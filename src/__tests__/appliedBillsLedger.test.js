@@ -129,9 +129,16 @@ describe('isMissingLedgerColumnError', () => {
 describe('mergeServerBills (Bill History union)', () => {
   const srv = (o) => ({ id: 7, doc_norm: 'inv-9', doc_number: 'INV-9', is_credit: false, vendor: 'V', doc_total: 10, portal_status: 'success', applied_at: '2026-07-01T10:00:00Z', ...o });
 
-  it('returns local list untouched when the server adds nothing new', () => {
-    const local = [{ id: 'a', parsed: { doc_number: 'INV-9' }, uploadedTs: 5 }];
+  it('returns a QBO-complete local list untouched when the server adds nothing new', () => {
+    const local = [{ id: 'a', qbStatus: 'success', parsed: { doc_number: 'INV-9' }, uploadedTs: 5 }];
     expect(mergeServerBills(local, [srv()])).toBe(local);
+  });
+
+  it('keeps the authoritative server row available when a stale local duplicate never reached QBO', () => {
+    const local = [{ id: 'a', resolution: { disposition: 'duplicate' }, parsed: { doc_number: 'INV-9' }, uploadedTs: 5 }];
+    const merged = mergeServerBills(local, [srv({ raw_meta: { doc_number: 'INV-9', matchedPOSource: 'so_po', matchedPO: { so_id: 'so-1' } } })]);
+    expect(merged).toHaveLength(2);
+    expect(merged.find(row => row._serverLedger).parsed.matchedPO.so_id).toBe('so-1');
   });
 
   it('adds server-only rows as read-only pushed entries (survives cleared localStorage)', () => {
@@ -164,6 +171,21 @@ describe('mergeServerBills (Bill History union)', () => {
     expect(merged).toHaveLength(2);
     expect(merged[0].id).toBe('srv-2'); // newest first
     expect(merged[1].id).toBe('a');
+  });
+
+  it('keeps distinct S&S invoices that share one split-shipment order number', () => {
+    const merged = mergeServerBills([], [
+      srv({ id: 1, doc_norm: '100404449', doc_number: '100404449', si_doc_number: '4504', vendor: 'S&S Activewear' }),
+      srv({ id: 2, doc_norm: '100404450', doc_number: '100404450', si_doc_number: '4504', vendor: 'S AND S ACTIVEWEAR' }),
+    ]);
+    expect(merged).toHaveLength(2);
+    expect(new Set(merged.map(row => row.parsed.doc_number))).toEqual(new Set(['100404449', '100404450']));
+  });
+
+  it('does not let a cached S&S sibling hide a server-ledger invoice for the same order', () => {
+    const local = [{ id: 'cached', parsed: { doc_number: '100404450', si_doc_number: '4504', vendor: 'S&S Activewear' } }];
+    const merged = mergeServerBills(local, [srv({ id: 1, doc_norm: '100404449', doc_number: '100404449', si_doc_number: '4504', vendor: 'S&S Activewear' })]);
+    expect(merged).toHaveLength(2);
   });
 });
 

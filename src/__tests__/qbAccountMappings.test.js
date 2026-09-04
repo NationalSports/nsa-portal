@@ -1,4 +1,5 @@
 import {
+  billVendorMatchName,
   QB_ACCOUNT_MAPPING_DEFAULTS,
   QB_ACCOUNT_POSTING_MATRIX,
   QB_STATE_TAX_ACCOUNT_KEYS,
@@ -8,6 +9,7 @@ import {
   calculateCustomerShipping,
   buildInternalLaborCostManifest,
   buildOmgBankDeposit,
+  findExistingVendorBill,
   findUniqueVendorMatch,
   getOmgFeeSource,
   indexQBNonInventoryItems,
@@ -143,6 +145,35 @@ describe('QuickBooks account resolution', () => {
 });
 
 describe('vendor bill adversarial routing', () => {
+  test('scopes duplicate supplier document numbers to the QBO vendor', () => {
+    const existing = [
+      { Id: 'other', DocNumber: '202964', VendorRef: { value: 'vendor-elsewhere' }, TotalAmt: 500, TxnDate: '2026-01-01' },
+      { Id: 'ours', DocNumber: '202964', VendorRef: { value: 'silver-screen' }, TotalAmt: 34.52, TxnDate: '2026-08-31' },
+    ];
+    expect(findExistingVendorBill(existing, {
+      docNumber: '202964', vendorId: 'silver-screen', total: 34.52, txnDate: '2026-08-31',
+    })?.Id).toBe('ours');
+    expect(findExistingVendorBill(existing.slice(0, 1), {
+      docNumber: '202964', vendorId: 'silver-screen', total: 34.52, txnDate: '2026-08-31',
+    })).toBeNull();
+  });
+
+  test('blocks a conflicting duplicate for the same QBO vendor', () => {
+    expect(() => findExistingVendorBill([
+      { Id: 'conflict', DocNumber: '202964', VendorRef: { value: 'silver-screen' }, TotalAmt: 40, TxnDate: '2026-08-31' },
+    ], {
+      docNumber: '202964', vendorId: 'silver-screen', total: 34.52, txnDate: '2026-08-31',
+    })).toThrow(/this vendor with a different date or total/i);
+  });
+
+  test('uses the reviewed portal vendor identity before the PDF supplier label', () => {
+    expect(billVendorMatchName({
+      supplier: 'Silver Screen Printing',
+      vendor: 'Silver Screen Printing & Embroidery',
+    })).toBe('Silver Screen Printing & Embroidery');
+    expect(billVendorMatchName({ supplier: 'S&S Activewear' })).toBe('S&S Activewear');
+  });
+
   test('classifies every active decoration-category vendor as 52000, with no inactive or substring false positives', () => {
     const vendors=[{id:'d1',name:'ABC Decoration',is_active:true},{id:'d2',name:'Old Decorator',is_active:false}];
     expect(manualBillAccountKey('deco:d1')).toBe('deco_account');
@@ -155,6 +186,7 @@ describe('vendor bill adversarial routing', () => {
 
   test('matches only one normalized legal vendor name and blocks ambiguity', () => {
     expect(findUniqueVendorMatch('Acme Sports, LLC', [{id:'v1',name:'ACME SPORTS INC.'}]).id).toBe('v1');
+    expect(findUniqueVendorMatch('ADIDAS US TEAM SERVICES', [{id:'adidas',name:'Adidas'}]).id).toBe('adidas');
     expect(findUniqueVendorMatch('Acme Sports', [{id:'v1',name:'Acme Sportswear'}])).toBeNull();
     expect(()=>findUniqueVendorMatch('Acme Sports', [
       {id:'v1',name:'Acme Sports LLC'},

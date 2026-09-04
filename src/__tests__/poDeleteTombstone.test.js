@@ -79,7 +79,7 @@ const save = async (payload) => {
   __mockState.calls.length = 0;
   __mockState.responses = {
     sales_orders: [{ data: { updated_at: 'yesterday', deco_pos: null }, error: null }, { error: null }],
-    so_items: [{ data: dbItems(), error: null }, { data: [{ id: 'n1' }, { id: 'n2' }, { id: 'n3' }], error: null }],
+    so_items: [{ data: dbItems(), error: null }, { data: [{ id: 'n1', item_index: 0 }, { id: 'n2', item_index: 1 }, { id: 'n3', item_index: 2 }], error: null }],
     so_art_files: [{ data: [], error: null }],
     so_item_po_lines: [
       { data: poRows(), error: null },        // PO-restore read

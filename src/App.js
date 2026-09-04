@@ -23,9 +23,10 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
+import GlobalSearch from './GlobalSearch';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills, portalBillAlreadyApplied } from './appliedBillsLedger';
 import { canViewAiInbox, resolveAccessUser } from './lib/pageAccess';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
@@ -47,9 +48,13 @@ import PortalAssistant from './PortalAssistant';
 import { canManageQuickBooksRole, storedUserCanManageQuickBooks } from './qbAccess';
 import { applyTaxRemittanceLedger, reversedTaxRemittanceIds } from './lib/taxRemittanceLedger';
 import { qboProductionReconnectUrl } from './qbOAuthCallback';
+import { mergeDurableQbCanaries, qbCanaryLedgerRecord } from './qbCanaryLedger';
 import { canViewFinancials } from './lib/financialAccess';
 import { consolidateOmgProductRows } from './lib/storeSkuGrouping';
 import { acquireOmgCreationGuard, omgCollectedUnitPrice, omgInvoiceIdempotencyKey, webstoreInvoiceIdempotencyKey } from './lib/omgCreationGuard';
+import { matchedBillPoNumber, normalizeBillForReview } from './qbBillReview';
+import { resolvePoDisplayVendor } from './lib/poVendor';
+import { removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
 // paint — so the first Excel import or PDF/SVG export has no download wait, while keeping them
@@ -437,6 +442,8 @@ const OnboardingWizard = lazyRetry(() => import('./OnboardingWizard'));
 const UniformBuilder = lazyRetry(() => import('./uniform/ProBuilder'));
 const UniformPatternsAdmin = lazyRetry(() => import('./uniform/PatternLibraryAdmin'));
 const UniformOrdersAdmin = lazyRetry(() => import('./uniform/UniformOrdersAdmin'));
+const MethodicDashboard = lazyRetry(() => import('./methodic/MethodicDashboard'));
+const MethodicArtQueue = lazyRetry(() => import('./methodic/MethodicArtQueue'));
 const UniformBuilderSettingsAdmin = lazyRetry(() => import('./uniform/BuilderSettingsAdmin'));
 const LoginGate = lazyRetry(() => import('./LoginGate'));
 import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal } from './modals';
@@ -447,12 +454,12 @@ import { shipStationCall, testShipStationConnection, convertSOToShipStation, pus
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString, applySiDocumentDiscount, siExpectedUpcharge, earlyPayFreightWaiver, poCoreTagMatch, looksNetsuiteDocRef } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
-import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku, resolveMappedSoItemIndex } from './billResolve';
+import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, billAutoHoldReasons, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku, resolveMappedSoItemIndex } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
-import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, planQBNonInventoryItems, qbBillNeedsSync, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
+import { QB_ACCOUNT_MAPPING_DEFAULTS, billVendorMatchName, buildVendorBillLines, calculateOmgInvoicePayment, findExistingVendorBill, findUniqueVendorMatch, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, planQBNonInventoryItems, qbBillNeedsSync, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
 import { BaggingQueueTile } from './baggingstation/BaggingDashCard';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
-import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
+import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, mergeAllContents, mergeAllSourceRefs, crossCustomerGroups, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
 import {
   supabase,
   scheduleEmailSend,
@@ -2240,7 +2247,7 @@ const _buildTabHref=(params)=>window.location.pathname+'?'+new URLSearchParams(p
 // 'dashboard' is the default and is represented by a clean URL (no ?pg=). Query-param based
 // (not a path) so it never touches Netlify's routing/redirects. Page-level only — opening a
 // specific record is not a separate history entry.
-const _PG_IDS=new Set(['dashboard','estimates','orders','jobs','uniforms','art','production','warehouse','purchase_orders','batch_pos','customers','vendors','team','products','inventory','messages','ai_inbox','ai_tasks','invoices','commissions','omg','webstores','reports','marketing','issues','import','qb','backup','settings','sales_tools','sales_history','salesmap','financials']);
+const _PG_IDS=new Set(['dashboard','estimates','orders','jobs','uniforms','methodic','art','production','warehouse','purchase_orders','batch_pos','customers','vendors','team','products','inventory','messages','ai_inbox','ai_tasks','invoices','commissions','omg','webstores','reports','marketing','issues','import','qb','backup','settings','sales_tools','sales_history','salesmap','financials']);
 const _pgFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).get('pg');return v&&_PG_IDS.has(v)?v:null}catch{return null}};
 // RowLink — wraps cell content in a real anchor so middle-click / Cmd-click /
 // right-click "Open in New Tab" all work natively in the browser. Plain
@@ -2698,11 +2705,11 @@ export default function App(){
         // Tier 1 (essential): everything the dashboard renders — orders, customers, invoices, messages,
         // todos, history, config — but NOT the ~47k product catalog / _pimg_ image rows (the dashboard
         // never reads them). Paints fast; products stream in via the tier-2 load below.
-        let d=await Promise.race([_dbLoad({essential:true,histInvoices:true,fullState:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
+        let d=await Promise.race([_dbLoad({essential:true,histInvoices:false,fullState:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
         // If even 120s wasn't enough, retry ONCE immediately with no cap before falling through to the
         // error banner — the uncapped poll would recover anyway, but only after its ~2min interval, which
         // left slow/overseas users staring at an empty "0 jobs" board and a scary banner in the meantime.
-        if(!d&&!cancelled){console.warn('[DB] Initial load hit the '+(_LOAD_CAP_MS/1000)+'s cap — retrying once uncapped before showing the error banner');d=await _dbLoad({essential:true,histInvoices:true,fullState:true})}
+        if(!d&&!cancelled){console.warn('[DB] Initial load hit the '+(_LOAD_CAP_MS/1000)+'s cap — retrying once uncapped before showing the error banner');d=await _dbLoad({essential:true,histInvoices:false,fullState:true})}
         if(cancelled)return;
         if(!d){
           // Supabase connected but query failed — do NOT allow writes that could overwrite real data
@@ -2870,7 +2877,7 @@ export default function App(){
           // replaced by the stale DB copy the load already read.
           if(as.wh_recent_actions)setWhRecentActions(prev=>{const incStr=JSON.stringify(as.wh_recent_actions);if(JSON.stringify(prev)===incStr){_whActionsApplied.current=incStr;return prev}if(_appStateDirty('wh_recent_actions'))return prev;_whActionsApplied.current=incStr;return as.wh_recent_actions});
           if(as.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as.job_time_logs});
-          if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as.qb_config,mapping:migrateQBAccountMapping(as.qb_config.mapping),autoSync:as.qb_config.initialMigrationApproved===true?(as.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)})}
+          if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};const _qbLoaded={..._qbDef,...as.qb_config,mapping:migrateQBAccountMapping(as.qb_config.mapping),autoSync:as.qb_config.initialMigrationApproved===true?(as.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)};setQBConfig(mergeDurableQbCanaries(_qbLoaded,as))}
           if(as.omg_first_seen)setOmgFirstSeen(as.omg_first_seen);
           if(as.inv_pos)setInvPOs(as.inv_pos);
           if(as.inv_adj_log)setInvAdjLog(prev=>{const incStr=JSON.stringify(as.inv_adj_log);if(JSON.stringify(prev)===incStr){_invAdjLogApplied.current=incStr;return prev}if(_appStateDirty('inv_adj_log'))return prev;_invAdjLogApplied.current=incStr;return as.inv_adj_log});
@@ -2933,7 +2940,7 @@ export default function App(){
             // Another browser is actively seeding (lock <30s old) — wait and reload
             console.log('[DB] Another browser is seeding — waiting to reload');
             await new Promise(r=>setTimeout(r,5000));
-            const d2=await _dbLoad({histInvoices:true,fullState:true});
+            const d2=await _dbLoad({histInvoices:false,fullState:true});
             // Same parent-timeout rule as the main branches: a d2 with timed-out parents must neither
             // be applied wholesale (would blank state + snapshot) nor fall through to the seed
             // fallback (would re-seed the live DB from local defaults). Fail the load instead.
@@ -2956,7 +2963,7 @@ export default function App(){
               if(as2.so_history)setSOHistory(prev=>{const incStr=JSON.stringify(as2.so_history);if(JSON.stringify(prev)===incStr){_soHistoryApplied.current=incStr;return prev}if(_appStateDirty('so_history'))return prev;_soHistoryApplied.current=incStr;return as2.so_history});
               if(as2.est_history)setEstHistory(prev=>{const incStr=JSON.stringify(as2.est_history);if(JSON.stringify(prev)===incStr){_estHistoryApplied.current=incStr;return prev}if(_appStateDirty('est_history'))return prev;_estHistoryApplied.current=incStr;return as2.est_history});
               if(as2.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as2.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as2.job_time_logs});
-              if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as2.qb_config,mapping:migrateQBAccountMapping(as2.qb_config.mapping),autoSync:as2.qb_config.initialMigrationApproved===true?(as2.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]})}if(as2.inv_pos)setInvPOs(as2.inv_pos);
+              if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};const _qbLoaded={..._qbDef,...as2.qb_config,mapping:migrateQBAccountMapping(as2.qb_config.mapping),autoSync:as2.qb_config.initialMigrationApproved===true?(as2.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]};setQBConfig(mergeDurableQbCanaries(_qbLoaded,as2))}if(as2.inv_pos)setInvPOs(as2.inv_pos);
               if(as2.inv_adj_log)setInvAdjLog(prev=>{const incStr=JSON.stringify(as2.inv_adj_log);if(JSON.stringify(prev)===incStr){_invAdjLogApplied.current=incStr;return prev}if(_appStateDirty('inv_adj_log'))return prev;_invAdjLogApplied.current=incStr;return as2.inv_adj_log});if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);if(as2.comm_overrides)setCommOverrides(as2.comm_overrides);if(as2.labor_rates)setLaborRates(as2.labor_rates);
               if(as2.company_info){const ci={...NSA_DEFAULTS,...as2.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
               console.log('[DB] Loaded from Supabase after seed by other browser');
@@ -3115,6 +3122,18 @@ export default function App(){
     }
     return()=>{cancelled=true;_realtimeHealthy=false;channels.forEach(ch=>supabase?.removeChannel(ch));if(channels._onVis)document.removeEventListener('visibilitychange',channels._onVis)};
   },[]);
+
+  // NetSuite history is large and read-only. Load it after the operational shell is usable so
+  // a slow 20k-row history request can never hold up dashboard/order startup.
+  const _histInvoicesLoadStarted=useRef(false);
+  React.useEffect(()=>{
+    if(dbLoading||!supabase||_histInvoicesLoadStarted.current)return;
+    _histInvoicesLoadStarted.current=true;let cancelled=false;let idleId=null;let timerId=null;
+    const load=async()=>{const rows=await _dbLoadHistInvoices();if(!cancelled&&rows)setHistInvs(rows)};
+    if(typeof window.requestIdleCallback==='function')idleId=window.requestIdleCallback(load,{timeout:2000});
+    else timerId=setTimeout(load,0);
+    return()=>{cancelled=true;if(idleId!=null&&typeof window.cancelIdleCallback==='function')window.cancelIdleCallback(idleId);if(timerId!=null)clearTimeout(timerId)};
+  },[dbLoading]);
 
   // ─── Deploy-aware auto-reload ───
   // Long-lived/abandoned tabs keep running stale JS and can hammer the API. Watch for a new
@@ -3707,6 +3726,17 @@ export default function App(){
         logChange('data_restored','SO',soId,kind==='item_restored'
           ?('Auto-restored '+(restored!=null?restored+' ':'')+'item(s) with purchase-order line(s) the save had dropped (stale state — no data lost)'+(reason?' — '+reason:''))
           :('Auto-restored '+(restored!=null?restored+' ':'')+(kind==='po_restored'?'PO':'pick')+' line(s) the save had dropped (stale state — no data lost)'));
+        return;
+      }
+      // These are observations, not confirmed loss. `hydrated_shrink` is emitted only after the DB guard
+      // proves every removed line was deliberately accounted for. `lost` is the earlier client-side suspicion
+      // raised before the authoritative DB guard runs; that later guard either verifies the edit or blocks it.
+      // Emailing either as "Items lost" creates a red alert for normal line removal even when persistence is
+      // healthy (SO-2359 / EST-2429, 2026-09-04). Keep the audit trail, but do not page the admin.
+      if(kind==='hydrated_shrink'||kind==='lost'){
+        logChange(kind==='hydrated_shrink'?'items_removed_verified':'item_shrink_observed','SO',soId,
+          (kind==='hydrated_shrink'?'Verified item removal: ':'Potential item-count reduction observed before DB verification: ')
+          +(reason||'(none)'));
         return;
       }
       // verify_fail: a post-insert read-back came back short or errored. The insert-first save keeps the OLD
@@ -4646,13 +4676,14 @@ export default function App(){
     try{
       const params=new URLSearchParams(window.location.search);
       if(params.get('qb_connected')==='true'){
+        const companyKey=params.get('qb_company_key')||'national';
         const company=params.get('qb_company')||'';
         const realm=params.get('qb_realm')||'';
-        setQBConfig(prev=>({...prev,connected:true,connectionError:'',companyId:realm,companyName:company,
+        if(companyKey==='national')setQBConfig(prev=>({...prev,connected:true,connectionError:'',companyId:realm,companyName:company,
           preflight:null,initialMigrationApproved:false,autoSync:'manual'}));
-        nf('Connected to QuickBooks Online'+(company?' — '+company:''));
+        nf((companyKey==='methodic'?'Methodic':'National')+' connected to QuickBooks Online'+(company?' — '+company:''));
         // Clean URL
-        const u=new URL(window.location);u.searchParams.delete('qb_connected');u.searchParams.delete('qb_company');u.searchParams.delete('qb_realm');
+        const u=new URL(window.location);u.searchParams.delete('qb_connected');u.searchParams.delete('qb_company');u.searchParams.delete('qb_company_key');u.searchParams.delete('qb_realm');
         window.history.replaceState({},'',u);
         sessionStorage.removeItem('qb_oauth_state');
       }else if(params.get('qb_error')){
@@ -6379,6 +6410,9 @@ export default function App(){
   const canAccess=useCallback((pageId)=>{
     if(!accessUser)return false;
     if(pageId==='ai_inbox')return canViewAiInbox(accessUser);
+    // Keep Custom Ops private during the rollout. This also protects direct
+    // ?pg=methodic links, not just the sidebar entry.
+    if(pageId==='methodic')return String(accessUser.email||'').toLowerCase()==='steve@nationalsportsapparel.com';
     // QBO is an accounting system, not a delegable portal page. Legacy access
     // arrays that contain `qb` must not expose it to reps or other operations roles.
     // Financials is identity-restricted even among admins. Never let an admin
@@ -6420,7 +6454,13 @@ export default function App(){
   // every path degrades silently to today's behavior (IF-coded labels, no box rows) — the
   // missing-table twin of the webstore-checkout missingFn pattern.
   const[boxRows,setBoxRows]=useState([]);
-  const[boxModal,setBoxModal]=useState(null);// {box, combineWith} — scan-action modal (desktop)
+  // {box, combineWith, mergeMode, pending:[box], warn} — scan-action modal (desktop).
+  // In mergeMode the pinned `box` is the merge TARGET and every subsequent scan lands in
+  // `pending` instead of replacing the modal; nothing is written until Confirm Merge.
+  const[boxModal,setBoxModal]=useState(null);
+  // Scans arrive through handleScanResult, whose closure is older than the current modal
+  // state; the ref keeps openBoxByCode looking at the live merge mode.
+  const boxModalRef=useRef(null);boxModalRef.current=boxModal;
   const _boxesMissing=useRef(false);
   const _boxTableGone=(error)=>!!error&&(error.code==='42P01'||error.code==='PGRST205'||/relation .*boxes.* does not exist|schema cache/i.test(error.message||''));
   const _loadBoxes=async()=>{
@@ -6529,29 +6569,91 @@ export default function App(){
   const openBoxByCode=async(code)=>{
     const box=await lookupBox(code);
     if(!box){nf('Box "'+code+'" not found'+(_boxesMissing.current?' — boxes table not deployed yet':''),'warn');return false}
-    if(box.id!==String(code).trim().toUpperCase())nf(String(code).trim().toUpperCase()+' was combined into '+box.id);
-    setBoxModal({box,combineWith:''});
+    const _scanned=String(code).trim().toUpperCase();
+    if(box.id!==_scanned)nf(_scanned+' was combined into '+box.id);
+    // Merge mode: a scan adds the box to the pending list instead of navigating away —
+    // the whole point is to keep the target pinned while cartons are scanned one-handed.
+    const _cur=boxModalRef.current;
+    if(_cur&&_cur.mergeMode&&_cur.box&&_cur.box.id!==box.id){
+      if((_cur.pending||[]).some(p=>p.id===box.id)){nf(box.id+' is already in this merge');return true}
+      if(box.status==='shipped'){nf(box.id+' already shipped — it can\'t be merged','error');return true}
+      setBoxModal(m=>m?{...m,pending:[...(m.pending||[]),box],warn:null}:m);
+      nf(box.id+' added to merge — '+boxUnits(box.contents)+' units');
+      return true;
+    }
+    if(_cur&&_cur.mergeMode&&_cur.box&&_cur.box.id===box.id){nf(box.id+' is the merge target');return true}
+    setBoxModal({box,combineWith:'',mergeMode:false,pending:[]});
     return true;
   };
   // Reprint a box's 4×6 (plate QR + team/SO context) via the shared label renderer.
-  const printBoxLabel=(box)=>{
+  // `supersedes` lists the plates just absorbed, so the merged label tells the floor which
+  // labels still taped to the carton are now dead.
+  const printBoxLabel=(box,supersedes)=>{
     const _so=sos.find(s=>s.id===box.so_id);
     const _c=_so?cust.find(x=>x.id===_so.customer_id):null;
-    printQrLabel(buildBoxLabel(box,{program:_c?.name||'',memo:_so?.memo||'',scanBase:window.location.origin+window.location.pathname}));
+    printQrLabel(buildBoxLabel(box,{program:_c?.name||'',memo:_so?.memo||'',scanBase:window.location.origin+window.location.pathname,supersedes:supersedes||[]}));
   };
-  // Combine: absorb `srcBox` into the box with id `tgtId` — sum SKUs+sizes, mark the absorbed
-  // plate combined + merged_into (its label keeps resolving via the lookup redirect), reprint one label.
-  const combineBoxes=async(srcBox,tgtId)=>{
-    const tgt=boxRows.find(b=>b.id===tgtId&&b.id!==srcBox.id);
-    if(!tgt){nf('Pick a box to combine into','error');return}
-    const merged=sumBoxContents(tgt.contents||[],srcBox.contents||[]);
-    const survivorPatch={contents:merged,source_refs:mergeSourceRefs(tgt.source_refs,srcBox.source_refs)};
-    if(!(await _boxUpdate(tgt.id,survivorPatch)))return;
-    await _boxUpdate(srcBox.id,{status:'combined',merged_into:tgt.id});
-    const survivor={...tgt,...survivorPatch,updated_at:new Date().toISOString()};
-    printBoxLabel(survivor);
-    setBoxModal({box:survivor,combineWith:''});
-    nf(srcBox.id+' combined into '+tgt.id+' — one label reprinted');
+  // Resolve the customer behind a box for the cross-customer guard: boxes carry no
+  // customer column, so it comes through so_id → SO → customer (so_id itself is the
+  // fallback label when the SO or customer can't be resolved).
+  const _boxCustomer=(box)=>{
+    const _so=box?.so_id?sos.find(s=>s.id===box.so_id):null;
+    const _c=_so?cust.find(x=>x.id===_so.customer_id):null;
+    return {id:box?.id||'',customerId:_c?.id||'',customerName:_c?.name||box?.so_id||'',soId:box?.so_id||''};
+  };
+  // Merge: absorb every box in `srcBoxes` into `target` — sum SKUs+sizes (same SKU+size from
+  // DIFFERENT POs stays split, see sumBoxContents), mark each absorbed plate combined +
+  // merged_into (their labels keep resolving via the lookup redirect), reprint ONE label.
+  //
+  // The write goes through the box_merge RPC so contents-move and mark-combined land in a
+  // single transaction. The old two-write path could leave the units in BOTH boxes with both
+  // labels scanning live — a double count in the one place it costs real money. If the RPC
+  // isn't deployed we refuse rather than fall back to that path.
+  //
+  // Returns {needsConfirm:{groups}} when the boxes span customers and the caller hasn't
+  // confirmed yet; the caller shows the warning and calls again with confirmedCrossCustomer.
+  const mergeBoxes=async(target,srcBoxes,{confirmedCrossCustomer=false}={})=>{
+    const srcs=(srcBoxes||[]).filter(b=>b&&b.id&&b.id!==target?.id);
+    if(!target||!srcs.length){nf('Scan at least one box to merge in','error');return null}
+    if(!supabase||_boxesMissing.current){nf('Box tracking isn\'t available — nothing was merged','error');return null}
+    const _cc=crossCustomerGroups([target,...srcs].map(_boxCustomer));
+    if(_cc.mismatch&&!confirmedCrossCustomer)return {needsConfirm:_cc};
+    const contents=mergeAllContents([target.contents||[],...srcs.map(b=>b.contents||[])]);
+    const refs=mergeAllSourceRefs([target.source_refs||[],...srcs.map(b=>b.source_refs||[])]);
+    // Inherit the SO only when the target has none and every source agrees on one.
+    const _srcSos=[...new Set(srcs.map(b=>b.so_id).filter(Boolean))];
+    const inheritSo=(!target.so_id&&_srcSos.length===1)?_srcSos[0]:null;
+    try{
+      const{data,error}=await supabase.rpc('box_merge',{
+        p_target:target.id,
+        p_target_ver:target.updated_at||null,
+        p_sources:srcs.map(b=>({id:b.id,updated_at:b.updated_at||null})),
+        p_contents:contents,
+        p_source_refs:refs,
+        p_so_id:inheritSo,
+        p_customer_id:null,
+      });
+      if(error){
+        const m=error.message||'';
+        if(error.code==='PGRST202'||error.code==='42883'||/could not find the function|schema cache/i.test(m))
+          nf('Merge needs the box_merge function deployed (migration 20260903120000) — nothing was merged','error');
+        else if(/STALE/i.test(m))
+          nf(m.replace(/^.*STALE:\s*/,'')+' — nothing was merged, rescan the boxes','error');
+        else nf('Merge failed ('+m+') — nothing was merged','error');
+        _loadBoxes();// resync: the failure may have been our snapshot, not the DB
+        return null;
+      }
+      const survivor=data||{...target,contents,source_refs:refs};
+      const _srcIds=new Set(srcs.map(b=>b.id));
+      setBoxRows(prev=>prev.map(b=>b.id===survivor.id?{...b,...survivor}
+        :_srcIds.has(b.id)?{...b,status:'combined',merged_into:survivor.id}:b));
+      printBoxLabel(survivor,srcs.map(b=>b.id));
+      nf(srcs.map(b=>b.id).join(', ')+' merged into '+survivor.id+' — one label reprinted');
+      return survivor;
+    }catch(e){
+      nf('Merge failed ('+(e?.message||e)+') — nothing was merged','error');
+      return null;
+    }
   };
   // ─── AUTO-SHIP BOXES ─── A box whose whole ORDER has left (SO shipped, or every
   // non-draft job completed/shipped — "when everything goes") is marked shipped, so
@@ -6584,7 +6686,7 @@ export default function App(){
 
   const isA=cu?.role==='admin'||cu?.role==='super_admin';
   const isSA=cu?.role==='super_admin';
-  const canAdjustInv=canAdjustInventory(cu,WAREHOUSE_LEAD_IDS);
+  const canAdjustInv=canAdjustInventory(cu,[...WAREHOUSE_LEAD_IDS,...INVENTORY_ADJUST_IDS]);
   // Normalize: super_admin is treated as admin everywhere via _r helper
   const _r=cu?.role==='super_admin'?'admin':cu?.role;
   const pars=useMemo(()=>cust.filter(c=>!c.parent_id&&(showArchived||c.is_active!==false)),[cust,showArchived]);const gK=useCallback(pid=>cust.filter(c=>c.parent_id===pid),[cust]);
@@ -7099,11 +7201,17 @@ export default function App(){
     if(addedSizes.length){logChange('inventory_sizes','Product',pid,'Added size'+(addedSizes.length===1?'':'s')+': '+addedSizes.join(', '))}
     nf('Inventory updated');
   };
+  // Allocate EST ids against the saved estimates PLUS whatever draft is open in the editor.
+  // A brand-new draft isn't in `ests` until it's saved, so building a second estimate on top
+  // of one used to hand back the SAME id. The editor is keyed on that id (key={eEst.id}), so
+  // React never remounted it and kept showing the old empty draft — the AI wizard reported
+  // "created estimate with N items" while the screen stayed at 0 items with no customer.
+  const _newEstId=()=>nextEstId((eEst&&!ests.some(x=>x.id===eEst.id))?[...ests,eEst]:ests);
   const newE=(c,product,seedItems,memo='')=>{const mk=c?.catalog_markup||1.65;const items=[];
     if(product){const au=isAU(product.brand)&&!String(product.id||'').startsWith('ssa-');const repCost=product.is_clearance&&product.clearance_cost!=null?product.clearance_cost:product.nsa_cost;const sell=au?rQ(product.retail_price*(1-auTierDisc(c?.adidas_ua_tier||'B',product.pricing_group,product.category))):rQ(repCost*mk);
       items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,vendor_id:product.vendor_id||null,pricing_group:product.pricing_group||null,color:product.color,nsa_cost:repCost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[],_is_clearance:product.is_clearance||false})}
     if(Array.isArray(seedItems)&&seedItems.length)items.push(...seedItems);
-    const e={id:nextEstId(ests),customer_id:c?.id||null,memo:memo||'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates');return e};
+    const e={id:_newEstId(),customer_id:c?.id||null,memo:memo||'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates');return e};
   const createEstimateFromInbox=(message)=>{
     const c=cust.find(x=>x.id===message?.customer_id);
     if(!c){nf('Match this email to a customer first','error');return}
@@ -7283,8 +7391,14 @@ export default function App(){
       const _nc=Math.round((safeNum(so._shipping_cost||0)+_pb.cost)*100)/100;if(_nc>0){so._shipping_cost=_nc;so._shipstation_cost=_nc;}}}
     const convertedEst={...est,status:'converted',updated_at:new Date().toLocaleString()};
     setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?convertedEst:e));setEEst(null);
-    // Explicitly save to DB immediately — don't rely solely on useEffect chain
-    _dbSaveSO(so);_dbSaveEstimate(convertedEst);
+    // Explicitly save to DB immediately — don't rely solely on useEffect chain.
+    // Methodic work is relinked only after both source/target documents exist, so
+    // the same request follows the line instead of creating an SO-side duplicate.
+    const[_soSaved]=await Promise.all([_dbSaveSO(so),_dbSaveEstimate(convertedEst)]);
+    if(_soSaved!==false){
+      try{const{methodicApi}=await import('./methodic/methodicApi');await methodicApi('relink_estimate',{estimate_id:est.id,sales_order_id:so.id});window.dispatchEvent(new CustomEvent('methodic-updated',{detail:{salesOrderId:so.id,estimateId:est.id}}))}
+      catch(methodicError){console.error('[convertSO] Methodic relink failed:',methodicError);nf('Sales order created, but Methodic work could not be relinked yet. Open the Methodic queue and retry.','warn')}
+    }
     // Consume the attached pending shipping charge (persisted SO — safe to record usage now).
     if(so.pending_ship_applied)_consumePendingShipForSO(so);
     const c=cust.find(x=>x.id===so.customer_id);
@@ -7353,7 +7467,7 @@ export default function App(){
     }
     const{art:clonedArt,idMap:_artIdMap}=reidArtFiles(est.art_files);
     const clonedItems=remapItemArtIds(safeItems(est).map(it=>{const clone=JSON.parse(JSON.stringify(it));delete clone.pick_lines;delete clone.po_lines;return clone}),_artIdMap);
-    const ne={id:nextEstId(ests),customer_id:est.customer_id,memo:(est.memo||'')+' (copy)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,bill_to_id:est.bill_to_id,email_status:null,art_files:clonedArt,items:clonedItems};
+    const ne={id:_newEstId(),customer_id:est.customer_id,memo:(est.memo||'')+' (copy)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,bill_to_id:est.bill_to_id,email_status:null,art_files:clonedArt,items:clonedItems};
     setEsts(prev=>[ne,...prev]);const c=cust.find(x=>x.id===ne.customer_id);setEEst(ne);setEEstC(c);setPg('estimates');nf(`${ne.id} copied from ${est.id}`)};
   const copySalesOrder=async so=>{
     // Auto-heal a partially-loaded sales order before copying — same failure mode the
@@ -11167,7 +11281,7 @@ export default function App(){
     // persist the exact line keys we SUBMITTED to the vendor (their sku/partId, size/color codes,
     // unit cost) as vendor_keys on the po_line. Pure capture — nothing reads it yet; it accumulates
     // so the bill matcher can later match on the vendor's own keys instead of fuzzy normalization.
-    const vendorKeys=apiOid&&apiLines&&apiLines.length?{order_no:String(apiOid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:safeNum(l.quantity),unit_cost:safeNum(l.unitPrice)}))}:null;
+    const vendorKeys=apiOid&&apiLines&&apiLines.length?{order_no:String(apiOid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:safeNum(l.quantity),unit_cost:safeNum(l.unitPrice),warehouse_id:l.warehouse_id||'',warehouse:l.warehouse||'',warehouse_qty:safeNum(l.warehouse_qty),warehouse_basis:l.warehouse_basis||''}))}:null;
     const apiStamp=apiOid?{api_order_id:apiOid,api_ordered_at:new Date().toLocaleString(),...(vendorKeys?{vendor_keys:vendorKeys}:{})}:null;
     // GRANULARITY (owner 2026-07-23): stamp each PO line with only ITS item's vendor keys —
     // stamping the whole batch's list on every line let a vendor number alias to the wrong
@@ -11188,9 +11302,10 @@ export default function App(){
     // Group by SO so an order with several batch entries gets a single save — per-entry saves
     // would each read the stale pre-save SO from sos and drop the previous entry's promotion.
     const bySo={};pos.forEach(bp=>{(bySo[bp.so_id]=bySo[bp.so_id]||[]).push(bp)});
-    Object.entries(bySo).forEach(([soId,bps])=>{try{
-      if(skipSoId&&soId===skipSoId)return;
-      const so=_sosNow.find(x=>x.id===soId);if(!so)return;
+    let promotionFailed=false;
+    for(const [soId,bps] of Object.entries(bySo)){try{
+      if(skipSoId&&soId===skipSoId)continue;
+      const so=_sosNow.find(x=>x.id===soId);if(!so)throw new Error('Sales order was not found in the live order list');
       const updatedItems=safeItems(so).map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
       bps.forEach(bp=>{
         let promoted=false;
@@ -11212,19 +11327,41 @@ export default function App(){
           });
         }
       });
-      savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()});
+      const saved=await savSONow({...so,items:updatedItems,updated_at:new Date().toLocaleString()});
+      if(!saved)throw new Error('database save returned false');
     }catch(_promoErr){
+      promotionFailed=true;
       // The vendor already accepted this order (or the rep already placed it) — never mask that
       // it isn't recorded on the SO. console-only left orders that exist at the vendor but
       // nowhere in fulfillment tracking, with nobody told.
       console.error('[orderVendorBatch] promotion failed for '+soId+' — clearing queue anyway',_promoErr);
       nf('⚠️ Batch '+poNum+' was placed but its PO line could not be recorded on '+soId+' — add it to the order manually','error');
       if(_dataLossAlert)_dataLossAlert({kind:'batch_promotion_failed',soId,reason:'Batch '+poNum+' ('+vgName+') promoted at the vendor but writing the po_line failed: '+(_promoErr&&_promoErr.message||_promoErr)});
-    }});
+    }}
     setBatchPOs(prev=>prev.filter(p=>(p.vendor_key+(p.ship_to_deco_id?':'+p.ship_to_deco_id:''))!==_gk));
     setBatchVendorCounters(prev=>{const n={...prev};delete n[_gk];return n;});
-    return poNum;
+    return promotionFailed?null:poNum;
     }finally{_batchOrderingRef.current.delete(_gk)}
+  };
+
+  // Remove a SanMar line that live inventory reports as short before submission. The PO
+  // commitment and its batch-queue mirror are updated together; the sales-order item stays
+  // in place so purchasing can source it elsewhere.
+  const removeQueuedSanMarLine=async(line)=>{
+    const currentSos=_visFlushRefs.current.sos||sos;
+    const so=currentSos.find(entry=>entry.id===line?.sourceSO);
+    if(!so){nf('The source sales order for this line could not be found. Nothing was changed.','error');return false}
+    const result=removeApiLineFromPoItems(safeItems(so),line);
+    if(!result.removed){nf(result.reason||'This line could not be removed from its source PO.','error');return false}
+    const updated={...so,items:result.items,updated_at:new Date().toLocaleString()};
+    let saved=false;
+    try{saved=await savSONow(updated)}catch(_saveErr){console.error('[removeQueuedSanMarLine] durable save failed',_saveErr)}
+    if(!saved){nf('The PO removal could not be confirmed. Do not submit; reload the order and verify the PO.','error');return false}
+    const nextBatches=removeApiLineFromBatchPOs(_visFlushRefs.current.batchPOs||batchPOs,line);
+    _visFlushRefs.current={..._visFlushRefs.current,batchPOs:nextBatches,sos:currentSos.map(entry=>entry.id===updated.id?updated:entry)};
+    setBatchPOs(nextBatches);
+    nf('Removed '+line.style+' '+line.size+' from '+result.poId+'; it will not be sent to SanMar.');
+    return true;
   };
 
 
@@ -11234,6 +11371,7 @@ export default function App(){
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
+      onOpenMethodicDashboard={()=>{setEEst(null);setPg('methodic')}}
       companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} onSaveCustomer={savC} onScheduleEmail={scheduleEmailSend} extractPdfText={extractPdfText}/></React.Suspense></ComponentErrorBoundary>
     // Filter estimates
     let fe=[...ests];
@@ -11287,7 +11425,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} shipCostBasis={shipCostBasis} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} onOpenMethodicDashboard={()=>{setESO(null);setESOTab(null);setPg('methodic')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} shipCostBasis={shipCostBasis} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -14922,7 +15060,7 @@ export default function App(){
                 setPg('batch_pos');
               }}>{'🚀'} Order {nextPO} for {vg.name}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
             {vg.vendor_key==='sanmar'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>{const _d=_apiDest(vg);setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipToDecoId:vg.ship_to_deco_id||null,shipTo:vg.ship_to_deco_id?undefined:(_d.shipTo||undefined),shipWarning:_d.warning,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,shipToDecoId:vg.ship_to_deco_id||null,apiResult:r,apiLines})})}}>
+              onClick={()=>{const _d=_apiDest(vg);setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipToDecoId:vg.ship_to_deco_id||null,shipTo:vg.ship_to_deco_id?undefined:(_d.shipTo||undefined),shipWarning:_d.warning,onRemoveLine:removeQueuedSanMarLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,shipToDecoId:vg.ship_to_deco_id||null,apiResult:r,apiLines})})}}>
               🚀 Submit SanMar Order (API)
             </button>}
             {vg.vendor_key==='sss'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
@@ -19412,27 +19550,54 @@ export default function App(){
     // one label page per SOURCE PO (each box gets its own label), not one merged label per
     // SO. Wrapped so a label-build failure can never abort the receive.
     const labels=[];
+    let _boxGroups=[],_boxRep='',_boxDate='';
     try{
       const byPo={};
       lines.forEach(({itemIdx,poLineIdx,rcv})=>{const it=items[itemIdx];if(!it)return;const sz=Object.entries(rcv||{}).filter(([,v])=>v>0);if(!sz.length)return;const q=sz.reduce((a,[,v])=>a+v,0);
         const pl=it.po_lines&&it.po_lines[poLineIdx];
-        const g=byPo[(pl&&pl.po_id)||soId]=byPo[(pl&&pl.po_id)||soId]||{code:(pl&&(pl.batch_po_number||pl.po_id))||soId,units:0,items:[]};
+        const g=byPo[(pl&&pl.po_id)||soId]=byPo[(pl&&pl.po_id)||soId]||{code:(pl&&(pl.batch_po_number||pl.po_id))||soId,poId:(pl&&pl.po_id)||'',units:0,items:[],contents:[]};
         g.units+=q;
         g.items.push({title:((it.sku||'')+' '+(it.name||'')).trim(),detail:[(it.color&&it.color!=='—')?it.color:'',q+' units'].filter(Boolean).join(' · '),sizes:sz.map(([s,v])=>s+': '+v).join('  ')});
+        // po_id rides on every content row: after cartons are merged this is the only thing
+        // that still answers "which PO did these 17 mediums come from" (sumBoxContents keys on it).
+        g.contents.push({sku:it.sku||'',name:it.name||'',color:it.color||'',so_id:soId,po_id:(pl&&pl.po_id)||'',sizes:Object.fromEntries(sz)});
       });
       const _r=REPS.find(rr=>rr.id===((cc&&cc.primary_rep_id)||so.created_by));
       const groups=Object.values(byPo);const _rDate=new Date().toLocaleDateString();
       groups.forEach((g,gi)=>labels.push({code:g.code,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(g.code),program:(cc&&cc.name)||'',rep:_r&&_r.name?'Rep: '+_r.name.split(' ')[0]:'',subtitle:groups.length>1?soId+' · Box '+(gi+1)+' of '+groups.length:soId,note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:g.items,codeSub:g.units+' units · scan to open PO'}));
+      _boxGroups=groups;_boxRep=_r&&_r.name?'Rep: '+_r.name.split(' ')[0]:'';_boxDate=_rDate;
     }catch(_){}
     const group=_buildReceiptGroup(so,itemQtyMap,decoJobs);
+    // Mint a receiving box per source PO so the check-in label carries a SCANNABLE plate
+    // (and the goods can later be merged). Until now only two desktop screens did this, so
+    // every tablet check-in — which is how the warehouse actually receives — produced no box
+    // at all: 0 of the first 108 boxes were kind='receiving'.
+    //
+    // Gated on the save: a plate for a receipt the DB never took is a label that scans to a
+    // box holding units nobody received (the NSA 4568 failure, one layer down). Falls back to
+    // today's PO-coded labels whenever box tracking is off or a mint fails.
+    const labelsP=saveP.then(async(ok)=>{
+      if(ok===false||!_boxGroups.length)return labels;
+      const out=[];
+      for(let gi=0;gi<_boxGroups.length;gi++){
+        const g=_boxGroups[gi];let box=null;
+        try{if(g.contents.length)box=await createBoxFor({kind:'receiving',soId,poId:g.poId||null,contents:g.contents})}catch(_){/* best-effort */}
+        out.push(box
+          ?{...buildBoxLabel(box,{program:(cc&&cc.name)||'',memo:so.memo||'',rep:_boxRep,scanBase:window.location.origin+window.location.pathname}),
+            subtitle:_boxGroups.length>1?soId+' · Box '+(gi+1)+' of '+_boxGroups.length:soId,
+            note:[g.poId,'RECEIVED — '+_boxDate].filter(Boolean).join(' · '),noteStyle:'color:#166534'}
+          :labels[gi]);
+      }
+      return out.filter(Boolean);
+    }).catch(()=>labels);
     if(!opts.defer){
       nf('Received '+grand+' unit'+(grand!==1?'s':'')+' on '+soId);
       notifyDecoReady(decoJobs);
       // Confirmation screen (labels print from there on tap) only AFTER the save confirms — a
       // check-in label must never exist for a receipt the DB doesn't hold.
-      saveP.then(ok=>{if(ok!==false)_showMobileReceipt({kind:'received',units:grand,labels,groups:[group]})});
+      saveP.then(ok=>{if(ok!==false)labelsP.then(ls=>_showMobileReceipt({kind:'received',units:grand,labels:ls,groups:[group]}))});
     }
-    return{labels,decoJobs,units:grand,group,saveP};
+    return{labels,labelsP,decoJobs,units:grand,group,saveP};
   };
   // Mobile batch check-in: apply every SO's receipts, then ONE combined print job (one page
   // per source PO) and ONE deco-ready toast. Fired after MobilePortal's summary toast so the
@@ -19446,11 +19611,15 @@ export default function App(){
     const perSo=[];
     (entries||[]).forEach(({soId,lines})=>{const r=mobileReceiveSOPO(soId,lines,{defer:true});if(r)perSo.push({soId,r})});
     if(perSo.length===0)return Promise.resolve(true);
-    return Promise.all(perSo.map(({soId,r})=>Promise.resolve(r.saveP).then(ok=>({soId,ok}),()=>({soId,ok:false})))).then(results=>{
+    return Promise.all(perSo.map(({soId,r})=>Promise.resolve(r.saveP).then(ok=>({soId,ok}),()=>({soId,ok:false})))).then(async(results)=>{
       const failed=new Set(results.filter(x=>x.ok===false).map(x=>x.soId));
       const saved=perSo.filter(({soId})=>!failed.has(soId));
       const labels=[],deco=[],groups=[];let units=0;
-      saved.forEach(({r})=>{labels.push(...r.labels);deco.push(...r.decoJobs);if(r.group)groups.push(r.group);units+=r.units});
+      // labelsP resolves to the BX-plate labels once each SO's receiving boxes are minted
+      // (falling back to that SO's PO-coded labels); resolved here so the batch still prints
+      // ONE combined job — a second window.open in the same tap is popup-blocked on iPad.
+      const _labelSets=await Promise.all(saved.map(({r})=>Promise.resolve(r.labelsP||r.labels).catch(()=>r.labels)));
+      saved.forEach(({r},i)=>{labels.push(...(_labelSets[i]||r.labels));deco.push(...r.decoJobs);if(r.group)groups.push(r.group);units+=r.units});
       if(failed.size===0&&Array.isArray(opts.batchNos)&&opts.batchNos.length){
         const _now=new Date().toLocaleString();
         setSubmittedBatches(prev=>prev.map(sb=>opts.batchNos.includes(sb.po_number)&&sb.status!=='received'?{...sb,status:'received',received_at:_now,received_by:cu?.name||'warehouse'}:sb));
@@ -23307,6 +23476,7 @@ export default function App(){
       const urgent=j.daysOut!=null&&j.daysOut<=3;
       const artist=REPS.find(r=>r.id===j.assigned_artist);
       const af=j.artFile;
+      const isMethodic=(j.art_requests||[]).some(r=>r?.source==='methodic');
       const cardKey=j.id+j.soId+view;
       // Split family this card stands for (null when it's just the one job) — see consolidateArtFamilies.
       const _fam=(j._famMembers||[]).length>1?j._famMembers:null;
@@ -23317,6 +23487,7 @@ export default function App(){
         <div style={{padding:'8px 10px',cursor:'pointer',minWidth:0}} onClick={()=>setExpandedArtCard(isExp?null:cardKey)}>
           <div style={{display:'flex',alignItems:'center',gap:4,marginBottom:4,minWidth:0}}>
             <span style={{fontSize:12,fontWeight:800,color:'#0f172a',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.customer}</span>
+            {isMethodic&&<span style={{fontSize:9,fontWeight:900,color:'#fff',background:'#312e81',padding:'2px 6px',borderRadius:4,flexShrink:0}}>METHODIC</span>}
             {urgent&&<span style={{fontSize:9,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 5px',borderRadius:3,flexShrink:0}}>🔥 {j.daysOut}d</span>}
             {j.daysOut!=null&&!urgent&&j.daysOut<=14&&<span style={{fontSize:9,color:'#92400e',flexShrink:0}}>{j.daysOut}d</span>}
           </div>
@@ -23455,6 +23626,8 @@ export default function App(){
         <input className="form-input" data-tour-id="art-search" style={{width:200,fontSize:12}} placeholder="Search customer, SO, art name..." value={artSearch} onChange={e=>setArtSearch(e.target.value)}/>
         <span style={{fontSize:11,color:'#64748b',marginLeft:'auto'}}>{artistJobs.length} job{artistJobs.length!==1?'s':''}</span>
       </div>
+
+      <React.Suspense fallback={null}><MethodicArtQueue estimates={ests} salesOrders={sos} customers={cust} teamMembers={REPS} notify={nf} onOpenDocument={(type,id)=>{if(type==='estimate'){const est=ests.find(x=>x.id===id);if(est){setEEst(est);setEEstC(cust.find(c=>c.id===est.customer_id)||null);setPg('estimates')}else nf('Estimate '+id+' not found','error')}else{const so=sos.find(x=>x.id===id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setESOTab('methodic');setPg('orders')}else nf('Sales order '+id+' not found','error')}}}/></React.Suspense>
 
       {/* ═══ ART TIME CLOCK ═══ */}
       {_isArtistUser&&<div className="card" style={{marginBottom:12,borderLeft:'3px solid #7c3aed'}}>
@@ -25448,7 +25621,7 @@ export default function App(){
   const[ssXref,setSsXref]=useState({open:false,step:'idle',plan:null,progress:null,result:null});
   const _billReviewBusyRef=useRef(false);// deploy-reload gate: true while unpushed bills sit in review in this tab
   const[reviewSnap,setReviewSnap]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_bill_review_session')||'null')}catch(e){return null}});// crash/deploy-reload recovery (Resume banner)
-  useEffect(()=>{_billReviewBusyRef.current=billImport.step==='review'&&billImport.parsed.some(b=>!b.portalStatus&&!b.reviewLater)},[billImport]);
+  useEffect(()=>{_billReviewBusyRef.current=billImport.step==='review'&&billImport.parsed.some(b=>!b.reviewLater&&(!b.portalStatus||(b.portalStatus==='success'&&qbBillNeedsSync(b.qbStatus))))},[billImport]);
   // Persist the in-review list so a deploy auto-reload (or crash) never costs the session —
   // the upload step then offers "Resume review". matchedPO/_lineMappings are dropped from the
   // snapshot and re-derived on resume through the same rematch pipeline a fresh pull uses, so
@@ -25476,7 +25649,7 @@ export default function App(){
     if(billImport.step==='review')return;// a fresh pull already loaded the list
     if(!(Array.isArray(sos)&&sos.length))return;// orders must be in before we re-match
     const rows=(reviewSnap&&Array.isArray(reviewSnap.bills))?reviewSnap.bills:[];
-    const pend=rows.filter(b=>b&&!b.portalStatus&&!b.reviewLater);
+    const pend=rows.filter(b=>b&&!b.reviewLater&&(!b.portalStatus||(b.portalStatus==='success'&&qbBillNeedsSync(b.qbStatus))));
     if(!pend.length||!reviewSnap.ts||Date.now()-reviewSnap.ts>3*24*3600*1000)return;
     if(typeof _autoResumeRef.current==='function'){_autoResumedOnce.current=true;_autoResumeRef.current()}
   },[pg,billView,billImport.step,sos,reviewSnap]);
@@ -27326,65 +27499,36 @@ export default function App(){
     const _autoPushSweep=async(bills)=>{
       try{
         let autoOn=true;try{autoOn=localStorage.getItem('nsa_bill_autopush')!=='off'}catch(e){}
-        if(!autoOn)return 0;
         // _ai_parsed = transcribed from a scanned PDF by vision — extraction itself is the
         // risk there, so those never auto-push regardless of how clean they look.
         // is_credit = a credit memo — some vendors print credit lines as POSITIVE quantities
         // (only the total is negative), so an auto-push would ADD what the credit reverses.
-        // Credits always get human eyes; manual push still works.
+        // Credits always get human eyes and use their dedicated reversal flow.
         // earlyPayFreightWaiver: Rawlings/TCK sometimes waive freight on early payment —
         // rare, but it's a human money decision (keep vs waive), so those never auto-push.
-        const candidates=(bills||[]).filter(b=>b&&b.parsed&&!b.parsed._ai_parsed&&!b.parsed.is_credit&&!earlyPayFreightWaiver(b.parsed).eligible&&_billIsReadyToPush(b)&&!_billTriage(b)?.issue&&!_validateBillForPush(b.parsed).length);
+        // Evaluate the safety gate even when auto-push is disabled. A finding governs every
+        // write path, and a previously held bill must be able to clear after a real rematch.
+        // Do not use _billIsReadyToPush/_billTriage here: both intentionally honor the prior
+        // hold and would prevent this fresh safety evaluation from ever clearing it.
+        const candidates=(bills||[]).filter(b=>b&&!b._qbBackfill&&b.parsed&&!b.parsed._ai_parsed&&!b.parsed.is_credit&&!earlyPayFreightWaiver(b.parsed).eligible&&_billIsBaseReadyToPush(b)&&!_validateBillForPush(b.parsed).length);
         if(!candidates.length)return 0;
         // DIRECT-PATH SAFETY GATE (Fable audit, 2026-07-22): _validateBillForPush checks
         // neither price nor vendor, and the $0-freight auto-mapping path can rewrite order
         // unit_cost with no cap. Before the unattended write, run each bill through
         // autoPushSafety (billResolve): exact-PO only, no credit-shaped totals, every
         // would-apply line's price within the same 25% bound the staged path enforces,
-        // vendors compatible. Blocked bills stay in review with the reason on the card —
-        // the human push button is unchanged.
+        // vendors compatible. The same live evaluator also guards human, parked, Portal,
+        // and QBO paths, so a wrapper-local stale/missing flag cannot bypass the hold.
         const autoBills=[];
         for(const b of candidates){
           const p=b.parsed;
           try{
-            const poLc=(p.po_number||'').toLowerCase().replace(/\s+/g,'');
-            const matchedPoRaw=p.matchedPOSource==='so_po'?(p.matchedPO?.po_id||''):(p.matchedPO?.po_number||p.matchedPO?.id||'');
-            // Exact-PO gate — strict whitespace-insensitive equality, OR (owner 2026-07-23) a
-            // core+customer-tag match, so a sloppily-written but certain PO ("PO.3182.LAF",
-            // "3094 CLHSSP") still auto-pushes. Only widens the PO check; price/vendor gates below stay.
-            const poExact=(!!poLc&&String(matchedPoRaw).toLowerCase().replace(/\s+/g,'')===poLc)||poCoreTagMatch(p.po_number,matchedPoRaw);
-            // Price pairs from what the push would ACTUALLY apply: staged mappings if
-            // present, else the same auto-mappings _applyBillsToPortal would build.
-            let pairs=(p._lineMappings&&p._lineMappings.length)?p._lineMappings:null;
-            let tItems=[];
-            if(p.matchedPOSource==='so_po'){
-              tItems=_soPoTargetItems(p);
-              if(!pairs&&safeNum(p.freight)<=0)pairs=_soPoAutoMappings(p)||[];
-              if(!pairs){
-                // freight-carried path: no mappings — pair each bill line with its
-                // BEST (closest-priced) SKU-matched target so size upcharges on
-                // multi-cost lines don't false-block.
-                pairs=[];
-                (p.items||[]).filter(it=>it&&it.sku&&it.qty>0&&safeNum(it.unit_price)>0).forEach(it=>{
-                  const ms=tItems.filter(t=>_billSkuMatchesItem((it.sku||'').toUpperCase(),t));
-                  if(!ms.length)return;
-                  const best=ms.reduce((a,t)=>Math.abs(safeNum(t.unit_cost)-safeNum(it.unit_price))<Math.abs(safeNum(a.unit_cost)-safeNum(it.unit_price))?t:a);
-                  pairs.push({bill_unit:safeNum(it.unit_price),unit_cost:safeNum(best.unit_cost)});
-                });
-              }
-            }
-            const reasons=autoPushSafety({
-              poExact,
-              pricePairs:pairs||[],
-              billVendor:String(p.vendor||p.supplier||''),
-              targetVendors:[...new Set(tItems.map(t=>String(t.vendor||'')).filter(Boolean))],
-              docTotal:safeNum(p.doc_total),
-            });
-            if(reasons.length){p._auto_hold=reasons;continue}
+            const reasons=_liveBillPushHoldReasons(p);
+            if(reasons.length)continue;
             autoBills.push(b);
           }catch(e){console.warn('auto-push safety check failed — holding bill for review',e);p._auto_hold=['safety check errored — review manually'];}
         }
-        if(!autoBills.length)return 0;
+        if(!autoOn||!autoBills.length)return 0;
         autoBills.forEach(b=>{b.parsed._auto_pushed=true});
         const pushed=await _applyBillsToPortal(autoBills);
         if(pushed)nf('⚡ '+pushed+' bill(s) auto-pushed to the portal (high-confidence match, no exceptions) — spot-check in Bill History','success');
@@ -28079,17 +28223,51 @@ export default function App(){
       return false;
     };
 
-    // A bill is ready to push to the portal when it's selected, not already pushed/parked, and
-    // has a target (auto-matched PO or a complete manual decoration target).
+    const _billIsBaseReadyToPush=b=>{
+      if(!b||b.reviewLater)return false;
+      // A Bill History QBO backfill is intentionally already complete on the
+      // portal side. It may enter the QBO pipeline, but never the portal writer.
+      if(b.portalStatus&&!b._qbBackfill)return false;
+      return _billHasTarget(b.parsed);
+    };
+
+    // A bill is ready to push when it is not already pushed/parked, has a target, and has no
+    // direct-path safety hold. This is shared by BOTH Portal and QBO selectors. `_auto_hold`
+    // used to be presentation-only, which let a row say "Held" while still entering either
+    // money path; it is now a fail-closed gate.
     // ONE definition of pushable, no checkbox curation: a bill either reconciles (Matched
-    // bucket → the push button takes ALL of them) or it doesn't (Needs Review). To hold a
-    // matched bill back, move it to Look at Later — that's the exclusion mechanism, and it
-    // persists across machines. portalStatus gates as before (success = done; error = the
+    // bucket → the push button takes ALL of them) or it doesn't (Needs Review). Safety holds
+    // stay in Needs Review; Look at Later remains the operator-controlled exclusion mechanism
+    // and persists across machines. portalStatus gates as before (success = done; error = the
     // apply/save failed, so it must NOT silently re-enter the pile — it shows as a failed
     // row and retries only through the same button after the operator sees it).
     const _billIsReadyToPush=b=>{
-      if(!b||b.portalStatus||b.reviewLater)return false;
-      return _billHasTarget(b.parsed);
+      if(!_billIsBaseReadyToPush(b))return false;
+      if(_liveBillPushHoldReasons(b.parsed).length)return false;
+      return true;
+    };
+
+    // QBO has a separate readiness gate from the Portal writer. A clean bill may
+    // already have been auto-applied to the portal while it is still waiting for
+    // its QBO Bill. Keep that row eligible for QBO without letting it re-enter the
+    // Portal push path. Failed portal writes remain fail-closed.
+    const _billIsReadyForQB=b=>{
+      if(!b||b.reviewLater)return false;
+      if(b.portalStatus&&b.portalStatus!=='success'&&!b._qbBackfill)return false;
+      if(!_billHasTarget(b.parsed))return false;
+      if(_liveBillPushHoldReasons(b.parsed).length)return false;
+      // A not-yet-applied bill must pass the full live review gate before QBO
+      // can receive it. Portal-complete rows were already reviewed/applied and
+      // may use the separate backfill path above.
+      if(b.portalStatus!=='success'&&(!_billIsReadyToPush(b)||_billTriage(b)?.issue))return false;
+      return true;
+    };
+
+    const _qboBillBatchKey=b=>{
+      const p=b?.parsed||{};
+      const vendor=normalizeVendorName(billVendorMatchName(p));
+      const doc=String(p.doc_number||b?.id||'').trim().toLowerCase();
+      return vendor&&doc?vendor+'|'+doc:'';
     };
 
     // Toggle a bill's "look at later" flag from saved history / the Look at Later page. val=true parks
@@ -28456,6 +28634,55 @@ export default function App(){
         maps.push({bill_idx:u.i,target_kind:'so',target_id:it.so_id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',so_item_idx:it.so_item_idx,po_id:it.po_id||'',allocated_qty:safeNum(u.li.qty||0),unit_cost:it.unit_cost||0,bill_unit:safeNum(u.li.unit_price||0),bill_cost:Math.round(billCost*100)/100});
       }
       return maps;
+    };
+
+    // Recompute the unattended/direct-path safety check from the bill's CURRENT match every
+    // time a selector or write boundary asks whether it can push. Persisted `_auto_hold` is a
+    // useful explanation, but it cannot be the authority: the same vendor invoice can exist as
+    // several pulled/saved wrappers and only one wrapper may carry the stored flag. That allowed
+    // an older duplicate to remain "Ready to push" after a newer copy was correctly held.
+    //
+    // Eligible auto-matched bills are therefore evaluated live at every Portal/QBO boundary.
+    // A clean real rematch clears a stale reason; an evaluation error fails closed. AI-read,
+    // credit, early-pay, and manually targeted decoration paths retain their persisted hold and
+    // continue through their dedicated human-review gates.
+    const _liveBillPushHoldReasons=(p)=>{
+      const stored=billAutoHoldReasons(p);
+      if(!p||p._ai_parsed||p.is_credit||earlyPayFreightWaiver(p).eligible||!p.matchedPOSource||!p.matchedPO)return stored;
+      try{
+        const poLc=(p.po_number||'').toLowerCase().replace(/\s+/g,'');
+        const matchedPoRaw=matchedBillPoNumber(p);
+        const poExact=(!!poLc&&String(matchedPoRaw).toLowerCase().replace(/\s+/g,'')===poLc)||poCoreTagMatch(p.po_number,matchedPoRaw);
+        let pairs=(p._lineMappings&&p._lineMappings.length)?p._lineMappings:null;
+        let tItems=[];
+        if(p.matchedPOSource==='so_po'){
+          tItems=_soPoTargetItems(p);
+          if(!pairs&&safeNum(p.freight)<=0)pairs=_soPoAutoMappings(p)||[];
+          if(!pairs){
+            pairs=[];
+            (p.items||[]).filter(it=>it&&it.sku&&it.qty>0&&safeNum(it.unit_price)>0).forEach(it=>{
+              const ms=tItems.filter(t=>_billSkuMatchesItem((it.sku||'').toUpperCase(),t));
+              if(!ms.length)return;
+              const best=ms.reduce((a,t)=>Math.abs(safeNum(t.unit_cost)-safeNum(it.unit_price))<Math.abs(safeNum(a.unit_cost)-safeNum(it.unit_price))?t:a);
+              pairs.push({bill_unit:safeNum(it.unit_price),unit_cost:safeNum(best.unit_cost)});
+            });
+          }
+        }
+        const reasons=autoPushSafety({
+          poExact,
+          pricePairs:pairs||[],
+          billVendor:String(p.vendor||p.supplier||''),
+          targetVendors:[...new Set(tItems.map(t=>String(t.vendor||'')).filter(Boolean))],
+          docTotal:safeNum(p.doc_total),
+        });
+        if(reasons.length)p._auto_hold=reasons;
+        else delete p._auto_hold;
+        return reasons;
+      }catch(e){
+        console.warn('bill push safety check failed — holding bill for review',e);
+        p._auto_hold=['safety check errored — review manually'];
+        return p._auto_hold;
+      }
     };
 
     // Apply a decoration bill manually when the user has picked an SO + target po_line (or "create new").
@@ -29289,7 +29516,10 @@ export default function App(){
     const _autoResolveDuplicates=()=>{
       const isDup=(x,wrapper)=>{
         if(x.dupOverride||x.portalStatus==='success')return false;
-        if(wrapper&&(x.reviewLater||x.qbStatus==='success'))return false;
+        // A Bill History backfill is supposed to refer to an already-applied
+        // portal document. Keep that explicitly loaded row alive long enough
+        // to reach the QBO-only pipeline; every portal writer excludes it.
+        if(wrapper&&(x.reviewLater||x.qbStatus==='success'||x._qbBackfill))return false;
         const d=(x.parsed?.doc_number||'').trim();
         return !!d&&_docAlreadyApplied(d);
       };
@@ -29410,7 +29640,7 @@ export default function App(){
       // the SI number. Check both so the same physical invoice can never be pushed twice — the
       // backstop that would have stopped the PO 3294 double-bill even if parse-dedup missed it.
       const _sdn=String(p.si_doc_number||'').trim();
-      if(_docAlreadyApplied(p.doc_number)||(_sdn&&_docAlreadyApplied(_sdn,'si')))errs.push('Already pushed to the Portal (duplicate doc #'+((p.doc_number||_sdn||'').toString().trim())+')');
+      if(!p._qbBackfill&&(_docAlreadyApplied(p.doc_number)||(_sdn&&_docAlreadyApplied(_sdn,'si'))))errs.push('Already pushed to the Portal (duplicate doc #'+((p.doc_number||_sdn||'').toString().trim())+')');
       // Credits reverse goods; the normal push ADDS. Block the normal path outright — the
       // ↩ Apply-credit panel on the card is the one door for credits (owner 2026-07-23).
       if(p.is_credit)errs.push('Credit memo — use ↩ Apply credit on the card (it un-bills the returned goods); the normal push would ADD what the credit reverses.');
@@ -29436,7 +29666,11 @@ export default function App(){
       // Owner rule ("my approval should do all this"): once a human accepted a proposal
       // that flagged the overage (_overage_ok), over-billing stops blocking — the push
       // corrects the order line up to what was billed, with an audit entry.
-      if(!(p._overage_ok&&(p._lineMappings||[]).length))errs.push(..._billOverBillingErrors(p,autoMaps||undefined));
+      // A QBO backfill never applies portal quantities. Comparing the already-
+      // billed PO to the same historic invoice would manufacture an overage
+      // (e.g. 2 already billed + the same 2 again) and block the accounting-only
+      // write even though the portal writer is explicitly disabled.
+      if(!p._qbBackfill&&!(p._overage_ok&&(p._lineMappings||[]).length))errs.push(..._billOverBillingErrors(p,autoMaps||undefined));
       return errs;
     };
 
@@ -29473,13 +29707,13 @@ export default function App(){
 
     // Live triage for a bill sitting in the review list — surfaced immediately, before any push.
     // Returns null for bills already pushed/parked (out of the running); otherwise flags whether the
-    // bill "matches up perfectly" (has a target AND no duplicate/over-billing problems). issue=true is
-    // anything that doesn't: no PO match, or a blocking problem. Warnings are advisory, not blocking.
+    // bill "matches up perfectly" (has a target AND no duplicate/over-billing/safety problems).
+    // Direct-path `_auto_hold` findings are blocking: a Held row must never also appear Ready.
     const _billTriage=b=>{
       if(!b||b.portalStatus==='success'||b.reviewLater)return null;
       const p=b.parsed;
       const matched=_billHasTarget(p);
-      const errs=matched?_validateBillForPush(p):[];
+      const errs=matched?[..._liveBillPushHoldReasons(p),..._validateBillForPush(p)]:[];
       const issue=!matched||errs.length>0;
       const reason=!matched?(p?.po_number?'No PO match for '+p.po_number:'No PO match — needs a PO number')
         :(errs.length?errs.join(' · '):'');
@@ -29736,6 +29970,11 @@ export default function App(){
       bills.forEach(b=>{
         try{
           const p=b.parsed;
+          const holdReasons=_liveBillPushHoldReasons(p);
+          // Defense in depth: stale dialogs and parked-bill actions can retain an old array even
+          // after the visible selector re-renders. Never let such a direct call cross the write
+          // boundary. Leave portalStatus untouched so fixing/rematching can re-qualify the bill.
+          if(holdReasons.length){b.portalMsg='Held for review: '+holdReasons.join(' · ');return}
           if(p)p._applyKey=b.id;// routes this bill's SO-save confirmations back to it (save gate below)
           // $0-freight so_po bills apply through explicit line mappings (the freight-carried
           // default path writes nothing at $0). Build them now; if they can't be built, fail
@@ -29873,7 +30112,7 @@ export default function App(){
       // Only the full-go bills — matched AND clean. Flagged/matched bills are left for review or
       // AI-match rather than bulk-pushed, so this mirrors the primary button's count exactly and a
       // clean push needs no problem modal. (A flagged bill pushes once it's been reconciled clean.)
-      const selected=billImport.parsed.filter(b=>_billIsReadyToPush(b)&&!_billTriage(b)?.issue);
+      const selected=billImport.parsed.filter(b=>!b._qbBackfill&&_billIsReadyToPush(b)&&!_billTriage(b)?.issue);
       if(!selected.length){nf('No matched bills selected to push','error');return}
       if(force!==true){
         const cleanBills=[],problemBills=[];
@@ -29908,8 +30147,15 @@ export default function App(){
     // so the two buttons always show the same number. Bills already in QB are skipped.
     const pushBillsToQB=async()=>{
       if(qbConfig.preflight?.status!=='success'||String(qbConfig.preflight?.realm_id||'')!==String(qbConfig.realm_id||'')){nf('Run the read-only live QBO preflight before sending any parsed bill','error');return}
+      const batchSeen=new Set();
       const selectedEntries=billImport.parsed.map((row,index)=>({row,index}))
-        .filter(({row})=>_billIsReadyToPush(row)&&!_billTriage(row)?.issue&&qbBillNeedsSync(row.qbStatus));
+        .filter(({row})=>{
+          if(!_billIsReadyForQB(row)||!qbBillNeedsSync(row.qbStatus))return false;
+          const key=_qboBillBatchKey(row);
+          if(key&&batchSeen.has(key))return false;
+          if(key)batchSeen.add(key);
+          return true;
+        });
       if(!selectedEntries.length){nf('No matched bills to push','error');return}
       const canaryMode=qbConfig.initialMigrationApproved!==true;
       const completedCanaries=new Set((qbConfig._qbCanaryBillIds||[]).map(String));
@@ -29964,7 +30210,7 @@ export default function App(){
         const bill=b.parsed||{};
         try{
           if(!_billHasTarget(bill))throw new Error('Bill is not linked to a portal PO/SO; no QBO bill was sent.');
-          const vendorName=String(bill.supplier||'').trim();
+          const vendorName=billVendorMatchName(bill);
           if(!vendorName)throw new Error('Bill supplier is blank; no QBO bill was sent.');
 
           const vendor=findUniqueVendorMatch(vendorName,vend);
@@ -30041,17 +30287,13 @@ export default function App(){
           // Idempotency check happens before every create. An exact vendor/date/total
           // match is reused; any same-number conflict blocks rather than guessing.
           const docKey=billDocNumber.toLowerCase();
-          const sameNumber=billsByDoc.get(docKey)||[];
-          const exact=sameNumber.filter(existing=>
-            String(existing.VendorRef?.value||'')===String(qbVendorId)
-            &&Math.abs(safeNum(existing.TotalAmt)-amt)<0.005
-            &&String(existing.TxnDate||'').slice(0,10)===txnDate);
-          if(exact.length>1)throw new Error('QBO contains duplicate exact bills for document '+billDocNumber+'; no new bill was sent.');
-          if(sameNumber.length&&exact.length!==1)throw new Error('QBO document '+billDocNumber+' already exists with a different vendor, date, or total; no new bill was sent.');
+          const existingVendorBill=findExistingVendorBill(billsByDoc.get(docKey)||[],{
+            docNumber:billDocNumber,vendorId:qbVendorId,total:amt,txnDate,
+          });
 
           let qboBillId,created=false;
-          if(exact.length===1){
-            qboBillId=exact[0].Id;
+          if(existingVendorBill){
+            qboBillId=existingVendorBill.Id;
           }else{
             const billRes=await qbApi('upsert_bill',{bill:qbBill});
             if(!billRes?.Bill?.Id)throw new Error(billRes?.Fault?.Error?.[0]?.Detail||'Unknown QBO bill error');
@@ -30084,6 +30326,20 @@ export default function App(){
               &&JSON.stringify(readLines)===JSON.stringify(sentLines);
             if(!readMatches)throw new Error('QBO Bill #'+qboBillId+' exists, but its read-back vendor/date/total/lines do not match the canary payload. Portal was not applied.');
             canaryReadback='Canary read-back verified: document, vendor, date, total, and '+readLines.length+' posting line(s)';
+            // Persist each verified canary in its own app_state row before
+            // applying the portal side or reporting success. The shared
+            // qb_config blob is last-write-wins and can be replaced by a
+            // navigation/poll race; a per-bill row is idempotent and cannot
+            // erase another canary. Retrying an exact existing QBO bill safely
+            // repairs a missing ledger row without creating a duplicate.
+            if(!supabase)throw new Error('QBO Bill #'+qboBillId+' was verified, but the durable canary ledger is unavailable. Portal was not applied.');
+            const canaryRow=qbCanaryLedgerRecord({
+              realmId:qbConfig.realm_id,qboBillId,
+              sourceId:b.id||bill.doc_number||bi,docNumber:billDocNumber,
+              verifiedAt:new Date().toISOString(),
+            });
+            const{error:canarySaveError}=await supabase.from('app_state').upsert(canaryRow,{onConflict:'id'});
+            if(canarySaveError)throw new Error('QBO Bill #'+qboBillId+' was verified, but its canary credit could not be saved: '+canarySaveError.message+'. Portal was not applied.');
           }
 
           // Only now—after QBO success or an exact existing read-back—may the
@@ -30138,9 +30394,23 @@ export default function App(){
 
       setBillImport(x=>({...x,uploading:false}));
       setSavedBills(prev=>{
+        const sourceRows=new Map((billImport.parsed||[]).map(row=>[row.id,row]));
+        const persistedIds=new Set();
         const updated=prev.map(sb=>{
           const result=qbResults[sb.id];
+          if(result)persistedIds.add(sb.id);
           return result?{...sb,qbStatus:result.qbStatus,qbMsg:result.qbMsg||'',...(result.portalStatus?{portalStatus:result.portalStatus,portalMsg:result.portalMsg||''}:{})}:sb;
+        });
+        // Server-ledger rows are not necessarily present in this browser's
+        // local cache. Persist their QBO result so Bill History keeps the
+        // verified status after navigation/reload instead of reverting to
+        // "Not pushed".
+        Object.entries(qbResults).forEach(([id,result])=>{
+          if(persistedIds.has(id))return;
+          const source=sourceRows.get(id);if(!source)return;
+          const {_qbBackfill,...cleanSource}=source;
+          const cleanParsed={...(source.parsed||{})};delete cleanParsed._qbBackfill;
+          updated.push({...cleanSource,parsed:cleanParsed,qbStatus:result.qbStatus,qbMsg:result.qbMsg||'',...(result.portalStatus?{portalStatus:result.portalStatus,portalMsg:result.portalMsg||''}:{})});
         });
         _lsSet('nsa_saved_bills',JSON.stringify(updated));
         return updated;
@@ -31147,7 +31417,7 @@ export default function App(){
             re-pull and re-orient. Hidden once resumed/discarded or when everything was pushed. */}
         {billImport.step==='upload'&&(()=>{
           const rows=(reviewSnap&&Array.isArray(reviewSnap.bills)?reviewSnap.bills:[]);
-          const pend=rows.filter(b=>b&&!b.portalStatus&&!b.reviewLater);
+          const pend=rows.filter(b=>b&&!b.reviewLater&&(!b.portalStatus||(b.portalStatus==='success'&&qbBillNeedsSync(b.qbStatus))));
           if(!pend.length||!reviewSnap.ts||Date.now()-reviewSnap.ts>3*24*3600*1000)return null;
           return<div style={{marginBottom:12,padding:'10px 16px',borderRadius:8,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',background:'#eff6ff',border:'1px solid #93c5fd'}}>
             <span style={{fontSize:18}}>⏪</span>
@@ -31203,7 +31473,17 @@ export default function App(){
               ⚠ To Review header above (single source, no clashing duplicates). */}
           const _matchedHeader=!_inReview?null:(()=>{
             const ready=billImport.parsed.filter(b=>_billIsReadyToPush(b)&&!_billTriage(b)?.issue);
+            const _qbReadySeen=new Set();
+            const qbReady=billImport.parsed.filter(b=>{
+              if(!_billIsReadyForQB(b)||!qbBillNeedsSync(b.qbStatus))return false;
+              const key=_qboBillBatchKey(b);
+              if(key&&_qbReadySeen.has(key))return false;
+              if(key)_qbReadySeen.add(key);
+              return true;
+            });
             const readyTotal=ready.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
+            const portalReady=ready.filter(b=>!b._qbBackfill);
+            const portalReadyTotal=portalReady.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
             const done=billImport.parsed.filter(b=>!_billTriage(b)).length;
             const failed=billImport.parsed.filter(b=>b.portalStatus&&b.portalStatus!=='success').length;
             return<div style={{marginBottom:16}}>
@@ -31213,8 +31493,8 @@ export default function App(){
                   {done>0&&<div style={{alignSelf:'center',fontFamily:FD,fontWeight:600,fontSize:11,letterSpacing:1,textTransform:'uppercase',color:'rgba(255,255,255,.4)'}}>{done} done</div>}
                 </div>
                 <div style={{marginLeft:'auto',display:'flex',flexDirection:'column',justifyContent:'center',gap:9,padding:'16px 24px',background:'rgba(0,0,0,.16)'}}>
-                  {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!ready.length,onClick:()=>pushBillsToPortal(),children:<>Push {ready.length} matched → Portal{readyTotal>0?' · '+nsaMoney(readyTotal):''}</>})}
-                  {qbOperator&&skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for the same matched pile':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!ready.some(b=>qbBillNeedsSync(b.qbStatus)),onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':(qbConfig.initialMigrationApproved===true?'Push next batch to QuickBooks':'Test 1 in QuickBooks')})}
+                  {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!portalReady.length,onClick:()=>pushBillsToPortal(),children:<>Push {portalReady.length} matched → Portal{portalReadyTotal>0?' · '+nsaMoney(portalReadyTotal):''}</>})}
+                  {qbOperator&&skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for portal-complete or currently matched rows':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!qbReady.length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':(qbConfig.initialMigrationApproved===true?'Push next batch to QuickBooks ('+Math.min(20,qbReady.length)+' of '+qbReady.length+')':'Test 1 in QuickBooks')})}
                   <label title="Push high-confidence matched bills to the portal automatically at pull time (and after the AI pass) — any bill the push button would take with zero problems. Anything with an exception waits for review. Auto-pushed bills are tagged in Bill History and covered by the daily anomaly email." style={{display:'flex',alignItems:'center',gap:7,cursor:'pointer',fontSize:11,color:'rgba(255,255,255,.75)',fontFamily:FD,fontWeight:600,letterSpacing:.4}}>
                     <input type="checkbox" checked={billAutoPush} onChange={e=>{const on=e.target.checked;setBillAutoPush(on);try{localStorage.setItem('nsa_bill_autopush',on?'on':'off')}catch(err){}}} style={{accentColor:'#6FD59A',margin:0}}/>
                     ⚡ Auto-push clean bills</label>
@@ -31228,7 +31508,7 @@ export default function App(){
             </div>;
           })();
             const renderBillCard=(b,bi,stepMode)=>{
-            const bill=b.parsed;
+            const bill=normalizeBillForReview(b.parsed);
             const poMatch=bill.matchedPO;const poSrc=bill.matchedPOSource;
             const tri=_billTriage(b);// live: {matched,errs,issue,reason} or null when pushed/parked
             const bucket=!tri?'done':tri.issue?'attention':'ready';
@@ -31454,7 +31734,7 @@ export default function App(){
                 {poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>PO Matched</span>}
                 {bill._auto_tied&&!portalPushed&&!b.qbStatus&&<span title="Matched automatically: the PO matched an order exactly and every line ties with high confidence (modest price differences sync onto the order with an audit entry)." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ecfdf5',color:'#047857',fontWeight:700,border:'1px solid #6ee7b7'}}>⚡ Auto-matched</span>}
                 {bill._auto_pushed&&portalPushed&&<span title="Pushed automatically: high-confidence match with no exceptions. Tagged in the ledger (resolution.auto_pushed); anything odd shows in the ⚠ Review pill and the daily anomaly email." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#047857',color:'#fff',fontWeight:700,border:'1px solid #065f46'}}>⚡ Auto-pushed</span>}
-                {!!(bill._auto_hold&&bill._auto_hold.length)&&!portalPushed&&<span title={'Matched, but held out of auto-push:\n• '+bill._auto_hold.join('\n• ')+'\nReview and push manually — the button works as always.'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fff7ed',color:'#9a3412',fontWeight:700,border:'1px solid #fed7aa'}}>⚡ Held · {bill._auto_hold.length===1?bill._auto_hold[0].split(' — ')[0].split(' (')[0]:bill._auto_hold.length+' reasons'}</span>}
+                {(()=>{const holdReasons=_liveBillPushHoldReasons(bill);return !!holdReasons.length&&!portalPushed?<span title={'Held out of Portal and QuickBooks pushes:\n• '+holdReasons.join('\n• ')+'\nFix or rematch this bill before it can be sent.'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fff7ed',color:'#9a3412',fontWeight:700,border:'1px solid #fed7aa'}}>⚡ Held · {holdReasons.length===1?holdReasons[0].split(' — ')[0].split(' (')[0]:holdReasons.length+' reasons'}</span>:null})()}
                 {bill._ai_parsed&&<span title="This bill was transcribed from a scanned PDF by AI (no text layer). Verify the lines and totals against the PDF before pushing — scanned reads never auto-push." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#eff6ff',color:'#1d4ed8',fontWeight:700,border:'1px solid #bfdbfe'}}>📷 AI-read scan</span>}
                 {bill._doc_discount_pct>0&&<span title={'Sports Inc document-level dealer discount: line prices shown were reduced '+bill._doc_discount_pct+'% from list (derived from this bill’s own gross vs net totals — Agron 25%, A4 5%, etc.). Unit prices are your true cost.'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ecfdf5',color:'#047857',fontWeight:700,border:'1px solid #a7f3d0'}}>−{bill._doc_discount_pct}% dealer</span>}
                 {bill._si_upcharge_computed&&<span title={'The SI upcharge wasn’t printed on the parse, so it was filled at 0.8% of the pre-discount subtotal: $'+safeNum(bill.si_upcharge).toFixed(2)+'. Verify against the invoice.'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fffbeb',color:'#92400e',fontWeight:700,border:'1px solid #fde68a'}}>SI fee 0.8% est.</span>}
@@ -31721,7 +32001,7 @@ export default function App(){
                 {/* Totals */}
                 <div style={{display:'flex',gap:0,borderTop:'1px solid #f1f5f9'}}>
                   {(bill.kind==='decoration'
-                    ?[['Doc Total',bill.doc_total,'doc_total'],['Freight (→ Outbound)',bill.freight,'freight']]
+                    ?[['Doc Total',bill.doc_total,'doc_total'],['Freight In (→ 51000)',bill.freight,'freight']]
                     :[['Merchandise',bill.merchandise_total,'merchandise_total'],['Freight',bill.freight,'freight'],['SI Upcharge',bill.si_upcharge,'si_upcharge'],['Doc Total',bill.doc_total,'doc_total']]
                   ).map(([label,val,key],i)=>
                     <div key={i} style={{flex:1,padding:'10px 14px',borderRight:'1px solid #f1f5f9',textAlign:'center'}}>
@@ -32372,15 +32652,17 @@ export default function App(){
           const rows=parked.filter(sb=>(billHistVendor==='all'||_vendorOf(sb)===billHistVendor)&&_timeOk(sb)).sort((a,b)=>(b.reviewLaterAt||0)-(a.reviewLaterAt||0));
           const recentCut=Date.now()-60*60*1000;// "recently moved" = parked within the last hour
           // Triage each parked bill into an issue bucket so the queue is worked by problem
-          // shape, not chronology. Precedence: duplicate > no match > over-billed > won't apply.
+          // shape, not chronology. A direct-path safety hold is its own non-pushable bucket;
+          // it must never be displayed or bulk-selected as "Ready" merely because it is parked.
           // Computed over ALL parked (not just the filtered rows) so the summary ribbon and the
           // bucket sections read from ONE classification — no second hand-synced copy.
           const enrichedAll=parked.map(sb=>{
             const p=sb.parsed||{};
             const matched=_billHasTarget(p);
-            const errs=matched?_validateBillForPush(p):[];
+            const holdReasons=_liveBillPushHoldReasons(p);
+            const errs=matched?[...holdReasons,..._validateBillForPush(p)]:[];
             const dup=_docAlreadyApplied(p.doc_number);
-            const bucket=dup?'duplicate':!matched?'nomatch':!errs.length?'ready'
+            const bucket=dup?'duplicate':!matched?'nomatch':holdReasons.length?'held':!errs.length?'ready'
               :errs.some(e=>e.indexOf(' exceeds ')>-1)?'overbilled':'noapply';// ' exceeds ' only occurs in _billOverBillingErrors strings
             return{sb,p,matched,errs,clean:matched&&!errs.length,bucket};
           });
@@ -32388,6 +32670,7 @@ export default function App(){
           const enriched=enrichedAll.filter(e=>rowIds.has(e.sb.id)).sort((a,b)=>(b.sb.reviewLaterAt||0)-(a.sb.reviewLaterAt||0));
           const BUCKETS=[
             ['ready','✅','Ready to push','#16a34a','#f0fdf4','These validate cleanly now — push them, or resolve if handled elsewhere.'],
+            ['held','🛑','Safety hold','#dc2626','#fef2f2','Blocked from Portal and QuickBooks. Move back to Review, then fix or rematch the bill.'],
             ['overbilled','⚠️','Over-billed','#dc2626','#fef2f2','The bill exceeds what the order says was ordered — reconcile below, then correct the order or accept the overage.'],
             ['noapply','🧩','Won’t apply cleanly','#d97706','#fffbeb','Matched an order, but the lines don’t map — fix the match.'],
             ['nomatch','🔍','No PO match','#4f46e5','#eef2ff','No order found for this bill’s PO number.'],
@@ -32424,7 +32707,7 @@ export default function App(){
               {oldestDays!=null&&<span style={{fontSize:11,color:TXTL}}>oldest {oldestDays===0?'today':oldestDays+'d'}</span>}
               <span style={{fontSize:11,color:TXTL}}>Out of every push until you act · synced across machines · pulls won’t re-add them.</span>
               {(()=>{
-                const rematchable=enrichedAll.filter(e=>e.bucket==='nomatch'||e.bucket==='noapply'||e.bucket==='overbilled');
+                const rematchable=enrichedAll.filter(e=>e.bucket==='held'||e.bucket==='nomatch'||e.bucket==='noapply'||e.bucket==='overbilled');
                 if(!rematchable.length)return null;
                 return <button onClick={()=>{rematchable.forEach(e=>_moveBackToReview(e.sb));nf(rematchable.length+' bill(s) moved to the review list — each gets its Best answer (overage approval included)')}}
                   title="Send every no-match / won't-apply / over-billed set-aside bill back into the review list — the matcher proposes its best answer with evidence, and accepting a flagged overage lets push correct the order automatically"
@@ -32490,7 +32773,7 @@ export default function App(){
                   </div>
                   {!clean&&<div style={{marginTop:10,display:'flex',flexDirection:'column',gap:6}}>{reasons.map((r,ri)=><div key={ri} style={{display:'flex',alignItems:'center',gap:9,padding:'8px 13px',background:REDBG,borderRadius:5}}><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke={RED} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{flex:'0 0 auto'}}><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z M12 9v4 M12 17h.01"/></svg><span style={{fontSize:13,color:'#7a2429',fontWeight:600}}>{r}</span></div>)}</div>}
                   {!expanded&&(()=>{
-                    const nextStep={ready:'Push to Portal — or Resolve if you billed it in NetSuite or handled it in QuickBooks',overbilled:'Reconcile in Review (Best answer + overage approval) — or Correct order from bill / Accept overage here',noapply:'Fix match — remap the lines to the right order',nomatch:'Fix match, or Find PO with AI, to attach it to an order',duplicate:'Resolve as duplicate — it was already applied'}[bucket];
+                    const nextStep={ready:'Push to Portal — or Resolve if you billed it in NetSuite or handled it in QuickBooks',held:'Move back to Review, then fix or rematch it — this bill cannot be pushed while held',overbilled:'Reconcile in Review (Best answer + overage approval) — or Correct order from bill / Accept overage here',noapply:'Fix match — remap the lines to the right order',nomatch:'Fix match, or Find PO with AI, to attach it to an order',duplicate:'Resolve as duplicate — it was already applied'}[bucket];
                     return nextStep?<div style={{fontFamily:FD,fontSize:12,fontWeight:700,letterSpacing:.4,color:NAVY,marginTop:8,textTransform:'uppercase'}}>👉 Next: <span style={{textTransform:'none',letterSpacing:0,fontFamily:'inherit',color:TXTL,fontWeight:600}}>{nextStep}</span></div>:null;
                   })()}
                   </div>
@@ -32763,7 +33046,7 @@ export default function App(){
                   <td style={{padding:'6px 12px',textAlign:'center'}}>{sb.parsed?.items?.length||0}</td>
                   <td style={{padding:'6px 12px'}} onClick={e=>e.stopPropagation()}>{sb.qbStatus==='success'?<span style={{color:'#166534',fontWeight:700}}>Pushed{sb.qbMsg?' · '+sb.qbMsg:''}</span>:sb.qbStatus==='error'?<span style={{color:'#dc2626',fontWeight:700}}>Failed{sb.qbMsg?' · '+sb.qbMsg:''}</span>:<span style={{color:'#94a3b8'}}>Not pushed</span>}
                     {sb.qbStatus!=='success'&&<button style={{marginLeft:6,fontSize:9,padding:'2px 8px',background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:4,color:'#1e40af',fontWeight:700,cursor:'pointer'}}
-                      onClick={e=>{e.stopPropagation();setBillImport({step:'review',files:[],parsed:[{...sb,selected:true,qbStatus:null,matchedPO:null,matchedPOSource:null}],uploading:false,showRaw:{}});nf('Bill loaded for re-push — click "Push to QuickBooks"')}}>Re-push</button>}</td>
+                      onClick={e=>{e.stopPropagation();setBillImport({step:'review',files:[],parsed:[{...sb,selected:true,qbStatus:null,qbMsg:'',portalStatus:null,portalMsg:'',_qbBackfill:true,parsed:{...normalizeBillForReview(sb.parsed),_qbBackfill:true}}],uploading:false,showRaw:{}});nf('Bill loaded for QBO backfill — the Portal side will not be applied again')}}>Re-push</button>}</td>
                   <td style={{padding:'6px 12px',textAlign:'center'}} onClick={e=>e.stopPropagation()}>
                     {sb._serverLedger
                     ?<span style={{fontSize:9,fontWeight:700,color:'#94a3b8'}} title="Pushed on the server ledger (possibly from another machine) — read-only here">server</span>
@@ -37254,7 +37537,8 @@ export default function App(){
     const rti=_mergeTxnItems(txnSearchResults,q,null);
     const allPicks=[];sos.forEach(so=>{safeItems(so).forEach(it=>{safePicks(it).forEach(pk=>{if(pk.pick_id&&pk.pick_id.toLowerCase().includes(s)&&!allPicks.find(x=>x.pick_id===pk.pick_id)){allPicks.push({pick_id:pk.pick_id,so_id:so.id,so,status:pk.status||'pick'})}})})});
     const rpk=allPicks;
-    const allPOs=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeItems(so).forEach(it=>{safePOs(it).forEach(po=>{const _poh=((po.po_id||'')+' '+(po.vendor||'')+' '+so.id).toLowerCase()+' '+_custHay(c2);if(_toks.every(t=>_poh.includes(t))){if(!allPOs.find(x=>x.po_id===po.po_id))allPOs.push({po_id:po.po_id,vendor:po.vendor,status:_searchPOStatus(so,po.po_id),so_id:so.id,so,customer:c2?.alpha_tag||''})}})});
+    const _poVendors=[...vend,...D_V];
+    const allPOs=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeItems(so).forEach(it=>{safePOs(it).forEach(po=>{const vendor=resolvePoDisplayVendor(it,po,_poVendors);const _poh=((po.po_id||'')+' '+vendor+' '+so.id).toLowerCase()+' '+_custHay(c2);if(_toks.every(t=>_poh.includes(t))){if(!allPOs.find(x=>x.po_id===po.po_id))allPOs.push({po_id:po.po_id,vendor,status:_searchPOStatus(so,po.po_id),so_id:so.id,so,customer:c2?.alpha_tag||''})}})});
       (so.deco_pos||[]).forEach(dp=>{const _dph=((dp.po_id||'')+' '+(dp.vendor||'')+' '+so.id).toLowerCase()+' '+_custHay(c2);if(_toks.every(t=>_dph.includes(t))){if(!allPOs.find(x=>x.po_id===dp.po_id))allPOs.push({po_id:dp.po_id,vendor:dp.vendor||'',status:dp.status||'waiting',so_id:so.id,so,customer:c2?.alpha_tag||'',isDeco:true})}});
     });
     submittedBatches.forEach(sb=>{const _sbh=((sb.po_number||'')+' '+(sb.vendor_name||'')+' '+(sb.source_pos||[]).map(sp=>[(sp.po_id||''),(sp.so_id||''),(sp.customer||'')].join(' ')).join(' ')).toLowerCase();if(_toks.every(t=>_sbh.includes(t))){if(!allPOs.find(x=>x.po_id===sb.po_number))allPOs.push({po_id:sb.po_number,vendor:sb.vendor_name,status:sb.status||'waiting',so_id:(sb.source_pos||[])[0]?.so_id||'',so:sos.find(x=>x.id===((sb.source_pos||[])[0]?.so_id)),customer:(sb.source_pos||[])[0]?.customer||'',isBatch:true})}});
@@ -37313,9 +37597,9 @@ export default function App(){
   }
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'uniforms',label:'Uniform Jobs',icon:'package'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'financials',label:'Financials',icon:'dollar',roles:['admin']},{id:'salesmap',label:'Sales Map',icon:'grid'},{id:'marketing',label:'Marketing',icon:'grid'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar',roles:['admin','super_admin','accounting']},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']},{section:'Tools'},{id:'production_hq',label:'Production HQ',icon:'package',href:'/teamshop-queue',external:true},{id:'floor_station',label:'Floor Station',icon:'grid',href:'/floor-station',external:true},{id:'move_checkin',label:'Move Check-In',icon:'box',href:'/move-checkin',external:true}];
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'uniforms',label:'Uniform Jobs',icon:'package'},{id:'methodic',label:'Custom Ops',icon:'package'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'financials',label:'Financials',icon:'dollar',roles:['admin']},{id:'salesmap',label:'Sales Map',icon:'grid'},{id:'marketing',label:'Marketing',icon:'grid'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar',roles:['admin','super_admin','accounting']},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']},{section:'Tools'},{id:'production_hq',label:'Production HQ',icon:'package',href:'/teamshop-queue',external:true},{id:'floor_station',label:'Floor Station',icon:'grid',href:'/floor-station',external:true},{id:'move_checkin',label:'Move Check-In',icon:'box',href:'/move-checkin',external:true}];
   nav.splice(3,0,{id:'ai_inbox',label:'AI Inbox',icon:'mail'},{id:'ai_tasks',label:'AI Tasks',icon:'grid',roles:['admin','rep']});
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',financials:'Financials',salesmap:'Sales Map',marketing:'Marketing',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',webstores:'Club Webstores',jobs:'Jobs',uniforms:'Uniform Jobs',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools',sales_history:'Sales History',search:'Search Results'};
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',financials:'Financials',salesmap:'Sales Map',marketing:'Marketing',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',webstores:'Club Webstores',jobs:'Jobs',uniforms:'Uniform Jobs',methodic:'Custom Ops',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools',sales_history:'Sales History',search:'Search Results'};
   titles.ai_inbox='AI Sales Inbox';titles.ai_tasks='AI Tasks';
   // ─── SCAN RESULT HANDLER ───
   function handleScanResult(val){
@@ -37431,7 +37715,7 @@ export default function App(){
   // <Toast> in the return below is never reached in mobile mode (this early return),
   // so without this every mobile toast — the green "🎽 Ready for decoration" and
   // "✅ Received N units" confirmations included — was silently dropped.
-  if(mobileMode)return<><Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveSOPOBatch={mobileReceiveSOPOBatch} onReceiveInvPO={receiveInvPO} receipt={mobileReceipt} onReceiptDone={()=>setMobileReceipt(null)} onPrintLabels={(labels)=>{try{printQrLabels(labels)}catch(_){}}} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxCombine={combineBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary><PortalAssistant variant="mobile" pg={pg} screenTitle={titles[pg]||'Portal'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={(row)=>{try{window.dispatchEvent(new CustomEvent('nsa:mobile-open-result',{detail:row}))}catch(e){}}} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/></>;
+  if(mobileMode)return<><Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveSOPOBatch={mobileReceiveSOPOBatch} onReceiveInvPO={receiveInvPO} receipt={mobileReceipt} onReceiptDone={()=>setMobileReceipt(null)} onPrintLabels={(labels)=>{try{printQrLabels(labels)}catch(_){}}} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxMerge={mergeBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary><PortalAssistant variant="mobile" pg={pg} screenTitle={titles[pg]||'Portal'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={(row)=>{try{window.dispatchEvent(new CustomEvent('nsa:mobile-open-result',{detail:row}))}catch(e){}}} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/></>;
 
   // Shared state interface for pages extracted out of App() (see src/AppContext.js).
   // Every key must be an App()-scope binding; extracted pages read these via useAppData().
@@ -37480,7 +37764,23 @@ export default function App(){
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><div style={{display:'flex',gap:4}}><button onClick={()=>setMobileMode(true)} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Switch to mobile view">📱 Mobile</button><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div></div>
     <div className="main"><div className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button><h1>{(eEst&&pg==='estimates')?eEst.id:(eSO&&pg==='orders')?eSO.id:(selC&&pg==='customers')?selC.name:(selV&&pg==='vendors')?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
-          <div className="search-bar" data-tour-id="global-search" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={gQ} onChange={e=>{setGQ(e.target.value);if(e.target.value.length>=2)setGOpen(true)}} onFocus={()=>{if(gQ.length>=2)setGOpen(true)}} onKeyDown={e=>{if(e.key==='Enter'){const q=gQ.trim();if(q.length>=2){setGSearchQ(q);setNlSpec(null);setCoachFinder(null);setPg('search');setGOpen(false)}}else if(e.key==='Escape'){setGOpen(false)}}}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
+          <GlobalSearch customers={cust} estimates={ests} salesOrders={sos} products={prod} invoices={invs} vendors={vend} submittedBatches={submittedBatches} inventoryPOs={invPOs}
+            searchProducts={_searchProductsServer} searchTxnItems={_searchTxnItemsServer} mergeTxnItems={_mergeTxnItems} searchWebstoreOrders={_queryWsOrders}
+            orderSearchHay={_soJobsSearchHay} searchPOStatus={_searchPOStatus} newTabHref={_newTabHref}
+            onSeeAll={query=>{setGSearchQ(query);setNlSpec(null);setCoachFinder(null);setPg('search')}}
+            onOpen={(kind,value)=>{
+              if(kind==='customer'){setSelC(value);setPg('customers')}
+              else if(kind==='order'){setESO(value);setESOC(cust.find(c=>c.id===value.customer_id));setPg('orders')}
+              else if(kind==='webstore')openWsOrderResult(value);
+              else if(kind==='estimate'){setEEst(value);setEEstC(cust.find(c=>c.id===value.customer_id));setPg('estimates')}
+              else if(kind==='product'){setSelP(value);setPg('products');setQ('')}
+              else if(kind==='txn')openTxnItem(value);
+              else if(kind==='pick'){setESO(value.so);setESOC(cust.find(c=>c.id===value.so?.customer_id));setPg('orders')}
+              else if(kind==='po'){if(value.isInvPO){setPOF(f=>({...f,search:value.po_id,status:'all',booking:false}));setPg('purchase_orders')}else if(value.isBatch){setBatchScan(value.po_id);setPg('batch_pos')}else if(value.so){setESOOpenPO(value.po_id);setESO(value.so);setESOC(cust.find(c=>c.id===value.so.customer_id));setPg('orders')}else setPg('purchase_orders')}
+              else if(kind==='job'){setESOTab('jobs');setESOScrollJob(value.ji);setESO(value.so);setESOC(cust.find(c=>c.id===value.so.customer_id));setPg('orders')}
+              else if(kind==='invoice'){setViewInvoice(value);setPg('invoices')}
+              else if(kind==='vendor'){setSelV(value);setPg('vendors')}
+            }}/>
           {gOpen&&gQ.length>=2&&(()=>{const s=gQ.toLowerCase();
             const _toks=s.split(/\s+/).filter(Boolean);
             const _custHay=(cc)=>{if(!cc)return'';const par=cc.parent_id?cust.find(x=>x.id===cc.parent_id):null;return((cc.name||'')+' '+(cc.alpha_tag||'')+' '+((cc.search_tags||[]).join(' '))+' '+((par?.search_tags||[]).join(' '))).toLowerCase()};
@@ -37498,7 +37798,8 @@ export default function App(){
             const allPicks=[];sos.forEach(so=>{safeItems(so).forEach(it=>{safePicks(it).forEach(pk=>{if(pk.pick_id&&pk.pick_id.toLowerCase().includes(s)&&!allPicks.find(x=>x.pick_id===pk.pick_id)){allPicks.push({pick_id:pk.pick_id,so_id:so.id,so,status:pk.status||'pick'})}})})});
             const rpk=allPicks.slice(0,4);
             // Build PO index from all SO po_lines + SO-level deco_pos + submitted batches
-            const allPOs=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeItems(so).forEach(it=>{safePOs(it).forEach(po=>{const _poh=((po.po_id||'')+' '+(po.vendor||'')+' '+so.id).toLowerCase()+' '+_custHay(c2);if(_toks.every(t=>_poh.includes(t))){if(!allPOs.find(x=>x.po_id===po.po_id))allPOs.push({po_id:po.po_id,vendor:po.vendor,status:_searchPOStatus(so,po.po_id),so_id:so.id,so,customer:c2?.alpha_tag||''})}})});
+            const _poVendors=[...vend,...D_V];
+            const allPOs=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeItems(so).forEach(it=>{safePOs(it).forEach(po=>{const vendor=resolvePoDisplayVendor(it,po,_poVendors);const _poh=((po.po_id||'')+' '+vendor+' '+so.id).toLowerCase()+' '+_custHay(c2);if(_toks.every(t=>_poh.includes(t))){if(!allPOs.find(x=>x.po_id===po.po_id))allPOs.push({po_id:po.po_id,vendor,status:_searchPOStatus(so,po.po_id),so_id:so.id,so,customer:c2?.alpha_tag||''})}})});
               (so.deco_pos||[]).forEach(dp=>{const _dph=((dp.po_id||'')+' '+(dp.vendor||'')+' '+so.id).toLowerCase()+' '+_custHay(c2);if(_toks.every(t=>_dph.includes(t))){if(!allPOs.find(x=>x.po_id===dp.po_id))allPOs.push({po_id:dp.po_id,vendor:dp.vendor||'',status:dp.status||'waiting',so_id:so.id,so,customer:c2?.alpha_tag||'',isDeco:true})}});
             });
             submittedBatches.forEach(sb=>{const _sbh=((sb.po_number||'')+' '+(sb.vendor_name||'')+' '+(sb.source_pos||[]).map(sp=>[(sp.po_id||''),(sp.so_id||''),(sp.customer||'')].join(' ')).join(' ')).toLowerCase();if(_toks.every(t=>_sbh.includes(t))){if(!allPOs.find(x=>x.po_id===sb.po_number))allPOs.push({po_id:sb.po_number,vendor:sb.vendor_name,status:sb.status||'waiting',so_id:(sb.source_pos||[])[0]?.so_id||'',so:sos.find(x=>x.id===((sb.source_pos||[])[0]?.so_id)),customer:(sb.source_pos||[])[0]?.customer||'',isBatch:true})}});
@@ -37686,7 +37987,7 @@ export default function App(){
           })}
         </div>
       </div>}
-      <div className="content">{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='uniforms'&&<ComponentErrorBoundary name="UniformJobs"><React.Suspense fallback={<LazyFallback/>}><UniformOrdersAdmin/></React.Suspense></ComponentErrorBoundary>}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&<ComponentErrorBoundary name="Invoices"><React.Suspense fallback={<LazyFallback/>}><InvoicesPage/></React.Suspense></ComponentErrorBoundary>}{pg==='commissions'&&<ComponentErrorBoundary name="Commissions"><React.Suspense fallback={<LazyFallback/>}><CommissionsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='financials'&&<ComponentErrorBoundary name="Financials"><React.Suspense fallback={<LazyFallback/>}><FinancialsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='omg'&&rOMG()}{pg==='webstores'&&<ComponentErrorBoundary name="Webstores"><React.Suspense fallback={<LazyFallback/>}><Webstores cust={cust} REPS={REPS} repCsr={repCsrAssignments} sos={sos} ests={ests} cu={cu} onCreateSO={webstoreCreateSO} onOpenSO={(soId)=>{const so=sos.find(x=>x.id===soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}else nf('Sales order '+soId+' not found — try reloading','warn')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='reports'&&rReports()}{pg==='salesmap'&&<ComponentErrorBoundary name="SalesMap"><React.Suspense fallback={<LazyFallback/>}><SalesMap customers={cust} orders={sos} invoices={invs} historicalInvoices={histInvs} vendors={vend} reps={REPS} calcMargin={calcOrderMargin} companyInfo={companyInfo} currentUser={cu} onOpenCustomer={c2=>{setSelC(c2.parent_id?cust.find(x=>x.id===c2.parent_id)||c2:c2);setPg('customers')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&<ComponentErrorBoundary name="QuickBooks"><React.Suspense fallback={<LazyFallback/>}><QBPage/></React.Suspense></ComponentErrorBoundary>}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='marketing'&&<ComponentErrorBoundary name="Marketing"><React.Suspense fallback={<LazyFallback/>}><MarketingPage/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
+      <div className="content">{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='uniforms'&&<ComponentErrorBoundary name="UniformJobs"><React.Suspense fallback={<LazyFallback/>}><UniformOrdersAdmin/></React.Suspense></ComponentErrorBoundary>}{pg==='methodic'&&<ComponentErrorBoundary name="MethodicOperations"><React.Suspense fallback={<LazyFallback/>}><MethodicDashboard orders={sos} estimates={ests} customers={cust} teamMembers={REPS} currentUser={cu} notify={nf} onOpenDocument={(type,id)=>{if(type==='estimate'){const est=ests.find(x=>x.id===id);if(est){setEEst(est);setEEstC(cust.find(c=>c.id===est.customer_id)||null);setPg('estimates')}else nf('Estimate '+id+' not found','error')}else{const so=sos.find(x=>x.id===id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setESOTab('methodic');setPg('orders')}else nf('Sales order '+id+' not found','error')}}}/></React.Suspense></ComponentErrorBoundary>}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&<ComponentErrorBoundary name="Invoices"><React.Suspense fallback={<LazyFallback/>}><InvoicesPage/></React.Suspense></ComponentErrorBoundary>}{pg==='commissions'&&<ComponentErrorBoundary name="Commissions"><React.Suspense fallback={<LazyFallback/>}><CommissionsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='financials'&&<ComponentErrorBoundary name="Financials"><React.Suspense fallback={<LazyFallback/>}><FinancialsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='omg'&&rOMG()}{pg==='webstores'&&<ComponentErrorBoundary name="Webstores"><React.Suspense fallback={<LazyFallback/>}><Webstores cust={cust} REPS={REPS} repCsr={repCsrAssignments} sos={sos} ests={ests} cu={cu} onCreateSO={webstoreCreateSO} onOpenSO={(soId)=>{const so=sos.find(x=>x.id===soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}else nf('Sales order '+soId+' not found — try reloading','warn')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='reports'&&rReports()}{pg==='salesmap'&&<ComponentErrorBoundary name="SalesMap"><React.Suspense fallback={<LazyFallback/>}><SalesMap customers={cust} orders={sos} invoices={invs} historicalInvoices={histInvs} vendors={vend} reps={REPS} calcMargin={calcOrderMargin} companyInfo={companyInfo} currentUser={cu} onOpenCustomer={c2=>{setSelC(c2.parent_id?cust.find(x=>x.id===c2.parent_id)||c2:c2);setPg('customers')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&<ComponentErrorBoundary name="QuickBooks"><React.Suspense fallback={<LazyFallback/>}><QBPage/></React.Suspense></ComponentErrorBoundary>}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='marketing'&&<ComponentErrorBoundary name="Marketing"><React.Suspense fallback={<LazyFallback/>}><MarketingPage/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
     {pg==='ai_inbox'&&canAccess('ai_inbox')&&<div className="content"><AiInbox supabase={supabase} customers={cust} onCreateEstimate={createEstimateFromInbox} notify={nf}/></div>}
     {pg==='ai_tasks'&&<div className="content"><AiTasks supabase={supabase} customers={cust} notify={nf}/></div>}
     {/* ═══ CREATE TODO MODAL (global) ═══ */}
@@ -38326,14 +38627,71 @@ export default function App(){
       const combineTargets=boxRows.filter(b=>b.id!==bx.id&&b.status!=='combined'&&b.status!=='shipped');
       const openLinkedSO=()=>{const so=sos.find(s=>s.id===bx.so_id);if(!so){nf('SO '+bx.so_id+' not found','warn');return}setBoxModal(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('tracking');setPg('orders')};
       const boxActive=bx.status!=='combined';
-      return<div className="modal-overlay" onClick={()=>setBoxModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
-        <div style={{padding:'14px 20px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+      const mergeMode=!!boxModal.mergeMode;const pending=boxModal.pending||[];
+      // Confirm Merge. mergeBoxes returns {needsConfirm} when the boxes span customers —
+      // that becomes the blocking warning panel, and the second tap re-calls with the flag.
+      const doMerge=async(force)=>{
+        const res=await mergeBoxes(bx,pending,{confirmedCrossCustomer:!!force});
+        if(res&&res.needsConfirm){setBoxModal(m=>m?{...m,warn:res.needsConfirm}:m);return}
+        if(res)setBoxModal({box:res,combineWith:'',mergeMode:false,pending:[]});
+      };
+      return<div className="modal-overlay" onClick={()=>{if(!mergeMode)setBoxModal(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+        <div style={{padding:'14px 20px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',...(mergeMode?{background:'#ecfeff',borderBottom:'3px solid #0e7490'}:{})}}>
           <span style={{fontSize:18,fontWeight:900,fontFamily:'monospace',color:'#0e7490'}}>📦 {bx.id}</span>
+          {mergeMode&&<span style={{fontSize:10,padding:'3px 10px',borderRadius:10,fontWeight:900,color:'#fff',background:'#0e7490',letterSpacing:0.5}}>MERGE TARGET</span>}
           <span style={{fontSize:11,padding:'2px 10px',borderRadius:10,fontWeight:800,color:meta.color,background:meta.bg}}>{meta.label}</span>
           {bx.merged_into&&<span style={{fontSize:11,color:'#64748b'}}>absorbed into <strong>{bx.merged_into}</strong></span>}
-          <button onClick={()=>setBoxModal(null)} style={{marginLeft:'auto',background:'none',border:'none',color:'#64748b',cursor:'pointer',fontSize:20}}>×</button>
+          {!mergeMode&&<button onClick={()=>setBoxModal(null)} style={{marginLeft:'auto',background:'none',border:'none',color:'#64748b',cursor:'pointer',fontSize:20}}>×</button>}
         </div>
         <div className="modal-body" style={{maxHeight:'70vh',overflowY:'auto'}}>
+          {/* ── MERGE MODE ── target pinned above, scan prompt, removable pending list ── */}
+          {mergeMode&&<div style={{marginBottom:14}}>
+            <div style={{padding:'10px 12px',border:'2px dashed #0e7490',borderRadius:8,background:'#f0fdff',marginBottom:10}}>
+              <div style={{fontSize:13,fontWeight:800,color:'#0e7490'}}>📷 Scan the next box to add it</div>
+              <div style={{fontSize:11,color:'#0e7490',marginTop:2}}>Everything lands in <strong>{bx.id}</strong>. Nothing is written until you confirm.</div>
+            </div>
+            {/* Desktop has no camera in hand: the modal covers the toolbar scan button, so a
+                box can also be added by plate here (a wedge scanner types straight into it). */}
+            {combineTargets.length>0&&<div style={{display:'flex',gap:6,alignItems:'center',marginBottom:10}}>
+              <select className="form-input" style={{flex:1,fontSize:12,padding:'8px 8px'}} value={boxModal.combineWith||''}
+                onChange={e=>setBoxModal(m=>m?{...m,combineWith:e.target.value}:m)}>
+                <option value="">Add a box by plate…</option>
+                {combineTargets.filter(b=>!pending.some(p=>p.id===b.id)).map(b=>
+                  <option key={b.id} value={b.id}>{b.id} — {[b.if_id,b.so_id].filter(Boolean).join(' · ')} ({boxUnits(b.contents)} units)</option>)}
+              </select>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:12,minHeight:38}} disabled={!boxModal.combineWith}
+                onClick={()=>{const b=boxRows.find(x=>x.id===boxModal.combineWith);if(!b)return;
+                  setBoxModal(m=>m?{...m,pending:[...(m.pending||[]),b],combineWith:'',warn:null}:m);nf(b.id+' added to merge')}}>Add</button>
+            </div>}
+            <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Merging in ({pending.length})</div>
+            {pending.length===0&&<div style={{fontSize:12,color:'#94a3b8',marginBottom:8}}>No boxes scanned yet.</div>}
+            {pending.map(p=>{const pc=_boxCustomer(p);
+              return<div key={p.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',background:'#fff',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:6}}>
+                <span style={{fontFamily:'monospace',fontWeight:800,color:'#0e7490',fontSize:13}}>{p.id}</span>
+                <span style={{fontSize:11,color:'#475569'}}>{[pc.customerName,p.so_id].filter(Boolean).join(' · ')}</span>
+                <span style={{marginLeft:'auto',fontSize:12,fontWeight:700,color:'#334155'}}>{boxUnits(p.contents)} units</span>
+                {/* Big hit target: this is tapped one-handed while the other hand holds a carton. */}
+                <button onClick={()=>setBoxModal(m=>m?{...m,pending:(m.pending||[]).filter(x=>x.id!==p.id),warn:null}:m)}
+                  style={{minWidth:38,minHeight:38,borderRadius:8,border:'1px solid #fecaca',background:'#fef2f2',color:'#b91c1c',fontSize:16,fontWeight:800,cursor:'pointer'}} title={'Remove '+p.id}>×</button>
+              </div>})}
+            {/* Cross-customer guard — warn, never hard-block: genuine multi-SO consolidation
+                happens, but merging two teams' goods is the mistake that costs real money. */}
+            {boxModal.warn&&<div style={{padding:'12px 14px',border:'2px solid #b45309',background:'#fffbeb',borderRadius:8,margin:'10px 0'}}>
+              <div style={{fontSize:13,fontWeight:900,color:'#92400e',marginBottom:6}}>⚠️ These boxes belong to different customers.</div>
+              {boxModal.warn.groups.map(g=><div key={g.key||g.name} style={{fontSize:12,color:'#78350f',marginBottom:2}}>
+                <strong style={{fontFamily:'monospace'}}>{g.boxIds.join(', ')}</strong> — {g.name}</div>)}
+              <div style={{display:'flex',gap:8,marginTop:10}}>
+                <button className="btn btn-sm" style={{fontSize:12,background:'#b45309',color:'#fff',border:'none',fontWeight:800,minHeight:38}} onClick={()=>doMerge(true)}>Merge anyway</button>
+                <button className="btn btn-sm btn-secondary" style={{fontSize:12,minHeight:38}} onClick={()=>setBoxModal(m=>m?{...m,warn:null}:m)}>Back</button>
+              </div>
+            </div>}
+            <div style={{display:'flex',gap:8,marginTop:12}}>
+              <button className="btn btn-sm" style={{fontSize:13,fontWeight:800,background:'#0e7490',color:'#fff',border:'none',minHeight:44,flex:1,opacity:pending.length?1:0.5}}
+                disabled={!pending.length} onClick={()=>doMerge(false)}>✓ Confirm Merge ({pending.length+1} boxes → {boxUnits(mergeAllContents([bx.contents||[],...pending.map(p=>p.contents||[])]))} units)</button>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:13,minHeight:44,padding:'0 18px'}}
+                onClick={()=>setBoxModal(m=>m?{...m,mergeMode:false,pending:[],warn:null}:m)}>Cancel</button>
+            </div>
+          </div>}
           {/* Linked refs + location */}
           <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:10,fontSize:12}}>
             {bx.if_id&&<span>IF: <strong style={{color:'#1e40af'}}>{bx.if_id}</strong></span>}
@@ -38362,23 +38720,21 @@ export default function App(){
               <div style={{fontFamily:'monospace',fontSize:11,color:'#475569',marginTop:2}}>{sz.map(([s,v])=>s+': '+v).join('  ')}</div>
             </div>})}
           {/* Actions */}
-          {boxActive&&<>
+          {boxActive&&!mergeMode&&<>
             <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',margin:'12px 0 6px'}}>Actions</div>
             <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:10}}>
               {[['staged','Staged'],['at_deco','➡️ At Deco'],['shipped','🚚 Shipped']].map(([st,lbl])=>
                 <button key={st} className={`btn btn-sm ${bx.status===st?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} disabled={bx.status===st} onClick={async()=>{if(await _boxUpdate(bx.id,{status:st}))nf(bx.id+' marked '+(BOX_STATUS_META[st]?.label||st))}}>{lbl}</button>)}
               <button className="btn btn-sm btn-secondary" style={{fontSize:11,marginLeft:'auto'}} onClick={()=>printBoxLabel(bx)}>🖨️ Reprint Label</button>
             </div>
-            {combineTargets.length>0&&<div style={{display:'flex',gap:6,alignItems:'flex-end'}}>
-              <div style={{flex:1}}>
-                <label style={{fontSize:10,color:'#64748b',fontWeight:600,display:'block',marginBottom:2}}>🔗 Combine this box into…</label>
-                <select className="form-input" style={{fontSize:12,padding:'6px 8px'}} value={boxModal.combineWith||''} onChange={e=>setBoxModal(m=>({...m,combineWith:e.target.value}))}>
-                  <option value="">Select a box…</option>
-                  {combineTargets.map(b=><option key={b.id} value={b.id}>{b.id} — {[b.if_id,b.so_id].filter(Boolean).join(' · ')} ({boxUnits(b.contents)} units)</option>)}
-                </select>
-              </div>
-              <button className="btn btn-sm btn-secondary" style={{fontSize:11}} disabled={!boxModal.combineWith} onClick={()=>combineBoxes(bx,boxModal.combineWith)}>Combine</button>
-            </div>}
+            {/* Merge: this box becomes the target, then every scan adds a carton to it. */}
+            <button className="btn btn-sm" style={{fontSize:13,fontWeight:800,background:'#0e7490',color:'#fff',border:'none',minHeight:44,width:'100%',marginBottom:10}}
+              onClick={()=>setBoxModal(m=>m?{...m,mergeMode:true,pending:[],warn:null,combineWith:''}:m)}>🔗 Merge boxes into {bx.id}</button>
+            {/* The old "Combine this box INTO another" dropdown lived here and ran the
+                OPPOSITE direction to merge mode — it killed the box you were looking at.
+                Two opposite-direction controls on one screen, with no undo on a merge, is
+                how a carton gets marked dead by mistake. Merge mode is now the only model:
+                the box on screen always survives, everything else is absorbed into it. */}
           </>}
         </div>
       </div></div>;

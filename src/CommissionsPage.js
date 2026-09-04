@@ -4,14 +4,14 @@
 // behavior-identical to the old closure call.
 import { useAppData } from './AppContext';
 import { calcSOStatus } from './components';
-import { commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, garmentCost } from './businessLogic';
+import { commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, garmentCost, calcRepPayout } from './businessLogic';
 import { decoSplitQty, linkedArtCostQty } from './pricing';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes, manualPoCostRows, manualPoCostTotal } from './safeHelpers';
 import { dP, rQ, parseDate, _decoUnitCostComb } from './App';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { supabase } from './lib/dbEngine';
 import { sendBrevoEmail } from './utils';
-import { canSnapshotLine, snapshotRowFromLine, applySnapshotToLine, overrideSnapshotPatch, isCommissionEarnedInvoice } from './commissionSnapshots';
+import { canSnapshotLine, lineDataReady, staleZeroCostSnapshot, zeroCostRepairPatch, snapshotRowFromLine, applySnapshotToLine, overrideSnapshotPatch, isCommissionEarnedInvoice } from './commissionSnapshots';
 
 // The Admin Dashboard tab is visible to this user only (Steve Peterson's seeded
 // team_members id — same single-user gate as the App.js to-do list).
@@ -50,8 +50,20 @@ export default function CommissionsPage({adminReports=false}={}){
     // warning but never enter payout math.
     const[omgComms,setOmgComms]=useState([]);
     const _snapWriting=useRef(false);
+    // Invalid freezes this page corrected on its own ($0 cost frozen over a real cost —
+    // see the repair effect below) and invoice ids a job-cost edit queued for re-freeze.
+    const _repairing=useRef(false);
+    const _repairTried=useRef({});
+    const[repairedIds,setRepairedIds]=useState([]);
+    const _resnapQueue=useRef({});
+    const _resnapping=useRef(false);
     // Admin Dashboard: which rep rows / invoice rows are expanded
     const[dashOpen,setDashOpen]=useState({});
+    // Merged dashboard table: hide reps with no activity AND no draw/loan settings
+    // (default on — the payout list carries every commission-eligible rep, most of them
+    // $0 in any given month), plus which row's ⋯ action menu is open.
+    const[hideZeroReps,setHideZeroReps]=useState(true);
+    const[rowMenu,setRowMenu]=useState(null);
     const[dashInvOpen,setDashInvOpen]=useState({});
     // Draw & loan settings modal ({id,draw,loan,pct} while open) and the send-report
     // modal ({to,reps:{repId:bool}} while open)
@@ -420,6 +432,61 @@ export default function CommissionsPage({adminReports=false}={}){
       })();
     });
 
+    // Repair an INVALID freeze: a snapshot that captured $0 cost while today's order data
+    // carries a real cost froze missing inputs, not the truth (INV-63327 froze at 100% GP
+    // five minutes before its unit costs were typed in). Only the frozen GP and the amount
+    // move, and at the ALREADY-FROZEN rate — paid date, statement month and any admin
+    // override stay exactly as they were, and the correction can only go down toward the
+    // real GP. Every other stale freeze still needs the deliberate Re-freeze button.
+    // Scans what this view can see (same as the freeze effect above); anything hidden
+    // behind the rep filter repairs on the next visit that shows it.
+    useEffect(()=>{
+      if(!supabase||!snaps||_repairing.current)return;
+      const bad=allLines.filter(l=>l.type!=='omg'&&l._live&&!_repairTried.current[l.inv.id]&&lineDataReady(l._live)&&staleZeroCostSnapshot(snaps[l.inv.id],l._live));
+      if(!bad.length)return;
+      _repairing.current=true;
+      // Mark before the write: a failed repair must not retry on every render.
+      bad.forEach(l=>{_repairTried.current[l.inv.id]=true});
+      (async()=>{
+        const fixed=[];
+        for(const l of bad){
+          const patch=zeroCostRepairPatch(snaps[l.inv.id],l._live,l._live.commBasis);
+          const{data,error}=await supabase.from('commission_snapshots').update({...patch,updated_at:new Date().toISOString()}).eq('invoice_id',l.inv.id).select();
+          if(error){console.warn('[Comm] $0-cost freeze repair failed for '+l.inv.id+':',error.message);continue}
+          if(data&&data[0]){setSnaps(prev=>({...prev,[l.inv.id]:data[0]}));fixed.push(l.inv.id)}
+        }
+        if(fixed.length)setRepairedIds(p=>[...new Set([...p,...fixed])]);
+        _repairing.current=false;
+      })();
+    });
+
+    // Re-freeze queued by a job-cost edit made on this page. The freeze has to wait one
+    // render: setSOs lands first, so `_live` here already carries the corrected cost.
+    useEffect(()=>{
+      if(!supabase||!snaps||_resnapping.current)return;
+      if(!Object.keys(_resnapQueue.current).length)return;
+      // Unfiltered: the job-cost editor lives on the admin dashboard, which shows every
+      // rep, so the edited invoice may not be in the header dropdown's current view.
+      // Only built when something is actually queued (the early return above).
+      const ready=buildAllCommLines(null).filter(l=>l.type!=='omg'&&_resnapQueue.current[l.inv.id]&&lineDataReady(l._live||l));
+      if(!ready.length)return;
+      _resnapping.current=true;
+      ready.forEach(l=>{delete _resnapQueue.current[l.inv.id]});
+      (async()=>{
+        for(const l of ready){
+          const row=snapshotRowFromLine(l._live||l,cu?.name||cu?.email||'');
+          const{data,error}=await supabase.from('commission_snapshots').upsert([row],{onConflict:'invoice_id'}).select();
+          if(error){alert('Costs saved, but updating '+l.inv.id+"'s frozen commission failed:\n\n"+error.message+'\n\nClick Re-freeze on that row to retry.');continue}
+          if(data&&data[0]){
+            setSnaps(prev=>({...prev,[l.inv.id]:data[0]}));
+            _repairTried.current[l.inv.id]=true;
+            alert('Costs saved. '+l.inv.id+"'s frozen commission is now $"+(Number(data[0].amount)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+'.');
+          }
+        }
+        _resnapping.current=false;
+      })();
+    });
+
     // An admin override on a frozen line must land in the snapshot (the money of record),
     // not just app_state — otherwise the frozen statement and the override disagree.
     const _applyOvrToSnap=async(invId,ovr)=>{
@@ -502,6 +569,9 @@ export default function CommissionsPage({adminReports=false}={}){
             <button key={id} className={`btn btn-sm ${commTab===id?'btn-primary':'btn-secondary'}`} onClick={()=>setCommTab(id)}>{label}</button>)}
         </div>
       </div>
+      {repairedIds.length>0&&<div style={{padding:'10px 12px',marginBottom:12,background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:7,color:'#1e40af',fontSize:11.5}}>
+        <b>Corrected {repairedIds.length} frozen commission line{repairedIds.length===1?'':'s'}</b> ({repairedIds.join(', ')}) that froze at $0 cost before the order's costs were entered. The frozen gross profit now uses the real cost; the rate, paid date and statement month are unchanged.
+      </div>}
       {heldOmgForMonth.length>0&&<div style={{padding:'10px 12px',marginBottom:12,background:'#fff7ed',border:'1px solid #fdba74',borderRadius:7,color:'#9a3412',fontSize:11.5}}>
         <b>{heldOmgForMonth.length} OMG store commission{heldOmgForMonth.length===1?' is':'s are'} on hold.</b> Missing API price, cost, fee, customer, or rep data must be resolved before the amount enters this statement.
       </div>}
@@ -788,7 +858,7 @@ export default function CommissionsPage({adminReports=false}={}){
           return{rep:r,lines,promo,earned,promoCost,net,rev,gp};
         }).filter(rr=>rr.lines.length>0||rr.promo.length>0).sort((a,b)=>b.net-a.net);
         const monthLabel=(()=>{const[y,m]=commMonth.split('-').map(Number);return new Date(y,m-1,1).toLocaleString('en-US',{month:'long',year:'numeric'})})();
-        const fmt=n=>'$'+n.toLocaleString(undefined,{maximumFractionDigits:2});
+        const fmt=n=>'$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
         const fmt0=n=>'$'+Math.round(n).toLocaleString();
         const printRep=(rr)=>{
           const w=window.open('','_blank','width=900,height=1100');
@@ -892,7 +962,7 @@ export default function CommissionsPage({adminReports=false}={}){
         const rows=Object.values(byRep).map(b=>({...b,rep:REPS.find(r=>r.id===b.repId),net:Math.round((b.comm-b.promoCost)*100)/100})).sort((a,b)=>b.net-a.net);
         const tot=rows.reduce((a,b)=>({rev:a.rev+b.rev,cost:a.cost+b.cost,gp:a.gp+b.gp,comm:a.comm+b.comm,promoCost:a.promoCost+b.promoCost,net:a.net+b.net,inv:a.inv+b.lines.length}),{rev:0,cost:0,gp:0,comm:0,promoCost:0,net:0,inv:0});
         const totGpPct=tot.rev>0?Math.round(tot.gp/tot.rev*100):0;
-        const fmt=n=>'$'+n.toLocaleString(undefined,{maximumFractionDigits:2});
+        const fmt=n=>'$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
         const fmt0=n=>'$'+Math.round(n).toLocaleString();
         const fmtD=d=>d?(d.getMonth()+1)+'/'+d.getDate()+'/'+String(d.getFullYear()).slice(2):'—';
         const gpBadge=(gp,rev)=>{const ok=rev>0&&gp/rev>=0.3;return<span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:ok?'#dcfce7':'#fef3c7',color:ok?'#166534':'#92400e'}}>{rev>0?Math.round(gp/rev*100):0}%</span>};
@@ -940,13 +1010,20 @@ export default function CommissionsPage({adminReports=false}={}){
             return next;
           }));
           setCostModal(null);
-          if(m.snapped)setTimeout(()=>alert('Costs saved. '+m.invId+' is frozen at payment — click Re-freeze in the expanded row to update the frozen commission.'),100);
+          // Frozen at payment, but the admin just corrected the very costs the freeze is
+          // made of — re-freeze it automatically instead of leaving a stale number behind a
+          // button they have to know about. The effect above does it once setSOs has landed.
+          if(m.snapped)_resnapQueue.current[m.invId]=true;
         };
         // ── Payouts: draw + loan math per rep for this month ──
-        // The DRAW measures against GROSS PROFIT (per Steve): a rep must generate GP
-        // above their monthly draw, and commission pays only on the GP beyond it —
-        // payable = net commission × (GP over draw ÷ total GP), i.e. the rep's own
-        // blended rate applied to the excess GP. No negative carryover between months.
+        // The DRAW is a cash advance against COMMISSION (per Steve, 2026-09): the rep is
+        // paid the draw through payroll, and that draw is recovered out of the commission
+        // they earn — payable = net commission − draw, floored at $0. A rep whose
+        // commission lands under their draw keeps the draw and is paid nothing further,
+        // and the shortfall is NOT carried into the next month (each month starts clean).
+        // This replaced a rule that compared the draw against GROSS PROFIT dollars, which
+        // cleared far too easily: a $5,000 draw passed on $5,000 of GP — worth only $1,500
+        // of commission — and then paid commission on top of a draw that was never earned back.
         // Then loan withholding (loanPct% of payable, capped at the balance, skipped
         // when "pay full this month" is checked) → payout. Once a month is Applied,
         // the stored loanLog amount is authoritative and the row locks until Undone.
@@ -959,23 +1036,35 @@ export default function CommissionsPage({adminReports=false}={}){
           return[...ids].map(id=>{
             const b=rows.find(r=>r.repId===id)||{repId:id,rep:REPS.find(r=>r.id===id),lines:[],promo:[],rev:0,cost:0,gp:0,comm:0,promoCost:0,net:0};
             const s=(repComp||{})[id]||{};
-            const draw=safeNum(s.draw);
             const gp=Math.round(b.gp*100)/100;
-            const underBy=draw>0?Math.max(0,Math.round((draw-gp)*100)/100):0;
-            const excessGP=draw>0?Math.max(0,Math.round((gp-draw)*100)/100):gp;
-            const payable=draw>0?(gp>0?Math.max(0,Math.round(b.net*(excessGP/gp)*100)/100):0):Math.max(0,Math.round(b.net*100)/100);
-            const loanBal=Math.round(safeNum(s.loanBalance)*100)/100;
-            const pct=s.loanPct!=null?safeNum(s.loanPct):50;
             const full=!!(s.fullMonths&&s.fullMonths[commMonth]);
             const appliedAmt=s.loanLog&&s.loanLog[commMonth]!=null?safeNum(s.loanLog[commMonth]):null;
-            const withhold=appliedAmt!=null?appliedAmt:(loanBal>0&&!full?Math.min(Math.round(payable*pct)/100,loanBal):0);
-            const payout=Math.round((payable-withhold)*100)/100;
-            const hasComp=draw>0||loanBal>0||appliedAmt!=null;
+            // Commission on NetSuite orders, which are still paid outside the portal.
+            const nsComm=s.nsComm&&s.nsComm[commMonth]!=null?safeNum(s.nsComm[commMonth]):0;
+            // The draw/loan arithmetic lives in businessLogic.calcRepPayout so it is unit
+            // tested against real paycheck cases rather than re-derived inside the render.
+            const{netComm,draw,underBy,payable,loanBal,pct,withhold,payout}=calcRepPayout({
+              netCommission:b.net,extraCommission:nsComm,draw:s.draw,loanBalance:s.loanBalance,loanPct:s.loanPct,payFull:full,appliedAmt,
+            });
+            const hasComp=draw>0||loanBal>0||appliedAmt!=null||nsComm!==0;
             const paidRec=(s.paid&&s.paid[commMonth])||null;
-            return{b,s,id,draw,gp,underBy,excessGP,payable,loanBal,pct,full,appliedAmt,withhold,payout,hasComp,paidRec};
+            return{b,s,id,draw,gp,netComm,nsComm,underBy,payable,loanBal,pct,full,appliedAmt,withhold,payout,hasComp,paidRec};
           }).sort((a,c)=>c.payout-a.payout);
         })();
         const totPayout=payoutRows.reduce((a,p)=>a+p.payout,0);
+        // ── One table: commission detail and draw/loan/payout on the same row ──
+        // payoutRows already carries each rep's whole commission bundle on `p.b`, so the
+        // two panels were only ever separate renders of the same joined data — Net
+        // Commission was literally printed twice. The Loan column is conditional: once the
+        // outstanding loans are paid off it disappears instead of sitting empty forever.
+        const anyLoan=payoutRows.some(p=>p.loanBal>0||p.appliedAmt!=null);
+        // Draw, [Loan], Payout, ⋯ — appended to the 10 commission columns. Nested detail
+        // rows pad by this so their colSpans stay aligned when the Loan column comes and goes.
+        const PAYCOLS=anyLoan?4:3;
+        const dashRows=payoutRows
+          .filter(p=>!hideZeroReps||p.b.lines.length>0||p.b.promo.length>0||p.hasComp)
+          .sort((a,c)=>(c.b.net+c.nsComm)-(a.b.net+a.nsComm));
+        const hiddenReps=payoutRows.length-dashRows.length;
         const updateComp=(id,patch)=>{const cur=(repComp||{})[id]||{};saveRepComp({...(repComp||{}),[id]:{...cur,...patch}})};
         const toggleFullMonth=(p)=>{
           if(repComp===null)return;
@@ -995,6 +1084,23 @@ export default function CommissionsPage({adminReports=false}={}){
           const log={...(p.s.loanLog||{})};delete log[commMonth];
           updateComp(p.id,{loanBalance:Math.round((safeNum(p.s.loanBalance)+p.appliedAmt)*100)/100,loanLog:log});
         };
+        // NetSuite orders are still being paid outside the portal. Their commission is
+        // entered here per rep per month — the AMOUNT (30% of the NetSuite gross profit),
+        // not the gross profit — and is added to portal commission before the draw applies.
+        const editNsComm=(p)=>{
+          if(repComp===null)return;
+          const raw=window.prompt('NetSuite commission for '+repName(p.b)+' — '+monthLabel+'\n\nEnter the commission AMOUNT (30% of the NetSuite gross profit), not the gross profit itself.\nIt is added to their portal commission before the draw is applied.\n\nBlank or 0 removes it.',p.nsComm?String(p.nsComm):'');
+          if(raw==null)return;
+          const t=String(raw).trim();
+          const v=t===''?0:parseFloat(t.replace(/[$,\s]/g,''));
+          if(!isFinite(v)){alert('Enter a number, for example 1250.00');return}
+          const next={...(p.s.nsComm||{})};
+          if(Math.round(v*100)===0)delete next[commMonth];else next[commMonth]=Math.round(v*100)/100;
+          updateComp(p.id,{nsComm:next});
+        };
+        // One row of the ⋯ action menu. Closes the menu before running, so the row never
+        // stays open behind a confirm() dialog.
+        const menuItem=(key,label,onClick,color)=><button key={key} className="btn btn-sm" style={{display:'block',width:'100%',textAlign:'left',fontSize:11,background:'transparent',border:'none',borderRadius:4,color:color||'#334155',padding:'6px 10px',cursor:'pointer'}} onClick={()=>{setRowMenu(null);onClick()}}>{label}</button>;
         // Mark a rep's month as PAID — records the payout amount, when, and by whom
         // in comm_rep_comp, so the dashboard shows what was actually disbursed even
         // if the month's numbers move later.
@@ -1039,7 +1145,7 @@ export default function CommissionsPage({adminReports=false}={}){
           if(repComp!==null){
             const selPay=payoutRows.filter(p=>!selIds||selIds.has(p.id));
             out.push([]);
-            out.push(['PAYOUTS — '+monthLabel,'Net Commission','GP','Monthly Draw (GP)','Under Draw By','Payable','To Loan','Loan Balance Remaining','PAYOUT','Paid']);
+            out.push(['PAYOUTS — '+monthLabel,'Net Commission','GP','Monthly Draw','Under Draw By','Payable','To Loan','Loan Balance Remaining','PAYOUT','Paid']);
             selPay.forEach(p=>out.push([repName(p.b),p.b.net.toFixed(2),p.gp.toFixed(2),p.draw>0?p.draw.toFixed(2):'',p.underBy>0?p.underBy.toFixed(2):'',p.payable.toFixed(2),p.withhold>0?p.withhold.toFixed(2):'',p.loanBal>0||p.appliedAmt!=null?p.loanBal.toFixed(2):'',p.payout.toFixed(2),p.paidRec?'paid '+String(p.paidRec.at).substring(0,10):'']));
             out.push(['TOTAL PAYOUT','','','','','','','',selPay.reduce((a,p)=>a+p.payout,0).toFixed(2),'']);
           }
@@ -1071,14 +1177,14 @@ export default function CommissionsPage({adminReports=false}={}){
             const td='padding:6px 8px;border-bottom:1px solid #e2e8f0';
             const selPay=payoutRows.filter(p=>selIds.has(p.id));
             const anyComp=repComp!==null&&selPay.some(p=>p.hasComp);
-            const summary=selPay.map(p=>{const b=p.b;return`<tr><td style="${td};font-weight:700">${esc(repName(b))}</td><td style="${td};text-align:center">${b.lines.length}</td><td style="${td};text-align:right">${fmt0(b.rev)}</td><td style="${td};text-align:center">${b.rev>0?Math.round(b.gp/b.rev*100):0}%</td><td style="${td};text-align:right">${fmt(b.net)}</td>${anyComp?`<td style="${td};text-align:right;color:#92400e">${p.draw>0?(p.underBy>0?'under draw by '+fmt(p.underBy):'met ('+fmt(p.draw)+' GP)'):'\u2014'}</td><td style="${td};text-align:right;color:#dc2626">${p.withhold>0?'\u2212'+fmt(p.withhold):'\u2014'}</td>`:''}<td style="${td};text-align:right;font-weight:800">${fmt(repComp!==null?p.payout:b.net)}</td></tr>`}).join('');
+            const summary=selPay.map(p=>{const b=p.b;return`<tr><td style="${td};font-weight:700">${esc(repName(b))}</td><td style="${td};text-align:center">${b.lines.length}</td><td style="${td};text-align:right">${fmt0(b.rev)}</td><td style="${td};text-align:center">${b.rev>0?Math.round(b.gp/b.rev*100):0}%</td><td style="${td};text-align:right">${fmt(b.net)}</td>${anyComp?`<td style="${td};text-align:right;color:#92400e">${p.draw>0?(p.underBy>0?'under draw by '+fmt(p.underBy):'met ('+fmt(p.draw)+' draw)'):'\u2014'}</td><td style="${td};text-align:right;color:#dc2626">${p.withhold>0?'\u2212'+fmt(p.withhold):'\u2014'}</td>`:''}<td style="${td};text-align:right;font-weight:800">${fmt(repComp!==null?p.payout:b.net)}</td></tr>`}).join('');
             const selTotNet=selPay.reduce((a,p)=>a+p.b.net,0);
             const selTotPay=selPay.reduce((a,p)=>a+(repComp!==null?p.payout:p.b.net),0);
             const html=`<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a;max-width:760px">
               <h2 style="margin:0 0 4px">Commission Report \u2014 ${monthLabel}${isMTD?' (Month to Date)':''}</h2>
               <p style="margin:0 0 16px;color:#64748b;font-size:13px">Sent from the NSA Portal admin commissions dashboard by ${esc(cu?.name||'')}. Invoice-level detail is in the attached CSV.${anyComp?' Payout = net commission \u2212 monthly draw \u2212 loan withholding.':''}</p>
               <table style="border-collapse:collapse;width:100%;font-size:13px"><thead><tr>
-                <th style="${td};text-align:left">Rep</th><th style="${td}">Invoices</th><th style="${td};text-align:right">Revenue</th><th style="${td}">GP%</th><th style="${td};text-align:right">Net Commission</th>${anyComp?`<th style="${td};text-align:right">Draw (GP)</th><th style="${td};text-align:right">To Loan</th>`:''}<th style="${td};text-align:right">Payout</th>
+                <th style="${td};text-align:left">Rep</th><th style="${td}">Invoices</th><th style="${td};text-align:right">Revenue</th><th style="${td}">GP%</th><th style="${td};text-align:right">Net Commission</th>${anyComp?`<th style="${td};text-align:right">Draw</th><th style="${td};text-align:right">To Loan</th>`:''}<th style="${td};text-align:right">Payout</th>
               </tr></thead><tbody>${summary}
                 <tr><td style="${td};font-weight:800" colspan="4">TOTAL</td><td style="${td};text-align:right;font-weight:800">${fmt(selTotNet)}</td>${anyComp?`<td style="${td}" colspan="2"></td>`:''}<td style="${td};text-align:right;font-weight:800">${fmt(selTotPay)}</td></tr>
               </tbody></table>
@@ -1117,22 +1223,24 @@ export default function CommissionsPage({adminReports=false}={}){
           </div>
           <div className="card" style={{marginTop:16}}>
             <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
-              <h2>Commissions by Rep</h2>
-              <div style={{display:'flex',gap:8,alignItems:'center'}}>
+              <h2>Commissions &amp; Payouts — {monthLabel}{isMTD?' (MTD)':''}</h2>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                 <span style={{fontSize:11,color:'#64748b'}}>Click a rep → invoices · click an invoice → line items</span>
+                {hiddenReps>0||!hideZeroReps?<label style={{fontSize:11,color:'#64748b',display:'flex',alignItems:'center',gap:4,cursor:'pointer'}} title="Reps with no invoices, no promo orders and no draw or loan set for this month"><input type="checkbox" checked={hideZeroReps} onChange={()=>setHideZeroReps(v=>!v)}/>hide $0 reps{hideZeroReps&&hiddenReps>0?' ('+hiddenReps+')':''}</label>:null}
                 <button className="btn btn-sm btn-secondary" disabled={rows.length===0} title="Download this report as a CSV spreadsheet" onClick={downloadCsv}>⬇ Export CSV</button>
-                <button className="btn btn-sm btn-primary" disabled={rows.length===0} title="Choose recipients and which reps to include, then email the report (CSV attached)" onClick={openEmailModal}>✉ Send Report…</button>
+                <button className="btn btn-sm btn-secondary" disabled={rows.length===0} title="Choose recipients and which reps to include, then email the report (CSV attached)" onClick={openEmailModal}>✉ Send Report…</button>
+                <button className="btn btn-sm btn-primary" disabled={repComp===null||payoutRows.length===0||payoutRows.every(p=>p.paidRec)} title="Mark every remaining rep's payout as paid for this month" onClick={markAllPaid}>💵 Mark month paid</button>
               </div>
             </div>
             <div className="card-body" style={{padding:0}}>
-              {rows.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No paid invoices or promo orders in {monthLabel}.</div>:
+              {dashRows.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No paid invoices or promo orders in {monthLabel}.</div>:
               <table style={{fontSize:12}}><thead><tr>
-                <th>Rep</th><th style={{textAlign:'center'}}>Invoices</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Cost</th><th style={{textAlign:'right'}}>Gross Profit</th><th style={{textAlign:'center'}}>GP%</th><th style={{textAlign:'center'}}>Days Paid</th><th style={{textAlign:'right'}}>Earned</th><th style={{textAlign:'right'}}>Promo</th><th style={{textAlign:'right'}}>Net Commission</th>
+                <th>Rep</th><th style={{textAlign:'center'}}>Invoices</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Cost</th><th style={{textAlign:'right'}}>Gross Profit</th><th style={{textAlign:'center'}}>GP%</th><th style={{textAlign:'center'}}>Days Paid</th><th style={{textAlign:'right'}}>Earned</th><th style={{textAlign:'right'}}>Promo</th><th style={{textAlign:'right'}}>Net Commission</th><th style={{textAlign:'right'}}>Monthly Draw</th>{anyLoan?<th>Loan</th>:null}<th style={{textAlign:'right'}}>Payout</th><th/>
               </tr></thead><tbody>
-                {rows.map(b=>{const open=!!dashOpen[b.repId];const name=b.rep?.name||(b.repId==='_none'?'⚠ Unassigned':b.repId);
+                {dashRows.map(p=>{const b=p.b;const expandable=b.lines.length>0||b.promo.length>0;const open=expandable&&!!dashOpen[b.repId];const name=b.rep?.name||(b.repId==='_none'?'⚠ Unassigned':b.repId);
                   return<Fragment key={b.repId}>
-                    <tr style={{cursor:'pointer',background:open?'#f0f9ff':''}} onClick={()=>setDashOpen(p=>({...p,[b.repId]:!p[b.repId]}))}>
-                      <td style={{fontWeight:800,color:'#0f172a'}}><span style={{display:'inline-block',width:14,color:'#64748b'}}>{open?'▼':'▶'}</span>{name}</td>
+                    <tr style={{cursor:expandable?'pointer':'default',background:open?'#f0f9ff':p.paidRec?'#f0fdf4':p.hasComp?'#f8fafc':''}} onClick={()=>{if(expandable)setDashOpen(q=>({...q,[b.repId]:!q[b.repId]}))}}>
+                      <td style={{fontWeight:800,color:'#0f172a'}}><span style={{display:'inline-block',width:14,color:'#64748b'}}>{expandable?(open?'▼':'▶'):''}</span>{name}</td>
                       <td style={{textAlign:'center'}}>{b.lines.length}</td>
                       <td style={{textAlign:'right'}}>{fmt0(b.rev)}</td>
                       <td style={{textAlign:'right',color:'#dc2626'}}>{fmt0(b.cost)}</td>
@@ -1141,7 +1249,37 @@ export default function CommissionsPage({adminReports=false}={}){
                       <td style={{textAlign:'center'}} title="Average days from invoice to payment">{daysBadge(avgDays(b.lines))}</td>
                       <td style={{textAlign:'right',fontWeight:700,color:'#1e40af'}}>{fmt(b.comm)}</td>
                       <td style={{textAlign:'right',color:b.promoCost>0?'#dc2626':'#94a3b8'}}>{b.promoCost>0?'−'+fmt(b.promoCost):'—'}</td>
-                      <td style={{textAlign:'right',fontWeight:800,fontSize:14,color:b.net>=0?'#166534':'#dc2626'}}>{fmt(b.net)}</td>
+                      <td style={{textAlign:'right',fontWeight:800,fontSize:14,color:p.netComm>=0?'#166534':'#dc2626'}}>{fmt(p.netComm)}
+                        {p.nsComm?<div style={{fontSize:9,color:'#7c3aed'}} title="Commission on NetSuite orders, entered manually">{p.nsComm>0?'incl. ':'less '}{fmt(Math.abs(p.nsComm))} NetSuite</div>:null}
+                      </td>
+                      <td style={{textAlign:'right',color:p.draw>0?'#92400e':'#94a3b8'}} title={p.draw>0?(p.underBy>0?fmt(p.draw)+' draw − '+fmt(p.netComm)+' earned = '+fmt(p.underBy)+' short':fmt(p.draw)+' draw fully earned back'):'No draw set'}>
+                        {p.draw>0?(p.underBy>0?<><span style={{fontWeight:700}}>−{fmt(p.underBy)}</span><div style={{fontSize:9}}>under {fmt(p.draw)} draw</div></>
+                          :<><span style={{color:'#166534',fontWeight:600}}>met</span><div style={{fontSize:9,color:'#166534'}}>{fmt(p.draw)} draw</div></>):'—'}
+                      </td>
+                      {anyLoan?<td style={{fontSize:11}}>{p.loanBal>0||p.appliedAmt!=null?<>
+                        <div style={{fontWeight:600,color:'#b45309'}}>{fmt(p.loanBal)}{p.withhold>0?<span style={{color:'#dc2626',marginLeft:4,fontWeight:700}}>−{fmt(p.withhold)}</span>:null}</div>
+                        {p.appliedAmt!=null?<div style={{fontSize:9,fontWeight:700,color:'#166534'}}>✓ applied</div>:p.full?<div style={{fontSize:9,color:'#64748b'}}>paying full</div>:null}
+                      </>:'—'}</td>:null}
+                      <td style={{textAlign:'right',fontWeight:800,fontSize:14,color:'#0f766e'}}>
+                        {repComp===null?<span style={{color:'#94a3b8',fontWeight:400,fontSize:11}}>…</span>:fmt(p.payout)}
+                        {p.payable>0&&p.payable!==p.payout?<div style={{fontSize:9,color:'#94a3b8'}}>{fmt(p.payable)} payable</div>:null}
+                        {p.paidRec?<div style={{fontSize:9,fontWeight:700,color:'#166534'}}>✓ PAID {String(p.paidRec.at).substring(0,10)}</div>:null}
+                        {p.paidRec&&Math.abs(safeNum(p.paidRec.amount)-p.payout)>0.005?<div style={{fontSize:9,fontWeight:700,color:'#dc2626'}} title="The month's numbers changed after this was marked paid">⚠ paid {fmt(safeNum(p.paidRec.amount))}</div>:null}
+                      </td>
+                      <td style={{textAlign:'center',position:'relative',whiteSpace:'nowrap'}} onClick={e=>e.stopPropagation()}>
+                        <button className="btn btn-sm" style={{fontSize:13,lineHeight:1,background:'#f8fafc',border:'1px solid #cbd5e1',color:'#475569',padding:'2px 8px'}} disabled={repComp===null} title="Draw & loan settings, apply to loan, mark paid" onClick={()=>setRowMenu(rowMenu===p.id?null:p.id)}>⋯</button>
+                        {rowMenu===p.id?<>
+                          <div style={{position:'fixed',inset:0,zIndex:40}} onClick={()=>setRowMenu(null)}/>
+                          <div style={{position:'absolute',right:6,top:'100%',zIndex:41,background:'white',border:'1px solid #cbd5e1',borderRadius:8,boxShadow:'0 8px 24px rgba(15,23,42,0.18)',padding:4,minWidth:200,textAlign:'left'}}>
+                            {menuItem('ns',p.nsComm?'✎ NetSuite commission '+fmt(p.nsComm):'➕ Add NetSuite commission…',()=>editNsComm(p),'#7c3aed')}
+                            {menuItem('cfg','⚙ Draw / loan settings…',()=>{const st=(repComp||{})[p.id]||{};setCompEdit({id:p.id,draw:st.draw!=null?String(st.draw):'',loan:st.loanBalance!=null?String(st.loanBalance):'',pct:st.loanPct!=null?String(st.loanPct):'50'})})}
+                            {p.appliedAmt==null&&p.withhold>0?menuItem('apply','⬇ Apply '+fmt(p.withhold)+' to loan',()=>applyLoan(p),'#854d0e'):null}
+                            {p.appliedAmt!=null?menuItem('undoloan','↩ Undo loan application',()=>undoLoan(p)):null}
+                            {p.appliedAmt==null&&p.loanBal>0?menuItem('full',(p.full?'☑':'☐')+' Pay full this month (skip loan)',()=>toggleFullMonth(p)):null}
+                            {!p.paidRec?menuItem('paid','💵 Mark paid '+fmt(p.payout),()=>markPaid(p),'#166534'):menuItem('unpaid','↩ Undo paid',()=>unmarkPaid(p))}
+                          </div>
+                        </>:null}
+                      </td>
                     </tr>
                     {open&&[...b.lines].sort((a,c)=>(c.paidDate||0)-(a.paidDate||0)).map(l=>{
                       const iOpen=!!dashInvOpen[l.inv.id];
@@ -1170,6 +1308,7 @@ export default function CommissionsPage({adminReports=false}={}){
                             <button style={{...bs,background:at15?'#1e40af':'#f8fafc',color:at15?'white':'#64748b',border:'1px solid #93c5fd'}} title="Keep the 15% late rate (clears any override)" onClick={()=>{setCommOverrides(p=>{const n={...p};delete n[l.inv.id];return n});_applyOvrToSnap(l.inv.id,null)}}>15%</button>
                             <button style={{...bs,background:at30?'#166534':'#f8fafc',color:at30?'white':'#64748b',border:'1px solid #86efac'}} title="Restore the full 30% rate on this late invoice" onClick={()=>{setCommOverrides(p=>({...p,[l.inv.id]:true}));_applyOvrToSnap(l.inv.id,true)}}>30%</button>
                           </span>})()}</td>
+                        <td colSpan={PAYCOLS}/>
                       </tr>
                       {iOpen&&(()=>{
                         const dtl=[];const g=calcGP(l.inv,dtl);
@@ -1194,10 +1333,10 @@ export default function CommissionsPage({adminReports=false}={}){
                         const rows2=dtl.filter(d=>!d._folded);
                         const dRev=rows2.reduce((a,d)=>a+(d.rev||0),0);const dCost=rows2.reduce((a,d)=>a+(d.cost||0),0);
                         const scaled=Math.abs((g.scale!=null?g.scale:1)-1)>0.02;
-                        return<tr><td colSpan={10} style={{padding:'0 12px 12px 46px',background:'#f1f5f9'}}>
+                        return<tr><td colSpan={10+PAYCOLS} style={{padding:'0 12px 12px 46px',background:'#f1f5f9'}}>
                           <div style={{display:'flex',gap:8,alignItems:'center',padding:'8px 0 4px',fontSize:10,color:'#64748b',flexWrap:'wrap'}}>
                             <button className="btn btn-sm" style={{fontSize:9,background:'#eff6ff',border:'1px solid #93c5fd',color:'#1e40af',padding:'2px 8px',fontWeight:700}} title="Edit every cost on this job — item purchase costs, PO line costs, outside deco POs, shipping, freight" onClick={()=>openCostModal(l)}>✎ Edit job costs</button>
-                            {l.snapped&&<>🔒 The invoice totals above are frozen at payment; the line detail below is live from today's order data.<button className="btn btn-sm" style={{fontSize:9,background:'#f8fafc',border:'1px solid #cbd5e1',color:'#475569',padding:'2px 6px'}} title="Recompute the frozen commission from today's live order data — use after correcting a cost" onClick={()=>_resnap(l)}>Re-freeze</button></>}
+                            {l.snapped&&<>🔒 The invoice totals above are frozen at payment; the line detail below is live from today's order data.<button className="btn btn-sm" style={{fontSize:9,background:'#f8fafc',border:'1px solid #cbd5e1',color:'#475569',padding:'2px 6px'}} title="Recompute the frozen commission from today's live order data — use after correcting a cost" onClick={()=>_resnap(l)}>Re-freeze</button>{Math.abs(safeNum(l.gp.cost)-safeNum(g.cost))>0.5&&<span style={{color:'#b45309',fontWeight:700}}>Frozen cost {fmt(safeNum(l.gp.cost))} vs live {fmt(safeNum(g.cost))} — Re-freeze to pay on the corrected cost.</span>}</>}
                           </div>
                           <table style={{fontSize:11,width:'100%',marginTop:4}}><thead><tr>
                             <th>Line</th><th style={{textAlign:'center'}}>Qty</th><th style={{textAlign:'right'}}>Unit Sell</th><th style={{textAlign:'right'}}>Unit Cost</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Cost</th><th style={{textAlign:'right'}}>GP</th><th style={{textAlign:'center'}}>GP%</th><th/>
@@ -1241,6 +1380,7 @@ export default function CommissionsPage({adminReports=false}={}){
                       <td colSpan={5}/>
                       <td colSpan={2} style={{textAlign:'right',fontSize:10,color:'#64748b'}}>promo cost deduction</td>
                       <td style={{textAlign:'right',fontWeight:700,color:'#dc2626'}}>−{fmt(l.totalCost)}</td>
+                      <td colSpan={PAYCOLS}/>
                     </tr>)}
                   </Fragment>})}
                 <tr style={{fontWeight:800,background:'#f0f9ff',borderTop:'2px solid #1e40af'}}>
@@ -1253,71 +1393,76 @@ export default function CommissionsPage({adminReports=false}={}){
                   <td style={{textAlign:'center'}}>{daysBadge(avgDays(rows.flatMap(b=>b.lines)))}</td>
                   <td style={{textAlign:'right',color:'#1e40af'}}>{fmt(tot.comm)}</td>
                   <td style={{textAlign:'right',color:tot.promoCost>0?'#dc2626':'#94a3b8'}}>{tot.promoCost>0?'−'+fmt(tot.promoCost):'—'}</td>
-                  <td style={{textAlign:'right',fontSize:15,color:tot.net>=0?'#166534':'#dc2626'}}>{fmt(tot.net)}</td>
-                </tr>
-              </tbody></table>}
-            </div>
-            <div style={{padding:'10px 16px',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>
-              Grouped by <strong>payment month</strong> — an invoice lands in the month its last payment came in, same as the Statement tab. Revenue is commissionable revenue (excludes CC surcharges, includes OMG fundraise). 🔒 lines are frozen at payment.
-              <span style={{marginLeft:8}}><span style={{background:'#fee2e2',padding:'1px 6px',borderRadius:4,fontWeight:600,color:'#dc2626'}}>Red</span> = $0 cost (missing purchase price — GP overstated). <span style={{background:'#fef9c3',padding:'1px 6px',borderRadius:4,fontWeight:600,color:'#92400e'}}>Yellow</span> = GP over 60% — verify before paying.</span>
-            </div>
-          </div>
-
-          {/* PAYOUTS — draws & loans applied to this month's net commissions */}
-          <div className="card" style={{marginTop:16}}>
-            <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
-              <h2>💰 Payouts — {monthLabel}{isMTD?' (MTD)':''}</h2>
-              <div style={{display:'flex',gap:8,alignItems:'center'}}>
-                <span style={{fontSize:11,color:'#64748b'}}>Draw measures against GP — commission pays on GP over the draw, then loan withholding</span>
-                <button className="btn btn-sm btn-primary" disabled={repComp===null||payoutRows.length===0||payoutRows.every(p=>p.paidRec)} title="Mark every remaining rep's payout as paid for this month" onClick={markAllPaid}>💵 Mark month paid</button>
-              </div>
-            </div>
-            <div className="card-body" style={{padding:0}}>
-              {repComp===null?<div style={{padding:30,textAlign:'center',color:'#94a3b8'}}>Loading draw & loan settings… (edits are disabled until they load)</div>:
-              payoutRows.length===0?<div style={{padding:30,textAlign:'center',color:'#94a3b8'}}>No commission activity or draw/loan settings for {monthLabel}.</div>:
-              <table style={{fontSize:12}}><thead><tr>
-                <th>Rep</th><th style={{textAlign:'right'}}>Net Commission</th><th style={{textAlign:'right'}}>Monthly Draw (GP)</th><th style={{textAlign:'right'}}>Payable</th><th>Loan</th><th style={{textAlign:'right'}}>Payout</th><th style={{textAlign:'center'}}></th>
-              </tr></thead><tbody>
-                {payoutRows.map(p=>{const name=repName(p.b);
-                  return<tr key={p.id} style={{background:p.paidRec?'#f0fdf4':p.hasComp?'#f8fafc':''}}>
-                    <td style={{fontWeight:700}}>{name}</td>
-                    <td style={{textAlign:'right'}}>{fmt(p.b.net)}</td>
-                    <td style={{textAlign:'right',color:p.draw>0?'#92400e':'#94a3b8'}}>{p.draw>0?(p.underBy>0?<><span style={{fontWeight:700}}>−{fmt(p.underBy)}</span><div style={{fontSize:9,color:'#92400e'}}>under draw ({fmt(p.draw)} − {fmt(p.gp)} GP)</div></>:<><span>met</span><div style={{fontSize:9,color:'#166534'}}>GP {fmt(p.gp)} ≥ {fmt(p.draw)}</div></>):'—'}</td>
-                    <td style={{textAlign:'right',fontWeight:600}}>{fmt(p.payable)}{p.draw>0&&p.excessGP>0&&<div style={{fontSize:9,color:'#94a3b8'}}>on {fmt(p.excessGP)} GP over draw</div>}</td>
-                    <td>{p.loanBal>0||p.appliedAmt!=null?<div style={{fontSize:11}}>
-                        <div style={{fontWeight:600,color:'#b45309'}}>bal {fmt(p.loanBal)}{p.withhold>0&&<span style={{color:'#dc2626',marginLeft:6,fontWeight:700}}>−{fmt(p.withhold)}{p.appliedAmt==null?' @'+p.pct+'%':''}</span>}</div>
-                        {p.appliedAmt!=null?<div style={{fontSize:9,fontWeight:700,color:'#166534'}}>✓ applied to loan</div>
-                        :<label style={{fontSize:10,color:'#64748b',display:'flex',alignItems:'center',gap:4,cursor:'pointer'}}><input type="checkbox" checked={p.full} onChange={()=>toggleFullMonth(p)}/>pay full this month</label>}
-                      </div>:'—'}</td>
-                    <td style={{textAlign:'right',fontWeight:800,fontSize:14,color:'#0f766e'}}>{fmt(p.payout)}
-                      {p.paidRec&&<div style={{fontSize:9,fontWeight:700,color:'#166534'}}>✓ PAID {String(p.paidRec.at).substring(0,10)}</div>}
-                      {p.paidRec&&Math.abs(safeNum(p.paidRec.amount)-p.payout)>0.005&&<div style={{fontSize:9,fontWeight:700,color:'#dc2626'}} title="The month's numbers changed after this was marked paid">⚠ paid {fmt(safeNum(p.paidRec.amount))}</div>}
-                    </td>
-                    <td style={{textAlign:'center'}}>
-                      <div style={{display:'flex',gap:4,justifyContent:'center',flexWrap:'wrap'}}>
-                        <button className="btn btn-sm" style={{fontSize:9,background:'#f8fafc',border:'1px solid #cbd5e1',color:'#475569',padding:'2px 6px'}} title="Set this rep's monthly draw, loan balance, and loan withholding %" onClick={()=>{const s=(repComp||{})[p.id]||{};setCompEdit({id:p.id,draw:s.draw!=null?String(s.draw):'',loan:s.loanBalance!=null?String(s.loanBalance):'',pct:s.loanPct!=null?String(s.loanPct):'50'})}}>⚙ Draw/Loan</button>
-                        {p.appliedAmt==null&&p.withhold>0&&<button className="btn btn-sm" style={{fontSize:9,background:'#fefce8',border:'1px solid #eab308',color:'#854d0e',padding:'2px 6px'}} title="Reduce the loan balance by this month's withholding and lock the month" onClick={()=>applyLoan(p)}>Apply to loan</button>}
-                        {p.appliedAmt!=null&&<button className="btn btn-sm" style={{fontSize:9,background:'#f8fafc',border:'1px solid #cbd5e1',color:'#475569',padding:'2px 6px'}} title="Put this month's withholding back on the loan balance" onClick={()=>undoLoan(p)}>Undo loan</button>}
-                        {!p.paidRec&&<button className="btn btn-sm" style={{fontSize:9,background:'#f0fdf4',border:'1px solid #86efac',color:'#166534',padding:'2px 6px',fontWeight:700}} title="Record this month's payout as paid to this rep" onClick={()=>markPaid(p)}>💵 Mark paid</button>}
-                        {p.paidRec&&<button className="btn btn-sm" style={{fontSize:9,background:'#f8fafc',border:'1px solid #cbd5e1',color:'#475569',padding:'2px 6px'}} title="Remove the paid mark for this month" onClick={()=>unmarkPaid(p)}>Undo paid</button>}
-                      </div>
-                    </td>
-                  </tr>})}
-                <tr style={{fontWeight:800,background:'#f0fdfa',borderTop:'2px solid #0f766e'}}>
-                  <td>TOTAL PAYOUT</td>
-                  <td style={{textAlign:'right'}}>{fmt(Math.round(payoutRows.reduce((a,p)=>a+p.b.net,0)*100)/100)}</td>
-                  <td style={{textAlign:'right',color:'#92400e'}}>{(()=>{const d=payoutRows.reduce((a,p)=>a+p.underBy,0);return d>0?'−'+fmt(Math.round(d*100)/100)+' under':'—'})()}</td>
-                  <td style={{textAlign:'right'}}>{fmt(Math.round(payoutRows.reduce((a,p)=>a+p.payable,0)*100)/100)}</td>
-                  <td style={{color:'#dc2626',fontSize:11}}>{(()=>{const w=payoutRows.reduce((a,p)=>a+p.withhold,0);return w>0?'−'+fmt(Math.round(w*100)/100)+' to loans':'—'})()}</td>
-                  <td style={{textAlign:'right',fontSize:15,color:'#0f766e'}}>{fmt(Math.round(totPayout*100)/100)}</td>
+                  <td style={{textAlign:'right',fontSize:15,color:tot.net>=0?'#166534':'#dc2626'}}>{(()=>{const ns=dashRows.reduce((a,q)=>a+q.nsComm,0);return<>{fmt(tot.net+ns)}{ns?<div style={{fontSize:9,color:'#7c3aed'}}>incl. {fmt(ns)} NetSuite</div>:null}</>})()}</td>
+                  <td style={{textAlign:'right',color:'#92400e',fontSize:11}}>{(()=>{const d=dashRows.reduce((a,q)=>a+q.underBy,0);return d>0?'−'+fmt(Math.round(d*100)/100)+' under':'—'})()}</td>
+                  {anyLoan?<td style={{color:'#dc2626',fontSize:11}}>{(()=>{const w=dashRows.reduce((a,q)=>a+q.withhold,0);return w>0?'−'+fmt(Math.round(w*100)/100):'—'})()}</td>:null}
+                  <td style={{textAlign:'right',fontSize:15,color:'#0f766e'}}>{repComp===null?'—':fmt(Math.round(dashRows.reduce((a,q)=>a+q.payout,0)*100)/100)}</td>
                   <td/>
                 </tr>
               </tbody></table>}
             </div>
             <div style={{padding:'10px 16px',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>
-              <strong>Draw:</strong> the monthly draw measures against gross profit — a rep under their draw shows the shortfall (draw − GP) and pays $0; over it, commission pays on the GP beyond the draw at the rep's own blended rate (no negative carryover between months). <strong>Loan:</strong> the set % of after-draw commission is withheld until the balance reaches $0 — check <em>pay full this month</em> to skip a month. <strong>Apply to loan</strong> permanently reduces the balance and locks the month (Undo puts it back). Settings apply to the month you're viewing.
+              Grouped by <strong>payment month</strong> — an invoice lands in the month its last payment came in, same as the Statement tab. Revenue is commissionable revenue (excludes CC surcharges, includes OMG fundraise). 🔒 lines are frozen at payment.
+              <div style={{marginTop:6}}><strong>Draw:</strong> a cash advance against commission — the rep keeps the draw and it is recovered out of the commission they earn. Payable = net commission − draw; a rep under their draw is paid $0 further and that shortfall does <em>not</em> carry into the next month. <strong>NetSuite:</strong> commission on orders still paid outside the portal, entered per rep from the ⋯ menu, counts toward earning back the draw. <strong>Loan:</strong> the set % of after-draw commission is withheld until the balance reaches $0 — the Loan column only appears while someone has a balance. <strong>Apply to loan</strong> permanently reduces the balance and locks the month (Undo puts it back). Draw/loan settings apply to the month you're viewing.</div>
+              <span style={{marginLeft:8}}><span style={{background:'#fee2e2',padding:'1px 6px',borderRadius:4,fontWeight:600,color:'#dc2626'}}>Red</span> = $0 cost (missing purchase price — GP overstated). <span style={{background:'#fef9c3',padding:'1px 6px',borderRadius:4,fontWeight:600,color:'#92400e'}}>Yellow</span> = GP over 60% — verify before paying.</span>
             </div>
           </div>
+
+          {/* PAID AFTER 90 DAYS — every invoice the late rule caught, with one-click approval.
+              The rule halves the rate (30% → 15% of the SAME gross profit) when the gap from
+              invoice date to LAST payment exceeds 90 days, so a single day over costs the rep
+              half that invoice's commission. Steve approves the full rate from here rather than
+              hunting for the invoice inside a rep's expanded row. */}
+          {(()=>{
+            const late=rows.flatMap(b=>b.lines)
+              .filter(l=>l.isLate&&l.commBasis!=='revenue')
+              .map(l=>({l,full:Math.round(l.gp.gp*0.30*100)/100}))
+              .map(x=>({...x,gap:Math.round((x.full-x.l.commAmt)*100)/100}))
+              .sort((a,c)=>c.gap-a.gap);
+            if(!late.length)return null;
+            const open=late.filter(x=>!x.l.overridden);
+            const withheld=Math.round(open.reduce((a,x)=>a+x.gap,0)*100)/100;
+            const th={textAlign:'right'};
+            return<div className="card" style={{marginTop:16}}>
+              <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+                <h2>⏰ Paid after 90 days — {monthLabel}</h2>
+                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                  <span style={{fontSize:11,color:'#64748b'}}>{open.length} still at 15% · <strong style={{color:'#dc2626'}}>{fmt(withheld)}</strong> of commission withheld</span>
+                  {open.length>0&&<button className="btn btn-sm btn-primary" title="Restore the full 30% rate on every invoice listed below that is still at 15%" onClick={()=>{
+                    if(!window.confirm('Approve the full 30% rate on all '+open.length+' invoice'+(open.length===1?'':'s')+' paid after 90 days in '+monthLabel+'?\n\nThis pays out '+fmt(withheld)+' more in commission.'))return;
+                    setCommOverrides(p=>{const n={...p};open.forEach(x=>{n[x.l.inv.id]=true});return n});
+                    open.forEach(x=>_applyOvrToSnap(x.l.inv.id,true));
+                  }}>✓ Pay all in full</button>}
+                </div>
+              </div>
+              <div className="card-body" style={{padding:0}}>
+                <table style={{fontSize:12}}><thead><tr>
+                  <th>Invoice</th><th>Rep</th><th style={{textAlign:'center'}}>Invoiced</th><th style={{textAlign:'center'}}>Paid</th><th style={{textAlign:'center'}}>Days</th><th style={th}>Gross Profit</th><th style={th}>Commission</th><th style={th}>At 30%</th><th style={th}>Difference</th><th style={{textAlign:'center'}}>Rate</th>
+                </tr></thead><tbody>
+                  {late.map(({l,full,gap})=><tr key={l.inv.id} style={{background:l.overridden?'#f0fdf4':''}}>
+                    <td><span style={{fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>openSO(l)} title="Open the order">{l.inv.id}</span><div style={{fontSize:10,color:'#64748b'}}>{l.customer?.name||'—'}</div></td>
+                    <td style={{fontSize:11}}>{l.rep?.name||'—'}</td>
+                    <td style={{textAlign:'center',fontSize:11,color:'#64748b'}}>{l.inv.date||'—'}</td>
+                    <td style={{textAlign:'center',fontSize:11,color:'#64748b'}}>{fmtD(l.paidDate)}</td>
+                    <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:700,background:'#fee2e2',color:'#dc2626'}}>{l.daysToPay}d</span></td>
+                    <td style={th}>{fmt(l.gp.gp)}</td>
+                    <td style={{...th,fontWeight:700,color:l.overridden?'#166534':'#dc2626'}}>{fmt(l.commAmt)}</td>
+                    <td style={{...th,color:'#64748b'}}>{fmt(full)}</td>
+                    <td style={{...th,fontWeight:700,color:gap>0.005?'#dc2626':'#94a3b8'}}>{gap>0.005?'−'+fmt(gap):'—'}</td>
+                    <td style={{textAlign:'center'}}>
+                      <span style={{display:'inline-flex',gap:4}}>
+                        <button style={{fontSize:9,padding:'2px 7px',borderRadius:6,cursor:'pointer',fontWeight:700,background:!l.overridden?'#1e40af':'#f8fafc',color:!l.overridden?'white':'#64748b',border:'1px solid #93c5fd'}} title="Keep the 15% late rate (clears any override)" onClick={()=>{setCommOverrides(p=>{const n={...p};delete n[l.inv.id];return n});_applyOvrToSnap(l.inv.id,null)}}>15%</button>
+                        <button style={{fontSize:9,padding:'2px 7px',borderRadius:6,cursor:'pointer',fontWeight:700,background:l.overridden?'#166534':'#f8fafc',color:l.overridden?'white':'#64748b',border:'1px solid #86efac'}} title="Pay this invoice in full at 30%" onClick={()=>{setCommOverrides(p=>({...p,[l.inv.id]:true}));_applyOvrToSnap(l.inv.id,true)}}>30%</button>
+                      </span>
+                    </td>
+                  </tr>)}
+                </tbody></table>
+              </div>
+              <div style={{padding:'10px 16px',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>
+                An invoice is late when more than 90 days pass between its date and its <strong>last</strong> payment — on a deposit order the balance payment sets the clock for the whole invoice. Late halves the rate to 15% of the same gross profit; <strong>30%</strong> here pays it in full and re-freezes the statement row. Revenue-basis reps are exempt from the late rule and never appear here. Covers the month you are viewing.
+              </div>
+            </div>;
+          })()}
 
           {/* Draw & loan settings modal */}
           {compEdit&&(()=>{const r=REPS.find(x=>x.id===compEdit.id);
@@ -1332,7 +1477,7 @@ export default function CommissionsPage({adminReports=false}={}){
                   <input type="number" min="0" step="0.01" className="form-input" style={inp} value={compEdit.loan} onChange={e=>setCompEdit(p=>({...p,loan:e.target.value}))} placeholder="0 = no loan"/>
                   <label className="form-label">Loan withholding (% of after-draw commission)</label>
                   <input type="number" min="0" max="100" step="1" className="form-input" style={inp} value={compEdit.pct} onChange={e=>setCompEdit(p=>({...p,pct:e.target.value}))}/>
-                  <div style={{fontSize:11,color:'#64748b',marginBottom:12}}>Withholding stops automatically when the balance reaches $0. Months already applied to the loan are not recalculated when you change these settings.</div>
+                  <div style={{fontSize:11,color:'#64748b',marginBottom:12}}>The draw is an advance against commission: payable = net commission − draw, floored at $0, with no carryover between months. Withholding stops automatically when the balance reaches $0. Months already applied to the loan are not recalculated when you change these settings.</div>
                   <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
                     <button className="btn btn-sm btn-secondary" onClick={()=>setCompEdit(null)}>Cancel</button>
                     <button className="btn btn-sm btn-primary" disabled={repComp===null} onClick={()=>{

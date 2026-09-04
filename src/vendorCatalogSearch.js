@@ -13,6 +13,7 @@
 
 import { sanmarGetProduct, sanmarGetInventory, sanmarGetPricing, ssApiCall, richardsonSearchStyles, momentecStyleV2 } from './vendorApis';
 import { normSzName } from './pricing';
+import { sanmarPricingRows, sanmarAccountPrice } from './lib/sanmarPricing';
 
 const SS_CDN = 'https://cdn.ssactivewear.com/';
 // SanMar exposes both garment-only flats and model photography. Webstore mockups need the
@@ -58,10 +59,10 @@ async function searchSanMar(query, vendorMap) {
       if (qty <= 0 && it.warehouseInfo) { const d = it.warehouseInfo.inventoryDetail || it.warehouseInfo; (Array.isArray(d) ? d : [d]).forEach((w) => { if (w && w.quantity) qty += parseInt(w.quantity) || 0; }); }
       invData[key] = qty;
     });
-    (priceRes?.items || []).forEach((it) => {
+    sanmarPricingRows(priceRes).forEach((it) => {
       const color = it.catalogColor || it.color || it.colorName || '';
       const sz = normSzName(it.size || it.labelSize || '');
-      const price = parseFloat(it.myPrice || 0) || parseFloat(it.salePrice || 0) || parseFloat(it.piecePrice || 0) || 0;
+      const price = sanmarAccountPrice(it);
       if (price > 0) priceMap[color + '|' + sz] = price;
     });
   } catch (e) { /* inventory/pricing optional */ }

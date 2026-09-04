@@ -15,9 +15,10 @@
 // src/__tests__/dbEngine.characterization.test.js.
 // ═══════════════════════════════════════════════════════════════════════
 import { createClient } from '@supabase/supabase-js';
+import { insertedItemIdsByIndex } from './itemInsertIdentity';
 import { makeBreakerFetch } from './requestBreaker';
 import { _sbAuthLock } from './supabase';
-import { _pick, _estCols, _soCols, _itemCols, _soItemCols, _decoCols, _itemExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, _vendCols, _firmDateCols, _omgStoreCols } from '../constants';
+import { _pick, _pickSoItem, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, _vendCols, _firmDateCols, _omgStoreCols } from '../constants';
 import { itemEditReconciles, itemsWithWipedQty, decorationShrinkConflicts, unaccountedDroppedItems, jobAllRoutedOutside } from '../businessLogic';
 import { soItemKey } from '../safeHelpers';
 import { authFetch } from '../utils';
@@ -775,7 +776,7 @@ const _estDiffCmp=(e)=>JSON.stringify({
 // all SO-level fields, jobs, art_files, firm_dates, and each item's decorations/pick_lines/po_lines —
 // is still compared WHOLE, exactly as before. Only the per-item session scalars (the storm trigger)
 // stop counting as changes.
-const _soItemForDiff=(it)=>({..._pick(it,[..._itemCols,..._soItemCols]),decorations:it.decorations,pick_lines:it.pick_lines,po_lines:it.po_lines});
+const _soItemForDiff=(it)=>({..._pickSoItem(it),decorations:it.decorations,pick_lines:it.pick_lines,po_lines:it.po_lines});
 const _soDiffCmp=(s)=>{const{_version,updated_at,...r}=s;if(Array.isArray(r.items))r.items=r.items.map(_soItemForDiff);return JSON.stringify(r)};
 // Phantom-save guard for products: compare ONLY what _dbSaveProduct actually persists — the products
 // row, the _pimg_ image backup (front/back/gallery), and product_inventory (_inv/_alerts). It mirrors
@@ -2389,21 +2390,24 @@ const _dbSaveSOInner = async (so) => {
       }
       _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();if(so._version)so._version=so._version+1;return true}
     // Batch insert all items at once (much faster than one-by-one)
-    const allItemRows=items.map((item,idx)=>{const{decorations,pick_lines,po_lines,...itemData}=item;return{..._pick(itemData,[..._itemCols,..._soItemCols]),so_id:so.id,item_index:idx}});
-    let{data:insertedItems,error:itemErr}=await supabase.from('so_items').insert(allItemRows).select('id');
+    const allItemRows=items.map((item,idx)=>{const{decorations,pick_lines,po_lines,...itemData}=item;return{..._pickSoItem(itemData),so_id:so.id,item_index:idx}});
+    // Child rows must be attached by the stable item_index returned by Postgres. INSERT ...
+    // RETURNING order is not an identity contract; pairing returned ids to `items[idx]` by array
+    // position can cross-link PO quantities/vendor metadata to a different SKU after a full save.
+    let{data:insertedItems,error:itemErr}=await supabase.from('so_items').insert(allItemRows).select('id,item_index');
     if(itemErr){
       if(itemErr.message?.includes('product_id')||itemErr.code==='23503'){
         const fkRows=allItemRows.map(r=>({...r,product_id:null}));
-        const fkRetry=await supabase.from('so_items').insert(fkRows).select('id');
+        const fkRetry=await supabase.from('so_items').insert(fkRows).select('id,item_index');
         if(!fkRetry.error){insertedItems=fkRetry.data;console.warn('[DB] so items saved with product_id nulled (FK constraint)')}
         else{itemErr=fkRetry.error}
       }
       if(!insertedItems){
         const coreRows=allItemRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_itemExtraCols.has(k))cr[k]=r[k]});return cr});
-        const retry=await supabase.from('so_items').insert(coreRows).select('id');
+        const retry=await supabase.from('so_items').insert(coreRows).select('id,item_index');
         if(retry.error){
           const coreNullPid=coreRows.map(r=>({...r,product_id:null}));
-          const retry2=await supabase.from('so_items').insert(coreNullPid).select('id');
+          const retry2=await supabase.from('so_items').insert(coreNullPid).select('id,item_index');
           if(retry2.error){console.error('[DB] so_items batch insert failed:',retry2.error.message,retry2.error.details);saveFailed=true;_failMsg=_failMsg||('so_items: '+retry2.error.message+(retry2.error.details?' ('+retry2.error.details+')':''))}
           else{insertedItems=retry2.data;console.warn('[DB] so items saved with core columns + product_id nulled')}
         }
@@ -2420,11 +2424,17 @@ const _dbSaveSOInner = async (so) => {
       console.error('[DB] SAFETY: so_items insert under-returned —',insertedItems?.length||0,'of',allItemRows.length,'ids');
       if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allItemRows.length,got:insertedItems?.length||0,reason:'so_items: insert returned '+(insertedItems?.length||0)+' of '+allItemRows.length+' ids — save queued for retry'});
     }
+    const insertedItemIdByIndex=insertedItemIdsByIndex(insertedItems);
+    if(!saveFailed&&insertedItemIdByIndex.size<allItemRows.length){
+      saveFailed=true;_failMsg=_failMsg||('so_items: insert response did not return a unique item_index for every row');
+      console.error('[DB] SAFETY: so_items insert response cannot be mapped by item_index for',so.id);
+      if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allItemRows.length,got:insertedItemIdByIndex.size,reason:'so_items: returned rows could not be mapped one-to-one by item_index — child writes blocked'});
+    }
     if(!saveFailed&&insertedItems?.length){
       // Build all child rows referencing their parent item IDs
       const allDecoRows=[],allPickRows=[],allPoRows=[];
       items.forEach((item,idx)=>{
-        const itemId=insertedItems[idx]?.id;if(!itemId)return;
+        const itemId=insertedItemIdByIndex.get(idx);if(!itemId)return;
         const{decorations,pick_lines,po_lines}=item;
         if(decorations?.length)decorations.forEach((d,di)=>allDecoRows.push({..._pick(_sanitizeDeco(d),_decoCols),so_item_id:itemId,deco_index:di}));
         if(pick_lines?.length)pick_lines.forEach(pk=>{const{pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,deco_po_id,deco_vendor_id,attention,pulled_at,...sizes}=pk;

@@ -13,6 +13,16 @@ export const _itemCols=['product_id','sku','name','brand','color','vendor_id','n
 // Sales-order-only item fields. Keep these separate from _itemCols because that base list also
 // feeds estimate_items writes, while invoice reconciliation history has no meaning on an estimate.
 export const _soItemCols=['invoice_line_keys'];
+// PostgREST builds one column set for an entire bulk insert. If an existing line carries
+// invoice_line_keys while a newly-added line omits it, the missing value becomes explicit NULL for
+// that row; the database default is not used and the NOT NULL constraint rejects the whole batch.
+// Use this projection for BOTH dirty comparison and persistence so missing/null legacy payloads are
+// canonically [] and do not create either failed saves or a missing-vs-empty phantom-save loop.
+export const _pickSoItem=(item)=>{
+  const row=_pick(item||{},[..._itemCols,..._soItemCols]);
+  row.invoice_line_keys=Array.isArray(row.invoice_line_keys)?row.invoice_line_keys:[];
+  return row;
+};
 // Topstar digitizing / vector-file billing line. This qty_only line bills the customer for a
 // file-creation service whose PO lives in so.deco_pos (a deco PO) — an item-level vendor PO is
 // never created for it. It must therefore be treated as already covered in SO status math and
@@ -306,6 +316,11 @@ export const _omgStoreCols=['id','store_name','customer_id','rep_id','csr_id','a
 // ─── Team & Company Defaults ───
 // Warehouse staff who can delegate tasks to other warehouse workers (in addition to admins/GM).
 export const WAREHOUSE_LEAD_IDS=['00000000-0000-0000-0000-000000000050']; // Kellen Coates
+// Staff cleared to make MANUAL stock corrections on the Inventory page (Adjust Inventory / INV).
+// Deliberately separate from WAREHOUSE_LEAD_IDS: that list also grants warehouse task delegation,
+// and someone can be trusted to correct counts without running the warehouse queue. Admins always
+// have this; this list adds individuals by id, one at a time.
+export const INVENTORY_ADJUST_IDS=['tm-mpn3xnfieezi']; // Vic Damian (CSR)
 export const DEFAULT_REPS=[
   // Admins
   {id:'00000000-0000-0000-0000-000000000001',name:'Steve Peterson',role:'admin'},
@@ -573,6 +588,24 @@ export const normalizeFootwearSize=(size)=>{
   return m?String(Number(m[1])+0.5):s;
 };
 export const normalizeFootwearSizeList=(sizes)=>[...new Set((Array.isArray(sizes)?sizes:[]).map(normalizeFootwearSize).filter(Boolean))].sort(_szCompare);
+
+// Size run to seed on an ORDER LINE from a catalog product's available_sizes. Many Adidas /
+// Under Armour catalog rows carry the vendor's ENTIRE run — XS, 3XL–5XL, and the tall block
+// (ST/MT/LT/XLT/2XLT…) — because the B2B feed lists every size the style is made in. A normal
+// team order only fills S–2XL, so dropping that whole run onto a fresh line (add-from-catalog,
+// SKU change, NetSuite import, AI build) turns the grid into a wall of empty columns. For a
+// standard adult-apparel run we seed just the core S–2XL; a rep adds outliers with +Size.
+// Non-standard runs (youth, OSFA, numeric, footwear, tall-only) have no core overlap and pass
+// through untouched. Any size that already carries a quantity is always kept so entered qtys
+// never drop. Lives here (not in the editors) so the order editors and the AI build paths all
+// seed the SAME run — this used to be a hand-synced copy in OrderEditor + OrderEditorClassic.
+export const CORE_APPAREL_SIZES=['S','M','L','XL','2XL'];
+export const orderLineSizes=(catalogSizes,qtySizes=[])=>{
+  const all=(Array.isArray(catalogSizes)?catalogSizes:[]).filter(Boolean);
+  const core=all.filter(s=>CORE_APPAREL_SIZES.includes(s));
+  const base=(core.length&&all.some(s=>!CORE_APPAREL_SIZES.includes(s)))?core:all;
+  return normalizeFootwearSizeList([...base,...(Array.isArray(qtySizes)?qtySizes:[]).filter(Boolean)]);
+};
 // Quantity maps need collision handling too: if legacy data contains both 10- and 10.5, preserve
 // every ordered unit under the single canonical 10.5 key rather than hiding or dropping either.
 export const normalizeFootwearSizeQtyMap=(sizes)=>Object.entries(sizes||{}).reduce((out,[size,qty])=>{

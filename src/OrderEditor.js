@@ -5,7 +5,7 @@ import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, orderLineSizes, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
 import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, skusMissingRevColorWays, missingRevColorWaysMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, replaceMockLinkGroup, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { suggestShipping, orderUnits } from './lib/shipSuggest';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
@@ -15,12 +15,18 @@ import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
 import QuickMockBuilder from './QuickMockBuilder';
+import MethodicOrderPanel from './methodic/MethodicOrderPanel';
+import MethodicOrderStatusStrip from './methodic/MethodicOrderStatusStrip';
+import MethodicRequestForm from './methodic/MethodicRequestForm';
+import { methodicApi } from './methodic/methodicApi';
+import { isMethodicItem } from './methodic/methodicWorkflow';
 import MultiItemAddModal from './MultiItemAddModal';
 // Lazy so the uniform designer only loads when a rep opens it.
 const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
 import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, TWA, TWN, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced, linkedArtCostQty, decoCostAt, decoCostResolved, outsideDecoEstAt, outsideDecoSell } from './pricing';
-import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, dedupeMockDupes, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, schoolPOBoxes, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles, authFetch, greetLine, withGreeting, emailMoney } from './utils';
+import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, dedupeMockDupes, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, schoolPOBoxes, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, aiLineAvailableSizes, preferAgronProduct, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles, authFetch, greetLine, withGreeting, emailMoney } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
+import { sanmarPricingSnapshot } from './lib/sanmarPricing';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit, unfulfilledSizes, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantRemoveLineApply, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
@@ -37,6 +43,7 @@ import { _dbPersistNewPoLine } from './lib/dbEngine';
 import { applyFullPromoPricing } from './lib/promoPricing';
 import { fetchPaidPromoHistoryInvoices, mergePromoHistoryInvoices, promoHalfWindows, withEarnedPromoAllocation } from './lib/promoHistory';
 import { itemVendorInvSource, vendorInvCacheKey } from './vendorInventory';
+import { apiVerificationForPoLine, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
 import './orderEditor.redesign.css';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
@@ -58,29 +65,24 @@ const nameWithBrand=(name,brand)=>{
 // re-ordered, so no PO ever prices off this.
 const catalogRepCost=(p)=>(p&&p.is_clearance&&p.clearance_cost!=null)?safeNum(p.clearance_cost):safeNum(p?.nsa_cost);
 
-// Size run to seed on an ORDER LINE from a catalog product's available_sizes. Many Adidas /
-// Under Armour catalog rows carry the vendor's ENTIRE run — XS, 3XL–5XL, and the tall block
-// (ST/MT/LT/XLT/2XLT…) — because the B2B feed lists every size the style is made in. A normal
-// team order only fills S–2XL, so dropping that whole run onto a fresh line (add-from-catalog,
-// SKU change, NetSuite import) turns the grid into a wall of empty columns. For a standard
-// adult-apparel run we seed just the core S–2XL; a rep adds outliers with +Size. Non-standard
-// runs (youth, OSFA, numeric, footwear, tall-only) have no core overlap and pass through
-// untouched. Any size that already carries a quantity is always kept so entered qtys never drop.
-const CORE_APPAREL_SIZES=['S','M','L','XL','2XL'];
+
+// Quantity keystrokes stay in this tiny component. The parent editor still owns the draft ref
+// (so Save/autosave can flush it safely), but no longer reconciles thousands of order controls
+// for every digit typed.
+const QuantityDraftInput=React.memo(function QuantityDraftInput({value,draftKey,onStage,onCommit,className,style,filledStyle,emptyStyle,placeholder='0'}){
+  const cur=value==null||value===0?'':String(value);const[raw,setRaw]=React.useState(cur);const[focused,setFocused]=React.useState(false);
+  React.useEffect(()=>{if(!focused)setRaw(cur)},[cur,focused]);
+  const commit=()=>{setFocused(false);onCommit(raw)};const filled=(parseInt(raw,10)||0)>0;
+  return <input className={className} data-sizing-draft="true" value={raw} placeholder={placeholder}
+    onFocus={()=>setFocused(true)} onChange={e=>{const next=e.target.value;if(!/^\d*$/.test(next))return;setRaw(next);onStage(draftKey,next)}}
+    onBlur={commit} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur()}}
+    style={{...style,...(filled?filledStyle:emptyStyle)}}/>;
+});
 // Size pools offered by the Copy Item modal's "New sizes" picker — the common run a rep
 // re-sizes a copied line into (a 3/L one-off, a couple of bigs), not the full catalog pool.
 // Outliers (5XL, tall, youth, half sizes below 6) are still added on the line with +Size.
 const COPY_APPAREL_SIZES=['XS','S','M','L','XL','2XL','3XL','4XL'];
 const COPY_FOOTWEAR_SIZES=['6','6.5','7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12'];
-const orderLineSizes=(catalogSizes,qtySizes=[])=>{
-  const all=(Array.isArray(catalogSizes)?catalogSizes:[]).filter(Boolean);
-  const core=all.filter(s=>CORE_APPAREL_SIZES.includes(s));
-  // Narrow to the core run only when the product also offers sizes beyond it (a standard adult
-  // run padded with extras). If the run IS already the core — or has no core overlap at all
-  // (youth/OSFA/numeric/footwear) — keep it verbatim.
-  const base=(core.length&&all.some(s=>!CORE_APPAREL_SIZES.includes(s)))?core:all;
-  return normalizeFootwearSizeList([...base,...(Array.isArray(qtySizes)?qtySizes:[]).filter(Boolean)]);
-};
 
 // Line items rendered on a printed / emailed estimate or SO PDF. This used to drop
 // any line whose total quantity was 0, which silently hid legitimately-quoted items
@@ -174,7 +176,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,shipCostBasis,onShipSS,onCheckShipStatus,onManualShip,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText,ui='new'}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,shipCostBasis,onShipSS,onCheckShipStatus,onManualShip,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,onOpenMethodicDashboard,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText,ui='new'}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -1099,7 +1101,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // In-progress size-cell edits, keyed `idx+'_'+sz`. Lets the user type intermediate values
   // (e.g. clear "8" then type "13") without the per-keystroke "Cannot reduce below X" guard firing.
   // Validation runs in uSz on blur instead — see input at the size grid below.
-  const[sizingDraft,setSizingDraft]=useState({});
   const sizingDraftRef=useRef({});
   const[coachApprovalModal,setCoachApprovalModal]=useState(null);// {jIdx, contact, portalUrl, method, message}
   // Art proofs often go to several contacts — keep the greeting naming whoever is checked
@@ -1556,13 +1557,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // Fetch pricing
         try{
           const prData=await sanmarGetPricing(sku,prodColor,'');
-          const prItems=prData?.items||[];
-          prItems.forEach(it=>{
-            const sz=normSzName(it.size||it.labelSize||'OSFA');
-            const mp=parseFloat(it.myPrice||0);const sp=parseFloat(it.salePrice||0);const pp=parseFloat(it.piecePrice||0);
-            const price=mp>0?mp:sp>0?sp:pp>0?pp:0;
-            if(price>0)sizePrice[sz]=price;
-          });
+          Object.assign(sizePrice,sanmarPricingSnapshot(prData,prodColor).prices);
         }catch(e){console.warn('[SanMar] Pricing fetch error for',sku,e.message)}
         // If we got no inventory data from the inventory endpoint, try product info
         if(Object.keys(sizeQty).length===0){
@@ -1772,8 +1767,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Size inputs deliberately buffer keystrokes until blur so clearing "8" on the way to "13"
   // does not trip the committed-quantity guards. Mirror that buffer in a ref: Save follows blur
   // immediately, before React would normally expose the new order state to the click handler.
-  const _stageSizingDraft=(k,v)=>{const next={...sizingDraftRef.current,[k]:v};sizingDraftRef.current=next;setSizingDraft(next);dirtyRef2.current=true;setDirty(true)};
-  const _dropSizingDraft=k=>{if(!(k in sizingDraftRef.current))return;const next={...sizingDraftRef.current};delete next[k];sizingDraftRef.current=next;setSizingDraft(next)};
+  const _stageSizingDraft=(k,v)=>{const first=!(k in sizingDraftRef.current);sizingDraftRef.current={...sizingDraftRef.current,[k]:v};if(first){dirtyRef2.current=true;setDirty(true)}};
+  const _dropSizingDraft=k=>{if(!(k in sizingDraftRef.current))return;const next={...sizingDraftRef.current};delete next[k];sizingDraftRef.current=next};
   const _flushActiveSizingDraft=()=>{
     if(!Object.keys(sizingDraftRef.current).length)return true;
     const active=typeof document!=='undefined'?document.activeElement:null;
@@ -1906,7 +1901,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       +holds.map(h=>h.pickId+' · '+(h.soId===o.id?'this order':h.soId)+' ×'+h.qty).join(', ')
       +') · '+Math.max(0,onHand-held)+' free to pull';
   };
-  const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showCustEdit,setShowCustEdit]=useState(false);const[showCustNew,setShowCustNew]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showItemMenu,setShowItemMenu]=useState(null);const[itemMenuPos,setItemMenuPos]=useState(null);const[moreActionsFor,setMoreActionsFor]=useState(null);const[editingItemName,setEditingItemName]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[],item_type:'apparel'});const[showCustSupp,setShowCustSupp]=useState(false);const[custSuppItem,setCustSuppItem]=useState({name:'',color:'',item_type:'apparel',notes:''});
+  const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showCustEdit,setShowCustEdit]=useState(false);const[showCustNew,setShowCustNew]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showItemMenu,setShowItemMenu]=useState(null);const[itemMenuPos,setItemMenuPos]=useState(null);const[moreActionsFor,setMoreActionsFor]=useState(null);const[editingItemName,setEditingItemName]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[],item_type:'apparel'});const[showCustSupp,setShowCustSupp]=useState(false);const[custSuppItem,setCustSuppItem]=useState({name:'',color:'',item_type:'apparel',notes:''});const[methodicRequestItem,setMethodicRequestItem]=useState(null);
 
   // ── + Size popover positioning ──
   // The popover renders position:FIXED on purpose: its line item lives inside `.card`, which sets
@@ -2882,7 +2877,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const sizes={};Object.entries(pl).forEach(([k,v])=>{if(!_PO_SZ_META.has(k)&&typeof v==='number'&&v>0)sizes[k]=v});
       if(!Object.keys(sizes).length)return;
       if(!writeIn&&pl.ship_to&&(pl.ship_to.line1||pl.ship_to.city))writeIn={addr:pl.ship_to,attention:pl.attention||pl.ship_to.attention||''};
-      payloadItems.push({sku:it.sku,name:it.name,color:it.color,sizes,unit_cost:safeNum(pl.unit_cost!=null?pl.unit_cost:it.nsa_cost),
+      payloadItems.push({item_idx:ln.lineIdx,sku:it.sku,name:it.name,color:it.color,sizes,unit_cost:safeNum(pl.unit_cost!=null?pl.unit_cost:it.nsa_cost),
         ...(pl._size_costs?{_size_costs:pl._size_costs}:{}),
         ...(it._mt_skus?{_mt_style:it._mt_style,_mt_color:it._mt_color,_mt_sku:it._mt_sku,_mt_skus:it._mt_skus}:{})});
     });
@@ -2901,7 +2896,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const shipTo=writeIn?_shape(writeIn.addr,writeIn.attention):(_decoShip?_shape(_decoShip):_shape(_custShip));
     return {
       vendorKey:vk,poNumber:poId,vendorName:po.vendor,
-      batchPOs:[{so_id:o.id,items:payloadItems}],
+      batchPOs:[{so_id:o.id,po_id:poId,items:payloadItems}],
       ...(shipTo?{shipTo}:{}),
       ...(po.drop_ship&&!shipTo?{shipWarning:'This PO is drop ship but no delivery address is on file'+(relDeco?' for the decorator (add it in Settings → Deco Vendors or on its linked Vendor)':" for the SO's ship-to customer")+' — it has fallen back to the NSA warehouse. Edit the address below if it should go elsewhere.'}:{}),
       // Decorator drop-ship: pre-lock ship-to and pre-fill DPO number in attention line
@@ -2914,10 +2909,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // After a real submit, stamp the returned order id on the PO's lines for traceability.
   // Returns true once the ack is stamped and saved — the vendor modals show a loud "order placed
   // but NOT recorded" warning on a falsy return, so a successful record must say so explicitly.
-  const _recordApiOrder=(desc,r,apiLines)=>{const oid=r&&(r.orderId||r.orderNumber||r.transactionId);if(!desc||!oid)return false;
+  const _recordApiOrder=async(desc,r,apiLines)=>{const oid=r&&(r.orderId||r.orderNumber||r.transactionId);if(!desc||!oid)return false;
     // Phase A of order-aware matching: persist the vendor ack + the exact line keys we submitted
     // (their sku/partId, size/color, unit cost) as vendor_keys — pure capture, nothing reads it yet.
-    const _vkeys=apiLines&&apiLines.length?{order_no:String(oid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:Number(l.quantity)||0,unit_cost:Number(l.unitPrice)||0}))}:null;
+    const _vkeys=apiLines&&apiLines.length?{order_no:String(oid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:Number(l.quantity)||0,unit_cost:Number(l.unitPrice)||0,warehouse_id:l.warehouse_id||'',warehouse:l.warehouse||'',warehouse_qty:Number(l.warehouse_qty)||0,warehouse_basis:l.warehouse_basis||''}))}:null;
     // Granularity (owner 2026-07-23): each line carries only ITS item's vendor keys — a
     // style-matched subset when one exists, the full list as fallback so nothing is lost.
     const _vkN=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
@@ -2925,11 +2920,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const k=_vkN(itemSku);const mine=k?_vkeys.lines.filter(l=>{const st=_vkN(l.style);return st&&(st===k||k.startsWith(st)||st.startsWith(k))}):[];
       return{...base,vendor_keys:mine.length?{..._vkeys,lines:mine}:_vkeys}};
     const stamp=_stampFor('');// legacy shape for the full-page badge below
-    const items=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>pl.po_id===desc.poNumber?{...pl,..._stampFor(it.sku)}:pl)}));
-    const updated={...o,items,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);
+    const current=oRef.current||o;
+    const items=safeItems(current).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>pl.po_id===desc.poNumber?{...pl,..._stampFor(it.sku)}:pl)}));
+    const updated={...current,items,updated_at:new Date().toLocaleString()};
+    // A vendor acknowledgement is not safely recorded until the database save itself has
+    // completed. A fire-and-forget save can show success and then lose the API marker on reload.
+    setO(updated);oRef.current=updated;
+    let saved=true;
+    try{saved=onSaveNow?await onSaveNow(updated):(onSave(updated)!==false)}catch(_saveErr){saved=false;console.error('[recordApiOrder] durable save failed',_saveErr)}
+    if(!saved){setO(current);oRef.current=current;nf('⚠️ '+desc.vendorName+' accepted order '+oid+', but the portal could not confirm its PO record. Do NOT re-order.','error');return false}
     // If this PO's full page is open, stamp its snapshot too so the "Placed via API" badge shows
     // and the "Order via API" button hides — a stale page could otherwise invite a double-submit.
-    setPoFullPage(pf=>(pf&&pf.po&&pf.po.po_id===desc.poNumber)?{...pf,po:{...pf.po,...stamp}}:pf);
+    setPoFullPage(pf=>(pf&&pf.po&&pf.po.po_id===desc.poNumber)?{...pf,po:{...pf.po,...stamp},soItems:items}:pf);
     nf('✅ '+desc.vendorName+' order '+oid+' recorded on '+desc.poNumber);
     return true;};
   // Shared onSubmitted for the vendor API modals below. Batch submits promote the whole queue
@@ -2943,7 +2945,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const orderedNum=onOrderBatch?await onOrderBatch({vendorKey:apiOrder.vendorKey,groupKey:apiOrder.groupKey||null,skipSoId:apiOrder.skipSoId,apiResult:r,apiLines}):null;
       if(!orderedNum)return false;
       const _oid=r&&(r.orderId||r.orderNumber||r.transactionId);
-      const _vkeys=_oid&&apiLines&&apiLines.length?{order_no:String(_oid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:Number(l.quantity)||0,unit_cost:Number(l.unitPrice)||0}))}:null;
+      const _vkeys=_oid&&apiLines&&apiLines.length?{order_no:String(_oid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:Number(l.quantity)||0,unit_cost:Number(l.unitPrice)||0,warehouse_id:l.warehouse_id||'',warehouse:l.warehouse||'',warehouse_qty:Number(l.warehouse_qty)||0,warehouse_basis:l.warehouse_basis||''}))}:null;
       // Granularity (owner 2026-07-23): per-item vendor-key subset, full list as fallback.
       const _vkN2=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
       const _stampFor2=(itemSku)=>{if(!_oid)return{};const base={api_order_id:_oid,api_ordered_at:new Date().toLocaleString()};if(!_vkeys)return base;
@@ -2951,13 +2953,32 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         return{...base,vendor_keys:mine.length?{..._vkeys,lines:mine}:_vkeys}};
       const myBatchIds=new Set((apiOrder.batchPOs||[]).filter(bp=>bp.so_id===apiOrder.skipSoId).map(bp=>bp.id));
       if(myBatchIds.size>0){
-        const items2=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+(apiOrder.vendorName||''),..._stampFor2(it.sku)}:pl)}));
-        const updated={...o,items:items2,updated_at:new Date().toLocaleString()};
-        setO(updated);onSave(updated);
+        const current=oRef.current||o;
+        const items2=safeItems(current).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+(apiOrder.vendorName||''),..._stampFor2(it.sku)}:pl)}));
+        const updated={...current,items:items2,updated_at:new Date().toLocaleString()};
+        setO(updated);oRef.current=updated;
+        let saved=true;
+        try{saved=onSaveNow?await onSaveNow(updated):(onSave(updated)!==false)}catch(_saveErr){saved=false;console.error('[apiOrderSubmitted] durable batch save failed',_saveErr)}
+        if(!saved){setO(current);oRef.current=current;return false}
       }
       return orderedNum;
     }
     return _recordApiOrder(apiOrder,r,apiLines);
+  };
+  const _removeSanMarApiLine=async(line)=>{
+    if(line?.sourceSO&&line.sourceSO!==o.id){nf('Open '+line.sourceSO+' to remove this line from its PO. Nothing was changed.','error');return false}
+    const current=oRef.current||o;
+    const result=removeApiLineFromPoItems(safeItems(current),line);
+    if(!result.removed){nf(result.reason||'This line could not be removed from the PO.','error');return false}
+    const updated={...current,items:result.items,updated_at:new Date().toLocaleString()};
+    setO(updated);oRef.current=updated;
+    let saved=true;
+    try{saved=onSaveNow?await onSaveNow(updated):(onSave(updated)!==false)}catch(_saveErr){saved=false;console.error('[removeSanMarApiLine] durable save failed',_saveErr)}
+    if(!saved){setO(current);oRef.current=current;nf('The PO removal could not be confirmed. Do not submit; reload the order and verify the PO.','error');return false}
+    if(line.sourceBatchId&&onBatchPO)onBatchPO(prev=>removeApiLineFromBatchPOs(prev,line));
+    setPoFullPage(pf=>{if(!pf)return pf;let first=null;const allLines=[];result.items.forEach((it,lineIdx)=>{const poIdx=(it.po_lines||[]).findIndex(pl=>pl.po_id===result.poId);if(poIdx>=0){allLines.push({lineIdx,poIdx});if(!first)first={item:it,po:it.po_lines[poIdx]}}});return first?{...pf,item:first.item,po:first.po,soItems:result.items,allLines}:null});
+    nf('Removed '+line.style+' '+line.size+' from '+result.poId+'; it will not be sent to SanMar.');
+    return true;
   };
   const uSz=(i,sz,v)=>{
     const n=v===''?0:parseInt(v)||0;
@@ -5213,8 +5234,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,marginLeft:4}} onClick={()=>{sv('_status_reverted',true);sv('status',autoSt)}}>↩️ Reset to Auto</button>}
         </div>})()}
       {/* Fulfillment (ship preference) moved up into the Create PO / Create Invoice row as a select */}
-      {isSO&&<div style={{marginTop:8}}><label className="form-label">Production Notes</label><input className="form-input" value={o.production_notes||''} onChange={e=>sv('production_notes',e.target.value)} placeholder="Internal notes..."/></div>}
+      {isSO&&<div style={{marginTop:8}}><label className="form-label">Production Notes</label><$Txt className="form-input" value={o.production_notes||''} onChange={v=>sv('production_notes',v)} placeholder="Internal notes..."/></div>}
     </div></div>
+    <MethodicOrderStatusStrip documentId={o.id} documentType={isSO?'sales_order':'estimate'} onOpen={()=>isSO?setTab('methodic'):onOpenMethodicDashboard?.()}/>
+    {methodicRequestItem&&createPortal(<div className="modal-overlay" onClick={()=>setMethodicRequestItem(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:940,width:'95vw',maxHeight:'94vh',overflow:'auto'}}><div className="modal-header" style={{background:'#eef2ff'}}><div><h2 style={{margin:0}}>Request Methodic Mockup</h2><div style={{fontSize:11,color:'#6366f1',marginTop:3}}>{o.id} · {methodicRequestItem.item.sku} · {methodicRequestItem.item.name}</div></div><button className="modal-close" onClick={()=>setMethodicRequestItem(null)}>×</button></div><div className="modal-body"><MethodicRequestForm order={o} initialItem={methodicRequestItem.item} itemIndex={methodicRequestItem.index} documentType={isSO?'sales_order':'estimate'} teamMembers={REPS||[]} onCancel={()=>setMethodicRequestItem(null)} onSave={async payload=>{const saved=await Promise.resolve(onSaveNow?.(oRef.current));if(saved===false)throw new Error('Save this document before creating the Methodic request.');const source=isSO?{sales_order_id:oRef.current.id}:{estimate_id:oRef.current.id};const data=await methodicApi('create',{...source,item_index:methodicRequestItem.index,...payload});setMethodicRequestItem(null);window.dispatchEvent(new CustomEvent('methodic-updated',{detail:{salesOrderId:isSO?oRef.current.id:null,estimateId:isSO?null:oRef.current.id}}));nf(data.request?._reused?`${data.request.request_number} already tracks this Methodic item`:`${data.request?.request_number||'Methodic request'} created and sent to Art`);}}/></div></div></div>,document.body)}
     {/* TABS */}
     <div className="tabs" style={{marginBottom:16}}>
       <button data-tour-id="oe-tab-items" className={`tab ${tab==='items'?'active':''}`} onClick={()=>setTab('items')}>Line Items</button>
@@ -5222,6 +5245,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <button className={`tab ${tab==='messages'?'active':''}`} onClick={()=>setTab('messages')}>Messages {(()=>{const entityMsgs=(msgs||[]).filter(m=>(m.entity_id===o.id)||(m.so_id===o.id));const unread=entityMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{unread}</span>:` (${entityMsgs.length})`})()}</button>
       {isSO&&<button className={`tab ${tab==='transactions'?'active':''}`} onClick={()=>setTab('transactions')}>Linked</button>}
       {isSO&&<button className={`tab ${tab==='jobs'?'active':''}`} onClick={()=>setTab('jobs')}>Jobs {(()=>{const jc=(o.jobs||[]).length;return jc>0?` (${jc})`:''})()}</button>}
+      {isSO&&<button className={`tab ${tab==='methodic'?'active':''}`} onClick={()=>setTab('methodic')} style={tab==='methodic'?{background:'#312e81',color:'white'}:{}}>Methodic</button>}
       {isSO&&<button className={`tab ${tab==='tracking'?'active':''}`} onClick={()=>setTab('tracking')}>Tracking {(()=>{const sc=(o._shipments||[]).length||(o._tracking_number?1:0);return sc>0?<span style={{background:'#166534',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{sc}</span>:''})()}</button>}
       {isSO&&<button className={`tab ${tab==='costs'?'active':''}`} onClick={()=>setTab('costs')} style={tab==='costs'?{background:'#166534',color:'white'}:{}}>💰 Costs</button>}
       <button className={`tab ${tab==='history'?'active':''}`} onClick={()=>setTab('history')}>History</button>
@@ -5387,6 +5411,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   })()}
                 {item.customer_supplied&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ecfeff',color:'#0e7490',fontWeight:700,border:'1px solid #a5f3fc'}}>🎁 Customer-Supplied</span>}
                 {item.is_free_promo&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#fdf2f8',color:'#be185d',fontWeight:700,border:'1px solid #fbcfe8'}}>🎁 FREE PROMO</span>}
+                {isMethodicItem(item,vendorList)&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#eef2ff',color:'#4338ca',fontWeight:900,border:'1px solid #c7d2fe'}}>METHODIC CUSTOM</span>}
                 {item.is_custom&&!item.customer_supplied&&!item.vendor_source&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Custom</span>}
                 {item.vendor_source&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>{item.vendor_source==='sanmar'?'🟦 via SanMar':item.vendor_source==='ss'?'🟪 via S&S':item.vendor_source==='momentec'?'🟧 via Momentec':'via vendor'}</span>}
                 {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700,cursor:'pointer'}} title={dp.vendor+' — '+dp.deco_type?.replace(/_/g,' ')} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>{dp.po_id} · {dp.vendor}</span>)}
@@ -5423,6 +5448,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {_itemImg(item)&&<button onClick={()=>{copyItemImage(item);setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#0369a1',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#f0f9ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:12}}>🖼️</span> Copy image</button>}
                   <button onClick={()=>{setCopySkuModal({itemIdx:idx,search:'',intent:'change',mode:'replace'});setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#7c3aed',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#f5f3ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:10,fontWeight:800}}>SKU</span> Change SKU</button>
                   <button onClick={()=>{setVendorModal({itemIdx:idx});setShowItemMenu(null);setItemMenuPos(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#b45309',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:12}}>🏷️</span> Change vendor</button>
+                  {isMethodicItem(item,vendorList)&&<button onClick={()=>{setMethodicRequestItem({item,index:idx});setShowItemMenu(null);setItemMenuPos(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'7px 10px',background:'#eef2ff',border:'none',cursor:'pointer',color:'#4338ca',fontSize:12,fontWeight:800,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#e0e7ff'} onMouseLeave={e=>e.currentTarget.style.background='#eef2ff'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:12}}>🎨</span> Request Methodic Mockup</button>}
                   {onAssignTodo&&<button onClick={()=>{onAssignTodo({title:'Pull '+(isSO?o.id:'')+' — '+item.sku,description:item.name+(item.color?' · '+item.color:''),so_id:isSO?o.id:'',customer_id:o.customer_id||'',priority:2,doc_label:isSO?o.id:'',wh_only:true});setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#0891b2',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#ecfeff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:12}}>👤</span> Assign to warehouse</button>}
                   <div style={{height:1,background:'#e2e8f0',margin:'4px 0'}}/>
                   {item.is_free_promo
@@ -5454,8 +5480,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {/* In estimate qty-only mode: show just the total input, no size grid */}
             {isQtyOnly?<>
               <div style={{textAlign:'center',padding:'0 10px'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOTAL QTY</div>
-                <input value={item.est_qty||''} onChange={e=>uI(idx,'est_qty',e.target.value===''?0:parseInt(e.target.value)||0)} placeholder="0"
-                  style={{width:64,textAlign:'center',fontSize:24,fontWeight:800,color:safeNum(item.est_qty)>0?'#1e40af':'#cbd5e1',border:'2px dashed #93c5fd',borderRadius:6,padding:'4px 0',background:'#eff6ff'}}/>
+                <QuantityDraftInput value={item.est_qty||''} draftKey={idx+'_QTY'} onStage={_stageSizingDraft}
+                  onCommit={v=>flushSync(()=>{uI(idx,'est_qty',v===''?0:parseInt(v,10)||0);_dropSizingDraft(idx+'_QTY')})}
+                  style={{width:64,textAlign:'center',fontSize:24,fontWeight:800,border:'2px dashed #93c5fd',borderRadius:6,padding:'4px 0',background:'#eff6ff'}}
+                  filledStyle={{color:'#1e40af'}} emptyStyle={{color:'#cbd5e1'}}/>
               </div>
               <button className="btn btn-sm btn-secondary" style={{fontSize:10,marginLeft:8,color:'#2563eb'}} onClick={()=>{
                 // Warn before breaking a qty-only line into sizes when it already has a PO placed
@@ -5480,9 +5508,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 one line and longer runs double up into a second row that lines up under the first
                 (an 11-wide row starting at 5 breaks after 10). */}
             <div style={{display:'grid',gridTemplateColumns:'repeat(11,48px)',columnGap:6,rowGap:10,alignItems:'start'}}>
-            {szs.map(sz=>{const _szFilled=((idx+'_'+sz) in sizingDraft?(parseInt(sizingDraft[idx+'_'+sz])||0):(_iSz[sz]||0))>0;return<div key={sz} style={{textAlign:'center',width:48}}><div className="oe-eb" style={{fontSize:10,color:'#5A6075',marginBottom:3}}>{sz}</div>
-              <input className="oe-num" data-sizing-draft="true" value={sizingDraft[idx+'_'+sz]??(_iSz[sz]||'')} onChange={e=>{const k=idx+'_'+sz;_stageSizingDraft(k,e.target.value)}} onBlur={()=>{const k=idx+'_'+sz;if(!(k in sizingDraftRef.current))return;const v=sizingDraftRef.current[k];flushSync(()=>{uSz(idx,sz,v);_dropSizingDraft(k)})}} placeholder="0"
-                style={{width:44,textAlign:'center',border:_szFilled?'1.5px solid #192853':'1px solid #E2E6EF',borderRadius:6,padding:'5px 0',fontSize:15,fontWeight:700,color:_szFilled?'#192853':'#C2C7D2',background:_szFilled?'#F4F7FF':'#fff'}}/>
+            {szs.map(sz=>{const _draftKey=idx+'_'+sz;return<div key={sz} style={{textAlign:'center',width:48}}><div className="oe-eb" style={{fontSize:10,color:'#5A6075',marginBottom:3}}>{sz}</div>
+              <QuantityDraftInput className="oe-num" value={_iSz[sz]||''} draftKey={_draftKey} onStage={_stageSizingDraft}
+                onCommit={v=>{if(!(_draftKey in sizingDraftRef.current))return;flushSync(()=>{uSz(idx,sz,v);_dropSizingDraft(_draftKey)})}}
+                style={{width:44,textAlign:'center',borderRadius:6,padding:'5px 0',fontSize:15,fontWeight:700}}
+                filledStyle={{border:'1.5px solid #192853',color:'#192853',background:'#F4F7FF'}} emptyStyle={{border:'1px solid #E2E6EF',color:'#C2C7D2',background:'#fff'}}/>
               {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];
                 // Show stock FREE TO PULL, not gross on-hand: units claimed by an open IF (here or on
                 // another SO) are already spoken for, and showing them green invites double-allocating.
@@ -6594,8 +6624,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const keeping=aiBuild.parsed.filter(p=>!p._skip);
             const newItems=keeping.map(p=>{
               const sku=(p.sku_guess||'').trim();
-              const catMatch=p.product_id?products.find(pr=>pr.id===p.product_id):
-                (sku?(products.find(pr=>pr.sku===sku)||products.find(pr=>pr.sku.toLowerCase()===sku.toLowerCase())):null);
+              // Agron's article number wins over the CLICK-style twin — it's the row that
+              // carries stock. See preferAgronProduct in utils.js.
+              const catMatch=preferAgronProduct(p.product_id?products.find(pr=>pr.id===p.product_id):
+                (sku?(products.find(pr=>pr.sku===sku)||products.find(pr=>pr.sku.toLowerCase()===sku.toLowerCase())):null),products);
               const brand=catMatch?.brand||p.brand||'';
               const au=isAU(brand);
               const cost=(catMatch?catalogRepCost(catMatch):0)||p.vendor_price||0;
@@ -6607,16 +6639,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const szKeys=Object.keys(p.sizes||{});
               return{
                 product_id:catMatch?.id||null,
-                // No placeholder SKU — an unmatched line comes in blank so the rep has to
-                // fill in the real style number before the order can be saved.
-                sku:sku,
+                // The matched product's SKU, so the line points at the article we priced it
+                // from (the Agron swap above changes it). Unmatched lines keep the raw guess —
+                // blank, so the rep has to fill in a real style number before saving.
+                sku:catMatch?.sku||sku,
                 name:catMatch?.name||p.name||'',
                 brand,
                 color:catMatch?.color||p.color||'',
                 nsa_cost:cost,
                 retail_price:retail,
                 unit_sell:sell,
-                available_sizes:szKeys.length>0?szKeys:(catMatch?.available_sizes||['S','M','L','XL','2XL']),
+                available_sizes:aiLineAvailableSizes(szKeys,catMatch?.available_sizes),
                 sizes:p.sizes||{},
                 decorations:[],
                 is_custom:!catMatch&&!p.vendor_source,
@@ -7807,6 +7840,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div></div>})()}
 
     {/* HISTORY TAB */}
+    {isSO&&tab==='methodic'&&<div className="card" style={{marginBottom:16}}><div className="card-body"><MethodicOrderPanel order={o} customer={ic} teamMembers={REPS||[]} currentUser={cu} notify={nf} onOpenDashboard={onOpenMethodicDashboard}/></div></div>}
+
     {tab==='history'&&<div className="card" style={{marginBottom:16}}>
       <div className="card-header"><h2 style={{margin:0,fontSize:14}}>Document History</h2></div>
       <div className="card-body" style={{padding:'16px 20px'}}>
@@ -10359,7 +10394,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
                   newPoLines.push({lineIdx:idx,poIdx:updatedItems[idx].po_lines.length-1});
                 }
-                apiPayloadItems.push({sku:member.sku,name:member.name,color:member.color,sizes:lineSizes,unit_cost:unitCostVal,
+                apiPayloadItems.push({item_idx:idx,sku:member.sku,name:member.name,color:member.color,sizes:lineSizes,unit_cost:unitCostVal,
                   ...(poLine._size_costs?{_size_costs:poLine._size_costs}:{}),
                   ...(member._mt_skus?{_mt_style:member._mt_style,_mt_color:member._mt_color,_mt_sku:member._mt_sku,_mt_skus:member._mt_skus}:{})});
               }
@@ -10416,7 +10451,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 // DPO number on the attention line would come back blank.
                 const _linkShip=resolveDecoShipToClient({decoId:_linkDeco.deco_vendor_id,so:updated,decoVendors,vendors:vendorList,itemIdxs:_newIdxs});
                 setApiOrder({vendorKey:_linkVk,poNumber:effectivePoId,vendorName:vn,
-                  batchPOs:[{so_id:o.id,items:apiPayloadItems}],
+                  batchPOs:[{so_id:o.id,po_id:effectivePoId,items:apiPayloadItems}],
                   shipToDecoId:_linkDeco.deco_vendor_id,
                   initialDpoNumber:String(_linkDeco.po_id||''),// full "DPO ####" — the attention line must carry the DPO prefix, so the field holds it verbatim
                   ...(_linkShip?{shipTo:{companyName:_linkShip.name,attentionTo:_linkShip.attention||'',address1:_linkShip.line1,city:_linkShip.city,region:_linkShip.state,postalCode:_linkShip.zip}}:{})});
@@ -10444,7 +10479,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 })();
                 if(_dsShipTo){
                   nf('📦 Drop ship — opening '+vn+' API order shipping to '+(_dsShipTo.companyName||'the customer')+' (review the address before submitting)');
-                  setApiOrder({vendorKey:_dsVk,poNumber:effectivePoId,vendorName:vn,batchPOs:[{so_id:o.id,items:apiPayloadItems}],shipTo:_dsShipTo});
+                  setApiOrder({vendorKey:_dsVk,poNumber:effectivePoId,vendorName:vn,batchPOs:[{so_id:o.id,po_id:effectivePoId,items:apiPayloadItems}],shipTo:_dsShipTo});
                 }else{
                   // Auto-open the PO modal on the newly created PO so the user can immediately email or download.
                   const first=newPoLines[0];
@@ -10664,7 +10699,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div></div>;
       })()}
 
-      {apiOrder&&apiOrder.vendorKey==='sanmar'&&<SanMarPreviewModal {...apiOrder} decoVendors={(decoVendors||[]).map(dv=>{if(dv.address_line1)return dv;const _v=vendorList.find(v2=>v2.id===dv.vendor_id);return _v?{...dv,address_line1:_v.address_line1||'',address_line2:_v.address_line2||'',city:_v.city||'',state:_v.state||'',zip:_v.zip||''}:dv})} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted}/>}
+      {apiOrder&&apiOrder.vendorKey==='sanmar'&&<SanMarPreviewModal {...apiOrder} decoVendors={(decoVendors||[]).map(dv=>{if(dv.address_line1)return dv;const _v=vendorList.find(v2=>v2.id===dv.vendor_id);return _v?{...dv,address_line1:_v.address_line1||'',address_line2:_v.address_line2||'',city:_v.city||'',state:_v.state||'',zip:_v.zip||''}:dv})} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted} onRemoveLine={_removeSanMarApiLine}/>}
       {apiOrder&&apiOrder.vendorKey==='sss'&&<SSOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted}/>}
       {apiOrder&&apiOrder.vendorKey==='momentec'&&<MomentecOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted}/>}
 
@@ -12468,7 +12503,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
             <div className="card">
               <div className="card-header"><h2>📝 Job Notes</h2></div>
               <div className="card-body">
-                <textarea className="form-input" rows={3} placeholder="Production notes for this job..." style={{fontSize:12}} value={j.notes||''} onChange={e=>updJob(ji,'notes',e.target.value)}/>
+                <$Txt as="textarea" className="form-input" rows={3} placeholder="Production notes for this job..." style={{fontSize:12}} value={j.notes||''} onChange={v=>updJob(ji,'notes',v)}/>
                 <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Visible to decoration team & printed on job sheet</div>
               </div>
             </div>
@@ -15448,12 +15483,19 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       const poStatus=isManualCostPO?'recorded':isDropShipFP?(totalBilledFP>=totalOrdered&&totalOrdered>0?'shipped':totalBilledFP>0?'partial':'waiting'):(totalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting');
       const unitCost=po.unit_cost!=null?safeNum(po.unit_cost):safeNum(item?.nsa_cost);
       const poTotal=totalOrdered*unitCost;
-      const vendorName=po.deco_vendor||(isManualCostPO?po.vendor:'')||vendorList.find(v=>v.id===(item?.vendor_id||item?.brand))?.name||D_V.find(v=>v.id===(item?.vendor_id||item?.brand))?.name||item?.brand||'';
+      // The supplier recorded on the PO is authoritative. The item catalog supplier is
+      // only a fallback and a mismatch signal; it must not silently relabel a real PO.
+      const vendorName=po.deco_vendor||vendorList.find(v=>v.id===po.vendor)?.name||D_V.find(v=>v.id===po.vendor)?.name||po.vendor||vendorList.find(v=>v.id===(item?.vendor_id||item?.brand))?.name||D_V.find(v=>v.id===(item?.vendor_id||item?.brand))?.name||item?.brand||'';
       // Gather all items on this PO from the SO
       const poItems=(allLines||[{lineIdx:0}]).map(ln=>({item:soItems?.[ln.lineIdx],po:soItems?.[ln.lineIdx]?.po_lines?.find(p=>p.po_id===po.po_id)||po})).filter(x=>x.item);
+      const poVendorMismatch=poItems.map(x=>{const source=vendorList.find(v=>v.id===x.item?.vendor_id)||D_V.find(v=>v.id===x.item?.vendor_id);if(!source||!x.po?.vendor)return null;const norm=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');const recorded=vendorList.find(v=>v.id===x.po.vendor)?.name||D_V.find(v=>v.id===x.po.vendor)?.name||x.po.vendor;return norm(recorded)!==norm(source.name)?{sku:x.item.sku,recorded,source:source.name}:null}).find(Boolean);
       // API placement — any line on this PO carrying api_order_id means it was submitted
       // electronically to the vendor (SanMar / S&S / Momentec). Surface it on the PO page.
       const apiPo=poItems.map(x=>x.po).find(p=>p&&p.api_order_id)||(po&&po.api_order_id?po:null);
+      const apiAcceptedCount=poItems.filter(x=>x.po&&x.po.api_order_id).length;
+      const apiPartiallyRecorded=apiAcceptedCount>0&&apiAcceptedCount<poItems.length;
+      const apiVerifiedCount=poItems.filter(x=>apiVerificationForPoLine(x.item,x.po).verified).length;
+      const apiHasUnverified=apiAcceptedCount>0&&apiVerifiedCount<poItems.length;
       const merchandiseTotal=poItems.reduce((a,{item:it,po:p})=>{
         const sk=Object.keys(p).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&k!=='shipping'&&typeof p[k]==='number');
         const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.unit_cost!=null?safeNum(p.unit_cost):safeNum(it.nsa_cost);return a+qty*uc},0);
@@ -15524,6 +15566,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           {/* Ready-for-deco hand-off — persists after the receive toast fades */}
           {!isDecoPO&&!isManualCostPO&&decoReadyBanner((allLines||[]).map(ln=>ln.lineIdx))}
 
+          {poVendorMismatch&&<div style={{marginBottom:16,padding:'10px 12px',borderRadius:8,background:'#fef2f2',border:'2px solid #ef4444',color:'#991b1b',fontSize:12}}>
+            <strong>⚠ PO/item link mismatch — verify before ordering or receiving.</strong> This PO is recorded for <strong>{poVendorMismatch.recorded}</strong>, but it is attached to <strong>{poVendorMismatch.sku}</strong>, whose catalog supplier is <strong>{poVendorMismatch.source}</strong>. This can indicate that PO details were crossed onto the wrong sales-order item.
+          </div>}
+
           {/* PO Total Summary */}
           <div className="card" style={{marginBottom:16,background:'#0f172a',color:'white'}}>
             <div className="card-body" style={{display:'flex',justifyContent:'space-around',textAlign:'center',padding:'16px 12px'}}>
@@ -15552,12 +15598,22 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           {!isDecoPO&&!isManualCostPO&&<div className="card" style={{marginBottom:16}}>
             <div className="card-header"><h2>Line Items</h2></div>
             <div className="card-body">
+              {apiPo&&<div style={{marginBottom:10,padding:'8px 10px',borderRadius:6,background:(apiPartiallyRecorded||apiHasUnverified)?'#fff7ed':'#f0fdf4',border:'1px solid '+((apiPartiallyRecorded||apiHasUnverified)?'#fdba74':'#86efac'),color:(apiPartiallyRecorded||apiHasUnverified)?'#9a3412':'#166534',fontSize:11,fontWeight:600}}>
+                {apiPartiallyRecorded
+                  ?'⚠ Only '+apiAcceptedCount+' of '+poItems.length+' PO item lines have a saved API acknowledgement. Do not resubmit the whole PO; verify the unmarked lines first.'
+                  :apiHasUnverified
+                    ?'⚠ Every item line has an API acknowledgement, but only '+apiVerifiedCount+' of '+poItems.length+' have size quantities that exactly match this PO. Review the flagged lines before taking action.'
+                    :'✓ Every item line below is API-acknowledged and its recorded size quantities exactly match this PO.'}
+                <span style={{fontWeight:400}}> “Open” in the size table means ordered but not yet received; it does not mean un-ordered.</span>
+              </div>}
               <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
                 <thead><tr style={{borderBottom:'2px solid #0f172a'}}>
                   <th style={{padding:'6px 8px',textAlign:'left'}}>SKU</th>
                   <th style={{padding:'6px 8px',textAlign:'left'}}>Product</th>
                   <th style={{padding:'6px 8px',textAlign:'left'}}>Color</th>
                   <th style={{padding:'6px 8px',textAlign:'center'}}>Qty</th>
+                  <th style={{padding:'6px 8px',textAlign:'left'}}>API acceptance</th>
+                  <th style={{padding:'6px 8px',textAlign:'left'}}>Expected origin</th>
                   <th style={{padding:'6px 8px',textAlign:'right'}}>Unit Cost</th>
                   <th style={{padding:'6px 8px',textAlign:'right'}}>Line Total</th>
                 </tr></thead>
@@ -15565,19 +15621,31 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                   {poItems.map(({item:it,po:p},idx)=>{
                     const sk=Object.keys(p).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&k!=='shipping'&&typeof p[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
                     const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.unit_cost!=null?safeNum(p.unit_cost):safeNum(it.nsa_cost);
+                    const apiCheck=apiVerificationForPoLine(it,p);
+                    const acceptedSizes=Object.entries(apiCheck.bySize).map(([size,v])=>size+':'+v.quantity).join(' ');
+                    const apiMismatch=apiCheck.discrepancies.map(d=>d.size+' PO:'+d.expected+' API:'+d.recorded).join(' · ');
+                    const expectedOrigins=[...new Set(apiCheck.rows.map(row=>row.warehouse||row.warehouse_name||'').filter(Boolean))];
                     return<tr key={idx} style={{borderBottom:'1px solid #e2e8f0'}}>
                       <td style={{padding:'6px 8px',fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</td>
                       <td style={{padding:'6px 8px',fontWeight:600}}>{it.name}</td>
                       <td style={{padding:'6px 8px',color:'#64748b'}}>{it.color}</td>
                       <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700}}>{qty}<div style={{fontSize:10,color:'#94a3b8'}}>{sk.map(sz=>sz+':'+p[sz]).join(' ')}</div></td>
+                      <td style={{padding:'6px 8px'}}>{apiCheck.verified
+                        ?<><div style={{color:'#0f766e',fontWeight:800}}>✓ Verified</div><div style={{fontSize:9,color:'#64748b',fontFamily:'monospace'}}>{acceptedSizes}</div></>
+                        :apiCheck.accepted&&apiCheck.hasLineDetail
+                          ?<><div style={{color:'#c2410c',fontWeight:800}}>⚠ Quantity mismatch</div><div style={{fontSize:9,color:'#9a3412',fontFamily:'monospace'}}>{apiMismatch}</div></>
+                          :apiCheck.accepted
+                            ?<><div style={{color:'#b45309',fontWeight:800}}>Acknowledged — not size-verified</div><div style={{fontSize:9,color:'#64748b'}}>Legacy API record has no submitted line detail.</div></>
+                            :<span style={{color:'#b45309',fontWeight:700}}>Not recorded</span>}</td>
+                      <td style={{padding:'6px 8px'}}>{expectedOrigins.length?<><div style={{fontWeight:700,color:'#334155'}}>{expectedOrigins.join(' · ')}</div><div style={{fontSize:9,color:'#94a3b8'}}>Prediction saved at submission</div></>:<span style={{color:'#94a3b8'}}>Not captured</span>}</td>
                       <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600}}>${uc.toFixed(2)}</td>
                       <td style={{padding:'6px 8px',textAlign:'right',fontWeight:800,fontSize:14}}>${(qty*uc).toFixed(2)}</td>
                     </tr>})}
-                  {manualCost>0&&<tr style={{background:'#fffbeb',borderTop:'1px solid #fde68a'}}><td colSpan={3} style={{padding:'6px 8px',fontWeight:700,color:'#92400e'}}>Manual added cost{manualCostNote?' — '+manualCostNote:''}</td><td style={{padding:'6px 8px',textAlign:'center',color:'#92400e'}}>1</td><td></td><td style={{padding:'6px 8px',textAlign:'right',fontWeight:800,color:'#92400e'}}>${manualCost.toFixed(2)}</td></tr>}
+                  {manualCost>0&&<tr style={{background:'#fffbeb',borderTop:'1px solid #fde68a'}}><td colSpan={3} style={{padding:'6px 8px',fontWeight:700,color:'#92400e'}}>Manual added cost{manualCostNote?' — '+manualCostNote:''}</td><td style={{padding:'6px 8px',textAlign:'center',color:'#92400e'}}>1</td><td colSpan={3}></td><td style={{padding:'6px 8px',textAlign:'right',fontWeight:800,color:'#92400e'}}>${manualCost.toFixed(2)}</td></tr>}
                   <tr style={{borderTop:'2px solid #0f172a',fontWeight:800}}>
                     <td colSpan={3} style={{padding:'6px 8px',textAlign:'right'}}>Grand Total</td>
                     <td style={{padding:'6px 8px',textAlign:'center'}}>{grandOrdered}</td>
-                    <td></td>
+                    <td colSpan={3}></td>
                     <td style={{padding:'6px 8px',textAlign:'right',fontSize:16,color:'#166534'}}>${grandTotal.toFixed(2)}</td>
                   </tr>
                 </tbody>

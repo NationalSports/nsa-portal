@@ -1,5 +1,5 @@
 /* eslint-disable */
-import { NSA as _NSA_CONST } from './constants';
+import { NSA as _NSA_CONST, szRank, orderLineSizes } from './constants';
 // Tackle-twill logo menu (settings-aware) so pdfDecoLabel can name a twill placement on documents.
 import { TWA as _TWA_TABLE } from './pricing';
 import JsBarcode from 'jsbarcode';
@@ -826,6 +826,7 @@ const _LABEL_CSS=`
   .rep{font-size:11px;font-weight:700;color:#334155;text-align:center;margin:4px 0 0}
   .badge{display:block;margin:6px auto 0;max-width:92%;padding:5px 8px;border:2px solid #d97706;border-radius:6px;font-weight:800;font-size:12px;text-align:center}
   .meta{font-size:11px;font-weight:800;text-align:center;margin:6px 0 0;line-height:1.3}
+  .supersedes{display:block;margin:6px auto 0;max-width:96%;padding:4px 8px;border:2px solid #b91c1c;border-radius:6px;background:#fef2f2;color:#b91c1c;font-weight:800;font-size:11px;text-align:center;letter-spacing:0.3px;line-height:1.25}
   .meta .mcode{font-weight:700;color:#334155}
   .items{margin-top:5px}
   .item{margin-bottom:4px;text-align:center;break-inside:avoid;page-break-inside:avoid}
@@ -963,6 +964,10 @@ const _labelPageHtml=(label={})=>{
   if(!bigCode&&z.code)metaParts.push(`<span class="mcode">${z.code}</span>`);
   (z.notes||[]).forEach(n=>metaParts.push(`<span style="${n.style||'color:#166534'}">${n.text}</span>`));
   const metaHtml=metaParts.length?`<div class="meta">${metaParts.join(' · ')}</div>`:'';
+  // Merged-box "SUPERSEDES: BX-2041, BX-2042" — the absorbed plates still scan (they
+  // redirect via merged_into), so the surviving label has to tell the floor which
+  // labels on the carton are now dead. Own line, boxed: the meta line is too quiet.
+  const supersedesHtml=label.supersedes?`<div class="supersedes">${label.supersedes}</div>`:'';
   const itemsHtml=(z.items||[]).map(it=>`<div class="item"><div class="item-title">${it.title||''}</div>${it.detail?`<div class="item-detail">${it.detail}</div>`:''}${it.sizes?`<div class="item-sz">${it.sizes}</div>`:''}</div>`).join('');
   return `<div class="page">`
     +`<div class="qr"><img src="${_qrImgSrc(label)}" alt="${z.code}"/></div>`
@@ -973,6 +978,7 @@ const _labelPageHtml=(label={})=>{
     +(z.rep?`<div class="rep">${z.rep}</div>`:'')
     +badge
     +metaHtml
+    +supersedesHtml
     +`<div class="items">${itemsHtml}</div>`
     +(label.codeSub?`<div class="foot-note">${label.codeSub}</div>`:'')
     +`</div>`;
@@ -1008,6 +1014,8 @@ export const downloadQrLabel=async(label={})=>{
   if(!bigCode&&z.code)metaParts.push(`<span style="font-weight:700;color:#334155">${z.code}</span>`);
   (z.notes||[]).forEach(n=>metaParts.push(`<span style="${n.style||'color:#166534'}">${n.text}</span>`));
   const metaHtml=metaParts.length?`<div style="font-size:11px;font-weight:800;text-align:center;margin:6px 0 0;line-height:1.3">${metaParts.join(' · ')}</div>`:'';
+  // Merged-box supersedes line — twin of the .supersedes rule in _LABEL_CSS.
+  const supersedesHtml=label.supersedes?`<div style="display:block;margin:6px auto 0;max-width:96%;padding:4px 8px;border:2px solid #b91c1c;border-radius:6px;background:#fef2f2;color:#b91c1c;font-weight:800;font-size:11px;text-align:center;letter-spacing:0.3px;line-height:1.25">${label.supersedes}</div>`:'';
   // .lbl-item is the html2pdf page-break anchor below — an item may move to the
   // next PDF page whole, but never gets sliced through its own text.
   const itemsHtml=(z.items||[]).map(it=>`<div class="lbl-item" style="margin-bottom:4px;text-align:center"><div style="font-size:21px;font-weight:800;line-height:1.15;overflow-wrap:break-word">${it.title||''}</div>${it.detail?`<div style="font-size:13px;font-weight:500;color:#475569;margin-top:2px">${it.detail}</div>`:''}${it.sizes?`<div style="font-size:18px;font-weight:800;letter-spacing:0.5px;margin-top:2px">${it.sizes}</div>`:''}</div>`).join('');
@@ -1023,7 +1031,7 @@ export const downloadQrLabel=async(label={})=>{
     +(z.program?`<div style="font-size:28px;font-weight:900;line-height:1.08;text-align:center;margin:5px 0 0;overflow-wrap:break-word">${z.program}</div>`:'')
     +(z.memo?`<div style="font-size:14px;font-weight:700;color:#334155;text-align:center;margin:3px 0 0;line-height:1.2;overflow-wrap:break-word">${z.memo}</div>`:'')
     +(z.rep?`<div style="font-size:11px;font-weight:700;color:#334155;text-align:center;margin:4px 0 0">${z.rep}</div>`:'')
-    +badge+metaHtml
+    +badge+metaHtml+supersedesHtml
     +`<div style="margin-top:8px">${itemsHtml}</div>`
     +(label.codeSub?`<div style="font-size:10px;color:#64748b;font-weight:600;text-align:center;margin-top:8px">${label.codeSub}</div>`:'');
   container.appendChild(page);
@@ -1334,3 +1342,42 @@ export async function enrichAiLinesWithVendors(lines,onProgress){
   }));
   return out;
 }
+
+// Size run for an order line built from an AI-parsed order.
+//
+// The parser buckets a bare "QTY 50" (no size breakdown given) under OSFA so the
+// quantity isn't lost. Taking the parsed keys as the WHOLE run left a matched apparel
+// product showing a lone OSFA column, with no S/M/L/XL to spread the 50 into.
+//
+// So seed the catalog product's run — through orderLineSizes, the SAME trim the
+// add-from-catalog path uses, or an adidas/UA row drags in its entire vendor run (XS,
+// 3XL–5XL and the whole tall block) and the grid becomes a wall of empty columns.
+// The parsed sizes ride along as qtySizes so the OSFA bucket (or any real breakdown)
+// is always kept. No catalog match (custom / vendor-only line) → the parsed sizes,
+// else the standard adult run.
+export const aiLineAvailableSizes=(parsedSizeKeys,catalogSizes)=>{
+  const parsed=(Array.isArray(parsedSizeKeys)?parsedSizeKeys:[]).filter(Boolean);
+  const cat=(Array.isArray(catalogSizes)?catalogSizes:[]).filter(Boolean);
+  if(!cat.length)return parsed.length?parsed:['S','M','L','XL','2XL'];
+  return orderLineSizes(cat,parsed).sort((a,b)=>szRank(a)-szRank(b));
+};
+
+// Agron is adidas' third-party distributor, and its article number is the SKU that
+// actually carries stock. In the catalog an adidas product with an all-numeric SKU IS
+// an Agron article (2,106 of 2,129 sit in agron_inventory; no lettered adidas SKU ever
+// does), and ~57 bags carry BOTH rows — the Agron article and the CLICK-style twin
+// (5159512 vs JJ7421), same name, same color, same vendor. Stock only ever lands on the
+// Agron row, so an AI-parsed line that resolved to the CLICK twin showed 0 on tens of
+// thousands of units. Agron wins: swap to the numeric twin when the catalog has one.
+export const preferAgronProduct=(match,products)=>{
+  const isAgronSku=s=>/^\d+$/.test(String(s||'').trim());
+  const isAdidas=b=>/^adidas/i.test(String(b||'').trim());
+  if(!match||!Array.isArray(products))return match;
+  if(!isAdidas(match.brand)||isAgronSku(match.sku))return match;
+  const nm=String(match.name||'').trim().toLowerCase();
+  if(!nm)return match;
+  const cl=String(match.color||'').trim().toLowerCase();
+  return products.find(p=>p&&p.id!==match.id&&isAgronSku(p.sku)&&isAdidas(p.brand)
+    &&String(p.name||'').trim().toLowerCase()===nm
+    &&String(p.color||'').trim().toLowerCase()===cl)||match;
+};
