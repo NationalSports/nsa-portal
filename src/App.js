@@ -32265,15 +32265,17 @@ export default function App(){
           const rows=parked.filter(sb=>(billHistVendor==='all'||_vendorOf(sb)===billHistVendor)&&_timeOk(sb)).sort((a,b)=>(b.reviewLaterAt||0)-(a.reviewLaterAt||0));
           const recentCut=Date.now()-60*60*1000;// "recently moved" = parked within the last hour
           // Triage each parked bill into an issue bucket so the queue is worked by problem
-          // shape, not chronology. Precedence: duplicate > no match > over-billed > won't apply.
+          // shape, not chronology. A direct-path safety hold is its own non-pushable bucket;
+          // it must never be displayed or bulk-selected as "Ready" merely because it is parked.
           // Computed over ALL parked (not just the filtered rows) so the summary ribbon and the
           // bucket sections read from ONE classification — no second hand-synced copy.
           const enrichedAll=parked.map(sb=>{
             const p=sb.parsed||{};
             const matched=_billHasTarget(p);
-            const errs=matched?_validateBillForPush(p):[];
+            const holdReasons=billAutoHoldReasons(p);
+            const errs=matched?[...holdReasons,..._validateBillForPush(p)]:[];
             const dup=_docAlreadyApplied(p.doc_number);
-            const bucket=dup?'duplicate':!matched?'nomatch':!errs.length?'ready'
+            const bucket=dup?'duplicate':!matched?'nomatch':holdReasons.length?'held':!errs.length?'ready'
               :errs.some(e=>e.indexOf(' exceeds ')>-1)?'overbilled':'noapply';// ' exceeds ' only occurs in _billOverBillingErrors strings
             return{sb,p,matched,errs,clean:matched&&!errs.length,bucket};
           });
@@ -32281,6 +32283,7 @@ export default function App(){
           const enriched=enrichedAll.filter(e=>rowIds.has(e.sb.id)).sort((a,b)=>(b.sb.reviewLaterAt||0)-(a.sb.reviewLaterAt||0));
           const BUCKETS=[
             ['ready','✅','Ready to push','#16a34a','#f0fdf4','These validate cleanly now — push them, or resolve if handled elsewhere.'],
+            ['held','🛑','Safety hold','#dc2626','#fef2f2','Blocked from Portal and QuickBooks. Move back to Review, then fix or rematch the bill.'],
             ['overbilled','⚠️','Over-billed','#dc2626','#fef2f2','The bill exceeds what the order says was ordered — reconcile below, then correct the order or accept the overage.'],
             ['noapply','🧩','Won’t apply cleanly','#d97706','#fffbeb','Matched an order, but the lines don’t map — fix the match.'],
             ['nomatch','🔍','No PO match','#4f46e5','#eef2ff','No order found for this bill’s PO number.'],
@@ -32317,7 +32320,7 @@ export default function App(){
               {oldestDays!=null&&<span style={{fontSize:11,color:TXTL}}>oldest {oldestDays===0?'today':oldestDays+'d'}</span>}
               <span style={{fontSize:11,color:TXTL}}>Out of every push until you act · synced across machines · pulls won’t re-add them.</span>
               {(()=>{
-                const rematchable=enrichedAll.filter(e=>e.bucket==='nomatch'||e.bucket==='noapply'||e.bucket==='overbilled');
+                const rematchable=enrichedAll.filter(e=>e.bucket==='held'||e.bucket==='nomatch'||e.bucket==='noapply'||e.bucket==='overbilled');
                 if(!rematchable.length)return null;
                 return <button onClick={()=>{rematchable.forEach(e=>_moveBackToReview(e.sb));nf(rematchable.length+' bill(s) moved to the review list — each gets its Best answer (overage approval included)')}}
                   title="Send every no-match / won't-apply / over-billed set-aside bill back into the review list — the matcher proposes its best answer with evidence, and accepting a flagged overage lets push correct the order automatically"
@@ -32383,7 +32386,7 @@ export default function App(){
                   </div>
                   {!clean&&<div style={{marginTop:10,display:'flex',flexDirection:'column',gap:6}}>{reasons.map((r,ri)=><div key={ri} style={{display:'flex',alignItems:'center',gap:9,padding:'8px 13px',background:REDBG,borderRadius:5}}><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke={RED} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{flex:'0 0 auto'}}><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z M12 9v4 M12 17h.01"/></svg><span style={{fontSize:13,color:'#7a2429',fontWeight:600}}>{r}</span></div>)}</div>}
                   {!expanded&&(()=>{
-                    const nextStep={ready:'Push to Portal — or Resolve if you billed it in NetSuite or handled it in QuickBooks',overbilled:'Reconcile in Review (Best answer + overage approval) — or Correct order from bill / Accept overage here',noapply:'Fix match — remap the lines to the right order',nomatch:'Fix match, or Find PO with AI, to attach it to an order',duplicate:'Resolve as duplicate — it was already applied'}[bucket];
+                    const nextStep={ready:'Push to Portal — or Resolve if you billed it in NetSuite or handled it in QuickBooks',held:'Move back to Review, then fix or rematch it — this bill cannot be pushed while held',overbilled:'Reconcile in Review (Best answer + overage approval) — or Correct order from bill / Accept overage here',noapply:'Fix match — remap the lines to the right order',nomatch:'Fix match, or Find PO with AI, to attach it to an order',duplicate:'Resolve as duplicate — it was already applied'}[bucket];
                     return nextStep?<div style={{fontFamily:FD,fontSize:12,fontWeight:700,letterSpacing:.4,color:NAVY,marginTop:8,textTransform:'uppercase'}}>👉 Next: <span style={{textTransform:'none',letterSpacing:0,fontFamily:'inherit',color:TXTL,fontWeight:600}}>{nextStep}</span></div>:null;
                   })()}
                   </div>
