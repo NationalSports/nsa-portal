@@ -9,7 +9,7 @@ import { searchVendorCatalogs, vendorColorToProductRow } from './vendorCatalogSe
 import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank, scaleOf } from './lib/storeInventory';
-import { haveSameDecorations, variantGroupFields } from './lib/webstoreGrouping';
+import { haveSameDecorations, variantGroupFields, sharedCardFields, webstoreDecorationCost } from './lib/webstoreGrouping';
 import { reopenPatchForCloseDate } from './lib/webstoreSchedule';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
@@ -2750,10 +2750,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // Decorations, add-on prompts, and inventory choices are card-level: fan them out to
     // every color row in the group so changing garment color never changes (or drops) the
     // shopper questions attached to that storefront card.
-    const groupFields = {};
-    if (Object.prototype.hasOwnProperty.call(fields, 'decorations')) groupFields.decorations = fields.decorations;
-    if (Object.prototype.hasOwnProperty.call(fields, 'options')) groupFields.options = fields.options;
-    if (Object.prototype.hasOwnProperty.call(fields, 'track_inventory')) groupFields.track_inventory = fields.track_inventory;
+    const groupFields = sharedCardFields(fields);
     // Size fill-ins are COLOR-specific. Never fan a White substitute onto the
     // other rows in a multi-color card (Navy, Black, etc.).
     if (Object.keys(groupFields).length) {
@@ -7879,9 +7876,10 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   // Live artwork presence (ignoring number/name perso tokens), so adding/removing a logo on
   // the Art tab re-defaults the deco cost.
   const _itemDecorated = decorations.some((d) => d && d.kind !== 'perso_number' && d.kind !== 'perso_name') || isTeam;
-  const [decoCostEst, setDecoCostEst] = useState(((Array.isArray(item.decorations) && item.decorations.some((d) => d && d.kind !== 'perso_number' && d.kind !== 'perso_name')) || isTeam) ? 5 : 0);
+  const _savedItemDecorated = (Array.isArray(item.decorations) && item.decorations.some((d) => d && d.kind !== 'perso_number' && d.kind !== 'perso_name')) || isTeam;
+  const [decoCostEst, setDecoCostEst] = useState(webstoreDecorationCost(item.deco_cost_estimate, _savedItemDecorated));
   // True once the rep types in the deco-cost box, so the artwork-driven default stops overriding it.
-  const [decoCostTouched, setDecoCostTouched] = useState((Number(item.deco_upcharge) || 0) > 0);
+  const [decoCostTouched, setDecoCostTouched] = useState(item.deco_cost_estimate != null);
   const setDecoCharge = (on, newCostStr) => {
     const newCost = Math.max(0, Number(newCostStr != null ? newCostStr : decoCostEst) || 0);
     if (newCostStr != null) setDecoCostEst(newCost);
@@ -8019,7 +8017,10 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
     (async () => {
       try {
         const style = sanmarStyleFromSku(skuEdit);
-        const data = await sanmarGetPricing(style, productColor, '');
+        // SanMar's pricing service is reliable for a style-wide request but can
+        // return no rows for a catalog color label (for example "True Navy").
+        // Fetch the style and scope the returned rows locally by normalized color.
+        const data = await sanmarGetPricing(style, '', '');
         const live = sanmarPricingSnapshot(data, productColor);
         if (cancelled) return;
         if (live.baseCost == null) { setSanmarCostStatus('unavailable'); return; }
@@ -8203,7 +8204,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   // Dirty tracking: a signature of every editable field. Compared to the baseline (the
   // values as last loaded / saved) so the parent can prompt a save before the rep switches
   // to another item. Reset to the current signature whenever we persist.
-  const _dirtySig = JSON.stringify([name, price, fundraise, decoUp, weight, image, backImage, extraImages, category, required, kitName, audience, options, takesNumber, takesName, nameUp, transferCodes, numTransferSets, decorations, offeredSizes, sizeList, trackInv, sizeSkus]);
+  const _dirtySig = JSON.stringify([name, price, fundraise, decoUp, decoCostEst, weight, image, backImage, extraImages, category, required, kitName, audience, options, takesNumber, takesName, nameUp, transferCodes, numTransferSets, decorations, offeredSizes, sizeList, trackInv, sizeSkus]);
   const _baselineSig = useRef(_dirtySig);
   if (dirtyRef) dirtyRef.current = _dirtySig !== _baselineSig.current;
 
@@ -8213,7 +8214,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
     // rep can see on the card — not just the webstore_products fields below.
     if (!isBundle && item.product_id && onUpdateProductMeta) await saveSku();
     const cleanOptions = cleanItemOptions(options);
-    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, deco_upcharge: Number(decoUp) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, roster_audience: (audience && audience !== 'all') ? audience : null, options: cleanOptions, card_style: cardStyle || null };
+    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, deco_upcharge: Number(decoUp) || 0, deco_cost_estimate: Number(decoCostEst) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, roster_audience: (audience && audience !== 'all') ? audience : null, options: cleanOptions, card_style: cardStyle || null };
     if (!isBundle) {
       fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0;
       fields.transfer_codes = transferCodes.filter(Boolean);

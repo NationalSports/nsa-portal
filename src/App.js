@@ -23,7 +23,7 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import GlobalSearch from './GlobalSearch';
@@ -456,7 +456,7 @@ import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
 import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, billAutoHoldReasons, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku, resolveMappedSoItemIndex } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
-import { QB_ACCOUNT_MAPPING_DEFAULTS, billVendorMatchName, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, planQBNonInventoryItems, qbBillNeedsSync, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
+import { QB_ACCOUNT_MAPPING_DEFAULTS, billVendorMatchName, buildVendorBillLines, calculateOmgInvoicePayment, findExistingVendorBill, findUniqueVendorMatch, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, planQBNonInventoryItems, qbBillNeedsSync, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
 import { BaggingQueueTile } from './baggingstation/BaggingDashCard';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, mergeAllContents, mergeAllSourceRefs, crossCustomerGroups, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -3728,6 +3728,17 @@ export default function App(){
           :('Auto-restored '+(restored!=null?restored+' ':'')+(kind==='po_restored'?'PO':'pick')+' line(s) the save had dropped (stale state — no data lost)'));
         return;
       }
+      // These are observations, not confirmed loss. `hydrated_shrink` is emitted only after the DB guard
+      // proves every removed line was deliberately accounted for. `lost` is the earlier client-side suspicion
+      // raised before the authoritative DB guard runs; that later guard either verifies the edit or blocks it.
+      // Emailing either as "Items lost" creates a red alert for normal line removal even when persistence is
+      // healthy (SO-2359 / EST-2429, 2026-09-04). Keep the audit trail, but do not page the admin.
+      if(kind==='hydrated_shrink'||kind==='lost'){
+        logChange(kind==='hydrated_shrink'?'items_removed_verified':'item_shrink_observed','SO',soId,
+          (kind==='hydrated_shrink'?'Verified item removal: ':'Potential item-count reduction observed before DB verification: ')
+          +(reason||'(none)'));
+        return;
+      }
       // verify_fail: a post-insert read-back came back short or errored. The insert-first save keeps the OLD
       // rows canonical and rolls the new ones back, so nothing is lost — the save sits in the 60s retry queue
       // and a transient blip heals on the next pass (the 2026-07-07 storm: one blip failed 8 SOs' read-backs
@@ -6675,7 +6686,7 @@ export default function App(){
 
   const isA=cu?.role==='admin'||cu?.role==='super_admin';
   const isSA=cu?.role==='super_admin';
-  const canAdjustInv=canAdjustInventory(cu,WAREHOUSE_LEAD_IDS);
+  const canAdjustInv=canAdjustInventory(cu,[...WAREHOUSE_LEAD_IDS,...INVENTORY_ADJUST_IDS]);
   // Normalize: super_admin is treated as admin everywhere via _r helper
   const _r=cu?.role==='super_admin'?'admin':cu?.role;
   const pars=useMemo(()=>cust.filter(c=>!c.parent_id&&(showArchived||c.is_active!==false)),[cust,showArchived]);const gK=useCallback(pid=>cust.filter(c=>c.parent_id===pid),[cust]);
@@ -25486,7 +25497,7 @@ export default function App(){
   const[ssXref,setSsXref]=useState({open:false,step:'idle',plan:null,progress:null,result:null});
   const _billReviewBusyRef=useRef(false);// deploy-reload gate: true while unpushed bills sit in review in this tab
   const[reviewSnap,setReviewSnap]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_bill_review_session')||'null')}catch(e){return null}});// crash/deploy-reload recovery (Resume banner)
-  useEffect(()=>{_billReviewBusyRef.current=billImport.step==='review'&&billImport.parsed.some(b=>!b.portalStatus&&!b.reviewLater)},[billImport]);
+  useEffect(()=>{_billReviewBusyRef.current=billImport.step==='review'&&billImport.parsed.some(b=>!b.reviewLater&&(!b.portalStatus||(b.portalStatus==='success'&&qbBillNeedsSync(b.qbStatus))))},[billImport]);
   // Persist the in-review list so a deploy auto-reload (or crash) never costs the session —
   // the upload step then offers "Resume review". matchedPO/_lineMappings are dropped from the
   // snapshot and re-derived on resume through the same rematch pipeline a fresh pull uses, so
@@ -25514,7 +25525,7 @@ export default function App(){
     if(billImport.step==='review')return;// a fresh pull already loaded the list
     if(!(Array.isArray(sos)&&sos.length))return;// orders must be in before we re-match
     const rows=(reviewSnap&&Array.isArray(reviewSnap.bills))?reviewSnap.bills:[];
-    const pend=rows.filter(b=>b&&!b.portalStatus&&!b.reviewLater);
+    const pend=rows.filter(b=>b&&!b.reviewLater&&(!b.portalStatus||(b.portalStatus==='success'&&qbBillNeedsSync(b.qbStatus))));
     if(!pend.length||!reviewSnap.ts||Date.now()-reviewSnap.ts>3*24*3600*1000)return;
     if(typeof _autoResumeRef.current==='function'){_autoResumedOnce.current=true;_autoResumeRef.current()}
   },[pg,billView,billImport.step,sos,reviewSnap]);
@@ -28112,6 +28123,29 @@ export default function App(){
       return true;
     };
 
+    // QBO has a separate readiness gate from the Portal writer. A clean bill may
+    // already have been auto-applied to the portal while it is still waiting for
+    // its QBO Bill. Keep that row eligible for QBO without letting it re-enter the
+    // Portal push path. Failed portal writes remain fail-closed.
+    const _billIsReadyForQB=b=>{
+      if(!b||b.reviewLater)return false;
+      if(b.portalStatus&&b.portalStatus!=='success'&&!b._qbBackfill)return false;
+      if(!_billHasTarget(b.parsed))return false;
+      if(_liveBillPushHoldReasons(b.parsed).length)return false;
+      // A not-yet-applied bill must pass the full live review gate before QBO
+      // can receive it. Portal-complete rows were already reviewed/applied and
+      // may use the separate backfill path above.
+      if(b.portalStatus!=='success'&&(!_billIsReadyToPush(b)||_billTriage(b)?.issue))return false;
+      return true;
+    };
+
+    const _qboBillBatchKey=b=>{
+      const p=b?.parsed||{};
+      const vendor=normalizeVendorName(billVendorMatchName(p));
+      const doc=String(p.doc_number||b?.id||'').trim().toLowerCase();
+      return vendor&&doc?vendor+'|'+doc:'';
+    };
+
     // Toggle a bill's "look at later" flag from saved history / the Look at Later page. val=true parks
     // it (also pulling it out of the review list if it's still there); val=false resolves/un-parks it.
     const _setBillReviewLater=(billId,val)=>{
@@ -29989,8 +30023,15 @@ export default function App(){
     // so the two buttons always show the same number. Bills already in QB are skipped.
     const pushBillsToQB=async()=>{
       if(qbConfig.preflight?.status!=='success'||String(qbConfig.preflight?.realm_id||'')!==String(qbConfig.realm_id||'')){nf('Run the read-only live QBO preflight before sending any parsed bill','error');return}
+      const batchSeen=new Set();
       const selectedEntries=billImport.parsed.map((row,index)=>({row,index}))
-        .filter(({row})=>_billIsReadyToPush(row)&&!_billTriage(row)?.issue&&qbBillNeedsSync(row.qbStatus));
+        .filter(({row})=>{
+          if(!_billIsReadyForQB(row)||!qbBillNeedsSync(row.qbStatus))return false;
+          const key=_qboBillBatchKey(row);
+          if(key&&batchSeen.has(key))return false;
+          if(key)batchSeen.add(key);
+          return true;
+        });
       if(!selectedEntries.length){nf('No matched bills to push','error');return}
       const canaryMode=qbConfig.initialMigrationApproved!==true;
       const completedCanaries=new Set((qbConfig._qbCanaryBillIds||[]).map(String));
@@ -30122,17 +30163,13 @@ export default function App(){
           // Idempotency check happens before every create. An exact vendor/date/total
           // match is reused; any same-number conflict blocks rather than guessing.
           const docKey=billDocNumber.toLowerCase();
-          const sameNumber=billsByDoc.get(docKey)||[];
-          const exact=sameNumber.filter(existing=>
-            String(existing.VendorRef?.value||'')===String(qbVendorId)
-            &&Math.abs(safeNum(existing.TotalAmt)-amt)<0.005
-            &&String(existing.TxnDate||'').slice(0,10)===txnDate);
-          if(exact.length>1)throw new Error('QBO contains duplicate exact bills for document '+billDocNumber+'; no new bill was sent.');
-          if(sameNumber.length&&exact.length!==1)throw new Error('QBO document '+billDocNumber+' already exists with a different vendor, date, or total; no new bill was sent.');
+          const existingVendorBill=findExistingVendorBill(billsByDoc.get(docKey)||[],{
+            docNumber:billDocNumber,vendorId:qbVendorId,total:amt,txnDate,
+          });
 
           let qboBillId,created=false;
-          if(exact.length===1){
-            qboBillId=exact[0].Id;
+          if(existingVendorBill){
+            qboBillId=existingVendorBill.Id;
           }else{
             const billRes=await qbApi('upsert_bill',{bill:qbBill});
             if(!billRes?.Bill?.Id)throw new Error(billRes?.Fault?.Error?.[0]?.Detail||'Unknown QBO bill error');
@@ -31256,7 +31293,7 @@ export default function App(){
             re-pull and re-orient. Hidden once resumed/discarded or when everything was pushed. */}
         {billImport.step==='upload'&&(()=>{
           const rows=(reviewSnap&&Array.isArray(reviewSnap.bills)?reviewSnap.bills:[]);
-          const pend=rows.filter(b=>b&&!b.portalStatus&&!b.reviewLater);
+          const pend=rows.filter(b=>b&&!b.reviewLater&&(!b.portalStatus||(b.portalStatus==='success'&&qbBillNeedsSync(b.qbStatus))));
           if(!pend.length||!reviewSnap.ts||Date.now()-reviewSnap.ts>3*24*3600*1000)return null;
           return<div style={{marginBottom:12,padding:'10px 16px',borderRadius:8,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',background:'#eff6ff',border:'1px solid #93c5fd'}}>
             <span style={{fontSize:18}}>⏪</span>
@@ -31312,6 +31349,14 @@ export default function App(){
               ⚠ To Review header above (single source, no clashing duplicates). */}
           const _matchedHeader=!_inReview?null:(()=>{
             const ready=billImport.parsed.filter(b=>_billIsReadyToPush(b)&&!_billTriage(b)?.issue);
+            const _qbReadySeen=new Set();
+            const qbReady=billImport.parsed.filter(b=>{
+              if(!_billIsReadyForQB(b)||!qbBillNeedsSync(b.qbStatus))return false;
+              const key=_qboBillBatchKey(b);
+              if(key&&_qbReadySeen.has(key))return false;
+              if(key)_qbReadySeen.add(key);
+              return true;
+            });
             const readyTotal=ready.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
             const portalReady=ready.filter(b=>!b._qbBackfill);
             const portalReadyTotal=portalReady.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
@@ -31325,7 +31370,7 @@ export default function App(){
                 </div>
                 <div style={{marginLeft:'auto',display:'flex',flexDirection:'column',justifyContent:'center',gap:9,padding:'16px 24px',background:'rgba(0,0,0,.16)'}}>
                   {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!portalReady.length,onClick:()=>pushBillsToPortal(),children:<>Push {portalReady.length} matched → Portal{portalReadyTotal>0?' · '+nsaMoney(portalReadyTotal):''}</>})}
-                  {qbOperator&&skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for the same matched pile':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!ready.some(b=>qbBillNeedsSync(b.qbStatus)),onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':(qbConfig.initialMigrationApproved===true?'Push next batch to QuickBooks':'Test 1 in QuickBooks')})}
+                  {qbOperator&&skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for portal-complete or currently matched rows':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!qbReady.length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':(qbConfig.initialMigrationApproved===true?'Push next batch to QuickBooks ('+Math.min(20,qbReady.length)+' of '+qbReady.length+')':'Test 1 in QuickBooks')})}
                   <label title="Push high-confidence matched bills to the portal automatically at pull time (and after the AI pass) — any bill the push button would take with zero problems. Anything with an exception waits for review. Auto-pushed bills are tagged in Bill History and covered by the daily anomaly email." style={{display:'flex',alignItems:'center',gap:7,cursor:'pointer',fontSize:11,color:'rgba(255,255,255,.75)',fontFamily:FD,fontWeight:600,letterSpacing:.4}}>
                     <input type="checkbox" checked={billAutoPush} onChange={e=>{const on=e.target.checked;setBillAutoPush(on);try{localStorage.setItem('nsa_bill_autopush',on?'on':'off')}catch(err){}}} style={{accentColor:'#6FD59A',margin:0}}/>
                     ⚡ Auto-push clean bills</label>
