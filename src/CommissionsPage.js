@@ -11,7 +11,7 @@ import { dP, rQ, parseDate, _decoUnitCostComb } from './App';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { supabase } from './lib/dbEngine';
 import { sendBrevoEmail } from './utils';
-import { canSnapshotLine, snapshotRowFromLine, applySnapshotToLine, overrideSnapshotPatch, isCommissionEarnedInvoice } from './commissionSnapshots';
+import { canSnapshotLine, lineDataReady, staleZeroCostSnapshot, zeroCostRepairPatch, snapshotRowFromLine, applySnapshotToLine, overrideSnapshotPatch, isCommissionEarnedInvoice } from './commissionSnapshots';
 
 // The Admin Dashboard tab is visible to this user only (Steve Peterson's seeded
 // team_members id — same single-user gate as the App.js to-do list).
@@ -50,6 +50,13 @@ export default function CommissionsPage({adminReports=false}={}){
     // warning but never enter payout math.
     const[omgComms,setOmgComms]=useState([]);
     const _snapWriting=useRef(false);
+    // Invalid freezes this page corrected on its own ($0 cost frozen over a real cost —
+    // see the repair effect below) and invoice ids a job-cost edit queued for re-freeze.
+    const _repairing=useRef(false);
+    const _repairTried=useRef({});
+    const[repairedIds,setRepairedIds]=useState([]);
+    const _resnapQueue=useRef({});
+    const _resnapping=useRef(false);
     // Admin Dashboard: which rep rows / invoice rows are expanded
     const[dashOpen,setDashOpen]=useState({});
     const[dashInvOpen,setDashInvOpen]=useState({});
@@ -420,6 +427,61 @@ export default function CommissionsPage({adminReports=false}={}){
       })();
     });
 
+    // Repair an INVALID freeze: a snapshot that captured $0 cost while today's order data
+    // carries a real cost froze missing inputs, not the truth (INV-63327 froze at 100% GP
+    // five minutes before its unit costs were typed in). Only the frozen GP and the amount
+    // move, and at the ALREADY-FROZEN rate — paid date, statement month and any admin
+    // override stay exactly as they were, and the correction can only go down toward the
+    // real GP. Every other stale freeze still needs the deliberate Re-freeze button.
+    // Scans what this view can see (same as the freeze effect above); anything hidden
+    // behind the rep filter repairs on the next visit that shows it.
+    useEffect(()=>{
+      if(!supabase||!snaps||_repairing.current)return;
+      const bad=allLines.filter(l=>l.type!=='omg'&&l._live&&!_repairTried.current[l.inv.id]&&lineDataReady(l._live)&&staleZeroCostSnapshot(snaps[l.inv.id],l._live));
+      if(!bad.length)return;
+      _repairing.current=true;
+      // Mark before the write: a failed repair must not retry on every render.
+      bad.forEach(l=>{_repairTried.current[l.inv.id]=true});
+      (async()=>{
+        const fixed=[];
+        for(const l of bad){
+          const patch=zeroCostRepairPatch(snaps[l.inv.id],l._live,l._live.commBasis);
+          const{data,error}=await supabase.from('commission_snapshots').update({...patch,updated_at:new Date().toISOString()}).eq('invoice_id',l.inv.id).select();
+          if(error){console.warn('[Comm] $0-cost freeze repair failed for '+l.inv.id+':',error.message);continue}
+          if(data&&data[0]){setSnaps(prev=>({...prev,[l.inv.id]:data[0]}));fixed.push(l.inv.id)}
+        }
+        if(fixed.length)setRepairedIds(p=>[...new Set([...p,...fixed])]);
+        _repairing.current=false;
+      })();
+    });
+
+    // Re-freeze queued by a job-cost edit made on this page. The freeze has to wait one
+    // render: setSOs lands first, so `_live` here already carries the corrected cost.
+    useEffect(()=>{
+      if(!supabase||!snaps||_resnapping.current)return;
+      if(!Object.keys(_resnapQueue.current).length)return;
+      // Unfiltered: the job-cost editor lives on the admin dashboard, which shows every
+      // rep, so the edited invoice may not be in the header dropdown's current view.
+      // Only built when something is actually queued (the early return above).
+      const ready=buildAllCommLines(null).filter(l=>l.type!=='omg'&&_resnapQueue.current[l.inv.id]&&lineDataReady(l._live||l));
+      if(!ready.length)return;
+      _resnapping.current=true;
+      ready.forEach(l=>{delete _resnapQueue.current[l.inv.id]});
+      (async()=>{
+        for(const l of ready){
+          const row=snapshotRowFromLine(l._live||l,cu?.name||cu?.email||'');
+          const{data,error}=await supabase.from('commission_snapshots').upsert([row],{onConflict:'invoice_id'}).select();
+          if(error){alert('Costs saved, but updating '+l.inv.id+"'s frozen commission failed:\n\n"+error.message+'\n\nClick Re-freeze on that row to retry.');continue}
+          if(data&&data[0]){
+            setSnaps(prev=>({...prev,[l.inv.id]:data[0]}));
+            _repairTried.current[l.inv.id]=true;
+            alert('Costs saved. '+l.inv.id+"'s frozen commission is now $"+(Number(data[0].amount)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+'.');
+          }
+        }
+        _resnapping.current=false;
+      })();
+    });
+
     // An admin override on a frozen line must land in the snapshot (the money of record),
     // not just app_state — otherwise the frozen statement and the override disagree.
     const _applyOvrToSnap=async(invId,ovr)=>{
@@ -502,6 +564,9 @@ export default function CommissionsPage({adminReports=false}={}){
             <button key={id} className={`btn btn-sm ${commTab===id?'btn-primary':'btn-secondary'}`} onClick={()=>setCommTab(id)}>{label}</button>)}
         </div>
       </div>
+      {repairedIds.length>0&&<div style={{padding:'10px 12px',marginBottom:12,background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:7,color:'#1e40af',fontSize:11.5}}>
+        <b>Corrected {repairedIds.length} frozen commission line{repairedIds.length===1?'':'s'}</b> ({repairedIds.join(', ')}) that froze at $0 cost before the order's costs were entered. The frozen gross profit now uses the real cost; the rate, paid date and statement month are unchanged.
+      </div>}
       {heldOmgForMonth.length>0&&<div style={{padding:'10px 12px',marginBottom:12,background:'#fff7ed',border:'1px solid #fdba74',borderRadius:7,color:'#9a3412',fontSize:11.5}}>
         <b>{heldOmgForMonth.length} OMG store commission{heldOmgForMonth.length===1?' is':'s are'} on hold.</b> Missing API price, cost, fee, customer, or rep data must be resolved before the amount enters this statement.
       </div>}
@@ -940,7 +1005,10 @@ export default function CommissionsPage({adminReports=false}={}){
             return next;
           }));
           setCostModal(null);
-          if(m.snapped)setTimeout(()=>alert('Costs saved. '+m.invId+' is frozen at payment — click Re-freeze in the expanded row to update the frozen commission.'),100);
+          // Frozen at payment, but the admin just corrected the very costs the freeze is
+          // made of — re-freeze it automatically instead of leaving a stale number behind a
+          // button they have to know about. The effect above does it once setSOs has landed.
+          if(m.snapped)_resnapQueue.current[m.invId]=true;
         };
         // ── Payouts: draw + loan math per rep for this month ──
         // The DRAW measures against GROSS PROFIT (per Steve): a rep must generate GP
@@ -1197,7 +1265,7 @@ export default function CommissionsPage({adminReports=false}={}){
                         return<tr><td colSpan={10} style={{padding:'0 12px 12px 46px',background:'#f1f5f9'}}>
                           <div style={{display:'flex',gap:8,alignItems:'center',padding:'8px 0 4px',fontSize:10,color:'#64748b',flexWrap:'wrap'}}>
                             <button className="btn btn-sm" style={{fontSize:9,background:'#eff6ff',border:'1px solid #93c5fd',color:'#1e40af',padding:'2px 8px',fontWeight:700}} title="Edit every cost on this job — item purchase costs, PO line costs, outside deco POs, shipping, freight" onClick={()=>openCostModal(l)}>✎ Edit job costs</button>
-                            {l.snapped&&<>🔒 The invoice totals above are frozen at payment; the line detail below is live from today's order data.<button className="btn btn-sm" style={{fontSize:9,background:'#f8fafc',border:'1px solid #cbd5e1',color:'#475569',padding:'2px 6px'}} title="Recompute the frozen commission from today's live order data — use after correcting a cost" onClick={()=>_resnap(l)}>Re-freeze</button></>}
+                            {l.snapped&&<>🔒 The invoice totals above are frozen at payment; the line detail below is live from today's order data.<button className="btn btn-sm" style={{fontSize:9,background:'#f8fafc',border:'1px solid #cbd5e1',color:'#475569',padding:'2px 6px'}} title="Recompute the frozen commission from today's live order data — use after correcting a cost" onClick={()=>_resnap(l)}>Re-freeze</button>{Math.abs(safeNum(l.gp.cost)-safeNum(g.cost))>0.5&&<span style={{color:'#b45309',fontWeight:700}}>Frozen cost {fmt(safeNum(l.gp.cost))} vs live {fmt(safeNum(g.cost))} — Re-freeze to pay on the corrected cost.</span>}</>}
                           </div>
                           <table style={{fontSize:11,width:'100%',marginTop:4}}><thead><tr>
                             <th>Line</th><th style={{textAlign:'center'}}>Qty</th><th style={{textAlign:'right'}}>Unit Sell</th><th style={{textAlign:'right'}}>Unit Cost</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Cost</th><th style={{textAlign:'right'}}>GP</th><th style={{textAlign:'center'}}>GP%</th><th/>
