@@ -48,9 +48,11 @@ import PortalAssistant from './PortalAssistant';
 import { canManageQuickBooksRole, storedUserCanManageQuickBooks } from './qbAccess';
 import { applyTaxRemittanceLedger, reversedTaxRemittanceIds } from './lib/taxRemittanceLedger';
 import { qboProductionReconnectUrl } from './qbOAuthCallback';
+import { mergeDurableQbCanaries, qbCanaryLedgerRecord } from './qbCanaryLedger';
 import { canViewFinancials } from './lib/financialAccess';
 import { consolidateOmgProductRows } from './lib/storeSkuGrouping';
 import { acquireOmgCreationGuard, omgCollectedUnitPrice, omgInvoiceIdempotencyKey, webstoreInvoiceIdempotencyKey } from './lib/omgCreationGuard';
+import { matchedBillPoNumber, normalizeBillForReview } from './qbBillReview';
 import { resolvePoDisplayVendor } from './lib/poVendor';
 import { removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
 
@@ -440,6 +442,8 @@ const OnboardingWizard = lazyRetry(() => import('./OnboardingWizard'));
 const UniformBuilder = lazyRetry(() => import('./uniform/ProBuilder'));
 const UniformPatternsAdmin = lazyRetry(() => import('./uniform/PatternLibraryAdmin'));
 const UniformOrdersAdmin = lazyRetry(() => import('./uniform/UniformOrdersAdmin'));
+const MethodicDashboard = lazyRetry(() => import('./methodic/MethodicDashboard'));
+const MethodicArtQueue = lazyRetry(() => import('./methodic/MethodicArtQueue'));
 const UniformBuilderSettingsAdmin = lazyRetry(() => import('./uniform/BuilderSettingsAdmin'));
 const LoginGate = lazyRetry(() => import('./LoginGate'));
 import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal } from './modals';
@@ -452,7 +456,7 @@ import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
 import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, billAutoHoldReasons, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku, resolveMappedSoItemIndex } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
-import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, planQBNonInventoryItems, qbBillNeedsSync, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
+import { QB_ACCOUNT_MAPPING_DEFAULTS, billVendorMatchName, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, planQBNonInventoryItems, qbBillNeedsSync, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
 import { BaggingQueueTile } from './baggingstation/BaggingDashCard';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, mergeAllContents, mergeAllSourceRefs, crossCustomerGroups, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -2243,7 +2247,7 @@ const _buildTabHref=(params)=>window.location.pathname+'?'+new URLSearchParams(p
 // 'dashboard' is the default and is represented by a clean URL (no ?pg=). Query-param based
 // (not a path) so it never touches Netlify's routing/redirects. Page-level only — opening a
 // specific record is not a separate history entry.
-const _PG_IDS=new Set(['dashboard','estimates','orders','jobs','uniforms','art','production','warehouse','purchase_orders','batch_pos','customers','vendors','team','products','inventory','messages','ai_inbox','ai_tasks','invoices','commissions','omg','webstores','reports','marketing','issues','import','qb','backup','settings','sales_tools','sales_history','salesmap','financials']);
+const _PG_IDS=new Set(['dashboard','estimates','orders','jobs','uniforms','methodic','art','production','warehouse','purchase_orders','batch_pos','customers','vendors','team','products','inventory','messages','ai_inbox','ai_tasks','invoices','commissions','omg','webstores','reports','marketing','issues','import','qb','backup','settings','sales_tools','sales_history','salesmap','financials']);
 const _pgFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).get('pg');return v&&_PG_IDS.has(v)?v:null}catch{return null}};
 // RowLink — wraps cell content in a real anchor so middle-click / Cmd-click /
 // right-click "Open in New Tab" all work natively in the browser. Plain
@@ -2873,7 +2877,7 @@ export default function App(){
           // replaced by the stale DB copy the load already read.
           if(as.wh_recent_actions)setWhRecentActions(prev=>{const incStr=JSON.stringify(as.wh_recent_actions);if(JSON.stringify(prev)===incStr){_whActionsApplied.current=incStr;return prev}if(_appStateDirty('wh_recent_actions'))return prev;_whActionsApplied.current=incStr;return as.wh_recent_actions});
           if(as.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as.job_time_logs});
-          if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as.qb_config,mapping:migrateQBAccountMapping(as.qb_config.mapping),autoSync:as.qb_config.initialMigrationApproved===true?(as.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)})}
+          if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};const _qbLoaded={..._qbDef,...as.qb_config,mapping:migrateQBAccountMapping(as.qb_config.mapping),autoSync:as.qb_config.initialMigrationApproved===true?(as.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)};setQBConfig(mergeDurableQbCanaries(_qbLoaded,as))}
           if(as.omg_first_seen)setOmgFirstSeen(as.omg_first_seen);
           if(as.inv_pos)setInvPOs(as.inv_pos);
           if(as.inv_adj_log)setInvAdjLog(prev=>{const incStr=JSON.stringify(as.inv_adj_log);if(JSON.stringify(prev)===incStr){_invAdjLogApplied.current=incStr;return prev}if(_appStateDirty('inv_adj_log'))return prev;_invAdjLogApplied.current=incStr;return as.inv_adj_log});
@@ -2959,7 +2963,7 @@ export default function App(){
               if(as2.so_history)setSOHistory(prev=>{const incStr=JSON.stringify(as2.so_history);if(JSON.stringify(prev)===incStr){_soHistoryApplied.current=incStr;return prev}if(_appStateDirty('so_history'))return prev;_soHistoryApplied.current=incStr;return as2.so_history});
               if(as2.est_history)setEstHistory(prev=>{const incStr=JSON.stringify(as2.est_history);if(JSON.stringify(prev)===incStr){_estHistoryApplied.current=incStr;return prev}if(_appStateDirty('est_history'))return prev;_estHistoryApplied.current=incStr;return as2.est_history});
               if(as2.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as2.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as2.job_time_logs});
-              if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as2.qb_config,mapping:migrateQBAccountMapping(as2.qb_config.mapping),autoSync:as2.qb_config.initialMigrationApproved===true?(as2.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]})}if(as2.inv_pos)setInvPOs(as2.inv_pos);
+              if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};const _qbLoaded={..._qbDef,...as2.qb_config,mapping:migrateQBAccountMapping(as2.qb_config.mapping),autoSync:as2.qb_config.initialMigrationApproved===true?(as2.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]};setQBConfig(mergeDurableQbCanaries(_qbLoaded,as2))}if(as2.inv_pos)setInvPOs(as2.inv_pos);
               if(as2.inv_adj_log)setInvAdjLog(prev=>{const incStr=JSON.stringify(as2.inv_adj_log);if(JSON.stringify(prev)===incStr){_invAdjLogApplied.current=incStr;return prev}if(_appStateDirty('inv_adj_log'))return prev;_invAdjLogApplied.current=incStr;return as2.inv_adj_log});if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);if(as2.comm_overrides)setCommOverrides(as2.comm_overrides);if(as2.labor_rates)setLaborRates(as2.labor_rates);
               if(as2.company_info){const ci={...NSA_DEFAULTS,...as2.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
               console.log('[DB] Loaded from Supabase after seed by other browser');
@@ -4661,13 +4665,14 @@ export default function App(){
     try{
       const params=new URLSearchParams(window.location.search);
       if(params.get('qb_connected')==='true'){
+        const companyKey=params.get('qb_company_key')||'national';
         const company=params.get('qb_company')||'';
         const realm=params.get('qb_realm')||'';
-        setQBConfig(prev=>({...prev,connected:true,connectionError:'',companyId:realm,companyName:company,
+        if(companyKey==='national')setQBConfig(prev=>({...prev,connected:true,connectionError:'',companyId:realm,companyName:company,
           preflight:null,initialMigrationApproved:false,autoSync:'manual'}));
-        nf('Connected to QuickBooks Online'+(company?' — '+company:''));
+        nf((companyKey==='methodic'?'Methodic':'National')+' connected to QuickBooks Online'+(company?' — '+company:''));
         // Clean URL
-        const u=new URL(window.location);u.searchParams.delete('qb_connected');u.searchParams.delete('qb_company');u.searchParams.delete('qb_realm');
+        const u=new URL(window.location);u.searchParams.delete('qb_connected');u.searchParams.delete('qb_company');u.searchParams.delete('qb_company_key');u.searchParams.delete('qb_realm');
         window.history.replaceState({},'',u);
         sessionStorage.removeItem('qb_oauth_state');
       }else if(params.get('qb_error')){
@@ -6394,6 +6399,9 @@ export default function App(){
   const canAccess=useCallback((pageId)=>{
     if(!accessUser)return false;
     if(pageId==='ai_inbox')return canViewAiInbox(accessUser);
+    // Keep Custom Ops private during the rollout. This also protects direct
+    // ?pg=methodic links, not just the sidebar entry.
+    if(pageId==='methodic')return String(accessUser.email||'').toLowerCase()==='steve@nationalsportsapparel.com';
     // QBO is an accounting system, not a delegable portal page. Legacy access
     // arrays that contain `qb` must not expose it to reps or other operations roles.
     // Financials is identity-restricted even among admins. Never let an admin
@@ -7182,11 +7190,17 @@ export default function App(){
     if(addedSizes.length){logChange('inventory_sizes','Product',pid,'Added size'+(addedSizes.length===1?'':'s')+': '+addedSizes.join(', '))}
     nf('Inventory updated');
   };
+  // Allocate EST ids against the saved estimates PLUS whatever draft is open in the editor.
+  // A brand-new draft isn't in `ests` until it's saved, so building a second estimate on top
+  // of one used to hand back the SAME id. The editor is keyed on that id (key={eEst.id}), so
+  // React never remounted it and kept showing the old empty draft — the AI wizard reported
+  // "created estimate with N items" while the screen stayed at 0 items with no customer.
+  const _newEstId=()=>nextEstId((eEst&&!ests.some(x=>x.id===eEst.id))?[...ests,eEst]:ests);
   const newE=(c,product,seedItems,memo='')=>{const mk=c?.catalog_markup||1.65;const items=[];
     if(product){const au=isAU(product.brand)&&!String(product.id||'').startsWith('ssa-');const repCost=product.is_clearance&&product.clearance_cost!=null?product.clearance_cost:product.nsa_cost;const sell=au?rQ(product.retail_price*(1-auTierDisc(c?.adidas_ua_tier||'B',product.pricing_group,product.category))):rQ(repCost*mk);
       items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,vendor_id:product.vendor_id||null,pricing_group:product.pricing_group||null,color:product.color,nsa_cost:repCost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[],_is_clearance:product.is_clearance||false})}
     if(Array.isArray(seedItems)&&seedItems.length)items.push(...seedItems);
-    const e={id:nextEstId(ests),customer_id:c?.id||null,memo:memo||'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates');return e};
+    const e={id:_newEstId(),customer_id:c?.id||null,memo:memo||'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates');return e};
   const createEstimateFromInbox=(message)=>{
     const c=cust.find(x=>x.id===message?.customer_id);
     if(!c){nf('Match this email to a customer first','error');return}
@@ -7366,8 +7380,14 @@ export default function App(){
       const _nc=Math.round((safeNum(so._shipping_cost||0)+_pb.cost)*100)/100;if(_nc>0){so._shipping_cost=_nc;so._shipstation_cost=_nc;}}}
     const convertedEst={...est,status:'converted',updated_at:new Date().toLocaleString()};
     setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?convertedEst:e));setEEst(null);
-    // Explicitly save to DB immediately — don't rely solely on useEffect chain
-    _dbSaveSO(so);_dbSaveEstimate(convertedEst);
+    // Explicitly save to DB immediately — don't rely solely on useEffect chain.
+    // Methodic work is relinked only after both source/target documents exist, so
+    // the same request follows the line instead of creating an SO-side duplicate.
+    const[_soSaved]=await Promise.all([_dbSaveSO(so),_dbSaveEstimate(convertedEst)]);
+    if(_soSaved!==false){
+      try{const{methodicApi}=await import('./methodic/methodicApi');await methodicApi('relink_estimate',{estimate_id:est.id,sales_order_id:so.id});window.dispatchEvent(new CustomEvent('methodic-updated',{detail:{salesOrderId:so.id,estimateId:est.id}}))}
+      catch(methodicError){console.error('[convertSO] Methodic relink failed:',methodicError);nf('Sales order created, but Methodic work could not be relinked yet. Open the Methodic queue and retry.','warn')}
+    }
     // Consume the attached pending shipping charge (persisted SO — safe to record usage now).
     if(so.pending_ship_applied)_consumePendingShipForSO(so);
     const c=cust.find(x=>x.id===so.customer_id);
@@ -7436,7 +7456,7 @@ export default function App(){
     }
     const{art:clonedArt,idMap:_artIdMap}=reidArtFiles(est.art_files);
     const clonedItems=remapItemArtIds(safeItems(est).map(it=>{const clone=JSON.parse(JSON.stringify(it));delete clone.pick_lines;delete clone.po_lines;return clone}),_artIdMap);
-    const ne={id:nextEstId(ests),customer_id:est.customer_id,memo:(est.memo||'')+' (copy)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,bill_to_id:est.bill_to_id,email_status:null,art_files:clonedArt,items:clonedItems};
+    const ne={id:_newEstId(),customer_id:est.customer_id,memo:(est.memo||'')+' (copy)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,bill_to_id:est.bill_to_id,email_status:null,art_files:clonedArt,items:clonedItems};
     setEsts(prev=>[ne,...prev]);const c=cust.find(x=>x.id===ne.customer_id);setEEst(ne);setEEstC(c);setPg('estimates');nf(`${ne.id} copied from ${est.id}`)};
   const copySalesOrder=async so=>{
     // Auto-heal a partially-loaded sales order before copying — same failure mode the
@@ -11340,6 +11360,7 @@ export default function App(){
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
+      onOpenMethodicDashboard={()=>{setEEst(null);setPg('methodic')}}
       companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} onSaveCustomer={savC} onScheduleEmail={scheduleEmailSend} extractPdfText={extractPdfText}/></React.Suspense></ComponentErrorBoundary>
     // Filter estimates
     let fe=[...ests];
@@ -11393,7 +11414,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} onOpenMethodicDashboard={()=>{setESO(null);setESOTab(null);setPg('methodic')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -23320,6 +23341,7 @@ export default function App(){
       const urgent=j.daysOut!=null&&j.daysOut<=3;
       const artist=REPS.find(r=>r.id===j.assigned_artist);
       const af=j.artFile;
+      const isMethodic=(j.art_requests||[]).some(r=>r?.source==='methodic');
       const cardKey=j.id+j.soId+view;
       // Split family this card stands for (null when it's just the one job) — see consolidateArtFamilies.
       const _fam=(j._famMembers||[]).length>1?j._famMembers:null;
@@ -23330,6 +23352,7 @@ export default function App(){
         <div style={{padding:'8px 10px',cursor:'pointer',minWidth:0}} onClick={()=>setExpandedArtCard(isExp?null:cardKey)}>
           <div style={{display:'flex',alignItems:'center',gap:4,marginBottom:4,minWidth:0}}>
             <span style={{fontSize:12,fontWeight:800,color:'#0f172a',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.customer}</span>
+            {isMethodic&&<span style={{fontSize:9,fontWeight:900,color:'#fff',background:'#312e81',padding:'2px 6px',borderRadius:4,flexShrink:0}}>METHODIC</span>}
             {urgent&&<span style={{fontSize:9,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 5px',borderRadius:3,flexShrink:0}}>🔥 {j.daysOut}d</span>}
             {j.daysOut!=null&&!urgent&&j.daysOut<=14&&<span style={{fontSize:9,color:'#92400e',flexShrink:0}}>{j.daysOut}d</span>}
           </div>
@@ -23468,6 +23491,8 @@ export default function App(){
         <input className="form-input" data-tour-id="art-search" style={{width:200,fontSize:12}} placeholder="Search customer, SO, art name..." value={artSearch} onChange={e=>setArtSearch(e.target.value)}/>
         <span style={{fontSize:11,color:'#64748b',marginLeft:'auto'}}>{artistJobs.length} job{artistJobs.length!==1?'s':''}</span>
       </div>
+
+      <React.Suspense fallback={null}><MethodicArtQueue estimates={ests} salesOrders={sos} customers={cust} teamMembers={REPS} notify={nf} onOpenDocument={(type,id)=>{if(type==='estimate'){const est=ests.find(x=>x.id===id);if(est){setEEst(est);setEEstC(cust.find(c=>c.id===est.customer_id)||null);setPg('estimates')}else nf('Estimate '+id+' not found','error')}else{const so=sos.find(x=>x.id===id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setESOTab('methodic');setPg('orders')}else nf('Sales order '+id+' not found','error')}}}/></React.Suspense>
 
       {/* ═══ ART TIME CLOCK ═══ */}
       {_isArtistUser&&<div className="card" style={{marginBottom:12,borderLeft:'3px solid #7c3aed'}}>
@@ -28468,7 +28493,7 @@ export default function App(){
       if(!p||p._ai_parsed||p.is_credit||earlyPayFreightWaiver(p).eligible||!p.matchedPOSource||!p.matchedPO)return stored;
       try{
         const poLc=(p.po_number||'').toLowerCase().replace(/\s+/g,'');
-        const matchedPoRaw=p.matchedPOSource==='so_po'?(p.matchedPO?.po_id||''):(p.matchedPO?.po_number||p.matchedPO?.id||'');
+        const matchedPoRaw=matchedBillPoNumber(p);
         const poExact=(!!poLc&&String(matchedPoRaw).toLowerCase().replace(/\s+/g,'')===poLc)||poCoreTagMatch(p.po_number,matchedPoRaw);
         let pairs=(p._lineMappings&&p._lineMappings.length)?p._lineMappings:null;
         let tItems=[];
@@ -29483,7 +29508,11 @@ export default function App(){
       // Owner rule ("my approval should do all this"): once a human accepted a proposal
       // that flagged the overage (_overage_ok), over-billing stops blocking — the push
       // corrects the order line up to what was billed, with an audit entry.
-      if(!(p._overage_ok&&(p._lineMappings||[]).length))errs.push(..._billOverBillingErrors(p,autoMaps||undefined));
+      // A QBO backfill never applies portal quantities. Comparing the already-
+      // billed PO to the same historic invoice would manufacture an overage
+      // (e.g. 2 already billed + the same 2 again) and block the accounting-only
+      // write even though the portal writer is explicitly disabled.
+      if(!p._qbBackfill&&!(p._overage_ok&&(p._lineMappings||[]).length))errs.push(..._billOverBillingErrors(p,autoMaps||undefined));
       return errs;
     };
 
@@ -30016,7 +30045,7 @@ export default function App(){
         const bill=b.parsed||{};
         try{
           if(!_billHasTarget(bill))throw new Error('Bill is not linked to a portal PO/SO; no QBO bill was sent.');
-          const vendorName=String(bill.supplier||'').trim();
+          const vendorName=billVendorMatchName(bill);
           if(!vendorName)throw new Error('Bill supplier is blank; no QBO bill was sent.');
 
           const vendor=findUniqueVendorMatch(vendorName,vend);
@@ -30136,6 +30165,20 @@ export default function App(){
               &&JSON.stringify(readLines)===JSON.stringify(sentLines);
             if(!readMatches)throw new Error('QBO Bill #'+qboBillId+' exists, but its read-back vendor/date/total/lines do not match the canary payload. Portal was not applied.');
             canaryReadback='Canary read-back verified: document, vendor, date, total, and '+readLines.length+' posting line(s)';
+            // Persist each verified canary in its own app_state row before
+            // applying the portal side or reporting success. The shared
+            // qb_config blob is last-write-wins and can be replaced by a
+            // navigation/poll race; a per-bill row is idempotent and cannot
+            // erase another canary. Retrying an exact existing QBO bill safely
+            // repairs a missing ledger row without creating a duplicate.
+            if(!supabase)throw new Error('QBO Bill #'+qboBillId+' was verified, but the durable canary ledger is unavailable. Portal was not applied.');
+            const canaryRow=qbCanaryLedgerRecord({
+              realmId:qbConfig.realm_id,qboBillId,
+              sourceId:b.id||bill.doc_number||bi,docNumber:billDocNumber,
+              verifiedAt:new Date().toISOString(),
+            });
+            const{error:canarySaveError}=await supabase.from('app_state').upsert(canaryRow,{onConflict:'id'});
+            if(canarySaveError)throw new Error('QBO Bill #'+qboBillId+' was verified, but its canary credit could not be saved: '+canarySaveError.message+'. Portal was not applied.');
           }
 
           // Only now—after QBO success or an exact existing read-back—may the
@@ -31296,7 +31339,7 @@ export default function App(){
             </div>;
           })();
             const renderBillCard=(b,bi,stepMode)=>{
-            const bill=b.parsed;
+            const bill=normalizeBillForReview(b.parsed);
             const poMatch=bill.matchedPO;const poSrc=bill.matchedPOSource;
             const tri=_billTriage(b);// live: {matched,errs,issue,reason} or null when pushed/parked
             const bucket=!tri?'done':tri.issue?'attention':'ready';
@@ -31789,7 +31832,7 @@ export default function App(){
                 {/* Totals */}
                 <div style={{display:'flex',gap:0,borderTop:'1px solid #f1f5f9'}}>
                   {(bill.kind==='decoration'
-                    ?[['Doc Total',bill.doc_total,'doc_total'],['Freight (→ Outbound)',bill.freight,'freight']]
+                    ?[['Doc Total',bill.doc_total,'doc_total'],['Freight In (→ 51000)',bill.freight,'freight']]
                     :[['Merchandise',bill.merchandise_total,'merchandise_total'],['Freight',bill.freight,'freight'],['SI Upcharge',bill.si_upcharge,'si_upcharge'],['Doc Total',bill.doc_total,'doc_total']]
                   ).map(([label,val,key],i)=>
                     <div key={i} style={{flex:1,padding:'10px 14px',borderRight:'1px solid #f1f5f9',textAlign:'center'}}>
@@ -32834,7 +32877,7 @@ export default function App(){
                   <td style={{padding:'6px 12px',textAlign:'center'}}>{sb.parsed?.items?.length||0}</td>
                   <td style={{padding:'6px 12px'}} onClick={e=>e.stopPropagation()}>{sb.qbStatus==='success'?<span style={{color:'#166534',fontWeight:700}}>Pushed{sb.qbMsg?' · '+sb.qbMsg:''}</span>:sb.qbStatus==='error'?<span style={{color:'#dc2626',fontWeight:700}}>Failed{sb.qbMsg?' · '+sb.qbMsg:''}</span>:<span style={{color:'#94a3b8'}}>Not pushed</span>}
                     {sb.qbStatus!=='success'&&<button style={{marginLeft:6,fontSize:9,padding:'2px 8px',background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:4,color:'#1e40af',fontWeight:700,cursor:'pointer'}}
-                      onClick={e=>{e.stopPropagation();setBillImport({step:'review',files:[],parsed:[{...sb,selected:true,qbStatus:null,qbMsg:'',portalStatus:null,portalMsg:'',_qbBackfill:true,parsed:{...(sb.parsed||{}),_qbBackfill:true}}],uploading:false,showRaw:{}});nf('Bill loaded for QBO backfill — the Portal side will not be applied again')}}>Re-push</button>}</td>
+                      onClick={e=>{e.stopPropagation();setBillImport({step:'review',files:[],parsed:[{...sb,selected:true,qbStatus:null,qbMsg:'',portalStatus:null,portalMsg:'',_qbBackfill:true,parsed:{...normalizeBillForReview(sb.parsed),_qbBackfill:true}}],uploading:false,showRaw:{}});nf('Bill loaded for QBO backfill — the Portal side will not be applied again')}}>Re-push</button>}</td>
                   <td style={{padding:'6px 12px',textAlign:'center'}} onClick={e=>e.stopPropagation()}>
                     {sb._serverLedger
                     ?<span style={{fontSize:9,fontWeight:700,color:'#94a3b8'}} title="Pushed on the server ledger (possibly from another machine) — read-only here">server</span>
@@ -37385,9 +37428,9 @@ export default function App(){
   }
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'uniforms',label:'Uniform Jobs',icon:'package'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'financials',label:'Financials',icon:'dollar',roles:['admin']},{id:'salesmap',label:'Sales Map',icon:'grid'},{id:'marketing',label:'Marketing',icon:'grid'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar',roles:['admin','super_admin','accounting']},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']},{section:'Tools'},{id:'production_hq',label:'Production HQ',icon:'package',href:'/teamshop-queue',external:true},{id:'floor_station',label:'Floor Station',icon:'grid',href:'/floor-station',external:true},{id:'move_checkin',label:'Move Check-In',icon:'box',href:'/move-checkin',external:true}];
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'uniforms',label:'Uniform Jobs',icon:'package'},{id:'methodic',label:'Custom Ops',icon:'package'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'financials',label:'Financials',icon:'dollar',roles:['admin']},{id:'salesmap',label:'Sales Map',icon:'grid'},{id:'marketing',label:'Marketing',icon:'grid'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar',roles:['admin','super_admin','accounting']},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']},{section:'Tools'},{id:'production_hq',label:'Production HQ',icon:'package',href:'/teamshop-queue',external:true},{id:'floor_station',label:'Floor Station',icon:'grid',href:'/floor-station',external:true},{id:'move_checkin',label:'Move Check-In',icon:'box',href:'/move-checkin',external:true}];
   nav.splice(3,0,{id:'ai_inbox',label:'AI Inbox',icon:'mail'},{id:'ai_tasks',label:'AI Tasks',icon:'grid',roles:['admin','rep']});
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',financials:'Financials',salesmap:'Sales Map',marketing:'Marketing',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',webstores:'Club Webstores',jobs:'Jobs',uniforms:'Uniform Jobs',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools',sales_history:'Sales History',search:'Search Results'};
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',financials:'Financials',salesmap:'Sales Map',marketing:'Marketing',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',webstores:'Club Webstores',jobs:'Jobs',uniforms:'Uniform Jobs',methodic:'Custom Ops',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools',sales_history:'Sales History',search:'Search Results'};
   titles.ai_inbox='AI Sales Inbox';titles.ai_tasks='AI Tasks';
   // ─── SCAN RESULT HANDLER ───
   function handleScanResult(val){
@@ -37775,7 +37818,7 @@ export default function App(){
           })}
         </div>
       </div>}
-      <div className="content">{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='uniforms'&&<ComponentErrorBoundary name="UniformJobs"><React.Suspense fallback={<LazyFallback/>}><UniformOrdersAdmin/></React.Suspense></ComponentErrorBoundary>}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&<ComponentErrorBoundary name="Invoices"><React.Suspense fallback={<LazyFallback/>}><InvoicesPage/></React.Suspense></ComponentErrorBoundary>}{pg==='commissions'&&<ComponentErrorBoundary name="Commissions"><React.Suspense fallback={<LazyFallback/>}><CommissionsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='financials'&&<ComponentErrorBoundary name="Financials"><React.Suspense fallback={<LazyFallback/>}><FinancialsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='omg'&&rOMG()}{pg==='webstores'&&<ComponentErrorBoundary name="Webstores"><React.Suspense fallback={<LazyFallback/>}><Webstores cust={cust} REPS={REPS} repCsr={repCsrAssignments} sos={sos} ests={ests} cu={cu} onCreateSO={webstoreCreateSO} onOpenSO={(soId)=>{const so=sos.find(x=>x.id===soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}else nf('Sales order '+soId+' not found — try reloading','warn')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='reports'&&rReports()}{pg==='salesmap'&&<ComponentErrorBoundary name="SalesMap"><React.Suspense fallback={<LazyFallback/>}><SalesMap customers={cust} orders={sos} invoices={invs} historicalInvoices={histInvs} vendors={vend} reps={REPS} calcMargin={calcOrderMargin} companyInfo={companyInfo} currentUser={cu} onOpenCustomer={c2=>{setSelC(c2.parent_id?cust.find(x=>x.id===c2.parent_id)||c2:c2);setPg('customers')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&<ComponentErrorBoundary name="QuickBooks"><React.Suspense fallback={<LazyFallback/>}><QBPage/></React.Suspense></ComponentErrorBoundary>}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='marketing'&&<ComponentErrorBoundary name="Marketing"><React.Suspense fallback={<LazyFallback/>}><MarketingPage/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
+      <div className="content">{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='uniforms'&&<ComponentErrorBoundary name="UniformJobs"><React.Suspense fallback={<LazyFallback/>}><UniformOrdersAdmin/></React.Suspense></ComponentErrorBoundary>}{pg==='methodic'&&<ComponentErrorBoundary name="MethodicOperations"><React.Suspense fallback={<LazyFallback/>}><MethodicDashboard orders={sos} estimates={ests} customers={cust} teamMembers={REPS} currentUser={cu} notify={nf} onOpenDocument={(type,id)=>{if(type==='estimate'){const est=ests.find(x=>x.id===id);if(est){setEEst(est);setEEstC(cust.find(c=>c.id===est.customer_id)||null);setPg('estimates')}else nf('Estimate '+id+' not found','error')}else{const so=sos.find(x=>x.id===id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setESOTab('methodic');setPg('orders')}else nf('Sales order '+id+' not found','error')}}}/></React.Suspense></ComponentErrorBoundary>}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&<ComponentErrorBoundary name="Invoices"><React.Suspense fallback={<LazyFallback/>}><InvoicesPage/></React.Suspense></ComponentErrorBoundary>}{pg==='commissions'&&<ComponentErrorBoundary name="Commissions"><React.Suspense fallback={<LazyFallback/>}><CommissionsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='financials'&&<ComponentErrorBoundary name="Financials"><React.Suspense fallback={<LazyFallback/>}><FinancialsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='omg'&&rOMG()}{pg==='webstores'&&<ComponentErrorBoundary name="Webstores"><React.Suspense fallback={<LazyFallback/>}><Webstores cust={cust} REPS={REPS} repCsr={repCsrAssignments} sos={sos} ests={ests} cu={cu} onCreateSO={webstoreCreateSO} onOpenSO={(soId)=>{const so=sos.find(x=>x.id===soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}else nf('Sales order '+soId+' not found — try reloading','warn')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='reports'&&rReports()}{pg==='salesmap'&&<ComponentErrorBoundary name="SalesMap"><React.Suspense fallback={<LazyFallback/>}><SalesMap customers={cust} orders={sos} invoices={invs} historicalInvoices={histInvs} vendors={vend} reps={REPS} calcMargin={calcOrderMargin} companyInfo={companyInfo} currentUser={cu} onOpenCustomer={c2=>{setSelC(c2.parent_id?cust.find(x=>x.id===c2.parent_id)||c2:c2);setPg('customers')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&<ComponentErrorBoundary name="QuickBooks"><React.Suspense fallback={<LazyFallback/>}><QBPage/></React.Suspense></ComponentErrorBoundary>}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='marketing'&&<ComponentErrorBoundary name="Marketing"><React.Suspense fallback={<LazyFallback/>}><MarketingPage/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
     {pg==='ai_inbox'&&canAccess('ai_inbox')&&<div className="content"><AiInbox supabase={supabase} customers={cust} onCreateEstimate={createEstimateFromInbox} notify={nf}/></div>}
     {pg==='ai_tasks'&&<div className="content"><AiTasks supabase={supabase} customers={cust} notify={nf}/></div>}
     {/* ═══ CREATE TODO MODAL (global) ═══ */}

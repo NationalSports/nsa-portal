@@ -1,5 +1,5 @@
 /* eslint-disable */
-import { NSA as _NSA_CONST } from './constants';
+import { NSA as _NSA_CONST, szRank, orderLineSizes } from './constants';
 // Tackle-twill logo menu (settings-aware) so pdfDecoLabel can name a twill placement on documents.
 import { TWA as _TWA_TABLE } from './pricing';
 import JsBarcode from 'jsbarcode';
@@ -1342,3 +1342,42 @@ export async function enrichAiLinesWithVendors(lines,onProgress){
   }));
   return out;
 }
+
+// Size run for an order line built from an AI-parsed order.
+//
+// The parser buckets a bare "QTY 50" (no size breakdown given) under OSFA so the
+// quantity isn't lost. Taking the parsed keys as the WHOLE run left a matched apparel
+// product showing a lone OSFA column, with no S/M/L/XL to spread the 50 into.
+//
+// So seed the catalog product's run — through orderLineSizes, the SAME trim the
+// add-from-catalog path uses, or an adidas/UA row drags in its entire vendor run (XS,
+// 3XL–5XL and the whole tall block) and the grid becomes a wall of empty columns.
+// The parsed sizes ride along as qtySizes so the OSFA bucket (or any real breakdown)
+// is always kept. No catalog match (custom / vendor-only line) → the parsed sizes,
+// else the standard adult run.
+export const aiLineAvailableSizes=(parsedSizeKeys,catalogSizes)=>{
+  const parsed=(Array.isArray(parsedSizeKeys)?parsedSizeKeys:[]).filter(Boolean);
+  const cat=(Array.isArray(catalogSizes)?catalogSizes:[]).filter(Boolean);
+  if(!cat.length)return parsed.length?parsed:['S','M','L','XL','2XL'];
+  return orderLineSizes(cat,parsed).sort((a,b)=>szRank(a)-szRank(b));
+};
+
+// Agron is adidas' third-party distributor, and its article number is the SKU that
+// actually carries stock. In the catalog an adidas product with an all-numeric SKU IS
+// an Agron article (2,106 of 2,129 sit in agron_inventory; no lettered adidas SKU ever
+// does), and ~57 bags carry BOTH rows — the Agron article and the CLICK-style twin
+// (5159512 vs JJ7421), same name, same color, same vendor. Stock only ever lands on the
+// Agron row, so an AI-parsed line that resolved to the CLICK twin showed 0 on tens of
+// thousands of units. Agron wins: swap to the numeric twin when the catalog has one.
+export const preferAgronProduct=(match,products)=>{
+  const isAgronSku=s=>/^\d+$/.test(String(s||'').trim());
+  const isAdidas=b=>/^adidas/i.test(String(b||'').trim());
+  if(!match||!Array.isArray(products))return match;
+  if(!isAdidas(match.brand)||isAgronSku(match.sku))return match;
+  const nm=String(match.name||'').trim().toLowerCase();
+  if(!nm)return match;
+  const cl=String(match.color||'').trim().toLowerCase();
+  return products.find(p=>p&&p.id!==match.id&&isAgronSku(p.sku)&&isAdidas(p.brand)
+    &&String(p.name||'').trim().toLowerCase()===nm
+    &&String(p.color||'').trim().toLowerCase()===cl)||match;
+};

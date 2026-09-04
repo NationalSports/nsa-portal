@@ -308,6 +308,23 @@ async function placeOrder(sb, body, coach, opts) {
 const PO_MAX_PDF_BYTES = 10 * 1024 * 1024; // bucket cap (00201) mirrored here for a clean 4xx
 const PO_NUMBER_MAX = 64;
 
+// Avoid running one regular expression over a ~14 MB base64 payload. On some
+// Node versions that can overflow the regex engine's stack at the valid 10 MB
+// boundary. This preserves the existing accepted character set.
+function isBase64Payload(raw) {
+  for (let i = 0; i < raw.length; i += 1) {
+    const code = raw.charCodeAt(i);
+    const isAlphaNumeric = (code >= 48 && code <= 57)
+      || (code >= 65 && code <= 90)
+      || (code >= 97 && code <= 122);
+    const isBase64Punctuation = code === 43 || code === 47 || code === 61;
+    const isWhitespace = code === 9 || code === 10 || code === 11
+      || code === 12 || code === 13 || code === 32;
+    if (!isAlphaNumeric && !isBase64Punctuation && !isWhitespace) return false;
+  }
+  return true;
+}
+
 // The teamshop_po_allowed column ships in 00200; before that migration the
 // select fails with 42703/schema-cache — a "feature not enabled" state, not
 // an eligible one. Same detection shape as webstore-checkout's
@@ -324,7 +341,7 @@ function decodePoPdf(b64) {
   // Cheap pre-decode guard: base64 inflates ~4/3, so anything longer than
   // this can't decode under the cap — reject before allocating the buffer.
   if (raw.length > Math.ceil(PO_MAX_PDF_BYTES * 4 / 3) + 4) return { error: 'The PO PDF is too large — 10 MB max.' };
-  if (!/^[A-Za-z0-9+/=\s]+$/.test(raw)) return { error: 'The PO file could not be read — please re-attach the PDF.' };
+  if (!isBase64Payload(raw)) return { error: 'The PO file could not be read — please re-attach the PDF.' };
   let buf;
   try { buf = Buffer.from(raw, 'base64'); } catch { return { error: 'The PO file could not be read — please re-attach the PDF.' }; }
   if (!buf || buf.length < 5) return { error: 'The PO file could not be read — please re-attach the PDF.' };

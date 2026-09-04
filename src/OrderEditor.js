@@ -5,7 +5,7 @@ import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, orderLineSizes, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
 import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, skusMissingRevColorWays, missingRevColorWaysMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, replaceMockLinkGroup, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
@@ -14,11 +14,16 @@ import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
 import QuickMockBuilder from './QuickMockBuilder';
+import MethodicOrderPanel from './methodic/MethodicOrderPanel';
+import MethodicOrderStatusStrip from './methodic/MethodicOrderStatusStrip';
+import MethodicRequestForm from './methodic/MethodicRequestForm';
+import { methodicApi } from './methodic/methodicApi';
+import { isMethodicItem } from './methodic/methodicWorkflow';
 import MultiItemAddModal from './MultiItemAddModal';
 // Lazy so the uniform designer only loads when a rep opens it.
 const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
 import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, TWA, TWN, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced, linkedArtCostQty, decoCostAt, decoCostResolved, outsideDecoEstAt, outsideDecoSell } from './pricing';
-import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, dedupeMockDupes, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, schoolPOBoxes, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles, authFetch, greetLine, withGreeting, emailMoney } from './utils';
+import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, dedupeMockDupes, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, schoolPOBoxes, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, aiLineAvailableSizes, preferAgronProduct, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles, authFetch, greetLine, withGreeting, emailMoney } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { sanmarPricingSnapshot } from './lib/sanmarPricing';
 import { getRichardsonLevel4Price } from './richardsonPrices';
@@ -59,15 +64,6 @@ const nameWithBrand=(name,brand)=>{
 // re-ordered, so no PO ever prices off this.
 const catalogRepCost=(p)=>(p&&p.is_clearance&&p.clearance_cost!=null)?safeNum(p.clearance_cost):safeNum(p?.nsa_cost);
 
-// Size run to seed on an ORDER LINE from a catalog product's available_sizes. Many Adidas /
-// Under Armour catalog rows carry the vendor's ENTIRE run — XS, 3XL–5XL, and the tall block
-// (ST/MT/LT/XLT/2XLT…) — because the B2B feed lists every size the style is made in. A normal
-// team order only fills S–2XL, so dropping that whole run onto a fresh line (add-from-catalog,
-// SKU change, NetSuite import) turns the grid into a wall of empty columns. For a standard
-// adult-apparel run we seed just the core S–2XL; a rep adds outliers with +Size. Non-standard
-// runs (youth, OSFA, numeric, footwear, tall-only) have no core overlap and pass through
-// untouched. Any size that already carries a quantity is always kept so entered qtys never drop.
-const CORE_APPAREL_SIZES=['S','M','L','XL','2XL'];
 
 // Quantity keystrokes stay in this tiny component. The parent editor still owns the draft ref
 // (so Save/autosave can flush it safely), but no longer reconciles thousands of order controls
@@ -86,15 +82,6 @@ const QuantityDraftInput=React.memo(function QuantityDraftInput({value,draftKey,
 // Outliers (5XL, tall, youth, half sizes below 6) are still added on the line with +Size.
 const COPY_APPAREL_SIZES=['XS','S','M','L','XL','2XL','3XL','4XL'];
 const COPY_FOOTWEAR_SIZES=['6','6.5','7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12'];
-const orderLineSizes=(catalogSizes,qtySizes=[])=>{
-  const all=(Array.isArray(catalogSizes)?catalogSizes:[]).filter(Boolean);
-  const core=all.filter(s=>CORE_APPAREL_SIZES.includes(s));
-  // Narrow to the core run only when the product also offers sizes beyond it (a standard adult
-  // run padded with extras). If the run IS already the core — or has no core overlap at all
-  // (youth/OSFA/numeric/footwear) — keep it verbatim.
-  const base=(core.length&&all.some(s=>!CORE_APPAREL_SIZES.includes(s)))?core:all;
-  return normalizeFootwearSizeList([...base,...(Array.isArray(qtySizes)?qtySizes:[]).filter(Boolean)]);
-};
 
 // Line items rendered on a printed / emailed estimate or SO PDF. This used to drop
 // any line whose total quantity was 0, which silently hid legitimately-quoted items
@@ -188,7 +175,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onManualShip,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText,ui='new'}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onManualShip,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,onOpenMethodicDashboard,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText,ui='new'}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -1913,7 +1900,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       +holds.map(h=>h.pickId+' · '+(h.soId===o.id?'this order':h.soId)+' ×'+h.qty).join(', ')
       +') · '+Math.max(0,onHand-held)+' free to pull';
   };
-  const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showCustEdit,setShowCustEdit]=useState(false);const[showCustNew,setShowCustNew]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showItemMenu,setShowItemMenu]=useState(null);const[itemMenuPos,setItemMenuPos]=useState(null);const[moreActionsFor,setMoreActionsFor]=useState(null);const[editingItemName,setEditingItemName]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[],item_type:'apparel'});const[showCustSupp,setShowCustSupp]=useState(false);const[custSuppItem,setCustSuppItem]=useState({name:'',color:'',item_type:'apparel',notes:''});
+  const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showCustEdit,setShowCustEdit]=useState(false);const[showCustNew,setShowCustNew]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showItemMenu,setShowItemMenu]=useState(null);const[itemMenuPos,setItemMenuPos]=useState(null);const[moreActionsFor,setMoreActionsFor]=useState(null);const[editingItemName,setEditingItemName]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[],item_type:'apparel'});const[showCustSupp,setShowCustSupp]=useState(false);const[custSuppItem,setCustSuppItem]=useState({name:'',color:'',item_type:'apparel',notes:''});const[methodicRequestItem,setMethodicRequestItem]=useState(null);
 
   // ── + Size popover positioning ──
   // The popover renders position:FIXED on purpose: its line item lives inside `.card`, which sets
@@ -5229,6 +5216,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {/* Fulfillment (ship preference) moved up into the Create PO / Create Invoice row as a select */}
       {isSO&&<div style={{marginTop:8}}><label className="form-label">Production Notes</label><$Txt className="form-input" value={o.production_notes||''} onChange={v=>sv('production_notes',v)} placeholder="Internal notes..."/></div>}
     </div></div>
+    <MethodicOrderStatusStrip documentId={o.id} documentType={isSO?'sales_order':'estimate'} onOpen={()=>isSO?setTab('methodic'):onOpenMethodicDashboard?.()}/>
+    {methodicRequestItem&&createPortal(<div className="modal-overlay" onClick={()=>setMethodicRequestItem(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:940,width:'95vw',maxHeight:'94vh',overflow:'auto'}}><div className="modal-header" style={{background:'#eef2ff'}}><div><h2 style={{margin:0}}>Request Methodic Mockup</h2><div style={{fontSize:11,color:'#6366f1',marginTop:3}}>{o.id} · {methodicRequestItem.item.sku} · {methodicRequestItem.item.name}</div></div><button className="modal-close" onClick={()=>setMethodicRequestItem(null)}>×</button></div><div className="modal-body"><MethodicRequestForm order={o} initialItem={methodicRequestItem.item} itemIndex={methodicRequestItem.index} documentType={isSO?'sales_order':'estimate'} teamMembers={REPS||[]} onCancel={()=>setMethodicRequestItem(null)} onSave={async payload=>{const saved=await Promise.resolve(onSaveNow?.(oRef.current));if(saved===false)throw new Error('Save this document before creating the Methodic request.');const source=isSO?{sales_order_id:oRef.current.id}:{estimate_id:oRef.current.id};const data=await methodicApi('create',{...source,item_index:methodicRequestItem.index,...payload});setMethodicRequestItem(null);window.dispatchEvent(new CustomEvent('methodic-updated',{detail:{salesOrderId:isSO?oRef.current.id:null,estimateId:isSO?null:oRef.current.id}}));nf(data.request?._reused?`${data.request.request_number} already tracks this Methodic item`:`${data.request?.request_number||'Methodic request'} created and sent to Art`);}}/></div></div></div>,document.body)}
     {/* TABS */}
     <div className="tabs" style={{marginBottom:16}}>
       <button data-tour-id="oe-tab-items" className={`tab ${tab==='items'?'active':''}`} onClick={()=>setTab('items')}>Line Items</button>
@@ -5236,6 +5225,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <button className={`tab ${tab==='messages'?'active':''}`} onClick={()=>setTab('messages')}>Messages {(()=>{const entityMsgs=(msgs||[]).filter(m=>(m.entity_id===o.id)||(m.so_id===o.id));const unread=entityMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{unread}</span>:` (${entityMsgs.length})`})()}</button>
       {isSO&&<button className={`tab ${tab==='transactions'?'active':''}`} onClick={()=>setTab('transactions')}>Linked</button>}
       {isSO&&<button className={`tab ${tab==='jobs'?'active':''}`} onClick={()=>setTab('jobs')}>Jobs {(()=>{const jc=(o.jobs||[]).length;return jc>0?` (${jc})`:''})()}</button>}
+      {isSO&&<button className={`tab ${tab==='methodic'?'active':''}`} onClick={()=>setTab('methodic')} style={tab==='methodic'?{background:'#312e81',color:'white'}:{}}>Methodic</button>}
       {isSO&&<button className={`tab ${tab==='tracking'?'active':''}`} onClick={()=>setTab('tracking')}>Tracking {(()=>{const sc=(o._shipments||[]).length||(o._tracking_number?1:0);return sc>0?<span style={{background:'#166534',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{sc}</span>:''})()}</button>}
       {isSO&&<button className={`tab ${tab==='costs'?'active':''}`} onClick={()=>setTab('costs')} style={tab==='costs'?{background:'#166534',color:'white'}:{}}>💰 Costs</button>}
       <button className={`tab ${tab==='history'?'active':''}`} onClick={()=>setTab('history')}>History</button>
@@ -5401,6 +5391,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   })()}
                 {item.customer_supplied&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ecfeff',color:'#0e7490',fontWeight:700,border:'1px solid #a5f3fc'}}>🎁 Customer-Supplied</span>}
                 {item.is_free_promo&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#fdf2f8',color:'#be185d',fontWeight:700,border:'1px solid #fbcfe8'}}>🎁 FREE PROMO</span>}
+                {isMethodicItem(item,vendorList)&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#eef2ff',color:'#4338ca',fontWeight:900,border:'1px solid #c7d2fe'}}>METHODIC CUSTOM</span>}
                 {item.is_custom&&!item.customer_supplied&&!item.vendor_source&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Custom</span>}
                 {item.vendor_source&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>{item.vendor_source==='sanmar'?'🟦 via SanMar':item.vendor_source==='ss'?'🟪 via S&S':item.vendor_source==='momentec'?'🟧 via Momentec':'via vendor'}</span>}
                 {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700,cursor:'pointer'}} title={dp.vendor+' — '+dp.deco_type?.replace(/_/g,' ')} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>{dp.po_id} · {dp.vendor}</span>)}
@@ -5437,6 +5428,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {_itemImg(item)&&<button onClick={()=>{copyItemImage(item);setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#0369a1',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#f0f9ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:12}}>🖼️</span> Copy image</button>}
                   <button onClick={()=>{setCopySkuModal({itemIdx:idx,search:'',intent:'change',mode:'replace'});setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#7c3aed',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#f5f3ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:10,fontWeight:800}}>SKU</span> Change SKU</button>
                   <button onClick={()=>{setVendorModal({itemIdx:idx});setShowItemMenu(null);setItemMenuPos(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#b45309',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:12}}>🏷️</span> Change vendor</button>
+                  {isMethodicItem(item,vendorList)&&<button onClick={()=>{setMethodicRequestItem({item,index:idx});setShowItemMenu(null);setItemMenuPos(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'7px 10px',background:'#eef2ff',border:'none',cursor:'pointer',color:'#4338ca',fontSize:12,fontWeight:800,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#e0e7ff'} onMouseLeave={e=>e.currentTarget.style.background='#eef2ff'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:12}}>🎨</span> Request Methodic Mockup</button>}
                   {onAssignTodo&&<button onClick={()=>{onAssignTodo({title:'Pull '+(isSO?o.id:'')+' — '+item.sku,description:item.name+(item.color?' · '+item.color:''),so_id:isSO?o.id:'',customer_id:o.customer_id||'',priority:2,doc_label:isSO?o.id:'',wh_only:true});setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#0891b2',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#ecfeff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:12}}>👤</span> Assign to warehouse</button>}
                   <div style={{height:1,background:'#e2e8f0',margin:'4px 0'}}/>
                   {item.is_free_promo
@@ -6612,8 +6604,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const keeping=aiBuild.parsed.filter(p=>!p._skip);
             const newItems=keeping.map(p=>{
               const sku=(p.sku_guess||'').trim();
-              const catMatch=p.product_id?products.find(pr=>pr.id===p.product_id):
-                (sku?(products.find(pr=>pr.sku===sku)||products.find(pr=>pr.sku.toLowerCase()===sku.toLowerCase())):null);
+              // Agron's article number wins over the CLICK-style twin — it's the row that
+              // carries stock. See preferAgronProduct in utils.js.
+              const catMatch=preferAgronProduct(p.product_id?products.find(pr=>pr.id===p.product_id):
+                (sku?(products.find(pr=>pr.sku===sku)||products.find(pr=>pr.sku.toLowerCase()===sku.toLowerCase())):null),products);
               const brand=catMatch?.brand||p.brand||'';
               const au=isAU(brand);
               const cost=(catMatch?catalogRepCost(catMatch):0)||p.vendor_price||0;
@@ -6625,16 +6619,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const szKeys=Object.keys(p.sizes||{});
               return{
                 product_id:catMatch?.id||null,
-                // No placeholder SKU — an unmatched line comes in blank so the rep has to
-                // fill in the real style number before the order can be saved.
-                sku:sku,
+                // The matched product's SKU, so the line points at the article we priced it
+                // from (the Agron swap above changes it). Unmatched lines keep the raw guess —
+                // blank, so the rep has to fill in a real style number before saving.
+                sku:catMatch?.sku||sku,
                 name:catMatch?.name||p.name||'',
                 brand,
                 color:catMatch?.color||p.color||'',
                 nsa_cost:cost,
                 retail_price:retail,
                 unit_sell:sell,
-                available_sizes:szKeys.length>0?szKeys:(catMatch?.available_sizes||['S','M','L','XL','2XL']),
+                available_sizes:aiLineAvailableSizes(szKeys,catMatch?.available_sizes),
                 sizes:p.sizes||{},
                 decorations:[],
                 is_custom:!catMatch&&!p.vendor_source,
@@ -7825,6 +7820,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div></div>})()}
 
     {/* HISTORY TAB */}
+    {isSO&&tab==='methodic'&&<div className="card" style={{marginBottom:16}}><div className="card-body"><MethodicOrderPanel order={o} customer={ic} teamMembers={REPS||[]} currentUser={cu} notify={nf} onOpenDashboard={onOpenMethodicDashboard}/></div></div>}
+
     {tab==='history'&&<div className="card" style={{marginBottom:16}}>
       <div className="card-header"><h2 style={{margin:0,fontSize:14}}>Document History</h2></div>
       <div className="card-body" style={{padding:'16px 20px'}}>

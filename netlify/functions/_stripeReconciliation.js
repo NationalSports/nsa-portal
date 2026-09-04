@@ -249,6 +249,40 @@ async function listPayoutBalanceTransactions(client, payoutId, { maxPages = 1000
   throw new Error('Stripe payout exceeded the reconciliation pagination safety limit');
 }
 
+// PostgREST caps a single response (1,000 rows by default), and a plain
+// `.select()` gives no signal that it truncated. This walks the range window
+// and fails closed unless the rows collected equal the server's exact count,
+// so a partial ledger can never be summed as if it were the whole one.
+// The caller must request `{ count: 'exact' }` and order by a unique key.
+async function selectAllRows(buildQuery, { pageSize = 500, maxPages = 1000, label = 'rows' } = {}) {
+  const rows = [];
+  let expected = null;
+  for (let page = 0; page < maxPages; page += 1) {
+    const from = rows.length;
+    const { data, error, count } = await buildQuery().range(from, from + pageSize - 1);
+    if (error) throw new Error(`Could not page through ${label}: ${error.message}`);
+    if (expected === null) {
+      // count == null must be rejected explicitly: Number(null) is 0, which is
+      // finite, so a query that forgot { count: 'exact' } would otherwise page
+      // zero rows and report an empty ledger as complete.
+      if (count == null || !Number.isFinite(Number(count))) {
+        throw new Error(`Paged read of ${label} requires an exact row count`);
+      }
+      expected = Number(count);
+    }
+    const batch = Array.isArray(data) ? data : [];
+    rows.push(...batch);
+    if (rows.length >= expected) break;
+    // No progress with rows still outstanding means the window is not
+    // advancing; returning here would silently under-report.
+    if (!batch.length) throw new Error(`Paged read of ${label} stalled at ${rows.length} of ${expected} rows`);
+  }
+  if (rows.length !== expected) {
+    throw new Error(`Paged read of ${label} returned ${rows.length} of ${expected} rows`);
+  }
+  return rows;
+}
+
 async function loadExistingBalanceTransactions(sb, ids) {
   const byId = new Map();
   for (let offset = 0; offset < ids.length; offset += 100) {
@@ -384,7 +418,7 @@ async function recordPayoutReconciliation({ client, sb, payout }) {
   return { ...patch, stripe_payout_id: payout.id };
 }
 
-async function reconcilePayoutBatch({ client, sb, createdGte, startingAfter = null, limit = 5 }) {
+async function reconcilePayoutBatch({ client, sb, createdGte, startingAfter = null, limit = 5, deadlineAt = null, now = () => Date.now() }) {
   const pageSize = Math.max(1, Math.min(25, Number(limit) || 5));
   const params = {
     limit: pageSize,
@@ -395,7 +429,13 @@ async function reconcilePayoutBatch({ client, sb, createdGte, startingAfter = nu
   const payouts = Array.isArray(page && page.data) ? page.data : [];
   const results = [];
   const errors = [];
+  let processed = 0;
   for (const payout of payouts) {
+    // Stop cleanly inside the caller's time budget rather than being killed
+    // mid-write by the function timeout. Unprocessed payouts stay actionable
+    // and are picked up by the next run.
+    if (deadlineAt && now() >= deadlineAt) break;
+    processed += 1;
     try {
       const reconciliation = await recordPayoutReconciliation({ client, sb, payout });
       results.push({
@@ -408,7 +448,9 @@ async function reconcilePayoutBatch({ client, sb, createdGte, startingAfter = nu
     }
   }
   return {
-    processed: payouts.length,
+    processed,
+    selected: payouts.length,
+    remaining: Math.max(0, payouts.length - processed),
     results,
     errors,
     has_more: !!(page && page.has_more),
@@ -486,6 +528,7 @@ module.exports = {
   payoutRow,
   reconcilePayoutBatch,
   repairWebhookConfiguration,
+  selectAllRows,
   recordDisputeFinancials,
   recordPaymentIntentFinancials,
   recordPayoutReconciliation,

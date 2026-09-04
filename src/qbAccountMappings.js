@@ -116,6 +116,14 @@ export function findUniqueVendorMatch(value, vendors = []) {
   return matches[0] || null;
 }
 
+// PDF parsers retain the supplier's printed name, while the bill-review flow
+// stores the exact portal vendor selected for that document in `vendor`.
+// Prefer that canonical identity at the QBO write boundary, then still run it
+// through findUniqueVendorMatch so stale or ambiguous values fail closed.
+export function billVendorMatchName(bill) {
+  return String(bill?.vendor || bill?.supplier || '').trim();
+}
+
 export function parseQBDateValue(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;
