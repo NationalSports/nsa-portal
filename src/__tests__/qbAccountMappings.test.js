@@ -9,6 +9,7 @@ import {
   calculateCustomerShipping,
   buildInternalLaborCostManifest,
   buildOmgBankDeposit,
+  findExistingVendorBill,
   findUniqueVendorMatch,
   getOmgFeeSource,
   indexQBNonInventoryItems,
@@ -144,6 +145,27 @@ describe('QuickBooks account resolution', () => {
 });
 
 describe('vendor bill adversarial routing', () => {
+  test('scopes duplicate supplier document numbers to the QBO vendor', () => {
+    const existing = [
+      { Id: 'other', DocNumber: '202964', VendorRef: { value: 'vendor-elsewhere' }, TotalAmt: 500, TxnDate: '2026-01-01' },
+      { Id: 'ours', DocNumber: '202964', VendorRef: { value: 'silver-screen' }, TotalAmt: 34.52, TxnDate: '2026-08-31' },
+    ];
+    expect(findExistingVendorBill(existing, {
+      docNumber: '202964', vendorId: 'silver-screen', total: 34.52, txnDate: '2026-08-31',
+    })?.Id).toBe('ours');
+    expect(findExistingVendorBill(existing.slice(0, 1), {
+      docNumber: '202964', vendorId: 'silver-screen', total: 34.52, txnDate: '2026-08-31',
+    })).toBeNull();
+  });
+
+  test('blocks a conflicting duplicate for the same QBO vendor', () => {
+    expect(() => findExistingVendorBill([
+      { Id: 'conflict', DocNumber: '202964', VendorRef: { value: 'silver-screen' }, TotalAmt: 40, TxnDate: '2026-08-31' },
+    ], {
+      docNumber: '202964', vendorId: 'silver-screen', total: 34.52, txnDate: '2026-08-31',
+    })).toThrow(/this vendor with a different date or total/i);
+  });
+
   test('uses the reviewed portal vendor identity before the PDF supplier label', () => {
     expect(billVendorMatchName({
       supplier: 'Silver Screen Printing',
