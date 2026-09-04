@@ -4,7 +4,7 @@ import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
 import { fetchPublicInventory, fetchPublicStorefrontProducts } from './lib/webstorePublicData';
 import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking, _cloudinaryPdfThumb, _withTimeout, fetchWithTimeout } from './utils';
-import { shipStationCall, sanmarResolveSku, ssResolveSku, richardsonResolveSku, momentecResolveSku, resolveSkuAcrossVendors } from './vendorApis';
+import { shipStationCall, sanmarGetPricing, sanmarResolveSku, ssResolveSku, richardsonResolveSku, momentecResolveSku, resolveSkuAcrossVendors } from './vendorApis';
 import { searchVendorCatalogs, vendorColorToProductRow } from './vendorCatalogSearch';
 import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
@@ -28,6 +28,7 @@ import { downloadSilverScreenFulfillment } from './lib/silverScreenFulfillment';
 import { selectFulfillmentReportScope } from './lib/fulfillmentReportScope';
 import { webstoreProductionKey } from './lib/storeSkuGrouping';
 import { allocateMoneyCents } from './lib/bundleMoney';
+import { sanmarPricingSnapshot, sanmarStyleFromSku } from './lib/sanmarPricing';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 const originalOrderTotal = (o) => Number(o && (o.original_total != null ? o.original_total : o.total)) || 0;
@@ -2696,13 +2697,16 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // Edit the item's base cost. Cost lives on the catalog product (products.nsa_cost) and
   // drives the margin readout, so this updates it wherever the product is used — fine for
   // the custom/manual items reps create here. Reloads so costByPid (and margins) refresh.
-  const updateProductCost = useCallback(async (productId, cost) => {
+  const updateProductCost = useCallback(async (productId, cost, options = {}) => {
     if (!productId) return;
     const v = (cost === '' || cost == null) ? null : Number(cost);
     if (v != null && !Number.isFinite(v)) { flash('Enter a valid cost'); return; }
-    const { error } = await supabase.from('products').update({ nsa_cost: v }).eq('id', productId);
+    const patch = { nsa_cost: v };
+    if (Object.prototype.hasOwnProperty.call(options, 'sizeCosts')) patch.size_costs = options.sizeCosts;
+    const { error } = await supabase.from('products').update(patch).eq('id', productId);
     if (error) { flash('Error: ' + error.message); return; }
-    flash('Cost updated'); loadDetail(sel);
+    if (!options.quiet) flash('Cost updated');
+    loadDetail(sel);
   }, [sel, flash, loadDetail]);
 
   // Edit the catalog product's vendor (who a PO is cut to) and/or SKU. SKU also syncs onto
@@ -7795,6 +7799,8 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const [vendorId, setVendorId] = useState('');
   const [vendorText, setVendorText] = useState(''); // free text in the vendor search box
   const [skuEdit, setSkuEdit] = useState(item.sku || '');
+  const [productColor, setProductColor] = useState('');
+  const [savedSizeCosts, setSavedSizeCosts] = useState(null);
   const _initVendorId = useRef('');
   const _initSku = useRef(item.sku || '');
   useEffect(() => {
@@ -7802,8 +7808,8 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
     let cancelled = false;
     (async () => {
       const [{ data: vs }, { data: pr }] = await Promise.all([
-        supabase.from('vendors').select('id,name').order('name'),
-        supabase.from('products').select('vendor_id,sku').eq('id', item.product_id).maybeSingle(),
+        supabase.from('vendors').select('id,name,api_provider').order('name'),
+        supabase.from('products').select('vendor_id,sku,color,size_costs,inventory_source').eq('id', item.product_id).maybeSingle(),
       ]);
       if (cancelled) return;
       setVendorList(vs || []);
@@ -7812,6 +7818,8 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       setVendorId(vid); _initVendorId.current = vid;
       setVendorText((vs || []).find((v) => v.id === vid)?.name || '');
       setSkuEdit(sk); _initSku.current = sk;
+      setProductColor((pr && pr.color) || stockByWp[item.id]?.color || '');
+      setSavedSizeCosts((pr && pr.size_costs) || null);
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -7975,6 +7983,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   // Cost is editable inline (persists to the catalog product via onUpdateCost); track it
   // locally so the margin readout updates live before the save round-trips.
   const [costInput, setCostInput] = useState(garmentCost != null ? String(garmentCost) : '');
+  const [sanmarCostStatus, setSanmarCostStatus] = useState('idle');
   const _editedCost = costInput.trim() === '' ? null : Number(costInput);
   const effCost = (_editedCost != null && Number.isFinite(_editedCost)) ? _editedCost : garmentCost;
   const costDirty = onUpdateCost && !isBundle && (costInput.trim() === '' ? garmentCost != null : !(garmentCost != null && Number(costInput) === garmentCost));
@@ -7986,6 +7995,37 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const marginPct = (effCost != null && priceNum > 0) ? Math.round((1 - trueCost / priceNum) * 100) : null;
   const target45 = effCost != null ? Math.ceil(trueCost / 0.55) : null; // price for ~45% margin after deco
   const saveCost = () => { if (costDirty) onUpdateCost(item.product_id, costInput.trim() === '' ? null : Number(costInput)); };
+
+  // Match the Order Editor's live SanMar pricing path. Opening a SanMar-backed
+  // item refreshes its catalog cost from getPricing for this exact style/color,
+  // then persists both the base tier and extended-size overrides. This prevents
+  // stale list prices and another color's sale price from driving store margins.
+  useEffect(() => {
+    if (isBundle || !item.product_id || !onUpdateCost || !vendorId || !skuEdit) return;
+    const vendor = vendorList.find((v) => v.id === vendorId);
+    const isSanMar = vendor?.api_provider === 'sanmar' || _invSrc === 'sanmar';
+    if (!isSanMar) return;
+    let cancelled = false;
+    setSanmarCostStatus('loading');
+    (async () => {
+      try {
+        const style = sanmarStyleFromSku(skuEdit);
+        const data = await sanmarGetPricing(style, productColor, '');
+        const live = sanmarPricingSnapshot(data, productColor);
+        if (cancelled) return;
+        if (live.baseCost == null) { setSanmarCostStatus('unavailable'); return; }
+        setCostInput(String(live.baseCost));
+        setSanmarCostStatus('live');
+        const stable = (v) => JSON.stringify(v && Object.keys(v).length ? Object.fromEntries(Object.entries(v).sort()) : null);
+        if (garmentCost == null || Math.abs(garmentCost - live.baseCost) > 0.005 || stable(savedSizeCosts) !== stable(live.sizeCosts)) {
+          await onUpdateCost(item.product_id, live.baseCost, { sizeCosts: live.sizeCosts, quiet: true });
+        }
+      } catch (error) {
+        if (!cancelled) setSanmarCostStatus('unavailable');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isBundle, item.product_id, onUpdateCost, vendorId, vendorList, skuEdit, productColor, _invSrc, garmentCost, savedSizeCosts]);
 
   // Other colorways of this garment (same product name) the store doesn't already carry,
   // so staff can add them in one step at the same price/options.
@@ -8287,6 +8327,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
                 {decoUp > 0 && <span style={{ color: '#2563eb', fontWeight: 600 }}>+{money(decoUp)} to price</span>}
               </>}
               {effCost != null && <><span style={{ color: '#e2e8f0', fontWeight: 400, fontSize: 14 }}>·</span><span style={{ color: '#475569' }}>Total <b style={{ color: '#1e293b' }}>{money(trueCost)}</b></span></>}
+              {sanmarCostStatus !== 'idle' && <span style={{ marginLeft: 'auto', color: sanmarCostStatus === 'live' ? '#15803d' : sanmarCostStatus === 'loading' ? '#64748b' : '#b45309', fontSize: 10.5, fontWeight: 700 }}>{sanmarCostStatus === 'live' ? '✓ Live SanMar price' : sanmarCostStatus === 'loading' ? 'Checking SanMar…' : 'SanMar price unavailable · saved cost shown'}</span>}
             </div>
           )}
 

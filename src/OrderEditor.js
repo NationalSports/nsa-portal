@@ -20,6 +20,7 @@ const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
 import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, TWA, TWN, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced, linkedArtCostQty, decoCostAt, decoCostResolved, outsideDecoEstAt, outsideDecoSell } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, dedupeMockDupes, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, schoolPOBoxes, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles, authFetch, greetLine, withGreeting, emailMoney } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
+import { sanmarPricingSnapshot } from './lib/sanmarPricing';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit, unfulfilledSizes, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantRemoveLineApply, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
@@ -1555,13 +1556,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // Fetch pricing
         try{
           const prData=await sanmarGetPricing(sku,prodColor,'');
-          const prItems=prData?.items||[];
-          prItems.forEach(it=>{
-            const sz=normSzName(it.size||it.labelSize||'OSFA');
-            const mp=parseFloat(it.myPrice||0);const sp=parseFloat(it.salePrice||0);const pp=parseFloat(it.piecePrice||0);
-            const price=mp>0?mp:sp>0?sp:pp>0?pp:0;
-            if(price>0)sizePrice[sz]=price;
-          });
+          Object.assign(sizePrice,sanmarPricingSnapshot(prData,prodColor).prices);
         }catch(e){console.warn('[SanMar] Pricing fetch error for',sku,e.message)}
         // If we got no inventory data from the inventory endpoint, try product info
         if(Object.keys(sizeQty).length===0){
