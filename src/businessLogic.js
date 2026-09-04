@@ -117,6 +117,40 @@ function dP(d, q, artFiles, cq) {
 // produce a negative committed count — negative quantities are invalid, not credits.
 const poCommitted = (poLines, sz) => (poLines || []).reduce((a, pk) => { const ordered = pk[sz] || 0; const cancelled = (pk.cancelled || {})[sz] || 0; return a + Math.max(0, ordered - cancelled) }, 0);
 
+// Quantities that can safely move to a replacement SKU without touching anything already
+// pulled on an IF or committed to an active PO. Cancelled PO units are open again. The maps
+// make the confirmation UI explicit about what moves and what stays on the original line.
+function unfulfilledSizes(item) {
+  const orderedMap = safeSizes(item);
+  const keys = new Set(Object.keys(orderedMap));
+  if (!keys.size && item && item.qty_only) keys.add('QTY');
+  // A stale/misaligned IF can carry a quantity under a neighboring size (for example 2/XL
+  // while the order line says 2/L). Per-size subtraction alone would then invent 2 open L
+  // units even though the IF covers the entire line in total. Cap the sum of movable sizes by
+  // the line-level remainder so fully committed lines never expose a phantom SKU move.
+  const commitmentKeys = new Set([...keys, ...safeArr(item?.available_sizes)]);
+  if (item && item.qty_only) commitmentKeys.add('QTY');
+  const activePOs = safePOs(item).filter(pl => pl && pl.status !== 'cancelled');
+  const totalOrdered = [...keys].reduce((a, sz) => a + (sz === 'QTY' && !Object.keys(orderedMap).length ? safeNum(item.est_qty) : safeNum(orderedMap[sz])), 0);
+  const totalPicked = [...commitmentKeys].reduce((a, sz) => a + safePicks(item).reduce((n, pk) => n + Math.max(0, safeNum(pk[sz])), 0), 0);
+  const totalPO = [...commitmentKeys].reduce((a, sz) => a + poCommitted(activePOs, sz), 0);
+  let remainingOpen = Math.max(0, totalOrdered - totalPicked - totalPO);
+  const ordered = {}, picked = {}, po = {}, open = {};
+  keys.forEach(sz => {
+    const oq = sz === 'QTY' && !Object.keys(orderedMap).length ? safeNum(item.est_qty) : safeNum(orderedMap[sz]);
+    if (!(oq > 0)) return;
+    const pq = safePicks(item).reduce((a, pk) => a + Math.max(0, safeNum(pk[sz])), 0);
+    const poq = poCommitted(activePOs, sz);
+    const available = Math.max(0, oq - pq - poq);
+    ordered[sz] = oq;
+    if (pq > 0) picked[sz] = pq;
+    if (poq > 0) po[sz] = poq;
+    const movable = Math.min(available, remainingOpen);
+    if (movable > 0) { open[sz] = movable; remainingOpen -= movable }
+  });
+  return { ordered, picked, po, open };
+}
+
 // ── PO over-commit check ──
 // Sizes about to go on a NEW PO for `item` that exceed what the line still has OPEN
 // (line qty − picked − already PO-committed, same math as the PO form's open counts).
@@ -1444,6 +1478,34 @@ function itemsWithWipedQty(clientItems, dbItems) {
   return out;
 }
 
+// A decoration reduction is destructive, so it must be tied to the exact before/after counts
+// recorded by the editor's Remove action. Hydration flags are deliberately irrelevant here: a
+// stale or partially reconciled client can incorrectly believe it fully loaded decorations.
+function decorationShrinkConflicts(clientItems, dbItems, dbDecoCounts, deleteIntents) {
+  const clients = safeArr(clientItems);
+  const intents = safeObj(deleteIntents);
+  const countFor = id => dbDecoCounts instanceof Map
+    ? safeNum(dbDecoCounts.get(id))
+    : safeNum(safeObj(dbDecoCounts)[id]);
+  return safeArr(dbItems).reduce((out, dbItem) => {
+    const oldCount = countFor(dbItem.id);
+    const clientItem = clients[dbItem.item_index];
+    if (!clientItem || oldCount <= 0) return out; // removing the whole item is handled separately
+    const newCount = safeDecos(clientItem).length;
+    if (newCount >= oldCount) return out;
+    const intent = safeObj(intents[String(dbItem.item_index)]);
+    if (safeNum(intent.from) === oldCount && safeNum(intent.to) === newCount) return out;
+    out.push({
+      item_index: dbItem.item_index,
+      sku: clientItem.sku || dbItem.sku || '',
+      name: clientItem.name || dbItem.name || '',
+      oldCount,
+      newCount,
+    });
+    return out;
+  }, []);
+}
+
 // ─── Commission / account attribution ───
 // The account OWNER (customer.primary_rep_id) is credited — for earned commission, pipeline,
 // promo-cost deductions, and every per-rep rollup. The SO creator (so.created_by) is only a fallback
@@ -1782,7 +1844,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
-  poCommitted, poOverCommit, billOverageQty, billLineNeed, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, unfulfilledSizes, poOverCommit, billOverageQty, billLineNeed, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Size reductions that run into POs / picks
   planSizeCut, absorbedSizes,
   // Portal Assistant confirmed writes (shared by both editors + App.js previews)
@@ -1796,5 +1858,5 @@ module.exports = {
   // Inventory
   checkInventoryConflicts,
   // Data-loss guards
-  itemEditReconciles, itemsWithWipedQty, unaccountedDroppedItems,
+  itemEditReconciles, itemsWithWipedQty, decorationShrinkConflicts, unaccountedDroppedItems,
 };

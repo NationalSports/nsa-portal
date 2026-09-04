@@ -56,6 +56,31 @@ export const ourBillSku = (bl) => {
 
 const _num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
 
+// Resolve a bill-line mapping to one exact sales-order item. Copied colorway rows in
+// legacy orders can share item_id, so a persisted array position is the strongest address.
+// Older mappings fall back through id+color and SKU+color before the historical id/SKU path.
+export const resolveMappedSoItemIndex = (items, mapping) => {
+  const its = items || []; const m = mapping || {};
+  const skuEq = (it) => String(m.sku || '').toUpperCase() === String((it && it.sku) || '').toUpperCase();
+  const colorEq = (it) => String(m.color || '').trim().toUpperCase() === String((it && it.color) || '').trim().toUpperCase();
+  const poEq = (it) => !m.po_id || ((it && it.po_lines) || []).some((po) => (po.po_id || '') === m.po_id);
+  const pos = Number(m.so_item_idx);
+  if (Number.isInteger(pos) && pos >= 0 && pos < its.length && skuEq(its[pos]) && poEq(its[pos])) return pos;
+  if (m.item_id) {
+    const byId = [];
+    its.forEach((it, i) => { if (String(it && it.id) === String(m.item_id)) byId.push(i); });
+    const exact = byId.find((i) => colorEq(its[i]) && poEq(its[i]));
+    if (exact != null) return exact;
+    const withPo = byId.find((i) => poEq(its[i]));
+    if (withPo != null) return withPo;
+    if (byId.length) return byId[0];
+  }
+  let idx = its.findIndex((it) => skuEq(it) && colorEq(it) && poEq(it));
+  if (idx < 0) idx = its.findIndex((it) => skuEq(it) && poEq(it));
+  if (idx < 0) idx = its.findIndex(skuEq);
+  return idx;
+};
+
 // Agron (and some Sports Inc feeds) append a single LETTER suffix to the adidas article
 // number: "5162436D"/"5161961C" ↔ our "5162436"/"5161961". Returns the numeric base when a
 // SKU is 5+ digits followed by exactly one letter, else null. Only fires on a numeric base,

@@ -1,11 +1,13 @@
 /* eslint-disable */
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Elements, PaymentElement, AddressElement, useStripe, useElements } from '@stripe/react-stripe-js';
+import { Elements, PaymentElement, ExpressCheckoutElement, AddressElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from '../lib/supabase';
+import { webstorePublicData } from '../lib/webstorePublicData';
 import { DecoOverlay } from '../lib/decoOverlay';
 import { foldScale, foldedQty, foldedSoon, regularSize, sizeRank, scaleOf as _scaleOf } from '../lib/storeInventory';
 import { normSzName } from '../pricing';
+import { deliveryWindowLabel, estimatedDeliveryDate, estimatedDeliveryRangeLabel } from '../lib/webstoreDeliveryWindow';
 
 // Route SanMar garment photos through a Cloudinary transform that trims to the
 // garment (on its white studio background) and pads to a uniform 4:5 frame, so
@@ -96,8 +98,11 @@ function StoreStyles() {
       <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
       <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
       <style>{`
+        html,body,#root{margin:0;min-height:100%;width:100%}
+        body{padding:0}
         .sf-root *{box-sizing:border-box}
-        .sf-root{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;background:${NEUTRAL.cream};color:${NEUTRAL.inkText}}
+        .sf-root{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;background:${NEUTRAL.cream};color:${NEUTRAL.inkText};width:100%}
+        .sf-root img{display:block}
         .sf-root ::selection{background:var(--sf-primary,#8C1D40);color:#fff}
         html{scroll-behavior:smooth}
         .sf-btn{transition:transform .18s cubic-bezier(.4,0,.2,1), background .18s ease, box-shadow .18s ease}
@@ -120,6 +125,50 @@ function StoreStyles() {
         .sf-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:20px}
         .sf-pdp-media{position:sticky;top:170px}
         .sf-search-toggle{display:none}
+        /* ── Varsity look ──────────────────────────────────────────── */
+        /* Squared corners, flat cards, a 4-up grid, and no NSA skew: the
+           varsity design is built on right angles, so the shared .sf-skew
+           transform (and its upright inner span) is neutralised here rather
+           than branched at every call site. */
+        .sf-vs .sf-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:22px}
+        .sf-vs .sf-card:hover{transform:translateY(-3px);box-shadow:0 14px 34px rgba(20,32,26,.14) !important;border-color:var(--sf-accent,#B6985A) !important}
+        .sf-vs .sf-skew{transform:none}
+        .sf-vs .sf-skew:hover{transform:translateY(-2px)}
+        .sf-vs .sf-skew>span{transform:none !important}
+        .sf-vs-navlink:after{content:'';position:absolute;left:0;right:0;bottom:-7px;height:3px;background:var(--sf-accent,#B6985A);transform:scaleX(0);transform-origin:left;transition:transform .18s ease}
+        .sf-vs-navlink{position:relative}
+        .sf-vs-navlink:hover:after{transform:scaleX(1)}
+        .sf-vs-catgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
+        .sf-vs-cat{transition:transform .18s ease, box-shadow .18s ease, border-color .18s ease}
+        .sf-vs-cat:hover{transform:translateY(-2px);box-shadow:0 12px 28px rgba(20,32,26,.13);border-color:var(--sf-accent,#B6985A) !important}
+        /* Keep long sport names fully inside the ghost-word mask. Shorter mascot
+           names retain the larger reference treatment; words such as BASKETBALL
+           and VOLLEYBALL get a slightly tighter responsive scale. */
+        .sf-vs-word-long{font-size:clamp(120px,20vw,260px) !important}
+        /* Scale the hero frame with its artwork. This keeps the desktop presence
+           while preventing the reduced tablet/mobile logo from floating inside
+           a desktop-height panel. */
+        .sf-vs-hero-body{min-height:clamp(240px,33vw,380px) !important}
+        .sf-vs-logo{width:clamp(200px,27.5vw,316px) !important;height:clamp(200px,27.5vw,316px) !important}
+        .sf-footlink{transition:color .15s ease}
+        .sf-footlink:hover{color:#fff !important}
+        @media (max-width:1100px){
+          .sf-vs .sf-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+          .sf-vs-catgrid{grid-template-columns:repeat(2,minmax(0,1fr))}
+        }
+        @media (max-width:820px){
+          .sf-vs .sf-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+        }
+        @media (max-width:860px){
+          .sf-vs-nav{display:none !important}
+          .sf-vs-dots{display:none !important}
+        }
+        /* Between phone and full desktop widths, long official-store ribbons
+           need a second line. Keeping the inner copy nowrap here lets it escape
+           the banner and disappear against the notched color field. */
+        @media (min-width:601px) and (max-width:923px){
+          .sf-vs-ribbon>span{white-space:normal !important}
+        }
         @media (max-width:860px){
           .sf-showcase .sf-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
           .sf-hero-grid{grid-template-columns:1fr !important}
@@ -129,6 +178,23 @@ function StoreStyles() {
         }
         @media (max-width:600px){
           .sf-grid{grid-template-columns:1fr 1fr;gap:12px}
+          .sf-vs .sf-grid{grid-template-columns:1fr 1fr;gap:12px}
+          /* Phone header: the hero already shows the crest at full size, so drop
+             it here and let the store name wrap to two lines instead of being
+             ellipsed down to four characters. */
+          .sf-vs-hdr{gap:10px !important;padding-left:14px !important;padding-right:14px !important}
+          .sf-vs-crest{display:none !important}
+          .sf-vs-title{white-space:normal !important;font-size:16px !important;line-height:1.06 !important;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+          .sf-vs-hero-body{min-height:240px !important}
+          .sf-vs-word{font-size:clamp(74px,21vw,126px) !important}
+          .sf-vs-word-long{font-size:clamp(74px,19vw,126px) !important}
+          .sf-vs-logo{width:202px !important;height:202px !important}
+          .sf-vs-edge-left{width:10% !important}
+          .sf-vs-edge-right{width:13% !important}
+          .sf-vs-catgrid{grid-template-columns:1fr}
+          .sf-vs-ribbon{max-width:100% !important;font-size:10px !important;letter-spacing:.9px !important;padding:8px 12px !important}
+          .sf-vs-ribbon>span{white-space:normal !important}
+          .sf-vs-phone{display:none !important}
           .sf-topstrip-brand{display:none !important}
           .sf-topstrip-inner{justify-content:center !important}
           /* Collapse the store search to just a magnifying-glass icon inline with the
@@ -152,6 +218,45 @@ function darken(hex, amount) {
     r = Math.round(r * (1 - amount)); g = Math.round(g * (1 - amount)); b = Math.round(b * (1 - amount));
     return '#' + [r, g, b].map((x) => Math.max(0, Math.min(255, x)).toString(16).padStart(2, '0')).join('');
   } catch { return hex; }
+}
+
+// #rrggbb → 'rgba(r,g,b,a)'. Used for the ghosted team name behind the hero logo.
+function hexA(hex, alpha) {
+  try {
+    const h = (hex || '#000000').replace('#', '');
+    const n = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+    const num = parseInt(n, 16);
+    return `rgba(${(num >> 16) & 255},${(num >> 8) & 255},${num & 255},${alpha})`;
+  } catch { return hex; }
+}
+
+// Perceptual luminance (0 = black, 1 = white), sRGB coefficients.
+function luminance(hex) {
+  try {
+    const h = (hex || '#000000').replace('#', '');
+    const n = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+    const num = parseInt(n, 16);
+    return (0.2126 * ((num >> 16) & 255) + 0.7152 * ((num >> 8) & 255) + 0.0722 * (num & 255)) / 255;
+  } catch { return 0; }
+}
+
+// A team color dark enough to carry white type and to read as a heading on
+// white. Most school primaries are already deep (navy, maroon, forest); the
+// light ones (vegas gold, columbia blue, silver) get stepped down until they
+// clear the threshold instead of shipping white-on-gold.
+function bandColor(hex) {
+  let c = hex || '#16223F';
+  for (let i = 0; i < 8 && luminance(c) > 0.26; i++) c = darken(c, 0.18);
+  return c;
+}
+
+// Preview override — /shop/<slug>?look=varsity|open|bold renders any look
+// without changing the store row, so a rep can compare before switching.
+function lookOverride() {
+  try {
+    const v = new URLSearchParams(window.location.search).get('look');
+    return (v === 'varsity' || v === 'open' || v === 'bold') ? v : null;
+  } catch { return null; }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -248,6 +353,11 @@ function parsePath() {
   return { slug: segs[1] || '', view: segs[2] || 'home', id: segs[3] || null };
 }
 function navTo(path) { window.history.pushState({}, '', path); window.dispatchEvent(new PopStateEvent('popstate')); window.scrollTo(0, 0); }
+function orderPath(store, order, suffix = '') {
+  const token = String(order && order.status_token || '');
+  if (!token) throw new Error('Order tracking token missing');
+  return `/shop/${store.slug}/order/${encodeURIComponent(token)}${suffix}`;
+}
 
 function useTheme(store) {
   return useMemo(() => {
@@ -258,24 +368,52 @@ function useTheme(store) {
     const accent = store?.accent_color || '#B6985A';
     const ink = store?.ink_color || NEUTRAL.ink;
     const theme = store?.theme || 'classic';
-    // Hero treatment. The flagship redesign is the lighter "Open" look (cream,
-    // two-column with a product collage), so that's the default for every store.
-    // "Bold" (full-bleed team gradient) is opt-in via an explicit hero_look flag —
-    // we intentionally do NOT key it off the legacy `theme` field, which used to
-    // mean corner-radius style and would mis-trigger Bold on many existing stores.
-    const look = store?.hero_look === 'bold' ? 'bold' : 'open';
+    // Hero treatment. "Varsity" is the current design — team-color header band,
+    // a light hatched hero with the team logo in front of the team name, a
+    // Featured Sections grid and a deep team-color footer — and EVERY store gets
+    // it: `hero_look` is not a column on `webstores` today, so this read always
+    // yields undefined (which is also why the older 'bold' look has never been
+    // reachable for any store). The switch is left in place so adding that column
+    // later is the only change needed to pin an individual store back to an
+    // earlier look; until then ?look= is the only lever, and it is per-visit —
+    // useful for comparing looks, not for holding a store on the old design.
+    // We intentionally do NOT key any of this off the legacy `theme` field,
+    // which used to mean corner-radius style.
+    const pinned = store?.hero_look === 'bold' ? 'bold' : store?.hero_look === 'open' ? 'open' : 'varsity';
+    const look = lookOverride() || pinned;
+    const varsity = look === 'varsity';
+    // A primary deep enough for white type / heading use (see bandColor).
+    const band = bandColor(primary);
     return {
+      // NEUTRAL first so the team-derived tokens below actually win — `ink` used
+      // to be clobbered by the spread and store.ink_color was silently ignored.
+      ...NEUTRAL,
       primary,
       primaryDark: darken(primary, 0.16),
       deep: darken(primary, 0.34),
       accent,
       accentDeep: darken(accent, 0.24),
+      band,
       ink,
       theme,
       look,
+      varsity,
       // Angular, not pillowy: cards 6, buttons/badges/inputs 4, panels 8.
       radius: 6,
-      ...NEUTRAL,
+      // Varsity repaints the neutrals: a white page instead of the warm cream,
+      // the deep team color for dark bands and the footer, and a near-black
+      // utility strip above the header. The two earlier looks keep NEUTRAL.
+      ...(varsity ? {
+        cream: '#FFFFFF',
+        paper: '#FFFFFF',
+        warm: '#F4F5F2',
+        line: '#E4E6E0',
+        ink: band,
+        deepest: darken(band, 0.55),
+        inkText: '#33383A',
+        subText: '#6C7275',
+        radius: 2,
+      } : {}),
     };
   }, [store]);
 }
@@ -328,6 +466,12 @@ function closesLabel(close_at) {
   if (days === 0) return { text: 'Closes today', urgent: true };
   if (days <= 7) return { text: `Closes in ${days} day${days === 1 ? '' : 's'} · ${date}`, urgent: true };
   return { text: `Open until ${date}`, urgent: false };
+}
+
+export function storeDeliveryEstimate(store) {
+  const weeks = `${deliveryWindowLabel(store && store.delivery_window_weeks)} after the store closes`;
+  const calendar = estimatedDeliveryRangeLabel(store && store.close_at, store && store.delivery_window_weeks);
+  return calendar ? `${weeks} — around ${calendar}` : weeks;
 }
 
 async function loadShowcasePresentation(store) {
@@ -429,28 +573,26 @@ export default function Storefront() {
 
   const load = useCallback(async (slug) => {
     setStatus('loading');
-    const { data: stores, error } = await supabase.from('webstores_public').select('*').eq('slug', slug).limit(1);
-    if (error) { if (isMissingTable(error)) setStatus('nomigration'); else { setStatus('error'); setErrMsg(error.message); } return; }
-    const s = (stores || [])[0];
-    if (!s || s.status === 'archived') { setStatus('notfound'); return; }
-    const [prodRes, bundleRes, presentation] = await Promise.all([
-      supabase.from('webstore_storefront_products').select('*').eq('store_id', s.id).order('sort_order'),
-      supabase.from('webstore_bundle_items').select('*').order('sort_order'),
-      loadShowcasePresentation(s),
-    ]);
-    const prods = applyShowcaseImages(prodRes.data || [], presentation);
+    let catalog;
+    try { catalog = await webstorePublicData('storefront', { slug }); }
+    catch (error) {
+      if (/not found/i.test(error.message || '')) setStatus('notfound');
+      else if (isMissingTable(error)) setStatus('nomigration');
+      else { setStatus('error'); setErrMsg(error.message); }
+      return;
+    }
+    const s = catalog.store;
+    const presentation = await loadShowcasePresentation(s);
+    const prods = applyShowcaseImages(catalog.products || [], presentation);
     setStore({ ...s, presentation_mode: presentation.mode, presentation_preview: presentation.preview });
     setProducts(prods);
     const bundleIds = new Set(prods.filter((p) => p.kind === 'bundle').map((p) => p.webstore_product_id));
-    const bItems = (bundleRes.data || []).filter((b) => bundleIds.has(b.bundle_id));
+    const bItems = (catalog.bundleItems || []).filter((b) => bundleIds.has(b.bundle_id));
     setBundleItems(bItems);
     // Component product details (name/image/sizes) so packages show real names + photos.
     const compPids = [...new Set(bItems.map((b) => b.product_id).filter(Boolean))];
     const info = {};
-    if (compPids.length) {
-      const { data } = await supabase.from('products').select('id,sku,name,image_front_url,available_sizes,color').in('id', compPids);
-      (data || []).forEach((p) => { info[p.id] = p; });
-    }
+    (catalog.componentProducts || []).filter((p) => compPids.includes(p.id)).forEach((p) => { info[p.id] = p; });
     setCompInfo(info);
     // A package can reference an item the store owner archived (active=false) so it no
     // longer shows as its own card but still lives inside the package. Those rows are
@@ -460,8 +602,7 @@ export default function Storefront() {
     const activeWpIds = new Set(prods.map((p) => p.webstore_product_id));
     const missingWpIds = [...new Set(bItems.map((b) => b.webstore_product_id).filter((id) => id && !activeWpIds.has(id)))];
     if (missingWpIds.length) {
-      const { data: arch } = await supabase.from('webstore_products').select('id,product_id,sku,display_name,image_url,image_back_url,decorations,retail_price,fundraise_amount').in('id', missingWpIds);
-      const extras = (arch || []).map((wp) => {
+      const extras = (catalog.archivedProducts || []).filter((wp) => missingWpIds.includes(wp.id)).map((wp) => {
         const base = info[wp.product_id] || {};
         return {
           webstore_product_id: wp.id, product_id: wp.product_id, kind: 'single', sku: wp.sku,
@@ -503,7 +644,7 @@ export default function Storefront() {
   const categories = (() => {
     const seen = new Map();
     for (const p of groupProducts(shownProducts)) {
-      const c = (p.rep.store_category || '').trim();
+      const c = productCategory(p.rep);
       if (!c) continue;
       if (!seen.has(c)) seen.set(c, p.rep.sort_order || 0);
     }
@@ -511,44 +652,351 @@ export default function Storefront() {
   })();
   // Category clicks always land on the browse grid (sub-nav is persistent chrome).
   const onCat = (c) => { setCat(c); if (route.view !== 'home') navTo('/shop/' + store.slug); else document.getElementById('shop-grid')?.scrollIntoView({ behavior: 'smooth' }); };
+  const resetBrowse = () => { setQuery(''); onCat('all'); };
   return (
-    <div className={`sf-root${store.presentation_mode === 'showcase' ? ' sf-showcase' : ''}`} style={{ '--sf-accent': theme.accent, '--sf-primary': theme.primary, '--sf-ink': theme.ink, fontFamily: BODY, color: theme.inkText, minHeight: '100vh', background: theme.cream, display: 'flex', flexDirection: 'column' }}>
+    <div className={`sf-root${theme.varsity ? ' sf-vs' : ''}${store.presentation_mode === 'showcase' ? ' sf-showcase' : ''}`} style={{ '--sf-accent': theme.accent, '--sf-primary': theme.primary, '--sf-ink': theme.ink, fontFamily: BODY, color: theme.inkText, minHeight: '100vh', background: theme.cream, display: 'flex', flexDirection: 'column' }}>
       <StoreStyles />
       <div style={{ position: 'sticky', top: 0, zIndex: 30 }}>
-        <TopStrip store={store} theme={theme} collapsed={scrolled} />
-        <Header store={store} theme={theme} cartCount={cartCount(cart)} collapsed={scrolled} />
-        <CategoryNav theme={theme} categories={categories} cat={cat} onCat={onCat} query={query} setQuery={setQuery} onSearch={() => { setCat('all'); if (route.view !== 'home') navTo('/shop/' + store.slug); }} />
+        {theme.varsity ? (
+          <>
+            <VsTopStrip store={store} theme={theme} collapsed={scrolled} />
+            {/* Varsity puts search in the header and browses by the Featured
+                Sections grid, so there is no separate category sub-nav. */}
+            <VsHeader store={store} theme={theme} cartCount={cartCount(cart)} collapsed={scrolled}
+              query={query} setQuery={(v) => { setQuery(v); if (v && route.view !== 'home') navTo('/shop/' + store.slug); }}
+              onAllItems={resetBrowse}
+              onCategories={() => {
+                setQuery('');
+                setCat('all');
+                if (route.view !== 'home') navTo('/shop/' + store.slug);
+                // A store with one (or no) category renders no Featured Sections
+                // block, so fall back to the grid rather than no-op the nav item.
+                setTimeout(() => (document.getElementById('shop-cats') || document.getElementById('shop-grid'))?.scrollIntoView({ behavior: 'smooth' }), 60);
+              }} />
+          </>
+        ) : (
+          <>
+            <TopStrip store={store} theme={theme} collapsed={scrolled} />
+            <Header store={store} theme={theme} cartCount={cartCount(cart)} collapsed={scrolled} />
+            <CategoryNav theme={theme} categories={categories} cat={cat} onCat={onCat} query={query} setQuery={setQuery} onSearch={() => { setCat('all'); if (route.view !== 'home') navTo('/shop/' + store.slug); }} />
+          </>
+        )}
       </div>
       {!isOpen && <PreviewBanner status={store.status} />}
       {store.presentation_preview && <AppearancePreviewBanner mode={store.presentation_mode} />}
       {playerCtx && <PlayerBanner player={playerCtx} theme={theme} onClear={clearPlayer} />}
       <main style={{ flex: 1 }}>
-        {route.view === 'home' && <Home store={store} theme={theme} products={shownProducts} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} query={query} />}
+        {route.view === 'home' && <Home store={store} theme={theme} products={shownProducts} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} onCat={onCat} onResetFilters={resetBrowse} query={query} />}
         {route.view === 'p' && (() => {
           const grp = groupProducts(shownProducts).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
           const rep = grp ? grp.rep : shownProducts.find((p) => p.webstore_product_id === route.id);
-          return <Wrap><ProductPage store={store} theme={theme} product={rep} colorRows={grp ? grp.rows : (rep ? [rep] : [])} isOpen={isOpen} onAdd={addToCart} player={playerCtx} /></Wrap>;
+          return <Wrap><ProductPage store={store} theme={theme} product={rep} colorRows={grp ? grp.rows : (rep ? [rep] : [])} isOpen={isOpen} onAdd={addToCart} player={playerCtx} onCat={onCat} /></Wrap>;
         })()}
         {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={shownProducts.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} products={[...products, ...compExtras]} isOpen={isOpen} onAdd={addToCart} player={playerCtx} /></Wrap>}
         {route.view === 'cart' && <Wrap><CartPage store={store} theme={theme} cart={cart} onUpdate={updateCart} /></Wrap>}
         {route.view === 'checkout' && <Wrap><CheckoutPage store={store} theme={theme} cart={cart} onUpdate={updateCart} onClear={() => updateCart([])} player={playerCtx} /></Wrap>}
-        {route.view === 'order' && <Wrap><OrderStatusPage store={store} theme={theme} orderId={route.id} /></Wrap>}
+        {route.view === 'order' && <Wrap><OrderStatusPage store={store} theme={theme} orderToken={route.id} /></Wrap>}
       </main>
-      <Footer store={store} theme={theme} />
+      {theme.varsity ? <VsFooter store={store} theme={theme} /> : <Footer store={store} theme={theme} />}
     </div>
   );
 }
 
 const Wrap = ({ children }) => <div style={{ maxWidth: 1240, margin: '0 auto', padding: '0 24px 64px', boxSizing: 'border-box' }}>{children}</div>;
 
+// ─────────────────────────────────────────────────────────────────────
+// Varsity look — the store design shipped from the 2026 mockups.
+//
+// Chrome only. Every component below reads the same store/product rows and
+// calls the same navTo / cart / stock helpers as the two earlier looks
+// (`open`, `bold`); nothing here touches pricing, inventory or checkout.
+// The one hard requirement from the design: the team LOGO sits in front and
+// the team name sits behind it, set large and ghosted.
+// ─────────────────────────────────────────────────────────────────────
+
+// Fine diagonal hatch behind the light hero panel. These values come directly
+// from the approved Design HTML rather than from screenshot measurements.
+const VS_HATCH = 'repeating-linear-gradient(-55deg, rgba(20,32,26,0.05) 0 2px, transparent 2px 11px)';
+// Dot-matrix block that sits in the hero's upper right, behind the art.
+const vsDots = (color) => `radial-gradient(${color} 1.6px, transparent 1.6px) 0 0/15px 15px`;
+
+// Store rows are almost always named "<Team> Team Store" (sometimes with a
+// season year). Printing that verbatim inside the design's own copy gives
+// "the official Orange Lutheran Football Team Store team store" and a footer
+// line reading "… Team Store Team Store", so the boilerplate tail comes off
+// before the name is used as a team name.
+function storeShortName(name) {
+  const raw = String(name || '').trim();
+  let n = raw
+    .replace(/\s+(19|20)\d{2}$/, '')
+    .replace(/\s+(team\s+)?(store|shop)$/i, '')
+    .replace(/\s+(19|20)\d{2}$/, '')
+    .trim();
+  return n || raw;
+}
+
+// Reps can curate a storefront-specific category, but older/live stores often
+// only carry the catalog category. Both are shopper-facing labels, so the
+// varsity category cards use the curated value first and gracefully fall back
+// to the catalog value instead of disappearing entirely.
+function productCategory(product) {
+  return String((product && (product.store_category || product.category)) || '').trim();
+}
+
+// The reference header is built around a short school name ("Cal Poly
+// Mustangs"), while real store names regularly run past 35 characters. Keep
+// the same 22px display size for short names, then step down only as needed so
+// the whole identity remains visible without changing the header's 76px rhythm.
+function varsityTitleSize(name) {
+  const len = storeShortName(name).length;
+  return len > 34 ? 19 : len > 26 ? 20 : 22;
+}
+
+// The gold/red hero ribbon should finish before the 15% edge field. Long store
+// names get a small, bounded type adjustment rather than overflowing onto the
+// wedge or wrapping the desktop ribbon to a second line.
+function varsityRibbonSize(name) {
+  const len = storeShortName(name).length;
+  return len > 34 ? 12 : len > 26 ? 13 : 14;
+}
+
+// The word set large behind the logo: the last word of the shortened name —
+// the mascot ("Cal Poly Mustangs" → MUSTANGS) or, for the many stores named
+// after a program, the sport ("Orange Lutheran Football" → FOOTBALL).
+function mascotWord(name) {
+  const parts = storeShortName(name).split(/\s+/).filter(Boolean);
+  return (parts.length ? parts[parts.length - 1] : '').toUpperCase();
+}
+
+// ── Varsity top strip ────────────────────────────────────────────────
+// Near-black utility bar: back to the marketing site · the store's real
+// delivery + close status · the rep's phone. (The mockup's centre slot reads
+// "free shipping on team orders $150+"; we print what this store actually
+// does instead of a claim we can't honour per-store.)
+function VsTopStrip({ store, theme, collapsed = false }) {
+  const closes = closesLabel(store.close_at);
+  const deliver = store.delivery_mode === 'ship_home' ? 'Ships to your door' : 'Ships to the team';
+  const estimate = deliveryWindowLabel(store.delivery_window_weeks);
+  const calendarEstimate = estimatedDeliveryRangeLabel(store.close_at, store.delivery_window_weeks);
+  return (
+    <div style={{ background: theme.deepest, color: 'rgba(255,255,255,0.82)', maxHeight: collapsed ? 0 : 36, overflow: 'hidden', transition: 'max-height .25s ease' }}>
+      <div className="sf-topstrip-inner" style={{ maxWidth: 1240, height: 36, margin: '0 auto', padding: '0 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, fontFamily: DISPLAY, fontSize: 14, fontWeight: 600, letterSpacing: '0.09em', textTransform: 'uppercase' }}>
+        <a className="sf-topstrip-brand" href="https://nationalsportsapparel.com" style={{ color: 'inherit', textDecoration: 'none', whiteSpace: 'nowrap' }}>← National Sports Apparel</a>
+        <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: closes && closes.urgent ? theme.accent : 'inherit' }}>
+          <span style={{ color: theme.accent }}>★</span>{' '}{deliver} in {estimate} after close{calendarEstimate ? ` · Around ${calendarEstimate}` : ''}{closes ? ` · ${closes.text}` : ''}{' '}<span style={{ color: theme.accent }}>★</span>
+        </span>
+        <a className="sf-vs-phone" href="tel:+17142798777" style={{ color: 'inherit', textDecoration: 'none', whiteSpace: 'nowrap' }}>(714) 279-8777</a>
+      </div>
+    </div>
+  );
+}
+
+// ── Varsity header ───────────────────────────────────────────────────
+// Team-color band: crest + team name on the left, section links + search +
+// accent cart button on the right, accent rule along the bottom-left edge.
+function VsHeader({ store, theme, cartCount = 0, collapsed = false, query, setQuery, onAllItems, onCategories }) {
+  const [searchOpen, setSearchOpen] = useState(false);
+  const open = searchOpen || !!query;
+  const inputRef = useRef(null);
+  const titleSize = varsityTitleSize(store.name);
+  useEffect(() => { if (searchOpen && inputRef.current) inputRef.current.focus(); }, [searchOpen]);
+  const navStyle = { background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: 'rgba(255,255,255,0.86)', fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, letterSpacing: '0.1em', textTransform: 'uppercase' };
+  return (
+    <header style={{ position: 'relative', background: theme.band, boxShadow: '0 2px 18px rgba(0,0,0,0.18)' }}>
+      <div className="sf-vs-hdr" style={{ maxWidth: 1240, height: collapsed ? 60 : 76, margin: '0 auto', padding: '0 24px', display: 'flex', alignItems: 'center', gap: 24, transition: 'height .2s ease' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer', minWidth: 0, flex: 1 }} onClick={() => navTo('/shop/' + store.slug)}>
+          <span className="sf-vs-crest" style={{ height: collapsed ? 44 : 56, minWidth: collapsed ? 40 : 46, maxWidth: collapsed ? 58 : 76, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, background: '#fff', borderRadius: 2, padding: 5, transition: 'height .2s ease' }}>
+            {store.logo_url
+              ? <img src={store.logo_url} alt="" style={{ height: collapsed ? 34 : 46, width: 'auto', maxWidth: collapsed ? 48 : 66, objectFit: 'contain' }} />
+              : <Crest store={store} theme={theme} size={collapsed ? 34 : 46} />}
+          </span>
+          <div className="sf-vs-title" style={{ fontFamily: DISPLAY, fontSize: collapsed ? Math.min(19, titleSize) : titleSize, fontWeight: 800, letterSpacing: '0.03em', textTransform: 'uppercase', color: '#fff', lineHeight: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{storeShortName(store.name)}</div>
+        </div>
+        <nav className="sf-vs-nav" style={{ display: 'flex', alignItems: 'center', gap: 30 }}>
+          <button className="sf-vs-navlink" style={navStyle} onClick={onCategories}>Shop by Category</button>
+          <button className="sf-vs-navlink" style={navStyle} onClick={onAllItems}>All Items</button>
+        </nav>
+        <div className={'sf-vs-search' + (open ? ' sf-vs-search-open' : '')} style={{ display: open ? 'flex' : 'none', alignItems: 'center', gap: 8, background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.28)', borderRadius: 2, padding: '0 11px', height: 36, width: 210, overflow: 'hidden' }}>
+          <SearchIcon color="rgba(255,255,255,0.8)" />
+          <input ref={inputRef} className="sf-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search the store"
+            style={{ border: 'none', background: 'transparent', outline: 'none', fontFamily: BODY, fontSize: 14, color: '#fff', width: '100%' }} />
+        </div>
+        <button type="button" aria-label="Search the store" onClick={() => setSearchOpen((o) => !o)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 6, color: 'rgba(255,255,255,0.88)', flexShrink: 0 }}>
+          <SearchIcon color="rgba(255,255,255,0.88)" />
+        </button>
+        <button className="sf-btn" onClick={() => navTo('/shop/' + store.slug + '/cart')}
+          style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 9, background: theme.accent, color: '#fff', border: 'none', borderRadius: 0, padding: '10px 16px', cursor: 'pointer', fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, letterSpacing: '0.09em', transform: 'skewX(-3deg)' }}>
+          <span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>Cart · {cartCount}</span>
+        </button>
+      </div>
+      <span aria-hidden style={{ display: 'block', height: 4, background: `linear-gradient(90deg, ${theme.accent} 0 22%, rgba(255,255,255,0.16) 22% 100%)` }} />
+    </header>
+  );
+}
+
+// ── Varsity hero ─────────────────────────────────────────────────────
+// Light hatched panel · team name ghosted large behind · team logo in front ·
+// accent wedge on the right edge · dot matrix · ribbon tab top-left.
+function VsHero({ store, theme }) {
+  const word = mascotWord(store.name);
+  const short = storeShortName(store.name);
+  const ribbonSize = varsityRibbonSize(store.name);
+  return (
+    <section style={{ position: 'relative', overflow: 'hidden', background: '#F7F8FB', borderBottom: `1px solid ${theme.line}` }}>
+      <div aria-hidden style={{ position: 'absolute', inset: 0, background: VS_HATCH, pointerEvents: 'none' }} />
+      <div aria-hidden className="sf-vs-edge-left" style={{ position: 'absolute', top: 0, bottom: 0, left: 0, width: '15%', background: 'repeating-linear-gradient(-55deg, rgba(20,32,26,0.14) 0 3px, transparent 3px 12px)', clipPath: 'polygon(0 0,88% 0,100% 8%,90% 22%,100% 40%,88% 58%,100% 74%,90% 90%,100% 100%,0 100%)', pointerEvents: 'none' }} />
+      <div aria-hidden className="sf-vs-edge-right" style={{ position: 'absolute', top: 0, bottom: 0, right: 0, width: '15%', background: theme.accent, opacity: 0.9, clipPath: 'polygon(12% 0,100% 0,100% 100%,10% 100%,0 88%,12% 74%,0 58%,12% 40%,0 22%,12% 8%)', pointerEvents: 'none' }} />
+      <div aria-hidden className="sf-vs-dots" style={{ position: 'absolute', top: '14%', right: '18%', width: 180, height: 200, background: vsDots(hexA(theme.accent, 0.55)), pointerEvents: 'none' }} />
+
+      <div style={{ position: 'relative', zIndex: 2, maxWidth: 1240, margin: '0 auto', padding: '24px 24px 0', width: '100%' }}>
+        <span className="sf-vs-ribbon" style={{ display: 'inline-flex', maxWidth: 'calc(85% - 24px)', background: theme.accent, color: '#fff', fontFamily: DISPLAY, fontWeight: 700, fontSize: ribbonSize, letterSpacing: '0.14em', textTransform: 'uppercase', padding: '8px 18px', transform: 'skewX(-6deg)' }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 14, transform: 'skewX(6deg)', minWidth: 0, whiteSpace: 'nowrap' }}>
+            The official {short} team store · Powered by National Sports Apparel
+            <span aria-hidden style={{ display: 'inline-flex', gap: 8, color: 'rgba(255,255,255,0.8)' }}>✕ ✕ ✕</span>
+          </span>
+        </span>
+      </div>
+
+      <div className="sf-vs-hero-body" style={{ position: 'relative', maxWidth: 1240, minHeight: 380, margin: '0 auto', padding: '18px 24px 8px', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        {/* The team name, set large and ghosted, sits BEHIND the logo. */}
+        <div aria-hidden style={{ position: 'absolute', inset: '0 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', pointerEvents: 'none' }}>
+          <span className={'sf-vs-word' + (word.length >= 9 ? ' sf-vs-word-long' : '')} style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(120px,21vw,340px)', letterSpacing: '-0.01em', lineHeight: 0.8, textTransform: 'uppercase', color: hexA(theme.band, 0.28), whiteSpace: 'nowrap' }}>{word}</span>
+        </div>
+        {/* The logo in front — required by the design. Falls back to the initials
+            crest only when the store has no logo on file. */}
+        <div className="sf-vs-logo" style={{ position: 'relative', zIndex: 2, width: 316, height: 316, display: 'flex', alignItems: 'center', justifyContent: 'center', transform: 'translateY(16px)', filter: `drop-shadow(0 9px 12px ${hexA(theme.band, 0.34)})` }}>
+          {store.logo_url
+            ? <img src={store.logo_url} alt={store.name} style={{ maxWidth: '100%', maxHeight: '100%', width: 'auto', height: 'auto', objectFit: 'contain' }} />
+            : <Crest store={store} theme={theme} size={280} />}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ── Varsity marquee ──────────────────────────────────────────────────
+// Dark team-color band of starred selling points under the hero.
+function VsMarquee({ theme }) {
+  const items = ['Custom Uniforms', 'Sideline Gear', 'Spirit Packs', 'No Minimums'];
+  return (
+    <div style={{ position: 'relative', background: theme.ink, borderTop: `4px solid ${theme.accent}` }}>
+      <div style={{ maxWidth: 1240, margin: '0 auto', padding: '15px 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '14px 40px', flexWrap: 'wrap' }}>
+        {items.map((t) => (
+          <span key={t} style={{ display: 'inline-flex', alignItems: 'center', gap: 14, fontFamily: DISPLAY, fontWeight: 800, fontSize: 20, letterSpacing: '0.05em', textTransform: 'uppercase', color: '#fff' }}>
+            <span aria-hidden style={{ color: theme.accent }}>★</span>{t}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Varsity section heading ──────────────────────────────────────────
+// Accent eyebrow · two-tone display headline (roman + italic accent) · rule.
+function VsSectionHead({ theme, eyebrow, head, tail, right, id }) {
+  return (
+    <div id={id} style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 20, flexWrap: 'wrap', marginBottom: 'clamp(20px,2.6vw,32px)', scrollMarginTop: 150 }}>
+      <div>
+        <div style={{ fontFamily: DISPLAY, fontSize: 13, fontWeight: 700, letterSpacing: 2.6, textTransform: 'uppercase', color: theme.accentDeep, marginBottom: 10 }}>{eyebrow}</div>
+        <h2 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(30px,4.2vw,50px)', lineHeight: 0.92, textTransform: 'uppercase', margin: 0, color: theme.band }}>
+          {head}{tail ? <> <em style={{ fontStyle: 'italic', color: theme.accent }}>{tail}</em></> : null}
+        </h2>
+        <span aria-hidden style={{ display: 'block', width: 74, height: 4, background: theme.accent, marginTop: 15 }} />
+      </div>
+      {right && <div style={{ paddingBottom: 19 }}>{right}</div>}
+    </div>
+  );
+}
+
+// ── Varsity category card ────────────────────────────────────────────
+// Photo tile + category name + item count; clicking filters the grid.
+function VsCategoryCard({ theme, label, count, img, store, onClick }) {
+  return (
+    <div className="sf-vs-cat" onClick={onClick} role="button" tabIndex={0}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
+      style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 20, background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 2, padding: 18 }}>
+      <div style={{ flexShrink: 0, width: 96, height: 96, background: theme.warm, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+        {img ? <img src={img} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <Crest store={store} theme={theme} size={44} />}
+      </div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(19px,2.2vw,25px)', lineHeight: 1.04, letterSpacing: 0.3, textTransform: 'uppercase', color: theme.band }}>{label}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }}>
+          <span aria-hidden style={{ width: 22, height: 3, background: theme.accent }} />
+          <span style={{ fontFamily: DISPLAY, fontSize: 13, fontWeight: 700, letterSpacing: 1.4, textTransform: 'uppercase', color: theme.subText }}>{count} item{count === 1 ? '' : 's'}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Varsity footer ───────────────────────────────────────────────────
+function VsFooter({ store, theme }) {
+  const dealers = ['Adidas', 'Under Armour', 'New Balance', 'Richardson'];
+  const short = storeShortName(store && store.name);
+  const deliver = store && store.delivery_mode === 'ship_home' ? 'shipped to your door' : 'delivered to the team';
+  const colHead = { fontFamily: DISPLAY, fontSize: 15, fontWeight: 800, letterSpacing: 1.8, textTransform: 'uppercase', color: '#fff', marginBottom: 8 };
+  const rule = { display: 'block', width: 34, height: 3, background: theme.accent, marginBottom: 18 };
+  const linkStyle = { background: 'none', border: 'none', padding: 0, textAlign: 'left', cursor: 'pointer', color: 'rgba(255,255,255,0.78)', fontFamily: BODY, fontSize: 15.5 };
+  const go = (hash) => () => { navTo('/shop/' + store.slug); setTimeout(() => (document.getElementById(hash) || document.getElementById('shop-grid'))?.scrollIntoView({ behavior: 'smooth' }), 60); };
+  return (
+    <footer style={{ background: theme.ink, color: 'rgba(255,255,255,0.78)', marginTop: 'auto' }}>
+      <div style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(40px,5vw,60px) 24px 30px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', gap: 40 }}>
+        <div>
+          <span style={{ display: 'inline-flex', background: '#fff', borderRadius: 2, padding: 7 }}><Crest store={store} theme={theme} size={50} /></span>
+          <p style={{ fontSize: 15.5, lineHeight: 1.65, margin: '18px 0 0', maxWidth: 330 }}>
+            The official team store for {short || 'your team'} — stocked, decorated, and {deliver} by National Sports Apparel.
+          </p>
+        </div>
+        <div>
+          <div style={colHead}>Store</div><span aria-hidden style={rule} />
+          <div style={{ display: 'grid', gap: 12, justifyItems: 'start' }}>
+            <button className="sf-footlink" style={linkStyle} onClick={go('shop-cats')}>Shop by Category</button>
+            <button className="sf-footlink" style={linkStyle} onClick={go('shop-grid')}>All Items</button>
+            <button className="sf-footlink" style={linkStyle} onClick={() => navTo('/shop/' + store.slug + '/cart')}>Your Cart</button>
+            <a className="sf-footlink" href="mailto:hello@nationalsportsapparel.com" style={{ ...linkStyle, textDecoration: 'none' }}>Questions & Returns</a>
+          </div>
+        </div>
+        <div>
+          <div style={colHead}>Your Rep</div><span aria-hidden style={rule} />
+          <p style={{ fontSize: 15.5, lineHeight: 1.65, margin: '0 0 16px', maxWidth: 300 }}>Need a size run, a rush order, or a custom design? Call your dedicated rep.</p>
+          <a href="tel:+17142798777" style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 27, letterSpacing: 0.6, color: '#fff', textDecoration: 'none' }}>(714) 279-8777</a>
+        </div>
+      </div>
+      <div style={{ borderTop: '1px solid rgba(255,255,255,0.14)' }}>
+        <div style={{ maxWidth: 1240, margin: '0 auto', padding: '16px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', fontFamily: DISPLAY, fontSize: 12.5, fontWeight: 600, letterSpacing: 1.3, textTransform: 'uppercase', color: 'rgba(255,255,255,0.6)' }}>
+          <span>© {new Date().getFullYear()} {short || 'Team'} Team Store · Operated by National Sports Apparel.</span>
+          <span>{dealers.join(' · ')}</span>
+        </div>
+      </div>
+    </footer>
+  );
+}
+
+// ── Varsity breadcrumb ───────────────────────────────────────────────
+// Replaces the plain "back to store" link on product pages. The category crumb
+// navigates home AND filters the grid to that section (onCat), so it lands
+// where the label says it will.
+function VsCrumbs({ store, theme, category, name, onCat }) {
+  const sep = <span aria-hidden style={{ color: theme.line, margin: '0 10px' }}>/</span>;
+  const link = { background: 'none', border: 'none', padding: 0, cursor: 'pointer', font: 'inherit', color: theme.subText, letterSpacing: 'inherit', textTransform: 'inherit' };
+  return (
+    <nav style={{ fontFamily: DISPLAY, fontSize: 13, fontWeight: 700, letterSpacing: 1.6, textTransform: 'uppercase', color: theme.subText, marginBottom: 22, display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
+      <button className="sf-navitem" style={link} onClick={() => navTo('/shop/' + store.slug)}>Team Store</button>
+      {category && <>{sep}<button className="sf-navitem" style={link} onClick={() => (onCat ? onCat(category) : navTo('/shop/' + store.slug))}>{category}</button></>}
+      {sep}<span style={{ color: theme.band }}>{name}</span>
+    </nav>
+  );
+}
+
 // ── Top strip ────────────────────────────────────────────────────────
 function TopStrip({ store, theme, collapsed = false }) {
   const closes = closesLabel(store.close_at);
   const deliver = store.delivery_mode === 'ship_home' ? 'Ships to your door' : 'Ships to the team';
+  const calendarEstimate = estimatedDeliveryRangeLabel(store.close_at, store.delivery_window_weeks);
   // The essential line shoppers need: where it ships + when the store closes. On
   // mobile this is all that shows (the brand label is hidden via .sf-topstrip-brand);
   // on desktop the brand label sits on the left and this sits on the right.
-  const status = closes ? `${deliver} · ${closes.text}` : deliver;
+  const status = `${deliver} in ${deliveryWindowLabel(store.delivery_window_weeks)} after close${calendarEstimate ? ` · Around ${calendarEstimate}` : ''}${closes ? ` · ${closes.text}` : ''}`;
   return (
     <div style={{ background: theme.ink, color: 'rgba(255,255,255,0.82)', maxHeight: collapsed ? 0 : 44, overflow: 'hidden', transition: 'max-height .25s ease' }}>
       <div className="sf-topstrip-inner" style={{ maxWidth: 1240, margin: '0 auto', padding: '7px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, fontFamily: DISPLAY, fontSize: 12.5, fontWeight: 600, letterSpacing: 1.4, textTransform: 'uppercase' }}>
@@ -670,7 +1118,7 @@ function splitHeadline(name) {
 }
 
 // ── Home: hero + grid ────────────────────────────────────────────────
-function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExtras = [], cat = 'all', query = '' }) {
+function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExtras = [], cat = 'all', onCat = null, onResetFilters = null, query = '' }) {
   const grouped = groupProducts(products);
   // wpById also resolves archived items kept alive only inside a package, so package
   // previews keep their custom photo/name even though those items aren't in the grid.
@@ -683,23 +1131,69 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
   // Browse filter: active category + free-text search.
   const q = query.trim().toLowerCase();
   const visible = grouped.filter((g) => {
-    const inCat = cat === 'all' || (g.rep.store_category || '').trim() === cat;
+    const inCat = cat === 'all' || productCategory(g.rep) === cat;
     const inQ = !q || [g.rep.name, g.rep.store_category, g.rep.category].filter(Boolean).some((s) => String(s).toLowerCase().includes(q));
     return inCat && inQ;
   });
   const filtered = cat !== 'all' || !!q;
+  const vs = theme.varsity;
+
+  // Varsity's "Featured Sections" cards — one per store category, carrying the
+  // item count and the first product photo in it. Built from the UNFILTERED
+  // grouping so the section list stays put as the shopper filters.
+  const catCards = (() => {
+    if (!vs) return [];
+    const m = new Map();
+    for (const g of grouped) {
+      const c = productCategory(g.rep);
+      if (!c) continue;
+      if (!m.has(c)) m.set(c, { label: c, count: 0, img: null, sort: g.rep.sort_order || 0 });
+      const e = m.get(c);
+      e.count += 1;
+      if (!e.img && g.rep.image_front_url) e.img = g.rep.image_front_url;
+    }
+    return [...m.values()].sort((a, b) => a.sort - b.sort);
+  })();
+  const eyebrowType = { fontFamily: DISPLAY, fontSize: 13, fontWeight: 700, letterSpacing: 1.6, textTransform: 'uppercase', color: theme.subText, whiteSpace: 'nowrap' };
 
   return (
     <>
-      {theme.look === 'bold'
+      {vs
+        ? <VsHero store={store} theme={theme} />
+        : theme.look === 'bold'
         ? <HeroBold store={store} theme={theme} lead={lead} goBundle={goBundle} scrollGrid={scrollGrid} />
         : <HeroOpen store={store} theme={theme} lead={lead} goBundle={goBundle} scrollGrid={scrollGrid} products={products} compExtras={compExtras} />}
 
-      <ValueStrip store={store} theme={theme} />
+      {vs ? <VsMarquee theme={theme} /> : <ValueStrip store={store} theme={theme} />}
 
       {firstBundle && !filtered && <PackPromo store={store} theme={theme} bundle={firstBundle} bundleItems={bundleItems} onClick={goBundle} />}
 
-      <div id="shop-grid" style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(24px,3vw,40px) 24px clamp(48px,6vw,72px)' }}>
+      {vs && !q && catCards.length > 1 && (
+        <div style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(40px,5vw,92px) 24px 0' }}>
+          <VsSectionHead id="shop-cats" theme={theme} eyebrow="Shop by Category" head="Featured" tail="Sections" />
+          <div className="sf-vs-catgrid">
+            {catCards.map((c) => (
+              <VsCategoryCard key={c.label} theme={theme} store={store} label={c.label} count={c.count} img={c.img}
+                onClick={() => onCat && onCat(c.label)} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div id="shop-grid" style={{ maxWidth: 1240, margin: '0 auto', padding: vs ? 'clamp(40px,5vw,92px) 24px clamp(52px,6.5vw,84px)' : 'clamp(24px,3vw,40px) 24px clamp(48px,6vw,72px)', scrollMarginTop: 132 }}>
+        {vs && products.length > 0 && (
+          <VsSectionHead theme={theme}
+            eyebrow={q ? 'Search results' : cat !== 'all' ? 'Section' : 'The full store'}
+            head={cat !== 'all' ? cat : 'All'} tail={cat !== 'all' ? '' : 'Items'}
+            right={(
+              <div style={{ display: 'flex', alignItems: 'center', gap: 22, flexWrap: 'wrap' }}>
+                <span style={eyebrowType}>{visible.length} product{visible.length === 1 ? '' : 's'}</span>
+                {filtered && onCat && (
+                  <button onClick={() => onResetFilters ? onResetFilters() : onCat('all')} style={{ background: 'none', border: 'none', padding: '0 0 4px', cursor: 'pointer', fontFamily: DISPLAY, fontSize: 14, fontWeight: 700, letterSpacing: 1.6, textTransform: 'uppercase', color: theme.band, borderBottom: `2px solid ${theme.accent}` }}>Show all items</button>
+                )}
+              </div>
+            )} />
+        )}
         {products.length === 0
           ? <Splash>No products in this store yet.</Splash>
           : visible.length === 0
@@ -713,10 +1207,10 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
               // When filtered to one category (or searching), show a single grid; the
               // full "All Gear" view splits into the store's category sections.
               const byCat = new Map();
-              for (const g of visible) { const c = (g.rep.store_category || '').trim(); if (!byCat.has(c)) byCat.set(c, []); byCat.get(c).push(g); }
+              for (const g of visible) { const c = productCategory(g.rep); if (!byCat.has(c)) byCat.set(c, []); byCat.get(c).push(g); }
               const sections = [...byCat.entries()].map(([c, gs]) => ({ cat: c, gs, minSort: Math.min(...gs.map((x) => x.rep.sort_order || 0)) }));
               sections.sort((a, b) => ((a.cat === '' ? 1 : 0) - (b.cat === '' ? 1 : 0)) || (a.minSort - b.minSort));
-              const useCats = !filtered && (sections.length > 1 || (sections.length === 1 && sections[0].cat));
+              const useCats = !vs && !filtered && (sections.length > 1 || (sections.length === 1 && sections[0].cat));
               if (!useCats) return <div className="sf-grid">{visible.map(cardOf)}</div>;
               return sections.map((sec) => (
                 <div key={sec.cat || '__more'} style={{ marginBottom: 48 }}>
@@ -740,6 +1234,7 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
 function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [], compExtras = [] }) {
   const { head, tail } = splitHeadline(store.name);
   const closes = closesLabel(store.close_at);
+  const calendarEstimate = estimatedDeliveryRangeLabel(store.close_at, store.delivery_window_weeks);
   const imgs = featuredHeroImgs(store, products, compExtras);
   const showCollage = imgs.length > 0;
   return (
@@ -759,7 +1254,7 @@ function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [], com
             <SkewBtn theme={theme} variant="outlineLight" onClick={scrollGrid}>Shop the Collection</SkewBtn>
           </div>
           <div style={{ display: 'flex', gap: 'clamp(20px,4vw,40px)', marginTop: 34, flexWrap: 'wrap' }}>
-            {[['No', 'Minimums'], ['Delivery', store.delivery_mode === 'deliver_club' ? 'To coach' : 'To home'], ['4–5wk', 'Team Delivery']].map(([n, l]) => (
+            {[['No', 'Minimums'], ['Delivery', store.delivery_mode === 'deliver_club' ? 'To coach' : 'To home'], [deliveryWindowLabel(store.delivery_window_weeks), calendarEstimate ? `Around ${calendarEstimate}` : 'After Store Close']].map(([n, l]) => (
               <div key={l}>
                 <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 26, color: '#fff', lineHeight: 1 }}>{n}</div>
                 <div style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.7)', fontWeight: 600, letterSpacing: 0.4, marginTop: 4 }}>{l}</div>
@@ -1029,9 +1524,14 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
   const hasCollage = isBundle && comps.some((c) => c.img);
   const b = isBundle ? bundleBadge(comps.length, theme) : stockBadge(p, theme);
   const catLabel = (p.store_category || p.category || '').trim();
+  const vs = theme.varsity;
+  // Varsity badges selectively, like the design: a plain in-stock item carries no
+  // tag, so the only tags on the grid are the ones that change a decision
+  // (low stock, sold out, package).
+  const showBadge = !vs || b.text !== 'In stock';
   const go = () => navTo(`/shop/${store.slug}/${isBundle ? 'b' : 'p'}/${p.webstore_product_id}`);
   return (
-    <div className="sf-card" onClick={go} style={{ cursor: 'pointer', position: 'relative', display: 'flex', flexDirection: 'column', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 6, overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,0.06)' }}>
+    <div className="sf-card" onClick={go} style={{ cursor: 'pointer', position: 'relative', display: 'flex', flexDirection: 'column', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: vs ? 2 : 6, overflow: 'hidden', boxShadow: vs ? 'none' : '0 2px 12px rgba(0,0,0,0.06)' }}>
       <div style={{ position: 'relative', width: '100%', aspectRatio: '4 / 5', background: '#fff', overflow: 'hidden' }}>
         {hasCollage
           ? <BundleCollage comps={comps} theme={theme} />
@@ -1045,17 +1545,22 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
                 {!isBundle && <DecoOverlay decorations={p.decorations} colorName={p.color} />}
               </div>
             : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
-        {/* Stock / package badge — skewed −6°, top-right */}
-        <span style={{ position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', padding: '4px 10px', background: b.bg, color: b.color, transform: 'skewX(-6deg)', borderRadius: 2, zIndex: 2 }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>{b.text}</span></span>
-        {/* Category label — bottom-right */}
-        {catLabel && <span style={{ position: 'absolute', bottom: 10, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase', color: theme.subText, zIndex: 2 }}>{catLabel}</span>}
+        {/* Stock / package badge — flat tag top-left in varsity, skewed −6° top-right otherwise */}
+        {showBadge && <span style={vs
+          ? { position: 'absolute', top: 0, left: 0, fontFamily: DISPLAY, fontSize: 12, fontWeight: 800, letterSpacing: 1.4, textTransform: 'uppercase', padding: '6px 14px', background: b.bg, color: b.color, zIndex: 2 }
+          : { position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', padding: '4px 10px', background: b.bg, color: b.color, transform: 'skewX(-6deg)', borderRadius: 2, zIndex: 2 }}>
+          {vs ? b.text : <span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>{b.text}</span>}
+        </span>}
+        {/* Category label — bottom-right (varsity moves it above the name instead) */}
+        {!vs && catLabel && <span style={{ position: 'absolute', bottom: 10, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase', color: theme.subText, zIndex: 2 }}>{catLabel}</span>}
       </div>
-      <div style={{ padding: '14px 15px 16px' }}>
-        <div style={{ fontFamily: DISPLAY, textTransform: 'uppercase', fontWeight: 700, fontSize: 18, letterSpacing: 0.3, lineHeight: 1.12, color: theme.ink, minHeight: 40, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{p.name}</div>
+      <div style={{ padding: vs ? '16px 16px 18px' : '14px 15px 16px' }}>
+        {vs && catLabel && <div style={{ fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, letterSpacing: 1.8, textTransform: 'uppercase', color: theme.subText, marginBottom: 8 }}>{catLabel}</div>}
+        <div style={{ fontFamily: DISPLAY, textTransform: 'uppercase', fontWeight: vs ? 800 : 700, fontSize: vs ? 19 : 18, letterSpacing: 0.3, lineHeight: 1.12, color: vs ? theme.band : theme.ink, minHeight: 40, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{p.name}</div>
         {!isBundle && <ColorDots rows={colorRows} theme={theme} />}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 }}>
-          <span style={{ fontFamily: DISPLAY, fontSize: 22, letterSpacing: 0.3, fontWeight: 800, color: theme.primary }}>{money(priceOf(p))}</span>
-          <span style={{ fontFamily: DISPLAY, fontSize: 13, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: theme.accentDeep }}>View →</span>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: vs ? 10 : 12 }}>
+          <span style={{ fontFamily: DISPLAY, fontSize: 22, letterSpacing: 0.3, fontWeight: 800, color: vs ? theme.band : theme.primary }}>{money(priceOf(p))}</span>
+          {!vs && <span style={{ fontFamily: DISPLAY, fontSize: 13, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: theme.accentDeep }}>View →</span>}
         </div>
       </div>
     </div>
@@ -1179,7 +1684,7 @@ function swatchColor(name) {
 }
 
 // ── Single product ───────────────────────────────────────────────────
-function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd, player = null }) {
+function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd, player = null, onCat = null }) {
   const [colorId, setColorId] = useState(rep ? rep.webstore_product_id : null);
   const [size, setSize] = useState(null);
   const [img, setImg] = useState('front');
@@ -1304,7 +1809,9 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const proof = ['Custom team decoration included', 'adidas & Under Armour quality', 'Ships to the team when the store closes'];
   return (
     <div style={{ paddingTop: 24 }}>
-      <BackLink store={store} theme={theme} />
+      {theme.varsity
+        ? <VsCrumbs store={store} theme={theme} category={[p.store_category, p.category].filter(Boolean)[0] || ''} name={p.name} onCat={onCat} />
+        : <BackLink store={store} theme={theme} />}
       <div className="sf-2col" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.05fr) minmax(0,0.95fr)', gap: 44, alignItems: 'start' }}>
         <div className="sf-pdp-media">
           <div style={{ position: 'relative', width: '100%', maxWidth: 420, margin: '0 auto', aspectRatio: '4 / 5', background: theme.warm, borderRadius: 8, border: `1px solid ${theme.line}`, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -1318,8 +1825,9 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
         </div>
         <div style={{ paddingTop: 4 }}>
           <div style={{ fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, letterSpacing: 2, textTransform: 'uppercase', color: theme.accentDeep, marginBottom: 8 }}>{[p.store_category, p.category].filter(Boolean)[0] || 'Team Gear'}</div>
-          <h1 style={{ fontFamily: DISPLAY, fontSize: 'clamp(32px,4vw,48px)', margin: '0 0 12px', letterSpacing: 0.2, lineHeight: 0.96, textTransform: 'uppercase', color: theme.ink }}>{p.name}</h1>
-          <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 30, marginBottom: showFund ? 4 : 18, letterSpacing: 0.3, color: theme.primary }}>{money(priceOf(p) + upNow)}{upNow > 0 ? <span style={{ fontSize: 14, color: theme.subText, fontFamily: BODY, fontWeight: 600 }}> · {size} +{money(upNow)}</span> : null}</div>
+          <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(32px,4vw,48px)', margin: '0 0 12px', letterSpacing: 0.2, lineHeight: 0.96, textTransform: 'uppercase', color: theme.varsity ? theme.band : theme.ink }}>{p.name}</h1>
+          {theme.varsity && <span aria-hidden style={{ display: 'block', width: 74, height: 4, background: theme.accent, margin: '0 0 20px' }} />}
+          <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 30, marginBottom: showFund ? 4 : 18, letterSpacing: 0.3, color: theme.varsity ? theme.band : theme.primary }}>{money(priceOf(p) + upNow)}{upNow > 0 ? <span style={{ fontSize: 14, color: theme.subText, fontFamily: BODY, fontWeight: 600 }}> · {size} +{money(upNow)}</span> : null}</div>
           {showFund && <div style={{ fontSize: 13, color: STOCK.in, fontWeight: 700, marginBottom: 18 }}>Includes {money(p.fundraise_amount)} that supports the team</div>}
           {descText && <p style={{ fontSize: 16, lineHeight: 1.6, color: theme.subText, margin: '0 0 22px', maxWidth: 480, whiteSpace: 'pre-line' }}>{descText}</p>}
 
@@ -1352,7 +1860,9 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
           ) : (sizes.length > 0 && <div style={{ margin: '22px 0' }}>
             <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
               <div style={label}>Select Size</div>
-              <span style={{ fontSize: 13, color: theme.accentDeep, cursor: 'pointer', textDecoration: 'underline' }}>Size guide</span>
+              {/* Decorative today — there is no size chart behind it. Left out of
+                  varsity rather than shipping a dead control in the new design. */}
+              {!theme.varsity && <span style={{ fontSize: 13, color: theme.accentDeep, cursor: 'pointer', textDecoration: 'underline' }}>Size guide</span>}
             </div>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>{renderSizeButtons(p, sizes)}</div>
           </div>)}
@@ -1381,14 +1891,23 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
                 <button onClick={() => setQty((q) => Math.min(99, q + 1))} style={qtyBtn(false)}>+</button>
               </div>
             )}
-            <button className="sf-btn sf-skew" onClick={addToCart} disabled={!canAdd} style={{ ...cta(theme), flex: 1, minWidth: 220, opacity: canAdd ? 1 : 0.55, cursor: canAdd ? 'pointer' : 'not-allowed' }}>
+            <button className="sf-btn sf-skew" onClick={addToCart} disabled={!canAdd} style={{ ...cta(theme), flex: theme.varsity ? '2 1 200px' : 1, minWidth: theme.varsity ? 200 : 220, opacity: canAdd ? 1 : 0.55, cursor: canAdd ? 'pointer' : 'not-allowed' }}>
               <span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>{!isOpen ? 'Store not open yet' : soldOutNoSize ? 'Sold out' : added ? '✓ Added to Cart' : needSize && !size ? 'Select a size' : needNumber && !num.trim() ? 'Enter a number' : missingAddOn ? `Complete ${missingAddOn.label}` : `Add to Cart · ${money(total * (isPersonalized ? 1 : qty))}`}</span>
             </button>
+            {theme.varsity && (
+              <button className="sf-btn" onClick={() => navTo('/shop/' + store.slug)}
+                style={{ ...cta(theme), flex: '1 1 150px', width: 'auto', minWidth: 150, background: 'transparent', color: theme.band, border: `2px solid ${theme.band}` }}>Keep Shopping</button>
+            )}
           </div>
           {added && <div style={{ marginTop: 14, background: '#EAF3EC', border: '1px solid #BFE0C8', color: STOCK.in, borderRadius: 6, padding: '11px 14px', fontWeight: 700, fontSize: 14, display: 'flex', alignItems: 'center', gap: 8 }}>✓ Added to cart — <span onClick={() => navTo('/shop/' + store.slug + '/cart')} style={{ textDecoration: 'underline', cursor: 'pointer' }}>view cart</span></div>}
 
           <div style={{ marginTop: 24, display: 'grid', gap: 10, borderTop: `1px solid ${theme.line}`, paddingTop: 20 }}>
-            {proof.map((pt) => <div key={pt} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 14.5, color: theme.subText }}><span style={{ color: theme.accentDeep, fontWeight: 800 }}>✓</span>{pt}</div>)}
+            {proof.map((pt) => <div key={pt} style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 14.5, color: theme.subText }}>
+              {theme.varsity
+                ? <span aria-hidden style={{ flexShrink: 0, width: 22, height: 22, background: theme.band, color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 800 }}>✓</span>
+                : <span style={{ color: theme.accentDeep, fontWeight: 800 }}>✓</span>}
+              {pt}
+            </div>)}
           </div>
         </div>
       </div>
@@ -1559,13 +2078,34 @@ function lineDetail(l) {
     Number(l.size_extra) > 0 ? `Includes +${money(l.size_extra)} for ${l.size}` : null,
   ].filter(Boolean);
 }
+
+// Cart quantities can come back from older localStorage snapshots as strings.
+// Normalize before doing arithmetic so "+" turns "1" into 2 (not "11").
+export function cartLineQty(line) {
+  const qty = Number(line?.qty);
+  return Number.isFinite(qty) && qty > 0 ? Math.floor(qty) : 1;
+}
+
+// A chosen color/size/custom option does not make a garment one-of-a-kind.
+// Only packs and genuinely personalized lines must remain at one unit.
+export function isFixedCartQty(line) {
+  return line?.kind === 'bundle' || !!line?.player_number || !!line?.player_name;
+}
+
+export function setCartLineQty(cart, key, nextQty) {
+  const qty = Number(nextQty);
+  if (!Number.isFinite(qty)) return cart;
+  if (qty <= 0) return cart.filter((line) => line.key !== key);
+  return cart.map((line) => (line.key === key ? { ...line, qty: Math.floor(qty) } : line));
+}
+
 function CartPage({ store, theme, cart, onUpdate }) {
   const remove = (key) => onUpdate(cart.filter((l) => l.key !== key));
-  const setQty = (key, q) => onUpdate(cart.map((l) => (l.key === key ? { ...l, qty: Math.max(1, q) } : l)));
+  const setQty = (key, q) => onUpdate(setCartLineQty(cart, key, q));
   // Personalized items (a specific jersey number/name) and packs are 1-of-a-kind.
-  const fixedQty = (l) => l.kind === 'bundle' || !!l.player_number || !!l.player_name || (Array.isArray(l.option_selections) && l.option_selections.length > 0);
+  const fixedQty = isFixedCartQty;
   const heading = <h1 style={{ position: 'relative', fontFamily: DISPLAY, fontSize: 'clamp(32px,5vw,46px)', textTransform: 'uppercase', letterSpacing: 0.3, margin: '0 0 26px', lineHeight: 0.95, color: theme.ink, paddingBottom: 14 }}>Your Cart<span aria-hidden style={{ position: 'absolute', left: 0, bottom: 0, width: 58, height: 4, background: theme.accent, transform: 'skewX(-12deg)' }} /></h1>;
-  if (!cart.length) return <div style={{ paddingTop: 24 }}><BackLink store={store} theme={theme} />{heading}<div style={{ background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 8, padding: '48px 24px', textAlign: 'center' }}><div style={{ fontSize: 16, color: theme.subText, marginBottom: 18 }}>Your cart is empty.</div><SkewBtn theme={theme} variant="primary" onClick={() => navTo('/shop/' + store.slug)}>Start with the Player Pack</SkewBtn></div></div>;
+  if (!cart.length) return <div style={{ paddingTop: 24 }}><BackLink store={store} theme={theme} />{heading}<div style={{ background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 8, padding: '48px 24px', textAlign: 'center' }}><div style={{ fontSize: 16, color: theme.subText, marginBottom: 18 }}>Your cart is empty.</div><SkewBtn theme={theme} variant="primary" onClick={() => navTo('/shop/' + store.slug)}>Browse the Store</SkewBtn></div></div>;
 
   const thumb = (img, kind) => <div style={{ width: 52, height: 52, borderRadius: 6, background: theme.warm, overflow: 'hidden', flexShrink: 0, display: 'grid', placeItems: 'center' }}>{img ? <img src={img} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <GarmentTile theme={theme} store={store} kind={kind || 'top'} />}</div>;
   const optLabel = (parts) => parts.filter(Boolean).join(' · ');
@@ -1605,9 +2145,9 @@ function CartPage({ store, theme, cart, onUpdate }) {
                   ? <button onClick={() => remove(l.key)} style={{ background: 'none', border: 'none', color: theme.primary, cursor: 'pointer', fontFamily: DISPLAY, fontWeight: 700, fontSize: 12.5, letterSpacing: 0.5, textTransform: 'uppercase', padding: '6px 0 0' }}>Remove</button>
                   : <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
                       <div style={{ display: 'flex', alignItems: 'center', border: `1px solid ${theme.line}`, borderRadius: 4, overflow: 'hidden', height: 36 }}>
-                        <button onClick={() => setQty(l.key, (l.qty || 1) - 1)} disabled={(l.qty || 1) <= 1} style={{ ...qtyBtn((l.qty || 1) <= 1), width: 34, minHeight: 34, fontSize: 17 }}>−</button>
-                        <span style={{ minWidth: 32, textAlign: 'center', fontWeight: 700, fontSize: 14, fontFamily: DISPLAY }}>{l.qty || 1}</span>
-                        <button onClick={() => setQty(l.key, (l.qty || 1) + 1)} style={{ ...qtyBtn(false), width: 34, minHeight: 34, fontSize: 17 }}>+</button>
+                        <button type="button" aria-label={`Decrease quantity for ${l.name || 'item'}`} title={cartLineQty(l) === 1 ? 'Remove item' : 'Decrease quantity'} onClick={() => setQty(l.key, cartLineQty(l) - 1)} style={{ ...qtyBtn(false), width: 34, minHeight: 34, fontSize: 17 }}>−</button>
+                        <span style={{ minWidth: 32, textAlign: 'center', fontWeight: 700, fontSize: 14, fontFamily: DISPLAY }}>{cartLineQty(l)}</span>
+                        <button type="button" aria-label={`Increase quantity for ${l.name || 'item'}`} onClick={() => setQty(l.key, cartLineQty(l) + 1)} style={{ ...qtyBtn(false), width: 34, minHeight: 34, fontSize: 17 }}>+</button>
                       </div>
                       <button onClick={() => remove(l.key)} style={{ background: 'none', border: 'none', color: theme.primary, cursor: 'pointer', fontFamily: DISPLAY, fontWeight: 700, fontSize: 12.5, letterSpacing: 0.5, textTransform: 'uppercase' }}>Remove</button>
                     </div>}
@@ -1629,7 +2169,7 @@ function CartPage({ store, theme, cart, onUpdate }) {
             <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 30, color: theme.primary }}>{money(grandTotal(store, cart))}</span>
           </div>
           <button className="sf-btn sf-skew" onClick={() => navTo('/shop/' + store.slug + '/checkout')} style={{ ...cta(theme), marginTop: 4 }}><span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>Checkout →</span></button>
-          <p style={{ fontSize: 12.5, color: theme.subText, lineHeight: 1.5, margin: '14px 0 0' }}>{store.delivery_mode === 'ship_home' ? 'Custom-decorated and shipped to your door' : 'Delivered to the team'} ~4–5 weeks after the store closes{closesLabel(store.close_at) ? ` ${closesLabel(store.close_at).text.replace(/^Closes /, '').replace(/^Open until /, 'on ')}` : ''}.</p>
+          <p style={{ fontSize: 12.5, color: theme.subText, lineHeight: 1.5, margin: '14px 0 0' }}>{store.delivery_mode === 'ship_home' ? 'Custom-decorated and shipped to your door' : 'Delivered to the team'}. Estimated delivery: {storeDeliveryEstimate(store)}{closesLabel(store.close_at) ? ` (${closesLabel(store.close_at).text})` : ''}.</p>
         </div>
       </div>
     </div>
@@ -1671,12 +2211,11 @@ async function repriceCart(store, cart) {
   try {
     const ids = [...new Set(cart.map((l) => l.webstore_product_id).filter(Boolean))];
     if (!ids.length) return cart;
-    const [{ data: prods }, { data: bitems }] = await Promise.all([
-      supabase.from('webstore_storefront_products')
-        .select('webstore_product_id,retail_price,fundraise_amount,size_upcharges,name_upcharge,options')
-        .eq('store_id', store.id).in('webstore_product_id', ids),
+    const [{ rows: allProds }, { data: bitems }] = await Promise.all([
+      webstorePublicData('storefront_products', { storeId: store.id }),
       supabase.from('webstore_bundle_items').select('id,bundle_id,name_upcharge,takes_name').in('bundle_id', ids),
     ]);
+    const prods = (allProds || []).filter((p) => ids.includes(p.webstore_product_id));
     const byId = {}; (prods || []).forEach((p) => { byId[p.webstore_product_id] = p; });
     const biById = {}; (bitems || []).forEach((b) => { biById[b.id] = b; });
     return cart.map((l) => {
@@ -1720,36 +2259,61 @@ function couponDiscount(coupon, cart, shipping = 0) {
 // Elements never re-initializes and wipes the buyer's input as the tax total updates.
 const STRIPE_ADDR_OPTS = { mode: 'payment', amount: 100, currency: 'usd', appearance: { theme: 'stripe' } };
 
+// A prominent wallet surface for mobile checkout. Apple Pay is allowed on every
+// Stripe-supported Apple browser (including compatible macOS Chromium); Stripe
+// still hides it when the device, currency, account, or registered domain is not
+// eligible. Keep redirect-based methods out of this element because the webstore
+// finalizes successful PaymentIntents in place and already has a card/ACH fallback.
+const EXPRESS_CHECKOUT_OPTS = {
+  buttonHeight: 52,
+  buttonTheme: { applePay: 'black', googlePay: 'black' },
+  buttonType: { applePay: 'check-out', googlePay: 'checkout' },
+  layout: { maxColumns: 1, maxRows: 2, overflow: 'auto' },
+  paymentMethods: {
+    applePay: 'always',
+    googlePay: 'auto',
+    link: 'auto',
+    paypal: 'never',
+    amazonPay: 'never',
+    klarna: 'never',
+  },
+};
+
 // If the Stripe address widget ever fails to render/init, fall back to the plain ZIP
 // input so club-delivery checkout can never be *blocked* by this enhancement.
 class StripeFieldBoundary extends React.Component {
   constructor(p) { super(p); this.state = { failed: false }; }
   static getDerivedStateFromError() { return { failed: true }; }
-  componentDidCatch(err) { try { console.warn('[storefront] billing address widget failed; using plain ZIP:', err && err.message); } catch (e) {} }
+  componentDidCatch(err) { try { console.warn('[storefront] billing address widget failed; using plain address fields:', err && err.message); } catch (e) {} }
   render() { return this.state.failed ? this.props.fallback : this.props.children; }
 }
 
-function BillingAddressInner({ onZip }) {
+function BillingAddressInner({ onAddress }) {
   return (
     <AddressElement
       options={{ mode: 'billing', fields: { phone: 'never' } }}
       onChange={(e) => {
-        const pc = e && e.value && e.value.address && e.value.address.postal_code;
-        if (pc) onZip(String(pc).replace(/\D/g, '').slice(0, 5));
+        const address = e && e.value && e.value.address;
+        if (address) onAddress({
+          billing_street1: String(address.line1 || '').trim().slice(0, 200),
+          billing_city: String(address.city || '').trim().slice(0, 120),
+          zip: String(address.postal_code || '').replace(/\D/g, '').slice(0, 5),
+          state: String(address.state || '').trim().toUpperCase().slice(0, 2),
+        });
       }}
     />
   );
 }
 
-// Renders the Stripe billing address (its postal drives the sales-tax quote), or the
-// plain ZIP `fallback` when locked (PaymentIntent created — inputs frozen), when Stripe
+// Renders the Stripe billing address (it drives the sales-tax quote), or the
+// plain-field `fallback` when locked (PaymentIntent created — inputs frozen), when Stripe
 // isn't available, or if the widget errors.
-function BillingZip({ stripePromise, disabled, onZip, fallback }) {
+function BillingZip({ stripePromise, disabled, onAddress, fallback }) {
   if (disabled || !stripePromise) return fallback;
   return (
     <StripeFieldBoundary fallback={fallback}>
       <Elements stripe={stripePromise} options={STRIPE_ADDR_OPTS}>
-        <BillingAddressInner onZip={onZip} />
+        <BillingAddressInner onAddress={onAddress} />
       </Elements>
     </StripeFieldBoundary>
   );
@@ -1763,7 +2327,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   // player_name = who the gear is for (often a parent buys for their kid). On
   // club/team stores it's required so every order tags to a player for the
   // player report + bagging; pre-filled from the roster link when present.
-  const [buyer, setBuyer] = useState({ name: '', email: '', phone: '', zip: '', player_name: (player && player.player_name) ? String(player.player_name) : '' });
+  const [buyer, setBuyer] = useState({ name: '', email: '', phone: '', billing_street1: '', billing_city: '', zip: '', state: '', player_name: (player && player.player_name) ? String(player.player_name) : '' });
   const [ship, setShip] = useState({ name: '', street1: '', street2: '', city: '', state: '', zip: '' });
   const [method, setMethod] = useState(allowPaid ? 'paid' : 'unpaid');
   const [busy, setBusy] = useState(false);
@@ -1781,19 +2345,19 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   // charges the original amount, or switch to team-tab and mint a duplicate order.
   const locked = !!clientSecret;
   const [checkoutMsg, setCheckoutMsg] = useState('');
-  useEffect(() => { supabase.from('webstore_settings').select('checkout_message').eq('id', 1).maybeSingle().then(({ data }) => setCheckoutMsg((data && data.checkout_message) || '')).catch(() => {}); }, []);
+  useEffect(() => { checkoutCall({ action: 'settings' }).then((data) => setCheckoutMsg((data && data.checkout_message) || '')).catch(() => {}); }, []);
   const needAddr = store.delivery_mode === 'ship_home';
   // Server-quoted sales tax: CA via CDTFA, registered out-of-state via TaxCloud. Quoted once
   // we can source tax (a complete ship address, or pickup which sources to NSA's location).
   const [taxInfo, setTaxInfo] = useState(null); // { tax, total, tax_state }
-  const _shipKey = needAddr ? [ship.street1, ship.city, ship.state, ship.zip].join('|') : ('pickup|' + (buyer.zip || ''));
+  const _shipKey = needAddr ? [ship.street1, ship.city, ship.state, ship.zip].join('|') : ['pickup', buyer.billing_street1 || '', buyer.billing_city || '', buyer.state || '', buyer.zip || ''].join('|');
   const _cartKey = JSON.stringify(cart.map((l) => [l.webstore_product_id, l.size, l.qty, l.option_selections || null]));
   useEffect(() => {
     if (needAddr && !(ship.street1 && ship.city && ship.state && ship.zip)) { setTaxInfo(null); return; }
-    if (!needAddr && (buyer.zip || '').length < 5) { setTaxInfo(null); return; }
+    if (!needAddr && (!(buyer.billing_street1 || '').trim() || !(buyer.billing_city || '').trim() || (buyer.state || '').length !== 2 || (buyer.zip || '').length < 5)) { setTaxInfo(null); return; }
     let cancelled = false;
     const t = setTimeout(async () => {
-      const r = await checkoutCall({ action: 'quote', storeSlug: store.slug, cart, ship: needAddr ? ship : null, billing: needAddr ? null : { zip: buyer.zip }, couponCode: coupon ? coupon.code : null });
+      const r = await checkoutCall({ action: 'quote', storeSlug: store.slug, cart, ship: needAddr ? ship : null, billing: needAddr ? null : { street1: buyer.billing_street1, city: buyer.billing_city, zip: buyer.zip, state: buyer.state }, couponCode: coupon ? coupon.code : null });
       if (!cancelled && r && r.totals) setTaxInfo(r.totals);
     }, 500);
     return () => { cancelled = true; clearTimeout(t); };
@@ -1821,7 +2385,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   if (!cart.length) return <div style={{ paddingTop: 26 }}><BackLink store={store} theme={theme} /><Splash>Your cart is empty.</Splash></div>;
 
   const validBuyer = buyer.name.trim() && /.+@.+\..+/.test(buyer.email)
-    && (needAddr ? (ship.street1 && ship.city && ship.state && ship.zip) : (((buyer.zip || '').length === 5) && (buyer.player_name || '').trim()));
+    && (needAddr ? (ship.street1 && ship.city && ship.state && ship.zip) : ((buyer.billing_street1 || '').trim() && (buyer.billing_city || '').trim() && ((buyer.zip || '').length === 5) && ((buyer.state || '').length === 2) && (buyer.player_name || '').trim()));
   const ship_ = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
   const discount = couponDiscount(coupon, cart, ship_);
   const processing = procFeeAmt(store, cart);
@@ -1846,13 +2410,13 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   };
 
   const submitUnpaid = async () => {
-    setErr(''); setPriceNotice(false); if (!validBuyer) { setErr(needAddr ? 'Please complete your contact and shipping info.' : 'Please complete your name, email, player name and billing ZIP.'); return; }
+    setErr(''); setPriceNotice(false); if (!validBuyer) { setErr(needAddr ? 'Please complete your contact and shipping info.' : 'Please complete your name, email, player name and billing address.'); return; }
     setBusy(true);
     const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'unpaid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), clientRef: orderRefFor('unpaid'), rosterToken: player ? player.token : null });
     setBusy(false);
     if (r.error) { if (r.code === 'totals_changed') return onTotalsChanged(); setErr(r.error.message); return; }
     clearOrderRef();
-    onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`);
+    onClear(); navTo(orderPath(store, r.order));
   };
 
   // Order-first: the server re-prices the cart, persists the order as
@@ -1860,23 +2424,28 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   // the PaymentIntent with the SERVER total, then we show the card form. The
   // Stripe webhook flips it to paid even if the buyer closes the tab.
   const startCard = async () => {
-    setErr(''); setPriceNotice(false); if (!validBuyer) { setErr(needAddr ? 'Please complete your contact and shipping info.' : 'Please complete your name, email, player name and billing ZIP.'); return; }
+    setErr(''); setPriceNotice(false); if (!validBuyer) { setErr(needAddr ? 'Please complete your contact and shipping info.' : 'Please complete your name, email, player name and billing address.'); return; }
     setBusy(true);
     const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), clientRef: orderRefFor('paid'), rosterToken: player ? player.token : null });
     if (r.error) { setBusy(false); if (r.code === 'totals_changed') return onTotalsChanged(); setErr(r.error.message); return; }
     if (r.alreadyPaid) {
       // Replay of an order whose payment already went through — finalize and land
       // on the confirmation instead of showing a card form for a settled intent.
-      await checkoutCall({ action: 'finalize', orderId: r.order.id, stripePiId: r.order.stripe_pi_id || r.intentId });
+      const finalized = await checkoutCall({ action: 'finalize', orderId: r.order.id, stripePiId: r.order.stripe_pi_id || r.intentId });
+      if (finalized.error || !finalized.ok) {
+        setErr((finalized.error && finalized.error.message) || 'Payment was received, but the order is still finalizing. Please try again — you will not be charged twice.');
+        setBusy(false);
+        return;
+      }
       clearOrderRef();
-      onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`);
+      onClear(); navTo(orderPath(store, r.order));
       return;
     }
     if (r.paymentProcessing) {
       // Replay of an order whose ACH debit is mid-settlement (or awaiting micro-deposit
       // verification) — the money is already in motion, so never re-show a payment form.
       clearOrderRef();
-      onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}${r.bankVerify ? '?bankverify=1' : ''}`);
+      onClear(); navTo(orderPath(store, r.order, r.bankVerify ? '?bankverify=1' : ''));
       return;
     }
     if (!r.clientSecret) { setErr('Could not start payment.'); setBusy(false); return; }
@@ -1891,9 +2460,14 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
     // to paid, and sends the confirmation email. If this call never lands (tab
     // closed, network drop), the Stripe webhook does the same — the atomic
     // confirmation_sent claim means exactly one of them sends the email.
-    await checkoutCall({ action: 'finalize', orderId: pendingOrder.id, stripePiId: paymentIntentId || pendingOrder.stripe_pi_id });
+    const finalized = await checkoutCall({ action: 'finalize', orderId: pendingOrder.id, stripePiId: paymentIntentId || pendingOrder.stripe_pi_id });
+    if (finalized.error || !finalized.ok) {
+      setErr((finalized.error && finalized.error.message) || 'Payment was received, but the order is still finalizing. Please try again — you will not be charged twice.');
+      setBusy(false);
+      return;
+    }
     clearOrderRef();
-    onClear(); navTo(`/shop/${store.slug}/order/${pendingOrder.id}`);
+    onClear(); navTo(orderPath(store, pendingOrder));
   };
 
   // Bank (ACH) debit initiated but not yet settled — no finalize (the server
@@ -1904,13 +2478,14 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   const confirmProcessing = async (paymentIntentId, verifying) => {
     if (!pendingOrder) { setErr('Order reference lost — your bank payment was submitted. Please contact us and we’ll confirm your order.'); return; }
     clearOrderRef();
-    onClear(); navTo(`/shop/${store.slug}/order/${pendingOrder.id}${verifying ? '?bankverify=1' : ''}`);
+    onClear(); navTo(orderPath(store, pendingOrder, verifying ? '?bankverify=1' : ''));
   };
 
   return (
     <div style={{ paddingTop: 24, maxWidth: 640 }}>
       <BackLink store={store} theme={theme} />
       <h1 style={{ position: 'relative', fontFamily: DISPLAY, fontSize: 'clamp(32px,5vw,46px)', textTransform: 'uppercase', letterSpacing: 0.3, margin: '0 0 26px', lineHeight: 0.95, color: theme.ink, paddingBottom: 14 }}>Checkout<span aria-hidden style={{ position: 'absolute', left: 0, bottom: 0, width: 58, height: 4, background: theme.accent, transform: 'skewX(-12deg)' }} /></h1>
+      <div style={{ background: '#fffbeb', color: '#78350f', border: '1px solid #fde68a', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14 }}><strong>Estimated delivery:</strong> {storeDeliveryEstimate(store)}.</div>
       {checkoutMsg && <div style={{ background: '#eff6ff', color: '#1e3a5f', border: '1px solid #bfdbfe', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14, whiteSpace: 'pre-wrap' }}>{checkoutMsg}</div>}
       {err && <div style={{ background: '#fee2e2', color: '#b91c1c', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14 }}>{err}</div>}
       {priceNotice && <div style={{ background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14 }}>Prices changed while you were shopping, so we refreshed your cart to the current prices. Please review your new total below and place your order again.</div>}
@@ -1933,7 +2508,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
       ) : (
         <><div style={{ background: '#eff6ff', color: '#1e40af', padding: '10px 14px', borderRadius: 8, fontSize: 13, margin: '12px 0' }}>Orders for this store are <b>delivered to the club</b> — no shipping address needed.</div>
         <Field label="Player's name"><input style={inp} value={buyer.player_name || ''} disabled={locked} maxLength={60} placeholder="First &amp; last name" onChange={(e) => setBuyer({ ...buyer, player_name: e.target.value })} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Required — the team sorts each order by player. Add yours even if you're the buyer.</div></Field>
-        <Field label="Billing address"><BillingZip stripePromise={stripePromise} disabled={locked} onZip={(z) => setBuyer((b) => ({ ...b, zip: z }))} fallback={<input style={{ ...inp, maxWidth: 160 }} value={buyer.zip || ''} disabled={locked} inputMode="numeric" maxLength={5} placeholder="e.g. 93703" onChange={(e) => setBuyer({ ...buyer, zip: e.target.value.replace(/\D/g, '').slice(0, 5) })} />} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Your billing address is used only to apply the correct sales tax for your area — Link fills it in automatically for returning shoppers.</div></Field></>
+        <Field label="Billing address"><BillingZip stripePromise={stripePromise} disabled={locked} onAddress={(a) => setBuyer((b) => ({ ...b, ...a }))} fallback={<div style={{ display: 'grid', gap: 8 }}><input aria-label="Billing street" style={inp} value={buyer.billing_street1 || ''} disabled={locked} maxLength={200} placeholder="Street address" onChange={(e) => setBuyer({ ...buyer, billing_street1: e.target.value })} /><input aria-label="Billing city" style={inp} value={buyer.billing_city || ''} disabled={locked} maxLength={120} placeholder="City" onChange={(e) => setBuyer({ ...buyer, billing_city: e.target.value })} /><div style={{ display: 'flex', gap: 8 }}><input aria-label="Billing state" style={{ ...inp, maxWidth: 82 }} value={buyer.state || ''} disabled={locked} maxLength={2} placeholder="State" onChange={(e) => setBuyer({ ...buyer, state: e.target.value.replace(/[^a-z]/gi, '').toUpperCase().slice(0, 2) })} /><input aria-label="Billing ZIP" style={{ ...inp, maxWidth: 160 }} value={buyer.zip || ''} disabled={locked} inputMode="numeric" maxLength={5} placeholder="ZIP" onChange={(e) => setBuyer({ ...buyer, zip: e.target.value.replace(/\D/g, '').slice(0, 5) })} /></div></div>} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Your billing address is used only to apply the correct sales tax for your area — Link fills it in automatically for returning shoppers.</div></Field></>
       )}
 
       {/* Coupon / scholarship code */}
@@ -1993,14 +2568,25 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   );
 }
 
-function CardForm({ theme, onPaid, onProcessing }) {
+export function CardForm({ theme, onPaid, onProcessing }) {
   const stripe = useStripe();
   const elements = useElements();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const pay = async () => {
+  // null = the wallet iframe is still checking this browser; false collapses it
+  // completely when no express method is eligible, so card checkout never gains
+  // an empty placeholder on unsupported devices.
+  const [expressAvailable, setExpressAvailable] = useState(null);
+  const pay = async (submitExpress = false) => {
     if (!stripe || !elements) return;
     setBusy(true); setErr('');
+    // Express Checkout's confirm event represents a wallet authorization. Stripe
+    // requires the shared Elements group to be submitted before confirmPayment;
+    // the regular PaymentElement path continues to let confirmPayment submit it.
+    if (submitExpress) {
+      const { error: submitError } = await elements.submit();
+      if (submitError) { setErr(submitError.message || 'Payment details could not be submitted.'); setBusy(false); return; }
+    }
     const { error, paymentIntent } = await stripe.confirmPayment({ elements, redirect: 'if_required' });
     if (error) { setErr(error.message || 'Payment failed.'); setBusy(false); return; }
     if (paymentIntent && paymentIntent.status === 'succeeded') { await onPaid(paymentIntent.id); }
@@ -2018,26 +2604,35 @@ function CardForm({ theme, onPaid, onProcessing }) {
   };
   return (
     <div>
+      <div style={{ visibility: expressAvailable ? 'visible' : 'hidden', height: expressAvailable === false ? 0 : 'auto', minHeight: expressAvailable === null ? 52 : 0, overflow: 'hidden', marginBottom: expressAvailable ? 18 : 0 }}>
+        <ExpressCheckoutElement
+          options={EXPRESS_CHECKOUT_OPTS}
+          onReady={({ availablePaymentMethods }) => setExpressAvailable(!!availablePaymentMethods && Object.values(availablePaymentMethods).some(Boolean))}
+          onLoadError={() => setExpressAvailable(false)}
+          onConfirm={() => pay(true)}
+        />
+      </div>
+      {expressAvailable && <div aria-hidden style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '0 0 18px', color: '#94a3b8', fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.8 }}><span style={{ height: 1, background: '#e2e8f0', flex: 1 }} /><span>Or pay another way</span><span style={{ height: 1, background: '#e2e8f0', flex: 1 }} /></div>}
       <PaymentElement />
       {err && <div style={{ color: '#b91c1c', fontSize: 13, marginTop: 8 }}>{err}</div>}
-      <button className="sf-btn" onClick={pay} disabled={busy} style={{ ...cta(theme), opacity: busy ? 0.5 : 1, marginTop: 14 }}>{busy ? 'Processing…' : 'Pay now'}</button>
+      <button className="sf-btn" onClick={() => pay(false)} disabled={busy} style={{ ...cta(theme), opacity: busy ? 0.5 : 1, marginTop: 14 }}>{busy ? 'Processing…' : 'Pay now'}</button>
     </div>
   );
 }
 
-// ── Order status (tokenless lookup by id; emailed link comes later) ──
-function OrderStatusPage({ store, theme, orderId }) {
+// ── Order status (private bearer token) ──────────────────────────────
+function OrderStatusPage({ store, theme, orderToken }) {
   const [order, setOrder] = useState(null);
   const [items, setItems] = useState([]);
   const [status, setStatus] = useState('loading');
   useEffect(() => {
     (async () => {
-      const r = await checkoutCall({ action: 'get_order', orderId });
+      const r = await checkoutCall({ action: 'track_order', token: orderToken });
       if (r.error || !r.order) { setStatus('notfound'); return; }
       setOrder(r.order);
       setItems(r.items || []); setStatus('ok');
     })();
-  }, [orderId]);
+  }, [orderToken]);
   if (status === 'loading') return <Splash>Loading your order…</Splash>;
   if (status === 'notfound') return <div style={{ paddingTop: 26 }}><BackLink store={store} theme={theme} /><Splash>Order not found.</Splash></div>;
 
@@ -2108,10 +2703,10 @@ function OrderStatusPage({ store, theme, orderId }) {
   const placedDate = order.created_at ? new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
   const updatedAt = order.updated_at || order.created_at;
   const updatedLabel = updatedAt ? new Date(updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ', ' + new Date(updatedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';
-  // Team delivery is ~4–5 weeks after the store CLOSES (production runs once the
-  // store closes), not from the order date. Show the later (5-week) edge so we
-  // don't over-promise — matches the "~4–5 weeks after the store closes" copy.
-  const estDelivery = store.close_at ? 'Wk of ' + new Date(new Date(store.close_at).getTime() + 35 * 86400000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'TBD';
+  // Production starts after close. Use the later edge of the store's selected
+  // window for the confirmation's conservative "week of" date.
+  const estimatedDate = estimatedDeliveryDate(store.close_at, store.delivery_window_weeks);
+  const estDelivery = estimatedDate ? 'Wk of ' + estimatedDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'TBD';
   const orderedDate = order.created_at ? new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
 
   // Inline helpers
@@ -2312,7 +2907,7 @@ function OrderStatusPage({ store, theme, orderId }) {
         )}
       </div>
 
-      {order.ship_method === 'ship_home' && <ShippingBlock theme={theme} order={order} shipped={!!order.shipped_at || curIdx >= 4} onSaved={(addr) => setOrder((o) => ({ ...o, ship_address: addr }))} />}
+      {order.ship_method === 'ship_home' && <ShippingBlock theme={theme} order={order} token={orderToken} shipped={!!order.shipped_at || curIdx >= 4} onSaved={(addr) => setOrder((o) => ({ ...o, ship_address: addr }))} />}
 
       {/* What's next */}
       <div style={{ background: WARM, border: `1px solid ${LINE}`, borderRadius: 8, padding: '20px 24px', marginBottom: 22 }}>
@@ -2335,8 +2930,9 @@ function OrderStatusPage({ store, theme, orderId }) {
   );
 }
 
-// Shows the order's shipping address and — until it ships — lets the buyer fix it.
-function ShippingBlock({ theme, order, shipped, onSaved }) {
+// Shows the order's shipping address and — until it ships — lets the buyer
+// correct tax-neutral recipient details. Jurisdiction/routing changes go to staff.
+function ShippingBlock({ theme, order, token, shipped, onSaved }) {
   const a = order.ship_address || {};
   const [editing, setEditing] = useState(false);
   const [f, setF] = useState({ name: a.name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', zip: a.zip || '' });
@@ -2345,7 +2941,7 @@ function ShippingBlock({ theme, order, shipped, onSaved }) {
   const save = async () => {
     if (!f.street1 || !f.city || !f.state || !f.zip) { setMsg('Please complete street, city, state and ZIP.'); return; }
     setBusy(true); setMsg('');
-    const r = await checkoutCall({ action: 'update_ship', orderId: order.id, ship: f });
+    const r = await checkoutCall({ action: 'update_ship', token, ship: f });
     setBusy(false);
     if (r.error) { setMsg(r.error.message || 'Could not save — please try again.'); return; }
     onSaved(r.ship_address || { ...a, ...f }); setEditing(false);
@@ -2354,18 +2950,13 @@ function ShippingBlock({ theme, order, shipped, onSaved }) {
     <div style={{ marginTop: 22, borderTop: '1px solid #eef1f5', paddingTop: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
         <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b' }}>Shipping to</div>
-        {!shipped && !editing && <button onClick={() => setEditing(true)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: theme.accent, cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>Edit address</button>}
+        {!shipped && !editing && <button onClick={() => setEditing(true)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: theme.accent, cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>Edit recipient / unit</button>}
       </div>
       {editing ? (
         <div>
           <Field label="Name"><input style={inp} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
-          <Field label="Street"><input style={inp} value={f.street1} onChange={(e) => setF({ ...f, street1: e.target.value })} /></Field>
           <Field label="Apt / unit (optional)"><input style={inp} value={f.street2} onChange={(e) => setF({ ...f, street2: e.target.value })} /></Field>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <Field label="City"><input style={inp} value={f.city} onChange={(e) => setF({ ...f, city: e.target.value })} /></Field>
-            <Field label="State"><input style={inp} value={f.state} onChange={(e) => setF({ ...f, state: e.target.value })} /></Field>
-            <Field label="ZIP"><input style={inp} value={f.zip} onChange={(e) => setF({ ...f, zip: e.target.value })} /></Field>
-          </div>
+          <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '10px 12px', fontSize: 13, color: '#475569', marginBottom: 12 }}>To change the street, city, state, or ZIP, message our team so we can verify tax and shipping first.</div>
           {msg && <div style={{ color: '#b91c1c', fontSize: 13, marginBottom: 8 }}>{msg}</div>}
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="sf-btn" onClick={save} disabled={busy} style={{ ...cta(theme), width: 'auto', padding: '12px 28px', fontSize: 14 }}>{busy ? 'Saving…' : 'Save address'}</button>
@@ -2425,7 +3016,7 @@ function Footer({ store, theme }) {
           <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 9, fontSize: 14 }}>
             <li>Custom team decoration included</li>
             <li>No order minimums</li>
-            <li>4–5 week team delivery</li>
+            <li>{deliveryWindowLabel(store && store.delivery_window_weeks)} after store close</li>
             <li>Questions? hello@nationalsportsapparel.com</li>
           </ul>
         </div>
@@ -2446,9 +3037,13 @@ function Footer({ store, theme }) {
 }
 
 // Size chips skew −4°; selected = primary fill, white text.
-const sizeBtn = (t, sel) => ({ minWidth: 50, padding: '11px 14px', borderRadius: 4, border: `1px solid ${sel ? t.primary : t.line}`, background: sel ? t.primary : '#fff', color: sel ? '#fff' : t.ink, fontFamily: DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: 0.5, cursor: 'pointer', transform: 'skewX(-4deg)' });
-const thumbBtn = (t, sel) => ({ padding: '9px 18px', borderRadius: 4, border: `1px solid ${sel ? t.primary : t.line}`, background: sel ? t.primary : '#fff', color: sel ? '#fff' : t.subText, fontFamily: DISPLAY, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, cursor: 'pointer' });
-const cta = (t) => ({ width: '100%', padding: '0 28px', height: 50, borderRadius: 4, border: 'none', background: t.primary, color: '#fff', fontFamily: DISPLAY, fontSize: 16, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' });
+// Size chips skew −4°; selected = primary fill, white text. Varsity squares them
+// off (its whole system is right angles) and selects with the deep team band.
+const sizeBtn = (t, sel) => ({ minWidth: 50, padding: '11px 14px', borderRadius: t.varsity ? 2 : 4, border: `1px solid ${sel ? (t.varsity ? t.band : t.primary) : t.line}`, background: sel ? (t.varsity ? t.band : t.primary) : '#fff', color: sel ? '#fff' : t.ink, fontFamily: DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: 0.5, cursor: 'pointer', transform: t.varsity ? 'none' : 'skewX(-4deg)' });
+const thumbBtn = (t, sel) => ({ padding: '9px 18px', borderRadius: t.varsity ? 2 : 4, border: `1px solid ${sel ? (t.varsity ? t.band : t.primary) : t.line}`, background: sel ? (t.varsity ? t.band : t.primary) : '#fff', color: sel ? '#fff' : t.subText, fontFamily: DISPLAY, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, cursor: 'pointer' });
+// Varsity's primary action is the accent (gold) block with deep team type on it —
+// the same button the design uses for Add to Cart and for checkout.
+const cta = (t) => ({ width: '100%', padding: '0 28px', height: 52, borderRadius: t.varsity ? 2 : 4, border: 'none', background: t.varsity ? t.accent : t.primary, color: t.varsity ? t.band : '#fff', fontFamily: DISPLAY, fontSize: 16, fontWeight: t.varsity ? 800 : 700, letterSpacing: 1.2, textTransform: 'uppercase', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' });
 const fieldStyle = (t, w) => ({ width: w, padding: '11px 12px', borderRadius: 4, border: `1px solid ${t.line}`, fontSize: 15, fontWeight: 600, fontFamily: 'inherit', boxSizing: 'border-box', background: '#fff' });
 
 // Darken/lighten a hex color by pct (−100..100) for hero gradients.

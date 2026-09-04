@@ -17,11 +17,28 @@
 // left paid orphan orders on number conflicts, and raced the coupon counter.
 const stripe = require('stripe');
 const { createClient } = require('@supabase/supabase-js');
+const { planShipmentLineUpdates } = require('./_webstoreShipment');
 const { sendOrderConfirmation, bumpCouponUse } = require('./_webstoreEmail');
 const { SO_DONE } = require('./backorder-ready-sweep'); // one definition of "SO finished"
+const {
+  staffRecipientIds,
+  staffEmailRecipients,
+  processNotificationByDedupe,
+} = require('./_webstoreNotifications');
 
 const HEADERS = { 'Content-Type': 'application/json' };
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+const INVENTORY_RETRY_ERROR = 'We could not verify inventory right now. Please wait a moment and try checkout again.';
+const escapeIlikeLiteral = (value) => String(value).replace(/[\\%_]/g, '\\$&');
+
+function storeOrderWindowError(store, nowMs = Date.now()) {
+  if (!store || store.status !== 'open') return 'This store isn’t open for orders right now.';
+  const openMs = store.open_at ? Date.parse(store.open_at) : NaN;
+  if (Number.isFinite(openMs) && openMs > nowMs) return 'This store isn’t open for orders yet.';
+  const closeMs = store.close_at ? Date.parse(store.close_at) : NaN;
+  if (Number.isFinite(closeMs) && closeMs <= nowMs) return 'This store has closed for orders.';
+  return null;
+}
 
 // Effective per-item fundraising. Mirrors webstore_storefront_products
 // (migration 047) EXACTLY so the price charged equals the price the storefront
@@ -47,6 +64,116 @@ function getSb() {
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) return null;
   return createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
+}
+
+// Exact public allow-list. Keep this explicit so a future base-table expansion
+// cannot silently expose a staff-only webstores column here.
+const PUBLIC_STORE_FIELDS = 'id,slug,name,status,open_at,close_at,payment_mode,require_login,number_enabled,number_unique,number_min,number_max,fundraise_enabled,fundraise_show_parents,logo_url,banner_url,primary_color,accent_color,hero_blurb,theme,ship_home_enabled,deliver_club_enabled,delivery_mode,delivery_window_weeks,flat_shipping,public_listed,featured_product_ids,processing_pct,storefront_template,sport';
+const PUBLIC_INVENTORY_FIELDS = 'sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced,source';
+const safeText = (value, max) => String(value || '').trim().slice(0, max);
+const uniqueTextList = (values, maxItems, maxLength) => [...new Set((Array.isArray(values) ? values : [])
+  .map((value) => safeText(value, maxLength)).filter(Boolean))].slice(0, maxItems);
+
+async function drainView(queryFactory, maxRows) {
+  const rows = [];
+  for (let from = 0; from < maxRows; from += 1000) {
+    const { data, error } = await queryFactory().range(from, Math.min(from + 999, maxRows - 1));
+    if (error) throw error;
+    rows.push(...(data || []));
+    if (!data || data.length < 1000) return rows;
+  }
+  return rows;
+}
+
+async function publicStoreSearch(sb, body) {
+  const term = safeText(body.term, 80).replace(/[%,()*:]/g, ' ').trim();
+  if (term.length < 2) return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ rows: [] }) };
+  const allowedStatuses = new Set(['open', 'closed']);
+  const statuses = uniqueTextList(body.statuses, 2, 12).filter((s) => allowedStatuses.has(s));
+  const limit = Math.min(50, Math.max(1, Number(body.limit) || 24));
+  let query = sb.from('webstores_public').select('slug,name,status,logo_url,primary_color,accent_color,banner_url,close_at')
+    .eq('public_listed', true).or(`name.ilike.*${escapeIlikeLiteral(term)}*,slug.ilike.*${escapeIlikeLiteral(term)}*`)
+    .order('name').limit(limit);
+  query = query.in('status', statuses.length ? statuses : ['open']);
+  const { data, error } = await query;
+  if (error) throw error;
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ rows: data || [] }) };
+}
+
+async function publicStoreCount(sb) {
+  const { count, error } = await sb.from('webstores_public').select('id', { count: 'exact', head: true })
+    .eq('status', 'open').eq('public_listed', true);
+  if (error) throw error;
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ count: Number(count) || 0 }) };
+}
+
+async function publicTemplates(sb) {
+  const { data, error } = await sb.from('webstore_templates_public').select('id,name').order('name').limit(250);
+  if (error) throw error;
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ rows: data || [] }) };
+}
+
+async function publicInventory(sb, body) {
+  const skus = uniqueTextList(body.skus, 400, 80);
+  if (!skus.length) return bad(400, 'skus are required');
+  const rows = await drainView(
+    () => sb.from('inventory_unified').select(PUBLIC_INVENTORY_FIELDS).in('sku', skus).order('sku').order('size'),
+    10000,
+  );
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ rows }) };
+}
+
+async function publicStorefrontProducts(sb, body) {
+  const storeId = safeText(body.storeId, 80);
+  if (!storeId) return bad(400, 'storeId is required');
+  const productIds = uniqueTextList(body.productIds, 400, 80);
+  const rows = await drainView(() => {
+    let query = sb.from('webstore_storefront_products').select('*').eq('store_id', storeId).order('sort_order');
+    if (productIds.length) query = query.in('product_id', productIds);
+    return query;
+  }, 3000);
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ rows }) };
+}
+
+async function publicStorefront(sb, body) {
+  const slug = safeText(body.slug, 120);
+  if (!slug || !/^[a-z0-9][a-z0-9-]*$/i.test(slug)) return bad(400, 'Invalid store slug');
+  // This handler uses the service role and returns only PUBLIC_STORE_FIELDS.
+  // Reading the base row lets newly added curated fields ship without widening
+  // the separately secured directory-search view.
+  const { data: stores, error: storeError } = await sb.from('webstores').select(PUBLIC_STORE_FIELDS).eq('slug', slug).limit(1);
+  if (storeError) throw storeError;
+  const store = (stores || [])[0];
+  if (!store || store.status === 'archived') return bad(404, 'Store not found');
+  const products = await drainView(
+    () => sb.from('webstore_storefront_products').select('*').eq('store_id', store.id).order('sort_order'),
+    3000,
+  );
+  const bundleIds = products.filter((p) => p.kind === 'bundle').map((p) => p.webstore_product_id);
+  let bundleItems = [];
+  if (bundleIds.length) {
+    const { data, error } = await sb.from('webstore_bundle_items').select('*').in('bundle_id', bundleIds).order('sort_order');
+    if (error) throw error;
+    bundleItems = data || [];
+  }
+  const productIds = [...new Set(bundleItems.map((item) => item.product_id).filter(Boolean))];
+  let componentProducts = [];
+  if (productIds.length) {
+    const { data, error } = await sb.from('products').select('id,sku,name,image_front_url,available_sizes,color').in('id', productIds);
+    if (error) throw error;
+    componentProducts = data || [];
+  }
+  const activeIds = new Set(products.map((p) => p.webstore_product_id));
+  const archivedIds = [...new Set(bundleItems.map((item) => item.webstore_product_id).filter((id) => id && !activeIds.has(id)))];
+  let archivedProducts = [];
+  if (archivedIds.length) {
+    const { data, error } = await sb.from('webstore_products')
+      .select('id,product_id,sku,display_name,image_url,image_back_url,decorations,retail_price,fundraise_amount')
+      .eq('store_id', store.id).in('id', archivedIds).eq('active', false);
+    if (error) throw error;
+    archivedProducts = data || [];
+  }
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ store, products, bundleItems, componentProducts, archivedProducts }) };
 }
 
 // Validate shopper-entered add-ons against the product's server-side definition.
@@ -161,7 +288,7 @@ async function priceCart(sb, store, cart) {
         // order_item.qty). Money is unaffected: components are stored at $0 and the parent
         // holds the whole package price at qty 1.
         const cq = Math.max(1, parseInt(c.qty, 10) || 1);
-        return { product_id: c.product_id, sku: c.sku, size: (cc.size || '').trim() || null, player_name: pname || null, player_number: pnum || null, name: cc.name || null, image: cc.image || null, qty: cq };
+        return { webstore_product_id: c.webstore_product_id || null, product_id: c.product_id, sku: c.sku, size: (cc.size || '').trim() || null, player_name: pname || null, player_number: pnum || null, name: cc.name || null, image: cc.image || null, qty: cq };
       });
       if (outComps.some((c) => c === null)) return { error: 'Package contents changed — please re-add it to your cart.' };
       if (outComps.some((c) => c === undefined)) return { error: 'A package in your cart is missing a size or number — please re-add it.' };
@@ -205,51 +332,103 @@ const _availForSize = (p, size) => {
 // just Adidas), so non-Adidas items are validated against real vendor availability.
 // Returns { error, holds }: error blocks checkout; holds are the (product, size,
 // qty, max_avail) lines the place_webstore_order transaction reserves for 30
-// minutes (migration 00171), closing the read-then-insert oversell race. Only
-// tracked, not-incoming lines get holds — the same lines this check can block on.
+// minutes, closing the read-then-insert oversell race. The transaction also
+// subtracts accepted order demand after those short holds expire
+// (20260902053000), so units stay reserved through unfinished SO production.
 async function checkStock(sb, store, lines) {
-  const singles = lines.filter((l) => l.kind === 'single' && l.size);
-  if (!singles.length) return { error: null, holds: [] };
-  const ids = [...new Set(singles.map((l) => l.wp.id))];
-  const { data, error } = await sb.from('webstore_storefront_products')
-    .select('webstore_product_id,product_id,name,size_stock,vendor_size_stock,vendor_on_hand,on_order_qty,earliest_eta,vendor_eta,track_inventory,inventory_source')
-    .eq('store_id', store.id).in('webstore_product_id', ids);
-  if (error) return { error: null, holds: [] }; // parity with the client: don't block checkout on a lookup failure
-  const byId = {}; (data || []).forEach((p) => { byId[p.webstore_product_id] = p; });
-  const need = {}; singles.forEach((l) => { const k = l.wp.id + '|' + l.size; need[k] = (need[k] || 0) + l.qty; });
+  // Flatten every inventory-backed fulfillment line. Bundle parents carry the
+  // money, but their catalog components carry the garments and therefore must
+  // reserve stock using their server-priced, catalog-authoritative quantities.
+  const demand = [];
+  lines.forEach((l) => {
+    if (l.kind === 'single' && l.size) {
+      demand.push({ webstore_product_id: l.wp.id, product_id: l.wp.product_id || null, size: l.size, qty: l.qty });
+    } else if (l.kind === 'bundle') {
+      (l.components || []).forEach((c) => {
+        // A legacy decorative/service placeholder can have no catalog product;
+        // there is no physical inventory resource to check in that case.
+        if (c.size && c.product_id) demand.push({
+          webstore_product_id: c.webstore_product_id || null,
+          product_id: c.product_id,
+          size: c.size,
+          qty: Math.max(1, parseInt(c.qty, 10) || 1),
+        });
+      });
+    }
+  });
+  if (!demand.length) return { error: null, holds: [] };
+
+  const ids = [...new Set(demand.map((d) => d.webstore_product_id).filter(Boolean))];
+  const pids = [...new Set(demand.map((d) => d.product_id).filter(Boolean))];
+  // Server-only lookup includes archived component cards that remain valid
+  // inside a package; the anonymous storefront view intentionally omits them.
+  const invRes = await sb.rpc('get_webstore_checkout_inventory', {
+    p_store_id: store.id,
+    p_webstore_product_ids: ids,
+    p_product_ids: pids,
+  });
+  if (invRes.error) return { error: INVENTORY_RETRY_ERROR, holds: [] };
+  const rows = invRes.data || [];
+  const byId = {}; const byPid = {};
+  rows.forEach((p) => {
+    byId[p.webstore_product_id] = p;
+    if (p.product_id) {
+      byPid[p.product_id] = byPid[p.product_id] || [];
+      if (!byPid[p.product_id].some((x) => x.webstore_product_id === p.webstore_product_id)) byPid[p.product_id].push(p);
+    }
+  });
+
+  // Resolve each request to a listing in this store, then merge by the actual
+  // shared inventory resource (catalog product + size), not by storefront card.
+  const need = {};
+  for (const d of demand) {
+    let p = d.webstore_product_id ? byId[d.webstore_product_id] : null;
+    if (!p && d.product_id) {
+      const candidates = byPid[d.product_id] || [];
+      // Without an exact component listing, ambiguity is unsafe: two cards can
+      // deliberately use different inventory tracking modes.
+      if (candidates.length !== 1) return { error: INVENTORY_RETRY_ERROR, holds: [] };
+      [p] = candidates;
+    }
+    if (!p || (d.product_id && p.product_id !== d.product_id)) return { error: INVENTORY_RETRY_ERROR, holds: [] };
+    const tracked = p.track_inventory !== false && !!p.inventory_source && p.inventory_source !== 'manual';
+    if (!tracked) continue;
+    const resource = (p.product_id || ('wp:' + p.webstore_product_id)) + '|' + d.size;
+    if (!need[resource]) need[resource] = { p, size: d.size, qty: 0 };
+    need[resource].qty += Number(d.qty) || 0;
+  }
 
   // Cumulative backorder claims: open needs-ledger rows (teamshop and club
   // alike, ANY store) already promise units of on-hand + incoming stock to
   // earlier orders — the sweep allocates FIFO by order date, so a new buyer
   // only truly gets what's left after those claims. Loaded once per checkout,
-  // only for products this cart backorders against; fail-open on any error
-  // (parity with the stock lookup above).
+  // only for products this cart backorders against. These reads fail closed: an
+  // unreadable or truncated claims ledger could otherwise let multiple buyers
+  // sell the same incoming units.
   const claimed = {}; // '<product_id>|<size>' -> promised qty on unfinished SOs
-  const capPids = [...new Set((data || []).filter((p) => Number(p.on_order_qty) > 0 && p.product_id).map((p) => p.product_id))];
+  const capPids = [...new Set(Object.values(need).map((n) => n.p).filter((p) => Number(p.on_order_qty) > 0 && p.product_id).map((p) => p.product_id))];
   if (capPids.length) {
     try {
       const nd = await sb.from('teamshop_auto_po_needs')
-        .select('product_id,size,qty_needed,so_id').gt('qty_needed', 0).in('product_id', capPids).limit(2000);
-      const rows = (!nd.error && nd.data) || [];
+        .select('product_id,size,qty_needed,so_id').gt('qty_needed', 0).in('product_id', capPids).limit(2001);
+      if (nd.error) return { error: INVENTORY_RETRY_ERROR, holds: [] };
+      const rows = nd.data || [];
+      if (rows.length > 2000) return { error: INVENTORY_RETRY_ERROR, holds: [] };
       const soIds = [...new Set(rows.map((n) => n.so_id).filter(Boolean))];
       const soRes = soIds.length ? await sb.from('sales_orders').select('id,status').in('id', soIds) : { data: [], error: null };
-      if (!soRes.error) {
-        // Statuses unreadable → count NO claims (fail-open, matching the stock
-        // lookup) rather than counting finished SOs' settled claims and
-        // over-blocking real buyers.
-        const done = new Set((soRes.data || [])
-          .filter((s) => SO_DONE.includes(String(s.status || '').toLowerCase())).map((s) => s.id));
-        rows.forEach((n) => {
-          if (done.has(n.so_id)) return; // finished SO — its claim is settled
-          const k = n.product_id + '|' + (n.size || '');
-          claimed[k] = (claimed[k] || 0) + (Number(n.qty_needed) || 0);
-        });
-      }
-    } catch (_) { /* fail-open: an unreadable ledger must not block checkout */ }
+      if (soRes.error) return { error: INVENTORY_RETRY_ERROR, holds: [] };
+      const done = new Set((soRes.data || [])
+        .filter((s) => SO_DONE.includes(String(s.status || '').toLowerCase())).map((s) => s.id));
+      rows.forEach((n) => {
+        if (done.has(n.so_id)) return; // finished SO — its claim is settled
+        const k = n.product_id + '|' + (n.size || '');
+        claimed[k] = (claimed[k] || 0) + (Number(n.qty_needed) || 0);
+      });
+    } catch (_) { return { error: INVENTORY_RETRY_ERROR, holds: [] }; }
   }
   const short = []; const holds = [];
-  Object.entries(need).forEach(([k, q]) => {
-    const [wid, size] = k.split('|'); const p = byId[wid]; if (!p) return;
+  Object.values(need).forEach(({ p, size, qty: q }) => {
+    const wid = p.webstore_product_id;
     // Not inventory-tracked (custom / made-to-order, or the item opted out) → never blocked.
     const tracked = p.track_inventory !== false && !!p.inventory_source && p.inventory_source !== 'manual';
     if (!tracked) return;
@@ -263,22 +442,28 @@ async function checkStock(sb, store, lines) {
       // is known (on_order_qty), this line is capped at on-hand + on-order
       // MINUS what the open backorder ledger already promises to earlier
       // orders (loaded above), so a burst of orders can't all sell against the
-      // same 20 incoming units. ETA-only signals (a vendor restock date with
-      // no qty) keep the uncapped allowance — there is no number to cap
-      // against. Remaining honest limit: an accepted order's claim appears in
-      // the ledger only at conversion (club: instant; teamshop: store close),
-      // so unconverted teamshop demand isn't counted yet.
+      // same 20 incoming units. A finite incoming pool gets a transactional hold
+      // too; the RPC subtracts accepted and converted-but-unfinished webstore
+      // and Team Shop demand before allowing it. ETA-only signals (a vendor restock date with
+      // no qty) keep the uncapped allowance — there is no number to reserve.
       const onOrder = Number(p.on_order_qty) || 0;
       if (onOrder > 0) {
         const avail = _availForSize(p, size);
         const promised = claimed[(p.product_id || '') + '|' + size] || 0;
-        if (avail + onOrder - promised < q) { short.push(`${p.name || 'item'} (size ${size})`); return; }
+        const grossAvail = avail + onOrder;
+        const finiteAvail = grossAvail - promised;
+        if (finiteAvail < q) { short.push(`${p.name || 'item'} (size ${size})`); return; }
+        // max_avail retains the legacy net-of-converted-claims cap, so either
+        // side of a staggered function deploy remains safe. The new function
+        // prefers gross_max_avail and subtracts full live order demand itself,
+        // eliminating the conversion/auto-PO timing gap.
+        holds.push({ webstore_product_id: wid, size, qty: q, max_avail: finiteAvail, gross_max_avail: grossAvail, label: `${p.name || 'item'} (size ${size})` });
       }
       return;
     }
     const avail = _availForSize(p, size);
     if (avail < q) { short.push(`${p.name || 'item'} (size ${size})`); return; }
-    holds.push({ webstore_product_id: wid, size, qty: q, max_avail: avail, label: `${p.name || 'item'} (size ${size})` });
+    holds.push({ webstore_product_id: wid, size, qty: q, max_avail: avail, gross_max_avail: avail, label: `${p.name || 'item'} (size ${size})` });
   });
   if (short.length) return { error: `Sorry — these just sold out while you were shopping: ${short.join(', ')}. Please remove or change them and try again.`, holds: [] };
   return { error: null, holds };
@@ -290,8 +475,8 @@ async function checkStock(sb, store, lines) {
 // add) or the cart was tampered — either way it's unfulfillable. Mirrors the client's
 // `needSize` rule: a product with a non-empty size scale (available_sizes) or an explicit
 // sizes_offered list requires a size. Read through the storefront view (base
-// webstore_products has no available_sizes). Fail-open on a lookup error, matching
-// checkStock — the drift/stock guards still apply.
+// webstore_products has no available_sizes). A lookup failure blocks checkout:
+// accepting an unverifiable sizeless line creates an unfulfillable order.
 async function checkSizesRequired(sb, store, lines) {
   const noSize = lines.filter((l) => l.kind === 'single' && !l.size);
   if (!noSize.length) return null;
@@ -299,8 +484,9 @@ async function checkSizesRequired(sb, store, lines) {
   const { data, error } = await sb.from('webstore_storefront_products')
     .select('webstore_product_id,name,available_sizes,sizes_offered,size_stock,vendor_size_stock,vendor_size_eta')
     .eq('store_id', store.id).in('webstore_product_id', ids);
-  if (error) return null;
+  if (error) return INVENTORY_RETRY_ERROR;
   const byId = {}; (data || []).forEach((p) => { byId[p.webstore_product_id] = p; });
+  if (ids.some((id) => !byId[id])) return INVENTORY_RETRY_ERROR;
   const nonEmpty = (a) => Array.isArray(a) && a.filter((x) => x != null && String(x).trim()).length > 0;
   // A product whose catalog scale is empty but which carries per-size stock is still a
   // SIZED product — the storefront now derives its size buttons from that stock (see
@@ -336,12 +522,30 @@ function checkNumberRange(store, lines) {
 
 async function loadCoupon(sb, store, code) {
   if (!code || !String(code).trim()) return { coupon: null };
-  const { data } = await sb.from('webstore_coupons').select('*').eq('store_id', store.id).ilike('code', String(code).trim()).limit(1);
+  const { data, error } = await sb.from('webstore_coupons').select('*').eq('store_id', store.id).ilike('code', escapeIlikeLiteral(String(code).trim())).limit(1);
+  if (error) return { error: 'We could not verify that coupon right now. Please wait a moment and try again.' };
   const c = data && data[0];
   if (!c || !c.active) return { error: 'That code isn’t valid for this store.' };
   if (c.expires_at && new Date(c.expires_at) < new Date(new Date().toDateString())) return { error: 'That code has expired.' };
   if (c.max_uses != null && (c.used_count || 0) >= c.max_uses) return { error: 'That code has already been used.' };
   return { coupon: c };
+}
+
+function buildOrderItems(lines, orderPlayer, randomUUID = require('crypto').randomUUID) {
+  const items = [];
+  for (const l of lines) {
+    if (l.kind === 'bundle') {
+      const bref = randomUUID();
+      // Every parent-level upcharge belongs on the paid parent row. Components
+      // remain $0 fulfillment rows, so excluding option_extra here made the
+      // persisted item total disagree with the amount charged at checkout.
+      items.push({ product_id: null, sku: null, size: null, qty: 1, unit_price: r2((Number(l.unit_price) || 0) + (Number(l.name_extra) || 0) + (Number(l.option_extra) || 0)), unit_fundraise: r2(l.fundraise), player_name: null, player_number: null, add_on_selections: l.option_selections || [], bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: true, name: l.name || null, image_url: l.image || null, line_status: 'pending' });
+      l.components.forEach((c) => items.push({ product_id: c.product_id, sku: c.sku, size: c.size, qty: Math.max(1, parseInt(c.qty, 10) || 1), unit_price: 0, unit_fundraise: 0, player_name: c.player_name || orderPlayer, player_number: c.player_number, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: false, name: c.name, image_url: c.image, line_status: 'pending' }));
+    } else {
+      items.push({ product_id: l.wp.product_id, sku: l.wp.sku, size: l.size, qty: l.qty, unit_price: r2((Number(l.unit_price) || 0) + (Number(l.name_extra) || 0)), unit_fundraise: r2(l.fundraise), player_name: l.player_name || orderPlayer, player_number: l.player_number, add_on_selections: l.option_selections || [], name: l.name || null, color: l.color, variant_label: l.variant_label || null, image_url: l.image || null, line_status: 'pending' });
+    }
+  }
+  return items;
 }
 
 const shipFee = (store) => store.delivery_mode === 'ship_home' ? r2(store.flat_shipping) : 0;
@@ -371,14 +575,11 @@ function taxableBaseAfterDiscount(subtotal, discount, cartTotal, shipping, coupo
 // (metered) TaxCloud edge function, which applies the apparel TIC + each state's
 // exemptions. We only collect where NSA is registered — TAX_COLLECT_STATES (default
 // "CA"); a destination state not on that list is taxed at $0 (we can't remit it).
-// Pickup / team-delivery orders source to NSA's origin (possession happens there).
+// Pickup / team-delivery orders source to the buyer's billing address. Never guess
+// a registered-state rate: a transient lookup failure must stop checkout rather
+// than silently turn a taxable order into a $0-tax order.
 const taxCollectStates = () => (process.env.TAX_COLLECT_STATES || 'CA').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
-const TAX_ORIGIN = {
-  street1: process.env.NSA_ORIGIN_ADDRESS || '',
-  city: process.env.NSA_ORIGIN_CITY || '',
-  state: (process.env.NSA_ORIGIN_STATE || 'CA').toUpperCase(),
-  zip: (process.env.NSA_ORIGIN_ZIP || '').slice(0, 5),
-};
+const TAX_RETRY_ERROR = 'We could not verify sales tax right now. Please wait a moment and try again.';
 
 // CDTFA free rate-by-address lookup (California only). Returns a decimal rate or null.
 async function cdtfaRate({ street1, city, zip }) {
@@ -406,37 +607,46 @@ async function taxcloudRate({ street1, city, state, zip }) {
     });
     const data = await res.json().catch(() => ({}));
     const rate = data && data.ok ? Number(data.tax_rate) : NaN;
-    return Number.isFinite(rate) && rate > 0 ? rate : null;
+    // A registered state can legitimately exempt apparel, producing a zero rate.
+    // data.ok distinguishes that valid result from an unavailable lookup.
+    return Number.isFinite(rate) && rate >= 0 ? rate : null;
   } catch (e) { console.warn('[webstore-checkout] TaxCloud lookup failed:', e.message); return null; }
 }
 
 // Returns { tax, rate, state, source } for a taxable base (product subtotal).
+// Resolve the destination before the zero-base shortcut so even a fully comped
+// order keeps the immutable jurisdiction used by reporting.
 async function calcTax(store, ship, taxableBase, billing) {
   const base = Math.max(0, Number(taxableBase) || 0);
-  if (base <= 0) return { tax: 0, rate: 0, state: '', source: 'zero_base' };
   const isPickup = store.delivery_mode !== 'ship_home';
   let dest;
   if (isPickup) {
     // Club-delivery: tax at the BUYER's home ZIP (their address), not NSA's origin.
-    // CA buyers pay their local rate; a ZIP outside CA's range is treated as out-of-state
-    // (we only collect where registered). No ZIP → can't source tax, so $0.
+    // CA buyers pay their local rate. Outside CA, retain the state collected by
+    // Stripe's billing AddressElement so registered-state nexus is evaluated.
     const zip = String((billing && billing.zip) || '').replace(/\D/g, '').slice(0, 5);
-    if (!zip) return { tax: 0, rate: 0, state: '', source: 'no_buyer_zip' };
+    if (!zip) return { error: TAX_RETRY_ERROR, state: '', source: 'missing_buyer_zip' };
     const zn = Number(zip);
     const isCaZip = zn >= 90001 && zn <= 96162;
-    dest = { street1: '', city: '', state: isCaZip ? 'CA' : String((billing && billing.state) || '').toUpperCase(), zip };
+    dest = {
+      street1: String((billing && billing.street1) || ''),
+      city: String((billing && billing.city) || ''),
+      state: isCaZip ? 'CA' : String((billing && billing.state) || '').toUpperCase(),
+      zip,
+    };
   } else {
     dest = { street1: ship.street1 || '', city: ship.city || '', state: String(ship.state || '').toUpperCase(), zip: String(ship.zip || '').slice(0, 5) };
   }
-  if (!dest.state || !taxCollectStates().includes(dest.state)) return { tax: 0, rate: 0, state: dest.state, source: 'not_registered' };
+  if (base <= 0) return { tax: 0, rate: 0, state: dest.state || '', source: 'zero_base' };
+  if (!dest.state) return { error: TAX_RETRY_ERROR, state: '', source: 'missing_destination_state' };
+  if (!taxCollectStates().includes(dest.state)) return { tax: 0, rate: 0, state: dest.state, source: 'not_registered' };
   if (dest.state === 'CA') {
-    let rate = await cdtfaRate(dest);
-    let source = 'cdtfa';
-    if (rate == null) { rate = Number(process.env.CA_DEFAULT_TAX_RATE) || 0.0775; source = 'cdtfa_fallback'; }
-    return { tax: r2(base * rate), rate, state: 'CA', source };
+    const rate = await cdtfaRate(dest);
+    if (rate == null) return { error: TAX_RETRY_ERROR, state: 'CA', source: 'cdtfa_unavailable' };
+    return { tax: r2(base * rate), rate, state: 'CA', source: 'cdtfa' };
   }
   const rate = await taxcloudRate(dest);
-  if (rate == null) return { tax: 0, rate: 0, state: dest.state, source: 'taxcloud_unavailable' };
+  if (rate == null) return { error: TAX_RETRY_ERROR, state: dest.state, source: 'taxcloud_unavailable' };
   return { tax: r2(base * rate), rate, state: dest.state, source: 'taxcloud' };
 }
 
@@ -453,11 +663,18 @@ exports.handler = async (event) => {
     if (body.action === 'quote') return await quoteTotals(sb, body);
     if (body.action === 'finalize') return await finalize(sb, body);
     if (body.action === 'check_coupon') return await checkCoupon(sb, body);
+    if (body.action === 'settings') return await publicSettings(sb);
     if (body.action === 'get_order') return await getOrder(sb, body);
     if (body.action === 'roster_lookup') return await rosterLookup(sb, body);
     if (body.action === 'track_order') return await trackOrder(sb, body);
     if (body.action === 'update_ship') return await updateShip(sb, body);
     if (body.action === 'post_message') return await postMessage(sb, body);
+    if (body.action === 'store_search') return await publicStoreSearch(sb, body);
+    if (body.action === 'store_count') return await publicStoreCount(sb);
+    if (body.action === 'templates') return await publicTemplates(sb);
+    if (body.action === 'inventory') return await publicInventory(sb, body);
+    if (body.action === 'storefront_products') return await publicStorefrontProducts(sb, body);
+    if (body.action === 'storefront') return await publicStorefront(sb, body);
     return bad(400, 'Unknown action.');
   } catch (e) {
     console.error('[webstore-checkout] error:', e);
@@ -535,7 +752,8 @@ async function placeOrder(sb, body) {
   const dup = await findOrderByClientRef(sb, clientRef);
   if (dup) return replayOrder(dup);
 
-  if (store.status !== 'open') return bad(409, 'This store isn’t open for orders right now.');
+  const windowError = storeOrderWindowError(store);
+  if (windowError) return bad(409, windowError);
 
   if (!buyer || !String(buyer.name || '').trim() || !/.+@.+\..+/.test(String(buyer.email || ''))) return bad(400, 'Please provide your name and a valid email.');
   const needAddr = store.delivery_mode === 'ship_home';
@@ -574,7 +792,10 @@ async function placeOrder(sb, body) {
   // When a coupon fully covers the pre-tax total the order is comped — charge no tax
   // either, so we never create an "unpaid" order carrying tax that is never collected
   // (and never email a buyer a total they weren't charged).
-  const taxRes = preTax > 0 ? await calcTax(store, ship || {}, taxableBaseAfterDiscount(priced.feeBase, discount, cartTotal, shipping, coupon), { zip: buyer.zip, state: buyer.state }) : { tax: 0 };
+  const taxRes = await calcTax(store, ship || {}, taxableBaseAfterDiscount(priced.feeBase, discount, cartTotal, shipping, coupon), {
+    street1: buyer.billing_street1, city: buyer.billing_city, zip: buyer.zip, state: buyer.state,
+  });
+  if (taxRes.error) return bad(503, taxRes.error, { code: 'tax_unavailable' });
   const tax = taxRes.tax;
   const total = r2(preTax + tax);
   const totals = { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, processing, discount, tax, total };
@@ -601,6 +822,9 @@ async function placeOrder(sb, body) {
     ship_address: needAddr ? { name: (ship.name || buyer.name || '').slice(0, 120), street1: ship.street1, street2: ship.street2 || '', city: ship.city, state: ship.state, zip: ship.zip } : null,
     ship_method: store.delivery_mode,
     subtotal: priced.subtotal, fundraise_amt: priced.fundraise, shipping_fee: shipping, processing_fee: processing, tax, total,
+    tax_state: taxRes.state ? String(taxRes.state).toUpperCase() : null,
+    tax_rate: Number(taxRes.rate) || 0,
+    tax_source: taxRes.source || 'unknown',
     coupon_code: coupon ? coupon.code : null, discount_amt: discount,
     ...(isClubStore ? { order_source: 'club', customer_id: store.customer_id || null } : {}),
   };
@@ -610,18 +834,8 @@ async function placeOrder(sb, body) {
   // name, so the player report + packing lists group parent-placed orders under
   // the actual player. It never drives decoration — that's the item's takes_name.
   const orderPlayer = String((buyer && buyer.player_name) || '').trim().slice(0, 60) || null;
-  const items = []; // no order_id yet — the transaction (or legacy path) injects it
-  for (const l of priced.lines) {
-    if (l.kind === 'bundle') {
-      const bref = require('crypto').randomUUID();
-      // Name fee rides on unit_price (NSA revenue); unit_fundraise is club raise only —
-      // batching/conversion sum unit_price + unit_fundraise, so the SO total is unchanged.
-      items.push({ product_id: null, sku: null, size: null, qty: 1, unit_price: r2(l.unit_price + l.name_extra), unit_fundraise: r2(l.fundraise), player_name: null, player_number: null, add_on_selections: l.option_selections || [], bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: true, name: l.name || null, image_url: l.image || null, line_status: 'pending' });
-      l.components.forEach((c) => items.push({ product_id: c.product_id, sku: c.sku, size: c.size, qty: Math.max(1, parseInt(c.qty, 10) || 1), unit_price: 0, unit_fundraise: 0, player_name: c.player_name || orderPlayer, player_number: c.player_number, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: false, name: c.name, image_url: c.image, line_status: 'pending' }));
-    } else {
-      items.push({ product_id: l.wp.product_id, sku: l.wp.sku, size: l.size, qty: l.qty, unit_price: r2(l.unit_price + l.name_extra), unit_fundraise: r2(l.fundraise), player_name: l.player_name || orderPlayer, player_number: l.player_number, add_on_selections: l.option_selections || [], name: l.name || null, color: l.color, variant_label: l.variant_label || null, image_url: l.image || null, line_status: 'pending' });
-    }
-  }
+  // No order_id yet — the transaction (or legacy path) injects it.
+  const items = buildOrderItems(priced.lines, orderPlayer);
 
   // A number is one-per-player across the store. Within one checkout the same
   // number legitimately repeats across a single player's bundle components
@@ -664,6 +878,8 @@ async function placeOrder(sb, body) {
     if (taken) return bad(409, `Number ${taken[1]} was just taken by someone else — please pick a different number.`, { code: 'number_taken', number: taken[1] });
     const sold = msg.match(/NSA_SOLD_OUT:(.+)/);
     if (sold) return bad(409, `Sorry — these just sold out while you were shopping: ${sold[1].trim()}. Please remove or change them and try again.`);
+    if (/NSA_COUPON_USED/.test(msg)) return bad(409, 'That code has already been used.');
+    if (/NSA_COUPON_INVALID/.test(msg)) return bad(409, 'That code is no longer valid for this store.');
     if (clientRef && /duplicate|unique/i.test(msg) && /client_ref/.test(msg)) {
       // Concurrent double-submit lost the transaction race — return the winner's order.
       const winner = await findOrderByClientRef(sb, clientRef);
@@ -740,12 +956,20 @@ async function placeOrder(sb, body) {
       return bad(502, 'Could not start the card payment: ' + e.message);
     }
     const { error: piErr } = await sb.from('webstore_orders').update({ stripe_pi_id: intent.id }).eq('id', order.id);
-    if (piErr) { await rollback(); return bad(502, 'Could not link the payment: ' + piErr.message); }
+    if (piErr) {
+      // The client has never received this secret, so cancel the orphan before
+      // deleting its order. Otherwise a failed DB link leaves a live, untracked
+      // PaymentIntent and a retry creates another one.
+      try { await stripe(sk).paymentIntents.cancel(intent.id); }
+      catch (cancelError) { console.error('[webstore-checkout] orphan PaymentIntent cancel failed:', intent.id, cancelError.message); }
+      await rollback();
+      return bad(502, 'Could not link the payment: ' + piErr.message);
+    }
     return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order: { ...order, stripe_pi_id: intent.id }, totals, clientSecret: intent.client_secret, intentId: intent.id }) };
   }
 
   // Team-tab / comped order: count the coupon use and send the confirmation now.
-  if (coupon) await bumpCouponUse(sb, store.id, coupon.code);
+  if (coupon) await bumpCouponUse(sb, store.id, coupon.code, order.id);
   if (order.buyer_email) {
     const { data: won } = await sb.from('webstore_orders').update({ confirmation_sent: true }).eq('id', order.id).neq('confirmation_sent', true).select('id').limit(1);
     if (won && won.length) { try { await sendOrderConfirmation(sb, order); } catch (e) { console.warn('[webstore-checkout] confirmation email failed:', e.message); } }
@@ -817,8 +1041,9 @@ async function quoteTotals(sb, body) {
   const processing = procFee(store, priced.feeBase);
   const preTax = Math.max(0, r2(cartTotal + shipping + processing - discount));
   const taxRes = await calcTax(store, ship || {}, taxableBaseAfterDiscount(priced.feeBase, discount, cartTotal, shipping, coupon), billing);
+  if (taxRes.error) return bad(503, taxRes.error, { code: 'tax_unavailable' });
   const total = r2(preTax + taxRes.tax);
-  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ totals: { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, processing, discount, tax: taxRes.tax, tax_state: taxRes.state, total } }) };
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ totals: { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, processing, discount, tax: taxRes.tax, tax_state: taxRes.state, tax_rate: taxRes.rate, tax_source: taxRes.source, total } }) };
 }
 
 async function finalize(sb, body) {
@@ -848,7 +1073,12 @@ async function finalize(sb, body) {
 
   // Promote ONLY from a genuine pre-paid state — never from a post-paid status
   // (e.g. 'batched'), so a re-called finalize can't regress a downstream order.
-  await sb.from('webstore_orders').update({ status: 'paid' }).eq('id', order.id).in('status', ['pending_payment', 'unpaid']);
+  const { error: paidError } = await sb.from('webstore_orders')
+    .update({ status: 'paid' }).eq('id', order.id).in('status', ['pending_payment', 'unpaid']);
+  if (paidError) {
+    console.error('[webstore-checkout] payment succeeded but paid status write failed:', order.id, paidError.message);
+    return bad(500, 'Payment was received, but the order is still finalizing. Please try again; you will not be charged twice.');
+  }
 
   // Club store order -> production conversion (migration 00204), the same
   // post-payment trigger point as stripe-webhook's teamshop conversion fallback.
@@ -874,7 +1104,7 @@ async function finalize(sb, body) {
   // webhook fallback) owns the coupon bump + the one confirmation email.
   const { data: won } = await sb.from('webstore_orders').update({ confirmation_sent: true }).eq('id', order.id).neq('confirmation_sent', true).select('id').limit(1);
   if (won && won.length) {
-    if (order.coupon_code) await bumpCouponUse(sb, order.store_id, order.coupon_code);
+    if (order.coupon_code) await bumpCouponUse(sb, order.store_id, order.coupon_code, order.id);
     if (order.buyer_email) { try { await sendOrderConfirmation(sb, { ...order, status: 'paid' }); } catch (e) { console.warn('[webstore-checkout] confirmation email failed:', e.message); } }
   }
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ ok: true, orderId: order.id }) };
@@ -896,46 +1126,102 @@ async function checkCoupon(sb, body) {
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ coupon: { code: c.code, kind: c.kind, value: c.value, cover_shipping: c.cover_shipping } }) };
 }
 
-// ── Order status (tokenless, by order id) ────────────────────────────
-// The post-checkout status page knows the order's UUID (122 bits of entropy,
-// the same bearer model the emailed status_token uses). Returns the buyer their
-// own order + line items — no anon access to the tables themselves.
-async function getOrder(sb, body) {
-  const { orderId } = body;
-  if (!orderId) return bad(400, 'orderId required');
-  const { data: orders, error } = await sb.from('webstore_orders').select('*').eq('id', orderId).limit(1);
+// Allow-list the one public storefront setting through the service endpoint so
+// internal placement memory does not require anonymous table access.
+async function publicSettings(sb) {
+  const { data, error } = await sb.from('webstore_settings').select('checkout_message').eq('id', 1).maybeSingle();
   if (error) return bad(500, error.message);
-  const order = orders && orders[0];
-  if (!order) return bad(404, 'Order not found');
-  const { data: items } = await sb.from('webstore_order_items').select('*').eq('order_id', order.id);
-  const rows = items || [];
-  // Enrich items that have no stored image_url with catalog fallback images.
-  const needImg = rows.filter((i) => !i.image_url);
-  if (needImg.length) {
-    const imgByPid = {};
-    const { data: cat } = await sb.from('webstore_products').select('id,product_id,image_url').eq('store_id', order.store_id);
-    (cat || []).forEach((c) => { if (c.image_url) { if (c.product_id) imgByPid[c.product_id] = c.image_url; imgByPid['wp:' + c.id] = c.image_url; } });
-    const pids = [...new Set(needImg.map((i) => i.product_id).filter((p) => p && !imgByPid[p]))];
-    if (pids.length) { const { data: prods } = await sb.from('products').select('id,image_front_url').in('id', pids); (prods || []).forEach((p) => { if (p.image_front_url) imgByPid[p.id] = p.image_front_url; }); }
-    rows.forEach((i) => { if (!i.image_url) i.image_url = imgByPid[i.product_id] || (i.bundle_product_id ? imgByPid['wp:' + i.bundle_product_id] : null) || null; });
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ checkout_message: (data && data.checkout_message) || '' }) };
+}
+
+const PUBLIC_ORDER_FIELDS = [
+  'id', 'store_id', 'status', 'buyer_name', 'ship_method', 'ship_address',
+  'subtotal', 'fundraise_amt', 'shipping_fee', 'processing_fee',
+  'discount_amt', 'tax', 'tax_state', 'tax_rate', 'tax_source', 'total', 'payment_mode', 'coupon_code', 'created_at',
+  'shipped_at', 'tracking_number', 'carrier',
+  'omg_order_number', 'order_number', 'status_token',
+].join(',');
+const PUBLIC_ORDER_ITEM_FIELDS = [
+  'id', 'order_id', 'product_id', 'bundle_product_id', 'bundle_ref',
+  'is_bundle_parent', 'sku', 'name', 'size', 'color', 'variant_label', 'qty',
+  'unit_price', 'line_status', 'shipped_qty', 'missing_qty', 'image_url',
+  'player_name', 'player_number',
+].join(',');
+
+async function enrichOrderImages(sb, order, rows) {
+  const needImage = (rows || []).filter((item) => !item.image_url);
+  if (!needImage.length) return rows;
+  const imageByProduct = {};
+  const { data: catalog } = await sb.from('webstore_products')
+    .select('id,product_id,image_url').eq('store_id', order.store_id);
+  (catalog || []).forEach((item) => {
+    if (!item.image_url) return;
+    if (item.product_id) imageByProduct[item.product_id] = item.image_url;
+    imageByProduct[`wp:${item.id}`] = item.image_url;
+  });
+  const missingProductIds = [...new Set(needImage.map((item) => item.product_id)
+    .filter((id) => id && !imageByProduct[id]))];
+  if (missingProductIds.length) {
+    const { data: products } = await sb.from('products').select('id,image_front_url').in('id', missingProductIds);
+    (products || []).forEach((product) => {
+      if (product.image_front_url) imageByProduct[product.id] = product.image_front_url;
+    });
   }
-  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, items: rows }) };
+  (rows || []).forEach((item) => {
+    if (!item.image_url) item.image_url = imageByProduct[item.product_id]
+      || (item.bundle_product_id ? imageByProduct[`wp:${item.bundle_product_id}`] : null) || null;
+  });
+  return rows;
+}
+
+// ── Legacy order status action ───────────────────────────────────────
+// Old storefront builds used a bare order UUID as a bearer credential. UUIDs
+// are identifiers, not authorization. Keep the action name during rollout, but
+// require the order's dedicated status token and verify both values agree.
+async function getOrder(sb, body) {
+  const orderId = String(body.orderId || '').trim();
+  const token = String(body.token || '').trim();
+  if (!orderId || !token) return bad(403, 'Order token required');
+  const tracked = await trackOrder(sb, { token });
+  if (tracked.statusCode !== 200) return tracked;
+  const payload = JSON.parse(tracked.body || '{}');
+  if (!payload.order || String(payload.order.id) !== orderId) return bad(404, 'Order not found');
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order: payload.order, items: payload.items || [] }) };
 }
 
 // ── Order tracking (by emailed status_token) ─────────────────────────
 async function trackOrder(sb, body) {
   const { token } = body;
   if (!token) return bad(400, 'token required');
-  const { data: orders, error } = await sb.from('webstore_orders').select('*').eq('status_token', token).limit(1);
+  const { data: orders, error } = await sb.from('webstore_orders').select(PUBLIC_ORDER_FIELDS).eq('status_token', token).limit(1);
   if (error) return bad(500, error.message);
   const order = orders && orders[0];
   if (!order) return bad(404, 'Order not found');
-  const [{ data: sRows }, { data: items }, { data: shipments }, messages] = await Promise.all([
+  const [{ data: sRows }, { data: itemRows }, { data: shipmentRows }, messages] = await Promise.all([
     sb.from('webstores').select('name,slug,logo_url,primary_color,accent_color').eq('id', order.store_id).limit(1),
-    sb.from('webstore_order_items').select('*').eq('order_id', order.id),
-    sb.from('webstore_shipments').select('*').eq('order_id', order.id).order('created_at', { ascending: true }),
+    sb.from('webstore_order_items').select(PUBLIC_ORDER_ITEM_FIELDS).eq('order_id', order.id),
+    sb.from('webstore_shipments').select('id,tracking_number,carrier,service,ship_date,items,created_at').eq('order_id', order.id).is('voided_at', null).order('created_at', { ascending: true }),
     loadThread(sb, order.id),
   ]);
+  const items = itemRows || [];
+  const shipments = shipmentRows || [];
+  await enrichOrderImages(sb, order, items);
+
+  // Self-heal shipments recorded by an older webhook run whose item updates
+  // failed or could not be matched. Opening the tracker should never continue
+  // showing "On order" when its own shipment ledger says those units shipped.
+  const repairs = planShipmentLineUpdates(items, shipments);
+  for (const repair of repairs) {
+    const item = items.find((i) => String(i.id) === String(repair.id));
+    if (!item) continue;
+    const alreadyCorrect = Number(item.shipped_qty || 0) === repair.shipped_qty && item.line_status === repair.line_status;
+    if (!alreadyCorrect) {
+      const patch = { shipped_qty: repair.shipped_qty, ...(repair.line_status === 'shipped' ? { line_status: 'shipped' } : {}) };
+      const { error: repairError } = await sb.from('webstore_order_items').update(patch).eq('id', repair.id);
+      if (!repairError) Object.assign(item, patch);
+      else console.error('[webstore-checkout] shipment tracker repair failed:', repair.id, repairError.message);
+    }
+  }
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, store: (sRows && sRows[0]) || null, items: items || [], shipments: shipments || [], messages }) };
 }
 
@@ -950,8 +1236,9 @@ async function loadThread(sb, orderId) {
 }
 
 // A shopper posts a reply from their portal page. Token-gated (no account):
-// the secret status_token is the only credential. Inserts a customer message
-// into the shared thread and notifies the store's CSR (→ rep → fallback).
+// the secret status_token is the only credential. The message and its outbox
+// obligation are inserted in one database transaction; email delivery can fail
+// without losing the notification and is retried by the scheduled worker.
 async function postMessage(sb, body) {
   const { token } = body;
   const text = String(body.text || '').trim().slice(0, 4000);
@@ -963,9 +1250,9 @@ async function postMessage(sb, body) {
   if (!order) return bad(404, 'Order not found');
 
   // Resolve the store, its owning rep, and the rep's primary CSR so the reply
-  // routes to the right person's inbox (tagged_members) and email.
+  // routes to the right person's inbox (tagged_members). The durable worker
+  // reloads those tagged profiles immediately before sending email.
   const tagged = [];
-  let notifyEmail = null, notifyName = '';
   try {
     const { data: store } = await sb.from('webstores').select('id,name,rep_id,csr_id,omg_sale_code').eq('id', order.store_id).maybeSingle();
     let repId = store && store.rep_id;
@@ -982,18 +1269,24 @@ async function postMessage(sb, body) {
       const active = (asn || []).filter((a) => a.is_active !== false);
       csrId = (active.find((a) => a.is_primary) || active[0] || {}).csr_id || null;
     }
-    // Route to the CSR if there is one, else the rep.
-    if (csrId) tagged.push(String(csrId));
-    else if (repId) tagged.push(String(repId));
-    // Notify email: prefer the CSR's, else the rep's.
-    const ids = [csrId, repId].filter(Boolean).map(String);
-    if (ids.length) {
-      const { data: people } = await sb.from('user_profiles').select('id,email,full_name').in('id', ids);
-      const pick = (people || []).find((p) => String(p.id) === String(csrId)) || (people || []).find((p) => String(p.id) === String(repId));
-      if (pick && pick.email) { notifyEmail = pick.email; notifyName = pick.full_name || ''; }
+    // Customer replies are high priority: route to BOTH the assigned CSR and
+    // rep. The former CSR-only behavior created a single point of failure and
+    // left the rep's Messages inbox empty even though the order was theirs.
+    tagged.push(...staffRecipientIds(csrId, repId));
+    // The webstore response team opts in through the existing notify_depts
+    // preference. Tag every active `store` subscriber in the in-app Messages
+    // inbox as a redundant safety net, independent of per-store assignments.
+    const { data: storeTeam } = await sb.from('user_profiles')
+      .select('id').eq('is_active', true).contains('notify_depts', ['store']);
+    for (const person of storeTeam || []) {
+      const sid = String(person.id);
+      if (!tagged.includes(sid)) tagged.push(sid);
     }
-    var storeName = (store && store.name) || 'your store';
-  } catch (e) { var storeName = 'your store'; }
+  } catch (e) {
+    // The shared webstore mailbox remains a recipient even when assignment
+    // lookup is unavailable; do not reject the customer's message for routing.
+    console.error('[webstore-checkout] customer reply routing lookup failed:', e.message);
+  }
 
   const now = new Date();
   const msg = {
@@ -1003,62 +1296,75 @@ async function postMessage(sb, body) {
     text, ts: now.toLocaleString(), dept: 'store',
     tagged_members: tagged, from_customer: true, read_by_staff: false,
   };
-  const { error: insErr } = await sb.from('messages').insert(msg);
+  const { error: insErr } = await sb.rpc('post_webstore_customer_message', {
+    p_order_id: order.id,
+    p_message: msg,
+  });
   if (insErr) return bad(502, 'Could not post your message: ' + insErr.message);
 
-  // Email the assigned CSR/rep (best-effort — never blocks the post).
-  try { await notifyStaffOfReply({ to: notifyEmail || 'stores@nationalsportsapparel.com', toName: notifyName, order, storeName, text }); } catch (e) { /* logged below */ }
+  // Try now for fast delivery. Failure leaves a pending outbox row for the
+  // scheduled retry worker; the customer message itself is already durable.
+  let delivery = { ok: true, claimed: false };
+  try {
+    delivery = await processNotificationByDedupe(sb, `customer_staff_reply:${msg.id}`);
+  } catch (e) {
+    delivery = { ok: false, queued: true, error: e.message };
+    console.error('[webstore-checkout] customer reply immediate delivery failed:', e.message);
+  }
 
-  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ ok: true, messages: await loadThread(sb, order.id) }) };
-}
-
-async function notifyStaffOfReply({ to, toName, order, storeName, text }) {
-  const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
-  if (!brevoKey || !to) return;
-  const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || '').replace(/\/+$/, '');
-  const adminLink = `${portal}/?omg=1`;
-  const safe = (s) => String(s == null ? '' : s).replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
-  const html = `<div style="font-family:'Source Sans 3',-apple-system,Segoe UI,Roboto,sans-serif;color:#2A2F3E;max-width:560px;margin:0 auto">
-    <div style="background:#0b1f3a;color:#fff;padding:18px 22px;border-radius:10px 10px 0 0">
-      <div style="font-size:12px;letter-spacing:1.5px;text-transform:uppercase;opacity:.85">${safe(storeName)}</div>
-      <div style="font-size:21px;font-weight:800;margin-top:4px">💬 New customer reply</div>
-    </div>
-    <div style="border:1px solid #eef1f5;border-top:none;border-radius:0 0 10px 10px;padding:22px">
-      <p style="margin:0 0 6px"><b>${safe(order.buyer_name || 'A customer')}</b> replied on order ${order.omg_order_number ? '#' + safe(order.omg_order_number) : ''}:</p>
-      <blockquote style="margin:8px 0;padding:12px 14px;background:#f8fafc;border-left:3px solid #e11d2a;border-radius:6px;font-size:15px">${safe(text)}</blockquote>
-      <p style="font-size:13px;color:#64748b">Open the order in OMG Stores to reply — your reply emails the customer their portal link.</p>
-      <div style="margin:18px 0"><a href="${adminLink}" style="display:inline-block;background:#e11d2a;color:#fff;text-decoration:none;padding:11px 24px;border-radius:8px;font-weight:700">Open OMG Stores →</a></div>
-    </div></div>`;
-  await fetch('https://api.brevo.com/v3/smtp/email', {
-    method: 'POST',
-    headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
+  return {
+    statusCode: 200,
+    headers: HEADERS,
     body: JSON.stringify({
-      sender: { name: 'NSA Order Portal', email: 'stores@nationalsportsapparel.com' },
-      to: [{ email: to, name: toName || '' }],
-      replyTo: order.buyer_email ? { email: order.buyer_email, name: order.buyer_name || '' } : undefined,
-      subject: `💬 ${order.buyer_name || 'Customer'} replied — ${storeName} order${order.omg_order_number ? ' #' + order.omg_order_number : ''}`,
-      htmlContent: html,
+      ok: true,
+      notification: delivery.ok ? (delivery.claimed ? 'sent' : 'already_processing') : 'queued_for_retry',
+      messages: await loadThread(sb, order.id),
     }),
-  });
+  };
 }
 
 // ── Buyer self-service shipping-address edit (before the order ships) ──
 async function updateShip(sb, body) {
-  const { orderId, ship } = body;
-  if (!orderId || !ship) return bad(400, 'orderId and ship required');
+  const token = String(body.token || '').trim();
+  const { ship } = body;
+  if (!token || !ship) return bad(400, 'token and ship required');
   if (!ship.street1 || !ship.city || !ship.state || !ship.zip) return bad(400, 'Please complete street, city, state and ZIP.');
-  const { data: orders, error } = await sb.from('webstore_orders').select('id,ship_address,shipped_at,status').eq('id', orderId).limit(1);
+  const { data: orders, error } = await sb.from('webstore_orders')
+    .select('id,ship_address,shipped_at,status').eq('status_token', token).limit(1);
   if (error) return bad(500, error.message);
   const order = orders && orders[0];
   if (!order) return bad(404, 'Order not found');
   if (order.shipped_at || order.status === 'shipped' || order.status === 'complete') return bad(409, 'This order has already shipped — contact us to change the address.');
+  const current = order.ship_address && typeof order.ship_address === 'object' ? order.ship_address : null;
+  if (!current || !current.street1 || !current.city || !current.state || !current.zip) {
+    return bad(409, 'Please message our team to change this order’s shipping address.');
+  }
+  const normText = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  const normState = (v) => String(v || '').trim().toUpperCase();
+  const normZip = (v) => String(v || '').replace(/\D/g, '').slice(0, 5);
+  const jurisdictionChanged = normText(ship.street1) !== normText(current.street1)
+    || normText(ship.city) !== normText(current.city)
+    || normState(ship.state) !== normState(current.state)
+    || normZip(ship.zip) !== normZip(current.zip);
+  if (jurisdictionChanged) {
+    return bad(409, 'To change the street, city, state, or ZIP after checkout, message our team so we can verify tax and shipping before updating it.');
+  }
   const addr = {
     name: String(ship.name || '').slice(0, 120),
-    street1: String(ship.street1).slice(0, 200), street2: String(ship.street2 || '').slice(0, 200),
-    city: String(ship.city).slice(0, 120), state: String(ship.state).slice(0, 40), zip: String(ship.zip).slice(0, 20),
+    // Keep every tax/routing field exactly as charged. Buyer self-service may
+    // correct the recipient name or apartment/suite only; staff handle anything
+    // that can change jurisdiction or carrier cost.
+    street1: String(current.street1).slice(0, 200), street2: String(ship.street2 || '').slice(0, 200),
+    city: String(current.city).slice(0, 120), state: String(current.state).slice(0, 40), zip: String(current.zip).slice(0, 20),
   };
-  const { error: upErr } = await sb.from('webstore_orders').update({ ship_address: addr }).eq('id', order.id);
+  const { data: updated, error: upErr } = await sb.from('webstore_orders').update({ ship_address: addr })
+    .eq('id', order.id)
+    .eq('status_token', token)
+    .is('shipped_at', null)
+    .not('status', 'in', '("shipped","complete")')
+    .select('id');
   if (upErr) return bad(502, 'Could not save the address: ' + upErr.message);
+  if (!updated || !updated.length) return bad(409, 'This order is already shipping — contact us to change the address.');
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ ok: true, ship_address: addr }) };
 }
 
@@ -1073,16 +1379,29 @@ module.exports.checkStock = checkStock;
 module.exports.checkSizesRequired = checkSizesRequired;
 module.exports.checkNumberRange = checkNumberRange;
 module.exports.couponDiscount = couponDiscount;
+module.exports.escapeIlikeLiteral = escapeIlikeLiteral;
+module.exports.loadCoupon = loadCoupon;
+module.exports.buildOrderItems = buildOrderItems;
+module.exports.storeOrderWindowError = storeOrderWindowError;
 module.exports._availForSize = _availForSize;
 module.exports.effFund = effFund;
 module.exports.shipFee = shipFee;
 module.exports.r2 = r2;
+module.exports.staffRecipientIds = staffRecipientIds;
+module.exports.staffEmailRecipients = staffEmailRecipients;
+module.exports.getOrder = getOrder;
+module.exports.trackOrder = trackOrder;
+module.exports.updateShip = updateShip;
+module.exports.publicSettings = publicSettings;
+module.exports.PUBLIC_ORDER_FIELDS = PUBLIC_ORDER_FIELDS;
+module.exports.PUBLIC_ORDER_ITEM_FIELDS = PUBLIC_ORDER_ITEM_FIELDS;
 
 // ── Team Shop checkout reuse (Stage 6) ───────────────────────────────
 // teamshop-checkout.js REQUIRES these instead of forking the tax math,
 // rollback compensation, or clientRef idempotency — one implementation for
 // both order sources. Export-only additions: no behavior change here.
 module.exports.calcTax = calcTax;
+module.exports.TAX_RETRY_ERROR = TAX_RETRY_ERROR;
 module.exports.rollbackOrder = rollbackOrder;
 module.exports.validClientRef = validClientRef;
 module.exports.findOrderByClientRef = findOrderByClientRef;

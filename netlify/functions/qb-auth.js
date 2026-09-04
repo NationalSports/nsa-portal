@@ -6,9 +6,9 @@
 //   disconnect → revokes at Intuit + clears the store (staff-only).
 // Tokens never cross to the browser or appear in a URL — see _qb.js for the store.
 const crypto = require('crypto');
-const { verifyUser } = require('./_shared');
+const { verifyQBOUser } = require('./_shared');
 const { getSupabaseAdmin, httpsPost, basicAuth, saveTokens, getStoredTokens, clearTokens, refreshStoredTokens, revokeToken } = require('./_qb');
-const { qbPortalRedirect } = require('./_qbOAuthRedirect');
+const { qbOAuthRedirectUri, qbPortalRedirect } = require('./_qbOAuthRedirect');
 
 const QB_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
 const QB_TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
@@ -36,7 +36,7 @@ exports.handler = async (event) => {
   const QB_CLIENT_ID = process.env.QB_CLIENT_ID;
   const QB_CLIENT_SECRET = process.env.QB_CLIENT_SECRET;
   const SITE_URL = process.env.URL || process.env.SITE_URL || 'http://localhost:3000';
-  const QB_REDIRECT_URI = process.env.QB_REDIRECT_URI || `${SITE_URL}/.netlify/functions/qb-auth?action=callback`;
+  const QB_REDIRECT_URI = qbOAuthRedirectUri(event, process.env.QB_REDIRECT_URI, SITE_URL);
 
   if (!QB_CLIENT_ID || !QB_CLIENT_SECRET) {
     return { statusCode: 500, headers: corsHeaders(origin), body: JSON.stringify({ error: 'QuickBooks credentials not configured. Add QB_CLIENT_ID, QB_CLIENT_SECRET, QB_REDIRECT_URI to Netlify env vars.' }) };
@@ -46,6 +46,13 @@ exports.handler = async (event) => {
   let action = params.action;
   let body = {};
   if (event.body) { try { body = JSON.parse(event.body); } catch { body = {}; } if (body.action) action = body.action; }
+
+  // The Intuit callback authenticates with the short-lived CSRF state cookie.
+  // Every staff-initiated OAuth action requires accounting/admin authorization.
+  if (['debug', 'connect', 'refresh', 'disconnect'].includes(action)) {
+    const v = await verifyQBOUser(event);
+    if (!v.ok) return { statusCode: v.status, headers: corsHeaders(origin), body: JSON.stringify({ error: v.error }) };
+  }
 
   // ── ACTION: debug ──
   if (action === 'debug') {
@@ -125,8 +132,6 @@ exports.handler = async (event) => {
   // ── ACTION: disconnect ──
   // Revoke at Intuit + clear the store. Staff-only (no token is accepted from the client).
   if (action === 'disconnect') {
-    const v = await verifyUser(event);
-    if (!v.ok) return { statusCode: v.status, headers: corsHeaders(origin), body: JSON.stringify({ error: v.error }) };
     try {
       const admin = getSupabaseAdmin();
       const cur = await getStoredTokens(admin);

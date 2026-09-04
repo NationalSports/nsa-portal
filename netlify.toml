@@ -301,3 +301,31 @@
 [functions."gmail-ai-sync"]
   schedule = "*/5 * * * *"
   timeout = 26
+
+# Durable webstore notification retry queue. Customer replies and shipment
+# emails are persisted before delivery; this sweep retries provider/API failures.
+[functions."webstore-notification-sweep"]
+  schedule = "*/5 * * * *"
+  timeout = 26
+
+# Hourly read-only webstore integrity canary. Reconciles durable message,
+# shipment, tracker, cost, refund, and batch-accounting records; also verifies
+# the sensitive-table/RPC access boundary. Findings are deduplicated in a
+# service-only incident ledger and alerted through a durable email outbox.
+[functions."webstore-integrity-sweep"]
+  schedule = "35 * * * *"
+  timeout = 26
+
+# Nightly Stripe settlement catch-up — 09:17 UTC (~1:17 AM PST / 2:17 AM PDT).
+# Replays recent PaymentIntents and payouts so missed webhooks are eventually
+# applied, audits the live webhook event set, and alerts only on actionable gaps.
+[functions."stripe-reconciliation-sweep"]
+  schedule = "17 9 * * *"
+  timeout = 26
+
+# Nightly operational OMG refresh — 08:15 UTC (12:15 AM PST / 1:15 AM PDT).
+# Reads the global order feed, groups by explicit sale relationship, and updates
+# 24/7 store order counts only. Monthly Margin Report imports remain the sole
+# source for profit and commissions.
+[functions."omg-order-sync-cron"]
+  schedule = "15 8 * * *"

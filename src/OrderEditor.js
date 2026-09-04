@@ -5,8 +5,8 @@ import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
-import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, skusMissingRevColorWays, missingRevColorWaysMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
+import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, skusMissingRevColorWays, missingRevColorWaysMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, replaceMockLinkGroup, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { suggestShipping, orderUnits } from './lib/shipSuggest';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
@@ -15,6 +15,7 @@ import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
 import QuickMockBuilder from './QuickMockBuilder';
+import MultiItemAddModal from './MultiItemAddModal';
 // Lazy so the uniform designer only loads when a rep opens it.
 const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
 import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, TWA, TWN, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced, linkedArtCostQty, decoCostAt, decoCostResolved, outsideDecoEstAt, outsideDecoSell } from './pricing';
@@ -22,7 +23,7 @@ import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, dedup
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
-import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantRemoveLineApply, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
+import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit, unfulfilledSizes, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantRemoveLineApply, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors, splitSliceOwnedKeys, pruneStaleSliceRows, reparentOrphanSplitJobs, remapFrozenJobItemIndexes } from './lib/syncJobsMatch';
@@ -33,6 +34,9 @@ import { ART_PULLBACK_CLEARS, approveArtOnSO, sendArtBackOnSO } from './lib/artR
 import { artFamilyKey } from './lib/artSplitFamily';
 import { parseStitchCount, embStitchTierLabel } from './lib/embStitchParser';
 import { _dbPersistNewPoLine } from './lib/dbEngine';
+import { applyFullPromoPricing } from './lib/promoPricing';
+import { fetchPaidPromoHistoryInvoices, mergePromoHistoryInvoices, promoHalfWindows, withEarnedPromoAllocation } from './lib/promoHistory';
+import { itemVendorInvSource, vendorInvCacheKey } from './vendorInventory';
 import './orderEditor.redesign.css';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
@@ -75,8 +79,7 @@ const orderLineSizes=(catalogSizes,qtySizes=[])=>{
   // run padded with extras). If the run IS already the core — or has no core overlap at all
   // (youth/OSFA/numeric/footwear) — keep it verbatim.
   const base=(core.length&&all.some(s=>!CORE_APPAREL_SIZES.includes(s)))?core:all;
-  return [...new Set([...base,...(Array.isArray(qtySizes)?qtySizes:[]).filter(Boolean)])]
-    .sort((a,b)=>szRank(a)-szRank(b));
+  return normalizeFootwearSizeList([...base,...(Array.isArray(qtySizes)?qtySizes:[]).filter(Boolean)]);
 };
 
 // Line items rendered on a printed / emailed estimate or SO PDF. This used to drop
@@ -326,7 +329,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     </div>;
   };
   const isE=mode==='estimate';const isSO=mode==='so';
-  const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
+  const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);const[multiAddOpen,setMultiAddOpen]=useState(false);const[multiAddQuery,setMultiAddQuery]=useState('');const[addItemMenuOpen,setAddItemMenuOpen]=useState(false);
+  // Promo dollars are owned by the parent account. Prefer that live record over
+  // the child copy so a sub-account never applies a stale/empty local balance.
+  const storedPromoCust=useMemo(()=>cust?.parent_id?(allCustomers||[]).find(c=>c.id===cust.parent_id)||cust:cust,[cust,allCustomers]);
+  const[promoLineHistory,setPromoLineHistory]=useState([]);const[promoHistoryReady,setPromoHistoryReady]=useState(false);
+  // The order can be opened directly, without visiting the customer Promo tab first. Load the
+  // paid NetSuite line archive here too, then preview the earned allocation in memory. It is
+  // persisted only inside the user's explicit Save/reconcile path below.
+  useEffect(()=>{
+    const pctActive=(storedPromoCust?.promo_programs||[]).some(p=>p.is_active!==false&&p.type==='percent_of_spend'&&safeNum(p.spend_percentage)>0);
+    if(!supabase||!storedPromoCust||!pctActive){setPromoLineHistory([]);setPromoHistoryReady(true);return}
+    const ownerId=storedPromoCust.id;const family=(allCustomers||[]).filter(c=>c.id===ownerId||c.parent_id===ownerId);const windows=promoHalfWindows();let cancelled=false;setPromoHistoryReady(false);
+    fetchPaidPromoHistoryInvoices({supabase,customers:family,start:windows.previous.start,end:windows.current.end})
+      .then(rows=>{if(!cancelled){setPromoLineHistory(rows);setPromoHistoryReady(true)}})
+      .catch(e=>{if(!cancelled){setPromoLineHistory([]);setPromoHistoryReady(true);console.warn('[Promo] Order NetSuite history load failed:',e?.message||e)}});
+    return()=>{cancelled=true};
+  },[storedPromoCust?.id,storedPromoCust?.promo_programs,allCustomers,supabase]);
+  const promoHistoryInvoices=useMemo(()=>mergePromoHistoryInvoices((allOrders||[]).filter(oo=>oo._hist&&oo.type==='invoice'),promoLineHistory),[allOrders,promoLineHistory]);
+  const promoCust=useMemo(()=>withEarnedPromoAllocation({customer:storedPromoCust,allCustomers,sos:allOrders,invs:allInvoices,histInvs:promoHistoryInvoices}),[storedPromoCust,allCustomers,allOrders,allInvoices,promoHistoryInvoices]);
   // Baseline of placeholder SKUs the order already carried when it was opened, as a multiset
   // of line keys. Snapshotted once — the editor is keyed by order id, so it remounts per
   // order. These lines keep saving as-is: estimates and SOs created before the requirement
@@ -1125,61 +1146,33 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     })();
   },[o.items?.length]);// eslint-disable-line react-hooks/exhaustive-deps
 
-  // Check if item is from S&S (handles both local D_V and Supabase UUID vendors)
-  const isSSItem=useCallback((item)=>{
-    if(item._ss_live)return true;
-    // S&S-synced catalog rows carry an ss* product id (ssb- blanks, ssa- adidas,
-    // ssua- UA). Those rows are excluded from the in-memory catalog (API-vendor
-    // rows aren't bootstrapped), so the products.find fallbacks below miss them
-    // — key off the id prefix so e.g. an S&S-sourced adidas tee is treated as an
-    // S&S item, not routed by its brand.
-    if(/^ss/.test(String(item.product_id||'')))return true;
+  const itemVendorSource=useCallback((item)=>{
     const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
-    if(!vId)return false;
-    const vRec=vendorList.find(v=>v.id===vId);
-    if(vRec)return vRec.api_provider==='ss_activewear'||vRec.name==='S&S Activewear';
-    if(item.brand==='S&S Activewear')return true;
-    return false;
+    // Treat a vendor resolved from the catalog/server map as authoritative too.
+    // Legacy webstore lines often omitted vendor_id even though their SKU was
+    // correctly mapped; otherwise an old `ssa-*` product id wins and shows S&S.
+    return itemVendorInvSource(vId?{...item,vendor_id:vId}:item,vendorList.find(v=>v.id===vId));
   },[products,vendorList,dbVendorBySku]);
+
+  // Check if item is from S&S (handles both local D_V and Supabase UUID vendors)
+  const isSSItem=useCallback((item)=>itemVendorSource(item)==='ss',[itemVendorSource]);
 
   // Check if item is from SanMar
-  const isSanMarItem=useCallback((item)=>{
-    if(item._sm_live)return true;
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
-    if(!vId)return false;
-    const vRec=vendorList.find(v=>v.id===vId);
-    if(vRec)return vRec.api_provider==='sanmar'||vRec.name==='SanMar';
-    return false;
-  },[products,vendorList,dbVendorBySku]);
+  const isSanMarItem=useCallback((item)=>itemVendorSource(item)==='sm',[itemVendorSource]);
 
   // Check if item is from Momentec
-  const isMomentecItem=useCallback((item)=>{
-    if(item._mt_live)return true;
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
-    if(!vId)return false;
-    const vRec=vendorList.find(v=>v.id===vId);
-    if(vRec)return vRec.api_provider==='momentec'||vRec.name==='Momentec';
-    return false;
-  },[products,vendorList,dbVendorBySku]);
+  const isMomentecItem=useCallback((item)=>itemVendorSource(item)==='mt',[itemVendorSource]);
 
   // Check if item is from Richardson (live StockInventory feed available)
-  const isRichardsonItem=useCallback((item)=>{
-    if(item._rs_live)return true;
-    if((item.brand||'').toLowerCase()==='richardson')return true;
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
-    if(!vId)return false;
-    const vRec=vendorList.find(v=>v.id===vId);
-    if(vRec)return vRec.api_provider==='richardson'||vRec.name==='Richardson';
-    return false;
-  },[products,vendorList,dbVendorBySku]);
+  const isRichardsonItem=useCallback((item)=>itemVendorSource(item)==='rs',[itemVendorSource]);
 
   // Check if item is from Adidas (for B2B inventory display)
   const isAdidasItem=useCallback((item)=>{
-    if((item.brand||'').toLowerCase()==='adidas')return true;
+    if((item.brand||'').toLowerCase().startsWith('adidas'))return true;
     const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
     if(!vId)return false;
     const vRec=vendorList.find(v=>v.id===vId);
-    if(vRec)return(vRec.name||'').toLowerCase()==='adidas';
+    if(vRec)return(vRec.name||'').toLowerCase().startsWith('adidas');
     return false;
   },[products,vendorList,dbVendorBySku]);
   // Under Armour items use the same synced B2B stock path (ua_inventory via the
@@ -1204,8 +1197,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
   // Keyed by style (sku base), stores {sizes:{S:qty,M:qty,...}, price:{S:cost,...}, fetchedAt:timestamp}
   const vendorInvCache=useRef({});
-  const[vendorInv,setVendorInv]=useState({});// {sku: {sizes:{S:qty,...}, loading:bool, error:str}}
+  const[vendorInv,setVendorInv]=useState({});// {source:sku:color: {sizes:{S:qty,...}, loading:bool, error:str}}
   const vendorInvFetching=useRef({});// track in-flight fetches
+  const vendorInvRequestSeq=useRef({});// newest request per supplier/SKU/color; stale responses cannot overwrite it
+  const itemVendorInvKey=useCallback((item)=>{
+    const source=itemVendorSource(item);
+    return ['ss','sm','mt','rs'].includes(source)?vendorInvCacheKey(source,item):'';
+  },[itemVendorSource]);
+  const vendorInvForItem=useCallback((item)=>{const key=itemVendorInvKey(item);return key?vendorInv[key]:null},[itemVendorInvKey,vendorInv]);
 
   // ─── Adidas B2B Inventory Cache ───
   const adidasInvCache=useRef({});// {sku: {sizes:{...}, lastSynced, fetchedAt}}
@@ -1343,15 +1342,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const isMT=isMomentecItem(itemRef);
     const isRS=isRichardsonItem(itemRef);
     if(!isSS&&!isSM&&!isMT&&!isRS)return;
-    const cacheKey=sku;
+    const source=isRS?'rs':isMT?'mt':isSM?'sm':'ss';
+    const cacheKey=vendorInvCacheKey(source,{...itemRef,sku});
     const cached=vendorInvCache.current[cacheKey];
     if(cached&&(Date.now()-cached.fetchedAt)<600000){
-      setVendorInv(prev=>({...prev,[sku]:{sizes:cached.sizes,price:cached.price,loading:false,error:null,source:cached.source,nextAvail:cached.nextAvail,sizeNextAvail:cached.sizeNextAvail||{}}}));
+      vendorInvRequestSeq.current[cacheKey]=(vendorInvRequestSeq.current[cacheKey]||0)+1;
+      setVendorInv(prev=>({...prev,[cacheKey]:{sizes:cached.sizes,price:cached.price,loading:false,error:null,source:cached.source,nextAvail:cached.nextAvail,sizeNextAvail:cached.sizeNextAvail||{}}}));
       return;
     }
     if(vendorInvFetching.current[cacheKey])return;
+    const requestSeq=(vendorInvRequestSeq.current[cacheKey]||0)+1;
+    vendorInvRequestSeq.current[cacheKey]=requestSeq;
+    const commit=(result)=>{if(vendorInvRequestSeq.current[cacheKey]!==requestSeq)return false;vendorInvCache.current[cacheKey]=result;setVendorInv(prev=>({...prev,[cacheKey]:{sizes:result.sizes||{},price:result.price||{},nextAvail:result.nextAvail||'',sizeNextAvail:result.sizeNextAvail||{},loading:false,error:null,source:result.source}}));return true};
     vendorInvFetching.current[cacheKey]=true;
-    setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:true,error:null,source:isRS?'rs':isMT?'mt':isSM?'sm':'ss'}}));
+    setVendorInv(prev=>({...prev,[cacheKey]:{sizes:{},price:{},loading:true,error:null,source}}));
     try{
       if(isRS){
         // Richardson: pull StockInventory feed grouped by Style; pick the color match for this item
@@ -1400,8 +1404,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         }catch(e){console.warn('[Richardson] Inventory fetch error for',sku,e.message);throw e}
         console.log('[Richardson] Inventory result for',sku,':',JSON.stringify(sizeQty),'next:',nextAvail);
         const result={sizes:sizeQty,price:sizePrice,nextAvail,sizeNextAvail,fetchedAt:Date.now(),source:'rs'};
-        vendorInvCache.current[cacheKey]=result;
-        setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,nextAvail,sizeNextAvail,loading:false,error:null,source:'rs'}}));
+        commit(result);
       }else if(isMT){
         // Momentec: fetch product detail via HCL Commerce to get child SKUs + inventory
         const sizeQty={};const sizePrice={};
@@ -1428,8 +1431,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         console.log('[Momentec] Inventory result for',sku,':',JSON.stringify(sizeQty));
         const hasMtInv=Object.values(sizeQty).some(v=>v>0);
         const result={sizes:hasMtInv?sizeQty:{},price:sizePrice,fetchedAt:Date.now(),source:'mt'};
-        vendorInvCache.current[cacheKey]=result;
-        setVendorInv(prev=>({...prev,[sku]:{sizes:hasMtInv?sizeQty:{},price:sizePrice,loading:false,error:null,source:'mt'}}));
+        commit(result);
       }else if(isSM){
         // SanMar: fetch inventory + pricing via SOAP API (now returns JSON)
         const prod3=products.find(p=>p.sku===sku);
@@ -1580,8 +1582,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         }
         console.log('[SanMar] Inventory result for',sku,':',JSON.stringify(sizeQty),'price:',JSON.stringify(sizePrice));
         const result={sizes:sizeQty,price:sizePrice,fetchedAt:Date.now(),source:'sm'};
-        vendorInvCache.current[cacheKey]=result;
-        setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,loading:false,error:null,source:'sm'}}));
+        commit(result);
       }else{
         // S&S Activewear: fetch via REST API
         let data;
@@ -1639,12 +1640,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         });
         console.log('[S&S] Inventory result for',sku,':',JSON.stringify(sizeQty));
         const result={sizes:sizeQty,price:sizePrice,fetchedAt:Date.now(),source:'ss'};
-        vendorInvCache.current[cacheKey]=result;
-        setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,loading:false,error:null,source:'ss'}}));
+        commit(result);
       }
     }catch(err){
       console.error('[Vendor] Inventory fetch failed for',sku,err);
-      setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:false,error:err.message,source:isRS?'rs':isMT?'mt':isSM?'sm':'ss'}}));
+      if(vendorInvRequestSeq.current[cacheKey]===requestSeq)setVendorInv(prev=>({...prev,[cacheKey]:{sizes:{},price:{},loading:false,error:err.message,source}}));
     }finally{
       delete vendorInvFetching.current[cacheKey];
     }
@@ -1654,7 +1654,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   React.useEffect(()=>{
     const items=safeItems(o);
     items.forEach(item=>{
-      if((isSSItem(item)||isSanMarItem(item)||isMomentecItem(item)||isRichardsonItem(item))&&!vendorInv[item.sku]&&!vendorInvFetching.current[item.sku]){
+      const key=itemVendorInvKey(item);
+      if(key&&!vendorInv[key]&&!vendorInvFetching.current[key]){
         fetchVendorInventory(item.sku,item.vendor_id,item);
       }
     });
@@ -1678,7 +1679,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // what the rep saved. We only fill genuine gaps.
       const hasCost=safeNum(item.nsa_cost)>0||Object.values(item._sizeCosts||{}).some(c=>safeNum(c)>0);
       if(hasCost)return item;
-      const price=vendorInv[item.sku]?.price;
+      const price=vendorInvForItem(item)?.price;
       if(!price)return item;
       const sizeCosts={};Object.entries(price).forEach(([sz,c])=>{const n=safeNum(c);if(n>0)sizeCosts[sz]=n});
       const vals=Object.values(sizeCosts);
@@ -1709,7 +1710,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       let changed=false;
       const next=safeItems(e).map(it=>{
         if(!pendingCostSku[it.sku])return it;
-        const inv=vendorInv[it.sku];
+        const inv=vendorInvForItem(it);
         if(!inv||inv.loading)return it;// still fetching — keep waiting
         settled.push(it.sku);
         if(safePOs(it).length||safePicks(it).length)return it;
@@ -2236,8 +2237,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(rsSearchTimer.current)clearTimeout(rsSearchTimer.current);
     // Determine active query: Add Product takes precedence, else Copy SKU modal
     const copyQ=copySkuModal?.search||'';
-    const activeQ=showAdd?pS:copyQ;
-    const isActive=showAdd||!!copySkuModal;
+    const activeQ=showAdd?pS:(copyQ||multiAddQuery);
+    const isActive=showAdd||!!copySkuModal||multiAddOpen;
     if(!isActive||!activeQ||activeQ.length<2){setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setSsSearching(false);setSmSearching(false);setMtSearching(false);setRsSearching(false);ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;rsSearchGen.current++;setExpandedStyle(null);return}
     // Bump generation to discard in-flight results from previous keystrokes
     ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;rsSearchGen.current++;setExpandedStyle(null);
@@ -2248,7 +2249,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     mtSearchTimer.current=setTimeout(()=>mtLiveSearch(activeQ),delay+200);
     rsSearchTimer.current=setTimeout(()=>rsLiveSearch(activeQ),delay+50);
     return()=>{if(ssSearchTimer.current)clearTimeout(ssSearchTimer.current);if(smSearchTimer.current)clearTimeout(smSearchTimer.current);if(mtSearchTimer.current)clearTimeout(mtSearchTimer.current);if(rsSearchTimer.current)clearTimeout(rsSearchTimer.current)};
-  },[pS,showAdd,copySkuModal?.search]);
+  },[pS,showAdd,copySkuModal?.search,multiAddQuery,multiAddOpen]);
 
   // When color picker modal opens, fetch the SKU's vendor data to populate colors list
   React.useEffect(()=>{
@@ -2342,6 +2343,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const expColorSearchInput=(borderColor)=><input value={expandColorQ} onChange={e=>setExpandColorQ(e.target.value)} onClick={e=>e.stopPropagation()} placeholder="Search colors..." autoFocus style={{flexBasis:'100%',padding:'4px 8px',fontSize:11,border:'1px solid '+borderColor,borderRadius:4,marginBottom:4}}/>;
   const expColorNoMatch=<div style={{fontSize:11,color:'#94a3b8',padding:'4px 2px',flexBasis:'100%'}}>No colors match "{expandColorQ}"</div>;
   const sv=(k,v)=>{setO(e=>({...e,[k]:v,updated_at:new Date().toLocaleString()}));setDirty(true)};
+  // Promo is an order-level mode. Heal legacy orders that only covered some
+  // lines; Save reconciles the parent ledger to the resulting full-order total.
+  React.useEffect(()=>{if(!o.promo_applied)return;
+    let changed=!o.tax_exempt;const items=safeItems(o).map(it=>{const next=applyFullPromoPricing(it);
+      const same=it.is_promo===true&&Math.abs(safeNum(it.unit_sell)-safeNum(next.unit_sell))<=0.005
+        &&JSON.stringify(it._sizeSells||null)===JSON.stringify(next._sizeSells||null)
+        &&safeNum(it._promo_credit)===0&&safeNum(it._promo_partial_qty)===0;
+      if(same)return it;changed=true;return next;
+    });
+    if(changed){setO(cur=>({...cur,items,tax_exempt:true,updated_at:new Date().toLocaleString()}));setDirty(true)}
+  },[o.promo_applied,o.items,o.tax_exempt]); // eslint-disable-line
   // Delivery method ("How is this order getting to the customer?") is purely a warehouse instruction.
   // When every live line ships direct to the customer — each item is on a drop-ship PO and/or decorated
   // out of house, with nothing received in-house or pulled from our stock — no goods route through the
@@ -2406,9 +2418,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // sparse, hard-to-fill grid. Default shoe runs to the standard 7–12 half-size set so the
     // grid is usable out of the box; trust the catalog only when it already carries half
     // sizes (a curated run). Staff can +Size for outliers either way.
-    const fwCatHasHalves=isFw&&(p.available_sizes||[]).some(s=>String(s).includes('.5'));
-    const avail=isFw?(fwCatHasHalves?[...p.available_sizes]:[...FOOTWEAR_DEFAULT_SIZES]):((p.available_sizes&&p.available_sizes.length)?orderLineSizes(p.available_sizes):['S','M','L','XL','2XL']);
+    const fwAvail=isFw?normalizeFootwearSizeList(p.available_sizes||[]):[];
+    const fwCatHasHalves=fwAvail.some(s=>String(s).includes('.5'));
+    const avail=isFw?(fwCatHasHalves?fwAvail:[...FOOTWEAR_DEFAULT_SIZES]):((p.available_sizes&&p.available_sizes.length)?orderLineSizes(p.available_sizes):['S','M','L','XL','2XL']);
     sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:nameWithBrand(p.name,p.brand),brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),_is_clearance:p.is_clearance||false,...(!clr&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1?{_sizeCosts:p._sizeCosts,...(au?{}:{_sizeSells:Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))})}:{}),sizes:{},qty_only:false,decorations:[],no_deco:true,is_footwear:isFw}]);setShowAdd(false);setPS('')};
+  const multiCatalogItem=p=>{const au=isAU(p.brand);const isFw=(p.category||'').toLowerCase()==='footwear';const clr=p.is_clearance&&p.clearance_cost!=null;const cost=catalogRepCost(p);const sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(cost*(o.default_markup||1.65));const fwAvail=isFw?normalizeFootwearSizeList(p.available_sizes||[]):[];const fwHalves=fwAvail.some(s=>String(s).includes('.5'));const avail=isFw?(fwHalves?fwAvail:[...FOOTWEAR_DEFAULT_SIZES]):((p.available_sizes&&p.available_sizes.length)?orderLineSizes(p.available_sizes):['S','M','L','XL','2XL']);return{product_id:p.id,sku:p.sku,name:nameWithBrand(p.name,p.brand),brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),_is_clearance:p.is_clearance||false,...(!clr&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1?{_sizeCosts:p._sizeCosts,...(au?{}:{_sizeSells:Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))})}:{}),sizes:{},qty_only:false,decorations:[],no_deco:true,is_footwear:isFw,_multiInv:Object.fromEntries(avail.map(sz=>[sz,availInv(p,sz)]))}};
+  const multiVendorItem=(style,color,source)=>{const isSM=source==='sm',isMT=source==='mt',isRS=source==='rs';const vendor=vendorList.find(v=>isRS?(v.api_provider==='richardson'||v.name==='Richardson'):isMT?(v.api_provider==='momentec'||v.name==='Momentec'):isSM?(v.api_provider==='sanmar'||v.name==='SanMar'):(v.api_provider==='ss_activewear'||v.name==='S&S Activewear'));const vId=vendor?.id||(isRS?'v5':isMT?'v8':isSM?'v3':'v4');const cost=color.customerPrice||color.piecePrice||0;const catMatch=products.find(p=>p.sku===style.sku&&(!color.colorName||p.color===color.colorName))||products.find(p=>p.sku===style.sku);const apiSizes=(color.sizes||[]).map(s=>s.sizeName).filter(Boolean);const catSizes=catMatch?.available_sizes||[];const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(Boolean):[];let avail=[...new Set([...apiSizes,...catSizes,...smSizes,...((isRS||apiSizes.length||catSizes.length||smSizes.length)?[]:['S','M','L','XL','2XL'])])].sort((a,b)=>szRank(a)-szRank(b));if(!avail.length)avail=isRS?['OSFA']:['S','M','L','XL','2XL'];const inv={};const sizeCost={};(color.sizes||[]).forEach(s=>{inv[s.sizeName]=(inv[s.sizeName]||0)+safeNum(s.qty);sizeCost[s.sizeName]=s.price||cost});const mk=o.default_markup||1.65;return{product_id:catMatch?.id||null,sku:style.sku,name:nameWithBrand(style.styleName,style.brandName),brand:style.brandName,vendor_id:vId,color:color.colorName,nsa_cost:cost,retail_price:catMatch?.retail_price||0,unit_sell:rQ(cost*mk),available_sizes:avail,sizes:{},qty_only:false,decorations:[],no_deco:true,is_custom:false,[isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live']:true,_colorImage:color.colorFrontImage||style.styleImage||'',_colorBackImage:color.colorBackImage||'',_sizeCosts:sizeCost,_sizeSells:Object.fromEntries(Object.entries(sizeCost).map(([sz,c])=>[sz,rQ(c*mk)])),_multiInv:inv,...(isMT&&style._mtId?{_mtId:style._mtId}:{}),...(isMT&&color.sku?{_mt_style:style.sku,_mt_color:color.colorCode||'',_mt_sku:color.sku,_mt_skus:Object.fromEntries((color.sizes||[]).map(s=>[s.sizeName,`${color.sku}.${s.sizeName}`]).filter(([sz])=>sz))}:{})}};
+  const multiCatalogResults=useCallback(q=>{const toks=(q||'').trim().toLowerCase().split(/\s+/).filter(Boolean);if((q||'').trim().length<2)return[];return products.filter(p=>!p.is_archived&&toks.every(t=>(p.sku||'').toLowerCase().includes(t)||(p.name||'').toLowerCase().includes(t)||(p.brand||'').toLowerCase().includes(t)||(p.color||'').toLowerCase().includes(t))).slice(0,18).map(p=>({key:'cat-'+p.id,sku:p.sku,label:(p.sku||'')+' · '+nameWithBrand(p.name,p.brand),sub:p.color||'',source:'catalog',sourceLabel:'CATALOG',item:multiCatalogItem(p)}))},[products,o.default_markup,cust,reservedInvMap]);
+  const multiVendorResults=useMemo(()=>[['ss',ssResults,'S&S'],['sm',smResults,'SANMAR'],['mt',mtResults,'MOMENTEC'],['rs',rsResults,'RICHARDSON']].flatMap(([source,styles,label])=>(styles||[]).flatMap((style,si)=>(style.colors||[]).slice(0,8).map((color,ci)=>({key:source+'-'+style.sku+'-'+(color.colorName||ci),sku:style.sku,label:style.sku+' · '+nameWithBrand(style.styleName,style.brandName),sub:(color.colorName||'')+' · '+safeNum(color.totalQty).toLocaleString()+' available',source,sourceLabel:label,item:multiVendorItem(style,color,source)})))).slice(0,40),[ssResults,smResults,mtResults,rsResults,o.default_markup,products,vendorList]);
+  const applyMultiItems=(rows,draftArts)=>{const errors={};const populated=rows.map((r,i)=>({r,i})).filter(({r})=>r.item||(r.query||'').trim());if(!populated.length){nf('Add at least one item','error');return{errors:{0:'Choose a product and enter quantities.'}}}const usedDrafts=new Set();populated.forEach(({r,i})=>{if(!r.item){errors[i]='Select a product from the search results.';return}const qty=Object.values(r.sizes||{}).reduce((n,v)=>n+Math.max(0,parseInt(v)||0),0);if(!qty)errors[i]='Enter a quantity for at least one size.';if(!Number.isFinite(Number(r.unit_sell))||Number(r.unit_sell)<0)errors[i]='Enter a valid sell price.';if(r.artMode==='assign'){if(!r.arts.length)errors[i]='Choose existing art or create an Art TBD.';r.arts.forEach(a=>{if(!a.artId)errors[i]='Complete every art selection.';if(a.source==='draft')usedDrafts.add(a.artId)})}});draftArts.filter(d=>usedDrafts.has(d.key)).forEach(d=>{if(!d.name.trim()||!d.deco_type||!d.position){const hit=populated.find(({r})=>r.arts.some(a=>a.source==='draft'&&a.artId===d.key));if(hit)errors[hit.i]='Complete the name, decoration type, and position for each Art TBD.'}});if(Object.keys(errors).length)return{errors};const stamp=Date.now();const draftId=new Map();const newArts=draftArts.filter(d=>usedDrafts.has(d.key)).map((d,i)=>{const id='af'+stamp+'_'+i;draftId.set(d.key,id);return{id,design_id:'design_'+stamp.toString(36)+'_'+i,name:d.name.trim(),deco_type:d.deco_type,status:'waiting_for_art',color_ways:[],files:[],mockup_files:[],mock_links:{},prod_files:[],notes:d.notes||'',uploaded:new Date().toLocaleDateString()}});const built=populated.map(({r})=>{const decorations=r.artMode==='assign'?r.arts.map(a=>({kind:'art',position:a.position||(a.source==='draft'?draftArts.find(d=>d.key===a.artId)?.position:'Front Center')||'Front Center',art_file_id:a.source==='draft'?draftId.get(a.artId):a.artId,sell_override:null})):[];return{...r.item,unit_sell:rQ(Number(r.unit_sell)),sizes:Object.fromEntries(Object.entries(r.sizes).map(([sz,v])=>[sz,Math.max(0,parseInt(v)||0)]).filter(([,v])=>v>0)),decorations,no_deco:r.artMode==='none',...(r.artMode==='later'?{_decoration_later:true}:{})}});const merged=[];built.forEach(item=>{const artKey=JSON.stringify(item.decorations.map(d=>({id:d.art_file_id,position:d.position})).sort((a,b)=>(a.id+a.position).localeCompare(b.id+b.position)));const key=[item.sku,item.color,item.unit_sell,artKey,item.no_deco,item._decoration_later||false].join('|');const hit=merged.find(x=>x._multiMergeKey===key);if(hit)Object.entries(item.sizes).forEach(([sz,v])=>{hit.sizes[sz]=(hit.sizes[sz]||0)+v});else merged.push({...item,_multiMergeKey:key})});const clean=merged.map(({_multiMergeKey,_multiInv,...item})=>item);setO(e=>({...e,items:[...safeItems(e),...clean],art_files:[...safeArt(e),...newArts],updated_at:new Date().toLocaleString()}));setDirty(true);setMultiAddOpen(false);setMultiAddQuery('');nf('Added '+clean.length+' item line'+(clean.length===1?'':'s'));return{ok:true}};
   // Apply a reordering of line items. Jobs (jobs[].items[].item_idx) and decoration POs
   // (deco_pos[].item_idxs) reference items by array position, so remap every such reference to
   // the items' new positions in the same update — otherwise a reorder leaves them pointing at the
@@ -2520,8 +2538,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const cp=products.find(p=>(p.sku===cur.sku||(cur.product_id&&p.id===cur.product_id))&&p.vendor_id===vid&&catalogRepCost(p)>0);
       if(cp&&Math.abs(catalogRepCost(cp)-safeNum(cur.nsa_cost))>0.005)next.nsa_cost=catalogRepCost(cp);
     }
-    setO(e=>({...e,items:safeItems(e).map((it,x)=>x===i?next:it),updated_at:new Date().toLocaleString()}));setDirty(true);
-    if(cur.sku){delete vendorInvCache.current[cur.sku];delete vendorInvFetching.current[cur.sku];setVendorInv(prev=>{const n={...prev};delete n[cur.sku];return n})}
+    // Build the replacement from the item in the functional update, not `cur`
+    // from the click render. Size additions can land in the same tick; using the
+    // stale object here previously reverted those newly-added sizes.
+    setO(e=>({...e,items:safeItems(e).map((it,x)=>{if(x!==i)return it;const{_ss_live,_sm_live,_mt_live,_rs_live,...latest}=it;const assigned={...latest,vendor_id:vid};if(canRecost&&next.nsa_cost!==cur.nsa_cost)assigned.nsa_cost=next.nsa_cost;return assigned}),updated_at:new Date().toLocaleString()}));setDirty(true);
     if(isLive){if(canRecost&&next.sku)setPendingCostSku(p=>({...p,[next.sku]:true}));fetchVendorInventory(next.sku,vid,next)}
     const vn=vendorList.find(v=>v.id===vid)?.name||'—';nf('Vendor set to '+vn+(isLive&&canRecost?' — refreshing live cost…':'')+' for '+(cur.sku||'item'));setVendorModal(null);
   };
@@ -2538,8 +2558,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const _copySzStr=newSz=>Object.entries(newSz||{}).filter(([,v])=>safeNum(v)>0).sort((a,b)=>szRank(a[0])-szRank(b[0])).map(([sz,v])=>safeNum(v)+'/'+sz).join(' ');
   const _insertCopiedItem=(items,i,clone)=>{const next=[...safeItems({items})];next.splice(i+1,0,clone);return next};
   const _applyCopyPrice=(clone,source,copyPrice)=>{if(!copyPrice)return clone;if(copyPrice.mode==='product'){if(clone.sku===source.sku){const p=products.find(x=>(source.product_id&&x.id===source.product_id)||(x.sku===source.sku&&(!source.color||x.color===source.color)))||products.find(x=>x.sku===source.sku);if(p){const au=isAU(p.brand||clone.brand);const fw=(p.category||'').toLowerCase()==='footwear'||!!clone.is_footwear;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.unit_sell=au?rQ(safeNum(p.retail_price)*(1-auDisc(fw,p.pricing_group))):rQ(catalogRepCost(p)*(o.default_markup||1.65));if(!au&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1){clone._sizeCosts=p._sizeCosts;clone._sizeSells=Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))}else{delete clone._sizeCosts;delete clone._sizeSells}}}}else{clone.unit_sell=safeNum(source.unit_sell);if(source._sizeSells)clone._sizeSells=JSON.parse(JSON.stringify(source._sizeSells));else delete clone._sizeSells}return clone};
-  const copyI=(i,newSz,copyPrice)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_applyCopySizes(clone,newSz);_applyCopyPrice(clone,it,copyPrice);const szStr=_copySzStr(newSz);sv('items',_insertCopiedItem(o.items,i,clone));nf('📋 Copied '+it.sku+(szStr?' — '+szStr:' with all sizes')+' & decorations')};
-  const copyIWithSku=(i,p,newSz,copyPrice)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_restampMt(clone);const _clr=p.is_clearance&&p.clearance_cost!=null;clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;clone._is_clearance=p.is_clearance||false;
+  const _moveUnfulfilledPreview=(i,targetSizes,targetLabel)=>{const it=safeItems(o)[i];if(!it)return null;
+    if(o._picksHydrated===false||o._posHydrated===false){nf("⚠️ This order's IFs/POs haven't finished loading. Reload before moving unfulfilled quantities.",'error');return null}
+    if(it.qty_only&&!Object.keys(safeSizes(it)).length){nf('Move unfulfilled needs a size breakdown. Use Change SKU for this quantity-only line.','error');return null}
+    const plan=unfulfilledSizes(it);const moveKeys=Object.keys(plan.open);if(!moveKeys.length){nf('Nothing to move — every quantity is already pulled or on a PO.','error');return null}
+    const avail=new Set((targetSizes||[]).filter(Boolean));const missing=avail.size?moveKeys.filter(sz=>!avail.has(sz)):[];
+    const moving=_copySzStr(plan.open);const staying=moveKeys.concat(Object.keys(plan.picked),Object.keys(plan.po)).filter((v,x,a)=>a.indexOf(v)===x).sort((a,b)=>szRank(a)-szRank(b)).map(sz=>({size:sz,pulled:safeNum(plan.picked[sz]),onPO:safeNum(plan.po[sz])})).filter(r=>r.pulled>0||r.onPO>0);
+    return{open:plan.open,moving,staying,missing,targetLabel,sourceSku:it.sku};
+  };
+  const _moveDecoKey=it=>JSON.stringify(safeDecos(it));
+  const _commitUnfulfilledMove=(i,clone,requested)=>{let merged=false;let replaced=false;
+    setO(e=>{const items=safeItems(e);const src=items[i];if(!src)return e;const live=unfulfilledSizes(src).open;const moving={};Object.keys(requested||{}).forEach(sz=>{const q=Math.min(safeNum(requested[sz]),safeNum(live[sz]));if(q>0)moving[sz]=q});if(!Object.keys(moving).length)return e;
+      const moved={...clone,sizes:moving,available_sizes:[...new Set([...(clone.available_sizes||[]),...Object.keys(moving)])].sort((a,b)=>szRank(a)-szRank(b)),pick_lines:[],po_lines:[]};
+      const srcSizes={...safeSizes(src)};Object.entries(moving).forEach(([sz,q])=>{srcSizes[sz]=Math.max(0,safeNum(srcSizes[sz])-q)});const srcNext={...src,sizes:srcSizes};
+      const matchIdx=items.findIndex((it,ix)=>ix!==i&&String(it.sku||'').toLowerCase()===String(moved.sku||'').toLowerCase()&&String(it.color||'').toLowerCase()===String(moved.color||'').toLowerCase()&&_moveDecoKey(it)===_moveDecoKey(moved));
+      const sourceEmpty=Object.values(srcSizes).every(v=>safeNum(v)<=0)&&(!src.qty_only||safeNum(src.est_qty)<=0);let nextItems=[...items];let nextJobs=e.jobs;let tombs=e._deletedItemKeys||[];let destIdx=null;let removedSource=false;
+      if(matchIdx>=0){merged=true;const target=items[matchIdx];const sums={...safeSizes(target)};Object.entries(moving).forEach(([sz,q])=>{sums[sz]=safeNum(sums[sz])+q});nextItems[matchIdx]={...target,...moved,sizes:sums,available_sizes:[...new Set([...(target.available_sizes||[]),...(moved.available_sizes||[]),...Object.keys(sums)])].sort((a,b)=>szRank(a)-szRank(b)),pick_lines:safePicks(target),po_lines:safePOs(target)};nextItems[i]=srcNext;destIdx=matchIdx;
+        if(sourceEmpty){const _ri=ii=>ii>i?ii-1:ii;removedSource=true;destIdx=_ri(matchIdx);nextItems=nextItems.filter((_,ix)=>ix!==i);nextJobs=safeJobs(e).map(j=>({...j,items:(j.items||[]).filter(gi=>gi.item_idx!==i).map(gi=>({...gi,item_idx:_ri(gi.item_idx)}))}));tombs=_stampRekeyTomb(e,src)}
+      }else if(sourceEmpty){replaced=true;destIdx=i;nextItems[i]=moved;tombs=_stampRekeyTomb(e,src)}else{nextItems[i]=srcNext;destIdx=nextItems.length;nextItems.push(moved)}
+      const nextDeco=safeArr(e.deco_pos).map(dp=>{const hadSource=(dp.item_idxs||[]).includes(i);let refs=(dp.item_idxs||[]).filter(ii=>!removedSource||ii!==i).map(ii=>removedSource&&ii>i?ii-1:ii);if(hadSource&&destIdx!=null)refs.push(destIdx);return{...dp,item_idxs:[...new Set(refs)]}});
+      const arts=linkSwappedGarmentMock(safeArr(e.art_files),src,moved.sku,moved.color);return{...e,items:nextItems,jobs:nextJobs,deco_pos:nextDeco,_deletedItemKeys:tombs,...(arts!==e.art_files?{art_files:arts}:{}),updated_at:new Date().toLocaleString()}});setDirty(true);
+    return{merged,replaced};
+  };
+  const copyI=(i,newSz,copyPrice)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];delete clone.invoice_line_keys;_applyCopySizes(clone,newSz);_applyCopyPrice(clone,it,copyPrice);const szStr=_copySzStr(newSz);sv('items',_insertCopiedItem(o.items,i,clone));nf('📋 Copied '+it.sku+(szStr?' — '+szStr:' with all sizes')+' & decorations')};
+  const copyIWithSku=(i,p,newSz,copyPrice,moveOpen=false,moveApproved=false)=>{const it=o.items[i];const movePreview=moveOpen?_moveUnfulfilledPreview(i,p.available_sizes,p.sku+(p.color?' — '+p.color:'')):null;if(moveOpen&&!movePreview)return;if(moveOpen&&!moveApproved){setCopySkuModal(m=>({...m,pendingMove:{kind:'catalog',product:p,preview:movePreview}}));return}const moveSz=movePreview?.open||null;const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];delete clone.invoice_line_keys;_restampMt(clone);const _clr=p.is_clearance&&p.clearance_cost!=null;clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;clone._is_clearance=p.is_clearance||false;
     // Seed the new SKU's core run and keep every size the source line actually has a quantity in,
     // so filled sizes survive the swap without dragging over the catalog's full padded run.
     const srcSizes=Array.isArray(it.available_sizes)?it.available_sizes:[];
@@ -2553,7 +2595,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // source line may stay). Link the new garment to the source's mock instead — same-color
     // only, via the visible "uses the same mockup as…" mechanism (SO-1480 class).
     const _linked=linkSwappedGarmentMock(safeArt(o),it,p.sku,p.color)!==safeArt(o);
-    _applyCopySizes(clone,newSz);_applyCopyPrice(clone,it,copyPrice);const _szStr=_copySzStr(newSz);
+    _applyCopySizes(clone,moveOpen?moveSz:newSz);_applyCopyPrice(clone,it,copyPrice);const _szStr=_copySzStr(moveOpen?moveSz:newSz);
+    if(moveOpen){const result=_commitUnfulfilledMove(i,clone,moveSz);setCopySkuModal(null);nf('↗ Moved '+_szStr+' from '+it.sku+' to '+p.sku+(result.merged?' and merged it into the existing line':result.replaced?'':' on a new line'));return}
     setO(e=>{const arts=linkSwappedGarmentMock(safeArr(e.art_files),it,p.sku,p.color);return{...e,items:_insertCopiedItem(e.items,i,clone),...(arts!==e.art_files?{art_files:arts}:{}),updated_at:new Date().toLocaleString()}});setDirty(true);
     setCopySkuModal(null);nf('📋 Copied decorations from '+it.sku+' → '+p.sku+(_szStr?' — '+_szStr:'')+(_linked?' — mockup linked to '+it.sku:''))};
   // Momentec API order SKUs (_mt_style/_mt_color/_mt_sku/_mt_skus) must always describe the
@@ -2571,7 +2614,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   };
   // Copy item to a vendor-search result (S&S/SanMar/Momentec/Richardson). Mirrors addSearchProduct
   // but preserves source item's decorations + sizes by cloning it.
-  const copyIWithVendorResult=(i,style,color,source,newSz,copyPrice)=>{
+  const copyIWithVendorResult=(i,style,color,source,newSz,copyPrice,moveOpen=false,moveApproved=false)=>{
     const it=o.items[i];if(!it)return;
     const isSM=source==='sm';const isMT=source==='mt';const isRS=source==='rs';
     const vendor=vendorList.find(v=>isRS?(v.api_provider==='richardson'||v.name==='Richardson'):isMT?(v.api_provider==='momentec'||v.name==='Momentec'):isSM?(v.api_provider==='sanmar'||v.name==='SanMar'):(v.api_provider==='ss_activewear'||v.name==='S&S Activewear'));
@@ -2586,6 +2629,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const STD_SIZES=(isRS||_feedSizes.length)?[]:['S','M','L','XL','2XL'];
     let availSizes=[..._feedSizes,...STD_SIZES];
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+    const movePreview=moveOpen?_moveUnfulfilledPreview(i,availSizes,style.sku+(color.colorName?' — '+color.colorName:'')):null;if(moveOpen&&!movePreview)return;if(moveOpen&&!moveApproved){setCopySkuModal(m=>({...m,pendingMove:{kind:'vendor',style,color,source,preview:movePreview}}));return}const moveSz=movePreview?.open||null;
     const vInv={};const vNextBySize={};
     // Only cache sizes with a real inventory hit. SanMar/S&S live-search rows often
     // come back with qty=0 because the search-time inventory fetch is a single
@@ -2595,7 +2639,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const liveFlag=isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
     const fallbackSizes=isRS?(availSizes.length?availSizes:['OSFA']):['S','M','L','XL','2XL'];
     // Clone source item to preserve decorations, then override SKU/product fields
-    const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];
+    const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];delete clone.invoice_line_keys;
     // Clear stale live-vendor flags from the source
     delete clone._ss_live;delete clone._sm_live;delete clone._mt_live;delete clone._rs_live;delete clone._mtId;delete clone._colors;
     _restampMt(clone,style,color,isMT);
@@ -2614,7 +2658,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const mk=o.default_markup||1.65;
     const sizeSell={};Object.entries(sizePrice).forEach(([sz,c])=>{sizeSell[sz]=rQ(c*mk)});
     clone._sizeSells=sizeSell;
-    _applyCopySizes(clone,newSz);_applyCopyPrice(clone,it,copyPrice);const _szStr=_copySzStr(newSz);
+    _applyCopySizes(clone,moveOpen?moveSz:newSz);_applyCopyPrice(clone,it,copyPrice);const _szStr=_copySzStr(moveOpen?moveSz:newSz);
+    if(moveOpen){const result=_commitUnfulfilledMove(i,clone,moveSz);setCopySkuModal(null);setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setExpandedStyle(null);nf('↗ Moved '+_szStr+' from '+it.sku+' to '+style.sku+(result.merged?' and merged it into the existing line':result.replaced?'':' on a new line'));return}
     // Same-color style swap: link the new garment to the source's mock so it follows the
     // swap (see copyIWithSku — shared linkSwappedGarmentMock, color-exact only).
     setO(e=>{const arts=linkSwappedGarmentMock(safeArr(e.art_files),it,style.sku,color.colorName);return{...e,items:_insertCopiedItem(e.items,i,clone),...(arts!==e.art_files?{art_files:arts}:{}),updated_at:new Date().toLocaleString()}});setDirty(true);
@@ -2627,9 +2672,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     setCopySkuModal(null);setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setExpandedStyle(null);
     nf('📋 Copied decorations from '+it.sku+' → '+style.sku+(_szStr?' — '+_szStr:''));
   };
-  // Change the SKU/product on an existing item in place (keeps decorations + sizes).
+  // Change the SKU/product on an existing item in place (keeps decorations; size and price behavior is selectable).
   // Only allowed when no PO/IF has been created on the item.
-  const changeItemSku=(i,p)=>{
+  const changeItemSku=(i,p,newSz,copyPrice)=>{
     const it=o.items[i];if(!it)return;
     if(safePicks(it).length>0||safePOs(it).length>0){nf('Cannot change SKU — item has PO or IF. Remove them first.','error');return}
     // The check above reads the CLIENT's copy — a tab whose so_item_pick_lines/so_item_po_lines load
@@ -2644,6 +2689,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     setO(e=>({...e,_deletedItemKeys:_stampRekeyTomb(e,safeItems(e)[i]),items:safeItems(e).map((x,xi)=>{
       if(xi!==i)return x;
       const next={...x};
+      next.invoice_line_keys=[...new Set([...safeArr(x.invoice_line_keys).map(safeStr).filter(Boolean),soLineKey(x,i)])];
       delete next._ss_live;delete next._sm_live;delete next._mt_live;delete next._rs_live;delete next._mtId;
       delete next._sizeCosts;delete next._sizeSells;delete next._colorImage;delete next._colorBackImage;
       _restampMt(next);
@@ -2654,6 +2700,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Drop quantities for sizes the new SKU doesn't carry, so an orphaned size from the old
       // SKU (e.g. OSFA) can't linger hidden in the grid and inflate the line total.
       next.sizes=Object.fromEntries(Object.entries(safeSizes(x)).filter(([sz])=>next.available_sizes.includes(sz)));
+      // Change SKU now honors the same optional size run and customer-price choice as Copy Item.
+      // Product cost always comes from the replacement; only the customer sell is preserved.
+      _applyCopySizes(next,newSz);_applyCopyPrice(next,x,copyPrice);
       next._colors=au?null:(p._colors||null);
       next.is_custom=false;
       return next;
@@ -2663,11 +2712,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // (SO-1480 pattern; the modal path was missing this, stranding webstore mocks on a SKU change).
     _rekeyLineMocks(i,it.sku,it.color);
     setCopySkuModal(null);
-    nf('🔄 Changed SKU → '+p.sku+' (decorations kept)');
+    nf('🔄 Changed SKU → '+p.sku+' (decorations kept'+(_copySzStr(newSz)?', sizes '+_copySzStr(newSz):'')+(copyPrice?.mode==='keep'?', price kept':'')+')');
   };
   // Change SKU in place to a vendor-search result (S&S/SanMar/Momentec/Richardson). Mirrors
   // copyIWithVendorResult but updates the existing item rather than appending a clone.
-  const changeItemWithVendorResult=(i,style,color,source)=>{
+  const changeItemWithVendorResult=(i,style,color,source,newSz,copyPrice)=>{
     const it=o.items[i];if(!it)return;
     if(safePicks(it).length>0||safePOs(it).length>0){nf('Cannot change SKU — item has PO or IF. Remove them first.','error');return}
     // The check above reads the CLIENT's copy — a tab whose so_item_pick_lines/so_item_po_lines load
@@ -2703,6 +2752,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     setO(e=>({...e,_deletedItemKeys:_stampRekeyTomb(e,safeItems(e)[i]),items:safeItems(e).map((x,xi)=>{
       if(xi!==i)return x;
       const next={...x};
+      next.invoice_line_keys=[...new Set([...safeArr(x.invoice_line_keys).map(safeStr).filter(Boolean),soLineKey(x,i)])];
       delete next._ss_live;delete next._sm_live;delete next._mt_live;delete next._rs_live;delete next._mtId;delete next._colors;
       _restampMt(next,style,color,isMT);
       next.product_id=catMatch?.id||null;next.sku=style.sku;next.name=style.styleName;next.brand=style.brandName;
@@ -2716,6 +2766,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       next._colorBackImage=color.colorBackImage||'';
       if(isMT&&style._mtId)next._mtId=style._mtId;
       next._sizeCosts=sizePrice;next._sizeSells=sizeSell;
+      _applyCopySizes(next,newSz);_applyCopyPrice(next,x,copyPrice);
       return next;
     }),updated_at:new Date().toLocaleString()}));
     setDirty(true);
@@ -2730,7 +2781,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Same identity move as changeItemSku above — without it the mock strands under the old key.
     _rekeyLineMocks(i,it.sku,it.color);
     setCopySkuModal(null);setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setExpandedStyle(null);
-    nf('🔄 Changed SKU → '+style.sku+' (decorations kept)');
+    nf('🔄 Changed SKU → '+style.sku+' (decorations kept'+(_copySzStr(newSz)?', sizes '+_copySzStr(newSz):'')+(copyPrice?.mode==='keep'?', price kept':'')+')');
   };
   // Change the color on an existing vendor-live item without losing decorations/sizes.
   const changeItemVendorColor=(itemIdx,style,color,source)=>{
@@ -2768,8 +2819,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // The garment's `sku|color` identity changed — move its per-garment mocks/links with it (SO-1480).
     if(cur)_rekeyLineMocks(itemIdx,cur.sku,cur.color);
     setColorPickerModal(null);setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);
-    // Refresh live per-size stock for the newly chosen color (inventory cache is keyed by sku).
-    if(cur){delete vendorInvCache.current[cur.sku];setVendorInv(prev=>{const n={...prev};delete n[cur.sku];return n;});fetchVendorInventory(cur.sku,cur.vendor_id,{...cur,color:color.colorName});}
+    // Refresh live per-size stock for the newly chosen supplier/SKU/color key.
+    if(cur){const changed={...cur,color:color.colorName};const key=itemVendorInvKey(changed);if(key){delete vendorInvCache.current[key];delete vendorInvFetching.current[key];setVendorInv(prev=>{const n={...prev};delete n[key];return n;})}fetchVendorInventory(cur.sku,cur.vendor_id,changed);}
     nf('🎨 Color changed to '+color.colorName);
   };
   // Inline color picker rendered UNDER a placed line item (reuses the same vendor
@@ -2911,7 +2962,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const uSz=(i,sz,v)=>{
     const n=v===''?0:parseInt(v)||0;
     const item=safeItems(oRef.current||o)[i];if(!item)return;
-    const cur=safeSizes(item)[sz]||0;
+    if(item.is_footwear)sz=normalizeFootwearSize(sz);
+    const curSizes=item.is_footwear?normalizeFootwearSizeQtyMap(safeSizes(item)):safeSizes(item);
+    const cur=curSizes[sz]||0;
     if(n===cur)return;// no-op: value unchanged, skip render + side effects
     const pickedQty=safePicks(item).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);
     const poQty=poCommitted(item.po_lines,sz);
@@ -2921,7 +2974,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const _applySizes=(po_lines,note)=>{
       setO(e=>{const next={...e,items:safeItems(e).map((it,x)=>{
         if(x!==i)return it;
-        const next={...it,sizes:{...it.sizes,[sz]:n}};
+        const nextSizes=it.is_footwear?normalizeFootwearSizeQtyMap(safeSizes(it)):{...safeSizes(it)};nextSizes[sz]=n;
+        const next={...it,sizes:nextSizes};
         if(po_lines)next.po_lines=po_lines;
         if(it.est_qty&&Object.values(next.sizes).reduce((a,v2)=>a+safeNum(v2),0)>0)next.est_qty=0;
         return next;
@@ -2981,7 +3035,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }
     _applySizes(null);
   };
-  const addSzToItem=(i,sz)=>{const it=o.items[i];const cur=it.available_sizes||[];if(!cur.includes(sz))uI(i,'available_sizes',[...cur,sz])};
+  const addSzToItem=(i,sz)=>{const it=o.items[i];const cur=it.available_sizes||[];const next=it.is_footwear?normalizeFootwearSizeList([...cur,sz]):[...cur,sz];if(!cur.includes(sz)||next.length!==cur.length)uI(i,'available_sizes',next)};
   // Total units already committed on POs for an item, summed across every size bucket (any positive
   // numeric key that isn't PO metadata). Used to warn before a re-size orphans an existing PO's
   // bucket — the PO keeps its old OSFA/QTY/size keys, so the item's new sizes won't line up against
@@ -3009,9 +3063,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }
     return true;
   };
-  const removeSzFromItem=(i,sz)=>{const it=o.items[i];if(safeNum(it.sizes[sz])>0){nf('Cannot remove '+sz+' — it has quantity. Set to 0 first.','error');return}const newSizes={...it.sizes};delete newSizes[sz];uI(i,'sizes',newSizes);uI(i,'available_sizes',(it.available_sizes||[]).filter(s=>s!==sz))};
-  const NUM_SZ={heat_transfer:['1"','1.5"','2"','3"','4"','5"','6"','8"','10"'],embroidery:['0.5"','0.75"','1"','1.5"','2"'],screen_print:['2"','4"','6"','8"','10"'],tackle_twill:TWN.map(r=>r.size)};
+  const removeSzFromItem=(i,sz)=>{const it=o.items[i];const same=s=>it.is_footwear?normalizeFootwearSize(s)===normalizeFootwearSize(sz):s===sz;const qty=Object.entries(safeSizes(it)).filter(([s])=>same(s)).reduce((a,[,v])=>a+safeNum(v),0);if(qty>0){nf('Cannot remove '+sz+' — it has quantity. Set to 0 first.','error');return}const newSizes={...safeSizes(it)};Object.keys(newSizes).filter(same).forEach(s=>delete newSizes[s]);uI(i,'sizes',newSizes);uI(i,'available_sizes',(it.available_sizes||[]).filter(s=>!same(s)))};
+  const NUM_SZ={heat_transfer:['1"','1.5"','2"','3"','4"','5"','6"','8"','10"'],embroidery:['0.5"','0.75"','1"','1.5"','2"','3"'],screen_print:['2"','4"','6"','8"','10"'],tackle_twill:TWN.map(r=>r.size)};
   const itemIsReversible=i=>{const it=o.items[i];return!!(it&&safeDecos(it).some(d=>d.reversible))};
+  const _withDecoDeleteIntent=(e,ii,nextCount)=>{const from=safeDecos(safeItems(e)[ii]).length;if(nextCount>=from)return{};const prior=e._decoDeleteIntents?.[ii];return{_decoDeleteIntents:{...(e._decoDeleteIntents||{}),[ii]:{from:Number.isFinite(prior?.from)?prior.from:from,to:nextCount}}}};
   const addArtDeco=i=>{const rev=itemIsReversible(i);sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'art',position:'Front Center',art_file_id:null,sell_override:null,...(rev?{reversible:true}:{})}]}:x))};
   const addNumDeco=i=>{const rev=itemIsReversible(i);sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'numbers',position:'Back',num_method:'screen_print',num_size:'6"',two_color:false,sell_override:null,custom_font_art_id:null,roster:{},...(rev?{reversible:true}:{})}]}:x))};
   const addNameDeco=i=>{const rev=itemIsReversible(i);sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'names',position:'Back Center',name_method:'heat_press',sell_override:null,sell_each:6,cost_each:3,names:{},...(rev?{reversible:true}:{})}]}:x))};
@@ -3050,7 +3105,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const sg='sg_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
       artDecos=active.map(d=>({kind:'art',position:d.position,art_file_id:d.art_file_id,sell_override:null,split_group:sg,split_sizes:{...d.sizes},...(rev?{reversible:true}:{})}));
     }
-    setO(e=>({...e,items:safeItems(e).map((x,i)=>i===m.itemIdx?{...x,no_deco:false,decorations:[...artDecos,...keepNonArt]}:x),updated_at:new Date().toLocaleString()}));
+    setO(e=>{const next=[...artDecos,...keepNonArt];return{...e,..._withDecoDeleteIntent(e,m.itemIdx,next.length),items:safeItems(e).map((x,i)=>i===m.itemIdx?{...x,no_deco:false,decorations:next}:x),updated_at:new Date().toLocaleString()}});
     setDirty(true);setSplitArtModal(null);
     nf(active.length>=2?('✂️ Split into '+active.length+' designs — '+active.length+' jobs created'):'Updated — one design on all pieces');
   };
@@ -3062,7 +3117,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const keepNonArt=safeDecos(it).filter(d=>d.kind!=='art');
     const first=splitArts[0];
     const merged={kind:'art',position:first.position||'Front Center',art_file_id:first.art_file_id||null,sell_override:null,...(first.reversible?{reversible:true}:{})};
-    setO(e=>({...e,items:safeItems(e).map((x,i)=>i===idx?{...x,decorations:[merged,...otherArts,...keepNonArt]}:x),updated_at:new Date().toLocaleString()}));
+    setO(e=>{const next=[merged,...otherArts,...keepNonArt];return{...e,..._withDecoDeleteIntent(e,idx,next.length),items:safeItems(e).map((x,i)=>i===idx?{...x,decorations:next}:x),updated_at:new Date().toLocaleString()}});
     setDirty(true);nf('Split removed — first design kept on all pieces');
   };
   const uD=(ii,di,k,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,[k]:v}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
@@ -3204,7 +3259,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     nf(val==='outside'
       ?'\uD83C\uDFA8 '+ln+' marked Outside'+(markDeco.vendor?' \u00B7 '+markDeco.vendor:'')+(isSO?' \u2014 add a Deco PO to bundle & cost '+(n!==1?'them':'it')+'.':' \u2014 carries to the sales order, where you bundle the Deco PO.')
       :'\uD83C\uDFED '+ln+' marked In-house'+(blocked.length?' \u00B7 '+blocked.length+' left on a Deco PO':''))};
-  const rmD=(ii,di)=>{const next=o.items[ii].decorations.filter((_,i)=>i!==di);setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:next,...(next.length===0?{no_deco:true}:{})}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
+  const rmD=(ii,di)=>{setO(e=>{const current=safeDecos(safeItems(e)[ii]);const next=current.filter((_,i)=>i!==di);return{...e,..._withDecoDeleteIntent(e,ii,next.length),items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:next,...(next.length===0?{no_deco:true}:{})}:it),updated_at:new Date().toLocaleString()}});setDirty(true)};
   // Art files (SO)
   const af=o.art_files||[];
   // Art-folder mutators use the functional setO form so they always read the
@@ -3547,6 +3602,32 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const promoAmount=promoRev+promoShip+promoCredit;const customerPays=normalRev+normalShip+normalTax;
     return{promoRev,promoCost,promoShip,promoAmount,promoCredit,normalRev,normalCost,normalShip,normalTax,customerPays};
   },[o,artQty,cust,af,costArtQty,outsourcedByItemCost]); // eslint-disable-line
+
+  // Replace this document's prior draw with the exact current promo total.
+  // Restoring its old usage first lets an edited order reuse its own dollars.
+  const reconcilePromoDraw=useCallback(async(orderToSave,targetAmount)=>{
+    if(!orderToSave.promo_applied)return{ok:true,order:orderToSave};
+    const money=n=>Math.round(safeNum(n)*100)/100;const target=money(targetAmount);
+    if(Math.abs(safeNum(orderToSave.promo_amount)-target)<=0.005)return{ok:true,order:{...orderToSave,promo_amount:target,tax_exempt:true}};
+    if(!promoHistoryReady){nf('Promo balance is still calculating. Wait a moment and Save again.','error');return{ok:false,order:orderToSave}}
+    if(!promoCust||!onSavePromoPeriod||!onSavePromoUsage||!onDeletePromoUsage){nf('Promo pricing changed, but the parent promo ledger is not available to sync. Reload and try again.','error');return{ok:false,order:orderToSave}}
+    const mine=u=>isSO?u.so_id===orderToSave.id:(u.estimate_id===orderToSave.id&&!u.so_id);
+    const oldUsages=(promoCust.promo_usage||[]).filter(mine);const oldByPeriod={};oldUsages.forEach(u=>{oldByPeriod[u.period_id]=(oldByPeriod[u.period_id]||0)+safeNum(u.amount)});
+    const restored=(promoCust.promo_periods||[]).map(p=>({...p,used:Math.max(0,safeNum(p.used)-safeNum(oldByPeriod[p.id]))}));
+    const now=new Date(),year=now.getFullYear(),periodStart=now.getMonth()<6?year+'-01-01':year+'-07-01';const oldPeriodIds=new Set(Object.keys(oldByPeriod));
+    const drawable=restored.filter(p=>oldPeriodIds.has(p.id)||p.period_start>=periodStart).sort((a,b)=>(a.period_start||'').localeCompare(b.period_start||''));
+    const available=drawable.reduce((a,p)=>a+Math.max(0,safeNum(p.allocated)-safeNum(p.used)),0);
+    if(target>available+0.005){nf('Full promo coverage needs $'+target.toFixed(2)+', but the parent account has only $'+available.toFixed(2)+' drawable.','error');return{ok:false,order:orderToSave}}
+    let left=target;const takes={};drawable.forEach(p=>{if(left<=0.005)return;const take=Math.min(left,Math.max(0,safeNum(p.allocated)-safeNum(p.used)));if(take>0){takes[p.id]=money(take);left=money(left-take)}});
+    const finalPeriods=restored.map(p=>takes[p.id]?{...p,used:money(safeNum(p.used)+takes[p.id])}:p);
+    const changedPeriods=finalPeriods.filter(p=>{const old=(storedPromoCust?.promo_periods||[]).find(x=>x.id===p.id);return!old||Math.abs(safeNum(p.used)-safeNum(old.used))>0.005||Math.abs(safeNum(p.allocated)-safeNum(old.allocated))>0.005});
+    for(const p of changedPeriods)await onSavePromoPeriod(p);
+    for(const periodId of oldPeriodIds)await onDeletePromoUsage(periodId,isSO?orderToSave.id:null,isSO?null:orderToSave.id);
+    const newUsages=Object.entries(takes).map(([period_id,amount])=>({period_id,amount,description:orderToSave.memo||('Promo on '+orderToSave.id),created_by:cu?.name||'System',so_id:isSO?orderToSave.id:null,estimate_id:isSO?(orderToSave.estimate_id||null):orderToSave.id,created_at:new Date().toISOString()}));
+    for(const usage of newUsages)await onSavePromoUsage(usage);
+    setCust(c=>c?{...c,promo_periods:finalPeriods,promo_usage:[...(promoCust.promo_usage||[]).filter(u=>!mine(u)),...newUsages]}:c);
+    return{ok:true,order:{...orderToSave,promo_amount:target,tax_exempt:true,updated_at:new Date().toLocaleString()}};
+  },[promoCust,storedPromoCust,promoHistoryReady,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,isSO,cu,nf]); // eslint-disable-line
 
   // AUTO-SYNC JOBS from decorations — one job per unique decoration combination per deco type
   // Items that share the exact same set of decorations AND deco type are grouped into one job
@@ -4334,6 +4415,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const statusFlow=['need_order','waiting_receive','needs_pull','items_received','in_production','ready_to_invoice','complete'];
 
   return(<div className={ui==='new'?'oe2':'oe2-base'}>
+    <MultiItemAddModal open={isE&&multiAddOpen} onClose={()=>{setMultiAddOpen(false);setMultiAddQuery('')}} catalogResults={multiCatalogResults} vendorResults={multiVendorResults} searching={ssSearching||smSearching||mtSearching||rsSearching} onActiveQuery={setMultiAddQuery} artFiles={safeArt(o).filter(f=>f.id!=='__tbd')} positions={POSITIONS} onApply={applyMultiItems}/>
     {/* ── Mockup lightbox overlay ── */}
     {mockupLightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setMockupLightbox(null)}>
       <button style={{position:'absolute',top:16,right:20,background:'rgba(255,255,255,0.15)',border:'none',color:'white',fontSize:28,borderRadius:'50%',width:44,height:44,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setMockupLightbox(null)}>×</button>
@@ -4471,7 +4553,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <span style={{flex:1}}/>
       {dirty&&<span style={{fontSize:11,color:'#B45309',fontWeight:700}}>● Unsaved</span>}
       <button ref={actionsRef} data-tour-id="oe-actions-toggle" className="btn btn-secondary" style={{fontSize:13,padding:'8px 13px'}} onClick={()=>setShowActionsDD(!showActionsDD)}>Actions <span style={{fontSize:9}}>▾</span></button>
-      <button className="oe2-cta" onClick={()=>{
+      <button className="oe2-cta" onClick={async()=>{
         if(!_flushActiveSizingDraft()){nf('Finish editing the quantity before saving','error');return}
         const current=oRef.current||o;
         if(!cust){nf('Select a customer first','error');return}
@@ -4486,8 +4568,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const noPrice=validItems.find(it=>!it.is_free_promo&&!it.customer_supplied&&safeNum(it.unit_sell)<=0);
         if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
         if(_shipPrefRequired()){nf('Select how this order gets to the customer (Ship or Deliver) before saving','error');return}
-        if(saveO!==o)setO(saveO);
-        onSave(saveO);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}}><span><Icon name="check" size={13}/> Save</span></button>
+        const synced=await reconcilePromoDraw(saveO,promoTotals?.promoAmount);if(!synced.ok)return;const syncedO=synced.order;
+        if(syncedO!==o)setO(syncedO);
+        onSave(syncedO);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}}><span><Icon name="check" size={13}/> Save</span></button>
     </div>
     {/* COACH APPROVED BANNER */}
     {isE&&o.status==='approved'&&o.approved_by==='Coach'&&<div style={{margin:'8px 0',padding:'12px 16px',background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:10}}>
@@ -4868,79 +4951,46 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {isSO&&o.estimate_id&&onViewEstimate&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onViewEstimate(o.estimate_id)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="dollar" size={12}/> View Estimate</button>}
             {/* Promo Funds — show when the customer has drawable funds: a funded period (incl. a one-time
                 manual allocation with no program) or an active fixed program to auto-allocate from. */}
-            {cust&&!o.promo_applied&&(()=>{const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _ps=(cust.promo_periods||[]).filter(p=>p.period_start>=_pStart);const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);if(_bal>0)return true;const progs=(cust.promo_programs||[]).filter(p=>p.is_active!==false);return progs.some(p=>p.type==='fixed'&&safeNum(p.fixed_amount)>0)})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} data-tour-id="oe-promo-apply" onClick={async()=>{setShowActionsDD(false);
+            {promoCust&&!o.promo_applied&&(()=>{const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _ps=(promoCust.promo_periods||[]).filter(p=>p.period_start>=_pStart);const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);if(_bal>0)return true;const progs=(promoCust.promo_programs||[]).filter(p=>p.is_active!==false);return progs.some(p=>p.type==='fixed'&&safeNum(p.fixed_amount)>0)})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} data-tour-id="oe-promo-apply" onClick={async()=>{setShowActionsDD(false);
               // Calculate available promo balance, auto-allocate period if needed
               const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
               const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';
               const _halfLabel=ps=>{const yy=ps.slice(0,4);return (ps.slice(5,7)==='01'?'H1 ':'H2 ')+yy};
-              let _cur=(cust.promo_periods||[]).filter(p=>p.period_start===_pStart);
+              let _cur=(promoCust.promo_periods||[]).filter(p=>p.period_start===_pStart);
               // Auto-allocate current period from fixed programs if none exists
               if(_cur.length===0){
-                const progs=(cust.promo_programs||[]).filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
+                const progs=(promoCust.promo_programs||[]).filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
                 const totalFixed=progs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
                 if(totalFixed>0){
-                  const newPeriod={id:'pp_'+(cust.parent_id||cust.id)+'_'+_pStart,customer_id:cust.parent_id||cust.id,period_start:_pStart,period_end:_pEnd,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
-                  await _dbSavePromoPeriod(newPeriod);
-                  setCust({...cust,promo_periods:[...(cust.promo_periods||[]),newPeriod]});
+                  const newPeriod={id:'pp_'+promoCust.id+'_'+_pStart,customer_id:promoCust.id,period_start:_pStart,period_end:_pEnd,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+                  if(onSavePromoPeriod)await onSavePromoPeriod(newPeriod);else await _dbSavePromoPeriod(newPeriod);
+                  setCust(c=>c?{...c,promo_periods:[...(promoCust.promo_periods||[]),newPeriod]}:c);
                   _cur=[newPeriod];
                   nf('Auto-allocated $'+totalFixed.toLocaleString()+' promo for '+_halfLabel(_pStart));
                 }
               }
               // Drawable periods: current half first, then future allocations (early use), each with a remaining balance.
-              const _future=(cust.promo_periods||[]).filter(p=>p.period_start>_pStart).sort((a,b)=>a.period_start.localeCompare(b.period_start));
+              const _future=(promoCust.promo_periods||[]).filter(p=>p.period_start>_pStart).sort((a,b)=>a.period_start.localeCompare(b.period_start));
               const _drawable=[..._cur,..._future].filter(p=>(safeNum(p.allocated)-safeNum(p.used))>0);
               let promoBudget=_drawable.reduce((a,p)=>a+safeNum(p.allocated)-safeNum(p.used),0);
               if(promoBudget<=0){nf('No promo funds available','error');return}
-              // Calculate promo cost per item (retail price + 25% deco markup)
-              const items=safeItems(o);const _aq={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)}})});
-              let remaining=promoBudget;const newItems=[];let fullCount=0;let partialItem=false;
-              // Pre-compute original revenue per item so flat shipping can be allocated proportionally,
-              // matching how promoTotals.promoShip distributes flat ship across promo items.
-              const _origRev=items.map(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);let r=q2*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q2;const dp=dP(d,q2,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q2*2:q2);r+=eq*dp.sell});return r});
-              const _totalOrigRev=_origRev.reduce((a,v)=>a+v,0);
-              const _flatShip=o.shipping_type==='flat'?safeNum(o.shipping_value):0;
-              items.forEach((it,_ix)=>{
-                const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!q){newItems.push(it);return}
-                if(remaining<=0){newItems.push(it);return}
-                const promoSell=safeNum(it.retail_price)||safeNum(it.nsa_cost)*2;
-                let itemPromoCost=q*promoSell;
-                safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);itemPromoCost+=eq*rQ(dp.sell*1.25)});
-                // Add proportional shipping estimate (25% markup on promo portion). For flat shipping,
-                // allocate by share of original revenue so the budget deduction matches promoTotals.promoAmount.
-                const shipBase=o.shipping_type==='pct'?itemPromoCost*(o.shipping_value||0)/100:(_totalOrigRev>0?_flatShip*_origRev[_ix]/_totalOrigRev:0);
-                const itemTotal=itemPromoCost+rQ(shipBase*1.25);
-                if(remaining>=itemTotal){
-                  // Fully covered by promo
-                  remaining-=itemTotal;fullCount++;
-                  newItems.push({...it,is_promo:true,_pre_promo_sell:it.unit_sell,unit_sell:promoSell,...(it._sizeSells?{_pre_promo_sizeSells:it._sizeSells,_sizeSells:undefined}:{})});
-                }else{
-                  // Partially covered — cover N whole units fully at retail (discard the leftover),
-                  // then blend the savings across the line by scaling both unit_sell and each deco
-                  // sell down by (1 - N/q). Customer pays equivalent of (q-N) units at original sells.
-                  const perUnitRetail=q>0?itemTotal/q:0;
-                  const N=perUnitRetail>0?Math.floor(remaining/perUnitRetail):0;
-                  if(N<=0){newItems.push(it)}
-                  else{
-                    const coveredFraction=N/q;
-                    const newGarmentSell=rQ(safeNum(it.unit_sell)*(1-coveredFraction));
-                    const promoSpent=rQ(N*perUnitRetail);
-                    const scaledDecos=safeDecos(it).map(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q;const dp=dP(d,q,af,cq);const blendedSell=rQ(dp.sell*(1-coveredFraction));return{...d,_pre_promo_sell_override:d.sell_override,sell_override:blendedSell}});
-                    const scaledSizeSells=it._sizeSells?Object.fromEntries(Object.entries(it._sizeSells).map(([sz,s])=>[sz,rQ(safeNum(s)*(1-coveredFraction))])):null;
-                    partialItem=true;
-                    newItems.push({...it,is_promo:false,_pre_promo_sell:it.unit_sell,unit_sell:newGarmentSell,decorations:scaledDecos,_promo_credit:promoSpent,_promo_partial_qty:N,...(scaledSizeSells?{_pre_promo_sizeSells:it._sizeSells,_sizeSells:scaledSizeSells}:{})});
-                    // Subtract only what was actually spent; the rounded-off leftover stays in the customer's budget.
-                    remaining=Math.max(0,remaining-promoSpent);
-                  }
-                }
+              // Promo is all-or-nothing at the order level. Price every line,
+              // then require the shared parent fund to cover the complete order.
+              const items=safeItems(o);const _aq={};items.forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)}})});
+              const newItems=items.map(applyFullPromoPricing);let promoSubtotal=0,originalSubtotal=0;let fullCount=0;
+              newItems.forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;fullCount++;
+                if(!it.is_free_promo){promoSubtotal+=q*safeNum(it.unit_sell);originalSubtotal+=it._pre_promo_sizeSells&&sq>0?Object.entries(safeSizes(it)).reduce((a,[sz,v])=>a+safeNum(v)*safeNum(it._pre_promo_sizeSells[sz]||it._pre_promo_sell),0):q*safeNum(it._pre_promo_sell)}
+                safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);promoSubtotal+=eq*rQ(dp.sell*1.25);originalSubtotal+=eq*dp.sell});
               });
-              if(fullCount===0&&!partialItem){nf('Promo not applied — remaining funds ($'+remaining.toFixed(2)+") can't cover any eligible item",'error');return}
-              sv('promo_applied',true);sv('items',newItems);
+              const promoShip=o.shipping_type==='pct'?rQ(originalSubtotal*(o.shipping_value||0)/100*1.25):rQ(safeNum(o.shipping_value)*1.25);
+              const promoUsed=Math.round((promoSubtotal+promoShip)*100)/100;const remaining=Math.round((promoBudget-promoUsed)*100)/100;
+              if(promoUsed>promoBudget+0.005){nf('Promo not applied — the full order needs $'+promoUsed.toFixed(2)+', but the parent account has only $'+promoBudget.toFixed(2)+' available','error');return}
+              sv('tax_exempt',true);sv('promo_applied',true);sv('items',newItems);
               // Deduct from balance + record usage immediately on both estimates and SOs so the Promo $ tab
               // and balance reflect the spend right away. Usage is keyed by estimate_id on an estimate (so_id
               // null) and by so_id on an SO; convertSO re-links the estimate's usage to the new SO instead of
               // deducting again, so an estimate and the SO it becomes never double-spend.
               {
-                const promoUsed=promoBudget-remaining;
                 if(promoUsed>0){
                   // Spread the deduction across drawable periods: current half first, then future (early use).
                   let _toDeduct=promoUsed;const _updatedPeriods=[];const _usageRecs=[];
@@ -4954,30 +5004,27 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   }
                   for(const up of _updatedPeriods){if(onSavePromoPeriod)await onSavePromoPeriod(up);else if(_dbSavePromoPeriod)await _dbSavePromoPeriod(up)}
                   for(const ur of _usageRecs){if(onSavePromoUsage)await onSavePromoUsage(ur)}
-                  setCust(c=>c?{...c,promo_periods:(c.promo_periods||[]).map(p=>{const up=_updatedPeriods.find(x=>x.id===p.id);return up||p}),promo_usage:[...(c.promo_usage||[]),..._usageRecs]}:c);
+                  setCust(c=>c?{...c,promo_periods:(promoCust.promo_periods||[]).map(p=>{const up=_updatedPeriods.find(x=>x.id===p.id);return up||p}),promo_usage:[...(promoCust.promo_usage||[]),..._usageRecs]}:c);
                   sv('promo_amount',promoUsed);
                 }
               }
-              const totalItems=items.filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0).length;
-              if(fullCount===totalItems){nf('Promo mode enabled — all eligible items set to retail pricing')}
-              else if(partialItem){nf(fullCount+' item(s) fully covered, 1 partially discounted — customer pays the rest')}
-              else{nf('Promo applied to '+fullCount+' of '+totalItems+' eligible items — customer pays for rest')}
+              nf('Promo mode enabled — all '+fullCount+' priced line(s) are covered by the parent promo fund')
             }} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Apply Promo Funds</button>}
             {o.promo_applied&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#d97706',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
               // Reverse the deduction by deleting any usage tied to this doc (by so_id on an SO, by estimate_id
               // on an estimate) and restoring each affected period's balance.
-              if(cust){
+              if(promoCust){
                 const _mine=u=>isSO?u.so_id===o.id:(u.estimate_id===o.id&&!u.so_id);
-                const usages=(cust.promo_usage||[]).filter(_mine);
+                const usages=(promoCust.promo_usage||[]).filter(_mine);
                 for(const u of usages){
-                  const period=(cust.promo_periods||[]).find(p=>p.id===u.period_id);
+                  const period=(promoCust.promo_periods||[]).find(p=>p.id===u.period_id);
                   if(period){
                     const restored={...period,used:Math.max(0,safeNum(period.used)-safeNum(u.amount))};
                     if(onSavePromoPeriod)await onSavePromoPeriod(restored);else if(_dbSavePromoPeriod)await _dbSavePromoPeriod(restored);
                   }
                 }
                 if(usages.length&&onDeletePromoUsage){const _pids=[...new Set(usages.map(u=>u.period_id))];for(const _pid of _pids)await onDeletePromoUsage(_pid,isSO?o.id:null,isSO?null:o.id)}
-                if(usages.length){setCust(c=>{if(!c)return c;const _byPeriod={};usages.forEach(u=>{_byPeriod[u.period_id]=(_byPeriod[u.period_id]||0)+safeNum(u.amount)});return{...c,promo_periods:(c.promo_periods||[]).map(p=>_byPeriod[p.id]?{...p,used:Math.max(0,safeNum(p.used)-_byPeriod[p.id])}:p),promo_usage:(c.promo_usage||[]).filter(u=>!_mine(u))}})}
+                if(usages.length){setCust(c=>{if(!c)return c;const _byPeriod={};usages.forEach(u=>{_byPeriod[u.period_id]=(_byPeriod[u.period_id]||0)+safeNum(u.amount)});return{...c,promo_periods:(promoCust.promo_periods||[]).map(p=>_byPeriod[p.id]?{...p,used:Math.max(0,safeNum(p.used)-_byPeriod[p.id])}:p),promo_usage:(promoCust.promo_usage||[]).filter(u=>!_mine(u))}})}
               }
               sv('promo_applied',false);sv('promo_amount',0);sv('items',safeItems(o).map(it=>({...it,is_promo:false,unit_sell:it._pre_promo_sell!=null?it._pre_promo_sell:it.unit_sell,...(it._pre_promo_sizeSells?{_sizeSells:it._pre_promo_sizeSells}:{}),decorations:safeDecos(it).map(d=>d._pre_promo_sell_override!==undefined?{...d,sell_override:d._pre_promo_sell_override,_pre_promo_sell_override:undefined}:d),_pre_promo_sell:undefined,_pre_promo_sizeSells:undefined,_promo_credit:undefined,_promo_partial_qty:undefined})));nf('Promo mode disabled')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Remove Promo</button>}
             {/* Credit — show when customer has credits available */}
@@ -5049,22 +5096,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         })()}
         {o.promo_applied&&(promoTotals?safeNum(promoTotals.customerPays)<=0.005:true)&&(o.status==='complete'?<span style={{padding:'6px 10px',fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,border:'1px solid #86efac'}}>✓ Promo Order Closed</span>:<button className="btn btn-secondary" style={{color:'#166534',borderColor:'#86efac'}} onClick={async()=>{
           if(!window.confirm('Mark promo order '+o.id+' as complete? No invoice needed — costs are tracked on the SO.'))return;
-          // Backfill: if this SO has promo applied but never recorded a usage row (e.g. converted before deduction was wired up), record it now.
-          if(isSO&&cust&&!(cust.promo_usage||[]).some(u=>u.so_id===o.id)){
-            const promoAmt=promoTotals?promoTotals.promoAmount:safeNum(o.promo_amount);
-            if(promoAmt>0){
-              const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _pStart=_m<6?_y+'-01-01':_y+'-07-01';
-              const period=(cust.promo_periods||[]).find(p=>p.period_start===_pStart)||(cust.promo_periods||[])[0];
-              if(period){
-                const updatedPeriod={...period,used:safeNum(period.used)+promoAmt};
-                const usageRec={period_id:period.id,amount:promoAmt,description:o.memo||('Promo on '+o.id),created_by:cu?.name||'System',so_id:o.id,estimate_id:o.estimate_id||null,created_at:new Date().toISOString()};
-                if(onSavePromoPeriod)await onSavePromoPeriod(updatedPeriod);
-                if(onSavePromoUsage)await onSavePromoUsage(usageRec);
-                setCust(c=>c?{...c,promo_periods:(c.promo_periods||[]).map(p=>p.id===period.id?updatedPeriod:p),promo_usage:[...(c.promo_usage||[]),usageRec]}:c);
-              }
-            }
-          }
-          const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' promo order closed');
+          const synced=await reconcilePromoDraw(o,promoTotals?.promoAmount);if(!synced.ok)return;
+          const updated={...synced.order,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' promo order closed');
         }}><Icon name="check" size={14}/> Close Promo Order</button>)}
         {o.order_type==='booking'&&!o.booking_confirmed&&<button style={{fontSize:13,padding:'7px 14px',borderRadius:6,background:'#059669',border:'none',color:'white',cursor:'pointer',fontWeight:700}} onClick={()=>{if(!window.confirm('Confirm this booking order with coach? It will enter the active pipeline.'))return;sv('booking_confirmed',true);sv('booking_confirmed_at',new Date().toISOString());sv('booking_confirmed_by',cu?.id||'');nf('Booking order confirmed — entering pipeline')}}><Icon name="check" size={14}/> Confirm with Coach</button>}
         {o.order_type==='booking'&&o.booking_confirmed&&<span style={{fontSize:12,color:'#059669',fontWeight:600,padding:'6px 8px',background:'#ecfdf5',borderRadius:6,border:'1px solid #86efac'}}>✓ Confirmed with Coach</span>}
@@ -5140,8 +5173,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <span style={{fontSize:12,fontWeight:700,color:'#92400e'}}>Promo Total: ${promoTotals.promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})}</span>
         {promoTotals.normalRev>0&&<span style={{fontSize:12}}>Customer Pays: <strong style={{color:'#166534'}}>${promoTotals.customerPays.toFixed(2)}</strong></span>}
         {promoTotals.normalRev===0&&promoTotals.promoCredit===0&&<span style={{fontSize:12,fontWeight:700,color:'#166534'}}>$0.00 Order</span>}
-        {(()=>{if(!cust)return null;const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _ps=(cust.promo_periods||[]).filter(p=>p.period_start>=(_m<6?_y+'-01-01':_y+'-07-01'));const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);const _ownDeducted=(cust.promo_usage||[]).filter(u=>isSO?u.so_id===o.id:(u.estimate_id===o.id&&!u.so_id)).reduce((a,u)=>a+safeNum(u.amount),0);const _availableForThis=_bal+_ownDeducted;if(promoTotals.promoAmount>_availableForThis){const _covered=Math.max(0,_availableForThis);const _over=promoTotals.promoAmount-_covered;return<span style={{fontSize:12,fontWeight:700,color:'#dc2626',background:'#fef2f2',padding:'2px 8px',borderRadius:6}}>⚠️ Overdraws promo funds — ${_covered.toLocaleString(undefined,{maximumFractionDigits:2})} covered, ${_over.toLocaleString(undefined,{maximumFractionDigits:2})} overdraft (carries to next semester)</span>}return<span style={{fontSize:11,color:'#64748b'}}>Remaining: ${_bal.toLocaleString(undefined,{maximumFractionDigits:2})}</span>})()}
-        {safeNum(o.promo_amount)>0&&Math.abs(safeNum(o.promo_amount)-promoTotals.promoAmount)>1&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626',background:'#fef2f2',padding:'2px 8px',borderRadius:6}}>⚠ Recorded promo draw ${safeNum(o.promo_amount).toLocaleString(undefined,{maximumFractionDigits:2})} ≠ current promo lines ${promoTotals.promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})} — promo items were edited after funds were applied</span>}
+        {(()=>{if(!promoCust)return null;const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _ps=(promoCust.promo_periods||[]).filter(p=>p.period_start>=(_m<6?_y+'-01-01':_y+'-07-01'));const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);const _ownDeducted=(promoCust.promo_usage||[]).filter(u=>isSO?u.so_id===o.id:(u.estimate_id===o.id&&!u.so_id)).reduce((a,u)=>a+safeNum(u.amount),0);const _availableForThis=_bal+_ownDeducted;if(promoTotals.promoAmount>_availableForThis){const _covered=Math.max(0,_availableForThis);const _over=promoTotals.promoAmount-_covered;return<span style={{fontSize:12,fontWeight:700,color:'#dc2626',background:'#fef2f2',padding:'2px 8px',borderRadius:6}}>⚠️ Parent promo funds are short — ${_covered.toLocaleString(undefined,{maximumFractionDigits:2})} available, ${_over.toLocaleString(undefined,{maximumFractionDigits:2})} more needed</span>}return<span style={{fontSize:11,color:'#64748b'}}>Parent remaining: ${_bal.toLocaleString(undefined,{maximumFractionDigits:2})}</span>})()}
+        {safeNum(o.promo_amount)>0&&Math.abs(safeNum(o.promo_amount)-promoTotals.promoAmount)>1&&(()=>{const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _bal=(promoCust?.promo_periods||[]).filter(p=>p.period_start>=(_m<6?_y+'-01-01':_y+'-07-01')).reduce((a,p)=>a+safeNum(p.allocated)-safeNum(p.used),0);const _projected=_bal-(promoTotals.promoAmount-safeNum(o.promo_amount));return<span style={{fontSize:12,fontWeight:600,color:'#475569',background:'#f1f5f9',padding:'2px 8px',borderRadius:6}}>Promo ledger update pending — Save will change this order’s draw from ${safeNum(o.promo_amount).toLocaleString(undefined,{maximumFractionDigits:2})} to ${promoTotals.promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})}. Projected parent remaining: ${_projected.toLocaleString(undefined,{maximumFractionDigits:2})}</span>})()}
       </div>}
       {/* Credit Summary */}
       {o.credit_applied&&safeNum(o.credit_amount)>0&&<div style={{margin:'8px 0',padding:'10px 16px',background:'#ecfdf5',borderRadius:8,border:'1px solid #a7f3d0',display:'flex',gap:16,alignItems:'center',flexWrap:'wrap'}}>
@@ -5194,7 +5227,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <button className={`tab ${tab==='history'?'active':''}`} onClick={()=>setTab('history')}>History</button>
       {/* Items-list tools live in the tab row to keep one uniform strip */}
       {tab==='items'&&<div style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center',alignSelf:'center',paddingBottom:4}}>
-        <button className="btn btn-sm btn-primary" style={{fontSize:12}} onClick={openAddItem} disabled={!cust} title={cust?'Add a product to this order':'Pick a customer first'}><Icon name="plus" size={12}/> Add Item</button>
+        {isE?<div style={{position:'relative',display:'flex'}}><button className="btn btn-sm btn-primary" style={{fontSize:12,borderTopRightRadius:0,borderBottomRightRadius:0}} onClick={openAddItem} disabled={!cust} title={cust?'Add a product to this estimate':'Pick a customer first'}><Icon name="plus" size={12}/> Add Item</button><button className="btn btn-sm btn-primary" style={{fontSize:11,borderTopLeftRadius:0,borderBottomLeftRadius:0,borderLeft:'1px solid rgba(255,255,255,.35)',padding:'4px 7px'}} onClick={()=>setAddItemMenuOpen(v=>!v)} disabled={!cust} aria-label="More add item options">▾</button>{addItemMenuOpen&&<div style={{position:'absolute',zIndex:40,top:'calc(100% + 4px)',right:0,width:180,background:'white',border:'1px solid #cbd5e1',borderRadius:7,boxShadow:'0 8px 24px rgba(15,23,42,.18)',padding:4}}><button type="button" onClick={()=>{setAddItemMenuOpen(false);setMultiAddOpen(true)}} style={{width:'100%',border:0,background:'white',padding:'8px 10px',textAlign:'left',cursor:'pointer',fontSize:12,fontWeight:750,color:'#1e3a8a'}}>＋ Add Multiple</button></div>}</div>:<button className="btn btn-sm btn-primary" style={{fontSize:12}} onClick={openAddItem} disabled={!cust} title={cust?'Add a product to this order':'Pick a customer first'}><Icon name="plus" size={12}/> Add Item</button>}
         {safeItems(o).length>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={openMarkDeco} title="Mark all or some line items as in-house or outside decoration">🎨 Mark Deco</button>}
         {safeItems(o).length>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={sortByDeco} title="Group line items together by their decoration">↕ Sort by Decoration</button>}
         {isSO&&safeItems(o).some(isItemShortPulled)&&<button className="btn btn-sm btn-secondary" style={{fontSize:12,background:'#FEF3C7',color:'#92400E',border:'1px solid #FDE68A'}} onClick={sortShortPullsFirst} title="Move short-pulled items to the top of the list">⚠ Short Pulls First</button>}
@@ -5211,7 +5244,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _anyCollapsed=safeItems(o).some((_,i)=>collapsedItems[i]);
       return<>
       {/* Items toolbar moved into the tabs row (Sort by Decoration / Short Pulls / Collapse All) */}
-      {safeItems(o).map((item,idx)=>{const szQty=Object.values(safeSizes(item)).reduce((a,v)=>a+safeNum(v),0);const qty=szQty>0?szQty:safeNum(item.est_qty);
+      {safeItems(o).map((item,idx)=>{const lineSizes=item.is_footwear?normalizeFootwearSizeQtyMap(safeSizes(item)):safeSizes(item);const szQty=Object.values(lineSizes).reduce((a,v)=>a+safeNum(v),0);const qty=szQty>0?szQty:safeNum(item.est_qty);
       // Display-only swatch: best-effort hex for the garment color name (falls back to neutral).
       const _swHex=(c=>{const n=(c||'').toLowerCase();const m={navy:'#192853',black:'#1A1A1A',white:'#FFFFFF',graphite:'#5A6075',charcoal:'#374151',grey:'#6B7280',gray:'#6B7280',silver:'#C4C9D4',red:'#B91C1C',scarlet:'#B91C1C',cardinal:'#9F1239',maroon:'#7F1D1D',royal:'#1D4ED8',columbia:'#93C5FD',carolina:'#93C5FD',blue:'#1E40AF',forest:'#14532D',kelly:'#15803D',green:'#166534',gold:'#CA8A04',yellow:'#EAB308',orange:'#EA580C',purple:'#6D28D9',pink:'#EC4899',brown:'#78350F',tan:'#D6BC8A',khaki:'#BDB76B',cream:'#F5F0E1'};const hit=Object.keys(m).find(k=>n.includes(k));return hit?m[hit]:'#E8ECF6'})(item.color);
       const _itemInvoicedQty=_itemInvoicedMap.get(soLineKey(item,idx))||0;
@@ -5249,15 +5282,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const sizePool=item.is_footwear?FOOTWEAR_SIZES:(isBallItem?BALL_SIZES:APPAREL_SIZES);
       // Keep any size the item actually declares — including custom/ball labels not in SZ_ORD — rather
       // than dropping it. Known sizes order by SZ_ORD; unknown/custom labels sort to the end.
-      const szs=((item.available_sizes&&item.available_sizes.length)?item.available_sizes:defaultSzList).filter(s=>SZ_ORD.includes(s)||(item.available_sizes||[]).includes(s)).sort((a,b)=>szRank(a)-szRank(b));
+      const rawSzs=((item.available_sizes&&item.available_sizes.length)?item.available_sizes:defaultSzList).filter(s=>SZ_ORD.includes(s)||(item.available_sizes||[]).includes(s));
+      const szs=item.is_footwear?normalizeFootwearSizeList(rawSzs):rawSzs.sort((a,b)=>szRank(a)-szRank(b));
       // Size quantities, read through safeSizes: an item can legitimately reach this render with NO
       // sizes object at all — a DB-restored line (dbEngine's item revive) carries whatever the row
       // held, and a sparse row's sizes column is null. Reading item.sizes[sz] directly on such a line
       // threw "Cannot read properties of undefined (reading 'S')" and took the whole OrderEditor down
       // with it (SO-1971, 2026-08-14), so one bad line blanked the entire order instead of one grid.
-      const _iSz=safeSizes(item);
-      const addable=sizePool.filter(s=>!(item.available_sizes||[]).includes(s));
-      const removable=sizePool.filter(s=>(item.available_sizes||[]).includes(s));
+      const _iSz=lineSizes;
+      const normalizedAvail=item.is_footwear?normalizeFootwearSizeList(item.available_sizes||[]):(item.available_sizes||[]);
+      const addable=sizePool.filter(s=>!normalizedAvail.includes(s));
+      const removable=sizePool.filter(s=>normalizedAvail.includes(s));
       // COLLAPSED compact summary — sku · name · qty · per-each · line total, with a small decoration subheader.
       if(collapsedItems[idx]){
         return(<div key={idx} id={'so-item-'+idx} className="card" style={{marginBottom:8,transition:'box-shadow 0.3s'}}>
@@ -5270,7 +5305,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span style={{fontWeight:700,fontSize:15,color:'#2A2F3E'}}>{item.name}</span>
                 {item.color&&<span className="badge badge-gray" style={{fontSize:10}}>{item.color}</span>}
                 {item.brand&&<span style={{fontSize:12,color:'#9aa0ad'}}>{item.brand}</span>}
-                {(()=>{const _cs=Object.entries(safeSizes(item)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>{const ia=SZ_ORD.indexOf(a[0]),ib=SZ_ORD.indexOf(b[0]);return(ia<0?999:ia)-(ib<0?999:ib)});return _cs.map(([sz,v])=><span key={sz} className="oe-num" style={{fontSize:12,fontWeight:700,color:'#192853',background:'#F4F7FF',border:'1px solid #D7E0F2',padding:'2px 7px',borderRadius:4,whiteSpace:'nowrap'}}>{sz} · {v}</span>)})()}
+                {(()=>{const _cs=Object.entries(lineSizes).filter(([,v])=>safeNum(v)>0).sort((a,b)=>szRank(a[0])-szRank(b[0]));return _cs.map(([sz,v])=><span key={sz} className="oe-num" style={{fontSize:12,fontWeight:700,color:'#192853',background:'#F4F7FF',border:'1px solid #D7E0F2',padding:'2px 7px',borderRadius:4,whiteSpace:'nowrap'}}>{sz} · {v}</span>)})()}
               </div>
               {/* Collapsed-row deco strip: see + change selected artwork, and the PO#(s) this line is ordered on, without expanding. */}
               <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',marginTop:4}} onClick={e=>e.stopPropagation()}>
@@ -5357,8 +5392,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700,cursor:'pointer'}} title={dp.vendor+' — '+dp.deco_type?.replace(/_/g,' ')} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>{dp.po_id} · {dp.vendor}</span>)}
                 {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}
                 {(item.is_footwear||(item.available_sizes||[]).join(',')==='OSFA')&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:10,fontWeight:700,background:item.is_footwear?'#dcfce7':'#fef3c7',color:item.is_footwear?'#166534':'#92400e'}}>{item.is_footwear?'👟 Footwear':'🧢 OSFA'}</span>}
-                {o.promo_applied&&<label style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,cursor:'pointer',background:item.is_promo?'#fef3c7':'#f1f5f9',color:item.is_promo?'#92400e':'#94a3b8',border:item.is_promo?'1px solid #fde68a':'1px solid #e2e8f0'}}><input type="checkbox" checked={item.is_promo||false} onChange={e=>{const checked=e.target.checked;if(checked){uI(idx,'_pre_promo_sell',item.unit_sell);if(item._sizeSells){uI(idx,'_pre_promo_sizeSells',item._sizeSells);uI(idx,'_sizeSells',undefined)}uI(idx,'unit_sell',safeNum(item.retail_price)||safeNum(item.nsa_cost)*2);uI(idx,'is_promo',true)}else{uI(idx,'unit_sell',item._pre_promo_sell!=null?item._pre_promo_sell:item.unit_sell);if(item._pre_promo_sizeSells){uI(idx,'_sizeSells',item._pre_promo_sizeSells);uI(idx,'_pre_promo_sizeSells',undefined)}uI(idx,'_pre_promo_sell',undefined);uI(idx,'is_promo',false)}}} style={{width:12,height:12}}/> Promo{item.is_promo&&item.retail_price?' ($'+item.retail_price+')':''}</label>}
-                {o.promo_applied&&!item.is_promo&&safeNum(item._promo_partial_qty)>0&&<span title={'Promo covers '+item._promo_partial_qty+' of '+qty+' units at retail. Sell prices on this line are blended across all '+qty+' units.'} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',cursor:'help'}}>🎁 {item._promo_partial_qty}/{qty} at retail (blended)</span>}</div>
+                {o.promo_applied&&<label title="Every line on a promo order is covered" style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a'}}><input type="checkbox" checked disabled style={{width:12,height:12}}/> Promo (${safeNum(item.unit_sell).toFixed(2)})</label>}</div>
               {/* Sell/cost editors + margin figures live in the per-item ledger (right column below) */}
               {(item.customer_supplied||item.is_free_promo||(item.is_custom&&isAU(item.brand)))&&<div style={{display:'flex',alignItems:'center',gap:8,marginTop:4,flexWrap:'wrap'}}>
                 {item.customer_supplied&&<span style={{fontSize:11,color:'#0e7490'}}>$0 garment — decoration charges below</span>}
@@ -5385,6 +5419,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     </>})()}
                   <button onClick={()=>{setEditingItemName(idx);setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#0f766e',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#f0fdfa'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:12}}>✏️</span> Edit name</button>
                   <button onClick={()=>{setCopySkuModal({itemIdx:idx,search:'',intent:'copy',mode:'clone'});setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#2563eb',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#eff6ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="file" size={14}/> Copy item</button>
+                  {isSO&&Object.keys(unfulfilledSizes(item).open).length>0&&<button onClick={()=>{setCopySkuModal({itemIdx:idx,search:'',intent:'move',mode:'move',priceMode:'keep'});setShowItemMenu(null);setItemMenuPos(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#047857',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#ecfdf5'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center'}}>↗</span> Move unfulfilled to another SKU</button>}
                   {_itemImg(item)&&<button onClick={()=>{copyItemImage(item);setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#0369a1',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#f0f9ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:12}}>🖼️</span> Copy image</button>}
                   <button onClick={()=>{setCopySkuModal({itemIdx:idx,search:'',intent:'change',mode:'replace'});setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#7c3aed',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#f5f3ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:10,fontWeight:800}}>SKU</span> Change SKU</button>
                   <button onClick={()=>{setVendorModal({itemIdx:idx});setShowItemMenu(null);setItemMenuPos(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#b45309',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:12}}>🏷️</span> Change vendor</button>
@@ -5455,14 +5490,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 if(stk==null)return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:'transparent'}}>&nbsp;</div>;
                 const free=availInv(p,sz);const held=Math.max(0,stk-free);const need=_iSz[sz]||0;
                 return<div title={invTip(p,sz)} style={{fontSize:9,fontWeight:600,minHeight:13,cursor:held>0?'help':'default',color:free<=0?'#dc2626':free<need?'#ca8a04':'#166534'}}>{free+' inv'}{held>0?'*':''}</div>})()}
-              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:9,color:'#a78bfa',minHeight:12}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='rs'?'rs':vi.source==='mt'?'':vi.source==='sm'?'sm':'ss';const clr=vi.source==='rs'?'#dc2626':vi.source==='mt'?'#16a34a':vi.source==='sm'?'#0891b2':'#7c3aed';const sizeNext=vi.source==='rs'?(vi.sizeNextAvail?.[sz]||''):'';const shortDate=sizeNext?(()=>{const [m,d]=sizeNext.split('/');return parseInt(m,10)+'/'+parseInt(d,10)})():'';const displayQty=vi.source==='mt'?(vStk>0?'✓ In Stock':'✗ Out'):(vi.source==='rs'&&vStk<=0&&shortDate)?shortDate:vStk.toLocaleString();const srcName=vi.source==='rs'?'Richardson':vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear';const tip=vi.source==='mt'?('Momentec: '+(vStk>0?'In stock':'Out of stock')+' — Momentec does not publish exact quantities'):(srcName+' stock: '+vStk.toLocaleString()+((vi.source==='rs'&&(sizeNext||vi.nextAvail))?' • next avail '+(sizeNext||vi.nextAvail):''));return<div style={{fontSize:9,fontWeight:700,minHeight:12,color:vStk<=0?(vi.source==='rs'&&shortDate?'#b45309':'#dc2626'):clr}} title={tip}>{displayQty} {lbl}</div>})()}
+              {(()=>{const vi=vendorInvForItem(item);if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:9,color:'#a78bfa',minHeight:12}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='rs'?'rs':vi.source==='mt'?'':vi.source==='sm'?'sm':'ss';const clr=vi.source==='rs'?'#dc2626':vi.source==='mt'?'#16a34a':vi.source==='sm'?'#0891b2':'#7c3aed';const sizeNext=vi.source==='rs'?(vi.sizeNextAvail?.[sz]||''):'';const shortDate=sizeNext?(()=>{const [m,d]=sizeNext.split('/');return parseInt(m,10)+'/'+parseInt(d,10)})():'';const displayQty=vi.source==='mt'?(vStk>0?'✓ In Stock':'✗ Out'):(vi.source==='rs'&&vStk<=0&&shortDate)?shortDate:vStk.toLocaleString();const srcName=vi.source==='rs'?'Richardson':vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear';const tip=vi.source==='mt'?('Momentec: '+(vStk>0?'In stock':'Out of stock')+' — Momentec does not publish exact quantities'):(srcName+' stock: '+vStk.toLocaleString()+((vi.source==='rs'&&(sizeNext||vi.nextAvail))?' • next avail '+(sizeNext||vi.nextAvail):''));return<div style={{fontSize:9,fontWeight:700,minHeight:12,color:vStk<=0?(vi.source==='rs'&&shortDate?'#b45309':'#dc2626'):clr}} title={tip}>{displayQty} {lbl}</div>})()}
               {(()=>{if(!isSyncedB2BItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return ai?.loading?<div style={{fontSize:9,color:'#059669',minHeight:12}}>...</div>:null;const cell=ai.sizes?.[sz];const b2bStk=cell?.qty;if(b2bStk==null)return<div style={{fontSize:9,color:'transparent',minHeight:12}}>&nbsp;</div>;const need=_iSz[sz]||0;const dOut=cell.futureDate?restockDaysOut(cell.futureDate):null;const hasRestock=b2bStk<=0&&dOut!=null&&dOut>=0;const soon=hasRestock&&dOut<=RESTOCK_SOON_DAYS;const color=b2bStk>0?((need>0&&b2bStk<need)?'#ca8a04':'#166534'):soon?'#ca8a04':hasRestock?'#b45309':'#dc2626';return<div onMouseEnter={e=>{const r=e.currentTarget.getBoundingClientRect();setB2bPop({idx,top:r.bottom+6,left:Math.max(8,Math.min(r.left-40,(typeof window!=='undefined'?window.innerWidth:1280)-360))})}} onMouseLeave={()=>setB2bPop(null)} style={{fontSize:9,fontWeight:700,minHeight:12,color:color,cursor:'help'}}>{soon?'✓':b2bStk.toLocaleString()}</div>})()}
               {(()=>{
                 // Per-size cost upcharge ($X.XX under larger sizes). Prefer the item's
                 // stored _sizeCosts; fall back to the live vendor pricing map so the
                 // upcharge label persists after reload (the vendor fetch repopulates
                 // vi.price even when _sizeCosts wasn't saved on the item).
-                const vi=vendorInv[item.sku];const costMap=item._sizeCosts||vi?.price;
+                const vi=vendorInvForItem(item);const costMap=item._sizeCosts||vi?.price;
                 if(!costMap)return null;
                 const sc=costMap[sz];
                 if(!sc||Math.abs(sc-item.nsa_cost)<0.01)return<div style={{fontSize:8,minHeight:11}}>{'\u00A0'}</div>;
@@ -5474,8 +5509,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div className="oe-num" style={{fontSize:20,fontWeight:800,color:'#192853'}}>{qty}</div>
             </div>
             </>}
-            {(()=>{const vi=vendorInv[item.sku];const isSM=isSanMarItem(item);const isSS=isSSItem(item);const isMT=isMomentecItem(item);const isRS=isRichardsonItem(item);
-              if(isSS||isSM||isMT||isRS){const lbl=isRS?'RS':isMT?'MT':isSM?'SM':'S&S';const clr=isRS?'#dc2626':isMT?'#d97706':isSM?'#0891b2':'#7c3aed';const bdr=isRS?'#fca5a5':isMT?'#fbbf24':isSM?'#67e8f9':'#c4b5fd';const name=isRS?'Richardson':isMT?'Momentec':isSM?'SanMar':'S&S';return<button title={vi?.error?'Error: '+vi.error+' — click to retry':'Refresh '+name+' inventory'} onClick={()=>{delete vendorInvCache.current[item.sku];delete vendorInvFetching.current[item.sku];setVendorInv(prev=>{const n={...prev};delete n[item.sku];return n});fetchVendorInventory(item.sku,item.vendor_id,item)}} style={{background:'none',border:'1px solid '+bdr,borderRadius:4,cursor:'pointer',color:vi?.error?'#dc2626':clr,padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{vi?.loading?'...':vi?.error?'⚠ '+lbl:'↻ '+lbl}</button>}return null})()}
+            {(()=>{const vi=vendorInvForItem(item);const isSM=isSanMarItem(item);const isSS=isSSItem(item);const isMT=isMomentecItem(item);const isRS=isRichardsonItem(item);
+              if(isSS||isSM||isMT||isRS){const lbl=isRS?'RS':isMT?'MT':isSM?'SM':'S&S';const clr=isRS?'#dc2626':isMT?'#d97706':isSM?'#0891b2':'#7c3aed';const bdr=isRS?'#fca5a5':isMT?'#fbbf24':isSM?'#67e8f9':'#c4b5fd';const name=isRS?'Richardson':isMT?'Momentec':isSM?'SanMar':'S&S';return<button title={vi?.error?'Error: '+vi.error+' — click to retry':'Refresh '+name+' inventory'} onClick={()=>{const key=itemVendorInvKey(item);if(key){delete vendorInvCache.current[key];delete vendorInvFetching.current[key];setVendorInv(prev=>{const n={...prev};delete n[key];return n})}fetchVendorInventory(item.sku,item.vendor_id,item)}} style={{background:'none',border:'1px solid '+bdr,borderRadius:4,cursor:'pointer',color:vi?.error?'#dc2626':clr,padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{vi?.loading?'...':vi?.error?'⚠ '+lbl:'↻ '+lbl}</button>}return null})()}
             {!isQtyOnly&&<div style={{position:'relative',marginLeft:4}}><button id={'oe-szbtn-'+idx} className="btn btn-sm btn-secondary" onClick={e=>{if(showSzPicker&&showSzPicker.idx===idx){setShowSzPicker(null)}else{const r=e.currentTarget.getBoundingClientRect();setShowSzPicker({idx,top:r.bottom+4,left:r.left})}}} style={{fontSize:10}}>+ Size</button>
               {showSzPicker&&showSzPicker.idx===idx&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowSzPicker(null)}/><div style={{position:'fixed',top:showSzPicker.top,left:showSzPicker.left,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:40,padding:6,display:'flex',gap:3,flexWrap:'wrap',width:260,maxHeight:'70vh',overflowY:'auto'}}>
                 <div style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:2}}>
@@ -5501,7 +5536,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {isSO&&!isQtyOnly&&szQty===0&&safeNum(item.est_qty)>0&&<span style={{fontSize:11,color:'#dc2626',fontWeight:700}}>Enter sizes ({item.est_qty} total)</span>}
             {isQtyOnly&&safeNum(item.est_qty)>0&&<span style={{fontSize:10,color:'#64748b',fontStyle:'italic'}}>Custom — no size breakdown</span>}
             {isSO&&!isQtyOnly&&(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
-              const szList=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0])));
+              const szList=Object.entries(lineSizes).filter(([,v])=>v>0).sort((a,b)=>szRank(a[0])-szRank(b[0]));
               const anyUnassigned=szList.some(([sz,v])=>{const picked=(item.pick_lines||[]).reduce((a2,pk)=>a2+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);return v-picked-po>0});
               if(!anyUnassigned)return<span style={{fontSize:12,color:'#1E7A46',fontWeight:700,background:'#EAF6EE',border:'1px solid #C9E7D4',padding:'3px 9px',borderRadius:20,whiteSpace:'nowrap'}}>✓ All assigned</span>;
               const hasInv=szList.some(([sz,v])=>{const picked=(item.pick_lines||[]).reduce((a2,pk)=>a2+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const inv=availInv(p,sz);return v-picked-po>0&&inv>0});
@@ -9694,7 +9729,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // (Restores the pre-collapse submit semantics: el?parseInt(el.value)||0:v.)
       const _poQtyVal=(vi,sz,fallback)=>{const el=document.getElementById('po-qty-'+vi+'-'+sz);if(!el)return fallback;const raw=String(el.value).trim();if(raw==='')return 0;const n=parseInt(raw,10);return isNaN(n)?0:n};
       const _poPriceVal=(vi,sz,fallback)=>{const elS=document.getElementById('po-price-'+vi+'-'+sz);const el=elS||document.getElementById('po-price-'+vi);if(!el)return fallback;const v=parseFloat(String(el.value).replace(/[$,\s]/g,''));return isNaN(v)?fallback:v};
-      const poLineTotal=(it,vi)=>{const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const _lc=safeNum(it.nsa_cost);const rawC=_lc>0?_lc:(catP?safeNum(catP.nsa_cost):0);const cc=isAdidas?Math.floor(rawC*100)/100:rawC;const scMap={...((vendorInv[it.sku]&&vendorInv[it.sku].price)||{}),...(it._sizeCosts||{})};const pFor=sz=>{const sc=safeNum(scMap[sz]);return sc>0?(isAdidas?Math.floor(sc*100)/100:sc):cc};return it.openSizes.reduce((a,[sz,v])=>a+_poQtyVal(vi,sz,v)*_poPriceVal(vi,sz,pFor(sz)),0)};
+      const poLineTotal=(it,vi)=>{const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const _lc=safeNum(it.nsa_cost);const rawC=_lc>0?_lc:(catP?safeNum(catP.nsa_cost):0);const cc=isAdidas?Math.floor(rawC*100)/100:rawC;const liveInv=vendorInvForItem(it);const scMap={...((liveInv&&liveInv.price)||{}),...(it._sizeCosts||{})};const pFor=sz=>{const sc=safeNum(scMap[sz]);return sc>0?(isAdidas?Math.floor(sc*100)/100:sc):cc};return it.openSizes.reduce((a,[sz,v])=>a+_poQtyVal(vi,sz,v)*_poPriceVal(vi,sz,pFor(sz)),0)};
       const poManualCostValue=Math.max(0,parseFloat(String(poManualCost).replace(/[$,\s]/g,''))||0);
       const poMerchandiseTotal=poItems.reduce((a,it,vi)=>poExcluded[vi]?a:a+poLineTotal(it,vi),0);
       const poOrderTotal=poMerchandiseTotal+poManualCostValue;
@@ -10101,7 +10136,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Per-size pricing: vendors like Momentec/SanMar charge upcharges for 2XL+. Source the per-size cost from the
             // item's captured _sizeCosts when present, otherwise fall back to live vendor pricing already fetched into
             // vendorInv (e.g. SanMar getPricing), so catalog-added items still render per-size inputs and capture the upcharge.
-            const liveSizePrice=(vendorInv[it.sku]&&vendorInv[it.sku].price)||{};
+            const liveSizePrice=(vendorInvForItem(it)&&vendorInvForItem(it).price)||{};
             const sizeCostMap={...liveSizePrice,...(it._sizeCosts||{})};
             const priceForSize=sz=>{const sc=safeNum(sizeCostMap[sz]);return sc>0?(isAdidas?Math.floor(sc*100)/100:sc):catCost};
             const distinctPrices=new Set(it.openSizes.map(([sz])=>priceForSize(sz).toFixed(2)));
@@ -11609,10 +11644,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 // _lbl overrides the lead-in text: the empty-state renders "or use the same mockup as:"
                 // (an alternative to uploading), the squash picker on an already-mocked card renders
                 // "Squash into the mockup for:" (dropping a redundant proof).
-                const _linkChipsR=(gi,_lbl)=>{if(!_linkArtId||itemDetails.length<2)return null;const myKey=garmentMockKey(gi);
+                const _linkChipsR=(gi,_lbl,_popover)=>{if(!_linkArtId||itemDetails.length<2)return null;const myKey=garmentMockKey(gi);
                   const others=itemDetails.filter(g=>garmentMockKey(g)!==myKey);
                   if(others.length===0)return null;
-                  return<div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',padding:'0 10px 10px'}}>
+                  return<div style={_popover?{position:'absolute',zIndex:20,top:'calc(100% + 5px)',left:0,minWidth:360,maxWidth:'min(620px, 80vw)',display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',padding:10,background:'white',border:'1px solid #c7d2fe',borderRadius:8,boxShadow:'0 8px 24px rgba(15,23,42,0.18)'}:{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',padding:'0 10px 10px'}}>
                     <span style={{fontSize:10,color:'#94a3b8',fontWeight:600}}>{_lbl||'or use the same mockup as:'}</span>
                     {others.map((g,oi)=>{const theirKey=garmentMockKey(g);const hasMock=_hasOwnMockR(g);
                       const colorMatch=(g.color||'')===(gi.color||'');
@@ -11707,7 +11742,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                     const nameDecos=it?jobItemDecosOfKind(gi,it,'names'):[];
                     const totalUnits=Object.values(gi.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
                     const _itemPFs=itemArtFiles.flatMap(_af=>(_af?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_afName:itemArtFiles.length>1?(_af?.name||''):''})));
-                    return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?14:0,border:'1px solid #fcd34d',borderRadius:10,overflow:'hidden',background:'white'}}>
+                    return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?14:0,border:'1px solid #fcd34d',borderRadius:10,overflow:'visible',background:'white'}}>
                       {/* Item header */}
                       <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'#fffbeb',borderBottom:'1px solid #fde68a'}}>
                         <div style={{display:'flex',gap:4,flexShrink:0}}>
@@ -11749,10 +11784,11 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                             need two proofs. Linking drops THIS card's image in favour of the source's —
                             nothing is moved or deleted, so Unlink restores it exactly. Only on the
                             actionable panel, and never over a sew-out proof (that has its own picker). */}
-                        {!_proofOnly&&_linkArtId&&itemDetails.length>1&&<div style={{marginBottom:6}}>
+                        {!_proofOnly&&_linkArtId&&itemDetails.length>1&&<div style={{marginBottom:6,position:'relative',display:'inline-block'}}>
                           <button onClick={()=>setSquashPickFor(k=>k===_mk?null:_mk)}
                             title="Near-identical garment? Share another garment's mockup instead of showing a second, almost-identical proof — the coach then approves one."
                             style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:12,border:'1px solid #c7d2fe',background:squashPickFor===_mk?'#e0e7ff':'#eef2ff',color:'#3730a3',fontSize:10,fontWeight:700,cursor:'pointer'}}>🔗 {squashPickFor===_mk?'Cancel':'Squash into another garment\u2019s mockup'}</button>
+                          {squashPickFor===_mk&&_linkChipsR(gi,'Use the mockup for:',true)}
                         </div>}
                         {_proofOnly&&<div style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde047',borderRadius:6,padding:'6px 10px',marginBottom:8}}>♻️ This is the digitizer's sew-out proof from the production files — <u>not a garment mockup</u>. It can't be approved or sent to the coach. Pick an option below: reuse an approved mockup, or send to the artist for a new one.</div>}
                         <div style={{display:'grid',gridTemplateColumns:_proofOnly?'repeat(auto-fill,minmax(150px,1fr))':(_ordered.length>1?'1fr 1fr':'1fr'),gap:8}}>
@@ -11784,7 +11820,6 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                       </div>
                       {_proofOnly&&(_priorPickR(gi)||_requestMockR(gi,true))}
                       {_proofOnly&&_linkChipsR(gi)}
-                      {!_proofOnly&&squashPickFor===_mk&&_linkChipsR(gi,'Squash into the mockup for:')}
                       </>})():<>
                        <div style={{padding:14,margin:'10px 10px 6px',textAlign:'center',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,color:'#9a3412',fontSize:12,fontWeight:600}}>No mockup uploaded yet for {gi.sku}</div>
                        {_priorPickR(gi)||_requestMockR(gi,false)}
@@ -12775,6 +12810,8 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
       const draftJobs=jobs.filter(j=>j.prod_status==='draft'||j._draft);
       const activeJobs=jobs.filter(j=>j.prod_status!=='draft'&&!j._draft);
       const DECO_LABELS_W={screen_print:'Screen Print',embroidery:'Embroidery',heat_transfer:'Heat Transfer',dtg:'DTG',sublimation:'Sublimation',vinyl:'Vinyl',patch:'Patch'};
+      const wizardGarments=items=>{const out=[];(items||[]).forEach(row=>{const it=safeItems(o)[row.item_idx]||row;const key=garmentMockKey(it);if(key!=='|'&&!out.some(g=>g.key===key))out.push({key,sku:it.sku||row.sku||'',name:safeStr(it.name||row.name),color:it.color||row.color||''})});return out};
+      const wizardExistingMockGroup=(items,artIds)=>{const gs=wizardGarments(items);const arts=[...new Set((artIds||[]).filter(a=>a&&a!=='__tbd'))].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);for(const g of gs){const deps=mockLinkDependents(arts,mockSkuOf(g),g.color).filter(k=>gs.some(x=>x.key===k));if(deps.length)return gs.filter(x=>x.key===g.key||deps.includes(x.key)).map(x=>x.key)}return[]};
       const openJobWizard=()=>{
         // Only wizard-load jobs that still need art submission. Already-submitted
         // jobs (art_requested / waiting_approval / art_complete / etc.) are
@@ -12799,7 +12836,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                 // made jobsShareGarments falsely re-couple the released split designs.
                 ...(ji.sizes&&Object.keys(ji.sizes).length>0?{sizes:{...ji.sizes}}:{}),...(ji.split_group?{split_group:ji.split_group,_artSplit:true}:{})};
             });
-            return{name:j.art_name||j.deco_type.replace(/_/g,' '),deco_type:j.deco_type,items,
+            return{name:j.art_name||j.deco_type.replace(/_/g,' '),deco_type:j.deco_type,items,mockGroup:wizardExistingMockGroup(items,j._art_ids||[j.art_file_id]),
               artist:j.assigned_artist||'',notes:j.rep_notes||'',files:[],
               _split:!!j.split_from,_existingJobId:j.id,_merged:!!j._merged};
           });
@@ -12822,12 +12859,14 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
               art_name:af2?.name||'',position:d.position||'Front Center',...(_splitShare||{})});
           });
         });
-        setJobWizard({groups:Object.values(dtMap)});
+        setJobWizard({groups:Object.values(dtMap).map(g=>({...g,mockGroup:wizardExistingMockGroup(g.items,g.items.map(it=>it.art_file_id))}))});
       };
       const wizActivate=(groups,activateAll)=>{
         // Block art submission when reversible Numbers decos are missing their
         // Pantone ink colors — the artist needs to see both sides' colors.
         if(activateAll){
+          const crossColor=groups.filter(g=>{const gs=wizardGarments(g.items.filter(it=>!it._excluded));const sel=(g.mockGroup||[]).filter(k=>gs.some(x=>x.key===k));return sel.length>1&&new Set(sel.map(k=>(gs.find(x=>x.key===k)||{}).color||'')).size>1});
+          if(crossColor.length&&!window.confirm('At least one one-mockup group includes different garment colors. The coach will see the source garment color for every garment in that group.\n\nGroup and submit anyway?'))return;
           const missing=[];
           groups.forEach(g=>{
             g.items.filter(it=>!it._excluded).forEach(it=>{
@@ -12932,6 +12971,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
           // Positions ride the same multi-deco read — a merged front+sleeve job lists both.
           const positions=[...new Set(releaseItems.flatMap(it=>{const ds=_rowArtDecos(it);return ds?ds.map(d=>safeStr(d.position)||it.position):[it.position]}).filter(Boolean))].join(', ');
           const artistObj=hasArtist?wizArtistsAll.find(a=>a.id===g.artist):null;
+          const _mockGs=wizardGarments(releaseItems);const _mockSel=(g.mockGroup||[]).filter(k=>_mockGs.some(x=>x.key===k));const _mockLabel=k=>{const mg=_mockGs.find(x=>x.key===k);return mg?((mg.color?mg.color+' ':'')+mg.sku):k};const _mockNote=_mockSel.length>1?('\n\n\uD83D\uDD17 ONE MOCKUP COVERS: '+_mockSel.map(_mockLabel).join(', ')+' — build the mockup on '+_mockLabel(_mockSel[0])+' only; the others share it.'):'';
           // Reuse existing job id when re-releasing a previously-loaded needs_art job
           const baseIdNum=gi+1+preservedJobs.length;
           const jobId=g._existingJobId||(o.id.replace('SO-','JOB-')+'-'+(baseIdNum<10?'0':'')+baseIdNum);
@@ -12954,7 +12994,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
             ...(g.quickMock&&activateAll?{sent_to_coach_at:new Date().toISOString(),quick_mock:true}:{}),
             assigned_artist:g.artist||'',
             rep_notes:g.notes||'',
-            ...(autoArtRequest?{art_requests:[{id:'AR-'+Date.now()+'-'+gi,artist:g.artist||'',artist_name:artistObj?.name||'',instructions:g.notes||'Requested on release',files:g.files||[],status:'requested',created_at:new Date().toISOString(),created_by:cu?.name||'System',auto:false}]}:{}),
+            ...(autoArtRequest?{art_requests:[{id:'AR-'+Date.now()+'-'+gi,artist:g.artist||'',artist_name:artistObj?.name||'',instructions:(g.notes||'Requested on release')+_mockNote,files:g.files||[],status:'requested',created_at:new Date().toISOString(),created_by:cu?.name||'System',auto:false}]}:{}),
             // Carry a split-art item's per-size share (sizes) + split_group + _artSplit into the frozen
             // snapshot — without sizes/split_group recalcedReleased re-derives the total from the WHOLE
             // garment line, inflating each split design back to the full quantity (SO-1131: Servite 55 /
@@ -13025,6 +13065,12 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
               return upd;
             });
           }
+          // Persist pre-production mock grouping in the same save as the released job, so the
+          // artist immediately sees one source garment instead of duplicate mockup work.
+          const _mockCandidates=wizardGarments(releaseItems).map(x=>x.key);
+          const _mockSelected=(g.mockGroup||[]).filter(k=>_mockCandidates.includes(k));
+          const _mockArtId=artIds.find(aid=>aid&&aid!=='__tbd');
+          if(_mockArtId&&Array.isArray(g.mockGroup))updArtFiles=replaceMockLinkGroup(updArtFiles,_mockArtId,_mockCandidates,_mockSelected);
         });
         const updated={...o,jobs:[...preservedJobs,...newJobs],art_files:updArtFiles,updated_at:new Date().toLocaleString()};
         saveSONow(updated,'Released jobs',null);setJobWizard(null);
@@ -13098,7 +13144,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                 {g.items.length>1?<button style={{fontSize:9,padding:'2px 8px',background:'#f1f5f9',border:'1px solid #d1d5db',borderRadius:4,cursor:'pointer',fontWeight:600,color:'#475569'}} onClick={()=>{
                   const gs=jobWizard.groups.map(gg=>({...gg,items:[...gg.items]}));
                   gs[gi].items.splice(ii,1);
-                  gs.push({name:it.art_name||'New Job',deco_type:g.deco_type,items:[it],_split:true,artist:'',notes:'',files:[]});
+                  gs.push({name:it.art_name||'New Job',deco_type:g.deco_type,items:[it],_split:true,artist:'',notes:'',files:[],mockGroup:[]});
                   setJobWizard({...jobWizard,groups:gs});
                 }}>Split</button>:g._split?<button style={{fontSize:9,padding:'2px 8px',background:'#ede9fe',border:'1px solid #c4b5fd',borderRadius:4,cursor:'pointer',fontWeight:600,color:'#6d28d9'}} onClick={()=>{
                   const gs=jobWizard.groups.map(gg=>({...gg,items:[...gg.items]}));
@@ -13109,6 +13155,13 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
               </td>
             </tr>)}</tbody>
           </table>}
+          {(()=>{const garments=wizardGarments(g.items.filter(it=>!it._excluded));if(garments.length<2)return null;const selected=(g.mockGroup||[]).filter(k=>garments.some(x=>x.key===k));const colors=new Set(selected.map(k=>(garments.find(x=>x.key===k)||{}).color||''));const toggle=key=>{const next=new Set(selected);if(next.has(key))next.delete(key);else next.add(key);const gs=[...jobWizard.groups];gs[gi]={...gs[gi],mockGroup:garments.filter(x=>next.has(x.key)).map(x=>x.key)};setJobWizard({...jobWizard,groups:gs})};return<div style={{marginTop:10,padding:10,background:selected.length>1?'#eef2ff':'white',border:'1px solid '+(selected.length>1?'#a5b4fc':'#e2e8f0'),borderRadius:6}}>
+            <div style={{fontSize:10,fontWeight:800,color:'#3730a3',marginBottom:3,textTransform:'uppercase',letterSpacing:0.4}}>🔗 One mockup for multiple garments (optional)</div>
+            <div style={{fontSize:10,color:'#64748b',marginBottom:7}}>Select garments getting the same logo that can share one proof. The first selected garment is the one the artist mocks.</div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>{garments.map(item=>{const on=selected.includes(item.key);const source=on&&selected[0]===item.key;return<label key={item.key} style={{display:'inline-flex',alignItems:'center',gap:5,padding:'4px 8px',borderRadius:14,border:'1px solid '+(on?'#818cf8':'#cbd5e1'),background:on?'#e0e7ff':'#f8fafc',fontSize:10,fontWeight:700,color:on?'#3730a3':'#475569',cursor:'pointer'}}><input type="checkbox" checked={on} onChange={()=>toggle(item.key)} style={{width:12,height:12}}/><span>{item.color?item.color+' ':''}{item.sku}</span>{source&&<span style={{fontSize:8,background:'#3730a3',color:'white',padding:'1px 5px',borderRadius:8}}>MOCK THIS</span>}</label>})}</div>
+            {selected.length===1&&<div style={{fontSize:9,color:'#94a3b8',marginTop:5}}>Select at least one more garment to share this mockup.</div>}
+            {selected.length>1&&<div style={{fontSize:10,fontWeight:700,color:colors.size>1?'#b45309':'#3730a3',marginTop:6}}>{colors.size>1?'⚠️ Different colors selected · ':''}1 mockup replaces {selected.length} separate proofs and is included in the artist instructions.</div>}
+          </div>})()}
           {/* Per-job artist selection and notes */}
           {g.items.length>0&&(()=>{const qmCount=Object.values(g.qmMocks||{}).filter(a=>(a||[]).length>0).length;const greenMode=g.skipArtist||g.quickMock;return<div style={{marginTop:10,padding:10,background:greenMode?'#f0fdf4':'white',borderRadius:6,border:'1px solid '+(greenMode?'#86efac':'#e2e8f0')}}>
             {(()=>{
@@ -13207,7 +13260,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
         </div>)}
         <div style={{display:'flex',gap:6,marginBottom:16}}>
           <button className="btn btn-sm btn-secondary" onClick={()=>{
-            const gs=[...jobWizard.groups,{name:'New Job',deco_type:jobWizard.groups[0]?.deco_type||'screen_print',items:[],artist:'',notes:'',files:[]}];
+            const gs=[...jobWizard.groups,{name:'New Job',deco_type:jobWizard.groups[0]?.deco_type||'screen_print',items:[],artist:'',notes:'',files:[],mockGroup:[]}];
             setJobWizard({...jobWizard,groups:gs});
           }}>+ Add Group</button>
         </div>
@@ -13921,6 +13974,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         if(itemInfos.length>1)lines.push({text:'TOTAL: '+grandTotal+' units',cls:'sz'});
         return lines;
       };
+      const pickRepName=REPS&&REPS.find(rr=>rr.id===(cust?.primary_rep_id||o?.created_by))?.name?.split(' ')[0]||'';
       return<div className="modal-overlay" onClick={()=>setEditPick(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640}}>
       <div className="modal-header"><h2>Pick — {pickId}{itemInfos.length>1?<span style={{marginLeft:8,fontSize:12,padding:'2px 8px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>{itemInfos.length} items</span>:null}</h2>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
@@ -14000,7 +14054,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           </div>
           <div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>printQrLabel({id:pickId,qrData,shipBadge:buildShipBadge(),lines:buildLabelLines()})}>🖨️ Print Label (4×6)</button>
-            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={async()=>{try{await downloadQrSheet({id:pickId,qrData,shipBadge:buildShipBadge(),title:cust?.name||o.id,subtitle:o.id,totalUnits:grandTotal,items:itemInfos.map(info=>({sku:info.item.sku||'',name:info.item.name||'',color:info.item.color||'',units:info.total,sizes:info.szKeys.map(sz=>sz+': '+info.pick[sz]).join('  ')}))});nf('Pick ticket downloaded')}catch(err){nf('Download failed: '+err.message,'error')}}}>⬇️ Download (PDF)</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={async()=>{try{await downloadQrSheet({id:pickId,qrData,shipBadge:buildShipBadge(),title:cust?.name||o.id,subtitle:o.id,rep:pickRepName,totalUnits:grandTotal,items:itemInfos.map(info=>({sku:info.item.sku||'',name:info.item.name||'',color:info.item.color||'',units:info.total,sizes:info.szKeys.map(sz=>sz+': '+info.pick[sz]).join('  ')}))});nf('Pick ticket downloaded')}catch(err){nf('Download failed: '+err.message,'error')}}}>⬇️ Download (PDF)</button>
           </div>
         </div>
       </div>
@@ -15913,7 +15967,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             <div style={{fontSize:12,color:'#475569'}}><strong>{it.sku}</strong>{it.color?' · '+it.color:''} — {it.name}</div>
             <div style={{fontSize:12,color:'#64748b'}}>Currently ordered from: <strong style={{color:'#0f172a'}}>{curName||'(unassigned)'}</strong></div>
             <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Order from vendor</label>
-              <SearchSelect options={vendorList.map(v=>({value:v.id,label:v.name}))} value={curVid} onChange={vid=>{if(vid&&vid!==curVid)reassignVendor(vendorModal.itemIdx,vid);else setVendorModal(null)}} placeholder="Search vendors..."/></div>
+              <SearchSelect options={vendorList.map(v=>({value:v.id,label:v.name}))} value={curVid} onChange={vid=>{if(vid&&vid!==curVid)reassignVendor(vendorModal.itemIdx,vid);else setVendorModal(null)}} placeholder="Search vendors..." menuPortal/></div>
             {hasPO&&<div style={{fontSize:11,color:'#b45309',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,padding:'8px 10px'}}>⚠️ This item already has a PO. Switching won't move quantities already on that PO or change its cost — review the existing PO after switching.</div>}
             <div style={{fontSize:11,color:'#94a3b8'}}>Cost is refreshed from the new vendor (live wholesale price, then catalog). The customer sell price and the item's brand are left unchanged.</div>
           </div>
@@ -15922,23 +15976,26 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       {/* Copy Item → New SKU Modal */}
       {copySkuModal&&(()=>{const srcIt=o.items[copySkuModal.itemIdx];if(!srcIt)return null;const sq=copySkuModal.search?.toLowerCase()||'';
         const canReplace=safePicks(srcIt).length===0&&safePOs(srcIt).length===0;
-        const intent=copySkuModal.intent||'change';// 'copy' = Copy item, 'change' = Change SKU in place
+        const intent=copySkuModal.intent||'change';// copy = duplicate; move = transfer only open qty; change = replace in place
+        const isMove=intent==='move';
         const isCopy=intent==='copy';
-        const mode=isCopy?(copySkuModal.mode||'clone'):'replace';
+        const mode=isMove?'move':isCopy?(copySkuModal.mode||'clone'):'replace';
         const isReplace=mode==='replace';// change SKU on this line in place
         const isClone=mode==='clone';// copy this line as-is (same SKU)
         // "New sizes" — resize the copy instead of inheriting the source's run (3/L only, etc).
-        // Applies to both copy modes; never to Change SKU, which keeps the line's own sizes.
+        // Applies to both copy modes and Change SKU. With Change SKU, leaving it closed keeps
+        // the current quantities (subject to sizes the replacement actually carries).
         // Qty-only lines carry no size grid at all, so a size run has nothing to land in — the
         // picker stays hidden there rather than accepting input the copied line would ignore.
-        const canNewSz=isCopy&&!srcIt.qty_only;
+        const canNewSz=(isCopy||isReplace)&&!srcIt.qty_only;
         const szOn=canNewSz&&!!copySkuModal.szOn;
         const newSz=szOn?(copySkuModal.sz||{}):null;
         const newSzTot=Object.values(newSz||{}).reduce((a,v)=>a+safeNum(v),0);
         const priceMode=copySkuModal.priceMode||'keep';
         const copyPrice={mode:priceMode};
-        const onPickCatalog=p=>isReplace?changeItemSku(copySkuModal.itemIdx,p):copyIWithSku(copySkuModal.itemIdx,p,newSz,copyPrice);
-        const onPickVendor=(st,c,src)=>isReplace?changeItemWithVendorResult(copySkuModal.itemIdx,st,c,src):copyIWithVendorResult(copySkuModal.itemIdx,st,c,src,newSz,copyPrice);
+        const pendingMove=copySkuModal.pendingMove||null;
+        const onPickCatalog=p=>isReplace?changeItemSku(copySkuModal.itemIdx,p,newSz,copyPrice):copyIWithSku(copySkuModal.itemIdx,p,newSz,copyPrice,isMove);
+        const onPickVendor=(st,c,src)=>isReplace?changeItemWithVendorResult(copySkuModal.itemIdx,st,c,src,newSz,copyPrice):copyIWithVendorResult(copySkuModal.itemIdx,st,c,src,newSz,copyPrice,isMove);
         const sqTokens=sq.split(/\s+/).filter(Boolean);
         const matches=sq.length>=2?products.filter(p=>{if(p.is_archived)return false;const sku=p.sku.toLowerCase(),name=p.name.toLowerCase(),brand=(p.brand||'').toLowerCase(),color=(p.color||'').toLowerCase();return sqTokens.every(t=>sku.includes(t)||name.includes(t)||brand.includes(t)||color.includes(t))}).slice(0,12):[];
         const anyVendor=ssResults.length>0||smResults.length>0||mtResults.length>0||rsResults.length>0;
@@ -15966,18 +16023,18 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             </div>})}
           </div>
         </div>;
-        return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setCopySkuModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
-          <div className="modal-header"><h2>{isCopy?'Copy Item':'Change SKU'}</h2><button className="modal-close" onClick={()=>setCopySkuModal(null)}>×</button></div>
+        return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setCopySkuModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:620}}>
+          <div className="modal-header"><h2>{isMove?'Move Unfulfilled to Another SKU':isCopy?'Copy Item':'Change SKU'}</h2><button className="modal-close" onClick={()=>setCopySkuModal(null)}>×</button></div>
           <div className="modal-body">
             <div style={{padding:10,background:'#f8fafc',borderRadius:8,marginBottom:12,fontSize:12}}>
-              <div style={{fontWeight:700}}>{isClone?'Copying':isCopy?'Copying from':'Changing'}: {srcIt.sku} — {srcIt.name}</div>
-              <div style={{color:'#64748b'}}>{safeDecos(srcIt).length} decoration(s) {isReplace?'+ sizes will be kept on this line':(newSzTot>0?'will carry over — sizes replaced with '+_copySzStr(newSz):'+ sizes will carry over')}</div>
+              <div style={{fontWeight:700,display:'flex',alignItems:'center',gap:5,flexWrap:'wrap'}}><span>{isMove?'Moving open quantities from':isClone?'Copying':isCopy?'Copying from':'Changing'}: {srcIt.sku} — {srcIt.name}</span>{srcIt.color&&<span style={{padding:'2px 6px',borderRadius:5,background:'#e2e8f0',color:'#475569',fontSize:10,fontWeight:800}}>{srcIt.color}</span>}</div>
+              <div style={{color:'#64748b'}}>{isMove?_copySzStr(unfulfilledSizes(srcIt).open)+' will move; pulled and PO quantities stay here. Full line setup will copy.':safeDecos(srcIt).length+' decoration(s) '+(isReplace?(newSzTot>0?'+ sizes will change to '+_copySzStr(newSz):'+ sizes will be kept on this line'):(newSzTot>0?'will carry over — sizes replaced with '+_copySzStr(newSz):'+ sizes will carry over'))}</div>
             </div>
             {isCopy&&<div style={{display:'flex',gap:6,marginBottom:10,padding:4,background:'#f1f5f9',borderRadius:8}}>
               <button onClick={()=>setCopySkuModal(m=>({...m,mode:'clone'}))} style={{flex:1,padding:'6px 10px',borderRadius:6,border:'none',cursor:'pointer',fontSize:11,fontWeight:700,background:isClone?'#2563eb':'transparent',color:isClone?'white':'#475569'}}>📋 Copy as-is (same SKU)</button>
               <button onClick={()=>setCopySkuModal(m=>({...m,mode:'copy'}))} style={{flex:1,padding:'6px 10px',borderRadius:6,border:'none',cursor:'pointer',fontSize:11,fontWeight:700,background:!isClone?'#2563eb':'transparent',color:!isClone?'white':'#475569'}}>🆕 Copy to new line with new SKU</button>
             </div>}
-            {isCopy&&<div style={{marginBottom:10,padding:'9px 10px',border:'1px solid #e2e8f0',borderRadius:8,background:'#fff'}}>
+            {(isCopy||isMove||isReplace)&&<div style={{marginBottom:10,padding:'9px 10px',border:'1px solid #e2e8f0',borderRadius:8,background:'#fff'}}>
               <div style={{fontSize:11,fontWeight:800,color:'#334155',marginBottom:7}}>Customer price</div>
               <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
                 <label style={{display:'flex',alignItems:'center',gap:5,fontSize:11,cursor:'pointer'}}><input type="radio" name="copy-item-price" checked={priceMode==='keep'} onChange={()=>setCopySkuModal(m=>({...m,priceMode:'keep'}))}/> Keep at ${safeNum(srcIt.unit_sell).toFixed(2)}</label>
@@ -15989,11 +16046,11 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               return<div style={{marginBottom:10,border:'1px solid '+(szOn?'#bfdbfe':'#e2e8f0'),borderRadius:8,overflow:'hidden'}}>
                 <button onClick={()=>setCopySkuModal(m=>({...m,szOn:!m.szOn}))} style={{width:'100%',padding:'7px 10px',border:'none',cursor:'pointer',background:szOn?'#eff6ff':'#f8fafc',display:'flex',alignItems:'center',gap:8,fontSize:11,fontWeight:700,color:szOn?'#1e40af':'#475569'}}>
                   <span style={{fontSize:9}}>{szOn?'▼':'▶'}</span>
-                  <span>📏 New sizes</span>
-                  <span style={{fontWeight:500,color:'#64748b'}}>{szOn?(newSzTot>0?_copySzStr(newSz)+' · '+newSzTot+' pcs':'enter the sizes you need'):'keep '+srcIt.sku+"'s size run"}</span>
+                  <span>📏 {isReplace?'Adjust sizes':'New sizes'}</span>
+                  <span style={{fontWeight:500,color:'#64748b'}}>{szOn?(newSzTot>0?_copySzStr(newSz)+' · '+newSzTot+' pcs':'enter the sizes you need'):(isReplace?'keep current size run':'keep '+srcIt.sku+"'s size run")}</span>
                 </button>
                 {szOn&&<div style={{padding:'8px 10px',background:'white',borderTop:'1px solid #e2e8f0'}}>
-                  <div style={{fontSize:11,color:'#64748b',marginBottom:7}}>The copied line gets only these sizes — {isFw?'footwear 6–12':'XS–4XL'}. Add anything outside this run with <b>+Size</b> on the line. Leave blank to carry over the source sizes.</div>
+                  <div style={{fontSize:11,color:'#64748b',marginBottom:7}}>The {isReplace?'replacement':'copied'} line gets only these sizes — {isFw?'footwear 6–12':'XS–4XL'}. Add anything outside this run with <b>+Size</b> on the line. Leave blank to carry over the source sizes.</div>
                   <div style={{display:'flex',flexWrap:'wrap',gap:5}}>
                     {pool.map(s=>{const v=(copySkuModal.sz||{})[s];const has=safeNum(v)>0;return<label key={s} style={{display:'flex',alignItems:'center',gap:4,padding:'3px 5px 3px 7px',borderRadius:6,border:'1px solid '+(has?'#2563eb':'#e2e8f0'),background:has?'#eff6ff':'white'}}>
                       <span style={{fontSize:11,fontWeight:700,color:has?'#1e40af':'#475569'}}>{s}</span>
@@ -16003,12 +16060,21 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                   {newSzTot>0&&<button onClick={()=>setCopySkuModal(m=>({...m,sz:{}}))} style={{marginTop:7,padding:'3px 8px',borderRadius:5,border:'1px solid #e2e8f0',background:'white',cursor:'pointer',fontSize:10,fontWeight:700,color:'#64748b'}}>Clear sizes</button>}
                 </div>}
               </div>})()}
-            {isClone?<div style={{display:'flex',flexDirection:'column',gap:10}}>
+            {isMove&&pendingMove?(()=>{const pm=pendingMove,pv=pm.preview;return<div style={{border:'1px solid #bfdbfe',borderRadius:10,overflow:'hidden',background:'#fff'}}>
+              <div style={{padding:'10px 12px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe'}}><div style={{fontSize:14,fontWeight:800,color:'#1e3a8a'}}>Review the move</div><div style={{fontSize:12,color:'#475569',marginTop:2}}>Confirm what changes before anything is updated.</div></div>
+              <div style={{padding:12}}>
+                <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr',alignItems:'center',gap:10,marginBottom:12}}><div style={{padding:'9px 10px',border:'1px solid #e2e8f0',borderRadius:8,background:'#f8fafc'}}><div style={{fontSize:10,fontWeight:800,color:'#64748b',textTransform:'uppercase'}}>From</div><div style={{fontSize:14,fontWeight:800,color:'#334155'}}>{pv.sourceSku}</div></div><div style={{fontSize:20,color:'#2563eb'}}>→</div><div style={{padding:'9px 10px',border:'1px solid #bbf7d0',borderRadius:8,background:'#f0fdf4'}}><div style={{fontSize:10,fontWeight:800,color:'#15803d',textTransform:'uppercase'}}>To</div><div style={{fontSize:14,fontWeight:800,color:'#166534'}}>{pv.targetLabel}</div></div></div>
+                <div style={{fontSize:11,fontWeight:800,color:'#1e40af',textTransform:'uppercase',letterSpacing:.4,marginBottom:5}}>Moves to the replacement</div><div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:13}}>{Object.entries(pv.open||{}).map(([sz,q])=><span key={sz} style={{padding:'5px 9px',borderRadius:7,background:'#dbeafe',border:'1px solid #93c5fd',color:'#1e3a8a',fontSize:13,fontWeight:800}}>{q} × {sz}</span>)}</div>
+                <div style={{fontSize:11,fontWeight:800,color:'#475569',textTransform:'uppercase',letterSpacing:.4,marginBottom:5}}>Stays on {pv.sourceSku}</div>{pv.staying.length?<div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden',marginBottom:12}}>{pv.staying.map(r=><div key={r.size} style={{display:'grid',gridTemplateColumns:'60px 1fr 1fr',gap:8,padding:'7px 10px',borderBottom:'1px solid #f1f5f9',fontSize:12,alignItems:'center'}}><strong>{r.size}</strong><span style={{color:r.pulled?'#166534':'#94a3b8'}}>{r.pulled?r.pulled+' pulled':'—'}</span><span style={{color:r.onPO?'#92400e':'#94a3b8'}}>{r.onPO?r.onPO+' on PO':'—'}</span></div>)}</div>:<div style={{padding:'8px 10px',borderRadius:8,background:'#f8fafc',color:'#64748b',fontSize:12,marginBottom:12}}>Nothing stays—the original line will be replaced.</div>}
+                {pv.missing.length>0&&<div style={{padding:'8px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,color:'#92400e',fontSize:12,marginBottom:10}}>⚠ {pv.targetLabel} does not list {pv.missing.join(', ')}. {pv.missing.length===1?'That size will':'Those sizes will'} be added to the replacement line.</div>}
+                <div style={{fontSize:11,color:'#64748b',lineHeight:1.45}}>The full line setup and decorations copy to the replacement. Pulled and PO quantities remain attached to the original SKU.</div>
+              </div><div style={{display:'flex',justifyContent:'flex-end',gap:8,padding:'10px 12px',borderTop:'1px solid #e2e8f0',background:'#f8fafc'}}><button className="btn btn-secondary" onClick={()=>setCopySkuModal(m=>({...m,pendingMove:null}))}>← Change selection</button><button className="btn btn-primary" onClick={()=>pm.kind==='catalog'?copyIWithSku(copySkuModal.itemIdx,pm.product,null,copyPrice,true,true):copyIWithVendorResult(copySkuModal.itemIdx,pm.style,pm.color,pm.source,null,copyPrice,true,true)}>Confirm Move</button></div>
+            </div>})():isClone?<div style={{display:'flex',flexDirection:'column',gap:10}}>
               <div style={{fontSize:12,color:'#64748b'}}>{newSzTot>0?'Adds a duplicate of this line (same SKU and decorations) below it, sized '+_copySzStr(newSz)+'.':'Adds an exact duplicate of this line (same SKU, sizes, and decorations) below it.'}</div>
               <button className="btn btn-primary" onClick={()=>{copyI(copySkuModal.itemIdx,newSz,copyPrice);setCopySkuModal(null)}} style={{alignSelf:'flex-start'}}><Icon name="file" size={14}/> Add duplicate line</button>
             </div>:<>
             {isReplace&&!canReplace&&<div style={{padding:'8px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,marginBottom:10,fontSize:11,color:'#dc2626',fontWeight:600}}>⚠️ This line has a PO or IF — remove them first to change its SKU in place. (Use Copy item → new SKU to add it as a separate line instead.)</div>}
-            <label className="form-label">Search for {isReplace?'replacement':'new'} product/SKU (catalog + S&S, SanMar, Momentec, Richardson live)</label>
+            <label className="form-label">Search for {isReplace||isMove?'replacement':'new'} product/SKU (catalog + S&S, SanMar, Momentec, Richardson live)</label>
             <input className="form-input" placeholder="Type SKU, name, or brand..." value={copySkuModal.search||''} onChange={e=>setCopySkuModal(m=>({...m,search:e.target.value}))} autoFocus/>
             {matches.length>0&&<div style={{maxHeight:200,overflowY:'auto',marginTop:8,border:'1px solid #e2e8f0',borderRadius:6}}>
               <div style={{padding:'4px 10px',background:'#eff6ff',fontSize:10,fontWeight:800,color:'#1e40af',textTransform:'uppercase',letterSpacing:1}}>NSA Catalog · {matches.length}</div>

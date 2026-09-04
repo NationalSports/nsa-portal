@@ -1,3 +1,5 @@
+/** @jest-environment node */
+
 /* webstore-checkout.js exports.handler — the Netlify entrypoint itself.
  *
  * Every other webstoreCheckout* test drives the exported action functions
@@ -42,12 +44,20 @@ describe('webstore-checkout handler', () => {
   });
 
   test('an action handler throwing is caught and returns 500, not an unhandled rejection', async () => {
-    // get_order reaches the DB the moment orderId is present; a client whose
+    // track_order reaches the DB the moment a token is present; a client whose
     // .from() throws synchronously simulates a hard failure inside the
     // dispatched action (matches teamshopAchCheckout.test.js's pattern).
     createClient.mockReturnValue({ from: () => { throw new Error('boom — db unreachable'); } });
-    const res = await handler(post({ action: 'get_order', orderId: 'ord1' }));
+    const res = await handler(post({ action: 'track_order', token: 'private-token' }));
     expect(res.statusCode).toBe(500);
     expect(JSON.parse(res.body).error).toMatch(/boom/);
+  });
+
+  test('legacy UUID-only order lookup is rejected before any database read', async () => {
+    const from = jest.fn(() => { throw new Error('must not query'); });
+    createClient.mockReturnValue({ from });
+    const res = await handler(post({ action: 'get_order', orderId: 'ord1' }));
+    expect(res.statusCode).toBe(403);
+    expect(from).not.toHaveBeenCalled();
   });
 });

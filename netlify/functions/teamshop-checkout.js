@@ -33,9 +33,9 @@
 // verifies the PaymentIntent amount/metadata — it never filters by store, so
 // Team Shop orders finalize identically to storefront orders, and the
 // stripe-webhook fallback (matched by stripe_pi_id only) shares the same
-// atomic confirmation_sent claim. `get_order` (by order UUID) and
-// `track_order` (by status_token) are equally store-agnostic, so the existing
-// /shop/order/<status_token> tracker works for Team Shop orders unchanged.
+// atomic confirmation_sent claim. Customer status/address access is always by
+// the private status_token, and the existing /shop/order/<status_token>
+// tracker works for Team Shop orders unchanged.
 //
 // Deliberately NOT mirrored from the storefront (made-to-order, coach-only):
 // no coupons, no fundraising, no processing fee, no jersey-number claims, and
@@ -106,8 +106,13 @@ async function requoteAndVerify(sb, customerId, body) {
 async function computeTotals(store, quote, ship) {
   const shipping = ws.shipFee(store);
   const taxRes = await ws.calcTax(store, ship || {}, quote.subtotal, null);
+  if (taxRes.error) return { error: taxRes.error };
   const total = r2(quote.subtotal + shipping + taxRes.tax);
-  return { subtotal: quote.subtotal, shipping, tax: taxRes.tax, tax_state: taxRes.state || '', total };
+  return {
+    subtotal: quote.subtotal, shipping, tax: taxRes.tax,
+    tax_state: taxRes.state || '', tax_rate: taxRes.rate || 0,
+    tax_source: taxRes.source || 'unknown', total,
+  };
 }
 
 // ── quote_totals ─────────────────────────────────────────────────────
@@ -125,6 +130,7 @@ async function quoteTotals(sb, body, coach) {
   if (rq.resp) return rq.resp;
 
   const totals = await computeTotals(st.store, rq.quote, body.ship);
+  if (totals.error) return bad(503, totals.error, { code: 'tax_unavailable' });
   return ok({ ok: true, quote: rq.quote, quote_hash: rq.quote.quote_hash, totals });
 }
 
@@ -153,7 +159,8 @@ async function placeOrder(sb, body, coach, opts) {
   const dup = await ws.findOrderByClientRef(sb, clientRef);
   if (dup) return ws.replayOrder(dup);
 
-  if (store.status !== 'open') return bad(409, 'The Team Shop isn’t open for orders right now.');
+  const windowError = ws.storeOrderWindowError(store);
+  if (windowError) return bad(409, windowError.replace('This store', 'The Team Shop'));
 
   const contact = body.contact || {};
   if (!String(contact.name || '').trim() || !/.+@.+\..+/.test(String(contact.email || ''))) {
@@ -173,6 +180,7 @@ async function placeOrder(sb, body, coach, opts) {
   const quote = rq.quote;
 
   const totals = await computeTotals(store, quote, ship);
+  if (totals.error) return bad(503, totals.error, { code: 'tax_unavailable' });
   if (Math.round(totals.total * 100) < 50) return bad(409, (ach ? 'Payments' : 'Card payments') + ' must be at least $0.50.');
 
   // Order row — webstore-checkout's field set (so every downstream reader:
@@ -198,6 +206,9 @@ async function placeOrder(sb, body, coach, opts) {
     shipping_fee: totals.shipping,
     processing_fee: 0,
     tax: totals.tax,
+    tax_state: totals.tax_state ? String(totals.tax_state).toUpperCase() : null,
+    tax_rate: Number(totals.tax_rate) || 0,
+    tax_source: totals.tax_source,
     total: totals.total,
     coupon_code: null,
     discount_amt: 0,
@@ -276,7 +287,12 @@ async function placeOrder(sb, body, coach, opts) {
     return bad(502, `Could not start the ${ach ? 'bank' : 'card'} payment: ` + e.message);
   }
   const { error: piErr } = await sb.from('webstore_orders').update({ stripe_pi_id: intent.id }).eq('id', order.id);
-  if (piErr) { await ws.rollbackOrder(sb, order.id); return bad(502, 'Could not link the payment: ' + piErr.message); }
+  if (piErr) {
+    try { await stripe(sk).paymentIntents.cancel(intent.id); }
+    catch (cancelError) { console.error('[teamshop-checkout] orphan PaymentIntent cancel failed:', intent.id, cancelError.message); }
+    await ws.rollbackOrder(sb, order.id);
+    return bad(502, 'Could not link the payment: ' + piErr.message);
+  }
 
   return ok({ order: { ...order, stripe_pi_id: intent.id }, totals, clientSecret: intent.client_secret, intentId: intent.id, ...(ach ? { ach: true } : {}) });
 }
@@ -335,7 +351,8 @@ async function placeOrderPo(sb, body, coach) {
   const dup = await ws.findOrderByClientRef(sb, clientRef);
   if (dup) return ws.replayOrder(dup);
 
-  if (store.status !== 'open') return bad(409, 'The Team Shop isn’t open for orders right now.');
+  const windowError = ws.storeOrderWindowError(store);
+  if (windowError) return bad(409, windowError.replace('This store', 'The Team Shop'));
 
   const contact = body.contact || {};
   if (!String(contact.name || '').trim() || !/.+@.+\..+/.test(String(contact.email || ''))) {
@@ -376,6 +393,7 @@ async function placeOrderPo(sb, body, coach) {
   if (rq.resp) return rq.resp;
   const quote = rq.quote;
   const totals = await computeTotals(store, quote, ship);
+  if (totals.error) return bad(503, totals.error, { code: 'tax_unavailable' });
 
   // Order row — place_order's field set with the card-specific values swapped:
   // status 'unpaid' (pending staff PO verification; 00199 refuses to convert
@@ -400,6 +418,9 @@ async function placeOrderPo(sb, body, coach) {
     shipping_fee: totals.shipping,
     processing_fee: 0,
     tax: totals.tax,
+    tax_state: totals.tax_state ? String(totals.tax_state).toUpperCase() : null,
+    tax_rate: Number(totals.tax_rate) || 0,
+    tax_source: totals.tax_source,
     total: totals.total,
     coupon_code: null,
     discount_amt: 0,
@@ -481,20 +502,23 @@ async function placeOrderPo(sb, body, coach) {
 // (migration 00196): CheckoutPage calls this right after webstore-checkout's
 // finalize succeeds. Coach JWT is sufficient here because nothing is trusted
 // from the client beyond the order id — this function re-reads the order and
-// verifies it is a PAID Team Shop order before invoking the RPC, and the RPC
-// re-guards both (plus so_id replay) inside its own transaction, so a replay,
-// a race with the stripe-webhook caller, or a hostile order_id is a no-op.
+// verifies it is the authenticated coach's own PAID Team Shop order before
+// invoking the RPC. Server-side Stripe/webhook retry paths call the RPC with
+// service credentials and do not depend on this coach-facing endpoint.
 // A failure here is recoverable: the order is already paid, and the webhook
 // (or a staff batch) converts it later — hence 502, never data loss.
-async function convertOrder(sb, body) {
+async function convertOrder(sb, body, coach) {
   const orderId = String(body.order_id || '').trim();
   if (!orderId) return bad(400, 'order_id required');
   const { data, error } = await sb.from('webstore_orders')
-    .select('id,status,order_source,so_id').eq('id', orderId).limit(1);
+    .select('id,status,order_source,so_id,coach_id').eq('id', orderId).limit(1);
   if (error) return bad(500, error.message);
   const order = data && data[0];
   if (!order) return bad(404, 'Order not found');
   if (order.order_source !== 'teamshop') return bad(409, 'Not a Team Shop order.');
+  if (!coach || !coach.id || String(order.coach_id || '') !== String(coach.id)) {
+    return bad(403, 'Not authorized for this order.');
+  }
   if (order.so_id) return ok({ ok: true, so_id: order.so_id, replayed: true });
   if (order.status !== 'paid') return bad(409, 'Order is not paid yet.');
   const rpc = await sb.rpc('create_teamshop_sales_order', { p_webstore_order_id: order.id });
@@ -532,7 +556,7 @@ exports.handler = async (event) => {
     if (body.action === 'place_order') return await placeOrder(admin, body, v.coach);
     if (body.action === 'place_order_ach') return await placeOrder(admin, body, v.coach, { ach: true });
     if (body.action === 'place_order_po') return await placeOrderPo(admin, body, v.coach);
-    if (body.action === 'convert_order') return await convertOrder(admin, body);
+    if (body.action === 'convert_order') return await convertOrder(admin, body, v.coach);
     return bad(400, 'Unknown action.');
   } catch (e) {
     console.error('[teamshop-checkout] error:', e);

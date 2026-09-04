@@ -22,9 +22,12 @@
 //   2. In Stripe → Developers → Webhooks, add endpoint:
 //        https://<your-site>/.netlify/functions/stripe-webhook
 //      subscribed to: payment_intent.succeeded, payment_intent.payment_failed,
-//      charge.refunded, charge.dispute.created (payment_failed drives the
+//      charge.refunded, charge.dispute.created, payout.created, payout.updated,
+//      payout.paid, payout.failed, payout.canceled, and
+//      payout.reconciliation_completed (payment_failed drives the
 //      Team Shop ACH failure path below — without it a bounced ACH order
-//      sits in 'pending_payment' forever)
+//      sits in 'pending_payment' forever; reconciliation_completed is the point
+//      when Stripe says an automatic payout's balance transactions are queryable)
 //   Also requires STRIPE_SECRET_KEY, REACT_APP_SUPABASE_URL (or SUPABASE_URL),
 //   and SUPABASE_SERVICE_ROLE_KEY.
 const stripe = require('stripe');
@@ -32,6 +35,13 @@ const { createClient } = require('@supabase/supabase-js');
 const { sendOrderConfirmation, bumpCouponUse } = require('./_webstoreEmail');
 const { reconcileInvoiceFromIntent } = require('./_shared');
 const { sendCustomerEmail: sendUniformCustomerEmail, sendStaffEmail: sendUniformStaffEmail } = require('./_uniformOrderEmail');
+const {
+  recordDisputeFinancials,
+  recordPaymentIntentFinancials,
+  recordPayoutReconciliation,
+  recordPayoutStatus,
+  recordRefundFinancials,
+} = require('./_stripeReconciliation');
 
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method not allowed' };
@@ -63,6 +73,11 @@ exports.handler = async (event) => {
     if (evt.type === 'payment_intent.succeeded') {
       const pi = evt.data.object;
       if (sb && pi && pi.id) {
+        // Capture Stripe's actual charge fee/net now.  This is distinct from
+        // processing_fee, which is customer-facing revenue.  A write failure
+        // returns 500 so Stripe retries the idempotent ledger upsert.
+        await recordPaymentIntentFinancials({ client, sb, paymentIntent: pi });
+
         // Idempotent, and never resurrect a terminal order: only a pending_payment order
         // for this intent flips to paid (a delayed retry must not undo a refund/cancel).
         // SECURITY (audit #1): flip to paid ONLY when the succeeded PI amount matches the order
@@ -95,7 +110,7 @@ exports.handler = async (event) => {
           .select('id,store_id,buyer_email,buyer_name,total,shipping_fee,discount_amt,coupon_code,payment_mode,ship_method,ship_address').limit(1);
         const order = claimed && claimed[0];
         if (order) {
-          if (order.coupon_code) await bumpCouponUse(sb, order.store_id, order.coupon_code);
+          if (order.coupon_code) await bumpCouponUse(sb, order.store_id, order.coupon_code, order.id);
           if (order.buyer_email) await sendOrderConfirmation(sb, order);
         }
 
@@ -315,6 +330,7 @@ exports.handler = async (event) => {
           const refunds = (charge.refunds && charge.refunds.data) || [];
           let appliedAny = false;
           for (const rf of refunds) {
+            await recordRefundFinancials({ client, sb, refund: rf });
             const { data: res } = await sb.rpc('apply_webstore_refund', {
               p_order_id: order.id, p_amount: (Number(rf.amount) || 0) / 100, p_kind: 'card',
               p_stripe_refund_id: rf.id, p_actor: null, p_reason: rf.reason || 'Stripe refund',
@@ -337,6 +353,7 @@ exports.handler = async (event) => {
       const dispute = evt.data.object;
       const piId = dispute && dispute.payment_intent;
       if (sb && piId) {
+        await recordDisputeFinancials({ client, sb, dispute });
         const { data: orders } = await sb.from('webstore_orders')
           .select('id,store_id,buyer_name,buyer_email,total').eq('stripe_pi_id', piId).limit(1);
         const order = orders && orders[0];
@@ -349,6 +366,16 @@ exports.handler = async (event) => {
           try { await alertStaffOfDispute(order, dispute); } catch (e) { console.warn('[stripe-webhook] dispute alert failed:', e.message); }
         }
       }
+    } else if (evt.type === 'payout.reconciliation_completed') {
+      // Stripe documents this as the event after which an automatic payout's
+      // balance transactions can be queried.  Sum every page and require the
+      // activity net to equal the amount expected at the bank.
+      if (sb) await recordPayoutReconciliation({ client, sb, payout: evt.data.object });
+    } else if ([
+      'payout.created', 'payout.updated', 'payout.paid',
+      'payout.failed', 'payout.canceled',
+    ].includes(evt.type)) {
+      if (sb) await recordPayoutStatus({ sb, payout: evt.data.object });
     }
   } catch (e) {
     // An unexpected exception here (network blip, client bug) is exactly the

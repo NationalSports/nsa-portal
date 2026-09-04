@@ -1,7 +1,8 @@
 /* eslint-disable */
 // Public coach-facing adidas inventory catalog at /adidas.
 // Joins the portal's adidas product catalog (products, brand=Adidas) with live
-// per-size availability from inventory_unified — adidas Cowork CLICK
+// per-size availability from the server-scoped inventory gateway, backed by
+// inventory_unified — adidas Cowork CLICK
 // (adidas_inventory) UNION Agron accessories (agron_inventory), both synced by
 // the COWORK bot. Agron items (socks/bags/hats/underwear/sport accessories) are
 // brand=Adidas with inventory_source='agron' and render identically to CLICK.
@@ -14,6 +15,7 @@
 // filter logic only assume {sku,name,color,category,sizes[]} per variant.
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabaseCoach as supabase } from '../lib/supabaseCoach';
+import { fetchPublicInventory } from '../lib/webstorePublicData';
 import { rQ, auTierDisc } from '../pricing';
 
 // Type system aligned with the NSA marketing site (same as Storefront.js)
@@ -370,9 +372,7 @@ async function fetchInventory(skus, ids, isAlive = () => true) {
     return rows;
   };
   const [inv, ih] = await Promise.all([
-    waves(chunkArr(skus, 400), (batch) =>
-      supabase.from('inventory_unified').select(INV_SELECT)
-        .in('sku', batch).or('stock_qty.gt.0,future_delivery_qty.gt.0')),
+    fetchPublicInventory(skus).then((rows) => rows.filter((r) => Number(r.stock_qty) > 0 || Number(r.future_delivery_qty) > 0)),
     waves(chunkArr(ids, 400), (batch) =>
       supabase.from('product_inventory').select('product_id,size,quantity')
         .in('product_id', batch).gt('quantity', 0)),

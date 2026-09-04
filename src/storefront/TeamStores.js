@@ -5,7 +5,7 @@
 // Surfaced at nationalsportsapparel.com/team-stores via the same Netlify proxy
 // rewrite used for /livelook, so the browser URL stays on the marketing domain.
 import React, { useState, useEffect, useRef, Suspense, lazy } from 'react';
-import { supabase } from '../lib/supabase';
+import { webstorePublicData } from '../lib/webstorePublicData';
 // Shared with the Team Shop storefront's Team Stores page — one query path
 // for the webstores_public directory search, not two hand-synced copies.
 import { cleanTerm, closesLabel, searchPublicTeamStores } from '../lib/publicTeamStores';
@@ -93,9 +93,9 @@ export default function TeamStores() {
 
   useEffect(() => {
     document.title = 'Team Stores · National Sports Apparel';
-    supabase.from('webstores_public').select('id', { count: 'exact', head: true })
-      .eq('status', 'open').eq('public_listed', true)
-      .then(({ count }) => setOpenCount(typeof count === 'number' ? count : null));
+    webstorePublicData('store_count')
+      .then(({ count }) => setOpenCount(typeof count === 'number' ? count : null))
+      .catch(() => setOpenCount(null));
   }, []);
 
   // Debounced search — only runs once 2+ characters are typed.

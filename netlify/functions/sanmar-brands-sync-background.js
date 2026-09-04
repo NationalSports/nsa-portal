@@ -83,13 +83,12 @@ function canonicalBrand(name) {
 
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 const arr = (v) => (Array.isArray(v) ? v : v != null ? [v] : []);
+const { inventoryKey: invKey, stockByColorSize } = require('./_sanmarInventory');
 // Inventory ↔ product-color join key. SanMar returns two-tone colors with inconsistent
 // spacing between the getInventoryLevels feed ("True Royal/ White") and the product feed
 // ("True Royal/White"), so a plain lowercase compare missed EVERY slash color and wrote 0
 // stock (e.g. Sport-Tek Tricot Track Jacket read out of stock with hundreds on hand). Strip
 // all whitespace from the color and upcase the size so the two sides line up.
-const invKey = (color, size) => String(color || '').toLowerCase().replace(/\s+/g, '') + '|' + String(size || '').trim().toUpperCase();
-
 exports.handler = async (event) => {
   const site  = (process.env.URL || '').replace(/\/+$/, '');
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || '').replace(/\/+$/, '');
@@ -240,24 +239,15 @@ exports.handler = async (event) => {
         const brand = canonicalBrand(brandText);
 
         // Inventory
-        const stockByCS = {};
+        let stockByCS = {};
         try {
-          const inv = await sm('promostandards', 'getInventoryLevels', { productId: style });
-          const variations = arr(
-            inv?.Inventory?.ProductVariationInventoryArray?.ProductVariationInventory ||
-            inv?.ProductVariationInventoryArray?.ProductVariationInventory ||
-            inv?.inventory || inv?.items
-          );
-          variations.forEach((v) => {
-            const color = String(v?.attributeColor || v?.color || '');
-            const size  = String(v?.attributeSize || v?.size || v?.labelSize || 'OSFA');
-            let qty = 0;
-            const parts = arr(v?.partInventoryArray?.partInventory || v?.PartInventoryArray?.PartInventory);
-            parts.forEach((p) => { qty += num(p?.quantityAvailable?.Quantity || p?.quantityAvailable?.quantity || p?.quantityAvailable); });
-            if (qty <= 0) qty = num(v?.quantityAvailable || v?.totalQty || v?.qty);
-            if (qty > 0) { const k = invKey(color, size); stockByCS[k] = (stockByCS[k] || 0) + qty; }
-          });
+          const inv = await sm('promostandardsV2', 'getInventoryLevels', { wsVersion: '2.0.0', productId: style });
+          stockByCS = stockByColorSize(inv, items);
+          if (!Object.keys(stockByCS).length) throw new Error('SanMar inventory returned no matched parts');
         } catch (e) { console.warn('[sanmar-brands-sync] inventory', style, e.message); }
+        if (!Object.keys(stockByCS).length) {
+          throw new Error('Inventory unavailable; preserving the last known stock instead of writing zeros');
+        }
 
         // Customer pricing. getProductInfoByStyleColorSize's productPriceInfo carries
         // the CATALOG list price (piecePrice), not our account price — for LPC380 it
@@ -308,7 +298,9 @@ exports.handler = async (event) => {
           for (const r of recs) { const sz = String(r.size || r.labelSize || '').trim(); const sc = costOf(r); if (sz && sc > 0 && _scMap[sz] == null) _scMap[sz] = sc; }
           const sizeCosts = {};
           for (const [sz, sc] of Object.entries(_scMap)) { if (Math.abs(sc - cost) > 0.001) sizeCosts[sz] = sc; }
-          const img    = r0.colorProductImage || r0.productImage || r0.colorProductImageThumbnail || r0.thumbnailImage || '';
+          // Prefer SanMar's garment-only flat for webstore decoration/mockups. Model
+          // photography remains a fallback for colors without a published flat.
+          const img    = r0.frontFlat || r0.colorProductImage || r0.productImage || r0.colorProductImageThumbnail || r0.thumbnailImage || '';
           // SanMar prefixes retired styles with "DISCONTINUED" — strip it (still sells from stock).
           const title  = (r0.productTitle || r0.productDescription || (style + ' ' + grp.colorName)).replace(/DISCONTINUED/ig, '').replace(/\s{2,}/g, ' ').trim();
           prodRows.push({

@@ -2,11 +2,13 @@ import {
   completedJobInvoiceExplanation,
   getOrderInvoiceCoverage,
   hasResponsePoForPull,
+  hasFreshMockForLatestArtRequest,
   isOrderFullyInvoiced,
   isFreshNotificationDate,
   pickSkuChanged,
   picksForCurrentSku,
   pulledItemsHaveMovedInLine,
+  shouldShowMockupReviewNotice,
   shouldShowCompletedJobNotice,
 } from './dashboardNotificationRules';
 
@@ -81,5 +83,41 @@ describe('dashboard notification lifecycle rules', () => {
     const paidAt = new Date('2026-08-18T12:00:00Z');
     expect(isFreshNotificationDate(paidAt, new Date('2026-08-25T11:59:59Z'))).toBe(true);
     expect(isFreshNotificationDate(paidAt, new Date('2026-08-25T12:00:00Z'))).toBe(false);
+  });
+
+  test('does not resurrect review for approved art when a newer request returned no new mock', () => {
+    const artId = 'art-1';
+    const reviewJob = {
+      art_status: 'waiting_approval', prod_status: 'hold', art_file_id: artId,
+      art_requests: [{ created_at: '2026-09-02T14:38:12Z', status: 'completed' }],
+      items: [{ item_idx: 0 }],
+    };
+    const reviewSo = {
+      items: [{ sku: 'IW2442', color: 'Grey/White' }],
+      art_files: [{
+        id: artId, status: 'approved',
+        item_mockups: { 'IW2442|Grey/White': [{ url: 'https://res.cloudinary.com/demo/image/upload/v1787755035/mock.jpg' }] },
+      }],
+    };
+    expect(hasFreshMockForLatestArtRequest(reviewJob, reviewSo)).toBe(false);
+    expect(shouldShowMockupReviewNotice(reviewJob, reviewSo)).toBe(false);
+  });
+
+  test('shows review when the latest request includes a genuinely newer mock', () => {
+    const artId = 'art-1';
+    const reviewJob = {
+      art_status: 'waiting_approval', prod_status: 'hold', art_file_id: artId,
+      art_requests: [{ created_at: '2026-09-02T14:38:12Z', status: 'completed' }],
+      items: [{ item_idx: 0 }],
+    };
+    const reviewSo = {
+      items: [{ sku: 'IW2442', color: 'Grey/White' }],
+      art_files: [{
+        id: artId, status: 'approved',
+        item_mockups: { 'IW2442|Grey/White': [{ url: 'https://res.cloudinary.com/demo/image/upload/v1788420000/mock.jpg' }] },
+      }],
+    };
+    expect(hasFreshMockForLatestArtRequest(reviewJob, reviewSo)).toBe(true);
+    expect(shouldShowMockupReviewNotice(reviewJob, reviewSo)).toBe(true);
   });
 });

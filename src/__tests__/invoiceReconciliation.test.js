@@ -88,6 +88,40 @@ describe('staleInvoiceQtyConflicts — blocks duplicate creation from a stale ta
   });
 });
 
+describe('SKU changes preserve already-invoiced quantity', () => {
+  test('a durable prior-key alias keeps a fully invoiced line fully invoiced after its SKU changes', () => {
+    const original = { sku: 'A1005', color: 'White', sizes: { XS: 3, S: 3 } };
+    const oldKey = soLineKey(original, 1);
+    const changed = {
+      sku: 'LH0083', color: 'White', sizes: { XS: 3, S: 3 }, invoice_line_keys: [oldKey],
+    };
+    const so = { id: 'SO-2245', items: [
+      { sku: 'AT203-65', color: 'Navy', sizes: { M: 1 } },
+      changed,
+    ] };
+    const invoices = [{ id: 'INV-2245', inv_type: 'full', line_items: [
+      { _so_line_key: oldKey, _sku: 'A1005', _color: 'White', qty: 6, amount: 360 },
+    ] }];
+
+    expect(buildInvoicedQtyMap(so, invoices).get(soLineKey(changed, 1))).toBe(6);
+    expect(invoicedLineOrphans(so, invoices)).toEqual([]);
+  });
+
+  test('retains every prior identity across repeated SKU changes', () => {
+    const changedTwice = {
+      sku: 'THIRD', color: 'Blue', sizes: { M: 2 },
+      invoice_line_keys: ['FIRST|Blue|0', 'SECOND|Blue|0'],
+    };
+    const so = { items: [changedTwice] };
+    const invoices = [
+      { id: 'INV-1', inv_type: 'partial', line_items: [{ _so_line_key: 'FIRST|Blue|0', _sku: 'FIRST', qty: 1 }] },
+      { id: 'INV-2', inv_type: 'partial', line_items: [{ _so_line_key: 'SECOND|Blue|0', _sku: 'SECOND', qty: 1 }] },
+    ];
+
+    expect(buildInvoicedQtyMap(so, invoices).get(soLineKey(changedTwice, 0))).toBe(2);
+  });
+});
+
 // ─────────────────────────────────────────────
 // 13. sumDepositInvoiced
 // ─────────────────────────────────────────────

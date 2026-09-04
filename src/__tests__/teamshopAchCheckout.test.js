@@ -1,3 +1,5 @@
+/** @jest-environment node */
+
 /* Team Shop ACH (US bank transfer) checkout — the settle-then-produce money path.
  *
  * Owner decision: ACH via Stripe us_bank_account takes ~4 business days to
@@ -126,6 +128,9 @@ beforeEach(() => {
   jest.clearAllMocks();
   calcTaxSpy = jest.spyOn(ws, 'calcTax').mockResolvedValue(TAX);
   stripeMock.__pi.create.mockResolvedValue({ id: 'pi_ach_1', client_secret: 'cs_ach_1' });
+  // These ACH state-machine tests do not model a Stripe Charge.  The payout
+  // ledger helper legitimately no-ops when the retrieved intent has none.
+  stripeMock.__pi.retrieve.mockImplementation(async (id) => ({ id, latest_charge: null }));
 });
 afterEach(() => { calcTaxSpy.mockRestore(); });
 
@@ -186,9 +191,9 @@ describe('place_order_ach', () => {
 
   test('SETTLE-THEN-PRODUCE: convert_order refuses the processing (pending_payment) ACH order — a client calling convert early cannot start production', async () => {
     const sb = fakeSb({
-      'webstore_orders.select': [{ data: [{ id: 'ord1', status: 'pending_payment', order_source: 'teamshop', so_id: null }], error: null }],
+      'webstore_orders.select': [{ data: [{ id: 'ord1', status: 'pending_payment', order_source: 'teamshop', so_id: null, coach_id: COACH.id }], error: null }],
     });
-    const res = await ts.convertOrder(sb, { order_id: 'ord1' });
+    const res = await ts.convertOrder(sb, { order_id: 'ord1' }, COACH);
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).error).toMatch(/not paid/i);
     expect(sb.calls.filter((c) => c.op === 'rpc')).toHaveLength(0);

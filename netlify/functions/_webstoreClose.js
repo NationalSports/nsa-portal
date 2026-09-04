@@ -11,9 +11,30 @@
 // commissions carry every cost — deliberately waits until the SO's final job finishes
 // (see the settle-on-finish to-dos in App.js), not a calendar delay.
 
+const crypto = require('crypto');
+
 const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = (n) => '$' + (Number(n) || 0).toFixed(2);
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+const closeIdentity = (store) => `${store.id}:${store.close_at || 'manual-close'}`;
+const closeTodoId = (store) => `todo-close-${store.id}-${crypto.createHash('sha256').update(closeIdentity(store)).digest('hex').slice(0, 12)}`;
+const closeEmailKey = (store) => {
+  const bytes = Buffer.from(crypto.createHash('sha256').update('webstore-close:' + closeIdentity(store)).digest().subarray(0, 16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
+
+async function sendCloseEmail(payload, idempotencyKey, apiKey) {
+  if (!apiKey) throw new Error('BREVO_API_KEY not configured');
+  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': apiKey, idempotencyKey },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(`Brevo returned HTTP ${res.status}: ${await res.text().catch(() => '')}`);
+}
 // Fundraising the club is owed on an order, net of the coupon discount's share of the pot
 // (checkout applies the % to subtotal + fundraise together, so a discounted order collected
 // proportionally less fundraising). Keeps this close-out summary in step with the in-app
@@ -28,15 +49,17 @@ const netFundraise = (o) => {
 };
 
 async function buildBreakdown(admin, store) {
-  const { data: orders } = await admin.from('webstore_orders')
+  const { data: orders, error: orderError } = await admin.from('webstore_orders')
     .select('id,status,subtotal,fundraise_amt,discount_amt,total').eq('store_id', store.id);
+  if (orderError) throw new Error(`Could not load closed-store orders: ${orderError.message}`);
   // Real demand only — drop cancelled / refunded / never-paid carts.
   const live = (orders || []).filter((o) => o.status !== 'cancelled' && o.status !== 'refunded' && o.status !== 'pending' && o.status !== 'pending_payment');
   const orderIds = live.map((o) => o.id);
   let units = 0;
   for (let i = 0; i < orderIds.length; i += 200) {
     const chunk = orderIds.slice(i, i + 200);
-    const { data: items } = await admin.from('webstore_order_items').select('qty,is_bundle_parent').in('order_id', chunk);
+    const { data: items, error: itemError } = await admin.from('webstore_order_items').select('qty,is_bundle_parent').in('order_id', chunk);
+    if (itemError) throw new Error(`Could not load closed-store items: ${itemError.message}`);
     units += (items || []).filter((it) => !it.is_bundle_parent).reduce((a, it) => a + (Number(it.qty) || 0), 0);
   }
   return {
@@ -68,7 +91,7 @@ async function notifyStoreClosed(admin, store, opts = {}) {
 
   // 1. Rep to-do (assigned to the store's rep). Mirrors the app's assigned_todos shape.
   const nowIso = new Date().toISOString();
-  const todoId = 'todo-close-' + store.id + '-' + Date.now().toString(36);
+  const todoId = closeTodoId(store);
   let todoOk = false;
   if (store.rep_id) {
     const desc = `Store "${store.name}" has closed. ${summaryLines.join(' · ')}.\n\nProcess the orders into a Sales Order from the store's Orders tab.`;
@@ -78,54 +101,55 @@ async function notifyStoreClosed(admin, store, opts = {}) {
       customer_id: store.customer_id || null, priority: b.orderCount > 0 ? 1 : 2, status: 'open',
       created_at: nowIso, updated_at: nowIso,
     });
-    todoOk = !error;
-    if (error) console.error('[webstore-close] todo insert failed:', error.message);
+    if (error && error.code !== '23505') throw new Error(`Could not create close-out to-do: ${error.message}`);
+    todoOk = true; // a duplicate means an earlier retry already created it
   }
 
   // 2. Email the assigned CSR — they process the closed store. Fall back to the
-  //    rep only when no CSR is assigned (the rep otherwise gets the daily digest).
+  //    rep only when no CSR is assigned, and always include the webstore team so
+  //    a missing assignment or staff email cannot make the close invisible.
   const ids = [store.csr_id || store.rep_id].filter(Boolean);
-  let emailed = [];
-  if (ids.length && brevoKey) {
-    const { data: members } = await admin.from('team_members').select('id,name,email').in('id', ids);
-    const to = (members || []).filter((m) => m && m.email && /.+@.+\..+/.test(m.email))
-      .map((m) => ({ email: m.email, name: m.name || '' }));
-    // De-dupe by email (rep and CSR could share one).
-    const seen = new Set(); const toUniq = to.filter((t) => { const k = t.email.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
-    if (toUniq.length) {
-      const rows = [
-        ['Orders', String(b.orderCount)], ['Units', String(b.units)],
-        ['Gross', money(b.gross)], ['Fundraising', money(b.fundraise)], ['Delivery', b.delivery],
-      ].map(([k, v]) => `<tr><td style="padding:4px 14px 4px 0;color:#64748b;font-size:13px">${esc(k)}</td><td style="padding:4px 0;font-weight:700;font-size:13px;color:#0f172a">${esc(v)}</td></tr>`).join('');
-      const res = await fetch('https://api.brevo.com/v3/smtp/email', {
-        method: 'POST',
-        headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
-        body: JSON.stringify({
-          sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
-          to: toUniq,
-          subject: `Store closed — ${store.name} (${b.orderCount} order${b.orderCount === 1 ? '' : 's'} to process)`,
-          htmlContent: `
-            <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:0 auto">
-              <div style="background:#192853;color:#fff;padding:18px 22px;border-radius:8px 8px 0 0">
-                <h2 style="margin:0;font-size:17px">A team store just closed</h2>
-              </div>
-              <div style="background:#fff;padding:20px 22px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 8px 8px">
-                <p style="font-size:14px;color:#334155;line-height:1.6;margin:0 0 14px"><strong>${esc(store.name)}</strong> has closed and is ready to process.</p>
-                <table style="border-collapse:collapse;margin-bottom:18px">${rows}</table>
-                <a href="${esc(link)}" style="display:inline-block;background:#962C32;color:#fff;border-radius:8px;padding:11px 22px;font-weight:700;text-decoration:none;font-size:14px">Process the store →</a>
-                <p style="font-size:12px;color:#94a3b8;margin-top:16px">Open the store's Orders tab and batch the orders into a Sales Order. A to-do has also been added to your dashboard.</p>
-              </div>
-            </div>`,
-        }),
-      });
-      if (res.ok) emailed = toUniq.map((t) => t.email);
-      else console.error('[webstore-close] Brevo error', res.status, await res.text().catch(() => ''));
-    }
+  let members = [];
+  if (ids.length) {
+    const memberResult = await admin.from('team_members').select('id,name,email').in('id', ids);
+    if (memberResult.error) throw new Error(`Could not load close-out recipients: ${memberResult.error.message}`);
+    members = memberResult.data || [];
   }
+  const to = [
+    ...members.filter((m) => m && m.email && /.+@.+\..+/.test(m.email)).map((m) => ({ email: m.email, name: m.name || '' })),
+    { email: 'stores@nationalsportsapparel.com', name: 'Webstore Team' },
+  ];
+  const seen = new Set(); const toUniq = to.filter((t) => { const k = t.email.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+  const rows = [
+    ['Orders', String(b.orderCount)], ['Units', String(b.units)],
+    ['Gross', money(b.gross)], ['Fundraising', money(b.fundraise)], ['Delivery', b.delivery],
+  ].map(([k, v]) => `<tr><td style="padding:4px 14px 4px 0;color:#64748b;font-size:13px">${esc(k)}</td><td style="padding:4px 0;font-weight:700;font-size:13px;color:#0f172a">${esc(v)}</td></tr>`).join('');
+  const payload = {
+    sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+    to: toUniq,
+    subject: `Store closed — ${store.name} (${b.orderCount} order${b.orderCount === 1 ? '' : 's'} to process)`,
+    htmlContent: `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:0 auto">
+        <div style="background:#192853;color:#fff;padding:18px 22px;border-radius:8px 8px 0 0">
+          <h2 style="margin:0;font-size:17px">A team store just closed</h2>
+        </div>
+        <div style="background:#fff;padding:20px 22px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 8px 8px">
+          <p style="font-size:14px;color:#334155;line-height:1.6;margin:0 0 14px"><strong>${esc(store.name)}</strong> has closed and is ready to process.</p>
+          <table style="border-collapse:collapse;margin-bottom:18px">${rows}</table>
+          <a href="${esc(link)}" style="display:inline-block;background:#962C32;color:#fff;border-radius:8px;padding:11px 22px;font-weight:700;text-decoration:none;font-size:14px">Process the store →</a>
+          <p style="font-size:12px;color:#94a3b8;margin-top:16px">Open the store's Orders tab and batch the orders into a Sales Order. A to-do has also been added to your dashboard.</p>
+        </div>
+      </div>`,
+  };
+  const sender = opts.sendEmail || ((body, key) => sendCloseEmail(body, key, brevoKey));
+  await sender(payload, closeEmailKey(store));
+  const emailed = toUniq.map((t) => t.email);
 
-  // 3. Stamp so it's never processed again.
-  await admin.from('webstores').update({ closed_notified_at: nowIso }).eq('id', store.id);
+  // 3. Stamp only after every required step succeeds. A failed email, recipient
+  // lookup, to-do insert, or stamp remains eligible for the hourly retry sweep.
+  const { error: stampError } = await admin.from('webstores').update({ closed_notified_at: nowIso }).eq('id', store.id);
+  if (stampError) throw new Error(`Could not mark close-out notification complete: ${stampError.message}`);
   return { notified: true, todoId: todoOk ? todoId : null, emailed, breakdown: b };
 }
 
-module.exports = { notifyStoreClosed, buildBreakdown, netFundraise };
+module.exports = { notifyStoreClosed, buildBreakdown, netFundraise, closeTodoId, closeEmailKey, sendCloseEmail };

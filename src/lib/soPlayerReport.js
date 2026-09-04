@@ -95,7 +95,7 @@ export function activeWebstoreLines(lines, orderById = null) {
 // One row per line item, ordered by order number — the CSV the warehouse sorts and bags from.
 // Every row repeats its order's ship-to so a single line can be read on its own (the whole
 // point of the flat file: filter to one player, still know where the box goes).
-function renderCsv({ so, storeName, lines, orderById }) {
+export function downloadPlayerReportCsv({ so, storeName, lines, orderById }) {
   const header = [
     'Order #', 'Order Date', 'Player', 'Player #', 'Buyer', 'Buyer Email', 'Buyer Phone',
     'Item', 'SKU', 'Adidas Tag SKU', 'Color', 'Size', 'Qty', 'Was SKU', 'Was Size', 'Flag',
@@ -109,6 +109,7 @@ function renderCsv({ so, storeName, lines, orderById }) {
       // Sort keys: numeric order number when it is one, so 1010525 < 1010654 (a string sort
       // would put "1010654" before "99"); then player, so one order's rows stay together.
       _num: Number(orderNo(o)) || 0,
+      _extra: !!l._orderExtra,
       _str: orderNo(o),
       _player: (l.player_name || '').trim().toLowerCase(),
       cells: [
@@ -119,14 +120,14 @@ function renderCsv({ so, storeName, lines, orderById }) {
         o.buyer_name || '', o.buyer_email || '', o.buyer_phone || '',
         f.name, f.sku, f.adidasTagSku, f.color, f.size, f.qty,
         f.wasSku, f.wasSize,
-        f.unmatched ? 'NOT ON SO — verify' : (f.wasSku || f.wasSize) ? (f.verify ? 'substituted — verify' : 'substituted') : '',
+        l._orderExtra ? 'ORDER EXTRA / UNASSIGNED' : f.unmatched ? 'NOT ON SO — verify' : (f.wasSku || f.wasSize) ? (f.verify ? 'substituted — verify' : 'substituted') : '',
         o.ship_method || '',
         a.name || o.buyer_name || '', a.street1 || '', a.street2 || '',
         a.city || '', a.state || '', a.zip || '', a.country || '',
       ],
     };
   });
-  rows.sort((x, y) => (x._num - y._num) || x._str.localeCompare(y._str) || x._player.localeCompare(y._player));
+  rows.sort((x, y) => Number(x._extra) - Number(y._extra) || (x._num - y._num) || x._str.localeCompare(y._str) || x._player.localeCompare(y._player));
   const stamp = new Date().toISOString().slice(0, 10);
   const safeStore = String(storeName || '').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '');
   downloadCsv(['player-report', so.id, safeStore, stamp].filter(Boolean).join('_') + '.csv',
@@ -144,9 +145,13 @@ export function omgCodeFromMemo(memo) {
 // strongest identity a product keeps through a swap — the rep changes WHAT we buy,
 // not who ordered which size.
 const norm = (s) => String(s || 'OS').trim().toUpperCase();
+// One-size labels vary by vendor/catalog (OSFA, Adjustable, One Size), but they
+// describe the same physical size. Compare them canonically while preserving the
+// SO's own label in the exported row.
+const sizeKey = (s) => /^(OS|OSFA|OSFM|ONE\s*SIZE(?:\s*FITS\s*ALL)?|ADJ(?:USTABLE)?)$/i.test(String(s || '').trim()) ? 'OS' : norm(s);
 function sizeProfile(rows, get) {
   const p = {};
-  rows.forEach((r) => { const { size, qty } = get(r); p[norm(size)] = (p[norm(size)] || 0) + (Number(qty) || 0); });
+  rows.forEach((r) => { const { size, qty } = get(r); const key = sizeKey(size); p[key] = (p[key] || 0) + (Number(qty) || 0); });
   return p;
 }
 // Overlap score in [0,1]: shared units / the larger side's units. 1 = identical curve.
@@ -157,6 +162,23 @@ function profileScore(a, b) {
   const denom = Math.max(ta, tb);
   return denom > 0 ? shared / denom : 0;
 }
+const profileTotal = (p) => Object.values(p || {}).reduce((n, q) => n + (Number(q) || 0), 0);
+const profilesEqual = (a, b) => {
+  const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
+  return [...keys].every((key) => (Number(a?.[key]) || 0) === (Number(b?.[key]) || 0));
+};
+
+function splitLinesForProfile(lines, profile) {
+  const remaining = { ...(profile || {}) }; const kept = []; const pending = [];
+  (lines || []).forEach((line) => {
+    const qty = Math.max(0, Number(line.qty) || 0);
+    const key = sizeKey(line.size);
+    const take = Math.min(qty, Math.max(0, Number(remaining[key]) || 0));
+    if (take > 0) { kept.push({ ...line, qty: take }); remaining[key] -= take; }
+    if (qty > take) pending.push({ ...line, qty: qty - take });
+  });
+  return { kept, pending };
+}
 
 // Project the SO's current size curve back onto the customer/player lines. Keep
 // every size that still exists first, then assign only the deficits to the SO's
@@ -166,18 +188,21 @@ function profileScore(a, b) {
 // an aggregate SO cannot tell us which player received which of those sizes.
 function allocateCurrentSizes(g) {
   if (!g.so) return g.lines;
-  const target = {};
+  const target = {}; const labels = {};
   const cws = g.matched === 'swap'
     ? g.so.colorways.filter((cw) => norm(cw.color) === norm(g.soColor || cw.color)).slice(0, 1)
     : g.so.colorways;
-  cws.forEach((cw) => Object.entries(cw.profile || {}).forEach(([s, q]) => { target[norm(s)] = (target[norm(s)] || 0) + (Number(q) || 0); }));
+  cws.forEach((cw) => Object.entries(cw.profile || {}).forEach(([s, q]) => {
+    const key = sizeKey(s); target[key] = (target[key] || 0) + (Number(q) || 0);
+    if (!labels[key]) labels[key] = cw.labels?.[key] || norm(s);
+  }));
   const remaining = { ...target }; const out = []; const pending = [];
   g.lines.forEach((l) => {
-    const sourceSize = norm(l.size);
+    const sourceSize = sizeKey(l.size); const sourceLabel = norm(l.size);
     const qty = Math.max(0, Number(l.qty) || 0);
     const keep = Math.min(qty, Math.max(0, remaining[sourceSize] || 0));
-    if (keep > 0) { out.push({ ...l, qty: keep, _size: sourceSize, _wasSize: '' }); remaining[sourceSize] -= keep; }
-    if (qty > keep) pending.push({ line: l, qty: qty - keep, sourceSize });
+    if (keep > 0) { out.push({ ...l, qty: keep, _size: labels[sourceSize] || sourceLabel, _wasSize: '' }); remaining[sourceSize] -= keep; }
+    if (qty > keep) pending.push({ line: l, qty: qty - keep, sourceSize, sourceLabel });
   });
   const surplusSizes = Object.keys(remaining).filter((s) => remaining[s] > 0);
   const pendingUnits = pending.reduce((n, p) => n + p.qty, 0);
@@ -187,12 +212,12 @@ function allocateCurrentSizes(g) {
     surplusSizes.forEach((size) => {
       if (!left || !(remaining[size] > 0)) return;
       const take = Math.min(left, remaining[size]);
-      out.push({ ...p.line, qty: take, _size: size, _wasSize: size !== p.sourceSize ? p.sourceSize : '', _sizeVerify: ambiguous });
+      out.push({ ...p.line, qty: take, _size: labels[size] || size, _wasSize: size !== p.sourceSize ? p.sourceLabel : '', _sizeVerify: ambiguous });
       remaining[size] -= take; left -= take;
     });
     // Source demand exceeds the SO curve. Keep the still-owed customer units in
     // the report and flag them; the unit mismatch banner supplies the SO delta.
-    if (left > 0) out.push({ ...p.line, qty: left, _size: p.sourceSize, _wasSize: '', _sizeVerify: true });
+    if (left > 0) out.push({ ...p.line, qty: left, _size: p.sourceLabel, _wasSize: '', _sizeVerify: true });
   });
   return out;
 }
@@ -223,8 +248,11 @@ export function mapLinesToSoItems(lines, soItems) {
     if (!g.name) g.name = it.name || it.custom_desc || '';
     const color = (it.color || '').trim();
     let cw = g.colorways.find((c) => c.color.toLowerCase() === color.toLowerCase());
-    if (!cw) { cw = { color, profile: {} }; g.colorways.push(cw); }
-    Object.entries(it.sizes || {}).forEach(([s, q]) => { cw.profile[norm(s)] = (cw.profile[norm(s)] || 0) + (Number(q) || 0); });
+    if (!cw) { cw = { color, profile: {}, labels: {} }; g.colorways.push(cw); }
+    Object.entries(it.sizes || {}).forEach(([s, q]) => {
+      const key = sizeKey(s); cw.profile[key] = (cw.profile[key] || 0) + (Number(q) || 0);
+      if (!cw.labels[key]) cw.labels[key] = String(s || key).trim() || key;
+    });
   });
   // Store side, grouped by sku (or product id / name when sku is blank).
   const groups = {}; const order = [];
@@ -254,6 +282,50 @@ export function mapLinesToSoItems(lines, soItems) {
     const covered = {};
     g.so.colorways.forEach((cw) => Object.entries(cw.profile).forEach(([s, q]) => { covered[s] = (covered[s] || 0) + q; }));
     if (profileScore(sizeProfile(g.lines, (l) => ({ size: l.size, qty: l.qty || 1 })), covered) === 0) { g.released = true; g.so = null; g.matched = null; }
+  });
+
+  // Partial replacement: a source product can remain on the SO for the sizes we
+  // could still buy while only its deficit moves to a second SKU (live case:
+  // St. Francis Flag Football GL9698 keeps L/M/S/XL, with the exact M:1 + S:5
+  // deficit moved to AT301). Accept only a globally unique exact deficit curve;
+  // anything less certain stays on the existing verify path.
+  const directClaimed = new Set();
+  order.forEach((k) => { if (groups[k].so) directClaimed.add(groups[k].soKey); });
+  const openTargets = [];
+  soOrder.forEach((key) => {
+    if (!directClaimed.has(key)) soGroups[key].colorways.forEach((cw, index) => openTargets.push({ key, g: soGroups[key], cw, index }));
+  });
+  const looseBeforeSplit = order.map((k) => groups[k]).filter((g) => !g.so);
+  const proposals = [];
+  order.forEach((k) => {
+    const g = groups[k]; if (!g.so || g.matched !== 'direct') return;
+    const source = sizeProfile(g.lines, (l) => ({ size: l.size, qty: l.qty || 1 }));
+    const covered = {};
+    g.so.colorways.forEach((cw) => Object.entries(cw.profile || {}).forEach(([size, qty]) => { covered[size] = (covered[size] || 0) + (Number(qty) || 0); }));
+    const deficit = {};
+    Object.entries(source).forEach(([size, qty]) => { const n = Math.max(0, qty - (covered[size] || 0)); if (n) deficit[size] = n; });
+    if (!profileTotal(deficit)) return;
+    const candidates = openTargets.filter((target) => profilesEqual(deficit, target.cw.profile));
+    if (candidates.length === 1) proposals.push({ sourceKey: k, g, deficit, target: candidates[0] });
+  });
+  const usedTargets = new Set();
+  proposals.forEach((proposal) => {
+    const targetId = proposal.target.key + '|' + proposal.target.index;
+    if (usedTargets.has(targetId) || proposals.filter((p) => p.target.key === proposal.target.key && p.target.index === proposal.target.index).length !== 1) return;
+    if (looseBeforeSplit.some((g) => profilesEqual(sizeProfile(g.lines, (l) => ({ size: l.size, qty: l.qty || 1 })), proposal.target.cw.profile))) return;
+    const covered = proposal.g.so.colorways.reduce((all, cw) => {
+      Object.entries(cw.profile || {}).forEach(([size, qty]) => { all[size] = (all[size] || 0) + (Number(qty) || 0); }); return all;
+    }, {});
+    const { kept, pending } = splitLinesForProfile(proposal.g.lines, covered);
+    if (!pending.length || !profilesEqual(sizeProfile(pending, (l) => ({ size: l.size, qty: l.qty || 1 })), proposal.deficit)) return;
+    proposal.g.lines = kept;
+    const derivedKey = proposal.sourceKey + '::__partial_swap__' + proposal.target.key + ':' + proposal.target.index;
+    groups[derivedKey] = {
+      lines: pending, sku: proposal.g.sku, product_id: proposal.g.product_id, name: proposal.g.name,
+      so: proposal.target.g, soKey: proposal.target.key, soColor: proposal.target.cw.color,
+      matched: 'swap', verify: false,
+    };
+    order.push(derivedKey); usedTargets.add(targetId);
   });
   const claimed = new Set();
   order.forEach((k) => { if (groups[k].so) claimed.add(groups[k].soKey); });
@@ -286,20 +358,28 @@ export function mapLinesToSoItems(lines, soItems) {
     if (gDone.has(c.gi) || tDone.has(c.ti)) return;
     gDone.add(c.gi); tDone.add(c.ti);
     const g = looseGroups[c.gi]; const t = looseCws[c.ti];
-    g.so = t.g; g.soColor = t.cw.color; g.matched = 'swap'; g.verify = c.s < 1 || c.ambiguous;
+    g.so = t.g; g.soColor = t.cw.color; g.matched = 'swap';
+    // A unique replacement with some size overlap and the same total is
+    // deterministic: matching sizes stay put, then the sole remaining curve maps
+    // to the SO's surplus. Zero-overlap swaps remain on manual review below.
+    // Quantity differences are handled per player by allocateCurrentSizes: units
+    // covered by the replacement remain certain, while only the uncovered source
+    // units are flagged. Do not contaminate every player on the product because
+    // one additional size is missing (live: XC has four confirmed hoodie units
+    // and one unpurchased XL).
+    g.verify = c.ambiguous;
   });
   // A unique whole-line replacement can also change every size, giving a zero
   // overlap score (e.g. old SKU XS deleted, new SKU S added). Match only when
   // equal unit totals identify a unique source↔target pair; it is flagged because
   // the aggregate SO does not prove the assignment.
-  const totalProfile = (p) => Object.values(p || {}).reduce((n, q) => n + (Number(q) || 0), 0);
   const remGs = looseGroups.map((g, gi) => ({ g, gi })).filter(({ gi }) => !gDone.has(gi));
   const remTs = looseCws.map((t, ti) => ({ t, ti })).filter(({ ti }) => !tDone.has(ti));
   const zeroPairs = [];
   remGs.forEach(({ g, gi }) => {
-    const qty = totalProfile(sizeProfile(g.lines, (l) => ({ size: l.size, qty: l.qty || 1 })));
+    const qty = profileTotal(sizeProfile(g.lines, (l) => ({ size: l.size, qty: l.qty || 1 })));
     remTs.forEach(({ t, ti }) => {
-      if (qty > 0 && qty === totalProfile(t.cw.profile) && (!g.released || t.key !== g.soKey)) zeroPairs.push({ g, gi, t, ti });
+      if (qty > 0 && qty === profileTotal(t.cw.profile) && (!g.released || t.key !== g.soKey)) zeroPairs.push({ g, gi, t, ti });
     });
   });
   zeroPairs.forEach((p) => {
@@ -355,6 +435,102 @@ export function materializeMappedLine(l) {
 const sumSoUnits = (items) => (items || []).reduce((n, it) => n + Object.entries(it.sizes || {})
   .reduce((a, [k, q]) => a + (/^(drop_ship|unit_cost|_)/i.test(k) ? 0 : (Number(q) || 0)), 0), 0);
 
+const reportItemKey = (sku, name, color, size) => [
+  String(sku || name || '').trim().toUpperCase(),
+  String(color || '').trim().toUpperCase().replace(/\s*\/\s*/g, '/').replace(/\s+/g, ' '),
+  norm(size),
+].join('|');
+
+// A submitted Silver Screen job can contain units that were added directly to
+// the vendor order and therefore have no player checkout. When the complete gap
+// can be identified exactly on the SO's current product/color/size curve, keep
+// those units as an explicit final pseudo-order. Any ambiguity returns no extras
+// so the normal unit audit blocks instead of guessing what Silver Screen has.
+export function buildSilverScreenOrderExtras({ soId, mappedLines = [], soItems = [], targetUnits = 0, orderById = {} } = {}) {
+  const sourceUnits = mappedLines.reduce((n, l) => n + (Number(l.qty) || 0), 0);
+  const needed = Math.max(0, Number(targetUnits) - sourceUnits);
+  if (!needed) return { lines: [], units: 0, safe: sourceUnits === Number(targetUnits) };
+
+  const assigned = new Map();
+  mappedLines.forEach((raw) => {
+    const l = materializeMappedLine(raw);
+    const key = reportItemKey(l._effSku || l.sku, l.name, l.color, l.size);
+    assigned.set(key, (assigned.get(key) || 0) + (Number(l.qty) || 0));
+  });
+
+  const targets = new Map();
+  (soItems || []).forEach((it) => Object.entries(it.sizes || {}).forEach(([size, rawQty]) => {
+    if (/^(drop_ship|unit_cost|_)/i.test(size)) return;
+    const qty = Math.max(0, Number(rawQty) || 0);
+    if (!qty) return;
+    const key = reportItemKey(it.sku, it.name || it.custom_desc, it.color, size);
+    const current = targets.get(key) || { qty: 0, item: it, size };
+    current.qty += qty;
+    targets.set(key, current);
+  }));
+
+  const residual = [];
+  targets.forEach(({ qty, item, size }, key) => {
+    const remaining = Math.max(0, qty - (assigned.get(key) || 0));
+    if (remaining) residual.push({ item, size, qty: remaining });
+  });
+  const residualUnits = residual.reduce((n, r) => n + r.qty, 0);
+  if (residualUnits !== needed) return { lines: [], units: 0, safe: false, residualUnits };
+
+  const orderId = `__silver_screen_extra__${soId}`;
+  orderById[orderId] = {
+    id: orderId,
+    order_number: `${soId} ORDER EXTRA`,
+    buyer_name: 'Order Extra / Unassigned',
+    ship_method: 'deliver_club',
+    _orderExtra: true,
+  };
+  const lines = residual.map(({ item, size, qty }, index) => materializeMappedLine({
+    id: `${orderId}__${index}`,
+    order_id: orderId,
+    sku: item.sku || '',
+    _sku: item.sku || '',
+    _effSku: item.sku || '',
+    name: item.name || item.custom_desc || item.sku || 'Item',
+    _name: item.name || item.custom_desc || item.sku || 'Item',
+    color: item.color || '',
+    _color: item.color || '',
+    size,
+    _size: size,
+    qty,
+    player_name: 'Order Extra / Unassigned',
+    player_number: '',
+    _sourceSoId: soId,
+    _orderExtra: true,
+  }));
+  return { lines, units: needed, safe: true };
+}
+
+// When a Silver Screen job already exists, its submitted quantity is the right
+// audit target. Reps sometimes leave an obsolete, zeroed/extra line on the SO;
+// that line must not block a fulfillment file whose customer units already equal
+// the job Silver Screen received.
+function silverScreenDpo(so) {
+  return [...(so?.deco_pos || [])].reverse().find((dp) => /silver\s*screen/i.test(String(dp?.vendor || '')) && dp?._silverscreen_job_id);
+}
+
+function fulfillmentUnitTarget(so, soUnits) {
+  const dpo = silverScreenDpo(so);
+  const jobUnits = Number(dpo?.qty);
+  return dpo && Number.isFinite(jobUnits) && jobUnits >= 0
+    ? { units: jobUnits, targetLabel: 'Silver Screen job units' }
+    : { units: soUnits, targetLabel: 'sales-order units' };
+}
+
+function silverScreenExternalIssues(so) {
+  const dpo = silverScreenDpo(so);
+  const todo = String(dpo?._silverscreen_todo || '').trim();
+  if (!todo || !(/only\s+\d+\s+of\s+\d+\s+(?:product\s+lines\s+)?were added/i.test(todo)
+    || /add\s+the\s+\d+\s+product\s+line/i.test(todo))) return [];
+  const summary = todo.split(/\s+\[/)[0].replace(/\s+/g, ' ').trim();
+  return [`${so.id}: Silver Screen job #${dpo._silverscreen_job_id} is incomplete — ${summary}`];
+}
+
 // Reconcile one store's current customer lines to the current items on every
 // linked SO. Unbatched lines stay as ordered. The returned audit accompanies the
 // projected lines so reports can show substitutions, missing mappings, missing
@@ -370,10 +546,10 @@ export function resolveWebstoreReportLines({ orders = [], lines = [], soItemsByS
     if (soId) (bySo[soId] = bySo[soId] || []).push(l); else unbatched.push(l);
   });
   const out = unbatched.map((l) => ({ ...l, _effSku: l._effSku || l.sku || '' }));
-  const audit = { substitutions: [], sizeChanges: [], unmatched: [], missingSos: [], wrongStoreLinks: [], unitMismatches: [] };
+  const audit = { substitutions: [], sizeChanges: [], unmatched: [], missingSos: [], wrongStoreLinks: [], unitMismatches: [], externalIssues: [], orderExtras: [] };
   Object.entries(bySo).forEach(([soId, sourceLines]) => {
+    const meta = soMetaBySo ? soMetaBySo[soId] : null;
     if (soMetaBySo) {
-      const meta = soMetaBySo[soId];
       const storeIds = [...new Set(sourceLines.map((l) => orderById[l.order_id] && orderById[l.order_id].store_id).filter(Boolean))];
       if (!meta) {
         audit.missingSos.push(soId);
@@ -386,6 +562,7 @@ export function resolveWebstoreReportLines({ orders = [], lines = [], soItemsByS
         return;
       }
     }
+    silverScreenExternalIssues(meta).forEach((issue) => audit.externalIssues.push(issue));
     const soItems = soItemsBySo[soId];
     if (!soItems) {
       audit.missingSos.push(soId);
@@ -393,7 +570,7 @@ export function resolveWebstoreReportLines({ orders = [], lines = [], soItemsByS
       return;
     }
     const mapped = mapLinesToSoItems(sourceLines, soItems);
-    mapped.lines.forEach((l) => out.push(materializeMappedLine({ ...l, _sourceSoId: soId })));
+    const reportLines = mapped.lines.map((l) => materializeMappedLine({ ...l, _sourceSoId: soId }));
     mapped.substitutions.forEach((s) => audit.substitutions.push({ ...s, soId }));
     const seenSizes = new Set();
     mapped.lines.filter((l) => l._wasSize).forEach((l) => {
@@ -403,9 +580,32 @@ export function resolveWebstoreReportLines({ orders = [], lines = [], soItemsByS
     mapped.unmatched.forEach((item) => audit.unmatched.push({ item, soId }));
     const sourceUnits = sourceLines.reduce((n, l) => n + (Number(l.qty) || 0), 0);
     const soUnits = sumSoUnits(soItems);
-    if (sourceUnits !== soUnits) audit.unitMismatches.push({ soId, sourceUnits, soUnits, delta: soUnits - sourceUnits });
+    const hasSilverScreenJob = !!silverScreenDpo(meta);
+    const target = fulfillmentUnitTarget(meta, soUnits);
+    const extras = hasSilverScreenJob && sourceUnits < target.units && !mapped.unmatched.length
+      ? buildSilverScreenOrderExtras({ soId, mappedLines: reportLines, soItems, targetUnits: target.units, orderById })
+      : { lines: [], units: 0 };
+    out.push(...reportLines, ...extras.lines);
+    if (extras.units) audit.orderExtras.push({ soId, units: extras.units });
+    const reportUnits = sourceUnits + extras.units;
+    // Without a submitted SS job, only customer demand above the SO is fatal.
+    // With a job, the report must equal what Silver Screen received; exact SO
+    // residuals become explicit unassigned extras, never guessed player orders.
+    if ((hasSilverScreenJob && reportUnits !== target.units) || (!hasSilverScreenJob && sourceUnits > target.units)) {
+      audit.unitMismatches.push({ soId, sourceUnits, soUnits: target.units, delta: target.units - sourceUnits, targetLabel: target.targetLabel });
+    }
   });
   return { lines: out, orderById, audit };
+}
+
+export function reportBlockingIssues(audit = {}) {
+  return [
+    ...(audit.missingSos || []).map((soId) => `${soId}: linked sales order could not be loaded`),
+    ...(audit.wrongStoreLinks || []).map((x) => `${x.soId}: linked sales order belongs to another store`),
+    ...(audit.unitMismatches || []).map((x) => `${x.soId}: ${x.sourceUnits} active customer units do not match ${x.soUnits} ${x.targetLabel || 'sales-order units'}`),
+    ...(audit.unmatched || []).map((x) => `${x.soId || 'Order'}: ${x.item || x} is not matched to the sales order`),
+    ...(audit.externalIssues || []),
+  ];
 }
 
 const reportSizeRank = (s) => {
@@ -486,21 +686,39 @@ export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format
     const orderById = {}; scoped.forEach((o) => { orderById[o.id] = o; });
     const activeLines = activeWebstoreLines(rawLines, orderById);
     const mapped = mapLinesToSoItems(activeLines, soItems);
-    const lines = await attachAdidasTagSkus(supabase, mapped.lines);
+    const sourceUnits = activeLines.reduce((n, l) => n + (Number(l.qty) || 0), 0);
+    const soUnits = sumSoUnits(soItems);
+    const target = fulfillmentUnitTarget(so, soUnits);
+    const hasSilverScreenJob = !!silverScreenDpo(so);
+    const materialized = mapped.lines.map((l) => materializeMappedLine({ ...l, _sourceSoId: so.id }));
+    const extras = hasSilverScreenJob && sourceUnits < target.units && !mapped.unmatched.length
+      ? buildSilverScreenOrderExtras({ soId: so.id, mappedLines: materialized, soItems, targetUnits: target.units, orderById })
+      : { lines: [], units: 0 };
+    const lines = await attachAdidasTagSkus(supabase, [...materialized, ...extras.lines]);
     const { substitutions, unmatched } = mapped;
-    if (format === 'csv') renderCsv({ so, storeName: ws.name || '', lines, orderById });
+    const audit = {
+      unmatched: unmatched.map((item) => ({ soId: so.id, item })),
+      unitMismatches: (hasSilverScreenJob ? sourceUnits + extras.units !== target.units : sourceUnits > target.units)
+        ? [{ soId: so.id, sourceUnits, soUnits: target.units, delta: target.units - sourceUnits, targetLabel: target.targetLabel }] : [],
+      externalIssues: silverScreenExternalIssues(so),
+      orderExtras: extras.units ? [{ soId: so.id, units: extras.units }] : [],
+    };
+    const blocking = reportBlockingIssues(audit);
+    if (format !== 'product' && blocking.length) {
+      toast(`Player report blocked: ${blocking.slice(0, 5).join('; ')}${blocking.length > 5 ? `; plus ${blocking.length - 5} more issue(s)` : ''}.`, 'error');
+      return false;
+    }
+    if (format === 'csv') downloadPlayerReportCsv({ so, storeName: ws.name || '', lines, orderById });
     else if (format === 'product') {
       let fulfillmentCustomer = customer;
-      if (!fulfillmentCustomer && ws.customer_id) {
+      // The editor can hold a stale/partial customer object even after the linked
+      // customer address has been completed in Supabase (live: St. Francis Golf).
+      // Club delivery rows must use the freshest customer tied to the webstore,
+      // so hydrate it at download time instead of trusting the editor snapshot.
+      if (ws.customer_id) {
         const { data } = await supabase.from('customers').select('id,name,contact_name,shipping_attention,shipping_address_line1,shipping_address_line2,shipping_city,shipping_state,shipping_zip').eq('id', ws.customer_id).maybeSingle();
-        fulfillmentCustomer = data || null;
+        fulfillmentCustomer = data || fulfillmentCustomer || null;
       }
-      const sourceUnits = activeLines.reduce((n, l) => n + (Number(l.qty) || 0), 0);
-      const soUnits = sumSoUnits(soItems);
-      const audit = {
-        unmatched: unmatched.map((item) => ({ soId: so.id, item })),
-        unitMismatches: sourceUnits === soUnits ? [] : [{ soId: so.id, sourceUnits, soUnits, delta: soUnits - sourceUnits }],
-      };
       const result = downloadSilverScreenFulfillment({ store: ws, lines, orderById, customer: fulfillmentCustomer, audit, reference: so.id });
       toast(`Downloaded ${result.unitCount} Silver Screen fulfillment unit${result.unitCount === 1 ? '' : 's'}`);
     }
