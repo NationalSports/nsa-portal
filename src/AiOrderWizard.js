@@ -7,7 +7,7 @@
 // editor with all items already populated.
 import React, { useState } from 'react';
 import { Icon, SearchSelect, ProductPicker } from './components';
-import { invokeEdgeFn, enrichAiLinesWithVendors } from './utils';
+import { invokeEdgeFn, enrichAiLinesWithVendors, aiLineAvailableSizes } from './utils';
 import { rQ, auTierDisc, isAU } from './pricing';
 
 const initialAi = () => ({
@@ -150,7 +150,7 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
         nsa_cost: cost,
         retail_price: retail,
         unit_sell: sell,
-        available_sizes: szKeys.length > 0 ? szKeys : (catMatch?.available_sizes || ['S', 'M', 'L', 'XL', '2XL']),
+        available_sizes: aiLineAvailableSizes(szKeys, catMatch?.available_sizes),
         sizes,
         decorations,
         no_deco: decorations.length === 0,
@@ -205,7 +205,7 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
         nsa_cost: cost,
         retail_price: retail,
         unit_sell: sell,
-        available_sizes: szKeys.length > 0 ? szKeys : (catMatch?.available_sizes || ['S', 'M', 'L', 'XL', '2XL']),
+        available_sizes: aiLineAvailableSizes(szKeys, catMatch?.available_sizes),
         sizes: p.sizes || {},
         decorations: [],
         // Vendor-matched items aren't "custom" — they have a real SKU and

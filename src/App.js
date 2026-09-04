@@ -7182,11 +7182,17 @@ export default function App(){
     if(addedSizes.length){logChange('inventory_sizes','Product',pid,'Added size'+(addedSizes.length===1?'':'s')+': '+addedSizes.join(', '))}
     nf('Inventory updated');
   };
+  // Allocate EST ids against the saved estimates PLUS whatever draft is open in the editor.
+  // A brand-new draft isn't in `ests` until it's saved, so building a second estimate on top
+  // of one used to hand back the SAME id. The editor is keyed on that id (key={eEst.id}), so
+  // React never remounted it and kept showing the old empty draft — the AI wizard reported
+  // "created estimate with N items" while the screen stayed at 0 items with no customer.
+  const _newEstId=()=>nextEstId((eEst&&!ests.some(x=>x.id===eEst.id))?[...ests,eEst]:ests);
   const newE=(c,product,seedItems,memo='')=>{const mk=c?.catalog_markup||1.65;const items=[];
     if(product){const au=isAU(product.brand)&&!String(product.id||'').startsWith('ssa-');const repCost=product.is_clearance&&product.clearance_cost!=null?product.clearance_cost:product.nsa_cost;const sell=au?rQ(product.retail_price*(1-auTierDisc(c?.adidas_ua_tier||'B',product.pricing_group,product.category))):rQ(repCost*mk);
       items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,vendor_id:product.vendor_id||null,pricing_group:product.pricing_group||null,color:product.color,nsa_cost:repCost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[],_is_clearance:product.is_clearance||false})}
     if(Array.isArray(seedItems)&&seedItems.length)items.push(...seedItems);
-    const e={id:nextEstId(ests),customer_id:c?.id||null,memo:memo||'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates');return e};
+    const e={id:_newEstId(),customer_id:c?.id||null,memo:memo||'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates');return e};
   const createEstimateFromInbox=(message)=>{
     const c=cust.find(x=>x.id===message?.customer_id);
     if(!c){nf('Match this email to a customer first','error');return}
@@ -7436,7 +7442,7 @@ export default function App(){
     }
     const{art:clonedArt,idMap:_artIdMap}=reidArtFiles(est.art_files);
     const clonedItems=remapItemArtIds(safeItems(est).map(it=>{const clone=JSON.parse(JSON.stringify(it));delete clone.pick_lines;delete clone.po_lines;return clone}),_artIdMap);
-    const ne={id:nextEstId(ests),customer_id:est.customer_id,memo:(est.memo||'')+' (copy)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,bill_to_id:est.bill_to_id,email_status:null,art_files:clonedArt,items:clonedItems};
+    const ne={id:_newEstId(),customer_id:est.customer_id,memo:(est.memo||'')+' (copy)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,bill_to_id:est.bill_to_id,email_status:null,art_files:clonedArt,items:clonedItems};
     setEsts(prev=>[ne,...prev]);const c=cust.find(x=>x.id===ne.customer_id);setEEst(ne);setEEstC(c);setPg('estimates');nf(`${ne.id} copied from ${est.id}`)};
   const copySalesOrder=async so=>{
     // Auto-heal a partially-loaded sales order before copying — same failure mode the
