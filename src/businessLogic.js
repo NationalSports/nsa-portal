@@ -1835,12 +1835,44 @@ function assistantRemovePoLine(order, { itemIdx, plIdx, size }) {
   return { next, poId, summary, removedWholePo };
 }
 
+// ── Rep payout: monthly draw + employee loan → what actually gets paid ──
+// The DRAW is a cash advance against COMMISSION (per Steve, 2026-09): the rep receives
+// the draw through payroll, and it is recovered out of the commission they earn, so
+// payable = net commission − draw, floored at $0. A rep whose commission lands under
+// their draw keeps the draw and is paid nothing further; that shortfall does NOT carry
+// into the next month — every month starts clean.
+//
+// This replaced a rule that measured the draw against GROSS PROFIT dollars, which cleared
+// far too easily: a $5,000 draw passed on $5,000 of GP — worth only $1,500 of commission
+// — and then paid commission on top of a draw that had never been earned back.
+//
+// Loan withholding then takes loanPct% of payable, capped at the outstanding balance and
+// skipped when the month is flagged "pay full". Once a month has been applied to the loan,
+// appliedAmt is authoritative (the stored amount) and overrides the percentage.
+function calcRepPayout({ netCommission, draw, loanBalance, loanPct, payFull, appliedAmt } = {}) {
+  const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const netComm = r2(netCommission);
+  const _draw = Math.max(0, r2(draw));
+  const loanBal = Math.max(0, r2(loanBalance));
+  const pct = loanPct == null ? 50 : Math.min(100, Math.max(0, Number(loanPct) || 0));
+  const underBy = _draw > 0 ? Math.max(0, r2(_draw - netComm)) : 0;
+  const payable = Math.max(0, r2(netComm - _draw));
+  const applied = appliedAmt == null ? null : r2(appliedAmt);
+  const withhold = applied != null
+    ? Math.min(applied, payable)
+    : (loanBal > 0 && !payFull ? Math.min(Math.round(payable * pct) / 100, loanBal) : 0);
+  const payout = Math.max(0, r2(payable - withhold));
+  return { netComm, draw: _draw, underBy, payable, loanBal, pct, withhold, payout };
+}
+
 module.exports = {
   // Safe accessors
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs, manualPoCostTotal,
   // Attribution
   commissionRepId,
   isCommissionRep,
+  // Commission payouts (draw + loan)
+  calcRepPayout,
   // Pricing
   rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
