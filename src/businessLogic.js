@@ -803,8 +803,12 @@ const allocateJobFulfillment = (jobs, items) => {
     return { root, depth, open: isOpenSplitSlice(j) ? 1 : 0 };
   };
   // open: 0 (received parent / normal slice) sorts before 1 (backorder slice) so the backorder
-  // claims its family's receipts last; within each open-tier the deepest split still claims first.
-  const order = jobs.map((j, i) => ({ i, m: famMeta(j) })).sort((a, b) => (a.m.open - b.m.open) || (b.m.depth - a.m.depth) || (a.i - b.i));
+  // claims its family's receipts last. Within the received tier the deepest split claims first
+  // (a slice carved off to run NOW took the receipts with it). Within the open tier it is the
+  // reverse: an open slice is by definition the not-yet-received remainder of its parent, so a
+  // backorder split off a backorder (-S-S, or a custom backorder slice off -S) must claim AFTER
+  // that parent — deepest-first there would hand a partially received -S's units to its child.
+  const order = jobs.map((j, i) => ({ i, m: famMeta(j) })).sort((a, b) => (a.m.open - b.m.open) || (a.m.open ? (a.m.depth - b.m.depth) : (b.m.depth - a.m.depth)) || (a.i - b.i));
   const claimed = {}; // family root::item_idx::size -> units already taken by deeper slices
   const out = new Array(jobs.length);
   order.forEach(e => {
