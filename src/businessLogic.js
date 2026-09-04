@@ -1849,7 +1849,11 @@ function assistantRemovePoLine(order, { itemIdx, plIdx, size }) {
 // Loan withholding then takes loanPct% of payable, capped at the outstanding balance and
 // skipped when the month is flagged "pay full". Once a month has been applied to the loan,
 // appliedAmt is authoritative (the stored amount) and overrides the percentage.
-function calcRepPayout({ netCommission, draw, loanBalance, loanPct, payFull, appliedAmt } = {}) {
+// `extraCommission` is commission earned OUTSIDE the portal — NetSuite orders are still
+// being paid out, and their commission (30% of the NetSuite gross profit, worked out
+// there) is entered per rep per month. It counts toward earning back the draw exactly
+// like portal commission, and may be negative to correct an earlier entry.
+function calcRepPayout({ netCommission, extraCommission, draw, loanBalance, loanPct, payFull, appliedAmt } = {}) {
   // Every amount is snapped to whole cents on the way in and the arithmetic runs in
   // integer cents from there. Doing the loan split in floating point made the penny on
   // an exact half-cent land arbitrarily: 50% of $2,578.47 is $1,289.235, and `2578.47*50`
@@ -1859,7 +1863,8 @@ function calcRepPayout({ netCommission, draw, loanBalance, loanPct, payFull, app
   // half-cent always rounds up, to the loan.
   const cents = (n) => { const v = Number(n); return Number.isFinite(v) ? Math.round(v * 100) : 0; };
   const money = (c) => Math.round(c) / 100;
-  const netC = cents(netCommission);
+  const extraC = cents(extraCommission);
+  const netC = cents(netCommission) + extraC;
   const drawC = Math.max(0, cents(draw));
   const loanC = Math.max(0, cents(loanBalance));
   // A missing, blank or unparseable withholding % falls back to the 50% default — reading
@@ -1881,7 +1886,7 @@ function calcRepPayout({ netCommission, draw, loanBalance, loanPct, payFull, app
     ? appliedC
     : (loanC > 0 && !payFull ? Math.min(Math.round(payableC * pct / 100), loanC) : 0);
   return {
-    netComm: money(netC), draw: money(drawC), underBy: money(underByC),
+    netComm: money(netC), extra: money(extraC), draw: money(drawC), underBy: money(underByC),
     payable: money(payableC), loanBal: money(loanC), pct,
     withhold: money(withholdC), payout: money(payableC - withholdC),
   };
