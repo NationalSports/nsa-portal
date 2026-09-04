@@ -3,6 +3,8 @@ jest.mock('../../netlify/functions/_qb', () => ({
   getSupabaseAdmin: jest.fn(() => ({ tag: 'admin-client' })),
   getStoredTokens: jest.fn(),
   getValidAccessToken: jest.fn(),
+  normalizeCompanyKey: jest.fn((value) => value || 'national'),
+  qbRequest: jest.fn(),
 }));
 
 const { verifyQBOUser } = require('../../netlify/functions/_shared');
