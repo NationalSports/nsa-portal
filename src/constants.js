@@ -13,6 +13,16 @@ export const _itemCols=['product_id','sku','name','brand','color','vendor_id','n
 // Sales-order-only item fields. Keep these separate from _itemCols because that base list also
 // feeds estimate_items writes, while invoice reconciliation history has no meaning on an estimate.
 export const _soItemCols=['invoice_line_keys'];
+// PostgREST builds one column set for an entire bulk insert. If an existing line carries
+// invoice_line_keys while a newly-added line omits it, the missing value becomes explicit NULL for
+// that row; the database default is not used and the NOT NULL constraint rejects the whole batch.
+// Use this projection for BOTH dirty comparison and persistence so missing/null legacy payloads are
+// canonically [] and do not create either failed saves or a missing-vs-empty phantom-save loop.
+export const _pickSoItem=(item)=>{
+  const row=_pick(item||{},[..._itemCols,..._soItemCols]);
+  row.invoice_line_keys=Array.isArray(row.invoice_line_keys)?row.invoice_line_keys:[];
+  return row;
+};
 // Topstar digitizing / vector-file billing line. This qty_only line bills the customer for a
 // file-creation service whose PO lives in so.deco_pos (a deco PO) — an item-level vendor PO is
 // never created for it. It must therefore be treated as already covered in SO status math and

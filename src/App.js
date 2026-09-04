@@ -3728,6 +3728,17 @@ export default function App(){
           :('Auto-restored '+(restored!=null?restored+' ':'')+(kind==='po_restored'?'PO':'pick')+' line(s) the save had dropped (stale state — no data lost)'));
         return;
       }
+      // These are observations, not confirmed loss. `hydrated_shrink` is emitted only after the DB guard
+      // proves every removed line was deliberately accounted for. `lost` is the earlier client-side suspicion
+      // raised before the authoritative DB guard runs; that later guard either verifies the edit or blocks it.
+      // Emailing either as "Items lost" creates a red alert for normal line removal even when persistence is
+      // healthy (SO-2359 / EST-2429, 2026-09-04). Keep the audit trail, but do not page the admin.
+      if(kind==='hydrated_shrink'||kind==='lost'){
+        logChange(kind==='hydrated_shrink'?'items_removed_verified':'item_shrink_observed','SO',soId,
+          (kind==='hydrated_shrink'?'Verified item removal: ':'Potential item-count reduction observed before DB verification: ')
+          +(reason||'(none)'));
+        return;
+      }
       // verify_fail: a post-insert read-back came back short or errored. The insert-first save keeps the OLD
       // rows canonical and rolls the new ones back, so nothing is lost — the save sits in the 60s retry queue
       // and a transient blip heals on the next pass (the 2026-07-07 storm: one blip failed 8 SOs' read-backs
