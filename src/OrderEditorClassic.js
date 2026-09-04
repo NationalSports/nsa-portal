@@ -13510,6 +13510,9 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               const splitFulPrev=items.reduce((a,gi)=>a+(ci[gi.item_idx]?allocateCustomSplit(gi.sizes,gi.fulSizes,cs[gi.item_idx]||{},take).sFul:0),0);
               const _setTake=t=>setSplitModal(m=>({...m,customTake:t}));
               const _setSizes=(item_idx,upd)=>setSplitModal(m=>({...m,customSizes:{...m.customSizes,[item_idx]:{...(m.customSizes?.[item_idx]||{}),...upd}}}));
+              // Quick picks REPLACE the garment's selection (a merge left the default open sizes under a
+              // "Received only" click, so the split carried both and the rep got a mixed run).
+              const _replaceSizes=(item_idx,map)=>setSplitModal(m=>({...m,customSizes:{...m.customSizes,[item_idx]:{...map}}}));
               const _toggleInclude=(item_idx,on)=>setSplitModal(m=>{
                 const next={...(m.customInclude||{}),[item_idx]:on};
                 // When turning on for the first time and no sizes selected yet, default to the units the
@@ -13550,10 +13553,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                     </div>
                     {incl&&<div>
                       <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:6}}>
-                        <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={e=>{e.stopPropagation();_setSizes(gi.item_idx,gi.sizes)}}>All sizes</button>
-                        {gi.units-gi.received>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} title="Select the sizes still on order and make the new job the backorder" onClick={e=>{e.stopPropagation();_setSizes(gi.item_idx,openSizes(gi.sizes,gi.fulSizes));_setTake('open')}}>Not received only ({gi.units-gi.received})</button>}
-                        {gi.received>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} title="Select the in-hand sizes and make the new job the one that runs now" onClick={e=>{e.stopPropagation();_setSizes(gi.item_idx,gi.fulSizes);_setTake('received')}}>Received only ({gi.received})</button>}
-                        <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={e=>{e.stopPropagation();const z={};Object.keys(gi.sizes).forEach(sz=>z[sz]=0);_setSizes(gi.item_idx,z)}}>Clear</button>
+                        <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={e=>{e.stopPropagation();_replaceSizes(gi.item_idx,gi.sizes)}}>All sizes</button>
+                        {gi.units-gi.received>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} title="Select the sizes still on order and make the new job the backorder" onClick={e=>{e.stopPropagation();_replaceSizes(gi.item_idx,openSizes(gi.sizes,gi.fulSizes));_setTake('open')}}>Not received only ({gi.units-gi.received})</button>}
+                        {gi.received>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} title="Select the in-hand sizes and make the new job the one that runs now" onClick={e=>{e.stopPropagation();_replaceSizes(gi.item_idx,gi.fulSizes||{});_setTake('received')}}>Received only ({gi.received})</button>}
+                        <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={e=>{e.stopPropagation();_replaceSizes(gi.item_idx,{})}}>Clear</button>
                       </div>
                       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(72px,1fr))',gap:6}}>
                         {sizesList.map(([sz,max])=>{
