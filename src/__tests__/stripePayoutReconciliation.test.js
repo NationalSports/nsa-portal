@@ -9,6 +9,7 @@ const {
   repairWebhookConfiguration,
   recordPaymentIntentFinancials,
   recordPayoutReconciliation,
+  selectAllRows,
 } = require('../../netlify/functions/_stripeReconciliation');
 const {
   chargeAmountMismatches,
@@ -255,5 +256,101 @@ describe('Stripe-settled order summaries', () => {
     const chargeByOrder = new Map([['order-refunded', { amount_cents: 1000 }]]);
     const activityByOrder = new Map([['order-refunded', 900]]);
     expect(chargeAmountMismatches(orders, chargeByOrder, activityByOrder)).toEqual([]);
+  });
+});
+
+describe('complete ledger reads', () => {
+  // A single PostgREST response is capped (1,000 rows by default) and says
+  // nothing when it truncates, so a whole-ledger sum has to be paged and then
+  // checked against the server's own count.
+  const ledger = (total) => Array.from({ length: total }, (_, i) => ({
+    stripe_balance_transaction_id: `txn_${String(i).padStart(4, '0')}`,
+    webstore_order_id: `order_${i % 7}`,
+    reporting_category: i === 1004 ? 'refund' : 'charge',
+    amount_cents: i === 1004 ? -2500 : 1000,
+  }));
+
+  const pagedSource = (rows, { serverPageCap = Infinity, reportedCount = rows.length } = {}) => {
+    const calls = [];
+    return {
+      calls,
+      build: () => ({
+        range: async (from, to) => {
+          calls.push([from, to]);
+          const size = Math.min(to - from + 1, serverPageCap);
+          return { data: rows.slice(from, from + size), count: reportedCount, error: null };
+        },
+      }),
+    };
+  };
+
+  test('reads every row past the first page, including a refund after row 1000', async () => {
+    const rows = ledger(1005);
+    const source = pagedSource(rows);
+    const result = await selectAllRows(source.build, { label: 'ledger' });
+    expect(result).toHaveLength(1005);
+    expect(source.calls.length).toBeGreaterThan(1);
+    const refunds = result.filter((row) => row.reporting_category === 'refund');
+    expect(refunds).toEqual([expect.objectContaining({ stripe_balance_transaction_id: 'txn_1004', amount_cents: -2500 })]);
+    // Net activity must include the late refund, not stop at the row cap.
+    expect(result.reduce((sum, row) => sum + row.amount_cents, 0)).toBe(1004 * 1000 - 2500);
+  });
+
+  test('still completes when the server caps pages below the requested size', async () => {
+    const rows = ledger(1005);
+    const source = pagedSource(rows, { serverPageCap: 400 });
+    await expect(selectAllRows(source.build, { label: 'ledger' })).resolves.toHaveLength(1005);
+  });
+
+  test('fails closed instead of returning a truncated ledger', async () => {
+    const source = pagedSource(ledger(500), { reportedCount: 1005 });
+    await expect(selectAllRows(source.build, { label: 'ledger' })).rejects.toThrow(/stalled at 500 of 1005/);
+  });
+
+  test('refuses to page a query that did not ask for an exact count', async () => {
+    const source = { build: () => ({ range: async () => ({ data: [], count: null, error: null }) }) };
+    await expect(selectAllRows(source.build, { label: 'ledger' })).rejects.toThrow(/exact row count/);
+  });
+
+  test('surfaces a read error rather than reporting a short ledger', async () => {
+    const source = { build: () => ({ range: async () => ({ data: null, count: null, error: { message: 'timeout' } }) }) };
+    await expect(selectAllRows(source.build, { label: 'ledger' })).rejects.toThrow(/timeout/);
+  });
+});
+
+describe('nightly time budget', () => {
+  test('stops reconciling payouts at the deadline and reports the remainder', async () => {
+    const sb = fakeSb();
+    let clock = 0;
+    const payouts = ['po_1', 'po_2', 'po_3'].map((id) => ({
+      id, amount: 941, currency: 'usd', status: 'paid', automatic: true,
+      method: 'standard', reconciliation_status: 'completed', created: 1788451200,
+    }));
+    const client = {
+      payouts: { list: jest.fn().mockResolvedValue({ data: payouts, has_more: false }) },
+      balanceTransactions: { list: jest.fn().mockImplementation(async () => {
+        clock += 100;
+        return { data: [bt('txn_x')], has_more: false };
+      }) },
+    };
+    const result = await reconcilePayoutBatch({
+      client, sb, createdGte: 1788000000, limit: 3, deadlineAt: 150, now: () => clock,
+    });
+    expect(result).toMatchObject({ processed: 2, selected: 3, remaining: 1 });
+    expect(result.errors).toEqual([]);
+  });
+
+  test('processes the whole page when no deadline is set', async () => {
+    const sb = fakeSb();
+    const payouts = ['po_a', 'po_b'].map((id) => ({
+      id, amount: 941, currency: 'usd', status: 'paid', automatic: true,
+      method: 'standard', reconciliation_status: 'completed', created: 1788451200,
+    }));
+    const client = {
+      payouts: { list: jest.fn().mockResolvedValue({ data: payouts, has_more: false }) },
+      balanceTransactions: { list: jest.fn().mockResolvedValue({ data: [bt('txn_y')], has_more: false }) },
+    };
+    const result = await reconcilePayoutBatch({ client, sb, createdGte: 1788000000, limit: 2 });
+    expect(result).toMatchObject({ processed: 2, remaining: 0 });
   });
 });
