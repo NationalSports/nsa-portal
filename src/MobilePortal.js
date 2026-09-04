@@ -49,7 +49,7 @@ const _msubFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveSOPOBatch,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxCombine,onBoxMerge,onBoxLabel,receipt,onReceiptDone,onPrintLabels}){
+export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveSOPOBatch,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxMerge,onBoxLabel,receipt,onReceiptDone,onPrintLabels}){
   const isOps=cu.role==='warehouse'||cu.role==='production';// ops roles: no sales/financial reporting
   const _caTop=canAccess||(()=>true);// page-access check usable anywhere in the component
   const[tab,setTab]=useState(()=>_mtabFromUrl()||'home');
@@ -2448,10 +2448,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       const bx=mpBox.box;
       const meta=BOX_STATUS_META[bx.status]||{label:bx.status,color:'#475569',bg:'#f1f5f9'};
       const boxActive=bx.status!=='combined';
-      const combineTargets=(boxes||[]).filter(b=>b.id!==bx.id&&b.status!=='combined'&&b.status!=='shipped');
       const setStatus=async(st)=>{if(!onBoxUpdate)return;if(await onBoxUpdate(bx.id,{status:st}))setMpBox(m=>m?{...m,box:{...m.box,status:st}}:m)};
       const saveBin=async()=>{if(!onBoxUpdate)return;const bin=(mpBox.binDraft||'').trim()||null;if(await onBoxUpdate(bx.id,{bin}))setMpBox(m=>m?{...m,box:{...m.box,bin},binDraft:undefined}:m)};
-      const doCombine=async()=>{if(!onBoxCombine||!mpBox.combineWith)return;await onBoxCombine(bx,mpBox.combineWith);const fresh=onBoxLookup?await onBoxLookup(bx.id):null;setMpBox(fresh?{box:fresh,combineWith:''}:null)};
       const mergeMode=!!mpBox.mergeMode;const pending=mpBox.pending||[];
       // Customer behind a box, for the cross-customer warning and the pending rows.
       const boxCustName=(b)=>{const so=b&&b.so_id?(sos||[]).find(s=>s.id===b.so_id):null;const c=so?(cust||[]).find(x=>x.id===so.customer_id):null;return (c&&c.name)||(b&&b.so_id)||''};
@@ -2538,14 +2536,11 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
                   style={{fontSize:12,fontWeight:700,padding:'8px 12px',borderRadius:8,border:'1px solid '+(bx.status===st?'#0e7490':'#cbd5e1'),background:bx.status===st?'#cffafe':'white',color:'#0f172a'}}>{lbl}</button>)}
               {onBoxLabel&&<button onClick={()=>onBoxLabel(bx)} style={{fontSize:12,fontWeight:700,padding:'8px 12px',borderRadius:8,border:'1px solid #cbd5e1',background:'white',marginLeft:'auto'}}>🖨️ Label</button>}
             </div>
-            {combineTargets.length>0&&<div style={{display:'flex',gap:6,alignItems:'center'}}>
-              <select value={mpBox.combineWith||''} onChange={e=>setMpBox(m=>({...m,combineWith:e.target.value}))}
-                style={{flex:1,fontSize:12,padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:8,background:'white'}}>
-                <option value="">🔗 Combine into…</option>
-                {combineTargets.map(b=><option key={b.id} value={b.id}>{b.id} — {[b.if_id,b.so_id].filter(Boolean).join(' · ')} ({boxUnits(b.contents)} u)</option>)}
-              </select>
-              <button onClick={doCombine} disabled={!mpBox.combineWith} style={{fontSize:12,fontWeight:700,padding:'8px 14px',borderRadius:8,border:'1px solid #cbd5e1',background:'#f8fafc',opacity:mpBox.combineWith?1:0.5}}>Combine</button>
-            </div>}
+            {/* The old "Combine into…" dropdown lived here and ran the OPPOSITE direction
+                to merge mode — it absorbed the box on screen into another one. Two
+                opposite-direction merge controls on a phone sheet, with no undo, is how the
+                wrong carton gets marked dead. Merge mode is the only model now: the box on
+                screen survives and everything scanned is absorbed into it. */}
           </>}
         </div>
       </div>;

@@ -6578,20 +6578,6 @@ export default function App(){
       return null;
     }
   };
-  // Back-compat single-source entry point (the old dropdown Combine action).
-  const combineBoxes=async(srcBox,tgtId)=>{
-    const tgt=boxRows.find(b=>b.id===tgtId&&b.id!==srcBox.id);
-    if(!tgt){nf('Pick a box to combine into','error');return}
-    const res=await mergeBoxes(tgt,[srcBox]);
-    if(res&&res.needsConfirm){
-      const names=res.needsConfirm.groups.map(g=>g.name+' ('+g.boxIds.join(', ')+')').join(' vs ');
-      if(!window.confirm('⚠️ These boxes belong to different customers:\n\n'+names+'\n\nMerge anyway?'))return;
-      const forced=await mergeBoxes(tgt,[srcBox],{confirmedCrossCustomer:true});
-      if(forced)setBoxModal({box:forced,combineWith:''});
-      return;
-    }
-    if(res)setBoxModal({box:res,combineWith:''});
-  };
   // ─── AUTO-SHIP BOXES ─── A box whose whole ORDER has left (SO shipped, or every
   // non-draft job completed/shipped — "when everything goes") is marked shipped, so
   // the move check-in station and Where-is-it views stop counting it as on-hand.
@@ -37239,7 +37225,7 @@ export default function App(){
   // <Toast> in the return below is never reached in mobile mode (this early return),
   // so without this every mobile toast — the green "🎽 Ready for decoration" and
   // "✅ Received N units" confirmations included — was silently dropped.
-  if(mobileMode)return<><Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveSOPOBatch={mobileReceiveSOPOBatch} onReceiveInvPO={receiveInvPO} receipt={mobileReceipt} onReceiptDone={()=>setMobileReceipt(null)} onPrintLabels={(labels)=>{try{printQrLabels(labels)}catch(_){}}} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxCombine={combineBoxes} onBoxMerge={mergeBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary><PortalAssistant variant="mobile" pg={pg} screenTitle={titles[pg]||'Portal'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={(row)=>{try{window.dispatchEvent(new CustomEvent('nsa:mobile-open-result',{detail:row}))}catch(e){}}} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/></>;
+  if(mobileMode)return<><Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveSOPOBatch={mobileReceiveSOPOBatch} onReceiveInvPO={receiveInvPO} receipt={mobileReceipt} onReceiptDone={()=>setMobileReceipt(null)} onPrintLabels={(labels)=>{try{printQrLabels(labels)}catch(_){}}} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxMerge={mergeBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary><PortalAssistant variant="mobile" pg={pg} screenTitle={titles[pg]||'Portal'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={(row)=>{try{window.dispatchEvent(new CustomEvent('nsa:mobile-open-result',{detail:row}))}catch(e){}}} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/></>;
 
   // Shared state interface for pages extracted out of App() (see src/AppContext.js).
   // Every key must be an App()-scope binding; extracted pages read these via useAppData().
@@ -38237,16 +38223,11 @@ export default function App(){
             {/* Merge: this box becomes the target, then every scan adds a carton to it. */}
             <button className="btn btn-sm" style={{fontSize:13,fontWeight:800,background:'#0e7490',color:'#fff',border:'none',minHeight:44,width:'100%',marginBottom:10}}
               onClick={()=>setBoxModal(m=>m?{...m,mergeMode:true,pending:[],warn:null,combineWith:''}:m)}>🔗 Merge boxes into {bx.id}</button>
-            {combineTargets.length>0&&<div style={{display:'flex',gap:6,alignItems:'flex-end'}}>
-              <div style={{flex:1}}>
-                <label style={{fontSize:10,color:'#64748b',fontWeight:600,display:'block',marginBottom:2}}>🔗 Combine this box into…</label>
-                <select className="form-input" style={{fontSize:12,padding:'6px 8px'}} value={boxModal.combineWith||''} onChange={e=>setBoxModal(m=>({...m,combineWith:e.target.value}))}>
-                  <option value="">Select a box…</option>
-                  {combineTargets.map(b=><option key={b.id} value={b.id}>{b.id} — {[b.if_id,b.so_id].filter(Boolean).join(' · ')} ({boxUnits(b.contents)} units)</option>)}
-                </select>
-              </div>
-              <button className="btn btn-sm btn-secondary" style={{fontSize:11}} disabled={!boxModal.combineWith} onClick={()=>combineBoxes(bx,boxModal.combineWith)}>Combine</button>
-            </div>}
+            {/* The old "Combine this box INTO another" dropdown lived here and ran the
+                OPPOSITE direction to merge mode — it killed the box you were looking at.
+                Two opposite-direction controls on one screen, with no undo on a merge, is
+                how a carton gets marked dead by mistake. Merge mode is now the only model:
+                the box on screen always survives, everything else is absorbed into it. */}
           </>}
         </div>
       </div></div>;
