@@ -137,12 +137,19 @@ begin
   if exists (
     select 1 from public.invoices i
      where i.id = any(v_ids)
-       and (coalesce(i.status, '') = 'paid'
+       and (lower(btrim(coalesce(i.status, ''))) = 'paid'
             or round((coalesce(i.total, 0) - coalesce(i.paid, 0)) * 100)::bigint <= 0)
   ) or exists (
     select 1 from public.invoice_payments p where p.invoice_id = any(v_ids) and p.ref = v_ref
   ) then
     raise exception 'legacy partial Stripe application requires manual review' using errcode = '23514';
+  end if;
+  if exists (
+    select 1 from public.invoices i
+     where i.id = any(v_ids)
+       and lower(btrim(coalesce(i.status, ''))) not in ('open', 'partial', 'overdue')
+  ) then
+    raise exception 'Stripe collection references an invoice that is not payable' using errcode = '23514';
   end if;
 
   select coalesce(sum(round((coalesce(i.total, 0) - coalesce(i.paid, 0)) * 100)::bigint), 0)
@@ -151,7 +158,7 @@ begin
     raise exception 'Stripe collection is less than the locked invoice balance' using errcode = '23514';
   end if;
   v_fee_cents := p_captured_cents - v_principal_cents;
-  if p_captured_cents > v_principal_cents + ceil(v_principal_cents * 0.05)::bigint + 100 then
+  if p_captured_cents > v_principal_cents + ceil(v_principal_cents * 0.10)::bigint then
     raise exception 'Stripe collection exceeds the allowed invoice surcharge' using errcode = '23514';
   end if;
   if p_payment_method = 'ach' and v_fee_cents <> 0 then

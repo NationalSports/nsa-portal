@@ -10,7 +10,7 @@ jest.mock('../../netlify/functions/_shared', () => ({
 }));
 jest.mock('../../netlify/functions/_portalCredentials', () => ({
   issuePortalCredential: jest.fn(async (_admin, customerId) => ({ token: `issued-${customerId}`, id: `cred-${customerId}` })),
-}), { virtual: true });
+}));
 
 const sweep = require('../../netlify/functions/followup-sweep');
 

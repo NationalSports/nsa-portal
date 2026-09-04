@@ -79,6 +79,8 @@ describe('settlement migration invariants', () => {
     expect(migration).toContain('v_found <> v_expected');
     expect(migration).toContain('v_fee_remaining');
     expect(migration).toContain('allocation cents do not equal captured cents');
+    expect(migration).toContain("not in ('open', 'partial', 'overdue')");
+    expect(migration).toContain('v_principal_cents * 0.10');
   });
 
   test('keeps invoice summaries, allocations, and required ledger rows in the RPC transaction', () => {

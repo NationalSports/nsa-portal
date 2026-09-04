@@ -4,7 +4,7 @@ jest.mock('../../netlify/functions/_shared', () => ({
 }));
 jest.mock('../../netlify/functions/_portalCredentials', () => ({
   issuePortalCredential: jest.fn(),
-}), { virtual: true });
+}));
 
 const shared = require('../../netlify/functions/_shared');
 const credentials = require('../../netlify/functions/_portalCredentials');

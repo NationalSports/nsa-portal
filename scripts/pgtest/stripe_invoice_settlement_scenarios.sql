@@ -116,7 +116,8 @@ reset role;
 insert into public.invoices(id, total, paid, cc_fee, status) values
   ('INV-UNDER', 100, 0, 0, 'open'),
   ('INV-OVER', 100, 0, 0, 'open'),
-  ('INV-ACH-FEE', 100, 0, 0, 'open');
+  ('INV-ACH-FEE', 100, 0, 0, 'open'),
+  ('INV-VOID-AFTER-CREATE', 100, 0, 0, 'void');
 do $$
 begin
   begin
@@ -129,7 +130,7 @@ begin
   end;
   begin
     perform public.settle_stripe_invoice_payment(
-      'pi_over', array['INV-OVER'], 10700, 'cc', '09/04/2026'
+      'pi_over', array['INV-OVER'], 11100, 'cc', '09/04/2026'
     );
     raise exception 'expected excessive surcharge rejection';
   exception when check_violation then
@@ -143,9 +144,20 @@ begin
   exception when check_violation then
     if sqlerrm not like 'ACH invoice collection cannot%' then raise; end if;
   end;
+  begin
+    perform public.settle_stripe_invoice_payment(
+      'pi_void_after_create', array['INV-VOID-AFTER-CREATE'], 10000, 'ach', '09/04/2026'
+    );
+    raise exception 'expected void invoice rejection';
+  exception when check_violation then
+    if sqlerrm not like 'Stripe collection references an invoice that is not payable%' then raise; end if;
+  end;
   if exists (select 1 from public.invoices
-              where id in ('INV-UNDER', 'INV-OVER', 'INV-ACH-FEE') and paid <> 0) then
+              where id in ('INV-UNDER', 'INV-OVER', 'INV-ACH-FEE', 'INV-VOID-AFTER-CREATE') and paid <> 0) then
     raise exception 'rejected settlement changed an invoice';
+  end if;
+  if (select status from public.invoices where id = 'INV-VOID-AFTER-CREATE') <> 'void' then
+    raise exception 'rejected settlement resurrected a void invoice';
   end if;
 end $$;
 

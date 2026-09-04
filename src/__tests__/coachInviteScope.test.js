@@ -109,7 +109,7 @@ jest.mock('../../netlify/functions/_shared', () => {
 });
 jest.mock('../../netlify/functions/_portalCredentials', () => ({
   issuePortalCredential: jest.fn(async () => ({ token: 'issued-token', id: 'cred-1' })),
-}), { virtual: true });
+}));
 
 const mockedShared = require('../../netlify/functions/_shared');
 const { handler } = require('../../netlify/functions/coach-invite');

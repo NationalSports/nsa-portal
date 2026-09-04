@@ -1,5 +1,5 @@
 {
- "_comment": "Column snapshot of the live public schema for the tables the client writes to. Regenerate with: node scripts/check-column-parity.js --dump (requires SUPABASE_DB_URL). Used by scripts/check-column-parity.js and src/__tests__/columnParity.test.js so the guard works without DB credentials in CI.",
+ "_comment": "Column snapshot of the live public schema for the tables the client writes to. Regenerate with: node scripts/check-column-parity.js --dump (requires SUPABASE_DB_URL). Used by scripts/check-column-parity.js and src/__tests__/columnParity.test.js so the guard works without DB credentials in CI. Includes the committed pending migration additions listed in _pending_migrations; those additions are source-derived, not a new live schema capture.",
  "_captured": "2026-07-27",
  "tables": {
   "estimate_art_files": [
@@ -322,6 +322,9 @@
    "follow_up_max",
    "follow_up_message",
    "follow_up_to",
+   "fund_allocation_error",
+   "fund_allocation_status",
+   "fund_allocation_updated_at",
    "id",
    "memo",
    "print_history",
@@ -381,6 +384,9 @@
    "expected_date",
    "expected_ship_date",
    "follow_up_at",
+   "fund_allocation_error",
+   "fund_allocation_status",
+   "fund_allocation_updated_at",
    "id",
    "memo",
    "omg_store_id",
@@ -428,5 +434,19 @@
    "thread_id",
    "ts"
   ]
+ },
+ "_pending_migrations": {
+  "20260904224604_atomic_fund_allocations": {
+   "estimates": [
+    "fund_allocation_status",
+    "fund_allocation_error",
+    "fund_allocation_updated_at"
+   ],
+   "sales_orders": [
+    "fund_allocation_status",
+    "fund_allocation_error",
+    "fund_allocation_updated_at"
+   ]
+  }
  }
 }
