@@ -447,7 +447,7 @@ import { shipStationCall, testShipStationConnection, convertSOToShipStation, pus
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString, applySiDocumentDiscount, siExpectedUpcharge, earlyPayFreightWaiver, poCoreTagMatch, looksNetsuiteDocRef } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
-import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku, resolveMappedSoItemIndex } from './billResolve';
+import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, billAutoHoldReasons, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku, resolveMappedSoItemIndex } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
 import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, planQBNonInventoryItems, qbBillNeedsSync, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
 import { BaggingQueueTile } from './baggingstation/BaggingDashCard';
@@ -27202,15 +27202,18 @@ export default function App(){
     const _autoPushSweep=async(bills)=>{
       try{
         let autoOn=true;try{autoOn=localStorage.getItem('nsa_bill_autopush')!=='off'}catch(e){}
-        if(!autoOn)return 0;
         // _ai_parsed = transcribed from a scanned PDF by vision — extraction itself is the
         // risk there, so those never auto-push regardless of how clean they look.
         // is_credit = a credit memo — some vendors print credit lines as POSITIVE quantities
         // (only the total is negative), so an auto-push would ADD what the credit reverses.
-        // Credits always get human eyes; manual push still works.
+        // Credits always get human eyes and use their dedicated reversal flow.
         // earlyPayFreightWaiver: Rawlings/TCK sometimes waive freight on early payment —
         // rare, but it's a human money decision (keep vs waive), so those never auto-push.
-        const candidates=(bills||[]).filter(b=>b&&b.parsed&&!b.parsed._ai_parsed&&!b.parsed.is_credit&&!earlyPayFreightWaiver(b.parsed).eligible&&_billIsReadyToPush(b)&&!_billTriage(b)?.issue&&!_validateBillForPush(b.parsed).length);
+        // Evaluate the safety gate even when auto-push is disabled. A finding governs every
+        // write path, and a previously held bill must be able to clear after a real rematch.
+        // Do not use _billIsReadyToPush/_billTriage here: both intentionally honor the prior
+        // hold and would prevent this fresh safety evaluation from ever clearing it.
+        const candidates=(bills||[]).filter(b=>b&&b.parsed&&!b.parsed._ai_parsed&&!b.parsed.is_credit&&!earlyPayFreightWaiver(b.parsed).eligible&&_billIsBaseReadyToPush(b)&&!_validateBillForPush(b.parsed).length);
         if(!candidates.length)return 0;
         // DIRECT-PATH SAFETY GATE (Fable audit, 2026-07-22): _validateBillForPush checks
         // neither price nor vendor, and the $0-freight auto-mapping path can rewrite order
@@ -27257,10 +27260,11 @@ export default function App(){
               docTotal:safeNum(p.doc_total),
             });
             if(reasons.length){p._auto_hold=reasons;continue}
+            delete p._auto_hold;
             autoBills.push(b);
           }catch(e){console.warn('auto-push safety check failed — holding bill for review',e);p._auto_hold=['safety check errored — review manually'];}
         }
-        if(!autoBills.length)return 0;
+        if(!autoOn||!autoBills.length)return 0;
         autoBills.forEach(b=>{b.parsed._auto_pushed=true});
         const pushed=await _applyBillsToPortal(autoBills);
         if(pushed)nf('⚡ '+pushed+' bill(s) auto-pushed to the portal (high-confidence match, no exceptions) — spot-check in Bill History','success');
@@ -27955,17 +27959,25 @@ export default function App(){
       return false;
     };
 
-    // A bill is ready to push to the portal when it's selected, not already pushed/parked, and
-    // has a target (auto-matched PO or a complete manual decoration target).
+    const _billIsBaseReadyToPush=b=>{
+      if(!b||b.portalStatus||b.reviewLater)return false;
+      return _billHasTarget(b.parsed);
+    };
+
+    // A bill is ready to push when it is not already pushed/parked, has a target, and has no
+    // direct-path safety hold. This is shared by BOTH Portal and QBO selectors. `_auto_hold`
+    // used to be presentation-only, which let a row say "Held" while still entering either
+    // money path; it is now a fail-closed gate.
     // ONE definition of pushable, no checkbox curation: a bill either reconciles (Matched
-    // bucket → the push button takes ALL of them) or it doesn't (Needs Review). To hold a
-    // matched bill back, move it to Look at Later — that's the exclusion mechanism, and it
-    // persists across machines. portalStatus gates as before (success = done; error = the
+    // bucket → the push button takes ALL of them) or it doesn't (Needs Review). Safety holds
+    // stay in Needs Review; Look at Later remains the operator-controlled exclusion mechanism
+    // and persists across machines. portalStatus gates as before (success = done; error = the
     // apply/save failed, so it must NOT silently re-enter the pile — it shows as a failed
     // row and retries only through the same button after the operator sees it).
     const _billIsReadyToPush=b=>{
-      if(!b||b.portalStatus||b.reviewLater)return false;
-      return _billHasTarget(b.parsed);
+      if(!_billIsBaseReadyToPush(b))return false;
+      if(billAutoHoldReasons(b.parsed).length)return false;
+      return true;
     };
 
     // Toggle a bill's "look at later" flag from saved history / the Look at Later page. val=true parks
@@ -29349,13 +29361,13 @@ export default function App(){
 
     // Live triage for a bill sitting in the review list — surfaced immediately, before any push.
     // Returns null for bills already pushed/parked (out of the running); otherwise flags whether the
-    // bill "matches up perfectly" (has a target AND no duplicate/over-billing problems). issue=true is
-    // anything that doesn't: no PO match, or a blocking problem. Warnings are advisory, not blocking.
+    // bill "matches up perfectly" (has a target AND no duplicate/over-billing/safety problems).
+    // Direct-path `_auto_hold` findings are blocking: a Held row must never also appear Ready.
     const _billTriage=b=>{
       if(!b||b.portalStatus==='success'||b.reviewLater)return null;
       const p=b.parsed;
       const matched=_billHasTarget(p);
-      const errs=matched?_validateBillForPush(p):[];
+      const errs=matched?[...billAutoHoldReasons(p),..._validateBillForPush(p)]:[];
       const issue=!matched||errs.length>0;
       const reason=!matched?(p?.po_number?'No PO match for '+p.po_number:'No PO match — needs a PO number')
         :(errs.length?errs.join(' · '):'');
@@ -29612,6 +29624,11 @@ export default function App(){
       bills.forEach(b=>{
         try{
           const p=b.parsed;
+          const holdReasons=billAutoHoldReasons(p);
+          // Defense in depth: stale dialogs and parked-bill actions can retain an old array even
+          // after the visible selector re-renders. Never let such a direct call cross the write
+          // boundary. Leave portalStatus untouched so fixing/rematching can re-qualify the bill.
+          if(holdReasons.length){b.portalMsg='Held for review: '+holdReasons.join(' · ');return}
           if(p)p._applyKey=b.id;// routes this bill's SO-save confirmations back to it (save gate below)
           // $0-freight so_po bills apply through explicit line mappings (the freight-carried
           // default path writes nothing at $0). Build them now; if they can't be built, fail
@@ -31330,7 +31347,7 @@ export default function App(){
                 {poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>PO Matched</span>}
                 {bill._auto_tied&&!portalPushed&&!b.qbStatus&&<span title="Matched automatically: the PO matched an order exactly and every line ties with high confidence (modest price differences sync onto the order with an audit entry)." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ecfdf5',color:'#047857',fontWeight:700,border:'1px solid #6ee7b7'}}>⚡ Auto-matched</span>}
                 {bill._auto_pushed&&portalPushed&&<span title="Pushed automatically: high-confidence match with no exceptions. Tagged in the ledger (resolution.auto_pushed); anything odd shows in the ⚠ Review pill and the daily anomaly email." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#047857',color:'#fff',fontWeight:700,border:'1px solid #065f46'}}>⚡ Auto-pushed</span>}
-                {!!(bill._auto_hold&&bill._auto_hold.length)&&!portalPushed&&<span title={'Matched, but held out of auto-push:\n• '+bill._auto_hold.join('\n• ')+'\nReview and push manually — the button works as always.'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fff7ed',color:'#9a3412',fontWeight:700,border:'1px solid #fed7aa'}}>⚡ Held · {bill._auto_hold.length===1?bill._auto_hold[0].split(' — ')[0].split(' (')[0]:bill._auto_hold.length+' reasons'}</span>}
+                {!!billAutoHoldReasons(bill).length&&!portalPushed&&<span title={'Held out of Portal and QuickBooks pushes:\n• '+billAutoHoldReasons(bill).join('\n• ')+'\nFix or rematch this bill before it can be sent.'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fff7ed',color:'#9a3412',fontWeight:700,border:'1px solid #fed7aa'}}>⚡ Held · {billAutoHoldReasons(bill).length===1?billAutoHoldReasons(bill)[0].split(' — ')[0].split(' (')[0]:billAutoHoldReasons(bill).length+' reasons'}</span>}
                 {bill._ai_parsed&&<span title="This bill was transcribed from a scanned PDF by AI (no text layer). Verify the lines and totals against the PDF before pushing — scanned reads never auto-push." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#eff6ff',color:'#1d4ed8',fontWeight:700,border:'1px solid #bfdbfe'}}>📷 AI-read scan</span>}
                 {bill._doc_discount_pct>0&&<span title={'Sports Inc document-level dealer discount: line prices shown were reduced '+bill._doc_discount_pct+'% from list (derived from this bill’s own gross vs net totals — Agron 25%, A4 5%, etc.). Unit prices are your true cost.'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ecfdf5',color:'#047857',fontWeight:700,border:'1px solid #a7f3d0'}}>−{bill._doc_discount_pct}% dealer</span>}
                 {bill._si_upcharge_computed&&<span title={'The SI upcharge wasn’t printed on the parse, so it was filled at 0.8% of the pre-discount subtotal: $'+safeNum(bill.si_upcharge).toFixed(2)+'. Verify against the invoice.'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fffbeb',color:'#92400e',fontWeight:700,border:'1px solid #fde68a'}}>SI fee 0.8% est.</span>}
