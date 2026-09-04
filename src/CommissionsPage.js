@@ -858,7 +858,7 @@ export default function CommissionsPage({adminReports=false}={}){
           return{rep:r,lines,promo,earned,promoCost,net,rev,gp};
         }).filter(rr=>rr.lines.length>0||rr.promo.length>0).sort((a,b)=>b.net-a.net);
         const monthLabel=(()=>{const[y,m]=commMonth.split('-').map(Number);return new Date(y,m-1,1).toLocaleString('en-US',{month:'long',year:'numeric'})})();
-        const fmt=n=>'$'+n.toLocaleString(undefined,{maximumFractionDigits:2});
+        const fmt=n=>'$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
         const fmt0=n=>'$'+Math.round(n).toLocaleString();
         const printRep=(rr)=>{
           const w=window.open('','_blank','width=900,height=1100');
@@ -962,7 +962,7 @@ export default function CommissionsPage({adminReports=false}={}){
         const rows=Object.values(byRep).map(b=>({...b,rep:REPS.find(r=>r.id===b.repId),net:Math.round((b.comm-b.promoCost)*100)/100})).sort((a,b)=>b.net-a.net);
         const tot=rows.reduce((a,b)=>({rev:a.rev+b.rev,cost:a.cost+b.cost,gp:a.gp+b.gp,comm:a.comm+b.comm,promoCost:a.promoCost+b.promoCost,net:a.net+b.net,inv:a.inv+b.lines.length}),{rev:0,cost:0,gp:0,comm:0,promoCost:0,net:0,inv:0});
         const totGpPct=tot.rev>0?Math.round(tot.gp/tot.rev*100):0;
-        const fmt=n=>'$'+n.toLocaleString(undefined,{maximumFractionDigits:2});
+        const fmt=n=>'$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
         const fmt0=n=>'$'+Math.round(n).toLocaleString();
         const fmtD=d=>d?(d.getMonth()+1)+'/'+d.getDate()+'/'+String(d.getFullYear()).slice(2):'—';
         const gpBadge=(gp,rev)=>{const ok=rev>0&&gp/rev>=0.3;return<span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:ok?'#dcfce7':'#fef3c7',color:ok?'#166534':'#92400e'}}>{rev>0?Math.round(gp/rev*100):0}%</span>};
@@ -1407,6 +1407,62 @@ export default function CommissionsPage({adminReports=false}={}){
               <span style={{marginLeft:8}}><span style={{background:'#fee2e2',padding:'1px 6px',borderRadius:4,fontWeight:600,color:'#dc2626'}}>Red</span> = $0 cost (missing purchase price — GP overstated). <span style={{background:'#fef9c3',padding:'1px 6px',borderRadius:4,fontWeight:600,color:'#92400e'}}>Yellow</span> = GP over 60% — verify before paying.</span>
             </div>
           </div>
+
+          {/* PAID AFTER 90 DAYS — every invoice the late rule caught, with one-click approval.
+              The rule halves the rate (30% → 15% of the SAME gross profit) when the gap from
+              invoice date to LAST payment exceeds 90 days, so a single day over costs the rep
+              half that invoice's commission. Steve approves the full rate from here rather than
+              hunting for the invoice inside a rep's expanded row. */}
+          {(()=>{
+            const late=rows.flatMap(b=>b.lines)
+              .filter(l=>l.isLate&&l.commBasis!=='revenue')
+              .map(l=>({l,full:Math.round(l.gp.gp*0.30*100)/100}))
+              .map(x=>({...x,gap:Math.round((x.full-x.l.commAmt)*100)/100}))
+              .sort((a,c)=>c.gap-a.gap);
+            if(!late.length)return null;
+            const open=late.filter(x=>!x.l.overridden);
+            const withheld=Math.round(open.reduce((a,x)=>a+x.gap,0)*100)/100;
+            const th={textAlign:'right'};
+            return<div className="card" style={{marginTop:16}}>
+              <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+                <h2>⏰ Paid after 90 days — {monthLabel}</h2>
+                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                  <span style={{fontSize:11,color:'#64748b'}}>{open.length} still at 15% · <strong style={{color:'#dc2626'}}>{fmt(withheld)}</strong> of commission withheld</span>
+                  {open.length>0&&<button className="btn btn-sm btn-primary" title="Restore the full 30% rate on every invoice listed below that is still at 15%" onClick={()=>{
+                    if(!window.confirm('Approve the full 30% rate on all '+open.length+' invoice'+(open.length===1?'':'s')+' paid after 90 days in '+monthLabel+'?\n\nThis pays out '+fmt(withheld)+' more in commission.'))return;
+                    setCommOverrides(p=>{const n={...p};open.forEach(x=>{n[x.l.inv.id]=true});return n});
+                    open.forEach(x=>_applyOvrToSnap(x.l.inv.id,true));
+                  }}>✓ Pay all in full</button>}
+                </div>
+              </div>
+              <div className="card-body" style={{padding:0}}>
+                <table style={{fontSize:12}}><thead><tr>
+                  <th>Invoice</th><th>Rep</th><th style={{textAlign:'center'}}>Invoiced</th><th style={{textAlign:'center'}}>Paid</th><th style={{textAlign:'center'}}>Days</th><th style={th}>Gross Profit</th><th style={th}>Commission</th><th style={th}>At 30%</th><th style={th}>Difference</th><th style={{textAlign:'center'}}>Rate</th>
+                </tr></thead><tbody>
+                  {late.map(({l,full,gap})=><tr key={l.inv.id} style={{background:l.overridden?'#f0fdf4':''}}>
+                    <td><span style={{fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>openSO(l)} title="Open the order">{l.inv.id}</span><div style={{fontSize:10,color:'#64748b'}}>{l.customer?.name||'—'}</div></td>
+                    <td style={{fontSize:11}}>{l.rep?.name||'—'}</td>
+                    <td style={{textAlign:'center',fontSize:11,color:'#64748b'}}>{l.inv.date||'—'}</td>
+                    <td style={{textAlign:'center',fontSize:11,color:'#64748b'}}>{fmtD(l.paidDate)}</td>
+                    <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:700,background:'#fee2e2',color:'#dc2626'}}>{l.daysToPay}d</span></td>
+                    <td style={th}>{fmt(l.gp.gp)}</td>
+                    <td style={{...th,fontWeight:700,color:l.overridden?'#166534':'#dc2626'}}>{fmt(l.commAmt)}</td>
+                    <td style={{...th,color:'#64748b'}}>{fmt(full)}</td>
+                    <td style={{...th,fontWeight:700,color:gap>0.005?'#dc2626':'#94a3b8'}}>{gap>0.005?'−'+fmt(gap):'—'}</td>
+                    <td style={{textAlign:'center'}}>
+                      <span style={{display:'inline-flex',gap:4}}>
+                        <button style={{fontSize:9,padding:'2px 7px',borderRadius:6,cursor:'pointer',fontWeight:700,background:!l.overridden?'#1e40af':'#f8fafc',color:!l.overridden?'white':'#64748b',border:'1px solid #93c5fd'}} title="Keep the 15% late rate (clears any override)" onClick={()=>{setCommOverrides(p=>{const n={...p};delete n[l.inv.id];return n});_applyOvrToSnap(l.inv.id,null)}}>15%</button>
+                        <button style={{fontSize:9,padding:'2px 7px',borderRadius:6,cursor:'pointer',fontWeight:700,background:l.overridden?'#166534':'#f8fafc',color:l.overridden?'white':'#64748b',border:'1px solid #86efac'}} title="Pay this invoice in full at 30%" onClick={()=>{setCommOverrides(p=>({...p,[l.inv.id]:true}));_applyOvrToSnap(l.inv.id,true)}}>30%</button>
+                      </span>
+                    </td>
+                  </tr>)}
+                </tbody></table>
+              </div>
+              <div style={{padding:'10px 16px',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>
+                An invoice is late when more than 90 days pass between its date and its <strong>last</strong> payment — on a deposit order the balance payment sets the clock for the whole invoice. Late halves the rate to 15% of the same gross profit; <strong>30%</strong> here pays it in full and re-freezes the statement row. Revenue-basis reps are exempt from the late rule and never appear here. Covers the month you are viewing.
+              </div>
+            </div>;
+          })()}
 
           {/* Draw & loan settings modal */}
           {compEdit&&(()=>{const r=REPS.find(x=>x.id===compEdit.id);
