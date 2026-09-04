@@ -27220,47 +27220,14 @@ export default function App(){
         // unit_cost with no cap. Before the unattended write, run each bill through
         // autoPushSafety (billResolve): exact-PO only, no credit-shaped totals, every
         // would-apply line's price within the same 25% bound the staged path enforces,
-        // vendors compatible. Blocked bills stay in review with the reason on the card —
-        // the human push button is unchanged.
+        // vendors compatible. The same live evaluator also guards human, parked, Portal,
+        // and QBO paths, so a wrapper-local stale/missing flag cannot bypass the hold.
         const autoBills=[];
         for(const b of candidates){
           const p=b.parsed;
           try{
-            const poLc=(p.po_number||'').toLowerCase().replace(/\s+/g,'');
-            const matchedPoRaw=p.matchedPOSource==='so_po'?(p.matchedPO?.po_id||''):(p.matchedPO?.po_number||p.matchedPO?.id||'');
-            // Exact-PO gate — strict whitespace-insensitive equality, OR (owner 2026-07-23) a
-            // core+customer-tag match, so a sloppily-written but certain PO ("PO.3182.LAF",
-            // "3094 CLHSSP") still auto-pushes. Only widens the PO check; price/vendor gates below stay.
-            const poExact=(!!poLc&&String(matchedPoRaw).toLowerCase().replace(/\s+/g,'')===poLc)||poCoreTagMatch(p.po_number,matchedPoRaw);
-            // Price pairs from what the push would ACTUALLY apply: staged mappings if
-            // present, else the same auto-mappings _applyBillsToPortal would build.
-            let pairs=(p._lineMappings&&p._lineMappings.length)?p._lineMappings:null;
-            let tItems=[];
-            if(p.matchedPOSource==='so_po'){
-              tItems=_soPoTargetItems(p);
-              if(!pairs&&safeNum(p.freight)<=0)pairs=_soPoAutoMappings(p)||[];
-              if(!pairs){
-                // freight-carried path: no mappings — pair each bill line with its
-                // BEST (closest-priced) SKU-matched target so size upcharges on
-                // multi-cost lines don't false-block.
-                pairs=[];
-                (p.items||[]).filter(it=>it&&it.sku&&it.qty>0&&safeNum(it.unit_price)>0).forEach(it=>{
-                  const ms=tItems.filter(t=>_billSkuMatchesItem((it.sku||'').toUpperCase(),t));
-                  if(!ms.length)return;
-                  const best=ms.reduce((a,t)=>Math.abs(safeNum(t.unit_cost)-safeNum(it.unit_price))<Math.abs(safeNum(a.unit_cost)-safeNum(it.unit_price))?t:a);
-                  pairs.push({bill_unit:safeNum(it.unit_price),unit_cost:safeNum(best.unit_cost)});
-                });
-              }
-            }
-            const reasons=autoPushSafety({
-              poExact,
-              pricePairs:pairs||[],
-              billVendor:String(p.vendor||p.supplier||''),
-              targetVendors:[...new Set(tItems.map(t=>String(t.vendor||'')).filter(Boolean))],
-              docTotal:safeNum(p.doc_total),
-            });
-            if(reasons.length){p._auto_hold=reasons;continue}
-            delete p._auto_hold;
+            const reasons=_liveBillPushHoldReasons(p);
+            if(reasons.length)continue;
             autoBills.push(b);
           }catch(e){console.warn('auto-push safety check failed — holding bill for review',e);p._auto_hold=['safety check errored — review manually'];}
         }
@@ -27976,7 +27943,7 @@ export default function App(){
     // row and retries only through the same button after the operator sees it).
     const _billIsReadyToPush=b=>{
       if(!_billIsBaseReadyToPush(b))return false;
-      if(billAutoHoldReasons(b.parsed).length)return false;
+      if(_liveBillPushHoldReasons(b.parsed).length)return false;
       return true;
     };
 
@@ -28344,6 +28311,55 @@ export default function App(){
         maps.push({bill_idx:u.i,target_kind:'so',target_id:it.so_id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',so_item_idx:it.so_item_idx,po_id:it.po_id||'',allocated_qty:safeNum(u.li.qty||0),unit_cost:it.unit_cost||0,bill_unit:safeNum(u.li.unit_price||0),bill_cost:Math.round(billCost*100)/100});
       }
       return maps;
+    };
+
+    // Recompute the unattended/direct-path safety check from the bill's CURRENT match every
+    // time a selector or write boundary asks whether it can push. Persisted `_auto_hold` is a
+    // useful explanation, but it cannot be the authority: the same vendor invoice can exist as
+    // several pulled/saved wrappers and only one wrapper may carry the stored flag. That allowed
+    // an older duplicate to remain "Ready to push" after a newer copy was correctly held.
+    //
+    // Eligible auto-matched bills are therefore evaluated live at every Portal/QBO boundary.
+    // A clean real rematch clears a stale reason; an evaluation error fails closed. AI-read,
+    // credit, early-pay, and manually targeted decoration paths retain their persisted hold and
+    // continue through their dedicated human-review gates.
+    const _liveBillPushHoldReasons=(p)=>{
+      const stored=billAutoHoldReasons(p);
+      if(!p||p._ai_parsed||p.is_credit||earlyPayFreightWaiver(p).eligible||!p.matchedPOSource||!p.matchedPO)return stored;
+      try{
+        const poLc=(p.po_number||'').toLowerCase().replace(/\s+/g,'');
+        const matchedPoRaw=p.matchedPOSource==='so_po'?(p.matchedPO?.po_id||''):(p.matchedPO?.po_number||p.matchedPO?.id||'');
+        const poExact=(!!poLc&&String(matchedPoRaw).toLowerCase().replace(/\s+/g,'')===poLc)||poCoreTagMatch(p.po_number,matchedPoRaw);
+        let pairs=(p._lineMappings&&p._lineMappings.length)?p._lineMappings:null;
+        let tItems=[];
+        if(p.matchedPOSource==='so_po'){
+          tItems=_soPoTargetItems(p);
+          if(!pairs&&safeNum(p.freight)<=0)pairs=_soPoAutoMappings(p)||[];
+          if(!pairs){
+            pairs=[];
+            (p.items||[]).filter(it=>it&&it.sku&&it.qty>0&&safeNum(it.unit_price)>0).forEach(it=>{
+              const ms=tItems.filter(t=>_billSkuMatchesItem((it.sku||'').toUpperCase(),t));
+              if(!ms.length)return;
+              const best=ms.reduce((a,t)=>Math.abs(safeNum(t.unit_cost)-safeNum(it.unit_price))<Math.abs(safeNum(a.unit_cost)-safeNum(it.unit_price))?t:a);
+              pairs.push({bill_unit:safeNum(it.unit_price),unit_cost:safeNum(best.unit_cost)});
+            });
+          }
+        }
+        const reasons=autoPushSafety({
+          poExact,
+          pricePairs:pairs||[],
+          billVendor:String(p.vendor||p.supplier||''),
+          targetVendors:[...new Set(tItems.map(t=>String(t.vendor||'')).filter(Boolean))],
+          docTotal:safeNum(p.doc_total),
+        });
+        if(reasons.length)p._auto_hold=reasons;
+        else delete p._auto_hold;
+        return reasons;
+      }catch(e){
+        console.warn('bill push safety check failed — holding bill for review',e);
+        p._auto_hold=['safety check errored — review manually'];
+        return p._auto_hold;
+      }
     };
 
     // Apply a decoration bill manually when the user has picked an SO + target po_line (or "create new").
@@ -29367,7 +29383,7 @@ export default function App(){
       if(!b||b.portalStatus==='success'||b.reviewLater)return null;
       const p=b.parsed;
       const matched=_billHasTarget(p);
-      const errs=matched?[...billAutoHoldReasons(p),..._validateBillForPush(p)]:[];
+      const errs=matched?[..._liveBillPushHoldReasons(p),..._validateBillForPush(p)]:[];
       const issue=!matched||errs.length>0;
       const reason=!matched?(p?.po_number?'No PO match for '+p.po_number:'No PO match — needs a PO number')
         :(errs.length?errs.join(' · '):'');
@@ -29624,7 +29640,7 @@ export default function App(){
       bills.forEach(b=>{
         try{
           const p=b.parsed;
-          const holdReasons=billAutoHoldReasons(p);
+          const holdReasons=_liveBillPushHoldReasons(p);
           // Defense in depth: stale dialogs and parked-bill actions can retain an old array even
           // after the visible selector re-renders. Never let such a direct call cross the write
           // boundary. Leave portalStatus untouched so fixing/rematching can re-qualify the bill.
@@ -31347,7 +31363,7 @@ export default function App(){
                 {poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>PO Matched</span>}
                 {bill._auto_tied&&!portalPushed&&!b.qbStatus&&<span title="Matched automatically: the PO matched an order exactly and every line ties with high confidence (modest price differences sync onto the order with an audit entry)." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ecfdf5',color:'#047857',fontWeight:700,border:'1px solid #6ee7b7'}}>⚡ Auto-matched</span>}
                 {bill._auto_pushed&&portalPushed&&<span title="Pushed automatically: high-confidence match with no exceptions. Tagged in the ledger (resolution.auto_pushed); anything odd shows in the ⚠ Review pill and the daily anomaly email." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#047857',color:'#fff',fontWeight:700,border:'1px solid #065f46'}}>⚡ Auto-pushed</span>}
-                {!!billAutoHoldReasons(bill).length&&!portalPushed&&<span title={'Held out of Portal and QuickBooks pushes:\n• '+billAutoHoldReasons(bill).join('\n• ')+'\nFix or rematch this bill before it can be sent.'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fff7ed',color:'#9a3412',fontWeight:700,border:'1px solid #fed7aa'}}>⚡ Held · {billAutoHoldReasons(bill).length===1?billAutoHoldReasons(bill)[0].split(' — ')[0].split(' (')[0]:billAutoHoldReasons(bill).length+' reasons'}</span>}
+                {(()=>{const holdReasons=_liveBillPushHoldReasons(bill);return !!holdReasons.length&&!portalPushed?<span title={'Held out of Portal and QuickBooks pushes:\n• '+holdReasons.join('\n• ')+'\nFix or rematch this bill before it can be sent.'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fff7ed',color:'#9a3412',fontWeight:700,border:'1px solid #fed7aa'}}>⚡ Held · {holdReasons.length===1?holdReasons[0].split(' — ')[0].split(' (')[0]:holdReasons.length+' reasons'}</span>:null})()}
                 {bill._ai_parsed&&<span title="This bill was transcribed from a scanned PDF by AI (no text layer). Verify the lines and totals against the PDF before pushing — scanned reads never auto-push." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#eff6ff',color:'#1d4ed8',fontWeight:700,border:'1px solid #bfdbfe'}}>📷 AI-read scan</span>}
                 {bill._doc_discount_pct>0&&<span title={'Sports Inc document-level dealer discount: line prices shown were reduced '+bill._doc_discount_pct+'% from list (derived from this bill’s own gross vs net totals — Agron 25%, A4 5%, etc.). Unit prices are your true cost.'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ecfdf5',color:'#047857',fontWeight:700,border:'1px solid #a7f3d0'}}>−{bill._doc_discount_pct}% dealer</span>}
                 {bill._si_upcharge_computed&&<span title={'The SI upcharge wasn’t printed on the parse, so it was filled at 0.8% of the pre-discount subtotal: $'+safeNum(bill.si_upcharge).toFixed(2)+'. Verify against the invoice.'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fffbeb',color:'#92400e',fontWeight:700,border:'1px solid #fde68a'}}>SI fee 0.8% est.</span>}
@@ -32272,7 +32288,7 @@ export default function App(){
           const enrichedAll=parked.map(sb=>{
             const p=sb.parsed||{};
             const matched=_billHasTarget(p);
-            const holdReasons=billAutoHoldReasons(p);
+            const holdReasons=_liveBillPushHoldReasons(p);
             const errs=matched?[...holdReasons,..._validateBillForPush(p)]:[];
             const dup=_docAlreadyApplied(p.doc_number);
             const bucket=dup?'duplicate':!matched?'nomatch':holdReasons.length?'held':!errs.length?'ready'
