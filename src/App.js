@@ -454,7 +454,7 @@ import { createQBSyncEngine } from './qbSyncEngine';
 import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, planQBNonInventoryItems, qbBillNeedsSync, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
 import { BaggingQueueTile } from './baggingstation/BaggingDashCard';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
-import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
+import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, mergeAllContents, mergeAllSourceRefs, crossCustomerGroups, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
 import {
   supabase,
   scheduleEmailSend,
@@ -6422,7 +6422,13 @@ export default function App(){
   // every path degrades silently to today's behavior (IF-coded labels, no box rows) — the
   // missing-table twin of the webstore-checkout missingFn pattern.
   const[boxRows,setBoxRows]=useState([]);
-  const[boxModal,setBoxModal]=useState(null);// {box, combineWith} — scan-action modal (desktop)
+  // {box, combineWith, mergeMode, pending:[box], warn} — scan-action modal (desktop).
+  // In mergeMode the pinned `box` is the merge TARGET and every subsequent scan lands in
+  // `pending` instead of replacing the modal; nothing is written until Confirm Merge.
+  const[boxModal,setBoxModal]=useState(null);
+  // Scans arrive through handleScanResult, whose closure is older than the current modal
+  // state; the ref keeps openBoxByCode looking at the live merge mode.
+  const boxModalRef=useRef(null);boxModalRef.current=boxModal;
   const _boxesMissing=useRef(false);
   const _boxTableGone=(error)=>!!error&&(error.code==='42P01'||error.code==='PGRST205'||/relation .*boxes.* does not exist|schema cache/i.test(error.message||''));
   const _loadBoxes=async()=>{
@@ -6531,29 +6537,91 @@ export default function App(){
   const openBoxByCode=async(code)=>{
     const box=await lookupBox(code);
     if(!box){nf('Box "'+code+'" not found'+(_boxesMissing.current?' — boxes table not deployed yet':''),'warn');return false}
-    if(box.id!==String(code).trim().toUpperCase())nf(String(code).trim().toUpperCase()+' was combined into '+box.id);
-    setBoxModal({box,combineWith:''});
+    const _scanned=String(code).trim().toUpperCase();
+    if(box.id!==_scanned)nf(_scanned+' was combined into '+box.id);
+    // Merge mode: a scan adds the box to the pending list instead of navigating away —
+    // the whole point is to keep the target pinned while cartons are scanned one-handed.
+    const _cur=boxModalRef.current;
+    if(_cur&&_cur.mergeMode&&_cur.box&&_cur.box.id!==box.id){
+      if((_cur.pending||[]).some(p=>p.id===box.id)){nf(box.id+' is already in this merge');return true}
+      if(box.status==='shipped'){nf(box.id+' already shipped — it can\'t be merged','error');return true}
+      setBoxModal(m=>m?{...m,pending:[...(m.pending||[]),box],warn:null}:m);
+      nf(box.id+' added to merge — '+boxUnits(box.contents)+' units');
+      return true;
+    }
+    if(_cur&&_cur.mergeMode&&_cur.box&&_cur.box.id===box.id){nf(box.id+' is the merge target');return true}
+    setBoxModal({box,combineWith:'',mergeMode:false,pending:[]});
     return true;
   };
   // Reprint a box's 4×6 (plate QR + team/SO context) via the shared label renderer.
-  const printBoxLabel=(box)=>{
+  // `supersedes` lists the plates just absorbed, so the merged label tells the floor which
+  // labels still taped to the carton are now dead.
+  const printBoxLabel=(box,supersedes)=>{
     const _so=sos.find(s=>s.id===box.so_id);
     const _c=_so?cust.find(x=>x.id===_so.customer_id):null;
-    printQrLabel(buildBoxLabel(box,{program:_c?.name||'',memo:_so?.memo||'',scanBase:window.location.origin+window.location.pathname}));
+    printQrLabel(buildBoxLabel(box,{program:_c?.name||'',memo:_so?.memo||'',scanBase:window.location.origin+window.location.pathname,supersedes:supersedes||[]}));
   };
-  // Combine: absorb `srcBox` into the box with id `tgtId` — sum SKUs+sizes, mark the absorbed
-  // plate combined + merged_into (its label keeps resolving via the lookup redirect), reprint one label.
-  const combineBoxes=async(srcBox,tgtId)=>{
-    const tgt=boxRows.find(b=>b.id===tgtId&&b.id!==srcBox.id);
-    if(!tgt){nf('Pick a box to combine into','error');return}
-    const merged=sumBoxContents(tgt.contents||[],srcBox.contents||[]);
-    const survivorPatch={contents:merged,source_refs:mergeSourceRefs(tgt.source_refs,srcBox.source_refs)};
-    if(!(await _boxUpdate(tgt.id,survivorPatch)))return;
-    await _boxUpdate(srcBox.id,{status:'combined',merged_into:tgt.id});
-    const survivor={...tgt,...survivorPatch,updated_at:new Date().toISOString()};
-    printBoxLabel(survivor);
-    setBoxModal({box:survivor,combineWith:''});
-    nf(srcBox.id+' combined into '+tgt.id+' — one label reprinted');
+  // Resolve the customer behind a box for the cross-customer guard: boxes carry no
+  // customer column, so it comes through so_id → SO → customer (so_id itself is the
+  // fallback label when the SO or customer can't be resolved).
+  const _boxCustomer=(box)=>{
+    const _so=box?.so_id?sos.find(s=>s.id===box.so_id):null;
+    const _c=_so?cust.find(x=>x.id===_so.customer_id):null;
+    return {id:box?.id||'',customerId:_c?.id||'',customerName:_c?.name||box?.so_id||'',soId:box?.so_id||''};
+  };
+  // Merge: absorb every box in `srcBoxes` into `target` — sum SKUs+sizes (same SKU+size from
+  // DIFFERENT POs stays split, see sumBoxContents), mark each absorbed plate combined +
+  // merged_into (their labels keep resolving via the lookup redirect), reprint ONE label.
+  //
+  // The write goes through the box_merge RPC so contents-move and mark-combined land in a
+  // single transaction. The old two-write path could leave the units in BOTH boxes with both
+  // labels scanning live — a double count in the one place it costs real money. If the RPC
+  // isn't deployed we refuse rather than fall back to that path.
+  //
+  // Returns {needsConfirm:{groups}} when the boxes span customers and the caller hasn't
+  // confirmed yet; the caller shows the warning and calls again with confirmedCrossCustomer.
+  const mergeBoxes=async(target,srcBoxes,{confirmedCrossCustomer=false}={})=>{
+    const srcs=(srcBoxes||[]).filter(b=>b&&b.id&&b.id!==target?.id);
+    if(!target||!srcs.length){nf('Scan at least one box to merge in','error');return null}
+    if(!supabase||_boxesMissing.current){nf('Box tracking isn\'t available — nothing was merged','error');return null}
+    const _cc=crossCustomerGroups([target,...srcs].map(_boxCustomer));
+    if(_cc.mismatch&&!confirmedCrossCustomer)return {needsConfirm:_cc};
+    const contents=mergeAllContents([target.contents||[],...srcs.map(b=>b.contents||[])]);
+    const refs=mergeAllSourceRefs([target.source_refs||[],...srcs.map(b=>b.source_refs||[])]);
+    // Inherit the SO only when the target has none and every source agrees on one.
+    const _srcSos=[...new Set(srcs.map(b=>b.so_id).filter(Boolean))];
+    const inheritSo=(!target.so_id&&_srcSos.length===1)?_srcSos[0]:null;
+    try{
+      const{data,error}=await supabase.rpc('box_merge',{
+        p_target:target.id,
+        p_target_ver:target.updated_at||null,
+        p_sources:srcs.map(b=>({id:b.id,updated_at:b.updated_at||null})),
+        p_contents:contents,
+        p_source_refs:refs,
+        p_so_id:inheritSo,
+        p_customer_id:null,
+      });
+      if(error){
+        const m=error.message||'';
+        if(error.code==='PGRST202'||error.code==='42883'||/could not find the function|schema cache/i.test(m))
+          nf('Merge needs the box_merge function deployed (migration 20260903120000) — nothing was merged','error');
+        else if(/STALE/i.test(m))
+          nf(m.replace(/^.*STALE:\s*/,'')+' — nothing was merged, rescan the boxes','error');
+        else nf('Merge failed ('+m+') — nothing was merged','error');
+        _loadBoxes();// resync: the failure may have been our snapshot, not the DB
+        return null;
+      }
+      const survivor=data||{...target,contents,source_refs:refs};
+      const _srcIds=new Set(srcs.map(b=>b.id));
+      setBoxRows(prev=>prev.map(b=>b.id===survivor.id?{...b,...survivor}
+        :_srcIds.has(b.id)?{...b,status:'combined',merged_into:survivor.id}:b));
+      printBoxLabel(survivor,srcs.map(b=>b.id));
+      nf(srcs.map(b=>b.id).join(', ')+' merged into '+survivor.id+' — one label reprinted');
+      return survivor;
+    }catch(e){
+      nf('Merge failed ('+(e?.message||e)+') — nothing was merged','error');
+      return null;
+    }
   };
   // ─── AUTO-SHIP BOXES ─── A box whose whole ORDER has left (SO shipped, or every
   // non-draft job completed/shipped — "when everything goes") is marked shipped, so
@@ -19437,27 +19505,54 @@ export default function App(){
     // one label page per SOURCE PO (each box gets its own label), not one merged label per
     // SO. Wrapped so a label-build failure can never abort the receive.
     const labels=[];
+    let _boxGroups=[],_boxRep='',_boxDate='';
     try{
       const byPo={};
       lines.forEach(({itemIdx,poLineIdx,rcv})=>{const it=items[itemIdx];if(!it)return;const sz=Object.entries(rcv||{}).filter(([,v])=>v>0);if(!sz.length)return;const q=sz.reduce((a,[,v])=>a+v,0);
         const pl=it.po_lines&&it.po_lines[poLineIdx];
-        const g=byPo[(pl&&pl.po_id)||soId]=byPo[(pl&&pl.po_id)||soId]||{code:(pl&&(pl.batch_po_number||pl.po_id))||soId,units:0,items:[]};
+        const g=byPo[(pl&&pl.po_id)||soId]=byPo[(pl&&pl.po_id)||soId]||{code:(pl&&(pl.batch_po_number||pl.po_id))||soId,poId:(pl&&pl.po_id)||'',units:0,items:[],contents:[]};
         g.units+=q;
         g.items.push({title:((it.sku||'')+' '+(it.name||'')).trim(),detail:[(it.color&&it.color!=='—')?it.color:'',q+' units'].filter(Boolean).join(' · '),sizes:sz.map(([s,v])=>s+': '+v).join('  ')});
+        // po_id rides on every content row: after cartons are merged this is the only thing
+        // that still answers "which PO did these 17 mediums come from" (sumBoxContents keys on it).
+        g.contents.push({sku:it.sku||'',name:it.name||'',color:it.color||'',so_id:soId,po_id:(pl&&pl.po_id)||'',sizes:Object.fromEntries(sz)});
       });
       const _r=REPS.find(rr=>rr.id===((cc&&cc.primary_rep_id)||so.created_by));
       const groups=Object.values(byPo);const _rDate=new Date().toLocaleDateString();
       groups.forEach((g,gi)=>labels.push({code:g.code,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(g.code),program:(cc&&cc.name)||'',rep:_r&&_r.name?'Rep: '+_r.name.split(' ')[0]:'',subtitle:groups.length>1?soId+' · Box '+(gi+1)+' of '+groups.length:soId,note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:g.items,codeSub:g.units+' units · scan to open PO'}));
+      _boxGroups=groups;_boxRep=_r&&_r.name?'Rep: '+_r.name.split(' ')[0]:'';_boxDate=_rDate;
     }catch(_){}
     const group=_buildReceiptGroup(so,itemQtyMap,decoJobs);
+    // Mint a receiving box per source PO so the check-in label carries a SCANNABLE plate
+    // (and the goods can later be merged). Until now only two desktop screens did this, so
+    // every tablet check-in — which is how the warehouse actually receives — produced no box
+    // at all: 0 of the first 108 boxes were kind='receiving'.
+    //
+    // Gated on the save: a plate for a receipt the DB never took is a label that scans to a
+    // box holding units nobody received (the NSA 4568 failure, one layer down). Falls back to
+    // today's PO-coded labels whenever box tracking is off or a mint fails.
+    const labelsP=saveP.then(async(ok)=>{
+      if(ok===false||!_boxGroups.length)return labels;
+      const out=[];
+      for(let gi=0;gi<_boxGroups.length;gi++){
+        const g=_boxGroups[gi];let box=null;
+        try{if(g.contents.length)box=await createBoxFor({kind:'receiving',soId,poId:g.poId||null,contents:g.contents})}catch(_){/* best-effort */}
+        out.push(box
+          ?{...buildBoxLabel(box,{program:(cc&&cc.name)||'',memo:so.memo||'',rep:_boxRep,scanBase:window.location.origin+window.location.pathname}),
+            subtitle:_boxGroups.length>1?soId+' · Box '+(gi+1)+' of '+_boxGroups.length:soId,
+            note:[g.poId,'RECEIVED — '+_boxDate].filter(Boolean).join(' · '),noteStyle:'color:#166534'}
+          :labels[gi]);
+      }
+      return out.filter(Boolean);
+    }).catch(()=>labels);
     if(!opts.defer){
       nf('Received '+grand+' unit'+(grand!==1?'s':'')+' on '+soId);
       notifyDecoReady(decoJobs);
       // Confirmation screen (labels print from there on tap) only AFTER the save confirms — a
       // check-in label must never exist for a receipt the DB doesn't hold.
-      saveP.then(ok=>{if(ok!==false)_showMobileReceipt({kind:'received',units:grand,labels,groups:[group]})});
+      saveP.then(ok=>{if(ok!==false)labelsP.then(ls=>_showMobileReceipt({kind:'received',units:grand,labels:ls,groups:[group]}))});
     }
-    return{labels,decoJobs,units:grand,group,saveP};
+    return{labels,labelsP,decoJobs,units:grand,group,saveP};
   };
   // Mobile batch check-in: apply every SO's receipts, then ONE combined print job (one page
   // per source PO) and ONE deco-ready toast. Fired after MobilePortal's summary toast so the
@@ -19471,11 +19566,15 @@ export default function App(){
     const perSo=[];
     (entries||[]).forEach(({soId,lines})=>{const r=mobileReceiveSOPO(soId,lines,{defer:true});if(r)perSo.push({soId,r})});
     if(perSo.length===0)return Promise.resolve(true);
-    return Promise.all(perSo.map(({soId,r})=>Promise.resolve(r.saveP).then(ok=>({soId,ok}),()=>({soId,ok:false})))).then(results=>{
+    return Promise.all(perSo.map(({soId,r})=>Promise.resolve(r.saveP).then(ok=>({soId,ok}),()=>({soId,ok:false})))).then(async(results)=>{
       const failed=new Set(results.filter(x=>x.ok===false).map(x=>x.soId));
       const saved=perSo.filter(({soId})=>!failed.has(soId));
       const labels=[],deco=[],groups=[];let units=0;
-      saved.forEach(({r})=>{labels.push(...r.labels);deco.push(...r.decoJobs);if(r.group)groups.push(r.group);units+=r.units});
+      // labelsP resolves to the BX-plate labels once each SO's receiving boxes are minted
+      // (falling back to that SO's PO-coded labels); resolved here so the batch still prints
+      // ONE combined job — a second window.open in the same tap is popup-blocked on iPad.
+      const _labelSets=await Promise.all(saved.map(({r})=>Promise.resolve(r.labelsP||r.labels).catch(()=>r.labels)));
+      saved.forEach(({r},i)=>{labels.push(...(_labelSets[i]||r.labels));deco.push(...r.decoJobs);if(r.group)groups.push(r.group);units+=r.units});
       if(failed.size===0&&Array.isArray(opts.batchNos)&&opts.batchNos.length){
         const _now=new Date().toLocaleString();
         setSubmittedBatches(prev=>prev.map(sb=>opts.batchNos.includes(sb.po_number)&&sb.status!=='received'?{...sb,status:'received',received_at:_now,received_by:cu?.name||'warehouse'}:sb));
@@ -37369,7 +37468,7 @@ export default function App(){
   // <Toast> in the return below is never reached in mobile mode (this early return),
   // so without this every mobile toast — the green "🎽 Ready for decoration" and
   // "✅ Received N units" confirmations included — was silently dropped.
-  if(mobileMode)return<><Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveSOPOBatch={mobileReceiveSOPOBatch} onReceiveInvPO={receiveInvPO} receipt={mobileReceipt} onReceiptDone={()=>setMobileReceipt(null)} onPrintLabels={(labels)=>{try{printQrLabels(labels)}catch(_){}}} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxCombine={combineBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary><PortalAssistant variant="mobile" pg={pg} screenTitle={titles[pg]||'Portal'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={(row)=>{try{window.dispatchEvent(new CustomEvent('nsa:mobile-open-result',{detail:row}))}catch(e){}}} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/></>;
+  if(mobileMode)return<><Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveSOPOBatch={mobileReceiveSOPOBatch} onReceiveInvPO={receiveInvPO} receipt={mobileReceipt} onReceiptDone={()=>setMobileReceipt(null)} onPrintLabels={(labels)=>{try{printQrLabels(labels)}catch(_){}}} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxMerge={mergeBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary><PortalAssistant variant="mobile" pg={pg} screenTitle={titles[pg]||'Portal'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={(row)=>{try{window.dispatchEvent(new CustomEvent('nsa:mobile-open-result',{detail:row}))}catch(e){}}} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/></>;
 
   // Shared state interface for pages extracted out of App() (see src/AppContext.js).
   // Every key must be an App()-scope binding; extracted pages read these via useAppData().
@@ -38265,14 +38364,71 @@ export default function App(){
       const combineTargets=boxRows.filter(b=>b.id!==bx.id&&b.status!=='combined'&&b.status!=='shipped');
       const openLinkedSO=()=>{const so=sos.find(s=>s.id===bx.so_id);if(!so){nf('SO '+bx.so_id+' not found','warn');return}setBoxModal(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('tracking');setPg('orders')};
       const boxActive=bx.status!=='combined';
-      return<div className="modal-overlay" onClick={()=>setBoxModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
-        <div style={{padding:'14px 20px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+      const mergeMode=!!boxModal.mergeMode;const pending=boxModal.pending||[];
+      // Confirm Merge. mergeBoxes returns {needsConfirm} when the boxes span customers —
+      // that becomes the blocking warning panel, and the second tap re-calls with the flag.
+      const doMerge=async(force)=>{
+        const res=await mergeBoxes(bx,pending,{confirmedCrossCustomer:!!force});
+        if(res&&res.needsConfirm){setBoxModal(m=>m?{...m,warn:res.needsConfirm}:m);return}
+        if(res)setBoxModal({box:res,combineWith:'',mergeMode:false,pending:[]});
+      };
+      return<div className="modal-overlay" onClick={()=>{if(!mergeMode)setBoxModal(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+        <div style={{padding:'14px 20px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',...(mergeMode?{background:'#ecfeff',borderBottom:'3px solid #0e7490'}:{})}}>
           <span style={{fontSize:18,fontWeight:900,fontFamily:'monospace',color:'#0e7490'}}>📦 {bx.id}</span>
+          {mergeMode&&<span style={{fontSize:10,padding:'3px 10px',borderRadius:10,fontWeight:900,color:'#fff',background:'#0e7490',letterSpacing:0.5}}>MERGE TARGET</span>}
           <span style={{fontSize:11,padding:'2px 10px',borderRadius:10,fontWeight:800,color:meta.color,background:meta.bg}}>{meta.label}</span>
           {bx.merged_into&&<span style={{fontSize:11,color:'#64748b'}}>absorbed into <strong>{bx.merged_into}</strong></span>}
-          <button onClick={()=>setBoxModal(null)} style={{marginLeft:'auto',background:'none',border:'none',color:'#64748b',cursor:'pointer',fontSize:20}}>×</button>
+          {!mergeMode&&<button onClick={()=>setBoxModal(null)} style={{marginLeft:'auto',background:'none',border:'none',color:'#64748b',cursor:'pointer',fontSize:20}}>×</button>}
         </div>
         <div className="modal-body" style={{maxHeight:'70vh',overflowY:'auto'}}>
+          {/* ── MERGE MODE ── target pinned above, scan prompt, removable pending list ── */}
+          {mergeMode&&<div style={{marginBottom:14}}>
+            <div style={{padding:'10px 12px',border:'2px dashed #0e7490',borderRadius:8,background:'#f0fdff',marginBottom:10}}>
+              <div style={{fontSize:13,fontWeight:800,color:'#0e7490'}}>📷 Scan the next box to add it</div>
+              <div style={{fontSize:11,color:'#0e7490',marginTop:2}}>Everything lands in <strong>{bx.id}</strong>. Nothing is written until you confirm.</div>
+            </div>
+            {/* Desktop has no camera in hand: the modal covers the toolbar scan button, so a
+                box can also be added by plate here (a wedge scanner types straight into it). */}
+            {combineTargets.length>0&&<div style={{display:'flex',gap:6,alignItems:'center',marginBottom:10}}>
+              <select className="form-input" style={{flex:1,fontSize:12,padding:'8px 8px'}} value={boxModal.combineWith||''}
+                onChange={e=>setBoxModal(m=>m?{...m,combineWith:e.target.value}:m)}>
+                <option value="">Add a box by plate…</option>
+                {combineTargets.filter(b=>!pending.some(p=>p.id===b.id)).map(b=>
+                  <option key={b.id} value={b.id}>{b.id} — {[b.if_id,b.so_id].filter(Boolean).join(' · ')} ({boxUnits(b.contents)} units)</option>)}
+              </select>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:12,minHeight:38}} disabled={!boxModal.combineWith}
+                onClick={()=>{const b=boxRows.find(x=>x.id===boxModal.combineWith);if(!b)return;
+                  setBoxModal(m=>m?{...m,pending:[...(m.pending||[]),b],combineWith:'',warn:null}:m);nf(b.id+' added to merge')}}>Add</button>
+            </div>}
+            <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Merging in ({pending.length})</div>
+            {pending.length===0&&<div style={{fontSize:12,color:'#94a3b8',marginBottom:8}}>No boxes scanned yet.</div>}
+            {pending.map(p=>{const pc=_boxCustomer(p);
+              return<div key={p.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',background:'#fff',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:6}}>
+                <span style={{fontFamily:'monospace',fontWeight:800,color:'#0e7490',fontSize:13}}>{p.id}</span>
+                <span style={{fontSize:11,color:'#475569'}}>{[pc.customerName,p.so_id].filter(Boolean).join(' · ')}</span>
+                <span style={{marginLeft:'auto',fontSize:12,fontWeight:700,color:'#334155'}}>{boxUnits(p.contents)} units</span>
+                {/* Big hit target: this is tapped one-handed while the other hand holds a carton. */}
+                <button onClick={()=>setBoxModal(m=>m?{...m,pending:(m.pending||[]).filter(x=>x.id!==p.id),warn:null}:m)}
+                  style={{minWidth:38,minHeight:38,borderRadius:8,border:'1px solid #fecaca',background:'#fef2f2',color:'#b91c1c',fontSize:16,fontWeight:800,cursor:'pointer'}} title={'Remove '+p.id}>×</button>
+              </div>})}
+            {/* Cross-customer guard — warn, never hard-block: genuine multi-SO consolidation
+                happens, but merging two teams' goods is the mistake that costs real money. */}
+            {boxModal.warn&&<div style={{padding:'12px 14px',border:'2px solid #b45309',background:'#fffbeb',borderRadius:8,margin:'10px 0'}}>
+              <div style={{fontSize:13,fontWeight:900,color:'#92400e',marginBottom:6}}>⚠️ These boxes belong to different customers.</div>
+              {boxModal.warn.groups.map(g=><div key={g.key||g.name} style={{fontSize:12,color:'#78350f',marginBottom:2}}>
+                <strong style={{fontFamily:'monospace'}}>{g.boxIds.join(', ')}</strong> — {g.name}</div>)}
+              <div style={{display:'flex',gap:8,marginTop:10}}>
+                <button className="btn btn-sm" style={{fontSize:12,background:'#b45309',color:'#fff',border:'none',fontWeight:800,minHeight:38}} onClick={()=>doMerge(true)}>Merge anyway</button>
+                <button className="btn btn-sm btn-secondary" style={{fontSize:12,minHeight:38}} onClick={()=>setBoxModal(m=>m?{...m,warn:null}:m)}>Back</button>
+              </div>
+            </div>}
+            <div style={{display:'flex',gap:8,marginTop:12}}>
+              <button className="btn btn-sm" style={{fontSize:13,fontWeight:800,background:'#0e7490',color:'#fff',border:'none',minHeight:44,flex:1,opacity:pending.length?1:0.5}}
+                disabled={!pending.length} onClick={()=>doMerge(false)}>✓ Confirm Merge ({pending.length+1} boxes → {boxUnits(mergeAllContents([bx.contents||[],...pending.map(p=>p.contents||[])]))} units)</button>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:13,minHeight:44,padding:'0 18px'}}
+                onClick={()=>setBoxModal(m=>m?{...m,mergeMode:false,pending:[],warn:null}:m)}>Cancel</button>
+            </div>
+          </div>}
           {/* Linked refs + location */}
           <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:10,fontSize:12}}>
             {bx.if_id&&<span>IF: <strong style={{color:'#1e40af'}}>{bx.if_id}</strong></span>}
@@ -38301,23 +38457,21 @@ export default function App(){
               <div style={{fontFamily:'monospace',fontSize:11,color:'#475569',marginTop:2}}>{sz.map(([s,v])=>s+': '+v).join('  ')}</div>
             </div>})}
           {/* Actions */}
-          {boxActive&&<>
+          {boxActive&&!mergeMode&&<>
             <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',margin:'12px 0 6px'}}>Actions</div>
             <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:10}}>
               {[['staged','Staged'],['at_deco','➡️ At Deco'],['shipped','🚚 Shipped']].map(([st,lbl])=>
                 <button key={st} className={`btn btn-sm ${bx.status===st?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} disabled={bx.status===st} onClick={async()=>{if(await _boxUpdate(bx.id,{status:st}))nf(bx.id+' marked '+(BOX_STATUS_META[st]?.label||st))}}>{lbl}</button>)}
               <button className="btn btn-sm btn-secondary" style={{fontSize:11,marginLeft:'auto'}} onClick={()=>printBoxLabel(bx)}>🖨️ Reprint Label</button>
             </div>
-            {combineTargets.length>0&&<div style={{display:'flex',gap:6,alignItems:'flex-end'}}>
-              <div style={{flex:1}}>
-                <label style={{fontSize:10,color:'#64748b',fontWeight:600,display:'block',marginBottom:2}}>🔗 Combine this box into…</label>
-                <select className="form-input" style={{fontSize:12,padding:'6px 8px'}} value={boxModal.combineWith||''} onChange={e=>setBoxModal(m=>({...m,combineWith:e.target.value}))}>
-                  <option value="">Select a box…</option>
-                  {combineTargets.map(b=><option key={b.id} value={b.id}>{b.id} — {[b.if_id,b.so_id].filter(Boolean).join(' · ')} ({boxUnits(b.contents)} units)</option>)}
-                </select>
-              </div>
-              <button className="btn btn-sm btn-secondary" style={{fontSize:11}} disabled={!boxModal.combineWith} onClick={()=>combineBoxes(bx,boxModal.combineWith)}>Combine</button>
-            </div>}
+            {/* Merge: this box becomes the target, then every scan adds a carton to it. */}
+            <button className="btn btn-sm" style={{fontSize:13,fontWeight:800,background:'#0e7490',color:'#fff',border:'none',minHeight:44,width:'100%',marginBottom:10}}
+              onClick={()=>setBoxModal(m=>m?{...m,mergeMode:true,pending:[],warn:null,combineWith:''}:m)}>🔗 Merge boxes into {bx.id}</button>
+            {/* The old "Combine this box INTO another" dropdown lived here and ran the
+                OPPOSITE direction to merge mode — it killed the box you were looking at.
+                Two opposite-direction controls on one screen, with no undo on a merge, is
+                how a carton gets marked dead by mistake. Merge mode is now the only model:
+                the box on screen always survives, everything else is absorbed into it. */}
           </>}
         </div>
       </div></div>;
