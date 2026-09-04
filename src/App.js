@@ -48,6 +48,7 @@ import PortalAssistant from './PortalAssistant';
 import { canManageQuickBooksRole, storedUserCanManageQuickBooks } from './qbAccess';
 import { applyTaxRemittanceLedger, reversedTaxRemittanceIds } from './lib/taxRemittanceLedger';
 import { qboProductionReconnectUrl } from './qbOAuthCallback';
+import { mergeDurableQbCanaries, qbCanaryLedgerRecord } from './qbCanaryLedger';
 import { canViewFinancials } from './lib/financialAccess';
 import { consolidateOmgProductRows } from './lib/storeSkuGrouping';
 import { acquireOmgCreationGuard, omgCollectedUnitPrice, omgInvoiceIdempotencyKey, webstoreInvoiceIdempotencyKey } from './lib/omgCreationGuard';
@@ -2875,7 +2876,7 @@ export default function App(){
           // replaced by the stale DB copy the load already read.
           if(as.wh_recent_actions)setWhRecentActions(prev=>{const incStr=JSON.stringify(as.wh_recent_actions);if(JSON.stringify(prev)===incStr){_whActionsApplied.current=incStr;return prev}if(_appStateDirty('wh_recent_actions'))return prev;_whActionsApplied.current=incStr;return as.wh_recent_actions});
           if(as.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as.job_time_logs});
-          if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as.qb_config,mapping:migrateQBAccountMapping(as.qb_config.mapping),autoSync:as.qb_config.initialMigrationApproved===true?(as.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)})}
+          if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};const _qbLoaded={..._qbDef,...as.qb_config,mapping:migrateQBAccountMapping(as.qb_config.mapping),autoSync:as.qb_config.initialMigrationApproved===true?(as.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)};setQBConfig(mergeDurableQbCanaries(_qbLoaded,as))}
           if(as.omg_first_seen)setOmgFirstSeen(as.omg_first_seen);
           if(as.inv_pos)setInvPOs(as.inv_pos);
           if(as.inv_adj_log)setInvAdjLog(prev=>{const incStr=JSON.stringify(as.inv_adj_log);if(JSON.stringify(prev)===incStr){_invAdjLogApplied.current=incStr;return prev}if(_appStateDirty('inv_adj_log'))return prev;_invAdjLogApplied.current=incStr;return as.inv_adj_log});
@@ -2961,7 +2962,7 @@ export default function App(){
               if(as2.so_history)setSOHistory(prev=>{const incStr=JSON.stringify(as2.so_history);if(JSON.stringify(prev)===incStr){_soHistoryApplied.current=incStr;return prev}if(_appStateDirty('so_history'))return prev;_soHistoryApplied.current=incStr;return as2.so_history});
               if(as2.est_history)setEstHistory(prev=>{const incStr=JSON.stringify(as2.est_history);if(JSON.stringify(prev)===incStr){_estHistoryApplied.current=incStr;return prev}if(_appStateDirty('est_history'))return prev;_estHistoryApplied.current=incStr;return as2.est_history});
               if(as2.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as2.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as2.job_time_logs});
-              if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as2.qb_config,mapping:migrateQBAccountMapping(as2.qb_config.mapping),autoSync:as2.qb_config.initialMigrationApproved===true?(as2.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]})}if(as2.inv_pos)setInvPOs(as2.inv_pos);
+              if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};const _qbLoaded={..._qbDef,...as2.qb_config,mapping:migrateQBAccountMapping(as2.qb_config.mapping),autoSync:as2.qb_config.initialMigrationApproved===true?(as2.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]};setQBConfig(mergeDurableQbCanaries(_qbLoaded,as2))}if(as2.inv_pos)setInvPOs(as2.inv_pos);
               if(as2.inv_adj_log)setInvAdjLog(prev=>{const incStr=JSON.stringify(as2.inv_adj_log);if(JSON.stringify(prev)===incStr){_invAdjLogApplied.current=incStr;return prev}if(_appStateDirty('inv_adj_log'))return prev;_invAdjLogApplied.current=incStr;return as2.inv_adj_log});if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);if(as2.comm_overrides)setCommOverrides(as2.comm_overrides);if(as2.labor_rates)setLaborRates(as2.labor_rates);
               if(as2.company_info){const ci={...NSA_DEFAULTS,...as2.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
               console.log('[DB] Loaded from Supabase after seed by other browser');
@@ -30157,6 +30158,20 @@ export default function App(){
               &&JSON.stringify(readLines)===JSON.stringify(sentLines);
             if(!readMatches)throw new Error('QBO Bill #'+qboBillId+' exists, but its read-back vendor/date/total/lines do not match the canary payload. Portal was not applied.');
             canaryReadback='Canary read-back verified: document, vendor, date, total, and '+readLines.length+' posting line(s)';
+            // Persist each verified canary in its own app_state row before
+            // applying the portal side or reporting success. The shared
+            // qb_config blob is last-write-wins and can be replaced by a
+            // navigation/poll race; a per-bill row is idempotent and cannot
+            // erase another canary. Retrying an exact existing QBO bill safely
+            // repairs a missing ledger row without creating a duplicate.
+            if(!supabase)throw new Error('QBO Bill #'+qboBillId+' was verified, but the durable canary ledger is unavailable. Portal was not applied.');
+            const canaryRow=qbCanaryLedgerRecord({
+              realmId:qbConfig.realm_id,qboBillId,
+              sourceId:b.id||bill.doc_number||bi,docNumber:billDocNumber,
+              verifiedAt:new Date().toISOString(),
+            });
+            const{error:canarySaveError}=await supabase.from('app_state').upsert(canaryRow,{onConflict:'id'});
+            if(canarySaveError)throw new Error('QBO Bill #'+qboBillId+' was verified, but its canary credit could not be saved: '+canarySaveError.message+'. Portal was not applied.');
           }
 
           // Only now—after QBO success or an exact existing read-back—may the
