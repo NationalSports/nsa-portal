@@ -1,5 +1,5 @@
 /* eslint-disable */
-import { NSA as _NSA_CONST, szRank } from './constants';
+import { NSA as _NSA_CONST, szRank, orderLineSizes } from './constants';
 // Tackle-twill logo menu (settings-aware) so pdfDecoLabel can name a twill placement on documents.
 import { TWA as _TWA_TABLE } from './pricing';
 import JsBarcode from 'jsbarcode';
@@ -1346,17 +1346,18 @@ export async function enrichAiLinesWithVendors(lines,onProgress){
 // Size run for an order line built from an AI-parsed order.
 //
 // The parser buckets a bare "QTY 50" (no size breakdown given) under OSFA so the
-// quantity isn't lost. Callers used to take the parsed size keys as the WHOLE size
-// run, which left a matched apparel product showing a lone OSFA column — the rep had
-// no S/M/L/XL columns to spread the 50 into without rebuilding the line.
+// quantity isn't lost. Taking the parsed keys as the WHOLE run left a matched apparel
+// product showing a lone OSFA column, with no S/M/L/XL to spread the 50 into.
 //
-// So: start from the catalog product's real size run when we matched one, then union
-// in whatever sizes the parse actually carries quantities for, ordered normally.
-// No catalog match (custom / vendor-only line) → the parsed sizes, else the standard
-// adult run.
+// So seed the catalog product's run — through orderLineSizes, the SAME trim the
+// add-from-catalog path uses, or an adidas/UA row drags in its entire vendor run (XS,
+// 3XL–5XL and the whole tall block) and the grid becomes a wall of empty columns.
+// The parsed sizes ride along as qtySizes so the OSFA bucket (or any real breakdown)
+// is always kept. No catalog match (custom / vendor-only line) → the parsed sizes,
+// else the standard adult run.
 export const aiLineAvailableSizes=(parsedSizeKeys,catalogSizes)=>{
   const parsed=(Array.isArray(parsedSizeKeys)?parsedSizeKeys:[]).filter(Boolean);
   const cat=(Array.isArray(catalogSizes)?catalogSizes:[]).filter(Boolean);
   if(!cat.length)return parsed.length?parsed:['S','M','L','XL','2XL'];
-  return [...new Set([...cat,...parsed])].sort((a,b)=>szRank(a)-szRank(b));
+  return orderLineSizes(cat,parsed).sort((a,b)=>szRank(a)-szRank(b));
 };

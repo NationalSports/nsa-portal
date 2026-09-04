@@ -22,7 +22,7 @@ import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, orderLineSizes, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
 import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, replaceMockLinkGroup, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
@@ -70,30 +70,12 @@ const nameWithBrand=(name,brand)=>{
 // this file's re-sync rule — classic users must get the same money-path fixes.
 const catalogRepCost=(p)=>(p&&p.is_clearance&&p.clearance_cost!=null)?safeNum(p.clearance_cost):safeNum(p?.nsa_cost);
 
-// Size run to seed on an ORDER LINE from a catalog product's available_sizes. Many Adidas /
-// Under Armour catalog rows carry the vendor's ENTIRE run — XS, 3XL–5XL, and the tall block
-// (ST/MT/LT/XLT/2XLT…) — because the B2B feed lists every size the style is made in. A normal
-// team order only fills S–2XL, so dropping that whole run onto a fresh line (add-from-catalog,
-// SKU change, NetSuite import) turns the grid into a wall of empty columns. For a standard
-// adult-apparel run we seed just the core S–2XL; a rep adds outliers with +Size. Non-standard
-// runs (youth, OSFA, numeric, footwear, tall-only) have no core overlap and pass through
-// untouched. Any size that already carries a quantity is always kept so entered qtys never drop.
-const CORE_APPAREL_SIZES=['S','M','L','XL','2XL'];
 // Size pools offered by the Copy Item modal's "New sizes" picker — the common run a rep
 // re-sizes a copied line into (a 3/L one-off, a couple of bigs), not the full catalog pool.
 // Outliers (5XL, tall, youth, half sizes below 6) are still added on the line with +Size.
 // Kept in sync with OrderEditor.js — the classic editor is what the portal loads by default.
 const COPY_APPAREL_SIZES=['XS','S','M','L','XL','2XL','3XL','4XL'];
 const COPY_FOOTWEAR_SIZES=['6','6.5','7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12'];
-const orderLineSizes=(catalogSizes,qtySizes=[])=>{
-  const all=(Array.isArray(catalogSizes)?catalogSizes:[]).filter(Boolean);
-  const core=all.filter(s=>CORE_APPAREL_SIZES.includes(s));
-  // Narrow to the core run only when the product also offers sizes beyond it (a standard adult
-  // run padded with extras). If the run IS already the core — or has no core overlap at all
-  // (youth/OSFA/numeric/footwear) — keep it verbatim.
-  const base=(core.length&&all.some(s=>!CORE_APPAREL_SIZES.includes(s)))?core:all;
-  return normalizeFootwearSizeList([...base,...(Array.isArray(qtySizes)?qtySizes:[]).filter(Boolean)]);
-};
 
 // Line items rendered on a printed / emailed estimate or SO PDF. This used to drop
 // any line whose total quantity was 0, which silently hid legitimately-quoted items
