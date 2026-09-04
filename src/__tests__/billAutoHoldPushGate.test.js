@@ -23,6 +23,13 @@ describe('supplier bill auto-hold is a hard push gate', () => {
     expect(triage[0]).toMatch(/\.\.\.billAutoHoldReasons\(p\)/);
   });
 
+  test('the Set aside workspace puts held bills in a non-pushable safety bucket', () => {
+    expect(APP).toMatch(/const holdReasons=billAutoHoldReasons\(p\);[\s\S]*?holdReasons\.length\?'held':!errs\.length\?'ready'/);
+    expect(APP).toMatch(/\['held','🛑','Safety hold'/);
+    expect(APP).toMatch(/bucket==='ready'&&!sb\.portalStatus/);
+    expect(APP).not.toMatch(/bucket==='held'.*?_pushParkedBill/);
+  });
+
   test('safety is recomputed while auto-push is off and a clean rematch clears a stale hold', () => {
     const sweep = APP.match(/const _autoPushSweep=async\(bills\)=>\{[\s\S]*?\n    \};/);
     expect(sweep).not.toBeNull();
