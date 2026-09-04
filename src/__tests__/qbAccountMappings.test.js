@@ -186,6 +186,7 @@ describe('vendor bill adversarial routing', () => {
 
   test('matches only one normalized legal vendor name and blocks ambiguity', () => {
     expect(findUniqueVendorMatch('Acme Sports, LLC', [{id:'v1',name:'ACME SPORTS INC.'}]).id).toBe('v1');
+    expect(findUniqueVendorMatch('ADIDAS US TEAM SERVICES', [{id:'adidas',name:'Adidas'}]).id).toBe('adidas');
     expect(findUniqueVendorMatch('Acme Sports', [{id:'v1',name:'Acme Sportswear'}])).toBeNull();
     expect(()=>findUniqueVendorMatch('Acme Sports', [
       {id:'v1',name:'Acme Sports LLC'},
