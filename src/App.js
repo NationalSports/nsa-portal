@@ -28121,7 +28121,18 @@ export default function App(){
       if(b.portalStatus&&b.portalStatus!=='success'&&!b._qbBackfill)return false;
       if(!_billHasTarget(b.parsed))return false;
       if(_liveBillPushHoldReasons(b.parsed).length)return false;
+      // A not-yet-applied bill must pass the full live review gate before QBO
+      // can receive it. Portal-complete rows were already reviewed/applied and
+      // may use the separate backfill path above.
+      if(b.portalStatus!=='success'&&(!_billIsReadyToPush(b)||_billTriage(b)?.issue))return false;
       return true;
+    };
+
+    const _qboBillBatchKey=b=>{
+      const p=b?.parsed||{};
+      const vendor=normalizeVendorName(billVendorMatchName(p));
+      const doc=String(p.doc_number||b?.id||'').trim().toLowerCase();
+      return vendor&&doc?vendor+'|'+doc:'';
     };
 
     // Toggle a bill's "look at later" flag from saved history / the Look at Later page. val=true parks
@@ -30001,8 +30012,15 @@ export default function App(){
     // so the two buttons always show the same number. Bills already in QB are skipped.
     const pushBillsToQB=async()=>{
       if(qbConfig.preflight?.status!=='success'||String(qbConfig.preflight?.realm_id||'')!==String(qbConfig.realm_id||'')){nf('Run the read-only live QBO preflight before sending any parsed bill','error');return}
+      const batchSeen=new Set();
       const selectedEntries=billImport.parsed.map((row,index)=>({row,index}))
-        .filter(({row})=>_billIsReadyForQB(row)&&qbBillNeedsSync(row.qbStatus));
+        .filter(({row})=>{
+          if(!_billIsReadyForQB(row)||!qbBillNeedsSync(row.qbStatus))return false;
+          const key=_qboBillBatchKey(row);
+          if(key&&batchSeen.has(key))return false;
+          if(key)batchSeen.add(key);
+          return true;
+        });
       if(!selectedEntries.length){nf('No matched bills to push','error');return}
       const canaryMode=qbConfig.initialMigrationApproved!==true;
       const completedCanaries=new Set((qbConfig._qbCanaryBillIds||[]).map(String));
@@ -31320,7 +31338,14 @@ export default function App(){
               ⚠ To Review header above (single source, no clashing duplicates). */}
           const _matchedHeader=!_inReview?null:(()=>{
             const ready=billImport.parsed.filter(b=>_billIsReadyToPush(b)&&!_billTriage(b)?.issue);
-            const qbReady=billImport.parsed.filter(b=>_billIsReadyForQB(b)&&qbBillNeedsSync(b.qbStatus));
+            const _qbReadySeen=new Set();
+            const qbReady=billImport.parsed.filter(b=>{
+              if(!_billIsReadyForQB(b)||!qbBillNeedsSync(b.qbStatus))return false;
+              const key=_qboBillBatchKey(b);
+              if(key&&_qbReadySeen.has(key))return false;
+              if(key)_qbReadySeen.add(key);
+              return true;
+            });
             const readyTotal=ready.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
             const portalReady=ready.filter(b=>!b._qbBackfill);
             const portalReadyTotal=portalReady.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
