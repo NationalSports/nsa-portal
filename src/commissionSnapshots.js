@@ -82,6 +82,37 @@ export function zeroCostRepairPatch(snap, liveLine, basis) {
 // Build the DB row from a buildCommLines line. The line's commRate/commAmt already
 // include any active admin override, so the freeze captures what the rep is actually
 // owed; the raw override value is kept alongside for display and later edits.
+// Blend the standard and late rates across an invoice's payments (per Steve, 2026-09).
+//
+// The late rule used to look at ONE date — the last payment — and halve the rate on the
+// whole invoice. On a deposit order that punished the deposit for the balance's lateness:
+// a 50% deposit banked on day 1 earned 15% because the balance landed on day 120.
+//
+// Now each payment is rated on its OWN age and weighted by its share of what was
+// collected, so the invoice's GP is split across payments in the same proportion as the
+// money. A day-1 deposit keeps the full 30% no matter when the balance arrives.
+//
+// Returns null when there is nothing to blend — no invoice date, no dated payments, or
+// nothing collected — and the caller falls back to the single last-payment rule.
+export function blendedStandardRate(payments, invDate) {
+  if (!invDate || isNaN(invDate.getTime()) || !Array.isArray(payments)) return null;
+  let total = 0, weighted = 0;
+  for (const p of payments) {
+    const amt = Number(p && p.amount);
+    const d = p && p.date;
+    // A payment with no usable date or amount is not evidence of anything; skip it rather
+    // than guess a date, which would silently move the rate in one direction or the other.
+    if (!Number.isFinite(amt) || amt <= 0 || !d || isNaN(d.getTime())) continue;
+    const days = Math.round((d - invDate) / 86400000);
+    total += amt;
+    weighted += amt * (days > COMM_LATE_DAYS ? COMM_RATE_LATE : COMM_RATE_STANDARD);
+  }
+  if (total <= 0) return null;
+  // Six decimals: enough that a blend re-multiplied by GP lands on the same cent, while
+  // keeping the stored rate a stable, comparable number.
+  return Math.round((weighted / total) * 1e6) / 1e6;
+}
+
 export function snapshotRowFromLine(line, snappedBy) {
   const d = line.paidDate;
   // Guard Invalid Date (a failed upstream parse) — otherwise the row literally writes
@@ -100,6 +131,10 @@ export function snapshotRowFromLine(line, snappedBy) {
     amount: line.commAmt,
     paid_date,
     days_to_pay: line.daysToPay != null ? line.daysToPay : null,
+    // The pre-override rate. days_to_pay alone can no longer reproduce it — a blended
+    // rate depends on every payment's own age — so clearing an override has to read the
+    // frozen value back rather than re-derive 15%/30% from one date.
+    base_rate: line.baseRate != null ? line.baseRate : null,
     override: ovr == null || ovr === false ? null : { value: ovr },
     snapped_by: snappedBy || null,
   };
@@ -114,14 +149,22 @@ export function applySnapshotToLine(line, snap, parseDateFn) {
   const daysToPay = snap.days_to_pay != null ? snap.days_to_pay : line.daysToPay;
   const rate = Number(snap.rate);
   const amount = Number(snap.amount);
+  const snapBase = snap.base_rate != null ? Number(snap.base_rate) : null;
+  const baseRate = snapBase != null && Number.isFinite(snapBase) ? snapBase : line.baseRate;
   return {
     ...line,
     gp: snap.gp || line.gp,
     commRate: isNaN(rate) ? line.commRate : rate,
     commAmt: isNaN(amount) ? line.commAmt : amount,
+    baseRate,
     paidDate,
     daysToPay,
-    isLate: daysToPay != null && daysToPay > COMM_LATE_DAYS,
+    // Late means "some of this invoice was paid late", which for a blended rate is any
+    // rate below standard. Rows frozen before base_rate existed fall back to the old
+    // single-date test so their display does not shift under them.
+    isLate: baseRate != null && Number.isFinite(baseRate)
+      ? baseRate < COMM_RATE_STANDARD
+      : (daysToPay != null && daysToPay > COMM_LATE_DAYS),
     overridden: !!snap.override,
     ovrRaw: snap.override ? snap.override.value : undefined,
     paidMonth: paidDate ? (paidDate.getMonth() + 1) + '/' + paidDate.getFullYear() : line.paidMonth,
@@ -140,8 +183,15 @@ export function overrideSnapshotPatch(snap, ovr, basis, baseRate) {
   const gp = Number(snap && snap.gp && snap.gp.gp) || 0;
   const rev = Number(snap && snap.gp && snap.gp.rev) || 0;
   const revBasis = basis === 'revenue';
+  // Prefer the frozen pre-override rate: on a part-late invoice the blend is the only
+  // thing that reproduces what the rep actually earned. Older rows have no base_rate, so
+  // they keep deriving 15%/30% from the single frozen days_to_pay.
+  const snapBase = snap && snap.base_rate != null ? Number(snap.base_rate) : null;
   const late = snap && snap.days_to_pay != null && snap.days_to_pay > COMM_LATE_DAYS;
-  const base = revBasis ? (baseRate != null ? baseRate : 0.01) : (late ? COMM_RATE_LATE : COMM_RATE_STANDARD);
+  const gpBase = snapBase != null && Number.isFinite(snapBase)
+    ? snapBase
+    : (late ? COMM_RATE_LATE : COMM_RATE_STANDARD);
+  const base = revBasis ? (baseRate != null ? baseRate : 0.01) : gpBase;
   // NaN (a blanked admin input parsed with parseFloat) counts as clearing the override —
   // typeof NaN === 'number', so without this it would write rate: NaN / amount: NaN.
   const cleared = ovr == null || ovr === false || (typeof ovr === 'number' && !Number.isFinite(ovr));
