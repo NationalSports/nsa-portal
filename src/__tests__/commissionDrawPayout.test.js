@@ -226,3 +226,63 @@ describe('calcRepPayout — adversarial', () => {
     }
   });
 });
+
+/* ── NetSuite commission (extraCommission) ─────────────────────────────────────
+ * Some orders are still written and paid in NetSuite, outside the portal. Their
+ * commission — the AMOUNT, i.e. 30% of the NetSuite gross profit, worked out there —
+ * is entered per rep per month from the ⋯ menu. It has to behave exactly like portal
+ * commission: it counts toward earning back the draw, and it flows on into the loan
+ * withholding. Entering it must never be a way to pay a rep who has not cleared their
+ * draw more than they earned. */
+describe('calcRepPayout — NetSuite commission earned outside the portal', () => {
+  test('counts toward earning back the draw', () => {
+    // $4,078.47 portal + $1,500 NetSuite = $5,578.47 against a $5,000 draw.
+    const r = calcRepPayout({ netCommission: 4078.47, extraCommission: 1500, draw: 5000 });
+    expect(r.netComm).toBe(5578.47);
+    expect(r.extra).toBe(1500);
+    expect(r.underBy).toBe(0);
+    expect(r.payable).toBe(578.47);
+  });
+
+  test('is not enough on its own to clear the draw', () => {
+    const r = calcRepPayout({ netCommission: 107.68, extraCommission: 1200, draw: 5000 });
+    expect(r.netComm).toBe(1307.68);
+    expect(r.underBy).toBe(3692.32);
+    expect(r.payable).toBe(0);
+    expect(r.payout).toBe(0);
+  });
+
+  test('a rep with no portal activity is still paid on NetSuite commission alone', () => {
+    const r = calcRepPayout({ netCommission: 0, extraCommission: 2500, draw: 0 });
+    expect(r.netComm).toBe(2500);
+    expect(r.payable).toBe(2500);
+    expect(r.payout).toBe(2500);
+  });
+
+  test('flows through the loan withholding like any other commission', () => {
+    const r = calcRepPayout({ netCommission: 3000, extraCommission: 5000, draw: 5000, loanBalance: 9999, loanPct: 50 });
+    expect(r.payable).toBe(3000);
+    expect(r.withhold).toBe(1500);
+    expect(r.payout).toBe(1500);
+  });
+
+  test('a negative entry corrects an earlier one and cannot drive the payout below $0', () => {
+    const r = calcRepPayout({ netCommission: 1000, extraCommission: -4000, draw: 0 });
+    expect(r.netComm).toBe(-3000);
+    expect(r.payable).toBe(0);
+    expect(r.payout).toBe(0);
+  });
+
+  test('absent or junk entries read as zero, never as NaN', () => {
+    for (const extraCommission of [undefined, null, '', 'abc', NaN, Infinity, {}, []]) {
+      const r = calcRepPayout({ netCommission: 1000, extraCommission, draw: 0 });
+      expect(r.netComm).toBe(1000);
+      expect(r.payable).toBe(1000);
+      expect(Number.isFinite(r.extra)).toBe(true);
+    }
+  });
+
+  test('numeric strings are honoured (the prompt returns text)', () => {
+    expect(calcRepPayout({ netCommission: 1000, extraCommission: '250.50' }).netComm).toBe(1250.5);
+  });
+});

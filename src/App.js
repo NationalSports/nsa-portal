@@ -23,7 +23,7 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import GlobalSearch from './GlobalSearch';
@@ -52,7 +52,7 @@ import { mergeDurableQbCanaries, qbCanaryLedgerRecord } from './qbCanaryLedger';
 import { canViewFinancials } from './lib/financialAccess';
 import { consolidateOmgProductRows } from './lib/storeSkuGrouping';
 import { acquireOmgCreationGuard, omgCollectedUnitPrice, omgInvoiceIdempotencyKey, webstoreInvoiceIdempotencyKey } from './lib/omgCreationGuard';
-import { normalizeBillForReview } from './qbBillReview';
+import { matchedBillPoNumber, normalizeBillForReview } from './qbBillReview';
 import { resolvePoDisplayVendor } from './lib/poVendor';
 import { removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
 
@@ -456,7 +456,7 @@ import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
 import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, billAutoHoldReasons, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku, resolveMappedSoItemIndex } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
-import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, planQBNonInventoryItems, qbBillNeedsSync, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
+import { QB_ACCOUNT_MAPPING_DEFAULTS, billVendorMatchName, buildVendorBillLines, calculateOmgInvoicePayment, findExistingVendorBill, findUniqueVendorMatch, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, planQBNonInventoryItems, qbBillNeedsSync, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
 import { BaggingQueueTile } from './baggingstation/BaggingDashCard';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, mergeAllContents, mergeAllSourceRefs, crossCustomerGroups, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -6675,7 +6675,7 @@ export default function App(){
 
   const isA=cu?.role==='admin'||cu?.role==='super_admin';
   const isSA=cu?.role==='super_admin';
-  const canAdjustInv=canAdjustInventory(cu,WAREHOUSE_LEAD_IDS);
+  const canAdjustInv=canAdjustInventory(cu,[...WAREHOUSE_LEAD_IDS,...INVENTORY_ADJUST_IDS]);
   // Normalize: super_admin is treated as admin everywhere via _r helper
   const _r=cu?.role==='super_admin'?'admin':cu?.role;
   const pars=useMemo(()=>cust.filter(c=>!c.parent_id&&(showArchived||c.is_active!==false)),[cust,showArchived]);const gK=useCallback(pid=>cust.filter(c=>c.parent_id===pid),[cust]);
@@ -28493,7 +28493,7 @@ export default function App(){
       if(!p||p._ai_parsed||p.is_credit||earlyPayFreightWaiver(p).eligible||!p.matchedPOSource||!p.matchedPO)return stored;
       try{
         const poLc=(p.po_number||'').toLowerCase().replace(/\s+/g,'');
-        const matchedPoRaw=p.matchedPOSource==='so_po'?(p.matchedPO?.po_id||''):(p.matchedPO?.po_number||p.matchedPO?.id||'');
+        const matchedPoRaw=matchedBillPoNumber(p);
         const poExact=(!!poLc&&String(matchedPoRaw).toLowerCase().replace(/\s+/g,'')===poLc)||poCoreTagMatch(p.po_number,matchedPoRaw);
         let pairs=(p._lineMappings&&p._lineMappings.length)?p._lineMappings:null;
         let tItems=[];
@@ -30045,7 +30045,7 @@ export default function App(){
         const bill=b.parsed||{};
         try{
           if(!_billHasTarget(bill))throw new Error('Bill is not linked to a portal PO/SO; no QBO bill was sent.');
-          const vendorName=String(bill.supplier||'').trim();
+          const vendorName=billVendorMatchName(bill);
           if(!vendorName)throw new Error('Bill supplier is blank; no QBO bill was sent.');
 
           const vendor=findUniqueVendorMatch(vendorName,vend);
@@ -30122,17 +30122,13 @@ export default function App(){
           // Idempotency check happens before every create. An exact vendor/date/total
           // match is reused; any same-number conflict blocks rather than guessing.
           const docKey=billDocNumber.toLowerCase();
-          const sameNumber=billsByDoc.get(docKey)||[];
-          const exact=sameNumber.filter(existing=>
-            String(existing.VendorRef?.value||'')===String(qbVendorId)
-            &&Math.abs(safeNum(existing.TotalAmt)-amt)<0.005
-            &&String(existing.TxnDate||'').slice(0,10)===txnDate);
-          if(exact.length>1)throw new Error('QBO contains duplicate exact bills for document '+billDocNumber+'; no new bill was sent.');
-          if(sameNumber.length&&exact.length!==1)throw new Error('QBO document '+billDocNumber+' already exists with a different vendor, date, or total; no new bill was sent.');
+          const existingVendorBill=findExistingVendorBill(billsByDoc.get(docKey)||[],{
+            docNumber:billDocNumber,vendorId:qbVendorId,total:amt,txnDate,
+          });
 
           let qboBillId,created=false;
-          if(exact.length===1){
-            qboBillId=exact[0].Id;
+          if(existingVendorBill){
+            qboBillId=existingVendorBill.Id;
           }else{
             const billRes=await qbApi('upsert_bill',{bill:qbBill});
             if(!billRes?.Bill?.Id)throw new Error(billRes?.Fault?.Error?.[0]?.Detail||'Unknown QBO bill error');
