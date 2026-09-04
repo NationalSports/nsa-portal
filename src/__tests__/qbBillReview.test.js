@@ -1,4 +1,4 @@
-import { normalizeBillForReview } from '../qbBillReview';
+import { matchedBillPoNumber, normalizeBillForReview } from '../qbBillReview';
 
 describe('QuickBooks bill review compatibility', () => {
   test('supplies empty arrays for older server-ledger rows', () => {
@@ -20,5 +20,17 @@ describe('QuickBooks bill review compatibility', () => {
       items: [],
       warnings: [],
     });
+  });
+
+  test('reads the canonical PO from every matched bill wrapper', () => {
+    expect(matchedBillPoNumber({
+      matchedPOSource: 'so_deco_po', matchedPO: { po_id: 'DPO 58012 DOUP' },
+    })).toBe('DPO 58012 DOUP');
+    expect(matchedBillPoNumber({
+      matchedPOSource: 'so_po', matchedPO: { po_id: 'PO 123' },
+    })).toBe('PO 123');
+    expect(matchedBillPoNumber({
+      matchedPOSource: 'batch', matchedPO: { po_number: 'BATCH 5' },
+    })).toBe('BATCH 5');
   });
 });

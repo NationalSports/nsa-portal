@@ -8,3 +8,12 @@ export function normalizeBillForReview(value) {
     warnings: Array.isArray(bill.warnings) ? bill.warnings : [],
   };
 }
+
+// Match wrappers use different field names by source: inventory/batch POs use
+// po_number, while Sales Order and decoration POs use po_id.
+export function matchedBillPoNumber(value) {
+  const bill = value && typeof value === 'object' ? value : {};
+  const match = bill.matchedPO && typeof bill.matchedPO === 'object' ? bill.matchedPO : {};
+  if (bill.matchedPOSource === 'so_po') return match.po_id || '';
+  return match.po_number || match.po_id || match.id || '';
+}
