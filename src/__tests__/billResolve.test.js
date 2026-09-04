@@ -1277,7 +1277,7 @@ describe('negative-evidence gates', () => {
 
 // ── autoPushSafety — the unattended direct-path gate (Fable audit, 2026-07-22) ──
 describe('autoPushSafety direct-path gate', () => {
-  const { autoPushSafety } = require('../billResolve');
+  const { autoPushSafety, billAutoHoldReasons } = require('../billResolve');
   const base = { poExact: true, pricePairs: [], billVendor: '', targetVendors: [], docTotal: 100 };
   test('clean exact-PO bill with sane prices passes', () => {
     expect(autoPushSafety({ ...base, pricePairs: [{ bill_unit: 10, unit_cost: 10 }, { bill_unit: 12.4, unit_cost: 10 }] })).toEqual([]); // +24% is within the staged path bound
@@ -1310,6 +1310,12 @@ describe('autoPushSafety direct-path gate', () => {
   test('reasons dedupe — many sharp lines yield distinct messages only', () => {
     const r = autoPushSafety({ ...base, pricePairs: [{ bill_unit: 15, unit_cost: 35 }, { bill_unit: 15, unit_cost: 35 }] });
     expect(r.length).toBe(1);
+  });
+  test('persisted safety findings normalize into a fail-closed hold', () => {
+    expect(billAutoHoldReasons({ _auto_hold: ['supplier differs', '', null] })).toEqual(['supplier differs']);
+    expect(billAutoHoldReasons({ _auto_hold: 'PO match is not exact' })).toEqual(['PO match is not exact']);
+    expect(billAutoHoldReasons({ _auto_hold: [] })).toEqual([]);
+    expect(billAutoHoldReasons(null)).toEqual([]);
   });
 });
 

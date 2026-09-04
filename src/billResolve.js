@@ -619,9 +619,8 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
 // _validateBillForPush, which checks neither price nor vendor — and at $0 freight its
 // auto-mappings can silently REWRITE order unit_cost with no cap (App.js priceSync).
 // Audit found a reachable, unguarded path (47 auto-pushes in prod; worst mapping gap
-// +103%, though no >25% cost REWRITE had fired yet). This gate closes it for the
-// UNATTENDED path only — the human push button keeps today's behavior (the money-check
-// UI is their gate, and intentional price syncs are a feature).
+// +103%, though no >25% cost REWRITE had fired yet). The caller treats this gate as a
+// hard hold for every Portal/QBO write path; a human must correct/rematch the bill first.
 // Returns [] when safe, else dedup'd blocker reasons.
 export const autoPushSafety = ({ poExact, pricePairs, billVendor, targetVendors, docTotal }) => {
   const reasons = new Set();
@@ -647,6 +646,17 @@ export const autoPushSafety = ({ poExact, pricePairs, billVendor, targetVendors,
     reasons.add('supplier differs — bill from ' + billVendor + ', order lines from ' + tv.join('/'));
   }
   return [...reasons];
+};
+
+// A direct-path safety finding is a real push hold, not merely an auto-push hint.
+// Keep this predicate pure so the Portal, QBO, parked-bill, and review paths share
+// one fail-closed interpretation of `_auto_hold`. Older saved rows may contain a
+// single string, so normalize that shape too.
+export const billAutoHoldReasons = (bill) => {
+  const value = bill && bill._auto_hold;
+  if (Array.isArray(value)) return value.map((reason) => String(reason || '').trim()).filter(Boolean);
+  const reason = String(value || '').trim();
+  return reason ? [reason] : [];
 };
 
 export const highConfidenceAutoAccept = (prop) => {
