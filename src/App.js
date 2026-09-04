@@ -52,7 +52,7 @@ import { mergeDurableQbCanaries, qbCanaryLedgerRecord } from './qbCanaryLedger';
 import { canViewFinancials } from './lib/financialAccess';
 import { consolidateOmgProductRows } from './lib/storeSkuGrouping';
 import { acquireOmgCreationGuard, omgCollectedUnitPrice, omgInvoiceIdempotencyKey, webstoreInvoiceIdempotencyKey } from './lib/omgCreationGuard';
-import { normalizeBillForReview } from './qbBillReview';
+import { matchedBillPoNumber, normalizeBillForReview } from './qbBillReview';
 import { resolvePoDisplayVendor } from './lib/poVendor';
 import { removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
 
@@ -28493,7 +28493,7 @@ export default function App(){
       if(!p||p._ai_parsed||p.is_credit||earlyPayFreightWaiver(p).eligible||!p.matchedPOSource||!p.matchedPO)return stored;
       try{
         const poLc=(p.po_number||'').toLowerCase().replace(/\s+/g,'');
-        const matchedPoRaw=p.matchedPOSource==='so_po'?(p.matchedPO?.po_id||''):(p.matchedPO?.po_number||p.matchedPO?.id||'');
+        const matchedPoRaw=matchedBillPoNumber(p);
         const poExact=(!!poLc&&String(matchedPoRaw).toLowerCase().replace(/\s+/g,'')===poLc)||poCoreTagMatch(p.po_number,matchedPoRaw);
         let pairs=(p._lineMappings&&p._lineMappings.length)?p._lineMappings:null;
         let tItems=[];
