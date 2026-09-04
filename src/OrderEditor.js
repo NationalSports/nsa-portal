@@ -68,6 +68,19 @@ const catalogRepCost=(p)=>(p&&p.is_clearance&&p.clearance_cost!=null)?safeNum(p.
 // runs (youth, OSFA, numeric, footwear, tall-only) have no core overlap and pass through
 // untouched. Any size that already carries a quantity is always kept so entered qtys never drop.
 const CORE_APPAREL_SIZES=['S','M','L','XL','2XL'];
+
+// Quantity keystrokes stay in this tiny component. The parent editor still owns the draft ref
+// (so Save/autosave can flush it safely), but no longer reconciles thousands of order controls
+// for every digit typed.
+const QuantityDraftInput=React.memo(function QuantityDraftInput({value,draftKey,onStage,onCommit,className,style,filledStyle,emptyStyle,placeholder='0'}){
+  const cur=value==null||value===0?'':String(value);const[raw,setRaw]=React.useState(cur);const[focused,setFocused]=React.useState(false);
+  React.useEffect(()=>{if(!focused)setRaw(cur)},[cur,focused]);
+  const commit=()=>{setFocused(false);onCommit(raw)};const filled=(parseInt(raw,10)||0)>0;
+  return <input className={className} data-sizing-draft="true" value={raw} placeholder={placeholder}
+    onFocus={()=>setFocused(true)} onChange={e=>{const next=e.target.value;if(!/^\d*$/.test(next))return;setRaw(next);onStage(draftKey,next)}}
+    onBlur={commit} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur()}}
+    style={{...style,...(filled?filledStyle:emptyStyle)}}/>;
+});
 // Size pools offered by the Copy Item modal's "New sizes" picker — the common run a rep
 // re-sizes a copied line into (a 3/L one-off, a couple of bigs), not the full catalog pool.
 // Outliers (5XL, tall, youth, half sizes below 6) are still added on the line with +Size.
@@ -1100,7 +1113,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // In-progress size-cell edits, keyed `idx+'_'+sz`. Lets the user type intermediate values
   // (e.g. clear "8" then type "13") without the per-keystroke "Cannot reduce below X" guard firing.
   // Validation runs in uSz on blur instead — see input at the size grid below.
-  const[sizingDraft,setSizingDraft]=useState({});
   const sizingDraftRef=useRef({});
   const[coachApprovalModal,setCoachApprovalModal]=useState(null);// {jIdx, contact, portalUrl, method, message}
   // Art proofs often go to several contacts — keep the greeting naming whoever is checked
@@ -1767,8 +1779,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Size inputs deliberately buffer keystrokes until blur so clearing "8" on the way to "13"
   // does not trip the committed-quantity guards. Mirror that buffer in a ref: Save follows blur
   // immediately, before React would normally expose the new order state to the click handler.
-  const _stageSizingDraft=(k,v)=>{const next={...sizingDraftRef.current,[k]:v};sizingDraftRef.current=next;setSizingDraft(next);dirtyRef2.current=true;setDirty(true)};
-  const _dropSizingDraft=k=>{if(!(k in sizingDraftRef.current))return;const next={...sizingDraftRef.current};delete next[k];sizingDraftRef.current=next;setSizingDraft(next)};
+  const _stageSizingDraft=(k,v)=>{const first=!(k in sizingDraftRef.current);sizingDraftRef.current={...sizingDraftRef.current,[k]:v};if(first){dirtyRef2.current=true;setDirty(true)}};
+  const _dropSizingDraft=k=>{if(!(k in sizingDraftRef.current))return;const next={...sizingDraftRef.current};delete next[k];sizingDraftRef.current=next};
   const _flushActiveSizingDraft=()=>{
     if(!Object.keys(sizingDraftRef.current).length)return true;
     const active=typeof document!=='undefined'?document.activeElement:null;
@@ -5215,7 +5227,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,marginLeft:4}} onClick={()=>{sv('_status_reverted',true);sv('status',autoSt)}}>↩️ Reset to Auto</button>}
         </div>})()}
       {/* Fulfillment (ship preference) moved up into the Create PO / Create Invoice row as a select */}
-      {isSO&&<div style={{marginTop:8}}><label className="form-label">Production Notes</label><input className="form-input" value={o.production_notes||''} onChange={e=>sv('production_notes',e.target.value)} placeholder="Internal notes..."/></div>}
+      {isSO&&<div style={{marginTop:8}}><label className="form-label">Production Notes</label><$Txt className="form-input" value={o.production_notes||''} onChange={v=>sv('production_notes',v)} placeholder="Internal notes..."/></div>}
     </div></div>
     {/* TABS */}
     <div className="tabs" style={{marginBottom:16}}>
@@ -5456,8 +5468,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {/* In estimate qty-only mode: show just the total input, no size grid */}
             {isQtyOnly?<>
               <div style={{textAlign:'center',padding:'0 10px'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOTAL QTY</div>
-                <input value={item.est_qty||''} onChange={e=>uI(idx,'est_qty',e.target.value===''?0:parseInt(e.target.value)||0)} placeholder="0"
-                  style={{width:64,textAlign:'center',fontSize:24,fontWeight:800,color:safeNum(item.est_qty)>0?'#1e40af':'#cbd5e1',border:'2px dashed #93c5fd',borderRadius:6,padding:'4px 0',background:'#eff6ff'}}/>
+                <QuantityDraftInput value={item.est_qty||''} draftKey={idx+'_QTY'} onStage={_stageSizingDraft}
+                  onCommit={v=>flushSync(()=>{uI(idx,'est_qty',v===''?0:parseInt(v,10)||0);_dropSizingDraft(idx+'_QTY')})}
+                  style={{width:64,textAlign:'center',fontSize:24,fontWeight:800,border:'2px dashed #93c5fd',borderRadius:6,padding:'4px 0',background:'#eff6ff'}}
+                  filledStyle={{color:'#1e40af'}} emptyStyle={{color:'#cbd5e1'}}/>
               </div>
               <button className="btn btn-sm btn-secondary" style={{fontSize:10,marginLeft:8,color:'#2563eb'}} onClick={()=>{
                 // Warn before breaking a qty-only line into sizes when it already has a PO placed
@@ -5482,9 +5496,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 one line and longer runs double up into a second row that lines up under the first
                 (an 11-wide row starting at 5 breaks after 10). */}
             <div style={{display:'grid',gridTemplateColumns:'repeat(11,48px)',columnGap:6,rowGap:10,alignItems:'start'}}>
-            {szs.map(sz=>{const _szFilled=((idx+'_'+sz) in sizingDraft?(parseInt(sizingDraft[idx+'_'+sz])||0):(_iSz[sz]||0))>0;return<div key={sz} style={{textAlign:'center',width:48}}><div className="oe-eb" style={{fontSize:10,color:'#5A6075',marginBottom:3}}>{sz}</div>
-              <input className="oe-num" data-sizing-draft="true" value={sizingDraft[idx+'_'+sz]??(_iSz[sz]||'')} onChange={e=>{const k=idx+'_'+sz;_stageSizingDraft(k,e.target.value)}} onBlur={()=>{const k=idx+'_'+sz;if(!(k in sizingDraftRef.current))return;const v=sizingDraftRef.current[k];flushSync(()=>{uSz(idx,sz,v);_dropSizingDraft(k)})}} placeholder="0"
-                style={{width:44,textAlign:'center',border:_szFilled?'1.5px solid #192853':'1px solid #E2E6EF',borderRadius:6,padding:'5px 0',fontSize:15,fontWeight:700,color:_szFilled?'#192853':'#C2C7D2',background:_szFilled?'#F4F7FF':'#fff'}}/>
+            {szs.map(sz=>{const _draftKey=idx+'_'+sz;return<div key={sz} style={{textAlign:'center',width:48}}><div className="oe-eb" style={{fontSize:10,color:'#5A6075',marginBottom:3}}>{sz}</div>
+              <QuantityDraftInput className="oe-num" value={_iSz[sz]||''} draftKey={_draftKey} onStage={_stageSizingDraft}
+                onCommit={v=>{if(!(_draftKey in sizingDraftRef.current))return;flushSync(()=>{uSz(idx,sz,v);_dropSizingDraft(_draftKey)})}}
+                style={{width:44,textAlign:'center',borderRadius:6,padding:'5px 0',fontSize:15,fontWeight:700}}
+                filledStyle={{border:'1.5px solid #192853',color:'#192853',background:'#F4F7FF'}} emptyStyle={{border:'1px solid #E2E6EF',color:'#C2C7D2',background:'#fff'}}/>
               {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];
                 // Show stock FREE TO PULL, not gross on-hand: units claimed by an open IF (here or on
                 // another SO) are already spoken for, and showing them green invites double-allocating.
@@ -12470,7 +12486,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
             <div className="card">
               <div className="card-header"><h2>📝 Job Notes</h2></div>
               <div className="card-body">
-                <textarea className="form-input" rows={3} placeholder="Production notes for this job..." style={{fontSize:12}} value={j.notes||''} onChange={e=>updJob(ji,'notes',e.target.value)}/>
+                <$Txt as="textarea" className="form-input" rows={3} placeholder="Production notes for this job..." style={{fontSize:12}} value={j.notes||''} onChange={v=>updJob(ji,'notes',v)}/>
                 <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Visible to decoration team & printed on job sheet</div>
               </div>
             </div>
