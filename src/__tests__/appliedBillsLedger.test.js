@@ -129,9 +129,16 @@ describe('isMissingLedgerColumnError', () => {
 describe('mergeServerBills (Bill History union)', () => {
   const srv = (o) => ({ id: 7, doc_norm: 'inv-9', doc_number: 'INV-9', is_credit: false, vendor: 'V', doc_total: 10, portal_status: 'success', applied_at: '2026-07-01T10:00:00Z', ...o });
 
-  it('returns local list untouched when the server adds nothing new', () => {
-    const local = [{ id: 'a', parsed: { doc_number: 'INV-9' }, uploadedTs: 5 }];
+  it('returns a QBO-complete local list untouched when the server adds nothing new', () => {
+    const local = [{ id: 'a', qbStatus: 'success', parsed: { doc_number: 'INV-9' }, uploadedTs: 5 }];
     expect(mergeServerBills(local, [srv()])).toBe(local);
+  });
+
+  it('keeps the authoritative server row available when a stale local duplicate never reached QBO', () => {
+    const local = [{ id: 'a', resolution: { disposition: 'duplicate' }, parsed: { doc_number: 'INV-9' }, uploadedTs: 5 }];
+    const merged = mergeServerBills(local, [srv({ raw_meta: { doc_number: 'INV-9', matchedPOSource: 'so_po', matchedPO: { so_id: 'so-1' } } })]);
+    expect(merged).toHaveLength(2);
+    expect(merged.find(row => row._serverLedger).parsed.matchedPO.so_id).toBe('so-1');
   });
 
   it('adds server-only rows as read-only pushed entries (survives cleared localStorage)', () => {

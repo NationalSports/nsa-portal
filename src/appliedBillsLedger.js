@@ -97,6 +97,8 @@ export const isMissingLedgerColumnError = (e) => !!e && (e.code === '42703' || e
 export const mergeServerBills = (savedBills, serverRows) => {
   const local = savedBills || [];
   const seen = new Set();
+  const localDocKeys = new Set();
+  const locallyCompletedInQbo = new Set();
   // S&S can issue more than one invoice for the same order. In those rows the
   // SI/S&S document number is the order number, not a unique invoice key, so a
   // real invoice number must win and the shared order number must not collapse
@@ -110,7 +112,12 @@ export const mergeServerBills = (savedBills, serverRows) => {
     const p = sb.parsed || {};
     const c = p.is_credit ? '1' : '0';
     const d = _norm(p.doc_number);
-    if (d) seen.add('d|' + c + '|' + d);
+    if (d) {
+      const key = 'd|' + c + '|' + d;
+      seen.add(key);
+      localDocKeys.add(key);
+      if (sb.qbStatus === 'success') locallyCompletedInQbo.add(key);
+    }
     const s = _norm(p.si_doc_number);
     if (s && !isSsInvoice(sb, p)) seen.add('s|' + c + '|' + s);
   });
@@ -121,7 +128,14 @@ export const mergeServerBills = (savedBills, serverRows) => {
     const s = _norm(r.si_doc_number);
     const parsedMeta = (r.raw_meta && typeof r.raw_meta === 'object') ? r.raw_meta : null;
     const ssInvoice = isSsInvoice(r, parsedMeta);
-    if ((d && seen.has('d|' + c + '|' + d)) || (s && !ssInvoice && seen.has('s|' + c + '|' + s))) return;
+    const docKey = d ? 'd|' + c + '|' + d : '';
+    const docSeen = !!docKey && seen.has(docKey);
+    // A stale browser cache often has one or more "duplicate" placeholders for
+    // a bill that the server has since applied. Until one of those local rows
+    // records QBO success, keep the authoritative server row too: it carries
+    // the matched PO payload required by the QBO-only backfill control.
+    const staleLocalNeedsQbo = docSeen && localDocKeys.has(docKey) && !locallyCompletedInQbo.has(docKey);
+    if ((docSeen && !staleLocalNeedsQbo) || (s && !ssInvoice && seen.has('s|' + c + '|' + s))) return;
     if (d) seen.add('d|' + c + '|' + d);
     if (s && !ssInvoice) seen.add('s|' + c + '|' + s);
     const parsed = parsedMeta || {
