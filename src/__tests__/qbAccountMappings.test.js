@@ -1,4 +1,5 @@
 import {
+  billVendorMatchName,
   QB_ACCOUNT_MAPPING_DEFAULTS,
   QB_ACCOUNT_POSTING_MATRIX,
   QB_STATE_TAX_ACCOUNT_KEYS,
@@ -143,6 +144,14 @@ describe('QuickBooks account resolution', () => {
 });
 
 describe('vendor bill adversarial routing', () => {
+  test('uses the reviewed portal vendor identity before the PDF supplier label', () => {
+    expect(billVendorMatchName({
+      supplier: 'Silver Screen Printing',
+      vendor: 'Silver Screen Printing & Embroidery',
+    })).toBe('Silver Screen Printing & Embroidery');
+    expect(billVendorMatchName({ supplier: 'S&S Activewear' })).toBe('S&S Activewear');
+  });
+
   test('classifies every active decoration-category vendor as 52000, with no inactive or substring false positives', () => {
     const vendors=[{id:'d1',name:'ABC Decoration',is_active:true},{id:'d2',name:'Old Decorator',is_active:false}];
     expect(manualBillAccountKey('deco:d1')).toBe('deco_account');
