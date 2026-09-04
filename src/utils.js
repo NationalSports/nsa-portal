@@ -1361,3 +1361,23 @@ export const aiLineAvailableSizes=(parsedSizeKeys,catalogSizes)=>{
   if(!cat.length)return parsed.length?parsed:['S','M','L','XL','2XL'];
   return orderLineSizes(cat,parsed).sort((a,b)=>szRank(a)-szRank(b));
 };
+
+// Agron is adidas' third-party distributor, and its article number is the SKU that
+// actually carries stock. In the catalog an adidas product with an all-numeric SKU IS
+// an Agron article (2,106 of 2,129 sit in agron_inventory; no lettered adidas SKU ever
+// does), and ~57 bags carry BOTH rows — the Agron article and the CLICK-style twin
+// (5159512 vs JJ7421), same name, same color, same vendor. Stock only ever lands on the
+// Agron row, so an AI-parsed line that resolved to the CLICK twin showed 0 on tens of
+// thousands of units. Agron wins: swap to the numeric twin when the catalog has one.
+export const preferAgronProduct=(match,products)=>{
+  const isAgronSku=s=>/^\d+$/.test(String(s||'').trim());
+  const isAdidas=b=>/^adidas/i.test(String(b||'').trim());
+  if(!match||!Array.isArray(products))return match;
+  if(!isAdidas(match.brand)||isAgronSku(match.sku))return match;
+  const nm=String(match.name||'').trim().toLowerCase();
+  if(!nm)return match;
+  const cl=String(match.color||'').trim().toLowerCase();
+  return products.find(p=>p&&p.id!==match.id&&isAgronSku(p.sku)&&isAdidas(p.brand)
+    &&String(p.name||'').trim().toLowerCase()===nm
+    &&String(p.color||'').trim().toLowerCase()===cl)||match;
+};

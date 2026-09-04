@@ -7,7 +7,7 @@
 // editor with all items already populated.
 import React, { useState } from 'react';
 import { Icon, SearchSelect, ProductPicker } from './components';
-import { invokeEdgeFn, enrichAiLinesWithVendors, aiLineAvailableSizes } from './utils';
+import { invokeEdgeFn, enrichAiLinesWithVendors, aiLineAvailableSizes, preferAgronProduct } from './utils';
 import { rQ, auTierDisc, isAU } from './pricing';
 
 const initialAi = () => ({
@@ -96,9 +96,11 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
     }
   };
 
-  const findCatMatch = (sku, product_id) => product_id
+  // Agron's article number wins over the CLICK-style twin — it's the row that carries
+  // stock. See preferAgronProduct in utils.js.
+  const findCatMatch = (sku, product_id) => preferAgronProduct(product_id
     ? (products || []).find(pr => pr.id === product_id)
-    : (sku ? ((products || []).find(pr => pr.sku === sku) || (products || []).find(pr => pr.sku.toLowerCase() === sku.toLowerCase())) : null);
+    : (sku ? ((products || []).find(pr => pr.sku === sku) || (products || []).find(pr => pr.sku.toLowerCase() === sku.toLowerCase())) : null), products);
 
   const buildRosterItems = (mk) => {
     const keeping = (ai.rosters || []).filter(r => !r._skip);
@@ -139,9 +141,10 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
       const szKeys = Object.keys(sizes).sort(szSort);
       return {
         product_id: catMatch?.id || null,
-        // Unmatched lines come in with a blank SKU rather than a "CUSTOM" placeholder —
-        // the order editor requires a real style number before the order can be saved.
-        sku,
+        // The matched product's SKU, so the line points at the article we priced it from
+        // (the Agron swap above changes it). Unmatched lines keep the raw guess — blank
+        // rather than a "CUSTOM" placeholder, since the editor requires a real style number.
+        sku: catMatch?.sku || sku,
         name: catMatch?.name || r.name || '',
         brand,
         vendor_id: catMatch?.vendor_id || null,
@@ -183,8 +186,7 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
     const mk = customer?.catalog_markup || defaultMarkup || 1.65;
     const items = keeping.map(p => {
       const sku = (p.sku_guess || '').trim();
-      const catMatch = p.product_id ? (products || []).find(pr => pr.id === p.product_id) :
-        (sku ? ((products || []).find(pr => pr.sku === sku) || (products || []).find(pr => pr.sku.toLowerCase() === sku.toLowerCase())) : null);
+      const catMatch = findCatMatch(sku, p.product_id);
       const brand = catMatch?.brand || p.brand || '';
       const au = isAU(brand) && !String(catMatch?.id||'').startsWith('ssa-');
       const cost = catMatch?.nsa_cost || p.vendor_price || 0;
@@ -195,8 +197,8 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
       const szKeys = Object.keys(p.sizes || {});
       return {
         product_id: catMatch?.id || null,
-        // Blank, not "CUSTOM" — see buildRosterItems.
-        sku,
+        // See buildRosterItems.
+        sku: catMatch?.sku || sku,
         name: catMatch?.name || p.name || '',
         brand,
         vendor_id: catMatch?.vendor_id || null,

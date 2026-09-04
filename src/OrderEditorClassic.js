@@ -36,7 +36,7 @@ import { downloadSoPlayerReport, omgCodeFromMemo } from './lib/soPlayerReport';
 // Lazy so the uniform designer only loads when a rep opens it.
 const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
 import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, TWA, TWN, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced, linkedArtCostQty, decoCostAt, decoCostResolved, outsideDecoEstAt, outsideDecoSell } from './pricing';
-import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, dedupeMockDupes, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, schoolPOBoxes, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, aiLineAvailableSizes, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles, authFetch, greetLine, withGreeting, emailMoney } from './utils';
+import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, dedupeMockDupes, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, schoolPOBoxes, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, aiLineAvailableSizes, preferAgronProduct, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles, authFetch, greetLine, withGreeting, emailMoney } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
@@ -6505,8 +6505,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const keeping=aiBuild.parsed.filter(p=>!p._skip);
             const newItems=keeping.map(p=>{
               const sku=(p.sku_guess||'').trim();
-              const catMatch=p.product_id?products.find(pr=>pr.id===p.product_id):
-                (sku?(products.find(pr=>pr.sku===sku)||products.find(pr=>pr.sku.toLowerCase()===sku.toLowerCase())):null);
+              // Agron's article number wins over the CLICK-style twin — it's the row that
+              // carries stock. See preferAgronProduct in utils.js.
+              const catMatch=preferAgronProduct(p.product_id?products.find(pr=>pr.id===p.product_id):
+                (sku?(products.find(pr=>pr.sku===sku)||products.find(pr=>pr.sku.toLowerCase()===sku.toLowerCase())):null),products);
               const brand=catMatch?.brand||p.brand||'';
               const au=isAU(brand);
               const cost=(catMatch?catalogRepCost(catMatch):0)||p.vendor_price||0;
@@ -6518,9 +6520,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const szKeys=Object.keys(p.sizes||{});
               return{
                 product_id:catMatch?.id||null,
-                // No placeholder SKU — an unmatched line comes in blank so the rep has to
-                // fill in the real style number before the order can be saved.
-                sku:sku,
+                // The matched product's SKU, so the line points at the article we priced it
+                // from (the Agron swap above changes it). Unmatched lines keep the raw guess —
+                // blank, so the rep has to fill in a real style number before saving.
+                sku:catMatch?.sku||sku,
                 name:catMatch?.name||p.name||'',
                 brand,
                 color:catMatch?.color||p.color||'',
