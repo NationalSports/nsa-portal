@@ -23,7 +23,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
-import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
+import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, replaceMockLinkGroup, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { CustModal } from './modals';
@@ -11562,10 +11562,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 // _lbl overrides the lead-in text: the empty-state renders "or use the same mockup as:"
                 // (an alternative to uploading), the squash picker on an already-mocked card renders
                 // "Squash into the mockup for:" (dropping a redundant proof).
-                const _linkChipsR=(gi,_lbl)=>{if(!_linkArtId||itemDetails.length<2)return null;const myKey=garmentMockKey(gi);
+                const _linkChipsR=(gi,_lbl,_popover)=>{if(!_linkArtId||itemDetails.length<2)return null;const myKey=garmentMockKey(gi);
                   const others=itemDetails.filter(g=>garmentMockKey(g)!==myKey);
                   if(others.length===0)return null;
-                  return<div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',padding:'0 10px 10px'}}>
+                  return<div style={_popover?{position:'absolute',zIndex:20,top:'calc(100% + 5px)',left:0,minWidth:360,maxWidth:'min(620px, 80vw)',display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',padding:10,background:'white',border:'1px solid #c7d2fe',borderRadius:8,boxShadow:'0 8px 24px rgba(15,23,42,0.18)'}:{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',padding:'0 10px 10px'}}>
                     <span style={{fontSize:10,color:'#94a3b8',fontWeight:600}}>{_lbl||'or use the same mockup as:'}</span>
                     {others.map((g,oi)=>{const theirKey=garmentMockKey(g);const hasMock=_hasOwnMockR(g);
                       const colorMatch=(g.color||'')===(gi.color||'');
@@ -11660,7 +11660,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                     const nameDecos=it?jobItemDecosOfKind(gi,it,'names'):[];
                     const totalUnits=Object.values(gi.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
                     const _itemPFs=itemArtFiles.flatMap(_af=>(_af?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_afName:itemArtFiles.length>1?(_af?.name||''):''})));
-                    return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?14:0,border:'1px solid #fcd34d',borderRadius:10,overflow:'hidden',background:'white'}}>
+                    return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?14:0,border:'1px solid #fcd34d',borderRadius:10,overflow:'visible',background:'white'}}>
                       {/* Item header */}
                       <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'#fffbeb',borderBottom:'1px solid #fde68a'}}>
                         <div style={{display:'flex',gap:4,flexShrink:0}}>
@@ -11702,10 +11702,11 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                             need two proofs. Linking drops THIS card's image in favour of the source's —
                             nothing is moved or deleted, so Unlink restores it exactly. Only on the
                             actionable panel, and never over a sew-out proof (that has its own picker). */}
-                        {!_proofOnly&&_linkArtId&&itemDetails.length>1&&<div style={{marginBottom:6}}>
+                        {!_proofOnly&&_linkArtId&&itemDetails.length>1&&<div style={{marginBottom:6,position:'relative',display:'inline-block'}}>
                           <button onClick={()=>setSquashPickFor(k=>k===_mk?null:_mk)}
                             title="Near-identical garment? Share another garment's mockup instead of showing a second, almost-identical proof — the coach then approves one."
                             style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:12,border:'1px solid #c7d2fe',background:squashPickFor===_mk?'#e0e7ff':'#eef2ff',color:'#3730a3',fontSize:10,fontWeight:700,cursor:'pointer'}}>🔗 {squashPickFor===_mk?'Cancel':'Squash into another garment\u2019s mockup'}</button>
+                          {squashPickFor===_mk&&_linkChipsR(gi,'Use the mockup for:',true)}
                         </div>}
                         {_proofOnly&&<div style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde047',borderRadius:6,padding:'6px 10px',marginBottom:8}}>♻️ This is the digitizer's sew-out proof from the production files — <u>not a garment mockup</u>. It can't be approved or sent to the coach. Pick an option below: reuse an approved mockup, or send to the artist for a new one.</div>}
                         <div style={{display:'grid',gridTemplateColumns:_proofOnly?'repeat(auto-fill,minmax(150px,1fr))':(_ordered.length>1?'1fr 1fr':'1fr'),gap:8}}>
@@ -11737,7 +11738,6 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                       </div>
                       {_proofOnly&&(_priorPickR(gi)||_requestMockR(gi,true))}
                       {_proofOnly&&_linkChipsR(gi)}
-                      {!_proofOnly&&squashPickFor===_mk&&_linkChipsR(gi,'Squash into the mockup for:')}
                       </>})():<>
                        <div style={{padding:14,margin:'10px 10px 6px',textAlign:'center',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,color:'#9a3412',fontSize:12,fontWeight:600}}>No mockup uploaded yet for {gi.sku}</div>
                        {_priorPickR(gi)||_requestMockR(gi,false)}
@@ -12724,6 +12724,8 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
       const draftJobs=jobs.filter(j=>j.prod_status==='draft'||j._draft);
       const activeJobs=jobs.filter(j=>j.prod_status!=='draft'&&!j._draft);
       const DECO_LABELS_W={screen_print:'Screen Print',embroidery:'Embroidery',heat_transfer:'Heat Transfer',dtg:'DTG',sublimation:'Sublimation',vinyl:'Vinyl',patch:'Patch'};
+      const wizardGarments=items=>{const out=[];(items||[]).forEach(row=>{const it=safeItems(o)[row.item_idx]||row;const key=garmentMockKey(it);if(key!=='|'&&!out.some(g=>g.key===key))out.push({key,sku:it.sku||row.sku||'',name:safeStr(it.name||row.name),color:it.color||row.color||''})});return out};
+      const wizardExistingMockGroup=(items,artIds)=>{const gs=wizardGarments(items);const arts=[...new Set((artIds||[]).filter(a=>a&&a!=='__tbd'))].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);for(const g of gs){const deps=mockLinkDependents(arts,mockSkuOf(g),g.color).filter(k=>gs.some(x=>x.key===k));if(deps.length)return gs.filter(x=>x.key===g.key||deps.includes(x.key)).map(x=>x.key)}return[]};
       const openJobWizard=()=>{
         // Only wizard-load jobs that still need art submission. Already-submitted
         // jobs (art_requested / waiting_approval / art_complete / etc.) are
@@ -12748,7 +12750,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                 // made jobsShareGarments falsely re-couple the released split designs.
                 ...(ji.sizes&&Object.keys(ji.sizes).length>0?{sizes:{...ji.sizes}}:{}),...(ji.split_group?{split_group:ji.split_group,_artSplit:true}:{})};
             });
-            return{name:j.art_name||j.deco_type.replace(/_/g,' '),deco_type:j.deco_type,items,
+            return{name:j.art_name||j.deco_type.replace(/_/g,' '),deco_type:j.deco_type,items,mockGroup:wizardExistingMockGroup(items,j._art_ids||[j.art_file_id]),
               artist:j.assigned_artist||'',notes:j.rep_notes||'',files:[],
               _split:!!j.split_from,_existingJobId:j.id,_merged:!!j._merged};
           });
@@ -12771,12 +12773,14 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
               art_name:af2?.name||'',position:d.position||'Front Center',...(_splitShare||{})});
           });
         });
-        setJobWizard({groups:Object.values(dtMap)});
+        setJobWizard({groups:Object.values(dtMap).map(g=>({...g,mockGroup:wizardExistingMockGroup(g.items,g.items.map(it=>it.art_file_id))}))});
       };
       const wizActivate=(groups,activateAll)=>{
         // Block art submission when reversible Numbers decos are missing their
         // Pantone ink colors — the artist needs to see both sides' colors.
         if(activateAll){
+          const crossColor=groups.filter(g=>{const gs=wizardGarments(g.items.filter(it=>!it._excluded));const sel=(g.mockGroup||[]).filter(k=>gs.some(x=>x.key===k));return sel.length>1&&new Set(sel.map(k=>(gs.find(x=>x.key===k)||{}).color||'')).size>1});
+          if(crossColor.length&&!window.confirm('At least one one-mockup group includes different garment colors. The coach will see the source garment color for every garment in that group.\n\nGroup and submit anyway?'))return;
           const missing=[];
           groups.forEach(g=>{
             g.items.filter(it=>!it._excluded).forEach(it=>{
@@ -12881,6 +12885,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
           // Positions ride the same multi-deco read — a merged front+sleeve job lists both.
           const positions=[...new Set(releaseItems.flatMap(it=>{const ds=_rowArtDecos(it);return ds?ds.map(d=>safeStr(d.position)||it.position):[it.position]}).filter(Boolean))].join(', ');
           const artistObj=hasArtist?wizArtistsAll.find(a=>a.id===g.artist):null;
+          const _mockGs=wizardGarments(releaseItems);const _mockSel=(g.mockGroup||[]).filter(k=>_mockGs.some(x=>x.key===k));const _mockLabel=k=>{const mg=_mockGs.find(x=>x.key===k);return mg?((mg.color?mg.color+' ':'')+mg.sku):k};const _mockNote=_mockSel.length>1?('\n\n\uD83D\uDD17 ONE MOCKUP COVERS: '+_mockSel.map(_mockLabel).join(', ')+' — build the mockup on '+_mockLabel(_mockSel[0])+' only; the others share it.'):'';
           // Reuse existing job id when re-releasing a previously-loaded needs_art job
           const baseIdNum=gi+1+preservedJobs.length;
           const jobId=g._existingJobId||(o.id.replace('SO-','JOB-')+'-'+(baseIdNum<10?'0':'')+baseIdNum);
@@ -12903,7 +12908,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
             ...(g.quickMock&&activateAll?{sent_to_coach_at:new Date().toISOString(),quick_mock:true}:{}),
             assigned_artist:g.artist||'',
             rep_notes:g.notes||'',
-            ...(autoArtRequest?{art_requests:[{id:'AR-'+Date.now()+'-'+gi,artist:g.artist||'',artist_name:artistObj?.name||'',instructions:g.notes||'Requested on release',files:g.files||[],status:'requested',created_at:new Date().toISOString(),created_by:cu?.name||'System',auto:false}]}:{}),
+            ...(autoArtRequest?{art_requests:[{id:'AR-'+Date.now()+'-'+gi,artist:g.artist||'',artist_name:artistObj?.name||'',instructions:(g.notes||'Requested on release')+_mockNote,files:g.files||[],status:'requested',created_at:new Date().toISOString(),created_by:cu?.name||'System',auto:false}]}:{}),
             // Carry a split-art item's per-size share (sizes) + split_group + _artSplit into the frozen
             // snapshot — without sizes/split_group recalcedReleased re-derives the total from the WHOLE
             // garment line, inflating each split design back to the full quantity (SO-1131: Servite 55 /
@@ -12974,6 +12979,12 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
               return upd;
             });
           }
+          // Persist pre-production mock grouping in the same save as the released job, so the
+          // artist immediately sees one source garment instead of duplicate mockup work.
+          const _mockCandidates=wizardGarments(releaseItems).map(x=>x.key);
+          const _mockSelected=(g.mockGroup||[]).filter(k=>_mockCandidates.includes(k));
+          const _mockArtId=artIds.find(aid=>aid&&aid!=='__tbd');
+          if(_mockArtId&&Array.isArray(g.mockGroup))updArtFiles=replaceMockLinkGroup(updArtFiles,_mockArtId,_mockCandidates,_mockSelected);
         });
         const updated={...o,jobs:[...preservedJobs,...newJobs],art_files:updArtFiles,updated_at:new Date().toLocaleString()};
         saveSONow(updated,'Released jobs',null);setJobWizard(null);
@@ -13047,7 +13058,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                 {g.items.length>1?<button style={{fontSize:9,padding:'2px 8px',background:'#f1f5f9',border:'1px solid #d1d5db',borderRadius:4,cursor:'pointer',fontWeight:600,color:'#475569'}} onClick={()=>{
                   const gs=jobWizard.groups.map(gg=>({...gg,items:[...gg.items]}));
                   gs[gi].items.splice(ii,1);
-                  gs.push({name:it.art_name||'New Job',deco_type:g.deco_type,items:[it],_split:true,artist:'',notes:'',files:[]});
+                  gs.push({name:it.art_name||'New Job',deco_type:g.deco_type,items:[it],_split:true,artist:'',notes:'',files:[],mockGroup:[]});
                   setJobWizard({...jobWizard,groups:gs});
                 }}>Split</button>:g._split?<button style={{fontSize:9,padding:'2px 8px',background:'#ede9fe',border:'1px solid #c4b5fd',borderRadius:4,cursor:'pointer',fontWeight:600,color:'#6d28d9'}} onClick={()=>{
                   const gs=jobWizard.groups.map(gg=>({...gg,items:[...gg.items]}));
@@ -13058,6 +13069,13 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
               </td>
             </tr>)}</tbody>
           </table>}
+          {(()=>{const garments=wizardGarments(g.items.filter(it=>!it._excluded));if(garments.length<2)return null;const selected=(g.mockGroup||[]).filter(k=>garments.some(x=>x.key===k));const colors=new Set(selected.map(k=>(garments.find(x=>x.key===k)||{}).color||''));const toggle=key=>{const next=new Set(selected);if(next.has(key))next.delete(key);else next.add(key);const gs=[...jobWizard.groups];gs[gi]={...gs[gi],mockGroup:garments.filter(x=>next.has(x.key)).map(x=>x.key)};setJobWizard({...jobWizard,groups:gs})};return<div style={{marginTop:10,padding:10,background:selected.length>1?'#eef2ff':'white',border:'1px solid '+(selected.length>1?'#a5b4fc':'#e2e8f0'),borderRadius:6}}>
+            <div style={{fontSize:10,fontWeight:800,color:'#3730a3',marginBottom:3,textTransform:'uppercase',letterSpacing:0.4}}>🔗 One mockup for multiple garments (optional)</div>
+            <div style={{fontSize:10,color:'#64748b',marginBottom:7}}>Select garments getting the same logo that can share one proof. The first selected garment is the one the artist mocks.</div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>{garments.map(item=>{const on=selected.includes(item.key);const source=on&&selected[0]===item.key;return<label key={item.key} style={{display:'inline-flex',alignItems:'center',gap:5,padding:'4px 8px',borderRadius:14,border:'1px solid '+(on?'#818cf8':'#cbd5e1'),background:on?'#e0e7ff':'#f8fafc',fontSize:10,fontWeight:700,color:on?'#3730a3':'#475569',cursor:'pointer'}}><input type="checkbox" checked={on} onChange={()=>toggle(item.key)} style={{width:12,height:12}}/><span>{item.color?item.color+' ':''}{item.sku}</span>{source&&<span style={{fontSize:8,background:'#3730a3',color:'white',padding:'1px 5px',borderRadius:8}}>MOCK THIS</span>}</label>})}</div>
+            {selected.length===1&&<div style={{fontSize:9,color:'#94a3b8',marginTop:5}}>Select at least one more garment to share this mockup.</div>}
+            {selected.length>1&&<div style={{fontSize:10,fontWeight:700,color:colors.size>1?'#b45309':'#3730a3',marginTop:6}}>{colors.size>1?'⚠️ Different colors selected · ':''}1 mockup replaces {selected.length} separate proofs and is included in the artist instructions.</div>}
+          </div>})()}
           {/* Per-job artist selection and notes */}
           {g.items.length>0&&(()=>{const qmCount=Object.values(g.qmMocks||{}).filter(a=>(a||[]).length>0).length;const greenMode=g.skipArtist||g.quickMock;return<div style={{marginTop:10,padding:10,background:greenMode?'#f0fdf4':'white',borderRadius:6,border:'1px solid '+(greenMode?'#86efac':'#e2e8f0')}}>
             {(()=>{
@@ -13156,7 +13174,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
         </div>)}
         <div style={{display:'flex',gap:6,marginBottom:16}}>
           <button className="btn btn-sm btn-secondary" onClick={()=>{
-            const gs=[...jobWizard.groups,{name:'New Job',deco_type:jobWizard.groups[0]?.deco_type||'screen_print',items:[],artist:'',notes:'',files:[]}];
+            const gs=[...jobWizard.groups,{name:'New Job',deco_type:jobWizard.groups[0]?.deco_type||'screen_print',items:[],artist:'',notes:'',files:[],mockGroup:[]}];
             setJobWizard({...jobWizard,groups:gs});
           }}>+ Add Group</button>
         </div>

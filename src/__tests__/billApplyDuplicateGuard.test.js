@@ -73,6 +73,12 @@ describe('supplier-bill apply paths (App.js)', () => {
   it('imports the shared guard rather than reimplementing it', () => {
     expect(APP).toMatch(/import\s*\{[^}]*duplicateBillDetail[^}]*\}\s*from\s*'\.\/lib\/billAnomalies'/);
   });
+
+  it('treats a portal-ledger duplicate as an already-applied QBO backfill', () => {
+    expect(APP).toContain('const portalWasAlreadyApplied=portalBillAlreadyApplied(bill,_docAlreadyApplied)');
+    expect(APP).toContain("b.portalMsg=portalWasAlreadyApplied?'Already applied to Portal; QBO backfill verified':'Applied to Portal after QBO verification'");
+    expect(APP).toContain('if(portalApplied&&!portalWasAlreadyApplied&&_billHasTarget(bill))');
+  });
 });
 
 describe('duplicateBillDetail against the real SO-1468 shape', () => {

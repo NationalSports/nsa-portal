@@ -2,11 +2,12 @@
 // as step 3 of the App.js decomposition. All shared state comes from useAppData();
 // this component holds no state of its own, so mount/unmount on page switch is
 // behavior-identical to the old closure call.
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAppData } from './AppContext';
 import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
+import { authFetch } from './utils';
 import { createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName, qbResponseErrorDetail } from './qbSyncEngine';
 import {
   QB_ACCOUNT_MAPPING_DEFAULTS,
@@ -24,6 +25,19 @@ import {
   qbWriteAccountRef,
   resolveQBAccountRefs,
 } from './qbAccountMappings';
+
+const stripeBackfillErrorSummary=(errors=[])=>{
+  const counts={};
+  errors.forEach(({error})=>{
+    const message=String(error||'Unknown Stripe error');
+    const category=/no such payment_intent/i.test(message)?'PaymentIntent not found in the current Stripe account':
+      /no balance transaction/i.test(message)?'PaymentIntent has no settled balance transaction':
+      /no such charge/i.test(message)?'Charge not found in the current Stripe account':
+      /rate limit|temporar|timeout|connection/i.test(message)?'Temporary Stripe/API error':'Other reconciliation error';
+    counts[category]=(counts[category]||0)+1;
+  });
+  return Object.entries(counts);
+};
 
 const QB_MAPPING_FIELDS = [
   ['income_account', 'Customer sales + shipping'],
@@ -64,6 +78,89 @@ export default function QBPage(){
   const [qbCanarySOId,setQbCanarySOId]=useState('');
   const [qbCanaryPOId,setQbCanaryPOId]=useState('');
   const [qbPreflighting,setQbPreflighting]=useState(false);
+  const [stripePayouts,setStripePayouts]=useState([]);
+  const [stripePayoutId,setStripePayoutId]=useState('');
+  const [stripePayoutDetail,setStripePayoutDetail]=useState(null);
+  const [stripePayoutLoading,setStripePayoutLoading]=useState(false);
+  const [stripePayoutError,setStripePayoutError]=useState('');
+  const [stripeBackfill,setStripeBackfill]=useState(null);
+  const [stripeWebhookStatus,setStripeWebhookStatus]=useState(null);
+
+  const stripeReconApi=async(action,payload={})=>{
+    const res=await authFetch('/.netlify/functions/stripe-reconciliation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,...payload})});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok)throw new Error(data.error||('Stripe reconciliation returned HTTP '+res.status));
+    return data;
+  };
+  const loadStripePayouts=async()=>{
+    setStripePayoutLoading(true);setStripePayoutError('');
+    try{const data=await stripeReconApi('list_payouts');setStripePayouts(data.payouts||[])}
+    catch(e){setStripePayoutError(e.message)}finally{setStripePayoutLoading(false)}
+  };
+  const loadStripePayoutDetail=async(id)=>{
+    setStripePayoutLoading(true);setStripePayoutError('');
+    try{const data=await stripeReconApi('payout_detail',{payout_id:id});setStripePayoutDetail(data)}
+    catch(e){setStripePayoutError(e.message)}finally{setStripePayoutLoading(false)}
+  };
+  const reconcileStripePayout=async(id)=>{
+    const payoutId=String(id||'').trim();
+    if(!/^po_[A-Za-z0-9_]+$/.test(payoutId)){setStripePayoutError('Enter a valid Stripe payout ID (po_...).');return}
+    setStripePayoutLoading(true);setStripePayoutError('');
+    try{
+      await stripeReconApi('reconcile_payout',{payout_id:payoutId});
+      setStripePayoutId('');await loadStripePayouts();await loadStripePayoutDetail(payoutId);
+      nf('Stripe payout reconciled to its balance transactions');
+    }catch(e){setStripePayoutError(e.message);setStripePayoutLoading(false)}
+  };
+  const loadStripeWebhookStatus=async()=>{
+    try{const data=await stripeReconApi('webhook_status');setStripeWebhookStatus(data);return data}
+    catch(e){setStripeWebhookStatus({healthy:false,error:e.message,missing_events:[]});throw e}
+  };
+  const repairStripeWebhookEvents=async()=>{
+    setStripePayoutLoading(true);setStripePayoutError('');
+    try{const data=await stripeReconApi('repair_webhook_events');setStripeWebhookStatus(data);nf('Stripe webhook payout, refund, and dispute coverage verified')}
+    catch(e){setStripePayoutError(e.message)}finally{setStripePayoutLoading(false)}
+  };
+  const runStripeHistoricalBackfill=async()=>{
+    setStripePayoutLoading(true);setStripePayoutError('');
+    const progress={phase:'orders',orders_processed:0,orders_linked:0,orders_skipped:0,payouts_processed:0,errors:[]};
+    setStripeBackfill({...progress});
+    try{
+      let cursor=null;
+      for(let page=0;page<100;page+=1){
+        const batch=await stripeReconApi('backfill_orders',{starting_after:cursor,limit:10});
+        progress.orders_processed+=Number(batch.processed||0);progress.orders_linked+=Number(batch.linked||0);
+        progress.orders_skipped+=(batch.skipped||[]).length;
+        progress.errors.push(...(batch.errors||[]));cursor=batch.next_cursor||null;setStripeBackfill({...progress});
+        if(!batch.has_more||!cursor)break;
+      }
+      progress.phase='payouts';setStripeBackfill({...progress});
+      cursor=null;let createdGte=null;
+      for(let page=0;page<100;page+=1){
+        const batch=await stripeReconApi('backfill_payouts',{starting_after:cursor,created_gte:createdGte,limit:5});
+        createdGte=batch.created_gte||createdGte;progress.payouts_processed+=Number(batch.processed||0);
+        progress.errors.push(...(batch.errors||[]));cursor=batch.next_cursor||null;setStripeBackfill({...progress});
+        if(!batch.has_more||!cursor)break;
+      }
+      const [status,webhook,payoutData]=await Promise.all([
+        stripeReconApi('reconciliation_status'),loadStripeWebhookStatus(),stripeReconApi('list_payouts'),
+      ]);
+      setStripePayouts(payoutData.payouts||[]);
+      setStripeBackfill({...progress,phase:'done',...status,webhook_healthy:webhook.healthy});
+      const reviewCount=Number(status.unlinked_card_orders||0)+Number(status.portal_payment_review_count||0)+Number(status.charge_amount_mismatch_count||0)+Number(status.actionable_automatic_payouts||0);
+      nf(reviewCount===0?'Stripe historical backfill complete':'Stripe backfill complete with review items',reviewCount===0?'success':'error');
+    }catch(e){setStripePayoutError(e.message);setStripeBackfill({...progress,phase:'error'});}finally{setStripePayoutLoading(false)}
+  };
+  const exportStripePayoutCsv=()=>{
+    const detail=stripePayoutDetail;if(!detail?.payout)return;
+    const head=['Payout ID','Balance Transaction','Webstore Order','Entry Type','Posting Account Key','Tax State','Amount Cents','QBO Ready'];
+    const rows=(detail.qbo_entries||[]).map(e=>[detail.payout.stripe_payout_id,e.stripe_balance_transaction_id,e.webstore_order_id||'',e.entry_type,e.posting_account_key,e.tax_state||'',e.amount_cents,e.qbo_ready?'Yes':'No']);
+    const esc=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
+    const csv=[head,...rows].map(row=>row.map(esc).join(',')).join('\r\n');
+    const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download='stripe-payout-'+detail.payout.stripe_payout_id+'.csv';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
+  };
+  useEffect(()=>{if(qbTab==='stripe'){loadStripePayouts();loadStripeWebhookStatus().catch(()=>{})}},[qbTab]);
 
 
     // Sync engine — one copy of the logic (see qbSyncEngine.js); the App-level
@@ -287,7 +384,7 @@ export default function QBPage(){
     };
     const runProductCanary=async()=>{
       if(!selectedCanaryProduct)return;
-      if(!window.confirm('Create exactly ONE zero-quantity QBO Inventory item?\n\nSKU: '+selectedCanaryProduct.sku+'\nProduct: '+selectedCanaryProduct.name+'\nSales: 40000\nCOGS: 50000\nInventory Asset: 12000\nStart date: 09/01/2026\n\nOpening quantity is zero, so this creates no inventory value. The item and accounts will be verified by API read-back.')){nf('QBO Inventory item canary cancelled — nothing was sent');return}
+      if(!window.confirm('Create exactly ONE QBO NonInventory purchase item?\n\nSKU: '+selectedCanaryProduct.sku+'\nProduct: '+selectedCanaryProduct.name+'\nSales: 40000\nPurchases: 51300\n\nThis creates no quantity on hand or inventory value. The item and accounts will be verified by API read-back.')){nf('QBO NonInventory item canary cancelled — nothing was sent');return}
       await syncInventory({canaryProductId:selectedCanaryProduct.id});
     };
     const runInactiveProductLinkCleanup=async()=>{
@@ -437,7 +534,7 @@ export default function QBPage(){
 
       {/* Tabs */}
       <div className="tab-bar" style={{marginBottom:16}}>
-        {[['overview','Overview'],['customers','Customers'],['invoices','Invoices'],['bills','Bill Upload'],['inventory','QBO Items'],['settings','Settings'],['log','Sync Log']].map(([k,l])=>
+        {[['overview','Overview'],['customers','Customers'],['invoices','Invoices'],['stripe','Stripe Payouts'],['bills','Bill Upload'],['inventory','QBO Items'],['settings','Settings'],['log','Sync Log']].map(([k,l])=>
           <button key={k} className={`tab ${qbTab===k?'active':''}`} onClick={()=>setQbTab(k)}>{l}</button>)}
       </div>
 
@@ -471,7 +568,7 @@ export default function QBPage(){
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={()=>syncInvoices()}>Invoices</button>
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncPaidFromQB}>Sync Paid</button>
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={()=>syncPurchaseOrders()}>POs</button>
-                <button className="btn btn-secondary" disabled title="Locked until legacy inventory cutover is approved">QBO Inventory Locked</button>
+                <button className="btn btn-secondary" disabled title="Locked until the product-item canaries are approved">QBO Product Items Locked</button>
               </div>
             </div>
           </div>
@@ -484,8 +581,8 @@ export default function QBPage(){
               <div style={{marginBottom:4}}>&#8226; <strong>Purchase Orders</strong> — total quantity per SKU plus outside-decoration lines</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Bills</strong> — parsed portal vendor bills push to QBO only after account, item, total, and duplicate checks</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Bill direction</strong> — the initial migration does not auto-pull QBO bills back into portal POs</div>
-              <div>&#8226; <strong>Inventory items</strong> — one aggregate zero-opening-balance QBO Inventory item per SKU; portal size/color totals remain authoritative</div>
-              <div>&#8226; <strong>Manual inventory adjustments</strong> — do not sync: QBO's public Accounting API has no writable quantity-adjustment transaction; enter these in QBO against 52400 Inventory Loss</div>
+              <div>&#8226; <strong>Product items</strong> — one QBO NonInventory purchase item per SKU using 40000 Sales and 51300 Purchases; portal inventory remains authoritative</div>
+              <div>&#8226; <strong>Inventory quantities and adjustments</strong> — remain in the portal and are not posted to QBO</div>
             </div>
           </div>
         </div>
@@ -701,6 +798,54 @@ export default function QBPage(){
         </div>
       </>}
 
+      {/* ── STRIPE PAYOUT RECONCILIATION TAB ── */}
+      {qbTab==='stripe'&&<>
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
+            <h2>Stripe Payout Reconciliation</h2>
+            <button className="btn btn-secondary btn-sm" disabled={stripePayoutLoading} onClick={loadStripePayouts}>{stripePayoutLoading?'Loading...':'Refresh'}</button>
+          </div>
+          <div className="card-body">
+            <div style={{fontSize:11,color:'#475569',marginBottom:10}}>Each automatic payout is reconciled against every Stripe balance transaction in the batch. Exact payouts can be exported as cent-based semantic posting rows; this screen never posts a bank deposit to QuickBooks automatically.</div>
+            <div style={{display:'flex',gap:8,alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',padding:10,marginBottom:10,background:stripeWebhookStatus?.healthy?'#f0fdf4':'#fffbeb',border:'1px solid '+(stripeWebhookStatus?.healthy?'#bbf7d0':'#fde68a'),borderRadius:7,fontSize:11}}>
+              <div><strong>Live webhook:</strong> {stripeWebhookStatus?.healthy?'all payment, refund, dispute, and payout events covered':stripeWebhookStatus?.error?'could not verify — '+stripeWebhookStatus.error:stripeWebhookStatus?'missing '+(stripeWebhookStatus.missing_events||[]).join(', '):'checking Stripe configuration...'}</div>
+              <div style={{display:'flex',gap:6}}>{stripeWebhookStatus&&!stripeWebhookStatus.healthy&&!stripeWebhookStatus.error&&<button className="btn btn-secondary btn-sm" disabled={stripePayoutLoading} onClick={repairStripeWebhookEvents}>Add missing events</button>}<button className="btn btn-primary btn-sm" disabled={stripePayoutLoading} onClick={runStripeHistoricalBackfill}>{stripePayoutLoading&&stripeBackfill?.phase&&stripeBackfill.phase!=='done'?'Backfill running...':'Run full historical backfill'}</button></div>
+            </div>
+            {stripeBackfill&&<div style={{padding:9,marginBottom:10,background:stripeBackfill.phase==='done'&&Number(stripeBackfill.unlinked_card_orders||0)+Number(stripeBackfill.portal_payment_review_count||0)+Number(stripeBackfill.charge_amount_mismatch_count||0)+Number(stripeBackfill.actionable_automatic_payouts||0)===0?'#f0fdf4':'#eff6ff',border:'1px solid #bfdbfe',borderRadius:7,fontSize:11,color:'#1e3a8a'}}>
+              <strong>{stripeBackfill.phase==='done'?'Backfill complete':stripeBackfill.phase==='error'?'Backfill stopped':'Backfill '+stripeBackfill.phase+' in progress'}:</strong> {stripeBackfill.orders_linked||0} of {stripeBackfill.orders_processed||0} unlinked order records linked · {stripeBackfill.orders_skipped||0} non-succeeded PaymentIntents skipped · {stripeBackfill.payouts_processed||0} payouts reconciled · {(stripeBackfill.errors||[]).length} errors
+              {stripeBackfill.phase==='done'&&<span> · {stripeBackfill.unlinked_card_orders||0} settled charge links missing · {stripeBackfill.portal_payment_review_count||0} portal payment-status reviews · {stripeBackfill.charge_amount_mismatch_count||0} Stripe activity-vs-order amount reviews · {stripeBackfill.actionable_automatic_payouts||0} actionable payouts · {stripeBackfill.unavailable_payouts||0} Instant/manual payouts not batch-reconcilable</span>}
+              {stripeBackfill.phase==='done'&&stripeBackfill.card_orders&&<div style={{marginTop:6}}>Stripe-settled card charges: {stripeBackfill.settled_card_orders?.linked_count||0}/{stripeBackfill.settled_card_orders?.order_count||0} linked (${(Number(stripeBackfill.settled_card_orders?.total_cents||0)/100).toFixed(2)} actually charged) · incomplete checkout attempts: {stripeBackfill.incomplete_card_attempts?.order_count||0} (${(Number(stripeBackfill.incomplete_card_attempts?.total_cents||0)/100).toFixed(2)} intended) · SO-2313: {stripeBackfill.so_2313?.linked_count||0}/{stripeBackfill.so_2313?.order_count||0} linked (${(Number(stripeBackfill.so_2313?.linked_cents||0)/100).toFixed(2)} of ${(Number(stripeBackfill.so_2313?.total_cents||0)/100).toFixed(2)})</div>}
+              {stripeBackfill.phase==='done'&&(stripeBackfill.charge_amount_mismatches||[]).length>0&&<div style={{marginTop:6,color:'#92400e'}}>Amount review: {stripeBackfill.charge_amount_mismatches.map(row=><span key={row.order_id} style={{display:'inline-block',marginRight:12}}><strong>{row.so_id||row.order_id}</strong> Stripe net activity ${(Number(row.stripe_activity_cents||0)/100).toFixed(2)} vs order ${(Number(row.portal_total_cents||0)/100).toFixed(2)} (original charge ${(Number(row.stripe_charge_cents||0)/100).toFixed(2)})</span>)}</div>}
+              {stripeBackfill.phase==='done'&&(stripeBackfill.portal_payment_review||[]).length>0&&<div style={{marginTop:6,color:'#92400e'}}>Payment-status review: {stripeBackfill.portal_payment_review.map(row=><span key={row.order_id} style={{display:'inline-block',marginRight:12}}><strong>{row.so_id||row.order_id}</strong> is {row.portal_status||'non-pending'} in the portal but has no succeeded Stripe charge</span>)}</div>}
+              {stripeBackfill.phase==='done'&&(stripeBackfill.errors||[]).length>0&&<div style={{marginTop:6,color:'#92400e'}}>{stripeBackfillErrorSummary(stripeBackfill.errors).map(([label,count])=><span key={label} style={{display:'inline-block',marginRight:12}}>{label}: <strong>{count}</strong></span>)}</div>}
+            </div>}
+            <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',padding:10,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:7}}>
+              <input className="form-input" style={{minWidth:300,flex:'1 1 300px'}} placeholder="Historical payout ID (po_...)" value={stripePayoutId} onChange={e=>setStripePayoutId(e.target.value)}/>
+              <button className="btn btn-primary btn-sm" disabled={stripePayoutLoading||!stripePayoutId.trim()} onClick={()=>reconcileStripePayout(stripePayoutId)}>Fetch &amp; reconcile</button>
+            </div>
+            {stripePayoutError&&<div style={{marginTop:9,padding:8,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,color:'#b91c1c',fontSize:11,fontWeight:600}}>{stripePayoutError}</div>}
+          </div>
+          <div style={{padding:0,maxHeight:390,overflow:'auto'}}>
+            <table style={{fontSize:11}}><thead><tr style={{background:'#f8fafc'}}><th>Payout</th><th>Arrival</th><th>Status</th><th>Reconciliation</th><th style={{textAlign:'right'}}>Activity amount</th><th style={{textAlign:'right'}}>Stripe fees</th><th style={{textAlign:'right'}}>Bank net</th><th></th></tr></thead><tbody>
+              {!stripePayouts.length&&!stripePayoutLoading?<tr><td colSpan="8" style={{padding:20,textAlign:'center',color:'#94a3b8'}}>No payout ledger rows yet. Paste a historical payout ID above or wait for Stripe&apos;s next payout webhook.</td></tr>:
+              stripePayouts.map(p=>{const exact=p.reconciliation_status==='exact';return<tr key={p.stripe_payout_id} style={{borderBottom:'1px solid #f1f5f9'}}>
+                <td style={{fontFamily:'monospace',fontWeight:700}}>{p.stripe_payout_id}</td><td>{p.arrival_date||'—'}</td><td>{p.status}{p.method?' · '+p.method:''}</td>
+                <td><span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:700,background:exact?'#dcfce7':p.reconciliation_status==='mismatch'?'#fee2e2':'#fef3c7',color:exact?'#166534':p.reconciliation_status==='mismatch'?'#b91c1c':'#92400e'}}>{p.reconciliation_status}</span>{p.reconciliation_difference_cents?<span style={{marginLeft:5,color:'#b91c1c'}}>{p.reconciliation_difference_cents}¢ diff</span>:null}</td>
+                <td style={{textAlign:'right'}}>${(Number(p.activity_amount_cents||0)/100).toFixed(2)}</td><td style={{textAlign:'right',color:'#b45309'}}>${(Number(p.fee_cents||0)/100).toFixed(2)}</td><td style={{textAlign:'right',fontWeight:700}}>${(Number(p.amount_cents||0)/100).toFixed(2)}</td>
+                <td style={{whiteSpace:'nowrap'}}><button className="btn btn-secondary btn-sm" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>loadStripePayoutDetail(p.stripe_payout_id)}>Detail</button>{!exact&&<button className="btn btn-secondary btn-sm" style={{fontSize:9,padding:'2px 6px',marginLeft:4}} onClick={()=>reconcileStripePayout(p.stripe_payout_id)}>Retry</button>}</td>
+              </tr>})}
+            </tbody></table>
+          </div>
+        </div>
+        {stripePayoutDetail&&<div className="card" style={{marginBottom:16}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}><h2>QBO-ready entries — {stripePayoutDetail.payout?.stripe_payout_id}</h2><button className="btn btn-primary btn-sm" disabled={!stripePayoutDetail.qbo_entries?.length} onClick={exportStripePayoutCsv}>Export CSV</button></div>
+          <div style={{padding:'9px 14px',fontSize:11,background:stripePayoutDetail.qbo_ready?'#f0fdf4':'#fffbeb',color:stripePayoutDetail.qbo_ready?'#166534':'#92400e',borderBottom:'1px solid #e2e8f0'}}>{stripePayoutDetail.qbo_ready?'All entries have deterministic semantic account routing. Resolve live QBO account IDs before posting.':'Contains review_required activity (such as an unlinked charge, refund, dispute, or amount mismatch). Resolve it before creating a QBO deposit.'}</div>
+          <div style={{padding:0,maxHeight:360,overflow:'auto'}}><table style={{fontSize:10}}><thead><tr style={{background:'#f8fafc'}}><th>Balance transaction</th><th>Order</th><th>Entry</th><th>Account key</th><th>State</th><th style={{textAlign:'right'}}>Amount</th></tr></thead><tbody>
+            {(stripePayoutDetail.qbo_entries||[]).map((e,i)=><tr key={e.stripe_balance_transaction_id+':'+e.entry_type+':'+i} style={{borderBottom:'1px solid #f1f5f9',background:e.qbo_ready?'#fff':'#fffbeb'}}><td style={{fontFamily:'monospace'}}>{e.stripe_balance_transaction_id}</td><td>{e.webstore_order_id||'—'}</td><td>{e.entry_type}</td><td style={{fontFamily:'monospace',color:e.qbo_ready?'#475569':'#b91c1c'}}>{e.posting_account_key}</td><td>{e.tax_state||'—'}</td><td style={{textAlign:'right',fontWeight:700}}>${(Number(e.amount_cents||0)/100).toFixed(2)}</td></tr>)}
+          </tbody></table></div>
+        </div>}
+      </>}
+
       {/* ── BILL UPLOAD TAB ── */}
       {qbTab==='bills'&&<>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
@@ -794,10 +939,10 @@ export default function QBPage(){
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2>QBO Product Items (One per SKU)</h2>
-            <button className="btn btn-primary btn-sm" disabled title="Locked until the legacy QBO inventory cutover and opening balances are approved">Inventory Batch Locked</button>
+            <button className="btn btn-primary btn-sm" disabled title="Locked until the product-item canaries are approved">Product Batch Locked</button>
           </div>
           <div style={{padding:'8px 16px',background:'#fffbeb',fontSize:11,color:'#92400e',borderBottom:'1px solid #fef3c7'}}>
-            The portal is the inventory source of truth. QBO will receive one aggregate Inventory item per SKU using 40000 Sales, 50000 COGS, and 12000 Inventory Asset. Bulk migration remains locked until the legacy QBO items and opening balances are approved.
+            The portal is the inventory source of truth. QBO will receive one NonInventory purchase item per SKU using 40000 Sales and 51300 Purchases. QBO will not receive quantity on hand or inventory value. Bulk migration remains locked until the canaries are approved.
           </div>
           <div style={{padding:'12px 14px',background:'#ecfdf5',borderBottom:'1px solid #a7f3d0'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:4}}>Required invoice service item</div>
@@ -806,8 +951,8 @@ export default function QBPage(){
             {!livePreflightReady&&<div style={{fontSize:11,color:'#92400e',marginTop:7,fontWeight:600}}>Button disabled: open Overview and run Read-Only Live Preflight.</div>}
           </div>
           <div style={{padding:'12px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe'}}>
-            <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:4}}>Test exactly one zero-quantity QBO Inventory item</div>
-            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Creates one SKU with zero opening quantity, verifies Inventory type plus 40000/50000/12000 routing, and saves the portal link only after API read-back.</div>
+            <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:4}}>Test exactly one QBO NonInventory purchase item</div>
+            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Creates one SKU with no quantity or inventory value, verifies NonInventory type plus 40000/51300 routing, and saves the portal link only after API read-back.</div>
             <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
               <select className="form-input" aria-label="Product SKU to test in QuickBooks" style={{minWidth:420,maxWidth:700}} value={qbCanaryProductId} onChange={e=>setQbCanaryProductId(e.target.value)}>
                 <option value="">Select one active SKU...</option>
@@ -819,8 +964,8 @@ export default function QBPage(){
             {!livePreflightReady&&<div style={{fontSize:11,color:'#92400e',marginTop:7,fontWeight:600}}>Button disabled: open Overview and run Read-Only Live Preflight.</div>}
           </div>
           <div style={{padding:'12px 14px',background:'#fff7ed',borderBottom:'1px solid #fdba74'}}>
-            <div style={{fontSize:12,fontWeight:700,color:'#9a3412',marginBottom:4}}>Manual quantity adjustments require a QBO entry</div>
-            <div style={{fontSize:11,color:'#475569'}}>The portal logs the size-level adjustment and remains the inventory source of truth. Intuit's public QBO Accounting API does not expose the Adjust quantity/value on hand transaction, and changing an existing item's QtyOnHand is ignored by QBO. Accounting must enter the aggregate SKU difference in QBO and use 52400 Inventory Loss. No portal control or background batch will claim these adjustments were synced.</div>
+            <div style={{fontSize:12,fontWeight:700,color:'#9a3412',marginBottom:4}}>Inventory quantities stay in the portal</div>
+            <div style={{fontSize:11,color:'#475569'}}>QBO SKU items are NonInventory purchase items, so bills and POs carry quantities without changing QBO quantity on hand or inventory value. Manual portal inventory adjustments therefore remain portal-only.</div>
           </div>
           <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
             <table style={{fontSize:11}}>
@@ -924,7 +1069,7 @@ export default function QBPage(){
           <div>&#8226; <strong>Customers</strong> &#8594; QB Customers (name, contact, address, order totals in notes)</div>
           <div>&#8226; <strong>Invoices</strong> &#8594; QB Invoices (total amount as single line, payments applied)</div>
           <div>&#8226; <strong>Vendor Bills</strong> &#8594; Upload bills with PDF/image attachments directly into QB</div>
-          <div>&#8226; <strong>Inventory</strong> &#8594; One aggregate QBO Inventory Item per SKU using 12000 / 40000 / 50000; portal size/color totals are the source of truth</div>
+          <div>&#8226; <strong>Product Items</strong> &#8594; One QBO NonInventory Item per SKU using 40000 Sales / 51300 Purchases; portal inventory is the source of truth</div>
         </div>
       </div>}
     </>);

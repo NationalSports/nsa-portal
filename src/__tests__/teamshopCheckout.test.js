@@ -158,7 +158,10 @@ describe('quote_totals', () => {
 
   test('totals are server-recomputed: subtotal from the quote, shipping from the store, tax from calcTax', async () => {
     const out = await freshQuote();
-    expect(out.totals).toEqual({ subtotal: SUBTOTAL, shipping: 5, tax: TAX.tax, tax_state: 'CA', total: TOTAL });
+    expect(out.totals).toEqual({
+      subtotal: SUBTOTAL, shipping: 5, tax: TAX.tax,
+      tax_state: 'CA', tax_rate: TAX.rate, tax_source: TAX.source, total: TOTAL,
+    });
     expect(calcTaxSpy).toHaveBeenCalledWith(STORE, SHIP, SUBTOTAL, null);
   });
 

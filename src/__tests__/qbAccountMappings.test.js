@@ -14,10 +14,13 @@ import {
   isDecorationVendorBill,
   loadAllQBEntities,
   loadQBAccounts,
+  mapBillItemsToPortalSkus,
   manualBillAccountKey,
   migrateQBAccountMapping,
   parseQBDateValue,
   parseOmgDepositStatements,
+  planQBNonInventoryItems,
+  qbBillNeedsSync,
   qbWriteAccountRef,
   resolveQBAccount,
 } from '../qbAccountMappings';
@@ -178,6 +181,44 @@ describe('vendor bill adversarial routing', () => {
       .toBe(true);
   });
 
+  test('posts a matched SanMar line with the portal SKU instead of the vendor catalog number', () => {
+    const rawItems = [{
+      sku: '1220314', desc: 'LNEA500. NE Lds French Try Plo', size: 'L', qty: 1,
+      unit_price: 25.86, extension: 25.86,
+    }];
+    const mapped = mapBillItemsToPortalSkus(rawItems, [
+      { bill_idx: 0, sku: 'LNEA500', allocated_qty: 1 },
+    ]);
+    expect(mapped[0]).toMatchObject({ sku: 'LNEA500', qty: 1, extension: 25.86 });
+
+    const result = buildVendorBillLines({
+      kind: 'goods', po_number: 'PO 58892 AMAV', merchandise_total: 25.86,
+      freight: 19.75, si_upcharge: 0.37, doc_total: 45.98, items: mapped,
+    }, refs, { LNEA500: { value: 'qbo-lnea500', name: 'LNEA500' } });
+    expect(result.lines[0]).toMatchObject({
+      Amount: 25.86,
+      ItemBasedExpenseLineDetail: { ItemRef: { value: 'qbo-lnea500', name: 'LNEA500' }, Qty: 1 },
+    });
+  });
+
+  test('uses the review SKU resolver without a saved tie and blocks conflicting accepted ties', () => {
+    expect(mapBillItemsToPortalSkus([
+      { sku: '1220314', desc: 'LNEA500. NE Lds French Try Plo' },
+    ])[0].sku).toBe('LNEA500');
+    expect(() => mapBillItemsToPortalSkus([{ sku: '1220314' }], [
+      { bill_idx: 0, sku: 'LNEA500', allocated_qty: 1 },
+      { bill_idx: 0, sku: 'PC61', allocated_qty: 1 },
+    ])).toThrow(/multiple portal SKUs/i);
+  });
+
+  test('allows a failed bill write to retry without reopening completed results', () => {
+    expect(qbBillNeedsSync(null)).toBe(true);
+    expect(qbBillNeedsSync(undefined)).toBe(true);
+    expect(qbBillNeedsSync('error')).toBe(true);
+    expect(qbBillNeedsSync('success')).toBe(false);
+    expect(qbBillNeedsSync('partial')).toBe(false);
+  });
+
   test('removes portal-only account metadata from QBO write references', () => {
     expect(qbWriteAccountRef({value:146,name:'Accounts Payable',accountNumber:'21100'}))
       .toEqual({value:'146'});
@@ -218,6 +259,37 @@ describe('vendor bill adversarial routing', () => {
       {Id:'2',Name:'Legacy inventory item',Sku:'OLD',Type:'Inventory',Active:true},
     ], ['A']).A.value).toBe('1');
     expect(() => indexQBNonInventoryItems([], ['MISSING'])).toThrow(/SKU MISSING was not found/i);
+  });
+
+  test('plans zero-value NonInventory SKU creation for a legacy bill SKU outside the product catalog', () => {
+    const plan=planQBNonInventoryItems([],['st350','YST350'],{
+      income_account:{value:'sales',accountNumber:'40000'},
+      purchases_account:{value:'purchases',accountNumber:'51300'},
+    },{ST350:'Sport-Tek Competitor Tee',YST350:'Youth Competitor Tee'});
+    expect(plan.refs).toEqual({});
+    expect(plan.upserts.map(x=>[x.sku,x.action,x.item])).toEqual([
+      ['ST350','create',expect.objectContaining({Name:'ST350',Sku:'ST350',Type:'NonInventory',UnitPrice:0,PurchaseCost:0,IncomeAccountRef:{value:'sales'},ExpenseAccountRef:{value:'purchases'}})],
+      ['YST350','create',expect.objectContaining({Name:'YST350',Sku:'YST350',Type:'NonInventory',UnitPrice:0,PurchaseCost:0,IncomeAccountRef:{value:'sales'},ExpenseAccountRef:{value:'purchases'}})],
+    ]);
+  });
+
+  test('reuses correctly routed items and repairs only an exact NonInventory SKU with wrong accounts', () => {
+    const plan=planQBNonInventoryItems([
+      {Id:'1',SyncToken:'3',Name:'A',Sku:'A',Type:'NonInventory',Active:true,IncomeAccountRef:{value:'sales'},ExpenseAccountRef:{value:'purchases'}},
+      {Id:'2',SyncToken:'7',Name:'B',Sku:'B',Type:'NonInventory',Active:true,IncomeAccountRef:{value:'wrong'},ExpenseAccountRef:{value:'purchases'}},
+    ],['A','B'],{income_account:{value:'sales'},purchases_account:{value:'purchases'}});
+    expect(plan.refs).toEqual({A:{value:'1',name:'A'}});
+    expect(plan.upserts).toEqual([{sku:'B',action:'repair',item:expect.objectContaining({Id:'2',SyncToken:'7',sparse:true,IncomeAccountRef:{value:'sales'},ExpenseAccountRef:{value:'purchases'}})}]);
+  });
+
+  test('legacy bill item planning fails closed on duplicate or incompatible QBO SKUs', () => {
+    const acctRefs={income_account:{value:'sales'},purchases_account:{value:'purchases'}};
+    expect(()=>planQBNonInventoryItems([
+      {Id:'1',Sku:'A',Type:'NonInventory',Active:true},
+      {Id:'2',Sku:'a',Type:'NonInventory',Active:true},
+    ],['A'],acctRefs)).toThrow(/duplicated/i);
+    expect(()=>planQBNonInventoryItems([{Id:'1',Sku:'A',Type:'Inventory',Active:true}],['A'],acctRefs)).toThrow(/expected NonInventory/i);
+    expect(()=>planQBNonInventoryItems([{Id:'1',Name:'A',Sku:'OLD',Type:'NonInventory',Active:false}],['A'],acctRefs)).toThrow(/inactive/i);
   });
 
   test('blocks a SKU bill when the QBO item is missing or merchandise totals disagree', () => {

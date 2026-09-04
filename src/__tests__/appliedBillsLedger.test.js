@@ -6,7 +6,32 @@ import {
   LEGACY_APPLIED_BILL_COLS,
   isMissingLedgerColumnError,
   mergeServerBills,
+  portalBillAlreadyApplied,
 } from '../appliedBillsLedger';
+
+describe('portalBillAlreadyApplied', () => {
+  it('recognizes an explicit in-memory apply without consulting the ledger', () => {
+    const lookup = jest.fn();
+    expect(portalBillAlreadyApplied({ _applied: true, doc_number: 'D1' }, lookup)).toBe(true);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it('recognizes a prior portal apply by vendor document number', () => {
+    const lookup = jest.fn((doc) => doc === '163996611');
+    expect(portalBillAlreadyApplied({ doc_number: ' 163996611 ' }, lookup)).toBe(true);
+    expect(lookup).toHaveBeenCalledWith('163996611');
+  });
+
+  it('checks the Sports Inc document key when the vendor document is new', () => {
+    const lookup = jest.fn((doc, kind) => doc === '991' && kind === 'si');
+    expect(portalBillAlreadyApplied({ doc_number: 'NEW', si_doc_number: ' 991 ' }, lookup)).toBe(true);
+    expect(lookup).toHaveBeenLastCalledWith('991', 'si');
+  });
+
+  it('returns false when neither portal key was previously applied', () => {
+    expect(portalBillAlreadyApplied({ doc_number: 'D2', si_doc_number: '992' }, () => false)).toBe(false);
+  });
+});
 
 describe('buildAppliedBillRows', () => {
   const bill = (p, extra) => ({ parsed: p, ...extra });

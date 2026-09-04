@@ -875,7 +875,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               <td style={{...tdR,color:'#64748b'}}>{s.orders||0}</td>
               <td style={{...tdR,fontWeight:700}}>{money(s.total_sales)}</td>
               <td style={{...tdR,fontWeight:800,color:shownProfit==null?'#94a3b8':shownProfit>=0?'#166534':'#dc2626'}}>{shownProfit==null?'—':money(shownProfit)}{profit.baseline&&<div style={{fontSize:9,fontWeight:600,color:'#94a3b8'}}>baseline</div>}</td>
-              <td style={{...tdR,whiteSpace:'nowrap'}} onClick={e=>e.stopPropagation()}>{onOpenOmgStore&&<button className="btn btn-sm btn-secondary" onClick={()=>onOpenOmgStore(s.id)}>Open store →</button>}</td>
+              <td style={{...tdR,whiteSpace:'nowrap'}} onClick={e=>e.stopPropagation()}>{onOpenOmgStore?<button className="btn btn-sm btn-secondary" onClick={()=>onOpenOmgStore(s.id)}>Open store →</button>:<span title="Ask an admin to enable OMG Stores in Team Access" style={{fontSize:10,color:'#94a3b8'}}>OMG access required</span>}</td>
             </tr>
             {ex&&detailRow(10,[metric('Orders',s.orders||0),metric('Items sold',s.items_sold||0),metric('Sales',money(s.total_sales)),metric('Fundraising',money(s.fundraise_total)),metric('Buyers',s.unique_buyers||0),metric('Delivery',deliv),latest?metric('Profit month',String(latest.period_month).slice(0,7)):null,latest?metric(totalLabel+' collected',money(latest.product_collected)):null,latest?metric(totalLabel+' item cost',money(latest.item_cost)):null,latest?metric(totalLabel+' product profit',money(latest.product_profit)):null,profit.netProfit!=null?metric('Monthly profit after fees',money(profit.netProfit)):null,latest?.source_mode?metric('Source',latest.source_mode==='omg_api'?'Nightly OMG API':'Manual import'):null,latest?.validation_status==='held'?metric('Commission','On hold'):null,profit.baseline?metric('Monthly calculation','Baseline saved'):null])}
           </React.Fragment>;})}
@@ -2114,7 +2114,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           {/* Mockup artwork display */}
           {mockupFiles2.length>0&&<div style={{marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>🖼️ Artwork Mockup</div>
-            {_mf2ProofOnly&&<div style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde047',borderRadius:6,padding:'6px 10px',marginBottom:8}}>♻️ Sew-out proof from production files — not a garment mockup</div>}
+            {_mf2ProofOnly&&<div style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde047',borderRadius:6,padding:'6px 10px',marginBottom:8}}>{/embroid/.test(String(j.deco_type||'').toLowerCase())?'♻️ Sew-out proof from production files — not a garment mockup':'♻️ Screen-print proof from production files'}</div>}
             {mockupFiles2.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
               return<div key={fi} style={{borderRadius:10,border:'1px solid #e2e8f0',overflow:'hidden',background:'white',marginBottom:8}}>
                 {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}/>

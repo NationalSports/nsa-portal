@@ -66,9 +66,9 @@ function getSb() {
   return createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
 }
 
-// Exact allow-list from webstores_public. Keep this explicit so a future view
-// expansion cannot silently expose a staff-only webstores column here.
-const PUBLIC_STORE_FIELDS = 'id,slug,name,status,open_at,close_at,payment_mode,require_login,number_enabled,number_unique,number_min,number_max,fundraise_enabled,fundraise_show_parents,logo_url,banner_url,primary_color,accent_color,hero_blurb,theme,ship_home_enabled,deliver_club_enabled,delivery_mode,flat_shipping,public_listed,featured_product_ids,processing_pct,storefront_template,sport';
+// Exact public allow-list. Keep this explicit so a future base-table expansion
+// cannot silently expose a staff-only webstores column here.
+const PUBLIC_STORE_FIELDS = 'id,slug,name,status,open_at,close_at,payment_mode,require_login,number_enabled,number_unique,number_min,number_max,fundraise_enabled,fundraise_show_parents,logo_url,banner_url,primary_color,accent_color,hero_blurb,theme,ship_home_enabled,deliver_club_enabled,delivery_mode,delivery_window_weeks,flat_shipping,public_listed,featured_product_ids,processing_pct,storefront_template,sport';
 const PUBLIC_INVENTORY_FIELDS = 'sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced,source';
 const safeText = (value, max) => String(value || '').trim().slice(0, max);
 const uniqueTextList = (values, maxItems, maxLength) => [...new Set((Array.isArray(values) ? values : [])
@@ -138,7 +138,10 @@ async function publicStorefrontProducts(sb, body) {
 async function publicStorefront(sb, body) {
   const slug = safeText(body.slug, 120);
   if (!slug || !/^[a-z0-9][a-z0-9-]*$/i.test(slug)) return bad(400, 'Invalid store slug');
-  const { data: stores, error: storeError } = await sb.from('webstores_public').select(PUBLIC_STORE_FIELDS).eq('slug', slug).limit(1);
+  // This handler uses the service role and returns only PUBLIC_STORE_FIELDS.
+  // Reading the base row lets newly added curated fields ship without widening
+  // the separately secured directory-search view.
+  const { data: stores, error: storeError } = await sb.from('webstores').select(PUBLIC_STORE_FIELDS).eq('slug', slug).limit(1);
   if (storeError) throw storeError;
   const store = (stores || [])[0];
   if (!store || store.status === 'archived') return bad(404, 'Store not found');
@@ -611,9 +614,10 @@ async function taxcloudRate({ street1, city, state, zip }) {
 }
 
 // Returns { tax, rate, state, source } for a taxable base (product subtotal).
+// Resolve the destination before the zero-base shortcut so even a fully comped
+// order keeps the immutable jurisdiction used by reporting.
 async function calcTax(store, ship, taxableBase, billing) {
   const base = Math.max(0, Number(taxableBase) || 0);
-  if (base <= 0) return { tax: 0, rate: 0, state: '', source: 'zero_base' };
   const isPickup = store.delivery_mode !== 'ship_home';
   let dest;
   if (isPickup) {
@@ -633,6 +637,7 @@ async function calcTax(store, ship, taxableBase, billing) {
   } else {
     dest = { street1: ship.street1 || '', city: ship.city || '', state: String(ship.state || '').toUpperCase(), zip: String(ship.zip || '').slice(0, 5) };
   }
+  if (base <= 0) return { tax: 0, rate: 0, state: dest.state || '', source: 'zero_base' };
   if (!dest.state) return { error: TAX_RETRY_ERROR, state: '', source: 'missing_destination_state' };
   if (!taxCollectStates().includes(dest.state)) return { tax: 0, rate: 0, state: dest.state, source: 'not_registered' };
   if (dest.state === 'CA') {
@@ -787,9 +792,9 @@ async function placeOrder(sb, body) {
   // When a coupon fully covers the pre-tax total the order is comped — charge no tax
   // either, so we never create an "unpaid" order carrying tax that is never collected
   // (and never email a buyer a total they weren't charged).
-  const taxRes = preTax > 0 ? await calcTax(store, ship || {}, taxableBaseAfterDiscount(priced.feeBase, discount, cartTotal, shipping, coupon), {
+  const taxRes = await calcTax(store, ship || {}, taxableBaseAfterDiscount(priced.feeBase, discount, cartTotal, shipping, coupon), {
     street1: buyer.billing_street1, city: buyer.billing_city, zip: buyer.zip, state: buyer.state,
-  }) : { tax: 0 };
+  });
   if (taxRes.error) return bad(503, taxRes.error, { code: 'tax_unavailable' });
   const tax = taxRes.tax;
   const total = r2(preTax + tax);
@@ -817,6 +822,9 @@ async function placeOrder(sb, body) {
     ship_address: needAddr ? { name: (ship.name || buyer.name || '').slice(0, 120), street1: ship.street1, street2: ship.street2 || '', city: ship.city, state: ship.state, zip: ship.zip } : null,
     ship_method: store.delivery_mode,
     subtotal: priced.subtotal, fundraise_amt: priced.fundraise, shipping_fee: shipping, processing_fee: processing, tax, total,
+    tax_state: taxRes.state ? String(taxRes.state).toUpperCase() : null,
+    tax_rate: Number(taxRes.rate) || 0,
+    tax_source: taxRes.source || 'unknown',
     coupon_code: coupon ? coupon.code : null, discount_amt: discount,
     ...(isClubStore ? { order_source: 'club', customer_id: store.customer_id || null } : {}),
   };
@@ -1035,7 +1043,7 @@ async function quoteTotals(sb, body) {
   const taxRes = await calcTax(store, ship || {}, taxableBaseAfterDiscount(priced.feeBase, discount, cartTotal, shipping, coupon), billing);
   if (taxRes.error) return bad(503, taxRes.error, { code: 'tax_unavailable' });
   const total = r2(preTax + taxRes.tax);
-  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ totals: { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, processing, discount, tax: taxRes.tax, tax_state: taxRes.state, total } }) };
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ totals: { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, processing, discount, tax: taxRes.tax, tax_state: taxRes.state, tax_rate: taxRes.rate, tax_source: taxRes.source, total } }) };
 }
 
 async function finalize(sb, body) {
@@ -1129,7 +1137,7 @@ async function publicSettings(sb) {
 const PUBLIC_ORDER_FIELDS = [
   'id', 'store_id', 'status', 'buyer_name', 'ship_method', 'ship_address',
   'subtotal', 'fundraise_amt', 'shipping_fee', 'processing_fee',
-  'discount_amt', 'tax', 'total', 'payment_mode', 'coupon_code', 'created_at',
+  'discount_amt', 'tax', 'tax_state', 'tax_rate', 'tax_source', 'total', 'payment_mode', 'coupon_code', 'created_at',
   'shipped_at', 'tracking_number', 'carrier',
   'omg_order_number', 'order_number', 'status_token',
 ].join(',');

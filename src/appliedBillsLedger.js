@@ -11,6 +11,21 @@ const _norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
 // null a string total — coerce here instead. Garbage still maps to 0.
 const _total = (v) => { const n = typeof v === 'number' ? v : (v == null || String(v).trim() === '' ? NaN : Number(v)); return Number.isFinite(n) ? n : 0; };
 
+// A QBO backfill can legitimately target a bill whose quantities/costs were
+// already applied in the portal before the accounting connection existed. In
+// that case the QBO write must not apply the same quantities a second time.
+// Check both portal dedup keys because Sports Inc bills may be recorded by the
+// vendor document number or by their SI document number.
+export const portalBillAlreadyApplied = (bill, docAlreadyApplied) => {
+  if (!bill) return false;
+  if (bill._applied) return true;
+  if (typeof docAlreadyApplied !== 'function') return false;
+  const doc = String(bill.doc_number == null ? '' : bill.doc_number).trim();
+  if (doc && docAlreadyApplied(doc)) return true;
+  const siDoc = String(bill.si_doc_number == null ? '' : bill.si_doc_number).trim();
+  return !!siDoc && !!docAlreadyApplied(siDoc, 'si');
+};
+
 // Shape ledger rows (full, post-00184 column set) from pushed bills. One row per
 // keyable bill — a bill with neither a doc # nor an SI/S&S order # can't be keyed
 // and stays guarded by the client-side SO _bill_details scan.

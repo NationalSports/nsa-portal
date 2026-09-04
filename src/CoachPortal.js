@@ -1794,7 +1794,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 </div>})}
             </div>{_myDeps.length>0&&<div style={{padding:'6px 14px',background:'#eef2ff',fontSize:11,fontWeight:700,color:'#3730a3',textAlign:'center'}}>One mockup — also applies to {_myDeps.map(k=>k.split('|')[0]).join(', ')}</div>}</>}
             {!_mySrc&&itemMockups.length===0&&itemProofFiles.length>0&&<>
-              <div style={{padding:'8px 14px',background:'#fffbeb',border:'1px solid #fde047',borderTop:'none',borderBottom:'none',fontSize:11,fontWeight:700,color:'#92400e',textAlign:'center'}}>♻️ Sew-out proof from production files — not a garment mockup</div>
+              <div style={{padding:'8px 14px',background:'#fffbeb',border:'1px solid #fde047',borderTop:'none',borderBottom:'none',fontSize:11,fontWeight:700,color:'#92400e',textAlign:'center'}}>{_isEmb?'♻️ Sew-out proof from production files — not a garment mockup':'♻️ Screen-print proof from production files'}</div>
               <div style={{display:'grid',gridTemplateColumns:itemProofFiles.length>1?'1fr 1fr':'1fr',gap:2,background:'#f1f5f9'}}>
                 {itemProofFiles.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(url,f);
                   return<div key={fi} style={{background:'white',cursor:isUrl(url)?'pointer':'default'}} onClick={()=>{if(isUrl(url))setLightbox(url)}}>
