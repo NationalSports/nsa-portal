@@ -27350,7 +27350,7 @@ export default function App(){
         // write path, and a previously held bill must be able to clear after a real rematch.
         // Do not use _billIsReadyToPush/_billTriage here: both intentionally honor the prior
         // hold and would prevent this fresh safety evaluation from ever clearing it.
-        const candidates=(bills||[]).filter(b=>b&&b.parsed&&!b.parsed._ai_parsed&&!b.parsed.is_credit&&!earlyPayFreightWaiver(b.parsed).eligible&&_billIsBaseReadyToPush(b)&&!_validateBillForPush(b.parsed).length);
+        const candidates=(bills||[]).filter(b=>b&&!b._qbBackfill&&b.parsed&&!b.parsed._ai_parsed&&!b.parsed.is_credit&&!earlyPayFreightWaiver(b.parsed).eligible&&_billIsBaseReadyToPush(b)&&!_validateBillForPush(b.parsed).length);
         if(!candidates.length)return 0;
         // DIRECT-PATH SAFETY GATE (Fable audit, 2026-07-22): _validateBillForPush checks
         // neither price nor vendor, and the $0-freight auto-mapping path can rewrite order
@@ -29333,7 +29333,10 @@ export default function App(){
     const _autoResolveDuplicates=()=>{
       const isDup=(x,wrapper)=>{
         if(x.dupOverride||x.portalStatus==='success')return false;
-        if(wrapper&&(x.reviewLater||x.qbStatus==='success'))return false;
+        // A Bill History backfill is supposed to refer to an already-applied
+        // portal document. Keep that explicitly loaded row alive long enough
+        // to reach the QBO-only pipeline; every portal writer excludes it.
+        if(wrapper&&(x.reviewLater||x.qbStatus==='success'||x._qbBackfill))return false;
         const d=(x.parsed?.doc_number||'').trim();
         return !!d&&_docAlreadyApplied(d);
       };
