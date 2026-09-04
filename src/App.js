@@ -29346,7 +29346,11 @@ export default function App(){
       // Owner rule ("my approval should do all this"): once a human accepted a proposal
       // that flagged the overage (_overage_ok), over-billing stops blocking — the push
       // corrects the order line up to what was billed, with an audit entry.
-      if(!(p._overage_ok&&(p._lineMappings||[]).length))errs.push(..._billOverBillingErrors(p,autoMaps||undefined));
+      // A QBO backfill never applies portal quantities. Comparing the already-
+      // billed PO to the same historic invoice would manufacture an overage
+      // (e.g. 2 already billed + the same 2 again) and block the accounting-only
+      // write even though the portal writer is explicitly disabled.
+      if(!p._qbBackfill&&!(p._overage_ok&&(p._lineMappings||[]).length))errs.push(..._billOverBillingErrors(p,autoMaps||undefined));
       return errs;
     };
 

@@ -88,6 +88,7 @@ describe('supplier-bill apply paths (App.js)', () => {
     expect(APP).toContain('updated.push({...cleanSource,parsed:cleanParsed,qbStatus:result.qbStatus');
     expect(APP).toContain("x.reviewLater||x.qbStatus==='success'||x._qbBackfill");
     expect(APP).toContain("filter(b=>b&&!b._qbBackfill&&b.parsed");
+    expect(APP).toContain("if(!p._qbBackfill&&!(p._overage_ok");
   });
 });
 
