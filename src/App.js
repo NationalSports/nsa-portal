@@ -25486,7 +25486,7 @@ export default function App(){
   const[ssXref,setSsXref]=useState({open:false,step:'idle',plan:null,progress:null,result:null});
   const _billReviewBusyRef=useRef(false);// deploy-reload gate: true while unpushed bills sit in review in this tab
   const[reviewSnap,setReviewSnap]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_bill_review_session')||'null')}catch(e){return null}});// crash/deploy-reload recovery (Resume banner)
-  useEffect(()=>{_billReviewBusyRef.current=billImport.step==='review'&&billImport.parsed.some(b=>!b.portalStatus&&!b.reviewLater)},[billImport]);
+  useEffect(()=>{_billReviewBusyRef.current=billImport.step==='review'&&billImport.parsed.some(b=>!b.reviewLater&&(!b.portalStatus||(b.portalStatus==='success'&&qbBillNeedsSync(b.qbStatus))))},[billImport]);
   // Persist the in-review list so a deploy auto-reload (or crash) never costs the session —
   // the upload step then offers "Resume review". matchedPO/_lineMappings are dropped from the
   // snapshot and re-derived on resume through the same rematch pipeline a fresh pull uses, so
@@ -25514,7 +25514,7 @@ export default function App(){
     if(billImport.step==='review')return;// a fresh pull already loaded the list
     if(!(Array.isArray(sos)&&sos.length))return;// orders must be in before we re-match
     const rows=(reviewSnap&&Array.isArray(reviewSnap.bills))?reviewSnap.bills:[];
-    const pend=rows.filter(b=>b&&!b.portalStatus&&!b.reviewLater);
+    const pend=rows.filter(b=>b&&!b.reviewLater&&(!b.portalStatus||(b.portalStatus==='success'&&qbBillNeedsSync(b.qbStatus))));
     if(!pend.length||!reviewSnap.ts||Date.now()-reviewSnap.ts>3*24*3600*1000)return;
     if(typeof _autoResumeRef.current==='function'){_autoResumedOnce.current=true;_autoResumeRef.current()}
   },[pg,billView,billImport.step,sos,reviewSnap]);
@@ -28112,6 +28112,18 @@ export default function App(){
       return true;
     };
 
+    // QBO has a separate readiness gate from the Portal writer. A clean bill may
+    // already have been auto-applied to the portal while it is still waiting for
+    // its QBO Bill. Keep that row eligible for QBO without letting it re-enter the
+    // Portal push path. Failed portal writes remain fail-closed.
+    const _billIsReadyForQB=b=>{
+      if(!b||b.reviewLater)return false;
+      if(b.portalStatus&&b.portalStatus!=='success'&&!b._qbBackfill)return false;
+      if(!_billHasTarget(b.parsed))return false;
+      if(_liveBillPushHoldReasons(b.parsed).length)return false;
+      return true;
+    };
+
     // Toggle a bill's "look at later" flag from saved history / the Look at Later page. val=true parks
     // it (also pulling it out of the review list if it's still there); val=false resolves/un-parks it.
     const _setBillReviewLater=(billId,val)=>{
@@ -29990,7 +30002,7 @@ export default function App(){
     const pushBillsToQB=async()=>{
       if(qbConfig.preflight?.status!=='success'||String(qbConfig.preflight?.realm_id||'')!==String(qbConfig.realm_id||'')){nf('Run the read-only live QBO preflight before sending any parsed bill','error');return}
       const selectedEntries=billImport.parsed.map((row,index)=>({row,index}))
-        .filter(({row})=>_billIsReadyToPush(row)&&!_billTriage(row)?.issue&&qbBillNeedsSync(row.qbStatus));
+        .filter(({row})=>_billIsReadyForQB(row)&&qbBillNeedsSync(row.qbStatus));
       if(!selectedEntries.length){nf('No matched bills to push','error');return}
       const canaryMode=qbConfig.initialMigrationApproved!==true;
       const completedCanaries=new Set((qbConfig._qbCanaryBillIds||[]).map(String));
@@ -31252,7 +31264,7 @@ export default function App(){
             re-pull and re-orient. Hidden once resumed/discarded or when everything was pushed. */}
         {billImport.step==='upload'&&(()=>{
           const rows=(reviewSnap&&Array.isArray(reviewSnap.bills)?reviewSnap.bills:[]);
-          const pend=rows.filter(b=>b&&!b.portalStatus&&!b.reviewLater);
+          const pend=rows.filter(b=>b&&!b.reviewLater&&(!b.portalStatus||(b.portalStatus==='success'&&qbBillNeedsSync(b.qbStatus))));
           if(!pend.length||!reviewSnap.ts||Date.now()-reviewSnap.ts>3*24*3600*1000)return null;
           return<div style={{marginBottom:12,padding:'10px 16px',borderRadius:8,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',background:'#eff6ff',border:'1px solid #93c5fd'}}>
             <span style={{fontSize:18}}>⏪</span>
@@ -31308,6 +31320,7 @@ export default function App(){
               ⚠ To Review header above (single source, no clashing duplicates). */}
           const _matchedHeader=!_inReview?null:(()=>{
             const ready=billImport.parsed.filter(b=>_billIsReadyToPush(b)&&!_billTriage(b)?.issue);
+            const qbReady=billImport.parsed.filter(b=>_billIsReadyForQB(b)&&qbBillNeedsSync(b.qbStatus));
             const readyTotal=ready.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
             const portalReady=ready.filter(b=>!b._qbBackfill);
             const portalReadyTotal=portalReady.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
@@ -31321,7 +31334,7 @@ export default function App(){
                 </div>
                 <div style={{marginLeft:'auto',display:'flex',flexDirection:'column',justifyContent:'center',gap:9,padding:'16px 24px',background:'rgba(0,0,0,.16)'}}>
                   {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!portalReady.length,onClick:()=>pushBillsToPortal(),children:<>Push {portalReady.length} matched → Portal{portalReadyTotal>0?' · '+nsaMoney(portalReadyTotal):''}</>})}
-                  {qbOperator&&skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for the same matched pile':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!ready.some(b=>qbBillNeedsSync(b.qbStatus)),onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':(qbConfig.initialMigrationApproved===true?'Push next batch to QuickBooks':'Test 1 in QuickBooks')})}
+                  {qbOperator&&skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for portal-complete or currently matched rows':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!qbReady.length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':(qbConfig.initialMigrationApproved===true?'Push next batch to QuickBooks ('+Math.min(20,qbReady.length)+' of '+qbReady.length+')':'Test 1 in QuickBooks')})}
                   <label title="Push high-confidence matched bills to the portal automatically at pull time (and after the AI pass) — any bill the push button would take with zero problems. Anything with an exception waits for review. Auto-pushed bills are tagged in Bill History and covered by the daily anomaly email." style={{display:'flex',alignItems:'center',gap:7,cursor:'pointer',fontSize:11,color:'rgba(255,255,255,.75)',fontFamily:FD,fontWeight:600,letterSpacing:.4}}>
                     <input type="checkbox" checked={billAutoPush} onChange={e=>{const on=e.target.checked;setBillAutoPush(on);try{localStorage.setItem('nsa_bill_autopush',on?'on':'off')}catch(err){}}} style={{accentColor:'#6FD59A',margin:0}}/>
                     ⚡ Auto-push clean bills</label>
