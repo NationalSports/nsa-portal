@@ -35,11 +35,13 @@ in one deployment unless the compatible gateway is already live.
 
 ## Phase C: rotation
 
-For each customer, issue a 256-bit random opaque token through the admin-only
-credential endpoint. Replace generated and manually managed links, then verify the
-new link. Disable the customer's `legacy_alpha_tag` credential only after its known
-links have been replaced. Record `disabled_at` and `replaced_by`; do not change or
-delete `customers.alpha_tag`, because it remains business display/search data.
+For each customer, active staff can issue a 256-bit random opaque token through
+the credential endpoint. Replace generated and manually managed links, then
+verify the new link. An admin must disable the customer's `legacy_alpha_tag`
+credential only after its known links have been replaced. The endpoint records
+`disabled_at`; record the old and replacement credential IDs in the rotation
+inventory. It does not populate `replaced_by`. Do not change or delete
+`customers.alpha_tag`, because it remains business display/search data.
 
 Rotation is deliberately per customer and reversible by clearing `disabled_at`
 during the transition. Never bulk-disable legacy credentials without an external
