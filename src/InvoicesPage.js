@@ -5,12 +5,15 @@
 import React from 'react';
 import { useAppData } from './AppContext';
 import { D_V, PRINT_CSS, orderedSizeKeys } from './constants';
-import { supabase, _dbSaveInvoice, _fetchHistInvoiceLines } from './lib/dbEngine';
+import { supabase, _dbSaveInvoice, _dbCreateInvoiceCreditMemo, _fetchHistInvoiceLines } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safePicks, safeSizes, soLineKey } from './safeHelpers';
 import { isCommissionRep } from './businessLogic';
+import { applyHistoricalInvoicePayment, historicalInvoiceAr } from './lib/historicalInvoiceAr';
+import { calculateCreditMemo, creditableBalance, creditedTotal, seedCreditMemoLines, setCreditMemoLineQty, validateCreditMemo } from './invoiceCreditMemo';
 import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub, resolveOrderShipTo, billToIdFor } from './components';
 import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled, greetLine, withGreeting, emailMoney } from './utils';
 import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms } from './App';
+import { stripePaymentRepairCandidate } from './lib/invoicePaymentReconciliation';
 
 // The sent_history entry Brevo told us never arrived (hard bounce / blocked / spam).
 // Read from history rather than the client-only _delivery_* fields so the failure is
@@ -29,7 +32,7 @@ function AutoRunOnce({run}){
 }
 
 export default function InvoicesPage(){
-  const {CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,voidInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
+  const {CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,voidInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setCust,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
 
     // Move ONE invoice to another rep (invoices.rep_id). Clearing it ('') returns the invoice to
     // the account rep. This replaced changeDocRep() here: that wrote customers.primary_rep_id, so
@@ -53,6 +56,35 @@ export default function InvoicesPage(){
     // detail page (nothing else reads it), keyed by invoice id so a slip left open never shows
     // up over a different invoice.
     const [packSlip,setPackSlip]=React.useState(null);
+    const [creditMemoModal,setCreditMemoModal]=React.useState(null);
+
+    // Repair the exact orphan state shown by an open invoice with a covering Stripe
+    // payment in its history. finalize_invoice retrieves the PaymentIntent from Stripe
+    // and validates its invoice metadata before applying it; this client does not trust
+    // the payment-history row on its own.
+    const paymentRepair=React.useMemo(()=>{
+      if(!viewInvoice)return null;
+      return stripePaymentRepairCandidate(invs.find(i=>i.id===viewInvoice.id)||viewInvoice);
+    },[viewInvoice,invs]);
+    const paymentRepairsAttempted=React.useRef(new Set());
+    React.useEffect(()=>{
+      if(!paymentRepair)return;
+      const key=paymentRepair.invoiceId+':'+paymentRepair.intentId;
+      if(paymentRepairsAttempted.current.has(key))return;
+      paymentRepairsAttempted.current.add(key);
+      let live=true;
+      (async()=>{try{
+        const response=await fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:paymentRepair.intentId})});
+        const result=await response.json().catch(()=>({}));
+        if(!live||!response.ok||!result.ok||result.underpaid)return;
+        const{data,error}=await supabase.from('invoices').select('*').eq('id',paymentRepair.invoiceId).single();
+        if(!live||error||!data)return;
+        setInvs(prev=>prev.map(i=>i.id===data.id?{...i,...data}:i));
+        setViewInvoice(prev=>prev&&prev.id===data.id?{...prev,...data}:prev);
+        nf('Stripe payment applied to '+data.id);
+      }catch(e){/* best-effort recovery; the invoice remains visibly open if verification fails */}})();
+      return()=>{live=false};
+    },[paymentRepair,nf,setInvs,setViewInvoice]);
 
     // Invoices usually go to a coach plus a billing/AP contact, so the greeting names whoever
     // is checked ("Hi Cam and Hillary,"). Only the greeting line is swapped — edits below it stay.
@@ -104,17 +136,18 @@ export default function InvoicesPage(){
     const sortIcon=(f)=>invSort.f===f?(invSort.d==='asc'?'▲':'▼'):'⇅';
 
     const recordPayment=(inv,amount,method,ref)=>{
-      // NetSuite-imported invoices live in customer_invoices and don't track
-      // a `paid` numeric. We just flip the status locally so the portal stops
-      // showing them as open; reconciliation back to NetSuite is handled there.
+      // NetSuite-imported invoices store the authoritative remaining amount in
+      // open_balance. Reduce it here as well as changing status so a partial
+      // payment cannot reappear at the invoice's full original face value.
       if(inv._hist){
-        const newStatus=amount>=safeNum(inv.total)?'paid':'partial';
+        const payment=applyHistoricalInvoicePayment(inv,amount);
+        if(payment.applied<=0){nf('This NetSuite invoice has no open balance','error');return}
         if(supabase&&inv.netsuite_internal_id){
-          (async()=>{try{await supabase.from('customer_invoices').update({status:newStatus}).eq('netsuite_internal_id',inv.netsuite_internal_id)}catch(e){console.warn('[recordPayment hist] failed:',e.message)}})();
+          (async()=>{try{await supabase.from('customer_invoices').update({status:payment.status,open_balance:payment.open_balance}).eq('netsuite_internal_id',inv.netsuite_internal_id)}catch(e){console.warn('[recordPayment hist] failed:',e.message)}})();
         }
-        setHistInvs(prev=>prev.map(i=>i.netsuite_internal_id===inv.netsuite_internal_id?{...i,status:newStatus}:i));
+        setHistInvs(prev=>prev.map(i=>i.netsuite_internal_id===inv.netsuite_internal_id?{...i,status:payment.status,open_balance:payment.open_balance}:i));
         setPayModal(null);
-        nf('Marked '+inv.id+' as '+newStatus+' (NetSuite — please mark paid in NS to keep AR in sync)');
+        nf('$'+payment.applied.toLocaleString()+' applied to '+inv.id+' — $'+payment.open_balance.toLocaleString()+' remains (please reconcile in NetSuite)');
         return;
       }
       const fee=method==='cc'?Math.round(amount*CC_FEE_PCT*100)/100:0;
@@ -189,6 +222,63 @@ export default function InvoicesPage(){
         return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:qty*(safeNum(it.unit_sell)+decoSell),
           _unitSell:safeNum(it.unit_sell),_decoSell:decoSell,_decos:decoDetails,_sku:it.sku,_name:it.name,_color:it.color,_so_line_key:soLineKey(it,_soIdx)}}).filter(Boolean):[];
       const lineItems=storedLineItems.length>0?storedLineItems:soComputedItems;
+      const creditMemos=inv.credit_memos||[];
+      const remainingCredit=creditableBalance(inv);
+      const activeCreditCalc=creditMemoModal&&creditMemoModal.invoiceId===inv.id
+        ?calculateCreditMemo({invoice:{...inv,line_items:lineItems},lines:creditMemoModal.lines,shipping:creditMemoModal.shipping})
+        :null;
+      const openCreditMemo=()=>{
+        const lines=lineItems.length
+          ?seedCreditMemoLines(lineItems,creditMemos)
+          :[{index:0,desc:'Credit adjustment',sku:'',max_qty:remainingCredit,qty:0,rate:1,is_amount:true}];
+        setCreditMemoModal({
+          invoiceId:inv.id,
+          date:new Date().toLocaleDateString('en-CA'),
+          reason:'',
+          shipping:0,
+          lines,
+          posting:false,
+        });
+      };
+      const postCreditMemo=async()=>{
+        if(!creditMemoModal||!activeCreditCalc)return;
+        const validation=validateCreditMemo({invoice:inv,calculation:activeCreditCalc,reason:creditMemoModal.reason});
+        if(validation){nf(validation,'error');return}
+        setCreditMemoModal(s=>({...s,posting:true}));
+        const payload={
+          invoice_id:inv.id,
+          subtotal:activeCreditCalc.subtotal,
+          tax:activeCreditCalc.tax,
+          shipping:activeCreditCalc.shipping,
+          reason:creditMemoModal.reason.trim(),
+          memo_date:creditMemoModal.date,
+          line_items:activeCreditCalc.line_items,
+          created_by:cu?.id||cu?.name||null,
+        };
+        let result;
+        if(supabase){
+          result=await _dbCreateInvoiceCreditMemo(payload);
+          if(!result||result.error){
+            nf('Credit memo was not posted: '+(result?.error||'database did not confirm the posting'),'error');
+            setCreditMemoModal(s=>s?{...s,posting:false}:s);
+            return;
+          }
+        }else{
+          const now=new Date().toISOString();
+          const id='CM-LOCAL-'+Date.now();
+          result={
+            memo:{id,invoice_id:inv.id,customer_id:inv.customer_id,customer_credit_id:'credit-'+id.toLowerCase(),memo_date:payload.memo_date,...activeCreditCalc,reason:payload.reason,created_by:payload.created_by,created_at:now},
+            credit:{id:'credit-'+id.toLowerCase(),customer_id:inv.customer_id,amount:activeCreditCalc.amount,used:0,source:'Credit memo '+id+' for '+inv.id+' — '+payload.reason,created_by:payload.created_by,created_at:now},
+          };
+        }
+        const memo=result.memo;const credit=result.credit;
+        const attachMemo=x=>x.id===inv.id?{...x,credit_memos:[...(x.credit_memos||[]),memo]}:x;
+        setInvs(prev=>prev.map(attachMemo));
+        setViewInvoice(prev=>prev&&prev.id===inv.id?attachMemo(prev):prev);
+        setCust(prev=>prev.map(c=>c.id===inv.customer_id?{...c,credits:[...(c.credits||[]),credit]}:c));
+        setCreditMemoModal(null);
+        nf(memo.id+' posted — $'+safeNum(memo.amount).toFixed(2)+' is now available on '+(ic?.name||'the customer')+' account');
+      };
       const shipAmt=inv.shipping||0;
       const taxAmt=inv.tax||0;
       const subtotal=lineItems.reduce((a,li)=>a+safeNum(li.amount),0);
@@ -388,6 +478,10 @@ export default function InvoicesPage(){
             {/* Portal-only actions. A NetSuite invoice carries no line items here, so editing it
                 writes an empty shell, and printing/sending it would show the customer a $0 document. */}
             {!inv._hist&&<>
+            <button className="btn btn-sm" style={{fontSize:12,padding:'6px 14px',background:'#fff7ed',color:'#9a3412',border:'1px solid #fdba74'}}
+              disabled={remainingCredit<=0.005}
+              title={remainingCredit<=0.005?'No paid amount remains available to credit':'Post a reusable account credit without changing the original invoice or its payments'}
+              onClick={openCreditMemo}>Credit Memo</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
                 // Seed billing_custom: true if there's an override that doesn't match any alt billing address on the customer
@@ -463,6 +557,19 @@ export default function InvoicesPage(){
             {canDelete&&<button className="btn btn-sm" style={{fontSize:12,padding:'6px 14px',color:'#dc2626',border:'1px solid #fca5a5',background:'white',marginLeft:String(inv.status||'').toLowerCase()==='void'?'auto':8}}
               onClick={()=>{deleteInvoice(inv.id);setViewInvoice(null)}}>Delete</button>}
           </div>
+
+          {creditMemos.length>0&&<div className="card-body" style={{padding:'12px 24px',borderBottom:'1px solid #e2e8f0',background:'#fffaf0'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+              <span style={{fontSize:11,fontWeight:800,color:'#9a3412',textTransform:'uppercase'}}>Credit Memos</span>
+              <span style={{fontSize:11,fontWeight:700,color:'#166534'}}>${creditedTotal(inv).toFixed(2)} posted to account · ${remainingCredit.toFixed(2)} creditable</span>
+            </div>
+            {creditMemos.map(cm=><div key={cm.id} style={{display:'grid',gridTemplateColumns:'90px 95px 1fr 110px',gap:10,alignItems:'center',fontSize:12,padding:'5px 0',borderTop:'1px solid #ffedd5'}}>
+              <span style={{fontWeight:800,color:'#9a3412'}}>{cm.id}</span>
+              <span style={{color:'#64748b'}}>{cm.memo_date||'—'}</span>
+              <span>{cm.reason}</span>
+              <span style={{fontWeight:800,color:'#166534',textAlign:'right'}}>-${safeNum(cm.amount).toFixed(2)}</span>
+            </div>)}
+          </div>}
 
           {/* Invoice info grid */}
           <div className="card-body" style={{padding:'20px 24px'}}>
@@ -874,6 +981,57 @@ export default function InvoicesPage(){
                 }}>📥 Download PDF</button>
             </div>
           </div></div>})()}
+
+        {/* ═══ CREDIT MEMO MODAL ═══ */}
+        {creditMemoModal&&creditMemoModal.invoiceId===inv.id&&activeCreditCalc&&<div className="modal-overlay" onClick={()=>{if(!creditMemoModal.posting)setCreditMemoModal(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:760,maxHeight:'92vh',display:'flex',flexDirection:'column'}}>
+          <div className="modal-header" style={{background:'#9a3412',color:'white'}}>
+            <h2 style={{color:'white'}}>Credit Memo — {inv.id}</h2>
+            <button className="modal-close" style={{color:'white'}} disabled={creditMemoModal.posting} onClick={()=>setCreditMemoModal(null)}>×</button>
+          </div>
+          <div className="modal-body" style={{overflow:'auto',flex:1}}>
+            <div style={{padding:10,background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:8,fontSize:12,color:'#7c2d12',marginBottom:14}}>
+              This leaves the original invoice and payment history intact. Posting creates an equal, reusable credit on <strong>{ic?.name||'this customer'}’s account</strong>.
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'160px 1fr',gap:12,marginBottom:14}}>
+              <div><label className="form-label">Memo Date</label><input type="date" className="form-input" value={creditMemoModal.date} onChange={e=>setCreditMemoModal(s=>({...s,date:e.target.value}))}/></div>
+              <div><label className="form-label">Reason *</label><input className="form-input" autoFocus value={creditMemoModal.reason} onChange={e=>setCreditMemoModal(s=>({...s,reason:e.target.value}))} placeholder="e.g., 35 dozen practice baseballs cancelled"/></div>
+            </div>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+              <label className="form-label" style={{margin:0}}>Items / quantities to credit</label>
+              <span style={{fontSize:11,color:'#64748b'}}>Up to ${remainingCredit.toFixed(2)} remains creditable</span>
+            </div>
+            <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
+              {creditMemoModal.lines.map((line,index)=>{const selected=line.qty>0;return<div key={index} style={{display:'grid',gridTemplateColumns:'24px 1fr 130px 95px',gap:10,alignItems:'center',padding:'10px 12px',borderBottom:index<creditMemoModal.lines.length-1?'1px solid #f1f5f9':'none',background:selected?'#fff7ed':'white'}}>
+                <input type="checkbox" checked={selected} onChange={e=>setCreditMemoModal(s=>({...s,lines:s.lines.map((l,i)=>i===index?setCreditMemoLineQty(l,e.target.checked?l.max_qty:0):l)}))} style={{accentColor:'#9a3412',width:16,height:16}}/>
+                <div style={{minWidth:0}}>
+                  <div style={{fontSize:12,fontWeight:700}}>{line.desc}</div>
+                  {!line.is_amount&&<div style={{fontSize:10,color:'#64748b'}}>{line.invoiced_qty} invoiced{line.credited_qty>0?' · '+line.credited_qty+' already credited':''} · {line.max_qty} available · ${safeNum(line.rate).toFixed(2)} each</div>}
+                </div>
+                <div>
+                  <label style={{display:'block',fontSize:9,color:'#64748b',marginBottom:2}}>{line.is_amount?'AMOUNT TO CREDIT':'CREDIT QTY'}</label>
+                  <input className="form-input" type="number" min="0" max={line.max_qty} step={line.is_amount?'0.01':'1'} value={line.qty||''} placeholder="0" onChange={e=>setCreditMemoModal(s=>({...s,lines:s.lines.map((l,i)=>i===index?setCreditMemoLineQty(l,e.target.value):l)}))} style={{padding:'4px 7px',fontSize:12,textAlign:'right'}}/>
+                </div>
+                <div style={{fontSize:13,fontWeight:800,textAlign:'right',color:selected?'#9a3412':'#94a3b8'}}>${(safeNum(line.qty)*safeNum(line.rate)).toFixed(2)}</div>
+              </div>})}
+            </div>
+            <div style={{display:'flex',justifyContent:'flex-end',marginTop:14}}>
+              <div style={{width:300}}>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:5}}><span style={{color:'#64748b'}}>Selected subtotal</span><span>${activeCreditCalc.subtotal.toFixed(2)}</span></div>
+                {safeNum(inv.tax)>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:5}}><span style={{color:'#64748b'}}>Tax credit (prorated)</span><span>${activeCreditCalc.tax.toFixed(2)}</span></div>}
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:12,marginBottom:6}}>
+                  <span style={{color:'#64748b'}}>Shipping credit</span>
+                  <input className="form-input" type="number" min="0" step="0.01" value={creditMemoModal.shipping||''} placeholder="0.00" onChange={e=>setCreditMemoModal(s=>({...s,shipping:Math.max(0,safeNum(e.target.value))}))} style={{width:90,padding:'3px 6px',textAlign:'right',fontSize:12}}/>
+                </div>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:16,fontWeight:900,color:'#9a3412',paddingTop:7,borderTop:'2px solid #9a3412'}}><span>Account Credit</span><span>${activeCreditCalc.amount.toFixed(2)}</span></div>
+                {activeCreditCalc.amount>remainingCredit+0.005&&<div style={{fontSize:10,color:'#dc2626',fontWeight:700,textAlign:'right',marginTop:4}}>Exceeds remaining creditable amount</div>}
+              </div>
+            </div>
+          </div>
+          <div className="modal-footer">
+            <button className="btn btn-secondary" disabled={creditMemoModal.posting} onClick={()=>setCreditMemoModal(null)}>Cancel</button>
+            <button className="btn btn-primary" style={{background:'#9a3412'}} disabled={creditMemoModal.posting||!!validateCreditMemo({invoice:inv,calculation:activeCreditCalc,reason:creditMemoModal.reason})} onClick={postCreditMemo}>{creditMemoModal.posting?'Posting…':'Post Credit Memo — $'+activeCreditCalc.amount.toFixed(2)}</button>
+          </div>
+        </div></div>}
 
         {/* ═══ SPLIT INVOICE MODAL ═══ */}
         {splitModal&&(()=>{
@@ -1432,22 +1590,25 @@ export default function InvoicesPage(){
     };
     const _openSO=(so)=>{if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}};
     // Historical rows from NetSuite — no so_id, no payments, and no due_date column.
-    // Treat status='paid' as fully paid; anything else leaves total as balance.
+    // Only explicit open statuses are collectible. Amount Remaining/open_balance
+    // wins when supplied; status-only legacy rows remain history and cannot enter
+    // Open/Past Due or collection actions until NetSuite supplies that balance.
     // Derive due_date from invoice_date + customer payment terms so aging buckets,
     // Overdue stat, and the past-due bulk-email view all work for these rows too.
     const enrichedHist=(histInvs||[]).map(i=>{
       const c2=cust.find(c=>c.id===i.customer_id);
       const baseDate=i.date||i.invoice_date;
       const age=agingDays(baseDate);
-      const paid=i.status==='paid'?safeNum(i.total):0;
-      const bal=safeNum(i.total)-paid;
+      const ar=historicalInvoiceAr(i);
+      const paid=ar.paid;
+      const bal=ar.balance;
       const derivedDue=i.due_date||_deriveDue(baseDate,c2?.payment_terms);
       const dd=dueDays(derivedDue);
-      const overdue=bal>0&&dd!==null&&dd<0;
+      const overdue=ar.collectible&&dd!==null&&dd<0;
       // Prefer the snapshot rep_name match; fall back to customer.primary_rep_id so
       // imported invoices without a recognizable rep_name still attribute to a rep.
       const rep=REPS.find(r=>r.name&&(i.rep_name||'').toLowerCase()===r.name.toLowerCase())?.id||c2?.primary_rep_id||null;
-      return{...i,paid,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_rep:rep,_cname:c2?.name||i.raw_customer_name||'Unknown',due_date:derivedDue,date:baseDate}});
+      return{...i,status:ar.status,paid,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_balanceBasis:ar.balanceBasis,_rep:rep,_cname:c2?.name||i.raw_customer_name||'Unknown',due_date:derivedDue,date:baseDate}});
     let fi=[...enrichedInvs,...enrichedHist];
 
     // Filters. The status and aging chips always apply. The rep filter is the one exception: when the
@@ -1579,7 +1740,7 @@ export default function InvoicesPage(){
                   {p.status==='matched'?'Confirm & Apply':'Apply Partial'}</button>}
                 {p.status==='action'&&<button className="btn btn-sm" style={{fontSize:11,background:clr,color:'white',border:'none',padding:'5px 12px'}} onClick={()=>{
                   if(p.act!=='invoice'||!p.so){setPg('omg');return}
-                  if(p.source==='web'){const a=p._agg||{};createAndSettleWebstoreInvoice(p.so,{cardTotal:a.prepaid||0,tabTotal:a.teamTab||0,tabExtras:Math.max(0,Math.round(((a.teamTab||0)-(a.tabProduct||0))*100)/100)});}
+                  if(p.source==='web'){const a=p._agg||{};void createAndSettleWebstoreInvoice(p.so,{cardTotal:a.prepaid||0,tabTotal:a.teamTab||0,tabExtras:Math.max(0,Math.round(((a.teamTab||0)-(a.tabProduct||0))*100)/100)});}
                   else createAndSettleOmgInvoice(p.so);
                 }}>
                   {p.act==='invoice'?'Invoice & Settle':'OMG Page'}</button>}
@@ -1644,14 +1805,14 @@ export default function InvoicesPage(){
             <td style={{color:'#166534',textAlign:'right'}}>{il(<>${inv.paid.toLocaleString()}{inv.cc_fee>0?<span style={{fontSize:8,color:'#94a3b8'}}> +${inv.cc_fee.toFixed(0)}fee</span>:''}</>)}</td>
             <td style={{fontWeight:700,color:inv._bal>0?'#dc2626':'#166534',textAlign:'right'}}>{il('$'+inv._bal.toLocaleString())}</td>
             <td>{il(<><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,
-              background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':inv._overdue?'#fecaca':'#dbeafe',
-              color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
-              {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span>
+              background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':inv.status==='unverified'?'#f1f5f9':inv._overdue?'#fecaca':'#dbeafe',
+              color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv.status==='unverified'?'#64748b':inv._overdue?'#991b1b':'#1e40af'}}>
+              {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv.status==='unverified'?'Unverified':inv._overdue?'Overdue':'Open'}</span>
               {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3,verticalAlign:'middle'}} title="Reported to TaxCloud for filing">TC</span>}
               {/* An unpaid invoice whose email bounced looks exactly like one the coach is
                   ignoring. Flag it in the list, where reps actually scan for what to chase. */}
               {inv.email_status==='failed'&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#fee2e2',color:'#b91c1c',marginLeft:3,verticalAlign:'middle'}} title="The last send bounced — the coach never received this invoice or its pay link.">⚠️ NOT DELIVERED</span>}</>)}</td>
-            <td onClick={e=>e.stopPropagation()}>{inv._hist?<>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}} title="Mark this NetSuite-imported invoice as paid in the portal (sync to NetSuite separately)" onClick={()=>setPayModal({inv:{...inv,_bal:safeNum(inv.total)-safeNum(inv.paid),paid:safeNum(inv.paid)},amount:safeNum(inv.total)-safeNum(inv.paid),method:'check',ref:''})}>💰 Pay</button>}{inv.status==='paid'&&<span style={{fontSize:9,color:'#94a3b8',fontStyle:'italic'}}>—</span>}</>:<>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
+            <td onClick={e=>e.stopPropagation()}>{inv._hist?<>{inv._bal>0.005&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}} title="Mark this NetSuite-imported invoice as paid in the portal (sync to NetSuite separately)" onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}{inv._bal<=0.005&&<span style={{fontSize:9,color:'#94a3b8',fontStyle:'italic'}}>—</span>}</>:<>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
               onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}
               {inv.status==='paid'&&!inv.tc_reported&&inv.tax>0&&<button className="btn btn-sm" style={{fontSize:8,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} title="Report this invoice to TaxCloud for state tax filing" onClick={async()=>{const c=cust.find(x=>x.id===inv.customer_id);if(!c)return;if(!supabase){nf('Supabase not configured','error');return}try{const d=await invokeEdgeFn(supabase,'taxcloud-capture',{action:'capture',customer_id:inv.customer_id,invoice_id:inv.id,so_id:inv.so_id||inv.id,items:(inv.items||inv.line_items||[]).map(it=>({sku:it.sku||it.desc||'ITEM',name:it.name||it.desc||'Item',price:it.rate||it.unit_sell||0,qty:it.qty||1})),destination:{state:c.shipping_state||c.billing_state||'',zip5:c.shipping_zip||c.billing_zip||''}});if(d?.ok){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,tc_reported:true,tc_tax:d.total_tax}:i));nf('Reported to TaxCloud — $'+d.total_tax+' tax filed')}else{nf(d?.error||'TaxCloud capture failed','error')}}catch(e){nf('Error: '+e.message,'error')}}}>TC File</button>}
               <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',marginLeft:2}} onClick={()=>{
@@ -1729,11 +1890,11 @@ export default function InvoicesPage(){
                 <td style={{fontWeight:600,textAlign:'right'}}>{il2('$'+inv.total.toLocaleString())}</td>
                 <td style={{fontWeight:700,color:inv._bal>0?'#dc2626':'#166534',textAlign:'right'}}>{il2('$'+inv._bal.toLocaleString())}</td>
                 <td>{il2(<><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,
-                  background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':inv._overdue?'#fecaca':'#dbeafe',
-                  color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
-                  {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span>
+                  background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':inv.status==='unverified'?'#f1f5f9':inv._overdue?'#fecaca':'#dbeafe',
+                  color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv.status==='unverified'?'#64748b':inv._overdue?'#991b1b':'#1e40af'}}>
+                  {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv.status==='unverified'?'Unverified':inv._overdue?'Overdue':'Open'}</span>
                   {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3}} title="Reported to TaxCloud">TC</span>}</>)}</td>
-                <td onClick={e=>e.stopPropagation()}>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}} title={inv._hist?'Mark this NetSuite invoice paid in portal (sync to NetSuite separately)':undefined}
+                <td onClick={e=>e.stopPropagation()}>{inv._bal>0.005&&inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}} title={inv._hist?'Mark this NetSuite invoice paid in portal (sync to NetSuite separately)':undefined}
                   onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}
                   {canDelete&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',marginLeft:4,background:'white'}} title={inv._hist?'Delete NetSuite invoice':'Delete invoice'} onClick={()=>deleteInvoice(inv.id)}><Icon name="trash" size={10}/></button>}</td>
               </tr>)})}</tbody></table>

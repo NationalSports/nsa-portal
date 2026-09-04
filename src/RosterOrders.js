@@ -1,6 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from './lib/supabase';
+import { fetchPublicInventory } from './lib/webstorePublicData';
 
 // ─── Size lists ───────────────────────────────────────────────────────────────
 const SZ_YOUTH = ['YXS','YS','YM','YL','YXL'];
@@ -339,11 +340,7 @@ function useKitInventory(items) {
         const skus = [...new Set(Object.values(skuByPid))];
         let vendorRows = [];
         if (skus.length) {
-          const { data: v } = await supabase
-            .from('inventory_unified')
-            .select('sku,size,stock_qty,future_delivery_qty,future_delivery_date')
-            .in('sku', skus);
-          vendorRows = v || [];
+          vendorRows = await fetchPublicInventory(skus);
         }
         if (cancelled) return;
         const map = {};

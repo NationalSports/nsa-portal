@@ -21,6 +21,7 @@
 --   053  store_category   054  vendor_size_eta  055/056  description (+ ai)
 --   062  variant_label    064  vendor stock from inventory_unified (all vendors)
 --   199  vendor stock matched on NORMALIZED sku (live-import vs sync spelling)
+--   20260805 vendor incoming/sync age   20260830 add-on option definitions
 -- ════════════════════════════════════════════════════════════════════════
 
 CREATE OR REPLACE VIEW webstore_storefront_products AS
@@ -70,7 +71,12 @@ CREATE OR REPLACE VIEW webstore_storefront_products AS
     COALESCE(wp.required, false) AS required,
     wp.kit_name,
     -- 070  card display style for bundle packages (null=card, 'banner', 'showcase').
-    wp.card_style
+    wp.card_style,
+    -- 20260805  vendor inbound quantities + snapshot age.
+    av.vendor_size_incoming,
+    av.vendor_synced_at,
+    -- 20260830  shopper-entered add-on field definitions.
+    wp.options
    FROM webstore_products wp
      LEFT JOIN products p ON p.id = wp.product_id
      LEFT JOIN webstores s ON s.id = wp.store_id
@@ -89,7 +95,9 @@ CREATE OR REPLACE VIEW webstore_storefront_products AS
      LEFT JOIN LATERAL ( SELECT jsonb_object_agg(ai.size, ai.stock_qty) AS vendor_size_stock,
             COALESCE(sum(GREATEST(ai.stock_qty, 0)), 0::bigint) AS vendor_on_hand,
             min(NULLIF(ai.future_delivery_date, ''::text)) FILTER (WHERE COALESCE(ai.stock_qty, 0) <= 0) AS vendor_eta,
-            jsonb_object_agg(ai.size, ai.future_delivery_date) FILTER (WHERE COALESCE(ai.stock_qty, 0) <= 0 AND ai.future_delivery_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'::text) AS vendor_size_eta
+            jsonb_object_agg(ai.size, ai.future_delivery_date) FILTER (WHERE COALESCE(ai.stock_qty, 0) <= 0 AND ai.future_delivery_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'::text) AS vendor_size_eta,
+            jsonb_object_agg(ai.size, ai.future_delivery_qty) FILTER (WHERE COALESCE(ai.stock_qty, 0) <= 0 AND COALESCE(ai.future_delivery_qty, 0) > 0 AND ai.future_delivery_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'::text) AS vendor_size_incoming,
+            max(ai.last_synced) AS vendor_synced_at
            FROM inventory_unified ai
           WHERE regexp_replace(upper(ai.sku), '[^A-Z0-9]', '', 'g') = regexp_replace(upper(wp.sku), '[^A-Z0-9]', '', 'g') AND ai.source = p.inventory_source AND (p.available_sizes IS NULL OR (ai.size IN ( SELECT jsonb_array_elements_text(p.available_sizes) AS jsonb_array_elements_text)) OR (
                 CASE upper(ai.size)

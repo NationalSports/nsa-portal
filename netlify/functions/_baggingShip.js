@@ -7,6 +7,8 @@
 // email, same as a desk-printed label. If anything here fails, the bag still
 // completes; the caller surfaces "print from Webstores" instead.
 
+const { processDirectShipment } = require('./shipstation-webhook');
+
 // Per-line ounces fallback — mirror of src/utils.js estimateWeightOz (functions
 // are CommonJS and can't import the CRA src module; keep the two in sync).
 function estimateWeightOz(text) {
@@ -150,9 +152,10 @@ async function createBagShipLabel(sb, order, items) {
   }
 
   const cm = SS_CARRIERS[(store.shipstation_carrier || 'fedex').toLowerCase()] || SS_CARRIERS.fedex;
+  const shipDate = new Date().toISOString().split('T')[0];
   const res = await ssCall('/orders/createlabelfororder', {
     orderId: ss.orderId, carrierCode: cm.carrierCode, serviceCode: store.shipstation_service || cm.serviceCode,
-    packageCode: 'package', confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
+    packageCode: 'package', confirmation: 'none', shipDate,
     weight: { value: labelWeightLbs(plan, store, weightByPid), units: 'pounds' },
     shipFrom: { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone },
     shipTo: { name: a.name || order.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: order.buyer_phone || '' },
@@ -160,28 +163,34 @@ async function createBagShipLabel(sb, order, items) {
   });
   const cost = res.shipmentCost != null ? Number(res.shipmentCost) + (Number(res.insuranceCost) || 0) : null;
 
-  // Same writes the desk flow makes: line progress, then order tracking/label.
-  for (const p of plan) {
-    const orig = (items || []).find((i) => i.id === p.id) || {};
-    const sq = (Number(orig.shipped_qty) || 0) + p.qty;
-    const done = sq >= (Number(orig.qty) || 0);
-    try {
-      await sb.from('webstore_order_items')
-        .update({ shipped_qty: sq, ...(done ? { line_status: 'shipped' } : {}) }).eq('id', p.id);
-    } catch (_) { /* webhook reconciliation backstops this */ }
-  }
-  const allShipped = (items || [])
-    .filter((i) => !i.is_bundle_parent && (i.line_status || '') !== 'cancelled')
-    .every((i) => {
-      const shipNow = (plan.find((p) => p.id === i.id) || {}).qty || 0;
-      return (Number(i.shipped_qty) || 0) + shipNow + heldQty(i) >= (Number(i.qty) || 0);
-    });
-  await sb.from('webstore_orders').update({
-    tracking_number: res.trackingNumber || null, carrier: cm.carrierCode,
-    label_cost: cost, label_data: res.labelData || null,
+  // Record the ledger synchronously. The ShipStation webhook is a replay
+  // backstop, not the first time the tracker learns that this label exists.
+  await processDirectShipment(sb, order, {
+    shipmentId: res.shipmentId || null,
+    trackingNumber: res.trackingNumber || null,
+    carrierCode: cm.carrierCode,
+    serviceCode: store.shipstation_service || cm.serviceCode,
+    shipDate,
+    shipmentCost: Number(res.shipmentCost) || 0,
+    insuranceCost: Number(res.insuranceCost) || 0,
+    shipmentItems: plan.map((item) => ({
+      lineItemKey: item.id,
+      sku: item.sku || null,
+      name: item.name || item.sku || null,
+      quantity: item.qty,
+      imageUrl: item.image_url || null,
+      options: [
+        item.size && { name: 'Size', value: item.size },
+        item.player_number && { name: 'Number', value: String(item.player_number) },
+        item.player_name && { name: 'Name', value: item.player_name },
+      ].filter(Boolean),
+    })),
+  });
+  const { error: labelError } = await sb.from('webstore_orders').update({
+    label_data: res.labelData || null,
     shipstation_shipment_id: res.shipmentId || null,
-    ...(allShipped ? { shipped_at: new Date().toISOString() } : {}),
   }).eq('id', order.id);
+  if (labelError) throw new Error(`Could not save label metadata: ${labelError.message}`);
 
   return { labelData: res.labelData || null, trackingNumber: res.trackingNumber || null, carrier: cm.carrierCode, cost };
 }

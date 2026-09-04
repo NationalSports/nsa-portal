@@ -99,6 +99,44 @@ describe('Safe Accessors', () => {
   });
 });
 
+describe('Unfulfilled quantities for SKU moves', () => {
+  test('moves only the XL left after an IF pull', () => {
+    expect(BL.unfulfilledSizes({
+      sizes: { S: 12, M: 18, L: 12, XL: 6 },
+      pick_lines: [{ pick_id: 'IF-1139', status: 'pulled', S: 3, L: 9, XL: 5 }],
+      po_lines: [{ po_id: '58103', S: 9, M: 18, L: 3 }],
+    })).toEqual({
+      ordered: { S: 12, M: 18, L: 12, XL: 6 },
+      picked: { S: 3, L: 9, XL: 5 },
+      po: { S: 9, M: 18, L: 3 },
+      open: { XL: 1 },
+    });
+  });
+
+  test('moves the short-pull remainder and treats cancelled PO units as open', () => {
+    expect(BL.unfulfilledSizes({
+      sizes: { S: 12, M: 18, L: 7, XL: 6 },
+      pick_lines: [{ pick_id: 'IF-1139', status: 'pulled' }],
+      po_lines: [{ po_id: '58103', S: 9, M: 18, L: 7, XL: 4, cancelled: { XL: 2 } }],
+    }).open).toEqual({ S: 3, XL: 4 });
+  });
+
+  test('ignores a fully cancelled PO line', () => {
+    expect(BL.unfulfilledSizes({
+      sizes: { XL: 6 },
+      po_lines: [{ po_id: '58103', status: 'cancelled', XL: 6 }],
+    }).open).toEqual({ XL: 6 });
+  });
+
+  test('does not invent open units when an IF covers the line total under a mismatched size', () => {
+    expect(BL.unfulfilledSizes({
+      sizes: { S: 0, M: 1, L: 2, XL: 0, '2XL': 6 },
+      available_sizes: ['S', 'M', 'L', 'XL', '2XL'],
+      pick_lines: [{ pick_id: 'IF-1162', status: 'pick', M: 1, XL: 2, '2XL': 6 }],
+    }).open).toEqual({});
+  });
+});
+
 // ═══════════════════════════════════════════════
 // 2. ROUNDING HELPERS
 // ═══════════════════════════════════════════════

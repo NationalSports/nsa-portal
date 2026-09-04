@@ -80,7 +80,7 @@ const save = async (p) => {
   __mockState.calls.length = 0;
   __mockState.responses = {
     sales_orders: [{ data: { updated_at: 'yesterday', deco_pos: null }, error: null }, { error: null }],
-    so_items: [{ data: dbItems(), error: null }, { data: [{ id: 'n1' }], error: null }],
+    so_items: [{ data: dbItems(), error: null }, { data: [{ id: 'n1', item_index: 0 }], error: null }],
     so_art_files: [{ data: [], error: null }],
     so_item_po_lines: [
       { data: poRows(), error: null },        // PO-restore read
@@ -153,7 +153,7 @@ const saveWith = async (p, rows) => {
   __mockState.calls.length = 0;
   __mockState.responses = {
     sales_orders: [{ data: { updated_at: 'yesterday', deco_pos: null }, error: null }, { error: null }],
-    so_items: [{ data: dbItems(), error: null }, { data: [{ id: 'n1' }], error: null }],
+    so_items: [{ data: dbItems(), error: null }, { data: [{ id: 'n1', item_index: 0 }], error: null }],
     so_art_files: [{ data: [], error: null }],
     so_item_po_lines: [
       { data: rows, error: null },
@@ -250,7 +250,7 @@ test('multi-item PO (one row per item): every item\'s rolled-back line merges in
         { id: 'oi-1', item_index: 0, sku: 'AT101', color: 'Dark Green/ White', product_id: null },
         { id: 'oi-2', item_index: 1, sku: 'AT102', color: 'Navy', product_id: null },
       ], error: null },
-      { data: [{ id: 'n1' }, { id: 'n2' }], error: null },
+      { data: [{ id: 'n1', item_index: 0 }, { id: 'n2', item_index: 1 }], error: null },
     ],
     so_art_files: [{ data: [], error: null }],
     so_item_po_lines: [

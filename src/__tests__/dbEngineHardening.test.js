@@ -124,7 +124,7 @@ describe('_dbSaveSOInner — so_items under-returned insert (fix 3)', () => {
           { id: 'oi-3', item_index: 2, sku: 'CAP', color: 'Black', product_id: null },
         ], error: null },
         // 3) the new insert: 3 rows sent, only 1 id comes back — the bug this test guards
-        { data: [{ id: 'new-1' }], error: null },
+        { data: [{ id: 'new-1', item_index: 0 }], error: null },
       ],
       so_art_files: [{ data: [], error: null }],
       so_item_po_lines: [
@@ -162,6 +162,100 @@ describe('_dbSaveSOInner — so_items under-returned insert (fix 3)', () => {
       const deletedIds = (c.inArgs && c.inArgs[1]) || [];
       oldIds.forEach(id => expect(deletedIds).not.toContain(id));
     });
+  });
+});
+
+// ── PO identity regression: INSERT ... RETURNING order must not decide ownership ───────────
+describe('_dbSaveSOInner — shuffled returned item rows keep each PO on its source item', () => {
+  beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
+  afterEach(() => { restoreEnv(); jest.resetModules(); });
+
+  test('keeps the confirmed SanMar and Prolook POs separate when returned rows are reversed', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      sales_orders: [
+        { data: { updated_at: 'yesterday', deco_pos: null }, error: null },
+        { error: null },
+      ],
+      so_items: [
+        { data: [
+          { id: 'old-tee', item_index: 0, sku: 'ST420', color: 'Forest Green', product_id: null },
+          { id: 'old-shorts', item_index: 1, sku: 'PROLOOK-SHORT', color: 'Black', product_id: null },
+        ], error: null },
+        // Deliberately reversed: Postgres does not guarantee RETURNING order.
+        { data: [
+          { id: 'new-shorts', item_index: 1 },
+          { id: 'new-tee', item_index: 0 },
+        ], error: null },
+      ],
+      so_art_files: [{ data: [], error: null }],
+      so_item_po_lines: [
+        { data: [], error: null },
+        { data: [], error: null },
+        { data: [], error: null },
+        { error: null },
+        { count: 2, error: null },
+      ],
+      so_item_pick_lines: [{ data: [], error: null }, { data: [], error: null }],
+      so_item_decorations: [{ data: [], error: null }],
+    };
+
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const result = await _dbSaveSO({
+      id: 'SO-2306', memo: 'GHBSB', _decosHydrated: true,
+      items: [
+        {
+          sku: 'ST420', color: 'Forest Green', sizes: { S: 8, M: 36, L: 24, XL: 6, '2XL': 1 },
+          po_lines: [{ po_id: 'PO 58989 GHBSB', vendor: 'SanMar', status: 'waiting', S: 8, M: 36, L: 24, XL: 6, '2XL': 1, received: {}, shipments: [] }],
+        },
+        {
+          sku: 'PROLOOK-SHORT', color: 'Black', sizes: { S: 8, M: 36, L: 24, XL: 6, '2XL': 1 },
+          po_lines: [{ po_id: 'PO 59040 GHBSB', vendor: 'Prolook', status: 'waiting', S: 8, M: 36, L: 24, XL: 6, '2XL': 1, received: {}, shipments: [] }],
+        },
+      ],
+    });
+
+    expect(result).toBe(true);
+    const poInsert = __mockState.calls.find(c => c.table === 'so_item_po_lines' && c.method === 'insert');
+    expect(poInsert).toBeDefined();
+    const rows = poInsert.args[0];
+    expect(rows.find(row => row.po_id === 'PO 58989 GHBSB')).toMatchObject({ so_item_id: 'new-tee', vendor: 'SanMar' });
+    expect(rows.find(row => row.po_id === 'PO 59040 GHBSB')).toMatchObject({ so_item_id: 'new-shorts', vendor: 'Prolook' });
+  });
+});
+
+// ── SO-1992: a hydrated flag must never authorize an unstamped decoration shrink ──────────
+describe('_dbSaveSOInner — exact decoration deletion intent', () => {
+  beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
+  afterEach(() => { restoreEnv(); jest.resetModules(); });
+
+  test('blocks a 2→0 decoration wipe even when the client says decorations were hydrated', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      sales_orders: [
+        { data: { updated_at: 'yesterday', deco_pos: null, created_at: 'created', status: 'open', po_number: null }, error: null },
+        { error: null },
+      ],
+      so_items: [{ data: [
+        { id: 'oi-deco', item_index: 0, sku: 'TEE', color: 'Red', product_id: null },
+      ], error: null }],
+      so_item_decorations: [{ data: [
+        { so_item_id: 'oi-deco' }, { so_item_id: 'oi-deco' },
+      ], error: null }],
+    };
+
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const result = await _dbSaveSO({
+      id: 'SO-DECO-GUARD', created_at: 'created', updated_at: 'today', status: 'open',
+      _decosHydrated: true, _itemsHydrated: true,
+      items: [{ sku: 'TEE', color: 'Red', sizes: { M: 1 }, decorations: [], no_deco: false }],
+    });
+
+    expect(result).toBe(false);
+    expect(__mockState.calls.some(c => c.table === 'so_items' && c.method === 'insert')).toBe(false);
+    expect(__mockState.calls.some(c => c.table === 'so_items' && c.method === 'delete')).toBe(false);
   });
 });
 
@@ -217,7 +311,7 @@ describe('_dbPersistNewPoLine — durable PO line write at creation (fix 5)', ()
   beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
   afterEach(() => { restoreEnv(); jest.resetModules(); });
 
-  const poLine = { po_id: 'PO 35700 SANBA', vendor: 'Adidas', status: 'waiting', L: 3, M: 5, unit_cost: 20.62 };
+  const poLine = { po_id: 'PO 35700 SANBA', vendor: 'Adidas', status: 'waiting', L: 3, M: 5, unit_cost: 20.62, _manual_cost: 8.75, _manual_cost_note: 'Credit-card fee', _payment_method: 'credit_card' };
 
   test('persists the line when the item exists and no line is present yet', async () => {
     const { __mockState } = require('@supabase/supabase-js');
@@ -241,6 +335,9 @@ describe('_dbPersistNewPoLine — durable PO line write at creation (fix 5)', ()
     expect(row.sizes.M).toBe(5);
     expect(row.sizes.L).toBe(3);
     expect(row.sizes.unit_cost).toBe(20.62);
+    expect(row.sizes._manual_cost).toBe(8.75);
+    expect(row.sizes._manual_cost_note).toBe('Credit-card fee');
+    expect(row.sizes._payment_method).toBe('credit_card');
     // The whole-SO save owns the updated_at/version bump — this durable write must NOT issue its own.
     expect(__mockState.calls.some(c => c.table === 'sales_orders' && c.method === 'update')).toBe(false);
   });
@@ -484,7 +581,7 @@ describe('_dbSaveSOInner — item carrying PO lines is rebuilt, not blocked (fix
       so_items: [
         { data: dbItems(), error: null },                                   // old-items read (projection)
         { data: fullItemRow(), error: null },                               // full-row re-read for the revive
-        { data: [{ id: 'n1' }, { id: 'n2' }, { id: 'n3' }], error: null },  // insert: 3 rows back
+        { data: [{ id: 'n1', item_index: 0 }, { id: 'n2', item_index: 1 }, { id: 'n3', item_index: 2 }], error: null },  // insert: 3 rows back
       ],
       so_art_files: [{ data: [], error: null }],
       so_item_po_lines: [
@@ -549,7 +646,7 @@ describe('_dbSaveSOInner — item carrying PO lines is rebuilt, not blocked (fix
       so_items: [
         { data: dbItems(), error: null },
         { data: fullItemRow(), error: null },
-        { data: [{ id: 'n1' }, { id: 'n2' }, { id: 'n3' }], error: null },
+        { data: [{ id: 'n1', item_index: 0 }, { id: 'n2', item_index: 1 }, { id: 'n3', item_index: 2 }], error: null },
       ],
       so_art_files: [{ data: [], error: null }],
       so_item_po_lines: [
@@ -632,7 +729,7 @@ describe('_dbSaveSOInner — version-conflict save with an in-place SKU change (
     ],
     so_items: [
       { data: dbItems(), error: null },                        // old-items read
-      { data: [{ id: 'n1' }, { id: 'n2' }], error: null },     // insert: 2 rows back
+      { data: [{ id: 'n1', item_index: 0 }, { id: 'n2', item_index: 1 }], error: null },     // insert: 2 rows back
     ],
     so_art_files: [{ data: [], error: null }, { data: [], error: null }],
     so_item_po_lines: [{ data: [], error: null }, { data: [], error: null }, { data: [], error: null }],
@@ -722,7 +819,7 @@ describe('_dbSaveSOInner — stale so_jobs save cannot regress art_status (SO-11
     ],
     so_items: [
       { data: [], error: null },          // old items read (empty — nothing to wipe)
-      { data: [{ id: 'ni-1' }], error: null }, // new insert returns matching id count
+      { data: [{ id: 'ni-1', item_index: 0 }], error: null }, // new insert returns matching id count
     ],
     so_art_files: [{ data: [], error: null }],
     so_item_po_lines: [
@@ -842,7 +939,7 @@ describe('_dbSaveSOInner — stale so_jobs save preserves receipts and history (
     ],
     so_items: [
       { data: [], error: null },
-      { data: [{ id: 'ni-1' }], error: null },
+      { data: [{ id: 'ni-1', item_index: 0 }], error: null },
     ],
     so_art_files: [{ data: [], error: null }],
     so_item_po_lines: [
@@ -933,7 +1030,7 @@ describe('_dbSaveSOInner — stale SO save preserves header decisions (po_number
     ],
     so_items: [
       { data: [{ id: 'oi-1', item_index: 0, sku: 'TEE', color: 'Red', product_id: null }], error: null },
-      { data: [{ id: 'ni-1' }], error: null },
+      { data: [{ id: 'ni-1', item_index: 0 }], error: null },
     ],
     so_art_files: [{ data: [], error: null }],
     so_item_po_lines: [

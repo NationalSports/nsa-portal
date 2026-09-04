@@ -1,10 +1,10 @@
 // Public team-store directory data — the ONE query path for finding a team's
 // webstore by name, shared by the portal-level /team-stores finder
 // (src/storefront/TeamStores.js) and the Team Shop storefront's Team Stores
-// page (src/teamshop/TeamStoresPage.js). Both read the anon-readable
-// `webstores_public` view (supabase/migrations/00134 + 00163) — extract, don't
-// duplicate, per the repo's no-hand-synced-copies rule.
-import { supabase } from './supabase';
+// page (src/teamshop/TeamStoresPage.js). Both use the bounded public-data
+// endpoint backed by `webstores_public` — extract, don't duplicate, per the
+// repo's no-hand-synced-copies rule.
+import { webstorePublicData } from './webstorePublicData';
 
 // Strip characters that would break the PostgREST or() filter syntax.
 export const cleanTerm = (q) => String(q || '').replace(/[%,()*:]/g, ' ').trim();
@@ -28,12 +28,10 @@ export function closesLabel(close_at) {
 export async function searchPublicTeamStores(term, { statuses = ['open'], limit = 24 } = {}) {
   const t = cleanTerm(term);
   if (t.length < 2) return [];
-  const { data } = await supabase.from('webstores_public')
-    .select('slug,name,status,logo_url,primary_color,accent_color,banner_url,close_at')
-    .in('status', statuses)
-    .eq('public_listed', true)
-    .or(`name.ilike.*${t}*,slug.ilike.*${t}*`)
-    .order('name')
-    .limit(limit);
-  return data || [];
+  try {
+    const result = await webstorePublicData('store_search', { term: t, statuses, limit });
+    return result.rows || [];
+  } catch (_) {
+    return [];
+  }
 }

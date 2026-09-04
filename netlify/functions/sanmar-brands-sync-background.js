@@ -83,13 +83,12 @@ function canonicalBrand(name) {
 
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 const arr = (v) => (Array.isArray(v) ? v : v != null ? [v] : []);
+const { inventoryKey: invKey, stockByColorSize } = require('./_sanmarInventory');
 // Inventory ↔ product-color join key. SanMar returns two-tone colors with inconsistent
 // spacing between the getInventoryLevels feed ("True Royal/ White") and the product feed
 // ("True Royal/White"), so a plain lowercase compare missed EVERY slash color and wrote 0
 // stock (e.g. Sport-Tek Tricot Track Jacket read out of stock with hundreds on hand). Strip
 // all whitespace from the color and upcase the size so the two sides line up.
-const invKey = (color, size) => String(color || '').toLowerCase().replace(/\s+/g, '') + '|' + String(size || '').trim().toUpperCase();
-
 exports.handler = async (event) => {
   const site  = (process.env.URL || '').replace(/\/+$/, '');
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || '').replace(/\/+$/, '');
@@ -240,41 +239,39 @@ exports.handler = async (event) => {
         const brand = canonicalBrand(brandText);
 
         // Inventory
-        const stockByCS = {};
+        let stockByCS = {};
         try {
-          const inv = await sm('promostandards', 'getInventoryLevels', { productId: style });
-          const variations = arr(
-            inv?.Inventory?.ProductVariationInventoryArray?.ProductVariationInventory ||
-            inv?.ProductVariationInventoryArray?.ProductVariationInventory ||
-            inv?.inventory || inv?.items
-          );
-          variations.forEach((v) => {
-            const color = String(v?.attributeColor || v?.color || '');
-            const size  = String(v?.attributeSize || v?.size || v?.labelSize || 'OSFA');
-            let qty = 0;
-            const parts = arr(v?.partInventoryArray?.partInventory || v?.PartInventoryArray?.PartInventory);
-            parts.forEach((p) => { qty += num(p?.quantityAvailable?.Quantity || p?.quantityAvailable?.quantity || p?.quantityAvailable); });
-            if (qty <= 0) qty = num(v?.quantityAvailable || v?.totalQty || v?.qty);
-            if (qty > 0) { const k = invKey(color, size); stockByCS[k] = (stockByCS[k] || 0) + qty; }
-          });
+          const inv = await sm('promostandardsV2', 'getInventoryLevels', { wsVersion: '2.0.0', productId: style });
+          stockByCS = stockByColorSize(inv, items);
+          if (!Object.keys(stockByCS).length) throw new Error('SanMar inventory returned no matched parts');
         } catch (e) { console.warn('[sanmar-brands-sync] inventory', style, e.message); }
+        if (!Object.keys(stockByCS).length) {
+          throw new Error('Inventory unavailable; preserving the last known stock instead of writing zeros');
+        }
 
         // Customer pricing. getProductInfoByStyleColorSize's productPriceInfo carries
         // the CATALOG list price (piecePrice), not our account price — for LPC380 it
         // returned 4.52/5.51/6.30 when our real prices were 3.52/4.51/5.30 (and 3.05
         // base on sale). The account price lives in the Pricing service's getPricing —
         // the same call + field priority (myPrice → salePrice → piecePrice) the Order
-        // Editor uses, which has been reliable. One lookup per style (uniform across
-        // colors); keep the lowest price seen per size. Falls back to the product-info
-        // fields if the pricing call fails.
+        // Editor uses, which has been reliable. One lookup per style returns all
+        // color/size rows; keep those dimensions intact so a promo on one color never
+        // becomes another color's cost. If account pricing is unavailable, preserve
+        // the existing catalog cost instead of replacing it with product-info list price.
         const priceBySize = {};
+        const priceByColorSize = {};
+        const priceColorKey = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
         try {
           const priced = await sm('pricing', 'getPricing', { style, color: '', size: '' });
           for (const r of arr(priced.items)) {
             const sz = String(r.size || r.labelSize || '').trim();
             if (!sz) continue;
             const p = num(r.myPrice) || num(r.salePrice) || num(r.piecePrice);
-            if (p > 0 && (priceBySize[sz] == null || p < priceBySize[sz])) priceBySize[sz] = p;
+            const ck = priceColorKey(r.catalogColor || r.color || r.colorName || r.productColor);
+            if (ck) {
+              priceByColorSize[ck] = priceByColorSize[ck] || {};
+              if (p > 0 && (priceByColorSize[ck][sz] == null || p < priceByColorSize[ck][sz])) priceByColorSize[ck][sz] = p;
+            } else if (p > 0 && (priceBySize[sz] == null || p < priceBySize[sz])) priceBySize[sz] = p;
           }
         } catch (e) { console.warn('[sanmar-brands-sync] pricing', style, e.message); }
 
@@ -289,15 +286,15 @@ exports.handler = async (event) => {
           const recs = grp.recs, r0 = recs[0];
           const sku = style + '-' + colorCode;
           const sizes = [...new Set(recs.map((r) => String(r.size || r.labelSize || '').trim()).filter(Boolean))];
-          // Our real per-size cost: the account price from getPricing when we got
-          // one for this size, else the product-info fields. Base cost = the LOWEST
-          // size's price (the XS–XL tier) — recs[0] is whatever size SanMar lists first
-          // (often an upsized 2XL+ row), which inflated nsa_cost for every color
-          // (e.g. LPC380 stored 4.52 vs the real 3.05 base).
+          // Our real per-size cost comes only from account getPricing. Base cost is
+          // the lowest size price (the XS–XL tier). If this color has no account-price
+          // row, omit cost fields from the upsert so the last verified cost survives.
           const costOf = (r) => {
             const sz = String(r.size || r.labelSize || '').trim();
+            const exact = priceByColorSize[priceColorKey(grp.colorName)] || {};
+            if (sz && exact[sz] > 0) return exact[sz];
             if (sz && priceBySize[sz] > 0) return priceBySize[sz];
-            return num(r.myPrice) || num(r.salePrice) || num(r.piecePrice) || num(r.customerPrice) || num(r.casePrice);
+            return 0;
           };
           const _perSize = recs.map(costOf).filter((c) => c > 0);
           const cost   = _perSize.length ? Math.min(..._perSize) : 0;
@@ -308,7 +305,9 @@ exports.handler = async (event) => {
           for (const r of recs) { const sz = String(r.size || r.labelSize || '').trim(); const sc = costOf(r); if (sz && sc > 0 && _scMap[sz] == null) _scMap[sz] = sc; }
           const sizeCosts = {};
           for (const [sz, sc] of Object.entries(_scMap)) { if (Math.abs(sc - cost) > 0.001) sizeCosts[sz] = sc; }
-          const img    = r0.colorProductImage || r0.productImage || r0.colorProductImageThumbnail || r0.thumbnailImage || '';
+          // Prefer SanMar's garment-only flat for webstore decoration/mockups. Model
+          // photography remains a fallback for colors without a published flat.
+          const img    = r0.frontFlat || r0.colorProductImage || r0.productImage || r0.colorProductImageThumbnail || r0.thumbnailImage || '';
           // SanMar prefixes retired styles with "DISCONTINUED" — strip it (still sells from stock).
           const title  = (r0.productTitle || r0.productDescription || (style + ' ' + grp.colorName)).replace(/DISCONTINUED/ig, '').replace(/\s{2,}/g, ' ').trim();
           prodRows.push({
@@ -320,9 +319,11 @@ exports.handler = async (event) => {
             color: grp.colorName,
             category: mapCategory(title),
             retail_price: retail,
-            nsa_cost: cost,
-            size_costs: Object.keys(sizeCosts).length ? sizeCosts : null,
-            catalog_sell_price: cost > 0 ? Math.round(cost * 1.65 * 100) / 100 : null,
+            ...(cost > 0 ? {
+              nsa_cost: cost,
+              size_costs: Object.keys(sizeCosts).length ? sizeCosts : null,
+              catalog_sell_price: Math.round(cost * 1.65 * 100) / 100,
+            } : {}),
             is_active: true,
             available_sizes: sizes,
             image_front_url: img || null,

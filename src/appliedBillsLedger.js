@@ -11,6 +11,21 @@ const _norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
 // null a string total — coerce here instead. Garbage still maps to 0.
 const _total = (v) => { const n = typeof v === 'number' ? v : (v == null || String(v).trim() === '' ? NaN : Number(v)); return Number.isFinite(n) ? n : 0; };
 
+// A QBO backfill can legitimately target a bill whose quantities/costs were
+// already applied in the portal before the accounting connection existed. In
+// that case the QBO write must not apply the same quantities a second time.
+// Check both portal dedup keys because Sports Inc bills may be recorded by the
+// vendor document number or by their SI document number.
+export const portalBillAlreadyApplied = (bill, docAlreadyApplied) => {
+  if (!bill) return false;
+  if (bill._applied) return true;
+  if (typeof docAlreadyApplied !== 'function') return false;
+  const doc = String(bill.doc_number == null ? '' : bill.doc_number).trim();
+  if (doc && docAlreadyApplied(doc)) return true;
+  const siDoc = String(bill.si_doc_number == null ? '' : bill.si_doc_number).trim();
+  return !!siDoc && !!docAlreadyApplied(siDoc, 'si');
+};
+
 // Shape ledger rows (full, post-00184 column set) from pushed bills. One row per
 // keyable bill — a bill with neither a doc # nor an SI/S&S order # can't be keyed
 // and stays guarded by the client-side SO _bill_details scan.
@@ -82,23 +97,48 @@ export const isMissingLedgerColumnError = (e) => !!e && (e.code === '42703' || e
 export const mergeServerBills = (savedBills, serverRows) => {
   const local = savedBills || [];
   const seen = new Set();
+  const localDocKeys = new Set();
+  const locallyCompletedInQbo = new Set();
+  // S&S can issue more than one invoice for the same order. In those rows the
+  // SI/S&S document number is the order number, not a unique invoice key, so a
+  // real invoice number must win and the shared order number must not collapse
+  // sibling invoices out of Bill History. Rows without an invoice number still
+  // fall back to the order number, preserving the legacy dedup safety net.
+  const isSsInvoice = (row, parsed) => {
+    const vendor = String(parsed?.vendor || parsed?.supplier || row?.vendor || '').trim();
+    return /s\s*(?:&|and)\s*s\s+activewear/i.test(vendor) && !!_norm(parsed?.doc_number || row?.doc_number || row?.doc_norm);
+  };
   local.forEach((sb) => {
     const p = sb.parsed || {};
     const c = p.is_credit ? '1' : '0';
     const d = _norm(p.doc_number);
-    if (d) seen.add('d|' + c + '|' + d);
+    if (d) {
+      const key = 'd|' + c + '|' + d;
+      seen.add(key);
+      localDocKeys.add(key);
+      if (sb.qbStatus === 'success') locallyCompletedInQbo.add(key);
+    }
     const s = _norm(p.si_doc_number);
-    if (s) seen.add('s|' + c + '|' + s);
+    if (s && !isSsInvoice(sb, p)) seen.add('s|' + c + '|' + s);
   });
   const extras = [];
   (serverRows || []).forEach((r) => {
     const c = r.is_credit ? '1' : '0';
     const d = _norm(r.doc_norm || r.doc_number);
     const s = _norm(r.si_doc_number);
-    if ((d && seen.has('d|' + c + '|' + d)) || (s && seen.has('s|' + c + '|' + s))) return;
+    const parsedMeta = (r.raw_meta && typeof r.raw_meta === 'object') ? r.raw_meta : null;
+    const ssInvoice = isSsInvoice(r, parsedMeta);
+    const docKey = d ? 'd|' + c + '|' + d : '';
+    const docSeen = !!docKey && seen.has(docKey);
+    // A stale browser cache often has one or more "duplicate" placeholders for
+    // a bill that the server has since applied. Until one of those local rows
+    // records QBO success, keep the authoritative server row too: it carries
+    // the matched PO payload required by the QBO-only backfill control.
+    const staleLocalNeedsQbo = docSeen && localDocKeys.has(docKey) && !locallyCompletedInQbo.has(docKey);
+    if ((docSeen && !staleLocalNeedsQbo) || (s && !ssInvoice && seen.has('s|' + c + '|' + s))) return;
     if (d) seen.add('d|' + c + '|' + d);
-    if (s) seen.add('s|' + c + '|' + s);
-    const parsed = (r.raw_meta && typeof r.raw_meta === 'object') ? r.raw_meta : {
+    if (s && !ssInvoice) seen.add('s|' + c + '|' + s);
+    const parsed = parsedMeta || {
       doc_number: r.doc_number || r.doc_norm || '',
       si_doc_number: r.si_doc_number || undefined,
       is_credit: !!r.is_credit,

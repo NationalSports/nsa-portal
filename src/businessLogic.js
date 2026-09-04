@@ -17,6 +17,16 @@ const safeDecos = (it) => safeArr(it?.decorations);
 const safeItems = (o) => safeArr(o?.items);
 const safeArt = (o) => safeArr(o?.art_files);
 const safeJobs = (o) => safeArr(o?.jobs);
+const manualPoCostTotal = (o) => {
+  const seen = new Set(); let total = 0;
+  safeItems(o).forEach((it, ii) => safePOs(it).forEach((po, pi) => {
+    const amount = safeNum(po?._manual_cost); if (!(amount > 0)) return;
+    const poId = String(po?.po_id || '').trim();
+    const key = poId ? poId.replace(/\s+/g, ' ').toLowerCase() : ('line:' + ii + ':' + pi);
+    if (seen.has(key)) return; seen.add(key); total += amount;
+  }));
+  return total;
+};
 // Same "does this art file actually have anything to review" check the approval-card UI uses
 // (App.js totalMocks) — an art file can carry a stale 'needs_approval'/'uploaded' status with 0
 // files/0 mockups (e.g. after a recall that didn't reset status), which must NOT read as waiting_approval
@@ -106,6 +116,40 @@ function dP(d, q, artFiles, cq) {
 // Per-line floor at 0: cancelling more than was ordered (data-entry slip) must not
 // produce a negative committed count — negative quantities are invalid, not credits.
 const poCommitted = (poLines, sz) => (poLines || []).reduce((a, pk) => { const ordered = pk[sz] || 0; const cancelled = (pk.cancelled || {})[sz] || 0; return a + Math.max(0, ordered - cancelled) }, 0);
+
+// Quantities that can safely move to a replacement SKU without touching anything already
+// pulled on an IF or committed to an active PO. Cancelled PO units are open again. The maps
+// make the confirmation UI explicit about what moves and what stays on the original line.
+function unfulfilledSizes(item) {
+  const orderedMap = safeSizes(item);
+  const keys = new Set(Object.keys(orderedMap));
+  if (!keys.size && item && item.qty_only) keys.add('QTY');
+  // A stale/misaligned IF can carry a quantity under a neighboring size (for example 2/XL
+  // while the order line says 2/L). Per-size subtraction alone would then invent 2 open L
+  // units even though the IF covers the entire line in total. Cap the sum of movable sizes by
+  // the line-level remainder so fully committed lines never expose a phantom SKU move.
+  const commitmentKeys = new Set([...keys, ...safeArr(item?.available_sizes)]);
+  if (item && item.qty_only) commitmentKeys.add('QTY');
+  const activePOs = safePOs(item).filter(pl => pl && pl.status !== 'cancelled');
+  const totalOrdered = [...keys].reduce((a, sz) => a + (sz === 'QTY' && !Object.keys(orderedMap).length ? safeNum(item.est_qty) : safeNum(orderedMap[sz])), 0);
+  const totalPicked = [...commitmentKeys].reduce((a, sz) => a + safePicks(item).reduce((n, pk) => n + Math.max(0, safeNum(pk[sz])), 0), 0);
+  const totalPO = [...commitmentKeys].reduce((a, sz) => a + poCommitted(activePOs, sz), 0);
+  let remainingOpen = Math.max(0, totalOrdered - totalPicked - totalPO);
+  const ordered = {}, picked = {}, po = {}, open = {};
+  keys.forEach(sz => {
+    const oq = sz === 'QTY' && !Object.keys(orderedMap).length ? safeNum(item.est_qty) : safeNum(orderedMap[sz]);
+    if (!(oq > 0)) return;
+    const pq = safePicks(item).reduce((a, pk) => a + Math.max(0, safeNum(pk[sz])), 0);
+    const poq = poCommitted(activePOs, sz);
+    const available = Math.max(0, oq - pq - poq);
+    ordered[sz] = oq;
+    if (pq > 0) picked[sz] = pq;
+    if (poq > 0) po[sz] = poq;
+    const movable = Math.min(available, remainingOpen);
+    if (movable > 0) { open[sz] = movable; remainingOpen -= movable }
+  });
+  return { ordered, picked, po, open };
+}
 
 // ── PO over-commit check ──
 // Sizes about to go on a NEW PO for `item` that exceed what the line still has OPEN
@@ -1041,6 +1085,7 @@ function calcTotals(o, cust) {
     if (bc > 0) { cost += bc; return; }
     cost += safeNum(dp.qty || 0) * safeNum(dp.unit_cost || 0);
   });
+  cost += manualPoCostTotal(o);
   const ship = o.shipping_type === 'pct' ? rev * (o.shipping_value || 0) / 100 : (o.shipping_value || 0);
   // Prior shipping carried from a Manual Ship recorded when the customer had no open order.
   const priorShip = safeNum(o.pending_ship_applied ? o.pending_ship_amount : 0);
@@ -1208,11 +1253,12 @@ function calcPromoTotals(o, cust) {
 
   // Customer pays only the non-promo portion
   const customerPays = normalRev + normalShip + normalTax;
+  const manualPoCost = manualPoCostTotal(o);
 
   return {
-    promoRev, promoCost, promoShip, promoAmount,
+    promoRev, promoCost, promoShip, promoAmount, manualPoCost,
     normalRev, normalCost, normalShip, normalTax,
-    customerPays, totalCost: promoCost + normalCost
+    customerPays, totalCost: promoCost + normalCost + manualPoCost
   };
 }
 
@@ -1430,6 +1476,34 @@ function itemsWithWipedQty(clientItems, dbItems) {
     if (total(ci.sizes) === 0) out.push({ item_index: idx, sku: db.sku, name: db.name, prevQty: oldQty });
   });
   return out;
+}
+
+// A decoration reduction is destructive, so it must be tied to the exact before/after counts
+// recorded by the editor's Remove action. Hydration flags are deliberately irrelevant here: a
+// stale or partially reconciled client can incorrectly believe it fully loaded decorations.
+function decorationShrinkConflicts(clientItems, dbItems, dbDecoCounts, deleteIntents) {
+  const clients = safeArr(clientItems);
+  const intents = safeObj(deleteIntents);
+  const countFor = id => dbDecoCounts instanceof Map
+    ? safeNum(dbDecoCounts.get(id))
+    : safeNum(safeObj(dbDecoCounts)[id]);
+  return safeArr(dbItems).reduce((out, dbItem) => {
+    const oldCount = countFor(dbItem.id);
+    const clientItem = clients[dbItem.item_index];
+    if (!clientItem || oldCount <= 0) return out; // removing the whole item is handled separately
+    const newCount = safeDecos(clientItem).length;
+    if (newCount >= oldCount) return out;
+    const intent = safeObj(intents[String(dbItem.item_index)]);
+    if (safeNum(intent.from) === oldCount && safeNum(intent.to) === newCount) return out;
+    out.push({
+      item_index: dbItem.item_index,
+      sku: clientItem.sku || dbItem.sku || '',
+      name: clientItem.name || dbItem.name || '',
+      oldCount,
+      newCount,
+    });
+    return out;
+  }, []);
 }
 
 // ─── Commission / account attribution ───
@@ -1761,16 +1835,70 @@ function assistantRemovePoLine(order, { itemIdx, plIdx, size }) {
   return { next, poId, summary, removedWholePo };
 }
 
+// ── Rep payout: monthly draw + employee loan → what actually gets paid ──
+// The DRAW is a cash advance against COMMISSION (per Steve, 2026-09): the rep receives
+// the draw through payroll, and it is recovered out of the commission they earn, so
+// payable = net commission − draw, floored at $0. A rep whose commission lands under
+// their draw keeps the draw and is paid nothing further; that shortfall does NOT carry
+// into the next month — every month starts clean.
+//
+// This replaced a rule that measured the draw against GROSS PROFIT dollars, which cleared
+// far too easily: a $5,000 draw passed on $5,000 of GP — worth only $1,500 of commission
+// — and then paid commission on top of a draw that had never been earned back.
+//
+// Loan withholding then takes loanPct% of payable, capped at the outstanding balance and
+// skipped when the month is flagged "pay full". Once a month has been applied to the loan,
+// appliedAmt is authoritative (the stored amount) and overrides the percentage.
+function calcRepPayout({ netCommission, draw, loanBalance, loanPct, payFull, appliedAmt } = {}) {
+  // Every amount is snapped to whole cents on the way in and the arithmetic runs in
+  // integer cents from there. Doing the loan split in floating point made the penny on
+  // an exact half-cent land arbitrarily: 50% of $2,578.47 is $1,289.235, and `2578.47*50`
+  // evaluates to 128923.49999999999 (rounds down) while `1000.01*50` gives
+  // 50000.500000000007 (rounds up) — same half-cent, opposite directions, decided by the
+  // binary representation rather than by a rule. In cents the split is exact and the
+  // half-cent always rounds up, to the loan.
+  const cents = (n) => { const v = Number(n); return Number.isFinite(v) ? Math.round(v * 100) : 0; };
+  const money = (c) => Math.round(c) / 100;
+  const netC = cents(netCommission);
+  const drawC = Math.max(0, cents(draw));
+  const loanC = Math.max(0, cents(loanBalance));
+  // A missing, blank or unparseable withholding % falls back to the 50% default — reading
+  // it as 0 would silently stop withholding and quietly overpay the rep. Only a real number
+  // or a non-blank numeric string counts, because loose coercion is not safe here:
+  // Number([]) is 0 and Number(true) is 1, so a stray array or boolean in the stored JSON
+  // would read as a real "withhold 0%" / "withhold 1%" rate rather than as junk.
+  const _pctRaw = typeof loanPct === 'string' ? loanPct.trim() : loanPct;
+  const _pctOk = (typeof _pctRaw === 'number' || (typeof _pctRaw === 'string' && _pctRaw !== ''))
+    && Number.isFinite(Number(_pctRaw));
+  const pct = _pctOk ? Math.min(100, Math.max(0, Number(_pctRaw))) : 50;
+  const underByC = drawC > 0 ? Math.max(0, drawC - netC) : 0;
+  const payableC = Math.max(0, netC - drawC);
+  // An already-applied month is authoritative, but it is clamped to [0, payable]: a
+  // negative stored amount would otherwise pay out MORE than was earned, and an amount
+  // larger than payable would drive the payout negative.
+  const appliedC = appliedAmt == null ? null : Math.min(Math.max(0, cents(appliedAmt)), payableC);
+  const withholdC = appliedC != null
+    ? appliedC
+    : (loanC > 0 && !payFull ? Math.min(Math.round(payableC * pct / 100), loanC) : 0);
+  return {
+    netComm: money(netC), draw: money(drawC), underBy: money(underByC),
+    payable: money(payableC), loanBal: money(loanC), pct,
+    withhold: money(withholdC), payout: money(payableC - withholdC),
+  };
+}
+
 module.exports = {
   // Safe accessors
-  safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
+  safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs, manualPoCostTotal,
   // Attribution
   commissionRepId,
   isCommissionRep,
+  // Commission payouts (draw + loan)
+  calcRepPayout,
   // Pricing
   rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
-  poCommitted, poOverCommit, billOverageQty, billLineNeed, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, unfulfilledSizes, poOverCommit, billOverageQty, billLineNeed, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Size reductions that run into POs / picks
   planSizeCut, absorbedSizes,
   // Portal Assistant confirmed writes (shared by both editors + App.js previews)
@@ -1784,5 +1912,5 @@ module.exports = {
   // Inventory
   checkInventoryConflicts,
   // Data-loss guards
-  itemEditReconciles, itemsWithWipedQty, unaccountedDroppedItems,
+  itemEditReconciles, itemsWithWipedQty, decorationShrinkConflicts, unaccountedDroppedItems,
 };

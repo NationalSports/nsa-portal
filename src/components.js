@@ -1,5 +1,6 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, poLineFulfilledQty } from './safeHelpers';
 import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC, isServiceLine } from './constants';
 // html2pdf is loaded on demand (see buildPdfAttachment below) to keep it out of the eager bundle.
@@ -72,10 +73,12 @@ function SortHeader({label,field,sortField,sortDir,onSort}){const a=sortField===
 // `limit` (optional) caps how many matches are RENDERED — a list of a few thousand
 // options (the full customer book) re-mounts every row on each keystroke otherwise.
 // Callers that pass no limit keep rendering every match, as before.
-function SearchSelect({options,value,onChange,placeholder,limit}){const[open,setOpen]=useState(false);const[q,setQ]=useState('');const _toks=q.toLowerCase().split(/\s+/).filter(Boolean);const f=options.filter(o=>{const h=(o.label+' '+(o.searchText||'')).toLowerCase();return _toks.every(t=>h.includes(t))});const sel=options.find(o=>o.value===value);const shown=limit?f.slice(0,limit):f;
-  return(<div style={{position:'relative'}}><div className="form-input" style={{cursor:'pointer',display:'flex',alignItems:'center'}} onClick={()=>setOpen(!open)}><span style={{flex:1,color:sel?'#0f172a':'#94a3b8'}}>{sel?sel.label:placeholder}</span><Icon name="search" size={14}/></div>
-    {open&&<div style={{position:'absolute',top:'100%',left:0,right:0,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:50,maxHeight:200,overflow:'auto'}}><div style={{padding:6}}><input className="form-input" placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)} autoFocus style={{fontSize:12}}/></div>
-      {shown.map(o=><div key={o.value} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,background:o.value===value?'#dbeafe':''}} onClick={()=>{onChange(o.value);setOpen(false);setQ('')}}>{o.label}</div>)}{f.length===0&&<div style={{padding:8,fontSize:12,color:'#94a3b8'}}>No results</div>}{shown.length<f.length&&<div style={{padding:8,fontSize:11,color:'#94a3b8'}}>Showing {shown.length} of {f.length} — keep typing to narrow.</div>}</div>}</div>)}
+function SearchSelect({options,value,onChange,placeholder,limit,menuPortal=false}){const[open,setOpen]=useState(false);const[q,setQ]=useState('');const anchorRef=useRef(null);const[pos,setPos]=useState(null);const _toks=q.toLowerCase().split(/\s+/).filter(Boolean);const f=options.filter(o=>{const h=(o.label+' '+(o.searchText||'')).toLowerCase();return _toks.every(t=>h.includes(t))});const sel=options.find(o=>o.value===value);const shown=limit?f.slice(0,limit):f;
+  useEffect(()=>{if(!open||!menuPortal||!anchorRef.current)return;const place=()=>{const r=anchorRef.current.getBoundingClientRect();const above=r.top>window.innerHeight-r.bottom;setPos({left:r.left,width:r.width,top:above?undefined:r.bottom+4,bottom:above?window.innerHeight-r.top+4:undefined})};place();window.addEventListener('resize',place);window.addEventListener('scroll',place,true);return()=>{window.removeEventListener('resize',place);window.removeEventListener('scroll',place,true)}},[open,menuPortal]);
+  const menu=<div data-search-select-menu style={{position:menuPortal?'fixed':'absolute',top:menuPortal?pos?.top:'100%',bottom:menuPortal?pos?.bottom:undefined,left:menuPortal?pos?.left:0,right:menuPortal?undefined:0,width:menuPortal?pos?.width:undefined,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:menuPortal?10050:50,maxHeight:200,overflow:'auto'}}><div style={{padding:6}}><input className="form-input" placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)} autoFocus style={{fontSize:12}}/></div>
+    {shown.map(o=><div key={o.value} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,background:o.value===value?'#dbeafe':''}} onClick={()=>{onChange(o.value);setOpen(false);setQ('')}}>{o.label}</div>)}{f.length===0&&<div style={{padding:8,fontSize:12,color:'#94a3b8'}}>No results</div>}{shown.length<f.length&&<div style={{padding:8,fontSize:11,color:'#94a3b8'}}>Showing {shown.length} of {f.length} — keep typing to narrow.</div>}</div>;
+  return(<div ref={anchorRef} style={{position:'relative'}}><div className="form-input" style={{cursor:'pointer',display:'flex',alignItems:'center'}} onClick={()=>setOpen(!open)}><span style={{flex:1,color:sel?'#0f172a':'#94a3b8'}}>{sel?sel.label:placeholder}</span><Icon name="search" size={14}/></div>
+    {open&&(menuPortal&&pos&&typeof document!=='undefined'?createPortal(menu,document.body):menu)}</div>)}
 
 // Catalog product picker built on SearchSelect. Lets the user bind a row to a
 // real catalog product by SKU/name/brand/color. Options are memoized so a table
@@ -111,7 +114,7 @@ function $In({value,onChange,w=70}){const[raw,setRaw]=React.useState(String(valu
 // blur was invisible to autosave AND to the unsaved-changes tab-close warning while
 // the field was still focused — closing the tab mid-note silently lost the note.
 const TXT_IDLE_MS=400,TXT_MAX_MS=1500;
-function $Txt({value,onChange,className,style,placeholder,title,onKeyDown,onClick,autoFocus}){
+function $Txt({value,onChange,className,style,placeholder,title,onKeyDown,onClick,autoFocus,as='input',rows,maxLength}){
   const cur=value==null?'':String(value);
   const[raw,setRaw]=React.useState(cur);const[focused,setFocused]=React.useState(false);
   const rawRef=React.useRef(raw);rawRef.current=raw;
@@ -122,12 +125,12 @@ function $Txt({value,onChange,className,style,placeholder,title,onKeyDown,onClic
   const flush=React.useCallback(()=>{if(timerRef.current){clearTimeout(timerRef.current);timerRef.current=null}firstEditRef.current=0;if(rawRef.current!==curRef.current)onChangeRef.current(rawRef.current)},[]);
   React.useEffect(()=>flush,[flush]);// flush pending text on unmount
   const commit=()=>{setFocused(false);flush()};
-  return<input className={className} style={style} placeholder={placeholder} title={title} autoFocus={autoFocus} value={raw}
-    onClick={onClick}
-    onFocus={()=>setFocused(true)}
-    onChange={e=>{const v=e.target.value;setRaw(v);rawRef.current=v;if(!firstEditRef.current)firstEditRef.current=Date.now();if(timerRef.current)clearTimeout(timerRef.current);if(Date.now()-firstEditRef.current>=TXT_MAX_MS)flush();else timerRef.current=setTimeout(flush,TXT_IDLE_MS)}}
-    onBlur={commit}
-    onKeyDown={e=>{if(e.key==='Enter'&&e.currentTarget.tagName==='INPUT')e.currentTarget.blur();if(onKeyDown)onKeyDown(e)}}/>;
+  return React.createElement(as,{className,style,placeholder,title,autoFocus,rows,maxLength,value:raw,
+    onClick,
+    onFocus:()=>setFocused(true),
+    onChange:e=>{const v=e.target.value;setRaw(v);rawRef.current=v;if(!firstEditRef.current)firstEditRef.current=Date.now();if(timerRef.current)clearTimeout(timerRef.current);if(Date.now()-firstEditRef.current>=TXT_MAX_MS)flush();else timerRef.current=setTimeout(flush,TXT_IDLE_MS)},
+    onBlur:commit,
+    onKeyDown:e=>{if(e.key==='Enter'&&e.currentTarget.tagName==='INPUT')e.currentTarget.blur();if(onKeyDown)onKeyDown(e)}});
 }
 
 function EmailBadge({e}){if(!e.email_status)return null;const s=e.email_status;

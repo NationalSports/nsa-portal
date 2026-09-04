@@ -43,6 +43,7 @@ function fakeSb(tables, user) {
         select: (cols) => { q.select = cols; return chain; },
         eq: (col, val) => { q.filters.push(['eq', col, val]); return chain; },
         in: (col, val) => { q.filters.push(['in', col, val]); return chain; },
+        is: (col, val) => { q.filters.push(['is', col, val]); return chain; },
         ilike: (col, val) => { q.filters.push(['ilike', col, val]); return chain; },
         order: () => chain,
         limit: () => chain,

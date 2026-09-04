@@ -41,6 +41,9 @@ const LINES = [
 // soItems: what the SO currently carries. AT310-50 is unchanged; the tank was swapped.
 const SO_ITEMS = [
   { sku: 'AT310-50', name: 'Adidas Techfit VB Shorts W', color: 'Black', sizes: { '2XS': 2 } },
+  // Obsolete off-order remnant left behind after the swap. It is not assigned to
+  // a player and must not block the per-SO fulfillment download.
+  { sku: '1203.080', name: 'Girls Racerback Tank', color: 'Black', sizes: { L: 1, S: 0 } },
   { sku: '1203.005', name: 'Girls Racerback Tank', color: 'White', sizes: { S: 1 } },
 ];
 
@@ -67,9 +70,9 @@ function supabaseStub() {
   };
 }
 
-const run = (format = 'csv') => downloadSoPlayerReport({
-  so: { id: 'SO-2035', webstore_id: 'ws-1', memo: '' },
-  soItems: SO_ITEMS, supabase: supabaseStub(), nf: () => {}, format,
+const run = (format = 'csv', customer = null, soOverrides = {}) => downloadSoPlayerReport({
+  so: { id: 'SO-2035', webstore_id: 'ws-1', memo: '', ...soOverrides },
+  soItems: SO_ITEMS, supabase: supabaseStub(), nf: () => {}, format, customer,
 });
 
 describe('player report CSV', () => {
@@ -123,6 +126,18 @@ describe('player report CSV', () => {
     expect(rows[1]).toContain('AT310-50,JL5410');
   });
 
+  test('puts Silver Screen-only units last as Order Extra / Unassigned', async () => {
+    const soOverrides = { deco_pos: [{ vendor: 'Silver Screen', qty: 4, _silverscreen_job_id: 58505 }] };
+    expect(await run('csv', null, soOverrides)).toBe(true);
+    const rows = captured.replace(/^﻿/, '').split('\r\n');
+    expect(rows).toHaveLength(4);
+    expect(rows[3]).toContain('SO-2035 ORDER EXTRA');
+    expect(rows[3]).toContain('Order Extra / Unassigned');
+    expect(rows[3]).toContain('1203.080');
+    expect(rows[3]).toContain(',L,1,');
+    expect(rows[3]).toContain('ORDER EXTRA / UNASSIGNED');
+  });
+
   test('PDF report prints both numbers for the S&S item', async () => {
     let html = '';
     const popup = {
@@ -136,7 +151,9 @@ describe('player report CSV', () => {
   });
 
   test('product report downloads the exact Silver Screen Domestic columns', async () => {
-    expect(await run('product')).toBe(true);
+    // Simulates an editor customer snapshot with no address. The download must
+    // rehydrate the webstore's linked customer instead of emitting blank fields.
+    expect(await run('product', { id: 'c-1', name: 'Stale customer snapshot' })).toBe(true);
     expect(XLSX.writeFile).toHaveBeenCalledTimes(1);
     const [workbook, filename] = XLSX.writeFile.mock.calls[0];
     expect(workbook.SheetNames).toEqual(['Domestic']);
@@ -152,6 +169,9 @@ describe('player report CSV', () => {
       'BILLING - 3RD PARTY POSTAL CODE (if applicable)',
     ]);
     expect(rows.slice(1).reduce((sum, row) => sum + Number(row[3]), 0)).toBe(3);
+    expect(rows.slice(1).map((row) => row[0])).toEqual(['99', '1010525']);
+    expect(rows[1][1]).toBe('Alexandra "Alex" Spitzer');
+    expect(rows[1].slice(8, 14)).toEqual(['12 Oak St', 'Apt 4', 'Reno', 'NV', '89502', 'UPS Ground']);
     expect(rows.slice(1).some((row) => row[6] === 'AT310-50' && /Adidas tag JL5410/.test(row[7]))).toBe(true);
   });
 });

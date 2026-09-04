@@ -15,12 +15,15 @@
 // src/__tests__/dbEngine.characterization.test.js.
 // ═══════════════════════════════════════════════════════════════════════
 import { createClient } from '@supabase/supabase-js';
+import { insertedItemIdsByIndex } from './itemInsertIdentity';
 import { makeBreakerFetch } from './requestBreaker';
 import { _sbAuthLock } from './supabase';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, _vendCols, _firmDateCols, _omgStoreCols } from '../constants';
-import { itemEditReconciles, itemsWithWipedQty, unaccountedDroppedItems, jobAllRoutedOutside } from '../businessLogic';
+import { _pick, _estCols, _soCols, _itemCols, _soItemCols, _decoCols, _itemExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, _vendCols, _firmDateCols, _omgStoreCols } from '../constants';
+import { itemEditReconciles, itemsWithWipedQty, decorationShrinkConflicts, unaccountedDroppedItems, jobAllRoutedOutside } from '../businessLogic';
 import { soItemKey } from '../safeHelpers';
 import { authFetch } from '../utils';
+import { consolidateOmgProductRows } from './storeSkuGrouping';
+import { preserveAppliedInvoiceSummary } from './invoicePaymentReconciliation';
 
 // ─── Supabase Setup ───
 const _sbUrl = process.env.REACT_APP_SUPABASE_URL || '';
@@ -340,6 +343,9 @@ const _mapHistInvoice=hi=>({
   customer_id:hi.customer_id,
   date:hi.invoice_date,
   total:hi.total!=null?Number(hi.total):null,
+  // Optional authoritative AR balance. Legacy imports do not have this field;
+  // those rows remain useful sales history but are excluded from collectible AR.
+  open_balance:hi.open_balance!=null?Number(hi.open_balance):null,
   memo:hi.memo||'',
   status:hi.status||'paid',
   type:'invoice',
@@ -390,7 +396,7 @@ const _dbLoad = async (opts={}) => {
     const _productsLoading=essential?false:(only?only.has('products'):!coreOnly);
     const [rTeam,rCust,rContacts,rVend,rProd,rProdInv,rEst,rEstArt,rEstItems,rEstDecos,
       rSO,rSOArt,rSOFirm,rSOItems,rSODecos,rSOPicks,rSOPOs,rSOJobs,
-      rInv,rInvPay,rInvItems,rMsg,rMsgReads,rOMG,rOMGProd,rIssues,rAppState,
+      rInv,rInvPay,rInvItems,rInvCreditMemos,rMsg,rMsgReads,rOMG,rOMGProd,rIssues,rAppState,
       rPromoProg,rPromoPeriods,rPromoUsage,rCredits,rCreditUsage,
       rPendingShip,rPendingShipUsage,
       rRepCsr,rAssignedTodos,rTodoComments,
@@ -432,6 +438,7 @@ const _dbLoad = async (opts={}) => {
       _grp('invoices',()=>_safeQuery('invoices',{order:'id'})),
       _grp('invoices',()=>_safeQuery('invoice_payments')),
       _grp('invoices',()=>_safeQuery('invoice_items')),
+      _grp('invoices',()=>_safeQuery('invoice_credit_memos',{order:'created_at'})),
       _grp('messages',()=>_safeQuery('messages',{order:'id'})),
       _grp('messages',()=>_safeQuery('message_reads')),
       _cold(()=>_safeQuery('omg_stores',{order:'id'})),
@@ -489,7 +496,7 @@ const _dbLoad = async (opts={}) => {
     const estRaw=d(rEst);const estArt=d(rEstArt);const estItems=d(rEstItems);const estDecos=d(rEstDecos);
     const soRaw=d(rSO);const soArt=d(rSOArt);const soFirm=d(rSOFirm);
     const soItems=d(rSOItems);const soDecos=d(rSODecos);const soPicks=d(rSOPicks);const soPOs=d(rSOPOs);const soJobs=d(rSOJobs);
-    const invRaw=d(rInv);const invPay=d(rInvPay);const invItems=d(rInvItems);
+    const invRaw=d(rInv);const invPay=d(rInvPay);const invItems=d(rInvItems);const invCreditMemos=d(rInvCreditMemos);
     const msgRaw=d(rMsg);const msgReads=d(rMsgReads);
     const omgRaw=d(rOMG);const omgProd=d(rOMGProd);
     const issues=d(rIssues);
@@ -630,13 +637,14 @@ const _dbLoad = async (opts={}) => {
       // Hydration flags so the save can tell a deliberate removal from items/payments that simply never loaded
       // (a timed-out invoice_items / invoice_payments query). _hydratedPayRefs lets payments be restore-merged by ref.
       const _hydratedPayRefs=[...new Set(payments.map(p=>p.ref).filter(Boolean))];
-      return{...inv,payments,items:items.length?items:undefined,_itemsHydrated:!_lastLoadTimedOut.has('invoice_items'),_paymentsHydrated:!_lastLoadTimedOut.has('invoice_payments'),_hydratedPayRefs}});
+      const credit_memos=invCreditMemos.filter(cm=>cm.invoice_id===inv.id);
+      return{...inv,payments,items:items.length?items:undefined,credit_memos,_itemsHydrated:!_lastLoadTimedOut.has('invoice_items'),_paymentsHydrated:!_lastLoadTimedOut.has('invoice_payments'),_hydratedPayRefs}});
     // NetSuite historical invoices — read-only; reshape invoice_date → date and tag as historical.
     const hist_invoices=d(rHistInvs).map(_mapHistInvoice);
     // Messages: attach read_by array and parse tagged_members
     const messages=msgRaw.map(m=>{const tm=m.tagged_members;const mapped={...m,text:m.body||m.text,ts:m.created_at||m.ts};delete mapped.body;return{...mapped,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id),tagged_members:Array.isArray(tm)?tm:(typeof tm==='string'?(() => {try{return JSON.parse(tm)}catch{return[]}})():[])}});
     // OMG Stores: attach products
-    const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>{const noDeco=p.deco_type==='no_deco';const dt=noDeco?[]:(p.deco_type||'').split('|').filter(Boolean);const ag=(p.art_group||'').split('|');const ci=(p.art_cust_ids||'').split('|');const decorations=dt.map((t,i)=>({type:t,art_group:ag[i]||'',...(ci[i]?{_cust_art_id:ci[i]}:{})}));return{sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',_cost_source:p._cost_source||'',vendor_id:p.vendor_id||'',art_group:p.art_group||'',decorations,no_deco:noDeco,art_ready:!!p.art_ready,_artwork:p._artwork||[]}})}));
+    const omg_stores=omgRaw.map(s=>({...s,products:consolidateOmgProductRows(omgProd.filter(p=>p.store_id===s.id)).map(p=>{const noDeco=p.deco_type==='no_deco';const dt=noDeco?[]:(p.deco_type||'').split('|').filter(Boolean);const ag=(p.art_group||'').split('|');const ci=(p.art_cust_ids||'').split('|');const decorations=dt.map((t,i)=>({type:t,art_group:ag[i]||'',...(ci[i]?{_cust_art_id:ci[i]}:{})}));return{sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',_cost_source:p._cost_source||'',vendor_id:p.vendor_id||'',art_group:p.art_group||'',decorations,no_deco:noDeco,art_ready:!!p.art_ready,_artwork:p._artwork||[]}})}));
     // Selective loads may not include customers/sales_orders — judge by whatever was fetched
     const hasData=only?[customers,sales_orders,products,estimates,invoices,messages,assignedTodos].some(a=>a.length>0):((customers.length>0)||(sales_orders.length>0));
     const dismissedTodosDb=d(rDismissedTodos);const dismissedNotifsDb=d(rDismissedNotifs);
@@ -737,6 +745,10 @@ const _CUST_CHILD_KEYS=['promo_programs','promo_periods','promo_usage','credits'
 // Phantom-save guard for customers: ignore the child-table arrays above (plus the server-managed
 // fields _diffCmp strips) so only changes _dbSaveCustomer can actually save trigger a save.
 const _custDiffCmp=(o)=>{const r={...o};delete r._version;delete r.updated_at;_CUST_CHILD_KEYS.forEach(k=>delete r[k]);return JSON.stringify(r)};
+// Credit memos are attached read-only from invoice_credit_memos and persist through
+// their transactional RPC. Adding one must not make the parent invoice look edited
+// and trigger an unrelated invoice upsert.
+const _invDiffCmp=(o)=>{const r={...o};delete r.credit_memos;return _diffCmp(r)};
 // NOT NULL columns with DB defaults reject an EXPLICIT null — a default only applies when the
 // column is omitted. Outbox payloads captured before the follow-up fields hydrated carry
 // follow_up_auto/follow_up_count as null, which hard-failed the whole save (SO-1401, 2026-07-31).
@@ -757,14 +769,14 @@ const _estDiffCmp=(e)=>JSON.stringify({
 });
 // Phantom-save guard for sales orders — DELIBERATELY CONSERVATIVE because the SO save is the most
 // data-loss-sensitive path in the app. It differs from _diffCmp ONLY by stripping, from each line
-// item, the scalar fields that are NOT in _itemCols — i.e. exactly the fields the SO save itself
-// discards (_pick(itemData,_itemCols) in _dbSaveSOInner). Those fields (recomputed-every-load
+// item, the scalar fields that are NOT in the SO item write lists — i.e. exactly the fields the SO
+// save itself discards. Those fields (recomputed-every-load
 // _sizeCosts/_sizeSells/_colorImage/etc.) can never be persisted, so dropping them from change-
 // detection can never hide a savable change → zero data-loss risk by construction. EVERYTHING else —
 // all SO-level fields, jobs, art_files, firm_dates, and each item's decorations/pick_lines/po_lines —
 // is still compared WHOLE, exactly as before. Only the per-item session scalars (the storm trigger)
 // stop counting as changes.
-const _soItemForDiff=(it)=>({..._pick(it,_itemCols),decorations:it.decorations,pick_lines:it.pick_lines,po_lines:it.po_lines});
+const _soItemForDiff=(it)=>({..._pick(it,[..._itemCols,..._soItemCols]),decorations:it.decorations,pick_lines:it.pick_lines,po_lines:it.po_lines});
 const _soDiffCmp=(s)=>{const{_version,updated_at,...r}=s;if(Array.isArray(r.items))r.items=r.items.map(_soItemForDiff);return JSON.stringify(r)};
 // Phantom-save guard for products: compare ONLY what _dbSaveProduct actually persists — the products
 // row, the _pimg_ image backup (front/back/gallery), and product_inventory (_inv/_alerts). It mirrors
@@ -1062,34 +1074,28 @@ const _dbSaveEstimateInner = async (est) => {
         return false;
       }
     }
-    // Safety check: if client has 0 decorations but DB has some, abort to prevent data loss — but ONLY when
-    // decorations were not cleanly loaded this session. A timed-out estimate_item_decorations load strips decos
-    // off the items while the DB still has them, so a save would wipe them. When decos WERE hydrated, the client
-    // list is trustworthy and removing the last decoration is a deliberate edit (the user-reported case) — allow it.
-    const clientDecoCount=(items||[]).reduce((a,it)=>a+(it.decorations?.length||0),0);
-    const allNoDeco=(items||[]).length>0&&(items||[]).every(it=>it.no_deco);
-    if(clientDecoCount===0&&!allNoDeco&&oldItemIds.length&&!est._decosHydrated){
-      const{count:dbDecoCount}=await supabase.from('estimate_item_decorations').select('id',{count:'exact',head:true}).in('estimate_item_id',oldItemIds);
-      if(dbDecoCount>0){console.error('[DB] SAFETY: Blocking estimate save — client has 0 decorations but DB has',dbDecoCount,'for',est.id,'(decorations never hydrated this session)');if(_dbNotify)_dbNotify('Save blocked — decoration data would be lost. Please reload the page.','error');_emitOutboxConflict('estimates',est);_dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();return false}
-    }
-    // Per-item safety: block save if any single item would lose all its decorations.
-    // Catches the partial-loss case the all-zero check above misses (one item drops decos while others retain them).
-    // Gated on _decosHydrated: when decos loaded cleanly, a per-item deco removal is a deliberate edit, so skip.
-    if(oldItemIds.length&&items?.length&&!est._decosHydrated){
-      const{data:_oldDecoRows}=await supabase.from('estimate_item_decorations').select('estimate_item_id').in('estimate_item_id',oldItemIds);
-      const _oldDecoByItem=new Map();(_oldDecoRows||[]).forEach(d=>_oldDecoByItem.set(d.estimate_item_id,(_oldDecoByItem.get(d.estimate_item_id)||0)+1));
-      for(const oi of _oldEstItems){
-        const oldN=_oldDecoByItem.get(oi.id)||0;if(oldN===0)continue;
-        const ci=items[oi.item_index];if(!ci)continue;// item removed by user — allowed
-        if(ci.no_deco)continue;
-        if((ci.decorations?.length||0)===0){
-          const label=ci.sku||oi.sku||('item '+oi.item_index);
-          console.error('[DB] SAFETY: Blocking estimate save — '+label+' had',oldN,'decoration(s) in DB but client has 0');
-          if(_dbNotify)_dbNotify('Save blocked — decoration data for '+label+' would be lost. Please reload the page.','error');
-          _emitOutboxConflict('estimates',est);
-          _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();
-          return false;
-        }
+    // Decoration shrink guard: hydration is not proof of intent. A stale reconciliation can carry
+    // `_decosHydrated=true` while still holding missing child rows (the EST-2079 incident). Always compare
+    // live DB counts with the client and require the exact before/after intent stamped by the editor's Remove
+    // action. A read error fails closed; proceeding with unknown DB counts would make this guard illusory.
+    if(oldItemIds.length&&items?.length){
+      const _oldDecoResp=await _retryNet(()=>supabase.from('estimate_item_decorations').select('estimate_item_id').in('estimate_item_id',oldItemIds));
+      if(_oldDecoResp.error){
+        console.error('[DB] SAFETY: Blocking estimate save — failed to verify decorations for',est.id,':',_oldDecoResp.error.message);
+        if(_dbNotify)_dbNotify('Save blocked — could not verify decoration data. Please reload the page.','error');
+        _dbSaveFailedIds.add(est.id);_recordSaveError(est.id,'estimate_item_decorations SELECT errored: '+_oldDecoResp.error.message);_persistFailedIds();
+        return false;
+      }
+      const _oldDecoByItem=new Map();(_oldDecoResp.data||[]).forEach(d=>_oldDecoByItem.set(d.estimate_item_id,(_oldDecoByItem.get(d.estimate_item_id)||0)+1));
+      const _decoConflicts=decorationShrinkConflicts(items,_oldEstItems,_oldDecoByItem,est._decoDeleteIntents);
+      if(_decoConflicts.length){
+        const c=_decoConflicts[0];const label=c.sku||c.name||('item '+c.item_index);
+        console.error('[DB] SAFETY: Blocking estimate save — '+label+' decorations would shrink without matching delete intent ('+c.oldCount+' → '+c.newCount+') for',est.id);
+        if(_dbNotify)_dbNotify('Save blocked — decoration data for '+label+' would be lost. Reload the page to restore it.','error');
+        if(_dataLossAlert)_dataLossAlert({kind:'deco_shrink_blocked',soId:est.id,itemIndex:c.item_index,sku:c.sku,prevCount:c.oldCount,newCount:c.newCount,reason:'decoration count shrank without explicit Remove action'});
+        _emitOutboxConflict('estimates',est);
+        _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();
+        return false;
       }
     }
     // Per-item quantity-wipe guard: block a save that would zero out a surviving line's quantities (same
@@ -1168,8 +1174,10 @@ const _dbSaveEstimateInner = async (est) => {
         }
       }
       const _fnMissing=r=>!!r.error&&(r.error.code==='PGRST202'||/Could not find the function|No function matches|does not exist/i.test(r.error.message||''));
-      let _rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null),p_is_new:_isNewEst}));
-      // Fallbacks for older deployed RPC signatures (pre-00195, then pre-00128) so deploy order can't break saving.
+      const _decoDeleteIntents=est._decoDeleteIntents||{};
+      let _rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null),p_is_new:_isNewEst,p_deco_delete_intents:_decoDeleteIntents}));
+      // Fallbacks for older deployed RPC signatures (pre-decoration guard, pre-00195, then pre-00128) so deploy order can't break saving.
+      if(_fnMissing(_rpcRes))_rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null),p_is_new:_isNewEst}));
       if(_fnMissing(_rpcRes))_rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null)}));
       if(_fnMissing(_rpcRes))_rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems}));
       // Id collision on create: re-mint from a fresh DB-wide max and retry ONCE, still as a create —
@@ -1178,7 +1186,8 @@ const _dbSaveEstimateInner = async (est) => {
         const oldId=est.id;const freshMax=await _refreshMaxId('estimates','EST-');
         est.id=_estPayload.id='EST-'+(Math.max(freshMax,parseInt((oldId.match(/\d+/)||['0'])[0])||0)+1);
         console.warn('[DB] Estimate id collision on create —',oldId,'already exists in DB, re-minted to',est.id);
-        _rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null),p_is_new:true}));
+        _rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null),p_is_new:true,p_deco_delete_intents:_decoDeleteIntents}));
+        if(_fnMissing(_rpcRes))_rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null),p_is_new:true}));
         if(!_rpcRes.error&&_dataLossAlert)_dataLossAlert({kind:'est_id_reminted',soId:est.id,reason:'create collided with existing '+oldId+' — re-minted to avoid overwriting it'});
       }
       const _rpcErr=_rpcRes.error;
@@ -1207,6 +1216,8 @@ const _dbSaveEstimateInner = async (est) => {
           ?"This customer isn't saved yet. Re-select or re-create the customer, then save."
           :_m.includes('ESTIMATE_ID_EXISTS')
             ?'Could not create '+est.id+' — the estimate number is already in use. Please save again to get a fresh number.'
+          :_m.includes('ESTIMATE_DECORATION_SHRINK_BLOCKED')
+            ?'Estimate save blocked — decoration rows changed without an explicit Remove action. Reload the estimate and try again.'
           :(_m.includes('ESTIMATE_ID_MISSING')||_m.includes('ESTIMATE_PAYLOAD_EMPTY'))
             ?'Estimate could not be saved — required fields are missing. Please reload and try again.'
             :'Estimate save failed — please try again, or reload the page if it keeps happening.';
@@ -1279,6 +1290,7 @@ const _dbSaveEstimateInner = async (est) => {
     // drop any authority a previous RPC-versioned save recorded, or _checkVersion would compare a
     // real server version against a stale guess and raise a conflict against this client's own write.
     if(!_serverVersioned)_dbOwnVersionExact.delete(est.id);
+    delete est._decoDeleteIntents;
     return true;
   }catch(e){console.error('[DB] save estimate:',e);if(_isAuthError(e))return _handleAuthSaveFailure(est.id,e);_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save failed: '+e.message,'error');return false}});
 };
@@ -1678,35 +1690,28 @@ const _dbSaveSOInner = async (so) => {
         _dbSaveFailedIds.delete(so.id);_persistFailedIds();return true;
       }
     }
-    // Safety check: if client has 0 decorations but DB has some, abort to prevent data loss — but ONLY when
-    // decorations were not cleanly loaded this session. A timed-out so_item_decorations load strips decos off the
-    // items while the DB still has them, so a save would wipe them. When decos WERE hydrated, the client list is
-    // trustworthy and removing the last decoration is a deliberate edit — allow it.
-    const clientDecoCount=(items||[]).reduce((a,it)=>a+(it.decorations?.length||0),0);
-    const allNoDeco=(items||[]).length>0&&(items||[]).every(it=>it.no_deco);
-    if(clientDecoCount===0&&!allNoDeco&&oldItemIds.length&&!so._decosHydrated){
-      const{count:dbDecoCount}=await supabase.from('so_item_decorations').select('id',{count:'exact',head:true}).in('so_item_id',oldItemIds);
-      if(dbDecoCount>0){console.error('[DB] SAFETY: Blocking SO save — client has 0 decorations but DB has',dbDecoCount,'for',so.id,'(decorations never hydrated this session)');if(_dbNotify)_dbNotify('Save blocked — decoration data would be lost. Please reload the page.','error');_emitOutboxConflict('sales_orders',so);_dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();return false}
-    }
-    // Per-item safety: block save if any single item would lose all its decorations.
-    // Catches the partial-loss case the all-zero check above misses (one item drops decos while siblings retain them).
-    // Gated on _decosHydrated: when decos loaded cleanly, a per-item deco removal is a deliberate edit, so skip.
-    if(oldItemIds.length&&items?.length&&!so._decosHydrated){
-      const{data:_oldDecoRows}=await supabase.from('so_item_decorations').select('so_item_id').in('so_item_id',oldItemIds);
-      const _oldDecoByItem=new Map();(_oldDecoRows||[]).forEach(d=>_oldDecoByItem.set(d.so_item_id,(_oldDecoByItem.get(d.so_item_id)||0)+1));
-      for(const oi of _oldSoItems){
-        const oldN=_oldDecoByItem.get(oi.id)||0;if(oldN===0)continue;
-        const ci=items[oi.item_index];if(!ci)continue;// item removed by user — allowed
-        if(ci.no_deco)continue;
-        if((ci.decorations?.length||0)===0){
-          const label=ci.sku||oi.sku||('item '+oi.item_index);
-          console.error('[DB] SAFETY: Blocking SO save — '+label+' had',oldN,'decoration(s) in DB but client has 0');
-          if(_dbNotify)_dbNotify('Save blocked — decoration data for '+label+' would be lost. Please reload the page.','error');
-          if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'per-item deco safety: '+label+' had '+oldN+' deco(s) in DB, client had 0'});
-          _emitOutboxConflict('sales_orders',so);
-          _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();
-          return false;
-        }
+    // Same exact-intent guard as estimates. SO-1992 proved that `_decosHydrated=true` is not evidence that
+    // the in-memory rows are complete: a second background save preserved all 14 items and 13 PO rows while
+    // silently shrinking decorations 19→2. Always compare against the live DB and fail closed on a read error.
+    if(oldItemIds.length&&items?.length){
+      const _oldDecoResp=await _retryNet(()=>supabase.from('so_item_decorations').select('so_item_id').in('so_item_id',oldItemIds));
+      if(_oldDecoResp.error){
+        console.error('[DB] SAFETY: Blocking SO save — failed to verify decorations for',so.id,':',_oldDecoResp.error.message);
+        if(_dbNotify)_dbNotify('Save blocked — could not verify decoration data. Please reload the page.','error');
+        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'so_item_decorations SELECT errored: '+_oldDecoResp.error.message});
+        _dbSaveFailedIds.add(so.id);_recordSaveError(so.id,'so_item_decorations SELECT errored: '+_oldDecoResp.error.message);_persistFailedIds();
+        return false;
+      }
+      const _oldDecoByItem=new Map();(_oldDecoResp.data||[]).forEach(d=>_oldDecoByItem.set(d.so_item_id,(_oldDecoByItem.get(d.so_item_id)||0)+1));
+      const _decoConflicts=decorationShrinkConflicts(items,_oldSoItems,_oldDecoByItem,so._decoDeleteIntents);
+      if(_decoConflicts.length){
+        const c=_decoConflicts[0];const label=c.sku||c.name||('item '+c.item_index);
+        console.error('[DB] SAFETY: Blocking SO save — '+label+' decorations would shrink without matching delete intent ('+c.oldCount+' → '+c.newCount+') for',so.id);
+        if(_dbNotify)_dbNotify('Save blocked — decoration data for '+label+' would be lost. Reload the page to restore it.','error');
+        if(_dataLossAlert)_dataLossAlert({kind:'deco_shrink_blocked',soId:so.id,itemIndex:c.item_index,sku:c.sku,prevCount:c.oldCount,newCount:c.newCount,reason:'decoration count shrank without explicit Remove action'});
+        _emitOutboxConflict('sales_orders',so);
+        _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();
+        return false;
       }
     }
     // PO line preservation: rebuild any purchase-order lines the user did NOT delete.
@@ -2385,21 +2390,24 @@ const _dbSaveSOInner = async (so) => {
       }
       _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();if(so._version)so._version=so._version+1;return true}
     // Batch insert all items at once (much faster than one-by-one)
-    const allItemRows=items.map((item,idx)=>{const{decorations,pick_lines,po_lines,...itemData}=item;return{..._pick(itemData,_itemCols),so_id:so.id,item_index:idx}});
-    let{data:insertedItems,error:itemErr}=await supabase.from('so_items').insert(allItemRows).select('id');
+    const allItemRows=items.map((item,idx)=>{const{decorations,pick_lines,po_lines,...itemData}=item;return{..._pick(itemData,[..._itemCols,..._soItemCols]),so_id:so.id,item_index:idx}});
+    // Child rows must be attached by the stable item_index returned by Postgres. INSERT ...
+    // RETURNING order is not an identity contract; pairing returned ids to `items[idx]` by array
+    // position can cross-link PO quantities/vendor metadata to a different SKU after a full save.
+    let{data:insertedItems,error:itemErr}=await supabase.from('so_items').insert(allItemRows).select('id,item_index');
     if(itemErr){
       if(itemErr.message?.includes('product_id')||itemErr.code==='23503'){
         const fkRows=allItemRows.map(r=>({...r,product_id:null}));
-        const fkRetry=await supabase.from('so_items').insert(fkRows).select('id');
+        const fkRetry=await supabase.from('so_items').insert(fkRows).select('id,item_index');
         if(!fkRetry.error){insertedItems=fkRetry.data;console.warn('[DB] so items saved with product_id nulled (FK constraint)')}
         else{itemErr=fkRetry.error}
       }
       if(!insertedItems){
         const coreRows=allItemRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_itemExtraCols.has(k))cr[k]=r[k]});return cr});
-        const retry=await supabase.from('so_items').insert(coreRows).select('id');
+        const retry=await supabase.from('so_items').insert(coreRows).select('id,item_index');
         if(retry.error){
           const coreNullPid=coreRows.map(r=>({...r,product_id:null}));
-          const retry2=await supabase.from('so_items').insert(coreNullPid).select('id');
+          const retry2=await supabase.from('so_items').insert(coreNullPid).select('id,item_index');
           if(retry2.error){console.error('[DB] so_items batch insert failed:',retry2.error.message,retry2.error.details);saveFailed=true;_failMsg=_failMsg||('so_items: '+retry2.error.message+(retry2.error.details?' ('+retry2.error.details+')':''))}
           else{insertedItems=retry2.data;console.warn('[DB] so items saved with core columns + product_id nulled')}
         }
@@ -2416,11 +2424,17 @@ const _dbSaveSOInner = async (so) => {
       console.error('[DB] SAFETY: so_items insert under-returned —',insertedItems?.length||0,'of',allItemRows.length,'ids');
       if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allItemRows.length,got:insertedItems?.length||0,reason:'so_items: insert returned '+(insertedItems?.length||0)+' of '+allItemRows.length+' ids — save queued for retry'});
     }
+    const insertedItemIdByIndex=insertedItemIdsByIndex(insertedItems);
+    if(!saveFailed&&insertedItemIdByIndex.size<allItemRows.length){
+      saveFailed=true;_failMsg=_failMsg||('so_items: insert response did not return a unique item_index for every row');
+      console.error('[DB] SAFETY: so_items insert response cannot be mapped by item_index for',so.id);
+      if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allItemRows.length,got:insertedItemIdByIndex.size,reason:'so_items: returned rows could not be mapped one-to-one by item_index — child writes blocked'});
+    }
     if(!saveFailed&&insertedItems?.length){
       // Build all child rows referencing their parent item IDs
       const allDecoRows=[],allPickRows=[],allPoRows=[];
       items.forEach((item,idx)=>{
-        const itemId=insertedItems[idx]?.id;if(!itemId)return;
+        const itemId=insertedItemIdByIndex.get(idx);if(!itemId)return;
         const{decorations,pick_lines,po_lines}=item;
         if(decorations?.length)decorations.forEach((d,di)=>allDecoRows.push({..._pick(_sanitizeDeco(d),_decoCols),so_item_id:itemId,deco_index:di}));
         if(pick_lines?.length)pick_lines.forEach(pk=>{const{pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,deco_po_id,deco_vendor_id,attention,pulled_at,...sizes}=pk;
@@ -2554,6 +2568,7 @@ const _dbSaveSOInner = async (so) => {
       if(_verRow&&typeof _verRow._version==='number'){so._version=_verRow._version;_dbOwnVersions[so.id]=_verRow._version;_dbOwnVersionExact.add(so.id)}
       else{_dbOwnVersionExact.delete(so.id);if(so._version)so._version=so._version+1}
     }catch(e){_dbOwnVersionExact.delete(so.id);if(so._version)so._version=so._version+1;console.warn('[DB] post-save _version read-back failed for',so.id,'— falling back to +1 estimate:',e?.message||e)}
+    delete so._decoDeleteIntents;
     return true;
   }catch(e){console.error('[DB] save SO:',e);if(_isAuthError(e))return _handleAuthSaveFailure(so.id,e);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
 };
@@ -2630,10 +2645,10 @@ const _dbSaveArtFilesInner = async (so) => {
   }catch(e){if(_isAuthError(e))return _handleAuthSaveFailure(so.id,e);console.error('[DB] save art files:',e);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+(e.message||e),'error');return false}});
 };
 const _dbSaveArtFiles = (so) => _outboxWrap('sales_orders', so, _queuedEntitySave(so.id, so, _dbSaveArtFilesInner), true/*addOnly: art-only success must not clear a failed full-SO payload*/);
-const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','bill_to_id','shipping_name','shipping_address','po_number','rep_id','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
+const _invCols=['id','customer_id','so_id','idempotency_key','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','deposit_applied','credit_amount','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','bill_to_id','shipping_name','shipping_address','po_number','rep_id','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
 // po_number and rep_id are in _invExtraCols too so a save still lands (minus that field) if the
 // column-add migration hasn't reached this environment's DB yet — the upsert retries without extra cols.
-const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','bill_to_id','shipping_name','shipping_address','po_number','rep_id','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at']);
+const _invExtraCols=new Set(['idempotency_key','deposit_applied','credit_amount','qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','bill_to_id','shipping_name','shipping_address','po_number','rep_id','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at']);
 const _dbSaveInvoiceInner = async (inv) => {
   if(!supabase)return;
   // NETSUITE GUARD (2026-08-12, INV62383). hist_invoices are read-only NetSuite records, keyed by
@@ -2710,7 +2725,7 @@ const _dbSaveInvoiceInner = async (inv) => {
         ||(ex.so_id??null)!==(inv.so_id??null)
         ||Math.abs(_n(ex.total)-_n(inv.total))>=0.005;
     };
-    const{data:_existInv,error:_existInvErr}=await supabase.from('invoices').select('id,created_at,customer_id,so_id,total').eq('id',inv.id).maybeSingle();
+    const{data:_existInv,error:_existInvErr}=await supabase.from('invoices').select('id,created_at,customer_id,so_id,total,paid,cc_fee,status').eq('id',inv.id).maybeSingle();
     if(!_existInvErr&&_existInv&&_invDifferentDoc(_existInv)){
       const oldId=inv.id;
       // Which signal caught it — the alerts are read during incident triage, so say which.
@@ -2733,6 +2748,17 @@ const _dbSaveInvoiceInner = async (inv) => {
         if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:oldId,reason:'id held by a different invoice ('+_why+') — refused overwrite'});
         _emitOutboxConflict('invoices',inv);_dbSaveFailedIds.delete(oldId);_clearSaveError(oldId);_persistFailedIds();
         return false;
+      }
+    }
+    // A portal payment updates the invoice with the service role. A staff tab that loaded
+    // before that payment may later save an unrelated edit with paid=0/status=open. Keep
+    // the server's more-advanced financial tuple so the stale save cannot unapply money.
+    if(!_existInvErr&&_existInv){
+      const _protectedInvRow=preserveAppliedInvoiceSummary(invRow,_existInv);
+      if(_protectedInvRow!==invRow){
+        invRow=_protectedInvRow;
+        inv.total=invRow.total;inv.paid=invRow.paid;inv.cc_fee=invRow.cc_fee;inv.status=invRow.status;
+        console.warn('[DB] Preserved newer payment summary while saving',inv.id);
       }
     }
     const{error:invErr}=await supabase.from('invoices').upsert(invRow,{onConflict:'id'});
@@ -3215,6 +3241,26 @@ const _dbSaveCreditUsage = async (usage) => {
     if(error){console.error('[DB] save credit usage:',error.message);return false}
     return true;
   }catch(e){console.error('[DB] save credit usage:',e);return false}
+};
+// Atomically creates the audit memo and the equal reusable account credit. Keeping
+// both inserts inside the database function prevents a dropped browser request from
+// leaving only one side of the financial posting behind.
+const _dbCreateInvoiceCreditMemo = async ({invoice_id,subtotal,tax,shipping,reason,memo_date,line_items,created_by}) => {
+  if(!supabase)return null;
+  try{
+    const{data,error}=await supabase.rpc('create_invoice_credit_memo',{
+      p_invoice_id:invoice_id,
+      p_subtotal:subtotal,
+      p_tax:tax,
+      p_shipping:shipping,
+      p_reason:reason,
+      p_memo_date:memo_date,
+      p_line_items:line_items,
+      p_created_by:created_by||null,
+    });
+    if(error){console.error('[DB] create invoice credit memo:',error.message);return{error:error.message}}
+    return data||null;
+  }catch(e){console.error('[DB] create invoice credit memo:',e);return{error:e.message||String(e)}}
 };
 // ── Pending-shipping DB functions (mirror of credits) ──
 const _dbSavePendingShip = async (rec) => {
@@ -3926,6 +3972,7 @@ export {
   _diffSaveSkipLogged,
   _diffCmp,
   _custDiffCmp,
+  _invDiffCmp,
   _estDiffCmp,
   _soDiffCmp,
   _prodDiffCmp,
@@ -3953,6 +4000,7 @@ export {
   _dbSaveCredit,
   _dbDeleteCredit,
   _dbSaveCreditUsage,
+  _dbCreateInvoiceCreditMemo,
   _dbSavePendingShip,
   _dbDeletePendingShip,
   _dbSavePendingShipUsage,

@@ -160,16 +160,19 @@ function qbRequest(method, path, accessToken, body, useSandbox) {
       });
     });
     req.on('error', reject);
+    // Fail before the Netlify function's hard timeout so callers receive a
+    // structured error instead of an ambiguous function timeout.
+    req.setTimeout(8000, () => req.destroy(new Error('QBO upstream request timed out')));
     if (body) req.write(typeof body === 'string' ? body : JSON.stringify(body));
     req.end();
   });
 }
 
-async function revokeToken(token) {
+async function revokeToken(token, companyKey = 'national') {
   if (!token) return;
   try {
     await httpsPost(QB_REVOKE_URL, `token=${encodeURIComponent(token)}`,
-      { 'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': basicAuth(), 'Accept': 'application/json' });
+      { 'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': basicAuth(companyKey), 'Accept': 'application/json' });
   } catch { /* best effort */ }
 }
 

@@ -1,8 +1,68 @@
-import { buildInvoicedQtyMap, safeItems, safeNum, safeSizes, soLineKey } from '../safeHelpers';
+import { buildInvoicedQtyMap, itemMockFiles, safeItems, safeNum, safeSizes, soLineKey } from '../safeHelpers';
 
 const IN_LINE_OR_LATER = new Set(['staging', 'in_process', 'completed', 'shipped']);
 
 export const isInLineOrLater = (status) => IN_LINE_OR_LATER.has(status);
+
+const fileTime = (file) => {
+  const direct = file && typeof file === 'object'
+    ? (file.uploaded_at || file.created_at || file.ts)
+    : null;
+  if (direct) {
+    const parsed = new Date(direct).getTime();
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  // Cloudinary puts the upload epoch in /v<seconds>/ even when a legacy file
+  // object has no uploaded_at field.
+  const url = typeof file === 'string' ? file : (file?.url || '');
+  const match = url.match(/\/v(\d{10,13})\//);
+  if (!match) return null;
+  const raw = Number(match[1]);
+  return match[1].length === 10 ? raw * 1000 : raw;
+};
+
+const jobArtIds = (job) => [...new Set(
+  ((Array.isArray(job?._art_ids) && job._art_ids.length) ? job._art_ids : [job?.art_file_id])
+    .filter((id) => id && id !== '__tbd'),
+)];
+
+const latestArtRequestTime = (job) => (job?.art_requests || []).reduce((latest, request) => {
+  const parsed = new Date(request?.created_at || request?.at || 0).getTime();
+  return Number.isNaN(parsed) ? latest : Math.max(latest, parsed);
+}, 0);
+
+// An old garment mock must not masquerade as the response to a newer art request.
+// This is the SO-2106 shape: the job had already been approved, was reopened only
+// to ask for separations/underbase, and "Send to Rep" reused the August mock while
+// claiming a new September proof was ready. Unknown legacy timestamps stay
+// permissive so non-Cloudinary proofs are not accidentally hidden.
+export const hasFreshMockForLatestArtRequest = (job, so) => {
+  const requestedAt = latestArtRequestTime(job);
+  if (!requestedAt) return true;
+  const ids = new Set(jobArtIds(job));
+  const artFiles = (so?.art_files || []).filter((art) => ids.has(art?.id));
+  const scoped = [];
+  (job?.items || []).forEach((jobItem) => {
+    const line = safeItems(so)[jobItem?.item_idx] || jobItem;
+    artFiles.forEach((art) => scoped.push(...itemMockFiles(art?.item_mockups || {}, line)));
+  });
+  if (!scoped.length) artFiles.forEach((art) => scoped.push(...(art?.mockup_files || art?.files || [])));
+  return scoped.some((file) => {
+    const uploadedAt = fileTime(file);
+    return uploadedAt == null || uploadedAt >= requestedAt;
+  });
+};
+
+export const shouldShowMockupReviewNotice = (job, so) => {
+  if (!job || job.art_status !== 'waiting_approval' || job.sent_to_coach_at || job.coach_approved_at) return false;
+  if (isInLineOrLater(job.prod_status)) return false;
+  if (hasFreshMockForLatestArtRequest(job, so)) return true;
+  const ids = new Set(jobArtIds(job));
+  const ownedArt = (so?.art_files || []).filter((art) => ids.has(art?.id));
+  // If the design remains approved and the latest request returned no new mock,
+  // the previous approval is the durable truth; do not resurrect Review Mockup.
+  return !ownedArt.length || ownedArt.some((art) => art.status !== 'approved' && art.status !== 'art_complete');
+};
 
 export const invoicesForOrder = (invoices, soId) => (invoices || []).filter((inv) => (
   inv && inv.so_id === soId && inv.status !== 'void' && !inv.deleted_at

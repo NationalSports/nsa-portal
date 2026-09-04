@@ -1,3 +1,5 @@
+/** @jest-environment node */
+
 /* Team Shop checkout (Stage 6) — the money path.
  *
  * teamshop-checkout.js must never price anything itself: quotes/hashes come
@@ -16,7 +18,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-key';
 jest.mock('@supabase/supabase-js', () => ({ createClient: jest.fn() }));
 
 jest.mock('stripe', () => {
-  const paymentIntents = { create: jest.fn(), retrieve: jest.fn() };
+  const paymentIntents = { create: jest.fn(), retrieve: jest.fn(), cancel: jest.fn() };
   // Plain function, NOT jest.fn(): react-scripts runs jest with resetMocks,
   // which would wipe a mock factory's implementation before every test and
   // make stripe(sk) return undefined. The inner jest.fn()s are re-primed in
@@ -135,6 +137,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   calcTaxSpy = jest.spyOn(ws, 'calcTax').mockResolvedValue(TAX);
   stripeMock.__pi.create.mockResolvedValue({ id: 'pi_1', client_secret: 'cs_1' });
+  stripeMock.__pi.cancel.mockResolvedValue({ id: 'pi_1', status: 'canceled' });
 });
 afterEach(() => { calcTaxSpy.mockRestore(); });
 
@@ -155,8 +158,18 @@ describe('quote_totals', () => {
 
   test('totals are server-recomputed: subtotal from the quote, shipping from the store, tax from calcTax', async () => {
     const out = await freshQuote();
-    expect(out.totals).toEqual({ subtotal: SUBTOTAL, shipping: 5, tax: TAX.tax, tax_state: 'CA', total: TOTAL });
+    expect(out.totals).toEqual({
+      subtotal: SUBTOTAL, shipping: 5, tax: TAX.tax,
+      tax_state: 'CA', tax_rate: TAX.rate, tax_source: TAX.source, total: TOTAL,
+    });
     expect(calcTaxSpy).toHaveBeenCalledWith(STORE, SHIP, SUBTOTAL, null);
+  });
+
+  test('a tax provider outage returns retryable 503 instead of quoting zero tax', async () => {
+    calcTaxSpy.mockResolvedValueOnce({ error: ws.TAX_RETRY_ERROR, state: 'CA', source: 'cdtfa_unavailable' });
+    const res = await ts.quoteTotals(fakeSb(quoteScript()), { customer_id: 'custA', lines: LINES, ship: SHIP }, COACH);
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toMatchObject({ code: 'tax_unavailable', error: ws.TAX_RETRY_ERROR });
   });
 
   test('stale quote_hash → 409 totals_changed with the fresh quote', async () => {
@@ -179,6 +192,17 @@ describe('quote_totals', () => {
 });
 
 describe('place_order', () => {
+  test('a tax provider outage stops the order before any write or Stripe call', async () => {
+    const { quote_hash } = await freshQuote();
+    calcTaxSpy.mockResolvedValueOnce({ error: ws.TAX_RETRY_ERROR, state: 'CA', source: 'cdtfa_unavailable' });
+    const sb = fakeSb(placeScript());
+    const res = await ts.placeOrder(sb, placeBody({ quote_hash }), COACH);
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body).code).toBe('tax_unavailable');
+    expect(sb.calls.filter((c) => c.op === 'rpc' || c.op === 'insert')).toHaveLength(0);
+    expect(stripeMock.__pi.create).not.toHaveBeenCalled();
+  });
+
   test('happy path: order row + items carry the Team Shop fields; Stripe charges the SERVER total', async () => {
     const { quote_hash } = await freshQuote();
     const sb = fakeSb(placeScript());
@@ -286,6 +310,20 @@ describe('place_order', () => {
     expect(res.statusCode).toBe(502);
     expect(JSON.parse(res.body).error).toMatch(/card payment/i);
     expect(rollbackSpy).toHaveBeenCalledWith(expect.anything(), 'ord1');
+    rollbackSpy.mockRestore();
+  });
+
+  test('a PaymentIntent link failure cancels the orphan before rolling the order back', async () => {
+    const rollbackSpy = jest.spyOn(ws, 'rollbackOrder').mockResolvedValue(undefined);
+    const { quote_hash } = await freshQuote();
+    const sb = fakeSb({
+      ...placeScript(),
+      'webstore_orders.update': [{ data: null, error: { message: 'link write failed' } }],
+    });
+    const res = await ts.placeOrder(sb, placeBody({ quote_hash }), COACH);
+    expect(res.statusCode).toBe(502);
+    expect(stripeMock.__pi.cancel).toHaveBeenCalledWith('pi_1');
+    expect(rollbackSpy).toHaveBeenCalledWith(sb, 'ord1');
     rollbackSpy.mockRestore();
   });
 
@@ -508,18 +546,18 @@ describe('decodePoPdf — size boundary', () => {
 // The RPC re-guards everything inside its transaction; these tests pin the
 // function-level pre-guards (paid + teamshop + replay) and the retry contract.
 describe('convert_order', () => {
-  const PAID = { id: 'ord1', status: 'paid', order_source: 'teamshop', so_id: null };
+  const PAID = { id: 'ord1', status: 'paid', order_source: 'teamshop', so_id: null, coach_id: COACH.id };
 
   test('unpaid order → 409 rejected, RPC never invoked', async () => {
     const sb = fakeSb({ 'webstore_orders.select': [{ data: [{ ...PAID, status: 'pending_payment' }], error: null }] });
-    const res = await ts.convertOrder(sb, { order_id: 'ord1' });
+    const res = await ts.convertOrder(sb, { order_id: 'ord1' }, COACH);
     expect(res.statusCode).toBe(409);
     expect(sb.calls.filter((c) => c.op === 'rpc')).toHaveLength(0);
   });
 
   test('non-teamshop (storefront) order → 409 rejected, RPC never invoked', async () => {
     const sb = fakeSb({ 'webstore_orders.select': [{ data: [{ ...PAID, order_source: null }], error: null }] });
-    const res = await ts.convertOrder(sb, { order_id: 'ord1' });
+    const res = await ts.convertOrder(sb, { order_id: 'ord1' }, COACH);
     expect(res.statusCode).toBe(409);
     expect(sb.calls.filter((c) => c.op === 'rpc')).toHaveLength(0);
   });
@@ -529,7 +567,7 @@ describe('convert_order', () => {
       'webstore_orders.select': [{ data: [PAID], error: null }],
       'rpc.create_teamshop_sales_order': [{ data: { so_id: 'SO-1001', replayed: false, jobs: 1 }, error: null }],
     });
-    const res = await ts.convertOrder(sb, { order_id: 'ord1' });
+    const res = await ts.convertOrder(sb, { order_id: 'ord1' }, COACH);
     expect(res.statusCode).toBe(200);
     const out = JSON.parse(res.body);
     expect(out.so_id).toBe('SO-1001');
@@ -541,7 +579,7 @@ describe('convert_order', () => {
 
   test('already converted (so_id set) → replayed:true without invoking the RPC', async () => {
     const sb = fakeSb({ 'webstore_orders.select': [{ data: [{ ...PAID, so_id: 'SO-1001' }], error: null }] });
-    const res = await ts.convertOrder(sb, { order_id: 'ord1' });
+    const res = await ts.convertOrder(sb, { order_id: 'ord1' }, COACH);
     expect(res.statusCode).toBe(200);
     const out = JSON.parse(res.body);
     expect(out.so_id).toBe('SO-1001');
@@ -554,7 +592,7 @@ describe('convert_order', () => {
       'webstore_orders.select': [{ data: [PAID], error: null }],
       'rpc.create_teamshop_sales_order': [{ data: null, error: { message: 'boom' } }],
     });
-    const res = await ts.convertOrder(sb, { order_id: 'ord1' });
+    const res = await ts.convertOrder(sb, { order_id: 'ord1' }, COACH);
     expect(res.statusCode).toBe(502);
     expect(JSON.parse(res.body).error).toMatch(/boom/);
     // No compensation writes: convert is read + rpc only — nothing to roll back,
@@ -565,8 +603,15 @@ describe('convert_order', () => {
 
   test('unknown order → 404', async () => {
     const sb = fakeSb({ 'webstore_orders.select': [{ data: [], error: null }] });
-    const res = await ts.convertOrder(sb, { order_id: 'nope' });
+    const res = await ts.convertOrder(sb, { order_id: 'nope' }, COACH);
     expect(res.statusCode).toBe(404);
+  });
+
+  test('a different coach cannot convert another coach\'s paid order', async () => {
+    const sb = fakeSb({ 'webstore_orders.select': [{ data: [PAID], error: null }] });
+    const res = await ts.convertOrder(sb, { order_id: 'ord1' }, { ...COACH, id: 'coach2' });
+    expect(res.statusCode).toBe(403);
+    expect(sb.calls.filter((c) => c.op === 'rpc')).toHaveLength(0);
   });
 });
 

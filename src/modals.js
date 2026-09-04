@@ -596,7 +596,7 @@ function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});co
           <div style={{flex:2}}><label style={{fontSize:11,fontWeight:700,color:'#475569',display:'block',marginBottom:4}}>Reason / Notes</label>
             <input className="form-input" value={reason} onChange={e=>setReason(e.target.value)} placeholder="Why is this being adjusted?" style={{width:'100%'}}/></div>
         </div>
-        <div style={{fontSize:11,color:'#64748b',background:'#fffbeb',padding:'6px 10px',borderRadius:4,border:'1px solid #fef3c7'}}>This adjustment will be logged and synced to QuickBooks.</div>
+        <div style={{fontSize:11,color:'#64748b',background:'#fffbeb',padding:'6px 10px',borderRadius:4,border:'1px solid #fef3c7'}}>This adjustment will be logged in the portal.</div>
       </div>}
     </div><div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={!hasChanges} onClick={()=>{onSave(product.id,a,d,reason,adjType,sortSz(avail));onClose()}}>Save</button></div></div></div>);
 }

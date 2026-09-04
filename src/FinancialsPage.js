@@ -12,12 +12,16 @@ import React, { useMemo, useState } from 'react';
 import { useAppData } from './AppContext';
 import { supabase } from './lib/supabase';
 import { calcOrderMargin } from './pricing';
+import { calcSOStatus, isCommissionRep } from './businessLogic';
 import {
-  billedByMonth, matchedPL, arAging, backlogSchedule,
-  forecastRevenue, cashForecast, insights, monthKey, parseDate,
+  billedByMonth, matchedPL, backlogSchedule,
+  forecastRevenue, cashForecast, insights, monthKey,
   portalStatement, combineStatement, profitByEntity, forecastAccuracy, buildSnapshotRows,
+  receivablesDashboard, staleOrdersReport,
 } from './lib/financeEngine';
 import { LEGACY_STATEMENTS } from './data/legacyStatements';
+import ARWorkspace from './ARWorkspace';
+import { canViewFinancials } from './lib/financialAccess';
 // Mounted in `adminReports` mode: the SAME component the Commissions page uses, showing
 // only its admin-only report tabs. Reusing it (rather than moving the tabs' code here)
 // keeps one copy of the commission math — rep pay and these reports can never disagree.
@@ -185,14 +189,28 @@ const LEVEL_META = {
 };
 
 export default function FinancialsPage() {
-  const { sos, invs, histInvs, cu, cust, REPS } = useAppData();
+  const {
+    sos, invs, histInvs, cu, cust, REPS,
+    msgs = [], setMsgs, assignedTodos = [], setAssignedTodos, nf,
+    setESO, setESOC, setPg, setSelC, setInvF,
+  } = useAppData();
   const [tab, setTab] = useState('overview');
   const legacyKeys = useMemo(() => Object.keys(LEGACY_STATEMENTS).sort(), []);
   const [stmtKey, setStmtKey] = useState(legacyKeys[legacyKeys.length - 1]);
   const [profitBy, setProfitBy] = useState('customer');
+  const [profitCustomerLevel, setProfitCustomerLevel] = useState('child');
   const [snaps, setSnaps] = useState(null);        // saved forecast snapshots (null = loading)
   const [snapNote, setSnapNote] = useState('');
-  const isAdmin = cu?.role === 'admin' || cu?.role === 'super_admin';
+  const [staleFilter, setStaleFilter] = useState('all');
+  const [staleRep, setStaleRep] = useState('all');
+  const [staleSearch, setStaleSearch] = useState('');
+  const [staleSelectedId, setStaleSelectedId] = useState(null);
+  const [staleChat, setStaleChat] = useState('');
+  const [staleTaskTitle, setStaleTaskTitle] = useState('');
+  const [staleTaskOwner, setStaleTaskOwner] = useState('');
+  const [staleTaskDue, setStaleTaskDue] = useState('');
+  const [arAccountFilter, setArAccountFilter] = useState('all');
+  const isAdmin = canViewFinancials(cu);
 
   const today = useMemo(() => new Date(), []);
   const thisKey = monthKey(today);
@@ -209,7 +227,12 @@ export default function FinancialsPage() {
     if (!isAdmin) return null;
     const billed = billedByMonth({ histInvs, invs });
     const pl = matchedPL({ sos, invs, calcMargin });
-    const aging = arAging({ invs, asOf: today });
+    const salesReps = (REPS || []).filter(isCommissionRep);
+    const ar = receivablesDashboard({ invs, histInvs, sos, customers: cust || [], reps: salesReps, asOf: today });
+    const aging = ar.aging;
+    const stale = staleOrdersReport({
+      sos, invs, histInvs, customers: cust || [], calcMargin, calcStatus: calcSOStatus, asOf: today,
+    });
     const backlog = backlogSchedule({ sos, invs, calcMargin, asOf: today });
     const rev = forecastRevenue({ billedHistory: billed, backlog, sos, calcMargin, asOf: today, horizon: 4 });
     const cash = cashForecast({ aging, revForecast: rev, asOf: today });
@@ -217,9 +240,9 @@ export default function FinancialsPage() {
     const legacy = LEGACY_STATEMENTS[stmtKey];
     const stmtPortal = portalStatement({ sos, invs, calcMargin, through: stmtKey });
     const statement = legacy ? combineStatement({ legacy, portal: stmtPortal }) : null;
-    const profit = profitByEntity({ sos, invs, calcMargin, customers: cust || [], groupBy: profitBy });
-    return { billed, pl, aging, backlog, rev, cash, notes, statement, stmtPortal, legacy, profit };
-  }, [isAdmin, histInvs, invs, sos, calcMargin, today, stmtKey, cust, profitBy]);
+    const profit = profitByEntity({ sos, invs, calcMargin, customers: cust || [], groupBy: profitBy, customerLevel: profitCustomerLevel });
+    return { billed, pl, aging, ar, stale, backlog, rev, cash, notes, statement, stmtPortal, legacy, profit };
+  }, [isAdmin, histInvs, invs, sos, calcMargin, today, stmtKey, cust, profitBy, profitCustomerLevel, REPS]);
 
 
   // Forecast snapshots: load the saved history, then record THIS month's forecast
@@ -257,10 +280,10 @@ export default function FinancialsPage() {
   }, [isAdmin]);
 
   if (!isAdmin) {
-    return <div className="card"><div className="card-body"><h2>Admins only</h2><p>The Financials suite is limited to admin accounts.</p></div></div>;
+    return <div className="card"><div className="card-body"><h2>Restricted financials</h2><p>This page is limited to its approved owners.</p></div></div>;
   }
   if (!model) return null;
-  const { billed, pl, aging, backlog, rev, cash, notes, statement, stmtPortal, legacy, profit } = model;
+  const { billed, pl, aging, ar, stale, backlog, rev, cash, notes, statement, stmtPortal, legacy, profit } = model;
 
   // ── Derived display data ──────────────────────────────────────────
   const year = today.getFullYear();
@@ -280,14 +303,55 @@ export default function FinancialsPage() {
   const accuracy = forecastAccuracy({ snapshots: snaps || [], actualByMonth, asOf: today });
   const repName = (id) => (REPS || []).find((r) => r.id === id)?.name || id || '\u2014';
   const custName = (id) => (cust || []).find((c) => c.id === id)?.name || id || '\u2014';
-  const arSorted = invs
-    .filter((i) => i && i.status !== 'void' && !i.deleted_at && (Number(i.total) || 0) - (Number(i.paid) || 0) > 0.005)
-    .map((i) => ({ ...i, open: (Number(i.total) || 0) - (Number(i.paid) || 0), d: parseDate(i.date) }))
-    .sort((a, b) => b.open - a.open);
+  const staleRows = stale.rows.filter((r) => {
+    if (staleFilter !== 'all' && r.category !== staleFilter && r.severity !== staleFilter) return false;
+    if (staleRep !== 'all' && r.repId !== staleRep) return false;
+    const q = staleSearch.trim().toLowerCase();
+    return !q || `${r.id} ${r.customerName} ${r.so?.memo || ''} ${r.reasons.join(' ')}`.toLowerCase().includes(q);
+  });
+  const arAccountRows = ar.accountRows.filter((r) => {
+    if (arAccountFilter === 'past_due') return r.pastDue > 0;
+    if (arAccountFilter === '60plus') return r.d60plus > 0;
+    if (arAccountFilter === 'missing_billing') return !r.billingEmail;
+    return true;
+  });
+  const repPayById = new Map(ar.repPayRows.map((r) => [r.repId, r]));
+  const openSO = (row) => {
+    if (!row?.so) return;
+    setESO?.(row.so); setESOC?.((cust || []).find((c) => c.id === row.customerId) || null); setPg?.('orders');
+  };
+  const openAccount = (row) => {
+    const c = (cust || []).find((x) => x.id === row?.customerId);
+    if (!c) return;
+    setSelC?.(c.parent_id ? (cust || []).find((x) => x.id === c.parent_id) || c : c); setPg?.('customers');
+  };
+  const openAccountInvoices = (row) => {
+    setInvF?.((f) => ({ ...f, search: row?.name || '', status: 'open', group: 'list', aging: 'all', rep: 'all' }));
+    setPg?.('invoices');
+  };
+  const staleSelected = staleSelectedId ? stale.rows.find((r) => r.id === staleSelectedId) || null : null;
+  const staleMessages = staleSelected ? msgs.filter((m) => (m.entity_type || 'so') === 'so' && (m.entity_id === staleSelected.id || m.so_id === staleSelected.id)).sort((a, b) => new Date(b.ts) - new Date(a.ts)) : [];
+  const staleTasks = staleSelected ? assignedTodos.filter((t) => t.so_id === staleSelected.id).sort((a, b) => String(a.due_date || '9999').localeCompare(String(b.due_date || '9999'))) : [];
+  const openStaleWorkspace = (row) => {
+    setStaleSelectedId(row.id); setStaleChat(''); setStaleTaskTitle(''); setStaleTaskOwner(row.repId || ''); setStaleTaskDue('');
+    if (setMsgs && cu?.id) setMsgs((prev) => prev.map((m) => ((m.entity_type || 'so') === 'so' && (m.entity_id === row.id || m.so_id === row.id) && !(m.read_by || []).includes(cu.id)) ? { ...m, read_by: [...(m.read_by || []), cu.id] } : m));
+  };
+  const postStaleChat = () => {
+    const text = staleChat.trim(); if (!text || !staleSelected) return;
+    const tagged = [staleSelected.repId].filter((id) => id && id !== cu?.id);
+    const msg = { id: 'm' + Date.now(), so_id: staleSelected.id, author_id: cu?.id, text, ts: new Date().toLocaleString(), read_by: [cu?.id].filter(Boolean), dept: 'accounting', tagged_members: tagged, entity_type: 'so', entity_id: staleSelected.id };
+    setMsgs?.((prev) => [...prev, msg]); setStaleChat(''); nf?.('Message posted and the assigned rep was notified.', 'success');
+  };
+  const addStaleTask = () => {
+    if (!staleTaskTitle.trim() || !staleTaskOwner || !staleSelected) { nf?.('Add a task and choose an owner.', 'error'); return; }
+    const now = new Date().toISOString();
+    const todo = { id: 'todo-stale-' + Date.now(), title: staleTaskTitle.trim(), description: 'Stale-order follow-up for ' + staleSelected.id + ' · ' + staleSelected.customerName, created_by: cu?.id, assigned_to: staleTaskOwner, so_id: staleSelected.id, customer_id: staleSelected.customerId || null, priority: staleSelected.severity === 'critical' ? 2 : 1, status: 'open', due_date: staleTaskDue || null, created_at: now, updated_at: now, comments: [] };
+    setAssignedTodos?.((prev) => [todo, ...prev]); setStaleTaskTitle(''); setStaleTaskDue(''); nf?.('Stale-order action item assigned.', 'success');
+  };
 
   const tabs = [
     ['overview', 'Overview'], ['pl', 'P&L'], ['statement', 'Statement'],
-    ['profit', 'Profitability'], ['ar', 'Receivables'], ['forecast', 'Forecast'],
+    ['profit', 'Profitability'], ['stale', 'Stale Orders'], ['ar', 'Receivables'], ['forecast', 'Forecast'],
     ['comm', 'Commission Reports'],
   ];
   const S = { h2: { fontFamily: FD, fontSize: 17, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: NAVY, margin: '0 0 8px' } };
@@ -301,7 +365,7 @@ export default function FinancialsPage() {
       {/* Header + tabs */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
         <h1 style={{ fontFamily: FD, fontSize: 26, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: NAVY, margin: 0 }}>Financials</h1>
-        <div style={{ display: 'flex', gap: 4, background: '#f1f5f9', borderRadius: 9, padding: 3 }}>
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', background: '#f1f5f9', borderRadius: 9, padding: 3 }}>
           {tabs.map(([id, label]) => (
             <button key={id} onClick={() => setTab(id)} style={{
               border: 'none', cursor: 'pointer', borderRadius: 7, padding: '5px 13px',
@@ -325,7 +389,7 @@ export default function FinancialsPage() {
           sub={ytdLyNet ? ((ytdNet / ytdLyNet - 1) * 100 >= 0 ? '+' : '') + ((ytdNet / ytdLyNet - 1) * 100).toFixed(0) + '% vs LY $' + Math.round(ytdLyNet / 1000) + 'K' : ''}
           subColor={ytdNet >= ytdLyNet ? GOOD : CRIT} />
         <Tile label="Portal GP margin YTD" value={ytdRev > 0 ? pct1(ytdGp / ytdRev) : '—'} sub={$k(ytdGp) + ' gross profit on ' + $k(ytdRev)} />
-        <Tile label="Open receivables" value={$k(aging.total)}
+        <Tile label="Open receivables (assumed)" value={$k(aging.total)}
           sub={$k(aging.buckets.d61_90 + aging.buckets.d90plus) + ' over 60 days'}
           subColor={(aging.buckets.d61_90 + aging.buckets.d90plus) / Math.max(1, aging.total) > 0.1 ? WARN : INK2} />
         <Tile label="Open order book" value={$k(backlog.totalValue)} sub={backlog.orders + ' orders · ' + $k(backlog.totalGp) + ' GP inside'} />
@@ -476,7 +540,7 @@ export default function FinancialsPage() {
         <>
           <div style={card}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap', marginBottom: 4 }}>
-              <h2 style={S.h2}>Profitability by {profitBy === 'rep' ? 'rep' : 'customer'}</h2>
+              <h2 style={S.h2}>Profitability by {profitBy === 'rep' ? 'rep' : profitCustomerLevel === 'parent' ? 'parent account' : 'child account'}</h2>
               <div style={{ display: 'flex', gap: 4, background: '#f1f5f9', borderRadius: 8, padding: 3 }}>
                 {[['customer', 'By customer'], ['rep', 'By rep']].map(([id, label]) => (
                   <button key={id} onClick={() => setProfitBy(id)} style={{
@@ -486,11 +550,23 @@ export default function FinancialsPage() {
                   }}>{label}</button>
                 ))}
               </div>
+              {profitBy === 'customer' && <div aria-label="Customer account level" style={{ display: 'flex', gap: 4, background: '#f8fafc', border: '1px solid ' + HAIR, borderRadius: 8, padding: 3 }}>
+                {[['child', 'Child accounts'], ['parent', 'Parent accounts']].map(([id, label]) => (
+                  <button key={id} onClick={() => setProfitCustomerLevel(id)} style={{
+                    border: 'none', cursor: 'pointer', borderRadius: 6, padding: '4px 11px',
+                    fontSize: 11, fontWeight: 700, background: profitCustomerLevel === id ? C1 : 'transparent',
+                    color: profitCustomerLevel === id ? '#fff' : INK2,
+                  }}>{label}</button>
+                ))}
+              </div>}
             </div>
             <div style={{ fontSize: 11.5, color: INK2, marginBottom: 10 }}>
               Ranked by gross profit earned, not by billings. Revenue is what has actually been invoiced;
               cost is the matching share of each order&rsquo;s cost, so a half-shipped order counts half.
               &ldquo;Open&rdquo; is order value still to invoice &mdash; profit not yet earned.
+              {profitBy === 'customer' && (profitCustomerLevel === 'parent'
+                ? ' Parent accounts include the parent record and every child; the totals reconcile exactly to Child accounts.'
+                : ' Child accounts show the exact customer record used on each order.')}
             </div>
             {profit.length === 0 ? (
               <div style={{ fontSize: 13, color: INK2 }}>No invoiced work yet in this view.</div>
@@ -508,7 +584,7 @@ export default function FinancialsPage() {
                 <div style={{ overflowX: 'auto', marginTop: 10 }}>
                   <table style={{ borderCollapse: 'collapse', minWidth: 660 }}>
                     <thead><tr>
-                      <th style={{ ...th, textAlign: 'left' }}>{profitBy === 'rep' ? 'Rep' : 'Customer'}</th>
+                      <th style={{ ...th, textAlign: 'left' }}>{profitBy === 'rep' ? 'Rep' : profitCustomerLevel === 'parent' ? 'Parent account' : 'Child account'}</th>
                       <th style={th}>Revenue</th><th style={th}>COGS</th><th style={th}>Gross profit</th>
                       <th style={th}>Margin</th><th style={th}>Orders</th>
                       <th style={th}>Open to invoice</th><th style={th}>Unpaid</th>
@@ -558,6 +634,109 @@ export default function FinancialsPage() {
         </>
       )}
 
+      {tab === 'stale' && (
+        <>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+            <Tile label="Potential billing" value={$k(stale.summary.value)} sub={stale.summary.count + ' sales orders need review'} subColor={stale.summary.count ? WARN : GOOD} />
+            <Tile label="Ready / production done" value={stale.summary.readyCount} sub="operational completion signal" />
+            <Tile label="Likely system mismatch" value={stale.summary.mismatchCount} sub="finished work vs fulfillment data" subColor={stale.summary.mismatchCount ? CRIT : GOOD} />
+            <Tile label="Old non-booking" value={stale.summary.oldCount} sub="open more than 30 days" subColor={stale.summary.oldCount ? WARN : GOOD} />
+            <Tile label="Critical" value={stale.summary.criticalCount} sub="shipped/complete or 90+ days" subColor={stale.summary.criticalCount ? CRIT : GOOD} />
+          </div>
+          <div style={card}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ flex: '1 1 420px' }}>
+                <h2 style={S.h2}>Stale sales orders that may be ready to invoice</h2>
+                <div style={{ fontSize: 11.5, color: INK2, maxWidth: 850 }}>
+                  Includes every uninvoiced order with a completion signal, plus every non-booking order still open after 30 days.
+                  Finished jobs are intentionally allowed through even when receiving or shipping data is incomplete &mdash; those rows are marked
+                  as a likely system mismatch instead of being hidden.
+                </div>
+              </div>
+              <input value={staleSearch} onChange={(e) => setStaleSearch(e.target.value)} placeholder="Search SO, account, memo…"
+                style={{ width: 220, padding: '7px 9px', border: '1px solid ' + HAIR, borderRadius: 7, fontSize: 12 }} />
+              <select value={staleRep} onChange={(e) => setStaleRep(e.target.value)} style={{ padding: '7px 9px', border: '1px solid ' + HAIR, borderRadius: 7, fontSize: 12, background: '#fff' }}>
+                <option value="all">All reps</option>
+                {(REPS || []).filter(isCommissionRep).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+            </div>
+            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 12, marginBottom: 10 }}>
+              {[
+                ['all', 'All ' + stale.summary.count], ['critical', 'Critical ' + stale.summary.criticalCount],
+                ['ready', 'Ready ' + stale.summary.readyCount], ['system_mismatch', 'Mismatch ' + stale.summary.mismatchCount],
+                ['old_open', 'Old open ' + stale.summary.oldCount],
+              ].map(([id, label]) => <button key={id} onClick={() => setStaleFilter(id)} style={{
+                border: '1px solid ' + (staleFilter === id ? NAVY : HAIR), borderRadius: 7, padding: '4px 9px', cursor: 'pointer',
+                background: staleFilter === id ? NAVY : '#fff', color: staleFilter === id ? '#fff' : INK2, fontSize: 11.5, fontWeight: 700,
+              }}>{label}</button>)}
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 1120 }}>
+                <thead><tr>
+                  <th style={{ ...th, textAlign: 'left' }}>Priority / order</th>
+                  <th style={{ ...th, textAlign: 'left' }}>Account / rep</th>
+                  <th style={th}>Age / expected</th><th style={{ ...th, textAlign: 'left' }}>System state</th>
+                  <th style={th}>Fulfillment</th><th style={th}>Invoice coverage</th>
+                  <th style={th}>Open to invoice</th><th style={{ ...th, textAlign: 'left' }}>Why it is here</th>
+                </tr></thead>
+                <tbody>
+                  {staleRows.map((r) => {
+                    const color = r.severity === 'critical' ? CRIT : r.severity === 'high' ? WARN : C1;
+                    return <tr key={r.id} style={{ background: r.category === 'system_mismatch' ? '#fff7ed' : undefined }}>
+                      <td style={tdL}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{ color, fontSize: 9 }}>&#9632;</span>
+                          <button onClick={() => openSO(r)} style={{ border: 0, background: 'none', color: C1, fontWeight: 800, cursor: 'pointer', padding: 0 }}>{r.id}</button>
+                          <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color }}>{r.severity}</span>
+                        </div>
+                        <div title={r.so?.memo || ''} style={{ color: INK3, fontSize: 10.5, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.so?.memo || 'No memo'}</div>
+                        <div style={{ display: 'flex', gap: 5, marginTop: 5 }}><button onClick={() => openStaleWorkspace(r)} style={{ border: '1px solid ' + NAVY, borderRadius: 6, background: NAVY, color: '#fff', fontWeight: 700, fontSize: 10, padding: '3px 7px', cursor: 'pointer' }}>Chat / TODO</button><button onClick={() => openSO(r)} style={{ border: '1px solid ' + HAIR, borderRadius: 6, background: '#fff', color: NAVY, fontWeight: 700, fontSize: 10, padding: '3px 7px', cursor: 'pointer' }}>Review SO</button></div>
+                      </td>
+                      <td style={tdL}>
+                        <button onClick={() => openAccount(r)} style={{ border: 0, background: 'none', color: INK, fontWeight: 700, cursor: 'pointer', padding: 0 }}>{r.customerName}</button>
+                        <div style={{ color: INK3, fontSize: 10.5 }}>{repName(r.repId)}{r.isBooking ? ' · booking' : ''}</div>
+                      </td>
+                      <td style={td}>
+                        <b style={{ color: r.ageDays > 90 ? CRIT : r.ageDays > 30 ? WARN : INK }}>{r.ageDays}d open</b>
+                        <div style={{ color: r.daysLate ? CRIT : INK3, fontSize: 10.5 }}>{r.expected ? (r.daysLate ? r.daysLate + 'd late' : r.expected.toLocaleDateString()) : 'no expected date'}</div>
+                      </td>
+                      <td style={tdL}>
+                        <div style={{ fontWeight: 700 }}>{String(r.status || '').replace(/_/g, ' ')}</div>
+                        {r.storedStatus && r.storedStatus !== r.status && <div style={{ fontSize: 10.5, color: INK3 }}>stored: {r.storedStatus}</div>}
+                      </td>
+                      <td style={td}>
+                        <div>{r.fulfilledUnits}/{r.totalUnits} units</div>
+                        <div style={{ color: r.mismatch ? CRIT : INK3, fontSize: 10.5 }}>{r.doneJobs}/{r.jobCount} jobs done</div>
+                      </td>
+                      <td style={td}>
+                        <div>{Math.round(r.invoicePct * 100)}%</div>
+                        <div style={{ color: INK3, fontSize: 10.5 }}>{r.invoiceCount} invoice{r.invoiceCount === 1 ? '' : 's'} · {$0(r.invoiced)}</div>
+                      </td>
+                      <td style={{ ...td, fontWeight: 800, color }}>{$0(r.openToInvoice)}</td>
+                      <td style={{ ...tdL, minWidth: 280 }}>
+                        {r.reasons.map((reason, i) => <div key={i} style={{ fontSize: 11.5, color: i === 0 ? INK : INK2, marginBottom: 2 }}>
+                          <span style={{ color: i === 0 ? color : INK3, marginRight: 5 }}>&bull;</span>{reason}
+                        </div>)}
+                      </td>
+                    </tr>;
+                  })}
+                </tbody>
+              </table>
+              {!staleRows.length && <div style={{ padding: 24, textAlign: 'center', color: INK2 }}>No stale orders match these filters.</div>}
+            </div>
+          </div>
+          {staleSelected && <div style={{ position: 'fixed', inset: 0, zIndex: 125, background: 'rgba(15,23,42,.38)' }} onMouseDown={(e) => { if (e.target === e.currentTarget) setStaleSelectedId(null); }}><aside style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 'min(720px,96vw)', background: '#fff', boxShadow: '-16px 0 44px rgba(15,23,42,.22)', overflowY: 'auto' }}>
+            <div style={{ position: 'sticky', top: 0, zIndex: 2, background: NAVY, color: '#fff', padding: '15px 18px' }}><div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}><div style={{ flex: 1 }}><div style={{ fontFamily: FD, fontSize: 23, fontWeight: 800, textTransform: 'uppercase' }}>{staleSelected.id} · {staleSelected.customerName}</div><div style={{ color: '#cbd5e1', fontSize: 11 }}>{repName(staleSelected.repId)} · {staleSelected.ageDays}d open · {$0(staleSelected.openToInvoice)} potentially billable</div></div><button onClick={() => setStaleSelectedId(null)} aria-label="Close stale-order workspace" style={{ border: 0, borderRadius: 7, width: 30, height: 30, background: 'rgba(255,255,255,.13)', color: '#fff', cursor: 'pointer', fontSize: 18 }}>&times;</button></div></div>
+            <div style={{ padding: 16 }}>
+              <div style={{ ...card, marginBottom: 12 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}><div><b style={{ color: NAVY }}>Why this order needs attention</b>{staleSelected.reasons.map((reason, i) => <div key={i} style={{ fontSize: 11.5, color: INK2, marginTop: 5 }}>&bull; {reason}</div>)}</div><button onClick={() => openSO(staleSelected)} style={{ border: '1px solid ' + NAVY, borderRadius: 6, background: '#fff', color: NAVY, fontWeight: 700, fontSize: 11, padding: '5px 9px', cursor: 'pointer', whiteSpace: 'nowrap' }}>Open sales order</button></div></div>
+              <div style={{ ...card, marginBottom: 12 }}><h2 style={S.h2}>Chat with the assigned rep</h2><textarea value={staleChat} onChange={(e) => setStaleChat(e.target.value)} placeholder={'Message ' + repName(staleSelected.repId) + ' about ' + staleSelected.id + '…'} rows={4} style={{ width: '100%', boxSizing: 'border-box', border: '1px solid ' + HAIR, borderRadius: 7, padding: 9, font: 'inherit', fontSize: 12 }} /><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 7 }}><span style={{ fontSize: 10.5, color: INK3 }}>Saved in the sales-order conversation and notifies the rep.</span><button onClick={postStaleChat} disabled={!staleChat.trim()} style={{ border: 0, borderRadius: 6, background: NAVY, color: '#fff', fontWeight: 700, fontSize: 11, padding: '6px 10px', cursor: staleChat.trim() ? 'pointer' : 'default', opacity: staleChat.trim() ? 1 : .5 }}>Post message</button></div></div>
+              <div style={{ ...card, marginBottom: 12 }}><h2 style={S.h2}>Assign a follow-up</h2><input value={staleTaskTitle} onChange={(e) => setStaleTaskTitle(e.target.value)} placeholder="What needs to happen before invoicing?" style={{ width: '100%', boxSizing: 'border-box', border: '1px solid ' + HAIR, borderRadius: 7, padding: 8, fontSize: 12, marginBottom: 8 }} /><div style={{ display: 'grid', gridTemplateColumns: 'minmax(150px,1fr) minmax(130px,.7fr) auto', gap: 8 }}><select value={staleTaskOwner} onChange={(e) => setStaleTaskOwner(e.target.value)} style={{ border: '1px solid ' + HAIR, borderRadius: 7, padding: 8, background: '#fff' }}><option value="">Assign to…</option>{(REPS || []).filter((r) => r.is_active !== false).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select><input type="date" value={staleTaskDue} onChange={(e) => setStaleTaskDue(e.target.value)} style={{ border: '1px solid ' + HAIR, borderRadius: 7, padding: 8 }} /><button onClick={addStaleTask} style={{ border: 0, borderRadius: 6, background: C1, color: '#fff', fontWeight: 700, fontSize: 11, padding: '6px 10px', cursor: 'pointer' }}>Assign TODO</button></div></div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))', gap: 12 }}><div style={card}><h2 style={S.h2}>Order conversation</h2>{staleMessages.length ? staleMessages.map((m) => <div key={m.id} style={{ borderLeft: '3px solid ' + C1, padding: '7px 9px', marginBottom: 8, background: '#f8fafc' }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 10, color: INK3 }}><b style={{ color: NAVY }}>{repName(m.author_id)}</b><span>{m.ts ? new Date(m.ts).toLocaleDateString() : ''}</span></div><div style={{ fontSize: 11.5, whiteSpace: 'pre-wrap', marginTop: 3 }}>{m.text}</div></div>) : <div style={{ color: INK3, fontSize: 11.5 }}>No conversation yet.</div>}</div><div style={card}><h2 style={S.h2}>Open action items</h2>{staleTasks.length ? staleTasks.map((t) => <div key={t.id} style={{ padding: '7px 0', borderBottom: '1px solid ' + GRID }}><div style={{ fontSize: 11.5, fontWeight: 700, textDecoration: ['complete', 'completed'].includes(t.status) ? 'line-through' : 'none' }}>{t.title}</div><div style={{ color: INK3, fontSize: 10 }}>{repName(t.assigned_to)}{t.due_date ? ' · due ' + new Date(t.due_date + 'T00:00:00').toLocaleDateString() : ''} · {t.status || 'open'}</div></div>) : <div style={{ color: INK3, fontSize: 11.5 }}>No order-linked action items.</div>}</div></div>
+            </div>
+          </aside></div>}
+        </>
+      )}
+
       {tab === 'comm' && (
         <div style={card}>
           <h2 style={S.h2}>Commission reports</h2>
@@ -572,15 +751,29 @@ export default function FinancialsPage() {
         </div>
       )}
 
-      {tab === 'ar' && (
+      {tab === 'ar' && <ARWorkspace mode="admin" />}
+
+      {false && tab === 'ar' && (
         <>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+            <Tile label="Total open AR" value={$k(ar.kpis.total)} sub={ar.aging.count + ' invoices · portal + NetSuite'} />
+            <Tile label="Past due" value={$k(ar.kpis.pastDue)} sub={pct1(ar.kpis.pastDuePct) + ' of open AR'} subColor={ar.kpis.pastDuePct > 0.25 ? CRIT : ar.kpis.pastDuePct > 0.1 ? WARN : INK2} />
+            <Tile label="60+ days past due" value={$k(ar.kpis.d60plus)} sub={$k(ar.kpis.d90plus) + ' is 90+'} subColor={ar.kpis.d60plus ? CRIT : GOOD} />
+            <Tile label="Due in next 7 days" value={$k(ar.kpis.dueNext7)} sub="collection runway" />
+            <Tile label="No billing email" value={$k(ar.kpis.noBillingExposure)} sub="open AR without a billing contact" subColor={ar.kpis.noBillingExposure ? CRIT : GOOD} />
+            <Tile label="Top-5 concentration" value={pct1(ar.kpis.top5Pct)} sub="share of AR in five accounts" subColor={ar.kpis.top5Pct > 0.5 ? WARN : INK2} />
+          </div>
           <div style={card}>
-            <h2 style={S.h2}>Receivables aging — {$0(aging.total)} open across {aging.count} invoices</h2>
+            <h2 style={S.h2}>Receivables aging by due date — {$0(aging.total)} open across {aging.count} invoices</h2>
+            <div style={{ fontSize: 11.5, color: INK2, marginBottom: 10 }}>
+              Combines live portal invoices with NetSuite invoice history, deduplicated by invoice number. &ldquo;Current&rdquo; means still inside the account&rsquo;s payment terms;
+              the remaining buckets are days past the calculated or stored due date.
+            </div>
             {(() => {
               const b = aging.buckets;
               const items = [
-                ['Current', b.current, C1], ['1–30 days', b.d1_30, C1],
-                ['31–60', b.d31_60, C4], ['61–90', b.d61_90, WARN], ['90+', b.d90plus, CRIT],
+                ['Current', b.current, C1], ['1–30 late', b.d1_30, C1],
+                ['31–60 late', b.d31_60, C4], ['61–90 late', b.d61_90, WARN], ['90+ late', b.d90plus, CRIT],
               ];
               const max = Math.max(...items.map((i) => i[1]), 1);
               return (
@@ -599,26 +792,127 @@ export default function FinancialsPage() {
             })()}
           </div>
           <div style={card}>
-            <h2 style={S.h2}>Largest open invoices</h2>
+            <h2 style={S.h2}>Open account totals by sales rep</h2>
+            <div style={{ fontSize: 11.5, color: INK2, marginBottom: 8 }}>
+              Every commission-eligible rep is listed, including zero-balance reps. Invoice overrides are honored; otherwise AR follows the account&rsquo;s current primary rep.
+            </div>
             <div style={{ overflowX: 'auto' }}>
-              <table style={{ borderCollapse: 'collapse', minWidth: 520 }}>
+              <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 980 }}>
                 <thead><tr>
-                  <th style={{ ...th, textAlign: 'left' }}>Invoice</th><th style={{ ...th, textAlign: 'left' }}>Order</th>
-                  <th style={th}>Date</th><th style={th}>Age</th><th style={th}>Open balance</th>
+                  <th style={{ ...th, textAlign: 'left' }}>Sales rep</th><th style={th}>Total open</th><th style={th}>Current</th>
+                  <th style={th}>Past due</th><th style={th}>60+</th><th style={th}>90+</th><th style={th}>Accounts / invoices</th>
+                  <th style={th}>Oldest</th><th style={th}>Avg days to pay</th><th style={{ ...th, textAlign: 'left' }}>Slowest account</th>
                 </tr></thead>
                 <tbody>
-                  {arSorted.slice(0, 15).map((i) => {
-                    const age = i.d ? Math.max(0, Math.floor((today - i.d) / 86400000)) : null;
-                    return (
-                      <tr key={i.id}>
-                        <td style={tdL}>{i.id}</td><td style={tdL}>{i.so_id || '—'}</td>
-                        <td style={td}>{i.d ? i.d.toLocaleDateString() : '—'}</td>
-                        <td style={{ ...td, color: age > 60 ? CRIT : age > 30 ? WARN : INK }}>{age == null ? '—' : age + 'd'}</td>
-                        <td style={{ ...td, fontWeight: 700 }}>{$0(i.open)}</td>
-                      </tr>
-                    );
+                  {ar.repRows.map((r) => {
+                    const pay = repPayById.get(r.repId);
+                    return <tr key={r.repId}>
+                      <td style={{ ...tdL, fontWeight: 700 }}>{r.name}</td>
+                      <td style={{ ...td, fontWeight: 800 }}>{$0(r.total)}</td><td style={td}>{$0(r.current)}</td>
+                      <td style={{ ...td, color: r.pastDue ? WARN : INK3 }}>{$0(r.pastDue)}</td>
+                      <td style={{ ...td, color: r.d61_90 + r.d90plus ? CRIT : INK3 }}>{$0(r.d61_90 + r.d90plus)}</td>
+                      <td style={{ ...td, color: r.d90plus ? CRIT : INK3 }}>{$0(r.d90plus)}</td>
+                      <td style={td}>{r.accountCount} / {r.invoiceCount}</td>
+                      <td style={{ ...td, color: r.oldestDays > 60 ? CRIT : r.oldestDays > 30 ? WARN : INK }}>{r.oldestDays ? r.oldestDays + 'd' : '—'}</td>
+                      <td style={td}>{pay?.avgDays == null ? '—' : Math.round(pay.avgDays) + 'd'}{pay?.count ? <div style={{ color: INK3, fontSize: 10 }}>{pay.count} paid invoice{pay.count === 1 ? '' : 's'}</div> : null}</td>
+                      <td style={tdL}>{pay?.worstAccount ? <><b>{pay.worstAccount.name}</b><div style={{ color: INK3, fontSize: 10 }}>{Math.round(pay.worstAccount.avgDays)}d avg · {pay.worstAccount.maxDays}d worst</div></> : '—'}</td>
+                    </tr>;
                   })}
                 </tbody>
+              </table>
+            </div>
+          </div>
+          <div style={card}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
+              <h2 style={S.h2}>Collections worklist by account</h2>
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                {[
+                  ['all', 'All'], ['past_due', 'Past due'], ['60plus', '60+ days'], ['missing_billing', 'Missing billing email'],
+                ].map(([id, label]) => <button key={id} onClick={() => setArAccountFilter(id)} style={{
+                  border: '1px solid ' + (arAccountFilter === id ? NAVY : HAIR), borderRadius: 6, padding: '3px 8px', cursor: 'pointer',
+                  background: arAccountFilter === id ? NAVY : '#fff', color: arAccountFilter === id ? '#fff' : INK2, fontSize: 11, fontWeight: 700,
+                }}>{label}</button>)}
+              </div>
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 1050 }}>
+                <thead><tr>
+                  <th style={{ ...th, textAlign: 'left' }}>Account / rep</th><th style={th}>Open balance</th><th style={th}>Past due</th>
+                  <th style={th}>60+</th><th style={th}>90+</th><th style={th}>Oldest</th><th style={th}>Invoices</th>
+                  <th style={th}>Avg / worst pay</th><th style={{ ...th, textAlign: 'left' }}>Contact readiness</th><th style={th}>Action</th>
+                </tr></thead>
+                <tbody>
+                  {arAccountRows.slice(0, 80).map((r) => <tr key={r.customerId || r.name}>
+                    <td style={tdL}><button onClick={() => openAccount(r)} disabled={!r.customerId} style={{ border: 0, padding: 0, background: 'none', color: r.customerId ? C1 : INK, cursor: r.customerId ? 'pointer' : 'default', fontWeight: 800 }}>{r.name}</button><div style={{ color: INK3, fontSize: 10.5 }}>{repName(r.repId)}</div></td>
+                    <td style={{ ...td, fontWeight: 800 }}>{$0(r.total)}</td><td style={{ ...td, color: r.pastDue ? WARN : INK3 }}>{$0(r.pastDue)}</td>
+                    <td style={{ ...td, color: r.d60plus ? CRIT : INK3 }}>{$0(r.d60plus)}</td><td style={{ ...td, color: r.d90plus ? CRIT : INK3 }}>{$0(r.d90plus)}</td>
+                    <td style={{ ...td, color: r.oldestDays > 60 ? CRIT : r.oldestDays > 30 ? WARN : INK }}>{r.oldestDays ? r.oldestDays + 'd' : '—'}</td>
+                    <td style={td}>{r.invoiceCount}</td>
+                    <td style={td}>{r.avgPayDays == null ? '—' : Math.round(r.avgPayDays) + 'd avg'}{r.maxPayDays != null && <div style={{ color: INK3, fontSize: 10 }}>{r.maxPayDays}d worst</div>}</td>
+                    <td style={tdL}>
+                      <div style={{ color: r.billingEmail ? GOOD : CRIT, fontSize: 11 }}>{r.billingEmail ? '✓ Billing: ' + r.billingEmail : '✗ No billing email'}</div>
+                      <div style={{ color: r.coachEmail ? GOOD : WARN, fontSize: 11 }}>{r.coachEmail ? '✓ Coach: ' + r.coachEmail : (r.coachUsesStaffEmail ? '✗ Coach email is a rep/staff address' : '✗ No coach email')}</div>
+                    </td>
+                    <td style={td}><button onClick={() => openAccountInvoices(r)} style={{ border: '1px solid ' + HAIR, borderRadius: 6, background: '#fff', color: NAVY, fontWeight: 700, fontSize: 11, padding: '4px 8px', cursor: 'pointer' }}>Open invoices</button></td>
+                  </tr>)}
+                </tbody>
+              </table>
+              {arAccountRows.length > 80 && <div style={{ fontSize: 11, color: INK3, marginTop: 6 }}>Showing the first 80 of {arAccountRows.length}; use a filter to narrow the worklist.</div>}
+              {!arAccountRows.length && <div style={{ padding: 20, color: INK2, textAlign: 'center' }}>No accounts match this filter.</div>}
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.15fr) minmax(0, .85fr)', gap: 14 }}>
+            <div style={card}>
+              <h2 style={S.h2}>Accounts that need contact or ownership information</h2>
+              <div style={{ fontSize: 11.5, color: INK2, marginBottom: 8 }}>
+                Audits every active account, not only accounts with open invoices. A coach address must be a valid non-staff email; billing contacts inherited from a parent account count.
+              </div>
+              <div style={{ maxHeight: 430, overflow: 'auto' }}>
+                <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 620 }}>
+                  <thead><tr><th style={{ ...th, textAlign: 'left' }}>Account / rep</th><th style={th}>Open AR</th><th style={{ ...th, textAlign: 'left' }}>Missing information</th><th style={th}>Action</th></tr></thead>
+                  <tbody>{ar.accountsNeedingInfo.slice(0, 100).map((r) => <tr key={r.customerId}>
+                    <td style={tdL}><b>{r.name}</b><div style={{ color: INK3, fontSize: 10.5 }}>{repName(r.repId)}</div></td>
+                    <td style={{ ...td, color: r.exposure ? CRIT : INK3, fontWeight: r.exposure ? 800 : 400 }}>{$0(r.exposure)}</td>
+                    <td style={tdL}>{r.issues.map((issue) => <span key={issue} style={{ display: 'inline-block', margin: '1px 4px 1px 0', padding: '2px 6px', borderRadius: 8, background: issue.includes('billing') || issue.includes('staff') ? '#fee2e2' : '#fef3c7', color: issue.includes('billing') || issue.includes('staff') ? '#991b1b' : '#92400e', fontSize: 10.5, fontWeight: 700 }}>{issue}</span>)}</td>
+                    <td style={td}><button onClick={() => openAccount(r)} style={{ border: '1px solid ' + HAIR, borderRadius: 6, background: '#fff', color: NAVY, fontWeight: 700, fontSize: 11, padding: '4px 8px', cursor: 'pointer' }}>Fix account</button></td>
+                  </tr>)}</tbody>
+                </table>
+              </div>
+              {ar.accountsNeedingInfo.length > 100 && <div style={{ fontSize: 11, color: INK3, marginTop: 6 }}>Showing 100 of {ar.accountsNeedingInfo.length}, prioritized by open exposure.</div>}
+            </div>
+            <div style={card}>
+              <h2 style={S.h2}>Slowest-paying accounts</h2>
+              <div style={{ fontSize: 11.5, color: INK2, marginBottom: 8 }}>
+                Based on {ar.kpis.paySampleCount} portal invoices with an observable final-payment date. NetSuite paid history is excluded because it has no paid date.
+                {ar.kpis.payFallbackCount > 0 && <> {ar.kpis.payFallbackCount} older record{ar.kpis.payFallbackCount === 1 ? ' uses' : 's use'} the invoice&rsquo;s last-updated date as the legacy fallback.</>}
+              </div>
+              <div style={{ maxHeight: 430, overflow: 'auto' }}>
+                <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 480 }}>
+                  <thead><tr><th style={{ ...th, textAlign: 'left' }}>Account</th><th style={th}>Avg</th><th style={th}>Worst</th><th style={th}>Terms</th><th style={th}>Samples</th></tr></thead>
+                  <tbody>{ar.accountPayRows.slice(0, 40).map((r) => <tr key={r.customerId}>
+                    <td style={tdL}><button onClick={() => openAccount(r)} style={{ border: 0, padding: 0, background: 'none', color: C1, cursor: 'pointer', fontWeight: 700 }}>{r.name}</button></td>
+                    <td style={{ ...td, color: r.avgDays > r.termsDays ? CRIT : INK, fontWeight: 700 }}>{Math.round(r.avgDays)}d</td>
+                    <td style={{ ...td, color: r.maxDays > r.termsDays * 2 ? CRIT : WARN }}>{r.maxDays}d</td><td style={td}>{r.termsDays}d</td><td style={td}>{r.count}</td>
+                  </tr>)}</tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div style={card}>
+            <h2 style={S.h2}>Largest open invoices</h2>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 760 }}>
+                <thead><tr>
+                  <th style={{ ...th, textAlign: 'left' }}>Invoice / source</th><th style={{ ...th, textAlign: 'left' }}>Account / rep</th>
+                  <th style={th}>Invoice date</th><th style={th}>Due date</th><th style={th}>Past due</th><th style={th}>Open balance</th>
+                </tr></thead>
+                <tbody>{[...ar.openInvoices].sort((a, b) => b.balance - a.balance).slice(0, 25).map((i) => <tr key={i.source + ':' + i.id}>
+                  <td style={tdL}><b>{i.id}</b><div style={{ color: INK3, fontSize: 10 }}>{i.source}</div></td>
+                  <td style={tdL}>{i.customerName}<div style={{ color: INK3, fontSize: 10 }}>{repName(i.repId)}</div></td>
+                  <td style={td}>{i.invoiceDate ? i.invoiceDate.toLocaleDateString() : '—'}</td><td style={td}>{i.dueDate ? i.dueDate.toLocaleDateString() : '—'}</td>
+                  <td style={{ ...td, color: i.daysPastDue > 60 ? CRIT : i.daysPastDue > 0 ? WARN : INK3 }}>{i.daysPastDue ? i.daysPastDue + 'd' : 'Current'}</td>
+                  <td style={{ ...td, fontWeight: 800 }}>{$0(i.balance)}</td>
+                </tr>)}</tbody>
               </table>
             </div>
           </div>

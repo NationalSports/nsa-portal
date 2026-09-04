@@ -46,6 +46,7 @@ function mapCategory(title) {
 }
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 const arr = (v) => (Array.isArray(v) ? v : v != null ? [v] : []);
+const { inventoryKey, stockByColorSize } = require('./_sanmarInventory');
 
 exports.handler = async () => {
   const site = (process.env.URL || '').replace(/\/+$/, '');
@@ -114,22 +115,15 @@ exports.handler = async () => {
         // 2) Live inventory for the whole style (PromoStandards getInventoryLevels),
         //    keyed by color+size. productID = style with the default productIDtype
         //    ('Supplier'); SanMar rejects productIDtype 'Style' ("125: Not Supported").
-        const stockByCS = {}; // `${colorLower}|${sizeLabel}` -> qty
+        let stockByCS = {}; // normalized `${color}|${size}` -> qty
         try {
-          const inv = await sm('promostandards', 'getInventoryLevels', { productId: style });
-          const variations = arr(inv?.Inventory?.ProductVariationInventoryArray?.ProductVariationInventory
-            || inv?.ProductVariationInventoryArray?.ProductVariationInventory
-            || inv?.inventory || inv?.items);
-          variations.forEach((v) => {
-            const color = String(v?.attributeColor || v?.color || '').toLowerCase();
-            const size = String(v?.attributeSize || v?.size || v?.labelSize || 'OSFA').trim();
-            let qty = 0;
-            const parts = arr(v?.partInventoryArray?.partInventory || v?.PartInventoryArray?.PartInventory);
-            parts.forEach((p) => { qty += num(p?.quantityAvailable?.Quantity || p?.quantityAvailable?.quantity || p?.quantityAvailable); });
-            if (qty <= 0) qty = num(v?.quantityAvailable || v?.totalQty || v?.qty);
-            if (qty > 0) stockByCS[color + '|' + size] = (stockByCS[color + '|' + size] || 0) + qty;
-          });
+          const inv = await sm('promostandardsV2', 'getInventoryLevels', { wsVersion: '2.0.0', productId: style });
+          stockByCS = stockByColorSize(inv, items);
+          if (!Object.keys(stockByCS).length) throw new Error('SanMar inventory returned no matched parts');
         } catch (e) { console.warn('[sanmar-nike-sync] inventory', style, e.message); }
+        if (!Object.keys(stockByCS).length) {
+          throw new Error('Inventory unavailable; preserving the last known stock instead of writing zeros');
+        }
 
         // Group product records by color
         const byColor = {};
@@ -145,7 +139,7 @@ exports.handler = async () => {
           const sizes = [...new Set(recs.map((r) => String(r.size || r.labelSize || '').trim()).filter(Boolean))];
           const cost = num(r0.piecePrice || r0.customerPrice || r0.casePrice);
           const retail = num(r0.msrp || r0.mapPrice || r0.piecePrice) || (cost > 0 ? Math.round(cost * 2) : 0);
-          const img = r0.colorProductImage || r0.productImage || r0.colorProductImageThumbnail || r0.thumbnailImage || '';
+          const img = r0.frontFlat || r0.colorProductImage || r0.productImage || r0.colorProductImageThumbnail || r0.thumbnailImage || '';
           // SanMar prefixes retired styles with "DISCONTINUED" (sometimes glued to the
           // next word, e.g. "DISCONTINUEDNike …"). Strip it — the item still sells from stock.
           const title = (r0.productTitle || r0.productDescription || (style + ' ' + grp.colorName)).replace(/DISCONTINUED/ig, '').replace(/\s{2,}/g, ' ').trim();
@@ -167,7 +161,7 @@ exports.handler = async () => {
             inventory_source: 'nike',
           });
           for (const size of sizes) {
-            const key = String(grp.colorName).toLowerCase() + '|' + size;
+            const key = inventoryKey(grp.colorName, size);
             const qty = stockByCS[key] || 0;
             invUpserts.push({
               id: sku + '-' + size, sku, size, stock_qty: qty,

@@ -83,6 +83,13 @@ describe('calcPaidQualifyingSpend', () => {
     expect(r.total).toBe(500);
   });
 
+  test('accepts the Paid In Full status used by NetSuite line history', () => {
+    const histInvs = [
+      { customer_id: 'C1', date: '2026-02-01', status: 'Paid In Full', subtotal: 500, tax: 40, total: 540, invoice_type: 'invoice' },
+    ];
+    expect(calcPaidQualifyingSpend({ sos: [], invs: [], histInvs, ...range }).histSpend).toBe(500);
+  });
+
   test('falls back to total − tax when subtotal is missing', () => {
     const histInvs = [{ customer_id: 'C1', date: '2026-02-01', status: 'paid', subtotal: null, tax: 40, total: 540, invoice_type: 'invoice' }];
     expect(calcPaidQualifyingSpend({ sos: [], invs: [], histInvs, ...range }).histSpend).toBe(500);

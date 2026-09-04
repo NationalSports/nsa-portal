@@ -19,7 +19,7 @@ function fakeSb(tables, user) {
     from(table) {
       const result = tables[table] || { data: [], error: null };
       const chain = {
-        select: () => chain, eq: () => chain, in: () => chain, order: () => chain,
+        select: () => chain, eq: () => chain, in: () => chain, is: () => chain, order: () => chain,
         ilike: () => chain, limit: () => chain, maybeSingle: () => Promise.resolve(result.error ? { data: null, error: result.error } : { data: (result.data || [])[0] || null, error: null }),
         then: (resolve, reject) => Promise.resolve(result).then(resolve, reject),
       };

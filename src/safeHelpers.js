@@ -26,6 +26,40 @@ export const poLineFulfilledQty = (pk, sz) => {
   return pk?.drop_ship ? Math.max(rcvd, safeNum((pk?.billed || {})[sz])) : rcvd;
 };
 
+export const normalizePoPaymentMethod = (value) => {
+  const method = String(value || '').trim().toLowerCase();
+  return method === 'wire' || method === 'cash' ? method : 'credit_card';
+};
+export const poPaymentMethodLabel = (value) => ({ credit_card: 'Credit card', wire: 'Wire', cash: 'Cash' })[normalizePoPaymentMethod(value)];
+
+// One-off costs entered while creating a garment PO (card fee, rush charge, etc.).
+// A PO can span several SO item rows, but the cost belongs to the PO as a whole. The
+// creator stores it on one canonical po_line; deduping by PO number also protects the
+// money path if an older edit/copy ever mirrors the metadata onto every line.
+export const manualPoCostRows = (o) => {
+  const rows = []; const seen = new Set(); const methods = new Map();
+  const keyFor = (po, itemIdx, poIdx) => {
+    const poId = String(po?.po_id || '').trim();
+    return poId ? poId.replace(/\s+/g, ' ').toLowerCase() : ('line:' + itemIdx + ':' + poIdx);
+  };
+  safeItems(o).forEach((it, itemIdx) => safePOs(it).forEach((po, poIdx) => {
+    const key = keyFor(po, itemIdx, poIdx);
+    if (po?._payment_method && !methods.has(key)) methods.set(key, normalizePoPaymentMethod(po._payment_method));
+  }));
+  safeItems(o).forEach((it, itemIdx) => safePOs(it).forEach((po, poIdx) => {
+    const amount = safeNum(po?._manual_cost);
+    if (!(amount > 0)) return;
+    const poId = String(po?.po_id || '').trim();
+    const key = keyFor(po, itemIdx, poIdx);
+    if (seen.has(key)) return;
+    seen.add(key);
+    const paymentMethod = methods.get(key) || (po?._payment_method ? normalizePoPaymentMethod(po._payment_method) : '');
+    rows.push({ po_id: poId, amount, note: String(po?._manual_cost_note || '').trim(), vendor: po?.vendor || '', payment_method: paymentMethod, payment_label: paymentMethod ? poPaymentMethodLabel(paymentMethod) : '' });
+  }));
+  return rows;
+};
+export const manualPoCostTotal = (o) => manualPoCostRows(o).reduce((sum, row) => sum + row.amount, 0);
+
 // ── Roster scoping ──
 // A numbers deco's roster jsonb can carry stale size keys the garment doesn't have —
 // "copy numbers from another item" brings the source's whole size curve, and a line's
@@ -377,9 +411,10 @@ export const poIdMissingFromOrder = (o, poId) => {
 };
 
 // Returns a Map of soLineKey -> total invoiced qty across the given invoices.
-// Matches first by exact key, then degrades to sku+color, then to sku alone,
-// for items from invoices written before the key existed or that lost their
-// color metadata. Deposit invoices bill a percentage of the whole order and
+// Matches first by exact key, then by a durable prior-key alias retained when
+// an invoiced line changes SKU, then degrades to sku+color or sku alone for
+// items from invoices written before the key existed or that lost their color
+// metadata. Deposit invoices bill a percentage of the whole order and
 // do NOT lock specific units, so their line qty is intentionally ignored
 // here — callers should credit the deposit amount as $ paid instead.
 // Core reconciliation of "how much of each SO line has already been invoiced".
@@ -394,6 +429,7 @@ const _reconcileInvoicedQty = (so, invoicesForSO) => {
   // Index by sku|color and by sku alone for fallback lookups
   const skuColorBuckets = new Map(); // sku|color -> [idx,...]
   const skuBuckets = new Map();      // sku -> [idx,...]
+  const aliasBuckets = new Map();    // prior sku|color|idx -> [current idx,...]
   items.forEach((it, idx) => {
     const sku = safeStr(it?.sku)||'';
     const k = sku+'|'+(safeStr(it?.color)||'');
@@ -401,6 +437,12 @@ const _reconcileInvoicedQty = (so, invoicesForSO) => {
     skuColorBuckets.get(k).push(idx);
     if (!skuBuckets.has(sku)) skuBuckets.set(sku, []);
     skuBuckets.get(sku).push(idx);
+    safeArr(it?.invoice_line_keys).forEach(alias => {
+      const key = safeStr(alias);
+      if (!key || key === soLineKey(it, idx)) return;
+      if (!aliasBuckets.has(key)) aliasBuckets.set(key, []);
+      if (!aliasBuckets.get(key).includes(idx)) aliasBuckets.get(key).push(idx);
+    });
   });
   const pourInto = (bucket, q) => {
     if (bucket.length === 0) return;
@@ -437,6 +479,10 @@ const _reconcileInvoicedQty = (so, invoicesForSO) => {
       if (!(q > 0)) return;
       if (li?._so_line_key && map.has(li._so_line_key)) {
         map.set(li._so_line_key, map.get(li._so_line_key) + q);
+        return;
+      }
+      if (li?._so_line_key && aliasBuckets.has(li._so_line_key)) {
+        pourInto(aliasBuckets.get(li._so_line_key), q);
         return;
       }
       // Legacy fallback chain: parse sku/color from explicit fields or the desc
@@ -590,6 +636,22 @@ export const shouldSkipZeroFinalInvoice = ({ invType, invTotal, isPromoOrder, pr
 };
 
 export const safeJobs = (o) => safeArr(o?.jobs);
+
+// Financial closure and physical fulfillment are independent. A final invoice makes the SO's
+// status "complete", but an unpulled pick line is still live warehouse work and must keep the
+// order in the warehouse data set.
+export const hasOpenItemFulfillment = (o) => safeItems(o).some(it =>
+  safePicks(it).some(pk => pk?.status !== 'pulled')
+);
+
+// Manual stock corrections are intentionally narrower than Inventory-page access. Admins can
+// adjust stock, as can explicitly designated warehouse leads; the warehouse role by itself stays
+// read-only so adding one lead does not silently grant the control to every warehouse account.
+export const canAdjustInventory = (user, warehouseLeadIds = []) => !!user && (
+  user.role === 'admin' ||
+  user.role === 'super_admin' ||
+  warehouseLeadIds.includes(user.id)
+);
 export const safeFirm = (o) => safeArr(o?.firm_dates);
 
 // ── Mock links ("use the same mockup as that garment") ──
@@ -725,6 +787,15 @@ export const squashMockLinks = (artFiles, artId, memberKeys) => {
   const keys = [...new Set(safeArr(memberKeys).filter(Boolean))];
   if (keys.length < 2) return safeArr(artFiles);
   return keys.slice(1).reduce((acc, k) => applyMockLink(acc, artId, k, keys[0]), safeArr(artFiles));
+};
+
+// Replace the grouping for a known set of garments. Editable pickers use this form so
+// unchecking garments really removes an older link before the current group is applied.
+export const replaceMockLinkGroup = (artFiles, artId, candidateKeys, memberKeys) => {
+  const candidates = new Set(safeArr(candidateKeys).filter(Boolean));
+  let out = safeArr(artFiles);
+  candidates.forEach(k => { out = applyMockLink(out, artId, k, null); });
+  return squashMockLinks(out, artId, memberKeys);
 };
 
 // ── Mocks follow the garment when its identity changes ──
@@ -898,7 +969,7 @@ export const realInkLines = (s) => String(s || '').split(/[,\n]/).map((c) => c.t
 // Approve — which need surface-specific delivery (nf toast vs alert) but must agree on
 // what the rep is told to do about it.
 export const missingMockupsMsg = (action, missing) =>
-  'Cannot ' + action + ' — no garment mockup yet for: ' + missing.join(', ') + '. A sew-out proof isn\'t enough: reuse an approved mock, link one ("use the same mockup as…"), or send to the artist for a mockup.';
+  'Cannot ' + action + ' — no garment mockup yet for: ' + missing.join(', ') + '. Reuse an approved mock, link one ("use the same mockup as…"), or send to the artist for a mockup.';
 
 // Companion message for the reversible color-way gate (skusMissingRevColorWays) — enforced
 // at the same rep surfaces as the mock gate (Approve Artwork / Send to Coach / openCoachSend).
@@ -1096,12 +1167,13 @@ export const displayableProofFile = (f) =>
   /\.(png|jpe?g|webp|gif|pdf)(\?|#|$)/i.test(typeof f === 'string' ? f : (f && (f.name || f.url)) || '');
 // DISPLAY-ONLY fallback: the files shown in a mockup slot when an art file carries NO per-garment mocks at
 // all: the general mockup_files/files bucket (legacy single-design art), else the
-// digitizer's displayable sew-out proof in prod_files (reused library art). This ladder is
+// displayable production proof in prod_files (reused library art). This ladder is
 // what the OrderEditor/CoachPortal approval views render — every mockup display surface
 // (incl. the Art Dashboard slots) must use it so a reused art never renders as "no mockup"
-// on one screen while another screen shows proof. NOTE: display only — the sew-out proof
-// does NOT satisfy the approval gate (skusMissingMockups requires a real garment mockup;
-// jobs are required to have one) and never appears on floor documents (_prodJobGenericMocks).
+// on one screen while another screen shows proof. Embroidery sew-outs are display-only and
+// do NOT satisfy the approval gate; a screen-print production proof can satisfy it because it
+// is the actual visual proof the rep reviews. Production proofs never appear on floor documents
+// (_prodJobGenericMocks).
 // Returns [] the moment the art has ANY per-garment mock — per-item mocks make the
 // general/proof buckets ambiguous (wrong-colorway class), so they stop standing in.
 export const artProofFallback = (a) => {
@@ -1228,13 +1300,20 @@ export const skusMissingMockups = (job, so) => {
       return safeArr(a?.mockup_files).length > 0 ? safeArr(a?.mockup_files) : safeArr(a?.files);
     });
     if (general.length > 0) return;
-    // POLICY: the digitizer's sew-out proof in prod_files does NOT satisfy the mockup
-    // gate. Jobs are required to carry a real garment mockup before Approve / Send to
-    // Coach — a sew-out is often a recolor, and one reaching a coach as "the mockup"
-    // is exactly what happened on SO-1661. The waiting_approval panel gives proof-only
-    // art its two compliant paths (reuse an approved prior mock, or send to the artist
-    // for a new one); the proof remains a labeled DISPLAY fallback (artProofFallback)
-    // so approval screens still show what exists — it just can't pass the gate.
+    // A screen-print proof saved with the production files is the visual proof the rep
+    // reviews, so it satisfies approval even when legacy data did not also copy it into
+    // mockup_files/item_mockups. Keep embroidery stricter: a digitizer sew-out is often a
+    // recolor and must not stand in for a garment mockup (SO-1661).
+    const hasScreenPrintProof = artFiles.some(a => {
+      const method = String(a?.deco_type || job?.deco_type || '').toLowerCase();
+      if (!/screen[\s_-]*print/.test(method) || a?.proof_dismissed) return false;
+      const hasPerItem = Object.values(a?.item_mockups || {}).some(v => safeArr(v).length > 0);
+      return !hasPerItem && safeArr(a?.prod_files).some(displayableProofFile);
+    });
+    if (hasScreenPrintProof) return;
+    // POLICY: embroidery sew-outs remain display-only. The waiting_approval panel gives
+    // proof-only embroidery art its compliant paths (reuse an approved prior mock, or
+    // send to the artist for a new one).
     if (mLabel) missing.push(mLabel);
   });
   return missing;

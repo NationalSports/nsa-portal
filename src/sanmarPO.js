@@ -86,6 +86,10 @@ export function buildSanMarLineItems(batchPOs) {
           unitPrice,
           sourceSO: bp.so_id,
           sourcePO: bp.po_id || '',
+          sourceBatchId: bp.id || '',
+          sourceItemIdx: Number.isInteger(it.item_idx) ? it.item_idx : null,
+          sourceSku: it.sku || '',
+          sourceColor: it.color || '',
           productName: it.name || '',
         });
       });

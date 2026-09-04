@@ -32,14 +32,14 @@ body {
 .sidebar-link svg { width: 18px; height: 18px; flex-shrink: 0; }
 .sidebar-user { padding: 12px 16px; border-top: 1px solid #1e293b; font-size: 12px; color: #64748b; }
 
-.main { margin-left: 220px; flex: 1; min-height: 100vh; }
+.main { margin-left: 220px; flex: 1; min-width: 0; min-height: 100vh; }
 .topbar {
   background: #fff; border-bottom: 1px solid #e2e8f0; padding: 0 24px;
   height: 52px; display: flex; align-items: center; justify-content: space-between;
   position: sticky; top: 0; z-index: 50;
 }
 .topbar h1 { font-size: 16px; font-weight: 700; color: #0f172a; }
-.content { padding: 20px 24px 80px; max-width: 1200px; }
+.content { width: 100%; min-width: 0; padding: 20px 24px 80px; max-width: 1200px; }
 .content.content-wide { max-width: 1600px; }
 
 /* Cards */

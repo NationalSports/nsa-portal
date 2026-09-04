@@ -13,8 +13,13 @@
 
 import { sanmarGetProduct, sanmarGetInventory, sanmarGetPricing, ssApiCall, richardsonSearchStyles, momentecStyleV2 } from './vendorApis';
 import { normSzName } from './pricing';
+import { sanmarPricingRows, sanmarAccountPrice } from './lib/sanmarPricing';
 
 const SS_CDN = 'https://cdn.ssactivewear.com/';
+// SanMar exposes both garment-only flats and model photography. Webstore mockups need the
+// clean garment canvas, so prefer frontFlat and retain the model image only as a fallback
+// for styles/colors where SanMar does not publish a flat.
+export const sanmarGarmentImage = (it = {}) => it.frontFlat || it.colorProductImage || it.productImage || it.colorProductImageThumbnail || it.thumbnailImage || '';
 const ssCdnImg = (u) => {
   const s = (u || '').toString().trim();
   if (!s) return '';
@@ -54,10 +59,10 @@ async function searchSanMar(query, vendorMap) {
       if (qty <= 0 && it.warehouseInfo) { const d = it.warehouseInfo.inventoryDetail || it.warehouseInfo; (Array.isArray(d) ? d : [d]).forEach((w) => { if (w && w.quantity) qty += parseInt(w.quantity) || 0; }); }
       invData[key] = qty;
     });
-    (priceRes?.items || []).forEach((it) => {
+    sanmarPricingRows(priceRes).forEach((it) => {
       const color = it.catalogColor || it.color || it.colorName || '';
       const sz = normSzName(it.size || it.labelSize || '');
-      const price = parseFloat(it.myPrice || 0) || parseFloat(it.salePrice || 0) || parseFloat(it.piecePrice || 0) || 0;
+      const price = sanmarAccountPrice(it);
       if (price > 0) priceMap[color + '|' + sz] = price;
     });
   } catch (e) { /* inventory/pricing optional */ }
@@ -67,9 +72,9 @@ async function searchSanMar(query, vendorMap) {
     const it = { ...bi, ...ii, ...pi, ...r };
     const sid = it.style || it.styleNumber || q;
     const color = it.catalogColor || it.color || it.colorName || it.productColor || '';
-    if (!styleMap[sid]) styleMap[sid] = { source: 'sm', vendorId: vid('sanmar', vendorMap), sku: sid, name: ((it.brandName || it.brand || '') + ' ' + (it.productTitle || it.styleName || it.description || sid)).trim(), brand: it.brandName || it.brand || '', image: it.colorProductImage || it.productImage || it.colorProductImageThumbnail || it.thumbnailImage || '', _colors: {} };
+    if (!styleMap[sid]) styleMap[sid] = { source: 'sm', vendorId: vid('sanmar', vendorMap), sku: sid, name: ((it.brandName || it.brand || '') + ' ' + (it.productTitle || it.styleName || it.description || sid)).trim(), brand: it.brandName || it.brand || '', image: sanmarGarmentImage(it), _colors: {} };
     const cKey = sid + '|' + color;
-    if (!styleMap[sid]._colors[cKey]) styleMap[sid]._colors[cKey] = { colorName: color, colorCode: it.colorCode || null, sku: sid, image: it.colorProductImage || it.productImage || it.colorSwatchImage || '', cost: 0, _sizes: {}, totalQty: 0 };
+    if (!styleMap[sid]._colors[cKey]) styleMap[sid]._colors[cKey] = { colorName: color, colorCode: it.colorCode || null, sku: sid, image: sanmarGarmentImage(it) || it.colorSwatchImage || '', cost: 0, _sizes: {}, totalQty: 0 };
     const cEntry = styleMap[sid]._colors[cKey];
     const sz = normSzName(it.size || it.labelSize || it.sizeCode || 'OSFA');
     const price = priceMap[color + '|' + sz] || parseFloat(it.salePrice || 0) || parseFloat(it.piecePrice || 0) || 0;

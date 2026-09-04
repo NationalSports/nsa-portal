@@ -45,12 +45,71 @@ describe('whole-store report reconciliation', () => {
     expect(resolved.audit.unitMismatches).toEqual([]);
   });
 
-  test('reports an SO quantity mismatch instead of hiding it', () => {
+  test('does not block customer fulfillment for an unassigned extra SO unit', () => {
     const orders = [{ id: 'o1', status: 'paid', so_id: 'SO-2' }];
     const lines = [{ id: 'i1', order_id: 'o1', sku: 'A', size: 'M', qty: 2 }];
     const soItemsBySo = { 'SO-2': [{ sku: 'A', name: 'A', sizes: { M: 3 } }] };
     const { audit } = resolveWebstoreReportLines({ orders, lines, soItemsBySo });
-    expect(audit.unitMismatches).toEqual([{ soId: 'SO-2', sourceUnits: 2, soUnits: 3, delta: 1 }]);
+    expect(audit.unitMismatches).toEqual([]);
+  });
+
+  test('preserves exact Silver Screen-only units as an unassigned order extra', () => {
+    const orders = [{ id: 'o1', store_id: 'STORE-A', status: 'paid', so_id: 'SO-SS' }];
+    const lines = [{ id: 'i1', order_id: 'o1', sku: 'GL9698', color: 'Black', size: 'S', qty: 2, player_name: 'Player' }];
+    const soItemsBySo = { 'SO-SS': [{ sku: 'GL9698', name: 'Adidas W. 3 Stripe Short', color: 'Black', sizes: { S: 2, XS: 1 } }] };
+    const soMetaBySo = { 'SO-SS': { id: 'SO-SS', webstore_id: 'STORE-A', deco_pos: [{ vendor: 'Silver Screen', qty: 3, _silverscreen_job_id: 58505 }] } };
+    const resolved = resolveWebstoreReportLines({ orders, lines, soItemsBySo, soMetaBySo });
+    expect(resolved.audit.unitMismatches).toEqual([]);
+    expect(resolved.audit.orderExtras).toEqual([{ soId: 'SO-SS', units: 1 }]);
+    expect(resolved.lines.reduce((n, l) => n + l.qty, 0)).toBe(3);
+    expect(resolved.lines.find((l) => l._orderExtra)).toMatchObject({
+      sku: 'GL9698', color: 'Black', size: 'XS', qty: 1,
+      player_name: 'Order Extra / Unassigned', _sourceSoId: 'SO-SS',
+    });
+    expect(resolved.orderById['__silver_screen_extra__SO-SS']).toMatchObject({
+      order_number: 'SO-SS ORDER EXTRA', ship_method: 'deliver_club',
+    });
+  });
+
+  test('blocks instead of guessing when the SO has more residual units than the Silver Screen gap', () => {
+    const orders = [{ id: 'o1', store_id: 'STORE-A', status: 'paid', so_id: 'SO-SS' }];
+    const lines = [{ id: 'i1', order_id: 'o1', sku: 'A', color: 'Black', size: 'M', qty: 2 }];
+    const soItemsBySo = { 'SO-SS': [{ sku: 'A', name: 'A', color: 'Black', sizes: { M: 3, XL: 1 } }] };
+    const soMetaBySo = { 'SO-SS': { id: 'SO-SS', webstore_id: 'STORE-A', deco_pos: [{ vendor: 'Silver Screen', qty: 3, _silverscreen_job_id: 58505 }] } };
+    const resolved = resolveWebstoreReportLines({ orders, lines, soItemsBySo, soMetaBySo });
+    expect(resolved.lines.some((l) => l._orderExtra)).toBe(false);
+    expect(resolved.audit.unitMismatches).toEqual([{
+      soId: 'SO-SS', sourceUnits: 2, soUnits: 3, delta: 1, targetLabel: 'Silver Screen job units',
+    }]);
+  });
+
+  test('still blocks when active customer units exceed the SO', () => {
+    const orders = [{ id: 'o1', status: 'paid', so_id: 'SO-SHORT' }];
+    const lines = [{ id: 'i1', order_id: 'o1', sku: 'A', size: 'M', qty: 3 }];
+    const soItemsBySo = { 'SO-SHORT': [{ sku: 'A', name: 'A', sizes: { M: 2 } }] };
+    const { audit } = resolveWebstoreReportLines({ orders, lines, soItemsBySo });
+    expect(audit.unitMismatches).toEqual([{
+      soId: 'SO-SHORT', sourceUnits: 3, soUnits: 2, delta: -1, targetLabel: 'sales-order units',
+    }]);
+  });
+
+  test('audits against the submitted Silver Screen job and surfaces incomplete jobs', () => {
+    const orders = [{ id: 'o1', store_id: 'STORE-A', status: 'paid', so_id: 'SO-SS' }];
+    const lines = [{ id: 'i1', order_id: 'o1', sku: 'A', size: 'M', qty: 3 }];
+    const soItemsBySo = { 'SO-SS': [{ sku: 'A', name: 'A', sizes: { M: 4 } }] };
+    const soMetaBySo = { 'SO-SS': {
+      id: 'SO-SS', webstore_id: 'STORE-A', deco_pos: [{
+        vendor: 'Silver Screen', qty: 2, _silverscreen_job_id: 58505,
+        _silverscreen_todo: 'Job #58505 created, but finish it on the Silver Screen portal — check product lines — only 12 of 13 were added. [forms: untrusted details]',
+      }],
+    } };
+    const { audit } = resolveWebstoreReportLines({ orders, lines, soItemsBySo, soMetaBySo });
+    expect(audit.unitMismatches).toEqual([{
+      soId: 'SO-SS', sourceUnits: 3, soUnits: 2, delta: -1, targetLabel: 'Silver Screen job units',
+    }]);
+    expect(audit.externalIssues).toEqual([
+      'SO-SS: Silver Screen job #58505 is incomplete — Job #58505 created, but finish it on the Silver Screen portal — check product lines — only 12 of 13 were added.',
+    ]);
   });
 
   test('rejects an order linked to an SO owned by another store', () => {

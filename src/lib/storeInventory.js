@@ -5,11 +5,12 @@
 // agree on exactly what's orderable right now.
 //
 // Same source of truth as the catalog live-look (AdidasInventory): VENDOR stock
-// (inventory_unified = adidas CLICK + Agron, keyed by SKU) merged with NSA's own
+// (the server-scoped inventory_unified feed, keyed by SKU) merged with NSA's own
 // IN-HOUSE warehouse stock (product_inventory, keyed by product_id). A size is
 // "available now" when vendor qty + in-house qty > 0.
 // ─────────────────────────────────────────────────────────
 import { supabase } from './supabase';
+import { fetchPublicInventory } from './webstorePublicData';
 
 export const SIZE_RANK_ORDER = ['3XS', '2XS', 'XXS', 'XS', 'S', 'M', 'L', 'XL', '2XL', 'XXL', '3XL', '4XL', '5XL', '6XL', 'OSFA', 'OS', 'NS'];
 
@@ -33,6 +34,30 @@ const _su = (s) => String(s == null ? '' : s).trim().toUpperCase();
 // The regular size a label maps to (returns the label unchanged when it isn't a tall).
 export const regularSize = (s) => TALL_TO_REGULAR[_su(s)] || s;
 export const isTallSize = (s) => Object.prototype.hasOwnProperty.call(TALL_TO_REGULAR, _su(s));
+
+// Product imports and vendor feeds do not always spell the same SKU identically.
+// Example: the catalog stores `ST650-TRUE-NAVY`, while SanMar inventory stores
+// `ST650-TrueNavy`. Keep the query bounded by generating the vendor-style alias,
+// then join returned rows with a punctuation/case-insensitive key.
+export const stockSkuKey = (sku) => String(sku || '').replace(/[^a-z0-9]/gi, '').toUpperCase();
+
+export const stockSkuAliases = (sku) => {
+  const raw = String(sku || '').trim();
+  if (!raw) return [];
+  const aliases = new Set([raw]);
+  const dash = raw.indexOf('-');
+  if (dash > 0 && dash < raw.length - 1) {
+    const style = raw.slice(0, dash);
+    const colorWords = raw.slice(dash + 1).split(/[^a-z0-9]+/i).filter(Boolean);
+    if (colorWords.length) {
+      const vendorColor = colorWords
+        .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+        .join('');
+      aliases.add(`${style}-${vendorColor}`);
+    }
+  }
+  return [...aliases];
+};
 
 // Collapse a product's size scale to the regular sizes a store offers: fold each tall
 // into its regular twin, drop duplicates, keep the original order. Returns regular labels.
@@ -97,7 +122,7 @@ export const foldedSoon = (regSize, soonOf) => {
 // Returns a Map keyed by product id → { units, sizes[], sizeStock{}, incoming }.
 export async function fetchStockMap(rows) {
   const ids = [...new Set(rows.map((r) => r.id).filter(Boolean))];
-  const skus = [...new Set(rows.map((r) => r.sku).filter(Boolean))];
+  const skus = [...new Set(rows.flatMap((r) => stockSkuAliases(r.sku)))];
   const map = new Map();
   if (!ids.length && !skus.length) return map;
   // Chunked (URL-safe .in() lists) and paged per chunk: the gateway hard-caps
@@ -118,18 +143,26 @@ export async function fetchStockMap(rows) {
     (await Promise.all(chunk(items, 400).map((b) => drain(() => buildReq(b))))).flat();
   const [vendRows, inhouseRows] = await Promise.all([
     skus.length
-      ? all(skus, (b) => supabase.from('inventory_unified').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty').in('sku', b).or('stock_qty.gt.0,future_delivery_qty.gt.0'))
+      ? fetchPublicInventory(skus).then((rows) => rows.filter((r) => Number(r.stock_qty) > 0 || Number(r.future_delivery_qty) > 0))
       : [],
     ids.length
       ? all(ids, (b) => supabase.from('product_inventory').select('product_id,size,quantity').in('product_id', b).gt('quantity', 0))
       : [],
   ]);
   const bySku = {};
-  for (const r of vendRows) (bySku[r.sku] = bySku[r.sku] || []).push({ size: r.size, q: r.stock_qty || 0, fd: r.future_delivery_date, fq: r.future_delivery_qty });
+  const byExactSku = {};
+  for (const r of vendRows) {
+    const stockRow = { size: r.size, q: r.stock_qty || 0, fd: r.future_delivery_date, fq: r.future_delivery_qty };
+    const key = stockSkuKey(r.sku);
+    (bySku[key] = bySku[key] || []).push(stockRow);
+    (byExactSku[r.sku] = byExactSku[r.sku] || []).push(stockRow);
+  }
   const byPid = {};
   for (const r of inhouseRows) { byPid[r.product_id] = byPid[r.product_id] || {}; byPid[r.product_id][r.size] = (byPid[r.product_id][r.size] || 0) + (r.quantity || 0); }
   for (const row of rows) {
-    const sizes = (bySku[row.sku] || []).map((s) => ({ ...s }));
+    // Prefer an exact feed match when both legacy and normalized spellings happen
+    // to exist, so aliases cannot double-count the same vendor inventory.
+    const sizes = (byExactSku[row.sku] || bySku[stockSkuKey(row.sku)] || []).map((s) => ({ ...s }));
     const ih = byPid[row.id];
     if (ih) for (const [size, qty] of Object.entries(ih)) { const ex = sizes.find((s) => s.size === size); if (ex) ex.ih = qty; else sizes.push({ size, q: 0, fd: null, fq: null, ih: qty }); }
     const availNow = (s) => (s.q || 0) + (s.ih || 0);

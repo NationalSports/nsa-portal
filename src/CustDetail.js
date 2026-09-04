@@ -16,6 +16,9 @@ import { RosterOrdersStaff } from './RosterOrders';
 import { supabase } from './lib/supabase';
 import { _fetchHistInvoiceLines } from './lib/dbEngine';
 import { applyBulkInvoiceSendHistory, buildBulkInvoiceEmailHtml, buildBulkInvoiceMessages, bulkInvoiceEmailSubject } from './lib/bulkInvoiceEmail';
+import { fetchPaidPromoHistoryInvoices, mergePromoHistoryInvoices } from './lib/promoHistory';
+import { latestMonthlyProfit } from './lib/omgMonthlyProfit';
+import { normalizeOmgStoreCode, validateOmgStoreAssignment, buildOmgStoreAssignment } from './lib/omgStoreAssignment';
 
 // Date normalization. Dates on this screen arrive in mixed shapes: ISO 'YYYY-MM-DD',
 // ISO timestamps, and locale strings like '7/10/2026, 3:22:11 PM' (NetSuite history
@@ -133,7 +136,7 @@ function CwMultiPrompt({title,cws=[],initialNames=[],initialDefault=false,onAppl
 
 // CUSTOMER DETAIL
 
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,onMsg,onInv,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,companyInfo,nf}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,onMsg,onInv,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,onOmgStoreSaved,companyInfo,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[yF,setYF]=useState('all');const[rR,setRR]=useState('thisyear');
   const[jSF,setJSF]=useState('open');// Jobs tab status filter: open | done | all
   const[jFil,setJFil]=useState({search:'',deco:'all',art:'all',prod:'all'});// Jobs tab: search + deco/art/product filters
@@ -151,7 +154,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   // (or create a new one). { title, onPick(cwName), onPickNew(name) }.
   const[cwPrompt,setCwPrompt]=useState(null);
   const[custArtFilter,setCustArtFilter]=useState('all');
-  const[subsCollapsed,setSubsCollapsed]=useState(true);const[custWebstores,setCustWebstores]=useState([]);const[custOmgStores,setCustOmgStores]=useState([]);const[wsAgg,setWsAgg]=useState({});const[stExpanded,setStExpanded]=useState(()=>new Set());
+  const[subsCollapsed,setSubsCollapsed]=useState(true);const[custWebstores,setCustWebstores]=useState([]);const[custOmgStores,setCustOmgStores]=useState([]);const[custOmgProfits,setCustOmgProfits]=useState([]);const[wsAgg,setWsAgg]=useState({});const[stExpanded,setStExpanded]=useState(()=>new Set());
+  const[omgAssign,setOmgAssign]=useState(null);const[omgAssignSaving,setOmgAssignSaving]=useState(false);const[omgAssignError,setOmgAssignError]=useState('');
   // Promo state
   const[promoEdit,setPromoEdit]=useState(null);// null or {type,fixed_amount,spend_percentage,notes,id?}
   const[promoNewPeriod,setPromoNewPeriod]=useState(null);// null or {program_id,allocated,notes}
@@ -191,6 +195,26 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   React.useEffect(()=>setCustLocal(initCust),[initCust]);
   React.useEffect(()=>{if(!showActions)return;const close=()=>setShowActions(false);document.addEventListener('click',close);return()=>document.removeEventListener('click',close)},[showActions]);
   const customer=custLocal;
+  const[promoLineHistory,setPromoLineHistory]=useState([]);
+  // customer_invoice_lines is the actively refreshed NetSuite archive used by
+  // Sales History. customer_invoices (the old header-only promo source) can lag
+  // behind it, so load the family-scoped paid lines for the two relevant halves
+  // and use them as a deduplicated fallback.
+  useEffect(()=>{
+    if(!supabase||!initCust)return;
+    const ownerId=initCust.parent_id||initCust.id;
+    const family=(allCustomers||[]).filter(c=>c.id===ownerId||c.parent_id===ownerId);
+    const pctActive=(initCust.promo_programs||[]).some(p=>p.is_active!==false&&p.type==='percent_of_spend'&&safeNum(p.spend_percentage)>0);
+    if(!pctActive){setPromoLineHistory([]);return}
+    const now=new Date();const year=now.getFullYear();const firstHalf=now.getMonth()<6;
+    const start=firstHalf?(year-1)+'-07-01':year+'-01-01';
+    const end=firstHalf?year+'-06-30':year+'-12-31';
+    let cancelled=false;
+    fetchPaidPromoHistoryInvoices({supabase,customers:family,start,end})
+      .then(rows=>{if(!cancelled)setPromoLineHistory(rows)})
+      .catch(e=>{if(!cancelled){setPromoLineHistory([]);console.warn('[Promo] NetSuite line-history fallback failed:',e?.message||e)}});
+    return()=>{cancelled=true};
+  },[initCust.id,initCust.parent_id,initCust.promo_programs,allCustomers]);
   // Auto co-op allocation + overdraft carry-forward.
   // 1) Whenever a % of Spend program is present (including one added just now), materialize the
   //    CURRENT period's allocation from the prior half's PAID qualifying spend × pct. Paid = portal
@@ -213,7 +237,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     let prevEarned=0;
     if(pct>0){
       const fam=[pId,...allCustomers.filter(x=>x.parent_id===pId).map(x=>x.id)];
-      const histInvsAll=(allOrders||[]).filter(oo=>oo._hist&&oo.type==='invoice');
+      const histInvsAll=mergePromoHistoryInvoices((allOrders||[]).filter(oo=>oo._hist&&oo.type==='invoice'),promoLineHistory);
       const prevSpend=calcPaidQualifyingSpend({sos,invs,histInvs:histInvsAll,famIds:fam,start:prev.start,end:prev.end}).total;
       prevEarned=Math.round(prevSpend*pct*100)/100;
     }
@@ -234,11 +258,47 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       carryPeriods.forEach(p=>onSavePromoPeriod({...p,notes:((p.notes||'')+' [overdraft carried to '+cur.label+']').trim()}));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[initCust.id,initCust.promo_programs,initCust.promo_periods,sos,invs]);
+  },[initCust.id,initCust.promo_programs,initCust.promo_periods,sos,invs,allOrders,promoLineHistory]);
   useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data}=await supabase.from('webstores').select('id,name,slug,status,open_at,close_at,director_name').in('customer_id',_ids).neq('status','archived').order('created_at',{ascending:false});if(!cancelled&&data)setCustWebstores(data)})();return()=>{cancelled=true}},[customer.id]);
   // OMG ("Order My Gear") stores for this account — open + past — so the Stores tab can
   // show both store types in one place and jump into either.
-  useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data}=await supabase.from('omg_stores').select('id,store_name,status,open_date,close_date,orders,total_sales,fundraise_total,items_sold,unique_buyers,delivery_mode').in('customer_id',_ids).order('open_date',{ascending:false});if(!cancelled&&data)setCustOmgStores(data)})();return()=>{cancelled=true}},[customer.id]);
+  useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data}=await supabase.from('omg_stores').select('id,store_name,customer_id,rep_id,status,open_date,close_date,orders,total_sales,fundraise_total,items_sold,unique_buyers,delivery_mode,channel_type,_omg_sale_code').in('customer_id',_ids).order('open_date',{ascending:false});if(!cancelled&&data)setCustOmgStores(data)})();return()=>{cancelled=true}},[customer.id]);
+  // Monthly OMG profit snapshots preserve the customer/rep assignment that was in
+  // effect at import time. Query by customer snapshot (including child accounts)
+  // instead of only by today's store mapping so reassignment does not rewrite history.
+  useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data,error}=await supabase.from('omg_store_profit_snapshots').select('id,store_id,store_code,period_month,is_cumulative,products,product_collected,item_cost,product_profit,margin_pct,refunds,omg_fees,processing_fees,invoiced_fees,net_profit,rep_id,source_mode,validation_status,imported_at').in('customer_id',_ids).order('period_month',{ascending:true});if(!cancelled)setCustOmgProfits(error?[]:(data||[]))})();return()=>{cancelled=true}},[customer.id]);
+  const accountRepId=customer.primary_rep_id||'';
+  const accountRep=(REPS||[]).find(r=>r.id===accountRepId);
+  const openOmgAssignment=()=>{
+    setOmgAssign({code:'',store_name:(customer.name||'Customer')+' 24/7 Store'});
+    setOmgAssignError('');
+  };
+  const saveOmgAssignment=async()=>{
+    if(!supabase){setOmgAssignError('Database connection is unavailable.');return}
+    const form={code:omgAssign?.code,storeName:omgAssign?.store_name,customerId:customer.id,repId:accountRepId};
+    const invalid=validateOmgStoreAssignment(form);if(invalid){setOmgAssignError(invalid);return}
+    const code=normalizeOmgStoreCode(form.code);setOmgAssignSaving(true);setOmgAssignError('');
+    try{
+      const{data:existing,error:lookupError}=await supabase.from('omg_stores').select('id,store_name,customer_id,rep_id,status,open_date,close_date,orders,total_sales,fundraise_total,items_sold,unique_buyers,delivery_mode,channel_type,_omg_sale_code').eq('_omg_sale_code',code).maybeSingle();
+      if(lookupError)throw lookupError;
+      if(existing?.customer_id&&existing.customer_id!==customer.id){
+        const owner=(allCustomers||[]).find(c=>c.id===existing.customer_id);
+        throw new Error(code+' is already assigned to '+(owner?.name||'another customer')+'. Open that customer to change it.');
+      }
+      const assignment=buildOmgStoreAssignment({...form,existing});
+      const payload={id:assignment.id,_omg_sale_code:assignment._omg_sale_code,store_name:assignment.store_name,customer_id:assignment.customer_id,rep_id:assignment.rep_id,channel_type:assignment.channel_type,status:assignment.status,open_date:assignment.open_date};
+      const request=existing
+        ?supabase.from('omg_stores').update(payload).eq('id',existing.id)
+        :supabase.from('omg_stores').insert(payload);
+      const{data:saved,error:saveError}=await request.select('id,store_name,customer_id,rep_id,status,open_date,close_date,orders,total_sales,fundraise_total,items_sold,unique_buyers,delivery_mode,channel_type,_omg_sale_code').single();
+      if(saveError)throw saveError;
+      const merged={...(existing||{}),...saved};
+      setCustOmgStores(prev=>prev.some(s=>s.id===merged.id)?prev.map(s=>s.id===merged.id?merged:s):[merged,...prev]);
+      onOmgStoreSaved&&onOmgStoreSaved(merged);
+      setOmgAssign(null);nf&&nf(code+' assigned to '+customer.name);
+    }catch(error){setOmgAssignError(error?.message||'Could not assign this OMG store.')}
+    finally{setOmgAssignSaving(false)}
+  };
   // Live order totals per web store (orders, gross, fundraising, units) so the Stores tab
   // can show sales/order numbers inline and in the expandable reporting row — same "real
   // demand only" filter the close-sweep uses (drop cancelled / never-paid carts).
@@ -546,7 +606,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           });
           safePOs(it).forEach(po=>{
             if(!po.po_id)return;
-            const qty=Object.entries(po).filter(([k,v])=>k!=='status'&&k!=='po_id'&&k!=='vendor'&&k!=='created_at'&&k!=='memo'&&k!=='received'&&k!=='ship_dates'&&k!=='drop_ship'&&typeof v==='number'&&v>0).reduce((a,[,v])=>a+v,0);
+            const qty=Object.entries(po).filter(([k,v])=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='vendor'&&k!=='created_at'&&k!=='memo'&&k!=='received'&&k!=='ship_dates'&&k!=='drop_ship'&&typeof v==='number'&&v>0).reduce((a,[,v])=>a+v,0);
             const cost=qty*(it.unit_cost||0);
             txns.push({id:po.po_id,type:'po',date:po.created_at||'',memo:it.name+' ('+it.sku+')'+' — '+(po.vendor||'Vendor'),customer_id:so.customer_id,total:cost>0?cost:null,status:po.status,so_id:so.id,_src:'po'});
           });
@@ -763,6 +823,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const chip=(status)=>{const st=(status||'').toLowerCase();const m=st==='open'?{bg:'#dcfce7',c:'#166534'}:st==='closed'?{bg:'#fee2e2',c:'#dc2626'}:{bg:'#f1f5f9',c:'#64748b'};return <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:m.bg,color:m.c,textTransform:'capitalize'}}>{status||'—'}</span>};
     const openFirst=arr=>[...arr].sort((a,b)=>((a.status||'').toLowerCase()==='open'?0:1)-((b.status||'').toLowerCase()==='open'?0:1));
     const ws=openFirst(custWebstores||[]);const omg=openFirst(custOmgStores||[]);
+    const profitByStore=(custOmgProfits||[]).reduce((out,row)=>{(out[row.store_id]||(out[row.store_id]=[])).push(row);return out},{});
     const th={padding:'8px 12px',textAlign:'left',fontSize:10.5,fontWeight:700,color:'#64748b',textTransform:'uppercase',letterSpacing:0.3};
     const thR={...th,textAlign:'right'};
     const td={padding:'8px 12px'};
@@ -771,9 +832,15 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const caret=ex=><span style={{display:'inline-block',width:12,color:'#94a3b8',fontSize:9,transform:ex?'rotate(90deg)':'none',transition:'transform .15s'}}>▶</span>;
     const metric=(label,val)=><div key={label} style={{minWidth:84}}><div style={{fontSize:9.5,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.3}}>{label}</div><div style={{fontSize:15,fontWeight:800,color:'#0f172a',marginTop:1}}>{val}</div></div>;
     const detailRow=(cols,metrics)=><tr><td colSpan={cols} style={{padding:0,background:'#f8fafc',borderTop:'1px solid #eef2f7'}}><div style={{display:'flex',flexWrap:'wrap',gap:22,padding:'12px 34px'}}>{metrics.filter(Boolean)}</div></td></tr>;
-    if(!ws.length&&!omg.length)return<div className="card"><div style={{padding:28,textAlign:'center',color:'#64748b',fontSize:13}}>No web stores or OMG stores for this account yet.</div></div>;
     const wsCols=8+(isP?1:0);
     return <div style={{display:'flex',flexDirection:'column',gap:14}}>
+      <div className="card">
+        <div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12}}>
+          <div><h2>OMG 24/7 Store Assignment</h2><div style={{fontSize:11,color:'#64748b',fontWeight:500,marginTop:2}}>Add the five-character OMG code once. Monthly profit imports will automatically use this customer and sales rep.</div></div>
+          <button className="btn btn-sm btn-primary" onClick={openOmgAssignment}>Add 24/7 store</button>
+        </div>
+      </div>
+      {!ws.length&&!omg.length&&<div className="card"><div style={{padding:28,textAlign:'center',color:'#64748b',fontSize:13}}>No web stores or OMG stores for this account yet. Add the OMG code above when the 24/7 store is created.</div></div>}
       {ws.length>0&&<div className="card"><div className="card-header"><h2>Web Stores ({ws.length})</h2></div><div className="card-body" style={{padding:0,overflowX:'auto'}}>
         <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr><th style={{...th,width:24}}></th><th style={th}>Store</th><th style={th}>Status</th><th style={th}>Opens</th><th style={th}>Closes</th>{isP&&<th style={th}>Director</th>}<th style={thR}>Orders</th><th style={thR}>Sales</th><th style={th}></th></tr></thead><tbody>
           {ws.map(s=>{const a=wsAgg[s.id]||{};const ex=stExpanded.has(s.id);return <React.Fragment key={s.id}>
@@ -796,22 +863,38 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         <div style={{padding:'7px 14px',fontSize:11,color:'#94a3b8',borderTop:'1px solid #f1f5f9'}}>Sales are live order totals (excludes cancelled / unpaid carts). Open a store for full reporting.</div>
       </div></div>}
       {omg.length>0&&<div className="card"><div className="card-header"><h2>OMG Stores ({omg.length})</h2></div><div className="card-body" style={{padding:0,overflowX:'auto'}}>
-        <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr><th style={{...th,width:24}}></th><th style={th}>Store</th><th style={th}>Status</th><th style={th}>Opens</th><th style={th}>Closes</th><th style={thR}>Orders</th><th style={thR}>Sales</th><th style={th}></th></tr></thead><tbody>
-          {omg.map(s=>{const ex=stExpanded.has(s.id);const deliv=s.delivery_mode==='deliver_club'?'Deliver to club':s.delivery_mode==='ship_home'?'Ship to home':(s.delivery_mode||'—');return <React.Fragment key={s.id}>
+        <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr><th style={{...th,width:24}}></th><th style={th}>Store</th><th style={th}>Code</th><th style={th}>Status</th><th style={th}>Opens</th><th style={th}>Closes</th><th style={thR}>Orders</th><th style={thR}>Sales</th><th style={thR}>Latest profit</th><th style={th}></th></tr></thead><tbody>
+          {omg.map(s=>{const ex=stExpanded.has(s.id);const deliv=s.delivery_mode==='deliver_club'?'Deliver to club':s.delivery_mode==='ship_home'?'Ship to home':(s.delivery_mode||'—');const snapshots=profitByStore[s.id]||[];const profit=latestMonthlyProfit(snapshots);const latest=profit.current;const shownProfit=profit.netProfit==null?(latest?.net_profit??null):profit.netProfit;const totalLabel=latest?.is_cumulative?'Cumulative':'Month';return <React.Fragment key={s.id}>
             <tr style={{borderTop:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>toggle(s.id)}>
               <td style={{...td,textAlign:'center'}}>{caret(ex)}</td>
-              <td style={{...td,fontWeight:700,color:'#7c3aed'}}>{s.store_name}</td>
+              <td style={{...td,fontWeight:700,color:'#7c3aed'}}>{s.store_name}{s.channel_type==='24/7'&&<span style={{marginLeft:7,padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:800,background:'#ede9fe',color:'#6d28d9'}}>24/7</span>}</td>
+              <td style={{...td,fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{s._omg_sale_code||'—'}</td>
               <td style={td}>{chip(s.status)}</td>
               <td style={{...td,color:'#64748b'}}>{dt(s.open_date)}</td>
               <td style={{...td,color:'#64748b'}}>{dt(s.close_date)}</td>
               <td style={{...tdR,color:'#64748b'}}>{s.orders||0}</td>
               <td style={{...tdR,fontWeight:700}}>{money(s.total_sales)}</td>
-              <td style={{...tdR,whiteSpace:'nowrap'}} onClick={e=>e.stopPropagation()}>{onOpenOmgStore&&<button className="btn btn-sm btn-secondary" onClick={()=>onOpenOmgStore(s.id)}>Open store →</button>}</td>
+              <td style={{...tdR,fontWeight:800,color:shownProfit==null?'#94a3b8':shownProfit>=0?'#166534':'#dc2626'}}>{shownProfit==null?'—':money(shownProfit)}{profit.baseline&&<div style={{fontSize:9,fontWeight:600,color:'#94a3b8'}}>baseline</div>}</td>
+              <td style={{...tdR,whiteSpace:'nowrap'}} onClick={e=>e.stopPropagation()}>{onOpenOmgStore?<button className="btn btn-sm btn-secondary" onClick={()=>onOpenOmgStore(s.id)}>Open store →</button>:<span title="Ask an admin to enable OMG Stores in Team Access" style={{fontSize:10,color:'#94a3b8'}}>OMG access required</span>}</td>
             </tr>
-            {ex&&detailRow(8,[metric('Orders',s.orders||0),metric('Items sold',s.items_sold||0),metric('Sales',money(s.total_sales)),metric('Fundraising',money(s.fundraise_total)),metric('Buyers',s.unique_buyers||0),metric('Delivery',deliv)])}
+            {ex&&detailRow(10,[metric('Orders',s.orders||0),metric('Items sold',s.items_sold||0),metric('Sales',money(s.total_sales)),metric('Fundraising',money(s.fundraise_total)),metric('Buyers',s.unique_buyers||0),metric('Delivery',deliv),latest?metric('Profit month',String(latest.period_month).slice(0,7)):null,latest?metric(totalLabel+' collected',money(latest.product_collected)):null,latest?metric(totalLabel+' item cost',money(latest.item_cost)):null,latest?metric(totalLabel+' product profit',money(latest.product_profit)):null,profit.netProfit!=null?metric('Monthly profit after fees',money(profit.netProfit)):null,latest?.source_mode?metric('Source',latest.source_mode==='omg_api'?'Nightly OMG API':'Manual import'):null,latest?.validation_status==='held'?metric('Commission','On hold'):null,profit.baseline?metric('Monthly calculation','Baseline saved'):null])}
           </React.Fragment>;})}
         </tbody></table>
+        <div style={{padding:'7px 14px',fontSize:11,color:'#94a3b8',borderTop:'1px solid #f1f5f9'}}>Nightly API rows show the current calendar month directly. Manual cumulative imports use the change from the prior snapshot; the first one is a baseline.</div>
       </div></div>}
+      {omgAssign&&<div className="modal-overlay" style={{zIndex:70}} onClick={()=>!omgAssignSaving&&setOmgAssign(null)}>
+        <div className="modal" style={{maxWidth:480}} onClick={e=>e.stopPropagation()}>
+          <div className="modal-header"><h2 style={{fontSize:16}}>Assign OMG 24/7 store</h2><button className="modal-close" disabled={omgAssignSaving} onClick={()=>setOmgAssign(null)}>x</button></div>
+          <div className="modal-body" style={{display:'flex',flexDirection:'column',gap:12}}>
+            <div style={{padding:'9px 11px',borderRadius:7,background:'#f8fafc',fontSize:11.5,color:'#475569'}}>This permanently maps the OMG code to <strong>{customer.name}</strong>. Future monthly imports use the mapping automatically.</div>
+            <label><span className="form-label">OMG store code</span><input autoFocus value={omgAssign.code} maxLength={5} onChange={e=>setOmgAssign(v=>({...v,code:normalizeOmgStoreCode(e.target.value).slice(0,5)}))} placeholder="5YP6D" style={{width:'100%',padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:6,fontFamily:'monospace',fontWeight:800,textTransform:'uppercase'}}/></label>
+            <label><span className="form-label">Store name</span><input value={omgAssign.store_name} onChange={e=>setOmgAssign(v=>({...v,store_name:e.target.value}))} placeholder="Customer 24/7 Store" style={{width:'100%',padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:6}}/></label>
+            <label><span className="form-label">Sales rep</span><div style={{width:'100%',padding:'8px 10px',border:'1px solid '+(accountRepId?'#cbd5e1':'#fecaca'),borderRadius:6,background:'#f8fafc',fontSize:13,fontWeight:600,color:accountRepId?'#0f172a':'#b91c1c'}}>{accountRep?.name||(accountRepId?'Assigned account rep':'No sales rep assigned to this customer')}</div><div style={{fontSize:10.5,color:'#64748b',marginTop:4}}>Automatically uses the sales rep assigned on this customer account.</div></label>
+            {omgAssignError&&<div style={{padding:'8px 10px',borderRadius:6,background:'#fef2f2',color:'#b91c1c',fontSize:11.5,fontWeight:600}}>{omgAssignError}</div>}
+          </div>
+          <div style={{display:'flex',gap:8,padding:'12px 16px',borderTop:'1px solid #eef2f7'}}><button className="btn btn-primary" disabled={omgAssignSaving||!accountRepId} onClick={saveOmgAssignment}>{omgAssignSaving?'Assigning…':'Assign store'}</button><button className="btn btn-secondary" disabled={omgAssignSaving} onClick={()=>setOmgAssign(null)}>Cancel</button></div>
+        </div>
+      </div>}
     </div>;
   })()}
   {/* PROMO DOLLARS TAB */}
@@ -845,7 +928,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const pctProg=programs.find(p=>p.is_active!==false&&p.type==='percent_of_spend'&&safeNum(p.spend_percentage)>0);
     const pct=pctProg?safeNum(pctProg.spend_percentage):0;
     const famIds=[parentId,...allCustomers.filter(c=>c.parent_id===parentId).map(c=>c.id)];
-    const _histInvsAll=(allOrders||[]).filter(oo=>oo._hist&&oo.type==='invoice');
+    const _histInvsAll=mergePromoHistoryInvoices((allOrders||[]).filter(oo=>oo._hist&&oo.type==='invoice'),promoLineHistory);
     const _spendInRange=(s,e)=>calcPaidQualifyingSpend({sos,invs,histInvs:_histInvsAll,famIds,start:s,end:e});
     const curSpendParts=pct>0?_spendInRange(curPeriod.start,curPeriod.end):{soSpend:0,histSpend:0,total:0};
     const curHalfSpend=curSpendParts.total;
@@ -885,7 +968,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const _allCredits=customer.credits||[];const _creditUsageAll=customer.credit_usage||[];
     const fundCredits=_allCredits.filter(cr=>cr.is_fundraise);
     const regCredits=_allCredits.filter(cr=>!cr.is_fundraise);
-    const _creditRow=cr=>{const bal=(cr.amount||0)-(cr.used||0);const usages=_creditUsageAll.filter(u=>u.credit_id===cr.id);
+    const _creditRow=cr=>{const bal=(cr.amount||0)-(cr.used||0);const usages=_creditUsageAll.filter(u=>u.credit_id===cr.id);const isMemoCredit=/^Credit memo CM-/i.test(cr.source||'');
       return<div key={cr.id} style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:8,display:'flex',gap:12,alignItems:'center'}}>
         <div style={{width:40,height:40,borderRadius:8,background:bal>0?'#d1fae5':'#f1f5f9',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>{bal>0?'🏷️':'✓'}</div>
         <div style={{flex:1}}>
@@ -904,7 +987,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           </div>}
         </div>
         <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:bal>0?'#d1fae5':'#f1f5f9',color:bal>0?'#065f46':'#94a3b8'}}>{bal>0?'$'+bal.toLocaleString()+' avail':'Fully Used'}</span>
-        {bal>0&&<button className="btn btn-sm" style={{color:'#dc2626'}} onClick={()=>{if(window.confirm('Delete this credit of $'+cr.amount+'?'))onDeleteCredit(cr.id)}}>×</button>}
+        {isMemoCredit&&<span style={{fontSize:9,color:'#9a3412',fontWeight:700}} title="Posted credit memos stay locked to their original invoice for the accounting audit trail">Credit memo · locked</span>}
+        {bal>0&&!isMemoCredit&&<button className="btn btn-sm" style={{color:'#dc2626'}} onClick={()=>{if(window.confirm('Delete this credit of $'+cr.amount+'?'))onDeleteCredit(cr.id)}}>×</button>}
       </div>;};
     return<div style={{display:'flex',flexDirection:'column',gap:12}}>
       {customer.parent_id&&parentCust&&parentCust.id!==customer.id&&<div style={{padding:'8px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,fontSize:12,color:'#1e40af'}}>Promo $ is shared with parent account <strong style={{cursor:'pointer',textDecoration:'underline'}} onClick={()=>onSelCust&&onSelCust(parentCust)}>{parentCust.name}</strong> — changes here apply to all sub-accounts.</div>}
@@ -2030,7 +2114,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           {/* Mockup artwork display */}
           {mockupFiles2.length>0&&<div style={{marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>🖼️ Artwork Mockup</div>
-            {_mf2ProofOnly&&<div style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde047',borderRadius:6,padding:'6px 10px',marginBottom:8}}>♻️ Sew-out proof from production files — not a garment mockup</div>}
+            {_mf2ProofOnly&&<div style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde047',borderRadius:6,padding:'6px 10px',marginBottom:8}}>{/embroid/.test(String(j.deco_type||'').toLowerCase())?'♻️ Sew-out proof from production files — not a garment mockup':'♻️ Screen-print proof from production files'}</div>}
             {mockupFiles2.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
               return<div key={fi} style={{borderRadius:10,border:'1px solid #e2e8f0',overflow:'hidden',background:'white',marginBottom:8}}>
                 {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}/>
