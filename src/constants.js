@@ -306,6 +306,11 @@ export const _omgStoreCols=['id','store_name','customer_id','rep_id','csr_id','a
 // ─── Team & Company Defaults ───
 // Warehouse staff who can delegate tasks to other warehouse workers (in addition to admins/GM).
 export const WAREHOUSE_LEAD_IDS=['00000000-0000-0000-0000-000000000050']; // Kellen Coates
+// Staff cleared to make MANUAL stock corrections on the Inventory page (Adjust Inventory / INV).
+// Deliberately separate from WAREHOUSE_LEAD_IDS: that list also grants warehouse task delegation,
+// and someone can be trusted to correct counts without running the warehouse queue. Admins always
+// have this; this list adds individuals by id, one at a time.
+export const INVENTORY_ADJUST_IDS=['tm-mpn3xnfieezi']; // Vic Damian (CSR)
 export const DEFAULT_REPS=[
   // Admins
   {id:'00000000-0000-0000-0000-000000000001',name:'Steve Peterson',role:'admin'},

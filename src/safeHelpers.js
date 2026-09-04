@@ -645,12 +645,13 @@ export const hasOpenItemFulfillment = (o) => safeItems(o).some(it =>
 );
 
 // Manual stock corrections are intentionally narrower than Inventory-page access. Admins can
-// adjust stock, as can explicitly designated warehouse leads; the warehouse role by itself stays
-// read-only so adding one lead does not silently grant the control to every warehouse account.
-export const canAdjustInventory = (user, warehouseLeadIds = []) => !!user && (
+// adjust stock, as can individuals named in the caller's allow-list (warehouse leads plus anyone
+// in INVENTORY_ADJUST_IDS); no role other than admin grants it, so the warehouse or CSR role by
+// itself stays read-only and naming one person never widens the control to their whole role.
+export const canAdjustInventory = (user, allowedIds = []) => !!user && (
   user.role === 'admin' ||
   user.role === 'super_admin' ||
-  warehouseLeadIds.includes(user.id)
+  allowedIds.includes(user.id)
 );
 export const safeFirm = (o) => safeArr(o?.firm_dates);
 
