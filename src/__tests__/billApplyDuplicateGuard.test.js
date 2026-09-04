@@ -86,6 +86,8 @@ describe('supplier-bill apply paths (App.js)', () => {
     expect(APP).toContain('const selected=billImport.parsed.filter(b=>!b._qbBackfill&&_billIsReadyToPush(b)');
     expect(APP).toContain("_qbBackfill:true,parsed:{...(sb.parsed||{}),_qbBackfill:true}");
     expect(APP).toContain('updated.push({...cleanSource,parsed:cleanParsed,qbStatus:result.qbStatus');
+    expect(APP).toContain("x.reviewLater||x.qbStatus==='success'||x._qbBackfill");
+    expect(APP).toContain("filter(b=>b&&!b._qbBackfill&&b.parsed");
   });
 });
 
