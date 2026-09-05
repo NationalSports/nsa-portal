@@ -9,7 +9,7 @@ import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
 import { authFetch } from './utils';
-import { buildQBCustomerManifest, createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName, qbResponseErrorDetail } from './qbSyncEngine';
+import { buildQBCustomerManifest, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName, qbResponseErrorDetail } from './qbSyncEngine';
 import {
   QB_ACCOUNT_MAPPING_DEFAULTS,
   QB_ACCOUNT_POSTING_MATRIX,
@@ -99,6 +99,8 @@ export default function QBPage(){
   const [customerBatchApproved,setCustomerBatchApproved]=useState(false);
   const [customerBatchLimit,setCustomerBatchLimit]=useState(20);
   const [customerReviewFilter,setCustomerReviewFilter]=useState('all');
+  const [poBatchReview,setPoBatchReview]=useState(null);
+  const [poBatchApproved,setPoBatchApproved]=useState(false);
   const [stripeBackfill,setStripeBackfill]=useState(null);
   const [stripeWebhookStatus,setStripeWebhookStatus]=useState(null);
 
@@ -375,6 +377,8 @@ export default function QBPage(){
     const selectedCanaryProduct=canaryProducts.find(p=>String(p.id)===String(qbCanaryProductId));
     const selectedCanarySO=canarySOs.find(so=>String(so.id)===String(qbCanarySOId));
     const selectedCanaryPO=canaryPOs.find(group=>String(group.poId)===String(qbCanaryPOId));
+    const poPreviewRows=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{});
+    const poBatchRows=(poBatchReview?.rows||[]).filter(row=>row.action==='ready').slice(0,20);
     const selectedInvoiceCustomer=selectedCanaryInvoice&&cust.find(c=>c.id===selectedCanaryInvoice.customer_id);
     const invoiceCanaryBlock=selectedCanaryInvoice&&!_custQBMap[selectedCanaryInvoice.customer_id]?'Sync this invoice customer first':selectedCanaryInvoice&&safeNum(selectedCanaryInvoice.tax)>0?'Taxable invoices remain blocked until QBO tax-code mapping is deployed':'';
     const soCanaryBlock=selectedCanarySO&&!_custQBMap[selectedCanarySO.customer_id]?'Sync this sales-order customer first':'';
@@ -501,6 +505,18 @@ export default function QBPage(){
       const poId=poCanaryReview.poId;
       setPoCanaryReview(null);
       await syncPurchaseOrders({}, {canaryPOId:poId});
+    };
+    const reviewPurchaseOrderBatch=()=>{
+      const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows:poPreviewRows,
+        counts:poPreviewRows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{})};
+      setPoBatchReview(review);setPoBatchApproved(false);setQBConfig(prev=>({...prev,lastPurchaseOrderReview:review}));
+      nf('Purchase-order readiness review complete — no QBO records changed');
+    };
+    const runPurchaseOrderBatch=async()=>{
+      const current=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{});
+      const currentById=new Map(current.map(row=>[row.poId,row]));
+      if(poBatchRows.some(row=>JSON.stringify(currentById.get(row.poId))!==JSON.stringify(row))){nf('Purchase-order batch changed since review — review it again','error');setPoBatchApproved(false);return}
+      await syncPurchaseOrders({}, {approved:poBatchApproved,approvedPOIds:poBatchRows.map(row=>row.poId)});setPoBatchApproved(false);setPoBatchReview(null);
     };
 
     // Build what a QB sync would push
@@ -725,6 +741,24 @@ export default function QBPage(){
             </div>
           </div>
           {!livePreflightReady&&<div style={{padding:'0 16px 12px',fontSize:11,color:'#92400e',fontWeight:600}}>Buttons disabled: run Read-Only Live Preflight first.</div>}
+        </div>
+
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h2>Controlled Purchase-Order Batch</h2></div>
+          <div className="card-body">
+            <p style={{fontSize:11,color:'#475569'}}>Reviews portal readiness first, then processes at most 20 exact PO IDs. Every created or matched PO must pass API header and line read-back before its durable link is saved. Missing vendors and product items block without being created as side effects.</p>
+            <button className="btn btn-sm" disabled={qbSyncing||!livePreflightReady} onClick={reviewPurchaseOrderBatch}>Review POs — No QBO Changes</button>
+            {poBatchReview&&<>
+              <p>Readiness: {JSON.stringify(poBatchReview.counts)}. Proposed batch: {poBatchRows.length} ready POs.</p>
+              <table><thead><tr><th>Portal PO</th><th>Vendor</th><th>Date</th><th>Lines</th><th>Total</th></tr></thead><tbody>{poBatchRows.map(row=><tr key={row.poId}><td>{row.poId}</td><td>{row.vendor}</td><td>{row.date}</td><td>{row.lineCount}</td><td>${row.total.toFixed(2)}</td></tr>)}</tbody></table>
+              <label><input type="checkbox" checked={poBatchApproved} disabled={qbSyncing} onChange={e=>setPoBatchApproved(e.target.checked)}/> I approve only the listed POs in this batch.</label>
+              <button className="btn btn-primary btn-sm" disabled={qbSyncing||!poBatchApproved||!poBatchRows.length||!qbConfig.qbPOBillMap?.['PO 58971 SHHGS']} onClick={runPurchaseOrderBatch}>Run Reviewed PO Batch</button>
+              <h3>First readiness exceptions</h3>
+              <table><thead><tr><th>Portal PO</th><th>Vendor</th><th>Reason</th></tr></thead><tbody>{poBatchReview.rows.filter(row=>row.action==='blocked').slice(0,20).map(row=><tr key={row.poId}><td>{row.poId}</td><td>{row.vendor}</td><td>{row.reason}</td></tr>)}</tbody></table>
+            </>}
+            {qbConfig.lastPurchaseOrderBatch&&<><h3>Latest PO batch: {qbConfig.lastPurchaseOrderBatch.status}</h3><table><thead><tr><th>Portal PO</th><th>Result</th><th>QBO ID</th><th>Error</th></tr></thead><tbody>{(qbConfig.lastPurchaseOrderBatch.results||[]).map(row=><tr key={row.poId}><td>{row.poId}</td><td>{row.result}</td><td>{row.qboId||''}</td><td>{row.error||''}</td></tr>)}</tbody></table><p>{JSON.stringify(qbConfig.lastPurchaseOrderBatch.counts)}</p></>}
+            <p style={{fontSize:10,color:'#92400e'}}>QBO does not support retrofitting native PO links onto existing bills through the API. Existing bills remain queued for QBO’s Add to Bill workflow and reciprocal API verification; this batch does not recreate or alter bills.</p>
+          </div>
         </div>
 
         <div className="card">
