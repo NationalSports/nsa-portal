@@ -1,3 +1,5 @@
+import {useOrderCatalogResults} from './lib/orderCatalogSearch';
+import QuantityDraftInput from './QuantityDraftInput';
 /* ═══════════════════════════════════════════════════════════════
    ORDER EDITOR — CLASSIC
    Rendered when the portal-wide UI toggle is on "classic", which is
@@ -1109,7 +1111,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // In-progress size-cell edits, keyed `idx+'_'+sz`. Lets the user type intermediate values
   // (e.g. clear "8" then type "13") without the per-keystroke "Cannot reduce below X" guard firing.
   // Validation runs in uSz on blur instead — see input at the size grid below.
-  const[sizingDraft,setSizingDraft]=useState({});
   const sizingDraftRef=useRef({});
   const[coachApprovalModal,setCoachApprovalModal]=useState(null);// {jIdx, contact, portalUrl, method, message}
   // Art proofs often go to several contacts — keep the greeting naming whoever is checked
@@ -1780,8 +1781,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Size inputs deliberately buffer keystrokes until blur so clearing "8" on the way to "13"
   // does not trip the committed-quantity guards. Mirror that buffer in a ref: Save follows blur
   // immediately, before React would normally expose the new order state to the click handler.
-  const _stageSizingDraft=(k,v)=>{const next={...sizingDraftRef.current,[k]:v};sizingDraftRef.current=next;setSizingDraft(next);dirtyRef2.current=true;setDirty(true)};
-  const _dropSizingDraft=k=>{if(!(k in sizingDraftRef.current))return;const next={...sizingDraftRef.current};delete next[k];sizingDraftRef.current=next;setSizingDraft(next)};
+  const _stageSizingDraft=(k,v)=>{const first=!(k in sizingDraftRef.current);sizingDraftRef.current={...sizingDraftRef.current,[k]:v};if(first){dirtyRef2.current=true;setDirty(true)}};
+  const _dropSizingDraft=k=>{if(!(k in sizingDraftRef.current))return;const next={...sizingDraftRef.current};delete next[k];sizingDraftRef.current=next};
   const _flushActiveSizingDraft=()=>{
     if(!Object.keys(sizingDraftRef.current).length)return true;
     const active=typeof document!=='undefined'?document.activeElement:null;
@@ -4412,7 +4413,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }
   },[syncJobs]);// eslint-disable-line
 
-  const fp=products.filter(p=>{if(!pS||pS.length<2)return false;if(p.is_archived)return false;if((p.brand||'').toLowerCase()==='momentec')return false;/* Momentec is served by the live /v2 vendor search below — keep its catalog rows out of these results */const tokens=pS.toLowerCase().split(/\s+/).filter(Boolean);if(!tokens.length)return false;const sku=p.sku.toLowerCase(),name=p.name.toLowerCase(),brand=(p.brand||'').toLowerCase(),color=(p.color||'').toLowerCase();return tokens.every(t=>sku.includes(t)||name.includes(t)||brand.includes(t)||color.includes(t))});
+  const fp=useOrderCatalogResults(products,pS);
   // Server-side product search fallback when local products don't match
   const[serverProducts,setServerProducts]=useState([]);
   const serverSearchTimer=useRef(null);
@@ -5440,8 +5441,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {/* In estimate qty-only mode: show just the total input, no size grid */}
             {isQtyOnly?<>
               <div style={{textAlign:'center',padding:'0 10px'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOTAL QTY</div>
-                <input value={item.est_qty||''} onChange={e=>uI(idx,'est_qty',e.target.value===''?0:parseInt(e.target.value)||0)} placeholder="0"
-                  style={{width:64,textAlign:'center',fontSize:24,fontWeight:800,color:safeNum(item.est_qty)>0?'#1e40af':'#cbd5e1',border:'2px dashed #93c5fd',borderRadius:6,padding:'4px 0',background:'#eff6ff'}}/>
+                <QuantityDraftInput value={item.est_qty||''} draftKey={idx+'_QTY'} onStage={_stageSizingDraft}
+                  onCommit={v=>flushSync(()=>{uI(idx,'est_qty',v===''?0:parseInt(v,10)||0);_dropSizingDraft(idx+'_QTY')})}
+                  style={{width:64,textAlign:'center',fontSize:24,fontWeight:800,border:'2px dashed #93c5fd',borderRadius:6,padding:'4px 0',background:'#eff6ff'}}
+                  filledStyle={{color:'#1e40af'}} emptyStyle={{color:'#cbd5e1'}}/>
               </div>
               <button className="btn btn-sm btn-secondary" style={{fontSize:10,marginLeft:8,color:'#2563eb'}} onClick={()=>{
                 // Warn before breaking a qty-only line into sizes when it already has a PO placed
@@ -5467,8 +5470,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 (an 11-wide row starting at 5 breaks after 10). */}
             <div style={{display:'grid',gridTemplateColumns:'repeat(11,48px)',columnGap:6,rowGap:10,alignItems:'start'}}>
             {szs.map(sz=><div key={sz} style={{textAlign:'center',width:48}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-              <input data-sizing-draft="true" value={sizingDraft[idx+'_'+sz]??(lineSizes[sz]||'')} onChange={e=>{const k=idx+'_'+sz;_stageSizingDraft(k,e.target.value)}} onBlur={()=>{const k=idx+'_'+sz;if(!(k in sizingDraftRef.current))return;const v=sizingDraftRef.current[k];flushSync(()=>{uSz(idx,sz,v);_dropSizingDraft(k)})}} placeholder="0"
-                style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:((idx+'_'+sz) in sizingDraft?(parseInt(sizingDraft[idx+'_'+sz])||0):(lineSizes[sz]||0))>0?'#0f172a':'#cbd5e1'}}/>
+              <QuantityDraftInput value={lineSizes[sz]||''} draftKey={idx+'_'+sz} onStage={_stageSizingDraft}
+                onCommit={v=>{const k=idx+'_'+sz;if(!(k in sizingDraftRef.current))return;flushSync(()=>{uSz(idx,sz,v);_dropSizingDraft(k)})}}
+                style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700}}
+                filledStyle={{color:'#0f172a'}} emptyStyle={{color:'#cbd5e1'}}/>
               {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];
                 // Show stock FREE TO PULL, not gross on-hand: units claimed by an open IF (here or on
                 // another SO) are already spoken for, and showing them green invites double-allocating.

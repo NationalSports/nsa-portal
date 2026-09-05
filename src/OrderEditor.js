@@ -1,3 +1,5 @@
+import {useOrderCatalogResults} from './lib/orderCatalogSearch';
+import QuantityDraftInput from './QuantityDraftInput';
 /* eslint-disable */
 import { canAcknowledgeSave } from './lib/saveAcknowledgement';
 import { lineIntentKey, newOrderLineId } from './lib/orderLineIdentity';
@@ -69,18 +71,6 @@ const nameWithBrand=(name,brand)=>{
 const catalogRepCost=(p)=>(p&&p.is_clearance&&p.clearance_cost!=null)?safeNum(p.clearance_cost):safeNum(p?.nsa_cost);
 
 
-// Quantity keystrokes stay in this tiny component. The parent editor still owns the draft ref
-// (so Save/autosave can flush it safely), but no longer reconciles thousands of order controls
-// for every digit typed.
-const QuantityDraftInput=React.memo(function QuantityDraftInput({value,draftKey,onStage,onCommit,className,style,filledStyle,emptyStyle,placeholder='0'}){
-  const cur=value==null||value===0?'':String(value);const[raw,setRaw]=React.useState(cur);const[focused,setFocused]=React.useState(false);
-  React.useEffect(()=>{if(!focused)setRaw(cur)},[cur,focused]);
-  const commit=()=>{setFocused(false);onCommit(raw)};const filled=(parseInt(raw,10)||0)>0;
-  return <input className={className} data-sizing-draft="true" value={raw} placeholder={placeholder}
-    onFocus={()=>setFocused(true)} onChange={e=>{const next=e.target.value;if(!/^\d*$/.test(next))return;setRaw(next);onStage(draftKey,next)}}
-    onBlur={commit} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur()}}
-    style={{...style,...(filled?filledStyle:emptyStyle)}}/>;
-});
 // Size pools offered by the Copy Item modal's "New sizes" picker — the common run a rep
 // re-sizes a copied line into (a 3/L one-off, a couple of bigs), not the full catalog pool.
 // Outliers (5XL, tall, youth, half sizes below 6) are still added on the line with +Size.
@@ -4427,7 +4417,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }
   },[syncJobs]);// eslint-disable-line
 
-  const fp=products.filter(p=>{if(!pS||pS.length<2)return false;if(p.is_archived)return false;if((p.brand||'').toLowerCase()==='momentec')return false;/* Momentec is served by the live /v2 vendor search below — keep its catalog rows out of these results */const tokens=pS.toLowerCase().split(/\s+/).filter(Boolean);if(!tokens.length)return false;const sku=p.sku.toLowerCase(),name=p.name.toLowerCase(),brand=(p.brand||'').toLowerCase(),color=(p.color||'').toLowerCase();return tokens.every(t=>sku.includes(t)||name.includes(t)||brand.includes(t)||color.includes(t))});
+  const fp=useOrderCatalogResults(products,pS);
   // Server-side product search fallback when local products don't match
   const[serverProducts,setServerProducts]=useState([]);
   const serverSearchTimer=useRef(null);
