@@ -667,7 +667,7 @@ export default function QBPage(){
       </div>
 
       {qbTab==='vendors'&&<div className="card"><div className="card-header"><h2>QBO Vendors → Portal</h2></div><div className="card-body">
-        <p>Match existing vendors or import missing vendors from QuickBooks. Portal names, purchasing settings and existing contacts are preserved; missing email and phone fields are filled from QBO. Ambiguous matches and inactive Portal vendors require review.</p>
+        <p>Match existing vendors or import missing vendors from QuickBooks. Portal names, purchasing settings and existing contacts are preserved; missing email and phone fields are filled from QBO. Possible decoration-vendor matches, ambiguous matches and inactive Portal vendors require review.</p>
         <p>Vendor imports do not change QuickBooks. During migration, run this review when QBO vendors change.</p>
         <button className="btn btn-secondary" disabled={vendorBusy||qbSyncing||!qbConfig.realm_id} onClick={reviewVendors}>{vendorBusy?'Working…':'Review QBO Vendors'}</button>
         {vendorReview&&<>
