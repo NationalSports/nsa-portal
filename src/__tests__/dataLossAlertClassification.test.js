@@ -1,3 +1,4 @@
+import { classifySaveAlert } from '../lib/saveAlertClassification';
 import fs from 'fs';
 import path from 'path';
 
@@ -19,5 +20,20 @@ describe('data-loss alert classification', () => {
     const genericEmailAt=appSource.indexOf("'🚨 NSA Portal — Items lost on '");
     expect(auditOnlyAt).toBeGreaterThan(-1);
     expect(genericEmailAt).toBeGreaterThan(auditOnlyAt);
+  });
+});
+
+
+test('EST-2434 decoration guard reports a blocked estimate save, never lost garments', () => {
+  expect(classifySaveAlert('deco_shrink_blocked', 'EST-2434')).toEqual({
+    isBlocked: true, entity: 'Estimate', action: 'save_blocked',
+    unit: 'decoration(s)', countLabel: 'Decorations',
+  });
+});
+
+test('item-count guards keep item units and the correct document type', () => {
+  expect(classifySaveAlert('bg_shrink_blocked', 'SO-1140')).toEqual({
+    isBlocked: true, entity: 'SO', action: 'save_blocked',
+    unit: 'item(s)', countLabel: 'Items',
   });
 });

@@ -39,7 +39,7 @@ jest.mock('@supabase/supabase-js', () => {
       getSession: () => Promise.resolve({ data: { session: null } }),
       onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
     },
-    rpc: () => Promise.resolve({ data: null, error: null }),
+    rpc: (name,args) => require('../testHelpers/atomicSaveRpc')(state,name,args),
   };
   return { createClient: () => client, __mockState: state };
 });

@@ -1,7 +1,7 @@
 // Conflict-card UI test: mounts the full <App/> (same harness as appSmoke) and drives the
 // outbox conflict card through the live stale-rejection path — dbEngine's _emitOutboxConflict
 // callback — asserting the card renders, "Discard my edit" clears both the card and the durable
-// outbox entry, and "Apply my edit anyway" restores the payload for re-save.
+// outbox entry, and offline "Apply my edit anyway" preserves the draft for review.
 // Supabase is null here, which is fine: the card, the callback, and the outbox store are all
 // backend-independent by design (that's what makes the content durable).
 
@@ -67,15 +67,14 @@ test('Discard clears the card AND the durable outbox entry', () => {
   expect(_outboxList()).toHaveLength(0);
 });
 
-test('Apply-anyway removes the card and flags the entity for re-save', () => {
+test('Apply-anyway preserves the conflict and durable draft when cloud is unavailable', async () => {
   render(<App />);
   emitConflict();
-  fireEvent.click(screen.getByText(/Apply my edit anyway/));
-  // card gone…
-  expect(screen.queryByText(/Apply my edit anyway/)).toBeNull();
-  // …entity flagged so the retry/diff-save flow persists the restored payload; the outbox
-  // entry deliberately survives until a save actually succeeds.
-  expect(_dbSaveFailedIds.has('EST-9001')).toBe(true);
+  await act(async () => { fireEvent.click(screen.getByText(/Apply my edit anyway/)); });
+  // No authoritative revision means no overwrite or acknowledgement.
+  expect(screen.queryByText(/Apply my edit anyway/)).toBeTruthy();
+  // The durable entry survives until a save actually succeeds.
+  expect(_outboxList()[0].payload.memo).toBe('the rejected edit');
   expect(_outboxList().map(e => e.id)).toContain('EST-9001');
   // cleanup module-level state so later suites aren't affected
   _dbSaveFailedIds.delete('EST-9001');

@@ -1,0 +1,21 @@
+name: Order save transactions
+on:
+  pull_request:
+    paths:
+      - 'supabase/migrations/**'
+      - 'scripts/pgtest/order_save*'
+      - 'src/lib/dbEngine.js'
+      - '.github/workflows/order-save-transactions.yml'
+  workflow_dispatch:
+jobs:
+  transactions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install isolated PostgreSQL runtime
+        run: npm install --prefix "$RUNNER_TEMP/order-save-pg" @electric-sql/pglite@0.3.14
+      - name: Verify atomic saves and rollback
+        run: PGLITE_MODULE="$RUNNER_TEMP/order-save-pg/node_modules/@electric-sql/pglite" node scripts/pgtest/order_save_scenarios.cjs
