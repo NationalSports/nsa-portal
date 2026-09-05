@@ -88,6 +88,7 @@ export default function QBPage(){
   const [customerManifest,setCustomerManifest]=useState(null);
   const [customerReviewBusy,setCustomerReviewBusy]=useState(false);
   const [customerBatchApproved,setCustomerBatchApproved]=useState(false);
+  const [customerReviewFilter,setCustomerReviewFilter]=useState('all');
   const [stripeBackfill,setStripeBackfill]=useState(null);
   const [stripeWebhookStatus,setStripeWebhookStatus]=useState(null);
 
@@ -406,8 +407,10 @@ export default function QBPage(){
         const terms=await loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000);
         const customers=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SalesTermRef',1000);
         const rows=buildQBCustomerManifest(cust,customers,terms,qbConfig.custQBMap||{});
-        setCustomerManifest({realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,
-          counts:rows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{})});
+        const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,
+          counts:rows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{})};
+        setCustomerManifest(review);
+        setQBConfig(prev=>({...prev,lastCustomerReview:review}));
         nf('Customer review complete — no QBO records changed');
       }catch(e){nf('Customer review failed — '+e.message,'error')}finally{setCustomerReviewBusy(false)}
     };
@@ -776,9 +779,10 @@ export default function QBPage(){
               <label><input type="checkbox" checked={customerBatchApproved} disabled={qbSyncing} onChange={e=>setCustomerBatchApproved(e.target.checked)}/> I approve the listed customer creations, links, and term changes in this batch.</label>
               <button className="btn btn-primary btn-sm" disabled={qbSyncing||!customerCanariesReady||!customerBatchApproved||!customerBatchRows.length} onClick={runCustomerBatch}>Run Reviewed Customer Batch</button>
 
-              <p>First 20 records needing approval or review. This review does not approve or run a batch.</p>
+              <label>Review filter <select aria-label="Customer review action filter" value={customerReviewFilter} onChange={e=>setCustomerReviewFilter(e.target.value)}><option value="all">All exceptions and approvals</option><option value="update_terms">Term changes</option><option value="create">Proposed creations</option><option value="blocked">Blocked records</option><option value="link">Existing matches</option></select></label>
+              <p>First 20 matching review records. This review does not approve or run a batch.</p>
               <table className="table"><thead><tr><th>Customer</th><th>Action</th><th>QBO ID</th><th>Reason</th></tr></thead><tbody>
-                {customerManifest.rows.filter(row=>!['link','excluded'].includes(row.action)).slice(0,20).map(row=><tr key={row.sourceId}><td>{row.displayName}</td><td>{row.action}</td><td>{row.qboId||'—'}</td><td>{row.reason}</td></tr>)}
+                {customerManifest.rows.filter(row=>customerReviewFilter==='all'?!['link','excluded'].includes(row.action):row.action===customerReviewFilter).slice(0,20).map(row=><tr key={row.sourceId}><td>{row.displayName}</td><td>{row.action}</td><td>{row.qboId||'—'}</td><td>{row.reason}</td></tr>)}
               </tbody></table>
             </>}
           </div>
