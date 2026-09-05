@@ -78,6 +78,7 @@ export default function QBPage(){
   const [qbCanaryProductId,setQbCanaryProductId]=useState('');
   const [qbCanarySOId,setQbCanarySOId]=useState('');
   const [qbCanaryPOId,setQbCanaryPOId]=useState('');
+  const [poCanaryReview,setPoCanaryReview]=useState(null);
   const [qbPreflighting,setQbPreflighting]=useState(false);
   const [stripePayouts,setStripePayouts]=useState([]);
   const [stripePayoutId,setStripePayoutId]=useState('');
@@ -485,11 +486,19 @@ export default function QBPage(){
       if(!window.confirm('Create or link exactly ONE QBO Estimate?\n\nPortal sales order: '+selectedCanarySO.id+'\nCustomer: '+preview.customerRef+'\nTotal: $'+safeNum(preview.total).toFixed(2)+'\n\nThis is non-posting and will be verified by API read-back.')){nf('Sales-order canary cancelled — nothing was sent');return}
       await syncSalesOrders({}, {}, {canarySOId:selectedCanarySO.id});
     };
-    const runPurchaseOrderCanary=async()=>{
+    const reviewPurchaseOrderCanary=()=>{
       if(!selectedCanaryPO||poCanaryBlock)return;
       const total=selectedCanaryPO.entries.reduce((sum,{pl,so,it})=>sum+safeNum(buildQBPurchaseOrder(pl,so,it).total),0);
-      if(!window.confirm('Create or link exactly ONE QBO Purchase Order?\n\nPortal PO: '+selectedCanaryPO.poId+'\nVendor: '+(selectedCanaryPO.vendor||'Unknown')+'\nTotal: $'+total.toFixed(2)+'\n\nThis is non-posting. The test will not create a vendor or item, and the PO will be verified by API read-back.')){nf('Purchase-order canary cancelled — nothing was sent');return}
-      await syncPurchaseOrders({}, {canaryPOId:selectedCanaryPO.poId});
+      setPoCanaryReview({poId:selectedCanaryPO.poId,vendor:selectedCanaryPO.vendor,total,fingerprint:JSON.stringify(selectedCanaryPO)});
+    };
+    const runPurchaseOrderCanary=async()=>{
+      if(qbSyncing||!livePreflightReady||!poCanaryReview)return;
+      if(!selectedCanaryPO||poCanaryBlock||poCanaryReview.fingerprint!==JSON.stringify(selectedCanaryPO)){
+        setPoCanaryReview(null);nf('Purchase order changed — review it again before testing','error');return;
+      }
+      const poId=poCanaryReview.poId;
+      setPoCanaryReview(null);
+      await syncPurchaseOrders({}, {canaryPOId:poId});
     };
 
     // Build what a QB sync would push
@@ -518,7 +527,8 @@ export default function QBPage(){
 
     const buildQBPurchaseOrder=(pl,so,it)=>{
       const qty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!k.startsWith('_')&&!['unit_cost','billed','tracking_numbers','vendor','drop_ship'].includes(k)&&k.match(/^[A-Z0-9]/)).reduce((a,[,v])=>a+v,0);
-      const rate=pl.po_type==='outside_deco'?safeNum(pl.unit_cost):safeNum(it.nsa_cost);
+      const hasSavedRate=pl.unit_cost!==undefined&&pl.unit_cost!==null&&pl.unit_cost!=='';
+      const rate=Math.round((safeNum(hasSavedRate?pl.unit_cost:it.nsa_cost)+Number.EPSILON)*100)/100;
       return{docType:'PurchaseOrder',docNumber:pl.po_id,vendorRef:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand,
         date:pl.created_at,soRef:so.id,lines:[{desc:it.sku+' '+it.name,qty,rate,amount:qty*rate}],
         account:pl.po_type==='outside_deco'?qbConfig.mapping.deco_account:qbConfig.mapping.purchases_account,
@@ -683,11 +693,19 @@ export default function QBPage(){
             <div style={{padding:12,background:'#f5f3ff',border:'1px solid #ddd6fe',borderRadius:8}}>
               <div style={{fontSize:12,fontWeight:700,color:'#5b21b6',marginBottom:4}}>Test exactly one purchase order</div>
               <div style={{fontSize:10,color:'#475569',marginBottom:8}}>Non-posting. The canary will not create a vendor or QBO item as a side effect.</div>
-              <select className="form-input" aria-label="Purchase order to test in QuickBooks" value={qbCanaryPOId} onChange={e=>setQbCanaryPOId(e.target.value)}>
+              <select className="form-input" aria-label="Purchase order to test in QuickBooks" disabled={qbSyncing} value={qbCanaryPOId} onChange={e=>{setQbCanaryPOId(e.target.value);setPoCanaryReview(null)}}>
                 <option value="">Select one purchase order...</option>
                 {canaryPOs.map(group=><option key={group.poId} value={group.poId}>{group.poId} — {group.vendor||'Unknown'}{group.invalidReason?' — BLOCKED':''}</option>)}
               </select>
-              <button className="btn btn-primary btn-sm" style={{marginTop:8,background:'#6d28d9'}} disabled={qbSyncing||!livePreflightReady||!selectedCanaryPO||!!poCanaryBlock} onClick={runPurchaseOrderCanary}>{qbSyncing?'Testing...':'Test 1 Purchase Order'}</button>
+              <button className="btn btn-primary btn-sm" style={{marginTop:8,background:'#6d28d9'}} disabled={qbSyncing||!livePreflightReady||!selectedCanaryPO||!!poCanaryBlock} onClick={reviewPurchaseOrderCanary}>{qbSyncing?'Testing...':'Test 1 Purchase Order'}</button>
+              {poCanaryReview&&<section role="region" aria-label="Confirm one purchase order" style={{marginTop:12,padding:12,background:'#fff',border:'2px solid #6d28d9',borderRadius:8}}>
+                <strong>Create or link exactly one QBO Purchase Order</strong>
+                <div style={{marginTop:8}}>{poCanaryReview.poId} — {poCanaryReview.vendor||'Unknown'}</div>
+                <div style={{fontWeight:700,marginTop:4}}>Saved PO total: ${poCanaryReview.total.toFixed(2)}</div>
+                <p>This is non-posting. No vendor or item will be created. The PO will be verified by API read-back.</p>
+                <button className="btn btn-primary btn-sm" disabled={qbSyncing||!livePreflightReady} onClick={runPurchaseOrderCanary}>Confirm and test this PO</button>
+                <button className="btn btn-sm" style={{marginLeft:8}} disabled={qbSyncing} onClick={()=>{setPoCanaryReview(null);nf('Purchase-order canary cancelled — nothing was sent')}}>Cancel</button>
+              </section>}
               {poCanaryBlock&&<div style={{fontSize:10,color:'#b91c1c',marginTop:6,fontWeight:600}}>{poCanaryBlock}</div>}
             </div>
           </div>
