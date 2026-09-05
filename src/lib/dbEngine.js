@@ -2361,6 +2361,25 @@ const _captureSoSave = (so, savePromise) => {
   }).catch(() => {});
 };
 const _dbSaveSO = (so) => { const _p = _saveDocument('sales_orders',so,_dbSaveSOInner); _captureSoSave(so, _p); return _p; };
+// Narrow memo operation: no full-save wrapper, outbox, pricing or child writes.
+// Its dedicated dialog owns field-level recovery; sharing the full-document
+// outbox here would let a memo receipt erase an unrelated failed order edit.
+const _dbSaveMemoCommand=command=>{
+  command=JSON.parse(JSON.stringify(command));
+  return _queuedEntitySave(command.id,null,()=>_dbSavingGuard(async()=>{
+  if(!supabase)throw new Error('Cloud connection is unavailable. Keep your memo and retry.');
+  await _ensureFreshSession();
+  if(_isSessionDead()||currentDraftOwner()!==command.ownerId)throw new Error('Sign in as the original editor before saving this memo.');
+  const {data,error}=await _retryNet(()=>{
+    if(currentDraftOwner()!==command.ownerId||_isSessionDead())throw new Error('The signed-in editor changed. Your memo draft is preserved.');
+    return supabase.rpc('save_sales_order_memo',{
+      p_so_id:command.id,p_expected_memo:command.expectedMemo??null,p_memo:command.memo,p_request_id:command.requestId,
+    });
+  });
+  if(error)throw new Error(error.message||'Memo save failed');
+  return data;
+}));
+};
 // Lightweight save for art-file-only edits (add/remove/tag a mockup or production file). Syncs ONLY so_art_files —
 // never deletes/reinserts items, decorations, or PO lines — so a simple file change can't trip the order-save
 // data-loss guards or partially re-persist line items. Mirrors the art_files sync in _dbSaveSOInner.
@@ -3870,6 +3889,7 @@ export {
   _buildInvMergeRows,
   _dbSaveEstimate,
   _dbSaveSO,
+  _dbSaveMemoCommand,
   _dbSaveArtFiles,
   _dbSaveInvoice,
   _dbNotify,

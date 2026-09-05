@@ -39,6 +39,14 @@ const root=path.resolve(__dirname,'../..');const read=f=>fs.readFileSync(path.jo
  await db.exec(read('supabase/migrations/20260905164405_preserve_order_trigger_search_path.sql'));
  // Production trigger functions include unqualified references inherited from the writer.
  await db.exec("create function order_estimate_trigger() returns trigger language plpgsql as $$begin perform id from estimates where id=new.estimate_id;return new;end$$;create trigger order_estimate_check before insert or update on sales_orders for each row execute function order_estimate_trigger();");
+ // Match the live relationship trigger: it must not repair a legacy link
+ // during an unrelated memo edit. The migration limits its UPDATE columns.
+ await db.exec(`create function public.enforce_so_estimate_customer() returns trigger language plpgsql as $$
+ declare est_customer text;begin
+ if new.estimate_id is not null then select customer_id into est_customer from estimates where id=new.estimate_id;
+ if est_customer is not null and new.customer_id is not null and est_customer<>new.customer_id then new.estimate_id:=null;end if;end if;
+ return new;end$$;`);
+ await db.exec(read('supabase/migrations/20260905174346_sales_order_memo_command.sql'));
  const query=async(sql,args=[]) => (await db.query(sql,args.map(a=>a!==null&&typeof a==='object'?JSON.stringify(a):a))).rows;
  const token=async id=>(await query('select sales_order_save_token($1) t',[id]))[0].t;
  const estToken=async id=>(await query('select estimate_save_token($1) t',[id]))[0].t;
@@ -71,6 +79,33 @@ const root=path.resolve(__dirname,'../..');const read=f=>fs.readFileSync(path.jo
  await assert.rejects(save(id,before,{...artPlan,items:[{sku:'BROKEN',item_index:0}]}),/INVALID_SAVE_ITEM_COLLECTION/);assert.equal(await token(id),before);
  console.log('PASS malformed collections roll back without deleting saved children');
 
+ // Memo commands are field-level compare-and-swap operations with receipts.
+ const memoSave=async(expected,memo,request)=> (await query('select save_sales_order_memo($1,$2,$3,$4) result',[id,expected,memo,request]))[0].result;
+ const memoId=n=>'00000000-0000-4000-8000-'+String(n).padStart(12,'0');
+ const childTables=['so_items','so_item_decorations','so_item_po_lines','so_item_pick_lines','so_art_files','so_jobs','so_firm_dates'];
+ const childSnapshot=()=>Promise.all(childTables.map(table=>query('select row_to_json(t) as row from '+table+' t order by id')));
+ const childrenBefore=await childSnapshot();
+ const headerBefore=(await query('select to_jsonb(s) row from sales_orders s where id=$1',[id]))[0].row;
+ // A concurrent unrelated edit is preserved even though the aggregate version moved.
+ await query("update sales_orders set po_number='CONCURRENT-PO' where id=$1",[id]);
+ // These column-specific business triggers must not fire for a memo update.
+ await db.exec("create function forbid_unrelated_memo_update() returns trigger language plpgsql as $$begin raise exception 'UNRELATED_MEMO_WRITE';end$$;create trigger no_memo_business_writes before update of status,deco_pos,webstore_id on sales_orders for each row execute function forbid_unrelated_memo_update();");
+ const memoResult=await memoSave(headerBefore.memo,'memo only',memoId(1));assert.equal(memoResult.saved,true);
+ assert.equal((await query('select po_number from sales_orders where id=$1',[id]))[0].po_number,'CONCURRENT-PO');
+ assert.deepEqual(await childSnapshot(),childrenBefore);
+ const conflict=await memoSave(headerBefore.memo,'stale text',memoId(2));assert.equal(conflict.conflict,true);assert.equal(conflict.current_memo,'memo only');
+ const latest=await memoSave('memo only','newer memo',memoId(3));
+ const replay=await memoSave(headerBefore.memo,'memo only',memoId(1));assert.equal(replay.replayed,true);assert.equal(replay.current_memo,'newer memo');assert.equal(replay.current_version,latest.version);
+ await assert.rejects(memoSave(headerBefore.memo,'different payload',memoId(1)),/MEMO_REQUEST_REUSED/);
+ await assert.rejects(memoSave('newer memo','',memoId(4)),/INVALID_MEMO_COMMAND/);
+ // A future trigger changing unrelated fields makes the whole command roll back.
+ await db.exec("create function corrupt_memo_header() returns trigger language plpgsql as $$begin new.po_number:='corrupted';return new;end$$;create trigger corrupt_memo before update of memo on sales_orders for each row execute function corrupt_memo_header();");
+ await assert.rejects(memoSave('newer memo','must roll back',memoId(5)),/MEMO_CHANGED_UNRELATED_FIELDS/);
+ assert.equal((await query('select memo from sales_orders where id=$1',[id]))[0].memo,'newer memo');
+ assert.equal((await query("select count(*)::int n from document_save_receipts where request_hash=$1",['memo:'+memoId(5)]))[0].n,0);
+ await db.exec('drop trigger corrupt_memo on sales_orders;drop trigger no_memo_business_writes on sales_orders;');
+ console.log('PASS memo-only writes, unrelated edits, same-field conflicts, retry receipts and rollback');
+
  // Exact screenshot structure: four decorated polos, two undecorated pants,
  // a plain short and decorated crew. Removing earlier lines shifts pants to 0/1.
  const eid='EST-2429';await query("insert into estimates(id,memo) values($1,'original')",[eid]);
@@ -101,9 +136,36 @@ const root=path.resolve(__dirname,'../..');const read=f=>fs.readFileSync(path.jo
  const estAck=await query(retrySql,retryArgs);assert.deepEqual(await query(retrySql,retryArgs),estAck);
  console.log('PASS estimate repeated request returns original commit acknowledgement');
 
+ // Receipt failure must roll back the memo, not leave a saved-but-unretryable edit.
+ await db.exec("create function fail_memo_receipt() returns trigger language plpgsql as $$begin if new.request_hash like 'memo:%' then raise exception 'RECEIPT_STORAGE_FAILED';end if;return new;end$$;create trigger fail_memo_receipt before insert on document_save_receipts for each row execute function fail_memo_receipt();");
+ await assert.rejects(memoSave('newer memo','receipt failure',memoId(6)),/RECEIPT_STORAGE_FAILED/);
+ assert.equal((await query('select memo from sales_orders where id=$1',[id]))[0].memo,'newer memo');
+ await db.exec('drop trigger fail_memo_receipt on document_save_receipts;');
+ // Legacy invalid relationship is preserved by memo-only save; a deliberate
+ // relationship edit still invokes the existing repair rule.
+ await query("insert into estimates(id,customer_id) values('EST-LINK','customer-a')");
+ await query('alter table sales_orders disable trigger trg_sales_orders_estimate_customer');
+ await query("update sales_orders set estimate_id='EST-LINK',customer_id='customer-b' where id=$1",[id]);
+ await query('alter table sales_orders enable trigger trg_sales_orders_estimate_customer');
+ await memoSave('newer memo','relationship untouched',memoId(7));
+ assert.equal((await query('select estimate_id from sales_orders where id=$1',[id]))[0].estimate_id,'EST-LINK');
+ await query("update sales_orders set customer_id='customer-c' where id=$1",[id]);
+ assert.equal((await query('select estimate_id from sales_orders where id=$1',[id]))[0].estimate_id,null);
+ console.log('PASS memo receipt rollback and relationship-trigger scope');
+
  await db.exec('grant usage on schema public to authenticated,anon;set role authenticated;');
+ await assert.rejects(memoSave('relationship untouched','denied',memoId(8)),/STAFF_REQUIRED/);
  await assert.rejects(query("select sales_order_save_token('SO-TEST')"),/STAFF_REQUIRED/);await db.exec('reset role;set role anon;');
+ await assert.rejects(memoSave('relationship untouched','denied',memoId(9)),/permission denied/);
  await assert.rejects(query("select save_sales_order_atomic('SO-TEST','x','{}')"),/permission denied/);await db.exec('reset role;');
+ await db.exec("grant select,update on sales_orders to authenticated;grant select on estimates to authenticated;alter table sales_orders enable row level security;set test.staff='true';set role authenticated;");
+ await assert.rejects(memoSave('relationship untouched','hidden row',memoId(10)),/ORDER_NOT_AVAILABLE/);
+ await db.exec("reset role;create policy memo_staff_select on sales_orders for select to authenticated using (true);create policy memo_staff_update on sales_orders for update to authenticated using (false);set role authenticated;");
+ await assert.rejects(memoSave('relationship untouched','forbidden update',memoId(11)),/ORDER_NOT_AVAILABLE|MEMO_UPDATE_DENIED/);
+ await db.exec("reset role;drop policy memo_staff_update on sales_orders;create policy memo_staff_update on sales_orders for update to authenticated using (true) with check (true);set role authenticated;");
+ assert.equal((await memoSave('relationship untouched','authorized staff memo',memoId(12))).saved,true);
+ await db.exec('reset role;');
+ console.log('PASS memo command obeys row visibility and UPDATE policy for authenticated staff');
  console.log('PASS anonymous and nonstaff access blocked');
  await db.close();console.log('ALL_ORDER_SAVE_SCENARIOS_PASSED');
 })().catch(e=>{console.error(e.message,e.where||'');process.exit(1)});
