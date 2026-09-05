@@ -18,6 +18,14 @@ This increment does not migrate every legacy outbox into IndexedDB, replace ever
 
 Validation includes unit tests with an IndexedDB implementation, storage-quota failures, separate connections, stale completion races, owner switching, and a native browser harness at `scripts/browser/draft-journal-check.html`. Serve the repo locally, open that harness, run checks, then reload. The harness uses synthetic data and sends no ERP requests.
 
+## Follow-up: preserve the attempted edit through retry
+
+Review found three competing automatic retry paths plus a manual path. They reconstructed requests from React arrays; two cleanup paths treated an absent loaded row as deletion and removed its outbox. The warning bar's Clear action also removed recovery entries while claiming it did not delete data.
+
+The branch now has one backoff scheduler and one shared retry coordinator for foreground/manual/background triggers. It snapshots the attempted payload and original revision in this tab, rechecks session/owner before each send, skips in-flight saves, and rotates bounded batches so later records are not starved. Boot-restored outbox content enters the same registry. Retry never substitutes a freshly loaded screen row. Missing snapshots remain flagged for review; absence from loaded state never erases the outbox. The blanket Clear action is removed, and the banner no longer promises unconditionally that browser storage succeeded. Existing explicit conflict-review discard remains available.
+
+Verification: the full 320-suite / 4,888-test run passed, plus four additional integration tests through the actual persistence wrappers with no cloud connection. Production build passed. The native browser harness passed nine checks, followed by a real reload recovery check. These tests use synthetic documents, not live customer edits. This follow-up changes client retry orchestration; it does not make invoice or inventory writes transactional or provide edit-time capture. Memo-only writes remain the next separate increment.
+
 ## Prioritized next increments
 
 | Priority | Work | Evidence / reason | Acceptance criterion |

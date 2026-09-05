@@ -14,7 +14,8 @@
 // bottom are new. Behavior contracts are pinned by
 // src/__tests__/dbEngine.characterization.test.js.
 // ═══════════════════════════════════════════════════════════════════════
-import { protectDocumentDraft } from './draftJournal';
+import { protectDocumentDraft, currentDraftOwner } from './draftJournal';
+import { createSaveRetryCoordinator } from './saveRetryCoordinator';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './requestBreaker';
 import { _sbAuthLock } from './supabase';
@@ -3670,24 +3671,43 @@ const _emitOutboxConflict=(table,entity)=>{try{
   const en=_outboxRead()[table+':'+entity.id];
   if(en&&_onOutboxConflict)_onOutboxConflict(en);
 }catch(e){console.error('[Outbox] conflict emit failed:',e)}};
-// Failure/success hook wrapping the exported save entry points. Keys off _dbSaveFailedIds so it
-// inherits the interior failure sites' judgment exactly — a false return that deliberately did NOT
-// flag the ID (e.g. a permanently-skipped duplicate SKU, or a version-conflict precheck that wants
-// a refetch, not a retry) is not outboxed. 'stale' (estimate superseded server-side) clears the
-// entry: existing semantics treat that edit as superseded, and the server-side version guard would
-// reject a re-apply anyway.
+// Retry snapshots are tab-local and immutable. A missing record in loaded state
+// cannot prove deletion and must never delete a recovery copy.
+const _saveRetryCoordinator=createSaveRetryCoordinator();
+const _rememberSaveRetry=(table,payload)=>{
+  const receipt=_saveRetryCoordinator.begin(currentDraftOwner(),table,payload);
+  _saveRetryCoordinator.finish(receipt,false);
+};
+const _retryFailedSaves=({manual=false}={})=>{
+ const owner=currentDraftOwner();
+ return _saveRetryCoordinator.retry({
+  ids:[..._dbSaveFailedIds].filter(id=>manual||(!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000)&&!_permDenialParked(id))),
+  owner,
+  canRetry:id=>currentDraftOwner()===owner&&!_isSessionDead()&&_dbSaveFailedIds.has(id)&&!_dbSavePendingIds.has(id),
+  save:(table,payload)=>{
+    const writers={estimates:_dbSaveEstimate,sales_orders:_dbSaveSO,invoices:_dbSaveInvoice,customers:_dbSaveCustomer,products:_dbSaveProduct,messages:_dbSaveMessage};
+    if(!writers[table])throw new Error('This record needs manual save review');
+    return writers[table](payload);
+  },
+  onMissing:id=>{if(!_dbSaveFailedErrors.has(id))_recordSaveError(id,'No retry snapshot in this tab. Review the recovery copy or open the record and save your intended edit.');},
+  onError:(id,error)=>_recordSaveError(id,error.message||String(error)),
+ });
+};
 const _outboxWrap=(table,entity,resultPromise,addOnly)=>{
   // Capture-on-attempt: persist a full-save draft synchronously at wrapper entry, before any
   // completion handler can run. Document saves supply a thunk so staging precedes dispatch.
   // Legacy non-document wrappers still supply an already-created promise.
   // Add-only art saves deliberately keep their old behavior: their success must never replace or
   // clear a failed full-entity payload. A dead session is the one existing add-only capture case.
+  let retryReceipt;
+  try{if(!addOnly&&entity?.id)retryReceipt=_saveRetryCoordinator.begin(currentDraftOwner(),table,entity);}catch(error){console.error('[Retry snapshot]',error);}
   const _outboxId=entity&&entity.id;
   const _outboxRevision=(!addOnly||_sessionDead)&&_outboxId?_newOutboxRevision():null;
   if(_outboxRevision)_registerOutboxAttempt(entity,_outboxRevision,_outboxId);
   try{if(_outboxRevision)_outboxAdd(table,entity,_outboxRevision)}catch{}
   let operation;try{operation=typeof resultPromise==='function'?resultPromise():resultPromise}catch(error){operation=Promise.reject(error)}
   return Promise.resolve(operation).then(r=>{
+    _saveRetryCoordinator.finish(retryReceipt,r);
     try{
       const _conflictCaptured=_consumeOutboxConflict(entity,_outboxRevision);
       _finishOutboxAttempt(entity,_outboxRevision);
@@ -3706,7 +3726,7 @@ const _outboxWrap=(table,entity,resultPromise,addOnly)=>{
       else if(r===true&&!addOnly&&!_conflictCaptured){if(_outboxId&&_outboxAck(table,_outboxId,_outboxRevision)){try{delete entity._obBaseVersion}catch{}}}
     }catch(e){console.error('[Outbox] hook failed:',e)}
     return r;
-  },err=>{try{
+  },err=>{_saveRetryCoordinator.finish(retryReceipt,false);try{
     const _conflictCaptured=_consumeOutboxConflict(entity,_outboxRevision);
     _finishOutboxAttempt(entity,_outboxRevision);
     if(!_conflictCaptured){
@@ -3913,6 +3933,8 @@ export {
   _saveDocument,
   _hasActiveDocumentSave,
   _outboxWrap,
+  _retryFailedSaves,
+  _rememberSaveRetry,
   _outboxGate,
   _outboxMatchesRow,
   _emitOutboxConflict,

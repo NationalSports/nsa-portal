@@ -4,6 +4,7 @@
 <button id="run">Run browser checks</button><button id="reload">Reload and verify recovery</button><pre id="result">Ready</pre>
 <script type="module">
 import {createDraftJournal} from '../../src/lib/draftJournal.js';
+import {createSaveRetryCoordinator} from '../../src/lib/saveRetryCoordinator.js';
 const output=document.querySelector('#result');
 const name=sessionStorage.getItem('draft-check-db')||'draft-check-'+Date.now();sessionStorage.setItem('draft-check-db',name);
 const a=createDraftJournal({name,session:'browser-a'}),b=createDraftJournal({name,session:'browser-b'});
@@ -22,6 +23,21 @@ document.querySelector('#run').onclick=async()=>{
  await a.acknowledge(latest);
  assert((await b.list('test-owner'))[0].revision===other.revision,'acknowledgement clears only its own revision');
  assert((await b.list('different-owner')).length===0,'recovery list is scoped to its owner');
+ const retries=createSaveRetryCoordinator();
+ const edit={id:'SO-RETRY-SYNTHETIC',memo:'intended edit',items:[{sizes:{M:2}}],_version:3};
+ const receipt=retries.begin('test-owner','sales_orders',edit);retries.finish(receipt,false);
+ edit.memo='refreshed screen';edit.items=[];
+ let release,calls=0;
+ const response=new Promise(resolve=>{release=resolve;});
+ const args={owner:'test-owner',ids:[edit.id],canRetry:()=>true,save:async(table,payload)=>{
+   calls++;assert(payload.memo==='intended edit'&&payload.items[0].sizes.M===2&&payload._version===3,'retry preserves attempted content and revision');
+   await response;return false;
+ }};
+ const first=retries.retry(args),second=retries.retry(args);
+ assert(first===second&&calls===1,'overlapping retry triggers send once');
+ release();await first;
+ const wrongOwner=await retries.retry({...args,owner:'different-owner'});
+ assert(wrongOwner.skipped===1&&calls===1,'retry cannot borrow another staff member’s draft');
  sessionStorage.setItem('draft-check-revision',other.revision);
  output.textContent+='\nReady for reload verification';
  }catch(error){output.textContent+='\nFAIL '+error.message;}

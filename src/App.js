@@ -551,7 +551,8 @@ import {
   _logClientEvent,
   _outboxAdd,
   _outboxRemove,
-  _outboxRemoveById,
+  _retryFailedSaves,
+  _rememberSaveRetry,
   _outboxList,
   _outboxGate,
   _setOnOutboxConflict,
@@ -2774,16 +2775,8 @@ export default function App(){
             const _obEntries=_outboxList();
             if(_obEntries.length){
               const _obTables={estimates:d.estimates,sales_orders:d.sales_orders,invoices:d.invoices,customers:d.customers,products:d.products,messages:d.messages};
-              // Tables whose load this boot is untrustworthy (parent query timed out empty; products:
-              // the essential tier-1 load SKIPS the catalog, so d.products=[] is normal, not a delete).
-              // Gating an outbox entry against such a table reads the missing row as "deleted on
-              // server" (_outboxGate → 'conflict') and raises a phantom conflict card that can discard
-              // a real unsaved edit. Instead, restore those entries via the same splice as an 'apply'
-              // verdict — the payload MUST re-enter state, because both orphan-cleanup sites (the
-              // startup sweep below and doRetry) treat a failed ID absent from state as "deleted by
-              // user" and purge its outbox entry. A genuinely-stale payload is still safe: the save
-              // paths re-check _version server-side, so a bad replay is rejected and stays failed.
-              // The entry gates normally on the next boot whose table actually loads.
+              // An incomplete load is not proof that an outboxed record was
+              // deleted. Keep the snapshot; its writer still checks cloud revisions.
               const _obNoGate={sales_orders:_soTimedOutBlank,estimates:_estTimedOutBlank,invoices:_invTimedOutBlank,customers:_custTimedOutBlank,messages:_msgTimedOutBlank,products:!d.products.length};
               const _obConflicts=[];
               _obEntries.forEach(en=>{
@@ -2792,6 +2785,7 @@ export default function App(){
                 if(_obNoGate[en.table]&&!arr.find(r=>r.id===en.id)){
                   arr.push(en.payload);
                   _obApplied[en.id]=en.payload;
+                  _rememberSaveRetry(en.table,en.payload);
                   _dbSaveFailedIds.add(en.id);
                   console.warn('[Outbox] restored unsaved edit for',en.id,'without gating — its table didn’t load this boot');
                   return;
@@ -2803,6 +2797,7 @@ export default function App(){
                   const idx=arr.findIndex(r=>r.id===en.id);
                   if(idx>=0)arr[idx]=en.payload;else arr.push(en.payload);
                   _obApplied[en.id]=en.payload;
+                  _rememberSaveRetry(en.table,en.payload);
                   _dbSaveFailedIds.add(en.id);
                   console.log('[Outbox] restored unsaved edit for',en.id,'(base v'+(en.baseVersion??'—')+')');
                   return;
@@ -2996,10 +2991,7 @@ export default function App(){
       finally{if(!cancelled){_dbReady.current=true;setDbLoading(false);
         // Mark initial load done after a tick so auto-save effects don't fire from the setState calls above
         setTimeout(()=>{_initialLoadDone.current=true;
-          // Clean up failed IDs for entities that were deleted — prevents permanent error banner
-          if(_dbSaveFailedIds.size){const d2=_visFlushRefs.current;const allIds2=new Set([...d2.ests,...d2.sos,...d2.invs,...d2.cust,...d2.prod,...d2.msgs].map(e=>e.id));
-          const orphaned2=[..._dbSaveFailedIds].filter(id=>!allIds2.has(id));
-          if(orphaned2.length){orphaned2.forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id);_outboxRemoveById(id);console.log('[DB] Startup cleanup — cleared orphaned failed ID:',id)});_persistFailedIds()}}
+          // Absence from a loaded page is not proof of deletion. Preserve failed drafts.
         },100);
       }}
     })();
@@ -3661,36 +3653,6 @@ export default function App(){
       }catch(e){console.error('[DB] omg products save:',e.message||e)}})()}
     }
   }});_dbSnap.current.omg=omgStores}},[omgStores]);
-
-  // ─── Automatic retry for failed saves (every 60s, sequential to avoid overwhelming Supabase) ───
-  // The interval is created ONCE (deps []) so its 60s timer isn't torn down every time
-  // these arrays change — during active editing they change far more than once a minute,
-  // which kept resetting the timer so the retry almost never fired. The save fns and
-  // _dbSaveFailedIds are module-level (stable); only the data arrays need a latest-value ref.
-  const _retryDataRef=useRef({ests,sos,invs,msgs,cust,prod});
-  _retryDataRef.current={ests,sos,invs,msgs,cust,prod};
-  React.useEffect(()=>{
-    const retryInterval=setInterval(async()=>{
-      // A latched-dead session can't save anything — every retry would go out as anon and be
-      // RLS-rejected (log spam, no progress). Hold the queue; sign-in un-latches and retries resume.
-      if(_isSessionDead()||_dbSaveFailedIds.size===0||!_initialLoadDone.current||!_dbLoadSuccess.current)return;
-      const {ests,sos,invs,msgs,cust,prod}=_retryDataRef.current;
-      console.log('[DB] Retrying failed saves:',[ ..._dbSaveFailedIds]);
-      const ids=[..._dbSaveFailedIds];
-      for(const id of ids){
-        const sid=String(id);
-        if(sid.startsWith('EST-')){const item=ests.find(e=>e.id===id);if(item)await _dbSaveEstimate(item)}
-        else if(sid.startsWith('SO-')){const item=sos.find(s=>s.id===id);if(item)await _dbSaveSO(item)}
-        else if(sid.startsWith('INV-')){const item=invs.find(i=>i.id===id);if(item)await _dbSaveInvoice(item)}
-        else if(sid.startsWith('MSG-')){const item=msgs.find(m=>m.id===id);if(item)await _dbSaveMessage(item)}
-        else{
-          const c=cust.find(x=>x.id===id);if(c){await _dbSaveCustomer(c);continue}
-          const p=prod.find(x=>x.id===id);if(p)await _dbSaveProduct(p)
-        }
-      }
-    },60000);
-    return()=>clearInterval(retryInterval);
-  },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Warn user before leaving if there are unsaved changes in flight ───
   React.useEffect(()=>{
@@ -4626,64 +4588,30 @@ export default function App(){
         // Tab returning — immediately retry failed saves instead of waiting for backoff timer
         // Reset backoff since user is actively using the tab
         _retryBackoff.current=60000;
-        const shouldRetry=id=>_dbSaveFailedIds.has(id)&&!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000)&&!_permDenialParked(id);
-        const retryIds=[..._dbSaveFailedIds].filter(shouldRetry).slice(0,10);
-        if(retryIds.length){
-          console.log('[DB] Tab visible — retrying',retryIds.length,'failed saves');
-          const retrySet=new Set(retryIds);
-          const snapMap={ests:[_dbSnap.current.ests,setEsts],sos:[_dbSnap.current.sos,setSOs],invs:[_dbSnap.current.invs,setInvs],cust:[_dbSnap.current.cust,setCust],prod:[_dbSnap.current.prod,setProd],msgs:[_dbSnap.current.msgs,setMsgs]};
-          Object.entries(snapMap).forEach(([key,[snap,setter]])=>{
-            if(!snap)return;
-            const hasFailedItem=snap.some(s=>retrySet.has(s.id));
-            if(!hasFailedItem)return;
-            _dbSnap.current[key]=snap.map(s=>retrySet.has(s.id)?{...s,_retry:Date.now()}:s);
-            setter(prev=>[...prev]);
-          });
-        }
+        await _retryFailedSaves();
       }
     };
     document.addEventListener('visibilitychange',onVis);
     return()=>document.removeEventListener('visibilitychange',onVis);
   },[]);
-  // Background retry — re-trigger saves for entities with failed IDs
-  // Uses exponential backoff: 60s → 120s → 240s (max 4min) to avoid hammering a down server
-  // Only re-renders state arrays that actually contain failed IDs (not all 6 every time)
+  // One retry scheduler; visibility and manual retry share its in-flight batch.
   const _retryBackoff=useRef(60000);
   React.useEffect(()=>{
     if(!supabase)return;
-    let retryTimer=null;
-    const scheduleRetry=()=>{retryTimer=setTimeout(doRetry,_retryBackoff.current)};
-    const doRetry=()=>{
-      if(!_dbSaveFailedIds.size||!_initialLoadDone.current||!_dbLoadSuccess.current){_retryBackoff.current=60000;scheduleRetry();return}
-      // A null/empty id can never save (products.id is NOT NULL) and would loop forever — purge it.
-      [..._dbSaveFailedIds].filter(id=>id==null||id==='').forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id)});
-      if(!_dbSaveFailedIds.size){_persistFailedIds();_retryBackoff.current=60000;scheduleRetry();return}
-      // Clean up failed IDs for entities that no longer exist in state (deleted by user)
-      const d=_visFlushRefs.current;const allIds=new Set([...d.ests,...d.sos,...d.invs,...d.cust,...d.prod,...d.msgs].map(e=>e.id));
-      const orphaned=[..._dbSaveFailedIds].filter(id=>!allIds.has(id));
-      if(orphaned.length){orphaned.forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id);_outboxRemoveById(id);console.log('[DB] Cleared orphaned failed ID:',id)});_persistFailedIds();if(!_dbSaveFailedIds.size){_retryBackoff.current=60000;scheduleRetry();return}}
-      // Skip IDs that were recently saved (prevents rapid re-conflict loops)
-      const retryIds=[..._dbSaveFailedIds].filter(id=>!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000)&&!_permDenialParked(id));
-      if(!retryIds.length){scheduleRetry();return}
-      // Cap retries at 10 IDs per cycle to avoid spiking CPU/network
-      const batch=retryIds.slice(0,10);
-      console.log('[DB] Retry: attempting re-save for',batch.length,'of',retryIds.length,'failed IDs (backoff:',Math.round(_retryBackoff.current/1000)+'s)');
-      const retrySet=new Set(batch);
-      // Only update snapshots + trigger re-render for arrays that actually contain failed IDs
-      const snapMap={ests:[_dbSnap.current.ests,setEsts],sos:[_dbSnap.current.sos,setSOs],invs:[_dbSnap.current.invs,setInvs],cust:[_dbSnap.current.cust,setCust],prod:[_dbSnap.current.prod,setProd],msgs:[_dbSnap.current.msgs,setMsgs]};
-      Object.entries(snapMap).forEach(([key,[snap,setter]])=>{
-        if(!snap)return;
-        const hasFailedItem=snap.some(s=>retrySet.has(s.id));
-        if(!hasFailedItem)return;// skip arrays with no failed items — no re-render needed
-        _dbSnap.current[key]=snap.map(s=>retrySet.has(s.id)?{...s,_retry:Date.now()}:s);
-        setter(prev=>[...prev]);
-      });
-      // Increase backoff for next cycle (max 4 minutes)
-      _retryBackoff.current=Math.min(_retryBackoff.current*2,240000);
-      scheduleRetry();
+    let retryTimer=null,cancelled=false;
+    const scheduleRetry=()=>{if(!cancelled)retryTimer=setTimeout(doRetry,_retryBackoff.current)};
+    const doRetry=async()=>{
+      try{
+        if(!_dbSaveFailedIds.size||!_initialLoadDone.current||!_dbLoadSuccess.current||_isSessionDead())_retryBackoff.current=60000;
+        else{
+          await _retryFailedSaves();
+          _retryBackoff.current=_dbSaveFailedIds.size?Math.min(_retryBackoff.current*2,240000):60000;
+        }
+      }catch(error){console.error('[DB] Retry batch failed:',error);}
+      finally{scheduleRetry();}
     };
     scheduleRetry();
-    return()=>{if(retryTimer)clearTimeout(retryTimer)};
+    return()=>{cancelled=true;if(retryTimer)clearTimeout(retryTimer)};
   },[]);
   // Handle QB OAuth callback redirect
   React.useEffect(()=>{
@@ -37802,29 +37730,14 @@ export default function App(){
       {failedSaveCount>0&&<div style={{background:'#fefce8',border:'1px solid #fde68a',color:'#92400e',fontSize:12,fontWeight:600}}>
         <div style={{padding:'8px 16px',display:'flex',alignItems:'center',gap:8}}>
           <span style={{fontSize:14}}>&#9888;</span>
-          <span style={{flex:1}}>{failedSaveCount} item{failedSaveCount>1?'s':''} failed to save to cloud. Auto-retrying in the background. Your data is safe locally.</span>
+          <span style={{flex:1}}>{failedSaveCount} record{failedSaveCount>1?'s still need':' still needs'} cloud-save confirmation. Keep unsaved work open; review Details if retry does not resolve it.</span>
           <button disabled={failedSaveBusy} onClick={async()=>{
             setFailedSaveBusy(true);
-            const ids=[..._dbSaveFailedIds];let ok=0,fail=0;
-            for(const id of ids){
-              const sid=String(id);let r=null;
-              try{
-                if(sid.startsWith('EST-')){const it=ests.find(e=>e.id===id);if(it)r=await _dbSaveEstimate(it)}
-                else if(sid.startsWith('SO-')){const it=sos.find(s=>s.id===id);if(it)r=await _dbSaveSO(it)}
-                else if(sid.startsWith('INV-')){const it=invs.find(i=>i.id===id);if(it)r=await _dbSaveInvoice(it)}
-                else if(sid.startsWith('MSG-')){const it=msgs.find(m=>m.id===id);if(it)r=await _dbSaveMessage(it)}
-                else{const c=cust.find(x=>x.id===id);if(c){r=await _dbSaveCustomer(c)}else{const p=prod.find(x=>x.id===id);if(p)r=await _dbSaveProduct(p)}}
-              }catch(e){console.error('[Retry] error for',id,e);r=false}
-              if(r===false||r==null)fail++;else ok++;
-            }
-            setFailedSaveBusy(false);
-            nf((ok?ok+' saved':'')+(ok&&fail?' · ':'')+(fail?fail+' still failing':'')||'Nothing to retry',fail?'error':'success');
+            try{
+              const {saved,failed,skipped}=await _retryFailedSaves({manual:true});
+              nf([saved?saved+' saved':'',failed?failed+' still failing':'',skipped?skipped+' need review or are already saving':''].filter(Boolean).join(' · ')||'Nothing to retry',failed||skipped?'error':'success');
+            }finally{setFailedSaveBusy(false);}
           }} style={{background:'#92400e',border:'none',color:'#fff',cursor:failedSaveBusy?'wait':'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap',opacity:failedSaveBusy?0.6:1}}>{failedSaveBusy?'Retrying…':'Retry now'}</button>
-          <button onClick={()=>{
-            if(!window.confirm('Clear '+_dbSaveFailedIds.size+' failed-save flag(s)?\n\nUse this if the data is actually fine in the cloud (verified by reloading the page) but the flag is stuck. This does not delete any data.'))return;
-            const ids=[..._dbSaveFailedIds];ids.forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id);_outboxRemoveById(id)});_persistFailedIds();
-            nf('Cleared '+ids.length+' failed-save flag(s)','success');
-          }} style={{background:'none',border:'1px solid #92400e',color:'#92400e',cursor:'pointer',fontWeight:600,fontSize:11,padding:'2px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Clear</button>
           <button onClick={()=>setFailedSaveOpen(o=>!o)} style={{background:'none',border:'none',color:'#92400e',cursor:'pointer',fontWeight:700,fontSize:11,padding:'2px 4px'}}>{failedSaveOpen?'Hide details ▲':'Details ▼'}</button>
         </div>
         {failedSaveOpen&&<div style={{padding:'8px 16px 10px',borderTop:'1px solid #fde68a',background:'#fffbeb',maxHeight:240,overflowY:'auto',fontWeight:400}}>
