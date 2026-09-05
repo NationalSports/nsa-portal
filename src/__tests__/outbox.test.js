@@ -9,12 +9,19 @@
 import {
   _outboxGate, _outboxMatchesRow,
   _outboxAdd, _outboxRemove, _outboxRemoveById, _outboxList,
+  _outboxWrap, _dbSaveFailedIds,
   _emitOutboxConflict, _setOnOutboxConflict,
   _dbOwnVersions, _rebaseOntoOwnWrite,
   _custDiffCmp,
 } from '../lib/dbEngine';
 
 const clearBox = () => localStorage.removeItem('nsa_outbox');
+const deferred = () => {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+};
 
 describe('_outboxMatchesRow (committed-but-response-lost detection)', () => {
   test('matches when every persisted payload field is reflected in the row', () => {
@@ -177,6 +184,139 @@ describe('outbox store (localStorage round-trip)', () => {
   });
 });
 
+describe('_outboxWrap (revision-aware completion acknowledgement)', () => {
+  beforeEach(() => { clearBox(); _dbSaveFailedIds.delete('C-1'); });
+  afterEach(() => { clearBox(); _dbSaveFailedIds.delete('C-1'); });
+
+  test('an older success does not remove a newer draft that later fails', async () => {
+    const oldResult = deferred();
+    const newResult = deferred();
+    const oldSave = _outboxWrap('customers', { id: 'C-1', name: 'old' }, oldResult.promise);
+    const oldRevision = _outboxList()[0].revision;
+    const newSave = _outboxWrap('customers', { id: 'C-1', name: 'new' }, newResult.promise);
+    const newRevision = _outboxList()[0].revision;
+
+    oldResult.resolve(true);
+    await oldSave;
+    expect(_outboxList()[0]).toMatchObject({ id: 'C-1', revision: newRevision, payload: { name: 'new' } });
+
+    _dbSaveFailedIds.add('C-1');
+    newResult.resolve(false);
+    await newSave;
+    expect(_outboxList()[0]).toMatchObject({ id: 'C-1', revision: expect.any(String), payload: { name: 'new' } });
+    expect(_outboxList()[0].revision).toBe(newRevision);
+    expect(newRevision).not.toBe(oldRevision);
+  });
+
+  test('a newer failure remains durable even when it completes before the older success', async () => {
+    const oldResult = deferred();
+    const newResult = deferred();
+    const oldSave = _outboxWrap('customers', { id: 'C-1', name: 'old' }, oldResult.promise);
+    const oldRevision = _outboxList()[0].revision;
+    const newSave = _outboxWrap('customers', { id: 'C-1', name: 'new' }, newResult.promise);
+    const newRevision = _outboxList()[0].revision;
+
+    _dbSaveFailedIds.add('C-1');
+    newResult.resolve(false);
+    await newSave;
+    oldResult.resolve(true);
+    await oldSave;
+
+    const [remaining] = _outboxList();
+    expect(remaining).toMatchObject({ id: 'C-1', payload: { name: 'new' } });
+    expect(remaining.revision).toBe(newRevision);
+    expect(newRevision).not.toBe(oldRevision);
+  });
+
+  test('an older save conflict cannot replace a newer staged draft', () => {
+    const old = { id: 'C-1', name: 'old' };
+    const oldResult = deferred();
+    _outboxWrap('customers', old, oldResult.promise);
+    _outboxWrap('customers', { id: 'C-1', name: 'new' }, deferred().promise);
+
+    _emitOutboxConflict('customers', old);
+
+    expect(_outboxList()[0].payload.name).toBe('new');
+  });
+
+  test('art-only success does not clear a failed full-entity payload', async () => {
+    _outboxAdd('sales_orders', { id: 'C-1', name: 'full draft' });
+    const artResult = deferred();
+    const artSave = _outboxWrap('sales_orders', { id: 'C-1', name: 'art snapshot' }, artResult.promise, true);
+    artResult.resolve(true);
+    await artSave;
+    expect(_outboxList()[0].payload.name).toBe('full draft');
+  });
+
+  test('art-only failure captures when empty and preserves an existing full draft', async () => {
+    _dbSaveFailedIds.add('C-1');
+    const firstResult = deferred();
+    const firstSave = _outboxWrap('sales_orders', { id: 'C-1', name: 'art failure' }, firstResult.promise, true);
+    firstResult.resolve(false);
+    await firstSave;
+    expect(_outboxList()[0].payload.name).toBe('art failure');
+
+    _outboxAdd('sales_orders', { id: 'C-1', name: 'newer full draft' });
+    const secondResult = deferred();
+    const secondSave = _outboxWrap('sales_orders', { id: 'C-1', name: 'old art failure' }, secondResult.promise, true);
+    secondResult.resolve(false);
+    await secondSave;
+    expect(_outboxList()[0].payload.name).toBe('newer full draft');
+  });
+
+  test('coalesced waiters sharing one mutable object each consume only their own conflict marker', async () => {
+    const shared = { id: 'C-1', name: 'draft' };
+    const secondResult = deferred();
+    const thirdResult = deferred();
+    const secondSave = _outboxWrap('customers', shared, secondResult.promise);
+    const thirdSave = _outboxWrap('customers', shared, thirdResult.promise);
+
+    _emitOutboxConflict('customers', shared);
+    secondResult.resolve(false);
+    await secondSave;
+    expect(_outboxList()).toHaveLength(1);
+    thirdResult.resolve(false);
+    await thirdSave;
+    expect(_outboxList()).toHaveLength(1);
+    expect(_outboxList()[0].payload.name).toBe('draft');
+  });
+
+  test('successful ID remint acknowledges the immutable staged key', async () => {
+    const entity = { id: 'SO-OLD', memo: 'saved after remint' };
+    const result = deferred();
+    const save = _outboxWrap('sales_orders', entity, result.promise);
+    entity.id = 'SO-NEW';
+    result.resolve(true);
+    await save;
+    expect(_outboxList()).toHaveLength(0);
+  });
+
+  test('failed ID remint rekeys its own retained draft without replacing a newer destination draft', async () => {
+    const entity = { id: 'SO-OLD', memo: 'reminted draft' };
+    const result = deferred();
+    const save = _outboxWrap('sales_orders', entity, result.promise);
+    entity.id = 'SO-NEW';
+    _dbSaveFailedIds.add('SO-NEW');
+    result.resolve(false);
+    await save;
+    expect(_outboxList()).toMatchObject([{ id: 'SO-NEW', payload: { memo: 'reminted draft' } }]);
+    _dbSaveFailedIds.delete('SO-NEW');
+  });
+
+  test('failed ID remint drops its old key when the final ID already has a newer draft', async () => {
+    const entity = { id: 'SO-OLD', memo: 'old attempt' };
+    const result = deferred();
+    const save = _outboxWrap('sales_orders', entity, result.promise);
+    _outboxAdd('sales_orders', { id: 'SO-NEW', memo: 'newer destination' });
+    entity.id = 'SO-NEW';
+    _dbSaveFailedIds.add('SO-NEW');
+    result.resolve(false);
+    await save;
+    expect(_outboxList()).toMatchObject([{ id: 'SO-NEW', payload: { memo: 'newer destination' } }]);
+    _dbSaveFailedIds.delete('SO-NEW');
+  });
+});
+
 describe('_rebaseOntoOwnWrite (self-conflict prevention — the EST-1395 false conflict card)', () => {
   // Scenario from prod, 2026-07-08: save 1 (approval flush) wrote v8; convertSO's payload was a
   // clone taken at v7, and _checkVersion's own-echo skip meant nothing healed the base — so the
@@ -209,5 +349,39 @@ describe('_rebaseOntoOwnWrite (self-conflict prevention — the EST-1395 false c
     const fresh = { id: 'EST-3' };                // brand-new draft, no version yet
     _rebaseOntoOwnWrite(fresh);
     expect(fresh._version).toBeUndefined();
+  });
+});
+
+describe('immutable document save attempts',()=>{
+  beforeEach(clearBox);
+  test('backup exists before dispatch and later object mutations cannot change the submitted snapshot',async()=>{
+    const {_saveDocument}=require('../lib/dbEngine');
+    let release;const held=new Promise(r=>{release=r});
+    const source={id:'SO-IMMUTABLE',items:[{sku:'TEE',sizes:{M:2}}]};
+    let received;
+    const pending=_saveDocument('sales_orders',source,async snapshot=>{
+      received=snapshot;
+      expect(_outboxList().find(e=>e.id===source.id).payload.items[0].sizes.M).toBe(2);
+      await held;snapshot._version=2;return true;
+    });
+    source.items[0].sizes.M=7;
+    expect(received.items[0].sizes.M).toBe(2);
+    release();await pending;
+    expect(source.items[0].sizes.M).toBe(7);
+    expect(source._version).toBeUndefined(); // no promotion of unsaved content
+  });
+  test('old completion cannot clear the newer backup or pending-save protection',async()=>{
+    const {_saveDocument,_hasActiveDocumentSave,_dbSavePendingIds}=require('../lib/dbEngine');
+    let releaseOld,releaseNew;const first=new Promise(r=>{releaseOld=r});const second=new Promise(r=>{releaseNew=r});
+    const save=async draft=>{await(draft.memo==='old'?first:second);return true};
+    const old=_saveDocument('sales_orders',{id:'SO-REVISIONS',memo:'old'},save);
+    const next=_saveDocument('sales_orders',{id:'SO-REVISIONS',memo:'new'},save);
+    releaseOld();await old;
+    expect(_outboxList().find(e=>e.id==='SO-REVISIONS').payload.memo).toBe('new');
+    expect(_hasActiveDocumentSave('SO-REVISIONS')).toBe(true);
+    expect(_dbSavePendingIds.has('SO-REVISIONS')).toBe(true);
+    releaseNew();await next;
+    expect(_outboxList().find(e=>e.id==='SO-REVISIONS')).toBeUndefined();
+    expect(_dbSavePendingIds.has('SO-REVISIONS')).toBe(false);
   });
 });

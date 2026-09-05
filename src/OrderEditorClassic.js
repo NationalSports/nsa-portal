@@ -16,6 +16,8 @@
    Delete this file only when the toggle retires.
    ═══════════════════════════════════════════════════════════════ */
 /* eslint-disable */
+import { canAcknowledgeSave } from './lib/saveAcknowledgement';
+import { lineIntentKey, newOrderLineId } from './lib/orderLineIdentity';
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import * as XLSX from 'xlsx';
@@ -341,7 +343,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     </div>;
   };
   const isE=mode==='estimate';const isSO=mode==='so';
-  const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);const[multiAddOpen,setMultiAddOpen]=useState(false);const[multiAddQuery,setMultiAddQuery]=useState('');const[addItemMenuOpen,setAddItemMenuOpen]=useState(false);
+  const[o,_setO]=useState(order);const orderEditRevision=useRef(0);const editorSaveSeq=useRef(0);const setO=useCallback(next=>{orderEditRevision.current++;_setO(next)},[]);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);const[multiAddOpen,setMultiAddOpen]=useState(false);const[multiAddQuery,setMultiAddQuery]=useState('');const[addItemMenuOpen,setAddItemMenuOpen]=useState(false);
   // Promo dollars are owned by the parent account. Prefer that live record over
   // the child copy so a sub-account never applies a stale/empty local balance.
   const storedPromoCust=useMemo(()=>cust?.parent_id?(allCustomers||[]).find(c=>c.id===cust.parent_id)||cust:cust,[cust,allCustomers]);
@@ -1802,8 +1804,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Normal autosave goes through the result-checked DB entry point. Emergency unload / forced-auth
       // flush additionally stages the exact draft in the durable outbox synchronously before any unmount.
       const persist=emergency?(onEmergencySaveRef.current||onSaveNowRef.current||onSaveRef.current):(onSaveNowRef.current||onSaveRef.current);
+      const revision=orderEditRevision.current,attempt=++editorSaveSeq.current;
       const result=persist(cur);
-      Promise.resolve(result).then(ok=>{if(ok===false){dirtyRef2.current=true;setDirty(true);return}dirtyRef2.current=false;setDirty(false)},()=>{dirtyRef2.current=true;setDirty(true)});
+      Promise.resolve(result).then(ok=>{
+        if(canAcknowledgeSave(ok,revision,orderEditRevision.current,attempt,editorSaveSeq.current)){dirtyRef2.current=false;setDirty(false)}
+        else if(attempt===editorSaveSeq.current){dirtyRef2.current=true;setDirty(true)}
+      },()=>{if(attempt===editorSaveSeq.current){dirtyRef2.current=true;setDirty(true)}});
     };
     const iv=setInterval(doAutoSave,30000);
     const handleUnload=()=>doAutoSave(true);
@@ -2582,8 +2588,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const arts=linkSwappedGarmentMock(safeArr(e.art_files),src,moved.sku,moved.color);return{...e,items:nextItems,jobs:nextJobs,deco_pos:nextDeco,_deletedItemKeys:tombs,...(arts!==e.art_files?{art_files:arts}:{}),updated_at:new Date().toLocaleString()}});setDirty(true);
     return{merged,replaced};
   };
-  const copyI=(i,newSz,copyPrice)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];delete clone.invoice_line_keys;_applyCopySizes(clone,newSz);_applyCopyPrice(clone,it,copyPrice);const szStr=_copySzStr(newSz);sv('items',_insertCopiedItem(o.items,i,clone));nf('📋 Copied '+it.sku+(szStr?' — '+szStr:' with all sizes')+' & decorations')};
-  const copyIWithSku=(i,p,newSz,copyPrice,moveOpen=false,moveApproved=false)=>{const it=o.items[i];const movePreview=moveOpen?_moveUnfulfilledPreview(i,p.available_sizes,p.sku+(p.color?' — '+p.color:'')):null;if(moveOpen&&!movePreview)return;if(moveOpen&&!moveApproved){setCopySkuModal(m=>({...m,pendingMove:{kind:'catalog',product:p,preview:movePreview}}));return}const moveSz=movePreview?.open||null;const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];delete clone.invoice_line_keys;_restampMt(clone);const _clr=p.is_clearance&&p.clearance_cost!=null;clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;clone._is_clearance=p.is_clearance||false;
+  const copyI=(i,newSz,copyPrice)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.line_id=newOrderLineId();clone.pick_lines=[];clone.po_lines=[];delete clone.invoice_line_keys;_applyCopySizes(clone,newSz);_applyCopyPrice(clone,it,copyPrice);const szStr=_copySzStr(newSz);sv('items',_insertCopiedItem(o.items,i,clone));nf('📋 Copied '+it.sku+(szStr?' — '+szStr:' with all sizes')+' & decorations')};
+  const copyIWithSku=(i,p,newSz,copyPrice,moveOpen=false,moveApproved=false)=>{const it=o.items[i];const movePreview=moveOpen?_moveUnfulfilledPreview(i,p.available_sizes,p.sku+(p.color?' — '+p.color:'')):null;if(moveOpen&&!movePreview)return;if(moveOpen&&!moveApproved){setCopySkuModal(m=>({...m,pendingMove:{kind:'catalog',product:p,preview:movePreview}}));return}const moveSz=movePreview?.open||null;const clone=JSON.parse(JSON.stringify(it));clone.line_id=newOrderLineId();clone.pick_lines=[];clone.po_lines=[];delete clone.invoice_line_keys;_restampMt(clone);const _clr=p.is_clearance&&p.clearance_cost!=null;clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;clone._is_clearance=p.is_clearance||false;
     // Seed the new SKU's core run and keep every size the source line actually has a quantity in,
     // so filled sizes survive the swap without dragging over the catalog's full padded run.
     const srcSizes=Array.isArray(it.available_sizes)?it.available_sizes:[];
@@ -2641,7 +2647,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const liveFlag=isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
     const fallbackSizes=isRS?(availSizes.length?availSizes:['OSFA']):['S','M','L','XL','2XL'];
     // Clone source item to preserve decorations, then override SKU/product fields
-    const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];delete clone.invoice_line_keys;
+    const clone=JSON.parse(JSON.stringify(it));clone.line_id=newOrderLineId();clone.pick_lines=[];clone.po_lines=[];delete clone.invoice_line_keys;
     // Clear stale live-vendor flags from the source
     delete clone._ss_live;delete clone._sm_live;delete clone._mt_live;delete clone._rs_live;delete clone._mtId;delete clone._colors;
     _restampMt(clone,style,color,isMT);
@@ -3068,7 +3074,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const removeSzFromItem=(i,sz)=>{const it=o.items[i];const same=s=>it.is_footwear?normalizeFootwearSize(s)===normalizeFootwearSize(sz):s===sz;const qty=Object.entries(safeSizes(it)).filter(([s])=>same(s)).reduce((a,[,v])=>a+safeNum(v),0);if(qty>0){nf('Cannot remove '+sz+' — it has quantity. Set to 0 first.','error');return}const newSizes={...safeSizes(it)};Object.keys(newSizes).filter(same).forEach(s=>delete newSizes[s]);uI(i,'sizes',newSizes);uI(i,'available_sizes',(it.available_sizes||[]).filter(s=>!same(s)))};
   const NUM_SZ={heat_transfer:['1"','1.5"','2"','3"','4"','5"','6"','8"','10"'],embroidery:['0.5"','0.75"','1"','1.5"','2"','3"'],screen_print:['2"','4"','6"','8"','10"'],tackle_twill:TWN.map(r=>r.size)};
   const itemIsReversible=i=>{const it=o.items[i];return!!(it&&safeDecos(it).some(d=>d.reversible))};
-  const _withDecoDeleteIntent=(e,ii,nextCount)=>{const from=safeDecos(safeItems(e)[ii]).length;if(nextCount>=from)return{};const prior=e._decoDeleteIntents?.[ii];return{_decoDeleteIntents:{...(e._decoDeleteIntents||{}),[ii]:{from:Number.isFinite(prior?.from)?prior.from:from,to:nextCount}}}};
+  const _withDecoDeleteIntent=(e,ii,nextCount)=>{const from=safeDecos(safeItems(e)[ii]).length;if(nextCount>=from)return{};const key=lineIntentKey(safeItems(e)[ii],ii);const prior=e._decoDeleteIntents?.[key];return{_decoDeleteIntents:{...(e._decoDeleteIntents||{}),[key]:{from:Number.isFinite(prior?.from)?prior.from:from,to:nextCount}}}};
   const addArtDeco=i=>{const rev=itemIsReversible(i);sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'art',position:'Front Center',art_file_id:null,sell_override:null,...(rev?{reversible:true}:{})}]}:x))};
   const addNumDeco=i=>{const rev=itemIsReversible(i);sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'numbers',position:'Back',num_method:'screen_print',num_size:'6"',two_color:false,sell_override:null,custom_font_art_id:null,roster:{},...(rev?{reversible:true}:{})}]}:x))};
   const addNameDeco=i=>{const rev=itemIsReversible(i);sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'names',position:'Back Center',name_method:'heat_press',sell_override:null,sell_each:6,cost_each:3,names:{},...(rev?{reversible:true}:{})}]}:x))};
@@ -3335,9 +3341,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // saveArtFilesNow's failure contract: on a failed persist, keep the editor dirty and tell the user NOT
   // to reload. Uses onSaveNow (App savSONow) which returns true/false; falls back to fire-and-forget onSave.
   const saveSONow=async(updated,label,okMsg)=>{
-    setO(updated);
-    if(onSaveNow){const ok=await onSaveNow(updated);if(ok!==false){setSaved(true);setDirty(false);if(okMsg!==null)nf(okMsg||('✅ '+(label||'Changes')+' saved'))}else{setDirty(true);nf('⚠️ '+(label||'Change')+' applied but NOT saved to the portal — sign in again and click Save. Do NOT reload; your work is still here.','error')}return ok!==false}
-    onSave(updated);setSaved(true);setDirty(false);if(okMsg&&okMsg!==null)nf(okMsg);return true;
+    setO(updated);oRef.current=updated;dirtyRef2.current=true;setDirty(true);
+    const revision=orderEditRevision.current,attempt=++editorSaveSeq.current;
+    let ok=false;
+    try{if(onSaveNow)ok=await onSaveNow(updated);else onSave(updated)}catch(error){console.error('[Editor] save failed:',error)}
+    if(canAcknowledgeSave(ok,revision,orderEditRevision.current,attempt,editorSaveSeq.current)){
+      setSaved(true);dirtyRef2.current=false;setDirty(false);
+      if(okMsg!==null)nf(okMsg||('✅ '+(label||'Changes')+' saved'));
+    }else if(ok!==true&&attempt===editorSaveSeq.current){
+      nf('Changes are still unsaved. Your draft is preserved; review the save message and retry.','error');
+    }
+    return ok===true;
   };
   // When a DST is uploaded to an approved embroidery art file, mark the job art_complete automatically
   // so the rep doesn't have to manually click "Mark Art Complete" after uploading.
@@ -4566,7 +4580,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(validItems.length===0){nf('Add at least one item with quantities','error');return}
         if(_shipPrefRequired()){nf('Select how this order gets to the customer (Ship or Deliver) before saving','error');return}
         const synced=await reconcilePromoDraw(current,promoTotals?.promoAmount);if(!synced.ok)return;
-        setO(synced.order);onSave(synced.order);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}} style={{padding:'6px 20px',fontSize:13,fontWeight:700}}><Icon name="check" size={14}/> Save</button>
+        await saveSONow(synced.order,isE?'Estimate':'Sales order')}} style={{padding:'6px 20px',fontSize:13,fontWeight:700}}><Icon name="check" size={14}/> Save</button>
     </div>
     {/* COACH APPROVED BANNER */}
     {isE&&o.status==='approved'&&o.approved_by==='Coach'&&<div style={{margin:'8px 0',padding:'12px 16px',background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:10}}>
@@ -4762,7 +4776,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
           if(_shipPrefRequired()){nf('Select how this order gets to the customer (Ship or Deliver) before saving','error');return}
           const synced=await reconcilePromoDraw(saveO,promoTotals?.promoAmount);if(!synced.ok)return;
-          setO(synced.order);onSave(synced.order);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
+          await saveSONow(synced.order,isE?'Estimate':'Sales order')}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
         {isE&&saved&&(o.status==='sent'||o.status==='draft'||o.status==='open')&&<button className="btn btn-primary" style={{background:'#22c55e'}} onClick={()=>{sv('status','approved');onSave({...o,status:'approved'});nf('Estimate approved')}}><Icon name="check" size={14}/> Approve</button>}
         {isE&&o.status==='approved'&&!linkedSO&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>{
           if(!cust){nf('Select a customer first','error');return}

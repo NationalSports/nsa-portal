@@ -4,6 +4,8 @@
 // These functions mirror the logic in App.js for testing
 // ═══════════════════════════════════════════════
 
+const { matchingClientLine, lineIntentKey } = require('./lib/orderLineIdentity');
+
 // ── Safe Accessors ──
 const safe = (v, def) => v != null ? v : def;
 const safeArr = (v) => Array.isArray(v) ? v : [];
@@ -1493,11 +1495,13 @@ function decorationShrinkConflicts(clientItems, dbItems, dbDecoCounts, deleteInt
     : safeNum(safeObj(dbDecoCounts)[id]);
   return safeArr(dbItems).reduce((out, dbItem) => {
     const oldCount = countFor(dbItem.id);
-    const clientItem = clients[dbItem.item_index];
+    const clientItem = matchingClientLine(dbItem, clients);
     if (!clientItem || oldCount <= 0) return out; // removing the whole item is handled separately
     const newCount = safeDecos(clientItem).length;
     if (newCount >= oldCount) return out;
-    const intent = safeObj(intents[String(dbItem.item_index)]);
+    const currentIndex = clients.indexOf(clientItem);
+    const intent = safeObj(intents[lineIntentKey(clientItem, currentIndex)] ||
+      (currentIndex === dbItem.item_index ? intents[String(dbItem.item_index)] : null));
     if (safeNum(intent.from) === oldCount && safeNum(intent.to) === newCount) return out;
     out.push({
       item_index: dbItem.item_index,
