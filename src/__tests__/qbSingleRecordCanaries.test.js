@@ -1,4 +1,4 @@
-import { createQBSyncEngine } from '../qbSyncEngine';
+import { billReferencesPortalPO, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions } from '../qbSyncEngine';
 import { indexQBNonInventoryItems, QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_SPECS } from '../qbAccountMappings';
 
 const accountRows = Object.values(QB_ACCOUNT_SPECS).map((spec,index)=>({
@@ -17,12 +17,13 @@ const makeEngine = ({qbApi,cust=[],sos=[],invs=[],prod=[],vend=[]}) => {
     setQbSyncing:jest.fn(),setInvs:jest.fn(),setInvPOs:jest.fn(),setSOs:jest.fn(),
     setSubmittedBatches:jest.fn(),setVend:jest.fn(),
   };
+  const persistQbLink=jest.fn(async()=>({}));
   const engine=createQBSyncEngine({
-      persistQbLink:jest.fn(async()=>({})),
+      persistQbLink,
     cust,sos,invs,prod,vend,invPOs:[],submittedBatches:[],qbApi,qbConfig:config,nf:jest.fn(),
     dP:jest.fn(()=>({sell:0})),...setters,
   });
-  return{engine,setters,getConfig:()=>config};
+  return{engine,setters,persistQbLink,getConfig:()=>config};
 };
 
 const accountResponse = {QueryResponse:{Account:accountRows}};
@@ -253,4 +254,75 @@ describe('QuickBooks one-record canaries', () => {
     await expect(engine.syncPurchaseOrders({}, {canaryPOId:'PO-1'})).resolves.toEqual({status:'blocked',synced:0});
     expect(getConfig().syncLog[0].details).toContain('PO-1 — FAILED: Transaction date is prior to start date for inventory item');
   });
+
+  test('verifies reciprocal PO-to-existing-bill links and persists one durable receipt', async() => {
+    const po={Id:'PO-QB',DocNumber:'PO-1',VendorRef:{value:'V-QB'},TotalAmt:10,TxnDate:'2026-09-01',LinkedTxn:[{TxnId:'B-1',TxnType:'Bill'}]};
+    const bill={Id:'B-1',DocNumber:'BILL-1',VendorRef:{value:'V-QB'},TotalAmt:12,TxnDate:'2026-09-02',PrivateNote:'PO: PO-1 | Tracking: 123',Line:[{Id:'1',LinkedTxn:[{TxnId:'PO-QB',TxnType:'PurchaseOrder',TxnLineId:'1'}]}]};
+    const qbApi=jest.fn(async(action,{query}={})=>{
+      if(action==='query'&&query.includes('FROM Bill STARTPOSITION'))return{QueryResponse:{Bill:[bill]}};
+      if(action==='query'&&query.includes("FROM PurchaseOrder WHERE Id = 'PO-QB'"))return{QueryResponse:{PurchaseOrder:[po]}};
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const{engine,getConfig,persistQbLink}=makeEngine({qbApi});
+    getConfig().qbPOMap['PO-1']='PO-QB';
+    await expect(engine.verifyPurchaseOrderBillLinks({canaryPOId:'PO-1',expectedBillId:'B-1'})).resolves.toEqual({status:'success',verified:1});
+    expect(persistQbLink).toHaveBeenCalledWith(expect.objectContaining({mapKey:'qbPOBillMap',sourceIds:['PO-1'],qboId:'B-1',evidence:expect.objectContaining({api_readback:true,purchase_order_id:'PO-QB',reciprocal_link:true})}));
+    expect(getConfig().qbPOBillMap['PO-1']).toBe('B-1');
+  });
+
+  test.each([
+    ['wrong reviewed bill', (po,bill)=>{bill.Id='OTHER'}, 'reviewed existing bill ID'],
+    ['wrong PO number', (po)=>{po.DocNumber='PO-2'}, 'number differs'],
+    ['wrong memo', (po,bill)=>{bill.PrivateNote='PO: PO-OTHER'}, 'exact portal PO reference'],
+    ['another PO link', (po,bill)=>{bill.LinkedTxn.push({TxnId:'OTHER',TxnType:'PurchaseOrder'})}, 'different purchase order'],
+    ['another bill link', (po)=>{po.LinkedTxn.push({TxnId:'OTHER',TxnType:'Bill'})}, 'different bill'],
+    ['missing reciprocal link', (po)=>{po.LinkedTxn=[]}, 'does not contain the bill link'],
+    ['wrong vendor', (po,bill)=>{bill.VendorRef.value='OTHER'}, 'vendors differ'],
+    ['missing vendors', (po,bill)=>{delete po.VendorRef;delete bill.VendorRef}, 'vendors differ'],
+  ])('does not certify %s', async(label,mutate,error)=>{
+    const po={Id:'PO-QB',DocNumber:'PO-1',VendorRef:{value:'V-QB'},LinkedTxn:[{TxnId:'B-1',TxnType:'Bill'}]};
+    const bill={Id:'B-1',VendorRef:{value:'V-QB'},PrivateNote:'PO: PO-1',LinkedTxn:[{TxnId:'PO-QB',TxnType:'PurchaseOrder'}]};
+    mutate(po,bill);
+    const qbApi=jest.fn(async(action,{query}={})=>({QueryResponse:query.includes('FROM Bill ')?{Bill:[bill]}:{PurchaseOrder:[po]}}));
+    const {engine,getConfig,persistQbLink}=makeEngine({qbApi});getConfig().qbPOMap['PO-1']='PO-QB';
+    await expect(engine.verifyPurchaseOrderBillLinks({canaryPOId:'PO-1',expectedBillId:'B-1'})).resolves.toEqual({status:'blocked',verified:0});
+    expect(persistQbLink).not.toHaveBeenCalled();
+    expect(getConfig().syncLog[0].details.join(' ')).toContain(error);
+    expect(qbApi.mock.calls.every(([action])=>action==='query')).toBe(true);
+  });
+
+  test('does not certify an ambiguous match or a failed durable receipt', async()=>{
+    const po={Id:'PO-QB',DocNumber:'PO-1',VendorRef:{value:'V-QB'},LinkedTxn:[{TxnId:'B-1',TxnType:'Bill'}]};
+    const bill={Id:'B-1',VendorRef:{value:'V-QB'},PrivateNote:'PO: PO-1',LinkedTxn:[{TxnId:'PO-QB',TxnType:'PurchaseOrder'}]};
+    let bills=[bill,{...bill,Id:'B-2'}];
+    const qbApi=jest.fn(async(action,{query}={})=>({QueryResponse:query.includes('FROM Bill ')?{Bill:bills}:{PurchaseOrder:[po]}}));
+    const {engine,getConfig,persistQbLink}=makeEngine({qbApi});getConfig().qbPOMap['PO-1']='PO-QB';
+    await engine.verifyPurchaseOrderBillLinks({canaryPOId:'PO-1',expectedBillId:'B-1'});
+    expect(persistQbLink).not.toHaveBeenCalled();
+    bills=[bill];persistQbLink.mockRejectedValue(new Error('database read-back failed'));
+    await expect(engine.verifyPurchaseOrderBillLinks({canaryPOId:'PO-1',expectedBillId:'B-1'})).resolves.toEqual({status:'blocked',verified:0});
+    expect(getConfig().qbPOBillMap?.['PO-1']).toBeUndefined();
+    expect(getConfig().lastPOBillVerification).toBeUndefined();
+  });
+
+  test('blocks a PO-to-bill receipt when API read-back is not reciprocal', async() => {
+    const bill={Id:'B-1',VendorRef:{value:'V-QB'},PrivateNote:'PO: PO-1',Line:[]};
+    const qbApi=jest.fn(async(action,{query}={})=>{
+      if(query.includes('FROM Bill STARTPOSITION'))return{QueryResponse:{Bill:[bill]}};
+      if(query.includes('FROM PurchaseOrder WHERE'))return{QueryResponse:{PurchaseOrder:[{Id:'PO-QB',VendorRef:{value:'V-QB'},LinkedTxn:[]}]}};
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const{engine,getConfig,persistQbLink}=makeEngine({qbApi});
+    getConfig().qbPOMap['PO-1']='PO-QB';
+    await expect(engine.verifyPurchaseOrderBillLinks({canaryPOId:'PO-1',expectedBillId:'B-1'})).resolves.toEqual({status:'blocked',verified:0});
+    expect(persistQbLink).not.toHaveBeenCalled();
+  });
+});
+
+test('PO-to-bill matching uses exact memo references and line links',()=>{
+  const lineLinked={Id:'1',Line:[{LinkedTxn:[{TxnId:'418',TxnType:'PurchaseOrder'}]}]};
+  expect(qbLinkedTransactions(lineLinked)).toHaveLength(1);
+  expect(billReferencesPortalPO({PrivateNote:'PO: PO 58971 SHHGS | Tracking: 123'},'PO 58971 SHHGS')).toBe(true);
+  expect(billReferencesPortalPO({PrivateNote:'PO: PO 58971 SHHGS-OTHER'},'PO 58971 SHHGS')).toBe(false);
+  expect(findQbPOBillCandidates([lineLinked], 'different', '418')).toEqual([lineLinked]);
 });

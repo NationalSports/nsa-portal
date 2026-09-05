@@ -1,6 +1,6 @@
 // Verified links must outlive replacement of the shared qb_config blob.
 // One row per realm/map/source, with compare-and-set updates and tombstones.
-export const QB_LINK_MAPS = ['custQBMap', 'prodQBMap', 'qbSOMap', 'qbPOMap'];
+export const QB_LINK_MAPS = ['custQBMap', 'prodQBMap', 'qbSOMap', 'qbPOMap', 'qbPOBillMap'];
 const PREFIX = '_qb_link_v1_';
 const clean = value => String(value == null ? '' : value).trim();
 const parse = value => typeof value === 'string' ? JSON.parse(value) : value;

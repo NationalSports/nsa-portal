@@ -23,12 +23,12 @@ function database() {
 const record = (mapKey='custQBMap',extra={}) => ({realmId:'9341456492604246',mapKey,sourceIds:['source-1'],qboId:'2380',
   log:{ts:'2026-09-05T12:00:00Z',type:'canary',status:'success',details:['API read-back verified']},evidence:{api_readback:true},...extra});
 
-test('all four maps and their evidence survive replacement of qb_config and a fresh load',async()=>{
+test('all durable maps and their evidence survive replacement of qb_config and a fresh load',async()=>{
   const {client,rows}=database();
   for(const mapKey of QB_LINK_MAPS)await persistVerifiedQBLink(client,record(mapKey));
   const reloaded=mergeDurableQBLinks({realm_id:record().realmId,syncLog:[]},Object.fromEntries([...rows].map(([k,row])=>[k,row.value])));
   QB_LINK_MAPS.forEach(key=>expect(reloaded[key]).toEqual({'source-1':'2380'}));
-  expect(reloaded.syncLog).toHaveLength(4);
+  expect(reloaded.syncLog).toHaveLength(QB_LINK_MAPS.length);
   expect(reloaded.syncLog.every(log=>log.status==='success')).toBe(true);
   const otherRealm=mergeDurableQBLinks({realm_id:'other'},Object.fromEntries([...rows].map(([k,row])=>[k,row.value])));
   QB_LINK_MAPS.forEach(key=>expect(otherRealm[key]).toEqual({}));

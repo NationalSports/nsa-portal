@@ -78,6 +78,8 @@ export default function QBPage(){
   const [qbCanaryProductId,setQbCanaryProductId]=useState('');
   const [qbCanarySOId,setQbCanarySOId]=useState('');
   const [qbCanaryPOId,setQbCanaryPOId]=useState('');
+  const [qbReconcilePOId,setQbReconcilePOId]=useState('');
+  const [qbReconcileBillId,setQbReconcileBillId]=useState('');
   const [poCanaryReview,setPoCanaryReview]=useState(null);
   const [qbPreflighting,setQbPreflighting]=useState(false);
   const [stripePayouts,setStripePayouts]=useState([]);
@@ -179,7 +181,7 @@ export default function QBPage(){
 
     // Sync engine — one copy of the logic (see qbSyncEngine.js); the App-level
     // auto-sync builds the same engine from fresh state, no page visit required.
-    const {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,persistQbLink,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
+    const {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,persistQbLink,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
 
     // Read-only live-company inspection. This is the mandatory first step and
     // performs no QBO create/update calls.
@@ -707,6 +709,19 @@ export default function QBPage(){
                 <button className="btn btn-sm" style={{marginLeft:8}} disabled={qbSyncing} onClick={()=>{setPoCanaryReview(null);nf('Purchase-order canary cancelled — nothing was sent')}}>Cancel</button>
               </section>}
               {poCanaryBlock&&<div style={{fontSize:10,color:'#b91c1c',marginTop:6,fontWeight:600}}>{poCanaryBlock}</div>}
+              <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid #ddd6fe'}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#5b21b6'}}>Verify an existing native PO-to-bill link</div>
+                <select className="form-input" aria-label="Linked purchase order to verify" style={{marginTop:6}} disabled={qbSyncing} value={qbReconcilePOId} onChange={e=>setQbReconcilePOId(e.target.value)}>
+                  <option value="">Select a linked purchase order...</option>
+                  {Object.keys(qbConfig.qbPOMap||{}).map(id=><option key={id} value={id}>{id} — QBO #{qbConfig.qbPOMap[id]}{qbConfig.qbPOBillMap?.[id]?' — previously verified':''}</option>)}
+                </select>
+                <label style={{display:'block',fontSize:11,marginTop:8}}>Existing QBO bill ID reviewed in QuickBooks
+                  <input className="form-input" aria-label="Existing QBO bill ID" value={qbReconcileBillId} disabled={qbSyncing} onChange={e=>setQbReconcileBillId(e.target.value.trim())} inputMode="numeric" />
+                </label>
+                <button className="btn btn-primary btn-sm" style={{marginTop:8,background:'#5b21b6'}} disabled={qbSyncing||!livePreflightReady||!qbReconcilePOId||!/^\d+$/.test(qbReconcileBillId)} onClick={()=>verifyPurchaseOrderBillLinks({canaryPOId:qbReconcilePOId,expectedBillId:qbReconcileBillId})}>Verify link by API read-back</button>
+                <div style={{fontSize:10,color:'#64748b',marginTop:6}}>Reads both existing QBO records and saves a receipt only when the reviewed bill, vendor, PO number, memo reference and reciprocal links agree. This verifies an existing link; it does not create a link or unlock PO batches.</div>
+                {qbConfig.lastPOBillVerification&&<details style={{marginTop:8}}><summary>Latest saved PO-to-bill API evidence</summary><pre style={{whiteSpace:'pre-wrap',fontSize:11}}>{JSON.stringify(qbConfig.lastPOBillVerification,null,2)}</pre></details>}
+              </div>
             </div>
           </div>
           {!livePreflightReady&&<div style={{padding:'0 16px 12px',fontSize:11,color:'#92400e',fontWeight:600}}>Buttons disabled: run Read-Only Live Preflight first.</div>}
