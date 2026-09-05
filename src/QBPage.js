@@ -8,7 +8,7 @@ import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
 import { authFetch } from './utils';
-import { createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName, qbResponseErrorDetail } from './qbSyncEngine';
+import { buildQBCustomerManifest, createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName, qbResponseErrorDetail } from './qbSyncEngine';
 import {
   QB_ACCOUNT_MAPPING_DEFAULTS,
   QB_ACCOUNT_POSTING_MATRIX,
@@ -85,6 +85,8 @@ export default function QBPage(){
   const [stripePayoutError,setStripePayoutError]=useState('');
   const [qbAuditItemId,setQbAuditItemId]=useState('');
   const [qbItemAudit,setQbItemAudit]=useState(null);
+  const [customerManifest,setCustomerManifest]=useState(null);
+  const [customerReviewBusy,setCustomerReviewBusy]=useState(false);
   const [stripeBackfill,setStripeBackfill]=useState(null);
   const [stripeWebhookStatus,setStripeWebhookStatus]=useState(null);
 
@@ -395,6 +397,24 @@ export default function QBPage(){
         setQbItemAudit(result);
         setQBConfig(prev=>({...prev,syncLog:[{ts:new Date().toLocaleString(),type:'item_recovery_audit',status:item?'success':'error',details:['READ ONLY — no QBO records changed',JSON.stringify(result)]},...(prev.syncLog||[])].slice(0,100)}));
       }catch(e){setQbItemAudit({error:e.message})}finally{setQbSyncing(false)}
+    };
+    const reviewCustomerMigration=async()=>{
+      if(!livePreflightReady)return;
+      setCustomerReviewBusy(true);setCustomerManifest(null);
+      try{
+        const terms=await loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000);
+        const customers=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SalesTermRef',1000);
+        const rows=buildQBCustomerManifest(cust,customers,terms,qbConfig.custQBMap||{});
+        setCustomerManifest({realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,
+          counts:rows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{})});
+        nf('Customer review complete — no QBO records changed');
+      }catch(e){nf('Customer review failed — '+e.message,'error')}finally{setCustomerReviewBusy(false)}
+    };
+    const downloadCustomerManifest=()=>{
+      if(!customerManifest)return;
+      const url=URL.createObjectURL(new Blob([JSON.stringify(customerManifest,null,2)],{type:'application/json'}));
+      const anchor=document.createElement('a');anchor.href=url;anchor.download='qbo-customer-review-'+customerManifest.reviewedAt.slice(0,10)+'.json';anchor.click();
+      setTimeout(()=>URL.revokeObjectURL(url),1000);
     };
     const runProductCanary=async()=>{
       if(!selectedCanaryProduct)return;
@@ -727,6 +747,17 @@ export default function QBPage(){
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2>Customer Sync</h2>
             <button className="btn btn-primary btn-sm" disabled title="Locked pending durable-link reload/session verification" onClick={syncCustomers}>{qbSyncing?'Syncing...':'Customer Batches Locked'}</button>
+          </div>
+          <div style={{padding:14,borderBottom:'1px solid #e2e8f0'}}>
+            <button className="btn btn-sm" disabled={qbSyncing||customerReviewBusy||!livePreflightReady} onClick={reviewCustomerMigration}>{customerReviewBusy?'Reviewing customers...':'Review Customers — No QBO Changes'}</button>
+            {customerManifest&&<>
+              <p>Reviewed {customerManifest.rows.length} customers in company realm {customerManifest.realm}. Existing matches: {customerManifest.counts.link||0}; proposed creations: {customerManifest.counts.create||0}; term changes: {customerManifest.counts.update_terms||0}; blocked: {customerManifest.counts.blocked||0}; excluded: {customerManifest.counts.excluded||0}.</p>
+              <button className="btn btn-sm" onClick={downloadCustomerManifest}>Download Full Customer Review</button>
+              <p>First 20 records needing approval or review. This review does not approve or run a batch.</p>
+              <table className="table"><thead><tr><th>Customer</th><th>Action</th><th>QBO ID</th><th>Reason</th></tr></thead><tbody>
+                {customerManifest.rows.filter(row=>!['link','excluded'].includes(row.action)).slice(0,20).map(row=><tr key={row.sourceId}><td>{row.displayName}</td><td>{row.action}</td><td>{row.qboId||'—'}</td><td>{row.reason}</td></tr>)}
+              </tbody></table>
+            </>}
           </div>
           <div style={{padding:'12px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:6}}>Test exactly one customer</div>

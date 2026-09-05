@@ -39,7 +39,7 @@ locked in the UI and engine, independently of supplier-bill approval.
 1. Run Read-Only Live Preflight and check the exact company and realm again.
 2. Run Del Lago Academy as link-only recovery. Require QBO customer #2380;
    stop on a creation prompt, a term-change prompt, or an ID mismatch.
-3. Run SKU 0000 and require QBO item #183 as a link-only result. Stop on any conflict.
+3. Run SKU 0000 and require QBO item #263 as a link-only result (operator approved replacement of inactive Inventory item #183 on September 5). Stop on any conflict.
 4. Verify the two receipts in the database, including realm, source ID, QBO ID,
    API verification, and result. Capture the operator-reviewed canary screens.
 5. Hard reload, then sign out/in, and verify links, counters, and receipt logs.
@@ -79,3 +79,5 @@ repository's existing third-party source-map warnings.
 - The attempted #263 retry encountered a browser timeout before any newer receipt was saved. It is not counted as verified. The recovery button now performs link-only work without a redundant native confirmation dialog; a missing match still blocks.
 
 - Fresh-login verification: after the operator reported signing out/in, the preview showed customer 1/2540 and product 1/10575. The guarded SKU retry then reused #263 with no QBO change; the independent database receipt at 2026-09-05T15:08:19.145Z records `result:linked`, API read-back, and 40000/51300 references. Operator acceptance of replacing the handoff's expected #183 with #263 remains pending.
+
+- Steve Peterson explicitly approved #263 in place of #183 and instructed continuation. PR #2180 merged as fbadbf11816e72abd3f842e8dc5376c42982ef96. The public production build metadata confirms that exact commit, built at 2026-09-05T15:38:14.347Z. Production counter/preflight verification awaits operator sign-in after the session reset.
