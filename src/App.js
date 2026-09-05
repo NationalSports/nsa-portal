@@ -2330,7 +2330,13 @@ export default function App(){
     mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},
     syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
   const[qbTab,setQbTab]=useState('overview');
-  const[qbSyncing,setQbSyncing]=useState(false);
+  const[qbSyncing,setQbSyncingState]=useState(false);
+  const qbSyncBusyRef=useRef(false);
+  const setQbSyncing=React.useCallback(value=>{
+    const next=typeof value==='function'?value(qbSyncBusyRef.current):value;
+    qbSyncBusyRef.current=next;
+    setQbSyncingState(next);
+  },[]);
   const _qbSyncCtxRef=React.useRef(null);// fresh state snapshot for the QB auto-sync engine, refreshed every render
   const _qbReconnectNoticeRef=React.useRef(0);// collapse a failed sync batch into one reconnect notice
   const _toastTimerRef=React.useRef(null);// an older toast must never clear a newer toast
@@ -3155,6 +3161,7 @@ export default function App(){
     const _mark=()=>{_lastTabInput.t=Date.now()};
     ['pointerdown','keydown','scroll'].forEach(ev=>window.addEventListener(ev,_mark,{passive:true}));
     startDeployReloadWatcher({
+      isBlocked:()=>qbSyncBusyRef.current,
       // Bills sitting in Import & Review are memory-only work — hold the reload for them too
       // (bounded by the watcher's defer cap; past it the review-session snapshot + Resume
       // banner recover the list, so a forced reload costs one click instead of the session).
@@ -3464,6 +3471,7 @@ export default function App(){
         window.dispatchEvent(new Event('nsa:version-reload-pending'));
         const deferStart=Date.now();
         const doReload=()=>{
+          if(qbSyncBusyRef.current){setTimeout(doReload,2000);return;}
           const savesIdle=_dbSavePendingIds.size===0&&_bgSync===0&&!dirtyRef.current;
           // An active bill review counts as activity even when the tab is hidden or the mouse
           // is idle (staff cross-check invoices in other tabs mid-review). Still bounded by the
@@ -3495,6 +3503,7 @@ export default function App(){
     window.addEventListener('pointerdown',mark,{capture:true,passive:true});
     window.addEventListener('keydown',mark,{capture:true,passive:true});
     const tick=async()=>{
+      if(qbSyncBusyRef.current)return;
       if(fired||Date.now()-lastAct<IDLE_RELOAD_MS)return;
       // Reload only a STUCK idle tab (pending/looping saves) — the case the deploy-reload can't handle.
       // A healthy idle tab just does this cheap in-memory check and sits (no reload, no load).
@@ -3510,7 +3519,7 @@ export default function App(){
       // Jitter (2–20s, matching the deploy-reload) so a fleet of simultaneously-idle tabs does not
       // reload-and-refetch in the same instant and spike the DB.
       const jitter=2000+Math.floor(Math.random()*18000);
-      setTimeout(()=>{try{window.location.reload()}catch(_){/* noop */}},jitter);
+      setTimeout(()=>{if(qbSyncBusyRef.current){fired=false;return;}try{window.location.reload()}catch(_){/* noop */}},jitter);
     };
     const iv=setInterval(tick,60000); // check every minute
     return()=>{clearInterval(iv);window.removeEventListener('pointerdown',mark,{capture:true});window.removeEventListener('keydown',mark,{capture:true})};
