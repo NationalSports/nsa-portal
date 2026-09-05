@@ -4,6 +4,7 @@
 // auto-sync silently did nothing until the page was visited that session — and after
 // leaving the page it synced the stale snapshot captured at the last render. QBPage
 // builds this same engine for its buttons: one copy of the logic, two callers.
+import { mergeQBSyncLogs } from './qbLinkLedger';
 import { D_V } from './constants';
 import { _dbSaveSO } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
@@ -232,13 +233,13 @@ export function createQBSyncEngine(ctx){
         if(verifiedType!=='service'&&verifiedType!=='noninventory')throw new Error('QBO item type was not Service or NonInventory on API read-back.');
         if(String(verified.IncomeAccountRef?.value||'')!==String(incomeAccountRef.value))throw new Error('QBO item was not mapped to 40000 Sales on API read-back.');
         log.details.push('READ-BACK VERIFIED: NSA Portal Sales · QBO Item #'+itemId+' · '+verified.Type+' · 40000 Sales');
-        setQBConfig(prev=>({...prev,_portalSalesItemId:itemId,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+        setQBConfig(prev=>({...prev,_portalSalesItemId:itemId,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
         nf('Verified NSA Portal Sales in QBO','success');
         setQbSyncing(false);
         return{status:'success',itemId};
       }catch(e){
         log.status='error';log.details.push(e.message||'NSA Portal Sales item test failed');
-        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
+        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));
         nf('NSA Portal Sales test blocked — '+(e.message||'QBO item setup error'),'error');
         setQbSyncing(false);
         return{status:'blocked'};
@@ -315,12 +316,12 @@ export function createQBSyncEngine(ctx){
         if(termsUpdated)log.details.push('UPDATED ONE QBO CUSTOMER TERM: '+(termRef.name||termRef.value));
         log.details.push('READ-BACK VERIFIED: '+(verified.DisplayName||verified.CompanyName||c.name)+(verified.SalesTermRef?.name?' · QBO terms '+verified.SalesTermRef.name:verified.SalesTermRef?.value?' · QBO terms ID '+verified.SalesTermRef.value:''));
         await persistQbLink({mapKey:'custQBMap',sourceIds:[c.id],qboId:qbId,log,evidence:{result:created?'created':termsUpdated?'updated':'linked',term_id:termRef.value,duplicate_preflight:'verified',api_readback:true}});
-        setQBConfig(prev=>({...prev,custQBMap:{...(prev.custQBMap||{}),[c.id]:qbId},syncLog:[log,...(prev.syncLog||[])].slice(0,100),lastSync:new Date().toLocaleString()}));
+        setQBConfig(prev=>({...prev,custQBMap:{...(prev.custQBMap||{}),[c.id]:qbId},syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
         nf((created?'Created and verified ':termsUpdated?'Updated terms and verified ':'Linked and verified ')+c.name+' in QBO');
         return{status:'success',created,termsUpdated,qbId,customerName:c.name};
       }catch(e){
         log.status='error';log.details.push(e.message||'Customer canary failed');
-        setQBConfig(prev=>({...prev,syncLog:[log,...(prev.syncLog||[])].slice(0,100)}));
+        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));
         nf('Customer test stopped — '+(e.message||'unknown error'),'error');
         return{status:'blocked',error:e.message};
       }finally{setQbSyncing(false)}
@@ -341,7 +342,7 @@ export function createQBSyncEngine(ctx){
         existingQBCusts=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, SyncToken',1000);
       }catch(e){
         log.status='error';log.details.push('Customer duplicate preflight failed: '+e.message);
-        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Customer sync blocked — QBO duplicate preflight failed','error');setQbSyncing(false);return{};
+        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('Customer sync blocked — QBO duplicate preflight failed','error');setQbSyncing(false);return{};
       }
       const activeCustomers=cust.filter(c=>c.is_active!==false&&!c.deleted_at);
       const sortedCustomers=[...activeCustomers].sort((a,b)=>{
@@ -381,7 +382,7 @@ export function createQBSyncEngine(ctx){
       if(synced===0&&log.details.length>0)log.status='error';
       const remainingCustomers=activeCustomers.filter(c=>!(c.qb_customer_id||(qbConfig.custQBMap||{})[c.id]||custQBMap[c.id])).length;
       log.details.unshift(synced+'/'+customersToSync.length+' customers completed in this batch'+(remainingCustomers?' · '+remainingCustomers+' remain unlinked':''));
-      setQBConfig(prev=>({...prev,_customerSyncOffset:customerBatch.nextOffset,custQBMap:{...prev.custQBMap,...custQBMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      setQBConfig(prev=>({...prev,_customerSyncOffset:customerBatch.nextOffset,custQBMap:{...prev.custQBMap,...custQBMap},syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
       nf(synced+' customers synced to QB');
       setQbSyncing(false);
       return custQBMap;
@@ -405,7 +406,7 @@ export function createQBSyncEngine(ctx){
         salesItemId=canary?await requireExistingPortalSalesItem(invoiceRefs.income_account):await ensurePortalSalesItem(invoiceRefs.income_account);
       }catch(e){
         log.status='error';log.details.push(e.message||'Required invoice account could not be resolved');
-        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Invoice sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return;
+        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('Invoice sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return;
       }
       for(const inv of unsyncedInvs2){
         const c=cust.find(cc=>cc.id===inv.customer_id);
@@ -481,7 +482,7 @@ export function createQBSyncEngine(ctx){
       }
       if(synced===0&&unsyncedInvs2.length>0)log.status='error';
       log.details.unshift(synced+'/'+unsyncedInvs2.length+(canary?' invoice canary':' invoices completed in this batch')+(allUnsyncedInvs.length>unsyncedInvs2.length?' · '+(allUnsyncedInvs.length-unsyncedInvs2.length)+' remain':''));
-      setQBConfig(prev=>({...prev,...(!canary?{_invoiceSyncOffset:invoiceBatch.nextOffset}:{}),syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      setQBConfig(prev=>({...prev,...(!canary?{_invoiceSyncOffset:invoiceBatch.nextOffset}:{}),syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
       nf(canary?(synced?'Created and verified exactly one QBO invoice':'Invoice canary stopped — no verified invoice'):(synced+' invoices synced to QB'),synced?'success':'error');
       setQbSyncing(false);
       return{status:synced===1?'success':'blocked',synced};
@@ -498,14 +499,14 @@ export function createQBSyncEngine(ctx){
       const paidOffset=Math.min(Math.max(0,Number(qbConfig._paidSyncOffset)||0),Math.max(0,allLinkedInvs.length-1));
       const linkedInvs=[...allLinkedInvs.slice(paidOffset),...allLinkedInvs.slice(0,paidOffset)].slice(0,QB_SYNC_BATCH_SIZE);
       const nextPaidOffset=allLinkedInvs.length?(paidOffset+linkedInvs.length)%allLinkedInvs.length:0;
-      if(linkedInvs.length===0){log.details.push('No QB-linked invoices to check');setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('No invoices to sync');setQbSyncing(false);return}
+      if(linkedInvs.length===0){log.details.push('No QB-linked invoices to check');setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('No invoices to sync');setQbSyncing(false);return}
       let paidRefs,salesItemId;
       try{
         paidRefs=await requiredAccountRefs(['income_account','discount_account','ar_account','payment_deposit_account']);
         salesItemId=await ensurePortalSalesItem(paidRefs.income_account);
       }catch(e){
         log.status='error';log.details.push(e.message||'Required payment account could not be resolved');
-        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Paid sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return;
+        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('Paid sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return;
       }
       try{
         // Query QB for all invoices and their balance
@@ -561,7 +562,7 @@ export function createQBSyncEngine(ctx){
         }
       }catch(e){log.status='error';log.details.push('QB query failed: '+e.message)}
       log.details.unshift(updated+'/'+linkedInvs.length+' invoices checked in this batch'+(allLinkedInvs.length>linkedInvs.length?' · '+(allLinkedInvs.length-linkedInvs.length)+' remain for later batches':''));
-      setQBConfig(prev=>({...prev,_paidSyncOffset:nextPaidOffset,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      setQBConfig(prev=>({...prev,_paidSyncOffset:nextPaidOffset,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
       nf(updated+' invoices synced with QB');
       setQbSyncing(false);
     };
@@ -577,7 +578,7 @@ export function createQBSyncEngine(ctx){
       try{
         // Query all bills from QB
         const qbBills=await loadAllQBEntities(qbApi,'Bill','*',500);
-        if(!qbBills.length){log.details.push('No bills found in QB');setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('No bills in QB');setQbSyncing(false);return}
+        if(!qbBills.length){log.details.push('No bills found in QB');setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('No bills in QB');setQbSyncing(false);return}
         // Build reverse map: QB PO Id → portal PO id
         const poMap={...(qbConfig.qbPOMap||{})};
         const reversePoMap={};// qbPOId → portalPOId
@@ -699,7 +700,7 @@ export function createQBSyncEngine(ctx){
         }
       }catch(e){log.status='error';log.details.push('QB query failed: '+e.message)}
       log.details.unshift(updated+' bills pulled from QB');
-      setQBConfig(prev=>({...prev,_syncedBillIds:newSyncedBillIds,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      setQBConfig(prev=>({...prev,_syncedBillIds:newSyncedBillIds,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
       nf(updated+' bill costs pulled from QB');
       setQbSyncing(false);
     };
@@ -724,7 +725,7 @@ export function createQBSyncEngine(ctx){
         incomeAcctRef=refs.income_account;purchasesAcctRef=refs.purchases_account;
       }catch(e){
         log.status='error';log.details.push(e.message||'Required product-item account could not be resolved');
-        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Product item sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return{};
+        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('Product item sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return{};
       }
       // Query existing QB items to match by name and avoid duplicates
       let existingQBItems=[];
@@ -732,7 +733,7 @@ export function createQBSyncEngine(ctx){
         existingQBItems=await loadAllQBEntities(qbApi,'Item','*',1000);
       }catch(e){
         log.status='error';log.details.push('Item duplicate preflight failed: '+e.message);
-        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Product item sync blocked — QBO duplicate preflight failed','error');setQbSyncing(false);return{};
+        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('Product item sync blocked — QBO duplicate preflight failed','error');setQbSyncing(false);return{};
       }
       const prodQBMap={...(qbConfig.prodQBMap||{})};
       const skuGroups=new Map();
@@ -775,6 +776,7 @@ export function createQBSyncEngine(ctx){
           log.details.push(sku+' — BLOCKED: existing QBO item type is '+existingType+'; QBO cannot convert it to NonInventory');log.status='partial';continue;
         }
         if(qbId&&!existingActive){log.details.push(sku+' — BLOCKED: linked QBO item is inactive');log.status='partial';continue}
+        if(!qbId){log.details.push(sku+' — BLOCKED: no active item matched; review existing and inactive QBO IDs before approving creation');log.status='partial';continue}
         const isUpdate=!!qbId;
         const qbItem={
           Name:itemName,
@@ -815,7 +817,7 @@ export function createQBSyncEngine(ctx){
       }
       const remainingSkus=[...skuGroups.values()].filter(products=>!products.some(p=>prodQBMap[p.id])).length;
       log.details.unshift(synced+'/'+skuBatches.length+(canary?' item canary':' product items completed in this batch')+(remainingSkus?' · '+remainingSkus+' remain unlinked':''));
-      setQBConfig(prev=>({...prev,...(!canary?{_inventorySyncOffset:inventoryBatch.nextOffset}:{}),prodQBMap:{...prev.prodQBMap,...prodQBMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      setQBConfig(prev=>({...prev,...(!canary?{_inventorySyncOffset:inventoryBatch.nextOffset}:{}),prodQBMap:{...prev.prodQBMap,...prodQBMap},syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
       nf(canary?(synced?'Created and verified exactly one QBO NonInventory SKU item':'QBO NonInventory item canary stopped'):'QBO product-item batch sync is locked',synced?'success':'error');
       setQbSyncing(false);
       return prodQBMap;
@@ -857,7 +859,7 @@ export function createQBSyncEngine(ctx){
         setQBConfig(prev=>{
           const prodQBMap={...(prev.prodQBMap||{})};
           productIds.forEach(id=>{if(String(prodQBMap[id]||'')===itemId)delete prodQBMap[id]});
-          return{...prev,prodQBMap,syncLog:[log,...(prev.syncLog||[])].slice(0,100),lastSync:new Date().toLocaleString()};
+          return{...prev,prodQBMap,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()};
         });
         nf('Cleared inactive QBO link for '+sku,'success');
         setQbSyncing(false);
@@ -865,7 +867,7 @@ export function createQBSyncEngine(ctx){
       }catch(e){
         const message=e.message||'Inactive QBO link could not be verified';
         const log={ts:new Date().toLocaleString(),type:'item_link_cleanup',status:'error',details:[message]};
-        setQBConfig(prev=>({...prev,syncLog:[log,...(prev.syncLog||[])].slice(0,100)}));
+        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));
         nf('Inactive-link cleanup blocked — '+message,'error');
         setQbSyncing(false);
         return{status:'blocked'};
@@ -894,7 +896,7 @@ export function createQBSyncEngine(ctx){
       try{existingQBEstimates=await loadAllQBEntities(qbApi,'Estimate','Id, DocNumber, CustomerRef, TotalAmt, TxnDate',500)}
       catch(e){
         log.status='error';log.details.push('Estimate duplicate preflight failed: '+e.message);
-        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Sales-order sync blocked — QBO duplicate preflight failed','error');setQbSyncing(false);return;
+        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('Sales-order sync blocked — QBO duplicate preflight failed','error');setQbSyncing(false);return;
       }
       let fallbackSalesItemId;
       try{
@@ -902,7 +904,7 @@ export function createQBSyncEngine(ctx){
         fallbackSalesItemId=await requireExistingPortalSalesItem(refs.income_account);
       }catch(e){
         log.status='error';log.details.push(e.message||'40000 Sales could not be resolved');
-        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Sales-order sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return;
+        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('Sales-order sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return;
       }
       const effectiveProdQBMap={...(qbConfig.prodQBMap||{}),...(prodQBMap||{})};
       for(const so of toSync){
@@ -978,7 +980,7 @@ export function createQBSyncEngine(ctx){
       }
       if(synced===0&&toSync.length>0)log.status='error';
       log.details.unshift(synced+'/'+toSync.length+(canary?' sales-order canary':' sales orders completed in this batch')+(allToSync.length>toSync.length?' · '+(allToSync.length-toSync.length)+' remain':''));
-      setQBConfig(prev=>({...prev,...(!canary?{_salesOrderSyncOffset:salesOrderBatch.nextOffset}:{}),qbSOMap:{...prev.qbSOMap,...soMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      setQBConfig(prev=>({...prev,...(!canary?{_salesOrderSyncOffset:salesOrderBatch.nextOffset}:{}),qbSOMap:{...prev.qbSOMap,...soMap},syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
       nf(canary?(synced?'Created and verified exactly one QBO estimate':'Sales-order canary stopped'):(synced+' sales orders synced to QB'),synced?'success':'error');
       setQbSyncing(false);
       return{status:synced===1?'success':'blocked',synced};
@@ -1000,13 +1002,13 @@ export function createQBSyncEngine(ctx){
         existingQBVendors=await loadAllQBEntities(qbApi,'Vendor','Id, DisplayName, CompanyName, SyncToken',500);
       }catch(e){
         log.status='error';log.details.push('Vendor duplicate preflight failed: '+e.message);
-        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Purchase-order sync blocked — QBO vendor preflight failed','error');setQbSyncing(false);return;
+        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('Purchase-order sync blocked — QBO vendor preflight failed','error');setQbSyncing(false);return;
       }
       let existingQBPOs=[];
       try{existingQBPOs=await loadAllQBEntities(qbApi,'PurchaseOrder','Id, DocNumber, VendorRef, TotalAmt, TxnDate',500)}
       catch(e){
         log.status='error';log.details.push('Purchase-order duplicate preflight failed: '+e.message);
-        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Purchase-order sync blocked — QBO duplicate preflight failed','error');setQbSyncing(false);return;
+        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('Purchase-order sync blocked — QBO duplicate preflight failed','error');setQbSyncing(false);return;
       }
       const vendorQBMap={};// vendorName -> qbVendorId (cache for this sync run)
       // POs do not post to the GL, but every line still carries the approved
@@ -1016,7 +1018,7 @@ export function createQBSyncEngine(ctx){
         poAccountRefs=await requiredAccountRefs(['purchases_account','deco_account']);
       }catch(e){
         log.status='error';log.details.push(e.message||'Required purchase-order account could not be resolved');
-        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Purchase-order sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return;
+        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('Purchase-order sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return;
       }
       // Group PO lines by po_id so we push one QB PO with all line items
       const allPoGroups=groupPortalPurchaseOrders(sos,poMap);
@@ -1118,7 +1120,7 @@ export function createQBSyncEngine(ctx){
       }
       if(synced===0&&poGroups.length>0)log.status='error';
       log.details.unshift(synced+'/'+poGroups.length+(canary?' purchase-order canary':' purchase orders completed in this batch')+(allPoGroups.length>poGroups.length?' · '+(allPoGroups.length-poGroups.length)+' remain':''));
-      setQBConfig(prev=>({...prev,...(!canary?{_purchaseOrderSyncOffset:purchaseOrderBatch.nextOffset}:{}),qbPOMap:{...prev.qbPOMap,...poMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      setQBConfig(prev=>({...prev,...(!canary?{_purchaseOrderSyncOffset:purchaseOrderBatch.nextOffset}:{}),qbPOMap:{...prev.qbPOMap,...poMap},syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
       nf(canary?(synced?'Created/linked and verified exactly one QBO purchase order':'Purchase-order canary stopped'):(synced+' purchase orders synced to QB'),synced?'success':'error');
       setQbSyncing(false);
       return{status:synced===1?'success':'blocked',synced};

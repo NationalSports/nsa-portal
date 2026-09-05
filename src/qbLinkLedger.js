@@ -12,6 +12,23 @@ export function qbLinkKey(realmId, mapKey, sourceId) {
   return PREFIX + encodeURIComponent(JSON.stringify([clean(realmId), mapKey, clean(sourceId)]));
 }
 
+// Legacy callers may append the original log after its receipt added an ID.
+// Collapse that pair while retaining separate, explicitly identified events.
+export function mergeQBSyncLogs(entries = []) {
+  const fingerprint = ({id, verified_at, ...event}) => JSON.stringify(event);
+  const identified = new Map();
+  entries.filter(log => log.id).forEach(log => identified.set(log.id, log));
+  const fingerprints = new Set([...identified.values()].map(fingerprint));
+  const legacy = new Map();
+  entries.filter(log => !log.id).forEach(log => {
+    const key = fingerprint(log);
+    if (!fingerprints.has(key)) legacy.set(key, log);
+  });
+  return [...identified.values(), ...legacy.values()].sort((a,b) =>
+    (Date.parse(b.verified_at || b.ts) || 0) - (Date.parse(a.verified_at || a.ts) || 0)
+  ).slice(0,100);
+}
+
 export function mergeDurableQBLinks(config = {}, appState = {}) {
   const result = {...config};
   QB_LINK_MAPS.forEach(key => { result[key] = {...(config[key] || {})}; });
@@ -28,9 +45,7 @@ export function mergeDurableQBLinks(config = {}, appState = {}) {
     else result[row.map_key][row.source_id] = row.qbo_id;
     if (row.log?.id) logs.set(row.log.id, row.log);
   });
-  result.syncLog = [...logs.values()].sort((a,b) =>
-    (Date.parse(b.verified_at || b.ts) || 0) - (Date.parse(a.verified_at || a.ts) || 0)
-  ).slice(0,100);
+  result.syncLog = mergeQBSyncLogs([...logs.values()]);
   return result;
 }
 

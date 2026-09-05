@@ -83,6 +83,8 @@ export default function QBPage(){
   const [stripePayoutDetail,setStripePayoutDetail]=useState(null);
   const [stripePayoutLoading,setStripePayoutLoading]=useState(false);
   const [stripePayoutError,setStripePayoutError]=useState('');
+  const [qbAuditItemId,setQbAuditItemId]=useState('');
+  const [qbItemAudit,setQbItemAudit]=useState(null);
   const [stripeBackfill,setStripeBackfill]=useState(null);
   const [stripeWebhookStatus,setStripeWebhookStatus]=useState(null);
 
@@ -382,9 +384,21 @@ export default function QBPage(){
       if(!window.confirm('Create exactly ONE QBO invoice?\n\nInvoice: '+doc+'\nCustomer: '+(selectedInvoiceCustomer?.name||'Unknown')+'\nTotal: $'+safeNum(selectedCanaryInvoice.total).toFixed(2)+'\nPaid in portal: $'+safeNum(selectedCanaryInvoice.paid).toFixed(2)+'\n\nThis test creates no payment. QBO customer terms and the invoice will be verified by API read-back.')){nf('Invoice canary cancelled — nothing was sent');return}
       await syncInvoices({}, {}, {canaryInvoiceId:selectedCanaryInvoice.id});
     };
+    const auditQBOItem=async()=>{
+      const id=String(qbAuditItemId).trim();
+      if(!/^\d+$/.test(id)||!livePreflightReady)return;
+      setQbSyncing(true);setQbItemAudit(null);
+      try{
+        const response=await queryQBReadOnly(qbApi,"SELECT * FROM Item WHERE Id = '"+id+"' AND Active IN (true, false) MAXRESULTS 1",'item recovery audit');
+        const item=response?.QueryResponse?.Item?.[0];
+        const result=item?{realm:qbConfig.realm_id,id:item.Id,name:item.Name,sku:item.Sku,active:item.Active,type:item.Type,income:item.IncomeAccountRef,purchases:item.ExpenseAccountRef}:{realm:qbConfig.realm_id,id,not_found:true};
+        setQbItemAudit(result);
+        setQBConfig(prev=>({...prev,syncLog:[{ts:new Date().toLocaleString(),type:'item_recovery_audit',status:item?'success':'error',details:['READ ONLY — no QBO records changed',JSON.stringify(result)]},...(prev.syncLog||[])].slice(0,100)}));
+      }catch(e){setQbItemAudit({error:e.message})}finally{setQbSyncing(false)}
+    };
     const runProductCanary=async()=>{
       if(!selectedCanaryProduct)return;
-      if(!window.confirm('Link or create exactly ONE QBO NonInventory purchase item?\n\nSKU: '+selectedCanaryProduct.sku+'\nProduct: '+selectedCanaryProduct.name+'\nSales: 40000\nPurchases: 51300\n\nExact existing items are linked without a QBO write. This creates no quantity on hand or inventory value. The item and accounts will be verified by API read-back.')){nf('QBO NonInventory item canary cancelled — nothing was sent');return}
+      if(!window.confirm('Recover exactly ONE existing QBO NonInventory purchase item?\n\nSKU: '+selectedCanaryProduct.sku+'\nProduct: '+selectedCanaryProduct.name+'\nSales: 40000\nPurchases: 51300\n\nExact existing items are linked without a QBO write. Missing matches are blocked for review. The item and accounts will be verified by API read-back.')){nf('QBO NonInventory item canary cancelled — nothing was sent');return}
       await syncInventory({canaryProductId:selectedCanaryProduct.id});
     };
     const runInactiveProductLinkCleanup=async()=>{
@@ -951,8 +965,13 @@ export default function QBPage(){
             {!livePreflightReady&&<div style={{fontSize:11,color:'#92400e',marginTop:7,fontWeight:600}}>Button disabled: open Overview and run Read-Only Live Preflight.</div>}
           </div>
           <div style={{padding:'12px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe'}}>
+            <div style={{marginBottom:12}}>
+              <label>Read an existing QBO item by ID <input className="form-input" aria-label="QBO item ID to audit" value={qbAuditItemId} onChange={e=>setQbAuditItemId(e.target.value)}/></label>
+              <button className="btn btn-sm" disabled={qbSyncing||!livePreflightReady||!/^\d+$/.test(qbAuditItemId.trim())} onClick={auditQBOItem}>Read QBO Item — No Changes</button>
+              {qbItemAudit&&<pre style={{whiteSpace:'pre-wrap'}}>{JSON.stringify(qbItemAudit,null,2)}</pre>}
+            </div>
             <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:4}}>Test exactly one QBO NonInventory purchase item</div>
-            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Creates one SKU with no quantity or inventory value, verifies NonInventory type plus 40000/51300 routing, and saves the portal link only after API read-back.</div>
+            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Recovers an existing SKU link, verifies NonInventory type plus 40000/51300 routing, and saves only after API read-back. Missing matches are blocked for review.</div>
             <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
               <select className="form-input" aria-label="Product SKU to test in QuickBooks" style={{minWidth:420,maxWidth:700}} value={qbCanaryProductId} onChange={e=>setQbCanaryProductId(e.target.value)}>
                 <option value="">Select one active SKU...</option>

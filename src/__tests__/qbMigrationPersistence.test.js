@@ -72,3 +72,18 @@ test('missing durable saver blocks canaries before a QBO call',async()=>{
   await run.engine.syncPurchaseOrders({}, {canaryPOId:'PO-1'});
   expect(run.qbApi).not.toHaveBeenCalled();
 });
+
+
+test('a missing SKU match cannot create a replacement during link recovery',async()=>{
+  const qbApi=jest.fn(async(action,{query}={})=>{
+    if(action==='query'&&query.includes('FROM Account'))return {QueryResponse:{Account:accounts}};
+    if(action==='query'&&query.includes('FROM Item'))return {QueryResponse:{Item:[]}};
+    throw new Error('Unexpected QBO write: '+action);
+  });
+  const run=setup({qbApi,prod:[{id:'P1',sku:'0000',name:'Known historical item'}]});
+  await run.engine.syncInventory({canaryProductId:'P1'});
+  expect(run.config().prodQBMap).toEqual({});
+  expect(run.persistQbLink).not.toHaveBeenCalled();
+  expect(qbApi.mock.calls.every(([action])=>action==='query')).toBe(true);
+  expect(run.config().syncLog[0].details.join(' ')).toMatch(/BLOCKED.*no active item matched/);
+});

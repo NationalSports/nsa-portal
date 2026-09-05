@@ -1,4 +1,4 @@
-import {mergeDurableQBLinks, persistVerifiedQBLink, qbLinkKey, QB_LINK_MAPS} from '../qbLinkLedger';
+import {mergeQBSyncLogs, mergeDurableQBLinks, persistVerifiedQBLink, qbLinkKey, QB_LINK_MAPS} from '../qbLinkLedger';
 
 function database() {
   const rows = new Map();
@@ -77,4 +77,19 @@ test('read-back-verified cleanup tombstones a legacy link without a prior receip
   const loaded=mergeDurableQBLinks({realm_id:product.realmId,prodQBMap:{'source-1':'183'}},
     Object.fromEntries([...rows].map(([k,row])=>[k,row.value])));
   expect(loaded.prodQBMap).toEqual({});
+});
+
+
+test('receipt and original success log appear once before and after reload', async()=>{
+  const {client,rows}=database();
+  const input=record();
+  const saved=await persistVerifiedQBLink(client,input);
+  const first=mergeDurableQBLinks({realm_id:input.realmId},saved);
+  const immediate=mergeQBSyncLogs([input.log,...first.syncLog]);
+  expect(immediate).toHaveLength(1);
+  expect(immediate[0].id).toBeTruthy();
+  const reloaded=mergeDurableQBLinks({realm_id:input.realmId,syncLog:[input.log,...first.syncLog]},
+    Object.fromEntries([...rows].map(([k,row])=>[k,row.value])));
+  expect(reloaded.syncLog).toEqual(immediate);
+  expect(mergeQBSyncLogs([{...immediate[0],id:'other'},...immediate])).toHaveLength(2);
 });

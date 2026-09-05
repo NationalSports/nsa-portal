@@ -64,3 +64,13 @@ passed 6 suites / 88 tests, including failed storage, conflicting IDs,
 cross-realm isolation, restoration of all four maps, tombstones, customer retry,
 link-only SKU variants, and batch locks. The production build passed with the
 repository's existing third-party source-map warnings.
+
+
+## Live preview verification — September 5, 2026
+
+- 07:12 Pacific: read-only preflight passed for National Sports Apparel LLC, realm 9341456492604246; approved account references resolved.
+- Del Lago Academy linked to existing customer #2380, Net 30, without a QBO write; customer counter 1/2540 survived reload.
+- A duplicate legacy/receipt log entry was found in the live check and corrected with regression coverage.
+- **Unexpected SKU result:** the 0000 test created item #263 rather than relinking historical #183. API read-back verified #263 as NonInventory, 40000/51300. This does not satisfy the required link-only canary. Further migration writes stopped pending an explicit read of #183, including inactive items.
+- Product recovery now blocks when no active match is returned. A read-only QBO item-ID audit is available to investigate historical IDs without changing them.
+- Gate 1 remains open. No customer/product/SO/PO bulk batches have run; no bill recreation or cleanup was performed.
