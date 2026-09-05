@@ -69,14 +69,14 @@ describe('QuickBooks one-record canaries', () => {
     const readback={Id:'I-1',Name:'SKU-1',Sku:'SKU-1',Type:'NonInventory',IncomeAccountRef:{value:accountId('40000')},ExpenseAccountRef:{value:accountId('51300')}};
     const qbApi=jest.fn(async(action,{query,item}={})=>{
       if(action==='query'&&query.includes('FROM Account'))return accountResponse;
-      if(action==='query'&&query.includes('FROM Item STARTPOSITION'))return{QueryResponse:{Item:[]}};
+      if(action==='query'&&query.includes('FROM Item WHERE Active IN'))return{QueryResponse:{Item:[]}};
       if(action==='upsert_item')return{Item:{Id:'I-1',...item}};
       if(action==='query'&&query.includes("FROM Item WHERE Id = 'I-1'"))return{QueryResponse:{Item:[readback]}};
       throw new Error('Unexpected QBO call: '+action+' '+query);
     });
     const{engine,getConfig}=makeEngine({qbApi,prod:[product]});
     await engine.syncInventory({canaryProductId:'P1',allowCreate:true});
-    expect(qbApi).toHaveBeenCalledWith('query',{query:'SELECT * FROM Item STARTPOSITION 1 MAXRESULTS 1000'});
+    expect(qbApi).toHaveBeenCalledWith('query',{query:'SELECT * FROM Item WHERE Active IN (true, false) STARTPOSITION 1 MAXRESULTS 1000'});
     expect(qbApi.mock.calls.filter(([action])=>action==='upsert_item')).toHaveLength(1);
     const itemPayload=qbApi.mock.calls.find(([action])=>action==='upsert_item')[1].item;
     expect(itemPayload.IncomeAccountRef).toEqual({value:accountId('40000')});

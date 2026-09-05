@@ -1,3 +1,4 @@
+import {buildQBProductManifest,loadQBProductItems} from './qbProductMigration';
 // QuickBooks Online sync page — lifted verbatim out of App() (was `function rQB()`)
 // as step 3 of the App.js decomposition. All shared state comes from useAppData();
 // this component holds no state of its own, so mount/unmount on page switch is
@@ -87,6 +88,11 @@ export default function QBPage(){
   const [qbItemAudit,setQbItemAudit]=useState(null);
   const [customerManifest,setCustomerManifest]=useState(null);
   const [customerReviewBusy,setCustomerReviewBusy]=useState(false);
+  const [productReview,setProductReview]=useState(null);
+  const [productApproved,setProductApproved]=useState(false);
+  const [productCreateApproved,setProductCreateApproved]=useState(false);
+  const [productFilter,setProductFilter]=useState('link');
+  const [productReviewBusy,setProductReviewBusy]=useState(false);
   const [customerBatchApproved,setCustomerBatchApproved]=useState(false);
   const [customerBatchLimit,setCustomerBatchLimit]=useState(20);
   const [customerReviewFilter,setCustomerReviewFilter]=useState('all');
@@ -435,9 +441,31 @@ export default function QBPage(){
       const anchor=document.createElement('a');anchor.href=url;anchor.download='qbo-customer-review-'+customerManifest.reviewedAt.slice(0,10)+'.json';anchor.click();
       setTimeout(()=>URL.revokeObjectURL(url),1000);
     };
+    const downloadProductEvidence=()=>{
+      const data={review:productReview||qbConfig.lastProductReview,run:qbConfig.lastProductRun};
+      const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
+      const anchor=document.createElement('a');anchor.href=url;anchor.download='qbo-product-evidence.json';anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    };
+    const reviewProducts=async()=>{
+      if(!livePreflightReady)return;
+      setProductReviewBusy(true);setProductApproved(false);
+      try{
+        const refs=resolveQBAccountRefs(await loadQBAccounts(qbApi),qbConfig.mapping,['income_account','purchases_account']);
+        const rows=buildQBProductManifest(prod,await loadQBProductItems(qbApi),qbConfig.prodQBMap||{},refs);
+        const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,counts:rows.reduce((a,r)=>(a[r.action]=(a[r.action]||0)+1,a),{})};
+        setProductReview(review);setQBConfig(prev=>({...prev,lastProductReview:review}));
+        nf('Product review complete — no QBO changes');
+      }catch(e){nf('Product review failed — '+e.message,'error')}finally{setProductReviewBusy(false)}
+    };
+    const productBatchRows=(productReview?.rows||[]).filter(r=>['link','create'].includes(r.action)&&!r.complete).slice(0,20);
+    const runProductBatch=async()=>{
+      await syncInventory({approved:productApproved,manifest:{...productReview,rows:productBatchRows}});
+      setProductReview(null);setProductApproved(false);
+    };
     const runProductCanary=async()=>{
       if(!selectedCanaryProduct)return;
-      await syncInventory({canaryProductId:selectedCanaryProduct.id});
+      await syncInventory({canaryProductId:selectedCanaryProduct.id,allowCreate:productCreateApproved});
+      setProductCreateApproved(false);setProductReview(null);
     };
     const runInactiveProductLinkCleanup=async()=>{
       if(!selectedCanaryProduct||!_prodQBMap[selectedCanaryProduct.id])return;
@@ -801,6 +829,7 @@ export default function QBPage(){
                 <option value="">Select one customer...</option>
                 {activeCanaryCustomers.map(c=><option key={c.id} value={c.id}>{portalCustomerDisplayName(c)}{_custQBMap[c.id]?' — linked QB #'+_custQBMap[c.id]:''}</option>)}
               </select>
+              <label><input type="checkbox" checked={productCreateApproved} disabled={qbSyncing} onChange={e=>setProductCreateApproved(e.target.checked)}/> Approve creation of this one SKU if no existing item matches.</label>
               <button className="btn btn-primary btn-sm" style={{background:'#0369a1'}} disabled={qbSyncing||!qbCanaryCustomerId||!livePreflightReady}
                 title={!livePreflightReady?'Run a successful read-only live preflight first':!qbCanaryCustomerId?'Select one customer first':''} onClick={runCustomerCanary}>
                 {qbSyncing?'Testing...':'Test 1 Customer'}
@@ -850,6 +879,7 @@ export default function QBPage(){
                 <option value="">Select one pending invoice...</option>
                 {canaryInvoices.map(inv=>{const c=cust.find(cc=>cc.id===inv.customer_id);return<option key={inv.id} value={inv.id}>{inv.display_id||inv.id} — {c?.name||'Unknown'} — ${safeNum(inv.total).toFixed(2)}{safeNum(inv.tax)>0?' — TAX BLOCKED':''}{!_custQBMap[inv.customer_id]?' — CUSTOMER NOT SYNCED':''}</option>})}
               </select>
+              <label><input type="checkbox" checked={productCreateApproved} disabled={qbSyncing} onChange={e=>setProductCreateApproved(e.target.checked)}/> Approve creation of this one SKU if no existing item matches.</label>
               <button className="btn btn-primary btn-sm" style={{background:'#0369a1'}} disabled={qbSyncing||!livePreflightReady||!selectedCanaryInvoice||!!invoiceCanaryBlock} onClick={runInvoiceCanary}>{qbSyncing?'Testing...':'Test 1 Invoice'}</button>
             </div>
             {invoiceCanaryBlock&&<div style={{fontSize:10,color:'#b91c1c',marginTop:6,fontWeight:600}}>{invoiceCanaryBlock}</div>}
@@ -1017,10 +1047,23 @@ export default function QBPage(){
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2>QBO Product Items (One per SKU)</h2>
-            <button className="btn btn-primary btn-sm" disabled title="Locked until the product-item canaries are approved">Product Batch Locked</button>
+            <button className="btn btn-primary btn-sm" disabled title="Locked until the product-item canaries are approved">Review Required Below</button>
           </div>
           <div style={{padding:'8px 16px',background:'#fffbeb',fontSize:11,color:'#92400e',borderBottom:'1px solid #fef3c7'}}>
-            The portal is the inventory source of truth. QBO will receive one NonInventory purchase item per SKU using 40000 Sales and 51300 Purchases. QBO will not receive quantity on hand or inventory value. Bulk migration remains locked until the canaries are approved.
+            The portal is the inventory source of truth. QBO will receive one NonInventory purchase item per SKU using 40000 Sales and 51300 Purchases. QBO will not receive quantity on hand or inventory value. Review and approve at most 20 SKUs after the existing-item and new-item canaries pass.
+          </div>
+          <div style={{padding:14}}>
+            <button className="btn btn-sm" disabled={qbSyncing||productReviewBusy||!livePreflightReady} onClick={reviewProducts}>Review Products — No QBO Changes</button>
+            {productReview&&<>
+              <p>Product review: {JSON.stringify(productReview.counts)}. Existing items are linked before any new SKU is created.</p>
+              <h3>Proposed product batch ({productBatchRows.length}, maximum 20 SKUs)</h3>
+              <table><thead><tr><th>SKU</th><th>Action</th><th>QBO ID</th><th>Portal variants</th><th>Accounts</th></tr></thead><tbody>{productBatchRows.map(r=><tr key={r.sku}><td>{r.sku}</td><td>{r.action}</td><td>{r.qboId||'New'}</td><td>{r.sourceIds.length}</td><td>40000 / 51300</td></tr>)}</tbody></table>
+              <label><input type="checkbox" checked={productApproved} disabled={qbSyncing} onChange={e=>setProductApproved(e.target.checked)}/> I approve this reviewed product batch.</label>
+              <button className="btn btn-sm" disabled={qbSyncing||!productApproved||!productBatchRows.length} onClick={runProductBatch}>Run Reviewed Product Batch</button>
+              <label>Review filter <select aria-label="Product review filter" value={productFilter} onChange={e=>setProductFilter(e.target.value)}>{['link','create','blocked','excluded'].map(a=><option key={a} value={a}>{a}</option>)}</select></label>
+              <table><thead><tr><th>SKU</th><th>Action</th><th>QBO ID</th><th>Reason</th></tr></thead><tbody>{productReview.rows.filter(r=>r.action===productFilter).slice(0,20).map((r,i)=><tr key={r.sku+i}><td>{r.sku}</td><td>{r.action}</td><td>{r.qboId||'New'}</td><td>{r.reason}</td></tr>)}</tbody></table>
+            </>}
+            {qbConfig.lastProductRun&&<><h3>Product reconciliation: {qbConfig.lastProductRun.status}</h3><button className="btn btn-sm" onClick={downloadProductEvidence}>Download Product Reconciliation</button><table><thead><tr><th>SKU</th><th>Result</th><th>QBO ID</th><th>Error</th></tr></thead><tbody>{(qbConfig.lastProductRun.results||[]).map(r=><tr key={r.sku}><td>{r.sku}</td><td>{r.result}</td><td>{r.qboId}</td><td>{r.error||''}</td></tr>)}</tbody></table><p>{JSON.stringify(qbConfig.lastProductRun.counts)}</p>{qbConfig.lastProductRun.error&&<p>{qbConfig.lastProductRun.error}</p>}</>}
           </div>
           <div style={{padding:'12px 14px',background:'#ecfdf5',borderBottom:'1px solid #a7f3d0'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:4}}>Required invoice service item</div>
@@ -1035,12 +1078,13 @@ export default function QBPage(){
               {qbItemAudit&&<pre style={{whiteSpace:'pre-wrap'}}>{JSON.stringify(qbItemAudit,null,2)}</pre>}
             </div>
             <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:4}}>Test exactly one QBO NonInventory purchase item</div>
-            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Recovers an existing SKU link, verifies NonInventory type plus 40000/51300 routing, and saves only after API read-back. Missing matches are blocked for review.</div>
+            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Recovers an existing SKU link, verifies NonInventory type plus 40000/51300 routing, and saves only after API read-back. New items require the one-SKU creation approval below; conflicts remain blocked.</div>
             <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-              <select className="form-input" aria-label="Product SKU to test in QuickBooks" style={{minWidth:420,maxWidth:700}} value={qbCanaryProductId} onChange={e=>setQbCanaryProductId(e.target.value)}>
+              <select className="form-input" aria-label="Product SKU to test in QuickBooks" style={{minWidth:420,maxWidth:700}} value={qbCanaryProductId} onChange={e=>{setQbCanaryProductId(e.target.value);setProductCreateApproved(false)}}>
                 <option value="">Select one active SKU...</option>
                 {canaryProducts.map(p=><option key={p.id} value={p.id}>{p.sku} — {p.name}{_prodQBMap[p.id]?' — linked QB #'+_prodQBMap[p.id]:''}</option>)}
               </select>
+              <label><input type="checkbox" checked={productCreateApproved} disabled={qbSyncing} onChange={e=>setProductCreateApproved(e.target.checked)}/> Approve creation of this one SKU if no existing item matches.</label>
               <button className="btn btn-primary btn-sm" style={{background:'#0369a1'}} disabled={qbSyncing||!livePreflightReady||!selectedCanaryProduct} onClick={runProductCanary}>{qbSyncing?'Testing...':'Test 1 QBO Item'}</button>
               {selectedCanaryProduct&&_prodQBMap[selectedCanaryProduct.id]&&<button className="btn btn-sm" style={{background:'#fff7ed',border:'1px solid #fdba74',color:'#9a3412'}} disabled={qbSyncing||!livePreflightReady} onClick={runInactiveProductLinkCleanup}>{qbSyncing?'Checking...':'Clear Inactive Link'}</button>}
             </div>
