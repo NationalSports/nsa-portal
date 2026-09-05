@@ -1,6 +1,7 @@
 /* eslint-disable */
 import { canAcknowledgeSave } from './lib/saveAcknowledgement';
 import { lineIntentKey, newOrderLineId } from './lib/orderLineIdentity';
+import { liveSoInvoices, soInvoiceBalance, invoiceBalanceSnapshot } from './lib/soInvoiceBalance';
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import * as XLSX from 'xlsx';
@@ -5079,17 +5080,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {(()=>{
           // Decide which invoicing actions to show. If any SO line still has un-invoiced qty,
           // surface "Create Invoice" alongside "Close Sales Order" so the user can bill the remainder.
-          const _hasAnyInv=(allInvoices||[]).some(inv=>inv.so_id===o.id);
-          const _invMap=_hasAnyInv?buildInvoicedQtyMap(o,(allInvoices||[]).filter(inv=>inv.so_id===o.id)):new Map();
+          const _liveInvs=liveSoInvoices(allInvoices,o.id);
+          const _hasAnyInv=_liveInvs.length>0;
+          const _remainingDollars=soInvoiceBalance({subtotal:totals.rev,shipping:totals.ship+totals.priorShip,tax:totals.tax,invoices:_liveInvs}).total;
+          const _invMap=_hasAnyInv?buildInvoicedQtyMap(o,_liveInvs):new Map();
           const _hasRemaining=safeItems(o).some((it,idx)=>{
-            const tot=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+            const tot=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)||safeNum(it.est_qty);
             const inv=_invMap.get(soLineKey(it,idx))||0;
             return tot-inv>0;
           });
           const _openCreateInv=(typeHint)=>{
             // Pre-select only items that still have remaining qty
             const remIdxs=safeItems(o).map((it,idx)=>{
-              const tot=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+              const tot=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)||safeNum(it.est_qty);
               const inv=_invMap.get(soLineKey(it,idx))||0;
               return tot-inv>0?idx:null;
             }).filter(i=>i!==null);
@@ -5100,7 +5103,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // A partial-promo order has a real customer-pays balance that still needs an invoice; the Create
           // Invoice modal already bills the promo-adjusted amount (see isPromoOrder handling there).
           if(o.promo_applied&&(promoTotals?safeNum(promoTotals.customerPays):0)<=0.005)return null;
-          if(o.status==='complete'&&_hasAnyInv)return<span style={{padding:'6px 10px',fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,border:'1px solid #86efac'}}>✓ Sales Order Closed</span>;
+          if(_hasAnyInv&&!o.promo_applied&&!o.credit_applied&&_remainingDollars>0.005)return<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>_openCreateInv(o.status==='complete'?'final':'full')}><Icon name="dollar" size={14}/> Invoice Remaining ${_remainingDollars.toFixed(2)}</button>;
+          if(o.status==='complete'&&_hasAnyInv&&!_hasRemaining)return<span style={{padding:'6px 10px',fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,border:'1px solid #86efac'}}>✓ Sales Order Closed</span>;
           if(!_hasAnyInv)return<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>_openCreateInv('final')}><Icon name="dollar" size={14}/> Create Invoice</button>;
           // Has prior invoices with un-billed remaining qty: only show Create Invoice — nothing left to "close ahead of".
           if(_hasRemaining)return<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>_openCreateInv('partial')}><Icon name="dollar" size={14}/> Create Invoice</button>;
@@ -8237,7 +8241,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const items=safeItems(o);
       const isPromoOrder=o.promo_applied;
       // Per-SO-item invoiced qty across prior invoices for this SO — used to prevent double-billing the same line
-      const _priorInvs=(allInvoices||[]).filter(inv=>inv.so_id===o.id);
+      const _priorInvs=liveSoInvoices(allInvoices,o.id);
       const invoicedQtyMap=buildInvoicedQtyMap(o,_priorInvs);
       // Lines already billed on this SO that no longer exist on it — the order was edited
       // after invoicing. Their qty is excluded from every "remaining" figure below, so the
@@ -8278,7 +8282,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // For partial: use selected items total (qty already reflects remaining-to-bill)
       // For final: use full order total
       const activeItems=invType==='partial'?invSelItems:items.map((_,i)=>i);
-      const selTotals=activeItems.reduce((acc,idx)=>{const t=itemTotals[idx];if(!t)return acc;return{items:acc.items+1,units:acc.units+t.qty,subtotal:acc.subtotal+t.total}},{items:0,units:0,subtotal:0});
+      let selTotals=activeItems.reduce((acc,idx)=>{const t=itemTotals[idx];if(!t)return acc;return{items:acc.items+1,units:acc.units+t.qty,subtotal:acc.subtotal+t.total}},{items:0,units:0,subtotal:0});
       // Prorate shipping & tax against the FULL order subtotal so a partial invoice
       // billing the remaining 5 of 26 units pays its share — not the full shipping
       // line the prior invoice already prorated against.
@@ -8294,11 +8298,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // For deposits, bill the whole shipping/tax (the deposit percentage applies later).
       // For everything else, prorate by the fraction of the order being billed in this invoice.
       const _billingAll=invType==='deposit';
-      const invShip=_billingAll?nonPromoShip:Math.round(nonPromoShip*selFraction*100)/100;
+      let invShip=_billingAll?nonPromoShip:Math.round(nonPromoShip*selFraction*100)/100;
       let invTax=_billingAll?nonPromoTax:Math.round(nonPromoTax*selFraction*100)/100;
       // Prior shipping carried onto this order (Manual Ship with no open order) bills in FULL,
       // once, on the first invoice for the SO — folded into the invoice's shipping line.
-      const _priorShipBill=(o.pending_ship_applied&&!(allInvoices||[]).some(i=>i.so_id===o.id))?safeNum(o.pending_ship_amount):0;
+      let _priorShipBill=(o.pending_ship_applied&&!(allInvoices||[]).some(i=>i.so_id===o.id))?safeNum(o.pending_ship_amount):0;
       // Credit: subtract from subtotal and recalculate tax on reduced amount
       const creditAmt=o.credit_applied?safeNum(o.credit_amount):0;
       let invCredit=0;
@@ -8311,15 +8315,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         invTax=Math.round(reducedSubtotal*taxRate2*100)/100;
         invCredit=Math.min(creditAmt,selTotals.subtotal+invShip+invTax);
       }
+      // Full/final settlement includes changes to already-billed prices and shipping.
+      // Keep quantity lines scoped to unbilled units; a separate adjustment carries the difference.
+      const balanceSettlement=_priorInvs.length>0&&!isPromoOrder&&!o.credit_applied&&(invType==='full'||invType==='final');
+      let balanceAdjustment=0;
+      if(balanceSettlement){
+        const balance=soInvoiceBalance({subtotal:totals.rev,shipping:totals.ship+totals.priorShip,tax:totals.tax,invoices:_priorInvs});
+        balanceAdjustment=Math.round((balance.subtotal-selTotals.subtotal)*100)/100;
+        selTotals={...selTotals,subtotal:balance.subtotal};
+        invShip=balance.shipping;invTax=balance.tax;_priorShipBill=0;
+      }
       const grossTotal=selTotals.subtotal+invShip+invTax-invCredit;
       // Prior deposit $ are already collected against this SO — apply as a credit on
       // non-deposit invoices so the new bill only charges the remaining balance.
-      const depositApplied=(invType==='partial'||invType==='full'||invType==='final')?Math.min(depositCredit,grossTotal):0;
+      const depositApplied=!balanceSettlement&&(invType==='partial'||invType==='full'||invType==='final')?Math.min(depositCredit,grossTotal):0;
       const fullTotal=Math.max(0,grossTotal-depositApplied);
       const invTotal=(invType==='deposit'?Math.round(grossTotal*invDepositPct/100*100)/100:fullTotal)+_priorShipBill;
 
       // Existing invoices on this SO
-      const soInvs=(allInvoices||[]).filter(i=>i.so_id===o.id);
+      const soInvs=_priorInvs;
       const soInvTotal=soInvs.reduce((a,i)=>a+(i.total||0),0);
 
       return<div className="modal-overlay" onClick={()=>setShowInvCreate(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
@@ -8346,7 +8360,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {_invOrphans.length>0&&<div style={{marginBottom:12,padding:12,background:'#fff7ed',border:'1px solid #fdba74',borderRadius:8}}>
             <div style={{fontWeight:700,color:'#9a3412',fontSize:13,marginBottom:4}}>This order changed after it was invoiced</div>
             <div style={{fontSize:12,color:'#7c2d12',marginBottom:6}}>
-              {_invOrphans.length} already-billed line{_invOrphans.length===1?' is':'s are'} no longer on {o.id}, totaling <strong>${_invOrphanAmt.toFixed(2)}</strong>. That amount was charged to the customer but is <strong>not</strong> counted in the remaining-to-invoice figures below.
+              {_invOrphans.length} already-billed line{_invOrphans.length===1?' is':'s are'} no longer on {o.id}, totaling <strong>${_invOrphanAmt.toFixed(2)}</strong>. That amount was charged to the customer {balanceSettlement?'and is included in the prior-billing adjustment below.':'but is not counted in the remaining quantity figures below.'}
             </div>
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
               <tbody>{_invOrphans.map((l,li2)=><tr key={li2}>
@@ -8462,6 +8476,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>}
           </div>
 
+          {balanceSettlement&&<div style={{padding:12,marginBottom:12,background:'#eff6ff',borderRadius:8,fontSize:12}}>
+            Remaining balance after ${soInvoiceBalance({invoices:_priorInvs}).billed.toFixed(2)} already invoiced.
+            {balanceAdjustment!==0&&<div>Price/deposit reconciliation: ${balanceAdjustment.toFixed(2)}. Review changed order prices before creating this invoice.</div>}
+          </div>}
           {/* Summary */}
           <div style={{background:'#f8fafc',borderRadius:8,padding:14}}>
             <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
@@ -8472,11 +8490,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <span style={{fontSize:12,color:'#64748b'}}>Subtotal</span>
               <span style={{fontSize:12,fontWeight:600}}>${selTotals.subtotal.toFixed(2)}</span>
             </div>
-            {invShip>0&&<div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+            {invShip!==0&&<div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
               <span style={{fontSize:12,color:'#64748b'}}>Shipping</span>
               <span style={{fontSize:12}}>${(invType==='deposit'?invShip*invDepositPct/100:invShip).toFixed(2)}</span>
             </div>}
-            {invTax>0&&<div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+            {invTax!==0&&<div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
               <span style={{fontSize:12,color:'#64748b'}}>Tax</span>
               <span style={{fontSize:12}}>${(invType==='deposit'?invTax*invDepositPct/100:invTax).toFixed(2)}</span>
             </div>}
@@ -8503,7 +8521,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setShowInvCreate(false)}>Cancel</button>
-          <button className="btn btn-primary" style={invType==='final'&&invTotal===0?{background:'#16a34a',borderColor:'#16a34a'}:invType==='final'?{background:'#dc2626',borderColor:'#dc2626'}:{}} disabled={invCreating||(invType==='partial'&&invSelItems.length===0)} onClick={async()=>{
+          <button className="btn btn-primary" style={invType==='final'&&invTotal===0?{background:'#16a34a',borderColor:'#16a34a'}:invType==='final'?{background:'#dc2626',borderColor:'#dc2626'}:{}} disabled={invCreating||(balanceSettlement&&invType==='full'&&invTotal<=0)||(invType==='partial'&&invSelItems.length===0)} onClick={async()=>{
             if(invCreating)return;// double-click guard — a second click would mint a second invoice with the same id
             // When Final is $0 AND prior invoices/deposits already cover the balance, skip a
             // redundant $0 invoice and just close the SO. Never-invoiced $0 orders (FREE PROMO
@@ -8516,9 +8534,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Fail closed on a read error: creating a money document without verifying the
             // live billed quantities is riskier than asking the rep to retry.
             if(supabase&&o.id){
-              const{data:_liveInvs,error:_liveInvErr}=await supabase.from('invoices').select('id,inv_type,status,line_items').eq('so_id',o.id);
+              const{data:_liveInvs,error:_liveInvErr}=await supabase.from('invoices').select('id,so_id,inv_type,status,deleted_at,total,shipping,tax,line_items').eq('so_id',o.id);
               if(_liveInvErr){nf('Invoice not created — could not verify current invoices. Reload and try again.','error');return;}
-              const _freshInvs=safeArr(_liveInvs);
+              const _freshInvs=liveSoInvoices(_liveInvs,o.id);
+              if(balanceSettlement&&invoiceBalanceSnapshot(_freshInvs)!==invoiceBalanceSnapshot(_priorInvs)){nf('Invoice not created — billed amounts changed. Reload to use the current balance.','error');return;}
               const _localInvs=safeArr(_priorInvs);
               const _freshIds=new Set(_localInvs.map(i=>i?.id).filter(Boolean));
               const _hasNewDeposit=_freshInvs.some(i=>i?.id&&!_freshIds.has(i.id));
@@ -8546,6 +8565,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const lineAmt=qty*(perEachSell+decoSell);
               return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:perEachSell+decoSell,amount:invType==='deposit'?Math.round(lineAmt*invDepositPct/100*100)/100:lineAmt,
                 _sku:it.sku,_name:it.name,_color:it.color,_so_line_key:soLineKey(it,idx)}}).filter(Boolean);
+            if(balanceSettlement&&balanceAdjustment!==0)lineItems.push({desc:'Remaining order price / prior billing adjustment — '+o.id,qty:1,rate:balanceAdjustment,amount:balanceAdjustment,_so_balance_adjustment:true});
             const invShipAmt=invType==='deposit'?Math.round(invShip*invDepositPct/100*100)/100:invShip;
             const invTaxAmt=invType==='deposit'?Math.round(invTax*invDepositPct/100*100)/100:invTax;
             const defaultMemo=(invType==='deposit'?invDepositPct+'% Deposit — '+o.memo:invType==='partial'?'Partial — '+o.memo:invType==='full'?'Invoice — '+o.memo:'Final Invoice — '+o.memo)+(_priorShipBill>0?' (incl. $'+_priorShipBill.toFixed(2)+' prior shipping)':'');
