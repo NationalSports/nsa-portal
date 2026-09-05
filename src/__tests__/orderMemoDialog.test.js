@@ -50,3 +50,35 @@ test('closing keeps the draft; explicit discard removes it without a cloud write
  const p=setup();await type();fireEvent.click(screen.getByText('Close and keep draft'));expect(p.journal.acknowledge).not.toHaveBeenCalled();expect(p.saveCommand).not.toHaveBeenCalled();
  fireEvent.click(screen.getByText('Discard memo draft'));await waitFor(()=>expect(p.journal.acknowledge).toHaveBeenCalledWith(receipt));expect(p.saveCommand).not.toHaveBeenCalled();
 });
+
+test('inline memo saves on Enter without opening a modal or changing the command contract',async()=>{
+ const host=document.createElement('div');document.body.appendChild(host);
+ const p=setup({inlineTarget:host});
+ expect(screen.queryByRole('dialog')).toBeNull();
+ fireEvent.change(screen.getByLabelText('Your memo'),{target:{value:'new memo'}});
+ await screen.findByText('Not saved · draft kept here');
+ fireEvent.keyDown(screen.getByLabelText('Your memo'),{key:'Enter'});
+ await waitFor(()=>expect(p.onClose).toHaveBeenCalled());
+ expect(p.saveCommand).toHaveBeenCalledWith(expect.objectContaining({id:'SO-TEST',memo:'new memo',expectedMemo:'old memo'}));
+ host.remove();
+});
+
+test('moving between an inline field and recovery dialog preserves text and retry identity',async()=>{
+ const host=document.createElement('div');document.body.appendChild(host);
+ const props={initial,owner:'staff',saveCommand:jest.fn().mockRejectedValue(new Error('Offline')),onSaved:jest.fn(),onClose:jest.fn(),journal:{stage:jest.fn().mockResolvedValue(receipt),acknowledge:jest.fn()}};
+ const view=render(<OrderMemoDialog {...props} inlineTarget={host}/>);
+ fireEvent.change(screen.getByLabelText('Your memo'),{target:{value:'keep across navigation'}});
+ await screen.findByText('Not saved · draft kept here');
+ fireEvent.click(screen.getByText('Save memo'));await screen.findByText('Offline');
+ const request=props.saveCommand.mock.calls[0][0].requestId;
+ view.rerender(<OrderMemoDialog {...props}/>);
+ expect(screen.getByRole('dialog')).toBeTruthy();
+ expect(screen.getByLabelText('Your memo').value).toBe('keep across navigation');
+ view.rerender(<OrderMemoDialog {...props} inlineTarget={host}/>);
+ expect(screen.queryByRole('dialog')).toBeNull();
+ expect(screen.getByLabelText('Your memo').value).toBe('keep across navigation');
+ fireEvent.click(screen.getByText('Save memo'));
+ await waitFor(()=>expect(props.saveCommand).toHaveBeenCalledTimes(2));
+ expect(props.saveCommand.mock.calls[1][0].requestId).toBe(request);
+ host.remove();
+});
