@@ -776,7 +776,7 @@ export function createQBSyncEngine(ctx){
           log.details.push(sku+' — BLOCKED: existing QBO item type is '+existingType+'; QBO cannot convert it to NonInventory');log.status='partial';continue;
         }
         if(qbId&&!existingActive){log.details.push(sku+' — BLOCKED: linked QBO item is inactive');log.status='partial';continue}
-        if(!qbId){log.details.push(sku+' — BLOCKED: no active item matched; review existing and inactive QBO IDs before approving creation');log.status='partial';continue}
+        if(!qbId&&!options.allowCreate){log.details.push(sku+' — BLOCKED: no active item matched; review existing and inactive QBO IDs before approving creation');log.status='partial';continue}
         const isUpdate=!!qbId;
         const qbItem={
           Name:itemName,

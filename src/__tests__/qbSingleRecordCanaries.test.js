@@ -75,7 +75,7 @@ describe('QuickBooks one-record canaries', () => {
       throw new Error('Unexpected QBO call: '+action+' '+query);
     });
     const{engine,getConfig}=makeEngine({qbApi,prod:[product]});
-    await engine.syncInventory({canaryProductId:'P1'});
+    await engine.syncInventory({canaryProductId:'P1',allowCreate:true});
     expect(qbApi).toHaveBeenCalledWith('query',{query:'SELECT * FROM Item STARTPOSITION 1 MAXRESULTS 1000'});
     expect(qbApi.mock.calls.filter(([action])=>action==='upsert_item')).toHaveLength(1);
     const itemPayload=qbApi.mock.calls.find(([action])=>action==='upsert_item')[1].item;
