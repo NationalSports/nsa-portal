@@ -88,6 +88,7 @@ export default function QBPage(){
   const [customerManifest,setCustomerManifest]=useState(null);
   const [customerReviewBusy,setCustomerReviewBusy]=useState(false);
   const [customerBatchApproved,setCustomerBatchApproved]=useState(false);
+  const [customerBatchLimit,setCustomerBatchLimit]=useState(20);
   const [customerReviewFilter,setCustomerReviewFilter]=useState('all');
   const [stripeBackfill,setStripeBackfill]=useState(null);
   const [stripeWebhookStatus,setStripeWebhookStatus]=useState(null);
@@ -415,7 +416,7 @@ export default function QBPage(){
       }catch(e){nf('Customer review failed — '+e.message,'error')}finally{setCustomerReviewBusy(false)}
     };
     const customerBatchRows=(customerManifest?.rows||[]).filter(row=>['link','create','update_terms'].includes(row.action)
-      &&(!qbConfig.custQBMap?.[row.sourceId]||row.action==='update_terms')).slice(0,20);
+      &&(!qbConfig.custQBMap?.[row.sourceId]||row.action==='update_terms')).slice(0,customerBatchLimit);
     const customerCanariesReady=Object.keys(qbConfig.custQBMap||{}).length>=2&&(qbConfig.syncLog||[]).some(log=>
       log.type==='customer_canary'&&log.status==='success'&&(log.details||[]).some(detail=>String(detail).startsWith('UPDATED ONE QBO CUSTOMER TERM:')));
     const runCustomerBatch=async()=>{
@@ -772,6 +773,7 @@ export default function QBPage(){
               <p>Reviewed {customerManifest.rows.length} customers in company realm {customerManifest.realm}. Existing matches: {customerManifest.counts.link||0}; proposed creations: {customerManifest.counts.create||0}; term changes: {customerManifest.counts.update_terms||0}; blocked: {customerManifest.counts.blocked||0}; excluded: {customerManifest.counts.excluded||0}.</p>
               <button className="btn btn-sm" onClick={downloadCustomerManifest}>Download Full Customer Review</button>
               <h3>Proposed customer batch ({customerBatchRows.length}, maximum 20)</h3>
+              <label>Batch size <select aria-label="Customer batch size" value={customerBatchLimit} disabled={qbSyncing} onChange={e=>{setCustomerBatchLimit(Number(e.target.value));setCustomerBatchApproved(false)}}>{Array.from({length:20},(_,i)=><option key={i+1} value={i+1}>{i+1}</option>)}</select></label>
               <table><thead><tr><th>Customer</th><th>Action</th><th>QBO ID</th><th>Current term</th><th>Approved portal term</th></tr></thead><tbody>
                 {customerBatchRows.map(row=><tr key={row.sourceId}><td>{row.displayName}</td><td>{row.action}</td><td>{row.qboId||'New'}</td><td>{row.currentTerm?.name||row.currentTerm?.value||'None'}</td><td>{row.desiredTerm?.name}</td></tr>)}
               </tbody></table>

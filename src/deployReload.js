@@ -71,6 +71,7 @@ async function _fingerprint() {
  * @param {Object} [opts]
  * @param {number} [opts.intervalMs=180000] How often to check for a new build (min 60s, default 3 min).
  * @param {() => boolean} [opts.isSafe] Save pipeline quiet? False defers the reload (e.g. a save is in flight).
+ * @param {() => boolean} [opts.isBlocked] External operation active? Blocks every reload path, including deadlines and the banner button.
  * @param {() => boolean} [opts.hasFailedSaves] Tab stuck in a failed-save loop? Only these tabs may be
  *   force-reloaded while unsafe (past maxDeferMs). Defaults to true, which preserves the pre-2026-07-28
  *   behavior for callers that don't distinguish.
@@ -89,6 +90,8 @@ export function startDeployReloadWatcher(opts = {}) {
   _started = true;
   const intervalMs = Math.max(60000, opts.intervalMs || 180000);
   const isSafe = typeof opts.isSafe === 'function' ? opts.isSafe : () => true;
+  // External writes must finish even if saves fail or the user requests a reload.
+  const isBlocked = typeof opts.isBlocked === 'function' ? opts.isBlocked : () => false;
   const hasFailedSaves = typeof opts.hasFailedSaves === 'function' ? opts.hasFailedSaves : () => true;
   const isUserIdle = typeof opts.isUserIdle === 'function' ? opts.isUserIdle : () => true;
   const maxDeferMs = Math.max(30000, opts.maxDeferMs || 90000);
@@ -98,13 +101,16 @@ export function startDeployReloadWatcher(opts = {}) {
   let _reloading = false;
 
   const doReload = (reason) => {
-    if (_reloading) return;
+    if (_reloading || isBlocked()) return;
     _reloading = true;
     try { if (typeof opts.onReload === 'function') opts.onReload(reason); } catch (_) { /* telemetry must never block the reload */ }
     // Small random delay so a fleet of tabs doesn't reload — and then re-fetch all data —
     // at the same instant, which would itself spike the DB. User-initiated reloads skip it.
     const jitter = reason === 'user' ? 0 : 2000 + Math.floor(Math.random() * 18000); // 2–20s
-    setTimeout(() => { try { window.location.reload(); } catch (_) { /* noop */ } }, jitter);
+    setTimeout(() => {
+      if (isBlocked()) { _reloading = false; setTimeout(tick, 5000); return; }
+      try { window.location.reload(); } catch (_) { /* noop */ }
+    }, jitter);
   };
 
   // Seed the baseline from the same source we'll compare against, so a freshly-opened tab
@@ -113,6 +119,7 @@ export function startDeployReloadWatcher(opts = {}) {
 
   const tick = () => {
     if (_reloading) return;
+    if (isBlocked()) { setTimeout(tick, 5000); return; }
     if (isSafe() && isUserIdle()) { doReload('safe-idle'); return; }
     if (hasFailedSaves() && Date.now() >= _stuckDeadline) { doReload('stuck-forced'); return; }
     if (Date.now() >= _idleDeadline && isSafe()) { doReload('deadline'); return; }
