@@ -35,6 +35,21 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
   assert.deepEqual((await reader.query('select received from so_item_po_lines where id=$1',[po.id])).rows[0].received,{M:4});
   assert.equal((await reader.query('select memo from sales_orders where id=$1',[id])).rows[0].memo,'first');
   console.log('PASS receiving edit racing full save survives; full save rejected atomically');
+  // Memo CAS holds the same order lock as full saves. A second memo writer
+  // waits, then sees a conflict instead of overwriting the first writer.
+  const memo=(client,expected,value,n)=>client.query('select save_sales_order_memo($1,$2,$3,$4) result',[id,expected,value,'10000000-0000-4000-8000-'+String(n).padStart(12,'0')]);
+  await a.query('begin');await memo(a,'first','memo winner',1);
+  finished=false;const memoLoser=memo(b,'first','memo loser',2).finally(()=>{finished=true;});
+  await sleep(80);assert.equal(finished,false);
+  assert.equal((await reader.query('select memo from sales_orders where id=$1',[id])).rows[0].memo,'first');
+  await a.query('commit');assert.equal((await memoLoser).rows[0].result.conflict,true);
+  // An unrelated legacy header edit can advance the order revision. Memo CAS
+  // preserves it and succeeds because the memo itself did not change.
+  await b.query('begin');await b.query("update sales_orders set po_number='PO-MEMO-RACE' where id=$1",[id]);
+  finished=false;const independent=memo(a,'memo winner','independent memo',3).finally(()=>{finished=true;});
+  await sleep(80);assert.equal(finished,false);await b.query('commit');assert.equal((await independent).rows[0].result.saved,true);
+  assert.equal((await reader.query('select po_number from sales_orders where id=$1',[id])).rows[0].po_number,'PO-MEMO-RACE');
+  console.log('PASS concurrent memo conflict and independent header update preservation');
   console.log('ALL_ORDER_SAVE_CONCURRENCY_SCENARIOS_PASSED');
  }finally{await a.query('rollback');await b.query('rollback');await Promise.all([a.end(),b.end(),reader.end()]);}
 })().catch(e=>{console.error(e.message);process.exit(1)});

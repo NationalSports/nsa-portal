@@ -26,6 +26,12 @@ The branch now has one backoff scheduler and one shared retry coordinator for fo
 
 Verification: after merging the latest main branch, all 322 suites / 4,902 tests passed, including four integration tests through the actual persistence wrappers with no cloud connection. Production build passed. The native browser harness passed nine checks, followed by a real reload recovery check. These tests use synthetic documents, not live customer edits. This follow-up changes client retry orchestration; it does not make invoice or inventory writes transactional or provide edit-time capture. Memo-only writes remain the next separate increment.
 
+## Memo-only increment prepared for review
+
+The `codex/memo-only-saves` branch adds a dedicated memo editor for existing versioned sales orders in both interfaces. It sends a field-level compare-and-swap command with an idempotent receipt, preserves unrelated concurrent changes, and uses a separate browser recovery lane. It does not stamp old order items with the newer memo version. The existing relationship trigger is narrowed to relationship edits so a memo update cannot repair an unrelated estimate link.
+
+All 324 suites / 4,912 tests and the production build pass. Separate PostgreSQL connections verified real memo conflicts and preservation of an unrelated header edit. Native browser checks verified explicit conflict choice, disconnected-save retention, recovery from another tab and after reload. The migration has not been applied to production. See [memo command behavior and rollout](MEMO_SAVE_COMMAND.md).
+
 ## Prioritized next increments
 
 | Priority | Work | Evidence / reason | Acceptance criterion |
