@@ -79,6 +79,7 @@ export default function QBPage(){
   const [qbCanarySOId,setQbCanarySOId]=useState('');
   const [qbCanaryPOId,setQbCanaryPOId]=useState('');
   const [qbReconcilePOId,setQbReconcilePOId]=useState('');
+  const [qbReconcileBillId,setQbReconcileBillId]=useState('');
   const [poCanaryReview,setPoCanaryReview]=useState(null);
   const [qbPreflighting,setQbPreflighting]=useState(false);
   const [stripePayouts,setStripePayouts]=useState([]);
@@ -712,10 +713,14 @@ export default function QBPage(){
                 <div style={{fontSize:11,fontWeight:700,color:'#5b21b6'}}>Verify an existing native PO-to-bill link</div>
                 <select className="form-input" aria-label="Linked purchase order to verify" style={{marginTop:6}} disabled={qbSyncing} value={qbReconcilePOId} onChange={e=>setQbReconcilePOId(e.target.value)}>
                   <option value="">Select a linked purchase order...</option>
-                  {Object.keys(qbConfig.qbPOMap||{}).filter(id=>!(qbConfig.qbPOBillMap||{})[id]).map(id=><option key={id} value={id}>{id} — QBO #{qbConfig.qbPOMap[id]}</option>)}
+                  {Object.keys(qbConfig.qbPOMap||{}).map(id=><option key={id} value={id}>{id} — QBO #{qbConfig.qbPOMap[id]}{qbConfig.qbPOBillMap?.[id]?' — previously verified':''}</option>)}
                 </select>
-                <button className="btn btn-primary btn-sm" style={{marginTop:8,background:'#5b21b6'}} disabled={qbSyncing||!livePreflightReady||!qbReconcilePOId} onClick={()=>verifyPurchaseOrderBillLinks({canaryPOId:qbReconcilePOId})}>Verify link by API read-back</button>
-                <div style={{fontSize:10,color:'#64748b',marginTop:6}}>Reads both existing QBO records and saves a receipt only when the Bill and Purchase Order contain reciprocal links.</div>
+                <label style={{display:'block',fontSize:11,marginTop:8}}>Existing QBO bill ID reviewed in QuickBooks
+                  <input className="form-input" aria-label="Existing QBO bill ID" value={qbReconcileBillId} disabled={qbSyncing} onChange={e=>setQbReconcileBillId(e.target.value.trim())} inputMode="numeric" />
+                </label>
+                <button className="btn btn-primary btn-sm" style={{marginTop:8,background:'#5b21b6'}} disabled={qbSyncing||!livePreflightReady||!qbReconcilePOId||!/^\d+$/.test(qbReconcileBillId)} onClick={()=>verifyPurchaseOrderBillLinks({canaryPOId:qbReconcilePOId,expectedBillId:qbReconcileBillId})}>Verify link by API read-back</button>
+                <div style={{fontSize:10,color:'#64748b',marginTop:6}}>Reads both existing QBO records and saves a receipt only when the reviewed bill, vendor, PO number, memo reference and reciprocal links agree. This verifies an existing link; it does not create a link or unlock PO batches.</div>
+                {qbConfig.lastPOBillVerification&&<details style={{marginTop:8}}><summary>Latest saved PO-to-bill API evidence</summary><pre style={{whiteSpace:'pre-wrap',fontSize:11}}>{JSON.stringify(qbConfig.lastPOBillVerification,null,2)}</pre></details>}
               </div>
             </div>
           </div>

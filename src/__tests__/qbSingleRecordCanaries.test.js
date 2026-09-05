@@ -265,9 +265,44 @@ describe('QuickBooks one-record canaries', () => {
     });
     const{engine,getConfig,persistQbLink}=makeEngine({qbApi});
     getConfig().qbPOMap['PO-1']='PO-QB';
-    await expect(engine.verifyPurchaseOrderBillLinks({canaryPOId:'PO-1'})).resolves.toEqual({status:'success',verified:1});
+    await expect(engine.verifyPurchaseOrderBillLinks({canaryPOId:'PO-1',expectedBillId:'B-1'})).resolves.toEqual({status:'success',verified:1});
     expect(persistQbLink).toHaveBeenCalledWith(expect.objectContaining({mapKey:'qbPOBillMap',sourceIds:['PO-1'],qboId:'B-1',evidence:expect.objectContaining({api_readback:true,purchase_order_id:'PO-QB',reciprocal_link:true})}));
     expect(getConfig().qbPOBillMap['PO-1']).toBe('B-1');
+  });
+
+  test.each([
+    ['wrong reviewed bill', (po,bill)=>{bill.Id='OTHER'}, 'reviewed existing bill ID'],
+    ['wrong PO number', (po)=>{po.DocNumber='PO-2'}, 'number differs'],
+    ['wrong memo', (po,bill)=>{bill.PrivateNote='PO: PO-OTHER'}, 'exact portal PO reference'],
+    ['another PO link', (po,bill)=>{bill.LinkedTxn.push({TxnId:'OTHER',TxnType:'PurchaseOrder'})}, 'different purchase order'],
+    ['another bill link', (po)=>{po.LinkedTxn.push({TxnId:'OTHER',TxnType:'Bill'})}, 'different bill'],
+    ['missing reciprocal link', (po)=>{po.LinkedTxn=[]}, 'does not contain the bill link'],
+    ['wrong vendor', (po,bill)=>{bill.VendorRef.value='OTHER'}, 'vendors differ'],
+    ['missing vendors', (po,bill)=>{delete po.VendorRef;delete bill.VendorRef}, 'vendors differ'],
+  ])('does not certify %s', async(label,mutate,error)=>{
+    const po={Id:'PO-QB',DocNumber:'PO-1',VendorRef:{value:'V-QB'},LinkedTxn:[{TxnId:'B-1',TxnType:'Bill'}]};
+    const bill={Id:'B-1',VendorRef:{value:'V-QB'},PrivateNote:'PO: PO-1',LinkedTxn:[{TxnId:'PO-QB',TxnType:'PurchaseOrder'}]};
+    mutate(po,bill);
+    const qbApi=jest.fn(async(action,{query}={})=>({QueryResponse:query.includes('FROM Bill ')?{Bill:[bill]}:{PurchaseOrder:[po]}}));
+    const {engine,getConfig,persistQbLink}=makeEngine({qbApi});getConfig().qbPOMap['PO-1']='PO-QB';
+    await expect(engine.verifyPurchaseOrderBillLinks({canaryPOId:'PO-1',expectedBillId:'B-1'})).resolves.toEqual({status:'blocked',verified:0});
+    expect(persistQbLink).not.toHaveBeenCalled();
+    expect(getConfig().syncLog[0].details.join(' ')).toContain(error);
+    expect(qbApi.mock.calls.every(([action])=>action==='query')).toBe(true);
+  });
+
+  test('does not certify an ambiguous match or a failed durable receipt', async()=>{
+    const po={Id:'PO-QB',DocNumber:'PO-1',VendorRef:{value:'V-QB'},LinkedTxn:[{TxnId:'B-1',TxnType:'Bill'}]};
+    const bill={Id:'B-1',VendorRef:{value:'V-QB'},PrivateNote:'PO: PO-1',LinkedTxn:[{TxnId:'PO-QB',TxnType:'PurchaseOrder'}]};
+    let bills=[bill,{...bill,Id:'B-2'}];
+    const qbApi=jest.fn(async(action,{query}={})=>({QueryResponse:query.includes('FROM Bill ')?{Bill:bills}:{PurchaseOrder:[po]}}));
+    const {engine,getConfig,persistQbLink}=makeEngine({qbApi});getConfig().qbPOMap['PO-1']='PO-QB';
+    await engine.verifyPurchaseOrderBillLinks({canaryPOId:'PO-1',expectedBillId:'B-1'});
+    expect(persistQbLink).not.toHaveBeenCalled();
+    bills=[bill];persistQbLink.mockRejectedValue(new Error('database read-back failed'));
+    await expect(engine.verifyPurchaseOrderBillLinks({canaryPOId:'PO-1',expectedBillId:'B-1'})).resolves.toEqual({status:'blocked',verified:0});
+    expect(getConfig().qbPOBillMap?.['PO-1']).toBeUndefined();
+    expect(getConfig().lastPOBillVerification).toBeUndefined();
   });
 
   test('blocks a PO-to-bill receipt when API read-back is not reciprocal', async() => {
@@ -279,7 +314,7 @@ describe('QuickBooks one-record canaries', () => {
     });
     const{engine,getConfig,persistQbLink}=makeEngine({qbApi});
     getConfig().qbPOMap['PO-1']='PO-QB';
-    await expect(engine.verifyPurchaseOrderBillLinks({canaryPOId:'PO-1'})).resolves.toEqual({status:'blocked',verified:0});
+    await expect(engine.verifyPurchaseOrderBillLinks({canaryPOId:'PO-1',expectedBillId:'B-1'})).resolves.toEqual({status:'blocked',verified:0});
     expect(persistQbLink).not.toHaveBeenCalled();
   });
 });

@@ -1071,11 +1071,11 @@ export function createQBSyncEngine(ctx){
     const verifyPurchaseOrderBillLinks=async(options={})=>{
       if(!canaryPreflightReady()||!requireDurableLinks())return{status:'blocked',verified:0};
       const canaryPOId=String(options.canaryPOId||'');
+      const expectedBillId=String(options.expectedBillId||'').trim();
+      if(!canaryPOId||!expectedBillId){nf('Select one purchase order and enter the existing QBO bill ID reviewed in QuickBooks','error');return{status:'blocked',verified:0}}
       const receiptMap={...(qbConfig.qbPOBillMap||{})};
-      const candidates=Object.entries(qbConfig.qbPOMap||{}).filter(([portalPOId])=>!receiptMap[portalPOId]);
-      const selected=canaryPOId?candidates.filter(([portalPOId])=>String(portalPOId)===canaryPOId):candidates.slice(0,QB_SYNC_BATCH_SIZE);
-      if(canaryPOId&&selected.length!==1){nf('Choose one linked purchase order without a reconciliation receipt','error');return{status:'blocked',verified:0}}
-      if(!selected.length){nf('No PO-to-bill links are waiting for verification');return{status:'success',verified:0}}
+      const selected=Object.entries(qbConfig.qbPOMap||{}).filter(([portalPOId])=>String(portalPOId)===canaryPOId);
+      if(selected.length!==1){nf('Choose one saved QBO purchase order','error');return{status:'blocked',verified:0}}
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:canaryPOId?'purchase_order_bill_canary':'purchase_order_bill_links',status:'success',details:[]};
       let bills=[];let verified=0;
@@ -1091,12 +1091,21 @@ export function createQBSyncEngine(ctx){
           const matches=findQbPOBillCandidates(bills,portalPOId,qboPOId);
           if(matches.length!==1)throw new Error(matches.length?'multiple bills reference this purchase order':'no bill references this purchase order');
           const bill=matches[0];
+          if(String(bill.Id)!==expectedBillId)throw new Error('matched bill differs from the reviewed existing bill ID');
+          if(String(po.DocNumber||'').trim()!==String(portalPOId).trim())throw new Error('saved purchase order number differs from the portal PO');
+          if(!billReferencesPortalPO(bill,portalPOId))throw new Error('bill memo does not contain the exact portal PO reference');
           const billLinks=qbLinkedTransactions(bill).filter(link=>link.TxnType==='PurchaseOrder');
           const poLinks=qbLinkedTransactions(po).filter(link=>link.TxnType==='Bill');
+          if(billLinks.some(link=>String(link.TxnId)!==String(qboPOId)))throw new Error('bill is linked to a different purchase order');
+          if(poLinks.some(link=>String(link.TxnId)!==String(bill.Id)))throw new Error('purchase order is linked to a different bill');
           if(!billLinks.some(link=>String(link.TxnId)===String(qboPOId)))throw new Error('bill API read-back does not contain the purchase-order link');
           if(!poLinks.some(link=>String(link.TxnId)===String(bill.Id)))throw new Error('purchase-order API read-back does not contain the bill link');
-          if(String(bill.VendorRef?.value||'')!==String(po.VendorRef?.value||''))throw new Error('bill and purchase order vendors differ');
-          await persistQbLink({mapKey:'qbPOBillMap',sourceIds:[portalPOId],qboId:bill.Id,log:{...log,details:[portalPOId+' — QBO PO #'+qboPOId+' linked to existing Bill #'+bill.Id+' and verified from both API records']},evidence:{result:'verified',api_readback:true,purchase_order_id:String(qboPOId),bill_id:String(bill.Id),bill_doc_number:bill.DocNumber||'',bill_date:bill.TxnDate||'',bill_total:safeNum(bill.TotalAmt),purchase_order_total:safeNum(po.TotalAmt),vendor_id:String(po.VendorRef?.value||''),reciprocal_link:true}});
+          if(!po.VendorRef?.value||String(bill.VendorRef?.value||'')!==String(po.VendorRef.value))throw new Error('bill and purchase order vendors differ or are missing');
+          const snapshot=record=>Object.fromEntries(['Id','SyncToken','DocNumber','TxnDate','DueDate','TotalAmt','Balance','VendorRef','PrivateNote','POStatus','LinkedTxn','Line'].filter(key=>record[key]!==undefined).map(key=>[key,record[key]]));
+          const evidence={result:'verified',api_readback:true,purchase_order_id:String(qboPOId),bill_id:String(bill.Id),bill_doc_number:bill.DocNumber||'',bill_date:bill.TxnDate||'',bill_total:safeNum(bill.TotalAmt),purchase_order_total:safeNum(po.TotalAmt),vendor_id:String(po.VendorRef.value),reciprocal_link:true,reviewed_bill_id:expectedBillId,purchase_order:snapshot(po),bill:snapshot(bill)};
+          const receiptLog={...log,details:[portalPOId+' — QBO PO #'+qboPOId+' linked to existing Bill #'+bill.Id+' and verified from both API records',JSON.stringify(evidence)]};
+          await persistQbLink({mapKey:'qbPOBillMap',sourceIds:[portalPOId],qboId:bill.Id,log:receiptLog,evidence});
+          setQBConfig(prev=>({...prev,lastPOBillVerification:{realm:qbConfig.realm_id,verifiedAt:new Date().toISOString(),portalPOId,...evidence}}));
           receiptMap[portalPOId]=String(bill.Id);verified++;
           log.details.push(portalPOId+' — VERIFIED: QBO PO #'+qboPOId+' ↔ existing Bill #'+bill.Id);
         }catch(e){log.status='partial';log.details.push(portalPOId+' — BLOCKED: '+e.message)}
