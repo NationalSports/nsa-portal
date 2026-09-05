@@ -80,6 +80,8 @@ export default function QBPage(){
   const [qbCanaryPOId,setQbCanaryPOId]=useState('');
   const [qbReconcilePOId,setQbReconcilePOId]=useState('');
   const [qbReconcileBillId,setQbReconcileBillId]=useState('');
+  const [poBatchApproved,setPoBatchApproved]=useState(false);
+  const [poBillLinkReview,setPoBillLinkReview]=useState(null);
   const [poCanaryReview,setPoCanaryReview]=useState(null);
   const [qbPreflighting,setQbPreflighting]=useState(false);
   const [stripePayouts,setStripePayouts]=useState([]);
@@ -181,7 +183,7 @@ export default function QBPage(){
 
     // Sync engine — one copy of the logic (see qbSyncEngine.js); the App-level
     // auto-sync builds the same engine from fresh state, no page visit required.
-    const {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,persistQbLink,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
+    const {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,reviewPurchaseOrderBillCandidate,linkPurchaseOrderBill,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,persistQbLink,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
 
     // Read-only live-company inspection. This is the mandatory first step and
     // performs no QBO create/update calls.
@@ -710,6 +712,11 @@ export default function QBPage(){
               </section>}
               {poCanaryBlock&&<div style={{fontSize:10,color:'#b91c1c',marginTop:6,fontWeight:600}}>{poCanaryBlock}</div>}
               <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid #ddd6fe'}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#5b21b6'}}>Next eligible purchase-order batch</div>
+                <label style={{display:'flex',gap:6,alignItems:'flex-start',fontSize:10,marginTop:6}}><input type="checkbox" checked={poBatchApproved} onChange={e=>setPoBatchApproved(e.target.checked)} /> I reviewed the PO canary and approve at most 20 eligible POs. Each result must pass API read-back and durable receipt storage.</label>
+                <button className="btn btn-primary btn-sm" style={{marginTop:8,background:'#5b21b6'}} disabled={qbSyncing||!livePreflightReady||!poBatchApproved||!Object.keys(qbConfig.qbPOBillMap||{}).length} onClick={async()=>{await syncPurchaseOrders({}, {approved:true});setPoBatchApproved(false)}}>Run next PO batch (max 20)</button>
+              </div>
+              <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid #ddd6fe'}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#5b21b6'}}>Verify an existing native PO-to-bill link</div>
                 <select className="form-input" aria-label="Linked purchase order to verify" style={{marginTop:6}} disabled={qbSyncing} value={qbReconcilePOId} onChange={e=>setQbReconcilePOId(e.target.value)}>
                   <option value="">Select a linked purchase order...</option>
@@ -721,6 +728,10 @@ export default function QBPage(){
                 <button className="btn btn-primary btn-sm" style={{marginTop:8,background:'#5b21b6'}} disabled={qbSyncing||!livePreflightReady||!qbReconcilePOId||!/^\d+$/.test(qbReconcileBillId)} onClick={()=>verifyPurchaseOrderBillLinks({canaryPOId:qbReconcilePOId,expectedBillId:qbReconcileBillId})}>Verify link by API read-back</button>
                 <div style={{fontSize:10,color:'#64748b',marginTop:6}}>Reads both existing QBO records and saves a receipt only when the reviewed bill, vendor, PO number, memo reference and reciprocal links agree. This verifies an existing link; it does not create a link or unlock PO batches.</div>
                 {qbConfig.lastPOBillVerification&&<details style={{marginTop:8}}><summary>Latest saved PO-to-bill API evidence</summary><pre style={{whiteSpace:'pre-wrap',fontSize:11}}>{JSON.stringify(qbConfig.lastPOBillVerification,null,2)}</pre></details>}
+                <button className="btn btn-secondary btn-sm" style={{marginTop:8}} disabled={qbSyncing||!livePreflightReady||!qbReconcilePOId||(qbConfig.qbPOBillMap||{})[qbReconcilePOId]} onClick={async()=>setPoBillLinkReview(await reviewPurchaseOrderBillCandidate(qbReconcilePOId))}>Review one unlinked bill candidate</button>
+                {poBillLinkReview&&<section role="region" aria-label="Confirm one PO to bill API link" style={{marginTop:8,padding:10,border:'2px solid #7c3aed',borderRadius:6,background:'#fff'}}>
+                  {poBillLinkReview.status==='ready'?<><strong>{poBillLinkReview.portalPOId} → existing Bill #{poBillLinkReview.billId}</strong><div>{poBillLinkReview.vendor} · Bill {poBillLinkReview.billDocNumber} · ${poBillLinkReview.billTotal.toFixed(2)} · PO ${poBillLinkReview.poTotal.toFixed(2)}</div><p style={{fontSize:10}}>This replaces only matched unlinked bill lines with identical PO-linked lines. Bill identity, date, vendor, descriptions, quantities, rates, amounts, fees and total are preserved and verified by API read-back.</p><button className="btn btn-primary btn-sm" disabled={qbSyncing} onClick={async()=>{await linkPurchaseOrderBill({portalPOId:poBillLinkReview.portalPOId,expectedBillId:poBillLinkReview.billId,approved:true});setPoBillLinkReview(null)}}>Confirm and link this existing bill</button></>:<strong>Blocked: {poBillLinkReview.reason||'candidate is not ready'}</strong>}
+                </section>}
               </div>
             </div>
           </div>
