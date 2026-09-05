@@ -1,0 +1,82 @@
+import { loadAllQBEntities } from './qbAccountMappings';
+
+const clean = value => String(value || '').trim();
+const nameKey = value => clean(value).replace(/\s+/g, ' ').toLowerCase();
+export const VENDOR_SYNC_COLUMNS = 'id,name,vendor_type,is_active,contact_email,contact_phone';
+
+// Preserve local purchasing settings and contacts. Only missing contacts are filled.
+export function buildQBVendorReview(vendors, qboVendors, links = {}, realmId) {
+  if (!clean(realmId)) throw new Error('A connected QBO company is required.');
+  const rows = qboVendors.map(q => {
+    const qboId = clean(q.Id), name = clean(q.DisplayName || q.CompanyName);
+    const row = { qboId, name, action: 'blocked', reason: '', patch: {} };
+    if (!qboId || !name) return {...row, reason: 'Missing QBO ID or name'};
+    if (q.Active === false) return {...row, action: 'skip', reason: 'Inactive in QBO'};
+    const names = [q.DisplayName, q.CompanyName].map(nameKey).filter(Boolean);
+    const linked = vendors.filter(v => clean(links[v.id]) === qboId);
+    const matches = linked.length ? linked : vendors.filter(v => names.includes(nameKey(v.name)));
+    if (matches.length > 1) return {...row, reason: 'Multiple Portal vendors match'};
+    if (!linked.length && qboVendors.some(other => other !== q && other.Active !== false &&
+      [other.DisplayName,other.CompanyName].map(nameKey).filter(Boolean).some(n => names.includes(n)))) {
+      return {...row, reason:'Multiple QBO vendors share this name'};
+    }
+    const vendor = matches[0];
+    if (vendor && links[vendor.id] && clean(links[vendor.id]) !== qboId) return {...row, reason: 'Portal vendor is linked to another QBO vendor'};
+    if (vendor?.is_active === false) return {...row, reason: 'Portal vendor is inactive'};
+    const portalId = vendor?.id || 'qbo-' + encodeURIComponent(realmId) + '-' + encodeURIComponent(qboId);
+    if (!vendor && vendors.some(v => v.id === portalId)) return {...row, reason: 'Imported vendor ID already exists with a different name'};
+    const patch = {};
+    if (!clean(vendor?.contact_email) && clean(q.PrimaryEmailAddr?.Address)) patch.contact_email = clean(q.PrimaryEmailAddr.Address);
+    if (!clean(vendor?.contact_phone) && clean(q.PrimaryPhone?.FreeFormNumber)) patch.contact_phone = clean(q.PrimaryPhone.FreeFormNumber);
+    return {...row, portalId, portalName: vendor?.name || name, before: vendor || null, patch,
+      action: !vendor ? 'create' : !links[portalId] ? 'link' : Object.keys(patch).length ? 'update' : 'unchanged'};
+  });
+  // Two QBO identities must never claim the same Portal record in one review.
+  for (const row of rows) {
+    if (row.portalId && rows.filter(r => r.portalId === row.portalId).length > 1) {
+      row.action = 'blocked'; row.reason = 'Multiple QBO vendors match this Portal vendor';
+    }
+  }
+  return rows;
+}
+
+export async function loadQBVendorReview({client, qbApi, links, realmId}) {
+  if (!client) throw new Error('Portal database unavailable.');
+  const vendors = [];
+  for (let start = 0; ; start += 500) {
+    const res = await client.from('vendors').select(VENDOR_SYNC_COLUMNS).order('id').range(start, start + 499);
+    if (res.error) throw new Error(res.error.message);
+    vendors.push(...(res.data || []));
+    if ((res.data || []).length < 500) break;
+  }
+  const qbo = await loadAllQBEntities(qbApi, 'Vendor', '*', 500);
+  return buildQBVendorReview(vendors, qbo, links, realmId);
+}
+
+export async function applyQBVendorReview({client, qbApi, links, realmId, reviewed, persistQbLink, onSaved}) {
+  const current = await loadQBVendorReview({client, qbApi, links, realmId});
+  if (JSON.stringify(current) !== JSON.stringify(reviewed)) throw new Error('Vendors changed since review. Review again before importing.');
+  const results = [];
+  for (const row of current.filter(r => ['create','link','update'].includes(r.action))) {
+    try {
+      let write;
+      if (row.action === 'create') {
+        write = await client.from('vendors').upsert({id:row.portalId,name:row.name,vendor_type:'upload',is_active:true,...row.patch}, {onConflict:'id',ignoreDuplicates:true});
+      } else if (Object.keys(row.patch).length) {
+        let query = client.from('vendors').update(row.patch).eq('id',row.portalId).eq('name',row.before.name);
+        for (const key of Object.keys(row.patch)) query = row.before[key] == null ? query.is(key,null) : query.eq(key,row.before[key]);
+        write = await query;
+      }
+      if (write?.error) throw new Error(write.error.message);
+      const saved = await client.from('vendors').select(VENDOR_SYNC_COLUMNS).eq('id',row.portalId).single();
+      if (saved.error || !saved.data || saved.data.name !== row.portalName || saved.data.is_active === false
+        || Object.entries(row.patch).some(([k,v]) => saved.data[k] !== v)) throw new Error('Portal vendor read-back did not match; reload and review.');
+      await persistQbLink({mapKey:'vendorQBMap',sourceIds:[row.portalId],qboId:row.qboId,
+        log:{type:'vendor_import',status:'success',ts:new Date().toISOString(),details:[row.name+' → Portal vendor '+row.portalId]},
+        evidence:{direction:'qbo_to_portal',portal_readback:true,qbo_readback:true,name:row.name}});
+      onSaved?.(saved.data);
+      results.push({...row,status:'saved'});
+    } catch (error) { results.push({...row,status:'error',reason:error.message}); }
+  }
+  return results;
+}

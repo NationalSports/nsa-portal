@@ -30076,7 +30076,7 @@ export default function App(){
           }
           const portalVendor=vendor||decoVendor;
           if(!portalVendor)throw new Error('Supplier '+vendorName+' does not uniquely match an active portal vendor; no QBO bill was sent.');
-          let qbVendorId=portalVendor?.qb_vendor_id;
+          let qbVendorId=qbConfig.vendorQBMap?.[portalVendor?.id]||portalVendor?.qb_vendor_id;
           if(qbVendorId&&!existingQBVendors.some(v=>String(v.Id)===String(qbVendorId)&&v.Active!==false))qbVendorId=null;
 
           if(!qbVendorId){
