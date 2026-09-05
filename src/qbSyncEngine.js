@@ -127,9 +127,18 @@ export function buildQBInvoicePostingLines({ invoice, salesItemId, discountAccou
 // ctx: every piece of app state/setters the routines touch, plus qbApi/nf/dP —
 // passed fresh by the caller (QBPage per render; App per interval fire).
 export function createQBSyncEngine(ctx){
-  const {cust,sos,invs,prod,vend,invAdjLog=[],invPOs,submittedBatches,qbApi,qbConfig,nf,dP,
+  const {cust,sos,invs,prod,vend,invAdjLog=[],invPOs,submittedBatches,qbApi,qbConfig,persistQbLink,nf,dP,
     setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend}=ctx;
     const QB_SYNC_BATCH_SIZE=20;
+    const requireDurableLinks=()=>{
+      if(typeof persistQbLink==='function')return true;
+      nf('Durable QBO link storage is unavailable; no migration record was sent','error');return false;
+    };
+    const migrationBatchLocked=()=>{
+      nf('Migration batches remain locked until durable links survive reload and fresh login, and this entity rollout is reviewed','error');
+      return true;
+    };
+
     const productionSyncLocked=()=>{
       if(qbConfig.initialMigrationApproved===true)return false;
       nf('Initial QBO migration is locked — complete the read-only preflight and reviewed bill canaries first','error');
@@ -181,6 +190,7 @@ export function createQBSyncEngine(ctx){
       if(expected.docNumber!=null&&String(row.DocNumber||'')!==String(expected.docNumber))throw new Error(entity+' document number did not match on API read-back.');
       if(expected.refValue!=null&&String(row[expected.refField]?.value||'')!==String(expected.refValue))throw new Error(entity+' customer/vendor did not match on API read-back.');
       if(expected.total!=null&&Math.abs(safeNum(row.TotalAmt)-safeNum(expected.total))>=0.005)throw new Error(entity+' total did not match on API read-back.');
+      if(expected.txnDate!=null&&String(row.TxnDate||'').slice(0,10)!==String(expected.txnDate))throw new Error(entity+' date did not match on API read-back.');
       if(expected.sku!=null&&String(row.Sku||'').trim().toUpperCase()!==String(expected.sku).trim().toUpperCase())throw new Error(entity+' SKU did not match on API read-back.');
       return row;
     };
@@ -258,6 +268,7 @@ export function createQBSyncEngine(ctx){
     // are locked. A create or a repair of the actual QBO Terms field requires a
     // second, explicit operator confirmation and a successful API read-back.
     const syncCustomerCanary=async(customerId,{allowCreate=false,allowTermUpdate=false}={})=>{
+      if(!requireDurableLinks())return{status:'blocked'};
       const c=cust.find(customer=>String(customer.id)===String(customerId));
       if(!c||c.is_active===false||c.deleted_at){nf('Choose an active customer for the QBO test','error');return{status:'blocked'}}
       if(qbConfig.preflight?.status!=='success'||String(qbConfig.preflight?.realm_id||'')!==String(qbConfig.realm_id||'')){
@@ -272,6 +283,7 @@ export function createQBSyncEngine(ctx){
         const savedId=String((qbConfig.custQBMap||{})[c.id]||c.qb_customer_id||'');
         let qboCustomer=savedId?qboCustomers.find(row=>String(row.Id)===savedId):null;
         if(qboCustomer?.Active===false)throw new Error('Saved QBO customer #'+savedId+' is inactive; no record was changed.');
+        if(savedId&&!qboCustomer)throw new Error('Saved QBO customer #'+savedId+' was not returned; query and review it before relinking.');
         if(!qboCustomer){
           const matches=findExactQBCustomerMatches(c,qboCustomers);
           if(matches.length>1)throw new Error('Multiple active QBO customers exactly match "'+c.name+'"; no record was changed.');
@@ -297,10 +309,12 @@ export function createQBSyncEngine(ctx){
         const readback=await queryQBReadOnly(qbApi,"SELECT * FROM Customer WHERE Id = '"+qbId+"' MAXRESULTS 1",'customer API read-back');
         const verified=readback?.QueryResponse?.Customer?.[0];
         if(!verified||String(verified.Id)!==qbId)throw new Error('Customer was not returned by the QBO read-back; the portal link was not saved.');
+        if(verified.Active===false)throw new Error('QBO customer was inactive on read-back; the portal link was not saved.');
         if(String(verified.SalesTermRef?.value||'')!==String(termRef.value))throw new Error('QBO customer terms did not match "'+termRef.name+'" on read-back; the portal link was not saved.');
         log.details.push((created?'CREATED ONE QBO CUSTOMER':termsUpdated?'UPDATED ONE QBO CUSTOMER':'LINK ONLY — no QBO customer was changed')+': '+c.name+' → QB #'+qbId);
         if(termsUpdated)log.details.push('UPDATED ONE QBO CUSTOMER TERM: '+(termRef.name||termRef.value));
         log.details.push('READ-BACK VERIFIED: '+(verified.DisplayName||verified.CompanyName||c.name)+(verified.SalesTermRef?.name?' · QBO terms '+verified.SalesTermRef.name:verified.SalesTermRef?.value?' · QBO terms ID '+verified.SalesTermRef.value:''));
+        await persistQbLink({mapKey:'custQBMap',sourceIds:[c.id],qboId:qbId,log,evidence:{result:created?'created':termsUpdated?'updated':'linked',term_id:termRef.value,duplicate_preflight:'verified',api_readback:true}});
         setQBConfig(prev=>({...prev,custQBMap:{...(prev.custQBMap||{}),[c.id]:qbId},syncLog:[log,...(prev.syncLog||[])].slice(0,100),lastSync:new Date().toLocaleString()}));
         nf((created?'Created and verified ':termsUpdated?'Updated terms and verified ':'Linked and verified ')+c.name+' in QBO');
         return{status:'success',created,termsUpdated,qbId,customerName:c.name};
@@ -314,7 +328,7 @@ export function createQBSyncEngine(ctx){
 
     // ── SYNC: Customers (name + totals) ──
     const syncCustomers=async()=>{
-      if(productionSyncLocked())return{};
+      if(migrationBatchLocked())return{};
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'customers',status:'success',details:[]};
       let synced=0;
@@ -344,7 +358,7 @@ export function createQBSyncEngine(ctx){
         // Match existing QB customer by name if we don't already have a QB ID
         let qbId=c.qb_customer_id||(qbConfig.custQBMap||{})[c.id];let syncToken=null;
         if(!qbId){
-          const matches=existingQBCusts.filter(q=>q.DisplayName===displayName||q.CompanyName===c.name||q.DisplayName===c.name);
+          const matches=findExactQBCustomerMatches(c,existingQBCusts);
           if(matches.length>1){log.details.push(c.name+' — BLOCKED: multiple QBO customers match this name');log.status='partial';continue}
           const match=matches[0];if(match){qbId=match.Id;syncToken=match.SyncToken}
         }else{
@@ -455,7 +469,8 @@ export function createQBSyncEngine(ctx){
           if(canary){
             try{
               const verified=await verifyCanaryReadback('Invoice',res.Invoice.Id,{docNumber:inv.display_id||inv.id,refField:'CustomerRef',refValue:cQBId,total:invoiceTotal});
-              if(String(verified.SalesTermRef?.value||'')!==String(customerTermRef?.value||''))throw new Error('Invoice customer terms did not match on API read-back.');
+              if(verified.Active===false)throw new Error('QBO customer was inactive on read-back; the portal link was not saved.');
+        if(String(verified.SalesTermRef?.value||'')!==String(customerTermRef?.value||''))throw new Error('Invoice customer terms did not match on API read-back.');
               log.details.push('READ-BACK VERIFIED: Invoice #'+verified.Id+' · '+(verified.SalesTermRef?.name||'QBO terms ID '+verified.SalesTermRef?.value));
             }catch(e){log.details.push((inv.display_id||inv.id)+' — VERIFY FAILED: '+e.message);log.status='error';continue}
           }
@@ -564,7 +579,7 @@ export function createQBSyncEngine(ctx){
         const qbBills=await loadAllQBEntities(qbApi,'Bill','*',500);
         if(!qbBills.length){log.details.push('No bills found in QB');setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('No bills in QB');setQbSyncing(false);return}
         // Build reverse map: QB PO Id → portal PO id
-        const poMap=qbConfig.qbPOMap||{};
+        const poMap={...(qbConfig.qbPOMap||{})};
         const reversePoMap={};// qbPOId → portalPOId
         Object.entries(poMap).forEach(([portalId,qbId])=>{reversePoMap[qbId]=portalId});
         // Collect all portal PO numbers for matching by DocNumber
@@ -697,8 +712,9 @@ export function createQBSyncEngine(ctx){
     const syncInventory=async(options={})=>{
       const canaryProductId=String(options?.canaryProductId||'');
       const canary=!!canaryProductId;
-      if(canary?!canaryPreflightReady():productionSyncLocked())return{};
+      if(canary?!canaryPreflightReady():migrationBatchLocked())return{};
       if(!canary){nf('QBO product-item batch sync is locked until the canaries are reviewed','error');return{status:'blocked'}}
+      if(!requireDurableLinks())return{status:'blocked'};
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:canary?'item_canary':'inventory',status:'success',details:[]};
       let synced=0;
@@ -720,7 +736,7 @@ export function createQBSyncEngine(ctx){
       }
       const prodQBMap={...(qbConfig.prodQBMap||{})};
       const skuGroups=new Map();
-      prod.filter(p=>p.is_active!==false&&String(p.sku||'').trim()).forEach(p=>{
+      prod.filter(p=>p.is_active!==false&&!p.deleted_at&&String(p.sku||'').trim()).forEach(p=>{
         const key=String(p.sku).trim().toUpperCase();
         if(!skuGroups.has(key))skuGroups.set(key,[]);
         skuGroups.get(key).push(p);
@@ -735,7 +751,9 @@ export function createQBSyncEngine(ctx){
       if(canary&&skuBatches.length!==1){nf('Choose exactly one active portal SKU','error');setQbSyncing(false);return{}}
       for(const [sku,products] of skuBatches){
         const p=products[0];
-        const existingQBId=products.map(pp=>prodQBMap[pp.id]).find(Boolean);
+        const mappedIds=[...new Set(products.map(pp=>String(prodQBMap[pp.id]||'')).filter(Boolean))];
+        if(mappedIds.length>1){log.details.push(sku+' — BLOCKED: portal variants have conflicting QBO IDs');log.status='partial';continue}
+        const existingQBId=mappedIds[0];
         // Sanitize the name QB will display — strip control chars QB chokes on,
         // collapse whitespace, trim, cap at 100. Same for description.
         const cleanName=String(p.name||'').replace(/[\x00-\x1f\x7f]/g,' ').replace(/\s+/g,' ').trim();
@@ -744,8 +762,8 @@ export function createQBSyncEngine(ctx){
         // duplicate SKUs would make later PO and bill routing nondeterministic.
         let qbId=existingQBId;let syncToken=null;let existingType=null;let existingActive=true;
         if(qbId){
-          const match=existingQBItems.find(i=>i.Id===qbId);
-          if(match){syncToken=match.SyncToken;existingType=match.Type;existingActive=match.Active!==false}else{qbId=null}
+          const match=existingQBItems.find(i=>String(i.Id)===String(qbId));
+          if(match){syncToken=match.SyncToken;existingType=match.Type;existingActive=match.Active!==false}else{log.details.push(sku+' — BLOCKED: saved QBO item was not returned; review the saved ID before relinking');log.status='partial';continue}
         }
         const skuMatches=existingQBItems.filter(i=>i.Active!==false&&
           (String(i.Sku||'').trim().toUpperCase()===sku||String(i.Name||'').trim().toUpperCase()===sku));
@@ -771,21 +789,28 @@ export function createQBSyncEngine(ctx){
             ?{Id:qbId,SyncToken:syncToken,sparse:true}
             :{Type:'NonInventory'}),
         };
-        let res;
-        try{res=await qbApi('upsert_item',{item:qbItem})}
-        catch(e){log.details.push(sku+' — FAILED: '+e.message);log.status='partial';continue}
-        if(res?.Item?.Id){
-          if(canary){
-            try{
-              const verified=await verifyCanaryReadback('Item',res.Item.Id,{sku});
-              if(String(verified.Type||'').toLowerCase()!=='noninventory')throw new Error('QBO item type was not NonInventory on API read-back.');
-              if(String(verified.IncomeAccountRef?.value||'')!==String(incomeAcctRef.value)||String(verified.ExpenseAccountRef?.value||'')!==String(purchasesAcctRef.value))throw new Error('QBO item accounts did not match 40000/51300 on API read-back.');
-              log.details.push('READ-BACK VERIFIED: '+sku+' · QBO Item #'+verified.Id+' · NonInventory · 40000/51300');
-            }catch(e){log.details.push(sku+' — VERIFY FAILED: '+e.message);log.status='error';continue}
+        try{
+          const existing=qbId?existingQBItems.find(i=>String(i.Id)===String(qbId)):null;
+          if(existing&&(String(existing.Sku||'').trim().toUpperCase()!==sku
+            ||String(existing.Name||'').trim().toUpperCase()!==sku
+            ||String(existing.IncomeAccountRef?.value||'')!==String(incomeAcctRef.value)
+            ||String(existing.ExpenseAccountRef?.value||'')!==String(purchasesAcctRef.value))){
+            throw new Error('Existing item SKU/name or account routing conflicts; no QBO item was changed.');
           }
-          products.forEach(pp=>{prodQBMap[pp.id]=res.Item.Id});
-          log.details.push(sku+' → QBO NonInventory Item #'+res.Item.Id+' ('+products.length+' portal variant'+(products.length===1?'':'s')+')');synced++;
-        }else{log.details.push(sku+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
+          const res=existing?{Item:existing}:await qbApi('upsert_item',{item:qbItem});
+          if(!res?.Item?.Id)throw new Error(qbResponseErrorDetail(res));
+          const verified=await verifyCanaryReadback('Item',res.Item.Id,{sku});
+          if(verified.Active===false||String(verified.Type||'').toLowerCase()!=='noninventory')throw new Error('QBO item was inactive or not NonInventory on API read-back.');
+          if(String(verified.IncomeAccountRef?.value||'')!==String(incomeAcctRef.value)||String(verified.ExpenseAccountRef?.value||'')!==String(purchasesAcctRef.value))throw new Error('QBO item accounts did not match 40000/51300 on API read-back.');
+          const itemLog={ts:log.ts,type:log.type,status:'success',details:[
+            (existing?'LINK ONLY — no QBO item was changed: ':'CREATED: ')+sku+' → QBO Item #'+verified.Id,
+            'READ-BACK VERIFIED: '+sku+' · NonInventory · 40000/51300',
+          ]};
+          await persistQbLink({mapKey:'prodQBMap',sourceIds:products.map(pp=>pp.id),qboId:verified.Id,log:itemLog,
+            evidence:{sku,result:existing?'linked':'created',income_account:incomeAcctRef.value,purchases_account:purchasesAcctRef.value,api_readback:true}});
+          products.forEach(pp=>{prodQBMap[pp.id]=verified.Id});
+          log.details.push(...itemLog.details);synced++;
+        }catch(e){log.details.push(sku+' — VERIFY/SAVE FAILED: '+e.message);log.status='error'}
       }
       const remainingSkus=[...skuGroups.values()].filter(products=>!products.some(p=>prodQBMap[p.id])).length;
       log.details.unshift(synced+'/'+skuBatches.length+(canary?' item canary':' product items completed in this batch')+(remainingSkus?' · '+remainingSkus+' remain unlinked':''));
@@ -800,7 +825,7 @@ export function createQBSyncEngine(ctx){
     // confirmation; the confirmed call reads QBO again immediately before the
     // link is removed. Active or mismatched items are never unlinked here.
     const clearInactiveProductLink=async(canaryProductId,options={})=>{
-      if(!canaryPreflightReady())return{status:'blocked'};
+      if(!canaryPreflightReady()||!requireDurableLinks())return{status:'blocked'};
       const product=prod.find(p=>String(p.id)===String(canaryProductId));
       const sku=String(product?.sku||'').trim().toUpperCase();
       if(!product||!sku){nf('Choose exactly one active portal SKU','error');return{status:'blocked'}}
@@ -827,6 +852,7 @@ export function createQBSyncEngine(ctx){
           'UNLINKED INACTIVE QBO ITEM: '+sku+' → QBO Item #'+itemId,
           productIds.length+' portal product record'+(productIds.length===1?'':'s')+' cleared after API read-back verified Active=false',
         ]};
+        await persistQbLink({mapKey:'prodQBMap',sourceIds:productIds,qboId:itemId,active:false,log,evidence:{sku,api_readback:true,inactive:true}});
         setQBConfig(prev=>{
           const prodQBMap={...(prev.prodQBMap||{})};
           productIds.forEach(id=>{if(String(prodQBMap[id]||'')===itemId)delete prodQBMap[id]});
@@ -850,11 +876,12 @@ export function createQBSyncEngine(ctx){
     const syncSalesOrders=async(custQBMap={},prodQBMap={},options={})=>{
       const canarySOId=String(options?.canarySOId||'');
       const canary=!!canarySOId;
-      if(canary?!canaryPreflightReady():productionSyncLocked())return;
+      if(canary?!canaryPreflightReady():migrationBatchLocked())return;
+      if(!requireDurableLinks())return{status:'blocked'};
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:canary?'sales_order_canary':'sales_orders',status:'success',details:[]};
       let synced=0;
-      const soMap=qbConfig.qbSOMap||{};
+      const soMap={...(qbConfig.qbSOMap||{})};
       const allToSync=sos.filter(so=>{
         const hasItems=safeItems(so).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
         return hasItems&&!soMap[so.id];
@@ -871,13 +898,14 @@ export function createQBSyncEngine(ctx){
       let fallbackSalesItemId;
       try{
         const refs=await requiredAccountRefs(['income_account']);
-        fallbackSalesItemId=canary?await requireExistingPortalSalesItem(refs.income_account):await ensurePortalSalesItem(refs.income_account);
+        fallbackSalesItemId=await requireExistingPortalSalesItem(refs.income_account);
       }catch(e){
         log.status='error';log.details.push(e.message||'40000 Sales could not be resolved');
         setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Sales-order sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return;
       }
       const effectiveProdQBMap={...(qbConfig.prodQBMap||{}),...(prodQBMap||{})};
       for(const so of toSync){
+        if(safeNum(so.tax)>0||(!so.tax_exempt&&safeNum(so.tax_rate)>0)){log.details.push(so.id+' — BLOCKED: taxable Estimates await approved QBO tax-code mapping');log.status='partial';continue}
         const c=cust.find(x=>x.id===so.customer_id);
         const cQBId=custQBMap[so.customer_id]||(qbConfig.custQBMap||{})[so.customer_id];
         if(!cQBId){log.details.push(so.id+' — skipped: customer not synced to QB');continue}
@@ -923,9 +951,10 @@ export function createQBSyncEngine(ctx){
         const exact=sameNumber.filter(existing=>String(existing.CustomerRef?.value||'')===String(cQBId)
           &&Math.abs(safeNum(existing.TotalAmt)-estimateTotal)<0.005
           &&String(existing.TxnDate||'').slice(0,10)===String(qbEstimate.TxnDate||'').slice(0,10));
-        if(exact.length===1){
+        if(exact.length===1&&sameNumber.length===1){
           if(canary){
-            try{await verifyCanaryReadback('Estimate',exact[0].Id,{docNumber:so.id,refField:'CustomerRef',refValue:cQBId,total:estimateTotal})}
+            try{await verifyCanaryReadback('Estimate',exact[0].Id,{docNumber:so.id,refField:'CustomerRef',refValue:cQBId,total:estimateTotal,txnDate:estimateDate});
+              await persistQbLink({mapKey:'qbSOMap',sourceIds:[so.id],qboId:exact[0].Id,log:{...log,details:[so.id+' — linked and verified QBO Estimate #'+exact[0].Id]},evidence:{result:'linked',api_readback:true,doc_number:so.id,customer_id:cQBId,date:estimateDate,total:estimateTotal}});}
             catch(e){log.details.push(so.id+' — VERIFY FAILED: '+e.message);log.status='error';continue}
           }
           soMap[so.id]=exact[0].Id;log.details.push(so.id+' — exact existing QB Estimate #'+exact[0].Id+' verified');synced++;continue;
@@ -937,7 +966,8 @@ export function createQBSyncEngine(ctx){
         if(res?.Estimate?.Id){
           if(canary){
             try{
-              const verified=await verifyCanaryReadback('Estimate',res.Estimate.Id,{docNumber:so.id,refField:'CustomerRef',refValue:cQBId,total:estimateTotal});
+              const verified=await verifyCanaryReadback('Estimate',res.Estimate.Id,{docNumber:so.id,refField:'CustomerRef',refValue:cQBId,total:estimateTotal,txnDate:estimateDate});
+              await persistQbLink({mapKey:'qbSOMap',sourceIds:[so.id],qboId:verified.Id,log:{...log,details:[so.id+' — created and verified QBO Estimate #'+verified.Id]},evidence:{result:'created',api_readback:true,doc_number:so.id,customer_id:cQBId,date:estimateDate,total:estimateTotal}});
               log.details.push('READ-BACK VERIFIED: '+so.id+' · QBO Estimate #'+verified.Id+' · $'+safeNum(verified.TotalAmt).toFixed(2));
             }catch(e){log.details.push(so.id+' — VERIFY FAILED: '+e.message);log.status='error';continue}
           }
@@ -957,11 +987,12 @@ export function createQBSyncEngine(ctx){
     const syncPurchaseOrders=async(prodQBMapArg={},options={})=>{
       const canaryPOId=String(options?.canaryPOId||'');
       const canary=!!canaryPOId;
-      if(canary?!canaryPreflightReady():productionSyncLocked())return;
+      if(canary?!canaryPreflightReady():migrationBatchLocked())return;
+      if(!requireDurableLinks())return{status:'blocked'};
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:canary?'purchase_order_canary':'purchase_orders',status:'success',details:[]};
       let synced=0;
-      const poMap=qbConfig.qbPOMap||{};
+      const poMap={...(qbConfig.qbPOMap||{})};
       // Fetch existing QB vendors to match by name and avoid duplicates
       let existingQBVendors=[];
       try{
@@ -1060,9 +1091,10 @@ export function createQBSyncEngine(ctx){
         const exact=sameNumber.filter(existing=>String(existing.VendorRef?.value||'')===String(qbVendorId)
           &&Math.abs(safeNum(existing.TotalAmt)-totalAmount)<0.005
           &&String(existing.TxnDate||'').slice(0,10)===String(qbPO.TxnDate||'').slice(0,10));
-        if(exact.length===1){
+        if(exact.length===1&&sameNumber.length===1){
           if(canary){
-            try{await verifyCanaryReadback('PurchaseOrder',exact[0].Id,{docNumber:group.poId,refField:'VendorRef',refValue:qbVendorId,total:totalAmount})}
+            try{await verifyCanaryReadback('PurchaseOrder',exact[0].Id,{docNumber:group.poId,refField:'VendorRef',refValue:qbVendorId,total:totalAmount,txnDate:poDate});
+              await persistQbLink({mapKey:'qbPOMap',sourceIds:[group.poId],qboId:exact[0].Id,log:{...log,details:[group.poId+' — linked and verified QBO PO #'+exact[0].Id]},evidence:{result:'linked',api_readback:true,doc_number:group.poId,vendor_id:qbVendorId,date:poDate,total:totalAmount}});}
             catch(e){log.details.push(group.poId+' — VERIFY FAILED: '+e.message);log.status='error';continue}
           }
           poMap[group.poId]=exact[0].Id;log.details.push(group.poId+' — exact existing QB PO #'+exact[0].Id+' verified');synced++;continue;
@@ -1074,7 +1106,8 @@ export function createQBSyncEngine(ctx){
         if(res?.PurchaseOrder?.Id){
           if(canary){
             try{
-              const verified=await verifyCanaryReadback('PurchaseOrder',res.PurchaseOrder.Id,{docNumber:group.poId,refField:'VendorRef',refValue:qbVendorId,total:totalAmount});
+              const verified=await verifyCanaryReadback('PurchaseOrder',res.PurchaseOrder.Id,{docNumber:group.poId,refField:'VendorRef',refValue:qbVendorId,total:totalAmount,txnDate:poDate});
+              await persistQbLink({mapKey:'qbPOMap',sourceIds:[group.poId],qboId:verified.Id,log:{...log,details:[group.poId+' — created and verified QBO PO #'+verified.Id]},evidence:{result:'created',api_readback:true,doc_number:group.poId,vendor_id:qbVendorId,date:poDate,total:totalAmount}});
               log.details.push('READ-BACK VERIFIED: '+group.poId+' · QBO PurchaseOrder #'+verified.Id+' · $'+safeNum(verified.TotalAmt).toFixed(2));
             }catch(e){log.details.push(group.poId+' — VERIFY FAILED: '+e.message);log.status='error';continue}
           }
@@ -1092,6 +1125,7 @@ export function createQBSyncEngine(ctx){
 
     // ── SYNC ALL ──
     const syncAll=async()=>{
+      if(migrationBatchLocked())return{status:'blocked'};
       if(productionSyncLocked())return;
       setQbSyncing(true);
       const custQBMap=await syncCustomers();

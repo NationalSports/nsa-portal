@@ -18,6 +18,7 @@ const makeEngine = ({qbApi,cust=[],sos=[],invs=[],prod=[],vend=[]}) => {
     setSubmittedBatches:jest.fn(),setVend:jest.fn(),
   };
   const engine=createQBSyncEngine({
+      persistQbLink:jest.fn(async()=>({})),
     cust,sos,invs,prod,vend,invPOs:[],submittedBatches:[],qbApi,qbConfig:config,nf:jest.fn(),
     dP:jest.fn(()=>({sell:0})),...setters,
   });
