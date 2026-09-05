@@ -167,7 +167,7 @@ describe('outbox store (localStorage round-trip)', () => {
     expect(_outboxGate(en, { id: 'SO-1514', memo: 'newer', _version: 112 })).toBe('conflict');
   });
 
-  test('size cap evicts oldest-first, loudly, never wedging the write', () => {
+  test('drafts beyond the old size cap are retained without evicting older work', () => {
     const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     const big = 'x'.repeat(500 * 1024); // two of these exceed the ~768k-char cap
     _outboxAdd('sales_orders', { id: 'SO-OLD', memo: big });
@@ -177,9 +177,9 @@ describe('outbox store (localStorage round-trip)', () => {
     localStorage.setItem('nsa_outbox', JSON.stringify(box));
     _outboxAdd('sales_orders', { id: 'SO-NEW', memo: big });
     const left = _outboxList();
-    expect(left).toHaveLength(1);
-    expect(left[0].id).toBe('SO-NEW');
-    expect(errSpy).toHaveBeenCalled(); // eviction is data loss — must never be silent
+    expect(left).toHaveLength(2);
+    expect(left.map(e=>e.id)).toEqual(expect.arrayContaining(['SO-OLD','SO-NEW']));
+    expect(errSpy).not.toHaveBeenCalled();
     errSpy.mockRestore();
   });
 });
@@ -384,4 +384,15 @@ describe('immutable document save attempts',()=>{
     expect(_outboxList().find(e=>e.id==='SO-REVISIONS')).toBeUndefined();
     expect(_dbSavePendingIds.has('SO-REVISIONS')).toBe(false);
   });
+});
+
+test('quota failure preserves the previously stored backup and reports staging failure',()=>{
+ localStorage.removeItem('nsa_outbox');
+ _outboxAdd('sales_orders',{id:'SO-KEPT',memo:'must survive'});
+ const original=localStorage.getItem('nsa_outbox');
+ const spy=jest.spyOn(Storage.prototype,'setItem').mockImplementation(()=>{throw new Error('QuotaExceededError');});
+ const error=jest.spyOn(console,'error').mockImplementation(()=>{});
+ expect(_outboxAdd('sales_orders',{id:'SO-NO-SPACE',memo:'new'})).toBe(false);
+ expect(localStorage.getItem('nsa_outbox')).toBe(original);
+ spy.mockRestore();error.mockRestore();localStorage.removeItem('nsa_outbox');
 });

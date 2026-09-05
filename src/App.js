@@ -2,6 +2,8 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import * as Sentry from '@sentry/react';
 import './portal.css';
+import DraftRecoveryPanel from './DraftRecoveryPanel';
+import {draftJournal} from './lib/draftJournal';
 import { classifySaveAlert } from './lib/saveAlertClassification';
 import MobilePortal from './MobilePortal';
 import DashboardOverview from './DashboardOverview';
@@ -37836,6 +37838,7 @@ export default function App(){
           })()}
         </div>}
       </div>}
+      <DraftRecoveryPanel owner={cu?.id} onReview={(payload,table)=>{const entry={table,id:payload.id,payload,baseVersion:payload._obBaseVersion??payload._version??null,ts:Date.now()};setOutboxConflicts(prev=>[...prev.filter(x=>x.table!==table||x.id!==payload.id),entry])}}/>
       {outboxConflicts.length>0&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b',fontSize:12,fontWeight:600}}>
         <div style={{padding:'8px 16px',display:'flex',alignItems:'center',gap:8}}>
           <span style={{fontSize:14}}>&#9888;</span>
@@ -37871,10 +37874,10 @@ export default function App(){
                 setOutboxConflicts(prev=>prev.filter(x=>x.table+':'+x.id!==key));
                 nf('Your edit for '+en.id+' was restored and is re-saving — it will replace the newer cloud copy.','success');
               }} style={{background:'#991b1b',border:'none',color:'#fff',cursor:'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Apply my edit anyway</button>
-              <button onClick={()=>{
+              <button onClick={async()=>{
                 if(!window.confirm('Discard your unsaved edit for '+en.id+'?\n\nThe newer cloud copy stays. This cannot be undone.'))return;
-                _outboxRemove(en.table,en.id);
-                _dbSaveFailedIds.delete(en.id);_clearSaveError(en.id);_persistFailedIds();
+                if(en.payload?._draftRecovery){try{await draftJournal.acknowledge(en.payload._draftRecovery)}catch{nf('Could not clear the recovery copy. Your draft is still available.','error');return}}
+                if(!en.payload?._draftRecovery){_outboxRemove(en.table,en.id);_dbSaveFailedIds.delete(en.id);_clearSaveError(en.id);_persistFailedIds();}
                 setOutboxConflicts(prev=>prev.filter(x=>x.table+':'+x.id!==key));
               }} style={{background:'none',border:'1px solid #991b1b',color:'#991b1b',cursor:'pointer',fontWeight:600,fontSize:11,padding:'2px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Discard my edit</button>
             </div>);

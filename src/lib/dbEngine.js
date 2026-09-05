@@ -14,6 +14,7 @@
 // bottom are new. Behavior contracts are pinned by
 // src/__tests__/dbEngine.characterization.test.js.
 // ═══════════════════════════════════════════════════════════════════════
+import { protectDocumentDraft } from './draftJournal';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './requestBreaker';
 import { _sbAuthLock } from './supabase';
@@ -3390,7 +3391,7 @@ const _saveDocument=(table,entity,saveFn,addOnly=false)=>{
   const id=entity.id;
   _activeDocumentSaves.set(id,(_activeDocumentSaves.get(id)||0)+1);
   _dbSavePendingIds.add(id);
-  return _outboxWrap(table,snapshot,()=>_queuedEntitySave(id,snapshot,saveFn),addOnly).then(result=>{
+  return _outboxWrap(table,snapshot,()=>addOnly?_queuedEntitySave(id,snapshot,saveFn):protectDocumentDraft(table,snapshot,()=>_queuedEntitySave(id,snapshot,saveFn),error=>{console.error('[Draft recovery]',error);if(_dbNotify)_dbNotify('Browser draft backup is unavailable. Keep this tab open until the cloud save is confirmed.','error')}),addOnly).then(result=>{
     // Only adopt the canonical version/merged fields into the exact source
     // object we captured. A caller that edited it meanwhile owns its new draft.
     if(result===true&&JSON.stringify(entity)===signature){Object.keys(entity).forEach(k=>{if(!(k in snapshot))delete entity[k]});Object.assign(entity,snapshot);}
@@ -3547,18 +3548,16 @@ const _dbSavePendingIds=new Set();
 // The gate, not this store, decides whether a payload may re-enter state: a stale outbox entry
 // silently overwriting a newer server row would be worse than the loss it prevents.
 const _OUTBOX_KEY='nsa_outbox';
-const _OUTBOX_MAX_CHARS=768*1024;// ~1.5MB in UTF-16 — self-capped, because essential keys bypass the budget checks above
 const _outboxRead=()=>{try{const raw=localStorage.getItem(_OUTBOX_KEY);const box=raw?JSON.parse(raw):{};return box&&typeof box==='object'&&!Array.isArray(box)?box:{}}catch{return{}}};
-// Read-modify-write on every mutation (never a cached in-memory blob) so two tabs failing saves
-// concurrently merge per-key instead of clobbering each other's whole outbox.
+// A full browser store must never delete someone else's unsaved work to make
+// room. setItem is atomic: failure leaves the previous backup unchanged.
 const _outboxWrite=(box)=>{
-  let s=JSON.stringify(box);
-  const evicted=[];
-  const evictOldest=()=>{const ks=Object.keys(box);if(!ks.length)return false;let oldest=ks[0];for(const k of ks)if((box[k].ts||0)<(box[oldest].ts||0))oldest=k;evicted.push(oldest);delete box[oldest];s=JSON.stringify(box);return true};
-  while(s.length>_OUTBOX_MAX_CHARS&&evictOldest());
-  for(;;){try{localStorage.setItem(_OUTBOX_KEY,s);break}catch(e){if(!evictOldest()){console.error('[Outbox] could not persist outbox:',e?.message||e);return}}}
-  // Eviction is data loss — it must never be silent.
-  if(evicted.length){console.error('[Outbox] DROPPED unsaved edit(s) to stay within the size cap:',evicted.join(', '));if(_dbNotify)_dbNotify('Storage full — '+evicted.length+' older unsaved edit(s) had to be dropped from the offline backup ('+evicted.join(', ')+'). Check the failed-save list.','error')}
+  try{localStorage.setItem(_OUTBOX_KEY,JSON.stringify(box));return true}
+  catch(error){
+    console.error('[Outbox] Could not update backup; existing drafts retained:',error);
+    if(_dbNotify)_dbNotify('Browser backup is full or unavailable. Existing drafts were kept. Keep this tab open until your cloud save is confirmed.','error');
+    return false;
+  }
 };
 // A save completion must identify the draft that it belongs to. A random component keeps tokens
 // distinct across tabs; the counter makes repeated saves in one tab easy to distinguish even when
@@ -3609,8 +3608,7 @@ const _outboxAdd=(table,entity,revision)=>{try{
   // a fully-successful save (_outboxWrap).
   const _obBase=payload._obBaseVersion!=null?payload._obBaseVersion:payload._version;
   box[key]={table,id:entity.id,payload,baseVersion:(_obBase!=null&&isFinite(Number(_obBase))?Number(_obBase):null),ts:Date.now(),attempts:(prev?.attempts||0)+1,revision:revision||_newOutboxRevision()};
-  _outboxWrite(box);
-  return box[key].revision;
+  return _outboxWrite(box)?box[key].revision:false;
 }catch(e){console.error('[Outbox] add failed:',e);return false}};
 // Update and acknowledge are compare-before-write operations. They intentionally do nothing when
 // another tab/attempt has replaced the key, which is the key safety property for delayed results.
@@ -3629,7 +3627,7 @@ const _outboxUpdate=(table,entity,revision,stagedId)=>{try{
     if(dest&&dest.revision!==revision){delete box[key];_outboxWrite(box);return false}
     box[destKey]=updated;delete box[key];
   }
-  _outboxWrite(box);return true;
+  return _outboxWrite(box);
 }catch(e){console.error('[Outbox] update failed:',e);return false}};
 const _outboxAck=(table,id,revision)=>{try{
   if(!id||!revision)return false;
@@ -3639,7 +3637,7 @@ const _outboxAck=(table,id,revision)=>{try{
   // This is still bounded by localStorage's lack of an atomic compare-and-swap; all callers must
   // use revision-aware ack/update paths for the guarantee to hold.
   const latest=_outboxRead()[key];if(!latest||latest.revision!==revision)return false;
-  delete box[key];_outboxWrite(box);return true;
+  delete box[key];return _outboxWrite(box);
 }catch{return false}};
 // Failed add-only saves historically captured their entity only after the failure was known. Keep
 // that behavior when no entry exists, while refusing to replace a full-save entry that may be newer.
