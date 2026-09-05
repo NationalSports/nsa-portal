@@ -79,6 +79,48 @@ export function findExactQBCustomerMatches(customer, qboCustomers = []) {
   return [...new Map(matches.map(match => [String(match.Id), match])).values()];
 }
 
+// Read-only plan: every source is classified before any customer batch writes.
+export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms = [], savedMap = {}) {
+  const rows = customers.map(customer => {
+    const row = {sourceId:String(customer.id || ''),name:customer.name || '',displayName:portalCustomerDisplayName(customer),
+      portalTerms:customer.payment_terms || '',qboId:'',action:'blocked',reason:''};
+    if(customer.is_active === false || customer.deleted_at)return {...row,action:'excluded',reason:'Inactive or deleted portal customer'};
+    try {
+      if(!row.sourceId || !String(customer.name || '').trim())throw new Error('Missing customer ID or name');
+      if(!String(customer.payment_terms || '').trim())throw new Error('Missing portal payment terms; no default is assumed');
+      const term = resolveQBCustomerTerm(terms,customer.payment_terms);
+      row.desiredTerm = term;
+      const mapped = String(savedMap[customer.id] || '');
+      const embedded = String(customer.qb_customer_id || '');
+      if(mapped && embedded && mapped !== embedded)throw new Error('Conflicting saved customer IDs');
+      const savedId = mapped || embedded;
+      const matches = findExactQBCustomerMatches(customer,qboCustomers);
+      if(matches.length > 1)throw new Error('Multiple exact QBO customer matches');
+      const existing = savedId ? qboCustomers.find(q=>String(q.Id) === savedId) : matches[0];
+      if(savedId && !existing)throw new Error('Saved QBO customer was not returned; audit its ID before relinking');
+      if(existing?.Active === false)throw new Error('Saved QBO customer is inactive');
+      if(existing && matches.length === 1 && String(matches[0].Id) !== String(existing.Id))throw new Error('Saved ID conflicts with exact name match');
+      if(existing && !matches.some(q=>String(q.Id) === String(existing.Id)))throw new Error('Saved QBO customer name does not match portal identity');
+      if(!existing)return {...row,action:'create',reason:'Requires explicit creation approval'};
+      row.qboId = String(existing.Id);
+      row.currentTerm = existing.SalesTermRef || null;
+      row.action = String(existing.SalesTermRef?.value || '') === term.value ? 'link' : 'update_terms';
+      row.reason = row.action === 'link' ? 'Existing active customer; terms match' : 'Requires explicit term-change approval';
+      return row;
+    }catch(error){return {...row,action:'blocked',reason:error.message};}
+  });
+  const names = new Map(), ids = new Map();
+  rows.filter(row=>!['excluded','blocked'].includes(row.action)).forEach(row=>{
+    const name = normalizeQBCustomerName(row.displayName);
+    names.set(name,[...(names.get(name)||[]),row]);
+    if(row.qboId)ids.set(row.qboId,[...(ids.get(row.qboId)||[]),row]);
+  });
+  [...names.values(),...ids.values()].filter(group=>group.length>1).forEach(group=>group.forEach(row=>{
+    row.action='blocked';row.reason='Multiple portal customers claim the same display name or QBO customer';
+  }));
+  return rows;
+}
+
 // One portal PO can span several SO item rows. Group those rows before both UI
 // preview and QBO posting so the operator sees the same one-PO payload the API
 // will receive. Mixed vendors or mixed merchandise/decoration categories under
