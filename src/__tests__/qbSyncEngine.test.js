@@ -68,6 +68,7 @@ describe('QuickBooks one-customer canary', () => {
     let config={realm_id:'9341',preflight:{status:'success',realm_id:'9341'},custQBMap:{},syncLog:[]};
     const setQBConfig=jest.fn(updater=>{config=typeof updater==='function'?updater(config):updater});
     const engine=createQBSyncEngine({
+      persistQbLink:jest.fn(async()=>({})),
       cust:[portalCustomer],sos:[],invs:[],prod:[],vend:[],invPOs:[],submittedBatches:[],qbApi,qbConfig:config,nf:jest.fn(),dP:jest.fn(),
       setQBConfig,setQbSyncing:jest.fn(),setInvs:jest.fn(),setInvPOs:jest.fn(),setSOs:jest.fn(),setSubmittedBatches:jest.fn(),setVend:jest.fn(),
     });

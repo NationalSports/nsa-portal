@@ -470,9 +470,10 @@ const _reconcileInvoicedQty = (so, invoicesForSO) => {
   };
   (invoicesForSO || []).forEach(inv => {
     // Deposits bill a % of the order without locking specific units
-    if (inv?.inv_type === 'deposit') return;
+    if (inv?.inv_type === 'deposit' || inv?.status === 'void' || inv?.deleted_at) return;
     const lines = safeArr(inv?.line_items);
     lines.forEach(li => {
+      if (li?._so_balance_adjustment) return;
       const q = safeNum(li?.qty);
       // Non-positive line quantities are invalid, not credits — a negative entry here
       // would inflate "remaining to invoice" and enable over-invoicing.

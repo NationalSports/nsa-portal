@@ -2,6 +2,9 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import * as Sentry from '@sentry/react';
 import './portal.css';
+import DraftRecoveryPanel from './DraftRecoveryPanel';
+import {draftJournal} from './lib/draftJournal';
+import { classifySaveAlert } from './lib/saveAlertClassification';
 import MobilePortal from './MobilePortal';
 import DashboardOverview from './DashboardOverview';
 import BarcodeScanner from './BarcodeScanner';
@@ -49,6 +52,7 @@ import { canManageQuickBooksRole, storedUserCanManageQuickBooks } from './qbAcce
 import { applyTaxRemittanceLedger, reversedTaxRemittanceIds } from './lib/taxRemittanceLedger';
 import { qboProductionReconnectUrl } from './qbOAuthCallback';
 import { mergeDurableQbCanaries, qbCanaryLedgerRecord } from './qbCanaryLedger';
+import { mergeDurableQBLinks, persistVerifiedQBLink } from './qbLinkLedger';
 import { canViewFinancials } from './lib/financialAccess';
 import { consolidateOmgProductRows } from './lib/storeSkuGrouping';
 import { acquireOmgCreationGuard, omgCollectedUnitPrice, omgInvoiceIdempotencyKey, webstoreInvoiceIdempotencyKey } from './lib/omgCreationGuard';
@@ -489,6 +493,8 @@ import {
   _soDiffCmp,
   _prodDiffCmp,
   _setInvBaseProvider,
+  _clearDocumentConflictCooldown,
+  _hasActiveDocumentSave,
   _dbSaveEstimate,
   _dbSaveSO,
   _dbSaveArtFiles,
@@ -545,7 +551,8 @@ import {
   _logClientEvent,
   _outboxAdd,
   _outboxRemove,
-  _outboxRemoveById,
+  _retryFailedSaves,
+  _rememberSaveRetry,
   _outboxList,
   _outboxGate,
   _setOnOutboxConflict,
@@ -2317,12 +2324,19 @@ export default function App(){
   const[dashSalesBasis,setDashSalesBasis]=useState('sales');// By Rep / Top Customers basis: sales (new SO revenue) | billed (invoices issued)
   const[dashCustRepFilter,setDashCustRepFilter]=useState('all');// Top Customers report: 'all' or a rep id
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
+  const _qbDurableRowsRef=useRef({});
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,
     realm_id:'',sandbox:false,// access/refresh tokens live server-side (qb_oauth_tokens), never in client state
     mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},
     syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
   const[qbTab,setQbTab]=useState('overview');
-  const[qbSyncing,setQbSyncing]=useState(false);
+  const[qbSyncing,setQbSyncingState]=useState(false);
+  const qbSyncBusyRef=useRef(false);
+  const setQbSyncing=React.useCallback(value=>{
+    const next=typeof value==='function'?value(qbSyncBusyRef.current):value;
+    qbSyncBusyRef.current=next;
+    setQbSyncingState(next);
+  },[]);
   const _qbSyncCtxRef=React.useRef(null);// fresh state snapshot for the QB auto-sync engine, refreshed every render
   const _qbReconnectNoticeRef=React.useRef(0);// collapse a failed sync batch into one reconnect notice
   const _toastTimerRef=React.useRef(null);// an older toast must never clear a newer toast
@@ -2767,16 +2781,8 @@ export default function App(){
             const _obEntries=_outboxList();
             if(_obEntries.length){
               const _obTables={estimates:d.estimates,sales_orders:d.sales_orders,invoices:d.invoices,customers:d.customers,products:d.products,messages:d.messages};
-              // Tables whose load this boot is untrustworthy (parent query timed out empty; products:
-              // the essential tier-1 load SKIPS the catalog, so d.products=[] is normal, not a delete).
-              // Gating an outbox entry against such a table reads the missing row as "deleted on
-              // server" (_outboxGate → 'conflict') and raises a phantom conflict card that can discard
-              // a real unsaved edit. Instead, restore those entries via the same splice as an 'apply'
-              // verdict — the payload MUST re-enter state, because both orphan-cleanup sites (the
-              // startup sweep below and doRetry) treat a failed ID absent from state as "deleted by
-              // user" and purge its outbox entry. A genuinely-stale payload is still safe: the save
-              // paths re-check _version server-side, so a bad replay is rejected and stays failed.
-              // The entry gates normally on the next boot whose table actually loads.
+              // An incomplete load is not proof that an outboxed record was
+              // deleted. Keep the snapshot; its writer still checks cloud revisions.
               const _obNoGate={sales_orders:_soTimedOutBlank,estimates:_estTimedOutBlank,invoices:_invTimedOutBlank,customers:_custTimedOutBlank,messages:_msgTimedOutBlank,products:!d.products.length};
               const _obConflicts=[];
               _obEntries.forEach(en=>{
@@ -2785,6 +2791,7 @@ export default function App(){
                 if(_obNoGate[en.table]&&!arr.find(r=>r.id===en.id)){
                   arr.push(en.payload);
                   _obApplied[en.id]=en.payload;
+                  _rememberSaveRetry(en.table,en.payload);
                   _dbSaveFailedIds.add(en.id);
                   console.warn('[Outbox] restored unsaved edit for',en.id,'without gating — its table didn’t load this boot');
                   return;
@@ -2796,6 +2803,7 @@ export default function App(){
                   const idx=arr.findIndex(r=>r.id===en.id);
                   if(idx>=0)arr[idx]=en.payload;else arr.push(en.payload);
                   _obApplied[en.id]=en.payload;
+                  _rememberSaveRetry(en.table,en.payload);
                   _dbSaveFailedIds.add(en.id);
                   console.log('[Outbox] restored unsaved edit for',en.id,'(base v'+(en.baseVersion??'—')+')');
                   return;
@@ -2877,7 +2885,7 @@ export default function App(){
           // replaced by the stale DB copy the load already read.
           if(as.wh_recent_actions)setWhRecentActions(prev=>{const incStr=JSON.stringify(as.wh_recent_actions);if(JSON.stringify(prev)===incStr){_whActionsApplied.current=incStr;return prev}if(_appStateDirty('wh_recent_actions'))return prev;_whActionsApplied.current=incStr;return as.wh_recent_actions});
           if(as.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as.job_time_logs});
-          if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};const _qbLoaded={..._qbDef,...as.qb_config,mapping:migrateQBAccountMapping(as.qb_config.mapping),autoSync:as.qb_config.initialMigrationApproved===true?(as.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)};setQBConfig(mergeDurableQbCanaries(_qbLoaded,as))}
+          if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};const _qbLoaded={..._qbDef,...as.qb_config,mapping:migrateQBAccountMapping(as.qb_config.mapping),autoSync:as.qb_config.initialMigrationApproved===true?(as.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)};setQBConfig(mergeDurableQBLinks(mergeDurableQbCanaries(_qbLoaded,as),{...as,..._qbDurableRowsRef.current}))}
           if(as.omg_first_seen)setOmgFirstSeen(as.omg_first_seen);
           if(as.inv_pos)setInvPOs(as.inv_pos);
           if(as.inv_adj_log)setInvAdjLog(prev=>{const incStr=JSON.stringify(as.inv_adj_log);if(JSON.stringify(prev)===incStr){_invAdjLogApplied.current=incStr;return prev}if(_appStateDirty('inv_adj_log'))return prev;_invAdjLogApplied.current=incStr;return as.inv_adj_log});
@@ -2963,7 +2971,7 @@ export default function App(){
               if(as2.so_history)setSOHistory(prev=>{const incStr=JSON.stringify(as2.so_history);if(JSON.stringify(prev)===incStr){_soHistoryApplied.current=incStr;return prev}if(_appStateDirty('so_history'))return prev;_soHistoryApplied.current=incStr;return as2.so_history});
               if(as2.est_history)setEstHistory(prev=>{const incStr=JSON.stringify(as2.est_history);if(JSON.stringify(prev)===incStr){_estHistoryApplied.current=incStr;return prev}if(_appStateDirty('est_history'))return prev;_estHistoryApplied.current=incStr;return as2.est_history});
               if(as2.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as2.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as2.job_time_logs});
-              if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};const _qbLoaded={..._qbDef,...as2.qb_config,mapping:migrateQBAccountMapping(as2.qb_config.mapping),autoSync:as2.qb_config.initialMigrationApproved===true?(as2.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]};setQBConfig(mergeDurableQbCanaries(_qbLoaded,as2))}if(as2.inv_pos)setInvPOs(as2.inv_pos);
+              if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};const _qbLoaded={..._qbDef,...as2.qb_config,mapping:migrateQBAccountMapping(as2.qb_config.mapping),autoSync:as2.qb_config.initialMigrationApproved===true?(as2.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]};setQBConfig(mergeDurableQBLinks(mergeDurableQbCanaries(_qbLoaded,as2),{...as2,..._qbDurableRowsRef.current}))}if(as2.inv_pos)setInvPOs(as2.inv_pos);
               if(as2.inv_adj_log)setInvAdjLog(prev=>{const incStr=JSON.stringify(as2.inv_adj_log);if(JSON.stringify(prev)===incStr){_invAdjLogApplied.current=incStr;return prev}if(_appStateDirty('inv_adj_log'))return prev;_invAdjLogApplied.current=incStr;return as2.inv_adj_log});if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);if(as2.comm_overrides)setCommOverrides(as2.comm_overrides);if(as2.labor_rates)setLaborRates(as2.labor_rates);
               if(as2.company_info){const ci={...NSA_DEFAULTS,...as2.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
               console.log('[DB] Loaded from Supabase after seed by other browser');
@@ -2989,10 +2997,7 @@ export default function App(){
       finally{if(!cancelled){_dbReady.current=true;setDbLoading(false);
         // Mark initial load done after a tick so auto-save effects don't fire from the setState calls above
         setTimeout(()=>{_initialLoadDone.current=true;
-          // Clean up failed IDs for entities that were deleted — prevents permanent error banner
-          if(_dbSaveFailedIds.size){const d2=_visFlushRefs.current;const allIds2=new Set([...d2.ests,...d2.sos,...d2.invs,...d2.cust,...d2.prod,...d2.msgs].map(e=>e.id));
-          const orphaned2=[..._dbSaveFailedIds].filter(id=>!allIds2.has(id));
-          if(orphaned2.length){orphaned2.forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id);_outboxRemoveById(id);console.log('[DB] Startup cleanup — cleared orphaned failed ID:',id)});_persistFailedIds()}}
+          // Absence from a loaded page is not proof of deletion. Preserve failed drafts.
         },100);
       }}
     })();
@@ -3156,6 +3161,7 @@ export default function App(){
     const _mark=()=>{_lastTabInput.t=Date.now()};
     ['pointerdown','keydown','scroll'].forEach(ev=>window.addEventListener(ev,_mark,{passive:true}));
     startDeployReloadWatcher({
+      isBlocked:()=>qbSyncBusyRef.current,
       // Bills sitting in Import & Review are memory-only work — hold the reload for them too
       // (bounded by the watcher's defer cap; past it the review-session snapshot + Resume
       // banner recover the list, so a forced reload costs one click instead of the session).
@@ -3465,6 +3471,7 @@ export default function App(){
         window.dispatchEvent(new Event('nsa:version-reload-pending'));
         const deferStart=Date.now();
         const doReload=()=>{
+          if(qbSyncBusyRef.current){setTimeout(doReload,2000);return;}
           const savesIdle=_dbSavePendingIds.size===0&&_bgSync===0&&!dirtyRef.current;
           // An active bill review counts as activity even when the tab is hidden or the mouse
           // is idle (staff cross-check invoices in other tabs mid-review). Still bounded by the
@@ -3496,6 +3503,7 @@ export default function App(){
     window.addEventListener('pointerdown',mark,{capture:true,passive:true});
     window.addEventListener('keydown',mark,{capture:true,passive:true});
     const tick=async()=>{
+      if(qbSyncBusyRef.current)return;
       if(fired||Date.now()-lastAct<IDLE_RELOAD_MS)return;
       // Reload only a STUCK idle tab (pending/looping saves) — the case the deploy-reload can't handle.
       // A healthy idle tab just does this cheap in-memory check and sits (no reload, no load).
@@ -3511,7 +3519,7 @@ export default function App(){
       // Jitter (2–20s, matching the deploy-reload) so a fleet of simultaneously-idle tabs does not
       // reload-and-refetch in the same instant and spike the DB.
       const jitter=2000+Math.floor(Math.random()*18000);
-      setTimeout(()=>{try{window.location.reload()}catch(_){/* noop */}},jitter);
+      setTimeout(()=>{if(qbSyncBusyRef.current){fired=false;return;}try{window.location.reload()}catch(_){/* noop */}},jitter);
     };
     const iv=setInterval(tick,60000); // check every minute
     return()=>{clearInterval(iv);window.removeEventListener('pointerdown',mark,{capture:true});window.removeEventListener('keydown',mark,{capture:true})};
@@ -3520,7 +3528,7 @@ export default function App(){
   // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
   // Uses _dbSnap to diff against last DB state — only saves records that actually changed (prevents cross-browser feedback loops)
-  const _diffSave=(arr,snapKey,saveFn,cmpFn=_diffCmp)=>{if(_authErrorDetected)return;if(!_initialLoadDone.current||!_dbLoadSuccess.current){if(!_diffSaveSkipLogged.has(snapKey)){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);_diffSaveSkipLogged.add(snapKey)}if(_initialLoadDone.current){const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item))_dbSavePendingIds.add(item.id)})}return}const snap=_dbSnap.current[snapKey]||[];const changed=[];const oldById=new Map();arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item)){changed.push(item);oldById.set(item.id,old||null)}});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;changed.forEach(item=>_dbSavePendingIds.add(item.id));const BATCH=3;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSyncInc();try{await Promise.all(batch.map(async item=>{const result=saveFn(item,oldById.get(item.id));if(result&&typeof result.then==='function'){const ok=await result;if(ok!==false){_dbSavePendingIds.delete(item.id)}else{const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}}}))}finally{_bgSyncDec()}if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
+  const _diffSave=(arr,snapKey,saveFn,cmpFn=_diffCmp)=>{if(_authErrorDetected)return;if(!_initialLoadDone.current||!_dbLoadSuccess.current){if(!_diffSaveSkipLogged.has(snapKey)){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);_diffSaveSkipLogged.add(snapKey)}if(_initialLoadDone.current){const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item))_dbSavePendingIds.add(item.id)})}return}const snap=_dbSnap.current[snapKey]||[];const changed=[];const oldById=new Map();arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item)){changed.push(item);oldById.set(item.id,old||null)}});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;changed.forEach(item=>_dbSavePendingIds.add(item.id));const BATCH=3;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSyncInc();try{await Promise.all(batch.map(async item=>{const result=saveFn(item,oldById.get(item.id));if(result&&typeof result.then==='function'){const ok=await result;if(ok!==false){(!_hasActiveDocumentSave(item.id)&&_dbSavePendingIds.delete(item.id))}else{const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id&&s===item?(snap.find(p=>p.id===item.id)||s):s)}}}))}finally{_bgSyncDec()}if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false,access:r.access||null,commission_eligible:r.commission_eligible===true})));_dbSnap.current.team=REPS}},[REPS]);
   React.useEffect(()=>{_diffSave(cust,'cust',c=>_dbSaveCustomer(c),_custDiffCmp)},[cust]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed.map(v=>_pick(v,_vendCols)));_dbSnap.current.vend=vend}},[vend]);
@@ -3655,36 +3663,6 @@ export default function App(){
     }
   }});_dbSnap.current.omg=omgStores}},[omgStores]);
 
-  // ─── Automatic retry for failed saves (every 60s, sequential to avoid overwhelming Supabase) ───
-  // The interval is created ONCE (deps []) so its 60s timer isn't torn down every time
-  // these arrays change — during active editing they change far more than once a minute,
-  // which kept resetting the timer so the retry almost never fired. The save fns and
-  // _dbSaveFailedIds are module-level (stable); only the data arrays need a latest-value ref.
-  const _retryDataRef=useRef({ests,sos,invs,msgs,cust,prod});
-  _retryDataRef.current={ests,sos,invs,msgs,cust,prod};
-  React.useEffect(()=>{
-    const retryInterval=setInterval(async()=>{
-      // A latched-dead session can't save anything — every retry would go out as anon and be
-      // RLS-rejected (log spam, no progress). Hold the queue; sign-in un-latches and retries resume.
-      if(_isSessionDead()||_dbSaveFailedIds.size===0||!_initialLoadDone.current||!_dbLoadSuccess.current)return;
-      const {ests,sos,invs,msgs,cust,prod}=_retryDataRef.current;
-      console.log('[DB] Retrying failed saves:',[ ..._dbSaveFailedIds]);
-      const ids=[..._dbSaveFailedIds];
-      for(const id of ids){
-        const sid=String(id);
-        if(sid.startsWith('EST-')){const item=ests.find(e=>e.id===id);if(item)await _dbSaveEstimate(item)}
-        else if(sid.startsWith('SO-')){const item=sos.find(s=>s.id===id);if(item)await _dbSaveSO(item)}
-        else if(sid.startsWith('INV-')){const item=invs.find(i=>i.id===id);if(item)await _dbSaveInvoice(item)}
-        else if(sid.startsWith('MSG-')){const item=msgs.find(m=>m.id===id);if(item)await _dbSaveMessage(item)}
-        else{
-          const c=cust.find(x=>x.id===id);if(c){await _dbSaveCustomer(c);continue}
-          const p=prod.find(x=>x.id===id);if(p)await _dbSaveProduct(p)
-        }
-      }
-    },60000);
-    return()=>clearInterval(retryInterval);
-  },[]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // ─── Warn user before leaving if there are unsaved changes in flight ───
   React.useEffect(()=>{
     const handleBeforeUnload=(e)=>{
@@ -3760,10 +3738,10 @@ export default function App(){
           +'</div>',senderName:'NSA Portal',senderEmail:companyInfo?.email||'team@nsa-teamwear.com'}).catch(e=>console.warn('[alert] verify_fail email failed:',e));
         return;
       }
-      const lostText=(prevCount!=null&&newCount!=null)?(prevCount-newCount)+' of '+prevCount+' item(s)':(prevCount!=null?prevCount+' item(s)':'item(s)');
-      const isBlocked=kind==='blocked'||kind==='bg_shrink_blocked'||kind==='qty_wipe_blocked';
+      const {isBlocked,entity:alertEntity,action:alertAction,unit:alertUnit,countLabel}=classifySaveAlert(kind,soId);
+      const lostText=(prevCount!=null&&newCount!=null)?(prevCount-newCount)+' of '+prevCount+' '+alertUnit:(prevCount!=null?prevCount+' '+alertUnit:alertUnit);
       const detail=(isBlocked?'Save blocked: ':'Items removed: ')+lostText+(reason?' — '+reason:'');
-      logChange(isBlocked?'save_blocked':'data_loss','SO',soId,detail);
+      logChange(alertAction,alertEntity,soId,detail);
       if(kind==='blocked')return; // plain blocked saves are logged but not emailed — no data is lost, so they're informational only
       // bg_shrink_blocked falls through so admin gets a heads-up that stale state nearly wiped an estimate
       const dedupeKey=kind+':'+soId;const last=_alertDedupeRef.current[dedupeKey]||0;const now=Date.now();
@@ -3787,13 +3765,13 @@ export default function App(){
       const subject=(isBlocked?'⚠️ NSA Portal — Save blocked on ':'🚨 NSA Portal — Items lost on ')+soId;
       const html='<div style="font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#0f172a">'
         +'<h2 style="color:'+(isBlocked?'#d97706':'#dc2626')+';margin:0 0 8px">'+(isBlocked?'Save blocked':'Items lost')+': '+soId+'</h2>'
-        +'<p><strong>SO:</strong> '+soId+'<br/>'
+        +'<p><strong>'+alertEntity+':</strong> '+soId+'<br/>'
         +'<strong>User:</strong> '+(cu?.name||cu?.id||'unknown')+'<br/>'
         +'<strong>When:</strong> '+new Date().toLocaleString()+'<br/>'
-        +(prevCount!=null?'<strong>Items before:</strong> '+prevCount+'<br/>':'')
-        +(newCount!=null?'<strong>Items in attempted save:</strong> '+newCount+'<br/>':'')
+        +(prevCount!=null?'<strong>'+countLabel+' before:</strong> '+prevCount+'<br/>':'')
+        +(newCount!=null?'<strong>'+countLabel+' in attempted save:</strong> '+newCount+'<br/>':'')
         +'<strong>Reason:</strong> '+(reason||'(none)')+'</p>'
-        +(isBlocked?'<p>The save was refused before any data was deleted. The user was prompted to reload.</p>':'<p style="color:#dc2626"><strong>Action needed:</strong> verify the SO and restore from <code>app_state.so_history</code> if items are missing.</p>')
+        +(isBlocked?'<p>The save was blocked. This event does not confirm data loss. Review the preserved draft against the current cloud copy before retrying.</p>':'<p style="color:#dc2626"><strong>Action needed:</strong> verify the SO and restore from <code>app_state.so_history</code> if items are missing.</p>')
         +'<p style="margin-top:16px;color:#64748b;font-size:12px">This alert is throttled to once per SO+type per 5 min. The full audit trail is in System Health → Change Log.</p>'
         +'</div>';
       sendBrevoEmail({to:[{email:adminEmail,name:'Steve Peterson'}],cc:ccEmail?[{email:ccEmail}]:undefined,subject,htmlContent:html,senderName:'NSA Portal',senderEmail:companyInfo?.email||'team@nsa-teamwear.com'}).catch(e=>console.warn('[alert] email failed:',e));
@@ -4571,12 +4549,20 @@ export default function App(){
       }
     }
   },[ests,estHistory]);
+  const persistQbLink=async(record)=>{
+    if(!storedUserCanManageQuickBooks()||!_initialLoadDone.current||!_dbLoadSuccess.current)throw new Error('Wait for a successful portal load before saving QBO links.');
+    const realmId=String(qbConfig.realm_id||'');
+    const rows=await persistVerifiedQBLink(supabase,{...record,realmId});
+    Object.assign(_qbDurableRowsRef.current,rows);
+    setQBConfig(prev=>String(prev.realm_id||'')===realmId?mergeDurableQBLinks(prev,rows):prev);
+    return rows;
+  };
   React.useEffect(()=>{if(storedUserCanManageQuickBooks())_saveAppState('qb_config',qbConfig)},[qbConfig]);
   // QB background auto-sync — self-contained: builds the sync engine from CURRENT
   // state at fire time. The old wiring called a ref only a mounted QBPage assigned,
   // so hourly/daily auto-sync silently did nothing until someone opened the QB page
   // that session — and afterwards synced the stale snapshot from the last render.
-  React.useEffect(()=>{_qbSyncCtxRef.current=storedUserCanManageQuickBooks()?{cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend}:null});
+  React.useEffect(()=>{_qbSyncCtxRef.current=storedUserCanManageQuickBooks()?{cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,persistQbLink,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend}:null});
   React.useEffect(()=>{
     if(!storedUserCanManageQuickBooks()||!qbConfig.connected||qbConfig.autoSync==='manual'||qbConfig.initialMigrationApproved!==true)return;
     const intervals={hourly:3600000,daily:86400000,realtime:300000};
@@ -4611,64 +4597,30 @@ export default function App(){
         // Tab returning — immediately retry failed saves instead of waiting for backoff timer
         // Reset backoff since user is actively using the tab
         _retryBackoff.current=60000;
-        const shouldRetry=id=>_dbSaveFailedIds.has(id)&&!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000)&&!_permDenialParked(id);
-        const retryIds=[..._dbSaveFailedIds].filter(shouldRetry).slice(0,10);
-        if(retryIds.length){
-          console.log('[DB] Tab visible — retrying',retryIds.length,'failed saves');
-          const retrySet=new Set(retryIds);
-          const snapMap={ests:[_dbSnap.current.ests,setEsts],sos:[_dbSnap.current.sos,setSOs],invs:[_dbSnap.current.invs,setInvs],cust:[_dbSnap.current.cust,setCust],prod:[_dbSnap.current.prod,setProd],msgs:[_dbSnap.current.msgs,setMsgs]};
-          Object.entries(snapMap).forEach(([key,[snap,setter]])=>{
-            if(!snap)return;
-            const hasFailedItem=snap.some(s=>retrySet.has(s.id));
-            if(!hasFailedItem)return;
-            _dbSnap.current[key]=snap.map(s=>retrySet.has(s.id)?{...s,_retry:Date.now()}:s);
-            setter(prev=>[...prev]);
-          });
-        }
+        await _retryFailedSaves();
       }
     };
     document.addEventListener('visibilitychange',onVis);
     return()=>document.removeEventListener('visibilitychange',onVis);
   },[]);
-  // Background retry — re-trigger saves for entities with failed IDs
-  // Uses exponential backoff: 60s → 120s → 240s (max 4min) to avoid hammering a down server
-  // Only re-renders state arrays that actually contain failed IDs (not all 6 every time)
+  // One retry scheduler; visibility and manual retry share its in-flight batch.
   const _retryBackoff=useRef(60000);
   React.useEffect(()=>{
     if(!supabase)return;
-    let retryTimer=null;
-    const scheduleRetry=()=>{retryTimer=setTimeout(doRetry,_retryBackoff.current)};
-    const doRetry=()=>{
-      if(!_dbSaveFailedIds.size||!_initialLoadDone.current||!_dbLoadSuccess.current){_retryBackoff.current=60000;scheduleRetry();return}
-      // A null/empty id can never save (products.id is NOT NULL) and would loop forever — purge it.
-      [..._dbSaveFailedIds].filter(id=>id==null||id==='').forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id)});
-      if(!_dbSaveFailedIds.size){_persistFailedIds();_retryBackoff.current=60000;scheduleRetry();return}
-      // Clean up failed IDs for entities that no longer exist in state (deleted by user)
-      const d=_visFlushRefs.current;const allIds=new Set([...d.ests,...d.sos,...d.invs,...d.cust,...d.prod,...d.msgs].map(e=>e.id));
-      const orphaned=[..._dbSaveFailedIds].filter(id=>!allIds.has(id));
-      if(orphaned.length){orphaned.forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id);_outboxRemoveById(id);console.log('[DB] Cleared orphaned failed ID:',id)});_persistFailedIds();if(!_dbSaveFailedIds.size){_retryBackoff.current=60000;scheduleRetry();return}}
-      // Skip IDs that were recently saved (prevents rapid re-conflict loops)
-      const retryIds=[..._dbSaveFailedIds].filter(id=>!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000)&&!_permDenialParked(id));
-      if(!retryIds.length){scheduleRetry();return}
-      // Cap retries at 10 IDs per cycle to avoid spiking CPU/network
-      const batch=retryIds.slice(0,10);
-      console.log('[DB] Retry: attempting re-save for',batch.length,'of',retryIds.length,'failed IDs (backoff:',Math.round(_retryBackoff.current/1000)+'s)');
-      const retrySet=new Set(batch);
-      // Only update snapshots + trigger re-render for arrays that actually contain failed IDs
-      const snapMap={ests:[_dbSnap.current.ests,setEsts],sos:[_dbSnap.current.sos,setSOs],invs:[_dbSnap.current.invs,setInvs],cust:[_dbSnap.current.cust,setCust],prod:[_dbSnap.current.prod,setProd],msgs:[_dbSnap.current.msgs,setMsgs]};
-      Object.entries(snapMap).forEach(([key,[snap,setter]])=>{
-        if(!snap)return;
-        const hasFailedItem=snap.some(s=>retrySet.has(s.id));
-        if(!hasFailedItem)return;// skip arrays with no failed items — no re-render needed
-        _dbSnap.current[key]=snap.map(s=>retrySet.has(s.id)?{...s,_retry:Date.now()}:s);
-        setter(prev=>[...prev]);
-      });
-      // Increase backoff for next cycle (max 4 minutes)
-      _retryBackoff.current=Math.min(_retryBackoff.current*2,240000);
-      scheduleRetry();
+    let retryTimer=null,cancelled=false;
+    const scheduleRetry=()=>{if(!cancelled)retryTimer=setTimeout(doRetry,_retryBackoff.current)};
+    const doRetry=async()=>{
+      try{
+        if(!_dbSaveFailedIds.size||!_initialLoadDone.current||!_dbLoadSuccess.current||_isSessionDead())_retryBackoff.current=60000;
+        else{
+          await _retryFailedSaves();
+          _retryBackoff.current=_dbSaveFailedIds.size?Math.min(_retryBackoff.current*2,240000):60000;
+        }
+      }catch(error){console.error('[DB] Retry batch failed:',error);}
+      finally{scheduleRetry();}
     };
     scheduleRetry();
-    return()=>{if(retryTimer)clearTimeout(retryTimer)};
+    return()=>{cancelled=true;if(retryTimer)clearTimeout(retryTimer)};
   },[]);
   // Handle QB OAuth callback redirect
   React.useEffect(()=>{
@@ -6927,7 +6879,7 @@ export default function App(){
     if(prev&&(prev.items?.length||0)>0&&(!e2.items||e2.items.length===0)){
       console.warn('[savE] Refusing to save '+e2.id+' — would drop '+prev.items.length+' item(s) from current state.');
       nf('⚠️ Save blocked for '+e2.id+': '+prev.items.length+' line item(s) would be deleted. Reload the page if items look wrong.','error');
-      return prev;
+      return false;
     }
     // Mark AFTER the abort guard — a blocked save must not arm the merge protection with a status that never persisted.
     if(prev&&prev.status!==e2.status)_markEstStatusChange(e2);
@@ -6946,7 +6898,7 @@ export default function App(){
     if(opts?.stageOutbox)_outboxAdd('estimates',e2);// synchronous durability for unload / forced re-auth
     _dbSavePendingIds.add(e2.id);
     const _p=_dbSaveEstimate(e2);
-    Promise.resolve(_p).finally(()=>{_dbSavePendingIds.delete(e2.id)});
+    Promise.resolve(_p).finally(()=>{(!_hasActiveDocumentSave(e2.id)&&_dbSavePendingIds.delete(e2.id))});
     return _p;
   };
   // ── Pending shipping charge carryover ──
@@ -7010,7 +6962,7 @@ export default function App(){
       console.warn('[savSO] Refusing to save '+sl.id+' — would drop '+prev.items.length+' item(s) from current state.');
       nf('⚠️ Save blocked for '+sl.id+': '+prev.items.length+' line item(s) would be deleted. Reload the page if items look wrong.','error');
       if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:sl.id,prevCount:prev.items.length,newCount:0,reason:'Client savSO refused empty items (in-memory prev had items)'});
-      return prev;
+      return false;
     }
     // Snapshot regression: client save where item count dropped (but not to 0). Only alarm when the previous
     // state was NOT cleanly hydrated — a drop computed from stale/partially-loaded data is a persistence concern.
@@ -7098,7 +7050,7 @@ export default function App(){
     // Return the persistence promise (resolves true on success, false on failure) so callers like the
     // Art Library Save button can report a truthful result instead of optimistically claiming "saved".
     const _artSaveP=_dbSaveArtFiles(merged);
-    Promise.resolve(_artSaveP).then(ok=>{if(ok!==false)_markRecentlyPulled(merged.id)}).finally(()=>{_dbSavePendingIds.delete(merged.id)});
+    Promise.resolve(_artSaveP).then(ok=>{if(ok!==false)_markRecentlyPulled(merged.id)}).finally(()=>{(!_hasActiveDocumentSave(merged.id)&&_dbSavePendingIds.delete(merged.id))});
     return _artSaveP;
   };
   // Result-checked FULL save: persist the whole SO (jobs + art) and return a truthful true/false promise so
@@ -7115,7 +7067,7 @@ export default function App(){
     if(opts?.stageOutbox)_outboxAdd('sales_orders',sl);// synchronous durability for unload / forced re-auth
     _dbSavePendingIds.add(sl.id);
     const _p=_dbSaveSO(sl);
-    Promise.resolve(_p).then(ok=>{if(ok!==false)_markRecentlyPulled(sl.id)}).finally(()=>{_dbSavePendingIds.delete(sl.id)});
+    Promise.resolve(_p).then(ok=>{if(ok!==false)_markRecentlyPulled(sl.id)}).finally(()=>{(!_hasActiveDocumentSave(sl.id)&&_dbSavePendingIds.delete(sl.id))});
     return _p;
   };
   // ── Auto-close fully-invoiced finished orders ──
@@ -11367,7 +11319,7 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eEst.id} supabase={supabase} order={eEst} mode="estimate" autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} customer={eEstC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={e=>{const e2=savE(e);setEEst(e2)}} onSaveNow={e=>savENow(e)} onEmergencySave={e=>savENow(e,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} onNavBatch={()=>{setEEst(null);setPg('batch_pos')}} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eEst.id} supabase={supabase} order={eEst} mode="estimate" autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} customer={eEstC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={e=>{const e2=savE(e);if(e2)setEEst(e2)}} onSaveNow={e=>savENow(e)} onEmergencySave={e=>savENow(e,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} onNavBatch={()=>{setEEst(null);setPg('batch_pos')}} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -11425,7 +11377,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} onOpenMethodicDashboard={()=>{setESO(null);setESOTab(null);setPg('methodic')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} shipCostBasis={shipCostBasis} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);if(locked)setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} onOpenMethodicDashboard={()=>{setESO(null);setESOTab(null);setPg('methodic')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} shipCostBasis={shipCostBasis} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -37726,7 +37678,7 @@ export default function App(){
     // session / navigation / notify
     cu,nf,pg,setPg,setESO,setESOC,setESOTab,setSelC,
     // QuickBooks page state + handlers
-    connectQB,disconnectQB,qbApi,qbConfig,setQBConfig,qbSyncing,setQbSyncing,qbTab,setQbTab,
+    connectQB,disconnectQB,qbApi,qbConfig,persistQbLink,setQBConfig,qbSyncing,setQbSyncing,qbTab,setQbTab,
     qbBillAmount,setQbBillAmount,qbBillDate,setQbBillDate,qbBillFile,setQbBillFile,qbBillMemo,setQbBillMemo,
     qbBillUploading,setQbBillUploading,qbBillVendor,setQbBillVendor,
     invAdjLog,invPOs,setInvPOs,submittedBatches,setSubmittedBatches,
@@ -37911,29 +37863,14 @@ export default function App(){
       {failedSaveCount>0&&<div style={{background:'#fefce8',border:'1px solid #fde68a',color:'#92400e',fontSize:12,fontWeight:600}}>
         <div style={{padding:'8px 16px',display:'flex',alignItems:'center',gap:8}}>
           <span style={{fontSize:14}}>&#9888;</span>
-          <span style={{flex:1}}>{failedSaveCount} item{failedSaveCount>1?'s':''} failed to save to cloud. Auto-retrying in the background. Your data is safe locally.</span>
+          <span style={{flex:1}}>{failedSaveCount} record{failedSaveCount>1?'s still need':' still needs'} cloud-save confirmation. Keep unsaved work open; review Details if retry does not resolve it.</span>
           <button disabled={failedSaveBusy} onClick={async()=>{
             setFailedSaveBusy(true);
-            const ids=[..._dbSaveFailedIds];let ok=0,fail=0;
-            for(const id of ids){
-              const sid=String(id);let r=null;
-              try{
-                if(sid.startsWith('EST-')){const it=ests.find(e=>e.id===id);if(it)r=await _dbSaveEstimate(it)}
-                else if(sid.startsWith('SO-')){const it=sos.find(s=>s.id===id);if(it)r=await _dbSaveSO(it)}
-                else if(sid.startsWith('INV-')){const it=invs.find(i=>i.id===id);if(it)r=await _dbSaveInvoice(it)}
-                else if(sid.startsWith('MSG-')){const it=msgs.find(m=>m.id===id);if(it)r=await _dbSaveMessage(it)}
-                else{const c=cust.find(x=>x.id===id);if(c){r=await _dbSaveCustomer(c)}else{const p=prod.find(x=>x.id===id);if(p)r=await _dbSaveProduct(p)}}
-              }catch(e){console.error('[Retry] error for',id,e);r=false}
-              if(r===false||r==null)fail++;else ok++;
-            }
-            setFailedSaveBusy(false);
-            nf((ok?ok+' saved':'')+(ok&&fail?' · ':'')+(fail?fail+' still failing':'')||'Nothing to retry',fail?'error':'success');
+            try{
+              const {saved,failed,skipped}=await _retryFailedSaves({manual:true});
+              nf([saved?saved+' saved':'',failed?failed+' still failing':'',skipped?skipped+' need review or are already saving':''].filter(Boolean).join(' · ')||'Nothing to retry',failed||skipped?'error':'success');
+            }finally{setFailedSaveBusy(false);}
           }} style={{background:'#92400e',border:'none',color:'#fff',cursor:failedSaveBusy?'wait':'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap',opacity:failedSaveBusy?0.6:1}}>{failedSaveBusy?'Retrying…':'Retry now'}</button>
-          <button onClick={()=>{
-            if(!window.confirm('Clear '+_dbSaveFailedIds.size+' failed-save flag(s)?\n\nUse this if the data is actually fine in the cloud (verified by reloading the page) but the flag is stuck. This does not delete any data.'))return;
-            const ids=[..._dbSaveFailedIds];ids.forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id);_outboxRemoveById(id)});_persistFailedIds();
-            nf('Cleared '+ids.length+' failed-save flag(s)','success');
-          }} style={{background:'none',border:'1px solid #92400e',color:'#92400e',cursor:'pointer',fontWeight:600,fontSize:11,padding:'2px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Clear</button>
           <button onClick={()=>setFailedSaveOpen(o=>!o)} style={{background:'none',border:'none',color:'#92400e',cursor:'pointer',fontWeight:700,fontSize:11,padding:'2px 4px'}}>{failedSaveOpen?'Hide details ▲':'Details ▼'}</button>
         </div>
         {failedSaveOpen&&<div style={{padding:'8px 16px 10px',borderTop:'1px solid #fde68a',background:'#fffbeb',maxHeight:240,overflowY:'auto',fontWeight:400}}>
@@ -37947,10 +37884,11 @@ export default function App(){
           })()}
         </div>}
       </div>}
+      <DraftRecoveryPanel owner={cu?.id} onReview={(payload,table)=>{const entry={table,id:payload.id,payload,baseVersion:payload._obBaseVersion??payload._version??null,ts:Date.now()};setOutboxConflicts(prev=>[...prev.filter(x=>x.table!==table||x.id!==payload.id),entry])}}/>
       {outboxConflicts.length>0&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b',fontSize:12,fontWeight:600}}>
         <div style={{padding:'8px 16px',display:'flex',alignItems:'center',gap:8}}>
           <span style={{fontSize:14}}>&#9888;</span>
-          <span style={{flex:1}}>{outboxConflicts.length} unsaved edit{outboxConflicts.length>1?'s':''} from this browser conflict{outboxConflicts.length>1?'':'s'} with newer changes already saved to the cloud. Review each one below &mdash; nothing is overwritten until you choose.</span>
+          <span style={{flex:1}}>{outboxConflicts.length} unsaved edit{outboxConflicts.length>1?'s':''} from this browser need review before saving. Review each one below &mdash; nothing is overwritten until you choose.</span>
         </div>
         <div style={{padding:'0 16px 10px',fontWeight:400}}>
           {outboxConflicts.map(en=>{
@@ -37958,10 +37896,15 @@ export default function App(){
             const key=en.table+':'+en.id;
             return(<div key={key} style={{fontSize:11,padding:'6px 0',borderBottom:'1px dashed #fecaca',display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
               <span style={{fontWeight:700,color:'#991b1b'}}>{label}</span>
-              <span style={{flex:1,color:'#7f1d1d',minWidth:200}}>your unsaved edit from {new Date(en.ts).toLocaleString()}; the cloud copy changed after that{en.baseVersion!=null?'':' (no version info — comparing was not possible)'}</span>
-              <button onClick={()=>{
+              <span style={{flex:1,color:'#7f1d1d',minWidth:200}}>your unsaved edit from {new Date(en.ts).toLocaleString()}; saving needs review{en.baseVersion!=null?'':' (no version info — comparing was not possible)'}</span>
+              <button onClick={async()=>{
                 const setters={estimates:setEsts,sales_orders:setSOs,invoices:setInvs,customers:setCust,products:setProd,messages:setMsgs};
-                const set=setters[en.table];if(!set)return;
+                const set=setters[en.table];if(!set||!supabase)return;
+                let cloud;
+                try{const result=await supabase.from(en.table).select('_version').eq('id',en.id).maybeSingle();if(result.error)throw result.error;cloud=result.data}
+                catch(error){nf('Could not check the current cloud copy. Your draft is preserved; retry when connected.','error');return}
+                if(!cloud&&en.baseVersion!=null){nf('This record was deleted in the cloud. Your draft is preserved for review.','error');return}
+                _clearDocumentConflictCooldown(en.id);
                 set(prev=>{
                   const i=prev.findIndex(r=>r.id===en.id);
                   const cur=i>=0?prev[i]:null;
@@ -37969,7 +37912,7 @@ export default function App(){
                   // overwrite, so the re-save must go out as a legitimate current-base write (the estimate
                   // stale guard would otherwise reject the old base and silently drop the user's choice).
                   const p={...en.payload,_retry:Date.now()};
-                  if(cur&&cur._version!=null)p._version=cur._version;
+                  if(cloud&&cloud._version!=null){p._version=cloud._version;p._obBaseVersion=cloud._version;}
                   if(i>=0){const n=[...prev];n[i]=p;return n}
                   return[...prev,p];
                 });
@@ -37977,10 +37920,10 @@ export default function App(){
                 setOutboxConflicts(prev=>prev.filter(x=>x.table+':'+x.id!==key));
                 nf('Your edit for '+en.id+' was restored and is re-saving — it will replace the newer cloud copy.','success');
               }} style={{background:'#991b1b',border:'none',color:'#fff',cursor:'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Apply my edit anyway</button>
-              <button onClick={()=>{
+              <button onClick={async()=>{
                 if(!window.confirm('Discard your unsaved edit for '+en.id+'?\n\nThe newer cloud copy stays. This cannot be undone.'))return;
-                _outboxRemove(en.table,en.id);
-                _dbSaveFailedIds.delete(en.id);_clearSaveError(en.id);_persistFailedIds();
+                if(en.payload?._draftRecovery){try{await draftJournal.acknowledge(en.payload._draftRecovery)}catch{nf('Could not clear the recovery copy. Your draft is still available.','error');return}}
+                if(!en.payload?._draftRecovery){_outboxRemove(en.table,en.id);_dbSaveFailedIds.delete(en.id);_clearSaveError(en.id);_persistFailedIds();}
                 setOutboxConflicts(prev=>prev.filter(x=>x.table+':'+x.id!==key));
               }} style={{background:'none',border:'1px solid #991b1b',color:'#991b1b',cursor:'pointer',fontWeight:600,fontSize:11,padding:'2px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Discard my edit</button>
             </div>);

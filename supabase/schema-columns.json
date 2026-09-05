@@ -83,6 +83,7 @@
    "is_free_promo",
    "is_promo",
    "item_index",
+   "line_id",
    "name",
    "no_deco",
    "notes",
@@ -117,6 +118,7 @@
    "is_free_promo",
    "is_promo",
    "item_index",
+   "line_id",
    "name",
    "no_deco",
    "notes",
@@ -427,6 +429,12 @@
    "text",
    "thread_id",
    "ts"
+  ],
+  "document_save_receipts": [
+   "created_at",
+   "document_id",
+   "request_hash",
+   "result"
   ]
  }
 }
