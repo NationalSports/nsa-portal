@@ -310,19 +310,23 @@ export function createQBSyncEngine(ctx){
     // One-customer canary is intentionally available while production batches
     // are locked. A create or a repair of the actual QBO Terms field requires a
     // second, explicit operator confirmation and a successful API read-back.
-    const syncCustomerCanary=async(customerId,{allowCreate=false,allowTermUpdate=false}={})=>{
+    const syncCustomerCanary=async(customerId,{allowCreate=false,allowTermUpdate=false,batchId='',expectedPlan=null}={})=>{
       if(!requireDurableLinks())return{status:'blocked'};
       const c=cust.find(customer=>String(customer.id)===String(customerId));
       if(!c||c.is_active===false||c.deleted_at){nf('Choose an active customer for the QBO test','error');return{status:'blocked'}}
       if(qbConfig.preflight?.status!=='success'||String(qbConfig.preflight?.realm_id||'')!==String(qbConfig.realm_id||'')){
         nf('Run the read-only live QBO preflight before testing a customer','error');return{status:'blocked'};
       }
-      setQbSyncing(true);
-      const log={ts:new Date().toLocaleString(),type:'customer_canary',status:'success',details:[]};
+      if(!batchId)setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:batchId?'customer_batch_record':'customer_canary',status:'success',details:[]};
       try{
         const qboTerms=await loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000);
         const termRef=resolveQBCustomerTerm(qboTerms,c.payment_terms);
         const qboCustomers=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SyncToken, SalesTermRef',1000);
+        const currentPlan=buildQBCustomerManifest(cust,qboCustomers,qboTerms,qbConfig.custQBMap||{}).find(row=>row.sourceId===String(c.id));
+        if(!currentPlan||['blocked','excluded'].includes(currentPlan.action))throw new Error(currentPlan?.reason||'Customer could not be reviewed');
+        if(expectedPlan && ['sourceId','displayName','portalTerms','qboId','action'].some(key=>currentPlan[key]!==expectedPlan[key]))throw new Error('Customer plan changed since review; refresh the manifest before continuing');
+        if(expectedPlan && (String(currentPlan.desiredTerm?.value)!==String(expectedPlan.desiredTerm?.value)||String(currentPlan.currentTerm?.value)!==String(expectedPlan.currentTerm?.value)))throw new Error('QBO term mapping changed since review');
         const savedId=String((qbConfig.custQBMap||{})[c.id]||c.qb_customer_id||'');
         let qboCustomer=savedId?qboCustomers.find(row=>String(row.Id)===savedId):null;
         if(qboCustomer?.Active===false)throw new Error('Saved QBO customer #'+savedId+' is inactive; no record was changed.');
@@ -354,10 +358,11 @@ export function createQBSyncEngine(ctx){
         if(!verified||String(verified.Id)!==qbId)throw new Error('Customer was not returned by the QBO read-back; the portal link was not saved.');
         if(verified.Active===false)throw new Error('QBO customer was inactive on read-back; the portal link was not saved.');
         if(String(verified.SalesTermRef?.value||'')!==String(termRef.value))throw new Error('QBO customer terms did not match "'+termRef.name+'" on read-back; the portal link was not saved.');
+        if(!findExactQBCustomerMatches(c,[verified]).length)throw new Error('Customer identity did not match on API read-back');
         log.details.push((created?'CREATED ONE QBO CUSTOMER':termsUpdated?'UPDATED ONE QBO CUSTOMER':'LINK ONLY — no QBO customer was changed')+': '+c.name+' → QB #'+qbId);
         if(termsUpdated)log.details.push('UPDATED ONE QBO CUSTOMER TERM: '+(termRef.name||termRef.value));
         log.details.push('READ-BACK VERIFIED: '+(verified.DisplayName||verified.CompanyName||c.name)+(verified.SalesTermRef?.name?' · QBO terms '+verified.SalesTermRef.name:verified.SalesTermRef?.value?' · QBO terms ID '+verified.SalesTermRef.value:''));
-        await persistQbLink({mapKey:'custQBMap',sourceIds:[c.id],qboId:qbId,log,evidence:{result:created?'created':termsUpdated?'updated':'linked',term_id:termRef.value,duplicate_preflight:'verified',api_readback:true}});
+        await persistQbLink({mapKey:'custQBMap',sourceIds:[c.id],qboId:qbId,log,evidence:{batch_id:batchId||null,result:created?'created':termsUpdated?'updated':'linked',term_id:termRef.value,duplicate_preflight:'verified',api_readback:true}});
         setQBConfig(prev=>({...prev,custQBMap:{...(prev.custQBMap||{}),[c.id]:qbId},syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
         nf((created?'Created and verified ':termsUpdated?'Updated terms and verified ':'Linked and verified ')+c.name+' in QBO');
         return{status:'success',created,termsUpdated,qbId,customerName:c.name};
@@ -366,68 +371,46 @@ export function createQBSyncEngine(ctx){
         setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));
         nf('Customer test stopped — '+(e.message||'unknown error'),'error');
         return{status:'blocked',error:e.message};
-      }finally{setQbSyncing(false)}
+      }finally{if(!batchId)setQbSyncing(false)}
     };
 
-    // ── SYNC: Customers (name + totals) ──
-    const syncCustomers=async()=>{
-      if(migrationBatchLocked())return{};
+    // Explicitly reviewed, sequential customer batches. Every record reuses
+    // the canary's fresh duplicate check, minimal write, read-back and receipt.
+    const syncCustomers=async({manifest,approved=false}={})=>{
+      const rows=manifest?.rows;
+      const age=Date.now()-Date.parse(manifest?.reviewedAt||'');
+      const canaryLogs=(qbConfig.syncLog||[]).filter(log=>log.type==='customer_canary'&&log.status==='success');
+      const termCanary=canaryLogs.some(log=>(log.details||[]).some(detail=>String(detail).startsWith('UPDATED ONE QBO CUSTOMER TERM:')));
+      if(!approved||!Array.isArray(rows)||rows.length<1||rows.length>20
+        ||new Set(rows.map(row=>row.sourceId)).size!==rows.length
+        ||rows.some(row=>!['link','create','update_terms'].includes(row.action))
+        ||String(manifest.realm)!==String(qbConfig.realm_id)||!Number.isFinite(age)||age<0||age>15*60*1000
+        ||!termCanary||Object.keys(qbConfig.custQBMap||{}).length<2){
+        nf('Customer batch blocked: complete canaries and approve a fresh review of at most 20 customers','error');return{status:'blocked'};
+      }
+      if(!requireDurableLinks())return{status:'blocked'};
+      const report={id:'customer-batch-'+new Date().toISOString(),realm:manifest.realm,reviewedAt:manifest.reviewedAt,
+        startedAt:new Date().toISOString(),status:'running',results:[],counts:{created:0,updated:0,linked:0,blocked:0,not_attempted:0}};
       setQbSyncing(true);
-      const log={ts:new Date().toLocaleString(),type:'customers',status:'success',details:[]};
-      let synced=0;
-      const custQBMap={};// localId -> qbCustomerId (returned for downstream syncs)
-      // Fetch existing QB customers to match by name and avoid duplicates
-      let existingQBCusts=[];
-      let qboTerms=[];
       try{
-        qboTerms=await loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000);
-        existingQBCusts=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, SyncToken',1000);
-      }catch(e){
-        log.status='error';log.details.push('Customer duplicate preflight failed: '+e.message);
-        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('Customer sync blocked — QBO duplicate preflight failed','error');setQbSyncing(false);return{};
-      }
-      const activeCustomers=cust.filter(c=>c.is_active!==false&&!c.deleted_at);
-      const sortedCustomers=[...activeCustomers].sort((a,b)=>{
-        const aLinked=!!(a.qb_customer_id||(qbConfig.custQBMap||{})[a.id]);
-        const bLinked=!!(b.qb_customer_id||(qbConfig.custQBMap||{})[b.id]);
-        return Number(aLinked)-Number(bLinked);
-      });
-      const customerBatch=rotatingBatch(sortedCustomers,qbConfig._customerSyncOffset,QB_SYNC_BATCH_SIZE);
-      const customersToSync=customerBatch.items;
-      for(const c of customersToSync){
-        const displayName=portalCustomerDisplayName(c);
-        let termRef;
-        try{termRef=resolveQBCustomerTerm(qboTerms,c.payment_terms)}catch(e){log.details.push(c.name+' — BLOCKED: '+e.message);log.status='partial';continue}
-        // Match existing QB customer by name if we don't already have a QB ID
-        let qbId=c.qb_customer_id||(qbConfig.custQBMap||{})[c.id];let syncToken=null;
-        if(!qbId){
-          const matches=findExactQBCustomerMatches(c,existingQBCusts);
-          if(matches.length>1){log.details.push(c.name+' — BLOCKED: multiple QBO customers match this name');log.status='partial';continue}
-          const match=matches[0];if(match){qbId=match.Id;syncToken=match.SyncToken}
-        }else{
-          const match=existingQBCusts.find(q=>q.Id===qbId);
-          if(match)syncToken=match.SyncToken;
+        let stopped=false;
+        for(const row of rows){
+          if(stopped){report.results.push({...row,result:'not_attempted'});report.counts.not_attempted++;continue;}
+          const outcome=await syncCustomerCanary(row.sourceId,{batchId:report.id,expectedPlan:row,
+            allowCreate:row.action==='create',allowTermUpdate:row.action==='update_terms'});
+          const result=outcome.status==='success'?(outcome.created?'created':outcome.termsUpdated?'updated':'linked'):'blocked';
+          report.results.push({...row,result,qboId:outcome.qbId||row.qboId,apiReadback:outcome.status==='success',reason:outcome.error||row.reason});
+          report.counts[result]++;
+          if(result==='blocked')stopped=true;
+          setQBConfig(prev=>({...prev,lastCustomerBatch:JSON.parse(JSON.stringify(report))}));
         }
-        const qbCustomer=buildQBCustomerPayload(c,{qbId,syncToken,termRef});
-        let res;
-        try{res=await qbApi('upsert_customer',{customer:qbCustomer})}catch(e){log.details.push(c.name+' — FAILED: '+e.message);log.status='partial';continue}
-        if(res?.Customer?.Id){
-          custQBMap[c.id]=res.Customer.Id;
-          log.details.push(c.name+' → QB #'+res.Customer.Id);synced++;
-        }else{
-          if(qbId)custQBMap[c.id]=qbId;
-          const errDetail=res?.Fault?.Error?.[0]?.Detail||res?.Fault?.Error?.[0]?.Message||res?.error||res?.message||(res?JSON.stringify(res).slice(0,120):'empty response');log.details.push(c.name+' — FAILED: '+errDetail);log.status='partial';
-        }
-      }
-      // Include customers that already had QB IDs from previous syncs
-      cust.forEach(c=>{const prev=(qbConfig.custQBMap||{})[c.id];if(prev&&!custQBMap[c.id])custQBMap[c.id]=prev});
-      if(synced===0&&log.details.length>0)log.status='error';
-      const remainingCustomers=activeCustomers.filter(c=>!(c.qb_customer_id||(qbConfig.custQBMap||{})[c.id]||custQBMap[c.id])).length;
-      log.details.unshift(synced+'/'+customersToSync.length+' customers completed in this batch'+(remainingCustomers?' · '+remainingCustomers+' remain unlinked':''));
-      setQBConfig(prev=>({...prev,_customerSyncOffset:customerBatch.nextOffset,custQBMap:{...prev.custQBMap,...custQBMap},syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
-      nf(synced+' customers synced to QB');
-      setQbSyncing(false);
-      return custQBMap;
+        report.status=report.counts.blocked?'stopped':'success';report.finishedAt=new Date().toISOString();
+        const log={ts:new Date().toLocaleString(),type:'customer_batch',status:report.status==='success'?'success':'error',
+          details:[report.id,JSON.stringify(report.counts),'Per-customer API read-back and durable receipts are recorded before success.']};
+        setQBConfig(prev=>({...prev,lastCustomerBatch:report,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));
+        nf('Customer batch '+report.status+' — review the reconciliation report');
+        return report;
+      }finally{setQbSyncing(false)}
     };
 
     // ── SYNC: Invoices (totals) ──

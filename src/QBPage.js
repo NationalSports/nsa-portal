@@ -87,6 +87,7 @@ export default function QBPage(){
   const [qbItemAudit,setQbItemAudit]=useState(null);
   const [customerManifest,setCustomerManifest]=useState(null);
   const [customerReviewBusy,setCustomerReviewBusy]=useState(false);
+  const [customerBatchApproved,setCustomerBatchApproved]=useState(false);
   const [stripeBackfill,setStripeBackfill]=useState(null);
   const [stripeWebhookStatus,setStripeWebhookStatus]=useState(null);
 
@@ -400,7 +401,7 @@ export default function QBPage(){
     };
     const reviewCustomerMigration=async()=>{
       if(!livePreflightReady)return;
-      setCustomerReviewBusy(true);setCustomerManifest(null);
+      setCustomerReviewBusy(true);setCustomerManifest(null);setCustomerBatchApproved(false);
       try{
         const terms=await loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000);
         const customers=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SalesTermRef',1000);
@@ -409,6 +410,20 @@ export default function QBPage(){
           counts:rows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{})});
         nf('Customer review complete — no QBO records changed');
       }catch(e){nf('Customer review failed — '+e.message,'error')}finally{setCustomerReviewBusy(false)}
+    };
+    const customerBatchRows=(customerManifest?.rows||[]).filter(row=>['link','create','update_terms'].includes(row.action)
+      &&(!qbConfig.custQBMap?.[row.sourceId]||row.action==='update_terms')).slice(0,20);
+    const customerCanariesReady=Object.keys(qbConfig.custQBMap||{}).length>=2&&(qbConfig.syncLog||[]).some(log=>
+      log.type==='customer_canary'&&log.status==='success'&&(log.details||[]).some(detail=>String(detail).startsWith('UPDATED ONE QBO CUSTOMER TERM:')));
+    const runCustomerBatch=async()=>{
+      const report=await syncCustomers({manifest:{...customerManifest,rows:customerBatchRows},approved:customerBatchApproved});
+      setCustomerBatchApproved(false);
+      if(report?.results)setCustomerManifest(null);
+    };
+    const downloadCustomerBatch=()=>{
+      const report=qbConfig.lastCustomerBatch;if(!report)return;
+      const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:'application/json'}));
+      const anchor=document.createElement('a');anchor.href=url;anchor.download='qbo-'+report.id.replace(/[:.]/g,'-')+'.json';anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
     };
     const downloadCustomerManifest=()=>{
       if(!customerManifest)return;
@@ -596,7 +611,7 @@ export default function QBPage(){
               <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
                 <button className="btn btn-primary" style={{flex:1,background:'#0369a1'}} disabled={qbPreflighting||qbSyncing} onClick={runQBPreflight}>{qbPreflighting?'Reading live QBO...':'Read-Only Live Preflight'}</button>
                 <button className="btn btn-primary" disabled title="Controlled migration: run and reconcile one entity at a time" onClick={syncAll}>{qbSyncing?'Syncing...':'Sync Everything'}</button>
-                <button className="btn btn-secondary" disabled title="Locked pending durable-link reload/session verification" onClick={syncCustomers}>Customers</button>
+                <button className="btn btn-secondary" disabled title="Use the reviewed customer batch below">Customers</button>
                 <button className="btn btn-secondary" disabled title="Locked pending customer links and Estimate rollout review" onClick={()=>syncSalesOrders()}>Sales Orders</button>
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={()=>syncInvoices()}>Invoices</button>
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncPaidFromQB}>Sync Paid</button>
@@ -746,19 +761,32 @@ export default function QBPage(){
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2>Customer Sync</h2>
-            <button className="btn btn-primary btn-sm" disabled title="Locked pending durable-link reload/session verification" onClick={syncCustomers}>{qbSyncing?'Syncing...':'Customer Batches Locked'}</button>
+            <button className="btn btn-primary btn-sm" disabled title="Use the reviewed customer batch below">{qbSyncing?'Syncing...':'Review Required Below'}</button>
           </div>
           <div style={{padding:14,borderBottom:'1px solid #e2e8f0'}}>
             <button className="btn btn-sm" disabled={qbSyncing||customerReviewBusy||!livePreflightReady} onClick={reviewCustomerMigration}>{customerReviewBusy?'Reviewing customers...':'Review Customers — No QBO Changes'}</button>
             {customerManifest&&<>
               <p>Reviewed {customerManifest.rows.length} customers in company realm {customerManifest.realm}. Existing matches: {customerManifest.counts.link||0}; proposed creations: {customerManifest.counts.create||0}; term changes: {customerManifest.counts.update_terms||0}; blocked: {customerManifest.counts.blocked||0}; excluded: {customerManifest.counts.excluded||0}.</p>
               <button className="btn btn-sm" onClick={downloadCustomerManifest}>Download Full Customer Review</button>
+              <h3>Proposed customer batch ({customerBatchRows.length}, maximum 20)</h3>
+              <table><thead><tr><th>Customer</th><th>Action</th><th>QBO ID</th><th>Current term</th><th>Approved portal term</th></tr></thead><tbody>
+                {customerBatchRows.map(row=><tr key={row.sourceId}><td>{row.displayName}</td><td>{row.action}</td><td>{row.qboId||'New'}</td><td>{row.currentTerm?.name||row.currentTerm?.value||'None'}</td><td>{row.desiredTerm?.name}</td></tr>)}
+              </tbody></table>
+              {!customerCanariesReady&&<p>Complete two customer links and one verified term-update canary before running a batch.</p>}
+              <label><input type="checkbox" checked={customerBatchApproved} disabled={qbSyncing} onChange={e=>setCustomerBatchApproved(e.target.checked)}/> I approve the listed customer creations, links, and term changes in this batch.</label>
+              <button className="btn btn-primary btn-sm" disabled={qbSyncing||!customerCanariesReady||!customerBatchApproved||!customerBatchRows.length} onClick={runCustomerBatch}>Run Reviewed Customer Batch</button>
+
               <p>First 20 records needing approval or review. This review does not approve or run a batch.</p>
               <table className="table"><thead><tr><th>Customer</th><th>Action</th><th>QBO ID</th><th>Reason</th></tr></thead><tbody>
                 {customerManifest.rows.filter(row=>!['link','excluded'].includes(row.action)).slice(0,20).map(row=><tr key={row.sourceId}><td>{row.displayName}</td><td>{row.action}</td><td>{row.qboId||'—'}</td><td>{row.reason}</td></tr>)}
               </tbody></table>
             </>}
           </div>
+          {qbConfig.lastCustomerBatch&&<div style={{padding:14}}>
+            <h3>Customer batch reconciliation: {qbConfig.lastCustomerBatch.status}</h3>
+            <p>{JSON.stringify(qbConfig.lastCustomerBatch.counts)}</p>
+            <button className="btn btn-sm" onClick={downloadCustomerBatch}>Download Customer Batch Reconciliation</button>
+          </div>}
           <div style={{padding:'12px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:6}}>Test exactly one customer</div>
             <div style={{fontSize:11,color:'#475569',marginBottom:8}}>An exact QBO match is linked without changing it when its terms already match. You must confirm before creating one customer or updating one customer&apos;s QBO Terms field. Bulk sync stays locked.</div>
