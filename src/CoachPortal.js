@@ -806,7 +806,7 @@ function CoachStoreCard({ store: s, d, alphaTag }) {
   );
 }
 
-function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onUpdateInvs,onUpdateSOs,onUpdateEsts,savSOFn,portalSettings}){
+function CoachPortal({customer,portalCredential,allCustomers,sos,ests,invs:initInvs,REPS,prod,onUpdateInvs,onUpdateSOs,onUpdateEsts,portalSettings}){
   const _portalDisclaimer=portalSettings?.disclaimer||'';
   const[jobView,setJobView]=useState(null);
   const[invView,setInvView]=useState(null);
@@ -840,14 +840,14 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     let alive=true;
     (async()=>{
       try{
-        if(!customer?.alpha_tag)return;
-        const r=await fetch('/.netlify/functions/uniform-order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'portal_list',portal:customer.alpha_tag})});
+        if(!portalCredential)return;
+        const r=await fetch('/.netlify/functions/uniform-order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'portal_list',portal:portalCredential})});
         const d=await r.json();
         if(alive&&d&&d.ok)setUniformOrders(Array.isArray(d.orders)?d.orders:[]);
       }catch(_e){/* card simply stays hidden */}
     })();
     return()=>{alive=false};
-  },[customer?.alpha_tag]);
+  },[portalCredential]);
   const[adRange,setAdRange]=useState('period');// AD spend dashboard scope: 'period' | 'all'
   const[spendView,setSpendView]=useState(false);// AD Spend & Promo full-screen view
   const[page,setPage]=useState('home');// portal nav: home|orders|roster|store|art|billing|shop
@@ -928,11 +928,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const sIds=_cpStoreKey?_cpStoreKey.split(','):[];
     if(!sIds.length){if(!cancel)setCpStores([]);return;}
     try {
-      const data=await coachWebstoreCall(customer.alpha_tag,'stores');
+      const data=await coachWebstoreCall(portalCredential,'stores');
       const wanted=new Set(sIds);
       if(!cancel)setCpStores((data.stores||[]).filter(store=>wanted.has(String(store.customer_id))));
     } catch { if(!cancel)setCpStores([]); }
-  })();return()=>{cancel=true;};},[_cpStoreKey,customer.alpha_tag]);
+  })();return()=>{cancel=true;};},[_cpStoreKey,portalCredential]);
   const cpVisibleStores=cpStores.filter(s=>s.status!=='archived'&&(s.status!=='draft'||s.created_via==='coach'));
   const hasStore=cpVisibleStores.length>0;
   const openStoreCount=cpStores.filter(s=>s.status==='open').length;
@@ -1102,10 +1102,17 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   })():null;
 
   // Track portal visit — mark sent documents as viewed by coach
+  const _recordPortalVisit=async()=>{
+    try{
+      const response=await fetch('/.netlify/functions/portal-visit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({portal:portalCredential})});
+      const result=await response.json();return response.ok&&result.ok?result.viewed_at:null;
+    }catch(_){return null;}
+  };
   const _portalTracked=useRef(false);
   useEffect(()=>{
     if(_portalTracked.current)return;_portalTracked.current=true;
-    const now=new Date().toLocaleString();
+    (async()=>{
+    const now=await _recordPortalVisit();if(!now)return;
     // Mark estimates with email_status='sent' as viewed
     const sentEsts=custEsts.filter(e=>e.email_status==='sent'&&!e.email_viewed_at);
     if(sentEsts.length&&onUpdateEsts)onUpdateEsts(prev=>prev.map(e=>sentEsts.some(se=>se.id===e.id)?{...e,email_status:'opened',email_viewed_at:now,updated_at:now}:e));
@@ -1113,14 +1120,15 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const sentSOs=custSOs.filter(s=>s.email_status==='sent'&&!s.email_viewed_at);
     if(sentSOs.length&&onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>sentSOs.some(ss=>ss.id===s.id)?{...s,email_status:'opened',email_viewed_at:now,updated_at:now}:s));
     // Mark invoices with email_status='sent' as viewed
-    const sentInvs=custInvs.filter(i=>i.email_status==='sent'&&!i.email_viewed_at);
+    const sentInvs=custInvs.filter(i=>i.email_status==='sent'&&!i.email_opened_at);
     if(sentInvs.length){
-      const updater=prev=>prev.map(i=>sentInvs.some(si=>si.id===i.id)?{...i,email_status:'opened',email_viewed_at:now,updated_at:now}:i);
+      const updater=prev=>prev.map(i=>sentInvs.some(si=>si.id===i.id)?{...i,email_status:'opened',email_opened_at:now,updated_at:now}:i);
       setInvs(updater);if(onUpdateInvs)onUpdateInvs(updater);
     }
     // Mark job art approvals as viewed when coach opens portal
     const jobSOs=custSOs.filter(s=>safeJobs(s).some(j=>j.sent_to_coach_at&&!j.coach_email_opened_at));
     if(jobSOs.length&&onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>{if(!jobSOs.some(js=>js.id===s.id))return s;const updJobs=safeJobs(s).map(j=>j.sent_to_coach_at&&!j.coach_email_opened_at?{...j,coach_email_opened_at:new Date().toISOString()}:j);return{...s,jobs:updJobs,updated_at:now}}));
+    })();
   },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── In-portal Back button ─────────────────────────────────────────────
@@ -1176,7 +1184,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // partway down the billing list would never see it otherwise.
   const _scrollToConfirmation=()=>{try{window.scrollTo({top:0,behavior:'smooth'})}catch{try{window.scrollTo(0,0)}catch{}}};
 
-  const handlePaymentSuccess=(result)=>{
+  const handlePaymentSuccess=async(result)=>{
     // Async methods (ACH/bank, and occasionally cards) come back as 'processing': the payment is
     // submitted but not settled, so we must NOT mark the invoice paid yet — settlement is confirmed
     // later by the Stripe webhook (a few business days for ACH). Just show a pending banner so the
@@ -1188,27 +1196,31 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       _scrollToConfirmation();
       return;
     }
-    // Update invoices locally and in parent (persists to Supabase/localStorage/QB)
-    const paidInvIds=result.invoices.map(i=>i.id);
-    // Surcharge rate must match what StripePaymentModal actually charged (portalSettings.ccFeePct,
-    // default 2.9%). The old code referenced an undefined CC_FEE_PORTAL here, which threw the moment
-    // a payment succeeded — so the invoice never got marked paid and the portal hit its error boundary.
-    const ccPct=(typeof portalSettings?.ccFeePct==='number'?portalSettings.ccFeePct:0.029);
-    const updater=prev=>prev.map(inv=>{
-      if(!paidInvIds.includes(inv.id))return inv;
-      const bal=(inv.total||0)-(inv.paid||0);
-      const fee=Math.round(bal*ccPct*100)/100;
-      const newTotal=(inv.total||0)+fee; // CC surcharge added to invoice total
-      const newPaid=(inv.paid||0)+bal+fee; // Customer pays balance + fee
-      const payment={amount:bal+fee,method:'cc',ref:'Stripe '+result.intentId,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),cc_fee:fee};
-      return{...inv,total:newTotal,paid:newPaid,status:newPaid>=newTotal?'paid':'partial',cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment],updated_at:new Date().toLocaleString()};
-    });
-    setInvs(updater);
-    if(onUpdateInvs)onUpdateInvs(updater);// optimistic UI; the DB write below is what actually persists
-    // The public portal is anonymous and RLS-blocks direct invoice writes (the parent save above fails
-    // with 401 by design), so reconcile server-side: a Netlify function re-verifies the charge with
-    // Stripe and marks the invoice paid via the service role. The webhook is a secondary backstop.
-    if(result.intentId)fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:result.intentId}),keepalive:true}).catch(()=>{});
+    // The payment has left Stripe successfully, but the account is not reported updated until the
+    // atomic invoice + ledger transaction commits. Use its exact persisted cent allocations locally
+    // instead of recomputing fees from a potentially stale browser balance.
+    let finalized=null;
+    try{
+      const resp=await fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:result.intentId})});
+      finalized=await resp.json().catch(()=>({}));
+      if(!resp.ok||!finalized?.ok)throw new Error(finalized?.error||'Account update is pending');
+    }catch(e){
+      setReceiptEmail(contactEmail||'');setReceiptStatus(null);
+      setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices||[],intentId:result.intentId,reconciliationPending:true});
+      setShowPay(null);setInvView(null);setPayLoading(false);_scrollToConfirmation();
+      return;
+    }
+    const allocations=new Map((finalized.allocations||[]).map(a=>[a.invoice_id,a]));
+    if(allocations.size){
+      const updater=prev=>prev.map(inv=>{
+        const a=allocations.get(inv.id);if(!a)return inv;
+        const ref='Stripe '+result.intentId;
+        const payments=(inv.payments||[]).some(p=>p.ref===ref)?(inv.payments||[]):[...(inv.payments||[]),{amount:Number(a.amount_cents)/100,method:a.method,ref,date:a.date,cc_fee:Number(a.fee_cents)/100}];
+        return{...inv,total:Number(a.total_cents)/100,paid:Number(a.paid_cents)/100,status:'paid',cc_fee:Number(a.invoice_fee_cents)/100,payments,updated_at:new Date().toLocaleString()};
+      });
+      setInvs(updater);
+      if(onUpdateInvs)onUpdateInvs(updater);
+    }
     setReceiptEmail(contactEmail||'');setReceiptStatus(null);
     setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices,intentId:result.intentId});
     setShowPay(null);setInvView(null);setPayLoading(false);
@@ -1259,12 +1271,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           const collected=(paymentIntent.amount||0)/100;
           if(matched.length){
             const balTotal=matched.reduce((a,inv)=>a+Math.max(0,(inv.total||0)-(inv.paid||0)),0);
-            handlePaymentSuccess({intentId:paymentIntent.id,amount:balTotal,fee:Math.max(0,Math.round((collected-balTotal)*100)/100),invoices:matched,status:'succeeded'});
+            await handlePaymentSuccess({intentId:paymentIntent.id,amount:balTotal,fee:Math.max(0,Math.round((collected-balTotal)*100)/100),invoices:matched,status:'succeeded'});
           }else{
-            // Invoices not loaded into this view — reconcile server-side directly, then confirm.
-            fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:paymentIntent.id}),keepalive:true}).catch(()=>{});
-            setReceiptEmail(contactEmail||'');setReceiptStatus(null);
-            setPaySuccess({amount:collected,fee:0,invoices:[],intentId:paymentIntent.id});
+            // Invoices not loaded into this view still use the same checked server finalization.
+            await handlePaymentSuccess({intentId:paymentIntent.id,amount:collected,fee:0,invoices:[],status:'succeeded'});
           }
         }else if(paymentIntent.status==='processing'){
           setReceiptEmail(contactEmail||'');setReceiptStatus(null);
@@ -1284,7 +1294,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     invoices={showPay==='all'?openInvs:[showPay]}
     customerName={customer.name}
     customerEmail={contactEmail}
-    alphaTag={customer.alpha_tag}
+    alphaTag={portalCredential}
     feePct={typeof portalSettings?.ccFeePct==='number'?portalSettings.ccFeePct:undefined}
     paymentNote={portalSettings?.paymentNote||''}
     onSuccess={handlePaymentSuccess}
@@ -1425,7 +1435,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             const _apprTo=_apprRep?.email||'steve@nationalsportsapparel.com';
             const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));
             // Persist via the serverless endpoint — the public portal's anon role can't write under RLS
-            const _res=await _portalAction({alphaTag:customer.alpha_tag,
+            const _res=await _portalAction({alphaTag:portalCredential,
               estimates:[{id:est.id,status:'approved',approved_by:'Coach',approved_at:_approvedAt,updated_at:_updatedAt}],
               email:{to:[{email:_apprTo}],cc:_accCc,subject:'✅ Estimate approved by coach — '+(est.memo||est.id)+' ('+est.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved estimate <strong>'+est.id+'</strong>'+(est.memo?' — '+est.memo:'')+'.</p><p>This estimate is ready to be converted to a sales order.</p><p style="margin:18px 0"><a href="https://connect.nationalsportsapparel.com/?est='+est.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Estimate '+est.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:_apprRep?.email?{email:_apprRep.email,name:_apprRep.name}:undefined},
             });
@@ -1453,7 +1463,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));
                 const _safeText=_reqText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br/>');
                 // Persist via the serverless endpoint — the public portal's anon role can't write under RLS
-                const _res=await _portalAction({alphaTag:customer.alpha_tag,
+                const _res=await _portalAction({alphaTag:portalCredential,
                   estimates:[{id:est.id,update_requests:_newReqs,updated_at:_updatedAt}],
                   email:{to:[{email:_urTo}],cc:_accCc,subject:'📝 Estimate update requested by coach — '+(est.memo||est.id)+' ('+est.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p><strong>'+customer.name+'</strong> requested changes to estimate <strong>'+est.id+'</strong>'+(est.memo?' — '+est.memo:'')+'.</p><div style="margin:12px 0;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;color:#78350f"><div style="font-size:11px;font-weight:700;color:#92400e;text-transform:uppercase;margin-bottom:4px">Coach\'s request</div>'+_safeText+'</div><p>Please update the estimate and resend it to the coach.</p><p style="margin:18px 0"><a href="https://connect.nationalsportsapparel.com/?est='+est.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Estimate '+est.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',...(_urRep?.email?{replyTo:{email:_urRep.email,name:_urRep.name}}:{})},
                 });
@@ -1607,7 +1617,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               const _jIm=_filterDisplayable(_jArtFiles.flatMap(af3=>Object.entries(af3?.item_mockups||{}).filter(([k])=>_jSkus.has(k.split('|')[0])).flatMap(([,arr])=>arr||[])));
               const _jMf=_jIm.length===0?(()=>{const _g=_filterDisplayable(_jArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[]));return _g.length>0?_g:_filterDisplayable(_jArtFiles.flatMap(af3=>af3?.prod_files||[]))})():[];
               const _jSeen=new Set();const mockups=[..._jIm,..._jMf].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_jSeen.has(u))return false;_jSeen.add(u);return true});
-              const _clickJob=()=>{setJobView({job:j,so});setComment('');if(j.sent_to_coach_at&&!j.coach_email_opened_at){const liveSO2=sos.find(s=>s.id===so.id);if(liveSO2){const updSO2={...liveSO2,jobs:(liveSO2.jobs||safeJobs(liveSO2)).map(jj=>jj.id===j.id?{...jj,coach_email_opened_at:new Date().toISOString()}:jj),updated_at:new Date().toLocaleString()};if(savSOFn)savSOFn(updSO2);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO2:s))}}};
+              const _clickJob=async()=>{setJobView({job:j,so});setComment('');if(j.sent_to_coach_at&&!j.coach_email_opened_at){const liveSO2=sos.find(s=>s.id===so.id);if(liveSO2&&await _recordPortalVisit()){const updSO2={...liveSO2,jobs:(liveSO2.jobs||safeJobs(liveSO2)).map(jj=>jj.id===j.id?{...jj,coach_email_opened_at:new Date().toISOString()}:jj),updated_at:new Date().toLocaleString()};if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO2:s))}}};
               const _jWait=j.art_status==='waiting_approval';
               return<div key={j.id} style={{border:`1px solid ${_jWait?tAccent:'#EEF1F6'}`,background:_jWait?tAccentSoft:'#F7F8FB',borderRadius:6,marginBottom:8,overflow:'hidden',cursor:'pointer'}} onClick={_clickJob}>
                 {mockups.length>0&&<div style={{display:'grid',gridTemplateColumns:mockups.length>1?'1fr 1fr':'1fr',gap:2,background:'#EEF1F6'}}>
@@ -1990,13 +2000,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 // Server FIRST — apply_coach_art_decision (portal-action) verifies the job is
                 // still awaiting the coach and applies the whole write set in one transaction;
                 // local state only flips after it commits, so a stale tab never shows a phantom approval.
-                const _res=await _portalAction({alphaTag:customer.alpha_tag,
+                const _res=await _portalAction({alphaTag:portalCredential,
                   artDecision:{so_id:liveSO.id,job_id:j.id,decision:'approve',comment:coachComment||null,art_ids:jArtIds,approved_status:_apSt,seen_mocks:_seenMocks},
                   email:{to:[{email:_apprTo}],subject:'✅ Art approved by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p>'+commentHtml+'<p>The job is now ready for production file prep.</p><p style="margin:18px 0"><a href="https://connect.nationalsportsapparel.com/?so='+liveSO.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Order '+liveSO.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',...(rep?.email?{replyTo:{email:rep.email,name:rep.name}}:{})},
                 });
                 if(!_res.ok){alert(_res.error||'Could not save your approval — please try again or contact your rep.');return}
                 const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_approval_comment:coachComment||undefined,coach_rejected:false}:jj),art_files:safeArt(liveSO).map(a=>jArtIds.includes(a.id)?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()};
-                if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
+                if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 setComment('');// stay on the job view — it re-renders from live state to show the "approved" banner
               }}>{items.length>1?'✅ Approve All '+items.length+' Garments':'✅ Approve Artwork'}</button>}
               <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'12px 16px',borderRadius:10}} onClick={async()=>{
@@ -2030,13 +2040,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 // Server FIRST — the guarded transaction sends the job back to the artist with the
                 // COMPLETE write set (send timestamp cleared, seps confirmation cleared) or conflicts
                 // if this tab is stale; local state only flips after it commits.
-                const _res=await _portalAction({alphaTag:customer.alpha_tag,
+                const _res=await _portalAction({alphaTag:portalCredential,
                   artDecision:{so_id:liveSO.id,job_id:j.id,decision:'reject',comment:_fb,art_ids:rArtIds},
                   email:{to:[{email:_rejTo}],subject:'📝 Art changes requested by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p><strong>'+customer.name+'</strong> requested changes to the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p><div style="margin:12px 0;padding:12px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;color:#991b1b"><div style="font-size:11px;font-weight:700;color:#dc2626;text-transform:uppercase;margin-bottom:4px">Coach\'s feedback</div>'+_safeText+'</div><p>Please revise the artwork and resend it for approval.</p><p style="margin:18px 0"><a href="https://connect.nationalsportsapparel.com/?so='+liveSO.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Order '+liveSO.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',...(rep?.email?{replyTo:{email:rep.email,name:rep.name}}:{})},
                 });
                 if(!_res.ok){alert(_res.error||'Could not send your request — please try again or contact your rep.');return}
                 const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,rejections:_newRejections,sent_to_coach_at:null,coach_approved_at:null}:jj),art_files:safeArt(liveSO).map(a=>rArtIds.includes(a.id)?{...a,status:'waiting_for_art',notes:(a.notes?a.notes+'\n':'')+'Coach feedback: '+_fb,prod_files_attached:false}:a),updated_at:new Date().toLocaleString()};
-                if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
+                if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 setComment('');setItemMarks({});// stay on the job view — it re-renders from live state to show the "changes requested" banner
               }}>{_flaggedItems.length>0?'📩 Send Feedback ('+_approvedItems.length+' approved · '+_flaggedItems.length+' to change)':'❌ Request Changes'}</button>
             </div>
@@ -2228,7 +2238,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   }
 
   // Coach store builder — full-screen guided flow
-  if(storeBuilder) return <StoreBuilder mode="coach" customer={customer} rep={rep} onClose={()=>setStoreBuilder(false)} />;
+  if(storeBuilder) return <StoreBuilder mode="coach" customer={customer} portalCredential={portalCredential} rep={rep} onClose={()=>setStoreBuilder(false)} />;
 
   // Coach uniform designer — full-screen builder
   if(uniformBuilder) return <React.Suspense fallback={<div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',color:'#64748b',fontFamily:'sans-serif'}}>Loading…</div>}><UniformBuilder coachDiscountPercent={customer?.uniform_discount_percent||0} existingArtwork={artLibrary.map(a=>({id:a.key,name:a.name,src:a.urls&&a.urls[0]})).filter(a=>a.src)} onExit={()=>setUniformBuilder(false)}/></React.Suspense>;
@@ -2608,12 +2618,12 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             invoice link, and every one of those routes leaves `page` on 'billing'. Gating
             this to 'home' meant the confirmation — and the receipt controls inside it —
             never rendered after a real payment. */}
-        {paySuccess&&<div style={{padding:16,background:paySuccess.processing?'#fffbeb':'#f0fdf4',border:'2px solid '+(paySuccess.processing?'#f59e0b':'#22c55e'),borderRadius:12,marginBottom:16,textAlign:'center'}}>
-          <div style={{fontSize:32,marginBottom:8}}>{paySuccess.processing?'⏳':'✅'}</div>
-          <div style={{fontSize:18,fontWeight:800,color:paySuccess.processing?'#92400e':'#166534',marginBottom:4}}>{paySuccess.processing?'Payment Processing':'Payment Successful!'}</div>
-          <div style={{fontSize:14,color:paySuccess.processing?'#92400e':'#166534'}}>${paySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})}{paySuccess.processing?' is processing':' paid'}{paySuccess.fee>0?' + $'+paySuccess.fee.toFixed(2)+' processing fee':''}</div>
-          <div style={{fontSize:12,color:'#64748b',marginTop:4}}>{paySuccess.processing?'This can take a few minutes to confirm. Your invoice will update automatically once it clears.':'Your account has been updated. Download or email yourself an itemized receipt below.'}</div>
-          {paySuccess.intentId&&<div style={{marginTop:14,paddingTop:14,borderTop:'1px solid '+(paySuccess.processing?'#fde68a':'#bbf7d0')}}>
+        {paySuccess&&<div style={{padding:16,background:(paySuccess.processing||paySuccess.reconciliationPending)?'#fffbeb':'#f0fdf4',border:'2px solid '+((paySuccess.processing||paySuccess.reconciliationPending)?'#f59e0b':'#22c55e'),borderRadius:12,marginBottom:16,textAlign:'center'}}>
+          <div style={{fontSize:32,marginBottom:8}}>{(paySuccess.processing||paySuccess.reconciliationPending)?'⏳':'✅'}</div>
+          <div style={{fontSize:18,fontWeight:800,color:(paySuccess.processing||paySuccess.reconciliationPending)?'#92400e':'#166534',marginBottom:4}}>{paySuccess.reconciliationPending?'Payment Received — Account Update Pending':paySuccess.processing?'Payment Processing':'Payment Successful!'}</div>
+          <div style={{fontSize:14,color:(paySuccess.processing||paySuccess.reconciliationPending)?'#92400e':'#166534'}}>${paySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})}{paySuccess.processing?' is processing':' paid'}{paySuccess.fee>0?' + $'+paySuccess.fee.toFixed(2)+' processing fee':''}</div>
+          <div style={{fontSize:12,color:'#64748b',marginTop:4}}>{paySuccess.reconciliationPending?'Your payment succeeded, but the invoice update is delayed. Please do not pay again; NSA will reconcile it automatically.':paySuccess.processing?'This can take a few minutes to confirm. Your invoice will update automatically once it clears.':'Your account has been updated. Download or email yourself an itemized receipt below.'}</div>
+          {paySuccess.intentId&&<div style={{marginTop:14,paddingTop:14,borderTop:'1px solid '+((paySuccess.processing||paySuccess.reconciliationPending)?'#fde68a':'#bbf7d0')}}>
             <a href={'/.netlify/functions/receipt?payment_intent_id='+encodeURIComponent(paySuccess.intentId)} target="_blank" rel="noopener noreferrer" style={{display:'inline-block',background:'#1e3a5f',color:'white',textDecoration:'none',padding:'9px 18px',borderRadius:8,fontSize:14,fontWeight:700}}>📄 Download receipt</a>
             <div style={{marginTop:12,fontSize:12,color:'#475569',fontWeight:600}}>Or email a copy:</div>
             <div style={{display:'flex',gap:8,justifyContent:'center',marginTop:6,flexWrap:'wrap'}}>
@@ -2972,14 +2982,14 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         {page==='store'&&<div>
           <div className="nsa-disp" style={{fontWeight:800,fontSize:'clamp(26px,4vw,34px)',textTransform:'uppercase',color:tPrimary,lineHeight:1,marginBottom:6}}>Team Store Tracking</div>
           <div style={{fontSize:14,color:'#5A6075',marginBottom:22}}>Live orders, fundraising and production status for your team store{cpVisibleStores.length>1?'s':''}.</div>
-          <CoachStore customer={customer} storeIds={cpStoreCustomerIds} alphaTag={customer.alpha_tag}/>
+          <CoachStore customer={customer} storeIds={cpStoreCustomerIds} alphaTag={portalCredential}/>
         </div>}
 
         {/* Roster orders — spreadsheet-style season kit ordering per team */}
         {page==='roster'&&<div>
           <div className="nsa-disp" style={{fontWeight:800,fontSize:'clamp(26px,4vw,34px)',textTransform:'uppercase',color:tPrimary,lineHeight:1,marginBottom:6}}>Roster Orders</div>
           <div style={{fontSize:14,color:'#5A6075',marginBottom:22}}>Build your team, fill in player sizes, and submit to {rep?.name||'your rep'} when you're ready.</div>
-          <RosterOrdersCoach customer={customer} />
+          <RosterOrdersCoach customer={customer} portalCredential={portalCredential} />
         </div>}
 
         {page==='shop'&&<div>
@@ -3124,7 +3134,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           <div className="nsa-disp" style={{fontWeight:800,fontSize:20,textTransform:'uppercase',color:tPrimary,marginBottom:14}}>Catalogs &amp; Stores</div>
 
           {/* Team Stores — inline (CoachStore renders existing stores) */}
-          <CoachStore customer={customer} storeIds={cpStoreCustomerIds} alphaTag={customer.alpha_tag} />
+          <CoachStore customer={customer} storeIds={cpStoreCustomerIds} alphaTag={portalCredential} />
 
           {/* Custom & Catalog Gear tile */}
           <a href={CP_MARKETING+'/design-lab'} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-tile" style={{textDecoration:'none',display:'flex',alignItems:'center',gap:22,background:'#fff',border:'1px solid #EEF1F6',borderRadius:8,padding:'22px 28px',boxShadow:'0 2px 12px rgba(0,0,0,.06)',marginBottom:14}}>

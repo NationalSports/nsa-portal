@@ -17,7 +17,7 @@
  */
 
 jest.mock('@supabase/supabase-js', () => {
-  const state = { responses: {}, calls: [] };
+  const state = { responses: {}, calls: [], rpcCalls: [] };
   const DEFAULT = { data: null, error: null, count: 0 };
   const makeBuilder = (table) => {
     let method = null;
@@ -50,7 +50,11 @@ jest.mock('@supabase/supabase-js', () => {
       getSession: () => Promise.resolve({ data: { session: null } }),
       onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
     },
-    rpc: () => Promise.resolve({ data: null, error: null }),
+    rpc: (name, args) => {
+      state.rpcCalls.push({ name, args });
+      const q = state.responses.rpc || [];
+      return Promise.resolve(q.length ? q.shift() : { data: { ok: true, version: 1 }, error: null });
+    },
   };
   return { createClient: () => client, __mockState: state };
 });
@@ -203,53 +207,41 @@ describe('_dbSaveSOInner — document-identity guard on id collision', () => {
 // `timestamptz DEFAULT now()`, so a client that just created the invoice holds a toLocaleString()
 // value while the DB returns ISO with microseconds. Comparing those as STRINGS would block ordinary
 // re-saves on every freshly-created invoice. The guard compares parsed instants with a tolerance.
-const invChildren = () => ({
-  invoice_payments: [{ data: [], error: null }],
-  invoice_items: [{ data: [], error: null, count: 0 }, { data: [], error: null }],
-});
-
-const invCalls = (state) => state.calls.filter(c => c.table === 'invoices');
-
 describe('_dbSaveInvoiceInner — document-identity guard on id collision', () => {
   beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
   afterEach(() => { restoreEnv(); jest.resetModules(); });
 
-  test('same instant in two different formats is ONE invoice and must still upsert', async () => {
+  test('new save includes a stable creation nonce in the atomic RPC', async () => {
     const { __mockState } = require('@supabase/supabase-js');
-    __mockState.calls.length = 0;
+    __mockState.calls.length = 0;__mockState.rpcCalls.length = 0;
     __mockState.responses = {
-      // DB returns ISO-with-microseconds for the very instant the client holds as a locale string.
-      invoices: [
-        { data: { id: 'INV-63320', created_at: '2026-07-27T14:54:42.663188+00:00' }, error: null },
-        { error: null }, // upsert
-      ],
-      ...invChildren(),
+      rpc: [{ data: { ok: true, version: 1 }, error: null }],
     };
 
     const { _dbSaveInvoice } = require('../lib/dbEngine');
-    // Date.parse of this locale form and of the ISO form above land within a second of each other,
-    // independent of the runner's timezone, because both are read as the same wall-clock instant.
     const inv = { id: 'INV-63320', created_at: '2026-07-27T14:54:42+00:00', total: 100, payments: [], items: [] };
     const result = await _dbSaveInvoice(inv);
 
-    expect(result).not.toBe(false);
-    const writes = invCalls(__mockState).filter(c => c.method === 'upsert');
-    expect(writes.length).toBeGreaterThan(0);
-    expect(inv.id).toBe('INV-63320'); // not renumbered
+    expect(result).toBe(true);
+    expect(inv.client_create_id).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(__mockState.rpcCalls).toEqual([expect.objectContaining({
+      name: 'save_invoice_atomic',
+      args: expect.objectContaining({p_base_version:null,p_invoice:expect.objectContaining({client_create_id:inv.client_create_id})}),
+    })]);
   });
 
   test('never-saved invoice whose number is held by another invoice re-mints, never upserts over it', async () => {
     const { __mockState } = require('@supabase/supabase-js');
-    __mockState.calls.length = 0;
+    __mockState.calls.length = 0;__mockState.rpcCalls.length = 0;
     __mockState.responses = {
       invoices: [
-        // incumbent created hours earlier — unambiguously a different document
-        { data: { id: 'INV-63320', created_at: '2026-07-27T09:00:00.000000+00:00' }, error: null },
         // _refreshMaxId scan; note the dashless id must be counted, not skipped
         { data: [{ id: 'INV-63321' }, { id: 'INV63322' }], error: null },
-        { error: null }, // the re-minted upsert
       ],
-      ...invChildren(),
+      rpc: [
+        { data: { ok:false, reason:'ID_EXISTS' }, error:null },
+        { data: { ok:true, version:1 }, error:null },
+      ],
     };
 
     const { _dbSaveInvoice } = require('../lib/dbEngine');
@@ -258,20 +250,16 @@ describe('_dbSaveInvoiceInner — document-identity guard on id collision', () =
 
     // Re-minted above the highest number found, INCLUDING the dashless 'INV63322'.
     expect(inv.id).toBe('INV-63323');
-    const writes = invCalls(__mockState).filter(c => c.method === 'upsert');
-    expect(writes.length).toBe(1);
-    expect(writes[0].args[0].id).toBe('INV-63323');
+    expect(__mockState.rpcCalls).toHaveLength(2);
+    expect(__mockState.rpcCalls[0].args.p_invoice.client_create_id).toBe(__mockState.rpcCalls[1].args.p_invoice.client_create_id);
+    expect(__mockState.rpcCalls[1].args.p_invoice.id).toBe('INV-63323');
   });
 
   test('already-saved invoice whose number is now held by another blocks and parks the edit', async () => {
     const { __mockState } = require('@supabase/supabase-js');
-    __mockState.calls.length = 0;
+    __mockState.calls.length = 0;__mockState.rpcCalls.length = 0;
     __mockState.responses = {
-      invoices: [
-        { data: { _version: 7 }, error: null }, // _checkVersion runs first
-        { data: { id: 'INV-63320', created_at: '2026-07-27T09:00:00.000000+00:00' }, error: null },
-      ],
-      ...invChildren(),
+      rpc: [{ data: { ok:false, reason:'ID_EXISTS', version:7 }, error:null }],
     };
 
     const { _dbSaveInvoice, _outboxList } = require('../lib/dbEngine');
@@ -279,28 +267,25 @@ describe('_dbSaveInvoiceInner — document-identity guard on id collision', () =
     const result = await _dbSaveInvoice(inv);
 
     expect(result).toBe(false);
-    expect(invCalls(__mockState).filter(c => c.method === 'upsert').length).toBe(0);
+    expect(__mockState.rpcCalls).toHaveLength(1);
     expect(inv.id).toBe('INV-63320'); // payments/items must not be stranded by a renumber
     expect((_outboxList() || []).filter(e => e && e.id === 'INV-63320').length).toBeGreaterThan(0);
   });
 
-  test('unparseable created_at means "can\'t tell" and must not block the save', async () => {
+  test('a stale RPC response cannot become a whole-row overwrite', async () => {
     const { __mockState } = require('@supabase/supabase-js');
-    __mockState.calls.length = 0;
+    __mockState.calls.length = 0;__mockState.rpcCalls.length = 0;
     __mockState.responses = {
-      invoices: [
-        { data: { id: 'INV-63320', created_at: 'not-a-date' }, error: null },
-        { error: null }, // upsert
-      ],
-      ...invChildren(),
+      rpc: [{ data: { ok:false, reason:'STALE', version:9 }, error:null }],
     };
 
     const { _dbSaveInvoice } = require('../lib/dbEngine');
-    const inv = { id: 'INV-63320', created_at: '2026-07-27T21:54:42+00:00', total: 100, payments: [], items: [] };
+    const inv = { id: 'INV-63320', created_at: '2026-07-27T21:54:42+00:00', total: 100, _version:8, payments: [], items: [] };
     const result = await _dbSaveInvoice(inv);
 
-    expect(result).not.toBe(false);
-    expect(invCalls(__mockState).filter(c => c.method === 'upsert').length).toBeGreaterThan(0);
+    expect(result).toBe('stale');
+    expect(inv._version).toBe(8);
+    expect(__mockState.rpcCalls).toHaveLength(1);
   });
 });
 
@@ -318,15 +303,12 @@ describe('_dbSaveInvoiceInner — identity guard with no client created_at', () 
   // The INV-63144 reproduction.
   test('never-saved invoice re-mints when the number is held by another customer', async () => {
     const { __mockState } = require('@supabase/supabase-js');
-    __mockState.calls.length = 0;
+    __mockState.calls.length = 0;__mockState.rpcCalls.length = 0;
     __mockState.responses = {
       invoices: [
-        // Steve's PV Football invoice, already live at this number.
-        { data: { id: 'INV-63144', created_at: '2026-07-10T15:56:20.352168+00:00', customer_id: 'c-ns-2625', so_id: 'SO-1495', total: 384.41 }, error: null },
         { data: [{ id: 'INV-63144' }], error: null }, // _refreshMaxId scan
-        { error: null }, // the re-minted upsert
       ],
-      ...invChildren(),
+      rpc: [{ data:{ok:false,reason:'ID_EXISTS'},error:null },{ data:{ok:true,version:1},error:null }],
     };
 
     const { _dbSaveInvoice } = require('../lib/dbEngine');
@@ -335,49 +317,38 @@ describe('_dbSaveInvoiceInner — identity guard with no client created_at', () 
     await _dbSaveInvoice(inv);
 
     expect(inv.id).toBe('INV-63145');
-    const writes = invCalls(__mockState).filter(c => c.method === 'upsert');
-    expect(writes.length).toBe(1);
-    expect(writes[0].args[0].id).toBe('INV-63145');
-    expect(writes[0].args[0].customer_id).toBe('c1782506750436');
+    expect(__mockState.rpcCalls).toHaveLength(2);
+    expect(__mockState.rpcCalls[1].args.p_invoice.id).toBe('INV-63145');
+    expect(__mockState.rpcCalls[1].args.p_invoice.customer_id).toBe('c1782506750436');
   });
 
   // The false positive to avoid: the failed-ids retry loop re-saves an invoice object that never
   // recorded its _version, so it looks "new" while its own row already exists. Same document —
   // renumbering it here would mint a duplicate invoice out of a successful save.
-  test('retry of our own save keeps its number when customer, SO and total all match', async () => {
+  test('lost-response retry keeps its number only when the persisted nonce proves ownership', async () => {
     const { __mockState } = require('@supabase/supabase-js');
-    __mockState.calls.length = 0;
+    __mockState.calls.length = 0;__mockState.rpcCalls.length = 0;
     __mockState.responses = {
-      invoices: [
-        { data: { id: 'INV-63144', created_at: '2026-07-10T15:56:20.352168+00:00', customer_id: 'c-ns-2625', so_id: 'SO-1495', total: '384.41' }, error: null },
-        { error: null }, // upsert under the same id
-      ],
-      ...invChildren(),
+      rpc: [{ data:{ok:true,version:1,idempotent:true},error:null }],
     };
 
     const { _dbSaveInvoice } = require('../lib/dbEngine');
-    const inv = { id: 'INV-63144', customer_id: 'c-ns-2625', so_id: 'SO-1495', total: 384.41, payments: [], items: [] };
+    const inv = { id: 'INV-63144', client_create_id:'11111111-1111-4111-8111-111111111111', customer_id: 'c-ns-2625', so_id: 'SO-1495', total: 384.41, payments: [], items: [] };
     const result = await _dbSaveInvoice(inv);
 
     expect(result).not.toBe(false);
     expect(inv.id).toBe('INV-63144'); // not renumbered
-    const writes = invCalls(__mockState).filter(c => c.method === 'upsert');
-    expect(writes.length).toBe(1);
-    expect(writes[0].args[0].id).toBe('INV-63144');
+    expect(__mockState.rpcCalls).toHaveLength(1);
+    expect(__mockState.rpcCalls[0].args.p_invoice.client_create_id).toBe(inv.client_create_id);
   });
 
   // Re-pointing a loaded invoice to another customer is a real workflow (the Lincoln XC split did
   // exactly that). A _version means the client read this row from the DB, so the change is deliberate.
   test('deliberate re-point of a loaded invoice is not treated as a collision', async () => {
     const { __mockState } = require('@supabase/supabase-js');
-    __mockState.calls.length = 0;
+    __mockState.calls.length = 0;__mockState.rpcCalls.length = 0;
     __mockState.responses = {
-      invoices: [
-        { data: { _version: 3 }, error: null }, // _checkVersion runs first
-        { data: { id: 'INV-63183', created_at: '2026-07-16T17:20:00.000000+00:00', customer_id: 'c-ns-4976', so_id: 'SO-1436', total: 1597.75 }, error: null },
-        { error: null }, // upsert
-      ],
-      ...invChildren(),
+      rpc: [{ data:{ok:true,version:4},error:null }],
     };
 
     const { _dbSaveInvoice } = require('../lib/dbEngine');
@@ -386,6 +357,7 @@ describe('_dbSaveInvoiceInner — identity guard with no client created_at', () 
 
     expect(result).not.toBe(false);
     expect(inv.id).toBe('INV-63183');
-    expect(invCalls(__mockState).filter(c => c.method === 'upsert').length).toBe(1);
+    expect(__mockState.rpcCalls).toHaveLength(1);
+    expect(__mockState.rpcCalls[0].args.p_base_version).toBe(3);
   });
 });

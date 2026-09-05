@@ -1,6 +1,7 @@
 // Temporary diagnostic — DELETE after Richardson sync is fixed.
 // Returns env var status, vendor lookup result, first 3 feed rows, AND
 // a duplicate-product-ID check using the corrected parseDescription.
+const { verifyAdmin } = require('./_shared');
 const DEFAULT_USER = 'CustFeed';
 const DEFAULT_FEED_URL = 'https://reports.richardsonsports.com/reportserver/reportserver/httpauthexport?key=StockInventory&format=JSON&download=false';
 
@@ -25,14 +26,26 @@ function parseDescription(description, style) {
   return { color: parts.join(' ').trim(), size };
 }
 
-exports.handler = async () => {
+const JSON_HEADERS = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
+
+exports.handler = async (event) => {
+  if (event.httpMethod !== 'POST') {
+    return { statusCode: 405, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Method not allowed' }) };
+  }
+  const auth = await verifyAdmin(event);
+  if (!auth.ok) {
+    return { statusCode: auth.status || 401, headers: JSON_HEADERS, body: JSON.stringify({ error: auth.error || 'Unauthorized' }) };
+  }
+  if (process.env.RICHARDSON_DEBUG_ENABLED !== 'true') {
+    return { statusCode: 404, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Diagnostic disabled' }) };
+  }
   const feedKey = process.env.RICHARDSON_FEED_KEY;
   const sbUrl   = (process.env.REACT_APP_SUPABASE_URL || '').replace(/\/+$/, '');
   const sbKey   = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   const cfg = { hasFeedKey: !!feedKey, hasSbUrl: !!sbUrl, hasSbKey: !!sbKey };
   if (!feedKey || !sbUrl || !sbKey) {
-    return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cfg, error: 'Missing env vars' }) };
+    return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ cfg, error: 'Missing env vars' }) };
   }
 
   // Vendor lookup
@@ -94,7 +107,7 @@ exports.handler = async () => {
 
   return {
     statusCode: 200,
-    headers: { 'Content-Type': 'application/json' },
+    headers: JSON_HEADERS,
     body: JSON.stringify({
       cfg, vendorId, vendorErr,
       feedStatus, feedRows, firstRowKeys, feedPreview,

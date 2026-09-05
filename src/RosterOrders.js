@@ -1732,10 +1732,20 @@ function SessionDetail({ session, customer, onBack, onNewEst }) {
     setSess(s => ({ ...s, status }));
     await supabase.from('roster_order_sessions').update({ status }).eq('id', session.id);
     if (status === 'open' && wasSubmitted) {
-      fetch('/.netlify/functions/roster-order-reopen', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: session.id, customer_id: customer.id, note: (note || '').trim() }),
-      }).catch(e => console.error('[changeStatus] reopen notify:', e));
+      try {
+        const { data } = await supabase.auth.getSession();
+        const token = data?.session?.access_token;
+        if (!token) throw new Error('Your staff session has expired. Please sign in again.');
+        const response = await fetch('/.netlify/functions/roster-order-reopen', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ session_id: session.id, customer_id: customer.id, note: (note || '').trim() }),
+        });
+        let result={};try{result=await response.json()}catch(_){}
+        if(!response.ok||!result.ok)throw new Error(result.error||`Notification failed (${response.status})`);
+      } catch (error) {
+        console.error('[changeStatus] reopen notify:', error);
+        if(nf)nf('Roster reopened, but coaches were not notified: '+(error?.message||'Unknown error'),'error');
+      }
     }
   };
 
@@ -2321,7 +2331,7 @@ export function RosterOrdersStaff({ customer, nf, onNewEst }) {
 // ─── Coach: exported component (embeds in CoachPortal) ───────────────────────
 // Self-serve: a coach who belongs to this customer can create sessions + teams,
 // build the kit from NSA's item catalog, fill rosters, and invite other coaches.
-export function RosterOrdersCoach({ customer }) {
+export function RosterOrdersCoach({ customer, portalCredential }) {
   const [coach, setCoach] = useState(null);        // { id, email, name }
   const [sessions, setSessions] = useState([]);    // this customer's non-draft sessions
   const [teams, setTeams] = useState([]);          // all teams across those sessions
@@ -2339,7 +2349,7 @@ export function RosterOrdersCoach({ customer }) {
   // Every roster write from the coach portal goes through roster-write.js (service role,
   // scoped to this portal's alpha_tag family) — the portal runs as anon and, once the
   // lockdown migration lands, can no longer write roster_* directly.
-  const coachWriter = useMemo(() => makeCoachWriter(customer.alpha_tag), [customer.alpha_tag]);
+  const coachWriter = useMemo(() => makeCoachWriter(portalCredential), [portalCredential]);
 
   const reload = useCallback(async () => {
     if (!customer?.coach_roster) { setLoading(false); return; } // roster module off for this account
@@ -2421,7 +2431,7 @@ export function RosterOrdersCoach({ customer }) {
       // the coach: a submit that silently stays 'open' means the rep never hears about it.
       const res = await fetch('/.netlify/functions/roster-order-submit', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: session.id, customer_id: customer.id, coach_email: coach?.email || '' }),
+        body: JSON.stringify({ session_id: session.id, portal: portalCredential, coach_email: coach?.email || '' }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok || j.ok === false) throw new Error(j.error || 'Submit failed');
@@ -2477,7 +2487,7 @@ export function RosterOrdersCoach({ customer }) {
     setInvite(prev => ({ ...prev, [team.id]: { ...f, sending: true } }));
     const { coach_id } = await inviteRosterCoach({
       email, name: (f.name || '').trim(), teamId: team.id, customerId: customer.id,
-      teamLabel: `${team.name} — ${session.name}`, alphaTag: customer.alpha_tag,
+      teamLabel: `${team.name} — ${session.name}`, alphaTag: portalCredential,
     });
     setCoachesByTeam(prev => ({
       ...prev, [team.id]: [...(prev[team.id] || []).filter(c => c.email !== email), { email, name: f.name, role: 'editor', id: coach_id }],

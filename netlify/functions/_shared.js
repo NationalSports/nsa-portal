@@ -1,6 +1,7 @@
 // Shared helpers for team-list / team-invite / team-deactivate functions.
 // Holds CORS boilerplate + admin verification using the user's JWT.
 const { createClient } = require('@supabase/supabase-js');
+const { resolvePortalCredential } = require('./_portalAuth');
 const crypto = require('crypto');
 
 // Constant-time string compare for shared secrets (station/vendor tokens). A plain
@@ -183,51 +184,11 @@ function pickCols(obj, allowed) {
   return out;
 }
 
-// ── Coach-portal customer-family resolution (alpha_tag → Set of customer ids) ──────
-// The portal link's alpha_tag is its only credential; every anon-portal endpoint must
-// scope reads/writes to the family it resolves to (parent + one level of sub-customers).
-// This is the canonical implementation — portal-action.js and coach-invite.js carry
-// older inline copies (coach-invite's has already drifted: parents only) and should
-// migrate here rather than fork again.
-// Matching tolerates tag-hygiene reality: stored tags may carry stray whitespace/case
-// (the staff modal historically saved them raw), and the App portal gate matches
-// trim+lowercase on BOTH sides — a resolver stricter than the gate yields a portal that
-// renders fine while every action 403s. Exact-insensitive match first (ilike with
-// escaped wildcards), then a normalized in-JS pass only if that found nothing.
-// Cached per warm container: the mapping is effectively static per portal and this runs
-// on every coach write (same shape as the token-verification cache above). A family
-// change (new sub-customer) is picked up within the TTL.
-const FAMILY_TTL_MS = 60 * 1000;
-const FAMILY_CACHE_MAX = 200;
-const _familyCache = new Map(); // normalized tag -> { at, fam: Set<customer id> }
-
-async function resolveCustomerFamily(admin, alphaTag) {
-  const tag = String(alphaTag || '').trim();
-  if (!tag) return { error: 'Unknown portal tag', notFound: true };
-  const norm = tag.toLowerCase();
-  const hit = _familyCache.get(norm);
-  if (hit && Date.now() - hit.at < FAMILY_TTL_MS) return { fam: hit.fam };
-
-  const esc = tag.replace(/([%_\\])/g, '\\$1'); // ilike without wildcards = case-insensitive exact
-  let { data: parents, error } = await admin.from('customers').select('id,parent_id').ilike('alpha_tag', esc);
-  if (error) return { error: error.message };
-  if (!parents || !parents.length) {
-    const { data: all, error: e2 } = await admin.from('customers').select('id,parent_id,alpha_tag').not('alpha_tag', 'is', null);
-    if (e2) return { error: e2.message };
-    parents = (all || []).filter((c) => String(c.alpha_tag || '').trim().toLowerCase() === norm);
-  }
-  if (!parents.length) return { error: 'Unknown portal tag', notFound: true };
-  const parentIds = parents.map((p) => p.id);
-  const directParentIds = parents.map((p) => p.parent_id).filter(Boolean);
-  const { data: kids, error: e3 } = await admin.from('customers').select('id').in('parent_id', parentIds);
-  if (e3) return { error: e3.message }; // a failed kids lookup must be a retryable 500, not a shrunken family
-  // A department tag sees its direct teams; a team tag sees its own record and
-  // the direct parent store, matching CoachPortal's existing navigation scope.
-  // It does not gain sibling-team access.
-  const fam = new Set([...parentIds, ...directParentIds, ...(kids || []).map((k) => k.id)]);
-  if (_familyCache.size >= FAMILY_CACHE_MAX) { const oldest = _familyCache.keys().next().value; _familyCache.delete(oldest); }
-  _familyCache.set(norm, { at: Date.now(), fam });
-  return { fam };
+// Canonical coach-portal bearer-credential resolver. It accepts new opaque
+// tokens and the staged hash-only legacy credentials, then returns the same
+// parent/direct-team family boundary used by every portal read and write.
+async function resolveCustomerFamily(admin, credential) {
+  return resolvePortalCredential(admin, credential);
 }
 
 // Resolve a roster team to the customer_id that owns it (team → session.customer_id).
@@ -245,66 +206,73 @@ async function rosterTeamCustomerId(admin, teamId) {
   return { customerId: data?.roster_order_sessions?.customer_id || null };
 }
 
-// Mark the invoice(s) referenced by a succeeded Stripe PaymentIntent's metadata as paid, using the
-// service role. This is the reliable reconciliation path for coach-portal payments: the portal is
-// anonymous and RLS-blocks it from writing `invoices`, and the Stripe webhook can't be relied on as
-// the sole mechanism (it depends on dashboard config that may be absent). Shared by stripe-payment's
-// `finalize_invoice` action (called by the portal right after payment) and the stripe-webhook backstop.
-// Idempotent: invoices already paid / with no open balance are skipped, so repeated calls (portal +
-// webhook, or Stripe retries) can't double-apply the surcharge. The surcharge actually collected
-// (amount captured − open balance) is folded into the total, mirroring the in-app payment handler.
-async function reconcileInvoiceFromIntent(admin, pi) {
-  const ids = String((pi && pi.metadata && pi.metadata.invoice_id) || '')
-    .split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+function stripeInvoicePaymentMethod(pi) {
+  const type = pi?.payment_method?.type
+    || pi?.latest_charge?.payment_method_details?.type
+    || (Array.isArray(pi?.payment_method_types) && pi.payment_method_types.length === 1
+      ? pi.payment_method_types[0] : '');
+  if (type === 'card') return 'cc';
+  if (type === 'us_bank_account') return 'ach';
+  return 'stripe';
+}
+
+function stripeInvoicePaymentDate(pi, settledAt) {
+  // A succeeded webhook's event timestamp is the best settlement date. Synchronous finalize calls
+  // use the expanded Charge timestamp. Fall back to the current time rather than PI.created, which
+  // is the debit-submission date for ACH and may precede settlement by several business days.
+  const seconds = Number(settledAt || pi?.latest_charge?.created || 0);
+  const date = seconds > 0 ? new Date(seconds * 1000) : new Date();
+  return date.toLocaleDateString('en-US', {
+    timeZone: 'America/Los_Angeles', month: '2-digit', day: '2-digit', year: 'numeric',
+  });
+}
+
+// Atomically apply a succeeded Stripe PaymentIntent to every invoice named in its metadata. The
+// database RPC locks the complete invoice set and writes both summaries and immutable ledger rows
+// in one transaction. It also owns the idempotency check: retries replay the persisted cent
+// allocations, while a legacy partial application is rejected for manual review rather than
+// guessing that already-applied principal is a new fee.
+async function reconcileInvoiceFromIntent(admin, pi, { settledAt } = {}) {
+  if (pi?.status !== 'succeeded') {
+    throw new Error('Only a succeeded Stripe PaymentIntent can settle invoices');
+  }
+  const ids = [...new Set(String(pi?.metadata?.invoice_id || '')
+    .split(/[\s,]+/).map((s) => s.trim()).filter(Boolean))];
   if (!ids.length) return { reconciled: [] };
-  const { data: rows, error } = await admin.from('invoices').select('id,total,paid,cc_fee,status').in('id', ids);
-  if (error) { console.error('[reconcileInvoice] lookup failed:', error.message); return { reconciled: [], error: error.message }; }
-  if (!rows || !rows.length) return { reconciled: [] };
-  // Only invoices that still owe money — this is what makes the call idempotent.
-  const targets = rows.filter((r) => r.status !== 'paid' && (Number(r.total) || 0) - (Number(r.paid) || 0) > 0.005);
-  const balTotal = targets.reduce((a, r) => a + ((Number(r.total) || 0) - (Number(r.paid) || 0)), 0);
-  const collected = (pi.amount_received != null ? pi.amount_received : (pi.amount || 0)) / 100;
-  // SECURITY: never settle an invoice for less than its open balance. This function sets
-  // paid = total for every target, so without this guard ANY succeeded PaymentIntent —
-  // including a $0.50 underpayment — would mark a large invoice fully paid. Legitimate portal
-  // payments always capture the full balance (plus the card surcharge), so this only rejects
-  // genuine underpayments; the 1-cent tolerance absorbs rounding. Captured funds remain in
-  // Stripe (visible in the dashboard) for manual handling.
-  if (targets.length && collected + 0.01 < balTotal) {
-    console.error('[reconcileInvoice] underpayment ignored for intent', pi.id,
-      '— captured', collected, 'vs open balance', balTotal,
-      '; left open:', targets.map((r) => r.id).join(','));
-    return { reconciled: [], underpaid: true, collected, balanceDue: balTotal };
+  if (pi?.metadata?.source && pi.metadata.source !== 'nsa_coach_portal') {
+    return { reconciled: [], ignored: true, reason: 'not_coach_portal' };
   }
-  const feeTotal = Math.max(0, Math.round((collected - balTotal) * 100) / 100);
-  const nowIso = new Date().toISOString();
-  // Pacific, not the function's UTC clock. A payment's date decides which month the rep's
-  // commission lands in, and a Netlify function runs in UTC — so a card taken after 5pm PT was
-  // stamped with TOMORROW's date (INV-63438 and INV-63489 both carry a day that never happened
-  // in the office). On the last evening of a month that silently books the commission to the
-  // next month, which is the exact failure INV-1053 was reported for.
-  const payDate = new Date().toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', month: '2-digit', day: '2-digit', year: 'numeric' });
-  const reconciled = [];
-  for (const r of targets) {
-    const bal = (Number(r.total) || 0) - (Number(r.paid) || 0);
-    const fee = balTotal > 0 ? Math.round(feeTotal * (bal / balTotal) * 100) / 100 : 0;
-    const newTotal = Math.round(((Number(r.total) || 0) + fee) * 100) / 100;
-    const { error: updErr } = await admin.from('invoices')
-      .update({ total: newTotal, paid: newTotal, cc_fee: Math.round(((Number(r.cc_fee) || 0) + fee) * 100) / 100, status: 'paid', updated_at: nowIso })
-      .eq('id', r.id).neq('status', 'paid'); // guard against a racing reconcile
-    if (updErr) { console.error('[reconcileInvoice] update failed for', r.id, ':', updErr.message); continue; }
-    // Best-effort audit row. invoice_payments has no cc_fee column, so it's omitted. Same ref format
-    // the app uses ('Stripe <intentId>') so its payment-preservation logic dedupes instead of duplicating.
-    try {
-      const ref = 'Stripe ' + pi.id;
-      const { data: existing } = await admin.from('invoice_payments').select('id').eq('invoice_id', r.id).eq('ref', ref).limit(1);
-      if (!existing || !existing.length) {
-        await admin.from('invoice_payments').insert({ invoice_id: r.id, amount: Math.round((bal + fee) * 100) / 100, method: 'cc', ref, date: payDate });
-      }
-    } catch (e) { /* audit row is best-effort */ }
-    reconciled.push(r.id);
+  if (!pi?.id) throw new Error('Stripe PaymentIntent id is required for invoice reconciliation');
+
+  const capturedCents = Number(pi.amount_received != null ? pi.amount_received : pi.amount);
+  if (!Number.isSafeInteger(capturedCents) || capturedCents <= 0) {
+    throw new Error('Stripe PaymentIntent captured amount is invalid');
   }
-  return { reconciled };
+
+  const { data, error } = await admin.rpc('settle_stripe_invoice_payment', {
+    p_payment_intent_id: pi.id,
+    p_invoice_ids: ids,
+    p_captured_cents: capturedCents,
+    p_payment_method: stripeInvoicePaymentMethod(pi),
+    p_payment_date: stripeInvoicePaymentDate(pi, settledAt),
+  });
+  if (error) {
+    console.error('[reconcileInvoice] atomic settlement failed for', pi.id, ':', error.message);
+    throw new Error(`Invoice settlement failed: ${error.message}`);
+  }
+  if (!data || data.ok !== true) {
+    throw new Error(`Invoice settlement did not commit${data?.reason ? `: ${data.reason}` : ''}`);
+  }
+  if (data.ignored && (pi?.metadata?.source === 'nsa_coach_portal'
+      || ids.some((id) => /^INV-/i.test(id)))) {
+    throw new Error('Invoice settlement did not commit: referenced invoices were not found');
+  }
+  return {
+    ...data,
+    reconciled: Array.isArray(data.allocations)
+      ? data.allocations.map((row) => row.invoice_id).filter(Boolean)
+      : [],
+  };
 }
 
 // Sync an order's webstore_order_items to `lineItems` WITHOUT destroying fulfillment state.

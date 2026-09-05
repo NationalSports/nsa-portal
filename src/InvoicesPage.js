@@ -14,6 +14,7 @@ import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub,
 import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled, greetLine, withGreeting, emailMoney } from './utils';
 import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms } from './App';
 import { stripePaymentRepairCandidate } from './lib/invoicePaymentReconciliation';
+import { getPortalUrl } from './lib/portalLinks';
 
 // The sent_history entry Brevo told us never arrived (hard bounce / blocked / spam).
 // Read from history rather than the client-only _delivery_* fields so the failure is
@@ -511,9 +512,9 @@ export default function InvoicesPage(){
                 });
               }}>Edit Invoice</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
-              onClick={()=>{
+              onClick={async()=>{
                 const contact=contacts[0];
-                const portalUrl=ic?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic.alpha_tag)+'&inv='+encodeURIComponent(inv.id):'';
+                let portalUrl;try{portalUrl=await getPortalUrl(ic?.id,'inv='+encodeURIComponent(inv.id))}catch(error){nf('Could not create portal link: '+(error?.message||'Unknown error'),'error');return}
                 // Build recipient list: customer's own contacts + inherited billing contacts from parent accounts
                 const ownContacts=(ic?.contacts||[]).filter(ct=>ct.email);
                 const inheritedBilling=getBillingContacts(ic,cust).filter(a=>a._inherited_from&&a.email&&!ownContacts.find(o=>o.email===a.email));
@@ -525,7 +526,7 @@ export default function InvoicesPage(){
                 // Job name comes off the SO — the invoice memo carries a "Final Invoice — " prefix.
                 const _job=((so?.memo||inv.memo)||'').trim();
                 const msg=greetLine(Object.keys(checked).filter(em=>checked[em]),sendContacts)+'\n\nAttached below is your invoice'+(_job?' for "'+_job+'"':'')+', totalling '+emailMoney(inv.total)+(inv.due_date?', due on '+inv.due_date:'')+'.'+(portalUrl?'\n\nYou can also view it anytime through your portal:\n'+portalUrl:'')+'\n\nPlease let us know if you have any questions, and thank you for your business!\n\nNSA Team';
-                const smsText='Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+inv.total.toFixed(2)+' is ready. Due by '+(inv.due_date||'—')+'. View: '+(portalUrl||'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic?.alpha_tag||''));
+                const smsText='Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+inv.total.toFixed(2)+' is ready. Due by '+(inv.due_date||'—')+'. View: '+portalUrl;
                 setInvSendModalDirect({inv,sendContacts,checked,customEmail:'',customEmails:[],msg,review:false,portalUrl,smsEnabled:_smsUiEnabled&&!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7,followUp:seedFollowUp(inv)});
               }}>Send Invoice</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
@@ -542,8 +543,8 @@ export default function InvoicesPage(){
               title="Build a no-pricing packing slip — pick the items and sizes actually going in this delivery"
               onClick={openPackSlip}>📦 Packing Slip</button>
             </>}
-            {ic?.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}} title="Copy this customer's coach portal link to share"
-              onClick={()=>{const purl='https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic.alpha_tag);navigator.clipboard.writeText(purl).then(()=>nf('Coach portal link copied!')).catch(()=>{window.prompt('Copy:',purl)})}}>🔗 Copy Portal Link</button>}
+            {ic?.id&&<button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}} title="Copy this customer's coach portal link to share"
+              onClick={async()=>{try{const purl=await getPortalUrl(ic.id);try{if(navigator.clipboard)await navigator.clipboard.writeText(purl);else window.prompt('Copy:',purl)}catch(_){window.prompt('Copy:',purl)}nf('Coach portal link ready to share!')}catch(error){nf('Could not create portal link: '+(error?.message||'Unknown error'),'error')}}}>🔗 Copy Portal Link</button>}
             {lineItems.length>=2&&inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:12,padding:'6px 14px',background:'#7c3aed',color:'white',border:'none'}}
               onClick={()=>{
                 // If line_items not stored on invoice, populate from computed items before splitting
@@ -1309,11 +1310,9 @@ export default function InvoicesPage(){
                   <button className="btn btn-sm btn-secondary" disabled={!(si.customEmail||'').includes('@')} onClick={()=>{const em=(si.customEmail||'').trim();if(em)setInvSendModalDirect(s=>({...s,customEmails:s.customEmails.includes(em)?s.customEmails:[...s.customEmails,em],customEmail:''}))}} style={{fontSize:10,whiteSpace:'nowrap'}}>+ Add</button>
                 </div>
               </div>
-              {/* The "View Invoice in Portal" pay button is built from the customer's alpha tag.
-                  Without one it was simply dropped and the email went out anyway — a pay-link
-                  email with no pay link, and nothing on screen said so. */}
+              {/* A send is blocked unless a secure portal credential was issued when this modal opened. */}
               {!si.portalUrl&&<div style={{marginBottom:12,padding:10,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,fontSize:12,color:'#b91c1c'}}>
-                <strong>No pay link on this email.</strong> This customer has no portal tag, so the “View &amp; Pay in Portal” button can’t be built. Set an alpha tag on the customer to include it.
+                <strong>No pay link on this email.</strong> Close this window and retry so a secure portal link can be created.
               </div>}
               <div style={{marginBottom:12}}><label className="form-label">Message</label>
                 <textarea className="form-input" rows={6} value={si.msg} onChange={e=>setInvSendModalDirect(s=>({...s,msg:e.target.value}))} style={{lineHeight:1.5}}/></div>
@@ -1411,7 +1410,7 @@ export default function InvoicesPage(){
                   brevoAttachments.push({name:_siPdfName,content:pdfB64});
                 }catch(err){console.warn('Failed to build invoice PDF:',err)}
                 // Build email with portal link
-                const portalUrl=siCust?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(siCust.alpha_tag)+'&inv='+encodeURIComponent(siInv.id):'';
+                const portalUrl=si.portalUrl;
                 const emailHtml=buildBrandedEmailHtml(si.msg.replace(/\n/g,'<br>')
                   +(portalUrl?'<br/><br/><a href="'+portalUrl+'" style="display:inline-block;padding:10px 20px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:600">View Invoice in Portal</a>':'')
                   +(si.review?buildReviewButtonHtml():''),companyInfo);
@@ -1986,7 +1985,6 @@ export default function InvoicesPage(){
           // Local tallies — the `pd` closure is a stale render snapshot, so reading
           // pd.progress after the loop always reported 0. Count here instead.
           let _sentN=0,_failedN=0;
-          const portalBase='https://nationalsportsapparel.com/coach?portal=';
           const _$ = n => '$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
           for(const t of sendableCustomers){
             const c=t.customer;
@@ -1999,7 +1997,8 @@ export default function InvoicesPage(){
               return '<tr><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;font-weight:600">'+(inv.id||'')+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+memo+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;font-family:monospace;font-size:11px">'+po+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+date+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+due+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right;color:#b91c1c;font-weight:600">'+_$(inv._bal)+'</td></tr>';
             }).join('');
             const stmtTable=pd.options.includeStatement?'<div style="margin:18px 0"><div style="font-size:13px;font-weight:700;color:#1e293b;margin-bottom:6px">Past-Due Invoices</div><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:#f1f5f9"><th style="padding:8px 10px;text-align:left">Invoice</th><th style="padding:8px 10px;text-align:left">Memo</th><th style="padding:8px 10px;text-align:left">PO #</th><th style="padding:8px 10px;text-align:left">Date</th><th style="padding:8px 10px;text-align:left">Due</th><th style="padding:8px 10px;text-align:right">Balance</th></tr></thead><tbody>'+stmtRows+'<tr><td colspan="5" style="padding:8px 10px;text-align:right;font-weight:700;border-top:2px solid #1e293b">Total Owed</td><td style="padding:8px 10px;text-align:right;font-weight:800;color:#b91c1c;border-top:2px solid #1e293b">'+_$(t.total)+'</td></tr></tbody></table></div>':'';
-            const portalUrl=c.alpha_tag?(portalBase+encodeURIComponent(c.alpha_tag)+(t.invoices.length===1?'&inv='+encodeURIComponent(t.invoices[0].id):'&page=billing')):'';
+            let portalUrl='';
+            if(pd.options.includePayLink){try{portalUrl=await getPortalUrl(c.id,t.invoices.length===1?'inv='+encodeURIComponent(t.invoices[0].id):'page=billing')}catch(error){_failedN++;console.warn('[past-due] portal link failed for '+c.name+':',error);upd(s=>({...s,progress:{...s.progress,done:s.progress.done+1,failed:s.progress.failed+1}}));continue}}
             const payButton=(pd.options.includePayLink&&portalUrl)?'<div style="margin:20px 0"><a href="'+portalUrl+'" style="display:inline-block;padding:12px 24px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:700;font-size:14px">View & Pay in Portal</a></div>':'';
             const greeting=(getBillingContacts(c,cust)[0]?.name||(c.contacts||[])[0]?.name||'Coach');
             const personalizedMsg=pd.message.replace(/\{name\}/g,greeting).replace(/\n/g,'<br/>');

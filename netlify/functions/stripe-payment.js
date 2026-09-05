@@ -2,7 +2,7 @@
 // Creates PaymentIntents for the coach portal checkout
 const stripe = require('stripe');
 const crypto = require('crypto');
-const { verifyUser, verifyAdmin, getSupabaseAdmin, reconcileInvoiceFromIntent } = require('./_shared');
+const { verifyUser, verifyAdmin, getSupabaseAdmin, reconcileInvoiceFromIntent, resolveCustomerFamily } = require('./_shared');
 const { sendRefundNotice } = require('./_webstoreEmail');
 
 // Dollar formatting for the refund message posted into the order thread — the
@@ -65,6 +65,72 @@ exports.listIntentRefunds = listIntentRefunds;
 
 // Hard ceiling on a single PaymentIntent — override with STRIPE_MAX_AMOUNT_CENTS.
 const MAX_AMOUNT_CENTS = parseInt(process.env.STRIPE_MAX_AMOUNT_CENTS || '', 10) || 5000000; // $50,000
+const DEFAULT_INVOICE_CARD_FEE_PCT = 0.029;
+const loadInvoiceCardFeePct = async (admin) => {
+  const { data, error } = await admin.from('app_state')
+    .select('value').eq('id', 'portal_settings').maybeSingle();
+  if (error) throw new Error(`Could not read portal payment settings: ${error.message || 'database error'}`);
+  if (!data) return DEFAULT_INVOICE_CARD_FEE_PCT;
+
+  let settings;
+  try {
+    settings = typeof data.value === 'string' ? JSON.parse(data.value) : data.value;
+  } catch (e) {
+    throw new Error('Portal payment settings are not valid JSON');
+  }
+  if (!settings || typeof settings !== 'object') throw new Error('Portal payment settings are invalid');
+  if (!Object.prototype.hasOwnProperty.call(settings, 'ccFeePct')) return DEFAULT_INVOICE_CARD_FEE_PCT;
+  const configured = settings.ccFeePct;
+  if (typeof configured !== 'number' || !Number.isFinite(configured) || configured < 0 || configured > 0.10) {
+    throw new Error('Portal card fee must be between 0% and 10%');
+  }
+  return configured;
+};
+exports.loadInvoiceCardFeePct = loadInvoiceCardFeePct;
+
+// Resolve the complete invoice set behind a coach-portal credential. This is the capture boundary:
+// missing/extra IDs, a database error, cross-family invoices, closed balances, and malformed money
+// all fail before Stripe can create or re-price an intent.
+const loadAuthorizedInvoicePayment = async (admin, invoiceId, alphaTag, { requirePortalCredential = true } = {}) => {
+  const ids = [...new Set(String(invoiceId || '').split(/[\s,]+/).map((s) => s.trim()).filter(Boolean))].sort();
+  const tag = String(alphaTag || '').trim();
+  if (!ids.length || ids.length > 100 || (requirePortalCredential && (!tag || tag.length > 200))) {
+    return { status: 400, error: 'Invoice IDs and portal credential are required.' };
+  }
+  let family = null;
+  if (requirePortalCredential) {
+    family = await resolveCustomerFamily(admin, tag);
+    if (family.error) return { status: family.notFound ? 403 : 503, error: family.notFound ? 'Unknown portal credential.' : 'Invoice verification is temporarily unavailable.' };
+  }
+
+  const { data: rows, error } = await admin.from('invoices')
+    .select('id,customer_id,total,paid,status').in('id', ids);
+  if (error) return { status: 503, error: 'Invoice verification is temporarily unavailable.' };
+  const found = new Set((rows || []).map((row) => String(row.id)));
+  if ((rows || []).length !== ids.length || ids.some((id) => !found.has(id))) {
+    return { status: 400, error: 'Every requested invoice must exist. Please reload and try again.' };
+  }
+  if (family && rows.some((row) => !family.fam.has(row.customer_id))) {
+    return { status: 403, error: 'An invoice is not available through this portal.' };
+  }
+
+  let balanceCents = 0;
+  for (const row of rows) {
+    const total = Number(row.total);
+    const paid = Number(row.paid);
+    if (!Number.isFinite(total) || !Number.isFinite(paid)) {
+      return { status: 503, error: 'Invoice balance could not be verified.' };
+    }
+    const cents = Math.round((total - paid) * 100);
+    const status = String(row.status || '').trim().toLowerCase();
+    if (!['open', 'partial', 'overdue'].includes(status) || cents <= 0) {
+      return { status: 409, error: 'An invoice no longer has an open balance. Please reload.' };
+    }
+    balanceCents += cents;
+  }
+  return { ids, rows, balanceCents };
+};
+exports.loadAuthorizedInvoicePayment = loadAuthorizedInvoicePayment;
 
 // Find a still-'processing' PaymentIntent overlapping any of realIds within the last
 // `days`. Stripe lists newest-first at up to 100/page, so this PAGINATES (bounded)
@@ -105,10 +171,17 @@ exports.handler = async (event) => {
   // Config probe — safe to call without the secret key so the client can report
   // exactly which piece is missing (publishable vs secret) and pull the live key.
   if (body.action === 'config') {
+    let feePct;
+    try {
+      feePct = await loadInvoiceCardFeePct(getSupabaseAdmin());
+    } catch (e) {
+      console.error('[stripe-payment] portal payment settings failed:', e.message);
+      return { statusCode: 503, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment settings are temporarily unavailable.' }) };
+    }
     return {
       statusCode: 200,
       headers: corsHeaders(),
-      body: JSON.stringify({ publishableKey: STRIPE_PK, hasSecretKey: !!STRIPE_SK, configured: !!STRIPE_PK && !!STRIPE_SK }),
+      body: JSON.stringify({ publishableKey: STRIPE_PK, hasSecretKey: !!STRIPE_SK, configured: !!STRIPE_PK && !!STRIPE_SK, invoiceCardFeePct: feePct }),
     };
   }
 
@@ -127,56 +200,51 @@ exports.handler = async (event) => {
 
     if (action === 'create_intent') {
       // Create a PaymentIntent for invoice payment.
-      // Public by necessity (coach portal + storefront pay without accounts), so the
-      // guardrails live here: floor + ceiling, an idempotency key so client retries
-      // can't mint duplicate intents, and — when the ids resolve to real invoices —
-      // a server-side cap at the open balance so a tampered client can't set the price.
+      // Public by necessity, so a portal credential, exact invoice-set resolution, and exact
+      // server-priced cents are required before Stripe sees a create call.
       const { amount_cents, customer_name, customer_email, invoice_id, invoice_memo, alpha_tag } = body;
 
-      if (!amount_cents || amount_cents < 50) {
+      if (!Number.isSafeInteger(amount_cents) || amount_cents < 50) {
         return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Amount must be at least $0.50' }) };
       }
       if (amount_cents > MAX_AMOUNT_CENTS) {
         return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: `Amount exceeds the $${Math.floor(MAX_AMOUNT_CENTS / 100).toLocaleString()} per-payment limit — please contact NSA to pay this invoice.` }) };
       }
 
-      // Best-effort invoice-balance validation. invoice_id may be a comma-joined list
-      // (multi-invoice portal payments) or a webstore slug (no invoice rows — skipped;
-      // webstore carts get verified when checkout moves server-side). Fail-open on DB
-      // errors so a Supabase blip can't take payments down — the ceiling still applies.
+      if (body.method !== 'card' && body.method !== 'bank') {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Choose card or bank payment.' }) };
+      }
+      const admin = getSupabaseAdmin();
+      let verified;
       try {
-        const ids = String(invoice_id || '').split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
-        if (ids.length) {
-          const admin = getSupabaseAdmin();
-          const { data: invRows, error: invErr } = await admin.from('invoices').select('id,total,paid').in('id', ids);
-          if (invErr) {
-            console.warn('[stripe-payment] invoice lookup failed, skipping balance check:', invErr.message);
-          } else if (invRows && invRows.length) {
-            const balanceCents = Math.round(invRows.reduce((a, r) => a + Math.max(0, (Number(r.total) || 0) - (Number(r.paid) || 0)), 0) * 100);
-            // Headroom for the CC surcharge the portal adds on top (3%) + rounding.
-            const maxCents = Math.ceil(balanceCents * 1.05) + 100;
-            if (balanceCents <= 0 || amount_cents > maxCents) {
-              return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment amount does not match the open balance for this invoice. Please reload the page and try again.' }) };
-            }
-            // In-flight ACH guard — REAL invoices only (ids that resolved to rows). A
-            // bank debit settles in 1–4 business days, and nothing marks the invoice
-            // "pending" while it does — the balance still shows open, so a payer
-            // returning the next day could start a SECOND real debit for the same
-            // invoice. Refuse (any method) while a 'processing' intent overlaps these
-            // invoice ids. Scoped inside the invRows branch so a non-invoice
-            // identifier (e.g. a legacy webstore slug shared across buyers) can never
-            // block one buyer on another's in-flight payment. Paginated 7-day scan
-            // (see findInFlightIntent); fail-open on Stripe errors (outer catch) so
-            // the check can never block payments outright.
-            const realIds = invRows.map((r) => String(r.id));
-            const inFlight = await findInFlightIntent(client, realIds);
-            if (inFlight) {
-              return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'A bank payment for this invoice is already processing (submitted ' + new Date(inFlight.created * 1000).toLocaleDateString('en-US') + '). Bank payments take 1–4 business days to clear, so please don’t pay again — contact NSA if you believe this is an error.' }) };
-            }
-          }
-        }
+        verified = await loadAuthorizedInvoicePayment(admin, invoice_id, alpha_tag);
       } catch (e) {
-        console.warn('[stripe-payment] balance check skipped:', e.message);
+        console.error('[stripe-payment] invoice verification failed:', e.message);
+        return { statusCode: 503, headers: corsHeaders(), body: JSON.stringify({ error: 'Invoice verification is temporarily unavailable.' }) };
+      }
+      if (verified.error) {
+        return { statusCode: verified.status, headers: corsHeaders(), body: JSON.stringify({ error: verified.error }) };
+      }
+      let cardFeePct = 0;
+      if (body.method === 'card') {
+        try {
+          cardFeePct = await loadInvoiceCardFeePct(admin);
+        } catch (e) {
+          console.error('[stripe-payment] portal payment settings failed:', e.message);
+          return { statusCode: 503, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment settings are temporarily unavailable.' }) };
+        }
+      }
+      const feeCents = Math.round(verified.balanceCents * cardFeePct);
+      const expectedCents = verified.balanceCents + feeCents;
+      if (amount_cents !== expectedCents) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment amount changed. Please reload and try again.', subtotal: verified.balanceCents / 100, fee: feeCents / 100 }) };
+      }
+
+      // A bank debit settles asynchronously while the invoice stays open. Refuse a second intent
+      // for any overlapping authoritative invoice set; lookup failure propagates to the outer 500.
+      const inFlight = await findInFlightIntent(client, verified.ids);
+      if (inFlight) {
+        return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'A bank payment for this invoice is already processing (submitted ' + new Date(inFlight.created * 1000).toLocaleDateString('en-US') + '). Bank payments take 1–4 business days to clear, so please don’t pay again — contact NSA if you believe this is an error.' }) };
       }
 
       // Same payer + same invoice(s) + same amount on the same day → same intent
@@ -185,21 +253,19 @@ exports.handler = async (event) => {
       // payment_method_types) so a same-day retry can't reuse a key whose parameters now differ —
       // Stripe rejects that with "idempotent requests can only be used with the same parameters."
       const idemKey = body.idempotency_key || crypto.createHash('sha256')
-        .update(['nsa_pi_v2', body.method || '', invoice_id || '', Math.round(amount_cents), (customer_email || '').toLowerCase(), new Date().toISOString().slice(0, 10)].join('|'))
+        .update(['nsa_pi_v3', body.method, verified.ids.join(','), expectedCents, (customer_email || '').toLowerCase(), new Date().toISOString().slice(0, 10)].join('|'))
         .digest('hex');
 
       const intent = await client.paymentIntents.create({
-        amount: Math.round(amount_cents),
+        amount: expectedCents,
         currency: 'usd',
         // The buyer picked card or bank up front (body.method), so restrict the intent to that one
-        // method. This hard-disables Link and guarantees the method charged matches the chosen price
-        // (card carries the surcharge, bank/ACH does not). Falls back to both if method is unspecified.
-        payment_method_types: body.method === 'bank' ? ['us_bank_account'] : body.method === 'card' ? ['card'] : ['card', 'us_bank_account'],
+        // method. This hard-disables Link and guarantees the method charged matches the chosen price.
+        payment_method_types: body.method === 'bank' ? ['us_bank_account'] : ['card'],
         metadata: {
-          invoice_id: invoice_id || '',
+          invoice_id: verified.ids.join(','),
           invoice_memo: invoice_memo || '',
           customer_name: customer_name || '',
-          alpha_tag: alpha_tag || '',
           source: 'nsa_coach_portal',
         },
         ...(customer_email ? { receipt_email: customer_email } : {}),
@@ -209,7 +275,7 @@ exports.handler = async (event) => {
       return {
         statusCode: 200,
         headers: corsHeaders(),
-        body: JSON.stringify({ clientSecret: intent.client_secret, intentId: intent.id }),
+        body: JSON.stringify({ clientSecret: intent.client_secret, intentId: intent.id, subtotal: verified.balanceCents / 100, fee: feeCents / 100 }),
       };
     }
 
@@ -220,7 +286,7 @@ exports.handler = async (event) => {
       // the invoice id stored in the intent's OWN metadata (never client-supplied), so it can't be
       // abused to set an arbitrary amount.
       const { intent_id, amount_cents } = body;
-      if (!intent_id || !amount_cents || amount_cents < 50) {
+      if (!intent_id || !Number.isSafeInteger(amount_cents) || amount_cents < 50) {
         return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'intent_id and amount_cents (>= $0.50) required' }) };
       }
       if (amount_cents > MAX_AMOUNT_CENTS) {
@@ -243,23 +309,30 @@ exports.handler = async (event) => {
       // validate against, so re-pricing it would let a buyer set an arbitrary amount (e.g. $0.50
       // for a $500 order). Refuse. And fail CLOSED: if the balance can't be confirmed, reject
       // rather than accept the client-supplied amount.
-      const ids = String((intent0.metadata && intent0.metadata.invoice_id) || '').split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
-      if (!ids.length || (intent0.metadata && intent0.metadata.webstore_order_id)) {
+      if (intent0.metadata?.source !== 'nsa_coach_portal'
+          || !intent0.metadata?.invoice_id
+          || intent0.metadata?.webstore_order_id
+          || !Array.isArray(intent0.payment_method_types)
+          || !intent0.payment_method_types.includes('us_bank_account')) {
         return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'This payment cannot be re-priced.' }) };
       }
-      let balanceCents = null;
+      let verified;
       try {
-        const admin = getSupabaseAdmin();
-        const { data: invRows, error: invErr } = await admin.from('invoices').select('id,total,paid').in('id', ids);
-        if (!invErr && invRows && invRows.length) {
-          balanceCents = Math.round(invRows.reduce((a, r) => a + Math.max(0, (Number(r.total) || 0) - (Number(r.paid) || 0)), 0) * 100);
-        }
-      } catch (e) { /* balanceCents stays null -> reject below */ }
-      const maxCents = balanceCents == null ? 0 : Math.ceil(balanceCents * 1.05) + 100; // headroom for CC surcharge + rounding
-      if (balanceCents == null || balanceCents <= 0 || amount_cents > maxCents) {
-        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment amount does not match the open balance for this invoice.' }) };
+        // The portal credential was verified before this server-created intent was issued and is
+        // deliberately not copied into Stripe metadata. Re-read only the exact server-pinned IDs.
+        verified = await loadAuthorizedInvoicePayment(
+          getSupabaseAdmin(), intent0.metadata.invoice_id, null, { requirePortalCredential: false },
+        );
+      } catch (e) {
+        return { statusCode: 503, headers: corsHeaders(), body: JSON.stringify({ error: 'Invoice verification is temporarily unavailable.' }) };
       }
-      const updated = await client.paymentIntents.update(intent_id, { amount: Math.round(amount_cents) });
+      if (verified.error) {
+        return { statusCode: verified.status, headers: corsHeaders(), body: JSON.stringify({ error: verified.error }) };
+      }
+      if (amount_cents !== verified.balanceCents) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Bank payment must equal the complete open invoice balance.', subtotal: verified.balanceCents / 100, fee: 0 }) };
+      }
+      const updated = await client.paymentIntents.update(intent_id, { amount: verified.balanceCents });
       return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, amount: updated.amount }) };
     }
 
@@ -275,7 +348,11 @@ exports.handler = async (event) => {
       }
       let intent;
       try {
-        intent = await client.paymentIntents.retrieve(payment_intent_id);
+        // Expand the settled charge/payment method so the ledger records the actual method and
+        // charge date when Stripe exposes them. The RPC receives only server-derived values.
+        intent = await client.paymentIntents.retrieve(payment_intent_id, {
+          expand: ['latest_charge', 'payment_method'],
+        });
       } catch (e) {
         return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ ok: false, error: 'Payment intent not found' }) };
       }
@@ -287,7 +364,9 @@ exports.handler = async (event) => {
         result = await reconcileInvoiceFromIntent(getSupabaseAdmin(), intent);
       } catch (e) {
         console.error('[stripe-payment] finalize_invoice reconcile error:', e.message);
-        return { statusCode: 500, headers: corsHeaders(), body: JSON.stringify({ ok: false, error: 'Reconcile failed' }) };
+        // The charge succeeded but its accounting transaction did not commit. A 503 is explicit
+        // retryable feedback to the portal; it must never wrap this state in a 200/ok response.
+        return { statusCode: 503, headers: corsHeaders(), body: JSON.stringify({ ok: false, retryable: true, error: 'Payment received; account update is still pending.' }) };
       }
       return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, ...result }) };
     }
@@ -504,7 +583,7 @@ exports.handler = async (event) => {
       );
       // Best-effort audit row so the refund shows on the invoice's payment history instead of
       // being invisible ("unrecorded escape hatch"). Negative amount, deduped by ref — mirrors
-      // reconcileInvoiceFromIntent's invoice_payments insert in _shared.js.
+      // reconcileInvoiceFromIntent's atomic invoice_payments ledger entry.
       if (invoice_id) {
         try {
           const admin = getSupabaseAdmin();

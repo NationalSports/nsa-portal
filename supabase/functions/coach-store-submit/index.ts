@@ -30,6 +30,71 @@ const ok = (b: unknown) => new Response(JSON.stringify({ ok: true, ...(b as obje
 const bad = (error: string, extra: Record<string, unknown> = {}) => new Response(JSON.stringify({ ok: false, error, ...extra }), { status: 200, headers: CORS });
 const str = (v: unknown) => (typeof v === "string" ? v : "").trim();
 
+const encoder = new TextEncoder();
+async function sha256(value: string): Promise<string> {
+  const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(value)));
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function credentialTableMissing(error: any): boolean {
+  const code = String(error?.code || "");
+  const message = String(error?.message || "");
+  return code === "42P01" || code === "PGRST205"
+    || /(?:relation|table)[^\n]*portal_access_credentials[^\n]*does not exist/i.test(message);
+}
+
+async function legacyPortalOwners(admin: ReturnType<typeof createClient>, presented: string) {
+  const escaped = presented.replace(/([%_\\])/g, "\\$1");
+  let { data, error } = await admin.from("customers")
+    .select("id,parent_id").ilike("alpha_tag", escaped);
+  if (error) return { error: error.message };
+  if (!data?.length) {
+    const all = await admin.from("customers").select("id,parent_id,alpha_tag").not("alpha_tag", "is", null);
+    if (all.error) return { error: all.error.message };
+    const normalized = presented.toLowerCase();
+    data = (all.data || []).filter((row: any) => str(row.alpha_tag).toLowerCase() === normalized);
+  }
+  if (!data?.length) return { notFound: true, error: "Unknown portal credential" };
+  return { owners: data.map((row: any) => ({ id: row.id, parent_id: row.parent_id })) };
+}
+
+async function resolvePortalFamily(admin: ReturnType<typeof createClient>, credential: string) {
+  const presented = str(credential);
+  if (!presented || presented.length > 512) return { notFound: true, error: "Unknown portal credential" };
+  const hashes = await Promise.all([
+    sha256("portal-token-v1:" + presented),
+    sha256("portal-legacy-v1:" + presented.toLowerCase()),
+  ]);
+  const credentialResult = await admin.from("portal_access_credentials")
+    .select("customer_id,expires_at,disabled_at").in("credential_hash", hashes);
+
+  let owners: Array<{ id: string; parent_id: string | null }>;
+  if (credentialResult.error) {
+    // Compatibility is permitted only before the credential-table migration.
+    // A miss, revocation, expiry, or schema error after it exists must fail closed.
+    if (!credentialTableMissing(credentialResult.error)) return { error: credentialResult.error.message };
+    const legacy = await legacyPortalOwners(admin, presented);
+    if (legacy.error) return legacy;
+    owners = legacy.owners || [];
+  } else {
+    const now = Date.now();
+    const ownerIds = [...new Set((credentialResult.data || [])
+      .filter((row: any) => !row.disabled_at && (!row.expires_at || Date.parse(row.expires_at) > now))
+      .map((row: any) => row.customer_id).filter(Boolean))];
+    if (ownerIds.length !== 1) return { notFound: true, error: "Unknown portal credential" };
+    const ownerResult = await admin.from("customers").select("id,parent_id").in("id", ownerIds);
+    if (ownerResult.error) return { error: ownerResult.error.message };
+    owners = ownerResult.data || [];
+    if (owners.length !== 1) return { notFound: true, error: "Unknown portal credential" };
+  }
+
+  const ownerIds = owners.map((row) => row.id);
+  const parentIds = owners.map((row) => row.parent_id).filter(Boolean) as string[];
+  const childResult = await admin.from("customers").select("id").in("parent_id", ownerIds);
+  if (childResult.error) return { error: childResult.error.message };
+  return { familyIds: [...new Set([...ownerIds, ...parentIds, ...(childResult.data || []).map((row: any) => row.id)])] };
+}
+
 function slugify(s: string): string {
   return s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "team-store";
 }
@@ -95,8 +160,8 @@ serve(async (req: Request) => {
     if (!productIds.length) return bad("Pick at least one item for your store.");
     if (productIds.length > 200) return bad("That's too many items for one store.");
 
-    // 1) Identity. Logged-in coach: the alpha_tag the portal opened with must match
-    //    the team. Public lead: no customer, but we require reachable contact info.
+    // 1) Identity. A portal bearer credential must resolve to the target team's
+    //    customer family. Public lead: no customer, but reachable contact is required.
     let teamLabel: string;
     if (isPublic) {
       if (!contactName) return bad("Please tell us your name so we can reach you.");
@@ -104,10 +169,12 @@ serve(async (req: Request) => {
       teamLabel = str((contact as any)?.org) || name;
     } else {
       if (!customerId || !alphaTag) return bad("Missing team identity.");
-      const { data: cust } = await admin.from("customers").select("id,alpha_tag,name").eq("id", customerId).maybeSingle();
+      const family = await resolvePortalFamily(admin, alphaTag);
+      if (family.error) return bad(family.notFound ? "This store link is no longer valid." : "Could not verify this store link.");
+      if (!family.familyIds?.includes(customerId)) return bad("This store link doesn't match your team.");
+      const { data: cust } = await admin.from("customers").select("id,name").eq("id", customerId).maybeSingle();
       if (!cust) return bad("We couldn't find your team.");
-      if (str(cust.alpha_tag).toLowerCase() !== alphaTag.toLowerCase()) return bad("This store link doesn't match your team.");
-      teamLabel = cust.name || alphaTag;
+      teamLabel = cust.name || "Team";
     }
 
     // Coach pool config (loaded once - also gives us the fundraise cap on both paths).

@@ -18,18 +18,13 @@
 
 const { getSupabaseAdmin } = require('./_shared');
 const { unsubUrl } = require('./_followupShared');
+const { issuePortalCredential } = require('./_portalCredentials');
 
 // Matches the client-side default (Send modals seed follow_up_max||4) — the two used to
 // disagree (client 4 vs sweep 6), so a row saved without an explicit max got 2 extra nags.
 const DEFAULT_MAX = 4;
 const PORTAL_BASE = 'https://nationalsportsapparel.com/coach';
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
-// deepLink: extra query params (e.g. 'est=EST123') so the portal opens straight
-// on the document being followed up, not the portal home.
-function portalLink(alphaTag, deepLink) {
-  return alphaTag ? `${PORTAL_BASE}?portal=${encodeURIComponent(alphaTag)}${deepLink ? '&' + deepLink : ''}` : '';
-}
 
 // Branded shell — message body (rep's custom text) + an optional portal button + the opt-out
 // footer (repeated commercial email must carry a working unsubscribe mechanism).
@@ -107,6 +102,20 @@ exports.handler = async () => {
   const TIME_BUDGET_MS = 8000;
   const overBudget = () => Date.now() - startedAt > TIME_BUDGET_MS;
 
+  // Reuse one plaintext credential per customer for this invocation only. The token is
+  // never persisted by the worker; the database stores only its hash.
+  const portalTokens = new Map();
+  const portalLink = async (customerId, deepLink) => {
+    if (!customerId) throw new Error('Follow-up row has no customer');
+    let pending = portalTokens.get(customerId);
+    if (!pending) {
+      pending = issuePortalCredential(admin, customerId, { label: 'Automated follow-up' }).then((credential) => credential.token);
+      portalTokens.set(customerId, pending);
+    }
+    const token = await pending;
+    return `${PORTAL_BASE}?portal=${encodeURIComponent(token)}${deepLink ? '&' + deepLink : ''}`;
+  };
+
   // Claim a row BEFORE sending: compare-and-swap follow_up_at from the value we read to a lease a
   // few hours out. If the update matches 0 rows, another invocation (overlapping run, retry after
   // a timeout) already claimed it — skip, no duplicate email. If we crash after the send, the row
@@ -172,7 +181,6 @@ exports.handler = async () => {
       .select(`id, customer_id, memo, status, approved_at, deleted_at, created_by, ${FU_COLS}`)
       .eq('follow_up_auto', true).lte('follow_up_at', nowIso).limit(500);
     const list = rows || [];
-    const custs = await custMap(admin, list.map((r) => r.customer_id));
     const reps = await repEmailMap(admin, list.map((r) => r.created_by));
     for (let i = 0; i < list.length; i++) {
       const r = list[i];
@@ -182,8 +190,7 @@ exports.handler = async () => {
       const to = parseRecipients(r.follow_up_to);
       if (!to.length) { await stop('estimates', r.id); continue; }
       if (!(await claim('estimates', r))) continue;
-      const cust = custs[r.customer_id] || {};
-      const link = portalLink(cust.alpha_tag, 'est=' + encodeURIComponent(r.id));
+      let link;try{link=await portalLink(r.customer_id,'est='+encodeURIComponent(r.id))}catch(error){results.errors++;console.error(`[followup-sweep] portal credential estimates/${r.id}:`,error.message);await backoff('estimates',r);continue}
       const msg = r.follow_up_message || defaultMessage('estimate', r.memo, link);
       const unsub = unsubUrl('estimates', r.id);
       const out = await sendEmail({ toList: to, subject: `Following up on your estimate${r.memo ? ` — ${r.memo}` : ''}`, html: buildHtml(msg, link, 'View & approve your estimate', unsub), replyTo: reps[r.created_by], unsubLink: unsub });
@@ -199,7 +206,6 @@ exports.handler = async () => {
       .select(`id, customer_id, memo, status, deleted_at, created_by, ${FU_COLS}`)
       .eq('follow_up_auto', true).lte('follow_up_at', nowIso).limit(500);
     const list = rows || [];
-    const custs = await custMap(admin, list.map((r) => r.customer_id));
     const reps = await repEmailMap(admin, list.map((r) => r.created_by));
     for (let i = 0; i < list.length; i++) {
       const r = list[i];
@@ -209,8 +215,7 @@ exports.handler = async () => {
       const to = parseRecipients(r.follow_up_to);
       if (!to.length) { await stop('invoices', r.id); continue; }
       if (!(await claim('invoices', r))) continue;
-      const cust = custs[r.customer_id] || {};
-      const link = portalLink(cust.alpha_tag, 'inv=' + encodeURIComponent(r.id));
+      let link;try{link=await portalLink(r.customer_id,'inv='+encodeURIComponent(r.id))}catch(error){results.errors++;console.error(`[followup-sweep] portal credential invoices/${r.id}:`,error.message);await backoff('invoices',r);continue}
       const msg = r.follow_up_message || defaultMessage('invoice', r.id, link);
       const unsub = unsubUrl('invoices', r.id);
       const out = await sendEmail({ toList: to, subject: `Following up on invoice ${r.id}`, html: buildHtml(msg, link, 'View & pay your invoice', unsub), replyTo: reps[r.created_by], unsubLink: unsub });
@@ -226,14 +231,13 @@ exports.handler = async () => {
       .select(`id, so_id, art_name, art_status, coach_approved_at, coach_rejected, ${FU_COLS}`)
       .eq('follow_up_auto', true).lte('follow_up_at', nowIso).limit(500);
     const list = rows || [];
-    // so_id -> sales_order (customer_id, created_by) -> customer.alpha_tag
+    // so_id -> sales_order (customer_id, created_by)
     const soIds = [...new Set(list.map((r) => r.so_id).filter(Boolean))];
     const soMap = {};
     if (soIds.length) {
       const { data: sos } = await admin.from('sales_orders').select('id, customer_id, created_by').in('id', soIds);
       (sos || []).forEach((s) => { soMap[s.id] = s; });
     }
-    const custs = await custMap(admin, Object.values(soMap).map((s) => s.customer_id));
     const reps = await repEmailMap(admin, Object.values(soMap).map((s) => s.created_by));
     for (let i = 0; i < list.length; i++) {
       const r = list[i];
@@ -244,8 +248,7 @@ exports.handler = async () => {
       if (!to.length) { await stop('so_jobs', r.id); continue; }
       if (!(await claim('so_jobs', r))) continue;
       const so = soMap[r.so_id] || {};
-      const cust = custs[so.customer_id] || {};
-      const link = portalLink(cust.alpha_tag, r.so_id ? 'so=' + encodeURIComponent(r.so_id) + '&job=' + encodeURIComponent(r.id) : '');
+      let link;try{link=await portalLink(so.customer_id,r.so_id?'so='+encodeURIComponent(r.so_id)+'&job='+encodeURIComponent(r.id):'')}catch(error){results.errors++;console.error(`[followup-sweep] portal credential so_jobs/${r.id}:`,error.message);await backoff('so_jobs',r);continue}
       const msg = r.follow_up_message || defaultMessage('art', r.art_name, link);
       const unsub = unsubUrl('so_jobs', r.id);
       const out = await sendEmail({ toList: to, subject: `Reminder: artwork ready for approval${r.art_name ? ` — ${r.art_name}` : ''}`, html: buildHtml(msg, link, 'Review & approve your artwork', unsub), replyTo: reps[so.created_by], unsubLink: unsub });
@@ -256,15 +259,6 @@ exports.handler = async () => {
 
   return { statusCode: 200, body: JSON.stringify(results) };
 };
-
-async function custMap(admin, ids) {
-  const map = {};
-  const clean = [...new Set(ids.filter(Boolean))];
-  if (!clean.length) return map;
-  const { data } = await admin.from('customers').select('id, name, alpha_tag').in('id', clean);
-  (data || []).forEach((c) => { map[c.id] = c; });
-  return map;
-}
 
 function histEntry(kind, to, row, messageId) {
   return {

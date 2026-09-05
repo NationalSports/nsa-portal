@@ -19,6 +19,7 @@ import { applyBulkInvoiceSendHistory, buildBulkInvoiceEmailHtml, buildBulkInvoic
 import { fetchPaidPromoHistoryInvoices, mergePromoHistoryInvoices } from './lib/promoHistory';
 import { latestMonthlyProfit } from './lib/omgMonthlyProfit';
 import { normalizeOmgStoreCode, validateOmgStoreAssignment, buildOmgStoreAssignment } from './lib/omgStoreAssignment';
+import { getPortalUrl } from './lib/portalLinks';
 
 // Date normalization. Dates on this screen arrive in mixed shapes: ISO 'YYYY-MM-DD',
 // ISO timestamps, and locale strings like '7/10/2026, 3:22:11 PM' (NetSuite history
@@ -374,7 +375,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         }
       }
       const totalDue=displayInvs.reduce((sum,inv)=>sum+safeNum(inv.total)-safeNum(inv.paid),0);
-      const portalUrl=customer.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(customer.alpha_tag)+'&page=billing':'';
+      const portalUrl=await getPortalUrl(customer.id,'page=billing');
       const emailInvs=displayInvs.map(inv=>({...inv,program:inv.customer_id===customer.id?'Main account':(teamName(inv.customer_id)||gn(inv.customer_id)||'—')}));
       const htmlContent=buildBrandedEmailHtml(buildBulkInvoiceEmailHtml({
         message:invEmailMsg,customerName:customer.name,totalDue,invoices:emailInvs,portalUrl,showProgram:isP,
@@ -502,7 +503,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{const _seed=getBillingContacts(customer,allCustomers).map(a=>a.email).filter(Boolean);const _fallback=(customer.contacts||[]).map(c=>c.email).filter(Boolean).slice(0,1);const _to=(_seed.length?_seed:_fallback);setInvEmailChecked(Object.fromEntries(_to.map(em=>[em,true])));setInvEmailCustom([]);setInvEmailAdding('');setInvEmailMsg(greetLine(_to,getBillingContacts(customer,allCustomers).concat(customer.contacts||[]))+'\n\nPlease review your open invoice(s) below. Let us know if you have any questions.\n\nThank you,\nNSA Team');setInvEmailOverdueOnly(false);setInvEmailAttachPdfs(true);setInvEmailStatus(null);setInvEmailSending(false);setShowInvEmail(true)}}>📄 Email Invoices ({openInvCount})</button>
       </>}
       <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:11}} onClick={()=>setShowPortal(true)}>🔗 Portal</button>
-      {customer.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const url='https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(customer.alpha_tag);try{navigator.clipboard&&navigator.clipboard.writeText(url)}catch(_){}window.open(url,'_blank','noopener,noreferrer')}}>📋 Open Portal Link</button>}
+      {customer.id&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={async()=>{try{const url=await getPortalUrl(customer.id);try{if(navigator.clipboard)await navigator.clipboard.writeText(url)}catch(_){}window.open(url,'_blank','noopener,noreferrer')}catch(error){nf&&nf('Could not create portal link: '+(error?.message||'Unknown error'),'error')}}}>📋 Open Portal Link</button>}
     </div>
   </div>
   {openBalance>0&&<div style={{textAlign:'right'}}><div style={{fontSize:11,color:'#dc2626',fontWeight:600}}>BALANCE</div><div style={{fontSize:24,fontWeight:800,color:'#dc2626'}}>${openBalance.toLocaleString()}</div></div>}</div></div>
@@ -2010,8 +2011,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         <button className="btn btn-primary" disabled={stmtSending||!stmtEmail.trim()} onClick={async()=>{
           const toList=stmtEmail.split(',').map(s=>s.trim()).filter(s=>s&&/@/.test(s));
           if(toList.length===0){nf('Enter a valid email address','error');return}
+          let portalUrl;
+          try{portalUrl=await getPortalUrl(customer.id,'page=billing')}catch(error){nf('Could not create portal link: '+(error?.message||'Unknown error'),'error');return}
           setStmtSending(true);
-          const portalUrl=customer.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(customer.alpha_tag)+'&page=billing'):'';
           const rep=REPS.find(r=>r.id===customer.primary_rep_id);
           const repEmail=rep&&cu?.email&&/@nationalsportsapparel\.com$/i.test(cu.email)?cu.email:'';
           const senderEmail=stmtFrom==='rep'&&repEmail?repEmail:'accounting@nationalsportsapparel.com';

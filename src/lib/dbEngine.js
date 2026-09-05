@@ -17,6 +17,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { insertedItemIdsByIndex } from './itemInsertIdentity';
 import { makeBreakerFetch } from './requestBreaker';
+import { makePortalFetch } from './portalFetch';
 import { _sbAuthLock } from './supabase';
 import { _pick, _pickSoItem, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, _vendCols, _firmDateCols, _omgStoreCols } from '../constants';
 import { itemEditReconciles, itemsWithWipedQty, decorationShrinkConflicts, unaccountedDroppedItems, jobAllRoutedOutside } from '../businessLogic';
@@ -32,7 +33,7 @@ let supabase = null;
 
 // Global request circuit breaker (see ./lib/requestBreaker): short-circuits any /rest/v1 endpoint
 // a render/effect bug puts into a runaway loop, so a stale tab can never flood the DB again.
-const _breakerFetch = makeBreakerFetch({ label: 'circuit-breaker' });
+const _breakerFetch = makeBreakerFetch({ label: 'circuit-breaker', fetch: makePortalFetch(undefined, { projectUrl: _sbUrl }) });
 
 // Auth lock: shares the per-tab in-memory mutex from ./lib/supabase so this
 // client and the lib client (same Supabase storage key) serialize auth ops
@@ -532,7 +533,7 @@ const _dbLoad = async (opts={}) => {
     const _pimgMap={};appStateRaw.filter(r=>r.id.startsWith('_pimg_')).forEach(r=>{try{_pimgMap[r.id.slice(6)]=JSON.parse(r.value)}catch{}});
     // Customers: attach contacts array
     // Promo $ is stored on the parent customer; subs inherit so promos can be viewed/applied from any account in the family.
-    const customers=custRaw.map(c=>{const promoOwnerId=c.parent_id||c.id;const ownerPeriods=promoPeriods.filter(pp=>pp.customer_id===promoOwnerId);return{...c,contacts:contacts.filter(ct=>ct.customer_id===c.id).sort((a,b)=>a.sort_order-b.sort_order).map(ct=>({name:ct.name,email:ct.email,phone:ct.phone,role:ct.role})),
+    const customers=custRaw.map(c=>{const promoOwnerId=c.parent_id||c.id;const ownerPeriods=promoPeriods.filter(pp=>pp.customer_id===promoOwnerId);return{...c,contacts:contacts.filter(ct=>ct.customer_id===c.id).sort((a,b)=>a.sort_order-b.sort_order).map(ct=>({name:ct.name,email:ct.email,phone:ct.phone,role:ct.role})),_contactsHydrated:!_lastLoadTimedOut.has('customer_contacts'),
       promo_programs:promoPrograms.filter(pp=>pp.customer_id===promoOwnerId),
       promo_periods:ownerPeriods,
       promo_usage:promoUsage.filter(pu=>ownerPeriods.some(pp=>pp.id===pu.period_id)),
@@ -629,10 +630,10 @@ const _dbLoad = async (opts={}) => {
       const _hydratedPickIds=[...new Set(items.flatMap(it=>(it.pick_lines||[]).map(p=>p.pick_id).filter(Boolean)))];
       const _soItemsHydrated=!_lastLoadTimedOut.has('so_items');if(_soItemsHydrated)_everHydratedItems.add(so.id);
       const _decosHydrated=!_lastLoadTimedOut.has('so_item_decorations')&&!_lastLoadTimedOut.has('so_items');
-      return{...so,items,art_files,firm_dates,jobs,..._decoPosGuard(so),_itemsHydrated:_soItemsHydrated,_decosHydrated,_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:_rawSoArt.map(a=>a.id).filter(Boolean)}});
+      return{...so,items,art_files,firm_dates,jobs,..._decoPosGuard(so),_itemsHydrated:_soItemsHydrated,_decosHydrated,_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_firmDatesHydrated:!_lastLoadTimedOut.has('so_firm_dates'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:_rawSoArt.map(a=>a.id).filter(Boolean)}});
     // Invoices: attach payments and items
     const invoices=invRaw.map(inv=>{
-      const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
+      const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date,cc_fee:Number(p.cc_fee)||0}));
       const items=invItems.filter(i=>i.invoice_id===inv.id).map(i=>({sku:i.sku,name:i.name,qty:i.qty,unit_price:i.unit_price,total:i.total,description:i.description}));
       // Hydration flags so the save can tell a deliberate removal from items/payments that simply never loaded
       // (a timed-out invoice_items / invoice_payments query). _hydratedPayRefs lets payments be restore-merged by ref.
@@ -1244,9 +1245,14 @@ const _dbSaveEstimateInner = async (est) => {
     }
     // Sync art_files: upsert current, delete removed. Optimistic concurrency via the _version trigger — never
     // overwrite an art row whose DB copy is newer than the client's, and only delete rows the client had loaded.
-    const{data:_dbAf}=await supabase.from('estimate_art_files').select('*').eq('estimate_id',est.id);
+    const{data:_dbAf,error:_dbAfErr}=await supabase.from('estimate_art_files').select('*').eq('estimate_id',est.id);
+    if(_dbAfErr){
+      // A failed child read means we cannot prove which rows this client loaded.
+      // Never turn that uncertainty into a broad art-file delete.
+      decoFailed=true;_failMsg=_failMsg||('estimate_art_files read: '+_dbAfErr.message);
+    }
     const _dbAfVerById=new Map((_dbAf||[]).map(r=>[r.id,r._version||0]));
-    if(art_files?.length){
+    if(!_dbAfErr&&art_files?.length){
       const _resolved=_resolveArtRows(art_files,_dbAf,est.id);
       {
         let afRows=_resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,estimate_id:est.id}));
@@ -1267,12 +1273,24 @@ const _dbSaveEstimateInner = async (est) => {
       const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
       const _knownArtIds=new Set(Array.isArray(est._hydratedArtIds)?est._hydratedArtIds:[]);
       const toDeleteAf=(_dbAf||[]).filter(ea=>!currentAfIds.has(ea.id)&&_knownArtIds.has(ea.id)).map(ea=>ea.id);
-      if(toDeleteAf.length)await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id).in('id',toDeleteAf);
-    }else if(Array.isArray(art_files)&&est._artHydrated!==false){
+      if(toDeleteAf.length){
+        const{data:_deleted,error:_deleteErr}=await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id).in('id',toDeleteAf).select('id');
+        const _deletedIds=new Set((_deleted||[]).map(r=>r.id));
+        if(_deleteErr||toDeleteAf.some(id=>!_deletedIds.has(id))){
+          decoFailed=true;_failMsg=_failMsg||('estimate_art_files delete: '+(_deleteErr?.message||'not every requested row was deleted'));
+        }
+      }
+    }else if(!_dbAfErr&&Array.isArray(art_files)&&est._artHydrated!==false){
       // User removed every art group (art_files === []). Delete only the rows the client had loaded; preserve any
       // added by another user since. Gated on _artHydrated so a timed-out load can't wipe real data.
       const _knownArtIds=(Array.isArray(est._hydratedArtIds)?est._hydratedArtIds:[]).filter(id=>_dbAfVerById.has(id));
-      if(_knownArtIds.length)await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id).in('id',_knownArtIds);
+      if(_knownArtIds.length){
+        const{data:_deleted,error:_deleteErr}=await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id).in('id',_knownArtIds).select('id');
+        const _deletedIds=new Set((_deleted||[]).map(r=>r.id));
+        if(_deleteErr||_knownArtIds.some(id=>!_deletedIds.has(id))){
+          decoFailed=true;_failMsg=_failMsg||('estimate_art_files delete: '+(_deleteErr?.message||'not every requested row was deleted'));
+        }
+      }
     }
     // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
     // Items + decorations were written atomically by the save_estimate RPC above — no separate insert,
@@ -1352,12 +1370,18 @@ const _poLineToRow=(itemId,po)=>{const{po_id,vendor,received,cancelled,shipments
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
   await _ensureFreshSession();// proactive token refresh before the write (see _dbSaveEstimateInner) — fewer reactive 401s from an idle tab
-  // Optimistic locking: check version before saving (auto-heal on conflict). Record the conflict
-  // rather than only adopting the server version: a bumped server version means ANOTHER session saved
-  // this SO after our copy loaded, and the guards below use that fact to refuse writes that would drop
-  // items or deco POs the other session added (the SO-1333 wipe, 2026-06-30).
+  // A pre-read cannot make a later whole-row upsert safe. If another tab already
+  // advanced this SO, retain this draft in the outbox and refuse every child/header
+  // mutation; adopting the newer version would merely authorize stale fields.
   let _versionConflict=null;
-  if(so._version){const vc=await _checkVersion('sales_orders',so.id,so._version);if(vc!==true&&typeof vc==='number'){_versionConflict={local:so._version,server:vc};if(so._obBaseVersion==null)so._obBaseVersion=so._version;so._version=vc}
+  if(so._version){const vc=await _checkVersion('sales_orders',so.id,so._version);if(vc!==true&&typeof vc==='number'){
+      _versionConflict={local:so._version,server:vc};
+      if(so._obBaseVersion==null)so._obBaseVersion=so._version;
+      _emitOutboxConflict('sales_orders',so);
+      _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();
+      if(!_bgSync&&_dbNotify)_dbNotify('This sales order changed in another tab. Your edit was not saved and is available in the conflict banner.','error');
+      return 'stale';
+    }
     else if(vc===false){
       // FAIL CLOSED (audit F6): the version SELECT itself failed (network/exception), so we cannot know
       // whether another session moved this SO. Proceeding would run the whole save with _versionConflict
@@ -2374,20 +2398,41 @@ const _dbSaveSOInner = async (so) => {
     // If jobs is undefined/null (not hydrated / not present on the payload), leave existing DB jobs
     // untouched. Orphaned jobs from a recycled SO number are cleaned at order creation (new-SO purge)
     // and dead frozen jobs are retired by syncJobs + the load-time live-decoration filter.
-    await supabase.from('so_firm_dates').delete().eq('so_id',so.id);
+    // Replace dates only from a completed child load. The RPC locks the parent and
+    // performs delete + replacement in one transaction, so an insert failure rolls
+    // the delete back instead of leaving the order without its promised dates.
+    if(Array.isArray(firm_dates)&&so._firmDatesHydrated!==false){
+      const{data:_firmDateResult,error:fdErr}=await _retryNet(()=>supabase.rpc('replace_so_firm_dates_atomic',{
+        p_so_id:so.id,p_firm_dates:firm_dates.map(f=>_pick(f,_firmDateCols)),
+      }));
+      if(fdErr||_firmDateResult?.ok!==true){
+        const msg=fdErr?.message||_firmDateResult?.reason||'replacement was rejected';
+        console.error('[DB] so_firm_dates atomic replacement failed:',msg);
+        saveFailed=true;_failMsg=_failMsg||('so_firm_dates: '+msg);
+      }
+    }
     // Art files already synced above (before the bgSync item-shrink guard). No second sync needed here.
     // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
-    if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true;_failMsg=_failMsg||('so_firm_dates: '+fdErr.message)}}
     if(!items?.length){
       if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id,{message:_failMsg});_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
       // Intentional removal of all items (validated by the safety guards above). Since we no longer delete
       // upfront, remove the old item rows and their children here.
       if(oldItemIds.length){
-        await supabase.from('so_item_decorations').delete().in('so_item_id',oldItemIds);
-        await supabase.from('so_item_pick_lines').delete().in('so_item_id',oldItemIds);
-        await supabase.from('so_item_po_lines').delete().in('so_item_id',oldItemIds);
-        await supabase.from('so_items').delete().in('id',oldItemIds);
+        for(const [table,column] of [['so_item_decorations','so_item_id'],['so_item_pick_lines','so_item_id'],['so_item_po_lines','so_item_id']]){
+          const{error}=await supabase.from(table).delete().in(column,oldItemIds);
+          if(error){saveFailed=true;_failMsg=_failMsg||(`${table} delete: ${error.message}`);break}
+        }
+        if(!saveFailed){
+          // RLS-filtered DELETE can resolve without an error while deleting zero rows.
+          // The parent IDs are known, so require every intended item deletion to be returned.
+          const{data:_deletedItems,error:_itemDeleteErr}=await supabase.from('so_items').delete().in('id',oldItemIds).select('id');
+          const _deletedIds=new Set((_deletedItems||[]).map(r=>r.id));
+          if(_itemDeleteErr||oldItemIds.some(id=>!_deletedIds.has(id))){
+            saveFailed=true;_failMsg=_failMsg||('so_items delete: '+(_itemDeleteErr?.message||'not every requested row was deleted'));
+          }
+        }
       }
+      if(saveFailed){_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order item removal did not complete; the order is retained for retry.','error');return false}
       _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();if(so._version)so._version=so._version+1;return true}
     // Batch insert all items at once (much faster than one-by-one)
     const allItemRows=items.map((item,idx)=>{const{decorations,pick_lines,po_lines,...itemData}=item;return{..._pickSoItem(itemData),so_id:so.id,item_index:idx}});
@@ -2645,254 +2690,104 @@ const _dbSaveArtFilesInner = async (so) => {
   }catch(e){if(_isAuthError(e))return _handleAuthSaveFailure(so.id,e);console.error('[DB] save art files:',e);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+(e.message||e),'error');return false}});
 };
 const _dbSaveArtFiles = (so) => _outboxWrap('sales_orders', so, _queuedEntitySave(so.id, so, _dbSaveArtFilesInner), true/*addOnly: art-only success must not clear a failed full-SO payload*/);
-const _invCols=['id','customer_id','so_id','idempotency_key','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','deposit_applied','credit_amount','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','bill_to_id','shipping_name','shipping_address','po_number','rep_id','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
-// po_number and rep_id are in _invExtraCols too so a save still lands (minus that field) if the
-// column-add migration hasn't reached this environment's DB yet — the upsert retries without extra cols.
-const _invExtraCols=new Set(['idempotency_key','deposit_applied','credit_amount','qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','bill_to_id','shipping_name','shipping_address','po_number','rep_id','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at']);
+const _invCols=['id','customer_id','so_id','idempotency_key','client_create_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','deposit_applied','credit_amount','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','bill_to_id','shipping_name','shipping_address','po_number','rep_id','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
+// A client-generated creation nonce makes a response-lost retry provably the
+// same new document. It is persisted before the first RPC/outbox attempt; do
+// not infer ownership from customer/SO/amount, which another invoice can share.
+const _newInvoiceCreateId=()=>{
+  try{if(globalThis.crypto&&typeof globalThis.crypto.randomUUID==='function')return globalThis.crypto.randomUUID()}catch{}
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const n=Math.floor(Math.random()*16);return(c==='x'?n:(n&3)|8).toString(16)});
+};
+const _ensureInvoiceCreateId=inv=>{
+  if(inv&&inv._version==null&&!inv.client_create_id)inv.client_create_id=_newInvoiceCreateId();
+  return inv;
+};
 const _dbSaveInvoiceInner = async (inv) => {
-  if(!supabase)return;
-  // NETSUITE GUARD (2026-08-12, INV62383). hist_invoices are read-only NetSuite records, keyed by
-  // their DOCUMENT NUMBER ("INV62383") rather than a portal id ("INV-62383"). Writing one here
-  // mints a SECOND invoice under that number in the portal table — header-only, $0, no lines —
-  // which then shadows the real record everywhere the UI looks an invoice up by id: the detail
-  // page's `invs.find(...)` renders the empty shell, and deleteInvoice — which checks histInvs
-  // first — would delete the NetSuite row while the shell survives. Three such rows (INV62383,
-  // INV63316, INV63043) were minted by the invoice detail page's Edit Invoice modal, which had no
-  // idea the invoice it was editing was a NetSuite one. Refuse the write so no path can mint more.
+  if(!supabase)return false;
   if(inv&&(inv._hist||inv.netsuite_internal_id)){
     console.warn('[DB] Refusing to write NetSuite invoice',inv.id,'into the portal invoices table — it is read-only here.');
     if(_dbNotify)_dbNotify(inv.id+' is a NetSuite invoice — it can only be edited in NetSuite.','error');
     return false;
   }
+  await _ensureFreshSession();
   return _dbSavingGuard(async()=>{try{
-    // Optimistic concurrency (00180) — same _checkVersion auto-heal the SO/estimate/customer saves
-    // use: a numeric return means another session saved after our copy loaded; adopt the server
-    // version so the counter doesn't fall behind (the poll/realtime merge guards key off it).
-    // _version itself is never written — the DB trigger owns it (not in _invCols).
-    if(inv._version){const vc=await _checkVersion('invoices',inv.id,inv._version);if(vc!==true&&typeof vc==='number'){if(inv._obBaseVersion==null)inv._obBaseVersion=inv._version;inv._version=vc}
-      else if(vc===false){
-        // FAIL CLOSED (audit F6): version check errored — cannot verify this invoice wasn't saved by
-        // another session. Defer to the failed-ids retry loop instead of writing unverified.
-        _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoices: version check failed — save deferred for retry');_persistFailedIds();
-        return false;
-      }}
     const{payments,items,...rest}=inv;
-    let invRow=_fuDefaults(_pick(rest,_invCols));
-    // IDENTITY GUARD (2026-07-27, mirrors the SO/estimate paths). nextInvId mints from the same
-    // page-load-stale _dbMaxIds, and this path had NO new-vs-existing check at all — a bare upsert, so
-    // a stale tab that re-minted a live invoice number would silently replace another customer's
-    // invoice, payments and line items included — the same hole that cost SO-1507 its header, on a
-    // money document.
-    //
-    // CORRECTION (2026-08-07): the original note here said no invoice collision appears in the audit
-    // history. That was wrong, and the detector behind it was blind by construction. It looked for
-    // created_at CHANGING between old_data and new_data, but invoices.created_at is a DB-owned
-    // `timestamptz DEFAULT now()` that an overwriting upsert never rewrites — so a collision leaves it
-    // untouched and the query returns nothing. Searching on customer_id changing instead surfaces
-    // seven, of which INV-63144 (2026-07-10) was a real loss: Palos Verdes HS Football's $384.41
-    // invoice, already emailed to the school, replaced 92 seconds later by another rep's session that
-    // had minted the same number. Restored as INV-63450.
-    //
-    // Unlike sales_orders/estimates, invoices.created_at is `timestamptz DEFAULT now()`, NOT text — so
-    // the two sides legitimately differ in FORMAT for the same instant: a client that just created the
-    // invoice holds toLocaleString() ("7/27/2026, 2:54:42 PM") while the DB returns ISO with
-    // microseconds. A string compare here would block ordinary re-saves, so compare parsed instants
-    // with a tolerance. If either side won't parse we cannot tell, and an unprovable mismatch must
-    // never block a save.
-    const _invSameDoc=(a,b)=>{
-      const ta=Date.parse(a),tb=Date.parse(b);
-      if(!Number.isFinite(ta)||!Number.isFinite(tb))return true;// unparseable → can't tell → allow
-      return Math.abs(ta-tb)<=5000;// one document across two formats stays far inside this
-    };
-    // ...and created_at alone cannot carry this guard, because the path that creates almost every
-    // invoice — the Create Invoice button in OrderEditor — builds its object without one (the column
-    // has a DB default, so nothing client-side ever needed to stamp it). `inv.created_at` is undefined
-    // there, the condition short-circuits, and the guard never runs. That is the gap INV-63144 fell
-    // through, and it stayed open after the 2026-07-27 fix shipped.
-    //
-    // So: compare created_at when both sides have one (strongest signal, and the only one that can
-    // tell two docs apart once a client has loaded the row), and otherwise fall back to the document's
-    // own identity. A client with no _version believes it is CREATING this invoice, so an existing row
-    // at that id is either our own save being retried — same customer, SO and total — or somebody
-    // else's invoice, which differs on at least one. A client that does hold a _version loaded the row
-    // from the DB, so its edits are deliberate (re-pointing an invoice to another customer is a real
-    // workflow — the Lincoln XC split did exactly that) and must not be second-guessed here.
-    const _invDifferentDoc=ex=>{
-      if(inv.created_at&&ex.created_at)return!_invSameDoc(ex.created_at,inv.created_at);
-      if(inv._version)return false;// loaded from the DB — this is an edit, not a mint
-      const _n=v=>Number(v)||0;
-      return(ex.customer_id??null)!==(inv.customer_id??null)
-        ||(ex.so_id??null)!==(inv.so_id??null)
-        ||Math.abs(_n(ex.total)-_n(inv.total))>=0.005;
-    };
-    const{data:_existInv,error:_existInvErr}=await supabase.from('invoices').select('id,created_at,customer_id,so_id,total,paid,cc_fee,status').eq('id',inv.id).maybeSingle();
-    if(!_existInvErr&&_existInv&&_invDifferentDoc(_existInv)){
+    const invoice=_fuDefaults(_pick(rest,_invCols));
+    // An unhydrated child list is absence, not an empty replacement. The RPC only
+    // mutates a child collection when it receives an explicit array.
+    const itemRows=Array.isArray(items)&&inv._itemsHydrated!==false
+      ?items.map(i=>({sku:i.sku,name:i.name,qty:i.qty,unit_price:i.unit_price,total:i.total,description:i.description}))
+      :null;
+    const paymentRows=Array.isArray(payments)&&inv._paymentsHydrated!==false
+      ?payments.map((p,i)=>({amount:p.amount,method:p.method,ref:p.ref||('pay_'+i),date:p.date,cc_fee:Number(p.cc_fee)||0}))
+      :null;
+    let res=await _retryNet(()=>supabase.rpc('save_invoice_atomic',{
+      p_invoice:invoice,p_items:itemRows,p_payments:paymentRows,p_base_version:inv._version??null,
+    }));
+    if(res.error){
+      if(_isAuthError(res.error))return _handleAuthSaveFailure(inv.id,res.error);
+      const msg=res.error.message||String(res.error);
+      console.error('[DB] save_invoice_atomic failed for',inv.id,':',msg);
+      _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'save_invoice_atomic: '+msg);_persistFailedIds();
+      if(_dbNotify)_dbNotify('Invoice save failed — no changes were committed. '+msg,'error');
+      return false;
+    }
+    let result=res.data||{};
+    // A create colliding with another invoice must receive a fresh document
+    // number, never degrade into an upsert of the incumbent. This is a read-only
+    // allocation retry; both attempts remain atomic RPC writes.
+    if(result.reason==='ID_EXISTS'&&inv._version==null){
       const oldId=inv.id;
-      // Which signal caught it — the alerts are read during incident triage, so say which.
-      const _why=(inv.created_at&&_existInv.created_at)
-        ?'created_at mismatch: theirs '+_existInv.created_at+' vs ours '+inv.created_at
-        :'identity mismatch: theirs '+_existInv.customer_id+'/'+_existInv.so_id+'/'+_existInv.total+' vs ours '+inv.customer_id+'/'+inv.so_id+'/'+inv.total;
-      if(!inv._version){
-        // Never saved, so no payments or items hang off this id yet — renumbering is clean. Scan on
-        // the 'INV' prefix, NOT 'INV-': some live ids carry no dash ('INV63316'), and a 'INV-%' scan
-        // would happily re-mint straight into one of them.
-        const freshMax=await _refreshMaxId('invoices','INV');
-        inv.id=invRow.id='INV-'+(Math.max(freshMax,parseInt((oldId.match(/\d+/)||['0'])[0])||0)+1);
-        console.warn('[DB] Invoice',oldId,'is held by a different invoice (',_why,') — re-minted to',inv.id);
-        if(_dbNotify)_dbNotify(oldId+' was already taken by another invoice — this one saved as '+inv.id+'. Reload to keep editing it.','error');
-        if(_dataLossAlert)_dataLossAlert({kind:'inv_id_reminted',soId:inv.id,reason:oldId+' belonged to a different invoice ('+_why+') — re-minted to '+inv.id});
-      }else{
-        // Already saved under this id: renumbering would strand its payments and line items.
-        console.error('[DB] SAFETY: Blocking invoice save —',oldId,'is held by a different invoice (',_why,')');
-        if(_dbNotify)_dbNotify('Save blocked — '+oldId+' now belongs to a different invoice. Please reload before editing.','error');
-        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:oldId,reason:'id held by a different invoice ('+_why+') — refused overwrite'});
-        _emitOutboxConflict('invoices',inv);_dbSaveFailedIds.delete(oldId);_clearSaveError(oldId);_persistFailedIds();
+      const freshMax=await _refreshMaxId('invoices','INV');
+      inv.id=invoice.id='INV-'+(Math.max(freshMax,parseInt((oldId.match(/\d+/)||['0'])[0])||0)+1);
+      res=await _retryNet(()=>supabase.rpc('save_invoice_atomic',{
+        p_invoice:invoice,p_items:itemRows,p_payments:paymentRows,p_base_version:null,
+      }));
+      if(res.error){
+        const msg=res.error.message||String(res.error);
+        _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'save_invoice_atomic: '+msg);_persistFailedIds();
         return false;
       }
+      result=res.data||{};
+      if(result.ok===true)console.warn('[DB] Invoice id collision — re-minted',oldId,'as',inv.id);
     }
-    // A portal payment updates the invoice with the service role. A staff tab that loaded
-    // before that payment may later save an unrelated edit with paid=0/status=open. Keep
-    // the server's more-advanced financial tuple so the stale save cannot unapply money.
-    if(!_existInvErr&&_existInv){
-      const _protectedInvRow=preserveAppliedInvoiceSummary(invRow,_existInv);
-      if(_protectedInvRow!==invRow){
-        invRow=_protectedInvRow;
-        inv.total=invRow.total;inv.paid=invRow.paid;inv.cc_fee=invRow.cc_fee;inv.status=invRow.status;
-        console.warn('[DB] Preserved newer payment summary while saving',inv.id);
+    if(result.ok!==true){
+      const reason=result.reason||'UNKNOWN';
+      if(reason==='STALE'||reason==='VERSION_REQUIRED'){
+        // Keep the draft at its original base version. Advancing it to the server
+        // version would make the next save overwrite fields this client never saw.
+        if(inv._obBaseVersion==null)inv._obBaseVersion=inv._version;
+        _emitOutboxConflict('invoices',inv);
+        _dbSaveFailedIds.delete(inv.id);_clearSaveError(inv.id);_persistFailedIds();
+        if(_dbNotify)_dbNotify('This invoice changed in another tab. Your edit was not saved and is available in the conflict banner.','error');
+        return 'stale';
       }
+      const msg='save_invoice_atomic: '+reason;
+      console.error('[DB] invoice save rejected for',inv.id,':',reason);
+      _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,msg);_persistFailedIds();
+      if(_dbNotify)_dbNotify(reason==='PAYMENT_REMOVAL_REQUIRES_REVERSAL'||reason==='PAYMENT_IMMUTABLE'
+        ?'Invoice payment history cannot be changed here. Record an auditable reversal instead.'
+        :'Invoice save was rejected — no changes were committed.');
+      return false;
     }
-    const{error:invErr}=await supabase.from('invoices').upsert(invRow,{onConflict:'id'});
-    if(invErr){
-      console.warn('[DB] invoices upsert failed, retrying without extra cols:',invErr.message);
-      const coreRow={};Object.keys(invRow).forEach(k=>{if(!_invExtraCols.has(k))coreRow[k]=invRow[k]});
-      const{error:invErr2}=await supabase.from('invoices').upsert(coreRow,{onConflict:'id'});
-      if(invErr2){console.error('[DB] invoices upsert failed (core):',invErr2.message);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoices: '+invErr2.message);_persistFailedIds();return false}
-    }
-    // Payment preservation: payments are financial records — never let a stale/timed-out client drop one another
-    // user (or this user, before a clean load) recorded. Read the live DB payments and re-inject any ref the client
-    // was never aware of, so only a payment the client loaded and then deleted is actually removed.
-    let _payments=payments;
-    let _dbPayRows=[];
-    {
-      const{data:_dbPays,error:_dbPayErr}=await supabase.from('invoice_payments').select('*').eq('invoice_id',inv.id);
-      if(_dbPayErr){
-        console.error('[DB] SAFETY: Blocking invoice save — failed to read existing payments for',inv.id,':',_dbPayErr.message);
-        if(_dbNotify)_dbNotify('Save blocked — could not verify existing payments. Please reload the page.','error');
-        _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_payments SELECT errored: '+_dbPayErr.message);_persistFailedIds();return false;
-      }
-      _dbPayRows=_dbPays||[];
-      if(_dbPays&&_dbPays.length){
-        const _clientRefs=new Set((payments||[]).map(p=>p.ref).filter(Boolean));
-        const _knownRefs=new Set([..._clientRefs,...(Array.isArray(inv._hydratedPayRefs)?inv._hydratedPayRefs:[])]);
-        const _payHydrated=inv._paymentsHydrated!==false;
-        const _restore=[];
-        _dbPays.forEach(row=>{
-          const ref=row.ref;
-          if(ref&&_clientRefs.has(ref))return;// client still holds it — it re-saves its own copy
-          if(_payHydrated&&ref&&_knownRefs.has(ref))return;// deliberately deleted from a clean load
-          _restore.push({amount:row.amount,method:row.method,ref:row.ref,date:row.date});
-        });
-        if(_restore.length){console.warn('[DB] Restored',_restore.length,'undeleted payment(s) for',inv.id,'(stale/foreign client state)');_payments=[...(payments||[]),..._restore];}
-      }
-    }
-    // Sync payments: upsert current, then delete removed (avoids DELETE+INSERT race condition)
-    if(_payments?.length){
-      // cc_fee is coerced: the column is NOT NULL, and an undefined here would make PostgREST
-      // reject the whole batch rather than default it.
-      const payRows=_payments.map((p,i)=>({invoice_id:inv.id,amount:p.amount,method:p.method,ref:p.ref||('pay_'+i),date:p.date,cc_fee:Number(p.cc_fee)||0}));
-      const{error:payErr}=await supabase.from('invoice_payments').upsert(payRows,{onConflict:'invoice_id,ref'});
-      if(payErr){
-        // FAIL CLOSED (2026-08-12, INV-1053). The old fallback here deleted every payment row on the
-        // invoice and then re-inserted the SAME payload that had just failed — so a schema or
-        // constraint error (this table was missing the cc_fee column the payload always carried, and
-        // the unique index the upsert targets) destroyed the invoice's payment history and swallowed
-        // both errors. Not one payment recorded through the portal ever reached the DB, and with no
-        // payment rows CommissionsPage falls back to the INVOICE date — quietly paying reps their
-        // commission in the wrong month.
-        //
-        // A payment is a financial record and its date decides a rep's statement month: never delete
-        // on a failed write. Try a plain insert of the rows the DB does not already hold, and if that
-        // fails too, fail the save so the retry loop keeps the payment instead of dropping it.
-        const _known=new Set(_dbPayRows.map(r=>String(r.ref)));
-        const _missing=payRows.filter(r=>!_known.has(String(r.ref)));
-        const{error:insErr}=_missing.length?await supabase.from('invoice_payments').insert(_missing):{error:null};
-        if(insErr){
-          console.error('[DB] invoice_payments write failed for',inv.id,'— upsert:',payErr.message,'/ insert:',insErr.message);
-          if(_dbNotify)_dbNotify('Payment NOT saved on '+inv.id+' — the payment record failed to write, so this invoice would commission in the wrong month. Retrying; reload if it persists.','error');
-          _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_payments: '+payErr.message+' | insert fallback: '+insErr.message);_persistFailedIds();return false;
-        }
-        console.warn('[DB] invoice_payments upsert failed for',inv.id,'—',payErr.message,'; inserted',_missing.length,'new payment(s) instead (existing rows left intact)');
-      }else{
-        // Delete payments beyond current set
-        const{data:existingPays}=await supabase.from('invoice_payments').select('id,ref').eq('invoice_id',inv.id);
-        const currentRefs=new Set(payRows.map(p=>p.ref));
-        const toDelete=(existingPays||[]).filter(ep=>!currentRefs.has(ep.ref)).map(ep=>ep.id);
-        if(toDelete.length)await supabase.from('invoice_payments').delete().in('id',toDelete);
-      }
-    }
-    // Invoice items have no stable client id, so they can't be restore-merged like payments. Instead, fail-closed:
-    // block the save if the client would drop items it never loaded (a timed-out invoice_items query yields fewer
-    // items than the DB). A clean load that legitimately removed items still goes through.
-    {
-      const{count:_dbItemCount,error:_dbItemErr}=await supabase.from('invoice_items').select('id',{count:'exact',head:true}).eq('invoice_id',inv.id);
-      if(_dbItemErr){
-        console.error('[DB] SAFETY: Blocking invoice save — failed to read existing items for',inv.id,':',_dbItemErr.message);
-        if(_dbNotify)_dbNotify('Save blocked — could not verify existing invoice items. Please reload the page.','error');
-        _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items COUNT errored: '+_dbItemErr.message);_persistFailedIds();return false;
-      }
-      const _clientItemCount=(items||[]).length;
-      if((_dbItemCount||0)>0&&_clientItemCount<(_dbItemCount||0)&&inv._itemsHydrated===false){
-        console.error('[DB] SAFETY: Blocking invoice save —',_clientItemCount,'client item(s) vs',_dbItemCount,'in DB for',inv.id,'(items not hydrated this session)');
-        if(_dbNotify)_dbNotify('Save blocked — invoice item data would be lost. Please reload the page.','error');
-        _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items hydration safety: client '+_clientItemCount+' < DB '+_dbItemCount);_persistFailedIds();return false;
-      }
-      if(items?.length){
-        // DATA-LOSS FIX (mirrors _dbSaveSOInner's insert-first swap): the old delete-then-insert
-        // order left the invoice with ZERO items in the DB whenever the insert failed after the
-        // delete succeeded. Now: read old ids → insert new rows → verify → only then delete old.
-        const{data:_oldInvItems,error:_oldInvReadErr}=await supabase.from('invoice_items').select('id').eq('invoice_id',inv.id);
-        if(_oldInvReadErr){
-          console.error('[DB] SAFETY: Blocking invoice save — failed to read existing item ids for',inv.id,':',_oldInvReadErr.message);
-          _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items id read: '+_oldInvReadErr.message);_persistFailedIds();return false;
-        }
-        const _itemRows=items.map(i=>({sku:i.sku,name:i.name,qty:i.qty,unit_price:i.unit_price,total:i.total,description:i.description,invoice_id:inv.id}));
-        const{data:_newInvItems,error:_itemInsErr}=await supabase.from('invoice_items').insert(_itemRows).select('id');
-        if(_itemInsErr){console.error('[DB] invoice_items insert failed (old rows left intact):',_itemInsErr.message);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items: '+_itemInsErr.message);_persistFailedIds();return false}
-        const _newInvIds=(_newInvItems||[]).map(r=>r.id).filter(Boolean);
-        if(_newInvIds.length<_itemRows.length){
-          // Under-returned insert — roll the new rows back so the old ones stay canonical.
-          console.error('[DB] SAFETY: invoice item insert under-returned —',_newInvIds.length,'of',_itemRows.length,'ids; rolling back');
-          if(_newInvIds.length)await supabase.from('invoice_items').delete().in('id',_newInvIds);
-          _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items: insert returned '+_newInvIds.length+' of '+_itemRows.length+' ids');_persistFailedIds();return false;
-        }
-        const _oldInvIds=(_oldInvItems||[]).map(r=>r.id).filter(Boolean);
-        if(_oldInvIds.length){
-          const{error:_oldDelErr}=await supabase.from('invoice_items').delete().in('id',_oldInvIds);
-          if(_oldDelErr){
-            // New rows are in and verified; old ones linger as temporary duplicates. Fail the
-            // save so the retry re-runs the swap (next pass treats the leftovers as "old").
-            console.error('[DB] invoice_items old-row cleanup failed (duplicates until retry):',_oldDelErr.message);
-            _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items cleanup: '+_oldDelErr.message);_persistFailedIds();return false;
-          }
-        }
-        const{count:_verifyItemCount}=await supabase.from('invoice_items').select('id',{count:'exact',head:true}).eq('invoice_id',inv.id);
-        if((_verifyItemCount||0)<_itemRows.length){
-          console.error('[DB] SAFETY: invoice item insert verification failed — expected',_itemRows.length,'got',_verifyItemCount);
-          _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items: only '+(_verifyItemCount||0)+' of '+_itemRows.length+' rows persisted');_persistFailedIds();return false;
-        }
-      }
+    if(typeof result.version==='number'){
+      inv._version=result.version;_dbOwnVersions[inv.id]=result.version;_dbOwnVersionExact.add(inv.id);
     }
     _dbSaveFailedIds.delete(inv.id);_clearSaveError(inv.id);_persistFailedIds();_dbRecentSaves[inv.id]=Date.now();
-    // Advance the local base _version in place (the caller passed the state object) — the DB
-    // trigger bumped the row on upsert-update, and the merge guards treat a strictly-newer local
-    // _version as "poll row is stale". Mirrors _dbSaveSOInner.
-    if(inv._version)inv._version=inv._version+1;
     return true;
-  }catch(e){console.error('[DB] save invoice:',e);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,e.message||String(e));_persistFailedIds();return false}});
+  }catch(e){
+    if(_isAuthError(e))return _handleAuthSaveFailure(inv.id,e);
+    console.error('[DB] save invoice:',e);
+    _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,e.message||String(e));_persistFailedIds();
+    return false;
+  }});
 };
 // Queued per invoice id (same as SOs/estimates) so a direct awaited save — e.g. the final-invoice
 // commit that gates closing the SO — can't race the _diffSave effect saving the same invoice.
-const _dbSaveInvoice = (inv) => _outboxWrap('invoices', inv, _queuedEntitySave(inv.id, inv, _dbSaveInvoiceInner));
+const _dbSaveInvoice = (inv) => {
+  _ensureInvoiceCreateId(inv);
+  return _outboxWrap('invoices', inv, _queuedEntitySave(inv.id, inv, _dbSaveInvoiceInner));
+};
 let _dbNotify=null; // set by App component for visible error toasts
 let _dataLossAlert=null; // set by App component — logs + emails on item-wipe attempts/events
 let _restoredLinesSync=null; // set by App component — merges PO/pick lines the save guard restored back into live state so a restore sticks instead of repeating on every save
@@ -3099,60 +2994,57 @@ const _ensureFreshSession=async()=>{
 };
 const _dbSaveCustomer = (c) => _outboxWrap('customers', c, _dbSaveCustomerInner(c));
 const _dbSaveCustomerInner = async (c) => {
-  if(!supabase){console.warn('[DB] save customer skipped — no supabase');return false}
+  if(!supabase){console.warn('[DB] save customer skipped — no supabase');return false;}
   await _ensureFreshSession();
-  // Optimistic locking: check version before saving
-  if(c._version){const vc=await _checkVersion('customers',c.id,c._version);if(vc!==true){
-    if(typeof vc==='number'){
-      if(c._obBaseVersion==null)c._obBaseVersion=c._version;c._version=vc;
-      // Durable capture (audit F7): this conflicted edit previously lived only in React memory — a
-      // reload/tab-close dropped it silently. Route it to the outbox conflict card like the SO/estimate
-      // stale-guards do, so the rep decides apply/discard instead of losing what they typed.
-      _emitOutboxConflict('customers',c);
-    }else{
-      // vc===false: the version check itself failed (network) — transient, so defer for retry (F6).
-      _dbSaveFailedIds.add(c.id);_recordSaveError(c.id,'customers: version check failed — save deferred for retry');_persistFailedIds();
-    }
-    return false}}
   try{
-    const{contacts,_oe,_os,_oi,_ob,...custRow}=c;
-    custRow.updated_at=new Date().toISOString();
-    if(!custRow.created_at)custRow.created_at=custRow.updated_at;
-    let{error:custErr}=await _retryNet(()=>supabase.from('customers').upsert(_pick(custRow,_custCols),{onConflict:'id'}));
-    if(custErr){
-      // A missing OPTIONAL column (search_tags 00085, art_files 00027) fails the WHOLE upsert on an
-      // un-migrated DB. Strip optional columns one at a time, dropping art_files LAST — otherwise a
-      // missing search_tags column also strips art_files, silently losing customer-library artwork
-      // (the "Add Art does nothing" bug: the art never persists, then a realtime reload wipes it).
-      const _optional=['uniform_discount_percent','search_tags','art_files'];let _saved=false;
-      for(let _n=1;_n<=_optional.length&&!_saved;_n++){
-        const _drop=new Set(_optional.slice(0,_n));
-        const _r=await _retryNet(()=>supabase.from('customers').upsert(_pick(custRow,_custCols.filter(c2=>!_drop.has(c2))),{onConflict:'id'}));
-        if(!_r.error){_saved=true;console.warn('[DB] customer saved without '+[..._drop].join(', ')+' (run latest migrations)')}
-        else if(_n===_optional.length){if(_isAuthError(_r.error))return _handleAuthSaveFailure(c.id,_r.error);console.error('[DB] save customer upsert error:',_r.error.message);_dbSaveFailedIds.add(c.id);_recordSaveError(c.id,'customers: '+_r.error.message);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+_r.error.message,'error');return false}
-      }
+    const{contacts,_oe,_os,_oi,_ob,...rest}=c;
+    const customer=_pick(rest,_custCols);
+    customer.updated_at=new Date().toISOString();
+    if(!customer.created_at)customer.created_at=customer.updated_at;
+    // `undefined` means contacts were not loaded; [] is an explicit request to
+    // remove the final contact and must reach the atomic replacement transaction.
+    const contactRows=Array.isArray(contacts)&&c._contactsHydrated!==false
+      ?contacts.map((ct,i)=>({name:ct.name,email:ct.email,phone:ct.phone,role:ct.role,sort_order:i}))
+      :null;
+    const res=await _retryNet(()=>supabase.rpc('save_customer_atomic',{
+      p_customer:customer,p_contacts:contactRows,p_base_version:c._version??null,
+    }));
+    if(res.error){
+      if(_isAuthError(res.error))return _handleAuthSaveFailure(c.id,res.error);
+      const msg=res.error.message||String(res.error);
+      console.error('[DB] save_customer_atomic failed for',c.id,':',msg);
+      _dbSaveFailedIds.add(c.id);_recordSaveError(c.id,'save_customer_atomic: '+msg);_persistFailedIds();
+      if(_dbNotify)_dbNotify('Customer save failed — no changes were committed. '+msg,'error');
+      return false;
     }
-    // Upsert contacts then delete removed ones (avoids DELETE+INSERT race condition)
-    if(contacts?.length){
-      const contactRows=contacts.map((ct,i)=>({customer_id:c.id,name:ct.name,email:ct.email,phone:ct.phone,role:ct.role,sort_order:i}));
-      const{error:ctErr}=await supabase.from('customer_contacts').upsert(contactRows,{onConflict:'customer_id,sort_order'});
-      if(ctErr){console.error('[DB] upsert contacts error:',ctErr.message);
-        // Fallback: DELETE+INSERT if upsert constraint doesn't exist
-        await supabase.from('customer_contacts').delete().eq('customer_id',c.id);
-        await supabase.from('customer_contacts').insert(contactRows);
-      }else{
-        // Delete contacts beyond current count
-        const{data:existingCts}=await supabase.from('customer_contacts').select('sort_order').eq('customer_id',c.id);
-        const toDelete=(existingCts||[]).filter(ec=>ec.sort_order>=contacts.length);
-        if(toDelete.length)await supabase.from('customer_contacts').delete().eq('customer_id',c.id).gte('sort_order',contacts.length);
+    const result=res.data||{};
+    if(result.ok!==true){
+      const reason=result.reason||'UNKNOWN';
+      if(reason==='STALE'||reason==='VERSION_REQUIRED'){
+        if(c._obBaseVersion==null)c._obBaseVersion=c._version;
+        _emitOutboxConflict('customers',c);
+        _dbSaveFailedIds.delete(c.id);_clearSaveError(c.id);_persistFailedIds();
+        if(_dbNotify)_dbNotify('This customer changed in another tab. Your edit was not saved and is available in the conflict banner.','error');
+        return 'stale';
       }
+      const msg='save_customer_atomic: '+reason;
+      console.error('[DB] customer save rejected for',c.id,':',reason);
+      _dbSaveFailedIds.add(c.id);_recordSaveError(c.id,msg);_persistFailedIds();
+      if(_dbNotify)_dbNotify('Customer save was rejected — no changes were committed.','error');
+      return false;
     }
-    // If contacts is empty/undefined, leave existing DB contacts untouched to prevent accidental data loss
+    if(typeof result.version==='number'){
+      c._version=result.version;_dbOwnVersions[c.id]=result.version;_dbOwnVersionExact.add(c.id);
+    }
     _dbSaveFailedIds.delete(c.id);_clearSaveError(c.id);_persistFailedIds();_dbRecentSaves[c.id]=Date.now();
-    // Bump local version to match server (DB trigger increments on UPDATE)
-    if(c._version)c._version=c._version+1;
     console.log('[DB] Customer saved:',c.id,c.name);return true;
-  }catch(e){if(_isAuthError(e))return _handleAuthSaveFailure(c.id,e);console.error('[DB] save customer:',e);_dbSaveFailedIds.add(c.id);_recordSaveError(c.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+e.message,'error');return false}
+  }catch(e){
+    if(_isAuthError(e))return _handleAuthSaveFailure(c.id,e);
+    console.error('[DB] save customer:',e);
+    _dbSaveFailedIds.add(c.id);_recordSaveError(c.id,e.message||String(e));_persistFailedIds();
+    if(_dbNotify)_dbNotify('Customer save failed: '+(e.message||e),'error');
+    return false;
+  }
 };
 const _dbSavePromoProgram = async (prog) => {
   if(!supabase)return false;
@@ -3241,6 +3133,26 @@ const _dbSaveCreditUsage = async (usage) => {
     if(error){console.error('[DB] save credit usage:',error.message);return false}
     return true;
   }catch(e){console.error('[DB] save credit usage:',e);return false}
+};
+// Replace a document's complete promo + account-credit draw in one database
+// transaction. The RPC owns balance validation, row locking, usage rows, and
+// the document's posted marker; callers must treat any error as unposted.
+const _dbSetFundAllocation = async ({documentType,documentId,customerId,promoAmount=0,creditAmount=0,sourceEstimateId=null,description=null,createdBy=null}) => {
+  if(!supabase)return{ok:false,error:'No database connection'};
+  try{
+    const{data,error}=await _retryNet(()=>supabase.rpc('set_document_fund_allocation',{
+      p_document_type:documentType,
+      p_document_id:documentId,
+      p_customer_id:customerId,
+      p_promo_amount:promoAmount,
+      p_credit_amount:creditAmount,
+      p_source_estimate_id:sourceEstimateId,
+      p_description:description,
+      p_created_by:createdBy,
+    }));
+    if(error){console.error('[DB] set fund allocation:',error.message);return{ok:false,error:error.message}}
+    return{ok:true,data:data||{}};
+  }catch(e){console.error('[DB] set fund allocation:',e);return{ok:false,error:e.message||String(e)}}
 };
 // Atomically creates the audit memo and the equal reusable account credit. Keeping
 // both inserts inside the database function prevents a dropped browser request from
@@ -3791,11 +3703,47 @@ const _outboxWrite=(box)=>{
   // Eviction is data loss — it must never be silent.
   if(evicted.length){console.error('[Outbox] DROPPED unsaved edit(s) to stay within the size cap:',evicted.join(', '));if(_dbNotify)_dbNotify('Storage full — '+evicted.length+' older unsaved edit(s) had to be dropped from the offline backup ('+evicted.join(', ')+'). Check the failed-save list.','error')}
 };
-const _outboxAdd=(table,entity)=>{try{
+// A save completion must identify the draft that it belongs to. A random component keeps tokens
+// distinct across tabs; the counter makes repeated saves in one tab easy to distinguish even when
+// Date.now() has the same value. The token is persisted with the entry so a later completion can
+// compare against the draft currently stored under this table:id key.
+let _outboxRevisionSeq=0;
+// A mutable object may be passed through several coalesced queue waiters. Keep every active
+// revision, rather than letting the latest wrapper overwrite the older one's identity.
+const _outboxAttemptsByEntity=new WeakMap();// entity → Map<revision, staged id>
+const _outboxConflictRevisions=new WeakMap();
+const _newOutboxRevision=()=>{
+  _outboxRevisionSeq=(_outboxRevisionSeq+1)%0x100000000;
+  let random='';try{random=(typeof crypto!=='undefined'&&crypto.getRandomValues)?Array.from(crypto.getRandomValues(new Uint32Array(2)),n=>n.toString(36)).join(''):Math.random().toString(36).slice(2)}catch{random=Math.random().toString(36).slice(2)}
+  return Date.now().toString(36)+'-'+_outboxRevisionSeq.toString(36)+'-'+random;
+};
+const _registerOutboxAttempt=(entity,revision,stagedId)=>{
+  if(!entity||typeof entity!=='object'||!revision)return;
+  const attempts=_outboxAttemptsByEntity.get(entity)||new Map();attempts.set(revision,stagedId);_outboxAttemptsByEntity.set(entity,attempts);
+};
+const _finishOutboxAttempt=(entity,revision)=>{
+  if(!entity||typeof entity!=='object'||!revision)return;
+  const attempts=_outboxAttemptsByEntity.get(entity);if(!attempts)return;attempts.delete(revision);if(!attempts.size)_outboxAttemptsByEntity.delete(entity);
+};
+const _markOutboxConflict=(entity)=>{
+  if(!entity||typeof entity!=='object')return;
+  const attempts=_outboxAttemptsByEntity.get(entity);if(!attempts?.size)return;
+  const conflicts=_outboxConflictRevisions.get(entity)||new Set();attempts.forEach((_stagedId,revision)=>conflicts.add(revision));_outboxConflictRevisions.set(entity,conflicts);
+};
+const _consumeOutboxConflict=(entity,revision)=>{
+  if(!entity||typeof entity!=='object'||!revision)return false;
+  const conflicts=_outboxConflictRevisions.get(entity);if(!conflicts||!conflicts.has(revision))return false;
+  conflicts.delete(revision);if(!conflicts.size)_outboxConflictRevisions.delete(entity);return true;
+};
+const _outboxPayload=(entity)=>{const payload={...entity};delete payload._retry;return payload};
+const _outboxAdd=(table,entity,revision)=>{try{
   if(!entity||!entity.id)return;
   const box=_outboxRead();const key=table+':'+entity.id;
-  const payload={...entity};delete payload._retry;// transient retry-poke marker, not part of the edit
+  const payload=_outboxPayload(entity);// transient retry-poke marker, not part of the edit
   const prev=box[key];
+  // Calls from a new save attempt intentionally replace the prior draft with their new revision.
+  // Completion handlers never call this function: they use _outboxUpdate/_outboxAck below, which
+  // compare the token and therefore cannot overwrite or remove a newer attempt.
   // Base = the version this edit's CONTENT was authored against. The optimistic-lock auto-heal
   // (_checkVersion conflict → entity._version=serverVersion) advances _version without touching the
   // content, so recording _version here would stamp stale content as "current" and make _outboxGate
@@ -3803,9 +3751,51 @@ const _outboxAdd=(table,entity)=>{try{
   // _obBaseVersion preserves the true pre-heal base; it's set at every auto-heal site and cleared on
   // a fully-successful save (_outboxWrap).
   const _obBase=payload._obBaseVersion!=null?payload._obBaseVersion:payload._version;
-  box[key]={table,id:entity.id,payload,baseVersion:(_obBase!=null&&isFinite(Number(_obBase))?Number(_obBase):null),ts:Date.now(),attempts:(prev?.attempts||0)+1};
+  box[key]={table,id:entity.id,payload,baseVersion:(_obBase!=null&&isFinite(Number(_obBase))?Number(_obBase):null),ts:Date.now(),attempts:(prev?.attempts||0)+1,revision:revision||_newOutboxRevision()};
   _outboxWrite(box);
-}catch(e){console.error('[Outbox] add failed:',e)}};
+  return box[key].revision;
+}catch(e){console.error('[Outbox] add failed:',e);return false}};
+// Update and acknowledge are compare-before-write operations. They intentionally do nothing when
+// another tab/attempt has replaced the key, which is the key safety property for delayed results.
+// localStorage has no cross-tab transaction here; the final read immediately before the write narrows
+// the race, while the revision check prevents the ordinary delayed-completion interleaving.
+const _outboxUpdate=(table,entity,revision,stagedId)=>{try{
+  if(!revision||!entity||!entity.id)return false;
+  const box=_outboxRead();const sourceId=stagedId||entity.id;const key=table+':'+sourceId;const prev=box[key];
+  if(!prev||prev.revision!==revision)return false;
+  const finalId=entity.id;const payload=_outboxPayload(entity);const _obBase=payload._obBaseVersion!=null?payload._obBaseVersion:payload._version;
+  const updated={...prev,table,id:finalId,payload,baseVersion:(_obBase!=null&&isFinite(Number(_obBase))?Number(_obBase):null),ts:Date.now(),attempts:(prev.attempts||0)+1,revision};
+  if(String(sourceId)===String(finalId)){box[key]=updated}
+  else{
+    const destKey=table+':'+finalId;const dest=box[destKey];
+    // A newer draft already owns the reminted ID. Drop only this attempt's old key and retain it.
+    if(dest&&dest.revision!==revision){delete box[key];_outboxWrite(box);return false}
+    box[destKey]=updated;delete box[key];
+  }
+  _outboxWrite(box);return true;
+}catch(e){console.error('[Outbox] update failed:',e);return false}};
+const _outboxAck=(table,id,revision)=>{try{
+  if(!id||!revision)return false;
+  const box=_outboxRead();const key=table+':'+id;const prev=box[key];
+  if(!prev||prev.revision!==revision)return false;
+  // Re-read before deleting so a storage event/newer write observed during the read is retained.
+  // This is still bounded by localStorage's lack of an atomic compare-and-swap; all callers must
+  // use revision-aware ack/update paths for the guarantee to hold.
+  const latest=_outboxRead()[key];if(!latest||latest.revision!==revision)return false;
+  delete box[key];_outboxWrite(box);return true;
+}catch{return false}};
+// Failed add-only saves historically captured their entity only after the failure was known. Keep
+// that behavior when no entry exists, while refusing to replace a full-save entry that may be newer.
+// A tokened full save may update only the entry it staged; if it was explicitly discarded meanwhile,
+// it must not resurrect itself here.
+const _outboxRetainFailure=(table,entity,revision,stagedId)=>{try{
+  if(!entity||!entity.id)return false;
+  const box=_outboxRead();const sourceId=stagedId||entity.id;const current=box[table+':'+sourceId];
+  if(current){return revision&&current.revision===revision?_outboxUpdate(table,entity,revision,sourceId):false}
+  // A tokened attempt was explicitly removed (or lost); never recreate it. Add-only failures have
+  // no staged token and retain their historical capture-on-failure behavior.
+  return revision?false:_outboxAdd(table,entity);
+}catch{return false}};
 const _outboxRemove=(table,id)=>{try{const box=_outboxRead();const key=table+':'+id;if(!(key in box))return;delete box[key];_outboxWrite(box)}catch{}};
 const _outboxRemoveById=(id)=>{try{const box=_outboxRead();let hit=false;for(const k of Object.keys(box)){if(box[k]&&box[k].id===id){delete box[k];hit=true}}if(hit)_outboxWrite(box)}catch{}};
 const _outboxList=()=>{try{return Object.values(_outboxRead())}catch{return[]}};
@@ -3817,7 +3807,11 @@ let _onOutboxConflict=null;// set by App — receives the outbox entry to append
 export const _setOnOutboxConflict=(fn)=>{_onOutboxConflict=fn};
 const _emitOutboxConflict=(table,entity)=>{try{
   if(!entity||!entity.id)return;
-  _outboxAdd(table,entity);
+  // Save inners can discover a stale-write conflict before their wrapper's Promise settles. Reuse
+  // that wrapper's token so an older stale result cannot replace a newer staged draft. Calls from
+  // explicit conflict surfaces have no token and retain the intentional fresh-capture behavior.
+  const attempts=_outboxAttemptsByEntity.get(entity);
+  if(attempts?.size){attempts.forEach((stagedId,revision)=>_outboxUpdate(table,entity,revision,stagedId));_markOutboxConflict(entity)}else _outboxAdd(table,entity);
   const en=_outboxRead()[table+':'+entity.id];
   if(en&&_onOutboxConflict)_onOutboxConflict(en);
 }catch(e){console.error('[Outbox] conflict emit failed:',e)}};
@@ -3828,23 +3822,43 @@ const _emitOutboxConflict=(table,entity)=>{try{
 // entry: existing semantics treat that edit as superseded, and the server-side version guard would
 // reject a re-apply anyway.
 const _outboxWrap=(table,entity,resultPromise,addOnly)=>{
-  // Capture-on-attempt: once the session is latched dead this save is doomed (the write goes out
-  // with a stale JWT and RLS rejects it). Persist the payload NOW, synchronously — the async
-  // failure path may never run if the app unmounts to the login screen first. This is what makes
-  // the forced-logout flush (`nsa:version-reload-pending` → editor onSave → save entry point)
-  // durable without depending on React commit timing.
-  try{if(_sessionDead&&entity&&entity.id)_outboxAdd(table,entity)}catch{}
+  // Capture-on-attempt: persist a full-save draft synchronously at wrapper entry, before any
+  // completion handler can run. Because JavaScript evaluates resultPromise before entering this
+  // function, this cannot precede every underlying request dispatch without changing all wrappers;
+  // the current save inners yield at their auth/guard boundary, and this closes the completion race.
+  // Add-only art saves deliberately keep their old behavior: their success must never replace or
+  // clear a failed full-entity payload. A dead session is the one existing add-only capture case.
+  const _outboxId=entity&&entity.id;
+  const _outboxRevision=(!addOnly||_sessionDead)&&_outboxId?_newOutboxRevision():null;
+  if(_outboxRevision)_registerOutboxAttempt(entity,_outboxRevision,_outboxId);
+  try{if(_outboxRevision)_outboxAdd(table,entity,_outboxRevision)}catch{}
   return Promise.resolve(resultPromise).then(r=>{
     try{
-      if(r===false){if(entity&&entity.id&&_dbSaveFailedIds.has(entity.id))_outboxAdd(table,entity)}
+      const _conflictCaptured=_consumeOutboxConflict(entity,_outboxRevision);
+      _finishOutboxAttempt(entity,_outboxRevision);
+      if(r===false){
+        // A deliberate conflict capture (identity collision or stale optimistic write) owns the
+        // entry even when the inner save clears its failed-ID flag before returning false.
+        if(!_conflictCaptured){
+          if(entity&&entity.id&&_dbSaveFailedIds.has(entity.id))_outboxRetainFailure(table,entity,_outboxRevision,_outboxId);
+          else if(_outboxId)_outboxAck(table,_outboxId,_outboxRevision);
+        }
+      }
       // addOnly: an art-files-only save success must not clear an outbox entry holding a failed
       // FULL entity payload — only the full save may clear. 'stale' deliberately does NOT clear:
       // the rejected edit's content is preserved for the conflict card (_emitOutboxConflict) so a
       // version rejection no longer silently destroys what the rep typed.
-      else if(r===true&&!addOnly){if(entity&&entity.id){_outboxRemove(table,entity.id);try{delete entity._obBaseVersion}catch{}}}
+      else if(r===true&&!addOnly&&!_conflictCaptured){if(_outboxId&&_outboxAck(table,_outboxId,_outboxRevision)){try{delete entity._obBaseVersion}catch{}}}
     }catch(e){console.error('[Outbox] hook failed:',e)}
     return r;
-  },err=>{try{if(entity&&entity.id&&_dbSaveFailedIds.has(entity.id))_outboxAdd(table,entity)}catch{}throw err});
+  },err=>{try{
+    const _conflictCaptured=_consumeOutboxConflict(entity,_outboxRevision);
+    _finishOutboxAttempt(entity,_outboxRevision);
+    if(!_conflictCaptured){
+      if(entity&&entity.id&&_dbSaveFailedIds.has(entity.id))_outboxRetainFailure(table,entity,_outboxRevision,_outboxId);
+      else if(_outboxId)_outboxAck(table,_outboxId,_outboxRevision);
+    }
+  }catch{}throw err});
 };
 // Boot-time gate: outbox entry vs the freshly-loaded DB row. Pure — unit-tested in the
 // characterization suite. Returns:
@@ -4000,6 +4014,7 @@ export {
   _dbSaveCredit,
   _dbDeleteCredit,
   _dbSaveCreditUsage,
+  _dbSetFundAllocation,
   _dbCreateInvoiceCreditMemo,
   _dbSavePendingShip,
   _dbDeletePendingShip,
@@ -4040,6 +4055,7 @@ export {
   _outboxRemove,
   _outboxRemoveById,
   _outboxList,
+  _outboxWrap,
   _outboxGate,
   _outboxMatchesRow,
   _emitOutboxConflict,

@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
+import { getPortalUrl } from './lib/portalLinks';
 import { fetchPublicInventory, fetchPublicStorefrontProducts } from './lib/webstorePublicData';
 import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking, _cloudinaryPdfThumb, _withTimeout, fetchWithTimeout } from './utils';
 import { shipStationCall, sanmarGetPricing, sanmarResolveSku, ssResolveSku, richardsonResolveSku, momentecResolveSku, resolveSkuAcrossVendors } from './vendorApis';
@@ -1514,11 +1515,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const custName = useCallback((id) => cust.find((c) => c.id === id)?.name || '—', [cust]);
   const repName = useCallback((id) => REPS.find((r) => r.id === id)?.name || '—', [REPS]);
 
-  // Read-only coach/director portal link for a store's club (keyed on alpha_tag).
-  const coachPortalUrl = useCallback((store) => {
+  // Issue a revocable coach/director portal credential for the store's club.
+  const coachPortalUrl = useCallback(async (store) => {
     const c = cust.find((x) => x.id === store?.customer_id);
-    const tag = c?.alpha_tag || c?.name || '';
-    return tag ? `${PUBLIC_SITE}/coach?portal=${encodeURIComponent(tag)}` : '';
+    if (!c?.id) throw new Error('This store is not linked to a customer');
+    return getPortalUrl(c.id);
   }, [cust]);
 
   // Send the family-facing launch email with PDF flyer attached.
@@ -1530,7 +1531,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // Anything that throws on the way to Brevo has to surface: an uncaught rejection
     // here left the rep with a stale "Generating flyer PDF…" toast and no send.
     try {
-      const r = await _sendLaunchEmail(store, to, coachPortalUrl(store));
+      const portalUrl = await coachPortalUrl(store);
+      const r = await _sendLaunchEmail(store, to, portalUrl);
       if (r && r.error) flash('Email failed: ' + r.error);
       else flash('Store link emailed to ' + to + (r.attached ? ' with PDF flyer' : ' (link only — the PDF flyer could not be attached)'));
     } catch (e) { flash('Email failed: ' + (e.message || e)); }
@@ -1821,7 +1823,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const to = (store.coach_contact_email || store.director_email || '').trim();
     if (!to) { flash('Launched (no coach/director email on file to notify).'); return; }
     try {
-      const r = await _sendLaunchEmail(store, to, coachPortalUrl(store));
+      const portalUrl = await coachPortalUrl(store);
+      const r = await _sendLaunchEmail(store, to, portalUrl);
       // Surface a failed send — this used to ignore the result and claim the email
       // went out even when it never reached Brevo.
       if (r && r.error) flash('Launched — but the coach email FAILED: ' + r.error);
@@ -4102,7 +4105,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onAddRoster={addRoster} onUpdateRoster={updateRoster} onRemoveRoster={removeRoster} onInviteRoster={inviteRoster}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
           onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} placementMemory={(wsSettings && wsSettings.placement_memory) || {}} onSavePlacementMemory={savePlacementMemory} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onAddStoreArtFolder={addStoreArtFolder} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
-          portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
+          onCopyPortal={() => coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onOpenSO={onOpenSO} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onChangeCloseDate={changeCloseDate} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
       )}
@@ -6335,12 +6338,12 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
   );
 }
 
-function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = null, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onBulkRemove, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onProductReport, onExportCsv, onReorder, onMove, onReorderColors, onRemoveColor, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onAddStoreArtFolder, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = null, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onBulkRemove, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onProductReport, onExportCsv, onReorder, onMove, onReorderColors, onRemoveColor, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onAddStoreArtFolder, onSaveStoreArt, onAttachWebLogo, onFlash, onCopyPortal, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
   const [emailLinkOpen, setEmailLinkOpen] = useState(false);
-  const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
+  const copyPortal = async () => { try { const portalUrl = await onCopyPortal(); if (navigator.clipboard) { try { await navigator.clipboard.writeText(portalUrl); } catch (_) { window.prompt('Copy coach portal link:', portalUrl); } } else window.prompt('Copy coach portal link:', portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); } catch (error) { onFlash('Could not create portal link: ' + (error?.message || 'Unknown error')); } };
   const orders = detail?.orders || [];
   const orderItems = detail?.orderItems || [];
   const catalog = detail?.catalog || [];
@@ -6497,7 +6500,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
         <div style={{ display: 'flex', gap: 8 }}>
           <a className="btn btn-sm btn-secondary" href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer">↗ View storefront</a>
           <MenuButton label="Share" align="right" items={[
-            portalUrl && { label: portalCopied ? '✓ Copied!' : 'Copy coach portal link', icon: '🔗', title: portalUrl, onClick: copyPortal },
+            onCopyPortal && { label: portalCopied ? '✓ Copied!' : 'Copy coach portal link', icon: '🔗', onClick: copyPortal },
             onFlyer && { label: 'Printable flyer (QR)', icon: '🖨️', title: 'Open a printable flyer with a QR code to the store', onClick: onFlyer },
             { label: 'Email store link', icon: '✉️', title: 'Send the store link + QR + PDF flyer to a coach or parent', onClick: () => setEmailLinkOpen(true) },
           ]} />

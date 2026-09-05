@@ -4,15 +4,8 @@
 // (bypassing RLS) and emails the customer's rep a summary via Brevo so they know
 // to build the order. No-op-safe if service creds or Brevo are absent — the
 // client still flips status optimistically.
-const { createClient } = require('@supabase/supabase-js');
+const { getSupabaseAdmin, resolveCustomerFamily } = require('./_shared');
 const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
-function getSupabaseAdmin() {
-  const url = process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) return null;
-  return createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
-}
 
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type' };
@@ -22,19 +15,35 @@ exports.handler = async (event) => {
   try {
     const body = JSON.parse(event.body || '{}');
     const sessionId = String(body.session_id || '').trim();
-    const customerId = String(body.customer_id || '').trim();
+    const portal = String(body.portal || '').trim();
     const coachEmail = String(body.coach_email || '').trim();
     if (!sessionId) return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'session_id required' }) };
+    if (!portal) return { statusCode: 403, headers, body: JSON.stringify({ ok: false, error: 'Portal credential required' }) };
 
-    const admin = getSupabaseAdmin();
-    if (!admin) return { statusCode: 200, headers, body: JSON.stringify({ ok: false, error: 'service-creds-missing' }) };
+    let admin;
+    try { admin = getSupabaseAdmin(); }
+    catch (_) { return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: 'service-creds-missing' }) }; }
+
+    // Resolve the bearer secret before looking up the requested session. The
+    // caller-supplied customer_id is intentionally ignored; ownership comes
+    // only from the canonical session row and credential-derived family.
+    const family = await resolveCustomerFamily(admin, portal);
+    if (family.error) {
+      return { statusCode: family.notFound ? 403 : 500, headers, body: JSON.stringify({ ok: false, error: family.error }) };
+    }
 
     // Flip status → submitted, but only from open/draft (don't clobber a later state).
-    const { data: sess } = await admin.from('roster_order_sessions')
+    const { data: sess, error: sessionError } = await admin.from('roster_order_sessions')
       .select('id,name,season,customer_id,status').eq('id', sessionId).maybeSingle();
-    if (!sess) return { statusCode: 200, headers, body: JSON.stringify({ ok: false, error: 'session-not-found' }) };
+    if (sessionError) throw sessionError;
+    if (!sess) return { statusCode: 404, headers, body: JSON.stringify({ ok: false, error: 'session-not-found' }) };
+    if (!family.fam.has(sess.customer_id)) {
+      return { statusCode: 403, headers, body: JSON.stringify({ ok: false, error: 'Session is outside this portal' }) };
+    }
     if (['open', 'draft'].includes(sess.status)) {
-      await admin.from('roster_order_sessions').update({ status: 'submitted' }).eq('id', sessionId);
+      const { error: submitError } = await admin.from('roster_order_sessions')
+        .update({ status: 'submitted' }).eq('id', sessionId).in('status', ['open', 'draft']);
+      if (submitError) throw submitError;
     }
 
     // Summary: teams, players, locked-team count (coach-done signal).
@@ -49,7 +58,7 @@ exports.handler = async (event) => {
     const lockedCount = (teams || []).filter((t) => t.locked).length;
 
     // Resolve customer + rep email.
-    const { data: cust } = await admin.from('customers').select('name,primary_rep_id').eq('id', customerId || sess.customer_id).maybeSingle();
+    const { data: cust } = await admin.from('customers').select('name,primary_rep_id').eq('id', sess.customer_id).maybeSingle();
     let repEmail = '', repName = '';
     if (cust?.primary_rep_id) {
       const { data: rep } = await admin.from('team_members').select('name,email').eq('id', cust.primary_rep_id).maybeSingle();
@@ -61,7 +70,7 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers, body: JSON.stringify({ ok: true, submitted: true, emailed: false, error: !repEmail ? 'no-rep-email' : 'email-not-configured' }) };
     }
 
-    const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || 'https://nsa-portal.netlify.app').replace(/\/+$/, '');
+    const portalBase = (process.env.PORTAL_PUBLIC_URL || process.env.URL || 'https://nsa-portal.netlify.app').replace(/\/+$/, '');
     const hello = repName ? `Hi ${esc(repName.split(' ')[0])},` : 'Hi,';
     const custName = cust?.name || 'A customer';
 
@@ -91,7 +100,7 @@ exports.handler = async (event) => {
               <p style="font-size:13px;color:#64748b;line-height:1.6;margin:0 0 16px">
                 Open <strong>${esc(custName)} &rarr; Roster</strong> in the portal to review sizes vs. inventory and build the estimate.
               </p>
-              <a href="${esc(portal)}" style="display:inline-block;background:#0b1f3a;color:#fff;border-radius:8px;padding:11px 24px;font-weight:700;text-decoration:none;font-size:14px">Open the portal</a>
+              <a href="${esc(portalBase)}" style="display:inline-block;background:#0b1f3a;color:#fff;border-radius:8px;padding:11px 24px;font-weight:700;text-decoration:none;font-size:14px">Open the portal</a>
             </div>
           </div>`,
       }),

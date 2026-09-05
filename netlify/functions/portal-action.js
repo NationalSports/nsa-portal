@@ -10,6 +10,7 @@
 // Brevo using the server-side key so it isn't exposed to the browser.
 
 const { createClient } = require('@supabase/supabase-js');
+const { resolveCustomerFamily } = require('./_shared');
 
 // Only these columns may be written from the portal — defends against a crafted
 // payload setting arbitrary columns. Target rows are additionally verified to
@@ -173,7 +174,7 @@ exports.handler = async (event) => {
   const admin = createClient(sbUrl, sbKey, { auth: { autoRefreshToken: false, persistSession: false } });
   const errors = [];
 
-  // Ownership scoping: the portal link carries the customer's alpha_tag, so every
+  // Ownership scoping: the portal link carries a hash-resolved bearer credential, so every
   // targeted SO/estimate must belong to that customer (or a sub-customer). Without
   // this, any caller could approve any estimate or patch any SO's allowlisted columns.
   if (!alphaTag || typeof alphaTag !== 'string' || !alphaTag.trim()) {
@@ -182,14 +183,12 @@ exports.handler = async (event) => {
   let allowedSO = new Set(), allowedEst = new Set();
   const allowedSODocs = new Map(), allowedEstDocs = new Map(), primaryRepByCustomer = new Map();
   try {
-    const { data: parents, error: custErr } = await admin.from('customers').select('id,primary_rep_id').eq('alpha_tag', alphaTag.trim());
+    const familyResult = await resolveCustomerFamily(admin, alphaTag);
+    if (familyResult.error) return { statusCode: familyResult.notFound ? 403 : 500, headers: CORS, body: JSON.stringify({ error: familyResult.error }) };
+    const famIds = familyResult.fam;
+    const { data: familyCustomers, error: custErr } = await admin.from('customers').select('id,primary_rep_id').in('id', [...famIds]);
     if (custErr) return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: custErr.message }) };
-    if (!parents || !parents.length) return { statusCode: 403, headers: CORS, body: JSON.stringify({ error: 'Unknown portal tag' }) };
-    const parentIds = parents.map(p => p.id);
-    const { data: kids, error: kidErr } = await admin.from('customers').select('id,primary_rep_id').in('parent_id', parentIds);
-    if (kidErr) return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: kidErr.message }) };
-    const famIds = new Set([...parentIds, ...(kids || []).map(k => k.id)]);
-    [...parents, ...(kids || [])].forEach(c => primaryRepByCustomer.set(c.id, c.primary_rep_id || null));
+    (familyCustomers || []).forEach(c => primaryRepByCustomer.set(c.id, c.primary_rep_id || null));
 
     const soIds = [...new Set([...jobs, ...artFiles].map(r => r?.so_id).concat(touchSO ? [touchSO] : []).concat(artDecision?.so_id ? [artDecision.so_id] : []).filter(Boolean))];
     if (soIds.length) {

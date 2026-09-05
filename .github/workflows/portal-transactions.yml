@@ -1,0 +1,24 @@
+name: Portal transaction regressions
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'supabase/migrations/**'
+      - 'supabase/tests/**'
+      - 'scripts/pgtest/**'
+      - '.github/workflows/portal-transactions.yml'
+jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install disposable PostgreSQL runtime
+        run: npm install --prefix "$RUNNER_TEMP/portal-pg" --no-audit --no-fund @electric-sql/pglite@0.3.14
+      - name: Verify transactions and access policies without live credentials
+        run: |
+          export PGLITE_MODULE="$RUNNER_TEMP/portal-pg/node_modules/@electric-sql/pglite"
+          node scripts/pgtest/portal_audit_scenarios.cjs
+          node scripts/pgtest/fund_allocation_scenarios.cjs

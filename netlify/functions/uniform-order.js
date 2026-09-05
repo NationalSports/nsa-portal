@@ -4,7 +4,7 @@
 // a signed-in active team member. All writes use the server-side service role;
 // the browser never receives it and never writes an order table directly.
 const crypto = require('crypto');
-const { corsHeaders, getSupabaseAdmin, verifyUser, pickCols } = require('./_shared');
+const { corsHeaders, getSupabaseAdmin, verifyUser, pickCols, resolveCustomerFamily } = require('./_shared');
 const { sendCustomerEmail, sendStaffEmail } = require('./_uniformOrderEmail');
 const { authoritativeUniformQuote } = require('./_uniformPricing');
 
@@ -366,11 +366,13 @@ async function reorder(sb, body) {
 async function portalList(sb, body) {
   const tag = cleanText(body.portal, 80);
   if (!tag) return response(400, { ok: false, error: 'Missing portal tag.' });
-  const { data: customer, error: custErr } = await sb.from('customers').select('id').ilike('alpha_tag', tag).maybeSingle();
-  if (custErr) throw custErr;
-  if (!customer) return response(404, { ok: false, error: 'Portal not found.' });
+  const family = await resolveCustomerFamily(sb, tag);
+  if (family.error) {
+    if (family.notFound) return response(404, { ok: false, error: 'Portal not found.' });
+    throw new Error(family.error);
+  }
   const { data: orders, error } = await sb.from('uniform_order_requests')
-    .select(PUBLIC_ORDER_FIELDS).eq('customer_id', customer.id)
+    .select(PUBLIC_ORDER_FIELDS).in('customer_id', [...family.fam])
     .order('created_at', { ascending: false }).limit(50);
   if (error) throw error;
   return response(200, { ok: true, orders: (orders || []).map(publicOrder) });

@@ -14,8 +14,8 @@
 // event. Signature-verification failures (400, above the try block) and
 // unrecognized event types (fall through with no flag set) are UNCHANGED —
 // only these two DB-write/RPC failure paths, plus the catch-all below, flip
-// to 500. Every other best-effort branch in this file (refund apply, dispute
-// alert, ACH-cancel note, invoice reconciliation) is intentionally untouched.
+// to 500. Invoice settlement also throws into the catch-all because its invoice
+// summary and required payment ledger must commit together.
 //
 // Setup:
 //   1. Add STRIPE_WEBHOOK_SECRET (from the Stripe dashboard endpoint) to env.
@@ -169,7 +169,9 @@ exports.handler = async (event) => {
         // this server-side right after paying (stripe-payment → finalize_invoice); this webhook is the
         // backstop for when that call never lands (tab closed, or a 3-D Secure redirect). Shared helper,
         // idempotent — the portal call, this one, and Stripe retries can't double-apply the surcharge.
-        await reconcileInvoiceFromIntent(sb, pi);
+        // Use the signed Stripe event timestamp as the settlement date. Any RPC failure throws to
+        // the outer handler, which returns 500 so Stripe retries the all-or-nothing transaction.
+        await reconcileInvoiceFromIntent(sb, pi, { settledAt: evt.created });
 
         // Uniform Builder checkout is order-first. If the buyer closes the tab
         // after Stripe succeeds, this is the authoritative backstop that marks

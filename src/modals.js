@@ -710,7 +710,8 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
   const[error,setError]=useState(null);
   const[serverSubtotal,setServerSubtotal]=useState(null);
   const[serverFee,setServerFee]=useState(null);
-  const _feePct=typeof feePct==='number'?feePct:CC_FEE_PORTAL_DEFAULT;
+  const[configuredFeePct,setConfiguredFeePct]=useState(null);
+  const _feePct=!createIntent&&typeof configuredFeePct==='number'?configuredFeePct:(typeof feePct==='number'?feePct:CC_FEE_PORTAL_DEFAULT);
   const totalDue=invoices.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
   const cardFee=Math.round(totalDue*_feePct*100)/100;
   const chosenFee=serverFee!=null?serverFee:(payChoice==='card'?cardFee:0);
@@ -725,11 +726,12 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
     let cancelled=false;
     (async()=>{
       try{
+        const cfgRes=await fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'config'})});
+        const cfg=await cfgRes.json().catch(()=>({}));
+        if(!cfgRes.ok)throw new Error(cfg.error||'Payment settings are temporarily unavailable.');
+        if(!createIntent&&Number.isFinite(Number(cfg?.invoiceCardFeePct))&&Number(cfg.invoiceCardFeePct)>=0&&Number(cfg.invoiceCardFeePct)<=0.10)setConfiguredFeePct(Number(cfg.invoiceCardFeePct));
         let promise=stripePromise;
-        if(!promise){
-          const cfg=await fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'config'})}).then(r=>r.json()).catch(()=>({}));
-          if(cfg&&cfg.publishableKey)promise=loadStripe(cfg.publishableKey);
-        }
+        if(!promise&&cfg&&cfg.publishableKey)promise=loadStripe(cfg.publishableKey);
         if(!promise){if(!cancelled)setError('Stripe publishable key is missing. Add REACT_APP_STRIPE_PK (or STRIPE_PUBLISHABLE_KEY) in Netlify and redeploy.');return;}
         if(!cancelled)setStripeReady(promise);
       }catch(e){if(!cancelled)setError(e.message)}
