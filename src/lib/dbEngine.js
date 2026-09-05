@@ -2360,7 +2360,12 @@ const _captureSoSave = (so, savePromise) => {
     } catch (_) { /* never let capture affect the save */ }
   }).catch(() => {});
 };
-const _dbSaveSO = (so) => { const _p = _saveDocument('sales_orders',so,_dbSaveSOInner); _captureSoSave(so, _p); return _p; };
+const _dbSaveSO = (so, opts) => {
+  // Bill confirmation must correspond to this exact mutation, not the result
+  // of a later editor/autosave that supersedes a coalesced pending payload.
+  const save = opts?.exactAttempt ? snapshot => _dbSaveSOInner(snapshot) : _dbSaveSOInner;
+  const _p = _saveDocument('sales_orders',so,save); _captureSoSave(so, _p); return _p;
+};
 // Narrow memo operation: no full-save wrapper, outbox, pricing or child writes.
 // Its dedicated dialog owns field-level recovery; sharing the full-document
 // outbox here would let a memo receipt erase an unrelated failed order edit.

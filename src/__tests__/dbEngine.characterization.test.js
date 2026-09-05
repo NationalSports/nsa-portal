@@ -279,6 +279,17 @@ describe('_queuedEntitySave', () => {
     ]);
     expect(saved.sort()).toEqual(['a', 'b']);
   });
+
+  test('an exact bill-attempt wrapper cannot be replaced by a later ordinary autosave', async () => {
+    let release;const gate=new Promise(r=>{release=r});const saved=[];
+    const ordinary=async d=>{saved.push(d.v);if(d.v==='block')await gate;return true};
+    const exact=snapshot=>ordinary(snapshot);// same unique wrapper used by _dbSaveSO exactAttempt
+    const first=_queuedEntitySave('E-exact',{v:'block'},ordinary);
+    const bill=_queuedEntitySave('E-exact',{v:'bill'},exact);
+    const autosave=_queuedEntitySave('E-exact',{v:'editor'},ordinary);
+    release();await expect(Promise.all([first,bill,autosave])).resolves.toEqual([true,true,true]);
+    expect(saved).toEqual(['block','bill','editor']);
+  });
 });
 
 // ── Transient-network retry ──────────────────────────────────────────
