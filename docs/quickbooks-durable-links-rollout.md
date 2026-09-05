@@ -74,3 +74,6 @@ repository's existing third-party source-map warnings.
 - **Unexpected SKU result:** the 0000 test created item #263 rather than relinking historical #183. API read-back verified #263 as NonInventory, 40000/51300. This does not satisfy the required link-only canary. Further migration writes stopped pending an explicit read of #183, including inactive items.
 - Product recovery now blocks when no active match is returned. A read-only QBO item-ID audit is available to investigate historical IDs without changing them.
 - Gate 1 remains open. No customer/product/SO/PO bulk batches have run; no bill recreation or cleanup was performed.
+
+- Read-only historical lookup returned #183 as `0000 (deleted)`, SKU `0000`, `Active:false`, `Type:Inventory`, expense account #149 (Cost of Goods Sold). The handoff's description of #183 as a reusable NonInventory item does not match current QBO state. Do not reactivate or convert it.
+- The attempted #263 retry encountered a browser timeout before any newer receipt was saved. It is not counted as verified. The recovery button now performs link-only work without a redundant native confirmation dialog; a missing match still blocks.

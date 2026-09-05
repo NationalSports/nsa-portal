@@ -398,7 +398,6 @@ export default function QBPage(){
     };
     const runProductCanary=async()=>{
       if(!selectedCanaryProduct)return;
-      if(!window.confirm('Recover exactly ONE existing QBO NonInventory purchase item?\n\nSKU: '+selectedCanaryProduct.sku+'\nProduct: '+selectedCanaryProduct.name+'\nSales: 40000\nPurchases: 51300\n\nExact existing items are linked without a QBO write. Missing matches are blocked for review. The item and accounts will be verified by API read-back.')){nf('QBO NonInventory item canary cancelled — nothing was sent');return}
       await syncInventory({canaryProductId:selectedCanaryProduct.id});
     };
     const runInactiveProductLinkCleanup=async()=>{
