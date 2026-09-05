@@ -1,4 +1,4 @@
-import { billReferencesPortalPO, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions } from '../qbSyncEngine';
+import { billReferencesPortalPO, buildQBBillPOReplacement, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions } from '../qbSyncEngine';
 import { indexQBNonInventoryItems, QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_SPECS } from '../qbAccountMappings';
 
 const accountRows = Object.values(QB_ACCOUNT_SPECS).map((spec,index)=>({
@@ -255,6 +255,30 @@ describe('QuickBooks one-record canaries', () => {
     expect(getConfig().syncLog[0].details).toContain('PO-1 — FAILED: Transaction date is prior to start date for inventory item');
   });
 
+  test('runs only approved eligible POs and persists each verified batch record', async()=>{
+    const makeItem=(id,sku,poId)=>({product_id:id,sku,name:sku,brand:'Acme',po_lines:[{po_id:poId,created_at:'2026-09-01',S:1,unit_cost:5}]});
+    const sos=[{id:'SO-1',items:[makeItem('P1','SKU-1','PO-1'),makeItem('P2','SKU-2','PO-2'),makeItem('P3','SKU-3','PO-BLOCKED')]}];
+    let next=0;
+    const qbApi=jest.fn(async(action,{query,purchase_order}={})=>{
+      if(query?.includes('FROM Vendor STARTPOSITION'))return{QueryResponse:{Vendor:[{Id:'V-QB',DisplayName:'Acme',CompanyName:'Acme'}]}};
+      if(query?.includes('FROM PurchaseOrder STARTPOSITION'))return{QueryResponse:{PurchaseOrder:[]}};
+      if(query?.includes('FROM Account'))return accountResponse;
+      if(action==='upsert_purchase_order')return{PurchaseOrder:{Id:'NEW-'+(++next),...purchase_order}};
+      if(query?.includes("FROM PurchaseOrder WHERE Id = 'NEW-")){
+        const id=query.match(/Id = '([^']+)'/)[1],index=Number(id.split('-')[1])-1,poId=['PO-1','PO-2'][index];
+        return{QueryResponse:{PurchaseOrder:[{Id:id,DocNumber:poId,VendorRef:{value:'V-QB'},TotalAmt:5,TxnDate:'2026-09-01'}]}};
+      }
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const{engine,getConfig,persistQbLink}=makeEngine({qbApi,sos,prod:[{id:'P1',sku:'SKU-1'},{id:'P2',sku:'SKU-2'},{id:'P3',sku:'SKU-3'}],vend:[{id:'V1',name:'Acme'}]});
+    getConfig().initialMigrationApproved=true;getConfig().prodQBMap={P1:'I-1',P2:'I-2'};
+    await expect(engine.syncPurchaseOrders({}, {approved:true})).resolves.toEqual({status:'success',synced:2});
+    expect(persistQbLink).toHaveBeenCalledTimes(2);
+    expect(qbApi.mock.calls.filter(([action])=>action==='upsert_vendor')).toHaveLength(0);
+    expect(getConfig().qbPOMap).toEqual({'PO-1':'NEW-1','PO-2':'NEW-2'});
+    expect(getConfig().syncLog[0].details[0]).toContain('1 blocked before batch');
+  });
+
   test('verifies reciprocal PO-to-existing-bill links and persists one durable receipt', async() => {
     const po={Id:'PO-QB',DocNumber:'PO-1',VendorRef:{value:'V-QB'},TotalAmt:10,TxnDate:'2026-09-01',LinkedTxn:[{TxnId:'B-1',TxnType:'Bill'}]};
     const bill={Id:'B-1',DocNumber:'BILL-1',VendorRef:{value:'V-QB'},TotalAmt:12,TxnDate:'2026-09-02',PrivateNote:'PO: PO-1 | Tracking: 123',Line:[{Id:'1',LinkedTxn:[{TxnId:'PO-QB',TxnType:'PurchaseOrder',TxnLineId:'1'}]}]};
@@ -268,6 +292,43 @@ describe('QuickBooks one-record canaries', () => {
     await expect(engine.verifyPurchaseOrderBillLinks({canaryPOId:'PO-1',expectedBillId:'B-1'})).resolves.toEqual({status:'success',verified:1});
     expect(persistQbLink).toHaveBeenCalledWith(expect.objectContaining({mapKey:'qbPOBillMap',sourceIds:['PO-1'],qboId:'B-1',evidence:expect.objectContaining({api_readback:true,purchase_order_id:'PO-QB',reciprocal_link:true})}));
     expect(getConfig().qbPOBillMap['PO-1']).toBe('B-1');
+  });
+
+  test('replaces matching bill lines with identical line-level PO links',()=>{
+    const bill={Id:'417',SyncToken:'1',VendorRef:{value:'2384'},TotalAmt:85.69,Balance:85.69,Line:[
+      {Id:'1',Description:'item 1',Amount:21,DetailType:'ItemBasedExpenseLineDetail',ItemBasedExpenseLineDetail:{ItemRef:{value:'262'},Qty:2,UnitPrice:10.5}},
+      {Id:'2',Description:'item 2',Amount:48.75,DetailType:'ItemBasedExpenseLineDetail',ItemBasedExpenseLineDetail:{ItemRef:{value:'182'},Qty:2,UnitPrice:24.375}},
+      {Id:'3',Description:'freight',Amount:15.94,DetailType:'AccountBasedExpenseLineDetail',AccountBasedExpenseLineDetail:{AccountRef:{value:'FREIGHT'}}},
+    ]};
+    const po={Id:'418',POStatus:'Open',Line:[
+      {Id:'1',DetailType:'ItemBasedExpenseLineDetail',ItemBasedExpenseLineDetail:{ItemRef:{value:'262'},Qty:2}},
+      {Id:'2',DetailType:'ItemBasedExpenseLineDetail',ItemBasedExpenseLineDetail:{ItemRef:{value:'182'},Qty:2}},
+    ]};
+    const update=buildQBBillPOReplacement({bill,purchaseOrder:po});
+    expect(update.Line[0]).toEqual(expect.objectContaining({Description:'item 1',Amount:21,LinkedTxn:[{TxnId:'418',TxnType:'PurchaseOrder',TxnLineId:'1'}]}));
+    expect(update.Line[0].Id).toBeUndefined();expect(update.Line[1].ItemBasedExpenseLineDetail.UnitPrice).toBe(24.375);
+    expect(update.Line[2].Id).toBe('3');expect(update.Line.reduce((sum,line)=>sum+line.Amount,0)).toBe(85.69);
+  });
+
+  test('links one reviewed existing bill by API and verifies the unchanged bill plus reciprocal PO',async()=>{
+    let bill={Id:'417',SyncToken:'1',DocNumber:'101',TxnDate:'2026-09-03',VendorRef:{value:'2384',name:'Agron'},APAccountRef:{value:'146'},PrivateNote:'PO: PO-1',TotalAmt:25,Balance:25,Line:[{Id:'5',Description:'SKU',Amount:25,DetailType:'ItemBasedExpenseLineDetail',ItemBasedExpenseLineDetail:{ItemRef:{value:'262'},Qty:2,UnitPrice:12.5}}]};
+    let po={Id:'418',SyncToken:'0',DocNumber:'PO-1',TxnDate:'2026-09-02',VendorRef:{value:'2384',name:'Agron'},POStatus:'Open',TotalAmt:25,Line:[{Id:'1',Amount:25,DetailType:'ItemBasedExpenseLineDetail',ItemBasedExpenseLineDetail:{ItemRef:{value:'262'},Qty:2,UnitPrice:12.5}}]};
+    const qbApi=jest.fn(async(action,{query,bill:payload}={})=>{
+      if(action==='query'&&query.includes('FROM Bill STARTPOSITION'))return{QueryResponse:{Bill:[bill]}};
+      if(action==='query'&&query.includes("FROM Bill WHERE Id = '417'"))return{QueryResponse:{Bill:[bill]}};
+      if(action==='query'&&query.includes("FROM PurchaseOrder WHERE Id = '418'"))return{QueryResponse:{PurchaseOrder:[po]}};
+      if(action==='upsert_bill'){
+        bill={...bill,SyncToken:'2',Line:payload.Line,LinkedTxn:[{TxnId:'418',TxnType:'PurchaseOrder'}]};
+        po={...po,SyncToken:'1',POStatus:'Closed',LinkedTxn:[{TxnId:'417',TxnType:'Bill'}]};
+        return{Bill:bill};
+      }
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const{engine,getConfig,persistQbLink}=makeEngine({qbApi});getConfig().qbPOMap['PO-1']='418';
+    await expect(engine.linkPurchaseOrderBill({portalPOId:'PO-1',expectedBillId:'417',approved:true})).resolves.toEqual({status:'success',portalPOId:'PO-1',billId:'417'});
+    expect(qbApi.mock.calls.filter(([action])=>action==='upsert_bill')).toHaveLength(1);
+    expect(persistQbLink).toHaveBeenCalledWith(expect.objectContaining({mapKey:'qbPOBillMap',qboId:'417',evidence:expect.objectContaining({link_method:'api_bill_update',reciprocal_link:true})}));
+    expect(getConfig().qbPOBillMap['PO-1']).toBe('417');
   });
 
   test.each([

@@ -167,6 +167,39 @@ export function findQbPOBillCandidates(bills = [], portalPOId, qboPOId) {
     || qbLinkedTransactions(bill).some(link => link.TxnType === 'PurchaseOrder' && String(link.TxnId) === String(qboPOId)));
 }
 
+const qbLineRef = line => line.ItemBasedExpenseLineDetail?.ItemRef?.value
+  ? 'item:'+line.ItemBasedExpenseLineDetail.ItemRef.value
+  : line.AccountBasedExpenseLineDetail?.AccountRef?.value
+    ? 'account:'+line.AccountBasedExpenseLineDetail.AccountRef.value : '';
+
+export function buildQBBillPOReplacement({bill, purchaseOrder}) {
+  if(!bill?.Id||!bill.SyncToken)throw new Error('Bill ID and SyncToken are required.');
+  if(Math.abs(safeNum(bill.Balance)-safeNum(bill.TotalAmt))>=0.005)throw new Error('Partially paid or closed bills cannot be linked automatically.');
+  if(String(purchaseOrder?.POStatus||'').toLowerCase()!=='open')throw new Error('Purchase order is not open.');
+  if(qbLinkedTransactions(bill).some(link=>link.TxnType==='PurchaseOrder'))throw new Error('Bill already has a purchase-order link.');
+  if(qbLinkedTransactions(purchaseOrder).some(link=>link.TxnType==='Bill'))throw new Error('Purchase order already has a bill link.');
+  const billLines=[...(bill.Line||[])],remaining=new Set(billLines.map((_,index)=>index));
+  const replacements=new Map();
+  (purchaseOrder.Line||[]).filter(line=>line.Id&&qbLineRef(line)).forEach(poLine=>{
+    const ref=qbLineRef(poLine);
+    const matches=[...remaining].filter(index=>{
+      const line=billLines[index];
+      if(qbLineRef(line)!==ref||qbLinkedTransactions(line).length)return false;
+      if(ref.startsWith('item:'))return Math.abs(safeNum(line.ItemBasedExpenseLineDetail?.Qty)-safeNum(poLine.ItemBasedExpenseLineDetail?.Qty))<0.000001;
+      return true;
+    });
+    if(matches.length!==1)throw new Error(matches.length?'Bill has ambiguous lines for PO line '+poLine.Id:'Bill is missing a line for PO line '+poLine.Id+'.');
+    const index=matches[0],source=billLines[index];remaining.delete(index);
+    const {Id,LineNum,...copy}=source;
+    replacements.set(index,{...copy,LinkedTxn:[{TxnId:String(purchaseOrder.Id),TxnType:'PurchaseOrder',TxnLineId:String(poLine.Id)}]});
+  });
+  if(!replacements.size)throw new Error('Purchase order has no linkable expense lines.');
+  const Line=billLines.map((line,index)=>replacements.get(index)||line);
+  if(Math.abs(Line.reduce((sum,line)=>sum+safeNum(line.Amount),0)-safeNum(bill.TotalAmt))>=0.005)throw new Error('Replacement lines would change the bill total.');
+  const writable=['Id','SyncToken','VendorRef','APAccountRef','TxnDate','DueDate','DocNumber','PrivateNote','SalesTermRef','DepartmentRef','CurrencyRef','ExchangeRate','GlobalTaxCalculation'];
+  return{...Object.fromEntries(writable.filter(key=>bill[key]!==undefined).map(key=>[key,bill[key]])),Line,sparse:false};
+}
+
 export function buildQBInvoicePostingLines({ invoice, salesItemId, discountAccountRef, description }) {
   const cents = value => Math.round(safeNum(value) * 100) / 100;
   const total = cents(invoice?.total);
@@ -929,7 +962,8 @@ export function createQBSyncEngine(ctx){
     const syncPurchaseOrders=async(prodQBMapArg={},options={})=>{
       const canaryPOId=String(options?.canaryPOId||'');
       const canary=!!canaryPOId;
-      if(canary?!canaryPreflightReady():migrationBatchLocked())return;
+      if(canary?!canaryPreflightReady():(!canaryPreflightReady()||productionSyncLocked()))return;
+      if(!canary&&options.approved!==true){nf('Review and approve the next purchase-order batch first','error');return{status:'blocked',synced:0}}
       if(!requireDurableLinks())return{status:'blocked'};
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:canary?'purchase_order_canary':'purchase_orders',status:'success',details:[]};
@@ -950,6 +984,15 @@ export function createQBSyncEngine(ctx){
         setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('Purchase-order sync blocked — QBO duplicate preflight failed','error');setQbSyncing(false);return;
       }
       const vendorQBMap={};// vendorName -> qbVendorId (cache for this sync run)
+      const resolveExistingVendorId=vendorName=>{
+        if(vendorQBMap[vendorName])return vendorQBMap[vendorName];
+        const portalVendor=vend.find(x=>x.name===vendorName)||D_V.find(x=>x.name===vendorName);
+        const bySavedId=portalVendor?.qb_vendor_id&&existingQBVendors.filter(q=>String(q.Id)===String(portalVendor.qb_vendor_id));
+        const exact=existingQBVendors.filter(q=>q.DisplayName===vendorName||q.CompanyName===vendorName);
+        const matches=bySavedId?.length?bySavedId:exact;
+        if(matches.length===1)vendorQBMap[vendorName]=matches[0].Id;
+        return matches.length===1?matches[0].Id:null;
+      };
       // POs do not post to the GL, but every line still carries the approved
       // category so the PO-to-bill workflow remains deterministic.
       let poAccountRefs;
@@ -961,7 +1004,17 @@ export function createQBSyncEngine(ctx){
       }
       // Group PO lines by po_id so we push one QB PO with all line items
       const allPoGroups=groupPortalPurchaseOrders(sos,poMap);
-      const purchaseOrderBatch=rotatingBatch(allPoGroups,qbConfig._purchaseOrderSyncOffset,QB_SYNC_BATCH_SIZE);
+      const effectiveProdQBMap={...(qbConfig.prodQBMap||{}),...(prodQBMapArg||{})};
+      const eligiblePoGroups=allPoGroups.filter(group=>{
+        if(group.invalidReason||!group.vendor||!parseQBDateValue(group.created_at)||!resolveExistingVendorId(group.vendor))return false;
+        if(group.accountKey==='deco_account')return true;
+        return group.entries.every(({it:i})=>{
+          const sku=String(i.sku||'').trim().toUpperCase();
+          const productId=i.product_id||(prod.find(pp=>String(pp.sku||'').trim().toUpperCase()===sku)||{}).id;
+          return !!(sku&&effectiveProdQBMap[productId]);
+        });
+      });
+      const purchaseOrderBatch=rotatingBatch(eligiblePoGroups,qbConfig._purchaseOrderSyncOffset,QB_SYNC_BATCH_SIZE);
       const poGroups=canary?allPoGroups.filter(group=>String(group.poId)===canaryPOId):purchaseOrderBatch.items;
       if(canary&&poGroups.length!==1){nf('Choose exactly one pending portal purchase order','error');setQbSyncing(false);return}
       for(const group of poGroups){
@@ -972,25 +1025,17 @@ export function createQBSyncEngine(ctx){
         if(!poDate){log.details.push(group.poId+' — BLOCKED: purchase-order date could not be converted to a QBO date');log.status='partial';continue}
         // Find or create vendor in QB
         let v=vend.find(x=>x.name===vendorName)||D_V.find(x=>x.name===vendorName);
-        let qbVendorId=vendorQBMap[vendorName]||v?.qb_vendor_id;
+        let qbVendorId=resolveExistingVendorId(vendorName);
         if(!qbVendorId){
           // Check existing QB vendors by name
           const vendorMatches=existingQBVendors.filter(q=>q.DisplayName===vendorName||q.CompanyName===vendorName);
           if(vendorMatches.length>1){log.details.push(group.poId+' — BLOCKED: multiple QBO vendors exactly match "'+vendorName+'"');log.status='partial';continue}
           const match=vendorMatches[0];
           if(match){qbVendorId=match.Id}
-          else{
-            if(canary){log.details.push(group.poId+' — BLOCKED: vendor "'+vendorName+'" is not linked or present in QBO; the one-record test will not create a second record');log.status='error';continue}
-            let vRes;
-            try{vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:vendorName,CompanyName:vendorName}})}
-            catch(e){log.details.push(group.poId+' — vendor "'+vendorName+'" creation failed: '+e.message);log.status='partial';continue}
-            if(vRes?.Vendor?.Id){qbVendorId=vRes.Vendor.Id}
-            else{log.details.push(group.poId+' — vendor "'+vendorName+'" creation failed: '+(vRes?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial';continue}
-          }
+          else{log.details.push(group.poId+' — BLOCKED: vendor "'+vendorName+'" is not linked or uniquely present in QBO; PO sync never creates vendors');log.status=canary?'error':'partial';continue}
           vendorQBMap[vendorName]=qbVendorId;
           if(v)setVend(prev=>prev.map(vv=>vv.id===v.id?{...vv,qb_vendor_id:qbVendorId}:vv));
         }
-        const effectiveProdQBMap={...(qbConfig.prodQBMap||{}),...(prodQBMapArg||{})};
         let missingSkuItem=null;
         const itemGroups=new Map();
         const qbLines=[];
@@ -1034,11 +1079,9 @@ export function createQBSyncEngine(ctx){
           &&Math.abs(safeNum(existing.TotalAmt)-totalAmount)<0.005
           &&String(existing.TxnDate||'').slice(0,10)===String(qbPO.TxnDate||'').slice(0,10));
         if(exact.length===1&&sameNumber.length===1){
-          if(canary){
-            try{await verifyCanaryReadback('PurchaseOrder',exact[0].Id,{docNumber:group.poId,refField:'VendorRef',refValue:qbVendorId,total:totalAmount,txnDate:poDate});
-              await persistQbLink({mapKey:'qbPOMap',sourceIds:[group.poId],qboId:exact[0].Id,log:{...log,details:[group.poId+' — linked and verified QBO PO #'+exact[0].Id]},evidence:{result:'linked',api_readback:true,doc_number:group.poId,vendor_id:qbVendorId,date:poDate,total:totalAmount}});}
-            catch(e){log.details.push(group.poId+' — VERIFY FAILED: '+e.message);log.status='error';continue}
-          }
+          try{await verifyCanaryReadback('PurchaseOrder',exact[0].Id,{docNumber:group.poId,refField:'VendorRef',refValue:qbVendorId,total:totalAmount,txnDate:poDate});
+            await persistQbLink({mapKey:'qbPOMap',sourceIds:[group.poId],qboId:exact[0].Id,log:{...log,details:[group.poId+' — linked and verified QBO PO #'+exact[0].Id]},evidence:{result:'linked',batch_id:canary?null:log.ts,api_readback:true,doc_number:group.poId,vendor_id:qbVendorId,date:poDate,total:totalAmount}});}
+          catch(e){log.details.push(group.poId+' — VERIFY/PERSIST FAILED: '+e.message);log.status='error';continue}
           poMap[group.poId]=exact[0].Id;log.details.push(group.poId+' — exact existing QB PO #'+exact[0].Id+' verified');synced++;continue;
         }
         if(sameNumber.length){log.details.push(group.poId+' — BLOCKED: QBO purchase-order number exists with a different vendor, date, or total');log.status='partial';continue}
@@ -1046,23 +1089,21 @@ export function createQBSyncEngine(ctx){
         try{res=await qbApi('upsert_purchase_order',{purchase_order:qbPO})}
         catch(e){log.details.push(group.poId+' — FAILED: '+e.message);log.status='partial';continue}
         if(res?.PurchaseOrder?.Id){
-          if(canary){
-            try{
-              const verified=await verifyCanaryReadback('PurchaseOrder',res.PurchaseOrder.Id,{docNumber:group.poId,refField:'VendorRef',refValue:qbVendorId,total:totalAmount,txnDate:poDate});
-              await persistQbLink({mapKey:'qbPOMap',sourceIds:[group.poId],qboId:verified.Id,log:{...log,details:[group.poId+' — created and verified QBO PO #'+verified.Id]},evidence:{result:'created',api_readback:true,doc_number:group.poId,vendor_id:qbVendorId,date:poDate,total:totalAmount}});
-              log.details.push('READ-BACK VERIFIED: '+group.poId+' · QBO PurchaseOrder #'+verified.Id+' · $'+safeNum(verified.TotalAmt).toFixed(2));
-            }catch(e){log.details.push(group.poId+' — VERIFY FAILED: '+e.message);log.status='error';continue}
-          }
+          try{
+            const verified=await verifyCanaryReadback('PurchaseOrder',res.PurchaseOrder.Id,{docNumber:group.poId,refField:'VendorRef',refValue:qbVendorId,total:totalAmount,txnDate:poDate});
+            await persistQbLink({mapKey:'qbPOMap',sourceIds:[group.poId],qboId:verified.Id,log:{...log,details:[group.poId+' — created and verified QBO PO #'+verified.Id]},evidence:{result:'created',batch_id:canary?null:log.ts,api_readback:true,doc_number:group.poId,vendor_id:qbVendorId,date:poDate,total:totalAmount}});
+            log.details.push('READ-BACK VERIFIED: '+group.poId+' · QBO PurchaseOrder #'+verified.Id+' · $'+safeNum(verified.TotalAmt).toFixed(2));
+          }catch(e){log.details.push(group.poId+' — VERIFY/PERSIST FAILED: '+e.message);log.status='error';continue}
           poMap[group.poId]=res.PurchaseOrder.Id;
           log.details.push(group.poId+' → QB PO #'+res.PurchaseOrder.Id+' ('+vendorName+' $'+totalAmount.toFixed(2)+', '+qbLines.length+' items)');synced++;
         }else{log.details.push(group.poId+' — FAILED: '+qbResponseErrorDetail(res));log.status='partial'}
       }
       if(synced===0&&poGroups.length>0)log.status='error';
-      log.details.unshift(synced+'/'+poGroups.length+(canary?' purchase-order canary':' purchase orders completed in this batch')+(allPoGroups.length>poGroups.length?' · '+(allPoGroups.length-poGroups.length)+' remain':''));
+      log.details.unshift(synced+'/'+poGroups.length+(canary?' purchase-order canary':' eligible purchase orders completed in this batch')+(eligiblePoGroups.length>poGroups.length?' · '+(eligiblePoGroups.length-poGroups.length)+' eligible remain':'')+(allPoGroups.length>eligiblePoGroups.length?' · '+(allPoGroups.length-eligiblePoGroups.length)+' blocked before batch':''));
       setQBConfig(prev=>({...prev,...(!canary?{_purchaseOrderSyncOffset:purchaseOrderBatch.nextOffset}:{}),qbPOMap:{...prev.qbPOMap,...poMap},syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
       nf(canary?(synced?'Created/linked and verified exactly one QBO purchase order':'Purchase-order canary stopped'):(synced+' purchase orders synced to QB'),synced?'success':'error');
       setQbSyncing(false);
-      return{status:synced===1?'success':'blocked',synced};
+      return{status:synced===poGroups.length?'success':'blocked',synced};
     };
 
     // Verify native PO-to-existing-bill relationships that were created through
@@ -1117,6 +1158,51 @@ export function createQBSyncEngine(ctx){
       return{status:verified===selected.length?'success':'blocked',verified};
     };
 
+    const reviewPurchaseOrderBillCandidate=async portalPOId=>{
+      const qboPOId=qbConfig.qbPOMap?.[portalPOId];
+      if(!qboPOId)return{status:'blocked',reason:'Portal PO has no saved QBO purchase-order link'};
+      const bills=await loadAllQBEntities(qbApi,'Bill','*',500);
+      const poResult=await queryQBReadOnly(qbApi,"SELECT * FROM PurchaseOrder WHERE Id = '"+String(qboPOId).replace(/'/g,"\\'")+"' MAXRESULTS 1",'purchase-order API read-back');
+      const po=poResult?.QueryResponse?.PurchaseOrder?.[0];
+      const matches=findQbPOBillCandidates(bills,portalPOId,qboPOId);
+      if(!po||matches.length!==1)return{status:'blocked',reason:!po?'Purchase order was not returned by QBO':matches.length?'Multiple QBO bills reference this PO':'No QBO bill memo contains this exact PO'};
+      const bill=matches[0];
+      if(String(po.DocNumber||'').trim()!==String(portalPOId).trim()||!billReferencesPortalPO(bill,portalPOId)||String(po.VendorRef?.value||'')!==String(bill.VendorRef?.value||''))return{status:'blocked',reason:'PO number, bill memo, or vendor did not match'};
+      const alreadyLinked=qbLinkedTransactions(bill).some(link=>link.TxnType==='PurchaseOrder'&&String(link.TxnId)===String(qboPOId));
+      if(!alreadyLinked)buildQBBillPOReplacement({bill,purchaseOrder:po});
+      return{status:alreadyLinked?'linked':'ready',portalPOId,qboPOId:String(qboPOId),billId:String(bill.Id),billDocNumber:bill.DocNumber||'',vendor:bill.VendorRef?.name||'',billDate:bill.TxnDate||'',billTotal:safeNum(bill.TotalAmt),poDate:po.TxnDate||'',poTotal:safeNum(po.TotalAmt),bill,po};
+    };
+
+    const linkPurchaseOrderBill=async(options={})=>{
+      const portalPOId=String(options.portalPOId||''),expectedBillId=String(options.expectedBillId||'');
+      if(!options.approved||!portalPOId||!expectedBillId)return{status:'blocked'};
+      if(!canaryPreflightReady()||!requireDurableLinks())return{status:'blocked'};
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:options.batchId?'purchase_order_bill_link_record':'purchase_order_bill_link_canary',status:'success',details:[]};
+      try{
+        const review=await reviewPurchaseOrderBillCandidate(portalPOId);
+        if(!['ready','linked'].includes(review.status))throw new Error(review.reason||'PO-to-bill candidate is blocked');
+        if(review.billId!==expectedBillId)throw new Error('QBO bill changed after review');
+        if(review.status==='ready'){
+          const before={id:review.billId,doc:review.billDocNumber,date:review.billDate,total:review.billTotal,vendor:String(review.bill.VendorRef?.value||'')};
+          const payload=buildQBBillPOReplacement({bill:review.bill,purchaseOrder:review.po});
+          const result=await qbApi('upsert_bill',{bill:payload});
+          if(!result?.Bill?.Id)throw new Error('QBO bill link update failed: '+qbResponseErrorDetail(result));
+          const billResult=await queryQBReadOnly(qbApi,"SELECT * FROM Bill WHERE Id = '"+expectedBillId.replace(/'/g,"\\'")+"' MAXRESULTS 1",'bill link API read-back');
+          const poResult=await queryQBReadOnly(qbApi,"SELECT * FROM PurchaseOrder WHERE Id = '"+review.qboPOId.replace(/'/g,"\\'")+"' MAXRESULTS 1",'purchase-order link API read-back');
+          const bill=billResult?.QueryResponse?.Bill?.[0],po=poResult?.QueryResponse?.PurchaseOrder?.[0];
+          if(!bill||!po||String(bill.Id)!==before.id||String(bill.DocNumber||'')!==String(before.doc)||String(bill.TxnDate||'')!==String(before.date)||Math.abs(safeNum(bill.TotalAmt)-before.total)>=0.005||String(bill.VendorRef?.value||'')!==before.vendor)throw new Error('Bill identity, date, vendor, or total changed on read-back');
+          if(!qbLinkedTransactions(bill).some(link=>link.TxnType==='PurchaseOrder'&&String(link.TxnId)===review.qboPOId)||!qbLinkedTransactions(po).some(link=>link.TxnType==='Bill'&&String(link.TxnId)===before.id))throw new Error('QBO did not return reciprocal links after the update');
+        }
+        const finalReview=await reviewPurchaseOrderBillCandidate(portalPOId);
+        if(finalReview.status!=='linked'||finalReview.billId!==expectedBillId)throw new Error('Final reciprocal link verification failed');
+        const evidence={result:review.status==='linked'?'already_linked':'linked',link_method:review.status==='linked'?'qbo_existing':'api_bill_update',api_readback:true,purchase_order_id:finalReview.qboPOId,bill_id:finalReview.billId,bill_doc_number:finalReview.billDocNumber,bill_date:finalReview.billDate,bill_total:finalReview.billTotal,purchase_order_total:finalReview.poTotal,vendor_id:String(finalReview.po.VendorRef?.value||''),reciprocal_link:true,batch_id:options.batchId||null};
+        await persistQbLink({mapKey:'qbPOBillMap',sourceIds:[portalPOId],qboId:finalReview.billId,log:{...log,details:[portalPOId+' — linked QBO PO #'+finalReview.qboPOId+' to existing Bill #'+finalReview.billId+' and verified from both API records']},evidence});
+        setQBConfig(prev=>({...prev,qbPOBillMap:{...prev.qbPOBillMap,[portalPOId]:finalReview.billId},lastPOBillLinkCanary:options.batchId?prev.lastPOBillLinkCanary:{portalPOId,...evidence,verifiedAt:new Date().toISOString()},syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
+        setQbSyncing(false);nf('PO-to-bill link verified','success');return{status:'success',portalPOId,billId:finalReview.billId};
+      }catch(e){log.status='error';log.details.push(portalPOId+' — BLOCKED: '+e.message);setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));setQbSyncing(false);nf('PO-to-bill link stopped — '+e.message,'error');return{status:'blocked',reason:e.message}}
+    };
+
     // ── SYNC ALL ──
     const syncAll=async()=>{
       if(migrationBatchLocked())return{status:'blocked'};
@@ -1133,5 +1219,5 @@ export function createQBSyncEngine(ctx){
       setQbSyncing(false);
     };
 
-    return {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,syncAll};
+    return {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,reviewPurchaseOrderBillCandidate,linkPurchaseOrderBill,syncAll};
 }
