@@ -139,3 +139,13 @@ test('a stale safety hold blocks the actual write boundary',async()=>{
   expect(await c._applyBillsToPortal([b])).toBe(0);expect(b.portalMsg).toContain('vendor mismatch');
   expect(c._dbSaveSO).not.toHaveBeenCalled();expect(c._recordAppliedBills).not.toHaveBeenCalled();
 });
+
+test('polling that adopts the exact saved target is not mistaken for an intervening edit',async()=>{
+  const c=context([decoOrder()]);const b=decoBill();
+  c._dbSaveSO.mockImplementation(async so=>{
+    c._billApplyData.current={...c._billApplyData.current,sos:[JSON.parse(JSON.stringify(so))]};
+    return true;
+  });
+  expect(await c._applyBillsToPortal([b])).toBe(1);expect(c._recordAppliedBills).toHaveBeenCalledTimes(1);
+  expect(c.sos[0].deco_pos[0]._bill_cost).toBe(100);
+});

@@ -28064,7 +28064,7 @@ export default function App(){
         const old=before.sos.find(s=>s.id===so.id);
         if(sameBillingSnapshot(old,so))continue;
         writes.push({
-          isCurrent:()=>sameBillingSnapshot(_billApplyData.current.sos.find(s=>s.id===so.id),old),
+          isCurrent:()=>{const current=_billApplyData.current.sos.find(s=>s.id===so.id);return sameBillingSnapshot(current,old)||sameBillingSnapshot(current,so)},
           save:()=>_dbSaveSO(so,{exactAttempt:true}),
           publish:()=>{_billApplyData.current={..._billApplyData.current,sos:_billApplyData.current.sos.map(s=>s.id===so.id?so:s)};setSOs(prev=>prev.map(s=>s.id===so.id?so:s))},
         });
@@ -28073,7 +28073,7 @@ export default function App(){
         if(sameBillingSnapshot(before[field],tx[field]))continue;
         const value=tx[field];
         writes.push({
-          isCurrent:()=>sameBillingSnapshot(_billApplyData.current[field],before[field]),
+          isCurrent:()=>sameBillingSnapshot(_billApplyData.current[field],before[field])||sameBillingSnapshot(_billApplyData.current[field],value),
           save:async()=>{
             if(!supabase||!_initialLoadDone.current||!_dbLoadSuccess.current)return false;
             const {error}=await supabase.from('app_state').upsert({id:key,value:JSON.stringify(value),updated_at:new Date().toISOString()},{onConflict:'id'});
