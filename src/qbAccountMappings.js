@@ -93,6 +93,12 @@ const VENDOR_LEGAL_SUFFIXES = new Set([
   'llc', 'llp', 'lp', 'ltd', 'limited',
 ]);
 
+// Exact supplier-name aliases confirmed by accounting. Keep this list narrow:
+// unlike legal-suffix cleanup, each entry represents a known trading identity.
+const VENDOR_NAME_ALIASES = new Map([
+  ['adidas us team services', 'adidas'],
+]);
+
 export function normalizeVendorName(value) {
   const tokens = norm(value)
     .replace(/&/g, ' and ')
@@ -101,7 +107,8 @@ export function normalizeVendorName(value) {
     .split(/\s+/)
     .filter(Boolean);
   while (tokens.length > 1 && VENDOR_LEGAL_SUFFIXES.has(tokens[tokens.length - 1])) tokens.pop();
-  return tokens.join(' ');
+  const normalized = tokens.join(' ');
+  return VENDOR_NAME_ALIASES.get(normalized) || normalized;
 }
 
 export function findUniqueVendorMatch(value, vendors = []) {

@@ -150,4 +150,32 @@ describe('startDeployReloadWatcher — health-aware reload', () => {
     expect(onPendingReload).not.toHaveBeenCalled();
     expect(reloadSpy).not.toHaveBeenCalled();
   });
+
+  test('QBO operation blocks idle, forced, and user reloads until reconciliation finishes', async () => {
+    let busy=true;
+    let reloadNow;
+    await start({isBlocked:()=>busy,isSafe:()=>true,hasFailedSaves:()=>true,isUserIdle:()=>true,
+      maxDeferMs:30000,onPendingReload:fn=>{reloadNow=fn}});
+    buildId=2;
+    await advanceAsync(240000);
+    reloadNow();
+    await advanceAsync(60000);
+    expect(reloadSpy).not.toHaveBeenCalled();
+    busy=false;
+    await advanceAsync(25000);
+    expect(reloadSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('operation beginning during reload jitter cancels reload and retries after completion', async () => {
+    let busy=false;
+    await start({isBlocked:()=>busy,isSafe:()=>true,hasFailedSaves:()=>false,isUserIdle:()=>true});
+    buildId=2;
+    await advanceAsync(180000);
+    busy=true;
+    await advanceAsync(60000);
+    expect(reloadSpy).not.toHaveBeenCalled();
+    busy=false;
+    await advanceAsync(25000);
+    expect(reloadSpy).toHaveBeenCalledTimes(1);
+  });
 });

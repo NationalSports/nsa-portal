@@ -14,8 +14,9 @@
 // bottom are new. Behavior contracts are pinned by
 // src/__tests__/dbEngine.characterization.test.js.
 // ═══════════════════════════════════════════════════════════════════════
+import { protectDocumentDraft, currentDraftOwner } from './draftJournal';
+import { createSaveRetryCoordinator } from './saveRetryCoordinator';
 import { createClient } from '@supabase/supabase-js';
-import { insertedItemIdsByIndex } from './itemInsertIdentity';
 import { makeBreakerFetch } from './requestBreaker';
 import { _sbAuthLock } from './supabase';
 import { _pick, _pickSoItem, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, _vendCols, _firmDateCols, _omgStoreCols } from '../constants';
@@ -458,6 +459,9 @@ const _dbLoad = async (opts={}) => {
         // (those ride with products in tier 2); routine reloads drop the init-only blobs too.
         const not=[];
         if(!fullState)not.push(['id','in','('+_APPSTATE_INIT_ONLY_KEYS.map(k=>'"'+k+'"').join(',')+')']);
+        // Durable QBO receipts hydrate only at login/reload, like qb_config.
+        // Do not pull thousands of migration receipts on every background poll.
+        if(!fullState)not.push(['id','like','_qb_link_v1_*']);
         if(!_productsLoading)not.push(['id','like','_pimg_*']);
         return _safeQuery('app_state',not.length?{not}:undefined);
       },
@@ -981,7 +985,7 @@ const _mergeDbEstStatus=async(est)=>{
   }catch(_){}
 };
 const _dbSaveEstimateInner = async (est) => {
-  if(!supabase)return;
+  if(!supabase)return false;
   await _ensureFreshSession();// refresh a near-expiry token BEFORE the write, so an idle/slept tab doesn't hit the reactive 401 path (spurious save-failed banner)
   // Never persist a customerless estimate. The "Select Customer *" rule is UI-only and save_estimate
   // permits a null customer, so a draft built before a customer is chosen — or an existing estimate whose
@@ -1010,12 +1014,21 @@ const _dbSaveEstimateInner = async (est) => {
   if(_bgSync&&(_EST_STATUS_RANK[est.status]??-1)<_EST_STATUS_RANK.approved){await _mergeDbEstStatus(est)}
   return _dbSavingGuard(async()=>{let decoFailed=false;let _failMsg='';try{
     const{items,art_files,...estRow}=est;
+    let {data:estimateToken,error:estimateTokenError}=await supabase.rpc('estimate_save_token',{p_estimate_id:est.id});
+    if(estimateTokenError)throw new Error('Cannot prepare estimate save: '+estimateTokenError.message);
+    const {data:estimateArt,error:estimateArtError}=await supabase.from('estimate_art_files').select('*').eq('estimate_id',est.id);
+    if(estimateArtError)throw new Error('Cannot verify estimate artwork: '+estimateArtError.message);
+    const resolvedArt=Array.isArray(art_files)?_resolveArtRows(art_files,estimateArt,est.id):[];
+    const artUpserts=resolvedArt.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,estimate_id:est.id}));
+    const currentArtIds=new Set((art_files||[]).map(a=>a.id));
+    const knownArtIds=new Set(est._hydratedArtIds||[]);
+    const artDeletes=Array.isArray(art_files)&&est._artHydrated!==false?(estimateArt||[]).filter(a=>knownArtIds.has(a.id)&&!currentArtIds.has(a.id)).map(a=>a.id):[];
     // The estimate row is now written by the atomic save_estimate RPC below — together with its items and
     // decorations in a single transaction. We intentionally no longer upsert it separately here: writing the
     // parent and children in independent calls (and letting a failed parent write fall through) is exactly
     // what produced orphaned stub estimates and the cryptic line-item FK error reps were seeing.
     // Delete old children — must delete grandchildren (decorations) BEFORE estimate_items due to FK constraints
-    const _oldEstResp=await _retryNet(()=>supabase.from('estimate_items').select('id,item_index,sku,name,product_id,sizes,qty_only,est_qty').eq('estimate_id',est.id));
+    const _oldEstResp=await _retryNet(()=>supabase.from('estimate_items').select('id,line_id,item_index,sku,color,name,product_id,sizes,qty_only,est_qty').eq('estimate_id',est.id));
     // Fail-closed: if reading existing items errored, refuse to proceed. Otherwise oldItemIds=[] would fail-open
     // and the unconditional `DELETE FROM estimate_items WHERE estimate_id=...` below would wipe whatever was there.
     if(_oldEstResp.error){
@@ -1045,12 +1058,12 @@ const _dbSaveEstimateInner = async (est) => {
     if(oldItemIds.length>0&&_clientEstItemCount===0){
       console.error('[DB] SAFETY: Blocking estimate zero-wipe for',est.id,'— client has 0 items but DB has',oldItemIds.length);
       if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:est.id,prevCount:oldItemIds.length,newCount:0,reason:'client has 0 items but DB has items (zero-wipe guard — likely stale/raced state)'});
-      _dbSaveFailedIds.delete(est.id);_persistFailedIds();return true;
+      _dbSaveFailedIds.delete(est.id);_persistFailedIds();return false;
     }
     if(_bgSync&&oldItemIds.length>0&&_clientEstItemCount<oldItemIds.length&&!(est._itemsHydrated||_everHydratedItems.has(est.id))){
       console.warn('[DB] SAFETY: background sync would shrink',est.id,'items ('+_clientEstItemCount+'<'+oldItemIds.length+') — items not hydrated, preserving DB items, skipping child writes');
       if(_dataLossAlert)_dataLossAlert({kind:'bg_shrink_blocked',soId:est.id,prevCount:oldItemIds.length,newCount:_clientEstItemCount,reason:'background estimate save would shrink items'});
-      _dbSaveFailedIds.delete(est.id);_persistFailedIds();return true;
+      _dbSaveFailedIds.delete(est.id);_persistFailedIds();return false;
     }
     // Client-authored estimate (new/imported): first save inserts the editor's items while the DB has none —
     // they're authoritative, so trust this estimate for the rest of the session (see SO save for rationale).
@@ -1119,7 +1132,7 @@ const _dbSaveEstimateInner = async (est) => {
         const _hydrated=est._itemsHydrated||_everHydratedItems.has(est.id);
         if(_bgSync&&!_hydrated){
           console.warn('[DB] SAFETY: background sync would empty quantities for "'+label+'" on',est.id,'— items not hydrated, preserving DB units, skipping write');
-          _dbSaveFailedIds.delete(est.id);_persistFailedIds();return true;
+          _dbSaveFailedIds.delete(est.id);_persistFailedIds();return false;
         }
         console.error('[DB] SAFETY: Blocking estimate save — quantities for "'+label+'" would be wiped ('+w.prevQty+' units → 0) for',est.id);
         if(_dataLossAlert)_dataLossAlert({kind:'qty_wipe_blocked',soId:est.id,itemIndex:w.item_index,sku:w.sku,prevQty:w.prevQty,reason:'item quantities would be emptied'});
@@ -1173,21 +1186,17 @@ const _dbSaveEstimateInner = async (est) => {
           return false;
         }
       }
-      const _fnMissing=r=>!!r.error&&(r.error.code==='PGRST202'||/Could not find the function|No function matches|does not exist/i.test(r.error.message||''));
       const _decoDeleteIntents=est._decoDeleteIntents||{};
-      let _rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null),p_is_new:_isNewEst,p_deco_delete_intents:_decoDeleteIntents}));
-      // Fallbacks for older deployed RPC signatures (pre-decoration guard, pre-00195, then pre-00128) so deploy order can't break saving.
-      if(_fnMissing(_rpcRes))_rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null),p_is_new:_isNewEst}));
-      if(_fnMissing(_rpcRes))_rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null)}));
-      if(_fnMissing(_rpcRes))_rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems}));
+      let _rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._obBaseVersion??est._version??null),p_is_new:_isNewEst,p_deco_delete_intents:_decoDeleteIntents,p_art_upserts:artUpserts,p_art_delete_ids:artDeletes,p_expected_token:estimateToken}));
+      // Require the full transactional RPC; never downgrade to an unversioned or partial save.
       // Id collision on create: re-mint from a fresh DB-wide max and retry ONCE, still as a create —
       // a second collision falls through to the generic error handler below instead of ever upserting.
       if(_isNewEst&&_rpcRes.error&&(_rpcRes.error.message||'').includes('ESTIMATE_ID_EXISTS')){
         const oldId=est.id;const freshMax=await _refreshMaxId('estimates','EST-');
         est.id=_estPayload.id='EST-'+(Math.max(freshMax,parseInt((oldId.match(/\d+/)||['0'])[0])||0)+1);
+        const freshToken=await supabase.rpc('estimate_save_token',{p_estimate_id:est.id});if(freshToken.error)throw new Error(freshToken.error.message);estimateToken=freshToken.data;
         console.warn('[DB] Estimate id collision on create —',oldId,'already exists in DB, re-minted to',est.id);
-        _rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null),p_is_new:true,p_deco_delete_intents:_decoDeleteIntents}));
-        if(_fnMissing(_rpcRes))_rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null),p_is_new:true}));
+        _rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._obBaseVersion??est._version??null),p_is_new:true,p_deco_delete_intents:_decoDeleteIntents,p_art_upserts:artUpserts,p_art_delete_ids:artDeletes,p_expected_token:estimateToken}));
         if(!_rpcRes.error&&_dataLossAlert)_dataLossAlert({kind:'est_id_reminted',soId:est.id,reason:'create collided with existing '+oldId+' — re-minted to avoid overwriting it'});
       }
       const _rpcErr=_rpcRes.error;
@@ -1239,45 +1248,14 @@ const _dbSaveEstimateInner = async (est) => {
         _dbStaleCooldown.set(est.id,Date.now()+_STALE_COOLDOWN_MS);
         return 'stale';
       }
+      if(!_rpcRes.data||typeof _rpcRes.data.version!=='number'||_rpcRes.data.estimate_id!==est.id)throw new Error('Database did not acknowledge the complete estimate save');
+      (_rpcRes.data?.line_ids||[]).forEach(row=>{if(items?.[row.item_index])items[row.item_index].line_id=row.line_id});
       // Advance our base _version from the RPC result so this client's own next save isn't seen as stale.
       if(_rpcRes.data&&typeof _rpcRes.data.version==='number'){est._version=_rpcRes.data.version;_dbOwnVersions[est.id]=est._version;_dbOwnVersionExact.add(est.id);_serverVersioned=true}
     }
-    // Sync art_files: upsert current, delete removed. Optimistic concurrency via the _version trigger — never
-    // overwrite an art row whose DB copy is newer than the client's, and only delete rows the client had loaded.
-    const{data:_dbAf}=await supabase.from('estimate_art_files').select('*').eq('estimate_id',est.id);
-    const _dbAfVerById=new Map((_dbAf||[]).map(r=>[r.id,r._version||0]));
-    if(art_files?.length){
-      const _resolved=_resolveArtRows(art_files,_dbAf,est.id);
-      {
-        let afRows=_resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,estimate_id:est.id}));
-        let _afOk=true;
-        const{error:afErr,dropped:afDropped}=await _writeRowsSchemaSafe('estimate_art_files',afRows,(r)=>supabase.from('estimate_art_files').upsert(r,{onConflict:'estimate_id,id'}),_artExtraCols);
-        if(afErr){
-          // A degraded (anon) session is rejected here by RLS — surface it as a save failure so it routes through
-          // session recovery below instead of being swallowed (which would clear the dirty flag and lose the art).
-          if(_isAuthError(afErr)){decoFailed=true;_failMsg=_failMsg||('estimate_art_files: '+afErr.message)}
-          else{console.error('[DB] estimate_art_files upsert failed:',afErr.message,afErr.details);_afOk=false;decoFailed=true;_failMsg=_failMsg||('estimate_art_files: '+afErr.message)}
-        }else if(afDropped.length){
-          console.warn('[DB] estimate_art_files is missing column(s):',afDropped.join(', '),'— those fields were not saved');
-          if(_dbNotify)_dbNotify(_artGapMsg('estimate_art_files',afDropped),'error');
-        }
-        // Match the DB trigger's version bump so this client's next save isn't mistaken for stale.
-        if(_afOk)_resolved.forEach(_adoptResolvedArtRow);
-      }
-      const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
-      const _knownArtIds=new Set(Array.isArray(est._hydratedArtIds)?est._hydratedArtIds:[]);
-      const toDeleteAf=(_dbAf||[]).filter(ea=>!currentAfIds.has(ea.id)&&_knownArtIds.has(ea.id)).map(ea=>ea.id);
-      if(toDeleteAf.length)await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id).in('id',toDeleteAf);
-    }else if(Array.isArray(art_files)&&est._artHydrated!==false){
-      // User removed every art group (art_files === []). Delete only the rows the client had loaded; preserve any
-      // added by another user since. Gated on _artHydrated so a timed-out load can't wipe real data.
-      const _knownArtIds=(Array.isArray(est._hydratedArtIds)?est._hydratedArtIds:[]).filter(id=>_dbAfVerById.has(id));
-      if(_knownArtIds.length)await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id).in('id',_knownArtIds);
-    }
-    // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
-    // Items + decorations were written atomically by the save_estimate RPC above — no separate insert,
-    // delete-old-rows swap, or rollback is needed here. (oldItemIds is still read above for the safety guards.)
-    if(decoFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(est.id,{message:_failMsg});_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,_failMsg||'unknown estimate save error');_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save incomplete: '+(_failMsg||'see console'),'error');return false}
+    // Artwork is part of the same transaction, so no later art request can turn
+    // a committed estimate into a partially failed save.
+    resolvedArt.forEach(_adoptResolvedArtRow);
     _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();_dbRecentSaves[est.id]=Date.now();_dbStaleCooldown.delete(est.id);
     // Bump local version to match server (DB trigger increments on UPDATE) — ONLY when the RPC didn't
     // return the post-save version (pre-00128 fallback). When it did, est._version is already exact and
@@ -1294,7 +1272,7 @@ const _dbSaveEstimateInner = async (est) => {
     return true;
   }catch(e){console.error('[DB] save estimate:',e);if(_isAuthError(e))return _handleAuthSaveFailure(est.id,e);_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save failed: '+e.message,'error');return false}});
 };
-const _dbSaveEstimate = (est) => _outboxWrap('estimates', est, _queuedEntitySave(est.id, est, _dbSaveEstimateInner));
+const _dbSaveEstimate = (est) => _saveDocument('estimates',est,_dbSaveEstimateInner);
 // Resolve which current item a preserved child row (PO/pick line) should re-attach to after the
 // order's structure changed. The row's original position wins when its SKU still matches; otherwise
 // fall back to SKU matching across all items — removing/reordering a line shifts every item_index
@@ -1350,12 +1328,13 @@ const _poLineToRow=(itemId,po)=>{const{po_id,vendor,received,cancelled,shipments
     billed:billed||{},tracking_numbers:tracking_numbers||[],
     sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined,drop_ship:drop_ship||undefined,_bill_details:_bill_details||undefined,_bill_cost:_bill_cost||undefined}};};
 const _dbSaveSOInner = async (so) => {
-  if(!supabase)return;
+  if(!supabase)return false;
   await _ensureFreshSession();// proactive token refresh before the write (see _dbSaveEstimateInner) — fewer reactive 401s from an idle tab
   // Optimistic locking: check version before saving (auto-heal on conflict). Record the conflict
   // rather than only adopting the server version: a bumped server version means ANOTHER session saved
   // this SO after our copy loaded, and the guards below use that fact to refuse writes that would drop
   // items or deco POs the other session added (the SO-1333 wipe, 2026-06-30).
+  _rebaseOntoOwnWrite(so);
   let _versionConflict=null;
   if(so._version){const vc=await _checkVersion('sales_orders',so.id,so._version);if(vc!==true&&typeof vc==='number'){_versionConflict={local:so._version,server:vc};if(so._obBaseVersion==null)so._obBaseVersion=so._version;so._version=vc}
     else if(vc===false){
@@ -1368,11 +1347,15 @@ const _dbSaveSOInner = async (so) => {
     }}
   return _dbSavingGuard(async()=>{let saveFailed=false;let _failMsg='';try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
-    // Save SO row FIRST (FK constraint requires it before items), but with OLD updated_at
-    // We'll bump updated_at LAST so cross-tab polls don't see stale items
+    let {data:saveToken,error:tokenError}=await supabase.rpc('sales_order_save_token',{p_so_id:so.id});
+    if(tokenError)throw new Error('Cannot prepare atomic sales-order save: '+tokenError.message);
+    const savePlan={header:null,items:null,art_upserts:[],art_deletes:[],job_upserts:[],job_deletes:[],firm_dates:null};
+    const afterCommit=[];
+
+    // Prepare the header together with its children. Only the final RPC writes it.
     const finalUpdatedAt=soRow.updated_at;
     const soRowInitial={..._pick(soRow,_soCols)};
-    // Try to preserve existing updated_at for the initial upsert (only bump it after children are saved)
+    // Read current header decisions for validation and legacy merge rules.
     const{data:existingSO,error:existErr}=await supabase.from('sales_orders').select('updated_at,deco_pos,created_at,status,po_number').eq('id',so.id).maybeSingle();
     if(existingSO)soRowInitial.updated_at=existingSO.updated_at;
     // Confident-new only when the lookup succeeded AND returned no row — never on a network/SELECT error,
@@ -1445,54 +1428,14 @@ const _dbSaveSOInner = async (so) => {
         console.warn('[DB] Preserved completed status on',so.id,'that a stale save would have reopened');
       }
     }
-    // Brand-new orders INSERT rather than upsert: nextSOId (App.js) mints ids from _dbMaxIds, which is only
-    // synced at page load, so a stale tab can re-mint an id another tab already saved (the SO-1514 incident)
-    // — an upsert would then silently REPLACE that order's header while the item-write guards below block
-    // the item write, leaving one order's header on another order's items. INSERT fails loud (23505) instead.
-    let{error:soErr}=await(_isNewSO?supabase.from('sales_orders').insert(soRowInitial):supabase.from('sales_orders').upsert(soRowInitial,{onConflict:'id'}));
-    if(!soErr&&_remintedFrom){
-      // The tab's React state still holds the OLD id (nothing plumbs a renumber back into it), so say so
-      // plainly rather than letting the rep keep editing an order that now lives under a different number.
-      if(_dbNotify)_dbNotify(_remintedFrom+' was already taken by another order — this one saved as '+so.id+'. Reload to keep editing it.','error');
-      if(_dataLossAlert)_dataLossAlert({kind:'so_id_reminted',soId:so.id,reason:_remintedFrom+' belonged to a different order (created_at mismatch) — re-minted to '+so.id});
-    }
-    if(soErr&&_isNewSO&&soErr.code==='23505'){
-      // Id collision on create: re-mint from a fresh DB-wide max (not the stale in-memory one) and retry
-      // ONCE, still as an insert — a second collision falls through to the block below instead of ever upserting.
-      const oldId=so.id;const freshMax=await _refreshSoMaxId();
-      so.id=soRowInitial.id='SO-'+(Math.max(freshMax,parseInt((oldId.match(/\d+/)||['0'])[0])||0)+1);
-      console.warn('[DB] SO id collision on create —',oldId,'already exists in DB, re-minted to',so.id);
-      ;({error:soErr}=await supabase.from('sales_orders').insert(soRowInitial));
-      if(!soErr&&_dataLossAlert)_dataLossAlert({kind:'so_id_reminted',soId:so.id,reason:'create collided with existing '+oldId+' — re-minted to avoid overwriting it'});
-    }
-    if(soErr){
-      const coreSoRow={};Object.keys(soRowInitial).forEach(k=>{if(!_soExtraCols.has(k))coreSoRow[k]=soRowInitial[k]});
-      const retry=await(_isNewSO?supabase.from('sales_orders').insert(coreSoRow):supabase.from('sales_orders').upsert(coreSoRow,{onConflict:'id'}));
-      if(retry.error){
-        if(_isNewSO&&retry.error.code==='23505'){
-          // Still colliding after a re-mint — refuse to fall through to an upsert that would silently
-          // overwrite the order that already owns this id. Data-loss prevention over UX: block and let the
-          // rep retry the save (which mints a new id from the now-current in-memory list).
-          console.error('[DB] sales_orders insert still colliding for new SO',so.id,':',retry.error.message);
-          if(_dbNotify)_dbNotify('Save blocked — could not create '+so.id+' (id already in use). Please retry.','error');
-          if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'sales_orders insert still collided after re-mint: '+retry.error.message});
-          return false;
-        }
-        console.error('[DB] sales_orders '+(_isNewSO?'insert':'upsert')+' failed:',retry.error.message);saveFailed=true;_failMsg='sales_orders: '+retry.error.message
-      }
-      else console.warn('[DB] SO saved with core columns only')
-    }
-    if(!saveFailed&&so._status_reverted)delete so._status_reverted;// one-shot marker — consumed by the save that carried it
-    // Recycled-number guard: a brand-new SO id can collide with a deleted order whose number was reused.
-    // Any so_jobs/so_art_files still sitting under this id are orphans from that prior order — purge them
-    // before we write this order's real children, so they can't silently re-attach by so_id. (Orphan
-    // items/decorations are already removed by the unconditional so_items delete further below.)
-    if(_isNewSO){
-      await supabase.from('so_jobs').delete().eq('so_id',so.id);
-      await supabase.from('so_art_files').delete().eq('so_id',so.id);
-    }
+    if(existErr)throw new Error('Cannot verify sales order: '+existErr.message);
+    // Preparation is read-only. A rejected item/deco/job validation cannot leave a new header behind.
+    savePlan.header={...soRowInitial,updated_at:finalUpdatedAt};
+    savePlan.is_new=_isNewSO;
+    savePlan.base_version=so._obBaseVersion??so._version??null;
+    if(_remintedFrom){const fresh=await supabase.rpc('sales_order_save_token',{p_so_id:so.id});if(fresh.error)throw new Error(fresh.error.message);saveToken=fresh.data;}
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
-    const _oldItemsResp=await _retryNet(()=>supabase.from('so_items').select('id,item_index,sku,color,product_id').eq('so_id',so.id));
+    const _oldItemsResp=await _retryNet(()=>supabase.from('so_items').select('id,line_id,item_index,sku,color,product_id').eq('so_id',so.id));
     // Fail-closed: refuse the save whenever reading existing items errored. A SELECT error returns oldItemIds=[],
     // which would skip the deco/pick/PO deletes' `.in([])` filter but still let the unconditional
     // `DELETE FROM so_items WHERE so_id=...` below wipe everything. Retrying later (via _dbSaveFailedIds) is safer.
@@ -1526,7 +1469,7 @@ const _dbSaveSOInner = async (so) => {
     if(oldItemIds.length>0&&_clientSoItemCount===0){
       console.error('[DB] SAFETY: Blocking SO zero-wipe for',so.id,'— client has 0 items but DB has',oldItemIds.length);
       if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:oldItemIds.length,newCount:0,reason:'client has 0 items but DB has items (zero-wipe guard — likely stale/raced state)'});
-      _dbSaveFailedIds.delete(so.id);_persistFailedIds();return true;
+      _dbSaveFailedIds.delete(so.id);_persistFailedIds();return false;
     }
     // Stale-content guard: another session saved this SO after our copy loaded (_versionConflict), and
     // the DB holds item rows this client's list doesn't cover (compared as a sku+color multiset). Those
@@ -1563,33 +1506,27 @@ const _dbSaveSOInner = async (so) => {
     // cannot safely rewrite items (e.g. duplicate-item state from an interrupted save). Art has its own
     // optimistic locking (_version) and deletion guard (_hydratedArtIds), fully independent of item counts.
     // Wrapped in a block so its consts don't collide with the identical block that runs after item commit.
-    {const{data:_dbAf}=await supabase.from('so_art_files').select('*').eq('so_id',so.id);
+    {const{data:_dbAf,error:_artReadError}=await supabase.from('so_art_files').select('*').eq('so_id',so.id);
+    if(_artReadError)throw new Error('Cannot verify artwork: '+_artReadError.message);
     const _dbAfVerById=new Map((_dbAf||[]).map(r=>[r.id,r._version||0]));
     if(art_files?.length){
       const _resolved=_resolveArtRows(art_files,_dbAf,so.id);
       {
         let soAfRows=_resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,so_id:so.id}));
         let _afOk=true;
-        const{error:afErr,dropped:afDropped}=await _writeRowsSchemaSafe('so_art_files',soAfRows,(r)=>_retryNet(()=>supabase.from('so_art_files').upsert(r,{onConflict:'so_id,id'})),_artExtraCols);
-        if(afErr){
-          console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr.message);_afOk=false;
-        }else if(afDropped.length){
-          console.warn('[DB] so_art_files is missing column(s):',afDropped.join(', '),'— those fields were not saved');
-          if(_dbNotify)_dbNotify(_artGapMsg('so_art_files',afDropped),'error');
-        }
-        // Match the DB trigger's version bump so this client's next save isn't mistaken for stale.
-        if(_afOk)_resolved.forEach(_adoptResolvedArtRow);
+        savePlan.art_upserts=soAfRows;
+        afterCommit.push(()=>_resolved.forEach(_adoptResolvedArtRow));
       }
       // Delete only art the client deliberately removed: it had loaded the row and no longer holds it.
       const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
       const _knownArtIds=new Set(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]);
       const toDeleteAf=(_dbAf||[]).filter(ea=>!currentAfIds.has(ea.id)&&_knownArtIds.has(ea.id)).map(ea=>ea.id);
-      if(toDeleteAf.length)await supabase.from('so_art_files').delete().eq('so_id',so.id).in('id',toDeleteAf);
+      savePlan.art_deletes.push(...toDeleteAf);
     }else if(Array.isArray(art_files)&&so._artHydrated!==false){
       // User removed every art group (art_files === []). Delete only the rows the client had loaded; any art
       // added by another user since (not in _hydratedArtIds) is preserved.
       const _knownArtIds=(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]).filter(id=>_dbAfVerById.has(id));
-      if(_knownArtIds.length)await supabase.from('so_art_files').delete().eq('so_id',so.id).in('id',_knownArtIds);
+      savePlan.art_deletes.push(..._knownArtIds);
     }}
     // SAFETY: a background sync (poll/realtime _diffSave, _bgSync=true) must NEVER shrink or empty an SO's
     // items — same root cause as the estimate item-wipe. Preserve DB rows; the SO row already upserted above.
@@ -1601,7 +1538,7 @@ const _dbSaveSOInner = async (so) => {
       console.warn('[DB] SAFETY: background sync would shrink',so.id,'items ('+_clientSoItemCount+'<'+_oldDistinctItemIndexCount+(oldItemIds.length!==_oldDistinctItemIndexCount?' raw='+oldItemIds.length:'')+') — items not hydrated, preserving DB items, skipping item writes; art files already synced');
       if(_dataLossAlert)_dataLossAlert({kind:'bg_shrink_blocked',soId:so.id,prevCount:_oldDistinctItemIndexCount,newCount:_clientSoItemCount,reason:'background SO save would shrink items'});
       if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id,{message:_failMsg});_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'so_art_files save error');_persistFailedIds();if(_dbNotify)_dbNotify('Art file save incomplete: '+(_failMsg||'see console'),'error');return false}
-      _dbSaveFailedIds.delete(so.id);_persistFailedIds();return true;
+      _dbSaveFailedIds.delete(so.id);_persistFailedIds();return false;
     }
     // Pure-deletion guard (SO-1468, 2026-07-13/14): refuse to delete DB item rows this session cannot
     // account for. Two holes let real garment lines vanish here with nothing but a console.warn:
@@ -1687,7 +1624,7 @@ const _dbSaveSOInner = async (so) => {
         // _version-climb). Allow it as a no-op success so the failed-save retry loop clears. The orphan jobs
         // are left untouched for get_health_report()/so-health-alert to surface for admin cleanup / re-import.
         console.warn('[DB] SO',so.id,'saving empty over',dbJobCount,'orphan job(s) — items hydrated & genuinely empty; no-op save, orphan jobs left for health-report cleanup');
-        _dbSaveFailedIds.delete(so.id);_persistFailedIds();return true;
+        _dbSaveFailedIds.delete(so.id);_persistFailedIds();return false;
       }
     }
     // Same exact-intent guard as estimates. SO-1992 proved that `_decosHydrated=true` is not evidence that
@@ -2153,7 +2090,8 @@ const _dbSaveSOInner = async (so) => {
       // consumed below on success). coach_rejected: only a null/undefined client value defers to a DB
       // true — an explicit false is a deliberate clear (approve paths, ART_PULLBACK_CLEARS) and passes.
       const _COACH_COLS=['sent_to_coach_at','coach_approved_at','coach_approval_comment'];
-      const{data:_dbCoach}=await supabase.from('so_jobs').select('id,sent_to_coach_at,coach_approved_at,coach_approval_comment,coach_rejected,art_status,_version,fulfilled_units,item_status,art_messages,sent_history,rejections').eq('so_id',so.id);
+      const{data:_dbCoach,error:_jobReadError}=await supabase.from('so_jobs').select('id,sent_to_coach_at,coach_approved_at,coach_approval_comment,coach_rejected,art_status,_version,fulfilled_units,item_status,art_messages,sent_history,rejections').eq('so_id',so.id);
+      if(_jobReadError)throw new Error('Cannot verify jobs: '+_jobReadError.message);
       const _dbCoachById=new Map((_dbCoach||[]).map(r=>[r.id,r]));
       {let _preserved=0;
       jobRows.forEach((row,i)=>{
@@ -2246,13 +2184,8 @@ const _dbSaveSOInner = async (so) => {
       // halves of that are kept: the helper's budget is far above any real gap, AND this branch
       // closes the gap itself — _draft is out of _jobCols (session-only, never a column) and the
       // other three now have a migration, so the retry should never fire here at all.
-      const{error:jobErr,dropped:jobDropped}=await _writeRowsSchemaSafe('so_jobs',jobRows,(r)=>supabase.from('so_jobs').upsert(r,{onConflict:'so_id,id'}),_jobExtraCols);
-      if(jobDropped.length){
-        console.warn('[DB] so_jobs is missing column(s):',jobDropped.join(', '),'— those fields were not saved');
-        if(!jobErr&&_dbNotify)_dbNotify(_schemaGapMsg('Jobs','so_jobs',jobDropped),'error');
-      }
-      if(jobErr){console.error('[DB] so_jobs upsert failed:',jobErr.message,jobErr.details);saveFailed=true;_failMsg=_failMsg||('so_jobs: '+jobErr.message)}
-      else dedupedJobs.forEach((j,i)=>{
+      savePlan.job_upserts=jobRows;
+      afterCommit.push(()=>dedupedJobs.forEach((j,i)=>{
         // Adopt every DB-protected/merged field we actually wrote, not just its version. Otherwise the
         // protected first save promotes stale local content to the current version and a second save can
         // regress art status, receipts, or append-only history with the guards now disarmed.
@@ -2267,13 +2200,14 @@ const _dbSaveSOInner = async (so) => {
         // copy genuinely behind ANOTHER client's write is treated as stale.
         const _db=_dbCoachById.get(j.id);
         j._version=((_db?_db._version:j._version)||0)+1;
-      });
+      }));
       // Delete jobs that no longer exist (scoped to this SO so a shared id can't wipe another order's job)
       const currentJobIds=jobs.map(j=>j.id).filter(Boolean);
       if(currentJobIds.length){
-        const{data:existingJobs}=await supabase.from('so_jobs').select('id').eq('so_id',so.id);
+        const{data:existingJobs,error:_jobDeleteReadError}=await supabase.from('so_jobs').select('id').eq('so_id',so.id);
+        if(_jobDeleteReadError)throw new Error('Cannot verify job removals: '+_jobDeleteReadError.message);
         const toDelete=(existingJobs||[]).filter(ej=>!currentJobIds.includes(ej.id)).map(ej=>ej.id);
-        if(toDelete.length)await supabase.from('so_jobs').delete().eq('so_id',so.id).in('id',toDelete);
+        savePlan.job_deletes.push(...toDelete);
       }
     }else if(Array.isArray(jobs)&&so._jobsHydrated!==false){
       // Intentional empty jobs list (syncJobs retired every job after line art was cleared, or admin
@@ -2291,7 +2225,7 @@ const _dbSaveSOInner = async (so) => {
       const _explicitDel=new Set(Array.isArray(so._deleteJobIds)?so._deleteJobIds:[]);
       const{data:_dbJobRows,error:_dbJobErr}=await supabase.from('so_jobs').select('id,key,art_status,art_file_id,_art_ids,items').eq('so_id',so.id);
       if(_dbJobErr){
-        console.error('[DB] SAFETY: skipping so_jobs wipe for',so.id,'— could not read existing jobs:',_dbJobErr.message);
+        throw new Error('Cannot verify job removals: '+_dbJobErr.message);
       }else{
         const _isProtectedJob=r=>!_explicitDel.has(r.id)&&((r.key||'').startsWith('released_')||(r.art_status&&r.art_status!=='needs_art'));
         let _blocked=(_dbJobRows||[]).filter(_isProtectedJob);
@@ -2363,7 +2297,7 @@ const _dbSaveSOInner = async (so) => {
             }
           }catch(err){console.error('[DB] SAFETY: dead-job liveness check failed on',so.id,'— keeping protection:',err?.message||err)}
         }
-        if(_delIds.length)await supabase.from('so_jobs').delete().eq('so_id',so.id).in('id',_delIds);
+        savePlan.job_deletes.push(..._delIds);
         if(_blocked.length){
           console.error('[DB] SAFETY: blocked wipe of',_blocked.length,'released/submitted job(s) on',so.id,'from an empty jobs save:',_blocked.map(r=>r.id).join(', '));
           if(_dbNotify)_dbNotify('Blocked deletion of '+_blocked.length+' submitted job(s) on '+so.id+' — your view may be out of date. Please reload the page.','error');
@@ -2374,201 +2308,39 @@ const _dbSaveSOInner = async (so) => {
     // If jobs is undefined/null (not hydrated / not present on the payload), leave existing DB jobs
     // untouched. Orphaned jobs from a recycled SO number are cleaned at order creation (new-SO purge)
     // and dead frozen jobs are retired by syncJobs + the load-time live-decoration filter.
-    await supabase.from('so_firm_dates').delete().eq('so_id',so.id);
-    // Art files already synced above (before the bgSync item-shrink guard). No second sync needed here.
-    // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
-    if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true;_failMsg=_failMsg||('so_firm_dates: '+fdErr.message)}}
-    if(!items?.length){
-      if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id,{message:_failMsg});_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
-      // Intentional removal of all items (validated by the safety guards above). Since we no longer delete
-      // upfront, remove the old item rows and their children here.
-      if(oldItemIds.length){
-        await supabase.from('so_item_decorations').delete().in('so_item_id',oldItemIds);
-        await supabase.from('so_item_pick_lines').delete().in('so_item_id',oldItemIds);
-        await supabase.from('so_item_po_lines').delete().in('so_item_id',oldItemIds);
-        await supabase.from('so_items').delete().in('id',oldItemIds);
-      }
-      _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();if(so._version)so._version=so._version+1;return true}
-    // Batch insert all items at once (much faster than one-by-one)
-    const allItemRows=items.map((item,idx)=>{const{decorations,pick_lines,po_lines,...itemData}=item;return{..._pickSoItem(itemData),so_id:so.id,item_index:idx}});
-    // Child rows must be attached by the stable item_index returned by Postgres. INSERT ...
-    // RETURNING order is not an identity contract; pairing returned ids to `items[idx]` by array
-    // position can cross-link PO quantities/vendor metadata to a different SKU after a full save.
-    let{data:insertedItems,error:itemErr}=await supabase.from('so_items').insert(allItemRows).select('id,item_index');
-    if(itemErr){
-      if(itemErr.message?.includes('product_id')||itemErr.code==='23503'){
-        const fkRows=allItemRows.map(r=>({...r,product_id:null}));
-        const fkRetry=await supabase.from('so_items').insert(fkRows).select('id,item_index');
-        if(!fkRetry.error){insertedItems=fkRetry.data;console.warn('[DB] so items saved with product_id nulled (FK constraint)')}
-        else{itemErr=fkRetry.error}
-      }
-      if(!insertedItems){
-        const coreRows=allItemRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_itemExtraCols.has(k))cr[k]=r[k]});return cr});
-        const retry=await supabase.from('so_items').insert(coreRows).select('id,item_index');
-        if(retry.error){
-          const coreNullPid=coreRows.map(r=>({...r,product_id:null}));
-          const retry2=await supabase.from('so_items').insert(coreNullPid).select('id,item_index');
-          if(retry2.error){console.error('[DB] so_items batch insert failed:',retry2.error.message,retry2.error.details);saveFailed=true;_failMsg=_failMsg||('so_items: '+retry2.error.message+(retry2.error.details?' ('+retry2.error.details+')':''))}
-          else{insertedItems=retry2.data;console.warn('[DB] so items saved with core columns + product_id nulled')}
-        }
-        else{insertedItems=retry.data;console.warn('[DB] so items saved with core columns only')}
-      }
-    }
-    // SAFETY: the parent insert must return one id per row. An under-returned .select('id')
-    // (e.g. RLS SELECT narrower than INSERT) used to silently drop the tail items' children
-    // AND — when it returned zero ids — skip the commit/rollback block entirely, so the save
-    // reported success while old rows were never deleted (the orphan-duplicate generator the
-    // loader dedups around). Same contract _countInsertedChildRows enforces for children.
-    if(!saveFailed&&(insertedItems?.length||0)<allItemRows.length){
-      saveFailed=true;_failMsg=_failMsg||('so_items: insert returned '+(insertedItems?.length||0)+' of '+allItemRows.length+' ids');
-      console.error('[DB] SAFETY: so_items insert under-returned —',insertedItems?.length||0,'of',allItemRows.length,'ids');
-      if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allItemRows.length,got:insertedItems?.length||0,reason:'so_items: insert returned '+(insertedItems?.length||0)+' of '+allItemRows.length+' ids — save queued for retry'});
-    }
-    const insertedItemIdByIndex=insertedItemIdsByIndex(insertedItems);
-    if(!saveFailed&&insertedItemIdByIndex.size<allItemRows.length){
-      saveFailed=true;_failMsg=_failMsg||('so_items: insert response did not return a unique item_index for every row');
-      console.error('[DB] SAFETY: so_items insert response cannot be mapped by item_index for',so.id);
-      if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allItemRows.length,got:insertedItemIdByIndex.size,reason:'so_items: returned rows could not be mapped one-to-one by item_index — child writes blocked'});
-    }
-    if(!saveFailed&&insertedItems?.length){
-      // Build all child rows referencing their parent item IDs
-      const allDecoRows=[],allPickRows=[],allPoRows=[];
-      items.forEach((item,idx)=>{
-        const itemId=insertedItemIdByIndex.get(idx);if(!itemId)return;
-        const{decorations,pick_lines,po_lines}=item;
-        if(decorations?.length)decorations.forEach((d,di)=>allDecoRows.push({..._pick(_sanitizeDeco(d),_decoCols),so_item_id:itemId,deco_index:di}));
-        if(pick_lines?.length)pick_lines.forEach(pk=>{const{pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,deco_po_id,deco_vendor_id,attention,pulled_at,...sizes}=pk;
-          // pulled_at predates the dedicated IF destination columns and lives inside sizes JSONB;
-          // preserve that convention while keeping routing metadata in real columns.
+    // Missing collections mean 'not loaded', never 'delete everything'. Each child's identity is
+    // allocated and linked in PostgreSQL, so INSERT RETURNING ordering cannot cross-link garments.
+    if(Array.isArray(firm_dates))savePlan.firm_dates=firm_dates.map(f=>_pick(f,_firmDateCols));
+    if(Array.isArray(items))savePlan.items=items.map((item,item_index)=>{
+      const {decorations,pick_lines,po_lines,...row}=item;
+      return {..._pickSoItem(row),item_index,
+        decorations:(decorations||[]).map((d,deco_index)=>({..._pick(_sanitizeDeco(d),_decoCols),deco_index})),
+        pick_lines:(pick_lines||[]).map(pk=>{
+          const {pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,deco_po_id,deco_vendor_id,attention,pulled_at,...sizes}=pk;
           if(pulled_at)sizes.pulled_at=pulled_at;
-          allPickRows.push({so_item_id:itemId,pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,deco_po_id,deco_vendor_id,attention,sizes})});
-        if(po_lines?.length)po_lines.forEach(po=>{allPoRows.push(_poLineToRow(itemId,po))});
-      });
-      // Batch insert decorations
-      if(allDecoRows.length){
-        // Was: ANY error re-inserted the batch stripped of every _decoExtraCols key — so a single
-        // unknown column (split_runs, shipped 2026-07-23 with no migration) silently dropped 24 real
-        // fields including deco_type, vendor, color_way_id, placement, deco_po_id and the split
-        // grouping, and a non-schema failure (FK/constraint) wrote mangled rows instead of failing.
-        // Now: only a schema gap recovers, only the named column is dropped, and the loss is reported.
-        const{error:decoErr,dropped:decoDropped}=await _writeRowsSchemaSafe('so_item_decorations',allDecoRows,(r)=>supabase.from('so_item_decorations').insert(r),_decoExtraCols);
-        if(decoErr){saveFailed=true;_failMsg=_failMsg||('so_item_decorations: '+decoErr.message+(decoErr.details?' ('+decoErr.details+')':''));console.error('[DB] so_item_decorations batch failed:',decoErr.message)}
-        else if(decoDropped.length){
-          console.warn('[DB] so_item_decorations is missing column(s):',decoDropped.join(', '),'— those fields were not saved');
-          if(_dbNotify)_dbNotify(_schemaGapMsg('Decorations','so_item_decorations',decoDropped),'error');
-        }
-        // Post-insert verification: count rows actually persisted; if fewer than expected, mark failed so we retry rather than accept a partial save as canonical.
-        if(!saveFailed){
-          const{count:_verifyCount,error:_verifyErr}=await _countInsertedChildRows('so_item_decorations',insertedItems.map(i=>i.id));
-          if(_verifyErr){
-            saveFailed=true;_failMsg=_failMsg||('so_item_decorations: verification read-back failed: '+_verifyErr.message);
-            console.error('[DB] SO deco verification read-back failed (inconclusive, save queued for retry):',_verifyErr.message);
-            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allDecoRows.length,got:null,reason:'so_item_decorations: verification read-back failed ('+_verifyErr.message+') — data intact, save queued for retry'});
-          }else if(_verifyCount<allDecoRows.length){
-            saveFailed=true;_failMsg=_failMsg||('so_item_decorations: only '+_verifyCount+' of '+allDecoRows.length+' rows persisted');
-            console.error('[DB] SAFETY: SO deco insert verification failed — expected',allDecoRows.length,'got',_verifyCount);
-            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allDecoRows.length,got:_verifyCount,reason:'so_item_decorations: wrote '+allDecoRows.length+', persisted '+_verifyCount+' — save queued for retry'});
-          }
-        }
+          return {pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,deco_po_id,deco_vendor_id,attention,sizes};
+        }),
+        po_lines:(po_lines||[]).map(po=>{const row=_poLineToRow(null,po);delete row.so_item_id;return row})};
+    });
+    if(saveFailed)throw new Error(_failMsg||'Sales-order validation failed');
+    const {data:committed,error:commitError}=await _retryNet(()=>supabase.rpc('save_sales_order_atomic',{
+      p_so_id:so.id,p_expected_token:saveToken,p_plan:savePlan,
+    }));
+    if(commitError){
+      if(commitError.code==='40001'||/STALE_SO_WRITE/.test(commitError.message||'')){
+        _emitOutboxConflict('sales_orders',so);
+        _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();
+        return false;
       }
-      // Batch insert pick lines
-      if(allPickRows.length){
-        const{error:pickErr}=await supabase.from('so_item_pick_lines').insert(allPickRows);
-        if(pickErr){saveFailed=true;_failMsg=_failMsg||('so_item_pick_lines: '+pickErr.message);console.error('[DB] so_item_pick_lines batch failed:',pickErr.message)}
-        // Post-insert verification: confirm rows persisted rather than letting a partial save drop picks silently.
-        if(!saveFailed){
-          const{count:_verifyPickCount,error:_verifyPickErr}=await _countInsertedChildRows('so_item_pick_lines',insertedItems.map(i=>i.id));
-          if(_verifyPickErr){
-            saveFailed=true;_failMsg=_failMsg||('so_item_pick_lines: verification read-back failed: '+_verifyPickErr.message);
-            console.error('[DB] SO pick-line verification read-back failed (inconclusive, save queued for retry):',_verifyPickErr.message);
-            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allPickRows.length,got:null,reason:'so_item_pick_lines: verification read-back failed ('+_verifyPickErr.message+') — data intact, save queued for retry'});
-          }else if(_verifyPickCount<allPickRows.length){
-            saveFailed=true;_failMsg=_failMsg||('so_item_pick_lines: only '+_verifyPickCount+' of '+allPickRows.length+' rows persisted');
-            console.error('[DB] SAFETY: SO pick-line insert verification failed — expected',allPickRows.length,'got',_verifyPickCount);
-            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allPickRows.length,got:_verifyPickCount,reason:'so_item_pick_lines: wrote '+allPickRows.length+', persisted '+_verifyPickCount+' — save queued for retry'});
-          }
-        }
-      }
-      // Batch insert PO lines
-      if(allPoRows.length){
-        const corePoRows=allPoRows.map(row=>{const{billed:b,tracking_numbers:tn,...coreRow}=row;return{...coreRow,sizes:{...(coreRow.sizes||{}),_billed:b||{},_tracking_numbers:tn||[]}}});
-        const{error:poErr}=await supabase.from('so_item_po_lines').insert(allPoRows);
-        if(poErr){
-          const{error:coreErr}=await supabase.from('so_item_po_lines').insert(corePoRows);
-          if(coreErr){saveFailed=true;_failMsg=_failMsg||('so_item_po_lines: '+coreErr.message);console.error('[DB] so_item_po_lines batch failed:',coreErr.message)}
-          else console.warn('[DB] PO lines saved without billed/tracking_numbers columns')
-        }
-        // Post-insert verification: confirm rows actually persisted; if fewer than expected, mark failed so we retry
-        // rather than letting a partial save become canonical (and silently drop PO lines).
-        if(!saveFailed){
-          const{count:_verifyPoCount,error:_verifyPoErr}=await _countInsertedChildRows('so_item_po_lines',insertedItems.map(i=>i.id));
-          if(_verifyPoErr){
-            saveFailed=true;_failMsg=_failMsg||('so_item_po_lines: verification read-back failed: '+_verifyPoErr.message);
-            console.error('[DB] SO PO-line verification read-back failed (inconclusive, save queued for retry):',_verifyPoErr.message);
-            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allPoRows.length,got:null,reason:'so_item_po_lines: verification read-back failed ('+_verifyPoErr.message+') — data intact, save queued for retry'});
-          }else if(_verifyPoCount<allPoRows.length){
-            saveFailed=true;_failMsg=_failMsg||('so_item_po_lines: only '+_verifyPoCount+' of '+allPoRows.length+' rows persisted');
-            console.error('[DB] SAFETY: SO PO-line insert verification failed — expected',allPoRows.length,'got',_verifyPoCount);
-            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allPoRows.length,got:_verifyPoCount,reason:'so_item_po_lines: wrote '+allPoRows.length+', persisted '+_verifyPoCount+' — save queued for retry'});
-          }
-        }
-      }
+      throw new Error(commitError.message||'Atomic save failed');
     }
-    // Commit/rollback the swap: new rows were inserted alongside the old ones (we no longer delete upfront).
-    if(insertedItems?.length){
-      if(!saveFailed){
-        // New items + children verified — now safe to remove the old rows (delete by id so the new rows survive).
-        if(oldItemIds.length){
-          // A failed cleanup delete leaves stale duplicate rows next to the verified new ones —
-          // not silent data loss, but it must be LOUD so the duplicates get traced here instead
-          // of surfacing as mystery orphans in the loader's dedup.
-          const _cleanupErrs=[];
-          for(const[tbl,col]of[['so_item_decorations','so_item_id'],['so_item_pick_lines','so_item_id'],['so_item_po_lines','so_item_id'],['so_items','id']]){
-            const{error:_ce}=await supabase.from(tbl).delete().in(col,oldItemIds);
-            if(_ce)_cleanupErrs.push(tbl+': '+_ce.message);
-          }
-          if(_cleanupErrs.length){
-            console.error('[DB] SO old-row cleanup failed (stale duplicates until retry):',_cleanupErrs.join('; '));
-            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:0,got:oldItemIds.length,reason:'old-row cleanup failed — '+_cleanupErrs.join('; ')+' — stale duplicate rows until a later save succeeds'});
-          }
-        }
-      }else{
-        // New rows did not fully persist — roll them back so the old data stays canonical and the retry starts clean.
-        const _newIds=insertedItems.map(i=>i.id).filter(Boolean);
-        if(_newIds.length){
-          // Same loudness rule for a rollback delete failing mid-way: partial new rows would
-          // linger beside the still-canonical old rows.
-          const _rbErrs=[];
-          for(const[tbl,col]of[['so_item_decorations','so_item_id'],['so_item_pick_lines','so_item_id'],['so_item_po_lines','so_item_id'],['so_items','id']]){
-            const{error:_re}=await supabase.from(tbl).delete().in(col,_newIds);
-            if(_re)_rbErrs.push(tbl+': '+_re.message);
-          }
-          if(_rbErrs.length)console.error('[DB] SO rollback delete failed mid-way (partial new rows linger, retried on next save):',_rbErrs.join('; '));
-        }
-      }
-    }
-    // Bump updated_at LAST — so cross-tab polls only see the new timestamp after all children are in place
-    if(finalUpdatedAt!==existingSO?.updated_at){
-      await supabase.from('sales_orders').update({updated_at:finalUpdatedAt}).eq('id',so.id);
-    }
-    if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id,{message:_failMsg});_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
+    if(!committed||committed.saved!==true)throw new Error('Database did not acknowledge the complete sales-order save');
+    afterCommit.forEach(fn=>fn());
+    (committed.line_ids||[]).forEach(row=>{if(items?.[row.item_index])items[row.item_index].line_id=row.line_id});
+    so._version=committed.version;
+    _dbOwnVersions[so.id]=committed.version;_dbOwnVersionExact.add(so.id);
     _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();_dbRecentSaves[so.id]=Date.now();
-    // Adopt the server's ACTUAL _version instead of guessing +1. One logical save trips the DB's version
-    // trigger more than once (the initial row upsert, then the final updated_at bump above), so the old
-    // +1 left every client permanently behind the server — which is exactly why the own-echo skip in
-    // _checkVersion had to be a blanket 60s window, and why a second user's interleaved write could hide
-    // inside it. Reading the version back makes _dbOwnVersions exact, so _checkVersion can tell this
-    // client's own bump from someone else's. If the read fails, keep the old estimate and leave
-    // _dbOwnVersions unset — _checkVersion then falls back to its previous time-boxed behaviour.
-    // try/catch, not just an error check: this runs AFTER the save has committed, so a throw here would
-    // be caught by the outer handler and report a successful save as failed — enrolling it in the retry
-    // loop and re-POSTing work that is already durable. A missed read-back costs only the exactness.
-    try{
-      const{data:_verRow}=await supabase.from('sales_orders').select('_version').eq('id',so.id).maybeSingle();
-      if(_verRow&&typeof _verRow._version==='number'){so._version=_verRow._version;_dbOwnVersions[so.id]=_verRow._version;_dbOwnVersionExact.add(so.id)}
-      else{_dbOwnVersionExact.delete(so.id);if(so._version)so._version=so._version+1}
-    }catch(e){_dbOwnVersionExact.delete(so.id);if(so._version)so._version=so._version+1;console.warn('[DB] post-save _version read-back failed for',so.id,'— falling back to +1 estimate:',e?.message||e)}
-    delete so._decoDeleteIntents;
+    delete so._decoDeleteIntents;delete so._status_reverted;
     return true;
   }catch(e){console.error('[DB] save SO:',e);if(_isAuthError(e))return _handleAuthSaveFailure(so.id,e);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
 };
@@ -2588,63 +2360,57 @@ const _captureSoSave = (so, savePromise) => {
     } catch (_) { /* never let capture affect the save */ }
   }).catch(() => {});
 };
-const _dbSaveSO = (so) => { const _p = _outboxWrap('sales_orders', so, _queuedEntitySave(so.id, so, _dbSaveSOInner)); _captureSoSave(so, _p); return _p; };
+const _dbSaveSO = (so) => { const _p = _saveDocument('sales_orders',so,_dbSaveSOInner); _captureSoSave(so, _p); return _p; };
+// Narrow memo operation: no full-save wrapper, outbox, pricing or child writes.
+// Its dedicated dialog owns field-level recovery; sharing the full-document
+// outbox here would let a memo receipt erase an unrelated failed order edit.
+const _dbSaveMemoCommand=command=>{
+  command=JSON.parse(JSON.stringify(command));
+  return _queuedEntitySave(command.id,null,()=>_dbSavingGuard(async()=>{
+  if(!supabase)throw new Error('Cloud connection is unavailable. Keep your memo and retry.');
+  await _ensureFreshSession();
+  if(_isSessionDead()||currentDraftOwner()!==command.ownerId)throw new Error('Sign in as the original editor before saving this memo.');
+  const {data,error}=await _retryNet(()=>{
+    if(currentDraftOwner()!==command.ownerId||_isSessionDead())throw new Error('The signed-in editor changed. Your memo draft is preserved.');
+    return supabase.rpc('save_sales_order_memo',{
+      p_so_id:command.id,p_expected_memo:command.expectedMemo??null,p_memo:command.memo,p_request_id:command.requestId,
+    });
+  });
+  if(error)throw new Error(error.message||'Memo save failed');
+  return data;
+}));
+};
 // Lightweight save for art-file-only edits (add/remove/tag a mockup or production file). Syncs ONLY so_art_files —
 // never deletes/reinserts items, decorations, or PO lines — so a simple file change can't trip the order-save
 // data-loss guards or partially re-persist line items. Mirrors the art_files sync in _dbSaveSOInner.
 const _dbSaveArtFilesInner = async (so) => {
   if(!supabase)return false;
+  await _ensureFreshSession();
   return _dbSavingGuard(async()=>{try{
-    const art_files=so.art_files;
-    if(!Array.isArray(art_files))return true;// nothing hydrated to sync
-    const{data:_dbAf,error:_dbAfErr}=await _retryNet(()=>supabase.from('so_art_files').select('*').eq('so_id',so.id));
-    if(_dbAfErr){if(_isAuthError(_dbAfErr))return _handleAuthSaveFailure(so.id,_dbAfErr);console.error('[DB] so_art_files read failed:',_dbAfErr.message);if(_dbNotify)_dbNotify('Could not save artwork file change: '+_dbAfErr.message,'error');return false}
-    const _dbAfVerById=new Map((_dbAf||[]).map(r=>[r.id,r._version||0]));
-    if(art_files.length){
-      const _resolved=_resolveArtRows(art_files,_dbAf,so.id);
-      {
-        const soAfRows=_resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,so_id:so.id}));
-        const{error:afErr,dropped:afDropped}=await _writeRowsSchemaSafe('so_art_files',soAfRows,(r)=>_retryNet(()=>supabase.from('so_art_files').upsert(r,{onConflict:'so_id,id'})),_artExtraCols);
-        if(afErr){
-          if(_isAuthError(afErr))return _handleAuthSaveFailure(so.id,afErr);
-          console.error('[DB] so_art_files upsert failed:',afErr.message);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+afErr.message,'error');return false;
-        }
-        if(afDropped.length){
-          console.warn('[DB] so_art_files is missing column(s):',afDropped.join(', '),'— those fields were not saved');
-          if(_dbNotify)_dbNotify(_artGapMsg('so_art_files',afDropped),'error');
-        }
-        _resolved.forEach(_adoptResolvedArtRow);
-      }
-      const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
-      const _knownArtIds=new Set(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]);
-      const toDeleteAf=(_dbAf||[]).filter(ea=>!currentAfIds.has(ea.id)&&_knownArtIds.has(ea.id)).map(ea=>ea.id);
-      if(toDeleteAf.length)await _retryNet(()=>supabase.from('so_art_files').delete().eq('so_id',so.id).in('id',toDeleteAf));
-    }else if(so._artHydrated!==false){
-      const _knownArtIds=(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]).filter(id=>_dbAfVerById.has(id));
-      if(_knownArtIds.length)await _retryNet(()=>supabase.from('so_art_files').delete().eq('so_id',so.id).in('id',_knownArtIds));
-    }
-    // Bump the order's updated_at to the value savArtFiles already set on the local copy. The lightweight art
-    // save otherwise never touches the sales_orders row, so the client's updated_at stays permanently ahead of
-    // the DB. That mismatch defeats the poll-merge fast-path (App.js mergeSO), which then wholesale-replaces this
-    // SO from a possibly-stale DB snapshot and drops a just-added art group from the open editor — even though
-    // the row persisted fine. Keeping the timestamps in sync lets the poll recognize there's nothing to change.
-    if(so.updated_at)await _retryNet(()=>supabase.from('sales_orders').update({updated_at:so.updated_at}).eq('id',so.id));
-    // Register this art save as "recently saved by this client" so the reconciliation art-superset guard (and the
-    // version-conflict skip) treats the local copy as the fresher one for the next ~60s. The lightweight art save
-    // otherwise never set this, unlike the full SO/estimate/customer saves.
-    _dbRecentSaves[so.id]=Date.now();
-    // Record the resulting version too. This path bumps sales_orders (the updated_at write above) without
-    // going through the full SO save, so leaving _dbOwnVersions behind would make _checkVersion read our
-    // own art-save bump as another user's write and raise a conflict against ourselves.
-    try{
-      const{data:_verRow}=await supabase.from('sales_orders').select('_version').eq('id',so.id).maybeSingle();
-      if(_verRow&&typeof _verRow._version==='number'){so._version=_verRow._version;_dbOwnVersions[so.id]=_verRow._version;_dbOwnVersionExact.add(so.id)}
-      else _dbOwnVersionExact.delete(so.id);
-    }catch(e){_dbOwnVersionExact.delete(so.id);console.warn('[DB] post-art-save _version read-back failed for',so.id,':',e?.message||e)}
+    if(!Array.isArray(so.art_files))return false;
+    const token=await supabase.rpc('sales_order_save_token',{p_so_id:so.id});
+    if(token.error)throw new Error(token.error.message);
+    const {data:dbArt,error:readError}=await supabase.from('so_art_files').select('*').eq('so_id',so.id);
+    if(readError)throw new Error(readError.message);
+    const resolved=_resolveArtRows(so.art_files,dbArt,so.id);
+    const present=new Set(so.art_files.map(a=>a.id));
+    const known=new Set(so._hydratedArtIds||[]);
+    const plan={header:{id:so.id},write_header:false,is_new:false,items:null,firm_dates:null,
+      art_upserts:resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,so_id:so.id})),
+      art_deletes:so._artHydrated===false?[]:(dbArt||[]).filter(a=>known.has(a.id)&&!present.has(a.id)).map(a=>a.id),
+      job_upserts:[],job_deletes:[]};
+    const {data,error}=await _retryNet(()=>supabase.rpc('save_sales_order_atomic',{p_so_id:so.id,p_expected_token:token.data,p_plan:plan}));
+    if(error)throw new Error(error.message);
+    if(data?.saved!==true)throw new Error('Database did not confirm the artwork save');
+    resolved.forEach(_adoptResolvedArtRow);
     return true;
-  }catch(e){if(_isAuthError(e))return _handleAuthSaveFailure(so.id,e);console.error('[DB] save art files:',e);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+(e.message||e),'error');return false}});
+  }catch(error){
+    if(_isAuthError(error))return _handleAuthSaveFailure(so.id,error);
+    if(_dbNotify)_dbNotify('Artwork was not saved: '+error.message,'error');
+    return false;
+  }});
 };
-const _dbSaveArtFiles = (so) => _outboxWrap('sales_orders', so, _queuedEntitySave(so.id, so, _dbSaveArtFilesInner), true/*addOnly: art-only success must not clear a failed full-SO payload*/);
+const _dbSaveArtFiles = (so) => _saveDocument('sales_orders',so,_dbSaveArtFilesInner,true);
 const _invCols=['id','customer_id','so_id','idempotency_key','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','deposit_applied','credit_amount','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','bill_to_id','shipping_name','shipping_address','po_number','rep_id','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
 // po_number and rep_id are in _invExtraCols too so a save still lands (minus that field) if the
 // column-add migration hasn't reached this environment's DB yet — the upsert retries without extra cols.
@@ -3632,6 +3398,30 @@ const _queuedEntitySave=(id,data,saveFn)=>new Promise((resolve,reject)=>{
   else queue.push({data,saveFn,waiters:[{resolve,reject}]});
   if(!_dbSaveInFlight[id])_drainEntitySaveQueue(id);
 });
+// Queue immutable document attempts. Neither a later React mutation nor a
+// delayed acknowledgement may change which content this attempt represents.
+const _activeDocumentSaves=new Map();
+const _hasActiveDocumentSave=id=>(_activeDocumentSaves.get(id)||0)>0;
+const _saveDocument=(table,entity,saveFn,addOnly=false)=>{
+  let snapshot,signature;
+  try{signature=JSON.stringify(entity);snapshot=JSON.parse(signature)}catch(error){
+    if(_dbNotify)_dbNotify('Could not prepare this document for saving: '+error.message,'error');
+    return Promise.resolve(false);
+  }
+  const id=entity.id;
+  _activeDocumentSaves.set(id,(_activeDocumentSaves.get(id)||0)+1);
+  _dbSavePendingIds.add(id);
+  return _outboxWrap(table,snapshot,()=>addOnly?_queuedEntitySave(id,snapshot,saveFn):protectDocumentDraft(table,snapshot,()=>_queuedEntitySave(id,snapshot,saveFn),error=>{console.error('[Draft recovery]',error);if(_dbNotify)_dbNotify('Browser draft backup is unavailable. Keep this tab open until the cloud save is confirmed.','error')}),addOnly).then(result=>{
+    // Only adopt the canonical version/merged fields into the exact source
+    // object we captured. A caller that edited it meanwhile owns its new draft.
+    if(result===true&&JSON.stringify(entity)===signature){Object.keys(entity).forEach(k=>{if(!(k in snapshot))delete entity[k]});Object.assign(entity,snapshot);}
+    return result;
+  }).finally(()=>{
+    const remaining=(_activeDocumentSaves.get(id)||1)-1;
+    if(remaining)_activeDocumentSaves.set(id,remaining);
+    else{_activeDocumentSaves.delete(id);_dbSavePendingIds.delete(id)}
+  });
+};
 // Track recently-pulled SOs — prevents poll/realtime from reverting pulls for 30s after a warehouse pull
 // This is a safety net for slow connections where the full SO save might not complete before the next poll
 const _recentlyPulledSOs=new Map();// soId → timestamp
@@ -3778,24 +3568,58 @@ const _dbSavePendingIds=new Set();
 // The gate, not this store, decides whether a payload may re-enter state: a stale outbox entry
 // silently overwriting a newer server row would be worse than the loss it prevents.
 const _OUTBOX_KEY='nsa_outbox';
-const _OUTBOX_MAX_CHARS=768*1024;// ~1.5MB in UTF-16 — self-capped, because essential keys bypass the budget checks above
 const _outboxRead=()=>{try{const raw=localStorage.getItem(_OUTBOX_KEY);const box=raw?JSON.parse(raw):{};return box&&typeof box==='object'&&!Array.isArray(box)?box:{}}catch{return{}}};
-// Read-modify-write on every mutation (never a cached in-memory blob) so two tabs failing saves
-// concurrently merge per-key instead of clobbering each other's whole outbox.
+// A full browser store must never delete someone else's unsaved work to make
+// room. setItem is atomic: failure leaves the previous backup unchanged.
 const _outboxWrite=(box)=>{
-  let s=JSON.stringify(box);
-  const evicted=[];
-  const evictOldest=()=>{const ks=Object.keys(box);if(!ks.length)return false;let oldest=ks[0];for(const k of ks)if((box[k].ts||0)<(box[oldest].ts||0))oldest=k;evicted.push(oldest);delete box[oldest];s=JSON.stringify(box);return true};
-  while(s.length>_OUTBOX_MAX_CHARS&&evictOldest());
-  for(;;){try{localStorage.setItem(_OUTBOX_KEY,s);break}catch(e){if(!evictOldest()){console.error('[Outbox] could not persist outbox:',e?.message||e);return}}}
-  // Eviction is data loss — it must never be silent.
-  if(evicted.length){console.error('[Outbox] DROPPED unsaved edit(s) to stay within the size cap:',evicted.join(', '));if(_dbNotify)_dbNotify('Storage full — '+evicted.length+' older unsaved edit(s) had to be dropped from the offline backup ('+evicted.join(', ')+'). Check the failed-save list.','error')}
+  try{localStorage.setItem(_OUTBOX_KEY,JSON.stringify(box));return true}
+  catch(error){
+    console.error('[Outbox] Could not update backup; existing drafts retained:',error);
+    if(_dbNotify)_dbNotify('Browser backup is full or unavailable. Existing drafts were kept. Keep this tab open until your cloud save is confirmed.','error');
+    return false;
+  }
 };
-const _outboxAdd=(table,entity)=>{try{
+// A save completion must identify the draft that it belongs to. A random component keeps tokens
+// distinct across tabs; the counter makes repeated saves in one tab easy to distinguish even when
+// Date.now() has the same value. The token is persisted with the entry so a later completion can
+// compare against the draft currently stored under this table:id key.
+let _outboxRevisionSeq=0;
+// A mutable object may be passed through several coalesced queue waiters. Keep every active
+// revision, rather than letting the latest wrapper overwrite the older one's identity.
+const _outboxAttemptsByEntity=new WeakMap();// entity → Map<revision, staged id>
+const _outboxConflictRevisions=new WeakMap();
+const _newOutboxRevision=()=>{
+  _outboxRevisionSeq=(_outboxRevisionSeq+1)%0x100000000;
+  let random='';try{random=(typeof crypto!=='undefined'&&crypto.getRandomValues)?Array.from(crypto.getRandomValues(new Uint32Array(2)),n=>n.toString(36)).join(''):Math.random().toString(36).slice(2)}catch{random=Math.random().toString(36).slice(2)}
+  return Date.now().toString(36)+'-'+_outboxRevisionSeq.toString(36)+'-'+random;
+};
+const _registerOutboxAttempt=(entity,revision,stagedId)=>{
+  if(!entity||typeof entity!=='object'||!revision)return;
+  const attempts=_outboxAttemptsByEntity.get(entity)||new Map();attempts.set(revision,stagedId);_outboxAttemptsByEntity.set(entity,attempts);
+};
+const _finishOutboxAttempt=(entity,revision)=>{
+  if(!entity||typeof entity!=='object'||!revision)return;
+  const attempts=_outboxAttemptsByEntity.get(entity);if(!attempts)return;attempts.delete(revision);if(!attempts.size)_outboxAttemptsByEntity.delete(entity);
+};
+const _markOutboxConflict=(entity)=>{
+  if(!entity||typeof entity!=='object')return;
+  const attempts=_outboxAttemptsByEntity.get(entity);if(!attempts?.size)return;
+  const conflicts=_outboxConflictRevisions.get(entity)||new Set();attempts.forEach((_stagedId,revision)=>conflicts.add(revision));_outboxConflictRevisions.set(entity,conflicts);
+};
+const _consumeOutboxConflict=(entity,revision)=>{
+  if(!entity||typeof entity!=='object'||!revision)return false;
+  const conflicts=_outboxConflictRevisions.get(entity);if(!conflicts||!conflicts.has(revision))return false;
+  conflicts.delete(revision);if(!conflicts.size)_outboxConflictRevisions.delete(entity);return true;
+};
+const _outboxPayload=(entity)=>{const payload={...entity};delete payload._retry;return payload};
+const _outboxAdd=(table,entity,revision)=>{try{
   if(!entity||!entity.id)return;
   const box=_outboxRead();const key=table+':'+entity.id;
-  const payload={...entity};delete payload._retry;// transient retry-poke marker, not part of the edit
+  const payload=_outboxPayload(entity);// transient retry-poke marker, not part of the edit
   const prev=box[key];
+  // Calls from a new save attempt intentionally replace the prior draft with their new revision.
+  // Completion handlers never call this function: they use _outboxUpdate/_outboxAck below, which
+  // compare the token and therefore cannot overwrite or remove a newer attempt.
   // Base = the version this edit's CONTENT was authored against. The optimistic-lock auto-heal
   // (_checkVersion conflict → entity._version=serverVersion) advances _version without touching the
   // content, so recording _version here would stamp stale content as "current" and make _outboxGate
@@ -3803,9 +3627,50 @@ const _outboxAdd=(table,entity)=>{try{
   // _obBaseVersion preserves the true pre-heal base; it's set at every auto-heal site and cleared on
   // a fully-successful save (_outboxWrap).
   const _obBase=payload._obBaseVersion!=null?payload._obBaseVersion:payload._version;
-  box[key]={table,id:entity.id,payload,baseVersion:(_obBase!=null&&isFinite(Number(_obBase))?Number(_obBase):null),ts:Date.now(),attempts:(prev?.attempts||0)+1};
-  _outboxWrite(box);
-}catch(e){console.error('[Outbox] add failed:',e)}};
+  box[key]={table,id:entity.id,payload,baseVersion:(_obBase!=null&&isFinite(Number(_obBase))?Number(_obBase):null),ts:Date.now(),attempts:(prev?.attempts||0)+1,revision:revision||_newOutboxRevision()};
+  return _outboxWrite(box)?box[key].revision:false;
+}catch(e){console.error('[Outbox] add failed:',e);return false}};
+// Update and acknowledge are compare-before-write operations. They intentionally do nothing when
+// another tab/attempt has replaced the key, which is the key safety property for delayed results.
+// localStorage has no cross-tab transaction here; the final read immediately before the write narrows
+// the race, while the revision check prevents the ordinary delayed-completion interleaving.
+const _outboxUpdate=(table,entity,revision,stagedId)=>{try{
+  if(!revision||!entity||!entity.id)return false;
+  const box=_outboxRead();const sourceId=stagedId||entity.id;const key=table+':'+sourceId;const prev=box[key];
+  if(!prev||prev.revision!==revision)return false;
+  const finalId=entity.id;const payload=_outboxPayload(entity);const _obBase=payload._obBaseVersion!=null?payload._obBaseVersion:payload._version;
+  const updated={...prev,table,id:finalId,payload,baseVersion:(_obBase!=null&&isFinite(Number(_obBase))?Number(_obBase):null),ts:Date.now(),attempts:(prev.attempts||0)+1,revision};
+  if(String(sourceId)===String(finalId)){box[key]=updated}
+  else{
+    const destKey=table+':'+finalId;const dest=box[destKey];
+    // A newer draft already owns the reminted ID. Drop only this attempt's old key and retain it.
+    if(dest&&dest.revision!==revision){delete box[key];_outboxWrite(box);return false}
+    box[destKey]=updated;delete box[key];
+  }
+  return _outboxWrite(box);
+}catch(e){console.error('[Outbox] update failed:',e);return false}};
+const _outboxAck=(table,id,revision)=>{try{
+  if(!id||!revision)return false;
+  const box=_outboxRead();const key=table+':'+id;const prev=box[key];
+  if(!prev||prev.revision!==revision)return false;
+  // Re-read before deleting so a storage event/newer write observed during the read is retained.
+  // This is still bounded by localStorage's lack of an atomic compare-and-swap; all callers must
+  // use revision-aware ack/update paths for the guarantee to hold.
+  const latest=_outboxRead()[key];if(!latest||latest.revision!==revision)return false;
+  delete box[key];return _outboxWrite(box);
+}catch{return false}};
+// Failed add-only saves historically captured their entity only after the failure was known. Keep
+// that behavior when no entry exists, while refusing to replace a full-save entry that may be newer.
+// A tokened full save may update only the entry it staged; if it was explicitly discarded meanwhile,
+// it must not resurrect itself here.
+const _outboxRetainFailure=(table,entity,revision,stagedId)=>{try{
+  if(!entity||!entity.id)return false;
+  const box=_outboxRead();const sourceId=stagedId||entity.id;const current=box[table+':'+sourceId];
+  if(current){return revision&&current.revision===revision?_outboxUpdate(table,entity,revision,sourceId):false}
+  // A tokened attempt was explicitly removed (or lost); never recreate it. Add-only failures have
+  // no staged token and retain their historical capture-on-failure behavior.
+  return revision?false:_outboxAdd(table,entity);
+}catch{return false}};
 const _outboxRemove=(table,id)=>{try{const box=_outboxRead();const key=table+':'+id;if(!(key in box))return;delete box[key];_outboxWrite(box)}catch{}};
 const _outboxRemoveById=(id)=>{try{const box=_outboxRead();let hit=false;for(const k of Object.keys(box)){if(box[k]&&box[k].id===id){delete box[k];hit=true}}if(hit)_outboxWrite(box)}catch{}};
 const _outboxList=()=>{try{return Object.values(_outboxRead())}catch{return[]}};
@@ -3817,34 +3682,77 @@ let _onOutboxConflict=null;// set by App — receives the outbox entry to append
 export const _setOnOutboxConflict=(fn)=>{_onOutboxConflict=fn};
 const _emitOutboxConflict=(table,entity)=>{try{
   if(!entity||!entity.id)return;
-  _outboxAdd(table,entity);
+  // Save inners can discover a stale-write conflict before their wrapper's Promise settles. Reuse
+  // that wrapper's token so an older stale result cannot replace a newer staged draft. Calls from
+  // explicit conflict surfaces have no token and retain the intentional fresh-capture behavior.
+  const attempts=_outboxAttemptsByEntity.get(entity);
+  if(attempts?.size){attempts.forEach((stagedId,revision)=>_outboxUpdate(table,entity,revision,stagedId));_markOutboxConflict(entity)}else _outboxAdd(table,entity);
   const en=_outboxRead()[table+':'+entity.id];
   if(en&&_onOutboxConflict)_onOutboxConflict(en);
 }catch(e){console.error('[Outbox] conflict emit failed:',e)}};
-// Failure/success hook wrapping the exported save entry points. Keys off _dbSaveFailedIds so it
-// inherits the interior failure sites' judgment exactly — a false return that deliberately did NOT
-// flag the ID (e.g. a permanently-skipped duplicate SKU, or a version-conflict precheck that wants
-// a refetch, not a retry) is not outboxed. 'stale' (estimate superseded server-side) clears the
-// entry: existing semantics treat that edit as superseded, and the server-side version guard would
-// reject a re-apply anyway.
+// Retry snapshots are tab-local and immutable. A missing record in loaded state
+// cannot prove deletion and must never delete a recovery copy.
+const _saveRetryCoordinator=createSaveRetryCoordinator();
+const _rememberSaveRetry=(table,payload)=>{
+  const receipt=_saveRetryCoordinator.begin(currentDraftOwner(),table,payload);
+  _saveRetryCoordinator.finish(receipt,false);
+};
+const _retryFailedSaves=({manual=false}={})=>{
+ const owner=currentDraftOwner();
+ return _saveRetryCoordinator.retry({
+  ids:[..._dbSaveFailedIds].filter(id=>manual||(!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000)&&!_permDenialParked(id))),
+  owner,
+  canRetry:id=>currentDraftOwner()===owner&&!_isSessionDead()&&_dbSaveFailedIds.has(id)&&!_dbSavePendingIds.has(id),
+  save:(table,payload)=>{
+    const writers={estimates:_dbSaveEstimate,sales_orders:_dbSaveSO,invoices:_dbSaveInvoice,customers:_dbSaveCustomer,products:_dbSaveProduct,messages:_dbSaveMessage};
+    if(!writers[table])throw new Error('This record needs manual save review');
+    return writers[table](payload);
+  },
+  onMissing:id=>{if(!_dbSaveFailedErrors.has(id))_recordSaveError(id,'No retry snapshot in this tab. Review the recovery copy or open the record and save your intended edit.');},
+  onError:(id,error)=>_recordSaveError(id,error.message||String(error)),
+ });
+};
 const _outboxWrap=(table,entity,resultPromise,addOnly)=>{
-  // Capture-on-attempt: once the session is latched dead this save is doomed (the write goes out
-  // with a stale JWT and RLS rejects it). Persist the payload NOW, synchronously — the async
-  // failure path may never run if the app unmounts to the login screen first. This is what makes
-  // the forced-logout flush (`nsa:version-reload-pending` → editor onSave → save entry point)
-  // durable without depending on React commit timing.
-  try{if(_sessionDead&&entity&&entity.id)_outboxAdd(table,entity)}catch{}
-  return Promise.resolve(resultPromise).then(r=>{
+  // Capture-on-attempt: persist a full-save draft synchronously at wrapper entry, before any
+  // completion handler can run. Document saves supply a thunk so staging precedes dispatch.
+  // Legacy non-document wrappers still supply an already-created promise.
+  // Add-only art saves deliberately keep their old behavior: their success must never replace or
+  // clear a failed full-entity payload. A dead session is the one existing add-only capture case.
+  let retryReceipt;
+  try{if(!addOnly&&entity?.id)retryReceipt=_saveRetryCoordinator.begin(currentDraftOwner(),table,entity);}catch(error){console.error('[Retry snapshot]',error);}
+  const _outboxId=entity&&entity.id;
+  const _outboxRevision=(!addOnly||_sessionDead)&&_outboxId?_newOutboxRevision():null;
+  if(_outboxRevision)_registerOutboxAttempt(entity,_outboxRevision,_outboxId);
+  try{if(_outboxRevision)_outboxAdd(table,entity,_outboxRevision)}catch{}
+  let operation;try{operation=typeof resultPromise==='function'?resultPromise():resultPromise}catch(error){operation=Promise.reject(error)}
+  return Promise.resolve(operation).then(r=>{
+    _saveRetryCoordinator.finish(retryReceipt,r);
     try{
-      if(r===false){if(entity&&entity.id&&_dbSaveFailedIds.has(entity.id))_outboxAdd(table,entity)}
+      const _conflictCaptured=_consumeOutboxConflict(entity,_outboxRevision);
+      _finishOutboxAttempt(entity,_outboxRevision);
+      if(r===false){
+        // A deliberate conflict capture (identity collision or stale optimistic write) owns the
+        // entry even when the inner save clears its failed-ID flag before returning false.
+        if(!_conflictCaptured){
+          if(entity&&entity.id&&_dbSaveFailedIds.has(entity.id))_outboxRetainFailure(table,entity,_outboxRevision,_outboxId);
+          else if(_outboxId)_outboxRetainFailure(table,entity,_outboxRevision,_outboxId);
+        }
+      }
       // addOnly: an art-files-only save success must not clear an outbox entry holding a failed
       // FULL entity payload — only the full save may clear. 'stale' deliberately does NOT clear:
       // the rejected edit's content is preserved for the conflict card (_emitOutboxConflict) so a
       // version rejection no longer silently destroys what the rep typed.
-      else if(r===true&&!addOnly){if(entity&&entity.id){_outboxRemove(table,entity.id);try{delete entity._obBaseVersion}catch{}}}
+      else if(r===true&&!addOnly&&!_conflictCaptured){if(_outboxId&&_outboxAck(table,_outboxId,_outboxRevision)){try{delete entity._obBaseVersion}catch{}}}
     }catch(e){console.error('[Outbox] hook failed:',e)}
     return r;
-  },err=>{try{if(entity&&entity.id&&_dbSaveFailedIds.has(entity.id))_outboxAdd(table,entity)}catch{}throw err});
+  },err=>{_saveRetryCoordinator.finish(retryReceipt,false);try{
+    const _conflictCaptured=_consumeOutboxConflict(entity,_outboxRevision);
+    _finishOutboxAttempt(entity,_outboxRevision);
+    if(!_conflictCaptured){
+      if(entity&&entity.id&&_dbSaveFailedIds.has(entity.id))_outboxRetainFailure(table,entity,_outboxRevision,_outboxId);
+      else if(_outboxId)_outboxRetainFailure(table,entity,_outboxRevision,_outboxId);
+    }
+  }catch{}throw err});
 };
 // Boot-time gate: outbox entry vs the freshly-loaded DB row. Pure — unit-tested in the
 // characterization suite. Returns:
@@ -3932,6 +3840,7 @@ const _dbSave = (table, data) => { if(supabase && data) return _retryNet(()=>sup
 // writers can't assign the module-level lets directly. Everything else
 // reads the live bindings exported below.
 export const _setDbNotify=(fn)=>{_dbNotify=fn};
+export const _clearDocumentConflictCooldown=id=>_dbStaleCooldown.delete(id);
 export const _setDataLossAlert=(fn)=>{_dataLossAlert=fn};
 export const _setRestoredLinesSync=(fn)=>{_restoredLinesSync=fn};
 export const _setOnEstStatusMerge=(fn)=>{_onEstStatusMerge=fn};
@@ -3980,6 +3889,7 @@ export {
   _buildInvMergeRows,
   _dbSaveEstimate,
   _dbSaveSO,
+  _dbSaveMemoCommand,
   _dbSaveArtFiles,
   _dbSaveInvoice,
   _dbNotify,
@@ -4040,6 +3950,11 @@ export {
   _outboxRemove,
   _outboxRemoveById,
   _outboxList,
+  _saveDocument,
+  _hasActiveDocumentSave,
+  _outboxWrap,
+  _retryFailedSaves,
+  _rememberSaveRetry,
   _outboxGate,
   _outboxMatchesRow,
   _emitOutboxConflict,

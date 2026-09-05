@@ -44,7 +44,7 @@ jest.mock('@supabase/supabase-js', () => {
       getSession: () => Promise.resolve({ data: { session: null } }),
       onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
     },
-    rpc: () => Promise.resolve({ data: null, error: null }),
+    rpc: (name,args) => require('../testHelpers/atomicSaveRpc')(state,name,args),
   };
   return { createClient: () => client, __mockState: state };
 });
@@ -103,11 +103,11 @@ describe('nsa_save_failed_ids corruption resilience (fix 2)', () => {
 // and must not delete the pre-existing (old) so_items rows. Drives the real save path with a
 // mocked Supabase client, taking the existing-SO branch (no items/version mismatch, no jobs,
 // no art files, no PO/pick lines) so the only unresolved thing is the item insert itself.
-describe('_dbSaveSOInner — so_items under-returned insert (fix 3)', () => {
+describe('_dbSaveSOInner — failed atomic commit', () => {
   beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
   afterEach(() => { restoreEnv(); jest.resetModules(); });
 
-  test('insert returning fewer ids than rows fails the save and never deletes the old items', async () => {
+  test('failed transaction stays unsaved and issues no standalone item deletes', async () => {
     const { __mockState } = require('@supabase/supabase-js');
     __mockState.calls.length = 0;
     __mockState.responses = {
@@ -149,6 +149,7 @@ describe('_dbSaveSOInner — so_items under-returned insert (fix 3)', () => {
       ],
     };
 
+    __mockState.atomicError={message:'transaction failed',code:'23514'};
     const result = await _dbSaveSO(so);
 
     expect(result).toBe(false);
@@ -156,7 +157,7 @@ describe('_dbSaveSOInner — so_items under-returned insert (fix 3)', () => {
 
     // The old item ids must never appear in a so_items delete — only the rolled-back NEW id may.
     const soItemDeletes = __mockState.calls.filter(c => c.table === 'so_items' && c.method === 'delete');
-    expect(soItemDeletes.length).toBeGreaterThan(0); // rollback of the partial insert does happen
+    expect(soItemDeletes.length).toBe(0); // PostgreSQL owns rollback; no client cleanup writes
     const oldIds = ['oi-1', 'oi-2', 'oi-3'];
     soItemDeletes.forEach(c => {
       const deletedIds = (c.inArgs && c.inArgs[1]) || [];
@@ -220,8 +221,8 @@ describe('_dbSaveSOInner — shuffled returned item rows keep each PO on its sou
     const poInsert = __mockState.calls.find(c => c.table === 'so_item_po_lines' && c.method === 'insert');
     expect(poInsert).toBeDefined();
     const rows = poInsert.args[0];
-    expect(rows.find(row => row.po_id === 'PO 58989 GHBSB')).toMatchObject({ so_item_id: 'new-tee', vendor: 'SanMar' });
-    expect(rows.find(row => row.po_id === 'PO 59040 GHBSB')).toMatchObject({ so_item_id: 'new-shorts', vendor: 'Prolook' });
+    expect(rows.find(row => row.po_id === 'PO 58989 GHBSB')).toMatchObject({ so_item_id: 'plan-item-0', vendor: 'SanMar' });
+    expect(rows.find(row => row.po_id === 'PO 59040 GHBSB')).toMatchObject({ so_item_id: 'plan-item-1', vendor: 'Prolook' });
   });
 });
 
@@ -630,7 +631,7 @@ describe('_dbSaveSOInner — item carrying PO lines is rebuilt, not blocked (fix
     const poRows = poInserts[0].args[0];
     expect(poRows.length).toBe(1);
     expect(poRows[0].po_id).toBe('PO 57028 BAH');
-    expect(poRows[0].so_item_id).toBe('n3');
+    expect(poRows[0].so_item_id).toBe('plan-item-2');
     expect(poRows[0].sizes.L).toBe(22);
     expect(poRows[0].sizes.unit_cost).toBe(7.35);
   });
@@ -844,13 +845,13 @@ describe('_dbSaveSOInner — stale so_jobs save cannot regress art_status (SO-11
     __mockState.responses = responses(dbJobRow());
     const { _dbSaveSO } = require('../lib/dbEngine');
     const job = { id: 'JOB-G-01', art_status: 'waiting_approval', _version: 3, items: [] };
-    const result = await _dbSaveSO(soWith(job));
+    const savedOrder=soWith(job);const result=await _dbSaveSO(savedOrder);
     expect(result).toBe(true);
     expect(jobUpsertRows(__mockState.calls)[0].art_status).toBe('art_complete');
     // The client copy adopts the protected row before rebasing. A version-only rebase would make its stale
     // waiting_approval look current and the next unrelated save would undo this guard.
-    expect(job.art_status).toBe('art_complete');
-    expect(job._version).toBe(6);
+    expect(savedOrder.jobs[0].art_status).toBe('art_complete');
+    expect(savedOrder.jobs[0]._version).toBe(6);
   });
 
   test('a deliberate pull-back (_coach_cleared) passes even from a stale copy', async () => {
@@ -859,9 +860,9 @@ describe('_dbSaveSOInner — stale so_jobs save cannot regress art_status (SO-11
     __mockState.responses = responses(dbJobRow());
     const { _dbSaveSO } = require('../lib/dbEngine');
     const job = { id: 'JOB-G-01', art_status: 'art_requested', _version: 3, _coach_cleared: true, items: [] };
-    await _dbSaveSO(soWith(job));
+    const savedOrder=soWith(job);await _dbSaveSO(savedOrder);
     expect(jobUpsertRows(__mockState.calls)[0].art_status).toBe('art_requested');
-    expect(job._coach_cleared).toBeUndefined(); // one-shot marker consumed
+    expect(savedOrder.jobs[0]._coach_cleared).toBeUndefined(); // one-shot marker consumed
   });
 
   test('a deliberate workboard move (_art_moved) passes even from a stale copy', async () => {
@@ -870,9 +871,9 @@ describe('_dbSaveSOInner — stale so_jobs save cannot regress art_status (SO-11
     __mockState.responses = responses(dbJobRow());
     const { _dbSaveSO } = require('../lib/dbEngine');
     const job = { id: 'JOB-G-01', art_status: 'art_in_progress', _version: 3, _art_moved: true, items: [] };
-    await _dbSaveSO(soWith(job));
+    const savedOrder=soWith(job);await _dbSaveSO(savedOrder);
     expect(jobUpsertRows(__mockState.calls)[0].art_status).toBe('art_in_progress');
-    expect(job._art_moved).toBeUndefined(); // one-shot marker consumed
+    expect(savedOrder.jobs[0]._art_moved).toBeUndefined(); // one-shot marker consumed
   });
 
   test('a current client (version matches DB) may move art_status backward unstamped', async () => {
@@ -881,7 +882,7 @@ describe('_dbSaveSOInner — stale so_jobs save cannot regress art_status (SO-11
     __mockState.responses = responses(dbJobRow());
     const { _dbSaveSO } = require('../lib/dbEngine');
     const job = { id: 'JOB-G-01', art_status: 'waiting_approval', _version: 5, items: [] };
-    await _dbSaveSO(soWith(job));
+    const savedOrder=soWith(job);await _dbSaveSO(savedOrder);
     expect(jobUpsertRows(__mockState.calls)[0].art_status).toBe('waiting_approval');
   });
 
@@ -891,7 +892,7 @@ describe('_dbSaveSOInner — stale so_jobs save cannot regress art_status (SO-11
     __mockState.responses = responses(dbJobRow({ art_status: 'waiting_approval' }));
     const { _dbSaveSO } = require('../lib/dbEngine');
     const job = { id: 'JOB-G-01', art_status: 'art_complete', _version: 3, items: [] };
-    await _dbSaveSO(soWith(job));
+    const savedOrder=soWith(job);await _dbSaveSO(savedOrder);
     expect(jobUpsertRows(__mockState.calls)[0].art_status).toBe('art_complete');
   });
 });
@@ -964,12 +965,12 @@ describe('_dbSaveSOInner — stale so_jobs save preserves receipts and history (
     __mockState.responses = responses(dbJobRow());
     const { _dbSaveSO } = require('../lib/dbEngine');
     const job = { id: 'JOB-H-01', art_status: 'art_complete', _version: 3, fulfilled_units: 0, item_status: 'need_to_order', items: [] };
-    await _dbSaveSO(soWith(job));
+    const savedOrder=soWith(job);await _dbSaveSO(savedOrder);
     const row = jobUpsertRow(__mockState.calls);
     expect(row.fulfilled_units).toBe(6);
     expect(row.item_status).toBe('partially_received');
-    expect(job.fulfilled_units).toBe(6);
-    expect(job.item_status).toBe('partially_received');
+    expect(savedOrder.jobs[0].fulfilled_units).toBe(6);
+    expect(savedOrder.jobs[0].item_status).toBe('partially_received');
   });
 
   test('a current copy (version matches DB) may lower fulfilled_units — deliberate un-receive', async () => {
@@ -978,7 +979,7 @@ describe('_dbSaveSOInner — stale so_jobs save preserves receipts and history (
     __mockState.responses = responses(dbJobRow());
     const { _dbSaveSO } = require('../lib/dbEngine');
     const job = { id: 'JOB-H-01', art_status: 'art_complete', _version: 5, fulfilled_units: 2, item_status: 'partially_received', items: [] };
-    await _dbSaveSO(soWith(job));
+    const savedOrder=soWith(job);await _dbSaveSO(savedOrder);
     expect(jobUpsertRow(__mockState.calls).fulfilled_units).toBe(2);
   });
 
@@ -993,13 +994,13 @@ describe('_dbSaveSOInner — stale so_jobs save preserves receipts and history (
       sent_history: [],                                                                // never loaded here
       rejections: [{ at: '2026-07-01T00:00:00Z', reason: 'r1' }],                      // unchanged
     };
-    await _dbSaveSO(soWith(job));
+    const savedOrder=soWith(job);await _dbSaveSO(savedOrder);
     const row = jobUpsertRow(__mockState.calls);
     expect(row.art_messages.map(m => m.id)).toEqual(['m1', 'm2', 'm3']); // DB order first, new entry appended
     expect(row.sent_history.length).toBe(1);                             // DB record rescued
     expect(row.rejections.length).toBe(1);                               // unchanged list untouched
-    expect(job.art_messages.map(m => m.id)).toEqual(['m1', 'm2', 'm3']); // adopted locally for the next save
-    expect(job.sent_history.length).toBe(1);
+    expect(savedOrder.jobs[0].art_messages.map(m => m.id)).toEqual(['m1', 'm2', 'm3']); // adopted locally for the next save
+    expect(savedOrder.jobs[0].sent_history.length).toBe(1);
   });
 
   test('a current copy keeps full authority over its lists', async () => {
@@ -1011,7 +1012,7 @@ describe('_dbSaveSOInner — stale so_jobs save preserves receipts and history (
       id: 'JOB-H-01', art_status: 'art_complete', _version: 5, fulfilled_units: 6, item_status: 'partially_received', items: [],
       art_messages: [{ id: 'm1', text: 'a' }],
     };
-    await _dbSaveSO(soWith(job));
+    const savedOrder=soWith(job);await _dbSaveSO(savedOrder);
     expect(jobUpsertRow(__mockState.calls).art_messages.map(m => m.id)).toEqual(['m1']);
   });
 });
