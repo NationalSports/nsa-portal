@@ -1,3 +1,5 @@
+import {supabase} from './lib/dbEngine';
+import {loadQBVendorReview,applyQBVendorReview} from './qbVendorSync';
 import {buildQBProductManifest,loadQBProductItems} from './qbProductMigration';
 // QuickBooks Online sync page — lifted verbatim out of App() (was `function rQB()`)
 // as step 3 of the App.js decomposition. All shared state comes from useAppData();
@@ -102,6 +104,23 @@ export default function QBPage(){
   const [customerReviewFilter,setCustomerReviewFilter]=useState('all');
   const [poBatchReview,setPoBatchReview]=useState(null);
   const [poBatchApproved,setPoBatchApproved]=useState(false);
+  const [vendorReview,setVendorReview]=useState(null);
+  const [vendorBusy,setVendorBusy]=useState(false);
+  const [vendorResults,setVendorResults]=useState(null);
+  const reviewVendors=async()=>{
+    setVendorBusy(true);setVendorReview(null);setVendorResults(null);
+    try{setVendorReview(await loadQBVendorReview({client:supabase,qbApi,links:qbConfig.vendorQBMap||{},realmId:qbConfig.realm_id}))}
+    catch(e){nf(e.message,'error')}finally{setVendorBusy(false)}
+  };
+  const importVendors=async()=>{
+    setVendorBusy(true);
+    try{
+      const results=await applyQBVendorReview({client:supabase,qbApi,links:qbConfig.vendorQBMap||{},realmId:qbConfig.realm_id,reviewed:vendorReview,persistQbLink,
+        onSaved:saved=>setVend(prev=>prev.some(v=>v.id===saved.id)?prev.map(v=>v.id===saved.id?{...v,...saved}:v):[...prev,saved])});
+      setVendorResults(results);setVendorReview(null);
+      nf(results.filter(r=>r.status==='saved').length+' vendors imported; '+results.filter(r=>r.status==='error').length+' errors');
+    }catch(e){setVendorReview(null);nf(e.message,'error')}finally{setVendorBusy(false)}
+  };
   const [stripeBackfill,setStripeBackfill]=useState(null);
   const [stripeWebhookStatus,setStripeWebhookStatus]=useState(null);
 
@@ -241,7 +260,7 @@ export default function QBPage(){
       if(isCanary&&!window.confirm('Create exactly ONE QBO bill?\n\nVendor: '+vendor.name+'\nTotal: $'+amt.toFixed(2)+'\nBill date: '+qbBillDate+'\nPurchases/decoration: $'+(amt-freight-sportsFee).toFixed(2)+'\nFreight in (51000): $'+freight.toFixed(2)+'\nSports Inc fee (58000): $'+sportsFee.toFixed(2)+'\n\nThe bill will be verified by QBO API read-back.')){nf('Bill canary cancelled — nothing was sent');return}
       setQbBillUploading(true);
       const log={ts:new Date().toLocaleString(),type:isCanary?'bill_canary':'bill_upload',status:'success',details:[]};
-      let qbVendorId=vendor.qb_vendor_id;
+      let qbVendorId=qbConfig.vendorQBMap?.[vendor.id]||vendor.qb_vendor_id;
       if(!qbVendorId){
         // Reuse an existing QBO vendor before attempting a create, so a decoration
         // vendor stored in its own portal table cannot create duplicates.
@@ -643,9 +662,21 @@ export default function QBPage(){
 
       {/* Tabs */}
       <div className="tab-bar" style={{marginBottom:16}}>
-        {[['overview','Overview'],['customers','Customers'],['invoices','Invoices'],['stripe','Stripe Payouts'],['bills','Bill Upload'],['inventory','QBO Items'],['settings','Settings'],['log','Sync Log']].map(([k,l])=>
+        {[['overview','Overview'],['customers','Customers'],['vendors','Vendors'],['invoices','Invoices'],['stripe','Stripe Payouts'],['bills','Bill Upload'],['inventory','QBO Items'],['settings','Settings'],['log','Sync Log']].map(([k,l])=>
           <button key={k} className={`tab ${qbTab===k?'active':''}`} onClick={()=>setQbTab(k)}>{l}</button>)}
       </div>
+
+      {qbTab==='vendors'&&<div className="card"><div className="card-header"><h2>QBO Vendors → Portal</h2></div><div className="card-body">
+        <p>Match existing vendors or import missing vendors from QuickBooks. Portal names, purchasing settings and existing contacts are preserved; missing email and phone fields are filled from QBO. Ambiguous matches and inactive Portal vendors require review.</p>
+        <p>Vendor imports do not change QuickBooks. During migration, run this review when QBO vendors change.</p>
+        <button className="btn btn-secondary" disabled={vendorBusy||qbSyncing||!qbConfig.realm_id} onClick={reviewVendors}>{vendorBusy?'Working…':'Review QBO Vendors'}</button>
+        {vendorReview&&<>
+          <table><thead><tr><th>QBO vendor</th><th>Portal vendor</th><th>Action</th><th>Details</th></tr></thead><tbody>{vendorReview.map((r,i)=><tr key={r.qboId+'-'+i}><td>{r.name}</td><td>{r.portalName||'—'}</td><td>{r.action}</td><td>{r.reason||Object.entries(r.patch).map(([k,v])=>k+': '+v).join('; ')}</td></tr>)}</tbody></table>
+          <button className="btn btn-primary" disabled={vendorBusy||!vendorReview.some(r=>['create','link','update'].includes(r.action))} onClick={importVendors}>Import Reviewed Vendors to Portal</button>
+        </>}
+        {vendorResults&&<div role="status">{vendorResults.filter(r=>r.status==='saved').length} saved; {vendorResults.filter(r=>r.status==='error').length} errors.
+          {vendorResults.filter(r=>r.status==='error').map(r=><p key={r.qboId}>{r.name}: {r.reason}</p>)}</div>}
+      </div></div>}
 
       {/* ── OVERVIEW TAB ── */}
       {qbTab==='overview'&&<>

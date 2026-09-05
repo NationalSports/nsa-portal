@@ -1021,7 +1021,8 @@ export function createQBSyncEngine(ctx){
       const resolveExistingVendorId=vendorName=>{
         if(vendorQBMap[vendorName])return vendorQBMap[vendorName];
         const portalVendor=vend.find(x=>x.name===vendorName)||D_V.find(x=>x.name===vendorName);
-        const bySavedId=portalVendor?.qb_vendor_id&&existingQBVendors.filter(q=>String(q.Id)===String(portalVendor.qb_vendor_id)
+        const savedVendorId=qbConfig.vendorQBMap?.[portalVendor?.id]||portalVendor?.qb_vendor_id;
+        const bySavedId=savedVendorId&&existingQBVendors.filter(q=>String(q.Id)===String(savedVendorId)
           &&(q.DisplayName===vendorName||q.CompanyName===vendorName));
         const exact=existingQBVendors.filter(q=>q.DisplayName===vendorName||q.CompanyName===vendorName);
         const matches=bySavedId?.length?bySavedId:exact;
