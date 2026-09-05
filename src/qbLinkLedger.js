@@ -59,7 +59,7 @@ export async function persistVerifiedQBLink(client, {realmId, mapKey, sourceIds,
       const update = await client.from('app_state').update(row).eq('id',row.id).eq('value',before.data.value);
       if (update.error) throw new Error('Durable QBO link save failed: ' + update.error.message);
     } else {
-      if (!active) throw new Error('Recover and verify this legacy link before clearing it.');
+      // A read-back-verified cleanup can tombstone a legacy in-blob link too.
       const insert = await client.from('app_state').upsert(row,{onConflict:'id',ignoreDuplicates:true});
       if (insert.error) throw new Error('Durable QBO link save failed: ' + insert.error.message);
     }

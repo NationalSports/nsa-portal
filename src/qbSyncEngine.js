@@ -800,6 +800,7 @@ export function createQBSyncEngine(ctx){
           const res=existing?{Item:existing}:await qbApi('upsert_item',{item:qbItem});
           if(!res?.Item?.Id)throw new Error(qbResponseErrorDetail(res));
           const verified=await verifyCanaryReadback('Item',res.Item.Id,{sku});
+          if(String(verified.Name||'').trim().toUpperCase()!==sku)throw new Error('QBO item name did not match the normalized SKU on API read-back.');
           if(verified.Active===false||String(verified.Type||'').toLowerCase()!=='noninventory')throw new Error('QBO item was inactive or not NonInventory on API read-back.');
           if(String(verified.IncomeAccountRef?.value||'')!==String(incomeAcctRef.value)||String(verified.ExpenseAccountRef?.value||'')!==String(purchasesAcctRef.value))throw new Error('QBO item accounts did not match 40000/51300 on API read-back.');
           const itemLog={ts:log.ts,type:log.type,status:'success',details:[

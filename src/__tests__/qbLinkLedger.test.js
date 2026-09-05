@@ -68,3 +68,13 @@ test('variant links share an item, and cleanup tombstones survive stale configur
 test('source key encoding does not collapse punctuation into a collision',()=>{
   expect(qbLinkKey('realm','qbPOMap','PO/A')).not.toBe(qbLinkKey('realm','qbPOMap','PO_A'));
 });
+
+
+test('read-back-verified cleanup tombstones a legacy link without a prior receipt',async()=>{
+  const {client,rows}=database();
+  const product=record('prodQBMap',{qboId:'183',active:false});
+  await persistVerifiedQBLink(client,product);
+  const loaded=mergeDurableQBLinks({realm_id:product.realmId,prodQBMap:{'source-1':'183'}},
+    Object.fromEntries([...rows].map(([k,row])=>[k,row.value])));
+  expect(loaded.prodQBMap).toEqual({});
+});
