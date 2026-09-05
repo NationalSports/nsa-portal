@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import * as Sentry from '@sentry/react';
 import './portal.css';
+import { classifySaveAlert } from './lib/saveAlertClassification';
 import MobilePortal from './MobilePortal';
 import DashboardOverview from './DashboardOverview';
 import BarcodeScanner from './BarcodeScanner';
@@ -3762,10 +3763,10 @@ export default function App(){
           +'</div>',senderName:'NSA Portal',senderEmail:companyInfo?.email||'team@nsa-teamwear.com'}).catch(e=>console.warn('[alert] verify_fail email failed:',e));
         return;
       }
-      const lostText=(prevCount!=null&&newCount!=null)?(prevCount-newCount)+' of '+prevCount+' item(s)':(prevCount!=null?prevCount+' item(s)':'item(s)');
-      const isBlocked=kind==='blocked'||kind==='bg_shrink_blocked'||kind==='qty_wipe_blocked';
+      const {isBlocked,entity:alertEntity,action:alertAction,unit:alertUnit,countLabel}=classifySaveAlert(kind,soId);
+      const lostText=(prevCount!=null&&newCount!=null)?(prevCount-newCount)+' of '+prevCount+' '+alertUnit:(prevCount!=null?prevCount+' '+alertUnit:alertUnit);
       const detail=(isBlocked?'Save blocked: ':'Items removed: ')+lostText+(reason?' — '+reason:'');
-      logChange(isBlocked?'save_blocked':'data_loss','SO',soId,detail);
+      logChange(alertAction,alertEntity,soId,detail);
       if(kind==='blocked')return; // plain blocked saves are logged but not emailed — no data is lost, so they're informational only
       // bg_shrink_blocked falls through so admin gets a heads-up that stale state nearly wiped an estimate
       const dedupeKey=kind+':'+soId;const last=_alertDedupeRef.current[dedupeKey]||0;const now=Date.now();
@@ -3789,13 +3790,13 @@ export default function App(){
       const subject=(isBlocked?'⚠️ NSA Portal — Save blocked on ':'🚨 NSA Portal — Items lost on ')+soId;
       const html='<div style="font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#0f172a">'
         +'<h2 style="color:'+(isBlocked?'#d97706':'#dc2626')+';margin:0 0 8px">'+(isBlocked?'Save blocked':'Items lost')+': '+soId+'</h2>'
-        +'<p><strong>SO:</strong> '+soId+'<br/>'
+        +'<p><strong>'+alertEntity+':</strong> '+soId+'<br/>'
         +'<strong>User:</strong> '+(cu?.name||cu?.id||'unknown')+'<br/>'
         +'<strong>When:</strong> '+new Date().toLocaleString()+'<br/>'
-        +(prevCount!=null?'<strong>Items before:</strong> '+prevCount+'<br/>':'')
-        +(newCount!=null?'<strong>Items in attempted save:</strong> '+newCount+'<br/>':'')
+        +(prevCount!=null?'<strong>'+countLabel+' before:</strong> '+prevCount+'<br/>':'')
+        +(newCount!=null?'<strong>'+countLabel+' in attempted save:</strong> '+newCount+'<br/>':'')
         +'<strong>Reason:</strong> '+(reason||'(none)')+'</p>'
-        +(isBlocked?'<p>The save was refused before any data was deleted. The user was prompted to reload.</p>':'<p style="color:#dc2626"><strong>Action needed:</strong> verify the SO and restore from <code>app_state.so_history</code> if items are missing.</p>')
+        +(isBlocked?'<p>The save was blocked. This event does not confirm data loss. Review the preserved draft against the current cloud copy before retrying.</p>':'<p style="color:#dc2626"><strong>Action needed:</strong> verify the SO and restore from <code>app_state.so_history</code> if items are missing.</p>')
         +'<p style="margin-top:16px;color:#64748b;font-size:12px">This alert is throttled to once per SO+type per 5 min. The full audit trail is in System Health → Change Log.</p>'
         +'</div>';
       sendBrevoEmail({to:[{email:adminEmail,name:'Steve Peterson'}],cc:ccEmail?[{email:ccEmail}]:undefined,subject,htmlContent:html,senderName:'NSA Portal',senderEmail:companyInfo?.email||'team@nsa-teamwear.com'}).catch(e=>console.warn('[alert] email failed:',e));

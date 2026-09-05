@@ -33,3 +33,14 @@ test('only the current confirmed edit clears unsaved state',()=>{
  expect(canAcknowledgeSave(true,4,5,2,2)).toBe(false); // typed during save
  expect(canAcknowledgeSave(true,4,4,2,3)).toBe(false); // newer attempt owns acknowledgement
 });
+
+
+test('EST-2434 reordered plain jerseys do not inherit the decorated 462900 line count',()=>{
+ const db=['R095ZX','R095ZX','462900','R095ZM'].map((sku,i)=>({id:i+1,line_id:'est2434-'+i,item_index:i,sku}));
+ const counts=new Map([[1,0],[2,0],[3,1],[4,0]]);
+ const client=[db[2],db[0],db[3],db[1]].map(row=>({...row,decorations:row.sku==='462900'?[{}]:[]}));
+ expect(decorationShrinkConflicts(client,db,counts,{})).toEqual([]);
+ client[0].decorations=[];
+ expect(decorationShrinkConflicts(client,db,counts,{})).toHaveLength(1);
+ expect(decorationShrinkConflicts(client,db,counts,{'line:est2434-2':{from:1,to:0}})).toEqual([]);
+});

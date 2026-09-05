@@ -39,3 +39,9 @@ The fixture includes 430 column definitions captured from read-only schema metad
 For two-session races, use a disposable native PostgreSQL 17 server on a Unix socket under `/private/tmp/`, with database/user `postgres` and port 54991. Install `pg` and PGlite outside the repository, set `PG_MODULE`, `PGLITE_MODULE`, and `PG_SCRATCH_SOCKET`, then run `order_save_scenarios.cjs` followed by `order_save_concurrency.cjs`. `PG_SCRATCH_RESET=1` destroys the fixture schema and is only for that disposable server. The scripts reject network database URLs.
 
 Native two-session scenarios verify competing saves, identical retries, reader isolation, and a receiving update racing a full save. Transaction scenarios also cover late-child failure rollback, stale bases, malformed collections, artwork-only writes, estimate artwork rollback, stable identities, and RPC access restrictions.
+
+## EST-2434 alert follow-up
+
+The September 5, 06:34:57 alert matched a `deco_shrink_blocked` event. The handler omitted that kind from its blocked-save classification, mislabeled decoration counts as item counts, and wrote a `data_loss` audit entry despite the guard rejecting the save. Email and audit now share a classification helper: this event is a blocked estimate save with decoration counts, and it does not instruct restoration on the basis of the alert alone.
+
+Read-only inspection found four current lines (R095ZX, R095ZX, 462900, R095ZM), with one decoration on 462900. This establishes the current saved contents, not whether every historical intended edit survived. The rejected browser payload was not available to prove the exact trigger. A regression covers this layout being reordered, and still requires explicit intent for a real decoration deletion. Three targeted suites pass (12 tests); no live records or historical audit entries were changed.
