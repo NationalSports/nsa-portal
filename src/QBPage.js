@@ -78,6 +78,7 @@ export default function QBPage(){
   const [qbCanaryProductId,setQbCanaryProductId]=useState('');
   const [qbCanarySOId,setQbCanarySOId]=useState('');
   const [qbCanaryPOId,setQbCanaryPOId]=useState('');
+  const [qbReconcilePOId,setQbReconcilePOId]=useState('');
   const [poCanaryReview,setPoCanaryReview]=useState(null);
   const [qbPreflighting,setQbPreflighting]=useState(false);
   const [stripePayouts,setStripePayouts]=useState([]);
@@ -179,7 +180,7 @@ export default function QBPage(){
 
     // Sync engine — one copy of the logic (see qbSyncEngine.js); the App-level
     // auto-sync builds the same engine from fresh state, no page visit required.
-    const {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,persistQbLink,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
+    const {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,persistQbLink,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
 
     // Read-only live-company inspection. This is the mandatory first step and
     // performs no QBO create/update calls.
@@ -707,6 +708,15 @@ export default function QBPage(){
                 <button className="btn btn-sm" style={{marginLeft:8}} disabled={qbSyncing} onClick={()=>{setPoCanaryReview(null);nf('Purchase-order canary cancelled — nothing was sent')}}>Cancel</button>
               </section>}
               {poCanaryBlock&&<div style={{fontSize:10,color:'#b91c1c',marginTop:6,fontWeight:600}}>{poCanaryBlock}</div>}
+              <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid #ddd6fe'}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#5b21b6'}}>Verify an existing native PO-to-bill link</div>
+                <select className="form-input" aria-label="Linked purchase order to verify" style={{marginTop:6}} disabled={qbSyncing} value={qbReconcilePOId} onChange={e=>setQbReconcilePOId(e.target.value)}>
+                  <option value="">Select a linked purchase order...</option>
+                  {Object.keys(qbConfig.qbPOMap||{}).filter(id=>!(qbConfig.qbPOBillMap||{})[id]).map(id=><option key={id} value={id}>{id} — QBO #{qbConfig.qbPOMap[id]}</option>)}
+                </select>
+                <button className="btn btn-primary btn-sm" style={{marginTop:8,background:'#5b21b6'}} disabled={qbSyncing||!livePreflightReady||!qbReconcilePOId} onClick={()=>verifyPurchaseOrderBillLinks({canaryPOId:qbReconcilePOId})}>Verify link by API read-back</button>
+                <div style={{fontSize:10,color:'#64748b',marginTop:6}}>Reads both existing QBO records and saves a receipt only when the Bill and Purchase Order contain reciprocal links.</div>
+              </div>
             </div>
           </div>
           {!livePreflightReady&&<div style={{padding:'0 16px 12px',fontSize:11,color:'#92400e',fontWeight:600}}>Buttons disabled: run Read-Only Live Preflight first.</div>}

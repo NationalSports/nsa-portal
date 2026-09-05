@@ -148,6 +148,25 @@ export function groupPortalPurchaseOrders(sos = [], poMap = {}) {
   return [...groups.values()];
 }
 
+export function qbLinkedTransactions(entity = {}) {
+  return [...(entity.LinkedTxn || []), ...(entity.Line || []).flatMap(line => line.LinkedTxn || [])];
+}
+
+export function billReferencesPortalPO(bill = {}, portalPOId = '') {
+  const note = String(bill.PrivateNote || '');
+  const wanted = String(portalPOId || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!wanted) return false;
+  return note.split('|').some(part => {
+    const match = part.trim().match(/^PO\s*:\s*(.+)$/i);
+    return match && match[1].trim().toLowerCase().replace(/\s+/g, ' ') === wanted;
+  });
+}
+
+export function findQbPOBillCandidates(bills = [], portalPOId, qboPOId) {
+  return (bills || []).filter(bill => billReferencesPortalPO(bill, portalPOId)
+    || qbLinkedTransactions(bill).some(link => link.TxnType === 'PurchaseOrder' && String(link.TxnId) === String(qboPOId)));
+}
+
 export function buildQBInvoicePostingLines({ invoice, salesItemId, discountAccountRef, description }) {
   const cents = value => Math.round(safeNum(value) * 100) / 100;
   const total = cents(invoice?.total);
@@ -1046,6 +1065,49 @@ export function createQBSyncEngine(ctx){
       return{status:synced===1?'success':'blocked',synced};
     };
 
+    // Verify native PO-to-existing-bill relationships that were created through
+    // QBO's supported Add to Bill workflow. This routine is read-only in QBO;
+    // it writes a durable portal receipt only after both records agree.
+    const verifyPurchaseOrderBillLinks=async(options={})=>{
+      if(!canaryPreflightReady()||!requireDurableLinks())return{status:'blocked',verified:0};
+      const canaryPOId=String(options.canaryPOId||'');
+      const receiptMap={...(qbConfig.qbPOBillMap||{})};
+      const candidates=Object.entries(qbConfig.qbPOMap||{}).filter(([portalPOId])=>!receiptMap[portalPOId]);
+      const selected=canaryPOId?candidates.filter(([portalPOId])=>String(portalPOId)===canaryPOId):candidates.slice(0,QB_SYNC_BATCH_SIZE);
+      if(canaryPOId&&selected.length!==1){nf('Choose one linked purchase order without a reconciliation receipt','error');return{status:'blocked',verified:0}}
+      if(!selected.length){nf('No PO-to-bill links are waiting for verification');return{status:'success',verified:0}}
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:canaryPOId?'purchase_order_bill_canary':'purchase_order_bill_links',status:'success',details:[]};
+      let bills=[];let verified=0;
+      try{bills=await loadAllQBEntities(qbApi,'Bill','*',500)}catch(e){
+        log.status='error';log.details.push('Bill read-back failed: '+e.message);
+        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));setQbSyncing(false);nf('PO-to-bill verification blocked — QBO bill query failed','error');return{status:'blocked',verified:0};
+      }
+      for(const [portalPOId,qboPOId] of selected){
+        try{
+          const poResult=await queryQBReadOnly(qbApi,"SELECT * FROM PurchaseOrder WHERE Id = '"+String(qboPOId).replace(/'/g,"\\'")+"' MAXRESULTS 1",'purchase-order API read-back');
+          const po=poResult?.QueryResponse?.PurchaseOrder?.[0];
+          if(!po||String(po.Id)!==String(qboPOId))throw new Error('saved QBO purchase order was not returned');
+          const matches=findQbPOBillCandidates(bills,portalPOId,qboPOId);
+          if(matches.length!==1)throw new Error(matches.length?'multiple bills reference this purchase order':'no bill references this purchase order');
+          const bill=matches[0];
+          const billLinks=qbLinkedTransactions(bill).filter(link=>link.TxnType==='PurchaseOrder');
+          const poLinks=qbLinkedTransactions(po).filter(link=>link.TxnType==='Bill');
+          if(!billLinks.some(link=>String(link.TxnId)===String(qboPOId)))throw new Error('bill API read-back does not contain the purchase-order link');
+          if(!poLinks.some(link=>String(link.TxnId)===String(bill.Id)))throw new Error('purchase-order API read-back does not contain the bill link');
+          if(String(bill.VendorRef?.value||'')!==String(po.VendorRef?.value||''))throw new Error('bill and purchase order vendors differ');
+          await persistQbLink({mapKey:'qbPOBillMap',sourceIds:[portalPOId],qboId:bill.Id,log:{...log,details:[portalPOId+' — QBO PO #'+qboPOId+' linked to existing Bill #'+bill.Id+' and verified from both API records']},evidence:{result:'verified',api_readback:true,purchase_order_id:String(qboPOId),bill_id:String(bill.Id),bill_doc_number:bill.DocNumber||'',bill_date:bill.TxnDate||'',bill_total:safeNum(bill.TotalAmt),purchase_order_total:safeNum(po.TotalAmt),vendor_id:String(po.VendorRef?.value||''),reciprocal_link:true}});
+          receiptMap[portalPOId]=String(bill.Id);verified++;
+          log.details.push(portalPOId+' — VERIFIED: QBO PO #'+qboPOId+' ↔ existing Bill #'+bill.Id);
+        }catch(e){log.status='partial';log.details.push(portalPOId+' — BLOCKED: '+e.message)}
+      }
+      log.details.unshift(verified+'/'+selected.length+(canaryPOId?' PO-to-bill canary':' PO-to-bill links')+' verified by reciprocal API read-back');
+      if(!verified)log.status='error';
+      setQBConfig(prev=>({...prev,qbPOBillMap:{...prev.qbPOBillMap,...receiptMap},syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
+      setQbSyncing(false);nf(verified+' PO-to-bill link'+(verified===1?'':'s')+' verified',verified?'success':'error');
+      return{status:verified===selected.length?'success':'blocked',verified};
+    };
+
     // ── SYNC ALL ──
     const syncAll=async()=>{
       if(migrationBatchLocked())return{status:'blocked'};
@@ -1062,5 +1124,5 @@ export function createQBSyncEngine(ctx){
       setQbSyncing(false);
     };
 
-    return {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,syncAll};
+    return {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,syncAll};
 }
