@@ -36,6 +36,9 @@ const root=path.resolve(__dirname,'../..');const read=f=>fs.readFileSync(path.jo
  await db.exec(read('supabase/migrations/20260901154306_fix_estimate_decoration_shrink_null_guard.sql'));
  await db.exec(read('supabase/migrations/20260905134208_atomic_sales_order_save.sql'));
  await db.exec(read('supabase/migrations/20260905135224_stable_order_line_identity.sql'));
+ await db.exec(read('supabase/migrations/20260905164405_preserve_order_trigger_search_path.sql'));
+ // Production trigger functions include unqualified references inherited from the writer.
+ await db.exec("create function order_estimate_trigger() returns trigger language plpgsql as $$begin perform id from estimates where id=new.estimate_id;return new;end$$;create trigger order_estimate_check before insert or update on sales_orders for each row execute function order_estimate_trigger();");
  const query=async(sql,args=[]) => (await db.query(sql,args.map(a=>a!==null&&typeof a==='object'?JSON.stringify(a):a))).rows;
  const token=async id=>(await query('select sales_order_save_token($1) t',[id]))[0].t;
  const estToken=async id=>(await query('select estimate_save_token($1) t',[id]))[0].t;

@@ -1,0 +1,48 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Draft recovery browser verification</title>
+<style>body{font:16px system-ui;max-width:760px;margin:40px auto;padding:0 20px}button{padding:10px;margin:8px 8px 8px 0}pre{white-space:pre-wrap;background:#f1f5f9;padding:20px}</style>
+<h1>Draft recovery browser verification</h1><p>Uses synthetic documents in an isolated local browser database. No ERP requests are sent.</p>
+<button id="run">Run browser checks</button><button id="reload">Reload and verify recovery</button><pre id="result">Ready</pre>
+<script type="module">
+import {createDraftJournal} from '../../src/lib/draftJournal.js';
+import {createSaveRetryCoordinator} from '../../src/lib/saveRetryCoordinator.js';
+const output=document.querySelector('#result');
+const name=sessionStorage.getItem('draft-check-db')||'draft-check-'+Date.now();sessionStorage.setItem('draft-check-db',name);
+const a=createDraftJournal({name,session:'browser-a'}),b=createDraftJournal({name,session:'browser-b'});
+const assert=(ok,label)=>{if(!ok)throw new Error(label);output.textContent+='\nPASS '+label;};
+document.querySelector('#run').onclick=async()=>{
+ output.textContent='Running native IndexedDB checks';
+ try{
+ const source={id:'SO-SYNTHETIC',memo:'draft A'};
+ const pending=a.stage('test-owner','sales_orders',source);source.memo='later mutation';const old=await pending;
+ assert((await a.list('test-owner'))[0].payload.memo==='draft A','immutable capture');
+ const latest=await a.stage('test-owner','sales_orders',{id:'SO-SYNTHETIC',memo:'draft A newer'});
+ const other=await b.stage('test-owner','sales_orders',{id:'SO-SYNTHETIC',memo:'draft B'});
+ assert((await a.list('test-owner')).length===2,'independent connections preserve both drafts');
+ assert(await b.acknowledge(old)===false,'late response cannot clear newer draft');
+ assert(await a.update(old,{id:'SO-SYNTHETIC',memo:'late failed write'})===false,'late failure cannot overwrite newer draft');
+ await a.acknowledge(latest);
+ assert((await b.list('test-owner'))[0].revision===other.revision,'acknowledgement clears only its own revision');
+ assert((await b.list('different-owner')).length===0,'recovery list is scoped to its owner');
+ const retries=createSaveRetryCoordinator();
+ const edit={id:'SO-RETRY-SYNTHETIC',memo:'intended edit',items:[{sizes:{M:2}}],_version:3};
+ const receipt=retries.begin('test-owner','sales_orders',edit);retries.finish(receipt,false);
+ edit.memo='refreshed screen';edit.items=[];
+ let release,calls=0;
+ const response=new Promise(resolve=>{release=resolve;});
+ const args={owner:'test-owner',ids:[edit.id],canRetry:()=>true,save:async(table,payload)=>{
+   calls++;assert(payload.memo==='intended edit'&&payload.items[0].sizes.M===2&&payload._version===3,'retry preserves attempted content and revision');
+   await response;return false;
+ }};
+ const first=retries.retry(args),second=retries.retry(args);
+ assert(first===second&&calls===1,'overlapping retry triggers send once');
+ release();await first;
+ const wrongOwner=await retries.retry({...args,owner:'different-owner'});
+ assert(wrongOwner.skipped===1&&calls===1,'retry cannot borrow another staff member’s draft');
+ sessionStorage.setItem('draft-check-revision',other.revision);
+ output.textContent+='\nReady for reload verification';
+ }catch(error){output.textContent+='\nFAIL '+error.message;}
+};
+document.querySelector('#reload').onclick=()=>location.reload();
+const expected=sessionStorage.getItem('draft-check-revision');
+if(expected){try{const rows=await a.list('test-owner');assert(rows.some(r=>r.revision===expected&&r.payload.memo==='draft B'),'draft survives page reload');}catch(error){output.textContent='FAIL '+error.message;}}
+</script></html>
