@@ -2,7 +2,7 @@
 
 ## Scope and behavior
 
-For an existing versioned sales order, clicking its Memo field opens a separate editor in both classic and redesigned interfaces. New orders and estimates keep their existing form. Other unsaved order edits must be saved or reviewed before opening this editor.
+For an existing versioned sales order, clicking its Memo field edits it inline in both classic and redesigned interfaces. Save memo (or Enter) commits only that field. A compact status distinguishes an unsaved local draft from a confirmed cloud save; recovery actions sit under Draft options. Same-field conflicts are reviewed beside the input. If the user navigates away with the editor open, the existing recovery dialog retains the same in-memory command so even a storage failure cannot silently erase the text. New orders and estimates keep their existing form. Other unsaved order edits must be saved or reviewed before opening this editor.
 
 A memo edit calls `save_sales_order_memo` with only the order ID, expected memo, new memo and stable request UUID. It bypasses `savSO`, price locking, promotion/shipping updates, the full-order outbox and child preparation. Only the confirmed memo is adopted into screen state and the diff snapshot; the RPC's newer aggregate version is **not** applied to old item data. Later full saves retain their original revision checks.
 
@@ -35,3 +35,7 @@ For an application rollback, redeploy the previous frontend while retaining the 
 - Native browser checks use `node scripts/browser/build-memo-check.cjs /private/tmp/nsa-memo-browser`, served on localhost. They exercise the actual dialog with synthetic cloud responses and native IndexedDB: conflicting text review, explicit replacement, failed network, recovery in a fresh tab, and recovery after closing the dialog and reloading. No ERP requests are made by the harness.
 
 See [Supabase database functions](https://supabase.com/docs/guides/database/functions) for invoker permissions and schema-resolution behavior. The current Supabase changelog was checked; the listed hosted PostgreSQL changes do not alter this RPC contract.
+
+## Inline interface verification
+
+The inline change retains the existing memo RPC and owner/retry/receipt contract; it needs no database migration. All 324 suites / 4,914 tests and the production build pass. Focused tests verify Enter-to-save and preservation of draft text/request identity when the inline host disappears and returns. Native browser checks use synthetic data and native IndexedDB for conflict resolution, failed saves, and close/reload recovery. Live classic/redesigned validation of the preceding memo-command release restored SO-1140 to its original memo; item and decoration rows remained exactly unchanged.
