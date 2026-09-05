@@ -1,4 +1,4 @@
-import { billReferencesPortalPO, buildQBBillPOReplacement, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions } from '../qbSyncEngine';
+import { billReferencesPortalPO, buildQBBillPOReplacement, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions } from '../qbSyncEngine';
 import { indexQBNonInventoryItems, QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_SPECS } from '../qbAccountMappings';
 
 const accountRows = Object.values(QB_ACCOUNT_SPECS).map((spec,index)=>({
@@ -202,13 +202,13 @@ describe('QuickBooks one-record canaries', () => {
 
   test('creates one PO without creating a vendor or item and verifies read-back', async() => {
     const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:5,sizes:{S:2},po_lines:[{po_id:'PO-1',created_at:'2026-09-01',S:2,unit_cost:5}]}]};
-    const readback={Id:'PO-QB',DocNumber:'PO-1',VendorRef:{value:'V-QB'},TotalAmt:10,TxnDate:'2026-09-01'};
+    let sentPO;
     const qbApi=jest.fn(async(action,{query,purchase_order}={})=>{
       if(action==='query'&&query.includes('FROM Vendor STARTPOSITION'))return{QueryResponse:{Vendor:[{Id:'V-QB',DisplayName:'Acme',CompanyName:'Acme'}]}};
       if(action==='query'&&query.includes('FROM PurchaseOrder STARTPOSITION'))return{QueryResponse:{PurchaseOrder:[]}};
       if(action==='query'&&query.includes('FROM Account'))return accountResponse;
-      if(action==='upsert_purchase_order')return{PurchaseOrder:{Id:'PO-QB',...purchase_order}};
-      if(action==='query'&&query.includes("FROM PurchaseOrder WHERE Id = 'PO-QB'"))return{QueryResponse:{PurchaseOrder:[readback]}};
+      if(action==='upsert_purchase_order'){sentPO=purchase_order;return{PurchaseOrder:{Id:'PO-QB',...purchase_order}}}
+      if(action==='query'&&query.includes("FROM PurchaseOrder WHERE Id = 'PO-QB'"))return{QueryResponse:{PurchaseOrder:[{Id:'PO-QB',...sentPO,TotalAmt:10}]}};
       throw new Error('Unexpected QBO call: '+action+' '+query);
     });
     const{engine,getConfig}=makeEngine({qbApi,sos:[so],prod:[{id:'P1',sku:'SKU-1'}],vend:[{id:'V1',name:'Acme'}]});
@@ -227,7 +227,7 @@ describe('QuickBooks one-record canaries', () => {
       if(action==='query'&&query.includes('FROM PurchaseOrder STARTPOSITION'))return{QueryResponse:{PurchaseOrder:[]}};
       if(action==='query'&&query.includes('FROM Account'))return accountResponse;
       if(action==='upsert_purchase_order'){sentPO=purchase_order;return{PurchaseOrder:{Id:'PO-QB',...purchase_order}}}
-      if(action==='query'&&query.includes("FROM PurchaseOrder WHERE Id = 'PO-QB'"))return{QueryResponse:{PurchaseOrder:[{Id:'PO-QB',DocNumber:'PO-1',VendorRef:{value:'V-QB'},TotalAmt:37.12,TxnDate:'2026-09-01'}]}};
+      if(action==='query'&&query.includes("FROM PurchaseOrder WHERE Id = 'PO-QB'"))return{QueryResponse:{PurchaseOrder:[{Id:'PO-QB',...sentPO,TotalAmt:37.12}]}};
       throw new Error('Unexpected QBO call: '+action+' '+query);
     });
     const{engine,getConfig}=makeEngine({qbApi,sos:[so],prod:[{id:'P1',sku:'SKU-1'}],vend:[{id:'V1',name:'Acme'}]});
@@ -255,28 +255,25 @@ describe('QuickBooks one-record canaries', () => {
     expect(getConfig().syncLog[0].details).toContain('PO-1 — FAILED: Transaction date is prior to start date for inventory item');
   });
 
-  test('runs only approved eligible POs and persists each verified batch record', async()=>{
-    const makeItem=(id,sku,poId)=>({product_id:id,sku,name:sku,brand:'Acme',po_lines:[{po_id:poId,created_at:'2026-09-01',S:1,unit_cost:5}]});
-    const sos=[{id:'SO-1',items:[makeItem('P1','SKU-1','PO-1'),makeItem('P2','SKU-2','PO-2'),makeItem('P3','SKU-3','PO-BLOCKED')]}];
-    let next=0;
+  test('requires an exact approved PO list and verifies every batch line before saving a durable link', async() => {
+    const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:5,sizes:{S:2},po_lines:[{po_id:'PO-1',created_at:'2026-09-01',S:2,unit_cost:5}]}]};
+    let sentPO;
     const qbApi=jest.fn(async(action,{query,purchase_order}={})=>{
-      if(query?.includes('FROM Vendor STARTPOSITION'))return{QueryResponse:{Vendor:[{Id:'V-QB',DisplayName:'Acme',CompanyName:'Acme'}]}};
+      if(query?.includes('FROM Vendor STARTPOSITION'))return{QueryResponse:{Vendor:[{Id:'V-QB',DisplayName:'Acme'}]}};
       if(query?.includes('FROM PurchaseOrder STARTPOSITION'))return{QueryResponse:{PurchaseOrder:[]}};
       if(query?.includes('FROM Account'))return accountResponse;
-      if(action==='upsert_purchase_order')return{PurchaseOrder:{Id:'NEW-'+(++next),...purchase_order}};
-      if(query?.includes("FROM PurchaseOrder WHERE Id = 'NEW-")){
-        const id=query.match(/Id = '([^']+)'/)[1],index=Number(id.split('-')[1])-1,poId=['PO-1','PO-2'][index];
-        return{QueryResponse:{PurchaseOrder:[{Id:id,DocNumber:poId,VendorRef:{value:'V-QB'},TotalAmt:5,TxnDate:'2026-09-01'}]}};
-      }
-      throw new Error('Unexpected QBO call: '+action+' '+query);
+      if(action==='upsert_purchase_order'){sentPO=purchase_order;return{PurchaseOrder:{Id:'PO-QB'}}}
+      if(query?.includes("FROM PurchaseOrder WHERE Id = 'PO-QB'"))return{QueryResponse:{PurchaseOrder:[{Id:'PO-QB',...sentPO,TotalAmt:10}]}};
+      throw new Error('Unexpected QBO call');
     });
-    const{engine,getConfig,persistQbLink}=makeEngine({qbApi,sos,prod:[{id:'P1',sku:'SKU-1'},{id:'P2',sku:'SKU-2'},{id:'P3',sku:'SKU-3'}],vend:[{id:'V1',name:'Acme'}]});
-    getConfig().initialMigrationApproved=true;getConfig().prodQBMap={P1:'I-1',P2:'I-2'};
-    await expect(engine.syncPurchaseOrders({}, {approved:true})).resolves.toEqual({status:'success',synced:2});
-    expect(persistQbLink).toHaveBeenCalledTimes(2);
-    expect(qbApi.mock.calls.filter(([action])=>action==='upsert_vendor')).toHaveLength(0);
-    expect(getConfig().qbPOMap).toEqual({'PO-1':'NEW-1','PO-2':'NEW-2'});
-    expect(getConfig().syncLog[0].details[0]).toContain('1 blocked before batch');
+    const{engine,getConfig,persistQbLink}=makeEngine({qbApi,sos:[so],prod:[{id:'P1',sku:'SKU-1'}],vend:[{id:'V1',name:'Acme'}]});
+    getConfig().initialMigrationApproved=true;getConfig().prodQBMap.P1='I-1';
+    await expect(engine.syncPurchaseOrders({},{})).resolves.toEqual({status:'blocked',synced:0});
+    expect(qbApi).not.toHaveBeenCalled();
+    const result=await engine.syncPurchaseOrders({}, {approved:true,approvedPOIds:['PO-1']});
+    expect(result).toEqual(expect.objectContaining({status:'success',synced:1,report:expect.objectContaining({counts:{created:1}})}));
+    expect(persistQbLink).toHaveBeenCalledWith(expect.objectContaining({mapKey:'qbPOMap',sourceIds:['PO-1'],evidence:expect.objectContaining({api_readback:true,line_count:1})}));
+    expect(getConfig().lastPurchaseOrderBatch.results[0]).toEqual(expect.objectContaining({poId:'PO-1',qboId:'PO-QB',result:'created'}));
   });
 
   test('verifies reciprocal PO-to-existing-bill links and persists one durable receipt', async() => {
@@ -386,4 +383,14 @@ test('PO-to-bill matching uses exact memo references and line links',()=>{
   expect(billReferencesPortalPO({PrivateNote:'PO: PO 58971 SHHGS | Tracking: 123'},'PO 58971 SHHGS')).toBe(true);
   expect(billReferencesPortalPO({PrivateNote:'PO: PO 58971 SHHGS-OTHER'},'PO 58971 SHHGS')).toBe(false);
   expect(findQbPOBillCandidates([lineLinked], 'different', '418')).toEqual([lineLinked]);
+});
+
+test('purchase-order preview identifies ready POs and missing item links without writing',()=>{
+  const sos=[{id:'SO-1',items:[
+    {product_id:'P1',sku:'READY',name:'Ready',brand:'Acme',nsa_cost:5,po_lines:[{po_id:'PO-1',created_at:'2026-09-01',S:2,unit_cost:5}]},
+    {product_id:'P2',sku:'MISSING',name:'Missing',brand:'Acme',nsa_cost:4,po_lines:[{po_id:'PO-2',created_at:'2026-09-01',M:1,unit_cost:4}]},
+  ]}];
+  const rows=buildQBPurchaseOrderPreviewRows(sos,[{id:'P1',sku:'READY'},{id:'P2',sku:'MISSING'}],{P1:'I-1'},{});
+  expect(rows.find(row=>row.poId==='PO-1')).toEqual(expect.objectContaining({action:'ready',total:10}));
+  expect(rows.find(row=>row.poId==='PO-2')).toEqual(expect.objectContaining({action:'blocked',reason:'missing QBO NonInventory item for MISSING'}));
 });

@@ -148,6 +148,34 @@ export function groupPortalPurchaseOrders(sos = [], poMap = {}) {
   return [...groups.values()];
 }
 
+export function buildQBPurchaseOrderPreviewRows(sos = [], products = [], prodQBMap = {}, poMap = {}) {
+  const productIdBySku = new Map(products.map(product => [String(product.sku || '').trim().toUpperCase(), product.id]));
+  return groupPortalPurchaseOrders(sos, poMap).map(group => {
+    const reasons = new Set(group.invalidReason ? [group.invalidReason] : []);
+    if (!String(group.vendor || '').trim()) reasons.add('missing saved vendor');
+    if (!parseQBDateValue(group.created_at)) reasons.add('invalid or missing PO date');
+    let total = 0;
+    const skus = new Set();
+    group.entries.forEach(({pl, it}) => {
+      const qty = Object.entries(pl || {}).filter(([key,value]) => typeof value === 'number'
+        && !key.startsWith('_') && !['unit_cost','billed','tracking_numbers','vendor','drop_ship'].includes(key)
+        && /^[A-Z0-9]/.test(key)).reduce((sum,[,value]) => sum + value, 0);
+      const rate = qbCurrency(pl?.unit_cost !== undefined && pl?.unit_cost !== null && pl?.unit_cost !== '' ? pl.unit_cost : it?.nsa_cost);
+      if (!(qty > 0) || rate < 0) return;
+      total += qty * rate;
+      if (group.accountKey === 'deco_account') return;
+      const sku = String(it?.sku || '').trim().toUpperCase();
+      const productId = it?.product_id || productIdBySku.get(sku);
+      skus.add(sku || '(blank SKU)');
+      if (!sku || !productId || !prodQBMap[productId]) reasons.add('missing QBO NonInventory item for ' + (sku || '(blank SKU)'));
+    });
+    total = qbCurrency(total);
+    if (!(total > 0)) reasons.add('no positive purchase-order lines');
+    return {poId:String(group.poId),vendor:String(group.vendor || ''),date:parseQBDateValue(group.created_at) || '',
+      lineCount:group.entries.length,skus:[...skus],total,action:reasons.size ? 'blocked' : 'ready',reason:[...reasons].join('; ')};
+  });
+}
+
 export function qbLinkedTransactions(entity = {}) {
   return [...(entity.LinkedTxn || []), ...(entity.Line || []).flatMap(line => line.LinkedTxn || [])];
 }
@@ -962,12 +990,18 @@ export function createQBSyncEngine(ctx){
     const syncPurchaseOrders=async(prodQBMapArg={},options={})=>{
       const canaryPOId=String(options?.canaryPOId||'');
       const canary=!!canaryPOId;
-      if(canary?!canaryPreflightReady():(!canaryPreflightReady()||productionSyncLocked()))return;
-      if(!canary&&options.approved!==true){nf('Review and approve the next purchase-order batch first','error');return{status:'blocked',synced:0}}
+      const approvedPOIds=[...new Set((options?.approvedPOIds||[]).map(id=>String(id).trim()).filter(Boolean))];
+      if(!canary&&(options?.approved!==true||!approvedPOIds.length||approvedPOIds.length>QB_SYNC_BATCH_SIZE)){
+        nf('Purchase-order batch blocked — approve a reviewed list of 1 to 20 exact PO IDs','error');
+        return{status:'blocked',synced:0};
+      }
+      if(!canary&&(!canaryPreflightReady()||productionSyncLocked()))return{status:'blocked',synced:0};
+      if(canary&&!canaryPreflightReady())return{status:'blocked',synced:0};
       if(!requireDurableLinks())return{status:'blocked'};
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:canary?'purchase_order_canary':'purchase_orders',status:'success',details:[]};
       let synced=0;
+      const results=[];
       const poMap={...(qbConfig.qbPOMap||{})};
       // Fetch existing QB vendors to match by name and avoid duplicates
       let existingQBVendors=[];
@@ -987,7 +1021,8 @@ export function createQBSyncEngine(ctx){
       const resolveExistingVendorId=vendorName=>{
         if(vendorQBMap[vendorName])return vendorQBMap[vendorName];
         const portalVendor=vend.find(x=>x.name===vendorName)||D_V.find(x=>x.name===vendorName);
-        const bySavedId=portalVendor?.qb_vendor_id&&existingQBVendors.filter(q=>String(q.Id)===String(portalVendor.qb_vendor_id));
+        const bySavedId=portalVendor?.qb_vendor_id&&existingQBVendors.filter(q=>String(q.Id)===String(portalVendor.qb_vendor_id)
+          &&(q.DisplayName===vendorName||q.CompanyName===vendorName));
         const exact=existingQBVendors.filter(q=>q.DisplayName===vendorName||q.CompanyName===vendorName);
         const matches=bySavedId?.length?bySavedId:exact;
         if(matches.length===1)vendorQBMap[vendorName]=matches[0].Id;
@@ -1005,34 +1040,28 @@ export function createQBSyncEngine(ctx){
       // Group PO lines by po_id so we push one QB PO with all line items
       const allPoGroups=groupPortalPurchaseOrders(sos,poMap);
       const effectiveProdQBMap={...(qbConfig.prodQBMap||{}),...(prodQBMapArg||{})};
-      const eligiblePoGroups=allPoGroups.filter(group=>{
-        if(group.invalidReason||!group.vendor||!parseQBDateValue(group.created_at)||!resolveExistingVendorId(group.vendor))return false;
-        if(group.accountKey==='deco_account')return true;
-        return group.entries.every(({it:i})=>{
-          const sku=String(i.sku||'').trim().toUpperCase();
-          const productId=i.product_id||(prod.find(pp=>String(pp.sku||'').trim().toUpperCase()===sku)||{}).id;
-          return !!(sku&&effectiveProdQBMap[productId]);
-        });
-      });
-      const purchaseOrderBatch=rotatingBatch(eligiblePoGroups,qbConfig._purchaseOrderSyncOffset,QB_SYNC_BATCH_SIZE);
-      const poGroups=canary?allPoGroups.filter(group=>String(group.poId)===canaryPOId):purchaseOrderBatch.items;
+      const requestedIds=canary?[canaryPOId]:approvedPOIds;
+      const poGroups=requestedIds.map(id=>allPoGroups.find(group=>String(group.poId)===id)).filter(Boolean);
       if(canary&&poGroups.length!==1){nf('Choose exactly one pending portal purchase order','error');setQbSyncing(false);return}
+      if(!canary&&poGroups.length!==approvedPOIds.length){
+        nf('Purchase-order batch changed since review — review it again before sending','error');setQbSyncing(false);return{status:'blocked',synced:0};
+      }
       for(const group of poGroups){
-        if(group.invalidReason){log.details.push(group.poId+' — BLOCKED: '+group.invalidReason);log.status='partial';continue}
+        if(group.invalidReason){log.details.push(group.poId+' — BLOCKED: '+group.invalidReason);results.push({poId:group.poId,result:'blocked',error:group.invalidReason});log.status='partial';continue}
         const vendorName=group.vendor;
-        if(!vendorName){log.details.push(group.poId+' — skipped: no vendor name');log.status='partial';continue}
+        if(!vendorName){const error='no saved vendor name';log.details.push(group.poId+' — BLOCKED: '+error);results.push({poId:group.poId,result:'blocked',error});log.status='partial';continue}
         const poDate=parseQBDateValue(group.created_at);
-        if(!poDate){log.details.push(group.poId+' — BLOCKED: purchase-order date could not be converted to a QBO date');log.status='partial';continue}
+        if(!poDate){const error='purchase-order date could not be converted to a QBO date';log.details.push(group.poId+' — BLOCKED: '+error);results.push({poId:group.poId,result:'blocked',error});log.status='partial';continue}
         // Find or create vendor in QB
         let v=vend.find(x=>x.name===vendorName)||D_V.find(x=>x.name===vendorName);
         let qbVendorId=resolveExistingVendorId(vendorName);
         if(!qbVendorId){
           // Check existing QB vendors by name
           const vendorMatches=existingQBVendors.filter(q=>q.DisplayName===vendorName||q.CompanyName===vendorName);
-          if(vendorMatches.length>1){log.details.push(group.poId+' — BLOCKED: multiple QBO vendors exactly match "'+vendorName+'"');log.status='partial';continue}
+          if(vendorMatches.length>1){const error='multiple QBO vendors exactly match "'+vendorName+'"';log.details.push(group.poId+' — BLOCKED: '+error);results.push({poId:group.poId,result:'blocked',error});log.status='partial';continue}
           const match=vendorMatches[0];
           if(match){qbVendorId=match.Id}
-          else{log.details.push(group.poId+' — BLOCKED: vendor "'+vendorName+'" is not linked or uniquely present in QBO; PO sync never creates vendors');log.status=canary?'error':'partial';continue}
+          else{const error='vendor "'+vendorName+'" is not linked or uniquely present in QBO';log.details.push(group.poId+' — BLOCKED: '+error);results.push({poId:group.poId,result:'blocked',error});log.status='partial';continue}
           vendorQBMap[vendorName]=qbVendorId;
           if(v)setVend(prev=>prev.map(vv=>vv.id===v.id?{...vv,qb_vendor_id:qbVendorId}:vv));
         }
@@ -1059,12 +1088,12 @@ export function createQBSyncEngine(ctx){
           const entry=itemGroups.get(sku)||{sku,itemId,qty:0,amount:0,names:new Set(),soIds:new Set()};
           entry.qty+=qty;entry.amount+=qty*rate;entry.names.add(i.name);entry.soIds.add(s.id);itemGroups.set(sku,entry);
         });
-        if(missingSkuItem){log.details.push(group.poId+' — BLOCKED: QBO NonInventory item missing for '+missingSkuItem);log.status='partial';continue}
+        if(missingSkuItem){const error='QBO NonInventory item missing for '+missingSkuItem;log.details.push(group.poId+' — BLOCKED: '+error);results.push({poId:group.poId,result:'blocked',error});log.status='partial';continue}
         itemGroups.forEach(entry=>qbLines.push({DetailType:'ItemBasedExpenseLineDetail',Amount:Math.round(entry.amount*100)/100,
           Description:entry.sku+' '+[...entry.names].filter(Boolean).join(' / ')+' (SO: '+[...entry.soIds].join(', ')+')',
           ItemBasedExpenseLineDetail:{ItemRef:{value:String(entry.itemId)},Qty:entry.qty,UnitPrice:Math.round((entry.amount/entry.qty)*1e6)/1e6}}));
-        const totalAmount=qbLines.reduce((a,l)=>a+l.Amount,0);
-        if(!qbLines.length||!(totalAmount>0)){log.details.push(group.poId+' — BLOCKED: no positive purchase-order lines');log.status='partial';continue}
+        const totalAmount=qbCurrency(qbLines.reduce((a,l)=>a+l.Amount,0));
+        if(!qbLines.length||!(totalAmount>0)){const error='no positive purchase-order lines';log.details.push(group.poId+' — BLOCKED: '+error);results.push({poId:group.poId,result:'blocked',error});log.status='partial';continue}
         const soRefs=[...new Set(group.entries.map(({so:s})=>s.id))].join(', ');
         const qbPO={
           DocNumber:group.poId,
@@ -1074,36 +1103,57 @@ export function createQBSyncEngine(ctx){
           PrivateNote:'Portal PO for SO: '+soRefs,
           ...(poMap[group.poId]?{Id:poMap[group.poId],sparse:true}:{}),
         };
+        const verifyPOReadback=async id=>{
+          const verified=await verifyCanaryReadback('PurchaseOrder',id,{docNumber:group.poId,refField:'VendorRef',refValue:qbVendorId,total:totalAmount,txnDate:poDate});
+          const lineValues=line=>({type:line.DetailType,amount:safeNum(line.Amount),
+            item:String(line.ItemBasedExpenseLineDetail?.ItemRef?.value||''),qty:safeNum(line.ItemBasedExpenseLineDetail?.Qty),
+            unitPrice:safeNum(line.ItemBasedExpenseLineDetail?.UnitPrice),account:String(line.AccountBasedExpenseLineDetail?.AccountRef?.value||'')});
+          const remaining=(verified.Line||[]).map(lineValues);
+          const matches=qbLines.every(line=>{
+            const expected=lineValues(line);
+            const index=remaining.findIndex(actual=>actual.type===expected.type&&actual.item===expected.item&&actual.account===expected.account
+              &&Math.abs(actual.amount-expected.amount)<0.005&&Math.abs(actual.qty-expected.qty)<0.000001&&Math.abs(actual.unitPrice-expected.unitPrice)<0.000001);
+            if(index<0)return false;
+            remaining.splice(index,1);
+            return true;
+          });
+          if(!matches||remaining.length)throw new Error('QBO line items, quantities, rates, amounts, or accounts differ from the reviewed PO');
+          return verified;
+        };
         const sameNumber=existingQBPOs.filter(existing=>String(existing.DocNumber||'')===String(group.poId));
         const exact=sameNumber.filter(existing=>String(existing.VendorRef?.value||'')===String(qbVendorId)
           &&Math.abs(safeNum(existing.TotalAmt)-totalAmount)<0.005
           &&String(existing.TxnDate||'').slice(0,10)===String(qbPO.TxnDate||'').slice(0,10));
         if(exact.length===1&&sameNumber.length===1){
-          try{await verifyCanaryReadback('PurchaseOrder',exact[0].Id,{docNumber:group.poId,refField:'VendorRef',refValue:qbVendorId,total:totalAmount,txnDate:poDate});
-            await persistQbLink({mapKey:'qbPOMap',sourceIds:[group.poId],qboId:exact[0].Id,log:{...log,details:[group.poId+' — linked and verified QBO PO #'+exact[0].Id]},evidence:{result:'linked',batch_id:canary?null:log.ts,api_readback:true,doc_number:group.poId,vendor_id:qbVendorId,date:poDate,total:totalAmount}});}
-          catch(e){log.details.push(group.poId+' — VERIFY/PERSIST FAILED: '+e.message);log.status='error';continue}
-          poMap[group.poId]=exact[0].Id;log.details.push(group.poId+' — exact existing QB PO #'+exact[0].Id+' verified');synced++;continue;
+          try{const verified=await verifyPOReadback(exact[0].Id);
+            await persistQbLink({mapKey:'qbPOMap',sourceIds:[group.poId],qboId:verified.Id,log:{...log,details:[group.poId+' — linked and verified QBO PO #'+verified.Id]},evidence:{result:'linked',batch_id:canary?null:log.ts,api_readback:true,doc_number:group.poId,vendor_id:qbVendorId,date:poDate,total:totalAmount,line_count:qbLines.length}});
+          }catch(e){log.details.push(group.poId+' — VERIFY FAILED: '+e.message);results.push({poId:group.poId,result:'blocked',error:e.message});log.status='partial';continue}
+          poMap[group.poId]=exact[0].Id;results.push({poId:group.poId,result:'linked',qboId:String(exact[0].Id),total:totalAmount});log.details.push(group.poId+' — exact existing QB PO #'+exact[0].Id+' verified');synced++;continue;
         }
-        if(sameNumber.length){log.details.push(group.poId+' — BLOCKED: QBO purchase-order number exists with a different vendor, date, or total');log.status='partial';continue}
+        if(sameNumber.length){const error='QBO purchase-order number exists with a different vendor, date, or total';log.details.push(group.poId+' — BLOCKED: '+error);results.push({poId:group.poId,result:'blocked',error});log.status='partial';continue}
         let res;
         try{res=await qbApi('upsert_purchase_order',{purchase_order:qbPO})}
-        catch(e){log.details.push(group.poId+' — FAILED: '+e.message);log.status='partial';continue}
+        catch(e){log.details.push(group.poId+' — FAILED: '+e.message);results.push({poId:group.poId,result:'failed',error:e.message});log.status='partial';continue}
         if(res?.PurchaseOrder?.Id){
           try{
-            const verified=await verifyCanaryReadback('PurchaseOrder',res.PurchaseOrder.Id,{docNumber:group.poId,refField:'VendorRef',refValue:qbVendorId,total:totalAmount,txnDate:poDate});
-            await persistQbLink({mapKey:'qbPOMap',sourceIds:[group.poId],qboId:verified.Id,log:{...log,details:[group.poId+' — created and verified QBO PO #'+verified.Id]},evidence:{result:'created',batch_id:canary?null:log.ts,api_readback:true,doc_number:group.poId,vendor_id:qbVendorId,date:poDate,total:totalAmount}});
+            const verified=await verifyPOReadback(res.PurchaseOrder.Id);
+            await persistQbLink({mapKey:'qbPOMap',sourceIds:[group.poId],qboId:verified.Id,log:{...log,details:[group.poId+' — created and verified QBO PO #'+verified.Id]},evidence:{result:'created',batch_id:canary?null:log.ts,api_readback:true,doc_number:group.poId,vendor_id:qbVendorId,date:poDate,total:totalAmount,line_count:qbLines.length}});
             log.details.push('READ-BACK VERIFIED: '+group.poId+' · QBO PurchaseOrder #'+verified.Id+' · $'+safeNum(verified.TotalAmt).toFixed(2));
-          }catch(e){log.details.push(group.poId+' — VERIFY/PERSIST FAILED: '+e.message);log.status='error';continue}
+          }catch(e){log.details.push(group.poId+' — VERIFY FAILED: '+e.message);results.push({poId:group.poId,result:'created_unverified',qboId:String(res.PurchaseOrder.Id),error:e.message});log.status='partial';continue}
           poMap[group.poId]=res.PurchaseOrder.Id;
-          log.details.push(group.poId+' → QB PO #'+res.PurchaseOrder.Id+' ('+vendorName+' $'+totalAmount.toFixed(2)+', '+qbLines.length+' items)');synced++;
-        }else{log.details.push(group.poId+' — FAILED: '+qbResponseErrorDetail(res));log.status='partial'}
+          results.push({poId:group.poId,result:'created',qboId:String(res.PurchaseOrder.Id),total:totalAmount});log.details.push(group.poId+' → QB PO #'+res.PurchaseOrder.Id+' ('+vendorName+' $'+totalAmount.toFixed(2)+', '+qbLines.length+' items)');synced++;
+        }else{const error=qbResponseErrorDetail(res);log.details.push(group.poId+' — FAILED: '+error);results.push({poId:group.poId,result:'failed',error});log.status='partial'}
       }
       if(synced===0&&poGroups.length>0)log.status='error';
-      log.details.unshift(synced+'/'+poGroups.length+(canary?' purchase-order canary':' eligible purchase orders completed in this batch')+(eligiblePoGroups.length>poGroups.length?' · '+(eligiblePoGroups.length-poGroups.length)+' eligible remain':'')+(allPoGroups.length>eligiblePoGroups.length?' · '+(allPoGroups.length-eligiblePoGroups.length)+' blocked before batch':''));
-      setQBConfig(prev=>({...prev,...(!canary?{_purchaseOrderSyncOffset:purchaseOrderBatch.nextOffset}:{}),qbPOMap:{...prev.qbPOMap,...poMap},syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
-      nf(canary?(synced?'Created/linked and verified exactly one QBO purchase order':'Purchase-order canary stopped'):(synced+' purchase orders synced to QB'),synced?'success':'error');
+      log.details.unshift(synced+'/'+poGroups.length+(canary?' purchase-order canary':' purchase orders completed in this batch')+(allPoGroups.length>poGroups.length?' · '+(allPoGroups.length-poGroups.length)+' remain':''));
+      const report={id:'purchase-order-batch-'+new Date().toISOString(),status:synced===poGroups.length?'success':'partial',results,counts:results.reduce((counts,row)=>({...counts,[row.result]:(counts[row.result]||0)+1}),{})};
+      setQBConfig(prev=>({...prev,qbPOMap:{...prev.qbPOMap,...poMap},...(!canary?{lastPurchaseOrderBatch:report}:{}),syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
+      nf(canary?(synced?'Created/linked and verified exactly one QBO purchase order':'Purchase-order canary stopped'):
+        (synced+'/'+poGroups.length+' purchase orders verified; review the saved reconciliation'),
+        canary?(synced?'success':'error'):(synced===poGroups.length?'success':'error'));
       setQbSyncing(false);
-      return{status:synced===poGroups.length?'success':'blocked',synced};
+      if(canary)return{status:synced===1?'success':'blocked',synced};
+      return{status:synced===poGroups.length?'success':'partial',synced,report};
     };
 
     // Verify native PO-to-existing-bill relationships that were created through
