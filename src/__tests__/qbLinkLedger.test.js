@@ -93,3 +93,12 @@ test('receipt and original success log appear once before and after reload', asy
   expect(reloaded.syncLog).toEqual(immediate);
   expect(mergeQBSyncLogs([{...immediate[0],id:'other'},...immediate])).toHaveLength(2);
 });
+
+
+test('one-item summary and receipt display a single verified result',()=>{
+  const event={ts:'2026-09-05T15:08:00Z',type:'item_canary',status:'success',details:['LINK ONLY 0000 #263','READ-BACK VERIFIED']};
+  const receipt={...event,id:'receipt-263',verified_at:'2026-09-05T15:08:19Z'};
+  const summary={...event,details:['1/1 item canary · 10369 remain unlinked',...event.details]};
+  expect(mergeQBSyncLogs([summary,receipt])).toEqual([receipt]);
+  expect(mergeQBSyncLogs([{...summary,status:'partial'},receipt])).toHaveLength(2);
+});

@@ -15,7 +15,14 @@ export function qbLinkKey(realmId, mapKey, sourceId) {
 // Legacy callers may append the original log after its receipt added an ID.
 // Collapse that pair while retaining separate, explicitly identified events.
 export function mergeQBSyncLogs(entries = []) {
-  const fingerprint = ({id, verified_at, ...event}) => JSON.stringify(event);
+  const fingerprint = ({id, verified_at, ...event}) => {
+    // A successful one-item legacy summary repeats the receipt's exact details.
+    if (event.type === 'item_canary' && event.status === 'success'
+      && /^1\/1 item canary(?: ·|$)/.test(event.details?.[0] || '')) {
+      event = {...event, details:event.details.slice(1)};
+    }
+    return JSON.stringify(event);
+  };
   const identified = new Map();
   entries.filter(log => log.id).forEach(log => identified.set(log.id, log));
   const fingerprints = new Set([...identified.values()].map(fingerprint));

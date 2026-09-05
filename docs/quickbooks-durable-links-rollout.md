@@ -7,7 +7,7 @@ It succeeded for National Sports Apparel LLC, realm `9341456492604246`.
 All configured account numbers and types resolved, including 40000 Sales,
 51300 Purchases, 51000 Freight In, 40100 Shipping Expense, and 52000 Outside Decoration.
 QBO reported 2,345 customers, 169 items, 81 bills, and 9 purchase orders.
-No QBO records were created or updated in this investigation.
+No QBO records were created or updated during that initial read-only investigation; later preview canary activity is recorded below.
 
 The Overview showed 0/2540 customer links and 0/10575 product links after a
 fresh portal login. A read-only database query independently confirmed that
@@ -77,3 +77,5 @@ repository's existing third-party source-map warnings.
 
 - Read-only historical lookup returned #183 as `0000 (deleted)`, SKU `0000`, `Active:false`, `Type:Inventory`, expense account #149 (Cost of Goods Sold). The handoff's description of #183 as a reusable NonInventory item does not match current QBO state. Do not reactivate or convert it.
 - The attempted #263 retry encountered a browser timeout before any newer receipt was saved. It is not counted as verified. The recovery button now performs link-only work without a redundant native confirmation dialog; a missing match still blocks.
+
+- Fresh-login verification: after the operator reported signing out/in, the preview showed customer 1/2540 and product 1/10575. The guarded SKU retry then reused #263 with no QBO change; the independent database receipt at 2026-09-05T15:08:19.145Z records `result:linked`, API read-back, and 40000/51300 references. Operator acceptance of replacing the handoff's expected #183 with #263 remains pending.
