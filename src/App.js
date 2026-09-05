@@ -45,7 +45,7 @@ import { consolidateArtFamilies, artFamilyIds, artFamilyIdsIn } from './lib/artS
 import { approveArtOnSO, sendArtBackOnSO, artApproveTarget } from './lib/artReview';
 import { approvalArtContext } from './lib/artApproval';
 import { closeOpenArtRequests } from './lib/artRequests';
-import { completedJobInvoiceExplanation, hasResponsePoForPull, isFreshNotificationDate, picksForCurrentSku, pulledItemsHaveMovedInLine, shouldShowCompletedJobNotice, shouldShowMockupReviewNotice } from './lib/dashboardNotificationRules';
+import { completedJobInvoiceExplanation, getOrderInvoiceCoverage, hasResponsePoForPull, isOrderFullyInvoiced, isFreshNotificationDate, picksForCurrentSku, pulledItemsHaveMovedInLine, shouldShowCompletedJobNotice, shouldShowMockupReviewNotice } from './lib/dashboardNotificationRules';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { AppDataProvider } from './AppContext';
 import PortalAssistant from './PortalAssistant';
@@ -6061,20 +6061,9 @@ export default function App(){
     setSnoozeOpenKey(null);
     nf(note||('Snoozed for '+days+' day'+(days!==1?'s':'')));
   };
-  // Opening a to-do to actually work it (click-through) clears it from the list "for now" — it rolls
-  // back onto the board tomorrow if it's still open, and stays hidden on every dashboard surface (not
-  // just the one that was clicked). Follow-ups push their source follow_up_at forward; the "Mockup
-  // ready for review" status to-do has no such date, so it uses the generic snooze map. A real state
-  // change (Approve / Send to Coach / Request changes) still clears the mockup to-do for good on its own.
-  const _todoClickedThrough=(t)=>{if(!t)return;
-    if(_todoIsFollowUp(t)){snoozeTodo(t,1,'⏰ Follow-up cleared for now — back tomorrow if still open');return}
-    // A 'art' (🎨 Mockup ready for review) to-do must NOT be snoozed just because the card was
-    // opened. A returned proof the rep merely clicked into — but has not sent to coach or approved —
-    // still needs review, and auto-hiding it for a day is how returned artwork "disappeared" the
-    // moment the rep clicked in (SO-1625: "I definitely submitted for art, but didn't see it when it
-    // came back"). This to-do already clears itself on a real state change — sent_to_coach_at set, or
-    // art_status leaving waiting_approval (see the todo builder) — so it needs no click-through snooze.
-  };
+  // Navigation is not completion. Only an explicit Snooze or a successful send
+  // may move follow_up_at; inspecting an order must leave its reminder due.
+  const _todoClickedThrough=()=>{};
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
   const[uiMode,setUiMode]=useState(()=>{try{return localStorage.getItem('nsa_ui_mode')||'classic'}catch{return'classic'}});// defaults to the classic portal until the team opts into the redesign// 'new' | 'classic' — portal-wide redesign switch. Every redesigned surface keys off this and falls back to its legacy UI in classic mode.
   const toggleUiMode=()=>setUiMode(m=>{const n=m==='new'?'classic':'new';try{localStorage.setItem('nsa_ui_mode',n)}catch{}return n});
@@ -8728,8 +8717,10 @@ export default function App(){
         if(shouldShowCompletedJobNotice(j,so,[...invs,...(histInvs||[])])){const _jobShipped=j.prod_status==='shipped';const _invoiceExplanation=completedJobInvoiceExplanation(so,[...invs,...(histInvs||[])]);todos.push({type:'job_completed',priority:3,msg:(_jobShipped?'📦 Job shipped — invoice needed: ':'🏭 Job completed: ')+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — '+(_jobShipped?'awaiting invoice':'ready to ship')+' · '+_invoiceExplanation,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
       });
       safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'📌 Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm',date:f.created_at||so.created_at})});
-      if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
-        if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'⚠️ Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,repId:_repId,action:'Open SO',role:'all',date:so.expected_date});
+      if(so.expected_date&&!so.deleted_at&&so._shipped!==true&&so._shipping_status!=='shipped'&&!['complete','cancelled','canceled','void','archived','deleted'].includes(so.status)){
+        const due=parseDate(so.expected_date),today=new Date();
+        const dOut=due?Math.round((new Date(due.getFullYear(),due.getMonth(),due.getDate())-new Date(today.getFullYear(),today.getMonth(),today.getDate()))/864e5):NaN;
+        if(dOut<=3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'⚠️ '+(dOut<0?'Overdue by '+Math.abs(dOut)+' day'+(dOut!==-1?'s':''):'Due in '+dOut+' day'+(dOut!==1?'s':''))+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,repId:_repId,action:'Open SO',role:'all',date:so.expected_date});
         if(dOut<=5&&dOut>3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:1,msg:'📅 Due in '+dOut+' days: '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,repId:_repId,action:'Open SO',role:'production',date:so.expected_date})};
       if(calcSOStatus(so)==='need_order')todos.push({type:'order',priority:2,msg:'🛒 Items need ordering: '+(so.memo||so.id),detail:tag,so,action:'Create PO',role:'sales',date:so.created_at});
       // Booking order confirmation todo — fires when within alert threshold of expected ship date
@@ -8854,10 +8845,10 @@ export default function App(){
       else if(bucket==='stale')todos.push({type:'follow_up',priority:0,msg:'🔴 Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · '+days+' days with no response',action:'Close or Re-send',role:'sales',est:e,estC:c2,date:sentDate});
     });
     // Invoice follow-up alerts (uses follow_up_at when set; auto ones are handled by the server sweep)
-    invs.filter(i=>i.status!=='paid'&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
+    invs.filter(i=>opsOpenInvoice(i)&&!['cancelled','canceled'].includes(String(i.status||'').toLowerCase())&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
       const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
       const daysSince=inv2.email_sent_at?Math.floor((new Date()-new Date(inv2.email_sent_at))/(1000*60*60*24)):0;
-      todos.push({type:'inv_followup',priority:1,msg:'⏰ Follow up on invoice '+inv2.id+' ('+daysSince+'d): $'+safeNum(inv2.total).toFixed(2),detail:tag2+' · Follow-up due '+new Date(inv2.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales',inv:inv2,date:inv2.email_sent_at||inv2.created_at});
+      todos.push({type:'inv_followup',priority:1,msg:'⏰ Follow up on invoice '+inv2.id+' ('+daysSince+'d): $'+opsInvoiceBalance(inv2).toFixed(2),detail:tag2+' · Follow-up due '+new Date(inv2.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales',inv:inv2,date:inv2.email_sent_at||inv2.created_at});
     });
     // Recently paid invoices → notification
     invs.filter(i=>i.status==='paid').forEach(inv2=>{
@@ -8877,8 +8868,10 @@ export default function App(){
     todos.forEach(t=>{
       if(t.so){const c=cust.find(x=>x.id===t.so.customer_id);t.repId=c?.primary_rep_id||t.so.created_by}
       else if(t.est){const c=cust.find(x=>x.id===t.est.customer_id);t.repId=c?.primary_rep_id||t.est.created_by}
+      else if(t.inv){const c=cust.find(x=>x.id===t.inv.customer_id);t.repId=c?.primary_rep_id||t.inv.created_by}
       if(t.dismissKey){/* explicit stable key set at creation — keep it */}
       else if(t.est)t.dismissKey=t.type+':'+(t.updateReqId||t.est.id);
+      else if(t.inv)t.dismissKey=t.type+':'+t.inv.id;
       else if(t.so&&t.deliverKey)t.dismissKey=t.type+':'+t.so.id+':'+t.deliverKey;
       else if(t.so&&t.jobId)t.dismissKey=t.type+':'+t.so.id+':'+t.jobId;
       else if(t.so)t.dismissKey=t.type+':'+t.so.id;
@@ -13234,8 +13227,10 @@ export default function App(){
         if(shouldShowCompletedJobNotice(j,so,[...invs,...(histInvs||[])])){const _jobShipped=j.prod_status==='shipped';const _invoiceExplanation=completedJobInvoiceExplanation(so,[...invs,...(histInvs||[])]);todos.push({type:'job_completed',priority:3,msg:(_jobShipped?'Job shipped — invoice needed: ':'Job completed: ')+j.art_name,detail:tag+' · '+so.id+' · '+_invoiceExplanation,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
       });
       safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm',date:f.created_at||so.created_at})});
-      if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
-        if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,repId:_repId,action:'Open SO',role:'all',date:so.expected_date});
+      if(so.expected_date&&!so.deleted_at&&so._shipped!==true&&so._shipping_status!=='shipped'&&!['complete','cancelled','canceled','void','archived','deleted'].includes(so.status)){
+        const due=parseDate(so.expected_date),today=new Date();
+        const dOut=due?Math.round((new Date(due.getFullYear(),due.getMonth(),due.getDate())-new Date(today.getFullYear(),today.getMonth(),today.getDate()))/864e5):NaN;
+        if(dOut<=3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:(dOut<0?'Overdue by '+Math.abs(dOut)+' day'+(dOut!==-1?'s':''):'Due in '+dOut+' day'+(dOut!==1?'s':''))+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,repId:_repId,action:'Open SO',role:'all',date:so.expected_date});
         if(dOut<=5&&dOut>3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:1,msg:'Due in '+dOut+' days: '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,repId:_repId,action:'Open SO',role:'production',date:so.expected_date})};
       if(calcSOStatus(so)==='need_order')todos.push({type:'order',priority:2,msg:'Items need ordering: '+(so.memo||so.id),detail:tag,so,action:'Create PO',role:'sales',date:so.created_at});
       if(so.order_type==='booking'&&!so.booking_confirmed&&so.expected_ship_date){
@@ -13291,10 +13286,10 @@ export default function App(){
       else if(bucket==='going_cold')todos.push({type:'follow_up',priority:1,msg:'Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
       else if(bucket==='stale')todos.push({type:'follow_up',priority:0,msg:'Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Close or Re-send',role:'sales',est:e,estC:c2,date:sentDate});
     });
-    invs.filter(i=>i.status!=='paid'&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
+    invs.filter(i=>opsOpenInvoice(i)&&!['cancelled','canceled'].includes(String(i.status||'').toLowerCase())&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
       const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
       const daysSince=inv2.email_sent_at?Math.floor((new Date()-new Date(inv2.email_sent_at))/(1000*60*60*24)):0;
-      todos.push({type:'inv_followup',priority:1,msg:'Follow up on invoice '+inv2.id+' ('+daysSince+'d)',detail:tag2,action:'Follow Up',role:'sales',date:inv2.email_sent_at||inv2.created_at});
+      todos.push({type:'inv_followup',priority:1,msg:'Follow up on invoice '+inv2.id+' ('+daysSince+'d)',detail:tag2,action:'Follow Up',role:'sales',inv:inv2,date:inv2.email_sent_at||inv2.created_at});
     });
     invs.filter(i=>i.status==='paid').forEach(inv2=>{
       const lastPay=inv2.payments?.length>0?inv2.payments[inv2.payments.length-1]:null;
@@ -13307,7 +13302,9 @@ export default function App(){
     todos.forEach(t=>{
       if(t.so){const c=cust.find(x=>x.id===t.so.customer_id);t.repId=c?.primary_rep_id||t.so.created_by}
       else if(t.est){const c=cust.find(x=>x.id===t.est.customer_id);t.repId=c?.primary_rep_id||t.est.created_by}
+      else if(t.inv){const c=cust.find(x=>x.id===t.inv.customer_id);t.repId=c?.primary_rep_id||t.inv.created_by}
       if(t.est)t.dismissKey=t.type+':'+t.est.id;
+      else if(t.inv)t.dismissKey=t.type+':'+t.inv.id;
       else if(t.so&&t.deliverKey)t.dismissKey=t.type+':'+t.so.id+':'+t.deliverKey;
       else if(t.so&&t.jobId)t.dismissKey=t.type+':'+t.so.id+':'+t.jobId;
       else if(t.so)t.dismissKey=t.type+':'+t.so.id;
@@ -35409,18 +35406,24 @@ export default function App(){
     }).map(so=>({so,dt:parseDate(so.expected_date),daysOut:Math.ceil((parseDate(so.expected_date).getTime()-_mdNow)/864e5)}))
       .sort((a,b)=>a.dt-b.dt);
 
-    // Orders ready to invoice (production done) that haven't been invoiced yet.
-    const _mdInvoicedSoIds=new Set(invs.filter(iv=>(iv.status||'').toLowerCase()!=='void'&&iv.so_id).map(iv=>iv.so_id));
+    // Reconcile actual invoiced units, including history, so deposits and partial
+    // invoices leave the remaining work visible. Prefer the live portal row when
+    // the same invoice appears in both sources; never count its quantities twice.
+    const _mdBillingInvoices=[...new Map([...(histInvs||[]),...invs].map(iv=>[iv.id,iv])).values()];
+    const _mdBillingBySo=new Map();
+    _mdBillingInvoices.forEach(iv=>{if(iv.so_id){const rows=_mdBillingBySo.get(iv.so_id)||[];rows.push(iv);_mdBillingBySo.set(iv.so_id,rows)}});
+    const _mdFullyInvoiced=(so)=>isOrderFullyInvoiced(so,_mdBillingBySo.get(so.id)||[]);
+    const _mdCoverageCache=new Map();
+    const _mdInvoiceCoverage=(so)=>{if(!_mdCoverageCache.has(so.id))_mdCoverageCache.set(so.id,getOrderInvoiceCoverage(so,_mdBillingBySo.get(so.id)||[]));return _mdCoverageCache.get(so.id)};
     const mdReadyInv=sos.filter(so=>{
-      if(!_mdMine(_mdRepOf(so))||so.deleted_at)return false;
-      return opsReadyToInvoice(so,_mdFF(so))&&!_mdInvoicedSoIds.has(so.id);
+      if(!_mdMine(_mdRepOf(so))||so.deleted_at||['cancelled','canceled','void','archived','deleted'].includes(so.status)||so.source==='webstore')return false;
+      return opsReadyToInvoice(so,_mdFF(so))&&!_mdFullyInvoiced(so);
     }).sort((a,b)=>parseDate(b.updated_at)-parseDate(a.updated_at));
 
-    // Shipped but never invoiced — money leak. NOT windowed (like Past Due, a live
-    // view): a shipped order with no invoice needs chasing no matter how old it is.
+    // Shipped with units still to invoice — a standing task, regardless of age.
     const mdShipNoInv=sos.filter(so=>{
-      if(!_mdMine(_mdRepOf(so))||so.deleted_at||so.status==='cancelled')return false;
-      return opsShippedNotInvoiced(so,_mdFF(so))&&!_mdInvoicedSoIds.has(so.id);
+      if(!_mdMine(_mdRepOf(so))||so.deleted_at||['cancelled','canceled','void','archived','deleted'].includes(so.status))return false;
+      return opsShippedNotInvoiced(so,_mdFF(so))&&!_mdFullyInvoiced(so);
     }).sort((a,b)=>parseDate(b._ship_date||b.updated_at)-parseDate(a._ship_date||a.updated_at));
 
     // Past-due invoices for my customers (live view — every currently-overdue open invoice).
@@ -35457,7 +35460,7 @@ export default function App(){
       {stTab==='myday'&&(()=>{
         const _mdPastDueTotal=mdPastDue.reduce((a,p)=>a+p.balance,0);
         const _mdPaidTotal=mdPaid.reduce((a,p)=>a+p.amount,0);
-        const _mdShipNoInvTotal=mdShipNoInv.reduce((a,so)=>a+safeNum(calcOrderMargin(so,sos).rev),0);
+        const _mdShipNoInvUnits=mdShipNoInv.reduce((a,so)=>a+_mdInvoiceCoverage(so).remaining,0);
         const tiles=[
           {id:'shipped',label:'Shipped',icon:'box',color:'#0e7490',n:mdShipped.length},
           {id:'approved',label:'Estimates Approved',icon:'check',color:'#047857',n:mdApproved.length},
@@ -35465,7 +35468,7 @@ export default function App(){
           {id:'checkedin',label:'All Checked In',icon:'warehouse',color:'#7c3aed',n:mdCheckedIn.length},
           {id:'paid',label:'Paid',icon:'check',color:'#047857',n:mdPaid.length,sub:_mdPaidTotal>0?_md$(_mdPaidTotal)+' in':''},
           {id:'readyinv',label:'Ready to Invoice',icon:'file',color:'#0891b2',n:mdReadyInv.length},
-          {id:'shipnoinv',label:'Shipped — Not Invoiced',icon:'dollar',color:'#c2410c',n:mdShipNoInv.length,sub:_mdShipNoInvTotal>0?_md$(_mdShipNoInvTotal)+' unbilled':''},
+          {id:'shipnoinv',label:'Shipped — Billing Remaining',icon:'dollar',color:'#c2410c',n:mdShipNoInv.length,sub:_mdShipNoInvUnits>0?_mdShipNoInvUnits.toLocaleString()+' units to invoice':''},
           {id:'pastdue',label:'Past Due',icon:'dollar',color:'#b91c1c',n:mdPastDue.length,sub:_mdPastDueTotal>0?_md$(_mdPastDueTotal)+' open':''},
           {id:'deadlines',label:'Deadlines ≤'+stMdDeadline+'d',icon:'clock',color:'#be123c',n:mdDeadlines.length},
         ];
@@ -35567,18 +35570,18 @@ export default function App(){
               </tr>)}</tbody></table></Section>}
 
           {mdReadyInv.length>0&&<Section id="readyinv" title="🧾 Ready to Invoice" count={mdReadyInv.length}>
-            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Value</th><th></th></tr></thead>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Order Value</th><th></th></tr></thead>
               <tbody>{mdReadyInv.map(so=><tr key={so.id}>
-                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}<div style={{fontSize:10,color:'#0891b2',fontWeight:600}}>production done · not invoiced</div></td>
+                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}<div style={{fontSize:10,color:'#0891b2',fontWeight:600}}>production done · {_mdInvoiceCoverage(so).remaining.toLocaleString()} units to invoice</div></td>
                 <td>{_mdCustName(so.customer_id)}</td>
                 <td style={{fontWeight:700,color:'#0891b2'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
                 <td><button className="btn btn-sm btn-primary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Invoice</button></td>
               </tr>)}</tbody></table></Section>}
 
-          {mdShipNoInv.length>0&&<Section id="shipnoinv" title="🚨 Shipped — Not Invoiced" count={mdShipNoInv.length}>
-            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Value</th><th>Shipped</th><th></th></tr></thead>
+          {mdShipNoInv.length>0&&<Section id="shipnoinv" title="🚨 Shipped — Billing Remaining" count={mdShipNoInv.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Order Value</th><th>Shipped</th><th></th></tr></thead>
               <tbody>{mdShipNoInv.map(so=><tr key={so.id} style={{background:'#fff7ed'}}>
-                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}<div style={{fontSize:10,color:'#c2410c',fontWeight:600}}>shipped out · never invoiced</div></td>
+                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}<div style={{fontSize:10,color:'#c2410c',fontWeight:600}}>shipped out · {_mdInvoiceCoverage(so).remaining.toLocaleString()} units to invoice</div></td>
                 <td>{_mdCustName(so.customer_id)}</td>
                 <td style={{fontWeight:700,color:'#c2410c'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
                 <td style={{color:'#64748b'}}>{_mdWhen(so._ship_date||so.updated_at)}</td>
