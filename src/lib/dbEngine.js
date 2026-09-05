@@ -458,6 +458,9 @@ const _dbLoad = async (opts={}) => {
         // (those ride with products in tier 2); routine reloads drop the init-only blobs too.
         const not=[];
         if(!fullState)not.push(['id','in','('+_APPSTATE_INIT_ONLY_KEYS.map(k=>'"'+k+'"').join(',')+')']);
+        // Durable QBO receipts hydrate only at login/reload, like qb_config.
+        // Do not pull thousands of migration receipts on every background poll.
+        if(!fullState)not.push(['id','like','_qb_link_v1_*']);
         if(!_productsLoading)not.push(['id','like','_pimg_*']);
         return _safeQuery('app_state',not.length?{not}:undefined);
       },

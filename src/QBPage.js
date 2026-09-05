@@ -68,7 +68,7 @@ const QB_MAPPING_FIELDS = [
 ];
 
 export default function QBPage(){
-  const {connectQB,cust,decoVendors,disconnectQB,invAdjLog,invPOs,invs,nf,prod,qbApi,qbBillAmount,qbBillDate,qbBillFile,qbBillMemo,qbBillUploading,qbBillVendor,qbConfig,qbSyncing,qbTab,setInvPOs,setInvs,setQBConfig,setQbBillAmount,setQbBillDate,setQbBillFile,setQbBillMemo,setQbBillUploading,setQbBillVendor,setQbSyncing,setQbTab,setSOs,setSubmittedBatches,setVend,sos,submittedBatches,vend}=useAppData();
+  const {connectQB,cust,decoVendors,disconnectQB,invAdjLog,invPOs,invs,nf,prod,persistQbLink,qbApi,qbBillAmount,qbBillDate,qbBillFile,qbBillMemo,qbBillUploading,qbBillVendor,qbConfig,qbSyncing,qbTab,setInvPOs,setInvs,setQBConfig,setQbBillAmount,setQbBillDate,setQbBillFile,setQbBillMemo,setQbBillUploading,setQbBillVendor,setQbSyncing,setQbTab,setSOs,setSubmittedBatches,setVend,sos,submittedBatches,vend}=useAppData();
   const [qbBillFreight,setQbBillFreight]=useState('');
   const [qbBillSportsFee,setQbBillSportsFee]=useState('');
   const [qbCanaryMode,setQbCanaryMode]=useState(true);
@@ -83,6 +83,8 @@ export default function QBPage(){
   const [stripePayoutDetail,setStripePayoutDetail]=useState(null);
   const [stripePayoutLoading,setStripePayoutLoading]=useState(false);
   const [stripePayoutError,setStripePayoutError]=useState('');
+  const [qbAuditItemId,setQbAuditItemId]=useState('');
+  const [qbItemAudit,setQbItemAudit]=useState(null);
   const [stripeBackfill,setStripeBackfill]=useState(null);
   const [stripeWebhookStatus,setStripeWebhookStatus]=useState(null);
 
@@ -165,7 +167,7 @@ export default function QBPage(){
 
     // Sync engine — one copy of the logic (see qbSyncEngine.js); the App-level
     // auto-sync builds the same engine from fresh state, no page visit required.
-    const {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
+    const {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,persistQbLink,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
 
     // Read-only live-company inspection. This is the mandatory first step and
     // performs no QBO create/update calls.
@@ -382,9 +384,20 @@ export default function QBPage(){
       if(!window.confirm('Create exactly ONE QBO invoice?\n\nInvoice: '+doc+'\nCustomer: '+(selectedInvoiceCustomer?.name||'Unknown')+'\nTotal: $'+safeNum(selectedCanaryInvoice.total).toFixed(2)+'\nPaid in portal: $'+safeNum(selectedCanaryInvoice.paid).toFixed(2)+'\n\nThis test creates no payment. QBO customer terms and the invoice will be verified by API read-back.')){nf('Invoice canary cancelled — nothing was sent');return}
       await syncInvoices({}, {}, {canaryInvoiceId:selectedCanaryInvoice.id});
     };
+    const auditQBOItem=async()=>{
+      const id=String(qbAuditItemId).trim();
+      if(!/^\d+$/.test(id)||!livePreflightReady)return;
+      setQbSyncing(true);setQbItemAudit(null);
+      try{
+        const response=await queryQBReadOnly(qbApi,"SELECT * FROM Item WHERE Id = '"+id+"' AND Active IN (true, false) MAXRESULTS 1",'item recovery audit');
+        const item=response?.QueryResponse?.Item?.[0];
+        const result=item?{realm:qbConfig.realm_id,id:item.Id,name:item.Name,sku:item.Sku,active:item.Active,type:item.Type,income:item.IncomeAccountRef,purchases:item.ExpenseAccountRef}:{realm:qbConfig.realm_id,id,not_found:true};
+        setQbItemAudit(result);
+        setQBConfig(prev=>({...prev,syncLog:[{ts:new Date().toLocaleString(),type:'item_recovery_audit',status:item?'success':'error',details:['READ ONLY — no QBO records changed',JSON.stringify(result)]},...(prev.syncLog||[])].slice(0,100)}));
+      }catch(e){setQbItemAudit({error:e.message})}finally{setQbSyncing(false)}
+    };
     const runProductCanary=async()=>{
       if(!selectedCanaryProduct)return;
-      if(!window.confirm('Create exactly ONE QBO NonInventory purchase item?\n\nSKU: '+selectedCanaryProduct.sku+'\nProduct: '+selectedCanaryProduct.name+'\nSales: 40000\nPurchases: 51300\n\nThis creates no quantity on hand or inventory value. The item and accounts will be verified by API read-back.')){nf('QBO NonInventory item canary cancelled — nothing was sent');return}
       await syncInventory({canaryProductId:selectedCanaryProduct.id});
     };
     const runInactiveProductLinkCleanup=async()=>{
@@ -548,7 +561,7 @@ export default function QBPage(){
                 <label className="form-label">Sync Mode</label>
                 <div style={{display:'flex',gap:4}}>
                   {[['manual','Manual'],['hourly','Hourly'],['daily','Daily'],['realtime','Real-time']].map(([v,l])=>
-                    <button key={v} disabled={!migrationUnlocked&&v!=='manual'} title={!migrationUnlocked&&v!=='manual'?'Enabled only after canary approval':''} className={`btn btn-sm ${qbConfig.autoSync===v?'btn-primary':'btn-secondary'}`}
+                    <button key={v} disabled={v!=='manual'} title={v!=='manual'?'Controlled migration uses manual, reconciled batches':''} className={`btn btn-sm ${qbConfig.autoSync===v?'btn-primary':'btn-secondary'}`}
                       onClick={()=>setQBConfig(prev=>({...prev,autoSync:v}))}>{l}</button>)}
                 </div>
               </div>
@@ -562,12 +575,12 @@ export default function QBPage(){
               </div>}
               <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
                 <button className="btn btn-primary" style={{flex:1,background:'#0369a1'}} disabled={qbPreflighting||qbSyncing} onClick={runQBPreflight}>{qbPreflighting?'Reading live QBO...':'Read-Only Live Preflight'}</button>
-                <button className="btn btn-primary" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={syncAll}>{qbSyncing?'Syncing...':'Sync Everything'}</button>
-                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncCustomers}>Customers</button>
-                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={()=>syncSalesOrders()}>Sales Orders</button>
+                <button className="btn btn-primary" disabled title="Controlled migration: run and reconcile one entity at a time" onClick={syncAll}>{qbSyncing?'Syncing...':'Sync Everything'}</button>
+                <button className="btn btn-secondary" disabled title="Locked pending durable-link reload/session verification" onClick={syncCustomers}>Customers</button>
+                <button className="btn btn-secondary" disabled title="Locked pending customer links and Estimate rollout review" onClick={()=>syncSalesOrders()}>Sales Orders</button>
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={()=>syncInvoices()}>Invoices</button>
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncPaidFromQB}>Sync Paid</button>
-                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={()=>syncPurchaseOrders()}>POs</button>
+                <button className="btn btn-secondary" disabled title="Locked pending native PO-to-existing-bill reconciliation" onClick={()=>syncPurchaseOrders()}>POs</button>
                 <button className="btn btn-secondary" disabled title="Locked until the product-item canaries are approved">QBO Product Items Locked</button>
               </div>
             </div>
@@ -713,7 +726,7 @@ export default function QBPage(){
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2>Customer Sync</h2>
-            <button className="btn btn-primary btn-sm" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={syncCustomers}>{qbSyncing?'Syncing...':'Sync All Customers'}</button>
+            <button className="btn btn-primary btn-sm" disabled title="Locked pending durable-link reload/session verification" onClick={syncCustomers}>{qbSyncing?'Syncing...':'Customer Batches Locked'}</button>
           </div>
           <div style={{padding:'12px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:6}}>Test exactly one customer</div>
@@ -951,8 +964,13 @@ export default function QBPage(){
             {!livePreflightReady&&<div style={{fontSize:11,color:'#92400e',marginTop:7,fontWeight:600}}>Button disabled: open Overview and run Read-Only Live Preflight.</div>}
           </div>
           <div style={{padding:'12px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe'}}>
+            <div style={{marginBottom:12}}>
+              <label>Read an existing QBO item by ID <input className="form-input" aria-label="QBO item ID to audit" value={qbAuditItemId} onChange={e=>setQbAuditItemId(e.target.value)}/></label>
+              <button className="btn btn-sm" disabled={qbSyncing||!livePreflightReady||!/^\d+$/.test(qbAuditItemId.trim())} onClick={auditQBOItem}>Read QBO Item — No Changes</button>
+              {qbItemAudit&&<pre style={{whiteSpace:'pre-wrap'}}>{JSON.stringify(qbItemAudit,null,2)}</pre>}
+            </div>
             <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:4}}>Test exactly one QBO NonInventory purchase item</div>
-            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Creates one SKU with no quantity or inventory value, verifies NonInventory type plus 40000/51300 routing, and saves the portal link only after API read-back.</div>
+            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Recovers an existing SKU link, verifies NonInventory type plus 40000/51300 routing, and saves only after API read-back. Missing matches are blocked for review.</div>
             <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
               <select className="form-input" aria-label="Product SKU to test in QuickBooks" style={{minWidth:420,maxWidth:700}} value={qbCanaryProductId} onChange={e=>setQbCanaryProductId(e.target.value)}>
                 <option value="">Select one active SKU...</option>

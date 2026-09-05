@@ -18,6 +18,7 @@ const makeEngine = ({qbApi,cust=[],sos=[],invs=[],prod=[],vend=[]}) => {
     setSubmittedBatches:jest.fn(),setVend:jest.fn(),
   };
   const engine=createQBSyncEngine({
+      persistQbLink:jest.fn(async()=>({})),
     cust,sos,invs,prod,vend,invPOs:[],submittedBatches:[],qbApi,qbConfig:config,nf:jest.fn(),
     dP:jest.fn(()=>({sell:0})),...setters,
   });
@@ -65,7 +66,7 @@ describe('QuickBooks one-record canaries', () => {
 
   test('creates and reads back exactly one NonInventory SKU with approved accounts', async() => {
     const product={id:'P1',sku:'SKU-1',name:'Test Jersey',is_active:true,nsa_cost:12,retail_price:20};
-    const readback={Id:'I-1',Sku:'SKU-1',Type:'NonInventory',IncomeAccountRef:{value:accountId('40000')},ExpenseAccountRef:{value:accountId('51300')}};
+    const readback={Id:'I-1',Name:'SKU-1',Sku:'SKU-1',Type:'NonInventory',IncomeAccountRef:{value:accountId('40000')},ExpenseAccountRef:{value:accountId('51300')}};
     const qbApi=jest.fn(async(action,{query,item}={})=>{
       if(action==='query'&&query.includes('FROM Account'))return accountResponse;
       if(action==='query'&&query.includes('FROM Item STARTPOSITION'))return{QueryResponse:{Item:[]}};
@@ -74,7 +75,7 @@ describe('QuickBooks one-record canaries', () => {
       throw new Error('Unexpected QBO call: '+action+' '+query);
     });
     const{engine,getConfig}=makeEngine({qbApi,prod:[product]});
-    await engine.syncInventory({canaryProductId:'P1'});
+    await engine.syncInventory({canaryProductId:'P1',allowCreate:true});
     expect(qbApi).toHaveBeenCalledWith('query',{query:'SELECT * FROM Item STARTPOSITION 1 MAXRESULTS 1000'});
     expect(qbApi.mock.calls.filter(([action])=>action==='upsert_item')).toHaveLength(1);
     const itemPayload=qbApi.mock.calls.find(([action])=>action==='upsert_item')[1].item;
