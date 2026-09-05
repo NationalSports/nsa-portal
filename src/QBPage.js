@@ -82,6 +82,7 @@ export default function QBPage(){
   const [qbReconcileBillId,setQbReconcileBillId]=useState('');
   const [poBatchApproved,setPoBatchApproved]=useState(false);
   const [poBillLinkReview,setPoBillLinkReview]=useState(null);
+  const [billPOPrereqReview,setBillPOPrereqReview]=useState(null);
   const [poCanaryReview,setPoCanaryReview]=useState(null);
   const [qbPreflighting,setQbPreflighting]=useState(false);
   const [stripePayouts,setStripePayouts]=useState([]);
@@ -183,7 +184,7 @@ export default function QBPage(){
 
     // Sync engine — one copy of the logic (see qbSyncEngine.js); the App-level
     // auto-sync builds the same engine from fresh state, no page visit required.
-    const {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,reviewPurchaseOrderBillCandidate,linkPurchaseOrderBill,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,persistQbLink,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
+    const {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,reviewPurchaseOrderBillCandidate,reviewBillReferencedPOPrerequisites,linkPurchaseOrderBill,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,persistQbLink,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
 
     // Read-only live-company inspection. This is the mandatory first step and
     // performs no QBO create/update calls.
@@ -715,6 +716,11 @@ export default function QBPage(){
                 <div style={{fontSize:11,fontWeight:700,color:'#5b21b6'}}>Next eligible purchase-order batch</div>
                 <label style={{display:'flex',gap:6,alignItems:'flex-start',fontSize:10,marginTop:6}}><input type="checkbox" checked={poBatchApproved} onChange={e=>setPoBatchApproved(e.target.checked)} /> I reviewed the PO canary and approve at most 20 eligible POs. Each result must pass API read-back and durable receipt storage.</label>
                 <button className="btn btn-primary btn-sm" style={{marginTop:8,background:'#5b21b6'}} disabled={qbSyncing||!livePreflightReady||!poBatchApproved||!Object.keys(qbConfig.qbPOBillMap||{}).length} onClick={async()=>{await syncPurchaseOrders({}, {approved:true});setPoBatchApproved(false)}}>Run next PO batch (max 20)</button>
+                <button className="btn btn-secondary btn-sm" style={{marginTop:8,marginLeft:6}} disabled={qbSyncing||!livePreflightReady} onClick={async()=>setBillPOPrereqReview(await reviewBillReferencedPOPrerequisites())}>Review bill-referenced PO prerequisites</button>
+                {billPOPrereqReview?.status==='success'&&<div style={{fontSize:10,marginTop:8}}><strong>{JSON.stringify(billPOPrereqReview.counts)}</strong>
+                  {billPOPrereqReview.linkRows.length>0&&<button className="btn btn-secondary btn-sm" style={{marginTop:6}} disabled={qbSyncing} onClick={async()=>{await syncInventory({approved:true,manifest:{realm:billPOPrereqReview.realm,reviewedAt:billPOPrereqReview.reviewedAt,rows:billPOPrereqReview.linkRows}});setBillPOPrereqReview(null)}}>Link next exact existing items (max 20)</button>}
+                  {billPOPrereqReview.counts.existingItemLinksPending===0&&<button className="btn btn-primary btn-sm" style={{marginTop:6}} disabled={qbSyncing||!poBatchApproved} onClick={async()=>{await syncPurchaseOrders({}, {approved:true,billReferencedOnly:true});setPoBatchApproved(false);setBillPOPrereqReview(null)}}>Run bill-targeted PO batch (max 20)</button>}
+                </div>}
               </div>
               <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid #ddd6fe'}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#5b21b6'}}>Verify an existing native PO-to-bill link</div>

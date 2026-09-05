@@ -1,4 +1,4 @@
-import {runQBProductMigration} from './qbProductMigration';
+import {buildQBProductManifest,loadQBProductItems,runQBProductMigration} from './qbProductMigration';
 // QuickBooks sync engine — the seven sync routines, extracted verbatim from QBPage
 // so the App-level auto-sync interval can build and run them from CURRENT state at
 // fire time. The old wiring called a ref that only a mounted QBPage assigned, so
@@ -160,6 +160,14 @@ export function billReferencesPortalPO(bill = {}, portalPOId = '') {
     const match = part.trim().match(/^PO\s*:\s*(.+)$/i);
     return match && match[1].trim().toLowerCase().replace(/\s+/g, ' ') === wanted;
   });
+}
+
+export function portalPOReferenceFromBill(bill={}) {
+  for(const part of String(bill.PrivateNote||'').split('|')){
+    const match=part.trim().match(/^PO\s*:\s*(.+)$/i);
+    if(match)return match[1].trim();
+  }
+  return'';
 }
 
 export function findQbPOBillCandidates(bills = [], portalPOId, qboPOId) {
@@ -1005,7 +1013,13 @@ export function createQBSyncEngine(ctx){
       // Group PO lines by po_id so we push one QB PO with all line items
       const allPoGroups=groupPortalPurchaseOrders(sos,poMap);
       const effectiveProdQBMap={...(qbConfig.prodQBMap||{}),...(prodQBMapArg||{})};
+      let billReferencedPOs=null;
+      if(options.billReferencedOnly){
+        try{billReferencedPOs=new Set((await loadAllQBEntities(qbApi,'Bill','*',500)).map(portalPOReferenceFromBill).filter(Boolean))}
+        catch(e){log.status='error';log.details.push('Bill-target preflight failed: '+e.message);setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));setQbSyncing(false);nf('PO batch blocked — QBO bill target query failed','error');return{status:'blocked',synced:0}}
+      }
       const eligiblePoGroups=allPoGroups.filter(group=>{
+        if(billReferencedPOs&&!billReferencedPOs.has(String(group.poId)))return false;
         if(group.invalidReason||!group.vendor||!parseQBDateValue(group.created_at)||!resolveExistingVendorId(group.vendor))return false;
         if(group.accountKey==='deco_account')return true;
         return group.entries.every(({it:i})=>{
@@ -1173,6 +1187,19 @@ export function createQBSyncEngine(ctx){
       return{status:alreadyLinked?'linked':'ready',portalPOId,qboPOId:String(qboPOId),billId:String(bill.Id),billDocNumber:bill.DocNumber||'',vendor:bill.VendorRef?.name||'',billDate:bill.TxnDate||'',billTotal:safeNum(bill.TotalAmt),poDate:po.TxnDate||'',poTotal:safeNum(po.TotalAmt),bill,po};
     };
 
+    const reviewBillReferencedPOPrerequisites=async()=>{
+      if(!canaryPreflightReady())return{status:'blocked'};
+      const [bills,items,refs]=await Promise.all([loadAllQBEntities(qbApi,'Bill','*',500),loadQBProductItems(qbApi),requiredAccountRefs(['income_account','purchases_account'])]);
+      const groups=groupPortalPurchaseOrders(sos,{}),groupMap=new Map(groups.map(group=>[String(group.poId),group]));
+      const billRefs=[...new Set(bills.map(portalPOReferenceFromBill).filter(Boolean))];
+      const matched=billRefs.filter(id=>groupMap.has(id)),requiredIds=new Set();
+      matched.forEach(id=>groupMap.get(id).entries.forEach(({it})=>{const sku=String(it.sku||'').trim().toUpperCase();const productId=it.product_id||(prod.find(p=>String(p.sku||'').trim().toUpperCase()===sku)||{}).id;if(productId)requiredIds.add(String(productId))}));
+      const rows=buildQBProductManifest(prod,items,qbConfig.prodQBMap||{},refs).filter(row=>row.sourceIds?.some(id=>requiredIds.has(String(id))));
+      const linkRows=rows.filter(row=>row.action==='link'&&!row.complete).slice(0,QB_SYNC_BATCH_SIZE);
+      const counts={qboBills:bills.length,billPOReferences:billRefs.length,matchedPortalPOs:matched.length,alreadyMappedPOs:matched.filter(id=>qbConfig.qbPOMap?.[id]).length,itemsReady:rows.filter(row=>row.complete).length,existingItemLinksPending:rows.filter(row=>row.action==='link'&&!row.complete).length,itemCreatesRequired:rows.filter(row=>row.action==='create').length,itemBlocks:rows.filter(row=>row.action==='blocked').length};
+      return{status:'success',realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),counts,billRefs,matchedPortalPOIds:matched,linkRows};
+    };
+
     const linkPurchaseOrderBill=async(options={})=>{
       const portalPOId=String(options.portalPOId||''),expectedBillId=String(options.expectedBillId||'');
       if(!options.approved||!portalPOId||!expectedBillId)return{status:'blocked'};
@@ -1219,5 +1246,5 @@ export function createQBSyncEngine(ctx){
       setQbSyncing(false);
     };
 
-    return {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,reviewPurchaseOrderBillCandidate,linkPurchaseOrderBill,syncAll};
+    return {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,reviewPurchaseOrderBillCandidate,reviewBillReferencedPOPrerequisites,linkPurchaseOrderBill,syncAll};
 }

@@ -1,4 +1,4 @@
-import { billReferencesPortalPO, buildQBBillPOReplacement, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions } from '../qbSyncEngine';
+import { billReferencesPortalPO, buildQBBillPOReplacement, createQBSyncEngine, findQbPOBillCandidates, portalPOReferenceFromBill, qbLinkedTransactions } from '../qbSyncEngine';
 import { indexQBNonInventoryItems, QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_SPECS } from '../qbAccountMappings';
 
 const accountRows = Object.values(QB_ACCOUNT_SPECS).map((spec,index)=>({
@@ -279,6 +279,21 @@ describe('QuickBooks one-record canaries', () => {
     expect(getConfig().syncLog[0].details[0]).toContain('1 blocked before batch');
   });
 
+  test('reviews the exact existing item links required by bill-referenced portal POs',async()=>{
+    const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Jersey',brand:'Acme',po_lines:[{po_id:'PO-1',created_at:'2026-09-01',S:1,unit_cost:5}]}]};
+    const item={Id:'I-1',Name:'SKU-1',Sku:'SKU-1',Type:'NonInventory',Active:true,IncomeAccountRef:{value:accountId('40000')},ExpenseAccountRef:{value:accountId('51300')}};
+    const qbApi=jest.fn(async(action,{query}={})=>{
+      if(query.includes('FROM Bill STARTPOSITION'))return{QueryResponse:{Bill:[{Id:'B-1',PrivateNote:'PO: PO-1 | Tracking: 123'}]}};
+      if(query.includes('FROM Item WHERE Active'))return{QueryResponse:{Item:[item]}};
+      if(query.includes('FROM Account'))return accountResponse;
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const{engine}=makeEngine({qbApi,sos:[so],prod:[{id:'P1',sku:'SKU-1',name:'Jersey'}]});
+    const review=await engine.reviewBillReferencedPOPrerequisites();
+    expect(review.counts).toEqual(expect.objectContaining({qboBills:1,billPOReferences:1,matchedPortalPOs:1,existingItemLinksPending:1,itemCreatesRequired:0}));
+    expect(review.linkRows).toEqual([expect.objectContaining({sku:'SKU-1',qboId:'I-1',action:'link'})]);
+  });
+
   test('verifies reciprocal PO-to-existing-bill links and persists one durable receipt', async() => {
     const po={Id:'PO-QB',DocNumber:'PO-1',VendorRef:{value:'V-QB'},TotalAmt:10,TxnDate:'2026-09-01',LinkedTxn:[{TxnId:'B-1',TxnType:'Bill'}]};
     const bill={Id:'B-1',DocNumber:'BILL-1',VendorRef:{value:'V-QB'},TotalAmt:12,TxnDate:'2026-09-02',PrivateNote:'PO: PO-1 | Tracking: 123',Line:[{Id:'1',LinkedTxn:[{TxnId:'PO-QB',TxnType:'PurchaseOrder',TxnLineId:'1'}]}]};
@@ -386,4 +401,5 @@ test('PO-to-bill matching uses exact memo references and line links',()=>{
   expect(billReferencesPortalPO({PrivateNote:'PO: PO 58971 SHHGS | Tracking: 123'},'PO 58971 SHHGS')).toBe(true);
   expect(billReferencesPortalPO({PrivateNote:'PO: PO 58971 SHHGS-OTHER'},'PO 58971 SHHGS')).toBe(false);
   expect(findQbPOBillCandidates([lineLinked], 'different', '418')).toEqual([lineLinked]);
+  expect(portalPOReferenceFromBill({PrivateNote:'PO: PO 58971 SHHGS | Tracking: 123'})).toBe('PO 58971 SHHGS');
 });
