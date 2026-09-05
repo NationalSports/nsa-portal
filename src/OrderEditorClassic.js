@@ -51,6 +51,7 @@ import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors, splitSliceOwnedKeys, pruneStaleSliceRows, reparentOrphanSplitJobs, remapFrozenJobItemIndexes } from './lib/syncJobsMatch';
 import { itemVendorInvSource, vendorInvCacheKey } from './vendorInventory';
 import { stampSplitRuns } from './lib/splitJobPricing';
+import { allocateCustomSplit, openSizes, freeSplitSuffix } from './lib/splitJobItems';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { artFamilyKey } from './lib/artSplitFamily';
 import { parseStitchCount, embStitchTierLabel } from './lib/embStitchParser';
@@ -4161,7 +4162,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     splitJobs.forEach(sj=>{
       const parent=newJobs.find(nj=>nj.id===sj.split_from);
       if(!parent||parent._hasSplitOverrides)return;
-      if(sj.key&&sj.key.endsWith('__split__B')){
+      if(sj.key&&/__split__B\d*$/.test(sj.key)){// -B, -B2, … (freeSplitSuffix)
         const childKeys=new Set((sj.items||[]).map(gi=>gi.item_idx+'-'+gi.sku));
         parent.items=parent.items.filter(gi=>!childKeys.has(gi.item_idx+'-'+gi.sku));
         const t=parent.items.reduce((a,gi)=>a+safeNum(gi.units),0);
@@ -10918,8 +10919,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         });
         if(keepTotal===0){nf('Nothing received yet — nothing producible to keep on this job','error');return}
         if(openItems.length===0||openTotal===0){nf('Everything is already received — no backorder to split off','error');return}
-        const existingS=jobs.filter(jj=>jj.split_from===j.id&&jj.id.startsWith(j.id+'-S')).length;
-        const suffix='S'+(existingS>0?existingS+1:'');
+        // First free -S / -S2 / … id on the ORDER (freeSplitSuffix): a count-based suffix re-mints an
+        // id a surviving sibling still holds once another slice was merged back, and the job sync's
+        // dedupe-by-id then silently drops one of the two jobs.
+        const suffix=freeSplitSuffix(jobs,j.id,'S');
+        if(!suffix){nf('No free split id for '+j.id,'error');return}
         const splitId=j.id+'-'+suffix;
         // New -S job = the backorder. split_open marks it so allocateJobFulfillment lets it claim the
         // item's receipts LAST — the received units stay counted on the original (parent) job.
@@ -10946,9 +10950,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const splitFul=splitItems.reduce((a,gi)=>a+gi.fulfilled,0);
         const keepUnits=keepItems.reduce((a,gi)=>a+gi.units,0);
         const keepFul=keepItems.reduce((a,gi)=>a+gi.fulfilled,0);
-        const splitId=j.id+'-B';
+        // -B, then -B2 … — a 3-garment job can be split by SKU twice; the old fixed '-B' minted a
+        // duplicate id the second time (see freeSplitSuffix).
+        const suffix=freeSplitSuffix(jobs,j.id,'B');
+        if(!suffix){nf('No free split id for '+j.id,'error');return}
+        const splitId=j.id+'-'+suffix;
         // Separate press runs → separate qty-tier pricing (see splitByReceived note).
-        const splitJob2={...j,..._artFields(j),id:splitId,key:j.key+'__split__B',split_from:j.id,items:splitItems,
+        const splitJob2={...j,..._artFields(j),id:splitId,key:j.key+'__split__'+suffix,split_from:j.id,items:splitItems,
           total_units:splitUnits,fulfilled_units:splitFul,priced_separately:true,price_override:null,
           prod_status:'hold',created_at:new Date().toLocaleDateString()};
         const remainJob={...j,items:keepItems,total_units:keepUnits,fulfilled_units:keepFul,priced_separately:true,price_override:null};
@@ -11000,7 +11008,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       };
       // Custom split — split specific sizes per item into a new job; items not flagged stay on the original.
       // splitItemSizes shape: { [item_idx]: { S: 2, M: 1, ... } } — only entries with at least one positive size are split.
-      const splitCustom=(jIdx,splitItemSizes)=>{
+      // take: 'open' (default) — the new job is a BACKORDER: it takes the not-yet-received units first
+      // and the parent keeps its receipts (JOB-2130-05: the 4 backordered M were split off and the slice
+      // was handed 4 RECEIVED M instead). 'received' — the new job takes the in-hand units so it can run
+      // now. The per-size maths is shared with the modal preview in src/lib/splitJobItems.js.
+      const splitCustom=(jIdx,splitItemSizes,take='open')=>{
         const j=jobs[jIdx];if(!j||!j.items?.length)return;
         const splitItems=[];const keepItems=[];
         let splitTotal=0,splitFul=0,keepTotal=0,keepFul=0;
@@ -11009,27 +11021,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const curSizes=_giSizes(gi);
           const curFul=_fulSizes[gii]||{};
           const reqSizes=splitItemSizes?.[gi.item_idx]||{};
-          const splitSizes={};const remainSizes={};
-          let sUnits=0,rUnits=0;
-          Object.entries(curSizes).forEach(([sz,v])=>{
-            const want=Math.max(0,Math.min(safeNum(reqSizes[sz]),safeNum(v)));
-            if(want>0){splitSizes[sz]=want;sUnits+=want}
-            const rem=safeNum(v)-want;
-            if(rem>0){remainSizes[sz]=rem;rUnits+=rem}
-          });
-          // Allocate fulfillment proportionally: receipts go to the split portion first up to its size cap.
-          const splitFulSizes={};const remainFulSizes={};
-          let sFul=0,rFul=0;
-          Object.keys(curSizes).forEach(sz=>{
-            const ful=safeNum(curFul[sz]);
-            const sCap=safeNum(splitSizes[sz]);
-            const rCap=safeNum(remainSizes[sz]);
-            const sF=Math.min(ful,sCap);
-            const rF=Math.min(ful-sF,rCap);
-            if(sF>0){splitFulSizes[sz]=sF;sFul+=sF}
-            if(rF>0){remainFulSizes[sz]=rF;rFul+=rF}
-          });
-          // Partition the roster: first N per size go to the split, the remainder stays on the parent.
+          // Per-size partition + receipt allocation ('open': backorder units move first; 'received':
+          // in-hand units move first) — see allocateCustomSplit.
+          const {splitSizes,remainSizes,splitFulSizes,remainFulSizes,sUnits,rUnits,sFul,rFul}=allocateCustomSplit(curSizes,curFul,reqSizes,take);
+          // Partition the roster. 'received': the first N names per size go to the split (it took the
+          // head-of-roster received units). 'open' (backorder): the parent keeps the head — the same
+          // convention splitByReceived uses — and the slice takes the tail.
           // Reads gi.roster if this item is itself a split slice; falls back to the source decoration's roster.
           const _srcIt=safeItems(o)[gi.item_idx];
           // Only a numbers deco THIS job owns — splitting an art job must not partition the sibling numbers job's roster.
@@ -11042,8 +11039,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const arr=Array.isArray(baseRoster[sz])?baseRoster[sz].slice():[];
               const sCap=safeNum(splitSizes[sz]);
               const rCap=safeNum(remainSizes[sz]);
-              if(sCap>0){const head=arr.slice(0,sCap);splitRoster[sz]=head.concat(Array(Math.max(0,sCap-head.length)).fill(''))}
-              if(rCap>0){const tail=arr.slice(sCap);remainRoster[sz]=tail.concat(Array(Math.max(0,rCap-tail.length)).fill(''))}
+              const headLen=take==='received'?sCap:rCap;// who takes the head of the roster
+              const head=arr.slice(0,headLen),tail=arr.slice(headLen);
+              const sArr=(take==='received'?head:tail).slice(0,sCap),rArr=(take==='received'?tail:head).slice(0,rCap);
+              if(sCap>0)splitRoster[sz]=sArr.concat(Array(sCap-sArr.length).fill(''));
+              if(rCap>0)remainRoster[sz]=rArr.concat(Array(rCap-rArr.length).fill(''));
             });
           }
           if(sUnits>0){
@@ -11061,17 +11061,24 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         });
         if(splitTotal===0){nf('Select at least one size to split off','error');return}
         if(keepItems.length===0||keepTotal===0){nf('Must leave some units on the original job','error');return}
-        const existingSplits=jobs.filter(jj=>jj.split_from===j.id).length;
-        const splitId=j.id+'-C'+(existingSplits+1);
+        // -C1, -C2 … — first free id on the order (a count of current children re-minted a live
+        // sibling's id after a merge-back; see freeSplitSuffix).
+        const suffix=freeSplitSuffix(jobs,j.id,'C',true);
+        if(!suffix){nf('No free split id for '+j.id,'error');return}
+        const splitId=j.id+'-'+suffix;
         // Separate press runs → separate qty-tier pricing (see splitByReceived note).
-        const splitJob2={...j,..._artFields(j),id:splitId,key:j.key+'__split__C'+(existingSplits+1),split_from:j.id,items:splitItems,
+        // split_open: a backorder slice claims the line's receipts LAST in allocateJobFulfillment, so the
+        // next receive/pull recalc keeps the parent's received units on the parent — the fulSizes seeded
+        // above are re-derived on every recalc and are not enough on their own. Set explicitly in both
+        // directions so a slice carved off a -S backorder never inherits its parent's flag in 'received' mode.
+        const splitJob2={...j,..._artFields(j),id:splitId,key:j.key+'__split__'+suffix,split_from:j.id,split_open:take!=='received',items:splitItems,
           total_units:splitTotal,fulfilled_units:splitFul,priced_separately:true,price_override:null,
           item_status:splitFul>=splitTotal&&splitTotal>0?'items_received':splitFul>0?'partially_received':'need_to_order',
           prod_status:'hold',created_at:new Date().toLocaleDateString()};
         const remainJob={...j,items:keepItems,total_units:keepTotal,fulfilled_units:keepFul,priced_separately:true,price_override:null,
           item_status:keepFul>=keepTotal&&keepTotal>0?'items_received':keepFul>0?'partially_received':'need_to_order'};
         const newJobs2=[...jobs];newJobs2.splice(jIdx,1,remainJob,splitJob2);
-        const updated=stampSplitRuns({...o,jobs:newJobs2,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Custom split! '+splitId+' with '+splitTotal+' units');
+        const updated=stampSplitRuns({...o,jobs:newJobs2,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Custom split! '+splitId+' — '+splitTotal+' units ('+(splitTotal-splitFul)+' not yet received · '+splitFul+' received)');
       };
       const updJob=(jIdx,k,v)=>{sv('jobs',jobs.map((j,i)=>i===jIdx?{...j,[k]:v}:j))};
       // Set/clear a split job's pricing-override state and immediately re-stamp + save, so the
@@ -13450,9 +13457,9 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                 <div style={{fontSize:12,color:'#475569'}}>Select which garments to move to a new job. Useful when different garments arrive at different times or need separate production runs.</div>
                 {items.length<2&&<div style={{fontSize:11,color:'#dc2626',marginTop:4}}>⚠️ Only 1 garment on this job — can't split by SKU</div>}
               </button>
-              <button className="btn" style={{padding:16,background:'#faf5ff',border:'2px solid #c4b5fd',borderRadius:12,textAlign:'left',cursor:'pointer'}} onClick={()=>setSplitModal(m=>({...m,mode:'custom',customSizes:{},customInclude:{}}))}>
+              <button className="btn" style={{padding:16,background:'#faf5ff',border:'2px solid #c4b5fd',borderRadius:12,textAlign:'left',cursor:'pointer'}} onClick={()=>setSplitModal(m=>({...m,mode:'custom',customSizes:{},customInclude:{},customTake:'open'}))}>
                 <div style={{fontWeight:800,fontSize:14,color:'#7c3aed',marginBottom:4}}>✏️ Custom Split — Choose Items & Sizes</div>
-                <div style={{fontSize:12,color:'#475569'}}>Pick which garments to split, then choose specific sizes from each. Art and approvals carry over to the new job.</div>
+                <div style={{fontSize:12,color:'#475569'}}>Pick which garments to split, then choose specific sizes from each. By default the new job takes the <strong>not-yet-received</strong> units (a backorder) and the received units stay on {j.id}. Art and approvals carry over to the new job.</div>
               </button>
             </div>}
 
@@ -13493,23 +13500,44 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             {splitModal.mode==='custom'&&(()=>{
               const cs=splitModal.customSizes||{};
               const ci=splitModal.customInclude||{};
+              // Which units the NEW job claims first — 'open' (backorder, default) or 'received'. The
+              // same switch drives splitCustom's allocation, so the preview below is what gets saved.
+              const take=splitModal.customTake||'open';
               const _itemSplitQty=gi=>Object.entries(cs[gi.item_idx]||{}).reduce((a,[sz,v])=>a+(ci[gi.item_idx]?Math.min(safeNum(v),safeNum(gi.sizes[sz])):0),0);
               const totalSplit=items.reduce((a,gi)=>a+_itemSplitQty(gi),0);
               const totalRemain=totalUnits-totalSplit;
+              // Received units that would travel with the split under the chosen take mode.
+              const splitFulPrev=items.reduce((a,gi)=>a+(ci[gi.item_idx]?allocateCustomSplit(gi.sizes,gi.fulSizes,cs[gi.item_idx]||{},take).sFul:0),0);
+              const _setTake=t=>setSplitModal(m=>({...m,customTake:t}));
               const _setSizes=(item_idx,upd)=>setSplitModal(m=>({...m,customSizes:{...m.customSizes,[item_idx]:{...(m.customSizes?.[item_idx]||{}),...upd}}}));
+              // Quick picks REPLACE the garment's selection (a merge left the default open sizes under a
+              // "Received only" click, so the split carried both and the rep got a mixed run).
+              const _replaceSizes=(item_idx,map)=>setSplitModal(m=>({...m,customSizes:{...m.customSizes,[item_idx]:{...map}}}));
               const _toggleInclude=(item_idx,on)=>setSplitModal(m=>{
                 const next={...(m.customInclude||{}),[item_idx]:on};
-                // When turning on for the first time and no sizes selected yet, default to all sizes for convenience.
+                // When turning on for the first time and no sizes selected yet, default to the units the
+                // chosen take mode is about (open sizes for a backorder split, received sizes for a
+                // run-now split); fall back to all sizes when there are none of that kind.
                 let nextSizes=m.customSizes||{};
                 if(on&&(!m.customSizes?.[item_idx]||Object.values(m.customSizes[item_idx]).every(v=>!safeNum(v)))){
                   const gi=items.find(g=>g.item_idx===item_idx);
-                  if(gi)nextSizes={...nextSizes,[item_idx]:{...gi.sizes}};
+                  if(gi){
+                    const pref=(m.customTake||'open')==='received'?(gi.fulSizes||{}):openSizes(gi.sizes,gi.fulSizes);
+                    const hasPref=Object.values(pref).some(v=>safeNum(v)>0);
+                    nextSizes={...nextSizes,[item_idx]:{...(hasPref?pref:gi.sizes)}};
+                  }
                 }
                 return{...m,customInclude:next,customSizes:nextSizes};
               });
               return<div>
                 <div style={{fontSize:12,fontWeight:700,marginBottom:4}}>Pick the garments and sizes to split off:</div>
-                <div style={{fontSize:11,color:'#64748b',marginBottom:10}}>Tick a garment to include it in the new job, then dial in the sizes. Art status, mockups, and coach approval will carry over.</div>
+                <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>Tick a garment to include it in the new job, then dial in the sizes. Art status, mockups, and coach approval will carry over.</div>
+                <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:4}}>
+                  <span style={{fontSize:11,fontWeight:700,color:'#475569'}}>New job takes:</span>
+                  <button className="btn btn-sm" style={{fontSize:11,padding:'3px 10px',background:take==='open'?'#7c3aed':'white',color:take==='open'?'white':'#475569',border:'1px solid '+(take==='open'?'#7c3aed':'#cbd5e1'),borderRadius:6}} onClick={()=>_setTake('open')}>📦 Not-yet-received units (backorder)</button>
+                  <button className="btn btn-sm" style={{fontSize:11,padding:'3px 10px',background:take==='received'?'#166534':'white',color:take==='received'?'white':'#475569',border:'1px solid '+(take==='received'?'#166534':'#cbd5e1'),borderRadius:6}} onClick={()=>_setTake('received')}>✅ Received units (run now)</button>
+                </div>
+                <div style={{fontSize:10,color:'#64748b',marginBottom:10}}>{take==='open'?('The received units stay on '+j.id+' so it can keep moving; the new job waits on the backorder.'):('The new job gets the in-hand units and can go to production now; '+j.id+' keeps the open balance.')}</div>
                 {items.map((gi,i)=>{
                   const incl=!!ci[gi.item_idx];
                   const itemSplit=_itemSplitQty(gi);
@@ -13519,22 +13547,23 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                       <input type="checkbox" checked={incl} readOnly style={{width:18,height:18}}/>
                       <div style={{flex:1}}>
                         <div><span style={{fontWeight:700,fontSize:12}}>{gi.sku}</span> <span style={{fontSize:12}}>{gi.name}</span> <span style={{color:'#94a3b8',fontSize:11}}>({gi.color||'—'})</span></div>
-                        <div style={{fontSize:10,color:'#64748b'}}>{gi.units} total · {gi.received} received</div>
+                        <div style={{fontSize:10,color:'#64748b'}}>{gi.units} total · <span style={{color:'#166534'}}>{gi.received} received</span> · <span style={{color:gi.units-gi.received>0?'#b45309':'#94a3b8'}}>{gi.units-gi.received} not yet received</span></div>
                       </div>
                       <div style={{fontSize:12,fontWeight:700,color:incl?'#7c3aed':'#94a3b8'}}>{itemSplit}<span style={{fontSize:10,color:'#94a3b8',fontWeight:400}}> / {gi.units} splitting</span></div>
                     </div>
                     {incl&&<div>
                       <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:6}}>
-                        <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={e=>{e.stopPropagation();_setSizes(gi.item_idx,gi.sizes)}}>All sizes</button>
-                        {gi.received>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={e=>{e.stopPropagation();_setSizes(gi.item_idx,gi.fulSizes)}}>Received only ({gi.received})</button>}
-                        <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={e=>{e.stopPropagation();const z={};Object.keys(gi.sizes).forEach(sz=>z[sz]=0);_setSizes(gi.item_idx,z)}}>Clear</button>
+                        <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={e=>{e.stopPropagation();_replaceSizes(gi.item_idx,gi.sizes)}}>All sizes</button>
+                        {gi.units-gi.received>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} title="Select the sizes still on order and make the new job the backorder" onClick={e=>{e.stopPropagation();_replaceSizes(gi.item_idx,openSizes(gi.sizes,gi.fulSizes));_setTake('open')}}>Not received only ({gi.units-gi.received})</button>}
+                        {gi.received>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} title="Select the in-hand sizes and make the new job the one that runs now" onClick={e=>{e.stopPropagation();_replaceSizes(gi.item_idx,gi.fulSizes||{});_setTake('received')}}>Received only ({gi.received})</button>}
+                        <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={e=>{e.stopPropagation();_replaceSizes(gi.item_idx,{})}}>Clear</button>
                       </div>
                       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(72px,1fr))',gap:6}}>
                         {sizesList.map(([sz,max])=>{
                           const cur=safeNum(cs[gi.item_idx]?.[sz]);
                           const fulMax=safeNum(gi.fulSizes?.[sz]);
                           return<div key={sz} style={{padding:'4px 6px',background:'white',border:'1px solid #e2e8f0',borderRadius:5}}>
-                            <div style={{fontSize:9,fontWeight:700,color:'#64748b',display:'flex',justifyContent:'space-between'}}><span>{sz}</span>{fulMax>0&&<span style={{color:'#166534'}}>{fulMax} rcvd</span>}</div>
+                            <div style={{fontSize:9,fontWeight:700,color:'#64748b',display:'flex',justifyContent:'space-between',gap:3}}><span>{sz}</span><span>{fulMax>0&&<span style={{color:'#166534'}}>{fulMax} rcvd</span>}{max-fulMax>0&&<span style={{color:'#b45309',marginLeft:fulMax>0?3:0}}>{max-fulMax} open</span>}</span></div>
                             <div style={{display:'flex',alignItems:'center',gap:3}}>
                               <input type="number" className="form-input" min={0} max={max} value={cur||''} placeholder="0"
                                 style={{width:'100%',fontSize:12,fontWeight:700,textAlign:'center',padding:'2px 4px'}}
@@ -13546,8 +13575,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                     </div>}
                   </div>})}
                 {totalSplit>0&&totalRemain>0&&<div style={{padding:10,background:'#faf5ff',borderRadius:6,marginTop:8,fontSize:12}}>
-                  <strong>New split job:</strong> {totalSplit} units<br/>
-                  <strong>Remaining on {j.id}:</strong> {totalRemain} units
+                  <strong>New split job:</strong> {totalSplit} units ({totalSplit-splitFulPrev} not yet received · {splitFulPrev} received)<br/>
+                  <strong>Remaining on {j.id}:</strong> {totalRemain} units ({totalRemain-(totalReceived-splitFulPrev)} not yet received · {totalReceived-splitFulPrev} received)
+                  {take==='open'&&splitFulPrev>0&&<div style={{marginTop:6,fontSize:11,color:'#b45309'}}>⚠️ {splitFulPrev} received unit{splitFulPrev===1?'':'s'} will move to the new job because more units were requested than are still on order.</div>}
+                  {take==='received'&&totalSplit-splitFulPrev>0&&<div style={{marginTop:6,fontSize:11,color:'#b45309'}}>⚠️ {totalSplit-splitFulPrev} not-yet-received unit{totalSplit-splitFulPrev===1?'':'s'} will move to the new job because more units were requested than are in hand.</div>}
                 </div>}
                 {totalSplit>0&&totalRemain<=0&&<div style={{padding:8,background:'#fef2f2',borderRadius:6,marginTop:8,fontSize:12,color:'#dc2626'}}>Must leave some units on the original job.</div>}
               </div>})()}
@@ -13564,7 +13595,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               if(!(ts>0&&tr>0))return null;
               // Build payload: only included items, capped per size.
               const payload={};items.forEach(gi=>{if(!ci[gi.item_idx])return;const out={};Object.entries(cs[gi.item_idx]||{}).forEach(([sz,v])=>{const want=Math.min(safeNum(v),safeNum(gi.sizes[sz]));if(want>0)out[sz]=want});if(Object.keys(out).length)payload[gi.item_idx]=out});
-              return<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>splitCustom(_smIdx,payload)}>✂️ Split {ts} Units</button>;
+              return<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>splitCustom(_smIdx,payload,splitModal.customTake||'open')}>✂️ Split {ts} Units{(splitModal.customTake||'open')==='received'?' (received — run now)':' (backorder)'}</button>;
             })()}
           </div>
         </div></div>})()}
