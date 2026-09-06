@@ -9,7 +9,7 @@ import { mergeQBSyncLogs } from './qbLinkLedger';
 import { D_V } from './constants';
 import { _dbSaveSO } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
-import { calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, parseQBDateValue, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
+import { QB_MAX_REVIEWED_BATCH, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, parseQBDateValue, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
 
 // Return a circular batch and the cursor for the next run. Permanent blockers
 // in the first N records must not starve every later customer/invoice/item/PO.
@@ -24,6 +24,75 @@ export function rotatingBatch(items = [], offset = 0, size = 20) {
 }
 
 const normalizeQBCustomerName = value => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+// A second, deliberately looser key used ONLY to spot a probable duplicate before
+// creating a customer. Exact matching (above) is case/space insensitive but still
+// misses "Boy's" vs "Boys" and "A & B" vs "A and B", which is exactly how a second
+// copy of a real customer gets created in QuickBooks. This never links anything on
+// its own — a hit blocks the row and names the QBO candidate for a human to judge.
+const QB_NAME_SUFFIXES = new Set(['inc', 'llc', 'lc', 'ltd', 'co', 'corp', 'company']);
+export function normalizeQBDuplicateKey(value) {
+  const base = String(value || '').toLowerCase()
+    .replace(/&/g, ' and ')
+    // Apostrophes join a word — "Boy's" is one token, not two. Dropping them before
+    // the general punctuation pass is what makes "Boy's" and "Boys" the same key.
+    .replace(/['\u2018\u2019\u02bc`]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+  const tokens = base.split(' ').filter(Boolean);
+  while (tokens.length > 1 && QB_NAME_SUFFIXES.has(tokens[tokens.length - 1])) tokens.pop();
+  if (tokens.length > 1 && tokens[0] === 'the') tokens.shift();
+  return tokens.join(' ');
+}
+
+// Candidates are QBO customers whose loose key equals the portal customer's, after
+// exact matching already failed. Inactive QBO records are ignored.
+export function findQBDuplicateCandidates(customer, qboCustomers = []) {
+  const keys = new Set([
+    normalizeQBDuplicateKey(customer?.name),
+    normalizeQBDuplicateKey(portalCustomerDisplayName(customer)),
+  ].filter(Boolean));
+  if (!keys.size) return [];
+  const hits = (qboCustomers || []).filter(qbo => {
+    if (!qbo || qbo.Active === false) return false;
+    return keys.has(normalizeQBDuplicateKey(qbo.DisplayName)) || keys.has(normalizeQBDuplicateKey(qbo.CompanyName));
+  });
+  return [...new Map(hits.map(hit => [String(hit.Id), hit])).values()];
+}
+
+// Read-only. Answers one question the counters cannot: are the QBO customers we are
+// failing to match actually the same accounts under different names, or a different
+// population entirely? Samples real QBO names so the answer is visible, not guessed.
+export function buildQBCustomerMatchDiagnostic(customers = [], qboCustomers = [], savedMap = {}, sampleSize = 40) {
+  const activeQBO = (qboCustomers || []).filter(qbo => qbo && qbo.Active !== false);
+  const claimed = new Set();
+  (customers || []).forEach(customer => {
+    const saved = String(savedMap[customer?.id] || customer?.qb_customer_id || '');
+    if (saved) claimed.add(saved);
+    findExactQBCustomerMatches(customer, activeQBO).forEach(match => claimed.add(String(match.Id)));
+    findQBDuplicateCandidates(customer, activeQBO).forEach(match => claimed.add(String(match.Id)));
+  });
+  const unclaimed = activeQBO.filter(qbo => !claimed.has(String(qbo.Id)));
+  const unmatchedPortal = (customers || []).filter(customer =>
+    customer?.is_active !== false && !customer?.deleted_at
+    && !String(savedMap[customer.id] || customer.qb_customer_id || '')
+    && !findExactQBCustomerMatches(customer, activeQBO).length
+    && !findQBDuplicateCandidates(customer, activeQBO).length);
+  const size = Math.max(1, Math.min(200, Number(sampleSize) || 40));
+  return {
+    qboActive: activeQBO.length,
+    qboClaimed: claimed.size,
+    qboUnclaimed: unclaimed.length,
+    portalActive: (customers || []).filter(c => c?.is_active !== false && !c?.deleted_at).length,
+    portalUnmatched: unmatchedPortal.length,
+    qboUnclaimedSample: unclaimed.slice(0, size).map(qbo => ({
+      id: String(qbo.Id), displayName: qbo.DisplayName || '', companyName: qbo.CompanyName || '',
+    })),
+    portalUnmatchedSample: unmatchedPortal.slice(0, size).map(customer => ({
+      sourceId: String(customer.id), name: customer.name || '', displayName: portalCustomerDisplayName(customer),
+    })),
+  };
+}
 const qbCurrency = value => Math.round((safeNum(value) + Number.EPSILON) * 100) / 100;
 
 export function qbResponseErrorDetail(response, fallback = 'unknown') {
@@ -80,17 +149,28 @@ export function findExactQBCustomerMatches(customer, qboCustomers = []) {
   return [...new Map(matches.map(match => [String(match.Id), match])).values()];
 }
 
+// Blank portal terms are common (most portal customers never had terms set) and
+// the portal itself bills them on Net 30. The review still never guesses a
+// financial term on its own: an existing QBO customer keeps the terms it already
+// has (no write), and a new customer only gets the reviewer's explicitly chosen
+// default. Anything else stays blocked.
+export function normalizeBlankTermsDefault(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  return portalCustomerTermSpec(raw).portalValue;
+}
+
 // Read-only plan: every source is classified before any customer batch writes.
-export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms = [], savedMap = {}) {
+export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms = [], savedMap = {}, options = {}) {
+  const blankTermsDefault = normalizeBlankTermsDefault(options.blankTermsDefault);
+  const activeTermById = new Map((terms || []).filter(term => term && term.Active !== false && term.Id)
+    .map(term => [String(term.Id), term]));
   const rows = customers.map(customer => {
     const row = {sourceId:String(customer.id || ''),name:customer.name || '',displayName:portalCustomerDisplayName(customer),
-      portalTerms:customer.payment_terms || '',qboId:'',action:'blocked',reason:''};
+      portalTerms:customer.payment_terms || '',qboId:'',action:'blocked',reason:'',termSource:'portal'};
     if(customer.is_active === false || customer.deleted_at)return {...row,action:'excluded',reason:'Inactive or deleted portal customer'};
     try {
       if(!row.sourceId || !String(customer.name || '').trim())throw new Error('Missing customer ID or name');
-      if(!String(customer.payment_terms || '').trim())throw new Error('Missing portal payment terms; no default is assumed');
-      const term = resolveQBCustomerTerm(terms,customer.payment_terms);
-      row.desiredTerm = term;
       const mapped = String(savedMap[customer.id] || '');
       const embedded = String(customer.qb_customer_id || '');
       if(mapped && embedded && mapped !== embedded)throw new Error('Conflicting saved customer IDs');
@@ -102,11 +182,39 @@ export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms
       if(existing?.Active === false)throw new Error('Saved QBO customer is inactive');
       if(existing && matches.length === 1 && String(matches[0].Id) !== String(existing.Id))throw new Error('Saved ID conflicts with exact name match');
       if(existing && !matches.some(q=>String(q.Id) === String(existing.Id)))throw new Error('Saved QBO customer name does not match portal identity');
-      if(!existing)return {...row,action:'create',reason:'Requires explicit creation approval'};
-      row.qboId = String(existing.Id);
-      row.currentTerm = existing.SalesTermRef || null;
+      // Record the match BEFORE resolving terms. A terms problem must never make a
+      // matched customer look unmatched: reporting the identity we found is what tells
+      // the reviewer whether a blocked row is a naming failure or only a terms gap.
+      if(existing){
+        row.qboId = String(existing.Id);
+        row.currentTerm = existing.SalesTermRef || null;
+      }
+      const portalTerms = String(customer.payment_terms || '').trim();
+      const existingTerm = existing ? activeTermById.get(String(existing.SalesTermRef?.value || '')) : null;
+      let term, termNote = '';
+      if(portalTerms){
+        term = resolveQBCustomerTerm(terms,portalTerms);
+      }else if(existingTerm){
+        term = { value:String(existingTerm.Id), name:String(existingTerm.Name || '') };
+        row.termSource = 'qbo';termNote = '; portal terms blank, keeping QBO terms ' + term.name;
+      }else if(blankTermsDefault){
+        term = resolveQBCustomerTerm(terms,blankTermsDefault);
+        row.termSource = 'default';termNote = '; portal terms blank, reviewer default ' + term.name;
+      }else throw new Error(existing
+        ? 'Matched QBO customer #' + existing.Id + ', but neither the Portal nor QBO has payment terms; choose a default to link it and set them'
+        : 'Missing portal payment terms; no default is assumed');
+      row.desiredTerm = term;
+      if(!existing){
+        // Never create a second copy of a customer QBO already has under a name that
+        // differs only by punctuation, "and"/"&", or a company suffix.
+        const nearby = findQBDuplicateCandidates(customer,qboCustomers);
+        if(nearby.length)throw new Error('Possible existing QBO customer '
+          + nearby.map(hit=>'"' + (hit.DisplayName || hit.CompanyName || '') + '" (#' + hit.Id + ')').join(', ')
+          + '; link or rename it before creating a second record');
+        return {...row,action:'create',reason:'Requires explicit creation approval' + termNote};
+      }
       row.action = String(existing.SalesTermRef?.value || '') === term.value ? 'link' : 'update_terms';
-      row.reason = row.action === 'link' ? 'Existing active customer; terms match' : 'Requires explicit term-change approval';
+      row.reason = (row.action === 'link' ? 'Existing active customer; terms match' : 'Requires explicit term-change approval') + termNote;
       return row;
     }catch(error){return {...row,action:'blocked',reason:error.message};}
   });
@@ -391,7 +499,7 @@ export function createQBSyncEngine(ctx){
     // One-customer canary is intentionally available while production batches
     // are locked. A create or a repair of the actual QBO Terms field requires a
     // second, explicit operator confirmation and a successful API read-back.
-    const syncCustomerCanary=async(customerId,{allowCreate=false,allowTermUpdate=false,batchId='',expectedPlan=null}={})=>{
+    const syncCustomerCanary=async(customerId,{allowCreate=false,allowTermUpdate=false,batchId='',expectedPlan=null,blankTermsDefault='',context=null}={})=>{
       if(!requireDurableLinks())return{status:'blocked'};
       const c=cust.find(customer=>String(customer.id)===String(customerId));
       if(!c||c.is_active===false||c.deleted_at){nf('Choose an active customer for the QBO test','error');return{status:'blocked'}}
@@ -401,13 +509,25 @@ export function createQBSyncEngine(ctx){
       if(!batchId)setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:batchId?'customer_batch_record':'customer_canary',status:'success',details:[]};
       try{
-        const qboTerms=await loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000);
-        const termRef=resolveQBCustomerTerm(qboTerms,c.payment_terms);
-        const qboCustomers=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SyncToken, SalesTermRef',1000);
-        const currentPlan=buildQBCustomerManifest(cust,qboCustomers,qboTerms,qbConfig.custQBMap||{}).find(row=>row.sourceId===String(c.id));
+        // A batch hoists the term and customer reads and the plan build out of its loop:
+        // re-reading every QBO customer and rebuilding all 2,500 plans per record is
+        // quadratic and is what forced the old 20-record cap. Correctness does not rest
+        // on that reload — the per-record API read-back after the write does — and the
+        // batch keeps its snapshot current by folding each verified record back into it.
+        const qboTerms=context?.terms
+          || await loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000);
+        const qboCustomers=context?.customers
+          || await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SyncToken, SalesTermRef',1000);
+        const currentPlan=context?.planBySource
+          ? context.planBySource.get(String(c.id))
+          : buildQBCustomerManifest(cust,qboCustomers,qboTerms,qbConfig.custQBMap||{},{blankTermsDefault}).find(row=>row.sourceId===String(c.id));
         if(!currentPlan||['blocked','excluded'].includes(currentPlan.action))throw new Error(currentPlan?.reason||'Customer could not be reviewed');
-        if(expectedPlan && ['sourceId','displayName','portalTerms','qboId','action'].some(key=>currentPlan[key]!==expectedPlan[key]))throw new Error('Customer plan changed since review; refresh the manifest before continuing');
+        if(expectedPlan && ['sourceId','displayName','portalTerms','qboId','action','termSource'].some(key=>currentPlan[key]!==expectedPlan[key]))throw new Error('Customer plan changed since review; refresh the manifest before continuing');
         if(expectedPlan && (String(currentPlan.desiredTerm?.value)!==String(expectedPlan.desiredTerm?.value)||String(currentPlan.currentTerm?.value)!==String(expectedPlan.currentTerm?.value)))throw new Error('QBO term mapping changed since review');
+        // The reviewed plan is the only source of the term: portal terms, the
+        // existing QBO customer's own terms, or the reviewer's explicit default.
+        const termRef=currentPlan.desiredTerm;
+        if(!termRef?.value)throw new Error('Reviewed plan has no QBO term; no customer was changed.');
         const savedId=String((qbConfig.custQBMap||{})[c.id]||c.qb_customer_id||'');
         let qboCustomer=savedId?qboCustomers.find(row=>String(row.Id)===savedId):null;
         if(qboCustomer?.Active===false)throw new Error('Saved QBO customer #'+savedId+' is inactive; no record was changed.');
@@ -440,10 +560,16 @@ export function createQBSyncEngine(ctx){
         if(verified.Active===false)throw new Error('QBO customer was inactive on read-back; the portal link was not saved.');
         if(String(verified.SalesTermRef?.value||'')!==String(termRef.value))throw new Error('QBO customer terms did not match "'+termRef.name+'" on read-back; the portal link was not saved.');
         if(!findExactQBCustomerMatches(c,[verified]).length)throw new Error('Customer identity did not match on API read-back');
+        if(context?.customers){
+          const at=context.customers.findIndex(row=>String(row.Id)===qbId);
+          if(at>=0)context.customers[at]=verified; else context.customers.push(verified);
+        }
         log.details.push((created?'CREATED ONE QBO CUSTOMER':termsUpdated?'UPDATED ONE QBO CUSTOMER':'LINK ONLY — no QBO customer was changed')+': '+c.name+' → QB #'+qbId);
+        if(currentPlan.termSource==='qbo')log.details.push('PORTAL TERMS BLANK — kept existing QBO terms '+(termRef.name||termRef.value));
+        if(currentPlan.termSource==='default')log.details.push('PORTAL TERMS BLANK — reviewer default '+(termRef.name||termRef.value)+' applied');
         if(termsUpdated)log.details.push('UPDATED ONE QBO CUSTOMER TERM: '+(termRef.name||termRef.value));
         log.details.push('READ-BACK VERIFIED: '+(verified.DisplayName||verified.CompanyName||c.name)+(verified.SalesTermRef?.name?' · QBO terms '+verified.SalesTermRef.name:verified.SalesTermRef?.value?' · QBO terms ID '+verified.SalesTermRef.value:''));
-        await persistQbLink({mapKey:'custQBMap',sourceIds:[c.id],qboId:qbId,log,evidence:{batch_id:batchId||null,result:created?'created':termsUpdated?'updated':'linked',term_id:termRef.value,duplicate_preflight:'verified',api_readback:true}});
+        await persistQbLink({mapKey:'custQBMap',sourceIds:[c.id],qboId:qbId,log,evidence:{batch_id:batchId||null,result:created?'created':termsUpdated?'updated':'linked',term_id:termRef.value,term_source:currentPlan.termSource||'portal',duplicate_preflight:'verified',api_readback:true}});
         setQBConfig(prev=>({...prev,custQBMap:{...(prev.custQBMap||{}),[c.id]:qbId},syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
         nf((created?'Created and verified ':termsUpdated?'Updated terms and verified ':'Linked and verified ')+c.name+' in QBO');
         return{status:'success',created,termsUpdated,qbId,customerName:c.name};
@@ -460,24 +586,36 @@ export function createQBSyncEngine(ctx){
     const syncCustomers=async({manifest,approved=false}={})=>{
       const rows=manifest?.rows;
       const age=Date.now()-Date.parse(manifest?.reviewedAt||'');
+      let blankTermsDefault='';
+      try{blankTermsDefault=normalizeBlankTermsDefault(manifest?.blankTermsDefault);}
+      catch(e){nf('Customer batch blocked: '+e.message,'error');return{status:'blocked'};}
       const canaryLogs=(qbConfig.syncLog||[]).filter(log=>log.type==='customer_canary'&&log.status==='success');
-      const termCanary=canaryLogs.some(log=>(log.details||[]).some(detail=>String(detail).startsWith('UPDATED ONE QBO CUSTOMER TERM:')));
-      if(!approved||!Array.isArray(rows)||rows.length<1||rows.length>20
+      // Accept the durable receipt as well as the log entry: syncLog holds only the
+      // newest 100 events, so this control expired on its own as other work accrued.
+      const termCanary=!!qbConfig.custTermCanaryVerifiedAt
+        ||canaryLogs.some(log=>(log.details||[]).some(detail=>String(detail).startsWith('UPDATED ONE QBO CUSTOMER TERM:')));
+      if(!approved||!Array.isArray(rows)||rows.length<1||rows.length>QB_MAX_REVIEWED_BATCH
         ||new Set(rows.map(row=>row.sourceId)).size!==rows.length
         ||rows.some(row=>!['link','create','update_terms'].includes(row.action))
         ||String(manifest.realm)!==String(qbConfig.realm_id)||!Number.isFinite(age)||age<0||age>15*60*1000
         ||!termCanary||Object.keys(qbConfig.custQBMap||{}).length<2){
-        nf('Customer batch blocked: complete canaries and approve a fresh review of at most 20 customers','error');return{status:'blocked'};
+        nf('Customer batch blocked: complete canaries and approve a fresh review of at most '+QB_MAX_REVIEWED_BATCH+' customers','error');return{status:'blocked'};
       }
       if(!requireDurableLinks())return{status:'blocked'};
-      const report={id:'customer-batch-'+new Date().toISOString(),realm:manifest.realm,reviewedAt:manifest.reviewedAt,
+      const report={id:'customer-batch-'+new Date().toISOString(),realm:manifest.realm,reviewedAt:manifest.reviewedAt,blankTermsDefault,
         startedAt:new Date().toISOString(),status:'running',results:[],counts:{created:0,updated:0,linked:0,blocked:0,not_attempted:0}};
       setQbSyncing(true);
       try{
+        // One read of terms and customers, one plan build, for the whole run.
+        const terms=await loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000);
+        const customers=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SyncToken, SalesTermRef',1000);
+        const planBySource=new Map(buildQBCustomerManifest(cust,customers,terms,qbConfig.custQBMap||{},{blankTermsDefault})
+          .map(row=>[String(row.sourceId),row]));
+        const context={terms,customers,planBySource};
         let stopped=false;
         for(const row of rows){
           if(stopped){report.results.push({...row,result:'not_attempted'});report.counts.not_attempted++;continue;}
-          const outcome=await syncCustomerCanary(row.sourceId,{batchId:report.id,expectedPlan:row,
+          const outcome=await syncCustomerCanary(row.sourceId,{batchId:report.id,expectedPlan:row,blankTermsDefault,context,
             allowCreate:row.action==='create',allowTermUpdate:row.action==='update_terms'});
           const result=outcome.status==='success'?(outcome.created?'created':outcome.termsUpdated?'updated':'linked'):'blocked';
           report.results.push({...row,result,qboId:outcome.qbId||row.qboId,apiReadback:outcome.status==='success',reason:outcome.error||row.reason});

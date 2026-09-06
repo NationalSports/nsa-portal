@@ -42,6 +42,6 @@ test.each(['approval','realm','age','size'])('blocks invalid batch %s before API
   if(kind==='approval')approved=false;
   if(kind==='realm')manifest.realm='other';
   if(kind==='age')manifest.reviewedAt='2020-01-01';
-  if(kind==='size')manifest.rows=Array.from({length:21},(_,i)=>({...manifest.rows[0],sku:String(i)}));
+  if(kind==='size')manifest.rows=Array.from({length:require('../qbAccountMappings').QB_MAX_REVIEWED_BATCH+1},(_,i)=>({...manifest.rows[0],sku:String(i)}));
   expect(await s.run({approved,manifest})).toEqual({status:'blocked'});expect(s.qbApi).not.toHaveBeenCalled();
 });
