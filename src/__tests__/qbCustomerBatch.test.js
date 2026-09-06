@@ -166,3 +166,39 @@ describe('large reviewed batches',()=>{
     expect(report.counts.not_attempted).toBe(4);
   });
 });
+
+// The engine and the Run button each decided batch-readiness for themselves and
+// drifted: the engine learned to read the durable receipt while the button kept
+// reading syncLog, which holds only the newest 100 events. The button was left
+// permanently disabled on a control that was in fact satisfied.
+describe('customer batch readiness is one shared decision',()=>{
+  const {qbCustomerBatchReady}=require('../qbSyncEngine');
+  const links={a:'1',b:'2'};
+  const canaryLog={type:'customer_canary',status:'success',details:['UPDATED ONE QBO CUSTOMER TERM: Net 30']};
+
+  test('the durable receipt alone is enough once the log has aged out',()=>{
+    expect(qbCustomerBatchReady({custQBMap:links,syncLog:[],custTermCanaryVerifiedAt:'2026-09-05T17:41:00.000Z'})).toBe(true);
+  });
+  test('the log alone still works for a company that has not aged it out',()=>{
+    expect(qbCustomerBatchReady({custQBMap:links,syncLog:[canaryLog]})).toBe(true);
+  });
+  test('neither source means not ready',()=>{
+    expect(qbCustomerBatchReady({custQBMap:links,syncLog:[]})).toBe(false);
+    expect(qbCustomerBatchReady({custQBMap:links,syncLog:[{...canaryLog,status:'error'}]})).toBe(false);
+    expect(qbCustomerBatchReady({custQBMap:links,syncLog:[{...canaryLog,details:['LINK ONLY — no QBO customer was changed']}]})).toBe(false);
+  });
+  test('fewer than two saved links is never ready, whatever the canary says',()=>{
+    expect(qbCustomerBatchReady({custQBMap:{a:'1'},custTermCanaryVerifiedAt:'2026-09-05T17:41:00.000Z'})).toBe(false);
+    expect(qbCustomerBatchReady({})).toBe(false);
+  });
+  test('the engine gate agrees with the predicate on the live-shaped config',async()=>{
+    // custQBMap has 43 entries and no customer_canary survives in syncLog: exactly the
+    // production state in which the Run button was disabled but the engine would allow it.
+    const aged={custQBMap:links,syncLog:[{type:'purchase_orders',status:'success',details:['…']}],
+      custTermCanaryVerifiedAt:'2026-09-05T17:41:00.000Z'};
+    expect(qbCustomerBatchReady(aged)).toBe(true);
+    const run=setup();
+    const report=await run.engine.syncCustomers({manifest:run.manifest,approved:true});
+    expect(report.status).toBe('success');
+  });
+});

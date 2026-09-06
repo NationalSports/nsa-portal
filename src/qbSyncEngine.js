@@ -298,6 +298,19 @@ export function qbPaymentsAppliedToInvoice(payments = [], qbInvoiceId) {
   }).filter(row => row && row.id);
 }
 
+// The customer batch requires proof that a term-update canary succeeded. The engine
+// and the Run button each decided this for themselves, and drifted: the engine was
+// taught to read the durable receipt while the button kept reading syncLog, which
+// holds only the newest 100 events and had long since evicted the proof. The button
+// was then permanently disabled on a control that was actually satisfied. One
+// predicate now answers it for both callers.
+export function qbCustomerBatchReady(config = {}) {
+  if (Object.keys(config.custQBMap || {}).length < 2) return false;
+  if (config.custTermCanaryVerifiedAt) return true;
+  return (config.syncLog || []).some(log => log.type === 'customer_canary' && log.status === 'success'
+    && (log.details || []).some(detail => String(detail).startsWith('UPDATED ONE QBO CUSTOMER TERM:')));
+}
+
 export function qbLinkedTransactions(entity = {}) {
   return [...(entity.LinkedTxn || []), ...(entity.Line || []).flatMap(line => line.LinkedTxn || [])];
 }
@@ -684,16 +697,12 @@ export function createQBSyncEngine(ctx){
       let blankTermsDefault='';
       try{blankTermsDefault=normalizeBlankTermsDefault(manifest?.blankTermsDefault);}
       catch(e){nf('Customer batch blocked: '+e.message,'error');return{status:'blocked'};}
-      const canaryLogs=(qbConfig.syncLog||[]).filter(log=>log.type==='customer_canary'&&log.status==='success');
-      // Accept the durable receipt as well as the log entry: syncLog holds only the
-      // newest 100 events, so this control expired on its own as other work accrued.
-      const termCanary=!!qbConfig.custTermCanaryVerifiedAt
-        ||canaryLogs.some(log=>(log.details||[]).some(detail=>String(detail).startsWith('UPDATED ONE QBO CUSTOMER TERM:')));
+      const termCanary=qbCustomerBatchReady(qbConfig);
       if(!approved||!Array.isArray(rows)||rows.length<1||rows.length>QB_MAX_REVIEWED_BATCH
         ||new Set(rows.map(row=>row.sourceId)).size!==rows.length
         ||rows.some(row=>!['link','create','update_terms'].includes(row.action))
         ||String(manifest.realm)!==String(qbConfig.realm_id)||!Number.isFinite(age)||age<0||age>15*60*1000
-        ||!termCanary||Object.keys(qbConfig.custQBMap||{}).length<2){
+        ||!termCanary){
         nf('Customer batch blocked: complete canaries and approve a fresh review of at most '+QB_MAX_REVIEWED_BATCH+' customers','error');return{status:'blocked'};
       }
       if(!requireDurableLinks())return{status:'blocked'};
