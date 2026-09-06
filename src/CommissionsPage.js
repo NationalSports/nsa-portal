@@ -11,7 +11,7 @@ import { dP, rQ, parseDate, _decoUnitCostComb } from './App';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { supabase } from './lib/dbEngine';
 import { sendBrevoEmail } from './utils';
-import { canSnapshotLine, lineDataReady, staleZeroCostSnapshot, zeroCostRepairPatch, snapshotRowFromLine, applySnapshotToLine, overrideSnapshotPatch, isCommissionEarnedInvoice } from './commissionSnapshots';
+import { canSnapshotLine, lineDataReady, staleZeroCostSnapshot, zeroCostRepairPatch, snapshotRowFromLine, applySnapshotToLine, overrideSnapshotPatch, isCommissionEarnedInvoice, blendedStandardRate } from './commissionSnapshots';
 
 // The Admin Dashboard tab is visible to this user only (Steve Peterson's seeded
 // team_members id — same single-user gate as the App.js to-do list).
@@ -247,10 +247,17 @@ export default function CommissionsPage({adminReports=false}={}){
         // appends rows the client never loaded onto the END of the array (dbEngine _restore), so
         // position does not track chronology — and on a partially-restored invoice the last slot
         // could be an older payment, booking the line to the wrong statement month.
-        const _payDates=(inv.payments||[]).map(p=>parseDate(p.date)).filter(d=>d&&!isNaN(d.getTime()));
+        const _payRows=(inv.payments||[]).map(p=>({amount:safeNum(p.amount),date:parseDate(p.date)}));
+        const _payDates=_payRows.map(x=>x.date).filter(d=>d&&!isNaN(d.getTime()));
         const paidDate=_payDates.length?new Date(Math.max(..._payDates)):invDate;
         const daysToPay=paidDate&&invDate?Math.round((paidDate-invDate)/(1000*60*60*24)):null;
-        const isLate=daysToPay!==null&&daysToPay>90;
+        // Each payment is rated on its OWN age and weighted by its share of what was
+        // collected, so a deposit banked on day 1 keeps the full 30% even when the balance
+        // lands late. Falls back to the single last-payment rule when there is nothing to
+        // blend (no dated payments — e.g. a paid invoice whose payment rows never hydrated).
+        const _blend=blendedStandardRate(_payRows,invDate);
+        const baseRate=_blend!=null?_blend:((daysToPay!==null&&daysToPay>90)?0.15:0.30);
+        const isLate=baseRate<0.30;
         // Override shape: legacy `true` = restore to 30% on a late invoice; number = explicit per-invoice rate (decimal, e.g. 0.25 for 25%).
         const ovr=commOverrides[inv.id];
         const overridden=ovr!==undefined&&ovr!==false&&ovr!==null;
@@ -260,12 +267,12 @@ export default function CommissionsPage({adminReports=false}={}){
         // of sale price). Default (null) keeps the standard 30%/15% of GP policy.
         const revBasis=rep?.commission_basis==='revenue';
         const repRate=revBasis?(safeNum(rep.commission_rate)||0.01):null;
-        const commRate=customRate!=null?customRate:revBasis?repRate:(isLate&&!overridden?0.15:0.30);
+        const commRate=customRate!=null?customRate:revBasis?repRate:(overridden?0.30:baseRate);
         const commAmt=Math.round((revBasis?gp.rev:gp.gp)*commRate*100)/100;
         const paidAmt=inv.payments?.reduce((a,p)=>a+safeNum(p.amount),0)||0;
         const invMonth=inv.date?inv.date.substring(0,2)+'/'+inv.date.substring(6,8):'';// MM/YY
         const paidMonth=paidDate?(paidDate.getMonth()+1)+'/'+paidDate.getFullYear():'';
-        const line={inv,so,customer:c,rep,gp,daysToPay,isLate,overridden,ovrRaw:ovr,commRate,commAmt,paidAmt,paidDate,invMonth,paidMonth,linked:_combLinked,repId:commissionRepId(c,so,inv),commBasis:revBasis?'revenue':'gp'};
+        const line={inv,so,customer:c,rep,gp,daysToPay,isLate,baseRate,overridden,ovrRaw:ovr,commRate,commAmt,paidAmt,paidDate,invMonth,paidMonth,linked:_combLinked,repId:commissionRepId(c,so,inv),commBasis:revBasis?'revenue':'gp'};
         // Frozen line: money fields come from the snapshot; _live keeps today's computation
         // around for the admin Re-freeze action (deliberate corrections only).
         const snap=snaps&&snaps[inv.id];
@@ -616,7 +623,7 @@ export default function CommissionsPage({adminReports=false}={}){
                   {l.isLate&&!l.overridden&&l.commBasis!=='revenue'&&<button className="btn btn-sm" style={{fontSize:9,background:'#fef3c7',border:'1px solid #f59e0b',color:'#92400e',padding:'2px 6px'}} title="Approve full 30% commission" onClick={()=>{setCommOverrides(p=>({...p,[l.inv.id]:true}));_applyOvrToSnap(l.inv.id,true)}}>Full 30%</button>}
                   {l.type!=='omg'&&<button className="btn btn-sm" style={{fontSize:9,background:'#eff6ff',border:'1px solid #93c5fd',color:'#1e40af',padding:'2px 6px'}} title="Set a custom commission % for this invoice" onClick={()=>{
                     const cur=Math.round(l.commRate*100);
-                    const v=window.prompt(`Set commission % for ${l.inv.id}\n(default: ${l.isLate?'15% late / 30% on-time':'30%'})`,String(cur));
+                    const v=window.prompt(`Set commission % for ${l.inv.id}\n(computed: ${Math.round((l.baseRate!=null?l.baseRate:0.30)*1000)/10}% — payments are rated individually, so a part-late invoice blends 30% and 15%)`,String(cur));
                     if(v===null)return;
                     const t=v.trim();
                     if(t===''){setCommOverrides(p=>{const n={...p};delete n[l.inv.id];return n});_applyOvrToSnap(l.inv.id,null);return}
@@ -965,6 +972,8 @@ export default function CommissionsPage({adminReports=false}={}){
         const fmt=n=>'$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
         const fmt0=n=>'$'+Math.round(n).toLocaleString();
         const fmtD=d=>d?(d.getMonth()+1)+'/'+d.getDate()+'/'+String(d.getFullYear()).slice(2):'—';
+        // A part-late invoice blends 30% and 15%, so the rate is not always a round number.
+        const _rateLbl=r=>(Math.round((r!=null?r:0.15)*1000)/10)+'%';
         const gpBadge=(gp,rev)=>{const ok=rev>0&&gp/rev>=0.3;return<span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:ok?'#dcfce7':'#fef3c7',color:ok?'#166534':'#92400e'}}>{rev>0?Math.round(gp/rev*100):0}%</span>};
         const openSO=l=>{if(l.so){setESOTab('costs');setESO(l.so);setESOC(l.customer);setPg('orders')}};
         const repName=b=>b.rep?.name||(b.repId==='_none'?'Unassigned':b.repId);
@@ -1298,14 +1307,19 @@ export default function CommissionsPage({adminReports=false}={}){
                         <td style={{textAlign:'center'}}>{daysBadge(l.daysToPay)}</td>
                         <td style={{textAlign:'right',color:'#1e40af'}}>{fmt(l.commAmt)}<span style={{marginLeft:4,fontSize:9,fontWeight:600,color:l.commRate===0.30||l.commBasis==='revenue'?'#166534':'#d97706'}}>@{l.commBasis==='revenue'?(Math.round(l.commRate*1000)/10)+'% of sale':Math.round(l.commRate*100)+'%'}</span></td>
                         <td colSpan={2} style={{textAlign:'center'}}>{lateInv&&l.commBasis!=='revenue'&&(()=>{
-                          // Paid >90 days late: pick the rate. 15% = the default late penalty
-                          // (clears any override); 30% = admin restores the full rate. Both
+                          // Part or all of this invoice was paid past 90 days. Left button keeps
+                          // the computed rate — the payment-weighted blend of 30% and 15%, which
+                          // is why it is not always a round number — and clears any override;
+                          // right button restores the full 30%. Both
                           // write through the same override + frozen-snapshot path as the
                           // Statement tab, so the two views can never disagree.
-                          const at30=l.commRate===0.30,at15=l.commRate===0.15;
+                          // A blended rate is neither 0.15 nor 0.30, so the buttons key off the
+                          // override itself: left = the invoice's computed rate, right = forced 30%.
+                          const at30=!!l.overridden,at15=!l.overridden;
+                          const baseLbl=_rateLbl(l.baseRate);
                           const bs={fontSize:9,padding:'2px 7px',borderRadius:6,cursor:'pointer',fontWeight:700};
                           return<span style={{display:'inline-flex',gap:4}} onClick={e=>e.stopPropagation()}>
-                            <button style={{...bs,background:at15?'#1e40af':'#f8fafc',color:at15?'white':'#64748b',border:'1px solid #93c5fd'}} title="Keep the 15% late rate (clears any override)" onClick={()=>{setCommOverrides(p=>{const n={...p};delete n[l.inv.id];return n});_applyOvrToSnap(l.inv.id,null)}}>15%</button>
+                            <button style={{...bs,background:at15?'#1e40af':'#f8fafc',color:at15?'white':'#64748b',border:'1px solid #93c5fd'}} title="Keep this invoice's computed rate (clears any override)" onClick={()=>{setCommOverrides(p=>{const n={...p};delete n[l.inv.id];return n});_applyOvrToSnap(l.inv.id,null)}}>{baseLbl}</button>
                             <button style={{...bs,background:at30?'#166534':'#f8fafc',color:at30?'white':'#64748b',border:'1px solid #86efac'}} title="Restore the full 30% rate on this late invoice" onClick={()=>{setCommOverrides(p=>({...p,[l.inv.id]:true}));_applyOvrToSnap(l.inv.id,true)}}>30%</button>
                           </span>})()}</td>
                         <td colSpan={PAYCOLS}/>
@@ -1451,7 +1465,7 @@ export default function CommissionsPage({adminReports=false}={}){
                     <td style={{...th,fontWeight:700,color:gap>0.005?'#dc2626':'#94a3b8'}}>{gap>0.005?'−'+fmt(gap):'—'}</td>
                     <td style={{textAlign:'center'}}>
                       <span style={{display:'inline-flex',gap:4}}>
-                        <button style={{fontSize:9,padding:'2px 7px',borderRadius:6,cursor:'pointer',fontWeight:700,background:!l.overridden?'#1e40af':'#f8fafc',color:!l.overridden?'white':'#64748b',border:'1px solid #93c5fd'}} title="Keep the 15% late rate (clears any override)" onClick={()=>{setCommOverrides(p=>{const n={...p};delete n[l.inv.id];return n});_applyOvrToSnap(l.inv.id,null)}}>15%</button>
+                        <button style={{fontSize:9,padding:'2px 7px',borderRadius:6,cursor:'pointer',fontWeight:700,background:!l.overridden?'#1e40af':'#f8fafc',color:!l.overridden?'white':'#64748b',border:'1px solid #93c5fd'}} title="Keep this invoice's computed rate (clears any override)" onClick={()=>{setCommOverrides(p=>{const n={...p};delete n[l.inv.id];return n});_applyOvrToSnap(l.inv.id,null)}}>{_rateLbl(l.baseRate)}</button>
                         <button style={{fontSize:9,padding:'2px 7px',borderRadius:6,cursor:'pointer',fontWeight:700,background:l.overridden?'#166534':'#f8fafc',color:l.overridden?'white':'#64748b',border:'1px solid #86efac'}} title="Pay this invoice in full at 30%" onClick={()=>{setCommOverrides(p=>({...p,[l.inv.id]:true}));_applyOvrToSnap(l.inv.id,true)}}>30%</button>
                       </span>
                     </td>
