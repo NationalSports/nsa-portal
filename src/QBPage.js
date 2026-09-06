@@ -102,7 +102,9 @@ export default function QBPage(){
   const [customerBatchApproved,setCustomerBatchApproved]=useState(false);
   const [customerBatchLimit,setCustomerBatchLimit]=useState(20);
   const [customerReviewFilter,setCustomerReviewFilter]=useState('all');
-  const [customerBlankTermsDefault,setCustomerBlankTermsDefault]=useState('');
+  // Steve Peterson approved Net 30 (the portal's own due-date default) for blank
+  // portal terms on September 6, 2026. The reviewer can still switch to Block.
+  const [customerBlankTermsDefault,setCustomerBlankTermsDefault]=useState('net30');
   const [qbTaxReading,setQbTaxReading]=useState(false);
   const [poBatchReview,setPoBatchReview]=useState(null);
   const [poBatchApproved,setPoBatchApproved]=useState(false);
@@ -939,8 +941,8 @@ export default function QBPage(){
           <div style={{padding:14,borderBottom:'1px solid #e2e8f0'}}>
             <div style={{fontSize:11,color:'#475569',marginBottom:8}}>
               <label>Blank portal payment terms <select aria-label="Blank portal payment terms" value={customerBlankTermsDefault} disabled={qbSyncing||customerReviewBusy} onChange={e=>{setCustomerBlankTermsDefault(e.target.value);setCustomerManifest(null);setCustomerBatchApproved(false)}}>
+                <option value="net30">Net 30 — approved default (portal due-date default)</option>
                 <option value="">Block — no default assumed</option>
-                <option value="net30">Net 30 — the portal&apos;s own due-date default</option>
               </select></label>
               <div style={{marginTop:4}}>A customer that already exists in QBO keeps the QBO terms it has today (no write). The default above applies only to customers with blank portal terms that are not in QBO yet, or whose QBO term is inactive. Changing it requires a fresh review.</div>
             </div>
