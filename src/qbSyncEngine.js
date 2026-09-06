@@ -227,6 +227,26 @@ export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms
   [...names.values(),...ids.values()].filter(group=>group.length>1).forEach(group=>group.forEach(row=>{
     row.action='blocked';row.reason='Multiple portal customers claim the same display name or QBO customer';
   }));
+  // Two portal customers can name the same real-world account while their display
+  // names differ only by tag ("Populous (POP)" vs "Populous (Populous)"), so the
+  // exact-display-name pass above misses them. The QBO-side duplicate guard cannot
+  // see them either: neither exists in QuickBooks yet, so both get created and the
+  // duplicate lands in the books. Block the creations and let a human merge first.
+  const looseKeys = new Map();
+  rows.filter(row=>!['excluded','blocked'].includes(row.action)).forEach(row=>{
+    const key = normalizeQBDuplicateKey(row.name) || normalizeQBDuplicateKey(row.displayName);
+    if(!key)return;
+    looseKeys.set(key,[...(looseKeys.get(key)||[]),row]);
+  });
+  looseKeys.forEach(group=>{
+    if(group.length < 2)return;
+    group.filter(row=>row.action === 'create').forEach(row=>{
+      row.action = 'blocked';
+      row.reason = 'Another portal customer resolves to the same QuickBooks name ('
+        + group.filter(other=>other !== row).map(other=>other.displayName).join(', ')
+        + '); merge or rename in the portal before creating a second record';
+    });
+  });
   return rows;
 }
 
