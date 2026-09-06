@@ -45,6 +45,11 @@ export function mergeDurableQBLinks(config = {}, appState = {}) {
   // that had genuinely been satisfied silently expired as unrelated activity pushed it
   // out. Receipts are permanent and one-per-link, so derive it from them instead.
   let termCanaryAt = clean(config.custTermCanaryVerifiedAt);
+  // Same story for the product batch, which requires one proven link canary and one
+  // proven creation canary. Reading those from syncLog alone means the control expires
+  // on its own as unrelated events push them past the 100-entry limit.
+  let itemLinkAt = clean(config.prodLinkCanaryVerifiedAt);
+  let itemCreateAt = clean(config.prodCreateCanaryVerifiedAt);
   (config.syncLog || []).forEach(log => logs.set(log.id || JSON.stringify(log), log));
   Object.entries(appState).forEach(([key, raw]) => {
     if (!key.startsWith(PREFIX)) return;
@@ -58,9 +63,15 @@ export function mergeDurableQBLinks(config = {}, appState = {}) {
     if (row.log?.id) logs.set(row.log.id, row.log);
     if (row.map_key === 'custQBMap' && row.active !== false && row.evidence?.result === 'updated'
       && clean(row.verified_at) > termCanaryAt) termCanaryAt = clean(row.verified_at);
+    if (row.map_key === 'prodQBMap' && row.active !== false) {
+      if (row.evidence?.result === 'linked' && clean(row.verified_at) > itemLinkAt) itemLinkAt = clean(row.verified_at);
+      if (row.evidence?.result === 'created' && clean(row.verified_at) > itemCreateAt) itemCreateAt = clean(row.verified_at);
+    }
   });
   result.syncLog = mergeQBSyncLogs([...logs.values()]);
   if (termCanaryAt) result.custTermCanaryVerifiedAt = termCanaryAt;
+  if (itemLinkAt) result.prodLinkCanaryVerifiedAt = itemLinkAt;
+  if (itemCreateAt) result.prodCreateCanaryVerifiedAt = itemCreateAt;
   return result;
 }
 

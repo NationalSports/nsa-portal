@@ -1,6 +1,6 @@
 import {supabase} from './lib/dbEngine';
 import {loadQBVendorReview,applyQBVendorReview} from './qbVendorSync';
-import {buildQBProductManifest,loadQBProductItems} from './qbProductMigration';
+import {buildQBProductManifest,loadQBProductItems,qbProductBatchReadiness} from './qbProductMigration';
 // QuickBooks Online sync page — lifted verbatim out of App() (was `function rQB()`)
 // as step 3 of the App.js decomposition. All shared state comes from useAppData();
 // this component holds no state of its own, so mount/unmount on page switch is
@@ -535,6 +535,7 @@ export default function QBPage(){
     const customerBatchRows=(customerManifest?.rows||[]).filter(row=>['link','create','update_terms'].includes(row.action)
       &&(!qbConfig.custQBMap?.[row.sourceId]||row.action==='update_terms')).slice(0,customerBatchLimit);
     const customerCanariesReady=qbCustomerBatchReady(qbConfig);
+    const productReadiness=qbProductBatchReadiness(qbConfig);
     const runCustomerBatch=async()=>{
       const report=await syncCustomers({manifest:{...customerManifest,rows:customerBatchRows},approved:customerBatchApproved});
       setCustomerBatchApproved(false);
@@ -1311,7 +1312,11 @@ export default function QBPage(){
               <label><input type="checkbox" checked={productPoOnly} disabled={qbSyncing} onChange={e=>{setProductPoOnly(e.target.checked);setProductApproved(false)}}/> Only SKUs on purchase orders awaiting sync ({poPendingSkus.size||'run a PO review first'})</label>
               <table><thead><tr><th>SKU</th><th>Action</th><th>QBO ID</th><th>Portal variants</th><th>Accounts</th></tr></thead><tbody>{productBatchRows.map(r=><tr key={r.sku}><td>{r.sku}</td><td>{r.action}</td><td>{r.qboId||'New'}</td><td>{r.sourceIds.length}</td><td>40000 / 51300</td></tr>)}</tbody></table>
               <label><input type="checkbox" checked={productApproved} disabled={qbSyncing} onChange={e=>setProductApproved(e.target.checked)}/> I approve this reviewed product batch.</label>
-              <button className="btn btn-sm" disabled={qbSyncing||!productApproved||!productBatchRows.length} onClick={runProductBatch}>Run Reviewed Product Batch</button>
+              {!productReadiness.ready&&<p style={{color:'#b91c1c',fontWeight:600}}>
+                Run button disabled: the batch needs one proven link canary{productReadiness.linked?' (done)':' (still needed)'} and one proven creation canary{productReadiness.created?' (done)':' (still needed)'}.
+                {!productReadiness.created&&' Use "Test 1 QBO Item" below on a SKU that is not in QuickBooks yet, with "Approve creation of this one SKU" ticked. One creation unlocks the batch.'}
+              </p>}
+              <button className="btn btn-sm" disabled={qbSyncing||!productApproved||!productBatchRows.length||!productReadiness.ready} onClick={runProductBatch}>Run Reviewed Product Batch</button>
               <label>Review filter <select aria-label="Product review filter" value={productFilter} onChange={e=>setProductFilter(e.target.value)}>{['link','create','blocked','excluded'].map(a=><option key={a} value={a}>{a}</option>)}</select></label>
               <table><thead><tr><th>SKU</th><th>Action</th><th>QBO ID</th><th>Reason</th></tr></thead><tbody>{productReview.rows.filter(r=>r.action===productFilter).slice(0,20).map((r,i)=><tr key={r.sku+i}><td>{r.sku}</td><td>{r.action}</td><td>{r.qboId||'New'}</td><td>{r.reason}</td></tr>)}</tbody></table>
             </>}
