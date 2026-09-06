@@ -52,3 +52,54 @@ test.each(['unapproved','oversize','stale','other_realm'])('rejects %s batches b
   expect(await run.engine.syncCustomers({manifest,approved})).toMatchObject({status:'blocked'});
   expect(run.qbApi).not.toHaveBeenCalled();
 });
+describe('blank portal terms in the canary and batch',()=>{
+  function setupBlank({qboTerm='8',blankTermsDefault=''}={}){
+    const cust=[{id:'B1',name:'Blank',payment_terms:''},{id:'B2',name:'Missing',payment_terms:''}];
+    const qbo=[{Id:'21',DisplayName:'Blank',Active:true,SyncToken:'0',SalesTermRef:{value:qboTerm,name:'Net 30'}}];
+    let config={realm_id:'realm',preflight:{status:'success',realm_id:'realm'},custQBMap:{canary1:'1',canary2:'2'},syncLog:[
+      {type:'customer_canary',status:'success',details:['UPDATED ONE QBO CUSTOMER TERM: Net 30']}]};
+    const qbApi=jest.fn(async(action,{query,customer}={})=>{
+      if(action==='query'&&query.includes('FROM Term'))return {QueryResponse:{Term:terms}};
+      if(action==='query'&&query.includes('FROM Customer')){
+        const id=query.match(/WHERE Id = '(.*?)'/)?.[1];
+        return {QueryResponse:{Customer:id?qbo.filter(q=>q.Id===id):qbo}};
+      }
+      if(action==='upsert_customer'){const saved={...customer,Id:customer.Id||'22',Active:true};qbo.push(saved);return {Customer:saved};}
+      throw new Error('Unexpected '+action);
+    });
+    const persistQbLink=jest.fn(async()=>{});
+    const engine=createQBSyncEngine({cust,qbApi,qbConfig:config,persistQbLink,setQbSyncing:jest.fn(),nf:jest.fn(),
+      setQBConfig:fn=>{config=fn(config);},sos:[],invs:[],prod:[],vend:[]});
+    const rows=buildQBCustomerManifest(cust,qbo,terms,{},{blankTermsDefault});
+    return {engine,qbApi,persistQbLink,rows,manifest:{realm:'realm',reviewedAt:new Date().toISOString(),rows,blankTermsDefault},config:()=>config};
+  }
+  test('canary links a blank-terms customer to its existing QBO record without any write',async()=>{
+    const run=setupBlank();
+    const result=await run.engine.syncCustomerCanary('B1');
+    expect(result).toMatchObject({status:'success',created:false,termsUpdated:false,qbId:'21'});
+    expect(run.qbApi.mock.calls.some(([action])=>action==='upsert_customer')).toBe(false);
+    expect(run.persistQbLink.mock.calls[0][0].evidence).toMatchObject({result:'linked',term_id:'8',term_source:'qbo'});
+  });
+  test('canary blocks a blank-terms customer with no QBO match unless a default was chosen',async()=>{
+    const run=setupBlank();
+    expect(await run.engine.syncCustomerCanary('B2')).toMatchObject({status:'blocked',error:expect.stringMatching(/no default is assumed/)});
+    expect(run.qbApi.mock.calls.some(([action])=>action==='upsert_customer')).toBe(false);
+    const withDefault=setupBlank({blankTermsDefault:'net30'});
+    expect(await withDefault.engine.syncCustomerCanary('B2',{blankTermsDefault:'net30'})).toMatchObject({status:'needs_confirmation'});
+    const created=await withDefault.engine.syncCustomerCanary('B2',{blankTermsDefault:'net30',allowCreate:true});
+    expect(created).toMatchObject({status:'success',created:true});
+    expect(withDefault.qbApi.mock.calls.find(([action])=>action==='upsert_customer')[1].customer.SalesTermRef).toEqual({value:'8',name:'Net 30'});
+    expect(withDefault.persistQbLink.mock.calls[0][0].evidence.term_source).toBe('default');
+  });
+  test('batch carries the reviewed default and rejects a plan reviewed under a different one',async()=>{
+    const run=setupBlank({blankTermsDefault:'net30'});
+    const report=await run.engine.syncCustomers({manifest:run.manifest,approved:true});
+    expect(report.counts).toMatchObject({linked:1,created:1,blocked:0});
+    expect(report.blankTermsDefault).toBe('net30');
+    const changed=setupBlank({blankTermsDefault:'net30'});
+    const stale=await changed.engine.syncCustomers({manifest:{...changed.manifest,blankTermsDefault:''},approved:true});
+    expect(stale.counts.created).toBe(0);
+    expect(changed.qbApi.mock.calls.some(([action])=>action==='upsert_customer')).toBe(false);
+    expect(await run.engine.syncCustomers({manifest:{...run.manifest,blankTermsDefault:'whenever'},approved:true})).toMatchObject({status:'blocked'});
+  });
+});

@@ -102,6 +102,8 @@ export default function QBPage(){
   const [customerBatchApproved,setCustomerBatchApproved]=useState(false);
   const [customerBatchLimit,setCustomerBatchLimit]=useState(20);
   const [customerReviewFilter,setCustomerReviewFilter]=useState('all');
+  const [customerBlankTermsDefault,setCustomerBlankTermsDefault]=useState('');
+  const [qbTaxReading,setQbTaxReading]=useState(false);
   const [poBatchReview,setPoBatchReview]=useState(null);
   const [poBatchApproved,setPoBatchApproved]=useState(false);
   const [vendorReview,setVendorReview]=useState(null);
@@ -235,6 +237,41 @@ export default function QBPage(){
         setQBConfig(prev=>({...prev,preflight:{status:'error',at:new Date().toISOString(),error:e.message},syncLog:[log,...prev.syncLog].slice(0,100)}));
         nf('Live QBO preflight failed — '+(e.message||'setup error'),'error');
       }finally{setQbPreflighting(false)}
+    };
+    // Read-only inspection of the live Sales Tax Center. Taxable invoices stay
+    // blocked until accounting approves a mapping from these codes/rates; this
+    // only records what QBO has so that decision can be made from evidence.
+    const runQBTaxPreflight=async()=>{
+      setQbTaxReading(true);
+      const log={ts:new Date().toLocaleString(),type:'tax_preflight',status:'success',details:['READ ONLY — no QuickBooks records were created or changed']};
+      try{
+        const prefsRes=await queryQBReadOnly(qbApi,'SELECT * FROM Preferences','tax preferences query');
+        const taxPrefs=prefsRes?.QueryResponse?.Preferences?.[0]?.TaxPrefs||{};
+        const [codes,rates,agencies]=await Promise.all([
+          loadAllQBEntities(qbApi,'TaxCode','*',100),
+          loadAllQBEntities(qbApi,'TaxRate','*',100),
+          loadAllQBEntities(qbApi,'TaxAgency','*',100),
+        ]);
+        const agencyName=ref=>agencies.find(a=>String(a.Id)===String(ref?.value||''))?.DisplayName||ref?.name||'';
+        const rateById=new Map(rates.map(r=>[String(r.Id),r]));
+        const summary=codes.slice(0,200).map(code=>({
+          id:String(code.Id),name:code.Name||'',active:code.Active!==false,taxable:code.Taxable!==false,group:!!code.TaxGroup,
+          rates:(code.SalesTaxRateList?.TaxRateDetail||[]).map(detail=>{const rate=rateById.get(String(detail.TaxRateRef?.value||''));
+            return{id:String(detail.TaxRateRef?.value||''),name:rate?.Name||detail.TaxRateRef?.name||'',rate:rate?.RateValue??null,agency:agencyName(rate?.AgencyRef)}}),
+        }));
+        log.details.push('Company realm: '+(qbConfig.realm_id||'unknown'));
+        log.details.push('Automated Sales Tax: '+(taxPrefs.PartnerTaxEnabled?'ENABLED':'not enabled')+' · sales tax in use: '+(taxPrefs.UsingSalesTax?'yes':'no'));
+        log.details.push(codes.length+' tax codes · '+rates.length+' tax rates · '+agencies.length+' tax agencies');
+        summary.filter(code=>code.active).forEach(code=>log.details.push('TaxCode #'+code.id+' '+code.name+' — '+(code.taxable?'taxable':'non-taxable')
+          +(code.rates.length?' — '+code.rates.map(r=>r.name+(r.rate!=null?' '+r.rate+'%':'')+(r.agency?' ('+r.agency+')':'')).join(', '):'')));
+        log.details.push('Taxable invoices remain blocked until accounting approves a tax-code mapping from this list.');
+        setQBConfig(prev=>({...prev,taxPreflight:{at:new Date().toISOString(),realm_id:prev.realm_id,partnerTaxEnabled:!!taxPrefs.PartnerTaxEnabled,usingSalesTax:!!taxPrefs.UsingSalesTax,codeCount:codes.length,rateCount:rates.length,codes:summary},syncLog:[log,...(prev.syncLog||[])].slice(0,100)}));
+        nf('Sales-tax setup read from QBO — no records changed');
+      }catch(e){
+        log.status='error';log.details.push(e.message||'Sales-tax read failed');
+        setQBConfig(prev=>({...prev,syncLog:[log,...(prev.syncLog||[])].slice(0,100)}));
+        nf('Sales-tax read failed — '+(e.message||'QBO error'),'error');
+      }finally{setQbTaxReading(false)}
     };
 
     // ── BILL UPLOAD — upload vendor bill to QB ──
@@ -405,15 +442,15 @@ export default function QBPage(){
     const poCanaryBlock=selectedCanaryPO?.invalidReason||'';
     const runCustomerCanary=async()=>{
       if(!qbCanaryCustomerId)return;
-      const result=await syncCustomerCanary(qbCanaryCustomerId);
+      const result=await syncCustomerCanary(qbCanaryCustomerId,{blankTermsDefault:customerBlankTermsDefault});
       if(result?.status==='needs_confirmation'){
         const approved=window.confirm('No exact active QBO customer matches "'+result.customerName+'".\n\nCreate exactly ONE new QBO customer with its mapped QBO payment terms and verify it by API read-back?');
         if(!approved){nf('Customer test cancelled — no QBO customer was created');return}
-        await syncCustomerCanary(qbCanaryCustomerId,{allowCreate:true});
+        await syncCustomerCanary(qbCanaryCustomerId,{allowCreate:true,blankTermsDefault:customerBlankTermsDefault});
       }else if(result?.status==='needs_term_confirmation'){
         const approved=window.confirm('QBO customer #'+result.qbId+' ("'+result.customerName+'") currently has terms "'+result.currentTerm+'".\n\nUpdate exactly this ONE customer to "'+result.desiredTerm+'" and verify it by API read-back?');
         if(!approved){nf('Customer terms update cancelled — no QBO customer was changed');return}
-        await syncCustomerCanary(qbCanaryCustomerId,{allowTermUpdate:true});
+        await syncCustomerCanary(qbCanaryCustomerId,{allowTermUpdate:true,blankTermsDefault:customerBlankTermsDefault});
       }
     };
     const runInvoiceCanary=async()=>{
@@ -440,9 +477,10 @@ export default function QBPage(){
       try{
         const terms=await loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000);
         const customers=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SalesTermRef',1000);
-        const rows=buildQBCustomerManifest(cust,customers,terms,qbConfig.custQBMap||{});
-        const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,
-          counts:rows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{})};
+        const rows=buildQBCustomerManifest(cust,customers,terms,qbConfig.custQBMap||{},{blankTermsDefault:customerBlankTermsDefault});
+        const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,blankTermsDefault:customerBlankTermsDefault,
+          counts:rows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{}),
+          termSources:rows.reduce((counts,row)=>({...counts,[row.termSource||'portal']:(counts[row.termSource||'portal']||0)+1}),{})};
         setCustomerManifest(review);
         setQBConfig(prev=>({...prev,lastCustomerReview:review}));
         nf('Customer review complete — no QBO records changed');
@@ -899,14 +937,21 @@ export default function QBPage(){
             <button className="btn btn-primary btn-sm" disabled title="Use the reviewed customer batch below">{qbSyncing?'Syncing...':'Review Required Below'}</button>
           </div>
           <div style={{padding:14,borderBottom:'1px solid #e2e8f0'}}>
+            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>
+              <label>Blank portal payment terms <select aria-label="Blank portal payment terms" value={customerBlankTermsDefault} disabled={qbSyncing||customerReviewBusy} onChange={e=>{setCustomerBlankTermsDefault(e.target.value);setCustomerManifest(null);setCustomerBatchApproved(false)}}>
+                <option value="">Block — no default assumed</option>
+                <option value="net30">Net 30 — the portal&apos;s own due-date default</option>
+              </select></label>
+              <div style={{marginTop:4}}>A customer that already exists in QBO keeps the QBO terms it has today (no write). The default above applies only to customers with blank portal terms that are not in QBO yet, or whose QBO term is inactive. Changing it requires a fresh review.</div>
+            </div>
             <button className="btn btn-sm" disabled={qbSyncing||customerReviewBusy||!livePreflightReady} onClick={reviewCustomerMigration}>{customerReviewBusy?'Reviewing customers...':'Review Customers — No QBO Changes'}</button>
             {customerManifest&&<>
-              <p>Reviewed {customerManifest.rows.length} customers in company realm {customerManifest.realm}. Existing matches: {customerManifest.counts.link||0}; proposed creations: {customerManifest.counts.create||0}; term changes: {customerManifest.counts.update_terms||0}; blocked: {customerManifest.counts.blocked||0}; excluded: {customerManifest.counts.excluded||0}.</p>
+              <p>Reviewed {customerManifest.rows.length} customers in company realm {customerManifest.realm}. Existing matches: {customerManifest.counts.link||0}; proposed creations: {customerManifest.counts.create||0}; term changes: {customerManifest.counts.update_terms||0}; blocked: {customerManifest.counts.blocked||0}; excluded: {customerManifest.counts.excluded||0}. Terms from QBO: {customerManifest.termSources?.qbo||0}; reviewer default applied: {customerManifest.termSources?.default||0}.</p>
               <button className="btn btn-sm" onClick={downloadCustomerManifest}>Download Full Customer Review</button>
               <h3>Proposed customer batch ({customerBatchRows.length}, maximum 20)</h3>
               <label>Batch size <select aria-label="Customer batch size" value={customerBatchLimit} disabled={qbSyncing} onChange={e=>{setCustomerBatchLimit(Number(e.target.value));setCustomerBatchApproved(false)}}>{Array.from({length:20},(_,i)=><option key={i+1} value={i+1}>{i+1}</option>)}</select></label>
               <table><thead><tr><th>Customer</th><th>Action</th><th>QBO ID</th><th>Current term</th><th>Approved portal term</th></tr></thead><tbody>
-                {customerBatchRows.map(row=><tr key={row.sourceId}><td>{row.displayName}</td><td>{row.action}</td><td>{row.qboId||'New'}</td><td>{row.currentTerm?.name||row.currentTerm?.value||'None'}</td><td>{row.desiredTerm?.name}</td></tr>)}
+                {customerBatchRows.map(row=><tr key={row.sourceId}><td>{row.displayName}</td><td>{row.action}</td><td>{row.qboId||'New'}</td><td>{row.currentTerm?.name||row.currentTerm?.value||'None'}</td><td>{row.desiredTerm?.name}{row.termSource==='qbo'?' (kept from QBO)':row.termSource==='default'?' (reviewer default)':''}</td></tr>)}
               </tbody></table>
               {!customerCanariesReady&&<p>Complete two customer links and one verified term-update canary before running a batch.</p>}
               <label><input type="checkbox" checked={customerBatchApproved} disabled={qbSyncing} onChange={e=>setCustomerBatchApproved(e.target.checked)}/> I approve the listed customer creations, links, and term changes in this batch.</label>
@@ -973,6 +1018,17 @@ export default function QBPage(){
               <button className="btn btn-primary btn-sm" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={syncPaidFromQB}>{qbSyncing?'Syncing...':'Sync Paid from QB'}</button>
               <button className="btn btn-secondary btn-sm" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={()=>syncInvoices()}>{qbSyncing?'Syncing...':'Push Invoices to QB'}</button>
             </div>
+          </div>
+          <div style={{padding:'12px 14px',background:'#fffbeb',borderBottom:'1px solid #fde68a'}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#92400e',marginBottom:4}}>Sales-tax setup (read-only)</div>
+            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>{unsyncedInvs.filter(inv=>safeNum(inv.tax)>0).length} of {unsyncedInvs.length} pending invoices carry sales tax and stay blocked until accounting approves a QBO tax-code mapping. This reads the live Sales Tax Center so that decision can be made from evidence. Nothing is written.</div>
+            <button className="btn btn-sm" disabled={qbTaxReading||qbSyncing||!livePreflightReady} title={!livePreflightReady?'Run a successful read-only live preflight first':''} onClick={runQBTaxPreflight}>{qbTaxReading?'Reading QBO tax setup...':'Read Sales Tax Setup — No QBO Changes'}</button>
+            {qbConfig.taxPreflight&&String(qbConfig.taxPreflight.realm_id||'')===String(qbConfig.realm_id||'')&&<div style={{fontSize:11,color:'#1e3a8a',marginTop:8}}>
+              <div>Read {new Date(qbConfig.taxPreflight.at).toLocaleString()} · Automated Sales Tax {qbConfig.taxPreflight.partnerTaxEnabled?'enabled':'not enabled'} · {qbConfig.taxPreflight.codeCount} tax codes · {qbConfig.taxPreflight.rateCount} tax rates</div>
+              <table style={{fontSize:10,marginTop:6}}><thead><tr><th>Tax code</th><th>Type</th><th>Rates</th></tr></thead><tbody>
+                {(qbConfig.taxPreflight.codes||[]).filter(code=>code.active).map(code=><tr key={code.id}><td>#{code.id} {code.name}</td><td>{code.taxable?'taxable':'non-taxable'}</td><td>{code.rates.map(r=>r.name+(r.rate!=null?' '+r.rate+'%':'')+(r.agency?' ('+r.agency+')':'')).join(', ')||'—'}</td></tr>)}
+              </tbody></table>
+            </div>}
           </div>
           <div style={{padding:'12px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:4}}>Test exactly one invoice</div>

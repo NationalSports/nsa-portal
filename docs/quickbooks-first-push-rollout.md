@@ -48,6 +48,20 @@ Tag them `NSA-QB-CANARY:<run_id>`. Read each record back from QBO and compare do
 
 Pause. The operator opens the records in QBO and sends screenshots/photos. Production remains locked until the API read-back and visual review are both approved.
 
+## 3a. Blank portal payment terms
+
+Most portal customers (2,338 of 2,540 active on September 6, 2026) have no payment terms saved, and the portal itself bills them as Net 30. The customer review handles that without guessing a financial term:
+
+- A customer that already exists in QBO is linked with the QBO terms it has today. No QBO write happens, and the plan is marked "kept from QBO".
+- A customer that is not in QBO yet, or whose QBO term is inactive, stays blocked unless the reviewer explicitly selects a default (currently only Net 30, the portal's own due-date default) before the review. The plan is marked "reviewer default", and the batch is rejected if the default changed after the review.
+- Real portal terms always win over both.
+
+Every receipt records `term_source` (`portal`, `qbo`, or `default`) so the choice is auditable.
+
+## 3b. Sales-tax setup read
+
+The Invoices tab has **Read Sales Tax Setup — No QBO Changes**. It reads Preferences (Automated Sales Tax on or off), TaxCode, TaxRate, and TaxAgency, logs them to the sync log, and keeps a compact copy in `qb_config.taxPreflight`. It writes nothing and does not unblock taxable invoices; accounting still has to approve a mapping from those codes before any taxable invoice can post.
+
 ## 4. Resumable production batches
 
 Process dependencies in this order:

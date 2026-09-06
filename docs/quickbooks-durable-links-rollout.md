@@ -81,3 +81,23 @@ repository's existing third-party source-map warnings.
 - Fresh-login verification: after the operator reported signing out/in, the preview showed customer 1/2540 and product 1/10575. The guarded SKU retry then reused #263 with no QBO change; the independent database receipt at 2026-09-05T15:08:19.145Z records `result:linked`, API read-back, and 40000/51300 references. Operator acceptance of replacing the handoff's expected #183 with #263 remains pending.
 
 - Steve Peterson explicitly approved #263 in place of #183 and instructed continuation. PR #2180 merged as fbadbf11816e72abd3f842e8dc5376c42982ef96. The public production build metadata confirms that exact commit, built at 2026-09-05T15:38:14.347Z. Production counter/preflight verification awaits operator sign-in after the session reset.
+
+
+## Live status — September 6, 2026
+
+Read from the production database, not from the UI counters.
+
+| Entity | Linked | Remaining | What is blocking the rest |
+|---|---:|---:|---|
+| Customers | 43 of 2,540 | 2,497 | 2,338 had blank portal terms and were blocked; handled by section 3a of the first-push plan |
+| Vendors | 0 | all | Import tab shipped September 5 (PR 2196/2197); review not yet run |
+| Products (SKUs) | 36 of 10,575 | 10,539 | 10,325 need creation at 20 per reviewed batch; only SKUs used by in-scope POs and bills are actually needed |
+| Purchase orders | 33 | 2,155 blocked | Every blocked PO is missing a QBO item for one of its SKUs |
+| PO-to-bill links | 1 | — | Batch bill linking stays disabled until more single-record canaries pass |
+| Invoices | 2 of 829 | 71 since the 2026-09-01 cutover | 60 of the 71 carry sales tax and are blocked pending the tax-code mapping; 48 of the 56 cutover customers had blank terms |
+| Payments | 0 | 8 cutover invoices have payments | Paid-status pass has no per-record read-back or receipts yet |
+| Supplier bills | 28 verified | — | Canary and reviewed-batch paths in production |
+
+The OAuth connection itself is healthy: the National realm token refreshed at 07:45 UTC on September 6, `initialMigrationApproved` is true, and the last read-only preflight succeeded against the correct realm.
+
+`app_state.qb_config` is 3.3 MB, and almost all of it is the three saved review row sets (the product review alone is about 2.3 MB). Every QuickBooks setting change rewrites that row. Not changed in this release; flagged for a follow-up that keeps only counts and the reviewed batch rows.
