@@ -11,7 +11,7 @@ import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
 import { authFetch } from './utils';
-import { buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName, qbResponseErrorDetail } from './qbSyncEngine';
+import { buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName, qbCustomerBatchReady, qbResponseErrorDetail } from './qbSyncEngine';
 import {
   QB_ACCOUNT_MAPPING_DEFAULTS,
   QB_ACCOUNT_POSTING_MATRIX,
@@ -534,8 +534,7 @@ export default function QBPage(){
     };
     const customerBatchRows=(customerManifest?.rows||[]).filter(row=>['link','create','update_terms'].includes(row.action)
       &&(!qbConfig.custQBMap?.[row.sourceId]||row.action==='update_terms')).slice(0,customerBatchLimit);
-    const customerCanariesReady=Object.keys(qbConfig.custQBMap||{}).length>=2&&(qbConfig.syncLog||[]).some(log=>
-      log.type==='customer_canary'&&log.status==='success'&&(log.details||[]).some(detail=>String(detail).startsWith('UPDATED ONE QBO CUSTOMER TERM:')));
+    const customerCanariesReady=qbCustomerBatchReady(qbConfig);
     const runCustomerBatch=async()=>{
       const report=await syncCustomers({manifest:{...customerManifest,rows:customerBatchRows},approved:customerBatchApproved});
       setCustomerBatchApproved(false);
@@ -1019,16 +1018,17 @@ export default function QBPage(){
               </div>}
             </div>
             <button className="btn btn-sm" disabled={qbSyncing||customerReviewBusy||!livePreflightReady} onClick={reviewCustomerMigration}>{customerReviewBusy?'Reviewing customers...':'Review Customers — No QBO Changes'}</button>
+            {!customerManifest&&<div style={{fontSize:11,color:'#475569',marginTop:6}}>The batch size, approval box and <strong>Run Reviewed Customer Batch</strong> button appear here once this review finishes. There is no separate sync button.</div>}
             {customerManifest&&<>
               <p>Reviewed {customerManifest.rows.length} customers in company realm {customerManifest.realm}. Existing matches: {customerManifest.counts.link||0}; proposed creations: {customerManifest.counts.create||0}; term changes: {customerManifest.counts.update_terms||0}; blocked: {customerManifest.counts.blocked||0}; excluded: {customerManifest.counts.excluded||0}. Terms from QBO: {customerManifest.termSources?.qbo||0}; reviewer default applied: {customerManifest.termSources?.default||0}.</p>
               <button className="btn btn-sm" onClick={downloadCustomerManifest}>Download Full Customer Review</button>
-              <h3>Proposed customer batch ({customerBatchRows.length}, maximum 20)</h3>
+              <h3>Proposed customer batch ({customerBatchRows.length} of {(customerManifest?.rows||[]).filter(row=>['link','create','update_terms'].includes(row.action)&&(!qbConfig.custQBMap?.[row.sourceId]||row.action==='update_terms')).length} eligible)</h3>
               <label>Batch size <select aria-label="Customer batch size" value={customerBatchLimit} disabled={qbSyncing} onChange={e=>{setCustomerBatchLimit(Number(e.target.value));setCustomerBatchApproved(false)}}>{QB_BATCH_SIZES.map(size=><option key={size} value={size}>{size}</option>)}</select></label>
               <div style={{fontSize:10,color:'#475569',marginTop:4}}>Each record is written and read back one at a time, so a run of {customerBatchLimit} takes roughly {Math.max(1,Math.round(customerBatchLimit*0.7/60))} minute(s). Keep the tab open. The first failure stops the run and the rest are reported as not attempted.</div>
               <table><thead><tr><th>Customer</th><th>Action</th><th>QBO ID</th><th>Current term</th><th>Approved portal term</th></tr></thead><tbody>
                 {customerBatchRows.map(row=><tr key={row.sourceId}><td>{row.displayName}</td><td>{row.action}</td><td>{row.qboId||'New'}</td><td>{row.currentTerm?.name||row.currentTerm?.value||'None'}</td><td>{row.desiredTerm?.name}{row.termSource==='qbo'?' (kept from QBO)':row.termSource==='default'?' (reviewer default)':''}</td></tr>)}
               </tbody></table>
-              {!customerCanariesReady&&<p>Complete two customer links and one verified term-update canary before running a batch.</p>}
+              {!customerCanariesReady&&<p style={{color:'#b91c1c',fontWeight:600}}>Run button disabled: this needs at least two saved customer links and one verified term-update canary. Use &quot;Test exactly one customer&quot; below on a customer whose QBO terms differ from the Portal.</p>}
               <label><input type="checkbox" checked={customerBatchApproved} disabled={qbSyncing} onChange={e=>setCustomerBatchApproved(e.target.checked)}/> I approve the listed customer creations, links, and term changes in this batch.</label>
               <button className="btn btn-primary btn-sm" disabled={qbSyncing||!customerCanariesReady||!customerBatchApproved||!customerBatchRows.length} onClick={runCustomerBatch}>Run Reviewed Customer Batch</button>
 
