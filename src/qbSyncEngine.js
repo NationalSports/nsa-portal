@@ -590,7 +590,10 @@ export function createQBSyncEngine(ctx){
       try{blankTermsDefault=normalizeBlankTermsDefault(manifest?.blankTermsDefault);}
       catch(e){nf('Customer batch blocked: '+e.message,'error');return{status:'blocked'};}
       const canaryLogs=(qbConfig.syncLog||[]).filter(log=>log.type==='customer_canary'&&log.status==='success');
-      const termCanary=canaryLogs.some(log=>(log.details||[]).some(detail=>String(detail).startsWith('UPDATED ONE QBO CUSTOMER TERM:')));
+      // Accept the durable receipt as well as the log entry: syncLog holds only the
+      // newest 100 events, so this control expired on its own as other work accrued.
+      const termCanary=!!qbConfig.custTermCanaryVerifiedAt
+        ||canaryLogs.some(log=>(log.details||[]).some(detail=>String(detail).startsWith('UPDATED ONE QBO CUSTOMER TERM:')));
       if(!approved||!Array.isArray(rows)||rows.length<1||rows.length>QB_MAX_REVIEWED_BATCH
         ||new Set(rows.map(row=>row.sourceId)).size!==rows.length
         ||rows.some(row=>!['link','create','update_terms'].includes(row.action))
