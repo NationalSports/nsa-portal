@@ -12,6 +12,16 @@ export async function loadQBProductItems(qbApi){
   throw new Error('Product review exceeded the pagination limit');
 }
 
+// What the product batch still needs before it may run, as data rather than a boolean,
+// so the Run button can say which half is missing instead of failing on click. Reads the
+// durable receipts first: syncLog keeps only the newest 100 events and drops these.
+export function qbProductBatchReadiness(config={}){
+  const logs=(config.syncLog||[]).filter(l=>l.type==='item_canary'&&l.status==='success');
+  const linked=!!config.prodLinkCanaryVerifiedAt||logs.some(l=>l.details?.some(d=>String(d).startsWith('LINK ONLY')));
+  const created=!!config.prodCreateCanaryVerifiedAt||logs.some(l=>l.details?.some(d=>String(d).startsWith('CREATED:')));
+  return {linked,created,ready:linked&&created};
+}
+
 export function buildQBProductManifest(products,items,map={},refs={}){
   const groups=new Map();const excluded=[];
   products.forEach(p=>{
@@ -50,8 +60,7 @@ export async function runQBProductMigration({options,products,config,qbApi,requi
   const canary=!!options.canaryProductId,manifest=options.manifest;
   const age=Date.now()-Date.parse(manifest?.reviewedAt||'');
   if(!canary){
-    const logs=(config.syncLog||[]).filter(l=>l.type==='item_canary'&&l.status==='success');
-    const linked=logs.some(l=>l.details?.some(d=>d.startsWith('LINK ONLY'))),created=logs.some(l=>l.details?.some(d=>d.startsWith('CREATED:')));
+    const {linked,created}=qbProductBatchReadiness(config);
     if(!options.approved||!linked||!created||!manifest?.rows?.length||manifest.rows.length>QB_MAX_REVIEWED_BATCH||new Set(manifest.rows.map(r=>r.sku)).size!==manifest.rows.length||manifest.rows.some(r=>!['link','create'].includes(r.action))||String(manifest.realm)!==String(config.realm_id)||!Number.isFinite(age)||age<0||age>900000){nf('Product batch blocked: approve a fresh product review of at most '+QB_MAX_REVIEWED_BATCH+' SKUs after link and create canaries','error');return {status:'blocked'};}
   }
   setQbSyncing(true);

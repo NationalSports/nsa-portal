@@ -132,3 +132,30 @@ describe('term-canary proof survives syncLog eviction',()=>{
       .custTermCanaryVerifiedAt).toBeUndefined();
   });
 });
+
+describe('product canary proof also survives syncLog eviction',()=>{
+  const {mergeDurableQBLinks}=require('../qbLinkLedger');
+  const key=source=>'_qb_link_v1_'+encodeURIComponent(JSON.stringify(['r1','prodQBMap',source]));
+  const receipt=(source,result,at)=>JSON.stringify({realm_id:'r1',map_key:'prodQBMap',source_id:source,
+    qbo_id:'900',verified_at:at,active:true,evidence:{result}});
+
+  test('linked and created receipts are each recorded',()=>{
+    const merged=mergeDurableQBLinks({realm_id:'r1'},{
+      [key('P1')]:receipt('P1','linked','2026-09-05T17:52:00.000Z'),
+      [key('P2')]:receipt('P2','created','2026-09-05T15:08:19.145Z'),
+    });
+    expect(merged.prodLinkCanaryVerifiedAt).toBe('2026-09-05T17:52:00.000Z');
+    expect(merged.prodCreateCanaryVerifiedAt).toBe('2026-09-05T15:08:19.145Z');
+  });
+  test('link-only receipts never imply a creation was proven',()=>{
+    const merged=mergeDurableQBLinks({realm_id:'r1'},{[key('P1')]:receipt('P1','linked','2026-09-05T17:52:00.000Z')});
+    expect(merged.prodLinkCanaryVerifiedAt).toBeTruthy();
+    expect(merged.prodCreateCanaryVerifiedAt).toBeUndefined();
+  });
+  test('a removed receipt proves nothing',()=>{
+    const merged=mergeDurableQBLinks({realm_id:'r1'},
+      {[key('P1')]:JSON.stringify({realm_id:'r1',map_key:'prodQBMap',source_id:'P1',qbo_id:'900',
+        verified_at:'2026-09-05T17:52:00.000Z',active:false,evidence:{result:'created'}})});
+    expect(merged.prodCreateCanaryVerifiedAt).toBeUndefined();
+  });
+});
