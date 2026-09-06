@@ -2722,19 +2722,14 @@ export default function App(){
         // Tier 1 (essential): everything the dashboard renders — orders, customers, invoices, messages,
         // todos, history, config — but NOT the ~47k product catalog / _pimg_ image rows (the dashboard
         // never reads them). Paints fast; products stream in via the tier-2 load below.
-        let d=await Promise.race([_dbLoad({essential:true,histInvoices:false,fullState:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
-        // If even 120s wasn't enough, retry ONCE immediately with no cap before falling through to the
-        // error banner — the uncapped poll would recover anyway, but only after its ~2min interval, which
-        // left slow/overseas users staring at an empty "0 jobs" board and a scary banner in the meantime.
-        if(!d&&!cancelled){console.warn('[DB] Initial load hit the '+(_LOAD_CAP_MS/1000)+'s cap — retrying once uncapped before showing the error banner');d=await _dbLoad({essential:true,histInvoices:false,fullState:true})}
+        const d=await Promise.race([_dbLoad({essential:true,histInvoices:false,fullState:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
+        // Do not retry uncapped here: a stalled auth/query queue would keep the
+        // loading gate open forever. The existing recovery poll retries with writes paused.
         if(cancelled)return;
         if(!d){
           // Supabase connected but query failed — do NOT allow writes that could overwrite real data
-          // Wording matters: reaching here means the 120s race lost AND the uncapped retry also came back
-          // empty — almost always a slow/failing CLIENT connection while the server is fine. The old "Could
-          // not load data from Supabase" text sent people hunting server dashboards. Say what happened, that
-          // it self-heals (the poll clears this banner when a later load succeeds), and what to check.
-          setDbError('This tab’s initial data load didn’t finish in time (usually a slow connection, not a server problem). Cloud saves are paused so this tab can’t overwrite good data — it will keep retrying automatically. Check your internet if this persists.');
+          // Keep writes paused until the recovery poll successfully reloads the database.
+          setDbError('The initial Portal data load did not complete. Cloud saves are paused to protect existing data. This tab will retry automatically; reload if the problem persists.');
           console.error('[DB] Load returned null — blocking Supabase writes');
         }else if(d.hasData){
           // If decoration queries timed out during initial load, warn user — data is incomplete
@@ -2919,7 +2914,7 @@ export default function App(){
           // blobs (change_log/so_history/qb_config/company_info…) that the 2026-08-11 cache purge
           // had already emptied locally. Treat it as a failed load: banner up, writes stay paused
           // (_dbLoadSuccess stays false), the poll retries and re-enables writes when a load succeeds.
-          setDbError('This tab’s initial data load didn’t finish in time (usually a slow connection, not a server problem). Cloud saves are paused so this tab can’t overwrite good data — it will keep retrying automatically. Check your internet if this persists.');
+          setDbError('The initial Portal data load did not complete. Cloud saves are paused to protect existing data. This tab will retry automatically; reload if the problem persists.');
           console.error('[DB] Initial load returned no data but parent queries timed out — treating as a FAILED load, not an empty database (seeding suppressed)');
         }else{
           // Supabase tables exist but are all empty — seed from localStorage
@@ -2956,7 +2951,7 @@ export default function App(){
             // be applied wholesale (would blank state + snapshot) nor fall through to the seed
             // fallback (would re-seed the live DB from local defaults). Fail the load instead.
             if(d2&&d2._parentTimedOut){
-              setDbError('This tab’s initial data load didn’t finish in time (usually a slow connection, not a server problem). Cloud saves are paused so this tab can’t overwrite good data — it will keep retrying automatically. Check your internet if this persists.');
+              setDbError('The initial Portal data load did not complete. Cloud saves are paused to protect existing data. This tab will retry automatically; reload if the problem persists.');
               console.error('[DB] Post-seed-wait load had parent-table timeouts — treating as a FAILED load (apply and fallback-seed both suppressed)');
             }else if(d2?.hasData){
               _dbSnap.current={ests:d2.estimates,sos:d2.sales_orders,invs:d2.invoices,msgs:d2.messages,cust:d2.customers,prod:d2.products,vend:d2.vendors,team:d2.team,omg:d2.omg_stores,issues:d2.issues,assignedTodos:d2.assignedTodos||[]};
