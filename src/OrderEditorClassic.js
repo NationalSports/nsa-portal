@@ -27,7 +27,7 @@ import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, orderLineSizes, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, pendingProdFileGroups, prodFileMethodOf, artStatusAfterProdConfirm, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, orderLineSizes, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
 import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, replaceMockLinkGroup, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
@@ -210,7 +210,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }
     if(_jb&&_jb.coach_rejected){const _lr=(_jb.rejections||[]).slice(-1)[0];if(!window.confirm('⚠️ The coach requested changes on this artwork'+((_lr&&_lr.reason)?(':\n\n"'+_lr.reason+'"'):'.')+'\n\nApprove it anyway? This overrides the coach’s change request.'))return;}
     const updJobs=safeJobs(curO).map(jj=>jj.id===jobId?{...jj,art_status:targetStatus,coach_rejected:false,art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}:jj);
-    const updArt=(artIds&&artIds.length)?safeArt(curO).map(a=>artIds.includes(a.id)?{...a,status:'approved',...(stampProd?{prod_files_attached:true}:{})}:a):safeArt(curO);
+    // stampProd: true stamps every id, an ARRAY stamps only those ids. The array form is what a
+    // mixed-method job needs — confirming the DTF films must never also claim the screen-print
+    // separation is done (SO-2145). Mirrors approveArtOnSO in lib/artReview.js.
+    const _stampIds=stampProd===true?(artIds||[]):(Array.isArray(stampProd)?stampProd:[]);
+    const updArt=(artIds&&artIds.length)?safeArt(curO).map(a=>artIds.includes(a.id)?{...a,status:'approved',...(_stampIds.includes(a.id)?{prod_files_attached:true}:{})}:a):safeArt(curO);
     const updated={...curO,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};
     setArtRevisionNote('');
     await saveSONow(updated,'Art approval','✅ Art approved — '+(targetStatus==='art_complete'?'production files confirmed, ready for production!':targetStatus==='order_dtf_transfers'?'order DTF transfers':targetStatus==='upload_emb_files'?'upload embroidery files':'sent to the artist for production separations'));
@@ -7957,23 +7961,53 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
     {/* PRODUCTION-FILES GATE — approving / completing art with no CONFIRMED separation.
         A file simply sitting in the production folder (e.g. a vector .ai mockup) is NOT the
-        print-ready separation, so the rep must explicitly say which path applies. */}
-    {artApproveGate&&(()=>{const g=artApproveGate;const _deco=g.deco||'screen_print';const _seps=prodFilesStatusFor(_deco);const _emb=_deco==='embroidery';const _dtf=_deco==='dtf'||_deco==='heat_press';
-      const _sepWord=_emb?'embroidery (DST) file':_dtf?'DTF transfer':'print-ready color separation';
+        print-ready separation, so the rep must explicitly say which path applies.
+        Asked PER DECORATION METHOD: a garment with a screen-printed front and a DTF sleeve owes
+        two different files, and one answer must never speak for both (SO-2145). Each answer
+        stamps only its own designs; the job reaches art_complete only once nothing is left. */}
+    {artApproveGate&&(()=>{const g=artApproveGate;
+      const _grps=(g.groups&&g.groups.length)?g.groups:[{method:prodFileMethodOf({deco_type:g.deco},g.deco),deco:g.deco||'screen_print',ids:g.artIds||[],arts:[]}];
+      const _multi=_grps.length>1;const _ans=g.answers||{};
+      const _sepWordOf=(deco)=>{const m=prodFileMethodOf({deco_type:deco},deco);return m==='embroidery'?'embroidery (DST) file':m==='dtf'?'DTF transfer':'print-ready color separation'};
+      const _apply=(confirmIds)=>{
+        /* Approving IS the sign-off on the CURRENT art, so a live .dst counts as its production
+           file even before the file's status flips to 'approved' — the same rule the Approve
+           Artwork button uses to decide whether to open this gate at all. */
+        const _ok=a=>artProdFilesConfirmed(a)||artDstOnFile(a);
+        const _live=(g.jobArtIds||g.artIds||[]).map(id=>safeArt(oRef.current).find(a=>a.id===id)).filter(Boolean);
+        const _target=_live.length?artStatusAfterProdConfirm(_live,confirmIds,g.jobDeco||g.deco,_ok):(confirmIds.length?'art_complete':prodFilesStatusFor(g.jobDeco||g.deco));
+        _approveArtTo(g.jobId,g.artIds,_target,confirmIds.length?confirmIds:false);
+        setArtApproveGate(null);
+      };
+      /* One group answers straight through (unchanged UX). With several, the answers collect here
+         and everything applies in ONE save once the last method is answered. */
+      const _answer=(m,val)=>{const nx={..._ans,[m]:val};
+        if(_grps.every(x=>nx[x.method]!==undefined)){_apply(_grps.filter(x=>nx[x.method]).reduce((acc,x)=>acc.concat(x.ids),[]))}
+        else{setArtApproveGate({...g,answers:nx})}};
       return<div className="modal-overlay" onClick={()=>setArtApproveGate(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
         <div className="modal-header"><h2>🏭 Production File Check</h2><button className="modal-close" onClick={()=>setArtApproveGate(null)}>×</button></div>
         <div className="modal-body">
-          <div style={{fontSize:13,color:'#334155',lineHeight:1.55,marginBottom:14}}>No production separation is confirmed for <strong>{g.artName||'this design'}</strong>. A file in the production folder isn't automatically the separation — a vector <strong>.ai</strong> or mockup is <em>not</em> a {_sepWord}. How do you want to proceed?</div>
-          <div style={{display:'flex',flexDirection:'column',gap:10}}>
-            <button type="button" onClick={()=>{_approveArtTo(g.jobId,g.artIds,'art_complete',true);setArtApproveGate(null)}} style={{textAlign:'left',padding:'12px 16px',background:'#f0fdf4',border:'2px solid #86efac',borderRadius:10,cursor:'pointer'}}>
-              <div style={{fontSize:14,fontWeight:800,color:'#166534'}}>✅ The production file is attached</div>
-              <div style={{fontSize:11.5,color:'#15803d',marginTop:3}}>I've added the {_sepWord}. Confirm it and send the job straight to production.</div>
-            </button>
-            <button type="button" onClick={()=>{_approveArtTo(g.jobId,g.artIds,_seps,false);setArtApproveGate(null)}} style={{textAlign:'left',padding:'12px 16px',background:'#eff6ff',border:'2px solid #93c5fd',borderRadius:10,cursor:'pointer'}}>
-              <div style={{fontSize:14,fontWeight:800,color:'#1e40af'}}>🎨 Send to artist for the production file</div>
-              <div style={{fontSize:11.5,color:'#2563eb',marginTop:3}}>Approve the art, but the artist still needs to create the {_sepWord} before it can go to production.</div>
-            </button>
-          </div>
+          {_multi&&<div style={{fontSize:13,color:'#334155',lineHeight:1.55,marginBottom:14}}>This job carries <strong>{_grps.length} decoration methods</strong>, and each one needs its OWN production file. Answer for each design below — confirming one never confirms the others.</div>}
+          {_grps.map((grp,gx)=>{const _w=_sepWordOf(grp.deco);
+            const _nm=(grp.arts||[]).map(a=>(a&&a.name)||'Unnamed').join(', ')||g.artName||'this design';
+            const _a=_ans[grp.method];
+            return<div key={grp.method+'-'+gx} style={_multi?{marginBottom:14,paddingBottom:12,borderBottom:gx<_grps.length-1?'1px solid #e2e8f0':'none'}:{}}>
+            <div style={{fontSize:13,color:'#334155',lineHeight:1.55,marginBottom:_multi?8:14}}>
+              {_multi
+                ?<><strong>{_nm}</strong> — is the {_w} attached? A vector <strong>.ai</strong> or mockup is <em>not</em> one.</>
+                :<>No production separation is confirmed for <strong>{_nm}</strong>. A file in the production folder isn't automatically the separation — a vector <strong>.ai</strong> or mockup is <em>not</em> a {_w}. How do you want to proceed?</>}
+            </div>
+            <div style={{display:'flex',flexDirection:'column',gap:10}}>
+              <button type="button" onClick={()=>_answer(grp.method,true)} style={{textAlign:'left',padding:'12px 16px',background:_a===true?'#dcfce7':'#f0fdf4',border:'2px solid '+(_a===true?'#16a34a':'#86efac'),borderRadius:10,cursor:'pointer'}}>
+                <div style={{fontSize:14,fontWeight:800,color:'#166534'}}>{_a===true?'✓ ':'✅ '}The production file is attached</div>
+                <div style={{fontSize:11.5,color:'#15803d',marginTop:3}}>I've added the {_w}. Confirm it{_multi?' for this design.':' and send the job straight to production.'}</div>
+              </button>
+              <button type="button" onClick={()=>_answer(grp.method,false)} style={{textAlign:'left',padding:'12px 16px',background:_a===false?'#dbeafe':'#eff6ff',border:'2px solid '+(_a===false?'#2563eb':'#93c5fd'),borderRadius:10,cursor:'pointer'}}>
+                <div style={{fontSize:14,fontWeight:800,color:'#1e40af'}}>{_a===false?'✓ ':'🎨 '}Send to artist for the production file</div>
+                <div style={{fontSize:11.5,color:'#2563eb',marginTop:3}}>Approve the art, but the artist still needs to create the {_w} before it can go to production.</div>
+              </button>
+            </div>
+          </div>})}
         </div>
         <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setArtApproveGate(null)}>Cancel</button></div>
       </div></div>;
@@ -11920,7 +11954,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                 was orphaned (e.g. a stock-swap SKU change) ships unmocked (SO-1480). */
                 const _mmA=skusMissingMockups(j,o);
                 if(_mmA.length>0){nf(missingMockupsMsg('approve',_mmA),'error');return}
-                const _apArtIds=(j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');const _apHasTbd=(j._art_ids||[j.art_file_id]).filter(Boolean).some(id=>id==='__tbd');const _apDeco=(af.find(a=>_apArtIds.includes(a.id))?.deco_type)||j.deco_type;const _allConfirmed=_apArtIds.length>0&&_apArtIds.every(id=>{const _a=af.find(a=>a.id===id);return artProdFilesConfirmed(_a)||artDstOnFile(_a)});/* artDstOnFile: approving IS the sign-off on the current art, so a live (non-stale) .dst counts here even though the file's status hasn't flipped to approved yet — no more "is the DST attached?" prompt with the DST in plain sight. A NEW logo still on the __tbd placeholder must NOT skip the gate — it used to land in production with no files stage at all. A job with no art ids and no placeholder (names/numbers-only) has nothing to gate and approves straight through. */if(_allConfirmed||(_apArtIds.length===0&&!_apHasTbd)){_approveArtTo(j.id,_apArtIds,'art_complete',true)}else{setArtApproveGate({jobId:j.id,artIds:_apArtIds,deco:_apDeco,artName:j.art_name})}}}>✅ Approve Artwork</button>
+                const _apArtIds=(j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');const _apHasTbd=(j._art_ids||[j.art_file_id]).filter(Boolean).some(id=>id==='__tbd');const _apDeco=(af.find(a=>_apArtIds.includes(a.id))?.deco_type)||j.deco_type;const _allConfirmed=_apArtIds.length>0&&_apArtIds.every(id=>{const _a=af.find(a=>a.id===id);return artProdFilesConfirmed(_a)||artDstOnFile(_a)});/* artDstOnFile: approving IS the sign-off on the current art, so a live (non-stale) .dst counts here even though the file's status hasn't flipped to approved yet — no more "is the DST attached?" prompt with the DST in plain sight. A NEW logo still on the __tbd placeholder must NOT skip the gate — it used to land in production with no files stage at all. A job with no art ids and no placeholder (names/numbers-only) has nothing to gate and approves straight through. */if(_allConfirmed||(_apArtIds.length===0&&!_apHasTbd)){_approveArtTo(j.id,_apArtIds,'art_complete',true)}else{{const _apLive=_apArtIds.map(id=>af.find(a=>a.id===id)).filter(Boolean);/* One block per METHOD still owing a file — a screen-printed front and a DTF sleeve on the same garment are two separate production files, and one answer must not speak for both (SO-2145). */const _apGroups=pendingProdFileGroups(_apLive,j.deco_type,a=>artProdFilesConfirmed(a)||artDstOnFile(a));setArtApproveGate({jobId:j.id,artIds:_apArtIds,groups:_apGroups,jobArtIds:_apArtIds,jobDeco:j.deco_type,deco:_apDeco,artName:j.art_name})}}}}>✅ Approve Artwork</button>
                 <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{/* Same per-garment mock gate as Approve — the coach must never be asked to
                 approve a proof with unmocked garments (they could approve it; the portal blocks too,
                 but don't send them a broken proof in the first place). */
@@ -11938,33 +11972,62 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                 }}>🔄 Request Update</button>
               </div>
             </div>})()}
-            {(PROD_FILES_STATUSES.includes(j.art_status)||_unconfirmedProd)&&(()=>{const _pPrimary=(j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');/* A job's _art_ids only carry the FIRST item's art (see buildJobs); on a multi-garment job the other garments' art lives on their item decorations. _unconfirmedProd gates this banner on that FULL set (_jobLiveArt), so the complete/confirm actions below must stamp the same set — otherwise a second garment's unconfirmed art keeps "Mark Art Complete" up no matter how many times the rep clicks. Anchor deco classification to the primary art so a mixed-deco edge case can't flip the button type. */const _pIds=_jobLiveArt.length?_jobLiveArt.map(a=>a.id):_pPrimary;const _pDeco=(af.find(a=>_pPrimary.includes(a.id))?.deco_type)||j.deco_type;const _pEmb=_pDeco==='embroidery';const _pDtf=_pDeco==='dtf'||_pDeco==='heat_press';const _pTarget=_pPrimary[0]||_pIds[0];const _pPFCount=_pIds.reduce((n,aid)=>{const a=af.find(x=>x.id===aid);return n+((a?.prod_files||[]).length)},0);const _pDst=_pIds.some(aid=>{const a=af.find(x=>x.id===aid);return a&&[...(a.prod_files||[]),...(a.files||[])].some(f=>isDstFile(f)&&!isStaleFile(f))});const _pStaleDst=!_pDst&&_pIds.some(aid=>{const a=af.find(x=>x.id===aid);return a&&[...(a.prod_files||[]),...(a.files||[])].some(f=>isDstFile(f)&&isStaleFile(f))});const _pTitle=_pEmb?(_pDst?'Art Approved — DST On File':_pStaleDst?'Art Approved — Confirm the Attached DST':'Art Approved — Upload Embroidery Production Files'):_pDtf?'Art Approved — Order DTF Transfers':'Art Approved — Waiting for Production Files';const _pMsg=_pEmb?(_pDst?'The coach approved this art and a DST is already attached — production files are ready. Mark complete to send it to production.':_pStaleDst?'The coach approved this art. A DST is already attached but was retired by an earlier update request — if it\'s still the right stitch file, just mark complete. Otherwise upload the new DST + PDF.':'The coach approved this art. Upload the DST + PDF for the printer, then mark it complete. Already sent them? Just mark complete.'):_pDtf?'The coach approved this art. Order the DTF transfer films, then click Films Ordered to complete this job.':'The artist needs to upload final production files before this job can go to production.';
-              const _completeEmb=()=>{const curO=oRef.current;const _by=cu?.name||'Rep';const updArt2=(curO.art_files||[]).map(a=>{if(!_pIds.includes(a.id))return a;/* Marking complete IS the sign-off on the attached DST — clear any lingering 'retired' tag left by an
+            {(PROD_FILES_STATUSES.includes(j.art_status)||_unconfirmedProd)&&(()=>{const _pPrimary=(j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');/* A job's _art_ids only carry the FIRST item's art (see buildJobs); on a multi-garment job the other garments' art lives on their item decorations. _unconfirmedProd gates this banner on that FULL set (_jobLiveArt), so the complete/confirm actions below act on the same set — otherwise a second garment's unconfirmed art keeps "Mark Art Complete" up no matter how many times the rep clicks.
+              PRODUCTION FILES ARE PER DESIGN, NOT PER JOB. One garment can carry a screen-printed front AND a DTF sleeve — buildJobs keeps them on ONE job, but each design still owes its own file. This banner used to classify the whole job by the PRIMARY art's deco_type and stamp prod_files_attached on EVERY art file on any confirm, so "Films Ordered — Mark Complete" on a mixed job silently claimed the screen-print separation was done too and sent the job to the floor with no seps (SO-2145). Now every method that still owes a file gets its OWN block, confirming one never touches the others, and the job only reaches art_complete once nothing is outstanding. */
+              const _pIds=_jobLiveArt.length?_jobLiveArt.map(a=>a.id):_pPrimary;
+              const _pArts=_jobLiveArt.length?_jobLiveArt:_pIds.map(id=>af.find(a=>a.id===id)).filter(Boolean);
+              const _pGroups=pendingProdFileGroups(_pArts,j.deco_type);
+              /* Nothing outstanding, but the job's status still reads as a production-files stage
+                 (a legacy row, or a confirm whose status never caught up) — keep the old single-block
+                 behavior, anchored on the primary art, so the rep can still clear it. */
+              const _blocks=_pGroups.length?_pGroups:[{method:prodFileMethodOf(af.find(a=>_pPrimary.includes(a.id))||_pArts[0],j.deco_type),deco:(af.find(a=>_pPrimary.includes(a.id))?.deco_type)||j.deco_type,ids:_pIds,arts:_pArts}];
+              const _multi=_blocks.length>1;
+              /* Confirming a method stamps ONLY its own art and re-derives the job's stage from what
+                 is still owed — art_complete only once nothing is outstanding. Derived from the
+                 CURRENT art at click time, not the render snapshot: another design's confirmation
+                 can land between render and click. */
+              const _nextSt=(ids)=>artStatusAfterProdConfirm(_pIds.map(id=>safeArt(oRef.current).find(a=>a.id===id)).filter(Boolean),ids,j.deco_type);
+              /* Name the FILE that is still missing, not the raw stage label — ART_LABELS calls the
+                 print stage "Art Approved — Waiting", which tells the rep nothing about what to chase. */
+              const _stillOwes=(st)=>' — this job still needs '+(st==='order_dtf_transfers'?'the DTF films':st==='upload_emb_files'?'the embroidery files':'the print separation');
+              const _completeEmb=(ids)=>{const curO=oRef.current;const _by=cu?.name||'Rep';const updArt2=(curO.art_files||[]).map(a=>{if(!ids.includes(a.id))return a;/* Marking complete IS the sign-off on the attached DST — clear any lingering 'retired' tag left by an
               earlier update-request/recall so this job never re-prompts "upload the DST" with the file in plain sight
-              on the next coach round (SO-1638). No-op when a live DST already exists, so a genuine redo stays retired. */const _rv=reviveSoleStaleDst(a);return _rv.prod_files.length>0?{...a,..._rv,status:'approved',prod_files_attached:true}:{...a,..._rv,status:'approved',prod_files_attached:true,prod_files:[{name:'Embroidery files sent to printer',emb_sent:true,at:new Date().toISOString(),by:_by}]}});const updJobs=safeJobs(curO).map((jj,i2)=>i2===ji?{...jj,art_status:'art_complete'}:jj);const updated={...curO,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};saveSONow(updated,'Production files','🧵 Embroidery production files marked complete')};
-              const _orderDtf=()=>{const curO=oRef.current;const marker={name:'DTF films ordered',dtf_order:true,at:new Date().toISOString(),by:cu?.name||'Rep'};const updArt2=(curO.art_files||[]).map(a=>_pIds.includes(a.id)?{...a,status:'approved',prod_files_attached:true,prod_files:[...(a.prod_files||[]),marker]}:a);const updJobs=safeJobs(curO).map((jj,i2)=>i2===ji?{...jj,art_status:'art_complete'}:jj);const updated={...curO,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};saveSONow(updated,'DTF films','🎞️ DTF films marked ordered — art complete')};
-              const _uploadEmb=()=>{setDstUploadModal({target:_pTarget})};
-              return<div style={{margin:'0 20px',padding:'12px 16px',background:'linear-gradient(135deg,#fef9c3,#fefce8)',border:'2px solid #fde047',borderRadius:8}}>
+              on the next coach round (SO-1638). No-op when a live DST already exists, so a genuine redo stays retired. */const _rv=reviveSoleStaleDst(a);return _rv.prod_files.length>0?{...a,..._rv,status:'approved',prod_files_attached:true}:{...a,..._rv,status:'approved',prod_files_attached:true,prod_files:[{name:'Embroidery files sent to printer',emb_sent:true,at:new Date().toISOString(),by:_by}]}});const _st=_nextSt(ids);const updJobs=safeJobs(curO).map((jj,i2)=>i2===ji?{...jj,art_status:_st}:jj);const updated={...curO,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};saveSONow(updated,'Production files','🧵 Embroidery production files marked complete'+(_st==='art_complete'?'':_stillOwes(_st)))};
+              const _orderDtf=(ids)=>{const curO=oRef.current;const marker={name:'DTF films ordered',dtf_order:true,at:new Date().toISOString(),by:cu?.name||'Rep'};const updArt2=(curO.art_files||[]).map(a=>ids.includes(a.id)?{...a,status:'approved',prod_files_attached:true,prod_files:[...(a.prod_files||[]),marker]}:a);const _st=_nextSt(ids);const updJobs=safeJobs(curO).map((jj,i2)=>i2===ji?{...jj,art_status:_st}:jj);const updated={...curO,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};saveSONow(updated,'DTF films','🎞️ DTF films marked ordered'+(_st==='art_complete'?' — art complete':_stillOwes(_st)))};
+              return<div style={{margin:'0 20px',display:'flex',flexDirection:'column',gap:8}}>
+              {_multi&&<div style={{padding:'8px 14px',background:'#fff7ed',border:'2px solid #fdba74',borderRadius:8,fontSize:12,color:'#9a3412',fontWeight:700}}>⚠️ This job has {_blocks.length} decoration methods still waiting on production files — each design needs its OWN file. Finishing one does not finish the others.</div>}
+              {_blocks.map((g,gx)=>{
+                const _emb=g.method==='embroidery';const _dtf=g.method==='dtf';const _ids=g.ids;
+                const _names=(g.arts||[]).map(a=>(a&&a.name)||'Unnamed').join(', ');
+                /* Per-BLOCK file counts. A job-wide count is what made SO-2145 read "3 production
+                   files attached" on the banner for a design that had none of them. */
+                const _pfCount=_ids.reduce((n,aid)=>{const a=af.find(x=>x.id===aid);return n+((a?.prod_files||[]).length)},0);
+                const _dst=_ids.some(aid=>{const a=af.find(x=>x.id===aid);return a&&[...(a.prod_files||[]),...(a.files||[])].some(f=>isDstFile(f)&&!isStaleFile(f))});
+                const _staleDst=!_dst&&_ids.some(aid=>{const a=af.find(x=>x.id===aid);return a&&[...(a.prod_files||[]),...(a.files||[])].some(f=>isDstFile(f)&&isStaleFile(f))});
+                const _title=(_multi?'':'Art Approved — ')+(_emb?(_dst?'DST On File':_staleDst?'Confirm the Attached DST':'Upload Embroidery Production Files'):_dtf?'Order DTF Transfers':'Waiting for Print Separations');
+                const _msg=_emb?(_dst?'The coach approved this art and a DST is already attached — production files are ready. Mark complete to send it to production.':_staleDst?'The coach approved this art. A DST is already attached but was retired by an earlier update request — if it\'s still the right stitch file, just mark complete. Otherwise upload the new DST + PDF.':'The coach approved this art. Upload the DST + PDF for the printer, then mark it complete. Already sent them? Just mark complete.'):_dtf?('The coach approved this art. Order the DTF transfer films, then click Films Ordered'+(_multi?' for this design.':' to complete this job.')):('The artist needs to make the print-ready color separation before '+(_multi?'this design':'this job')+' can go to production.');
+                return<div key={g.method+'-'+gx} style={{padding:'12px 16px',background:'linear-gradient(135deg,#fef9c3,#fefce8)',border:'2px solid #fde047',borderRadius:8}}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <span style={{fontSize:16}}>✅</span>
-                <span style={{fontWeight:700,fontSize:14,color:'#854d0e'}}>{_pTitle}</span>
-                {(_pEmb||_pDtf)&&<span style={{fontSize:10,fontWeight:700,color:'#854d0e',background:'#fde68a',padding:'1px 8px',borderRadius:10,marginLeft:'auto'}}>Your to-do</span>}
+                <span style={{fontWeight:700,fontSize:14,color:'#854d0e'}}>{_title}</span>
+                {(_emb||_dtf)&&<span style={{fontSize:10,fontWeight:700,color:'#854d0e',background:'#fde68a',padding:'1px 8px',borderRadius:10,marginLeft:'auto'}}>Your to-do</span>}
               </div>
-              <div style={{fontSize:12,color:'#713f12',marginTop:4}}>{_pMsg}</div>
-              {_pPFCount>0&&<div style={{fontSize:11,color:'#15803d',fontWeight:700,marginTop:6}}>🏭 {_pPFCount} production file{_pPFCount!==1?'s':''} attached</div>}
-              {_pDst&&_pPFCount===0&&<div style={{fontSize:11,color:'#15803d',fontWeight:700,marginTop:6}}>🧵 DST detected on the art file — production files ready</div>}
-              {_pStaleDst&&<div style={{fontSize:11,color:'#92400e',fontWeight:700,marginTop:6}}>🧵 A retired DST is attached (superseded by an earlier update) — mark complete to use it, or upload the new one</div>}
-              {_pEmb&&<div style={{display:'flex',gap:8,marginTop:10,flexWrap:'wrap'}}>
-                <button className="btn btn-sm" style={{fontSize:12,fontWeight:700,background:'#7c3aed',color:'white',border:'none',padding:'6px 14px',borderRadius:6}} onClick={_uploadEmb}>📎 Upload DST + PDF</button>
-                <button className="btn btn-sm" style={{fontSize:12,fontWeight:700,background:'#166534',color:'white',border:'none',padding:'6px 14px',borderRadius:6}} onClick={_completeEmb}>✓ {(_pPFCount>0||_pDst)?'Mark Art Complete':'Files Sent — Mark Complete'}</button>
+              {_multi&&_names&&<div style={{fontSize:11,fontWeight:700,color:'#854d0e',marginTop:3}}>🎨 {_names}</div>}
+              <div style={{fontSize:12,color:'#713f12',marginTop:4}}>{_msg}</div>
+              {_pfCount>0&&<div style={{fontSize:11,color:'#15803d',fontWeight:700,marginTop:6}}>🏭 {_pfCount} production file{_pfCount!==1?'s':''} attached{_multi?' to this design':''}</div>}
+              {_dst&&_pfCount===0&&<div style={{fontSize:11,color:'#15803d',fontWeight:700,marginTop:6}}>🧵 DST detected on the art file — production files ready</div>}
+              {_staleDst&&<div style={{fontSize:11,color:'#92400e',fontWeight:700,marginTop:6}}>🧵 A retired DST is attached (superseded by an earlier update) — mark complete to use it, or upload the new one</div>}
+              {_emb&&<div style={{display:'flex',gap:8,marginTop:10,flexWrap:'wrap'}}>
+                <button className="btn btn-sm" style={{fontSize:12,fontWeight:700,background:'#7c3aed',color:'white',border:'none',padding:'6px 14px',borderRadius:6}} onClick={()=>setDstUploadModal({target:_ids[0]})}>📎 Upload DST + PDF</button>
+                <button className="btn btn-sm" style={{fontSize:12,fontWeight:700,background:'#166534',color:'white',border:'none',padding:'6px 14px',borderRadius:6}} onClick={()=>_completeEmb(_ids)}>✓ {(_pfCount>0||_dst)?(_multi?'Embroidery Done':'Mark Art Complete'):'Files Sent — Mark Complete'}</button>
               </div>}
-              {_pDtf&&<div style={{display:'flex',gap:8,marginTop:10,flexWrap:'wrap'}}>
-                <button className="btn btn-sm" style={{fontSize:12,fontWeight:700,background:'#0891b2',color:'white',border:'none',padding:'6px 14px',borderRadius:6}} onClick={_orderDtf}>🎞️ Films Ordered — Mark Complete</button>
+              {_dtf&&<div style={{display:'flex',gap:8,marginTop:10,flexWrap:'wrap'}}>
+                <button className="btn btn-sm" style={{fontSize:12,fontWeight:700,background:'#0891b2',color:'white',border:'none',padding:'6px 14px',borderRadius:6}} onClick={()=>_orderDtf(_ids)}>🎞️ Films Ordered{_multi?'':' — Mark Complete'}</button>
               </div>}
-              {!_pEmb&&!_pDtf&&(_pPFCount>0||_pDst)&&<div style={{display:'flex',gap:8,marginTop:10,flexWrap:'wrap'}}>
-                <button className="btn btn-sm" style={{fontSize:12,fontWeight:700,background:'#166534',color:'white',border:'none',padding:'6px 14px',borderRadius:6}} onClick={()=>setArtApproveGate({jobId:j.id,artIds:_pIds,deco:_pDeco,artName:j.art_name})}>✓ Mark Art Complete</button>
+              {!_emb&&!_dtf&&(_pfCount>0||_dst)&&<div style={{display:'flex',gap:8,marginTop:10,flexWrap:'wrap'}}>
+                <button className="btn btn-sm" style={{fontSize:12,fontWeight:700,background:'#166534',color:'white',border:'none',padding:'6px 14px',borderRadius:6}} onClick={()=>setArtApproveGate({jobId:j.id,artIds:_ids,groups:[g],jobArtIds:_pIds,jobDeco:j.deco_type,deco:g.deco,artName:_names||j.art_name})}>✓ {_multi?'Separation Attached':'Mark Art Complete'}</button>
               </div>}
-            </div>;})()}
+            </div>;})}</div>;})()}
             {j.art_status==='art_complete'&&!_needsMockCheck&&!_unconfirmedProd&&<div style={{margin:'0 20px',padding:'10px 16px',background:'linear-gradient(135deg,#dcfce7,#f0fdf4)',border:'2px solid #86efac',borderRadius:8}}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <span style={{fontSize:16}}>🎉</span>
@@ -12189,7 +12252,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                 {(hasActiveReqs||(j.art_status&&j.art_status!=='needs_art'))&&<button className="btn btn-sm" style={{fontSize:10,background:'#dc2626',color:'white',border:'none',padding:'3px 8px',marginRight:4}} title="Pull the art back completely — use when the design/logo itself is changing" onClick={()=>_recallArt(ji,'Update Art')}>Recall Art</button>}
                 {(hasActiveReqs||(j.art_status&&j.art_status!=='needs_art'))&&<button className="btn btn-sm" style={{fontSize:10,background:'#6d28d9',color:'white',border:'none',padding:'3px 8px'}} title="Send a change straight to the artist — job stays in place; the new art needs approval again" onClick={()=>setArtReqModal({jIdx:ji,artist:_activeArtistId(j.assigned_artist||((j.art_requests||[]).slice(-1)[0]?.artist)),instructions:'',files:[]})}>
                   Update Art</button>}</>})()}
-              {(j.art_status==='waiting_approval')&&<button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{const _appArtIds=(j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');const _appHasTbd=(j._art_ids||[j.art_file_id]).filter(Boolean).some(id=>id==='__tbd');const _apDeco=(af.find(a=>_appArtIds.includes(a.id))?.deco_type)||j.deco_type;const _allConfirmed=_appArtIds.length>0&&_appArtIds.every(id=>artProdFilesConfirmed(af.find(a=>a.id===id)));/* Same as the main Approve Artwork button: a __tbd placeholder must open the gate; a truly artless job (names/numbers-only) approves straight through. */if(_allConfirmed||(_appArtIds.length===0&&!_appHasTbd)){_approveArtTo(j.id,_appArtIds,'art_complete',false)}else{setArtApproveGate({jobId:j.id,artIds:_appArtIds,deco:_apDeco,artName:j.art_name})}}}>Approve Art</button>}
+              {(j.art_status==='waiting_approval')&&<button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{const _appArtIds=(j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');const _appHasTbd=(j._art_ids||[j.art_file_id]).filter(Boolean).some(id=>id==='__tbd');const _apDeco=(af.find(a=>_appArtIds.includes(a.id))?.deco_type)||j.deco_type;const _allConfirmed=_appArtIds.length>0&&_appArtIds.every(id=>artProdFilesConfirmed(af.find(a=>a.id===id)));/* Same as the main Approve Artwork button: a __tbd placeholder must open the gate; a truly artless job (names/numbers-only) approves straight through. */if(_allConfirmed||(_appArtIds.length===0&&!_appHasTbd)){_approveArtTo(j.id,_appArtIds,'art_complete',false)}else{{const _apLive=_appArtIds.map(id=>af.find(a=>a.id===id)).filter(Boolean);/* One block per METHOD still owing a file — a screen-printed front and a DTF sleeve on the same garment are two separate production files, and one answer must not speak for both (SO-2145). */const _apGroups=pendingProdFileGroups(_apLive,j.deco_type,a=>artProdFilesConfirmed(a)||artDstOnFile(a));setArtApproveGate({jobId:j.id,artIds:_appArtIds,groups:_apGroups,jobArtIds:_appArtIds,jobDeco:j.deco_type,deco:_apDeco,artName:j.art_name})}}}}>Approve Art</button>}
               <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Artist:</div>
               <select className="form-select" style={{width:130,fontSize:11}} value={j.assigned_artist||''} onChange={e=>{
                 // Re-point the OPEN art request at the new artist too, not just assigned_artist. The
