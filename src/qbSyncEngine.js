@@ -9,7 +9,7 @@ import { mergeQBSyncLogs } from './qbLinkLedger';
 import { D_V } from './constants';
 import { _dbSaveSO } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
-import { QB_MAX_REVIEWED_BATCH, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, parseQBDateValue, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
+import { QB_MAX_REVIEWED_BATCH, QB_STATE_TAX_ACCOUNT_KEYS, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, parseQBDateValue, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
 
 // Return a circular batch and the cursor for the next run. Permanent blockers
 // in the first N records must not starve every later customer/invoice/item/PO.
@@ -494,6 +494,87 @@ export function createQBSyncEngine(ctx){
         ...(qbId?{Id:qbId,sparse:true}:{}),
         ...(syncToken?{SyncToken:syncToken}:{}),
       };
+    };
+
+    // Manual sales tax, one state at a time. Two things about QBO manual tax are
+    // unknown until a real record exists, and this canary is how we find out rather
+    // than assume: which liability account QBO assigns to a new agency (the portal's
+    // approved matrix expects 25200/25230, but QBO may insist on its own Sales Tax
+    // Payable), and whether one rate per state can carry the portal's own per-invoice
+    // amount when the portal holds 39 distinct local rates. It creates exactly one
+    // agency and one tax code, reads both back, and reports what QBO actually did.
+    const syncTaxRateCanary=async({state,rateName,ratePercent,agencyName,allowCreate=false}={})=>{
+      if(!canaryPreflightReady())return{status:'blocked'};
+      if(!requireDurableLinks())return{status:'blocked'};
+      const code=String(state||'').trim().toUpperCase();
+      const accountKey=QB_STATE_TAX_ACCOUNT_KEYS[code];
+      if(!accountKey){nf('Choose a state with an approved tax account','error');return{status:'blocked'}}
+      const percent=Number(ratePercent);
+      if(!Number.isFinite(percent)||percent<=0||percent>25){nf('Enter a tax rate between 0 and 25 percent','error');return{status:'blocked'}}
+      const agency=String(agencyName||'').trim(), rate=String(rateName||'').trim();
+      if(!agency||!rate){nf('Name the tax agency and the tax rate','error');return{status:'blocked'}}
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:'tax_rate_canary',status:'success',details:[]};
+      try{
+        const prefs=await queryQBReadOnly(qbApi,'SELECT * FROM Preferences','tax preferences recheck');
+        const taxPrefs=prefs?.QueryResponse?.Preferences?.[0]?.TaxPrefs||{};
+        if(taxPrefs.PartnerTaxEnabled)throw new Error('QBO Automated Sales Tax is enabled; manual rates are not the right mechanism. Nothing was created.');
+        const existingAgencies=await loadAllQBEntities(qbApi,'TaxAgency','*',100);
+        const agencyMatches=existingAgencies.filter(row=>normalizeQBCustomerName(row.DisplayName)===normalizeQBCustomerName(agency));
+        if(agencyMatches.length>1)throw new Error('Multiple QBO tax agencies are named "'+agency+'"; nothing was created.');
+        const existingCodes=await loadAllQBEntities(qbApi,'TaxCode','*',100);
+        if(existingCodes.some(row=>normalizeQBCustomerName(row.Name)===normalizeQBCustomerName(rate)))
+          throw new Error('A QBO tax code named "'+rate+'" already exists; nothing was created.');
+        if(!allowCreate)return{status:'needs_confirmation',state:code,agency,rate,percent,
+          agencyExists:agencyMatches.length===1,agencyId:agencyMatches[0]?.Id?String(agencyMatches[0].Id):''};
+
+        let agencyId=agencyMatches[0]?.Id?String(agencyMatches[0].Id):'';
+        if(!agencyId){
+          const created=await qbApi('upsert_taxagency',{taxagency:{DisplayName:agency}});
+          agencyId=String(created?.TaxAgency?.Id||'');
+          if(!agencyId)throw new Error(qbResponseErrorDetail(created,'QBO did not return a tax agency ID'));
+          log.details.push('CREATED ONE QBO TAX AGENCY: '+agency+' → #'+agencyId);
+        }else log.details.push('REUSED EXISTING QBO TAX AGENCY: '+agency+' → #'+agencyId);
+
+        const response=await qbApi('create_taxcode',{taxcode:{TaxCode:rate,
+          TaxRateDetails:[{TaxRateName:rate,RateValue:percent,TaxAgencyId:agencyId,TaxApplicableOn:'Sales'}]}});
+        const taxCodeId=String(response?.TaxCodeId||response?.TaxCode?.Id||'');
+        const rateId=String(response?.TaxRateDetails?.[0]?.TaxRateId||'');
+        if(!taxCodeId||!rateId)throw new Error(qbResponseErrorDetail(response,'QBO did not return a tax code and rate ID'));
+
+        const verifiedRate=(await loadAllQBEntities(qbApi,'TaxRate','*',100)).find(row=>String(row.Id)===rateId);
+        if(!verifiedRate)throw new Error('Tax rate #'+rateId+' was not returned by API read-back; no link was saved.');
+        if(Math.abs(Number(verifiedRate.RateValue)-percent)>0.0001)throw new Error('QBO stored rate '+verifiedRate.RateValue+'%, not '+percent+'%; no link was saved.');
+        const verifiedCode=(await loadAllQBEntities(qbApi,'TaxCode','*',100)).find(row=>String(row.Id)===taxCodeId);
+        if(!verifiedCode||verifiedCode.Active===false)throw new Error('Tax code #'+taxCodeId+' was missing or inactive on read-back; no link was saved.');
+
+        // The liability account QBO chose is the answer the approved posting matrix needs.
+        const qboAccountId=String(verifiedRate.AgencyRef?.value||agencyId);
+        log.details.push('READ-BACK VERIFIED: TaxCode #'+taxCodeId+' · TaxRate #'+rateId+' · '+verifiedRate.RateValue+'% · agency #'+qboAccountId);
+        // Reporting only, and deliberately non-fatal: the rate exists and is verified by
+        // this point, so a chart-mapping problem must not discard the proof of a write
+        // that already happened. A failure here is reported, not thrown.
+        let approvedAccount='';
+        try{
+          const approved=resolveQBAccountRefs(await loadQBAccounts(qbApi),qbConfig.mapping,[accountKey])[accountKey];
+          approvedAccount=approved.accountNumber;
+          log.details.push('Portal-approved '+code+' liability account is '+approved.accountNumber+' '+approved.name+' (QB #'+approved.value+'). QBO manual sales tax posts through its own agency-managed account, so confirm on the first taxable invoice which account actually moves before relying on the matrix.');
+        }catch(accountError){
+          log.status='partial';
+          log.details.push('Tax rate was created and verified, but the approved '+code+' liability account could not be resolved: '+accountError.message+'. Confirm on the first taxable invoice which account actually moves.');
+        }
+        await persistQbLink({mapKey:'qbTaxRateMap',sourceIds:[code],qboId:rateId,log,
+          evidence:{state:code,result:'created',tax_code_id:taxCodeId,tax_rate_id:rateId,agency_id:agencyId,
+            rate_percent:verifiedRate.RateValue,approved_account:approvedAccount||null,api_readback:true}});
+        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
+        nf('Created and verified one QBO tax rate for '+code);
+        return{status:'success',state:code,taxCodeId,rateId,agencyId,ratePercent:verifiedRate.RateValue};
+      }catch(e){
+        log.status='error';log.details.push(e.message||'Tax rate canary failed');
+        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));
+        nf('Tax rate setup stopped — '+(e.message||'QBO error'),'error');
+        return{status:'blocked',error:e.message};
+      }finally{setQbSyncing(false)}
     };
 
     // One-customer canary is intentionally available while production batches
@@ -1408,5 +1489,5 @@ export function createQBSyncEngine(ctx){
       setQbSyncing(false);
     };
 
-    return {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,reviewPurchaseOrderBillCandidate,linkPurchaseOrderBill,syncAll};
+    return {syncTaxRateCanary,syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,reviewPurchaseOrderBillCandidate,linkPurchaseOrderBill,syncAll};
 }
