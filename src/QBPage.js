@@ -714,11 +714,11 @@ export default function QBPage(){
       {qbConfig.connected&&<>
       {/* Stats */}
       <div className="stats-row" style={{marginBottom:16}}>
-        <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">Customers in QB</div><div className="stat-value" style={{color:'#2563eb'}}>{custWithQB}/{cust.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label" title="Customers the Portal has a saved, verified QuickBooks link for. QuickBooks may already hold customers the Portal has not linked yet.">Customers linked</div><div className="stat-value" style={{color:'#2563eb'}}>{custWithQB}/{cust.length}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}><div className="stat-label">Invoices to Sync</div><div className="stat-value" style={{color:'#d97706'}}>{unsyncedInvs.length}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #16a34a'}}><div className="stat-label">SOs to Sync</div><div className="stat-value" style={{color:'#16a34a'}}>{unsyncedSOs.length}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">POs to Sync</div><div className="stat-value" style={{color:'#7c3aed'}}>{unsyncedPOGroups.length}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Products in QB</div><div className="stat-value" style={{color:'#166534'}}>{prodWithQB}/{prod.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label" title="SKUs the Portal has a saved, verified QuickBooks item link for. QuickBooks may already hold items the Portal has not linked yet.">Products linked</div><div className="stat-value" style={{color:'#166534'}}>{prodWithQB}/{prod.length}</div></div>
       </div>
 
       {/* Tabs */}
