@@ -446,6 +446,41 @@ export const dgCodeOf=name=>{const m=String(name||'').match(/DG[-_ ]?(\d{4,})/i)
 // looser gate for marking an already-staged job complete. Matches _prodConfirmed in businessLogic.js
 // (which only runs its .dst check under the af.status==='approved' branch).
 export const artProdFilesConfirmed=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if((af.deco_type||'')==='embroidery'&&af.status==='approved')return artLiveDsts(af).length>0;return false};
+// ── PRODUCTION FILES ARE PER DESIGN, NOT PER JOB ──────────────────────────────────────────────
+// One garment can carry a screen-printed front AND a DTF sleeve. buildJobs deliberately keeps
+// those on ONE job (one tech sheet, one trip across the floor), but each design still owes its
+// OWN production file: a color separation for the print, ordered films for the DTF, a DST for the
+// embroidery. The order page used to classify the whole job by its PRIMARY art's deco_type and
+// then stamp prod_files_attached on EVERY art file the job touches — so "Films Ordered — Mark
+// Complete" on a mixed job silently claimed the screen-print separation was done too and sent the
+// job to production with no seps (SO-2145: DTF sleeve ordered, the PAL front separation never
+// made, and 3 production files showing on the banner — all of them the DTF's). These helpers
+// split a job's live art into the method buckets that still owe a file, so each bucket can be
+// asked for, and confirmed, on its own.
+export const prodFileMethodOf=(af,fallbackDeco)=>{const d=(af&&af.deco_type)||fallbackDeco||'screen_print';return d==='embroidery'?'embroidery':(d==='dtf'||d==='heat_press')?'dtf':'print'};
+// Print first: a separation is the long-lead item (an artist has to draw it), while films are
+// ordered and DSTs are uploaded. A fixed order also keeps the banner from reshuffling on rerender.
+export const PROD_FILE_METHOD_ORDER=['print','dtf','embroidery'];
+// The method buckets on this job that still owe a production file, in PROD_FILE_METHOD_ORDER.
+// `isConfirmed` defaults to the strict artProdFilesConfirmed; approve-time callers pass the
+// looser artProdFilesConfirmed||artDstOnFile (approving IS the sign-off on the current art, so a
+// live .dst counts before the file's status has flipped to 'approved').
+export const pendingProdFileGroups=(liveArt,fallbackDeco,isConfirmed)=>{
+  const ok=isConfirmed||artProdFilesConfirmed;const by={};
+  (liveArt||[]).forEach(a=>{if(!a||ok(a))return;
+    const m=prodFileMethodOf(a,fallbackDeco);
+    if(!by[m])by[m]={method:m,deco:(a.deco_type||fallbackDeco||'screen_print'),ids:[],arts:[]};
+    by[m].ids.push(a.id);by[m].arts.push(a);});
+  return PROD_FILE_METHOD_ORDER.filter(m=>by[m]).map(m=>by[m]);
+};
+// Where a job lands once `confirmedIds` are confirmed: 'art_complete' ONLY when nothing is still
+// owed, otherwise the stage of whatever method is still outstanding. Confirming the DTF films on
+// a mixed job leaves it in 'production_files_needed' — the print separation is still missing.
+export const artStatusAfterProdConfirm=(liveArt,confirmedIds,fallbackDeco,isConfirmed)=>{
+  const done=new Set(confirmedIds||[]);
+  const rest=pendingProdFileGroups((liveArt||[]).filter(a=>a&&!done.has(a.id)),fallbackDeco,isConfirmed);
+  return rest.length?prodFilesStatusFor(rest[0].deco):'art_complete';
+};
 // "Does this art file have anything to review" — mirrors App.js totalMocks / the approval-card UI.
 // An art file can carry a stale 'needs_approval'/'uploaded' status with 0 files/0 mockups (e.g. a
 // recall that didn't reset status), which must NOT read as waiting_approval or it regenerates a
