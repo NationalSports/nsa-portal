@@ -1332,6 +1332,14 @@ const _poLineToRow=(itemId,po)=>{const{po_id,vendor,received,cancelled,shipments
     sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined,drop_ship:drop_ship||undefined,_bill_details:_bill_details||undefined,_bill_cost:_bill_cost||undefined}};};
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return false;
+  // Stale-write circuit breaker (mirrors _dbSaveEstimateInner). A save rejected as STALE_SO_WRITE is
+  // preserved in the conflict card; re-POSTing the identical stale copy can never succeed. Without this
+  // gate, the auto-save effect re-fired the rejected save on every state change — 3.9M rejections in
+  // 11 hours on 2026-09-05, exhausting the DB connection pool and taking PostgREST down (503s for
+  // every user). Skip the network entirely until the cooldown elapses; _diffSave honors the same
+  // cooldown so it does not roll its snapshot back and re-queue the edit in the meantime.
+  const _cd=_dbStaleCooldown.get(so.id);
+  if(_cd&&Date.now()<_cd)return false;
   await _ensureFreshSession();// proactive token refresh before the write (see _dbSaveEstimateInner) — fewer reactive 401s from an idle tab
   // Optimistic locking: check version before saving (auto-heal on conflict). Record the conflict
   // rather than only adopting the server version: a bumped server version means ANOTHER session saved
@@ -2331,8 +2339,10 @@ const _dbSaveSOInner = async (so) => {
     }));
     if(commitError){
       if(commitError.code==='40001'||/STALE_SO_WRITE/.test(commitError.message||'')){
+        console.warn('[DB] save_sales_order_atomic rejected a stale write for',so.id,'—',commitError.message);
         _emitOutboxConflict('sales_orders',so);
         _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();
+        _dbStaleCooldown.set(so.id,Date.now()+_STALE_COOLDOWN_MS);// throttle re-POSTs until realtime heals the copy
         return false;
       }
       throw new Error(commitError.message||'Atomic save failed');
@@ -3849,6 +3859,9 @@ const _dbSave = (table, data) => { if(supabase && data) return _retryNet(()=>sup
 // reads the live bindings exported below.
 export const _setDbNotify=(fn)=>{_dbNotify=fn};
 export const _clearDocumentConflictCooldown=id=>_dbStaleCooldown.delete(id);
+// True while a stale-write rejection for this document is cooling down. App's _diffSave uses it to
+// keep its snapshot (no rollback) so the rejected edit is not re-queued on every state change.
+export const _isDocumentConflictCooling=id=>{const t=_dbStaleCooldown.get(id);return !!t&&Date.now()<t};
 export const _setDataLossAlert=(fn)=>{_dataLossAlert=fn};
 export const _setRestoredLinesSync=(fn)=>{_restoredLinesSync=fn};
 export const _setOnEstStatusMerge=(fn)=>{_onEstStatusMerge=fn};
