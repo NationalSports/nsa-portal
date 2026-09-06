@@ -125,10 +125,13 @@ describe('a generic single word must not claim an unrelated vendor',()=>{
 });
 
 describe('a QBO vendor that is the same business as a Portal vendor under another spelling',()=>{
-  // Real names from the books: QBO carries the legal form, the Portal the short one.
+  // The first pair is the live case: the 2026-09-06 QBO vendor export carries
+  // "Astra Sport LLC" for the Portal's "Astra Sport". The rest are the same
+  // shape -- legal form in QBO, short form in the Portal.
   const portal = name => ({id:'p1',name,vendor_type:'upload',is_active:true});
   const qbo = name => ({Id:'50',DisplayName:name});
   test.each([
+    ['Astra Sport LLC','Astra Sport'],
     ['AGRON INC.','Agron'],
     ['MIZUNO USA INC','Mizuno USA, Inc.'],
     ['MUELLER SPORTS MEDICINE INC','MUELLER SPORTS MEDICINE'],
