@@ -12068,11 +12068,13 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
               const _blocks=_pGroups.length?_pGroups:[{method:prodFileMethodOf(af.find(a=>_pPrimary.includes(a.id))||_pArts[0],j.deco_type),deco:(af.find(a=>_pPrimary.includes(a.id))?.deco_type)||j.deco_type,ids:_pIds,arts:_pArts}];
               const _multi=_blocks.length>1;
               /* Confirming a method stamps ONLY its own art and re-derives the job's stage from what
-                 is still owed — art_complete only once nothing is outstanding. */
-              /* Derived from the CURRENT art at click time, not the render snapshot — the other
-                 designs' confirmations can land between render and click. */
+                 is still owed — art_complete only once nothing is outstanding. Derived from the
+                 CURRENT art at click time, not the render snapshot: another design's confirmation
+                 can land between render and click. */
               const _nextSt=(ids)=>artStatusAfterProdConfirm(_pIds.map(id=>safeArt(oRef.current).find(a=>a.id===id)).filter(Boolean),ids,j.deco_type);
-              const _stillOwes=(st)=>' — this job still needs '+(ART_LABELS[st]||'production files');
+              /* Name the FILE that is still missing, not the raw stage label — ART_LABELS calls the
+                 print stage "Art Approved — Waiting", which tells the rep nothing about what to chase. */
+              const _stillOwes=(st)=>' — this job still needs '+(st==='order_dtf_transfers'?'the DTF films':st==='upload_emb_files'?'the embroidery files':'the print separation');
               const _completeEmb=(ids)=>{const curO=oRef.current;const _by=cu?.name||'Rep';const updArt2=(curO.art_files||[]).map(a=>{if(!ids.includes(a.id))return a;/* Marking complete IS the sign-off on the attached DST — clear any lingering 'retired' tag left by an
               earlier update-request/recall so this job never re-prompts "upload the DST" with the file in plain sight
               on the next coach round (SO-1638). No-op when a live DST already exists, so a genuine redo stays retired. */const _rv=reviveSoleStaleDst(a);return _rv.prod_files.length>0?{...a,..._rv,status:'approved',prod_files_attached:true}:{...a,..._rv,status:'approved',prod_files_attached:true,prod_files:[{name:'Embroidery files sent to printer',emb_sent:true,at:new Date().toISOString(),by:_by}]}});const _st=_nextSt(ids);const updJobs=safeJobs(curO).map((jj,i2)=>i2===ji?{...jj,art_status:_st}:jj);const updated={...curO,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};saveSONow(updated,'Production files','🧵 Embroidery production files marked complete'+(_st==='art_complete'?'':_stillOwes(_st)))};
