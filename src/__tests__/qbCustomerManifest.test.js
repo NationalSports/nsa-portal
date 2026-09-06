@@ -89,3 +89,42 @@ describe('duplicate-candidate guard before creating a customer',()=>{
     expect(report.portalUnmatchedSample[0]).toMatchObject({sourceId:'C2',displayName:'Only In Portal (OIP)'});
   });
 });
+
+// Real records read from the live QuickBooks company on September 6, 2026. QBO stores
+// these under exactly the display name the portal writes, and with no payment terms.
+describe('a matched QBO customer with no terms on either side',()=>{
+  const live=[
+    {portal:{id:'c1',name:'310 Volleyball Club',alpha_tag:'3VC',payment_terms:''},
+     qbo:{Id:'3001',DisplayName:'310 Volleyball Club (3VC)',CompanyName:'310 Volleyball Club',Active:true}},
+    {portal:{id:'c2',name:'805 Elite Volleyball Club',alpha_tag:'8EVC',payment_terms:''},
+     qbo:{Id:'3002',DisplayName:'805 Elite Volleyball Club (8EVC)',CompanyName:'805 Elite Volleyball Club',Active:true}},
+    {portal:{id:'c3',name:"Crean Lutheran Boy's Volleyball",alpha_tag:'CLBV',payment_terms:''},
+     qbo:{Id:'3003',DisplayName:"Crean Lutheran Boy's Volleyball (CLBV)",CompanyName:"Crean Lutheran Boy's Volleyball",Active:true}},
+  ];
+  const portals=live.map(pair=>pair.portal), qbos=live.map(pair=>pair.qbo);
+
+  test('matching succeeds: the row reports the QBO id even when terms block it',()=>{
+    const rows=buildQBCustomerManifest(portals,qbos,terms);
+    expect(rows.map(row=>row.qboId)).toEqual(['3001','3002','3003']);
+    rows.forEach(row=>{
+      expect(row.action).toBe('blocked');
+      expect(row.reason).toMatch(/Matched QBO customer #\d+, but neither the Portal nor QBO has payment terms/);
+      expect(row.reason).not.toMatch(/Missing portal payment terms/);
+    });
+  });
+
+  test('with the approved default these are term updates on existing records, never creations',()=>{
+    const rows=buildQBCustomerManifest(portals,qbos,terms,{},{blankTermsDefault:'net30'});
+    rows.forEach((row,i)=>{
+      expect(row).toMatchObject({action:'update_terms',qboId:String(3001+i),termSource:'default'});
+      expect(row.desiredTerm).toEqual({value:'8',name:'Net 30'});
+    });
+    expect(rows.some(row=>row.action==='create')).toBe(false);
+  });
+
+  test('a genuinely absent customer still reads as unmatched, with no QBO id',()=>{
+    const row=buildQBCustomerManifest([{id:'c9',name:'Not In QuickBooks',alpha_tag:'NIQ',payment_terms:''}],qbos,terms)[0];
+    expect(row).toMatchObject({action:'blocked',qboId:''});
+    expect(row.reason).toBe('Missing portal payment terms; no default is assumed');
+  });
+});

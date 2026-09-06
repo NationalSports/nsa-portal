@@ -58,6 +58,11 @@ Most portal customers (2,338 of 2,540 active on September 6, 2026) have no payme
 
 Every receipt records `term_source` (`portal`, `qbo`, or `default`) so the choice is auditable.
 
+A blocked row always reports the QBO customer it matched, when it matched one. Terms are
+resolved after identity precisely so that a terms gap cannot disguise itself as a naming
+failure; a blocked row with an empty QBO ID means genuinely no match, and one carrying an
+ID means the identity is settled and only terms are missing.
+
 Reading the review counters correctly matters here. With the selector on **Block**, a blank-terms customer is unblocked only if it already matches a QBO customer; everything else still counts as blocked, which is the pre-change behavior. With the selector on **Net 30**, those same rows become proposed creations. A Block-mode review is therefore a measurement of name matching, not of this control.
 
 ## 3c. Duplicate-creation guard

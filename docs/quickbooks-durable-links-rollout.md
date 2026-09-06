@@ -115,14 +115,31 @@ blank-terms customer only clears if it already matches in QBO. It measures name 
 not the blank-terms control, and the run's expectation of a large drop in Block mode was
 wrong.
 
-The result that matters is underneath it. QBO holds 2,385 active customers against 2,540
-active portal customers, and the review matched roughly 36 of them organically; the rest
-of the 43 links are records this portal created in earlier batches, whose QBO IDs run
-contiguously from 2385. Portal customers carrying payment terms (202 of them, almost all
-created in the portal itself) matched at about 38%, while blank-terms customers, almost
-all carrying NetSuite-derived IDs, matched at about 0.04%. Either those 2,300-odd QBO
-customers are different accounts, or they are the same accounts under different names.
-Until that is settled, approving creations risks duplicating a live customer list.
+### Corrected diagnosis, same day
+
+The first reading of that run concluded name matching was failing, because all 2,337
+blocked rows showed an empty QBO ID. That conclusion was wrong, and the empty ID was a
+reporting bug in this file: `row.qboId` was assigned *after* the payment-terms branch, so
+a customer that matched QBO but had no terms on either side blocked before its own
+identity was recorded. The reviewer saw a matched customer as unmatched.
+
+Screenshots of the live QuickBooks customer list settled it. QBO stores these customers
+under exactly the display name the portal writes — `310 Volleyball Club (3VC)`,
+`805 Elite Volleyball Club (8EVC)`, `Crean Lutheran Boy's Volleyball (CLBV)` — with
+`CompanyName` holding the bare name. Matching works. What those QBO records lack is
+payment terms, and the portal customers have none either, so in Block mode both sides are
+empty and the row correctly refuses to invent a financial term.
+
+The practical consequence reverses the earlier warning. With the approved Net 30 default
+these rows become **term updates on existing QBO customers**, not creations. There is no
+mass-duplication risk from this path. The real decision is narrower and belongs to
+accounting: setting Net 30 on roughly 2,337 existing QuickBooks customers that currently
+carry no terms. Terms are not optional — the invoice canary refuses to post against a
+linked customer with no `SalesTermRef`.
+
+Proposed creations stayed at 125 in Block mode; those are the customers genuinely absent
+from QuickBooks, and the duplicate guard added the same day covers the near-miss names
+among them.
 
 Sales tax was read read-only: Automated Sales Tax is not enabled, sales tax is not in
 use, and the company has 3 tax codes (TAX, NON, CustomSalesTax) with **zero tax rates and

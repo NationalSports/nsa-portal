@@ -182,6 +182,13 @@ export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms
       if(existing?.Active === false)throw new Error('Saved QBO customer is inactive');
       if(existing && matches.length === 1 && String(matches[0].Id) !== String(existing.Id))throw new Error('Saved ID conflicts with exact name match');
       if(existing && !matches.some(q=>String(q.Id) === String(existing.Id)))throw new Error('Saved QBO customer name does not match portal identity');
+      // Record the match BEFORE resolving terms. A terms problem must never make a
+      // matched customer look unmatched: reporting the identity we found is what tells
+      // the reviewer whether a blocked row is a naming failure or only a terms gap.
+      if(existing){
+        row.qboId = String(existing.Id);
+        row.currentTerm = existing.SalesTermRef || null;
+      }
       const portalTerms = String(customer.payment_terms || '').trim();
       const existingTerm = existing ? activeTermById.get(String(existing.SalesTermRef?.value || '')) : null;
       let term, termNote = '';
@@ -193,7 +200,9 @@ export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms
       }else if(blankTermsDefault){
         term = resolveQBCustomerTerm(terms,blankTermsDefault);
         row.termSource = 'default';termNote = '; portal terms blank, reviewer default ' + term.name;
-      }else throw new Error('Missing portal payment terms; no default is assumed');
+      }else throw new Error(existing
+        ? 'Matched QBO customer #' + existing.Id + ', but neither the Portal nor QBO has payment terms; choose a default to link it and set them'
+        : 'Missing portal payment terms; no default is assumed');
       row.desiredTerm = term;
       if(!existing){
         // Never create a second copy of a customer QBO already has under a name that
@@ -204,8 +213,6 @@ export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms
           + '; link or rename it before creating a second record');
         return {...row,action:'create',reason:'Requires explicit creation approval' + termNote};
       }
-      row.qboId = String(existing.Id);
-      row.currentTerm = existing.SalesTermRef || null;
       row.action = String(existing.SalesTermRef?.value || '') === term.value ? 'link' : 'update_terms';
       row.reason = (row.action === 'link' ? 'Existing active customer; terms match' : 'Requires explicit term-change approval') + termNote;
       return row;
