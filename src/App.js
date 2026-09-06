@@ -11398,7 +11398,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);if(locked)setESO(locked)}} onEditMemo={memoCommandsReady?openMemoEditor:null} memoEditorRef={setMemoInlineTarget} memoEditing={memoCommand?.id===eSO.id&&memoCommand?.ownerId===String(cu?.id)} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} onOpenMethodicDashboard={()=>{setESO(null);setESOTab(null);setPg('methodic')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);if(locked)setESO(locked)}} onEditMemo={memoCommandsReady?openMemoEditor:null} memoEditorRef={setMemoInlineTarget} memoEditing={memoCommand?.id===eSO.id&&memoCommand?.ownerId===String(cu?.id)} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} onOpenMethodicDashboard={()=>{setESO(null);setESOTab(null);setPg('methodic')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} shipCostBasis={shipCostBasis} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -19626,6 +19626,52 @@ export default function App(){
   const[clearShipModal,setClearShipModal]=useState(null);
   const[shipExpanded,setShipExpanded]=useState({});// key->bool; Ready-to-Ship cards start collapsed
   const[manualShipModal,setManualShipModal]=useState(null);
+  // Standard carton sizes. Carriers bill the greater of actual and dimensional weight
+  // (L*W*H/139), and only 6 of 301 recorded shipments carry dimensions — typing three
+  // numbers per box is why. Picking one is not. Loaded directly rather than through the
+  // bulk loader so an un-migrated database just yields an empty list and the manual
+  // inputs keep working.
+  // Calibration behind the order editor's shipping suggestion. One row, refreshed
+  // by scripts/shipping-audit.js, so the suggestion tracks the data rather than
+  // hardcoded constants. Loaded once and passed to both editors.
+  //
+  // WAIT FOR THE SESSION BEFORE ASKING. ship_cost_basis is readable only by an
+  // authenticated staff member (see its migration), and Supabase restores the
+  // session asynchronously on first load - the same lag the auth guard below
+  // allows ~9s for. A fetch fired at mount goes out under the anon key, RLS
+  // matches no rows, and maybeSingle() reports that as {data:null,error:null}:
+  // indistinguishable from "no calibration exists". The suggestion then never
+  // appears for the whole life of the page, with nothing logged. So poll for a
+  // live session first, and say something when we still come away empty.
+  const[shipCostBasis,setShipCostBasis]=useState(null);
+  useEffect(()=>{
+    if(!supabase)return;
+    let alive=true;
+    (async()=>{
+      for(let i=0;i<30&&alive;i++){
+        let session=null;
+        try{const r=await supabase.auth.getSession();session=r?.data?.session||null}catch(_){}
+        if(_isLiveSession(session))break;
+        await new Promise(r=>setTimeout(r,300));
+      }
+      if(!alive)return;
+      const{data,error}=await supabase.from('ship_cost_basis').select('*').limit(1).maybeSingle();
+      if(!alive)return;
+      if(data){setShipCostBasis(data);return}
+      console.warn('[ship] no shipping cost basis - the editor will not suggest a charge. '
+        +(error?error.message:'No row visible: either the audit has never run, or this account is not an active team_members row (ship_cost_basis RLS).'));
+    })();
+    return()=>{alive=false};
+  },[]);
+  const[shipCartons,setShipCartons]=useState([]);
+  useEffect(()=>{
+    if(!supabase||!manualShipModal||shipCartons.length)return;
+    let alive=true;
+    supabase.from('ship_cartons').select('id,name,length_in,width_in,height_in,dim_weight_lb,active,sort_order')
+      .eq('active',true).order('sort_order')
+      .then(({data,error})=>{if(alive&&!error&&Array.isArray(data))setShipCartons(data)});
+    return()=>{alive=false};
+  },[manualShipModal,shipCartons.length]);
   const manualShipStateForSO=(so,c2,base={})=>{
     const _sel=resolveOrderShipTo(so,c2);
     const _destAddr=_sel&&_sel.street
@@ -19633,6 +19679,30 @@ export default function App(){
       :{company:c2?.name||'',street1:c2?.shipping_address_line1||'',street2:c2?.shipping_address_line2||'',city:c2?.shipping_city||'',state:c2?.shipping_state||'',zip:c2?.shipping_zip||'',phone:c2?.contacts?.[0]?.phone||''};
     return{...base,custSearch:'',custFilter:c2||null,so,cust:c2||null,carrier:base.carrier||'ups',tracking:'',cost:'',notes:'',weight:base.weight||5,dimensions:base.dimensions||{length:'',width:'',height:''},availItems:unshippedOrderItems(so),shipItems:[],markShipped:{},shipToMode:'customer',decoId:'',attn:'',destTouched:false,destAddr:_destAddr,labelUrl:null,shipstationShipmentId:null};
   };
+  // Row of standard-carton buttons that fill the L/W/H inputs. Renders nothing when the
+  // catalog is empty (pre-migration database), so the manual inputs stay the fallback.
+  const renderCartonPicker=()=>{
+    if(!shipCartons.length)return null;
+    const dims=manualShipModal?.dimensions||{};
+    const isOn=(c)=>String(dims.length)===String(c.length_in)&&String(dims.width)===String(c.width_in)&&String(dims.height)===String(c.height_in);
+    return<div style={{display:'flex',alignItems:'center',gap:4,flexWrap:'wrap',marginBottom:6}}>
+      <label style={{fontSize:10,fontWeight:700,color:'#64748b',marginRight:2}}>Box</label>
+      {shipCartons.map(c=>{
+        const on=isOn(c);
+        return<button key={c.id} type="button" className="btn btn-sm"
+          title={`${c.length_in} × ${c.width_in} × ${c.height_in} in · ${c.dim_weight_lb} lb dim weight`}
+          style={{fontSize:10,padding:'3px 8px',fontWeight:700,border:'1px solid '+(on?'#1e40af':'#cbd5e1'),
+            background:on?'#dbeafe':'white',color:on?'#1e40af':'#475569'}}
+          onClick={()=>setManualShipModal(m=>({...m,dimensions:{length:String(c.length_in),width:String(c.width_in),height:String(c.height_in)}}))}>
+          {c.length_in}×{c.width_in}×{c.height_in}
+        </button>;
+      })}
+      {(dims.length||dims.width||dims.height)&&<button type="button" className="btn btn-sm"
+        style={{fontSize:10,padding:'3px 8px',background:'none',border:'none',color:'#94a3b8'}}
+        onClick={()=>setManualShipModal(m=>({...m,dimensions:{length:'',width:'',height:''}}))}>clear</button>}
+    </div>;
+  };
+
   const openManualShipForSO=(so)=>{
     const c2=cust.find(cc=>cc.id===so?.customer_id);
     if(!so||!c2){nf('Sales order or customer could not be loaded','error');return}
@@ -21869,6 +21939,7 @@ export default function App(){
                 <div style={{display:'flex',gap:8,alignItems:'flex-end'}}>
                   <div><label style={_lbl}>Weight (lbs)</label>
                     <input className="form-input" type="number" min="0.1" step="0.5" value={manualShipModal.weight===''||manualShipModal.weight===undefined?'':manualShipModal.weight} placeholder="5" style={{width:70,fontSize:11}} onChange={e=>setManualShipModal({...manualShipModal,weight:e.target.value===''?'':parseFloat(e.target.value)})}/></div>
+                  {renderCartonPicker()}
                   <div style={{display:'flex',alignItems:'center',gap:3}}>
                     <label style={{fontSize:10,fontWeight:700,color:'#64748b',marginRight:2}}>Box (in)</label>
                     <input className="form-input" type="number" min="1" placeholder="L" value={(manualShipModal.dimensions||{}).length||''} style={{width:48,fontSize:11,padding:'4px 4px',textAlign:'center'}} onChange={e=>setManualShipModal({...manualShipModal,dimensions:{...(manualShipModal.dimensions||{}),length:e.target.value}})}/>
@@ -21966,20 +22037,27 @@ export default function App(){
               {(()=>{
                 const q=(manualShipModal.custSearch||'').toLowerCase();
                 if(q.length<2)return<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>Type at least 2 characters to search</div>;
+                // "Open" = still owes a shipment. That is the right filter for BROWSING (the
+                // per-customer open count below), but it must not gate an explicit search: a
+                // finished order is exactly the one whose cost nobody recorded, and status
+                // 'complete' is hidden from every warehouse queue, so search is the only way
+                // back to it. 511 completed orders carry a shipping charge and no cost.
                 const _canOverride=so=>!so.deleted_at&&(unshippedOrderItems(so).length>0||soHasOpenShipWork(so));
+                const _isRecordable=so=>!so.deleted_at;
                 const openSosByCust={};
                 sos.forEach(so=>{
                   if(!_canOverride(so))return;
                   if(!openSosByCust[so.customer_id])openSosByCust[so.customer_id]=[];
                   openSosByCust[so.customer_id].push(so);
                 });
-                const soResults=sos.filter(so=>{if(!_canOverride(so))return false;const cc=cust.find(x=>x.id===so.customer_id);return((so.id||'')+' '+(so.memo||'')+' '+(cc?.name||'')).toLowerCase().includes(q)}).slice(0,8);
+                const soResults=sos.filter(so=>{if(!_isRecordable(so))return false;const cc=cust.find(x=>x.id===so.customer_id);return((so.id||'')+' '+(so.memo||'')+' '+(cc?.name||'')).toLowerCase().includes(q)})
+                  .sort((a,b)=>(_canOverride(b)?1:0)-(_canOverride(a)?1:0)).slice(0,8);
                 const results=cust.filter(cc=>(cc.name||'').toLowerCase().includes(q)).sort((a,b)=>(a.name||'').localeCompare(b.name||'')).slice(0,12);
                 if(results.length===0&&soResults.length===0)return<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No matching customer or sales order</div>;
                 return<div style={{display:'grid',gap:4}}>
                   {soResults.length>0&&<div style={{fontSize:9,fontWeight:800,color:'#64748b',textTransform:'uppercase',marginTop:2}}>Sales orders</div>}
                   {soResults.map(so=>{const cc=cust.find(x=>x.id===so.customer_id);return<div key={so.id} style={{padding:'8px 12px',background:'#eff6ff',borderRadius:6,border:'1px solid #93c5fd',cursor:'pointer'}} onClick={()=>setManualShipModal(manualShipStateForSO(so,cc,manualShipModal))}>
-                    <div style={{display:'flex',gap:8,alignItems:'center'}}><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{so.id}</span><span style={{fontSize:11,fontWeight:700}}>{cc?.name||'Unknown'}</span><span style={{marginLeft:'auto',fontSize:9,color:'#64748b'}}>{calcSOStatus(so)} · {unshippedOrderItems(so).reduce((a,it)=>a+it.qty,0)} unshipped</span></div>
+                    <div style={{display:'flex',gap:8,alignItems:'center'}}><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{so.id}</span><span style={{fontSize:11,fontWeight:700}}>{cc?.name||'Unknown'}</span><span style={{marginLeft:'auto',fontSize:9,color:'#64748b'}}>{calcSOStatus(so)} · {_canOverride(so)?(unshippedOrderItems(so).reduce((a,it)=>a+it.qty,0)+' unshipped'):'nothing left to ship — record cost'}</span></div>
                   </div>})}
                   {results.length>0&&<div style={{fontSize:9,fontWeight:800,color:'#64748b',textTransform:'uppercase',marginTop:soResults.length?6:2}}>Customers</div>}
                   {results.map(cc=>{
@@ -22006,12 +22084,17 @@ export default function App(){
                 <span style={{fontSize:10,color:'#64748b'}}>— select an order to ship</span>
               </div>
               {(()=>{
-                const custSos=sos.filter(so=>!so.deleted_at&&so.customer_id===manualShipModal.custFilter.id&&(unshippedOrderItems(so).length>0||soHasOpenShipWork(so)));
+                const _custOpen=so=>unshippedOrderItems(so).length>0||soHasOpenShipWork(so);
+                // Open orders first, then finished ones so a cost can still be attached. Capped
+                // because a long-standing customer has hundreds; the SO-number search above is
+                // the precise route to anything older than this list.
+                const custSos=sos.filter(so=>!so.deleted_at&&so.customer_id===manualShipModal.custFilter.id)
+                  .sort((a,b)=>(_custOpen(b)?1:0)-(_custOpen(a)?1:0)).slice(0,25);
                 const _noSoBtn=<button className="btn btn-sm" style={{width:'100%',marginTop:8,fontSize:11,fontWeight:700,background:'white',color:'#166534',border:'1px dashed #86efac',padding:'8px'}}
                   onClick={()=>{const c2=manualShipModal.custFilter;const _destAddr={company:c2?.name||'',attn:'',street1:c2?.shipping_address_line1||'',street2:c2?.shipping_address_line2||'',city:c2?.shipping_city||'',state:c2?.shipping_state||'',zip:c2?.shipping_zip||'',phone:c2?.contacts?.[0]?.phone||''};setManualShipModal({...manualShipModal,noSo:true,cust:c2,destAddr:_destAddr,shipToMode:'customer',itemDesc:'',charge:'',cost:'',tracking:'',labelUrl:null,carrier:manualShipModal.carrier||'ups'});}}>
                   📦 Ship without an order — bill {manualShipModal.custFilter.name} on their next order
                 </button>;
-                if(custSos.length===0)return<><div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No open sales orders for this customer</div>{_noSoBtn}</>;
+                if(custSos.length===0)return<><div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No sales orders for this customer</div>{_noSoBtn}</>;
                 return<><div style={{display:'grid',gap:4}}>
                   {custSos.map(so=>{
                     const st=calcSOStatus(so);
@@ -22027,6 +22110,7 @@ export default function App(){
                       <div style={{display:'flex',alignItems:'center',gap:8}}>
                         <span style={{fontWeight:800,color:'#1e40af',fontSize:12,fontFamily:'monospace'}}>{so.id}</span>
                         <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#f1f5f9',color:'#64748b'}}>{st}</span>
+                        {!_custOpen(so)&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>record cost</span>}
                         <span style={{marginLeft:'auto',fontSize:10,color:'#64748b'}}>{itemCount} items · {jobCount} jobs</span>
                       </div>
                       {so.memo&&<div style={{fontSize:10,color:'#64748b',marginTop:2,fontStyle:'italic',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{so.memo}</div>}
@@ -22229,6 +22313,7 @@ export default function App(){
                     style={{width:70,fontSize:11}}
                     onChange={e=>setManualShipModal({...manualShipModal,weight:e.target.value===''?'':parseFloat(e.target.value)})}/>
                 </div>
+                {renderCartonPicker()}
                 <div style={{display:'flex',alignItems:'center',gap:3}}>
                   <label style={{fontSize:10,fontWeight:700,color:'#64748b',marginRight:2}}>Box (in)</label>
                   <input className="form-input" type="number" min="1" placeholder="L" value={(manualShipModal.dimensions||{}).length||''} style={{width:48,fontSize:11,padding:'4px 4px',textAlign:'center'}}
@@ -22341,14 +22426,50 @@ export default function App(){
 
             {/* Actions */}
             {(()=>{
+              // Local/rep delivery and customer pickup have no carrier cost. Recording that
+              // as a $0 shipment is indistinguishable from never recording anything —
+              // _shipping_cost is already 0 on 1,103 of 1,226 orders — so this asserts the
+              // zero explicitly instead. 46 warehouse_delivery and 29 rep_delivery orders
+              // carrying $6,763 of shipping charge need exactly this.
+              const _doNoCarrierCost=async()=>{
+                const so=manualShipModal.so;
+                if(!so)return;
+                const reason=(manualShipModal.notes||'').trim()
+                  ||(manualShipModal.carrier==='rep_delivery'?'Rep delivery'
+                    :manualShipModal.shipToMode==='warehouse'?'Warehouse delivery'
+                    :'Local delivery / customer pickup');
+                const patch={no_carrier_cost:true,no_carrier_cost_reason:reason,
+                  no_carrier_cost_by:cu?.id||'',no_carrier_cost_at:new Date().toISOString()};
+                // Deliberately NOT through savSO. These columns are not in _soCols: asserting
+                // "no carrier cost" is a decision about one order at one moment, and riding it
+                // along on every unrelated sales_orders save would make it a silent side
+                // effect. A targeted update also surfaces its own failure rather than being
+                // dropped from a batch.
+                if(supabase){
+                  const{error}=await supabase.from('sales_orders').update(patch).eq('id',so.id);
+                  if(error){nf('Could not record "no carrier cost": '+error.message+' — migration 20260901160000 may not be applied','error');return}
+                }
+                setSOs(prev=>prev.map(x=>x.id===so.id?{...x,...patch}:x));
+                addWhAction({type:'no_carrier_cost',soId:so.id,customer:manualShipModal.cust?.name||'',reason,by:cu?.id||'warehouse'});
+                nf(so.id+' marked as no carrier cost — '+reason);
+                setManualShipModal(null);
+              };
               const _doConfirmManualShip=async(openEmail)=>{
                   const so=manualShipModal.so;
                   const hasSelectedItems=(manualShipModal.shipItems||[]).some(it=>Object.values(it.sizes||{}).some(v=>safeNum(v)>0));
-                  if(!hasSelectedItems&&!String(manualShipModal.itemDesc||'').trim()){nf('Select at least one item and quantity to ship','error');return}
                   const cost=parseFloat(manualShipModal.cost)||0;
+                  // Cost-only record. On a finished order there is nothing left to select, and
+                  // requiring a description just makes the rep invent one — which is why the
+                  // cost went unrecorded instead. A cost against an order with nothing left to
+                  // ship is a complete, honest record on its own.
+                  const _nothingLeft=(manualShipModal.availItems||[]).length===0;
+                  const _costOnly=!hasSelectedItems&&!String(manualShipModal.itemDesc||'').trim()&&_nothingLeft&&(cost>0||(parseFloat(manualShipModal.charge)||0)>0);
+                  if(!hasSelectedItems&&!String(manualShipModal.itemDesc||'').trim()&&!_costOnly){
+                    nf(_nothingLeft?'Enter the shipping cost to record it against this order':'Select at least one item and quantity to ship','error');return}
                   const trackUrl2=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
                   const shipItems=(manualShipModal.shipItems||[]).map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:{...it.sizes}}));
                   if(manualShipModal.itemDesc)shipItems.push({sku:'MANUAL',name:manualShipModal.itemDesc,color:'',sizes:{}});
+                  if(_costOnly)shipItems.push({sku:'COST-ONLY',name:'Shipping cost recorded after the fact',color:'',sizes:{}});
                   // Destination — where this shipment is headed (customer / our warehouse / decorator)
                   const _mode=manualShipModal.shipToMode||'customer';
                   const _da=manualShipModal.destAddr||{};
@@ -22413,6 +22534,9 @@ export default function App(){
               return <div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12,flexWrap:'wrap',alignItems:'center'}}>
                 <button className="btn btn-primary" style={{background:'#92400e',borderColor:'#92400e',fontWeight:800}}
                   onClick={()=>_doConfirmManualShip(false)}>⚡ Confirm Shipment</button>
+                <button className="btn btn-sm" style={{fontSize:11,fontWeight:700,background:'white',color:'#166534',border:'1px dashed #86efac',padding:'8px 12px'}}
+                  title="We delivered this ourselves — record that there is no carrier cost, rather than leaving it looking unrecorded"
+                  onClick={_doNoCarrierCost}>🚚 No carrier cost</button>
                 {manualShipModal.labelUrl&&<button className="btn btn-primary" style={{background:'#0369a1',borderColor:'#0369a1',fontWeight:800}}
                   onClick={()=>_doConfirmManualShip(true)}>📧 Confirm &amp; Email Label…</button>}
                 <button className="btn btn-secondary" onClick={()=>setManualShipModal(null)}>Cancel</button>
