@@ -135,6 +135,28 @@ After a clean 20-record pilot, continue in batches of 20. Increase concurrency o
 
 Retry 429 and transient network/5xx errors with bounded exponential backoff and jitter. Respect `Retry-After`. Do not automatically retry account, tax, duplicate-conflict, or payload validation errors; mark them for review.
 
+## 4a. Customer payments
+
+The payment push is the only place the portal moves cash into QBO, and it was the only
+write without the proof every other path carries. Its QBO response was discarded
+entirely, so a rejected payment was reported to the operator as money successfully sent.
+
+It now behaves like the rest of the migration:
+
+- **Duplicate preflight.** QBO cannot be queried by `LinkedTxn`, so the customer's
+  payments are read and the lines pointing at this invoice are totalled. Money QBO
+  already records against the invoice is never sent again, and a partial existing
+  payment only tops up the remainder.
+- **Checked response.** A fault blocks the record and is reported as blocked.
+- **API read-back.** The created payment is re-read and its total, customer, deposit
+  account and link to the invoice are all verified before success is claimed.
+- **Durable receipt** under `qbPaymentMap`, keyed by portal invoice and QBO payment ID,
+  recording the amount, what was already applied, and the deposit account.
+
+Payments still deposit to 11010 Undeposited Funds per the approved matrix. The pull
+direction, where QBO is ahead of the portal, is unchanged: it reads QBO's balance as
+authoritative each run and is self-correcting.
+
 ## 5. Completion checks
 
 The migration is complete only when:
