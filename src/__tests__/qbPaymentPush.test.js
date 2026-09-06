@@ -103,3 +103,82 @@ test('when QBO is ahead of the Portal nothing is pushed',async()=>{
   await run.engine.syncPaidFromQB();
   expect(run.qbApi.mock.calls.some(([a])=>a==='upsert_payment')).toBe(false);
 });
+
+// Checks are entered in QBO, so the pull direction carries most customer money.
+// The date it records is a commission input: CommissionsPage rates a line at 15%
+// rather than 30% once days-to-pay passes 90, and freezes it on first render.
+describe('pulling QBO payments into the Portal',()=>{
+  const {qbPaymentsAppliedToInvoice}=require('../qbSyncEngine');
+  function pullSetup({qboPayments,existingRows=[]}={}){
+    const invs=[{id:'INV1',display_id:'INV-1',customer_id:'C1',total:100,paid:0,qb_invoice_id:'900',
+      date:'2026-05-01',payments:existingRows}];
+    let config={realm_id:'r1',preflight:{status:'success',realm_id:'r1'},mapping,initialMigrationApproved:true,
+      custQBMap:{C1:'55'},syncLog:[]};
+    let saved=null;
+    const qbApi=jest.fn(async(action,args={})=>{
+      if(action==='query'){
+        const q=args.query||'';
+        if(q.includes('FROM Account'))return{QueryResponse:{Account:accounts}};
+        if(q.includes('FROM Item'))return{QueryResponse:{Item:[{Id:'7',Name:'NSA Portal Sales',Type:'Service',Active:true,IncomeAccountRef:{value:'10'}}]}};
+        if(q.includes('FROM Invoice'))return{QueryResponse:{Invoice:[{Id:'900',DocNumber:'INV-1',Balance:0,TotalAmt:100,SyncToken:'0'}]}};
+        if(q.includes('FROM Payment'))return{QueryResponse:{Payment:qboPayments}};
+        return{QueryResponse:{}};
+      }
+      if(action==='upsert_item')return{Item:{Id:'7'}};
+      throw new Error('Unexpected '+action);
+    });
+    const engine=createQBSyncEngine({cust:[{id:'C1',name:'Club'}],sos:[],invs,prod:[],vend:[],qbApi,qbConfig:config,
+      persistQbLink:jest.fn(async()=>{}),nf:jest.fn(),setQbSyncing:jest.fn(),
+      setInvs:fn=>{saved=fn(invs)[0]},setQBConfig:fn=>{config=fn(config);}});
+    return {engine,saved:()=>saved,log:()=>(config.syncLog||[]).find(l=>l.type==='paid_sync')||{details:[]}};
+  }
+  const check=(id,date,amount)=>({Id:id,TxnDate:date,Line:[{Amount:amount,LinkedTxn:[{TxnType:'Invoice',TxnId:'900'}]}]});
+
+  test('the real QBO payment date is recorded, not today',async()=>{
+    const run=pullSetup({qboPayments:[check('70','2026-05-20',100)]});
+    await run.engine.syncPaidFromQB();
+    expect(run.saved().payments).toEqual([{amount:100,method:'qb_sync',ref:'QBO Payment #70',date:'2026-05-20'}]);
+    expect(run.saved()).toMatchObject({paid:100,status:'paid'});
+    // 19 days, well inside the 90-day window that halves the rep's rate.
+    const days=Math.round((new Date(2026,4,20)-new Date(2026,4,1))/86400000);
+    expect(days).toBe(19);
+  });
+
+  test('a payment already recorded is not appended twice',async()=>{
+    const run=pullSetup({qboPayments:[check('70','2026-05-20',100)],
+      existingRows:[{amount:100,method:'qb_sync',ref:'QBO Payment #70',date:'2026-05-20'}]});
+    await run.engine.syncPaidFromQB();
+    expect(run.saved().payments).toHaveLength(1);
+  });
+
+  test('a payment with no usable date blocks rather than guessing one',async()=>{
+    const run=pullSetup({qboPayments:[check('70','',100)]});
+    await run.engine.syncPaidFromQB();
+    expect(run.saved()).toBeNull();
+    expect(run.log().details.join(' ')).toMatch(/has no usable date, and a guessed date would change the rep commission rate/);
+  });
+
+  test('a paid balance with no payment referencing the invoice blocks',async()=>{
+    const run=pullSetup({qboPayments:[{Id:'71',TxnDate:'2026-05-20',Line:[{Amount:100,LinkedTxn:[{TxnType:'Invoice',TxnId:'999'}]}]}]});
+    await run.engine.syncPaidFromQB();
+    expect(run.saved()).toBeNull();
+    expect(run.log().details.join(' ')).toMatch(/no payment record references this invoice/);
+  });
+
+  test('several checks against one invoice each keep their own date and amount',async()=>{
+    const run=pullSetup({qboPayments:[check('70','2026-05-10',40),check('71','2026-05-25',60)]});
+    await run.engine.syncPaidFromQB();
+    expect(run.saved().payments).toEqual([
+      {amount:40,method:'qb_sync',ref:'QBO Payment #70',date:'2026-05-10'},
+      {amount:60,method:'qb_sync',ref:'QBO Payment #71',date:'2026-05-25'},
+    ]);
+  });
+
+  test('the shared helper sums only lines applied to the invoice',()=>{
+    expect(qbPaymentsAppliedToInvoice([
+      {Id:'1',TxnDate:'2026-01-01',Line:[{Amount:10,LinkedTxn:[{TxnType:'Invoice',TxnId:'900'}]},{Amount:5,LinkedTxn:[{TxnType:'Invoice',TxnId:'901'}]}]},
+      {Id:'2',TxnDate:'2026-01-02',Line:[{Amount:7,LinkedTxn:[{TxnType:'Invoice',TxnId:'901'}]}]},
+    ],'900')).toEqual([{id:'1',date:'2026-01-01',amount:10}]);
+    expect(qbPaymentsAppliedToInvoice([{Id:'1',Line:[]}],'')).toEqual([]);
+  });
+});

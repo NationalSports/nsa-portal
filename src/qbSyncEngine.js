@@ -284,6 +284,20 @@ export function buildQBPurchaseOrderPreviewRows(sos = [], products = [], prodQBM
   });
 }
 
+// QBO cannot be queried by LinkedTxn, so both payment directions read the customer's
+// payments and pick out the lines applied to one invoice. Shared so the push preflight
+// and the pull cannot drift apart.
+export function qbPaymentsAppliedToInvoice(payments = [], qbInvoiceId) {
+  const target = String(qbInvoiceId || '');
+  if (!target) return [];
+  return (payments || []).map(payment => {
+    const amount = (payment?.Line || [])
+      .filter(line => (line?.LinkedTxn || []).some(link => link?.TxnType === 'Invoice' && String(link.TxnId) === target))
+      .reduce((sum, line) => sum + safeNum(line.Amount), 0);
+    return amount > 0 ? { id: String(payment.Id || ''), date: String(payment.TxnDate || ''), amount: Math.round(amount * 100) / 100 } : null;
+  }).filter(row => row && row.id);
+}
+
 export function qbLinkedTransactions(entity = {}) {
   return [...(entity.LinkedTxn || []), ...(entity.Line || []).flatMap(line => line.LinkedTxn || [])];
 }
@@ -862,11 +876,31 @@ export function createQBSyncEngine(ctx){
           const qbPaid=qbTotal-qbBalance;
           const portalPaid=safeNum(inv.paid);
           if(qbPaid>portalPaid){
-            // QB has more paid — pull to portal
+            // QB has more paid — pull to portal. Checks are entered in QBO, so this is
+            // the main way customer money reaches the Portal. The date recorded here is
+            // a commission input: CommissionsPage rates a line at 15% instead of 30%
+            // when days-to-pay exceeds 90, and freezes that the first time it renders.
+            // Stamping today's date on a check received weeks ago therefore underpays
+            // the rep, so the real QBO payment date is read and a missing one blocks.
+            const docId=inv.display_id||inv.id;
+            const cQBId=inv.qb_customer_id||(qbConfig.custQBMap||{})[inv.customer_id];
+            if(!cQBId){log.details.push(docId+' — pull BLOCKED: customer is not linked, so QBO payment dates cannot be read');log.status='partial';continue}
+            let applied=[];
+            try{
+              const paymentRes=await queryQBReadOnly(qbApi,"SELECT * FROM Payment WHERE CustomerRef = '"+String(cQBId).replace(/'/g,"\\'")+"' MAXRESULTS 1000",'payment pull read');
+              applied=qbPaymentsAppliedToInvoice(paymentRes?.QueryResponse?.Payment||[],inv.qb_invoice_id);
+            }catch(pe){log.details.push(docId+' — pull BLOCKED: '+(pe.message||'QBO payment read failed'));log.status='partial';continue}
+            if(!applied.length){log.details.push(docId+' — pull BLOCKED: QBO shows $'+qbPaid.toFixed(2)+' paid but no payment record references this invoice');log.status='partial';continue}
+            const undated=applied.filter(row=>!/^\d{4}-\d{2}-\d{2}/.test(row.date));
+            if(undated.length){log.details.push(docId+' — pull BLOCKED: QBO Payment #'+undated[0].id+' has no usable date, and a guessed date would change the rep commission rate');log.status='partial';continue}
+            const known=new Set((inv.payments||[]).map(existing=>String(existing.ref||'')));
+            const fresh=applied.filter(row=>!known.has('QBO Payment #'+row.id));
             const newStatus=qbBalance<=0?'paid':qbPaid>0?'partial':'open';
-            const pmt={amount:Math.round((qbPaid-portalPaid)*100)/100,method:'qb_sync',ref:'QB Payment Sync',date:new Date().toLocaleDateString()};
-            setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,paid:Math.round(qbPaid*100)/100,status:newStatus,payments:[...(ii.payments||[]),pmt]}:ii));
-            log.details.push((inv.display_id||inv.id)+' — marked '+newStatus+' (QB paid $'+qbPaid.toFixed(2)+')');updated++;
+            setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,paid:Math.round(qbPaid*100)/100,status:newStatus,
+              payments:[...(ii.payments||[]),...fresh.map(row=>({amount:row.amount,method:'qb_sync',ref:'QBO Payment #'+row.id,date:row.date}))]}:ii));
+            log.details.push(docId+' — marked '+newStatus+' (QB paid $'+qbPaid.toFixed(2)+')'
+              +(fresh.length?' · recorded '+fresh.map(row=>'QBO Payment #'+row.id+' $'+row.amount.toFixed(2)+' dated '+row.date).join(', '):' · no new QBO payment rows'));
+            updated++;
           }else if(portalPaid>qbPaid&&qbBalance>0){
             // Portal has more paid — push payment to QB. This is the only place the
             // portal moves cash into QBO, so it carries the same proof every other
@@ -882,10 +916,8 @@ export function createQBSyncEngine(ctx){
               // invoice. QBO cannot be queried by LinkedTxn, so read the customer's
               // payments and total the lines that point at this invoice.
               const existing=await queryQBReadOnly(qbApi,"SELECT * FROM Payment WHERE CustomerRef = '"+String(cQBId).replace(/'/g,"\\'")+"' MAXRESULTS 1000",'existing payment preflight');
-              const linkedTotal=(existing?.QueryResponse?.Payment||[]).reduce((sum,payment)=>
-                sum+(payment.Line||[]).filter(line=>(line.LinkedTxn||[]).some(link=>
-                  link.TxnType==='Invoice'&&String(link.TxnId)===String(inv.qb_invoice_id)))
-                  .reduce((lineSum,line)=>lineSum+safeNum(line.Amount),0),0);
+              const linkedTotal=qbPaymentsAppliedToInvoice(existing?.QueryResponse?.Payment||[],inv.qb_invoice_id)
+                .reduce((sum,row)=>sum+row.amount,0);
               if(linkedTotal>=portalPaid-0.005){
                 log.details.push(docId+' — no payment sent: QBO already records $'+linkedTotal.toFixed(2)+' against this invoice');
                 continue;
