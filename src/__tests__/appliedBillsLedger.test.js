@@ -10,10 +10,10 @@ import {
 } from '../appliedBillsLedger';
 
 describe('portalBillAlreadyApplied', () => {
-  it('recognizes an explicit in-memory apply without consulting the ledger', () => {
+  it('does not trust the legacy transient apply marker without a ledger hit', () => {
     const lookup = jest.fn();
-    expect(portalBillAlreadyApplied({ _applied: true, doc_number: 'D1' }, lookup)).toBe(true);
-    expect(lookup).not.toHaveBeenCalled();
+    expect(portalBillAlreadyApplied({ _applied: true, doc_number: 'D1' }, lookup)).toBe(false);
+    expect(lookup).toHaveBeenCalledWith('D1');
   });
 
   it('recognizes a prior portal apply by vendor document number', () => {
@@ -30,6 +30,22 @@ describe('portalBillAlreadyApplied', () => {
 
   it('returns false when neither portal key was previously applied', () => {
     expect(portalBillAlreadyApplied({ doc_number: 'D2', si_doc_number: '992' }, () => false)).toBe(false);
+  });
+
+  it('keeps an invoice and credit note with the same document number distinct', () => {
+    const lookup = jest.fn((doc, _kind, isCredit) => doc === 'D3' && !!isCredit);
+    expect(portalBillAlreadyApplied({ doc_number: 'D3', is_credit: false }, lookup)).toBe(false);
+    expect(portalBillAlreadyApplied({ doc_number: 'D3', is_credit: true }, lookup)).toBe(true);
+    expect(lookup).toHaveBeenNthCalledWith(1, 'D3');
+    expect(lookup).toHaveBeenNthCalledWith(2, 'D3', undefined, true);
+  });
+
+  it('keeps an invoice and credit note distinct in the SI order-number key space', () => {
+    const lookup = jest.fn((doc, kind, isCredit) => doc === '992' && kind === 'si' && !!isCredit);
+    expect(portalBillAlreadyApplied({ doc_number: 'NEW', si_doc_number: '992', is_credit: false }, lookup)).toBe(false);
+    expect(portalBillAlreadyApplied({ doc_number: 'NEW', si_doc_number: '992', is_credit: true }, lookup)).toBe(true);
+    expect(lookup).toHaveBeenNthCalledWith(3, 'NEW', undefined, true);
+    expect(lookup).toHaveBeenNthCalledWith(4, '992', 'si', true);
   });
 });
 

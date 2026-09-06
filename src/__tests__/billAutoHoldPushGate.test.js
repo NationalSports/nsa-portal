@@ -11,10 +11,10 @@ describe('supplier bill auto-hold is a hard push gate', () => {
   });
 
   test('the Portal write boundary independently refuses a stale held bill', () => {
-    const applyBoundary = APP.match(/const _applyBillsToPortal=async\(bills\)=>\{[\s\S]*?await _recordAppliedBills/);
+    const applyBoundary = APP.match(/const _confirmPortalBill=async[\s\S]*?\n    \};/);
     expect(applyBoundary).not.toBeNull();
     expect(applyBoundary[0]).toMatch(/const holdReasons=_liveBillPushHoldReasons\(p\)/);
-    expect(applyBoundary[0]).toMatch(/if\(holdReasons\.length\)\{b\.portalMsg=.*;return\}/);
+    expect(applyBoundary[0]).toMatch(/if\(holdReasons\.length\)throw new Error/);
   });
 
   test('review triage treats the same safety findings as blocking errors', () => {
