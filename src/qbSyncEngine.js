@@ -9,7 +9,7 @@ import { mergeQBSyncLogs } from './qbLinkLedger';
 import { D_V } from './constants';
 import { _dbSaveSO } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
-import { calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, parseQBDateValue, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
+import { QB_MAX_REVIEWED_BATCH, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, parseQBDateValue, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
 
 // Return a circular batch and the cursor for the next run. Permanent blockers
 // in the first N records must not starve every later customer/invoice/item/PO.
@@ -499,7 +499,7 @@ export function createQBSyncEngine(ctx){
     // One-customer canary is intentionally available while production batches
     // are locked. A create or a repair of the actual QBO Terms field requires a
     // second, explicit operator confirmation and a successful API read-back.
-    const syncCustomerCanary=async(customerId,{allowCreate=false,allowTermUpdate=false,batchId='',expectedPlan=null,blankTermsDefault=''}={})=>{
+    const syncCustomerCanary=async(customerId,{allowCreate=false,allowTermUpdate=false,batchId='',expectedPlan=null,blankTermsDefault='',context=null}={})=>{
       if(!requireDurableLinks())return{status:'blocked'};
       const c=cust.find(customer=>String(customer.id)===String(customerId));
       if(!c||c.is_active===false||c.deleted_at){nf('Choose an active customer for the QBO test','error');return{status:'blocked'}}
@@ -509,9 +509,18 @@ export function createQBSyncEngine(ctx){
       if(!batchId)setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:batchId?'customer_batch_record':'customer_canary',status:'success',details:[]};
       try{
-        const qboTerms=await loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000);
-        const qboCustomers=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SyncToken, SalesTermRef',1000);
-        const currentPlan=buildQBCustomerManifest(cust,qboCustomers,qboTerms,qbConfig.custQBMap||{},{blankTermsDefault}).find(row=>row.sourceId===String(c.id));
+        // A batch hoists the term and customer reads and the plan build out of its loop:
+        // re-reading every QBO customer and rebuilding all 2,500 plans per record is
+        // quadratic and is what forced the old 20-record cap. Correctness does not rest
+        // on that reload — the per-record API read-back after the write does — and the
+        // batch keeps its snapshot current by folding each verified record back into it.
+        const qboTerms=context?.terms
+          || await loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000);
+        const qboCustomers=context?.customers
+          || await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SyncToken, SalesTermRef',1000);
+        const currentPlan=context?.planBySource
+          ? context.planBySource.get(String(c.id))
+          : buildQBCustomerManifest(cust,qboCustomers,qboTerms,qbConfig.custQBMap||{},{blankTermsDefault}).find(row=>row.sourceId===String(c.id));
         if(!currentPlan||['blocked','excluded'].includes(currentPlan.action))throw new Error(currentPlan?.reason||'Customer could not be reviewed');
         if(expectedPlan && ['sourceId','displayName','portalTerms','qboId','action','termSource'].some(key=>currentPlan[key]!==expectedPlan[key]))throw new Error('Customer plan changed since review; refresh the manifest before continuing');
         if(expectedPlan && (String(currentPlan.desiredTerm?.value)!==String(expectedPlan.desiredTerm?.value)||String(currentPlan.currentTerm?.value)!==String(expectedPlan.currentTerm?.value)))throw new Error('QBO term mapping changed since review');
@@ -551,6 +560,10 @@ export function createQBSyncEngine(ctx){
         if(verified.Active===false)throw new Error('QBO customer was inactive on read-back; the portal link was not saved.');
         if(String(verified.SalesTermRef?.value||'')!==String(termRef.value))throw new Error('QBO customer terms did not match "'+termRef.name+'" on read-back; the portal link was not saved.');
         if(!findExactQBCustomerMatches(c,[verified]).length)throw new Error('Customer identity did not match on API read-back');
+        if(context?.customers){
+          const at=context.customers.findIndex(row=>String(row.Id)===qbId);
+          if(at>=0)context.customers[at]=verified; else context.customers.push(verified);
+        }
         log.details.push((created?'CREATED ONE QBO CUSTOMER':termsUpdated?'UPDATED ONE QBO CUSTOMER':'LINK ONLY — no QBO customer was changed')+': '+c.name+' → QB #'+qbId);
         if(currentPlan.termSource==='qbo')log.details.push('PORTAL TERMS BLANK — kept existing QBO terms '+(termRef.name||termRef.value));
         if(currentPlan.termSource==='default')log.details.push('PORTAL TERMS BLANK — reviewer default '+(termRef.name||termRef.value)+' applied');
@@ -578,22 +591,28 @@ export function createQBSyncEngine(ctx){
       catch(e){nf('Customer batch blocked: '+e.message,'error');return{status:'blocked'};}
       const canaryLogs=(qbConfig.syncLog||[]).filter(log=>log.type==='customer_canary'&&log.status==='success');
       const termCanary=canaryLogs.some(log=>(log.details||[]).some(detail=>String(detail).startsWith('UPDATED ONE QBO CUSTOMER TERM:')));
-      if(!approved||!Array.isArray(rows)||rows.length<1||rows.length>20
+      if(!approved||!Array.isArray(rows)||rows.length<1||rows.length>QB_MAX_REVIEWED_BATCH
         ||new Set(rows.map(row=>row.sourceId)).size!==rows.length
         ||rows.some(row=>!['link','create','update_terms'].includes(row.action))
         ||String(manifest.realm)!==String(qbConfig.realm_id)||!Number.isFinite(age)||age<0||age>15*60*1000
         ||!termCanary||Object.keys(qbConfig.custQBMap||{}).length<2){
-        nf('Customer batch blocked: complete canaries and approve a fresh review of at most 20 customers','error');return{status:'blocked'};
+        nf('Customer batch blocked: complete canaries and approve a fresh review of at most '+QB_MAX_REVIEWED_BATCH+' customers','error');return{status:'blocked'};
       }
       if(!requireDurableLinks())return{status:'blocked'};
       const report={id:'customer-batch-'+new Date().toISOString(),realm:manifest.realm,reviewedAt:manifest.reviewedAt,blankTermsDefault,
         startedAt:new Date().toISOString(),status:'running',results:[],counts:{created:0,updated:0,linked:0,blocked:0,not_attempted:0}};
       setQbSyncing(true);
       try{
+        // One read of terms and customers, one plan build, for the whole run.
+        const terms=await loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000);
+        const customers=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SyncToken, SalesTermRef',1000);
+        const planBySource=new Map(buildQBCustomerManifest(cust,customers,terms,qbConfig.custQBMap||{},{blankTermsDefault})
+          .map(row=>[String(row.sourceId),row]));
+        const context={terms,customers,planBySource};
         let stopped=false;
         for(const row of rows){
           if(stopped){report.results.push({...row,result:'not_attempted'});report.counts.not_attempted++;continue;}
-          const outcome=await syncCustomerCanary(row.sourceId,{batchId:report.id,expectedPlan:row,blankTermsDefault,
+          const outcome=await syncCustomerCanary(row.sourceId,{batchId:report.id,expectedPlan:row,blankTermsDefault,context,
             allowCreate:row.action==='create',allowTermUpdate:row.action==='update_terms'});
           const result=outcome.status==='success'?(outcome.created?'created':outcome.termsUpdated?'updated':'linked'):'blocked';
           report.results.push({...row,result,qboId:outcome.qbId||row.qboId,apiReadback:outcome.status==='success',reason:outcome.error||row.reason});

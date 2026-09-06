@@ -5,7 +5,7 @@ import {buildQBProductManifest,loadQBProductItems} from './qbProductMigration';
 // as step 3 of the App.js decomposition. All shared state comes from useAppData();
 // this component holds no state of its own, so mount/unmount on page switch is
 // behavior-identical to the old closure call.
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAppData } from './AppContext';
 import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
@@ -41,6 +41,8 @@ const stripeBackfillErrorSummary=(errors=[])=>{
   });
   return Object.entries(counts);
 };
+
+const QB_BATCH_SIZES = [10, 20, 50, 100, 250, 500];
 
 const QB_MAPPING_FIELDS = [
   ['income_account', 'Customer sales + shipping'],
@@ -101,6 +103,9 @@ export default function QBPage(){
   const [productReviewBusy,setProductReviewBusy]=useState(false);
   const [customerBatchApproved,setCustomerBatchApproved]=useState(false);
   const [customerBatchLimit,setCustomerBatchLimit]=useState(20);
+  const [productBatchLimit,setProductBatchLimit]=useState(20);
+  const [poBatchLimit,setPoBatchLimit]=useState(20);
+  const [productPoOnly,setProductPoOnly]=useState(true);
   const [customerReviewFilter,setCustomerReviewFilter]=useState('all');
   // Steve Peterson approved Net 30 (the portal's own due-date default) for blank
   // portal terms on September 6, 2026. The reviewer can still switch to Block.
@@ -439,7 +444,7 @@ export default function QBPage(){
     const selectedCanarySO=canarySOs.find(so=>String(so.id)===String(qbCanarySOId));
     const selectedCanaryPO=canaryPOs.find(group=>String(group.poId)===String(qbCanaryPOId));
     const poPreviewRows=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{});
-    const poBatchRows=(poBatchReview?.rows||[]).filter(row=>row.action==='ready').slice(0,20);
+    const poBatchRows=(poBatchReview?.rows||[]).filter(row=>row.action==='ready').slice(0,poBatchLimit);
     const selectedInvoiceCustomer=selectedCanaryInvoice&&cust.find(c=>c.id===selectedCanaryInvoice.customer_id);
     const invoiceCanaryBlock=selectedCanaryInvoice&&!_custQBMap[selectedCanaryInvoice.customer_id]?'Sync this invoice customer first':selectedCanaryInvoice&&safeNum(selectedCanaryInvoice.tax)>0?'Taxable invoices remain blocked until QBO tax-code mapping is deployed':'';
     const soCanaryBlock=selectedCanarySO&&!_custQBMap[selectedCanarySO.customer_id]?'Sync this sales-order customer first':'';
@@ -545,7 +550,13 @@ export default function QBPage(){
         nf('Product review complete — no QBO changes');
       }catch(e){nf('Product review failed — '+e.message,'error')}finally{setProductReviewBusy(false)}
     };
-    const productBatchRows=(productReview?.rows||[]).filter(r=>['link','create'].includes(r.action)&&!r.complete).slice(0,20);
+    // Only SKUs that actually appear on a purchase order awaiting sync need a QBO item.
+    // The full catalogue is about 48,000 SKUs and QBO never needs most of them.
+    const poPendingSkus=React.useMemo(()=>new Set((poBatchReview?.rows||qbConfig.lastPurchaseOrderReview?.rows||[])
+      .flatMap(row=>row.skus||[]).map(sku=>String(sku).trim().toUpperCase()).filter(Boolean)),[poBatchReview,qbConfig.lastPurchaseOrderReview]);
+    const productBatchRows=(productReview?.rows||[]).filter(r=>['link','create'].includes(r.action)&&!r.complete)
+      .filter(r=>!productPoOnly||!poPendingSkus.size||poPendingSkus.has(String(r.sku).trim().toUpperCase()))
+      .slice(0,productBatchLimit);
     const runProductBatch=async()=>{
       await syncInventory({approved:productApproved,manifest:{...productReview,rows:productBatchRows}});
       setProductReview(null);setProductApproved(false);
@@ -848,6 +859,7 @@ export default function QBPage(){
             {poBatchReview&&<>
               <p>Readiness: {JSON.stringify(poBatchReview.counts)}. Proposed batch: {poBatchRows.length} ready POs.</p>
               <table><thead><tr><th>Portal PO</th><th>Vendor</th><th>Date</th><th>Lines</th><th>Total</th></tr></thead><tbody>{poBatchRows.map(row=><tr key={row.poId}><td>{row.poId}</td><td>{row.vendor}</td><td>{row.date}</td><td>{row.lineCount}</td><td>${row.total.toFixed(2)}</td></tr>)}</tbody></table>
+              <label style={{marginRight:12}}>Batch size <select aria-label="Purchase order batch size" value={poBatchLimit} disabled={qbSyncing} onChange={e=>{setPoBatchLimit(Number(e.target.value));setPoBatchApproved(false)}}>{QB_BATCH_SIZES.map(size=><option key={size} value={size}>{size}</option>)}</select></label>
               <label><input type="checkbox" checked={poBatchApproved} disabled={qbSyncing} onChange={e=>setPoBatchApproved(e.target.checked)}/> I approve only the listed POs in this batch.</label>
               <button className="btn btn-primary btn-sm" disabled={qbSyncing||!poBatchApproved||!poBatchRows.length||!qbConfig.qbPOBillMap?.['PO 58971 SHHGS']} onClick={runPurchaseOrderBatch}>Run Reviewed PO Batch</button>
               <h3>First readiness exceptions</h3>
@@ -993,7 +1005,8 @@ export default function QBPage(){
               <p>Reviewed {customerManifest.rows.length} customers in company realm {customerManifest.realm}. Existing matches: {customerManifest.counts.link||0}; proposed creations: {customerManifest.counts.create||0}; term changes: {customerManifest.counts.update_terms||0}; blocked: {customerManifest.counts.blocked||0}; excluded: {customerManifest.counts.excluded||0}. Terms from QBO: {customerManifest.termSources?.qbo||0}; reviewer default applied: {customerManifest.termSources?.default||0}.</p>
               <button className="btn btn-sm" onClick={downloadCustomerManifest}>Download Full Customer Review</button>
               <h3>Proposed customer batch ({customerBatchRows.length}, maximum 20)</h3>
-              <label>Batch size <select aria-label="Customer batch size" value={customerBatchLimit} disabled={qbSyncing} onChange={e=>{setCustomerBatchLimit(Number(e.target.value));setCustomerBatchApproved(false)}}>{Array.from({length:20},(_,i)=><option key={i+1} value={i+1}>{i+1}</option>)}</select></label>
+              <label>Batch size <select aria-label="Customer batch size" value={customerBatchLimit} disabled={qbSyncing} onChange={e=>{setCustomerBatchLimit(Number(e.target.value));setCustomerBatchApproved(false)}}>{QB_BATCH_SIZES.map(size=><option key={size} value={size}>{size}</option>)}</select></label>
+              <div style={{fontSize:10,color:'#475569',marginTop:4}}>Each record is written and read back one at a time, so a run of {customerBatchLimit} takes roughly {Math.max(1,Math.round(customerBatchLimit*0.7/60))} minute(s). Keep the tab open. The first failure stops the run and the rest are reported as not attempted.</div>
               <table><thead><tr><th>Customer</th><th>Action</th><th>QBO ID</th><th>Current term</th><th>Approved portal term</th></tr></thead><tbody>
                 {customerBatchRows.map(row=><tr key={row.sourceId}><td>{row.displayName}</td><td>{row.action}</td><td>{row.qboId||'New'}</td><td>{row.currentTerm?.name||row.currentTerm?.value||'None'}</td><td>{row.desiredTerm?.name}{row.termSource==='qbo'?' (kept from QBO)':row.termSource==='default'?' (reviewer default)':''}</td></tr>)}
               </tbody></table>
@@ -1259,7 +1272,9 @@ export default function QBPage(){
             <button className="btn btn-sm" disabled={qbSyncing||productReviewBusy||!livePreflightReady} onClick={reviewProducts}>Review Products — No QBO Changes</button>
             {productReview&&<>
               <p>Product review: {JSON.stringify(productReview.counts)}. Existing items are linked before any new SKU is created.</p>
-              <h3>Proposed product batch ({productBatchRows.length}, maximum 20 SKUs)</h3>
+              <h3>Proposed product batch ({productBatchRows.length} SKUs)</h3>
+              <label style={{marginRight:12}}>Batch size <select aria-label="Product batch size" value={productBatchLimit} disabled={qbSyncing} onChange={e=>{setProductBatchLimit(Number(e.target.value));setProductApproved(false)}}>{QB_BATCH_SIZES.map(size=><option key={size} value={size}>{size}</option>)}</select></label>
+              <label><input type="checkbox" checked={productPoOnly} disabled={qbSyncing} onChange={e=>{setProductPoOnly(e.target.checked);setProductApproved(false)}}/> Only SKUs on purchase orders awaiting sync ({poPendingSkus.size||'run a PO review first'})</label>
               <table><thead><tr><th>SKU</th><th>Action</th><th>QBO ID</th><th>Portal variants</th><th>Accounts</th></tr></thead><tbody>{productBatchRows.map(r=><tr key={r.sku}><td>{r.sku}</td><td>{r.action}</td><td>{r.qboId||'New'}</td><td>{r.sourceIds.length}</td><td>40000 / 51300</td></tr>)}</tbody></table>
               <label><input type="checkbox" checked={productApproved} disabled={qbSyncing} onChange={e=>setProductApproved(e.target.checked)}/> I approve this reviewed product batch.</label>
               <button className="btn btn-sm" disabled={qbSyncing||!productApproved||!productBatchRows.length} onClick={runProductBatch}>Run Reviewed Product Batch</button>

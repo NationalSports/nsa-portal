@@ -46,7 +46,7 @@ test('a changed plan blocks before a write',async()=>{
 test.each(['unapproved','oversize','stale','other_realm'])('rejects %s batches before QBO calls',async(kind)=>{
   const run=setup();const manifest={...run.manifest};let approved=true;
   if(kind==='unapproved')approved=false;
-  if(kind==='oversize')manifest.rows=Array.from({length:21},(_,i)=>({...manifest.rows[0],sourceId:String(i)}));
+  if(kind==='oversize')manifest.rows=Array.from({length:require('../qbAccountMappings').QB_MAX_REVIEWED_BATCH+1},(_,i)=>({...manifest.rows[0],sourceId:String(i)}));
   if(kind==='stale')manifest.reviewedAt='2020-01-01';
   if(kind==='other_realm')manifest.realm='other';
   expect(await run.engine.syncCustomers({manifest,approved})).toMatchObject({status:'blocked'});
@@ -101,5 +101,68 @@ describe('blank portal terms in the canary and batch',()=>{
     expect(stale.counts.created).toBe(0);
     expect(changed.qbApi.mock.calls.some(([action])=>action==='upsert_customer')).toBe(false);
     expect(await run.engine.syncCustomers({manifest:{...run.manifest,blankTermsDefault:'whenever'},approved:true})).toMatchObject({status:'blocked'});
+  });
+});
+
+describe('large reviewed batches',()=>{
+  const {QB_MAX_REVIEWED_BATCH}=require('../qbAccountMappings');
+  function setupMany(count){
+    const cust=Array.from({length:count},(_,i)=>({id:'M'+i,name:'Club '+i,payment_terms:'net30'}));
+    const qbo=[];
+    let config={realm_id:'realm',preflight:{status:'success',realm_id:'realm'},custQBMap:{a:'1',b:'2'},syncLog:[
+      {type:'customer_canary',status:'success',details:['UPDATED ONE QBO CUSTOMER TERM: Net 30']}]};
+    let nextId=500, termReads=0, customerListReads=0;
+    const qbApi=jest.fn(async(action,{query,customer}={})=>{
+      if(action==='query'&&query.includes('FROM Term')){termReads++;return {QueryResponse:{Term:terms}};}
+      if(action==='query'&&query.includes('FROM Customer')){
+        const id=query.match(/WHERE Id = '(.*?)'/)?.[1];
+        if(!id)customerListReads++;
+        return {QueryResponse:{Customer:id?qbo.filter(q=>q.Id===id):qbo}};
+      }
+      if(action==='upsert_customer'){
+        const saved={...customer,Id:customer.Id||String(nextId++),Active:true};qbo.push(saved);return {Customer:saved};
+      }
+      throw new Error('Unexpected '+action);
+    });
+    const engine=createQBSyncEngine({cust,qbApi,qbConfig:config,persistQbLink:jest.fn(async()=>{}),setQbSyncing:jest.fn(),nf:jest.fn(),
+      setQBConfig:fn=>{config=fn(config);},sos:[],invs:[],prod:[],vend:[]});
+    const rows=buildQBCustomerManifest(cust,qbo,terms,{});
+    return {engine,qbApi,rows,reads:()=>({termReads,customerListReads}),
+      manifest:{realm:'realm',reviewedAt:new Date().toISOString(),rows}};
+  }
+
+  test('a 100-record batch reads the QBO lists once, not once per record',async()=>{
+    const run=setupMany(100);
+    const report=await run.engine.syncCustomers({manifest:run.manifest,approved:true});
+    expect(report.counts).toMatchObject({created:100,blocked:0,not_attempted:0});
+    // One term read and one customer-list read for the whole run. The old per-record
+    // reload made this 100 and 100, which is why the cap had to be 20.
+    expect(run.reads()).toEqual({termReads:1,customerListReads:1});
+  });
+
+  test('each created customer is folded into the shared snapshot for later records',async()=>{
+    const run=setupMany(3);
+    await run.engine.syncCustomers({manifest:run.manifest,approved:true});
+    const readBacks=run.qbApi.mock.calls.filter(([action,args])=>action==='query'&&/WHERE Id = /.test(args.query||''));
+    expect(readBacks).toHaveLength(3);
+    expect(new Set(run.qbApi.mock.calls.filter(([a])=>a==='upsert_customer').map(([,args])=>args.customer.DisplayName)).size).toBe(3);
+  });
+
+  test('the cap is the shared limit, and one over it is refused before any QBO call',async()=>{
+    const run=setupMany(2);
+    const oversize=Array.from({length:QB_MAX_REVIEWED_BATCH+1},(_,i)=>({...run.rows[0],sourceId:'X'+i}));
+    expect(await run.engine.syncCustomers({manifest:{...run.manifest,rows:oversize},approved:true})).toMatchObject({status:'blocked'});
+    expect(run.qbApi).not.toHaveBeenCalled();
+  });
+
+  test('a failure part way through still stops the run and reports the remainder',async()=>{
+    const run=setupMany(5);
+    run.qbApi.mockImplementationOnce(async()=>({QueryResponse:{Term:terms}}))
+      .mockImplementationOnce(async()=>({QueryResponse:{Customer:[]}}))
+      .mockImplementationOnce(async()=>({Fault:{Error:[{Detail:'QBO rejected the write'}]}}));
+    const report=await run.engine.syncCustomers({manifest:run.manifest,approved:true});
+    expect(report.status).toBe('stopped');
+    expect(report.counts.blocked).toBe(1);
+    expect(report.counts.not_attempted).toBe(4);
   });
 });

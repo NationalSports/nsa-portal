@@ -81,6 +81,41 @@ This exists because the counters cannot answer the question that gates the whole
 
 The Invoices tab has **Read Sales Tax Setup — No QBO Changes**. It reads Preferences (Automated Sales Tax on or off), TaxCode, TaxRate, and TaxAgency, logs them to the sync log, and keeps a compact copy in `qb_config.taxPreflight`. It writes nothing and does not unblock taxable invoices; accounting still has to approve a mapping from those codes before any taxable invoice can post.
 
+## 3e. Batch size
+
+Reviewed batches are capped at `QB_MAX_REVIEWED_BATCH` (500), not 20. The old cap was
+not a safety judgement about record count; it was forced by cost. Every record in a
+customer batch re-read all QBO terms and all QBO customers and rebuilt the entire
+plan for all 2,500 portal customers, and every record in a product batch re-read the
+whole QBO item catalogue and rebuilt the plan for all 62,000 portal product rows. Both
+are quadratic, so a 500-record run was hours of work and tens of thousands of API calls.
+
+Those reads and plan builds are now hoisted to once per run. Each record still proves
+itself the same way it always did — a write, then a full QBO API read-back, then a
+durable receipt — and the run still stops on the first failure with the remainder
+reported as `not_attempted`. What changed is that a run of 500 costs about 500 write
+plus 500 read-back calls instead of several thousand list pages.
+
+The snapshot is kept current inside the run: every verified customer or item is folded
+back into it, so a later record sees what earlier records created. The one property
+given up is re-reading the full QBO list immediately before each individual record; a
+concurrent external change to a *different* record is now noticed at the next review
+rather than mid-run. A concurrent change to *this* record is still caught, because the
+read-back verifies identity, terms and accounts on the actual written record, and QBO
+independently rejects a duplicate customer display name or item name.
+
+Runs are sequential and browser-resident, so the reconciliation report is written after
+every record and a reload leaves a truthful partial report rather than an unknown state.
+
+## 3f. Products: only the SKUs that are actually needed
+
+The portal holds about 48,000 active SKUs and the product review proposes roughly 10,325
+creations, but QBO only needs an item for a SKU that appears on a document being posted.
+The pending purchase orders reference 2,134 distinct SKUs. The product batch therefore
+offers an "only SKUs on purchase orders awaiting sync" filter, on by default, which
+reduces the product phase by about 80%. Clearing it restores the full catalogue for
+anyone who wants it.
+
 ## 4. Resumable production batches
 
 Process dependencies in this order:
