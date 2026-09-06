@@ -3,11 +3,21 @@ import { loadAllQBEntities } from './qbAccountMappings';
 const clean = value => String(value || '').trim();
 const nameKey = value => clean(value).replace(/\s+/g, ' ').toLowerCase();
 // Broad comparison is used only to HOLD potential duplicates, never to link them.
-const decorationNameKey = value => nameKey(value)
-  .replace(/screenprinting/g, 'screen printing')
-  .replace(/[^a-z0-9]+/g, ' ').split(' ')
-  .filter(word => word && !['and','inc','incorporated','llc','ltd','int','international','printing','embroidery','screenprinting'].includes(word))
-  .join(' ');
+const DECORATION_STOPWORDS = ['and','inc','incorporated','llc','ltd','int','international','printing','embroidery','screenprinting'];
+const decorationNameKey = value => {
+  const words = nameKey(value)
+    .replace(/screenprinting/g, 'screen printing')
+    .replace(/[^a-z0-9]+/g, ' ').split(' ').filter(Boolean);
+  const stripped = words.filter(word => !DECORATION_STOPWORDS.includes(word));
+  // Stripping the trade words is what lets "Silver Screen" hold "Silver Screen
+  // Printing, Inc.". But when it leaves a single word, that word is usually a place
+  // or a family name -- "Pacific Embroidery" collapses to "pacific" -- and a bare
+  // token like that prefix-matches every unrelated vendor starting with it. Keep the
+  // full name in that case: it still matches its own longer forms, and it no longer
+  // claims a different business. A name that was already one word is unaffected, so
+  // "BYOG" still holds "BYOG Screenprinting".
+  return (stripped.length > 1 ? stripped : words).join(' ');
+};
 export const VENDOR_SYNC_COLUMNS = 'id,name,vendor_type,is_active,contact_email,contact_phone';
 
 // Preserve local purchasing settings and contacts. Only missing contacts are filled.

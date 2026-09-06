@@ -79,3 +79,47 @@ test('new decoration match after review aborts before writes',async()=>{
  await expect(applyQBVendorReview({client,links:{},realmId:'realm',reviewed:plan([])})).rejects.toThrow('changed since review');
  expect(client.writes).toEqual([]);
 });
+
+// Stripping trade words is what lets "Silver Screen" hold "Silver Screen Printing,
+// Inc.". When it leaves a single word, that word is usually a place or family name and
+// prefix-matches unrelated vendors. NSA has two genuinely separate Pacific decorators.
+describe('a generic single word must not claim an unrelated vendor',()=>{
+  const {buildQBVendorReview}=require('../qbVendorSync');
+  const qbo=(id,name)=>({Id:id,DisplayName:name,CompanyName:name,Active:true});
+  const vendors=[
+    {id:'ns_4538',name:'Pacific Screen Printing'},{id:'ns_117',name:'Pacific Embroidery'},
+    {id:'ns_3297',name:'Silver Screen Printing & Embroidery'},{id:'ns_4076',name:'BYOG Screenprinting'},
+  ];
+  const deco=[
+    {id:'d1',name:'Pacific Screen Print',vendor_id:'ns_4538',is_active:true},
+    {id:'d2',name:'Pacific Embroidery',vendor_id:'ns_117',is_active:true},
+    {id:'d3',name:'Silver Screen',vendor_id:'ns_3297',is_active:true},
+    {id:'d4',name:'BYOG Screenprinting',vendor_id:'ns_4076',is_active:true},
+  ];
+  const review=name=>buildQBVendorReview(vendors,[qbo('9',name)],{},'realm',deco)[0];
+
+  test('two separate Pacific businesses each link to their own record',()=>{
+    expect(review('Pacific Screen Printing')).toMatchObject({action:'link',portalId:'ns_4538'});
+    expect(review('Pacific Embroidery')).toMatchObject({action:'link',portalId:'ns_117'});
+  });
+
+  test('"Pacific Embroidery" no longer holds every vendor starting with Pacific',()=>{
+    expect(review('Pacific Screen Printing').reason||'').not.toMatch(/Pacific Embroidery/);
+  });
+
+  test('the documented holds are unchanged',()=>{
+    // A multi-word decorator key still holds its own longer forms.
+    expect(review('Silver Screen Printing, Inc.')).toMatchObject({action:'blocked'});
+    expect(review('Silver Screen Printing, Inc.').reason).toMatch(/Silver Screen/);
+    // A name that was already one word keeps holding: stripping changed nothing.
+    expect(review('BYOG')).toMatchObject({action:'blocked'});
+    expect(review('BYOG').reason).toMatch(/BYOG Screenprinting/);
+    // An exact decorator-to-vendor pair still passes.
+    expect(review('Silver Screen Printing & Embroidery')).toMatchObject({action:'link',portalId:'ns_3297'});
+    expect(review('BYOG Screenprinting')).toMatchObject({action:'link',portalId:'ns_4076'});
+  });
+
+  test('a QBO name matching no Portal vendor still blocks rather than guessing',()=>{
+    expect(review('Pacific Screen Print Int., Inc')).toMatchObject({action:'blocked'});
+  });
+});
