@@ -18,6 +18,23 @@ const decorationNameKey = value => {
   // "BYOG" still holds "BYOG Screenprinting".
   return (stripped.length > 1 ? stripped : words).join(' ');
 };
+// Ordinary vendors were matched by exact normalized name only, so "AGRON INC."
+// and Portal "Agron" looked unrelated and a second Portal vendor was created for
+// the same business. Compare on a looser key too -- punctuation, "&"/"and", and
+// the trailing company words -- and HOLD the row for a human. Like the decoration
+// key above this never links anything on its own.
+const VENDOR_NAME_SUFFIXES = new Set(['inc','incorporated','llc','lc','ltd','co','corp','company','usa']);
+export function vendorDuplicateKey(value) {
+  const tokens = clean(value).toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/['\u2018\u2019\u02bc`]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim().split(' ').filter(Boolean);
+  while (tokens.length > 1 && VENDOR_NAME_SUFFIXES.has(tokens[tokens.length - 1])) tokens.pop();
+  if (tokens.length > 1 && tokens[0] === 'the') tokens.shift();
+  return tokens.join(' ');
+}
+
 export const VENDOR_SYNC_COLUMNS = 'id,name,vendor_type,is_active,contact_email,contact_phone';
 
 // Preserve local purchasing settings and contacts. Only missing contacts are filled.
@@ -54,6 +71,13 @@ export function buildQBVendorReview(vendors, qboVendors, links = {}, realmId, de
     if (vendor?.is_active === false) return {...row, reason: 'Portal vendor is inactive'};
     const portalId = vendor?.id || 'qbo-' + encodeURIComponent(realmId) + '-' + encodeURIComponent(qboId);
     if (!vendor && vendors.some(v => v.id === portalId)) return {...row, reason: 'Imported vendor ID already exists with a different name'};
+    if (!vendor) {
+      const key = vendorDuplicateKey(name);
+      const near = key ? vendors.filter(v => v.is_active !== false && vendorDuplicateKey(v.name) === key) : [];
+      if (near.length) return {...row, portalName: near.map(v => v.name).join('; '),
+        reason: 'Possible existing Portal vendor: ' + near.map(v => v.name + ' (' + v.id + ')').join('; ')
+          + '. Link or rename it before importing a second record.'};
+    }
     const patch = {};
     if (!clean(vendor?.contact_email) && clean(q.PrimaryEmailAddr?.Address)) patch.contact_email = clean(q.PrimaryEmailAddr.Address);
     if (!clean(vendor?.contact_phone) && clean(q.PrimaryPhone?.FreeFormNumber)) patch.contact_phone = clean(q.PrimaryPhone.FreeFormNumber);

@@ -124,6 +124,15 @@ export default function QBPage(){
   const [vendorReview,setVendorReview]=useState(null);
   const [vendorBusy,setVendorBusy]=useState(false);
   const [vendorResults,setVendorResults]=useState(null);
+  const downloadVendorReview=()=>{
+    if(!vendorReview)return;
+    const payload={realm:qbConfig.realm_id,readAt:new Date().toISOString(),
+      counts:vendorReview.reduce((acc,row)=>({...acc,[row.action]:(acc[row.action]||0)+1}),{}),rows:vendorReview};
+    const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));
+    const anchor=document.createElement('a');anchor.href=url;
+    anchor.download='qbo-vendor-review-'+payload.readAt.slice(0,10)+'.json';anchor.click();
+    URL.revokeObjectURL(url);
+  };
   const reviewVendors=async()=>{
     setVendorBusy(true);setVendorReview(null);setVendorResults(null);
     try{setVendorReview(await loadQBVendorReview({client:supabase,qbApi,links:qbConfig.vendorQBMap||{},realmId:qbConfig.realm_id}))}
@@ -762,6 +771,7 @@ export default function QBPage(){
         <button className="btn btn-secondary" disabled={vendorBusy||qbSyncing||!qbConfig.realm_id} onClick={reviewVendors}>{vendorBusy?'Working…':'Review QBO Vendors'}</button>
         {vendorReview&&<>
           <table><thead><tr><th>QBO vendor</th><th>Portal vendor</th><th>Action</th><th>Details</th></tr></thead><tbody>{vendorReview.map((r,i)=><tr key={r.qboId+'-'+i}><td>{r.name}</td><td>{r.portalName||'—'}</td><td>{r.action}</td><td>{r.reason||Object.entries(r.patch).map(([k,v])=>k+': '+v).join('; ')}</td></tr>)}</tbody></table>
+          <button className="btn btn-sm" style={{marginRight:8}} onClick={downloadVendorReview}>Download Vendor Review — No Changes</button>
           <button className="btn btn-primary" disabled={vendorBusy||!vendorReview.some(r=>['create','link','update'].includes(r.action))} onClick={importVendors}>Import Reviewed Vendors to Portal</button>
         </>}
         {vendorResults&&<div role="status">{vendorResults.filter(r=>r.status==='saved').length} saved; {vendorResults.filter(r=>r.status==='error').length} errors.
