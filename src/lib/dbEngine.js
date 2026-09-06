@@ -324,16 +324,19 @@ const _sbResetPassword=async(email)=>{
 const _sbSignOut=async()=>{if(supabase)await supabase.auth.signOut({scope:'local'})};
 const _sbGetSession=async()=>{
   if(!supabase)return null;
-  const{data}=await supabase.auth.getSession();
+  const{data,error}=await supabase.auth.getSession();
+  if(error)throw new Error('Could not restore your session: '+error.message);
   return data?.session||null;
 };
 const _sbLinkTeamAuth=async(teamId,authId)=>{
   if(!supabase)return;
-  await supabase.rpc('link_team_auth',{p_team_id:teamId,p_auth_id:authId});
+  const{error}=await supabase.rpc('link_team_auth',{p_team_id:teamId,p_auth_id:authId});
+  if(error)throw new Error('Could not link your staff profile: '+error.message);
 };
 const _sbGetMyProfile=async()=>{
   if(!supabase)return null;
-  const{data}=await supabase.rpc('get_my_profile');
+  const{data,error}=await supabase.rpc('get_my_profile');
+  if(error)throw new Error('Could not load your staff profile: '+error.message);
   return data?.[0]||null;
 };
 // Reshape one customer_invoices row into the read-only _hist invoice object the app merges into

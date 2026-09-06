@@ -90,7 +90,9 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
           const member=REPS.find(r=>r.email&&r.email.toLowerCase()===email.trim().toLowerCase());
           if(member&&res.user){
             await withStartupDeadline(()=>_sbLinkTeamAuth(member.id,res.user.id),'Linking your staff profile');
-            onLogin({...member,_authSession:true});
+            const linkedProfile=await withStartupDeadline(()=>_sbGetMyProfile(),'Loading your staff profile');
+            if(!linkedProfile){setError('Your staff profile could not be verified after linking. Please contact your admin.');return}
+            onLogin({...linkedProfile,_authSession:true});
           }else{
             setError('No team member profile found for this account');return;
           }
