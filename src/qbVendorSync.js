@@ -2,10 +2,16 @@ import { loadAllQBEntities } from './qbAccountMappings';
 
 const clean = value => String(value || '').trim();
 const nameKey = value => clean(value).replace(/\s+/g, ' ').toLowerCase();
+// Broad comparison is used only to HOLD potential duplicates, never to link them.
+const decorationNameKey = value => nameKey(value)
+  .replace(/screenprinting/g, 'screen printing')
+  .replace(/[^a-z0-9]+/g, ' ').split(' ')
+  .filter(word => word && !['and','inc','incorporated','llc','ltd','int','international','printing','embroidery','screenprinting'].includes(word))
+  .join(' ');
 export const VENDOR_SYNC_COLUMNS = 'id,name,vendor_type,is_active,contact_email,contact_phone';
 
 // Preserve local purchasing settings and contacts. Only missing contacts are filled.
-export function buildQBVendorReview(vendors, qboVendors, links = {}, realmId) {
+export function buildQBVendorReview(vendors, qboVendors, links = {}, realmId, decorationVendors = []) {
   if (!clean(realmId)) throw new Error('A connected QBO company is required.');
   const rows = qboVendors.map(q => {
     const qboId = clean(q.Id), name = clean(q.DisplayName || q.CompanyName);
@@ -21,6 +27,19 @@ export function buildQBVendorReview(vendors, qboVendors, links = {}, realmId) {
       return {...row, reason:'Multiple QBO vendors share this name'};
     }
     const vendor = matches[0];
+    const possibleDecorators = decorationVendors.filter(d => {
+      const key = decorationNameKey(d.name);
+      return key && [q.DisplayName,q.CompanyName].some(n => {
+        const candidate = decorationNameKey(n);
+        return candidate && (candidate === key || candidate.startsWith(key+' ') || key.startsWith(candidate+' '));
+      });
+    });
+    if (possibleDecorators.length && !(possibleDecorators.length === 1 && vendor &&
+      possibleDecorators[0].vendor_id === vendor.id && possibleDecorators[0].is_active !== false)) {
+      return {...row, portalName:possibleDecorators.map(d=>d.name).join('; '),
+        reason:'Possible decoration-vendor match: '+possibleDecorators.map(d=>d.name).join('; ')+'. Review the existing decoration vendor link before importing.'};
+    }
+
     if (vendor && links[vendor.id] && clean(links[vendor.id]) !== qboId) return {...row, reason: 'Portal vendor is linked to another QBO vendor'};
     if (vendor?.is_active === false) return {...row, reason: 'Portal vendor is inactive'};
     const portalId = vendor?.id || 'qbo-' + encodeURIComponent(realmId) + '-' + encodeURIComponent(qboId);
@@ -49,8 +68,15 @@ export async function loadQBVendorReview({client, qbApi, links, realmId}) {
     vendors.push(...(res.data || []));
     if ((res.data || []).length < 500) break;
   }
+  const decorators = [];
+  for (let start = 0; ; start += 500) {
+    const res = await client.from('deco_vendors').select('id,name,vendor_id,is_active').order('id').range(start,start+499);
+    if (res.error) throw new Error('Decoration vendor review failed: '+res.error.message);
+    decorators.push(...(res.data || []));
+    if ((res.data || []).length < 500) break;
+  }
   const qbo = await loadAllQBEntities(qbApi, 'Vendor', '*', 500);
-  return buildQBVendorReview(vendors, qbo, links, realmId);
+  return buildQBVendorReview(vendors, qbo, links, realmId, decorators);
 }
 
 export async function applyQBVendorReview({client, qbApi, links, realmId, reviewed, persistQbLink, onSaved}) {
