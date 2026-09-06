@@ -670,14 +670,15 @@ export function createQBSyncEngine(ctx){
         if(!qboCustomer){
           if(!allowCreate)return{status:'needs_confirmation',customerId:c.id,customerName:c.name};
           const response=await qbApi('upsert_customer',{customer:buildQBCustomerPayload(c,{termRef})});
-          const fault=response?.Fault?.Error?.[0];
-          if(!response?.Customer?.Id)throw new Error(fault?.Detail||fault?.Message||'QuickBooks did not return the new customer.');
+          // qbApi hands back {__qbTransportError, error} on a timeout or HTTP error,
+          // which carries no Fault. Reading only Fault threw that reason away and
+          // reported a bare "did not return the new customer" the operator cannot act on.
+          if(!response?.Customer?.Id)throw new Error(qbResponseErrorDetail(response,'QuickBooks did not return the new customer.'));
           qboCustomer=response.Customer;created=true;
         }else if(String(qboCustomer.SalesTermRef?.value||'')!==String(termRef.value)){
           if(!allowTermUpdate)return{status:'needs_term_confirmation',customerId:c.id,customerName:c.name,qbId:String(qboCustomer.Id||''),currentTerm:qboCustomer.SalesTermRef?.name||'none',desiredTerm:termRef.name};
           const response=await qbApi('upsert_customer',{customer:{Id:String(qboCustomer.Id),SyncToken:String(qboCustomer.SyncToken||'0'),sparse:true,SalesTermRef:termRef}});
-          const fault=response?.Fault?.Error?.[0];
-          if(!response?.Customer?.Id)throw new Error(fault?.Detail||fault?.Message||'QuickBooks did not update the customer terms.');
+          if(!response?.Customer?.Id)throw new Error(qbResponseErrorDetail(response,'QuickBooks did not update the customer terms.'));
           qboCustomer=response.Customer;termsUpdated=true;
         }
         const qbId=String(qboCustomer.Id||'');
