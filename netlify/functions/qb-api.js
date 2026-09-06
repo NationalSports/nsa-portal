@@ -199,6 +199,22 @@ exports.handler = async (event) => {
       return { statusCode: res.status, headers: corsHeaders(origin), body: JSON.stringify(res.data) };
     }
 
+    // ── CREATE TAX AGENCY ── manual sales tax only; QBO owns the liability account it
+    // assigns, so the caller must read the created records back to learn where tax posts.
+    if (action === 'upsert_taxagency') {
+      const { taxagency } = body;
+      const res = await qbRequest('POST', `${basePath}/taxagency`, access_token, taxagency, sandbox);
+      return { statusCode: res.status, headers: corsHeaders(origin), body: JSON.stringify(res.data) };
+    }
+
+    // ── CREATE TAX CODE + RATES ── the TaxService endpoint is the only supported way to
+    // create a manual sales-tax rate; plain TaxRate creates are rejected by QBO.
+    if (action === 'create_taxcode') {
+      const { taxcode } = body;
+      const res = await qbRequest('POST', `${basePath}/taxservice/taxcode`, access_token, taxcode, sandbox);
+      return { statusCode: res.status, headers: corsHeaders(origin), body: JSON.stringify(res.data) };
+    }
+
     // ── CREATE/UPDATE VENDOR ──
     if (action === 'upsert_vendor') {
       const { vendor } = body;

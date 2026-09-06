@@ -42,6 +42,30 @@ test.each(['approval','realm','age','size'])('blocks invalid batch %s before API
   if(kind==='approval')approved=false;
   if(kind==='realm')manifest.realm='other';
   if(kind==='age')manifest.reviewedAt='2020-01-01';
-  if(kind==='size')manifest.rows=Array.from({length:21},(_,i)=>({...manifest.rows[0],sku:String(i)}));
+  if(kind==='size')manifest.rows=Array.from({length:require('../qbAccountMappings').QB_MAX_REVIEWED_BATCH+1},(_,i)=>({...manifest.rows[0],sku:String(i)}));
   expect(await s.run({approved,manifest})).toEqual({status:'blocked'});expect(s.qbApi).not.toHaveBeenCalled();
+});
+
+describe('product batch readiness is visible before the click',()=>{
+  const {qbProductBatchReadiness}=require('../qbProductMigration');
+  const link={type:'item_canary',status:'success',details:['LINK ONLY — no QBO item was changed: KJ3320 → QBO Item #230']};
+  const create={type:'item_canary',status:'success',details:['CREATED: 0000 → QBO Item #263']};
+
+  test('the live state reads as link-proven but creation-missing',()=>{
+    // 13 link-only canaries, zero creations: exactly the production config today.
+    expect(qbProductBatchReadiness({syncLog:Array(13).fill(link)}))
+      .toEqual({linked:true,created:false,ready:false});
+  });
+  test('both halves proven is ready',()=>{
+    expect(qbProductBatchReadiness({syncLog:[link,create]})).toEqual({linked:true,created:true,ready:true});
+  });
+  test('durable receipts satisfy it once the log has aged the canaries out',()=>{
+    expect(qbProductBatchReadiness({syncLog:[],prodLinkCanaryVerifiedAt:'2026-09-05T17:52:00.000Z',
+      prodCreateCanaryVerifiedAt:'2026-09-05T15:08:19.145Z'})).toEqual({linked:true,created:true,ready:true});
+  });
+  test('a failed canary and an empty config prove nothing',()=>{
+    expect(qbProductBatchReadiness({syncLog:[{...link,status:'error'},{...create,status:'error'}]}))
+      .toEqual({linked:false,created:false,ready:false});
+    expect(qbProductBatchReadiness({})).toEqual({linked:false,created:false,ready:false});
+  });
 });

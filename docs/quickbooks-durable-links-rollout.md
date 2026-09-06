@@ -81,3 +81,71 @@ repository's existing third-party source-map warnings.
 - Fresh-login verification: after the operator reported signing out/in, the preview showed customer 1/2540 and product 1/10575. The guarded SKU retry then reused #263 with no QBO change; the independent database receipt at 2026-09-05T15:08:19.145Z records `result:linked`, API read-back, and 40000/51300 references. Operator acceptance of replacing the handoff's expected #183 with #263 remains pending.
 
 - Steve Peterson explicitly approved #263 in place of #183 and instructed continuation. PR #2180 merged as fbadbf11816e72abd3f842e8dc5376c42982ef96. The public production build metadata confirms that exact commit, built at 2026-09-05T15:38:14.347Z. Production counter/preflight verification awaits operator sign-in after the session reset.
+
+
+## Live status — September 6, 2026
+
+Read from the production database, not from the UI counters.
+
+| Entity | Linked | Remaining | What is blocking the rest |
+|---|---:|---:|---|
+| Customers | 43 of 2,540 | 2,497 | 2,338 had blank portal terms and were blocked; handled by section 3a of the first-push plan |
+| Vendors | 0 | all | Import tab shipped September 5 (PR 2196/2197); review not yet run |
+| Products (SKUs) | 36 of 10,575 | 10,539 | 10,325 need creation at 20 per reviewed batch; only SKUs used by in-scope POs and bills are actually needed |
+| Purchase orders | 33 | 2,155 blocked | Every blocked PO is missing a QBO item for one of its SKUs |
+| PO-to-bill links | 1 | — | Batch bill linking stays disabled until more single-record canaries pass |
+| Invoices | 2 of 829 | 71 since the 2026-09-01 cutover | 60 of the 71 carry sales tax and are blocked pending the tax-code mapping; 48 of the 56 cutover customers had blank terms |
+| Payments | 0 | 8 cutover invoices have payments | Paid-status pass has no per-record read-back or receipts yet |
+| Supplier bills | 28 verified | — | Canary and reviewed-batch paths in production |
+
+The OAuth connection itself is healthy: the National realm token refreshed at 07:45 UTC on September 6, `initialMigrationApproved` is true, and the last read-only preflight succeeded against the correct realm.
+
+`app_state.qb_config` is 3.3 MB, and almost all of it is the three saved review row sets (the product review alone is about 2.3 MB). Every QuickBooks setting change rewrites that row. Not changed in this release; flagged for a follow-up that keeps only counts and the reviewed batch rows.
+
+
+## Operator run — September 6, 2026, 9:42 AM Pacific
+
+Run against the PR 2202 preview on commit `3b8f69e`. Preflight passed for the correct
+company and realm. No QBO record was created, updated or linked during the run.
+
+The customer review was run with blank terms set to **Block** and returned 2,541 rows:
+43 existing matches, 125 proposed creations, 35 term changes, 2,337 blocked, 1 excluded,
+1 customer taking its terms from QBO. That is the correct result for Block mode, where a
+blank-terms customer only clears if it already matches in QBO. It measures name matching,
+not the blank-terms control, and the run's expectation of a large drop in Block mode was
+wrong.
+
+### Corrected diagnosis, same day
+
+The first reading of that run concluded name matching was failing, because all 2,337
+blocked rows showed an empty QBO ID. That conclusion was wrong, and the empty ID was a
+reporting bug in this file: `row.qboId` was assigned *after* the payment-terms branch, so
+a customer that matched QBO but had no terms on either side blocked before its own
+identity was recorded. The reviewer saw a matched customer as unmatched.
+
+Screenshots of the live QuickBooks customer list settled it. QBO stores these customers
+under exactly the display name the portal writes — `310 Volleyball Club (3VC)`,
+`805 Elite Volleyball Club (8EVC)`, `Crean Lutheran Boy's Volleyball (CLBV)` — with
+`CompanyName` holding the bare name. Matching works. What those QBO records lack is
+payment terms, and the portal customers have none either, so in Block mode both sides are
+empty and the row correctly refuses to invent a financial term.
+
+The practical consequence reverses the earlier warning. With the approved Net 30 default
+these rows become **term updates on existing QBO customers**, not creations. There is no
+mass-duplication risk from this path. The real decision is narrower and belongs to
+accounting: setting Net 30 on roughly 2,337 existing QuickBooks customers that currently
+carry no terms. Terms are not optional — the invoice canary refuses to post against a
+linked customer with no `SalesTermRef`.
+
+Proposed creations stayed at 125 in Block mode; those are the customers genuinely absent
+from QuickBooks, and the duplicate guard added the same day covers the near-miss names
+among them.
+
+Sales tax was read read-only: Automated Sales Tax is not enabled, sales tax is not in
+use, and the company has 3 tax codes (TAX, NON, CustomSalesTax) with **zero tax rates and
+zero tax agencies**. The state liability accounts exist on the chart of accounts while
+the sales-tax feature behind them does not. The 60 blocked taxable invoices cannot post
+until that is configured in QuickBooks; no portal change resolves it.
+
+Also outstanding: 20 customers created by an earlier batch (QBO IDs from about 2385)
+predate the duplicate guard and were never checked against a looser name key.

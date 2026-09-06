@@ -153,6 +153,13 @@ export function findExistingVendorBill(existingBills, { docNumber, vendorId, tot
   return exact[0] || null;
 }
 
+// Reviewed migration batches run sequentially with a full QBO read-back per record.
+// The old cap of 20 existed because each record re-downloaded the entire QBO entity
+// list and rebuilt the whole plan, which is quadratic; with those reads hoisted out
+// of the loop a run is bounded by API latency alone. 500 keeps one run inside a
+// sitting and inside QBO's per-minute request budget.
+export const QB_MAX_REVIEWED_BATCH = 500;
+
 export function parseQBDateValue(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;

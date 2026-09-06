@@ -18,12 +18,19 @@ const _total = (v) => { const n = typeof v === 'number' ? v : (v == null || Stri
 // vendor document number or by their SI document number.
 export const portalBillAlreadyApplied = (bill, docAlreadyApplied) => {
   if (!bill) return false;
-  if (bill._applied) return true;
   if (typeof docAlreadyApplied !== 'function') return false;
+  // The applied_bills unique key includes is_credit: an invoice and its credit
+  // note may legitimately share a document number. Keep the old two-argument
+  // callback shape for invoices, while passing the credit discriminator when
+  // checking a credit so older callers/lookups remain source-compatible.
+  const credit = !!bill.is_credit;
+  const lookup = (value, kind) => credit
+    ? docAlreadyApplied(value, kind, true)
+    : (kind ? docAlreadyApplied(value, kind) : docAlreadyApplied(value));
   const doc = String(bill.doc_number == null ? '' : bill.doc_number).trim();
-  if (doc && docAlreadyApplied(doc)) return true;
+  if (doc && lookup(doc)) return true;
   const siDoc = String(bill.si_doc_number == null ? '' : bill.si_doc_number).trim();
-  return !!siDoc && !!docAlreadyApplied(siDoc, 'si');
+  return !!siDoc && !!lookup(siDoc, 'si');
 };
 
 // Shape ledger rows (full, post-00184 column set) from pushed bills. One row per

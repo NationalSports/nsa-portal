@@ -9,7 +9,7 @@ import { mergeQBSyncLogs } from './qbLinkLedger';
 import { D_V } from './constants';
 import { _dbSaveSO } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
-import { calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, parseQBDateValue, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
+import { QB_MAX_REVIEWED_BATCH, QB_STATE_TAX_ACCOUNT_KEYS, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, parseQBDateValue, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
 
 // Return a circular batch and the cursor for the next run. Permanent blockers
 // in the first N records must not starve every later customer/invoice/item/PO.
@@ -24,6 +24,75 @@ export function rotatingBatch(items = [], offset = 0, size = 20) {
 }
 
 const normalizeQBCustomerName = value => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+// A second, deliberately looser key used ONLY to spot a probable duplicate before
+// creating a customer. Exact matching (above) is case/space insensitive but still
+// misses "Boy's" vs "Boys" and "A & B" vs "A and B", which is exactly how a second
+// copy of a real customer gets created in QuickBooks. This never links anything on
+// its own — a hit blocks the row and names the QBO candidate for a human to judge.
+const QB_NAME_SUFFIXES = new Set(['inc', 'llc', 'lc', 'ltd', 'co', 'corp', 'company']);
+export function normalizeQBDuplicateKey(value) {
+  const base = String(value || '').toLowerCase()
+    .replace(/&/g, ' and ')
+    // Apostrophes join a word — "Boy's" is one token, not two. Dropping them before
+    // the general punctuation pass is what makes "Boy's" and "Boys" the same key.
+    .replace(/['\u2018\u2019\u02bc`]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+  const tokens = base.split(' ').filter(Boolean);
+  while (tokens.length > 1 && QB_NAME_SUFFIXES.has(tokens[tokens.length - 1])) tokens.pop();
+  if (tokens.length > 1 && tokens[0] === 'the') tokens.shift();
+  return tokens.join(' ');
+}
+
+// Candidates are QBO customers whose loose key equals the portal customer's, after
+// exact matching already failed. Inactive QBO records are ignored.
+export function findQBDuplicateCandidates(customer, qboCustomers = []) {
+  const keys = new Set([
+    normalizeQBDuplicateKey(customer?.name),
+    normalizeQBDuplicateKey(portalCustomerDisplayName(customer)),
+  ].filter(Boolean));
+  if (!keys.size) return [];
+  const hits = (qboCustomers || []).filter(qbo => {
+    if (!qbo || qbo.Active === false) return false;
+    return keys.has(normalizeQBDuplicateKey(qbo.DisplayName)) || keys.has(normalizeQBDuplicateKey(qbo.CompanyName));
+  });
+  return [...new Map(hits.map(hit => [String(hit.Id), hit])).values()];
+}
+
+// Read-only. Answers one question the counters cannot: are the QBO customers we are
+// failing to match actually the same accounts under different names, or a different
+// population entirely? Samples real QBO names so the answer is visible, not guessed.
+export function buildQBCustomerMatchDiagnostic(customers = [], qboCustomers = [], savedMap = {}, sampleSize = 40) {
+  const activeQBO = (qboCustomers || []).filter(qbo => qbo && qbo.Active !== false);
+  const claimed = new Set();
+  (customers || []).forEach(customer => {
+    const saved = String(savedMap[customer?.id] || customer?.qb_customer_id || '');
+    if (saved) claimed.add(saved);
+    findExactQBCustomerMatches(customer, activeQBO).forEach(match => claimed.add(String(match.Id)));
+    findQBDuplicateCandidates(customer, activeQBO).forEach(match => claimed.add(String(match.Id)));
+  });
+  const unclaimed = activeQBO.filter(qbo => !claimed.has(String(qbo.Id)));
+  const unmatchedPortal = (customers || []).filter(customer =>
+    customer?.is_active !== false && !customer?.deleted_at
+    && !String(savedMap[customer.id] || customer.qb_customer_id || '')
+    && !findExactQBCustomerMatches(customer, activeQBO).length
+    && !findQBDuplicateCandidates(customer, activeQBO).length);
+  const size = Math.max(1, Math.min(200, Number(sampleSize) || 40));
+  return {
+    qboActive: activeQBO.length,
+    qboClaimed: claimed.size,
+    qboUnclaimed: unclaimed.length,
+    portalActive: (customers || []).filter(c => c?.is_active !== false && !c?.deleted_at).length,
+    portalUnmatched: unmatchedPortal.length,
+    qboUnclaimedSample: unclaimed.slice(0, size).map(qbo => ({
+      id: String(qbo.Id), displayName: qbo.DisplayName || '', companyName: qbo.CompanyName || '',
+    })),
+    portalUnmatchedSample: unmatchedPortal.slice(0, size).map(customer => ({
+      sourceId: String(customer.id), name: customer.name || '', displayName: portalCustomerDisplayName(customer),
+    })),
+  };
+}
 const qbCurrency = value => Math.round((safeNum(value) + Number.EPSILON) * 100) / 100;
 
 export function qbResponseErrorDetail(response, fallback = 'unknown') {
@@ -80,17 +149,28 @@ export function findExactQBCustomerMatches(customer, qboCustomers = []) {
   return [...new Map(matches.map(match => [String(match.Id), match])).values()];
 }
 
+// Blank portal terms are common (most portal customers never had terms set) and
+// the portal itself bills them on Net 30. The review still never guesses a
+// financial term on its own: an existing QBO customer keeps the terms it already
+// has (no write), and a new customer only gets the reviewer's explicitly chosen
+// default. Anything else stays blocked.
+export function normalizeBlankTermsDefault(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  return portalCustomerTermSpec(raw).portalValue;
+}
+
 // Read-only plan: every source is classified before any customer batch writes.
-export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms = [], savedMap = {}) {
+export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms = [], savedMap = {}, options = {}) {
+  const blankTermsDefault = normalizeBlankTermsDefault(options.blankTermsDefault);
+  const activeTermById = new Map((terms || []).filter(term => term && term.Active !== false && term.Id)
+    .map(term => [String(term.Id), term]));
   const rows = customers.map(customer => {
     const row = {sourceId:String(customer.id || ''),name:customer.name || '',displayName:portalCustomerDisplayName(customer),
-      portalTerms:customer.payment_terms || '',qboId:'',action:'blocked',reason:''};
+      portalTerms:customer.payment_terms || '',qboId:'',action:'blocked',reason:'',termSource:'portal'};
     if(customer.is_active === false || customer.deleted_at)return {...row,action:'excluded',reason:'Inactive or deleted portal customer'};
     try {
       if(!row.sourceId || !String(customer.name || '').trim())throw new Error('Missing customer ID or name');
-      if(!String(customer.payment_terms || '').trim())throw new Error('Missing portal payment terms; no default is assumed');
-      const term = resolveQBCustomerTerm(terms,customer.payment_terms);
-      row.desiredTerm = term;
       const mapped = String(savedMap[customer.id] || '');
       const embedded = String(customer.qb_customer_id || '');
       if(mapped && embedded && mapped !== embedded)throw new Error('Conflicting saved customer IDs');
@@ -102,11 +182,39 @@ export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms
       if(existing?.Active === false)throw new Error('Saved QBO customer is inactive');
       if(existing && matches.length === 1 && String(matches[0].Id) !== String(existing.Id))throw new Error('Saved ID conflicts with exact name match');
       if(existing && !matches.some(q=>String(q.Id) === String(existing.Id)))throw new Error('Saved QBO customer name does not match portal identity');
-      if(!existing)return {...row,action:'create',reason:'Requires explicit creation approval'};
-      row.qboId = String(existing.Id);
-      row.currentTerm = existing.SalesTermRef || null;
+      // Record the match BEFORE resolving terms. A terms problem must never make a
+      // matched customer look unmatched: reporting the identity we found is what tells
+      // the reviewer whether a blocked row is a naming failure or only a terms gap.
+      if(existing){
+        row.qboId = String(existing.Id);
+        row.currentTerm = existing.SalesTermRef || null;
+      }
+      const portalTerms = String(customer.payment_terms || '').trim();
+      const existingTerm = existing ? activeTermById.get(String(existing.SalesTermRef?.value || '')) : null;
+      let term, termNote = '';
+      if(portalTerms){
+        term = resolveQBCustomerTerm(terms,portalTerms);
+      }else if(existingTerm){
+        term = { value:String(existingTerm.Id), name:String(existingTerm.Name || '') };
+        row.termSource = 'qbo';termNote = '; portal terms blank, keeping QBO terms ' + term.name;
+      }else if(blankTermsDefault){
+        term = resolveQBCustomerTerm(terms,blankTermsDefault);
+        row.termSource = 'default';termNote = '; portal terms blank, reviewer default ' + term.name;
+      }else throw new Error(existing
+        ? 'Matched QBO customer #' + existing.Id + ', but neither the Portal nor QBO has payment terms; choose a default to link it and set them'
+        : 'Missing portal payment terms; no default is assumed');
+      row.desiredTerm = term;
+      if(!existing){
+        // Never create a second copy of a customer QBO already has under a name that
+        // differs only by punctuation, "and"/"&", or a company suffix.
+        const nearby = findQBDuplicateCandidates(customer,qboCustomers);
+        if(nearby.length)throw new Error('Possible existing QBO customer '
+          + nearby.map(hit=>'"' + (hit.DisplayName || hit.CompanyName || '') + '" (#' + hit.Id + ')').join(', ')
+          + '; link or rename it before creating a second record');
+        return {...row,action:'create',reason:'Requires explicit creation approval' + termNote};
+      }
       row.action = String(existing.SalesTermRef?.value || '') === term.value ? 'link' : 'update_terms';
-      row.reason = row.action === 'link' ? 'Existing active customer; terms match' : 'Requires explicit term-change approval';
+      row.reason = (row.action === 'link' ? 'Existing active customer; terms match' : 'Requires explicit term-change approval') + termNote;
       return row;
     }catch(error){return {...row,action:'blocked',reason:error.message};}
   });
@@ -146,6 +254,113 @@ export function groupPortalPurchaseOrders(sos = [], poMap = {}) {
     group.entries.push({ pl, so, it });
   })));
   return [...groups.values()];
+}
+
+export function buildQBPurchaseOrderPreviewRows(sos = [], products = [], prodQBMap = {}, poMap = {}) {
+  const productIdBySku = new Map(products.map(product => [String(product.sku || '').trim().toUpperCase(), product.id]));
+  return groupPortalPurchaseOrders(sos, poMap).map(group => {
+    const reasons = new Set(group.invalidReason ? [group.invalidReason] : []);
+    if (!String(group.vendor || '').trim()) reasons.add('missing saved vendor');
+    if (!parseQBDateValue(group.created_at)) reasons.add('invalid or missing PO date');
+    let total = 0;
+    const skus = new Set();
+    group.entries.forEach(({pl, it}) => {
+      const qty = Object.entries(pl || {}).filter(([key,value]) => typeof value === 'number'
+        && !key.startsWith('_') && !['unit_cost','billed','tracking_numbers','vendor','drop_ship'].includes(key)
+        && /^[A-Z0-9]/.test(key)).reduce((sum,[,value]) => sum + value, 0);
+      const rate = qbCurrency(pl?.unit_cost !== undefined && pl?.unit_cost !== null && pl?.unit_cost !== '' ? pl.unit_cost : it?.nsa_cost);
+      if (!(qty > 0) || rate < 0) return;
+      total += qty * rate;
+      if (group.accountKey === 'deco_account') return;
+      const sku = String(it?.sku || '').trim().toUpperCase();
+      const productId = it?.product_id || productIdBySku.get(sku);
+      skus.add(sku || '(blank SKU)');
+      if (!sku || !productId || !prodQBMap[productId]) reasons.add('missing QBO NonInventory item for ' + (sku || '(blank SKU)'));
+    });
+    total = qbCurrency(total);
+    if (!(total > 0)) reasons.add('no positive purchase-order lines');
+    return {poId:String(group.poId),vendor:String(group.vendor || ''),date:parseQBDateValue(group.created_at) || '',
+      lineCount:group.entries.length,skus:[...skus],total,action:reasons.size ? 'blocked' : 'ready',reason:[...reasons].join('; ')};
+  });
+}
+
+// QBO cannot be queried by LinkedTxn, so both payment directions read the customer's
+// payments and pick out the lines applied to one invoice. Shared so the push preflight
+// and the pull cannot drift apart.
+export function qbPaymentsAppliedToInvoice(payments = [], qbInvoiceId) {
+  const target = String(qbInvoiceId || '');
+  if (!target) return [];
+  return (payments || []).map(payment => {
+    const amount = (payment?.Line || [])
+      .filter(line => (line?.LinkedTxn || []).some(link => link?.TxnType === 'Invoice' && String(link.TxnId) === target))
+      .reduce((sum, line) => sum + safeNum(line.Amount), 0);
+    return amount > 0 ? { id: String(payment.Id || ''), date: String(payment.TxnDate || ''), amount: Math.round(amount * 100) / 100 } : null;
+  }).filter(row => row && row.id);
+}
+
+// The customer batch requires proof that a term-update canary succeeded. The engine
+// and the Run button each decided this for themselves, and drifted: the engine was
+// taught to read the durable receipt while the button kept reading syncLog, which
+// holds only the newest 100 events and had long since evicted the proof. The button
+// was then permanently disabled on a control that was actually satisfied. One
+// predicate now answers it for both callers.
+export function qbCustomerBatchReady(config = {}) {
+  if (Object.keys(config.custQBMap || {}).length < 2) return false;
+  if (config.custTermCanaryVerifiedAt) return true;
+  return (config.syncLog || []).some(log => log.type === 'customer_canary' && log.status === 'success'
+    && (log.details || []).some(detail => String(detail).startsWith('UPDATED ONE QBO CUSTOMER TERM:')));
+}
+
+export function qbLinkedTransactions(entity = {}) {
+  return [...(entity.LinkedTxn || []), ...(entity.Line || []).flatMap(line => line.LinkedTxn || [])];
+}
+
+export function billReferencesPortalPO(bill = {}, portalPOId = '') {
+  const note = String(bill.PrivateNote || '');
+  const wanted = String(portalPOId || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!wanted) return false;
+  return note.split('|').some(part => {
+    const match = part.trim().match(/^PO\s*:\s*(.+)$/i);
+    return match && match[1].trim().toLowerCase().replace(/\s+/g, ' ') === wanted;
+  });
+}
+
+export function findQbPOBillCandidates(bills = [], portalPOId, qboPOId) {
+  return (bills || []).filter(bill => billReferencesPortalPO(bill, portalPOId)
+    || qbLinkedTransactions(bill).some(link => link.TxnType === 'PurchaseOrder' && String(link.TxnId) === String(qboPOId)));
+}
+
+const qbLineRef = line => line.ItemBasedExpenseLineDetail?.ItemRef?.value
+  ? 'item:'+line.ItemBasedExpenseLineDetail.ItemRef.value
+  : line.AccountBasedExpenseLineDetail?.AccountRef?.value
+    ? 'account:'+line.AccountBasedExpenseLineDetail.AccountRef.value : '';
+
+export function buildQBBillPOReplacement({bill, purchaseOrder}) {
+  if(!bill?.Id||!bill.SyncToken)throw new Error('Bill ID and SyncToken are required.');
+  if(Math.abs(safeNum(bill.Balance)-safeNum(bill.TotalAmt))>=0.005)throw new Error('Partially paid or closed bills cannot be linked automatically.');
+  if(String(purchaseOrder?.POStatus||'').toLowerCase()!=='open')throw new Error('Purchase order is not open.');
+  if(qbLinkedTransactions(bill).some(link=>link.TxnType==='PurchaseOrder'))throw new Error('Bill already has a purchase-order link.');
+  if(qbLinkedTransactions(purchaseOrder).some(link=>link.TxnType==='Bill'))throw new Error('Purchase order already has a bill link.');
+  const billLines=[...(bill.Line||[])],remaining=new Set(billLines.map((_,index)=>index));
+  const replacements=new Map();
+  (purchaseOrder.Line||[]).filter(line=>line.Id&&qbLineRef(line)).forEach(poLine=>{
+    const ref=qbLineRef(poLine);
+    const matches=[...remaining].filter(index=>{
+      const line=billLines[index];
+      if(qbLineRef(line)!==ref||qbLinkedTransactions(line).length)return false;
+      if(ref.startsWith('item:'))return Math.abs(safeNum(line.ItemBasedExpenseLineDetail?.Qty)-safeNum(poLine.ItemBasedExpenseLineDetail?.Qty))<0.000001;
+      return true;
+    });
+    if(matches.length!==1)throw new Error(matches.length?'Bill has ambiguous lines for PO line '+poLine.Id:'Bill is missing a line for PO line '+poLine.Id+'.');
+    const index=matches[0],source=billLines[index];remaining.delete(index);
+    const {Id,LineNum,...copy}=source;
+    replacements.set(index,{...copy,LinkedTxn:[{TxnId:String(purchaseOrder.Id),TxnType:'PurchaseOrder',TxnLineId:String(poLine.Id)}]});
+  });
+  if(!replacements.size)throw new Error('Purchase order has no linkable expense lines.');
+  const Line=billLines.map((line,index)=>replacements.get(index)||line);
+  if(Math.abs(Line.reduce((sum,line)=>sum+safeNum(line.Amount),0)-safeNum(bill.TotalAmt))>=0.005)throw new Error('Replacement lines would change the bill total.');
+  const writable=['Id','SyncToken','VendorRef','APAccountRef','TxnDate','DueDate','DocNumber','PrivateNote','SalesTermRef','DepartmentRef','CurrencyRef','ExchangeRate','GlobalTaxCalculation'];
+  return{...Object.fromEntries(writable.filter(key=>bill[key]!==undefined).map(key=>[key,bill[key]])),Line,sparse:false};
 }
 
 export function buildQBInvoicePostingLines({ invoice, salesItemId, discountAccountRef, description }) {
@@ -308,10 +523,91 @@ export function createQBSyncEngine(ctx){
       };
     };
 
+    // Manual sales tax, one state at a time. Two things about QBO manual tax are
+    // unknown until a real record exists, and this canary is how we find out rather
+    // than assume: which liability account QBO assigns to a new agency (the portal's
+    // approved matrix expects 25200/25230, but QBO may insist on its own Sales Tax
+    // Payable), and whether one rate per state can carry the portal's own per-invoice
+    // amount when the portal holds 39 distinct local rates. It creates exactly one
+    // agency and one tax code, reads both back, and reports what QBO actually did.
+    const syncTaxRateCanary=async({state,rateName,ratePercent,agencyName,allowCreate=false}={})=>{
+      if(!canaryPreflightReady())return{status:'blocked'};
+      if(!requireDurableLinks())return{status:'blocked'};
+      const code=String(state||'').trim().toUpperCase();
+      const accountKey=QB_STATE_TAX_ACCOUNT_KEYS[code];
+      if(!accountKey){nf('Choose a state with an approved tax account','error');return{status:'blocked'}}
+      const percent=Number(ratePercent);
+      if(!Number.isFinite(percent)||percent<=0||percent>25){nf('Enter a tax rate between 0 and 25 percent','error');return{status:'blocked'}}
+      const agency=String(agencyName||'').trim(), rate=String(rateName||'').trim();
+      if(!agency||!rate){nf('Name the tax agency and the tax rate','error');return{status:'blocked'}}
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:'tax_rate_canary',status:'success',details:[]};
+      try{
+        const prefs=await queryQBReadOnly(qbApi,'SELECT * FROM Preferences','tax preferences recheck');
+        const taxPrefs=prefs?.QueryResponse?.Preferences?.[0]?.TaxPrefs||{};
+        if(taxPrefs.PartnerTaxEnabled)throw new Error('QBO Automated Sales Tax is enabled; manual rates are not the right mechanism. Nothing was created.');
+        const existingAgencies=await loadAllQBEntities(qbApi,'TaxAgency','*',100);
+        const agencyMatches=existingAgencies.filter(row=>normalizeQBCustomerName(row.DisplayName)===normalizeQBCustomerName(agency));
+        if(agencyMatches.length>1)throw new Error('Multiple QBO tax agencies are named "'+agency+'"; nothing was created.');
+        const existingCodes=await loadAllQBEntities(qbApi,'TaxCode','*',100);
+        if(existingCodes.some(row=>normalizeQBCustomerName(row.Name)===normalizeQBCustomerName(rate)))
+          throw new Error('A QBO tax code named "'+rate+'" already exists; nothing was created.');
+        if(!allowCreate)return{status:'needs_confirmation',state:code,agency,rate,percent,
+          agencyExists:agencyMatches.length===1,agencyId:agencyMatches[0]?.Id?String(agencyMatches[0].Id):''};
+
+        let agencyId=agencyMatches[0]?.Id?String(agencyMatches[0].Id):'';
+        if(!agencyId){
+          const created=await qbApi('upsert_taxagency',{taxagency:{DisplayName:agency}});
+          agencyId=String(created?.TaxAgency?.Id||'');
+          if(!agencyId)throw new Error(qbResponseErrorDetail(created,'QBO did not return a tax agency ID'));
+          log.details.push('CREATED ONE QBO TAX AGENCY: '+agency+' → #'+agencyId);
+        }else log.details.push('REUSED EXISTING QBO TAX AGENCY: '+agency+' → #'+agencyId);
+
+        const response=await qbApi('create_taxcode',{taxcode:{TaxCode:rate,
+          TaxRateDetails:[{TaxRateName:rate,RateValue:percent,TaxAgencyId:agencyId,TaxApplicableOn:'Sales'}]}});
+        const taxCodeId=String(response?.TaxCodeId||response?.TaxCode?.Id||'');
+        const rateId=String(response?.TaxRateDetails?.[0]?.TaxRateId||'');
+        if(!taxCodeId||!rateId)throw new Error(qbResponseErrorDetail(response,'QBO did not return a tax code and rate ID'));
+
+        const verifiedRate=(await loadAllQBEntities(qbApi,'TaxRate','*',100)).find(row=>String(row.Id)===rateId);
+        if(!verifiedRate)throw new Error('Tax rate #'+rateId+' was not returned by API read-back; no link was saved.');
+        if(Math.abs(Number(verifiedRate.RateValue)-percent)>0.0001)throw new Error('QBO stored rate '+verifiedRate.RateValue+'%, not '+percent+'%; no link was saved.');
+        const verifiedCode=(await loadAllQBEntities(qbApi,'TaxCode','*',100)).find(row=>String(row.Id)===taxCodeId);
+        if(!verifiedCode||verifiedCode.Active===false)throw new Error('Tax code #'+taxCodeId+' was missing or inactive on read-back; no link was saved.');
+
+        // The liability account QBO chose is the answer the approved posting matrix needs.
+        const qboAccountId=String(verifiedRate.AgencyRef?.value||agencyId);
+        log.details.push('READ-BACK VERIFIED: TaxCode #'+taxCodeId+' · TaxRate #'+rateId+' · '+verifiedRate.RateValue+'% · agency #'+qboAccountId);
+        // Reporting only, and deliberately non-fatal: the rate exists and is verified by
+        // this point, so a chart-mapping problem must not discard the proof of a write
+        // that already happened. A failure here is reported, not thrown.
+        let approvedAccount='';
+        try{
+          const approved=resolveQBAccountRefs(await loadQBAccounts(qbApi),qbConfig.mapping,[accountKey])[accountKey];
+          approvedAccount=approved.accountNumber;
+          log.details.push('Portal-approved '+code+' liability account is '+approved.accountNumber+' '+approved.name+' (QB #'+approved.value+'). QBO manual sales tax posts through its own agency-managed account, so confirm on the first taxable invoice which account actually moves before relying on the matrix.');
+        }catch(accountError){
+          log.status='partial';
+          log.details.push('Tax rate was created and verified, but the approved '+code+' liability account could not be resolved: '+accountError.message+'. Confirm on the first taxable invoice which account actually moves.');
+        }
+        await persistQbLink({mapKey:'qbTaxRateMap',sourceIds:[code],qboId:rateId,log,
+          evidence:{state:code,result:'created',tax_code_id:taxCodeId,tax_rate_id:rateId,agency_id:agencyId,
+            rate_percent:verifiedRate.RateValue,approved_account:approvedAccount||null,api_readback:true}});
+        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
+        nf('Created and verified one QBO tax rate for '+code);
+        return{status:'success',state:code,taxCodeId,rateId,agencyId,ratePercent:verifiedRate.RateValue};
+      }catch(e){
+        log.status='error';log.details.push(e.message||'Tax rate canary failed');
+        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));
+        nf('Tax rate setup stopped — '+(e.message||'QBO error'),'error');
+        return{status:'blocked',error:e.message};
+      }finally{setQbSyncing(false)}
+    };
+
     // One-customer canary is intentionally available while production batches
     // are locked. A create or a repair of the actual QBO Terms field requires a
     // second, explicit operator confirmation and a successful API read-back.
-    const syncCustomerCanary=async(customerId,{allowCreate=false,allowTermUpdate=false,batchId='',expectedPlan=null}={})=>{
+    const syncCustomerCanary=async(customerId,{allowCreate=false,allowTermUpdate=false,batchId='',expectedPlan=null,blankTermsDefault='',context=null}={})=>{
       if(!requireDurableLinks())return{status:'blocked'};
       const c=cust.find(customer=>String(customer.id)===String(customerId));
       if(!c||c.is_active===false||c.deleted_at){nf('Choose an active customer for the QBO test','error');return{status:'blocked'}}
@@ -321,13 +617,25 @@ export function createQBSyncEngine(ctx){
       if(!batchId)setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:batchId?'customer_batch_record':'customer_canary',status:'success',details:[]};
       try{
-        const qboTerms=await loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000);
-        const termRef=resolveQBCustomerTerm(qboTerms,c.payment_terms);
-        const qboCustomers=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SyncToken, SalesTermRef',1000);
-        const currentPlan=buildQBCustomerManifest(cust,qboCustomers,qboTerms,qbConfig.custQBMap||{}).find(row=>row.sourceId===String(c.id));
+        // A batch hoists the term and customer reads and the plan build out of its loop:
+        // re-reading every QBO customer and rebuilding all 2,500 plans per record is
+        // quadratic and is what forced the old 20-record cap. Correctness does not rest
+        // on that reload — the per-record API read-back after the write does — and the
+        // batch keeps its snapshot current by folding each verified record back into it.
+        const qboTerms=context?.terms
+          || await loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000);
+        const qboCustomers=context?.customers
+          || await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SyncToken, SalesTermRef',1000);
+        const currentPlan=context?.planBySource
+          ? context.planBySource.get(String(c.id))
+          : buildQBCustomerManifest(cust,qboCustomers,qboTerms,qbConfig.custQBMap||{},{blankTermsDefault}).find(row=>row.sourceId===String(c.id));
         if(!currentPlan||['blocked','excluded'].includes(currentPlan.action))throw new Error(currentPlan?.reason||'Customer could not be reviewed');
-        if(expectedPlan && ['sourceId','displayName','portalTerms','qboId','action'].some(key=>currentPlan[key]!==expectedPlan[key]))throw new Error('Customer plan changed since review; refresh the manifest before continuing');
+        if(expectedPlan && ['sourceId','displayName','portalTerms','qboId','action','termSource'].some(key=>currentPlan[key]!==expectedPlan[key]))throw new Error('Customer plan changed since review; refresh the manifest before continuing');
         if(expectedPlan && (String(currentPlan.desiredTerm?.value)!==String(expectedPlan.desiredTerm?.value)||String(currentPlan.currentTerm?.value)!==String(expectedPlan.currentTerm?.value)))throw new Error('QBO term mapping changed since review');
+        // The reviewed plan is the only source of the term: portal terms, the
+        // existing QBO customer's own terms, or the reviewer's explicit default.
+        const termRef=currentPlan.desiredTerm;
+        if(!termRef?.value)throw new Error('Reviewed plan has no QBO term; no customer was changed.');
         const savedId=String((qbConfig.custQBMap||{})[c.id]||c.qb_customer_id||'');
         let qboCustomer=savedId?qboCustomers.find(row=>String(row.Id)===savedId):null;
         if(qboCustomer?.Active===false)throw new Error('Saved QBO customer #'+savedId+' is inactive; no record was changed.');
@@ -360,10 +668,16 @@ export function createQBSyncEngine(ctx){
         if(verified.Active===false)throw new Error('QBO customer was inactive on read-back; the portal link was not saved.');
         if(String(verified.SalesTermRef?.value||'')!==String(termRef.value))throw new Error('QBO customer terms did not match "'+termRef.name+'" on read-back; the portal link was not saved.');
         if(!findExactQBCustomerMatches(c,[verified]).length)throw new Error('Customer identity did not match on API read-back');
+        if(context?.customers){
+          const at=context.customers.findIndex(row=>String(row.Id)===qbId);
+          if(at>=0)context.customers[at]=verified; else context.customers.push(verified);
+        }
         log.details.push((created?'CREATED ONE QBO CUSTOMER':termsUpdated?'UPDATED ONE QBO CUSTOMER':'LINK ONLY — no QBO customer was changed')+': '+c.name+' → QB #'+qbId);
+        if(currentPlan.termSource==='qbo')log.details.push('PORTAL TERMS BLANK — kept existing QBO terms '+(termRef.name||termRef.value));
+        if(currentPlan.termSource==='default')log.details.push('PORTAL TERMS BLANK — reviewer default '+(termRef.name||termRef.value)+' applied');
         if(termsUpdated)log.details.push('UPDATED ONE QBO CUSTOMER TERM: '+(termRef.name||termRef.value));
         log.details.push('READ-BACK VERIFIED: '+(verified.DisplayName||verified.CompanyName||c.name)+(verified.SalesTermRef?.name?' · QBO terms '+verified.SalesTermRef.name:verified.SalesTermRef?.value?' · QBO terms ID '+verified.SalesTermRef.value:''));
-        await persistQbLink({mapKey:'custQBMap',sourceIds:[c.id],qboId:qbId,log,evidence:{batch_id:batchId||null,result:created?'created':termsUpdated?'updated':'linked',term_id:termRef.value,duplicate_preflight:'verified',api_readback:true}});
+        await persistQbLink({mapKey:'custQBMap',sourceIds:[c.id],qboId:qbId,log,evidence:{batch_id:batchId||null,result:created?'created':termsUpdated?'updated':'linked',term_id:termRef.value,term_source:currentPlan.termSource||'portal',duplicate_preflight:'verified',api_readback:true}});
         setQBConfig(prev=>({...prev,custQBMap:{...(prev.custQBMap||{}),[c.id]:qbId},syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
         nf((created?'Created and verified ':termsUpdated?'Updated terms and verified ':'Linked and verified ')+c.name+' in QBO');
         return{status:'success',created,termsUpdated,qbId,customerName:c.name};
@@ -380,24 +694,32 @@ export function createQBSyncEngine(ctx){
     const syncCustomers=async({manifest,approved=false}={})=>{
       const rows=manifest?.rows;
       const age=Date.now()-Date.parse(manifest?.reviewedAt||'');
-      const canaryLogs=(qbConfig.syncLog||[]).filter(log=>log.type==='customer_canary'&&log.status==='success');
-      const termCanary=canaryLogs.some(log=>(log.details||[]).some(detail=>String(detail).startsWith('UPDATED ONE QBO CUSTOMER TERM:')));
-      if(!approved||!Array.isArray(rows)||rows.length<1||rows.length>20
+      let blankTermsDefault='';
+      try{blankTermsDefault=normalizeBlankTermsDefault(manifest?.blankTermsDefault);}
+      catch(e){nf('Customer batch blocked: '+e.message,'error');return{status:'blocked'};}
+      const termCanary=qbCustomerBatchReady(qbConfig);
+      if(!approved||!Array.isArray(rows)||rows.length<1||rows.length>QB_MAX_REVIEWED_BATCH
         ||new Set(rows.map(row=>row.sourceId)).size!==rows.length
         ||rows.some(row=>!['link','create','update_terms'].includes(row.action))
         ||String(manifest.realm)!==String(qbConfig.realm_id)||!Number.isFinite(age)||age<0||age>15*60*1000
-        ||!termCanary||Object.keys(qbConfig.custQBMap||{}).length<2){
-        nf('Customer batch blocked: complete canaries and approve a fresh review of at most 20 customers','error');return{status:'blocked'};
+        ||!termCanary){
+        nf('Customer batch blocked: complete canaries and approve a fresh review of at most '+QB_MAX_REVIEWED_BATCH+' customers','error');return{status:'blocked'};
       }
       if(!requireDurableLinks())return{status:'blocked'};
-      const report={id:'customer-batch-'+new Date().toISOString(),realm:manifest.realm,reviewedAt:manifest.reviewedAt,
+      const report={id:'customer-batch-'+new Date().toISOString(),realm:manifest.realm,reviewedAt:manifest.reviewedAt,blankTermsDefault,
         startedAt:new Date().toISOString(),status:'running',results:[],counts:{created:0,updated:0,linked:0,blocked:0,not_attempted:0}};
       setQbSyncing(true);
       try{
+        // One read of terms and customers, one plan build, for the whole run.
+        const terms=await loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000);
+        const customers=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SyncToken, SalesTermRef',1000);
+        const planBySource=new Map(buildQBCustomerManifest(cust,customers,terms,qbConfig.custQBMap||{},{blankTermsDefault})
+          .map(row=>[String(row.sourceId),row]));
+        const context={terms,customers,planBySource};
         let stopped=false;
         for(const row of rows){
           if(stopped){report.results.push({...row,result:'not_attempted'});report.counts.not_attempted++;continue;}
-          const outcome=await syncCustomerCanary(row.sourceId,{batchId:report.id,expectedPlan:row,
+          const outcome=await syncCustomerCanary(row.sourceId,{batchId:report.id,expectedPlan:row,blankTermsDefault,context,
             allowCreate:row.action==='create',allowTermUpdate:row.action==='update_terms'});
           const result=outcome.status==='success'?(outcome.created?'created':outcome.termsUpdated?'updated':'linked'):'blocked';
           report.results.push({...row,result,qboId:outcome.qbId||row.qboId,apiReadback:outcome.status==='success',reason:outcome.error||row.reason});
@@ -563,25 +885,77 @@ export function createQBSyncEngine(ctx){
           const qbPaid=qbTotal-qbBalance;
           const portalPaid=safeNum(inv.paid);
           if(qbPaid>portalPaid){
-            // QB has more paid — pull to portal
+            // QB has more paid — pull to portal. Checks are entered in QBO, so this is
+            // the main way customer money reaches the Portal. The date recorded here is
+            // a commission input: CommissionsPage rates a line at 15% instead of 30%
+            // when days-to-pay exceeds 90, and freezes that the first time it renders.
+            // Stamping today's date on a check received weeks ago therefore underpays
+            // the rep, so the real QBO payment date is read and a missing one blocks.
+            const docId=inv.display_id||inv.id;
+            const cQBId=inv.qb_customer_id||(qbConfig.custQBMap||{})[inv.customer_id];
+            if(!cQBId){log.details.push(docId+' — pull BLOCKED: customer is not linked, so QBO payment dates cannot be read');log.status='partial';continue}
+            let applied=[];
+            try{
+              const paymentRes=await queryQBReadOnly(qbApi,"SELECT * FROM Payment WHERE CustomerRef = '"+String(cQBId).replace(/'/g,"\\'")+"' MAXRESULTS 1000",'payment pull read');
+              applied=qbPaymentsAppliedToInvoice(paymentRes?.QueryResponse?.Payment||[],inv.qb_invoice_id);
+            }catch(pe){log.details.push(docId+' — pull BLOCKED: '+(pe.message||'QBO payment read failed'));log.status='partial';continue}
+            if(!applied.length){log.details.push(docId+' — pull BLOCKED: QBO shows $'+qbPaid.toFixed(2)+' paid but no payment record references this invoice');log.status='partial';continue}
+            const undated=applied.filter(row=>!/^\d{4}-\d{2}-\d{2}/.test(row.date));
+            if(undated.length){log.details.push(docId+' — pull BLOCKED: QBO Payment #'+undated[0].id+' has no usable date, and a guessed date would change the rep commission rate');log.status='partial';continue}
+            const known=new Set((inv.payments||[]).map(existing=>String(existing.ref||'')));
+            const fresh=applied.filter(row=>!known.has('QBO Payment #'+row.id));
             const newStatus=qbBalance<=0?'paid':qbPaid>0?'partial':'open';
-            const pmt={amount:Math.round((qbPaid-portalPaid)*100)/100,method:'qb_sync',ref:'QB Payment Sync',date:new Date().toLocaleDateString()};
-            setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,paid:Math.round(qbPaid*100)/100,status:newStatus,payments:[...(ii.payments||[]),pmt]}:ii));
-            log.details.push((inv.display_id||inv.id)+' — marked '+newStatus+' (QB paid $'+qbPaid.toFixed(2)+')');updated++;
+            setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,paid:Math.round(qbPaid*100)/100,status:newStatus,
+              payments:[...(ii.payments||[]),...fresh.map(row=>({amount:row.amount,method:'qb_sync',ref:'QBO Payment #'+row.id,date:row.date}))]}:ii));
+            log.details.push(docId+' — marked '+newStatus+' (QB paid $'+qbPaid.toFixed(2)+')'
+              +(fresh.length?' · recorded '+fresh.map(row=>'QBO Payment #'+row.id+' $'+row.amount.toFixed(2)+' dated '+row.date).join(', '):' · no new QBO payment rows'));
+            updated++;
           }else if(portalPaid>qbPaid&&qbBalance>0){
-            // Portal has more paid — push payment to QB
+            // Portal has more paid — push payment to QB. This is the only place the
+            // portal moves cash into QBO, so it carries the same proof every other
+            // write does: a duplicate preflight against QBO's own payments, a checked
+            // response, an API read-back of the created record, and a durable receipt.
             const diff=Math.round((portalPaid-qbPaid)*100)/100;
             const cQBId=inv.qb_customer_id||(qbConfig.custQBMap||{})[inv.customer_id];
-            if(cQBId){
-              try{
-                const qbPmt={CustomerRef:{value:cQBId},DepositToAccountRef:paidRefs.payment_deposit_account,TotalAmt:diff,
-                  Line:[{Amount:diff,LinkedTxn:[{TxnId:inv.qb_invoice_id,TxnType:'Invoice'}]}]};
-                await qbApi('upsert_payment',{payment:qbPmt});
-                log.details.push((inv.display_id||inv.id)+' — pushed $'+diff.toFixed(2)+' payment to QB');updated++;
-              }catch(pe){log.details.push((inv.display_id||inv.id)+' — failed to push payment to QB: '+pe.message);log.status='partial'}
-            }else{
-              log.details.push((inv.display_id||inv.id)+' — skipped push: customer not synced to QB');
-            }
+            const docId=inv.display_id||inv.id;
+            if(!cQBId){log.details.push(docId+' — skipped push: customer not synced to QB');continue}
+            if(!requireDurableLinks()){log.details.push(docId+' — BLOCKED: durable receipt storage unavailable; no payment was sent');log.status='partial';continue}
+            try{
+              // Never send a second payment for money QBO already records against this
+              // invoice. QBO cannot be queried by LinkedTxn, so read the customer's
+              // payments and total the lines that point at this invoice.
+              const existing=await queryQBReadOnly(qbApi,"SELECT * FROM Payment WHERE CustomerRef = '"+String(cQBId).replace(/'/g,"\\'")+"' MAXRESULTS 1000",'existing payment preflight');
+              const linkedTotal=qbPaymentsAppliedToInvoice(existing?.QueryResponse?.Payment||[],inv.qb_invoice_id)
+                .reduce((sum,row)=>sum+row.amount,0);
+              if(linkedTotal>=portalPaid-0.005){
+                log.details.push(docId+' — no payment sent: QBO already records $'+linkedTotal.toFixed(2)+' against this invoice');
+                continue;
+              }
+              const send=Math.round(Math.min(diff,portalPaid-linkedTotal)*100)/100;
+              if(send<=0){log.details.push(docId+' — no payment sent: nothing left to apply');continue}
+              const qbPmt={CustomerRef:{value:cQBId},DepositToAccountRef:paidRefs.payment_deposit_account,TotalAmt:send,
+                PrivateNote:'Portal invoice '+docId,
+                Line:[{Amount:send,LinkedTxn:[{TxnId:inv.qb_invoice_id,TxnType:'Invoice'}]}]};
+              const response=await qbApi('upsert_payment',{payment:qbPmt});
+              const paymentId=String(response?.Payment?.Id||'');
+              // The old code discarded this response, so a QBO fault was reported to the
+              // operator as a successful payment push.
+              if(!paymentId)throw new Error(qbResponseErrorDetail(response,'QuickBooks did not return a payment ID'));
+              const readback=await queryQBReadOnly(qbApi,"SELECT * FROM Payment WHERE Id = '"+paymentId.replace(/'/g,"\\'")+"' MAXRESULTS 1",'payment API read-back');
+              const verified=readback?.QueryResponse?.Payment?.[0];
+              if(!verified||String(verified.Id)!==paymentId)throw new Error('payment was not returned by API read-back');
+              if(Math.abs(safeNum(verified.TotalAmt)-send)>=0.005)throw new Error('payment total did not match on read-back');
+              if(String(verified.CustomerRef?.value||'')!==String(cQBId))throw new Error('payment customer did not match on read-back');
+              if(String(verified.DepositToAccountRef?.value||'')!==String(paidRefs.payment_deposit_account.value))throw new Error('payment deposit account did not match on read-back');
+              if(!(verified.Line||[]).some(line=>(line.LinkedTxn||[]).some(link=>link.TxnType==='Invoice'&&String(link.TxnId)===String(inv.qb_invoice_id))))throw new Error('payment is not linked to this invoice on read-back');
+              const receiptLog={ts:log.ts,type:'payment_record',status:'success',details:[
+                docId+' — PAID $'+send.toFixed(2)+' → QBO Payment #'+paymentId,
+                'READ-BACK VERIFIED: Payment #'+paymentId+' · $'+safeNum(verified.TotalAmt).toFixed(2)+' · deposit account '+String(verified.DepositToAccountRef?.value||'')]};
+              await persistQbLink({mapKey:'qbPaymentMap',sourceIds:[String(inv.id)+':'+paymentId],qboId:paymentId,log:receiptLog,
+                evidence:{result:'created',invoice_id:String(inv.id),qb_invoice_id:String(inv.qb_invoice_id),
+                  amount:send,already_applied:linkedTotal,deposit_account:String(verified.DepositToAccountRef?.value||''),api_readback:true}});
+              log.details.push(docId+' — pushed and verified $'+send.toFixed(2)+' payment → QBO Payment #'+paymentId);updated++;
+            }catch(pe){log.details.push(docId+' — payment BLOCKED: '+(pe.message||'unknown error'));log.status='partial'}
           }else{
             log.details.push((inv.display_id||inv.id)+' — already up to date');
           }
@@ -910,11 +1284,18 @@ export function createQBSyncEngine(ctx){
     const syncPurchaseOrders=async(prodQBMapArg={},options={})=>{
       const canaryPOId=String(options?.canaryPOId||'');
       const canary=!!canaryPOId;
-      if(canary?!canaryPreflightReady():migrationBatchLocked())return;
+      const approvedPOIds=[...new Set((options?.approvedPOIds||[]).map(id=>String(id).trim()).filter(Boolean))];
+      if(!canary&&(options?.approved!==true||!approvedPOIds.length||approvedPOIds.length>QB_SYNC_BATCH_SIZE)){
+        nf('Purchase-order batch blocked — approve a reviewed list of 1 to 20 exact PO IDs','error');
+        return{status:'blocked',synced:0};
+      }
+      if(!canary&&(!canaryPreflightReady()||productionSyncLocked()))return{status:'blocked',synced:0};
+      if(canary&&!canaryPreflightReady())return{status:'blocked',synced:0};
       if(!requireDurableLinks())return{status:'blocked'};
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:canary?'purchase_order_canary':'purchase_orders',status:'success',details:[]};
       let synced=0;
+      const results=[];
       const poMap={...(qbConfig.qbPOMap||{})};
       // Fetch existing QB vendors to match by name and avoid duplicates
       let existingQBVendors=[];
@@ -931,6 +1312,17 @@ export function createQBSyncEngine(ctx){
         setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('Purchase-order sync blocked — QBO duplicate preflight failed','error');setQbSyncing(false);return;
       }
       const vendorQBMap={};// vendorName -> qbVendorId (cache for this sync run)
+      const resolveExistingVendorId=vendorName=>{
+        if(vendorQBMap[vendorName])return vendorQBMap[vendorName];
+        const portalVendor=vend.find(x=>x.name===vendorName)||D_V.find(x=>x.name===vendorName);
+        const savedVendorId=qbConfig.vendorQBMap?.[portalVendor?.id]||portalVendor?.qb_vendor_id;
+        const bySavedId=savedVendorId&&existingQBVendors.filter(q=>String(q.Id)===String(savedVendorId)
+          &&(q.DisplayName===vendorName||q.CompanyName===vendorName));
+        const exact=existingQBVendors.filter(q=>q.DisplayName===vendorName||q.CompanyName===vendorName);
+        const matches=bySavedId?.length?bySavedId:exact;
+        if(matches.length===1)vendorQBMap[vendorName]=matches[0].Id;
+        return matches.length===1?matches[0].Id:null;
+      };
       // POs do not post to the GL, but every line still carries the approved
       // category so the PO-to-bill workflow remains deterministic.
       let poAccountRefs;
@@ -942,36 +1334,32 @@ export function createQBSyncEngine(ctx){
       }
       // Group PO lines by po_id so we push one QB PO with all line items
       const allPoGroups=groupPortalPurchaseOrders(sos,poMap);
-      const purchaseOrderBatch=rotatingBatch(allPoGroups,qbConfig._purchaseOrderSyncOffset,QB_SYNC_BATCH_SIZE);
-      const poGroups=canary?allPoGroups.filter(group=>String(group.poId)===canaryPOId):purchaseOrderBatch.items;
+      const effectiveProdQBMap={...(qbConfig.prodQBMap||{}),...(prodQBMapArg||{})};
+      const requestedIds=canary?[canaryPOId]:approvedPOIds;
+      const poGroups=requestedIds.map(id=>allPoGroups.find(group=>String(group.poId)===id)).filter(Boolean);
       if(canary&&poGroups.length!==1){nf('Choose exactly one pending portal purchase order','error');setQbSyncing(false);return}
+      if(!canary&&poGroups.length!==approvedPOIds.length){
+        nf('Purchase-order batch changed since review — review it again before sending','error');setQbSyncing(false);return{status:'blocked',synced:0};
+      }
       for(const group of poGroups){
-        if(group.invalidReason){log.details.push(group.poId+' — BLOCKED: '+group.invalidReason);log.status='partial';continue}
+        if(group.invalidReason){log.details.push(group.poId+' — BLOCKED: '+group.invalidReason);results.push({poId:group.poId,result:'blocked',error:group.invalidReason});log.status='partial';continue}
         const vendorName=group.vendor;
-        if(!vendorName){log.details.push(group.poId+' — skipped: no vendor name');log.status='partial';continue}
+        if(!vendorName){const error='no saved vendor name';log.details.push(group.poId+' — BLOCKED: '+error);results.push({poId:group.poId,result:'blocked',error});log.status='partial';continue}
         const poDate=parseQBDateValue(group.created_at);
-        if(!poDate){log.details.push(group.poId+' — BLOCKED: purchase-order date could not be converted to a QBO date');log.status='partial';continue}
+        if(!poDate){const error='purchase-order date could not be converted to a QBO date';log.details.push(group.poId+' — BLOCKED: '+error);results.push({poId:group.poId,result:'blocked',error});log.status='partial';continue}
         // Find or create vendor in QB
         let v=vend.find(x=>x.name===vendorName)||D_V.find(x=>x.name===vendorName);
-        let qbVendorId=vendorQBMap[vendorName]||v?.qb_vendor_id;
+        let qbVendorId=resolveExistingVendorId(vendorName);
         if(!qbVendorId){
           // Check existing QB vendors by name
           const vendorMatches=existingQBVendors.filter(q=>q.DisplayName===vendorName||q.CompanyName===vendorName);
-          if(vendorMatches.length>1){log.details.push(group.poId+' — BLOCKED: multiple QBO vendors exactly match "'+vendorName+'"');log.status='partial';continue}
+          if(vendorMatches.length>1){const error='multiple QBO vendors exactly match "'+vendorName+'"';log.details.push(group.poId+' — BLOCKED: '+error);results.push({poId:group.poId,result:'blocked',error});log.status='partial';continue}
           const match=vendorMatches[0];
           if(match){qbVendorId=match.Id}
-          else{
-            if(canary){log.details.push(group.poId+' — BLOCKED: vendor "'+vendorName+'" is not linked or present in QBO; the one-record test will not create a second record');log.status='error';continue}
-            let vRes;
-            try{vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:vendorName,CompanyName:vendorName}})}
-            catch(e){log.details.push(group.poId+' — vendor "'+vendorName+'" creation failed: '+e.message);log.status='partial';continue}
-            if(vRes?.Vendor?.Id){qbVendorId=vRes.Vendor.Id}
-            else{log.details.push(group.poId+' — vendor "'+vendorName+'" creation failed: '+(vRes?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial';continue}
-          }
+          else{const error='vendor "'+vendorName+'" is not linked or uniquely present in QBO';log.details.push(group.poId+' — BLOCKED: '+error);results.push({poId:group.poId,result:'blocked',error});log.status='partial';continue}
           vendorQBMap[vendorName]=qbVendorId;
           if(v)setVend(prev=>prev.map(vv=>vv.id===v.id?{...vv,qb_vendor_id:qbVendorId}:vv));
         }
-        const effectiveProdQBMap={...(qbConfig.prodQBMap||{}),...(prodQBMapArg||{})};
         let missingSkuItem=null;
         const itemGroups=new Map();
         const qbLines=[];
@@ -995,12 +1383,12 @@ export function createQBSyncEngine(ctx){
           const entry=itemGroups.get(sku)||{sku,itemId,qty:0,amount:0,names:new Set(),soIds:new Set()};
           entry.qty+=qty;entry.amount+=qty*rate;entry.names.add(i.name);entry.soIds.add(s.id);itemGroups.set(sku,entry);
         });
-        if(missingSkuItem){log.details.push(group.poId+' — BLOCKED: QBO NonInventory item missing for '+missingSkuItem);log.status='partial';continue}
+        if(missingSkuItem){const error='QBO NonInventory item missing for '+missingSkuItem;log.details.push(group.poId+' — BLOCKED: '+error);results.push({poId:group.poId,result:'blocked',error});log.status='partial';continue}
         itemGroups.forEach(entry=>qbLines.push({DetailType:'ItemBasedExpenseLineDetail',Amount:Math.round(entry.amount*100)/100,
           Description:entry.sku+' '+[...entry.names].filter(Boolean).join(' / ')+' (SO: '+[...entry.soIds].join(', ')+')',
           ItemBasedExpenseLineDetail:{ItemRef:{value:String(entry.itemId)},Qty:entry.qty,UnitPrice:Math.round((entry.amount/entry.qty)*1e6)/1e6}}));
-        const totalAmount=qbLines.reduce((a,l)=>a+l.Amount,0);
-        if(!qbLines.length||!(totalAmount>0)){log.details.push(group.poId+' — BLOCKED: no positive purchase-order lines');log.status='partial';continue}
+        const totalAmount=qbCurrency(qbLines.reduce((a,l)=>a+l.Amount,0));
+        if(!qbLines.length||!(totalAmount>0)){const error='no positive purchase-order lines';log.details.push(group.poId+' — BLOCKED: '+error);results.push({poId:group.poId,result:'blocked',error});log.status='partial';continue}
         const soRefs=[...new Set(group.entries.map(({so:s})=>s.id))].join(', ');
         const qbPO={
           DocNumber:group.poId,
@@ -1010,40 +1398,154 @@ export function createQBSyncEngine(ctx){
           PrivateNote:'Portal PO for SO: '+soRefs,
           ...(poMap[group.poId]?{Id:poMap[group.poId],sparse:true}:{}),
         };
+        const verifyPOReadback=async id=>{
+          const verified=await verifyCanaryReadback('PurchaseOrder',id,{docNumber:group.poId,refField:'VendorRef',refValue:qbVendorId,total:totalAmount,txnDate:poDate});
+          const lineValues=line=>({type:line.DetailType,amount:safeNum(line.Amount),
+            item:String(line.ItemBasedExpenseLineDetail?.ItemRef?.value||''),qty:safeNum(line.ItemBasedExpenseLineDetail?.Qty),
+            unitPrice:safeNum(line.ItemBasedExpenseLineDetail?.UnitPrice),account:String(line.AccountBasedExpenseLineDetail?.AccountRef?.value||'')});
+          const remaining=(verified.Line||[]).map(lineValues);
+          const matches=qbLines.every(line=>{
+            const expected=lineValues(line);
+            const index=remaining.findIndex(actual=>actual.type===expected.type&&actual.item===expected.item&&actual.account===expected.account
+              &&Math.abs(actual.amount-expected.amount)<0.005&&Math.abs(actual.qty-expected.qty)<0.000001&&Math.abs(actual.unitPrice-expected.unitPrice)<0.000001);
+            if(index<0)return false;
+            remaining.splice(index,1);
+            return true;
+          });
+          if(!matches||remaining.length)throw new Error('QBO line items, quantities, rates, amounts, or accounts differ from the reviewed PO');
+          return verified;
+        };
         const sameNumber=existingQBPOs.filter(existing=>String(existing.DocNumber||'')===String(group.poId));
         const exact=sameNumber.filter(existing=>String(existing.VendorRef?.value||'')===String(qbVendorId)
           &&Math.abs(safeNum(existing.TotalAmt)-totalAmount)<0.005
           &&String(existing.TxnDate||'').slice(0,10)===String(qbPO.TxnDate||'').slice(0,10));
         if(exact.length===1&&sameNumber.length===1){
-          if(canary){
-            try{await verifyCanaryReadback('PurchaseOrder',exact[0].Id,{docNumber:group.poId,refField:'VendorRef',refValue:qbVendorId,total:totalAmount,txnDate:poDate});
-              await persistQbLink({mapKey:'qbPOMap',sourceIds:[group.poId],qboId:exact[0].Id,log:{...log,details:[group.poId+' — linked and verified QBO PO #'+exact[0].Id]},evidence:{result:'linked',api_readback:true,doc_number:group.poId,vendor_id:qbVendorId,date:poDate,total:totalAmount}});}
-            catch(e){log.details.push(group.poId+' — VERIFY FAILED: '+e.message);log.status='error';continue}
-          }
-          poMap[group.poId]=exact[0].Id;log.details.push(group.poId+' — exact existing QB PO #'+exact[0].Id+' verified');synced++;continue;
+          try{const verified=await verifyPOReadback(exact[0].Id);
+            await persistQbLink({mapKey:'qbPOMap',sourceIds:[group.poId],qboId:verified.Id,log:{...log,details:[group.poId+' — linked and verified QBO PO #'+verified.Id]},evidence:{result:'linked',batch_id:canary?null:log.ts,api_readback:true,doc_number:group.poId,vendor_id:qbVendorId,date:poDate,total:totalAmount,line_count:qbLines.length}});
+          }catch(e){log.details.push(group.poId+' — VERIFY FAILED: '+e.message);results.push({poId:group.poId,result:'blocked',error:e.message});log.status='partial';continue}
+          poMap[group.poId]=exact[0].Id;results.push({poId:group.poId,result:'linked',qboId:String(exact[0].Id),total:totalAmount});log.details.push(group.poId+' — exact existing QB PO #'+exact[0].Id+' verified');synced++;continue;
         }
-        if(sameNumber.length){log.details.push(group.poId+' — BLOCKED: QBO purchase-order number exists with a different vendor, date, or total');log.status='partial';continue}
+        if(sameNumber.length){const error='QBO purchase-order number exists with a different vendor, date, or total';log.details.push(group.poId+' — BLOCKED: '+error);results.push({poId:group.poId,result:'blocked',error});log.status='partial';continue}
         let res;
         try{res=await qbApi('upsert_purchase_order',{purchase_order:qbPO})}
-        catch(e){log.details.push(group.poId+' — FAILED: '+e.message);log.status='partial';continue}
+        catch(e){log.details.push(group.poId+' — FAILED: '+e.message);results.push({poId:group.poId,result:'failed',error:e.message});log.status='partial';continue}
         if(res?.PurchaseOrder?.Id){
-          if(canary){
-            try{
-              const verified=await verifyCanaryReadback('PurchaseOrder',res.PurchaseOrder.Id,{docNumber:group.poId,refField:'VendorRef',refValue:qbVendorId,total:totalAmount,txnDate:poDate});
-              await persistQbLink({mapKey:'qbPOMap',sourceIds:[group.poId],qboId:verified.Id,log:{...log,details:[group.poId+' — created and verified QBO PO #'+verified.Id]},evidence:{result:'created',api_readback:true,doc_number:group.poId,vendor_id:qbVendorId,date:poDate,total:totalAmount}});
-              log.details.push('READ-BACK VERIFIED: '+group.poId+' · QBO PurchaseOrder #'+verified.Id+' · $'+safeNum(verified.TotalAmt).toFixed(2));
-            }catch(e){log.details.push(group.poId+' — VERIFY FAILED: '+e.message);log.status='error';continue}
-          }
+          try{
+            const verified=await verifyPOReadback(res.PurchaseOrder.Id);
+            await persistQbLink({mapKey:'qbPOMap',sourceIds:[group.poId],qboId:verified.Id,log:{...log,details:[group.poId+' — created and verified QBO PO #'+verified.Id]},evidence:{result:'created',batch_id:canary?null:log.ts,api_readback:true,doc_number:group.poId,vendor_id:qbVendorId,date:poDate,total:totalAmount,line_count:qbLines.length}});
+            log.details.push('READ-BACK VERIFIED: '+group.poId+' · QBO PurchaseOrder #'+verified.Id+' · $'+safeNum(verified.TotalAmt).toFixed(2));
+          }catch(e){log.details.push(group.poId+' — VERIFY FAILED: '+e.message);results.push({poId:group.poId,result:'created_unverified',qboId:String(res.PurchaseOrder.Id),error:e.message});log.status='partial';continue}
           poMap[group.poId]=res.PurchaseOrder.Id;
-          log.details.push(group.poId+' → QB PO #'+res.PurchaseOrder.Id+' ('+vendorName+' $'+totalAmount.toFixed(2)+', '+qbLines.length+' items)');synced++;
-        }else{log.details.push(group.poId+' — FAILED: '+qbResponseErrorDetail(res));log.status='partial'}
+          results.push({poId:group.poId,result:'created',qboId:String(res.PurchaseOrder.Id),total:totalAmount});log.details.push(group.poId+' → QB PO #'+res.PurchaseOrder.Id+' ('+vendorName+' $'+totalAmount.toFixed(2)+', '+qbLines.length+' items)');synced++;
+        }else{const error=qbResponseErrorDetail(res);log.details.push(group.poId+' — FAILED: '+error);results.push({poId:group.poId,result:'failed',error});log.status='partial'}
       }
       if(synced===0&&poGroups.length>0)log.status='error';
       log.details.unshift(synced+'/'+poGroups.length+(canary?' purchase-order canary':' purchase orders completed in this batch')+(allPoGroups.length>poGroups.length?' · '+(allPoGroups.length-poGroups.length)+' remain':''));
-      setQBConfig(prev=>({...prev,...(!canary?{_purchaseOrderSyncOffset:purchaseOrderBatch.nextOffset}:{}),qbPOMap:{...prev.qbPOMap,...poMap},syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
-      nf(canary?(synced?'Created/linked and verified exactly one QBO purchase order':'Purchase-order canary stopped'):(synced+' purchase orders synced to QB'),synced?'success':'error');
+      const report={id:'purchase-order-batch-'+new Date().toISOString(),status:synced===poGroups.length?'success':'partial',results,counts:results.reduce((counts,row)=>({...counts,[row.result]:(counts[row.result]||0)+1}),{})};
+      setQBConfig(prev=>({...prev,qbPOMap:{...prev.qbPOMap,...poMap},...(!canary?{lastPurchaseOrderBatch:report}:{}),syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
+      nf(canary?(synced?'Created/linked and verified exactly one QBO purchase order':'Purchase-order canary stopped'):
+        (synced+'/'+poGroups.length+' purchase orders verified; review the saved reconciliation'),
+        canary?(synced?'success':'error'):(synced===poGroups.length?'success':'error'));
       setQbSyncing(false);
-      return{status:synced===1?'success':'blocked',synced};
+      if(canary)return{status:synced===1?'success':'blocked',synced};
+      return{status:synced===poGroups.length?'success':'partial',synced,report};
+    };
+
+    // Verify native PO-to-existing-bill relationships that were created through
+    // QBO's supported Add to Bill workflow. This routine is read-only in QBO;
+    // it writes a durable portal receipt only after both records agree.
+    const verifyPurchaseOrderBillLinks=async(options={})=>{
+      if(!canaryPreflightReady()||!requireDurableLinks())return{status:'blocked',verified:0};
+      const canaryPOId=String(options.canaryPOId||'');
+      const expectedBillId=String(options.expectedBillId||'').trim();
+      if(!canaryPOId||!expectedBillId){nf('Select one purchase order and enter the existing QBO bill ID reviewed in QuickBooks','error');return{status:'blocked',verified:0}}
+      const receiptMap={...(qbConfig.qbPOBillMap||{})};
+      const selected=Object.entries(qbConfig.qbPOMap||{}).filter(([portalPOId])=>String(portalPOId)===canaryPOId);
+      if(selected.length!==1){nf('Choose one saved QBO purchase order','error');return{status:'blocked',verified:0}}
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:canaryPOId?'purchase_order_bill_canary':'purchase_order_bill_links',status:'success',details:[]};
+      let bills=[];let verified=0;
+      try{bills=await loadAllQBEntities(qbApi,'Bill','*',500)}catch(e){
+        log.status='error';log.details.push('Bill read-back failed: '+e.message);
+        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));setQbSyncing(false);nf('PO-to-bill verification blocked — QBO bill query failed','error');return{status:'blocked',verified:0};
+      }
+      for(const [portalPOId,qboPOId] of selected){
+        try{
+          const poResult=await queryQBReadOnly(qbApi,"SELECT * FROM PurchaseOrder WHERE Id = '"+String(qboPOId).replace(/'/g,"\\'")+"' MAXRESULTS 1",'purchase-order API read-back');
+          const po=poResult?.QueryResponse?.PurchaseOrder?.[0];
+          if(!po||String(po.Id)!==String(qboPOId))throw new Error('saved QBO purchase order was not returned');
+          const matches=findQbPOBillCandidates(bills,portalPOId,qboPOId);
+          if(matches.length!==1)throw new Error(matches.length?'multiple bills reference this purchase order':'no bill references this purchase order');
+          const bill=matches[0];
+          if(String(bill.Id)!==expectedBillId)throw new Error('matched bill differs from the reviewed existing bill ID');
+          if(String(po.DocNumber||'').trim()!==String(portalPOId).trim())throw new Error('saved purchase order number differs from the portal PO');
+          if(!billReferencesPortalPO(bill,portalPOId))throw new Error('bill memo does not contain the exact portal PO reference');
+          const billLinks=qbLinkedTransactions(bill).filter(link=>link.TxnType==='PurchaseOrder');
+          const poLinks=qbLinkedTransactions(po).filter(link=>link.TxnType==='Bill');
+          if(billLinks.some(link=>String(link.TxnId)!==String(qboPOId)))throw new Error('bill is linked to a different purchase order');
+          if(poLinks.some(link=>String(link.TxnId)!==String(bill.Id)))throw new Error('purchase order is linked to a different bill');
+          if(!billLinks.some(link=>String(link.TxnId)===String(qboPOId)))throw new Error('bill API read-back does not contain the purchase-order link');
+          if(!poLinks.some(link=>String(link.TxnId)===String(bill.Id)))throw new Error('purchase-order API read-back does not contain the bill link');
+          if(!po.VendorRef?.value||String(bill.VendorRef?.value||'')!==String(po.VendorRef.value))throw new Error('bill and purchase order vendors differ or are missing');
+          const snapshot=record=>Object.fromEntries(['Id','SyncToken','DocNumber','TxnDate','DueDate','TotalAmt','Balance','VendorRef','PrivateNote','POStatus','LinkedTxn','Line'].filter(key=>record[key]!==undefined).map(key=>[key,record[key]]));
+          const evidence={result:'verified',api_readback:true,purchase_order_id:String(qboPOId),bill_id:String(bill.Id),bill_doc_number:bill.DocNumber||'',bill_date:bill.TxnDate||'',bill_total:safeNum(bill.TotalAmt),purchase_order_total:safeNum(po.TotalAmt),vendor_id:String(po.VendorRef.value),reciprocal_link:true,reviewed_bill_id:expectedBillId,purchase_order:snapshot(po),bill:snapshot(bill)};
+          const receiptLog={...log,details:[portalPOId+' — QBO PO #'+qboPOId+' linked to existing Bill #'+bill.Id+' and verified from both API records',JSON.stringify(evidence)]};
+          await persistQbLink({mapKey:'qbPOBillMap',sourceIds:[portalPOId],qboId:bill.Id,log:receiptLog,evidence});
+          setQBConfig(prev=>({...prev,lastPOBillVerification:{realm:qbConfig.realm_id,verifiedAt:new Date().toISOString(),portalPOId,...evidence}}));
+          receiptMap[portalPOId]=String(bill.Id);verified++;
+          log.details.push(portalPOId+' — VERIFIED: QBO PO #'+qboPOId+' ↔ existing Bill #'+bill.Id);
+        }catch(e){log.status='partial';log.details.push(portalPOId+' — BLOCKED: '+e.message)}
+      }
+      log.details.unshift(verified+'/'+selected.length+(canaryPOId?' PO-to-bill canary':' PO-to-bill links')+' verified by reciprocal API read-back');
+      if(!verified)log.status='error';
+      setQBConfig(prev=>({...prev,qbPOBillMap:{...prev.qbPOBillMap,...receiptMap},syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
+      setQbSyncing(false);nf(verified+' PO-to-bill link'+(verified===1?'':'s')+' verified',verified?'success':'error');
+      return{status:verified===selected.length?'success':'blocked',verified};
+    };
+
+    const reviewPurchaseOrderBillCandidate=async portalPOId=>{
+      const qboPOId=qbConfig.qbPOMap?.[portalPOId];
+      if(!qboPOId)return{status:'blocked',reason:'Portal PO has no saved QBO purchase-order link'};
+      const bills=await loadAllQBEntities(qbApi,'Bill','*',500);
+      const poResult=await queryQBReadOnly(qbApi,"SELECT * FROM PurchaseOrder WHERE Id = '"+String(qboPOId).replace(/'/g,"\\'")+"' MAXRESULTS 1",'purchase-order API read-back');
+      const po=poResult?.QueryResponse?.PurchaseOrder?.[0];
+      const matches=findQbPOBillCandidates(bills,portalPOId,qboPOId);
+      if(!po||matches.length!==1)return{status:'blocked',reason:!po?'Purchase order was not returned by QBO':matches.length?'Multiple QBO bills reference this PO':'No QBO bill memo contains this exact PO'};
+      const bill=matches[0];
+      if(String(po.DocNumber||'').trim()!==String(portalPOId).trim()||!billReferencesPortalPO(bill,portalPOId)||String(po.VendorRef?.value||'')!==String(bill.VendorRef?.value||''))return{status:'blocked',reason:'PO number, bill memo, or vendor did not match'};
+      const alreadyLinked=qbLinkedTransactions(bill).some(link=>link.TxnType==='PurchaseOrder'&&String(link.TxnId)===String(qboPOId));
+      if(!alreadyLinked)buildQBBillPOReplacement({bill,purchaseOrder:po});
+      return{status:alreadyLinked?'linked':'ready',portalPOId,qboPOId:String(qboPOId),billId:String(bill.Id),billDocNumber:bill.DocNumber||'',vendor:bill.VendorRef?.name||'',billDate:bill.TxnDate||'',billTotal:safeNum(bill.TotalAmt),poDate:po.TxnDate||'',poTotal:safeNum(po.TotalAmt),bill,po};
+    };
+
+    const linkPurchaseOrderBill=async(options={})=>{
+      const portalPOId=String(options.portalPOId||''),expectedBillId=String(options.expectedBillId||'');
+      if(!options.approved||!portalPOId||!expectedBillId)return{status:'blocked'};
+      if(!canaryPreflightReady()||!requireDurableLinks())return{status:'blocked'};
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:options.batchId?'purchase_order_bill_link_record':'purchase_order_bill_link_canary',status:'success',details:[]};
+      try{
+        const review=await reviewPurchaseOrderBillCandidate(portalPOId);
+        if(!['ready','linked'].includes(review.status))throw new Error(review.reason||'PO-to-bill candidate is blocked');
+        if(review.billId!==expectedBillId)throw new Error('QBO bill changed after review');
+        if(review.status==='ready'){
+          const before={id:review.billId,doc:review.billDocNumber,date:review.billDate,total:review.billTotal,vendor:String(review.bill.VendorRef?.value||'')};
+          const payload=buildQBBillPOReplacement({bill:review.bill,purchaseOrder:review.po});
+          const result=await qbApi('upsert_bill',{bill:payload});
+          if(!result?.Bill?.Id)throw new Error('QBO bill link update failed: '+qbResponseErrorDetail(result));
+          const billResult=await queryQBReadOnly(qbApi,"SELECT * FROM Bill WHERE Id = '"+expectedBillId.replace(/'/g,"\\'")+"' MAXRESULTS 1",'bill link API read-back');
+          const poResult=await queryQBReadOnly(qbApi,"SELECT * FROM PurchaseOrder WHERE Id = '"+review.qboPOId.replace(/'/g,"\\'")+"' MAXRESULTS 1",'purchase-order link API read-back');
+          const bill=billResult?.QueryResponse?.Bill?.[0],po=poResult?.QueryResponse?.PurchaseOrder?.[0];
+          if(!bill||!po||String(bill.Id)!==before.id||String(bill.DocNumber||'')!==String(before.doc)||String(bill.TxnDate||'')!==String(before.date)||Math.abs(safeNum(bill.TotalAmt)-before.total)>=0.005||String(bill.VendorRef?.value||'')!==before.vendor)throw new Error('Bill identity, date, vendor, or total changed on read-back');
+          if(!qbLinkedTransactions(bill).some(link=>link.TxnType==='PurchaseOrder'&&String(link.TxnId)===review.qboPOId)||!qbLinkedTransactions(po).some(link=>link.TxnType==='Bill'&&String(link.TxnId)===before.id))throw new Error('QBO did not return reciprocal links after the update');
+        }
+        const finalReview=await reviewPurchaseOrderBillCandidate(portalPOId);
+        if(finalReview.status!=='linked'||finalReview.billId!==expectedBillId)throw new Error('Final reciprocal link verification failed');
+        const evidence={result:review.status==='linked'?'already_linked':'linked',link_method:review.status==='linked'?'qbo_existing':'api_bill_update',api_readback:true,purchase_order_id:finalReview.qboPOId,bill_id:finalReview.billId,bill_doc_number:finalReview.billDocNumber,bill_date:finalReview.billDate,bill_total:finalReview.billTotal,purchase_order_total:finalReview.poTotal,vendor_id:String(finalReview.po.VendorRef?.value||''),reciprocal_link:true,batch_id:options.batchId||null};
+        await persistQbLink({mapKey:'qbPOBillMap',sourceIds:[portalPOId],qboId:finalReview.billId,log:{...log,details:[portalPOId+' — linked QBO PO #'+finalReview.qboPOId+' to existing Bill #'+finalReview.billId+' and verified from both API records']},evidence});
+        setQBConfig(prev=>({...prev,qbPOBillMap:{...prev.qbPOBillMap,[portalPOId]:finalReview.billId},lastPOBillLinkCanary:options.batchId?prev.lastPOBillLinkCanary:{portalPOId,...evidence,verifiedAt:new Date().toISOString()},syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
+        setQbSyncing(false);nf('PO-to-bill link verified','success');return{status:'success',portalPOId,billId:finalReview.billId};
+      }catch(e){log.status='error';log.details.push(portalPOId+' — BLOCKED: '+e.message);setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));setQbSyncing(false);nf('PO-to-bill link stopped — '+e.message,'error');return{status:'blocked',reason:e.message}}
     };
 
     // ── SYNC ALL ──
@@ -1062,5 +1564,5 @@ export function createQBSyncEngine(ctx){
       setQbSyncing(false);
     };
 
-    return {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,syncAll};
+    return {syncTaxRateCanary,syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,reviewPurchaseOrderBillCandidate,linkPurchaseOrderBill,syncAll};
 }

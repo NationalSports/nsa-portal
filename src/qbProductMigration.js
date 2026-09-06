@@ -1,4 +1,4 @@
-import {queryQBReadOnly} from './qbAccountMappings';
+import {QB_MAX_REVIEWED_BATCH, queryQBReadOnly} from './qbAccountMappings';
 import {mergeQBSyncLogs} from './qbLinkLedger';
 
 export const normalizeProductSKU=value=>String(value||'').trim().toUpperCase();
@@ -10,6 +10,16 @@ export async function loadQBProductItems(qbApi){
     if(page.length<1000)return items;
   }
   throw new Error('Product review exceeded the pagination limit');
+}
+
+// What the product batch still needs before it may run, as data rather than a boolean,
+// so the Run button can say which half is missing instead of failing on click. Reads the
+// durable receipts first: syncLog keeps only the newest 100 events and drops these.
+export function qbProductBatchReadiness(config={}){
+  const logs=(config.syncLog||[]).filter(l=>l.type==='item_canary'&&l.status==='success');
+  const linked=!!config.prodLinkCanaryVerifiedAt||logs.some(l=>l.details?.some(d=>String(d).startsWith('LINK ONLY')));
+  const created=!!config.prodCreateCanaryVerifiedAt||logs.some(l=>l.details?.some(d=>String(d).startsWith('CREATED:')));
+  return {linked,created,ready:linked&&created};
 }
 
 export function buildQBProductManifest(products,items,map={},refs={}){
@@ -50,9 +60,8 @@ export async function runQBProductMigration({options,products,config,qbApi,requi
   const canary=!!options.canaryProductId,manifest=options.manifest;
   const age=Date.now()-Date.parse(manifest?.reviewedAt||'');
   if(!canary){
-    const logs=(config.syncLog||[]).filter(l=>l.type==='item_canary'&&l.status==='success');
-    const linked=logs.some(l=>l.details?.some(d=>d.startsWith('LINK ONLY'))),created=logs.some(l=>l.details?.some(d=>d.startsWith('CREATED:')));
-    if(!options.approved||!linked||!created||!manifest?.rows?.length||manifest.rows.length>20||new Set(manifest.rows.map(r=>r.sku)).size!==manifest.rows.length||manifest.rows.some(r=>!['link','create'].includes(r.action))||String(manifest.realm)!==String(config.realm_id)||!Number.isFinite(age)||age<0||age>900000){nf('Product batch blocked: approve a fresh product review after link and create canaries','error');return {status:'blocked'};}
+    const {linked,created}=qbProductBatchReadiness(config);
+    if(!options.approved||!linked||!created||!manifest?.rows?.length||manifest.rows.length>QB_MAX_REVIEWED_BATCH||new Set(manifest.rows.map(r=>r.sku)).size!==manifest.rows.length||manifest.rows.some(r=>!['link','create'].includes(r.action))||String(manifest.realm)!==String(config.realm_id)||!Number.isFinite(age)||age<0||age>900000){nf('Product batch blocked: approve a fresh product review of at most '+QB_MAX_REVIEWED_BATCH+' SKUs after link and create canaries','error');return {status:'blocked'};}
   }
   setQbSyncing(true);
   const report={id:'product-'+(canary?'canary-':'batch-')+new Date().toISOString(),realm:config.realm_id,status:'running',startedAt:new Date().toISOString(),results:[],counts:{created:0,linked:0,blocked:0,not_attempted:0}};
@@ -60,10 +69,15 @@ export async function runQBProductMigration({options,products,config,qbApi,requi
   try{
     const refs=await requiredAccountRefs(['income_account','purchases_account']);
     let planned=manifest?.rows;
+    // Read every QBO item and build the plan ONCE per run. Doing both per record is
+    // quadratic in catalogue size and is what forced the old 20-SKU cap; each record
+    // still proves itself with a full API read-back after its write, and every
+    // verified item is folded back into the snapshot for the records that follow.
+    let items=await loadQBProductItems(qbApi);
+    let rowBySku=new Map(buildQBProductManifest(products,items,map,refs).filter(r=>r.action!=='excluded').map(r=>[r.sku,r]));
     if(canary){
-      const rows=buildQBProductManifest(products,await loadQBProductItems(qbApi),map,refs);
-      const row=rows.find(r=>r.sourceIds.includes(String(options.canaryProductId)));
-      if(!row||row.action==='excluded')throw new Error('Choose exactly one active portal SKU');
+      const row=[...rowBySku.values()].find(r=>r.sourceIds.includes(String(options.canaryProductId)));
+      if(!row)throw new Error('Choose exactly one active portal SKU');
       planned=[row];
     }
     report.plannedRows=planned;setQBConfig(prev=>({...prev,lastProductRun:JSON.parse(JSON.stringify(report))}));
@@ -72,7 +86,7 @@ export async function runQBProductMigration({options,products,config,qbApi,requi
       if(stopped){report.results.push({...plan,result:'not_attempted'});report.counts.not_attempted++;continue;}
       const log={ts:new Date().toLocaleString(),type:canary?'item_canary':'product_batch_record',status:'success',details:[]};
       try{
-        const row=buildQBProductManifest(products,await loadQBProductItems(qbApi),map,refs).find(r=>r.sku===plan.sku&&r.action!=='excluded');
+        const row=rowBySku.get(plan.sku);
         if(!row||!['link','create'].includes(row.action))throw new Error(row?.reason||'SKU no longer eligible');
         if(!canary&&JSON.stringify([row.sku,row.sourceIds,row.qboId,row.action,row.incomeAccount,row.purchasesAccount])!==JSON.stringify([plan.sku,plan.sourceIds,plan.qboId,plan.action,plan.incomeAccount,plan.purchasesAccount]))throw new Error('Product plan changed; run a fresh review');
         if(row.action==='create'&&!(canary?options.allowCreate:options.approved))throw new Error('no active item matched; explicit creation approval is required');
@@ -86,6 +100,8 @@ export async function runQBProductMigration({options,products,config,qbApi,requi
         log.details=[(row.action==='link'?'LINK ONLY — no QBO item was changed: ':'CREATED: ')+row.sku+' → QBO Item #'+id,'READ-BACK VERIFIED: '+row.sku+' · NonInventory · 40000/51300'];
         await persistQbLink({mapKey:'prodQBMap',sourceIds:row.sourceIds,qboId:id,log,evidence:{sku:row.sku,result:row.action==='link'?'linked':'created',batch_id:canary?null:report.id,income_account:row.incomeAccount,purchases_account:row.purchasesAccount,api_readback:true,duplicate_preflight:'verified',no_inventory:true}});
         row.sourceIds.forEach(source=>{map[source]=id});
+        const at=items.findIndex(existing=>String(existing.Id)===String(id));
+        if(at>=0)items[at]=verified; else items.push(verified);
         const result=row.action==='link'?'linked':'created';report.counts[result]++;
         report.results.push({...row,qboId:id,result,apiReadback:true});
       }catch(e){stopped=true;log.status='error';log.details.push(plan.sku+' — BLOCKED: '+e.message);report.counts.blocked++;report.results.push({...plan,result:'blocked',error:e.message});}

@@ -23,12 +23,12 @@ function database() {
 const record = (mapKey='custQBMap',extra={}) => ({realmId:'9341456492604246',mapKey,sourceIds:['source-1'],qboId:'2380',
   log:{ts:'2026-09-05T12:00:00Z',type:'canary',status:'success',details:['API read-back verified']},evidence:{api_readback:true},...extra});
 
-test('all four maps and their evidence survive replacement of qb_config and a fresh load',async()=>{
+test('all durable maps and their evidence survive replacement of qb_config and a fresh load',async()=>{
   const {client,rows}=database();
   for(const mapKey of QB_LINK_MAPS)await persistVerifiedQBLink(client,record(mapKey));
   const reloaded=mergeDurableQBLinks({realm_id:record().realmId,syncLog:[]},Object.fromEntries([...rows].map(([k,row])=>[k,row.value])));
   QB_LINK_MAPS.forEach(key=>expect(reloaded[key]).toEqual({'source-1':'2380'}));
-  expect(reloaded.syncLog).toHaveLength(4);
+  expect(reloaded.syncLog).toHaveLength(QB_LINK_MAPS.length);
   expect(reloaded.syncLog.every(log=>log.status==='success')).toBe(true);
   const otherRealm=mergeDurableQBLinks({realm_id:'other'},Object.fromEntries([...rows].map(([k,row])=>[k,row.value])));
   QB_LINK_MAPS.forEach(key=>expect(otherRealm[key]).toEqual({}));
@@ -101,4 +101,61 @@ test('one-item summary and receipt display a single verified result',()=>{
   const summary={...event,details:['1/1 item canary · 10369 remain unlinked',...event.details]};
   expect(mergeQBSyncLogs([summary,receipt])).toEqual([receipt]);
   expect(mergeQBSyncLogs([{...summary,status:'partial'},receipt])).toHaveLength(2);
+});
+
+describe('term-canary proof survives syncLog eviction',()=>{
+  const {mergeDurableQBLinks}=require('../qbLinkLedger');
+  const receipt=(overrides={})=>JSON.stringify({realm_id:'r1',map_key:'custQBMap',source_id:'C1',qbo_id:'486',
+    verified_at:'2026-09-05T17:41:00.000Z',active:true,evidence:{result:'updated'},...overrides});
+  const keyFor=(map,source)=>'_qb_link_v1_'+encodeURIComponent(JSON.stringify(['r1',map,source]));
+
+  test('an updated-terms receipt records the proof even with no matching log entry',()=>{
+    const merged=mergeDurableQBLinks({realm_id:'r1',syncLog:[]},{[keyFor('custQBMap','C1')]:receipt()});
+    expect(merged.custTermCanaryVerifiedAt).toBe('2026-09-05T17:41:00.000Z');
+    expect(merged.custQBMap.C1).toBe('486');
+  });
+  test('only a customer receipt that actually updated terms counts, and not a removed one',()=>{
+    expect(mergeDurableQBLinks({realm_id:'r1'},{[keyFor('custQBMap','C1')]:receipt({evidence:{result:'linked'}})})
+      .custTermCanaryVerifiedAt).toBeUndefined();
+    expect(mergeDurableQBLinks({realm_id:'r1'},{[keyFor('custQBMap','C1')]:receipt({active:false})})
+      .custTermCanaryVerifiedAt).toBeUndefined();
+    expect(mergeDurableQBLinks({realm_id:'r1'},{[keyFor('prodQBMap','P1')]:receipt({map_key:'prodQBMap',source_id:'P1'})})
+      .custTermCanaryVerifiedAt).toBeUndefined();
+  });
+  test('the most recent proof wins and a foreign realm contributes none',()=>{
+    const merged=mergeDurableQBLinks({realm_id:'r1'},{
+      [keyFor('custQBMap','C1')]:receipt(),
+      [keyFor('custQBMap','C2')]:receipt({source_id:'C2',qbo_id:'487',verified_at:'2026-09-06T01:00:00.000Z'}),
+    });
+    expect(merged.custTermCanaryVerifiedAt).toBe('2026-09-06T01:00:00.000Z');
+    expect(mergeDurableQBLinks({realm_id:'other'},{[keyFor('custQBMap','C1')]:receipt()})
+      .custTermCanaryVerifiedAt).toBeUndefined();
+  });
+});
+
+describe('product canary proof also survives syncLog eviction',()=>{
+  const {mergeDurableQBLinks}=require('../qbLinkLedger');
+  const key=source=>'_qb_link_v1_'+encodeURIComponent(JSON.stringify(['r1','prodQBMap',source]));
+  const receipt=(source,result,at)=>JSON.stringify({realm_id:'r1',map_key:'prodQBMap',source_id:source,
+    qbo_id:'900',verified_at:at,active:true,evidence:{result}});
+
+  test('linked and created receipts are each recorded',()=>{
+    const merged=mergeDurableQBLinks({realm_id:'r1'},{
+      [key('P1')]:receipt('P1','linked','2026-09-05T17:52:00.000Z'),
+      [key('P2')]:receipt('P2','created','2026-09-05T15:08:19.145Z'),
+    });
+    expect(merged.prodLinkCanaryVerifiedAt).toBe('2026-09-05T17:52:00.000Z');
+    expect(merged.prodCreateCanaryVerifiedAt).toBe('2026-09-05T15:08:19.145Z');
+  });
+  test('link-only receipts never imply a creation was proven',()=>{
+    const merged=mergeDurableQBLinks({realm_id:'r1'},{[key('P1')]:receipt('P1','linked','2026-09-05T17:52:00.000Z')});
+    expect(merged.prodLinkCanaryVerifiedAt).toBeTruthy();
+    expect(merged.prodCreateCanaryVerifiedAt).toBeUndefined();
+  });
+  test('a removed receipt proves nothing',()=>{
+    const merged=mergeDurableQBLinks({realm_id:'r1'},
+      {[key('P1')]:JSON.stringify({realm_id:'r1',map_key:'prodQBMap',source_id:'P1',qbo_id:'900',
+        verified_at:'2026-09-05T17:52:00.000Z',active:false,evidence:{result:'created'}})});
+    expect(merged.prodCreateCanaryVerifiedAt).toBeUndefined();
+  });
 });

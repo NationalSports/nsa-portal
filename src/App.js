@@ -32,6 +32,7 @@ import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import GlobalSearch from './GlobalSearch';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills, portalBillAlreadyApplied } from './appliedBillsLedger';
+import { createBillApplySession, billAttemptJournal, billingAttemptKey, sameBillingSnapshot } from './billApplySession';
 import { canViewAiInbox, resolveAccessUser } from './lib/pageAccess';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
 import { buildJobs, billOverageQty, billLineNeed, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost, assistantNormSize, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
@@ -45,7 +46,7 @@ import { consolidateArtFamilies, artFamilyIds, artFamilyIdsIn } from './lib/artS
 import { approveArtOnSO, sendArtBackOnSO, artApproveTarget } from './lib/artReview';
 import { approvalArtContext } from './lib/artApproval';
 import { closeOpenArtRequests } from './lib/artRequests';
-import { completedJobInvoiceExplanation, hasResponsePoForPull, isFreshNotificationDate, picksForCurrentSku, pulledItemsHaveMovedInLine, shouldShowCompletedJobNotice, shouldShowMockupReviewNotice } from './lib/dashboardNotificationRules';
+import { completedJobInvoiceExplanation, getOrderInvoiceCoverage, hasResponsePoForPull, isOrderFullyInvoiced, isFreshNotificationDate, picksForCurrentSku, pulledItemsHaveMovedInLine, shouldShowCompletedJobNotice, shouldShowMockupReviewNotice } from './lib/dashboardNotificationRules';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { AppDataProvider } from './AppContext';
 import PortalAssistant from './PortalAssistant';
@@ -495,6 +496,7 @@ import {
   _prodDiffCmp,
   _setInvBaseProvider,
   _clearDocumentConflictCooldown,
+  _isDocumentConflictCooling,
   _hasActiveDocumentSave,
   _dbSaveEstimate,
   _dbSaveSO,
@@ -2721,19 +2723,14 @@ export default function App(){
         // Tier 1 (essential): everything the dashboard renders — orders, customers, invoices, messages,
         // todos, history, config — but NOT the ~47k product catalog / _pimg_ image rows (the dashboard
         // never reads them). Paints fast; products stream in via the tier-2 load below.
-        let d=await Promise.race([_dbLoad({essential:true,histInvoices:false,fullState:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
-        // If even 120s wasn't enough, retry ONCE immediately with no cap before falling through to the
-        // error banner — the uncapped poll would recover anyway, but only after its ~2min interval, which
-        // left slow/overseas users staring at an empty "0 jobs" board and a scary banner in the meantime.
-        if(!d&&!cancelled){console.warn('[DB] Initial load hit the '+(_LOAD_CAP_MS/1000)+'s cap — retrying once uncapped before showing the error banner');d=await _dbLoad({essential:true,histInvoices:false,fullState:true})}
+        const d=await Promise.race([_dbLoad({essential:true,histInvoices:false,fullState:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
+        // Do not retry uncapped here: a stalled auth/query queue would keep the
+        // loading gate open forever. The existing recovery poll retries with writes paused.
         if(cancelled)return;
         if(!d){
           // Supabase connected but query failed — do NOT allow writes that could overwrite real data
-          // Wording matters: reaching here means the 120s race lost AND the uncapped retry also came back
-          // empty — almost always a slow/failing CLIENT connection while the server is fine. The old "Could
-          // not load data from Supabase" text sent people hunting server dashboards. Say what happened, that
-          // it self-heals (the poll clears this banner when a later load succeeds), and what to check.
-          setDbError('This tab’s initial data load didn’t finish in time (usually a slow connection, not a server problem). Cloud saves are paused so this tab can’t overwrite good data — it will keep retrying automatically. Check your internet if this persists.');
+          // Keep writes paused until the recovery poll successfully reloads the database.
+          setDbError('The initial Portal data load did not complete. Cloud saves are paused to protect existing data. This tab will retry automatically; reload if the problem persists.');
           console.error('[DB] Load returned null — blocking Supabase writes');
         }else if(d.hasData){
           // If decoration queries timed out during initial load, warn user — data is incomplete
@@ -2918,7 +2915,7 @@ export default function App(){
           // blobs (change_log/so_history/qb_config/company_info…) that the 2026-08-11 cache purge
           // had already emptied locally. Treat it as a failed load: banner up, writes stay paused
           // (_dbLoadSuccess stays false), the poll retries and re-enables writes when a load succeeds.
-          setDbError('This tab’s initial data load didn’t finish in time (usually a slow connection, not a server problem). Cloud saves are paused so this tab can’t overwrite good data — it will keep retrying automatically. Check your internet if this persists.');
+          setDbError('The initial Portal data load did not complete. Cloud saves are paused to protect existing data. This tab will retry automatically; reload if the problem persists.');
           console.error('[DB] Initial load returned no data but parent queries timed out — treating as a FAILED load, not an empty database (seeding suppressed)');
         }else{
           // Supabase tables exist but are all empty — seed from localStorage
@@ -2955,7 +2952,7 @@ export default function App(){
             // be applied wholesale (would blank state + snapshot) nor fall through to the seed
             // fallback (would re-seed the live DB from local defaults). Fail the load instead.
             if(d2&&d2._parentTimedOut){
-              setDbError('This tab’s initial data load didn’t finish in time (usually a slow connection, not a server problem). Cloud saves are paused so this tab can’t overwrite good data — it will keep retrying automatically. Check your internet if this persists.');
+              setDbError('The initial Portal data load did not complete. Cloud saves are paused to protect existing data. This tab will retry automatically; reload if the problem persists.');
               console.error('[DB] Post-seed-wait load had parent-table timeouts — treating as a FAILED load (apply and fallback-seed both suppressed)');
             }else if(d2?.hasData){
               _dbSnap.current={ests:d2.estimates,sos:d2.sales_orders,invs:d2.invoices,msgs:d2.messages,cust:d2.customers,prod:d2.products,vend:d2.vendors,team:d2.team,omg:d2.omg_stores,issues:d2.issues,assignedTodos:d2.assignedTodos||[]};
@@ -3530,7 +3527,7 @@ export default function App(){
   // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
   // Uses _dbSnap to diff against last DB state — only saves records that actually changed (prevents cross-browser feedback loops)
-  const _diffSave=(arr,snapKey,saveFn,cmpFn=_diffCmp)=>{if(_authErrorDetected)return;if(!_initialLoadDone.current||!_dbLoadSuccess.current){if(!_diffSaveSkipLogged.has(snapKey)){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);_diffSaveSkipLogged.add(snapKey)}if(_initialLoadDone.current){const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item))_dbSavePendingIds.add(item.id)})}return}const snap=_dbSnap.current[snapKey]||[];const changed=[];const oldById=new Map();arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item)){changed.push(item);oldById.set(item.id,old||null)}});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;changed.forEach(item=>_dbSavePendingIds.add(item.id));const BATCH=3;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSyncInc();try{await Promise.all(batch.map(async item=>{const result=saveFn(item,oldById.get(item.id));if(result&&typeof result.then==='function'){const ok=await result;if(ok!==false){(!_hasActiveDocumentSave(item.id)&&_dbSavePendingIds.delete(item.id))}else{const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id&&s===item?(snap.find(p=>p.id===item.id)||s):s)}}}))}finally{_bgSyncDec()}if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
+  const _diffSave=(arr,snapKey,saveFn,cmpFn=_diffCmp)=>{if(_authErrorDetected)return;if(!_initialLoadDone.current||!_dbLoadSuccess.current){if(!_diffSaveSkipLogged.has(snapKey)){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);_diffSaveSkipLogged.add(snapKey)}if(_initialLoadDone.current){const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item))_dbSavePendingIds.add(item.id)})}return}const snap=_dbSnap.current[snapKey]||[];const changed=[];const oldById=new Map();arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item)){changed.push(item);oldById.set(item.id,old||null)}});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;changed.forEach(item=>_dbSavePendingIds.add(item.id));const BATCH=3;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSyncInc();try{await Promise.all(batch.map(async item=>{const result=saveFn(item,oldById.get(item.id));if(result&&typeof result.then==='function'){const ok=await result;if(ok!==false){(!_hasActiveDocumentSave(item.id)&&_dbSavePendingIds.delete(item.id))}else if(!_isDocumentConflictCooling(item.id)){const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id&&s===item?(snap.find(p=>p.id===item.id)||s):s)}}}))}finally{_bgSyncDec()}if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false,access:r.access||null,commission_eligible:r.commission_eligible===true})));_dbSnap.current.team=REPS}},[REPS]);
   React.useEffect(()=>{_diffSave(cust,'cust',c=>_dbSaveCustomer(c),_custDiffCmp)},[cust]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed.map(v=>_pick(v,_vendCols)));_dbSnap.current.vend=vend}},[vend]);
@@ -6061,20 +6058,9 @@ export default function App(){
     setSnoozeOpenKey(null);
     nf(note||('Snoozed for '+days+' day'+(days!==1?'s':'')));
   };
-  // Opening a to-do to actually work it (click-through) clears it from the list "for now" — it rolls
-  // back onto the board tomorrow if it's still open, and stays hidden on every dashboard surface (not
-  // just the one that was clicked). Follow-ups push their source follow_up_at forward; the "Mockup
-  // ready for review" status to-do has no such date, so it uses the generic snooze map. A real state
-  // change (Approve / Send to Coach / Request changes) still clears the mockup to-do for good on its own.
-  const _todoClickedThrough=(t)=>{if(!t)return;
-    if(_todoIsFollowUp(t)){snoozeTodo(t,1,'⏰ Follow-up cleared for now — back tomorrow if still open');return}
-    // A 'art' (🎨 Mockup ready for review) to-do must NOT be snoozed just because the card was
-    // opened. A returned proof the rep merely clicked into — but has not sent to coach or approved —
-    // still needs review, and auto-hiding it for a day is how returned artwork "disappeared" the
-    // moment the rep clicked in (SO-1625: "I definitely submitted for art, but didn't see it when it
-    // came back"). This to-do already clears itself on a real state change — sent_to_coach_at set, or
-    // art_status leaving waiting_approval (see the todo builder) — so it needs no click-through snooze.
-  };
+  // Navigation is not completion. Only an explicit Snooze or a successful send
+  // may move follow_up_at; inspecting an order must leave its reminder due.
+  const _todoClickedThrough=()=>{};
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
   const[uiMode,setUiMode]=useState(()=>{try{return localStorage.getItem('nsa_ui_mode')||'classic'}catch{return'classic'}});// defaults to the classic portal until the team opts into the redesign// 'new' | 'classic' — portal-wide redesign switch. Every redesigned surface keys off this and falls back to its legacy UI in classic mode.
   const toggleUiMode=()=>setUiMode(m=>{const n=m==='new'?'classic':'new';try{localStorage.setItem('nsa_ui_mode',n)}catch{}return n});
@@ -7061,6 +7047,7 @@ export default function App(){
   // data-loss guards, syncs the diff snapshot so the [sos] effect doesn't ALSO fire a full save, and protects
   // the SO from a mid-write poll merge — same pattern as savArtFiles above, but for the entire order.
   const [memoCommandsReady,setMemoCommandsReady]=useState(false),[memoCommand,setMemoCommand]=useState(null);
+  const [memoInlineTarget,setMemoInlineTarget]=useState(null);
   const memoOwnerRef=useRef(String(cu?.id||''));memoOwnerRef.current=String(cu?.id||'');
   React.useEffect(()=>{
     let active=true;setMemoCommandsReady(false);setMemoCommand(null);
@@ -8727,8 +8714,10 @@ export default function App(){
         if(shouldShowCompletedJobNotice(j,so,[...invs,...(histInvs||[])])){const _jobShipped=j.prod_status==='shipped';const _invoiceExplanation=completedJobInvoiceExplanation(so,[...invs,...(histInvs||[])]);todos.push({type:'job_completed',priority:3,msg:(_jobShipped?'📦 Job shipped — invoice needed: ':'🏭 Job completed: ')+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — '+(_jobShipped?'awaiting invoice':'ready to ship')+' · '+_invoiceExplanation,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
       });
       safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'📌 Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm',date:f.created_at||so.created_at})});
-      if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
-        if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'⚠️ Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,repId:_repId,action:'Open SO',role:'all',date:so.expected_date});
+      if(so.expected_date&&!so.deleted_at&&so._shipped!==true&&so._shipping_status!=='shipped'&&!['complete','cancelled','canceled','void','archived','deleted'].includes(so.status)){
+        const due=parseDate(so.expected_date),today=new Date();
+        const dOut=due?Math.round((new Date(due.getFullYear(),due.getMonth(),due.getDate())-new Date(today.getFullYear(),today.getMonth(),today.getDate()))/864e5):NaN;
+        if(dOut<=3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'⚠️ '+(dOut<0?'Overdue by '+Math.abs(dOut)+' day'+(dOut!==-1?'s':''):'Due in '+dOut+' day'+(dOut!==1?'s':''))+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,repId:_repId,action:'Open SO',role:'all',date:so.expected_date});
         if(dOut<=5&&dOut>3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:1,msg:'📅 Due in '+dOut+' days: '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,repId:_repId,action:'Open SO',role:'production',date:so.expected_date})};
       if(calcSOStatus(so)==='need_order')todos.push({type:'order',priority:2,msg:'🛒 Items need ordering: '+(so.memo||so.id),detail:tag,so,action:'Create PO',role:'sales',date:so.created_at});
       // Booking order confirmation todo — fires when within alert threshold of expected ship date
@@ -8853,10 +8842,10 @@ export default function App(){
       else if(bucket==='stale')todos.push({type:'follow_up',priority:0,msg:'🔴 Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · '+days+' days with no response',action:'Close or Re-send',role:'sales',est:e,estC:c2,date:sentDate});
     });
     // Invoice follow-up alerts (uses follow_up_at when set; auto ones are handled by the server sweep)
-    invs.filter(i=>i.status!=='paid'&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
+    invs.filter(i=>opsOpenInvoice(i)&&!['cancelled','canceled'].includes(String(i.status||'').toLowerCase())&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
       const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
       const daysSince=inv2.email_sent_at?Math.floor((new Date()-new Date(inv2.email_sent_at))/(1000*60*60*24)):0;
-      todos.push({type:'inv_followup',priority:1,msg:'⏰ Follow up on invoice '+inv2.id+' ('+daysSince+'d): $'+safeNum(inv2.total).toFixed(2),detail:tag2+' · Follow-up due '+new Date(inv2.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales',inv:inv2,date:inv2.email_sent_at||inv2.created_at});
+      todos.push({type:'inv_followup',priority:1,msg:'⏰ Follow up on invoice '+inv2.id+' ('+daysSince+'d): $'+opsInvoiceBalance(inv2).toFixed(2),detail:tag2+' · Follow-up due '+new Date(inv2.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales',inv:inv2,date:inv2.email_sent_at||inv2.created_at});
     });
     // Recently paid invoices → notification
     invs.filter(i=>i.status==='paid').forEach(inv2=>{
@@ -8876,8 +8865,10 @@ export default function App(){
     todos.forEach(t=>{
       if(t.so){const c=cust.find(x=>x.id===t.so.customer_id);t.repId=c?.primary_rep_id||t.so.created_by}
       else if(t.est){const c=cust.find(x=>x.id===t.est.customer_id);t.repId=c?.primary_rep_id||t.est.created_by}
+      else if(t.inv){const c=cust.find(x=>x.id===t.inv.customer_id);t.repId=c?.primary_rep_id||t.inv.created_by}
       if(t.dismissKey){/* explicit stable key set at creation — keep it */}
       else if(t.est)t.dismissKey=t.type+':'+(t.updateReqId||t.est.id);
+      else if(t.inv)t.dismissKey=t.type+':'+t.inv.id;
       else if(t.so&&t.deliverKey)t.dismissKey=t.type+':'+t.so.id+':'+t.deliverKey;
       else if(t.so&&t.jobId)t.dismissKey=t.type+':'+t.so.id+':'+t.jobId;
       else if(t.so)t.dismissKey=t.type+':'+t.so.id;
@@ -11407,7 +11398,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);if(locked)setESO(locked)}} onEditMemo={memoCommandsReady?openMemoEditor:null} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} onOpenMethodicDashboard={()=>{setESO(null);setESOTab(null);setPg('methodic')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);if(locked)setESO(locked)}} onEditMemo={memoCommandsReady?openMemoEditor:null} memoEditorRef={setMemoInlineTarget} memoEditing={memoCommand?.id===eSO.id&&memoCommand?.ownerId===String(cu?.id)} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} onOpenMethodicDashboard={()=>{setESO(null);setESOTab(null);setPg('methodic')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -13233,8 +13224,10 @@ export default function App(){
         if(shouldShowCompletedJobNotice(j,so,[...invs,...(histInvs||[])])){const _jobShipped=j.prod_status==='shipped';const _invoiceExplanation=completedJobInvoiceExplanation(so,[...invs,...(histInvs||[])]);todos.push({type:'job_completed',priority:3,msg:(_jobShipped?'Job shipped — invoice needed: ':'Job completed: ')+j.art_name,detail:tag+' · '+so.id+' · '+_invoiceExplanation,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
       });
       safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm',date:f.created_at||so.created_at})});
-      if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
-        if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,repId:_repId,action:'Open SO',role:'all',date:so.expected_date});
+      if(so.expected_date&&!so.deleted_at&&so._shipped!==true&&so._shipping_status!=='shipped'&&!['complete','cancelled','canceled','void','archived','deleted'].includes(so.status)){
+        const due=parseDate(so.expected_date),today=new Date();
+        const dOut=due?Math.round((new Date(due.getFullYear(),due.getMonth(),due.getDate())-new Date(today.getFullYear(),today.getMonth(),today.getDate()))/864e5):NaN;
+        if(dOut<=3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:(dOut<0?'Overdue by '+Math.abs(dOut)+' day'+(dOut!==-1?'s':''):'Due in '+dOut+' day'+(dOut!==1?'s':''))+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,repId:_repId,action:'Open SO',role:'all',date:so.expected_date});
         if(dOut<=5&&dOut>3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:1,msg:'Due in '+dOut+' days: '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,repId:_repId,action:'Open SO',role:'production',date:so.expected_date})};
       if(calcSOStatus(so)==='need_order')todos.push({type:'order',priority:2,msg:'Items need ordering: '+(so.memo||so.id),detail:tag,so,action:'Create PO',role:'sales',date:so.created_at});
       if(so.order_type==='booking'&&!so.booking_confirmed&&so.expected_ship_date){
@@ -13290,10 +13283,10 @@ export default function App(){
       else if(bucket==='going_cold')todos.push({type:'follow_up',priority:1,msg:'Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
       else if(bucket==='stale')todos.push({type:'follow_up',priority:0,msg:'Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Close or Re-send',role:'sales',est:e,estC:c2,date:sentDate});
     });
-    invs.filter(i=>i.status!=='paid'&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
+    invs.filter(i=>opsOpenInvoice(i)&&!['cancelled','canceled'].includes(String(i.status||'').toLowerCase())&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
       const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
       const daysSince=inv2.email_sent_at?Math.floor((new Date()-new Date(inv2.email_sent_at))/(1000*60*60*24)):0;
-      todos.push({type:'inv_followup',priority:1,msg:'Follow up on invoice '+inv2.id+' ('+daysSince+'d)',detail:tag2,action:'Follow Up',role:'sales',date:inv2.email_sent_at||inv2.created_at});
+      todos.push({type:'inv_followup',priority:1,msg:'Follow up on invoice '+inv2.id+' ('+daysSince+'d)',detail:tag2,action:'Follow Up',role:'sales',inv:inv2,date:inv2.email_sent_at||inv2.created_at});
     });
     invs.filter(i=>i.status==='paid').forEach(inv2=>{
       const lastPay=inv2.payments?.length>0?inv2.payments[inv2.payments.length-1]:null;
@@ -13306,7 +13299,9 @@ export default function App(){
     todos.forEach(t=>{
       if(t.so){const c=cust.find(x=>x.id===t.so.customer_id);t.repId=c?.primary_rep_id||t.so.created_by}
       else if(t.est){const c=cust.find(x=>x.id===t.est.customer_id);t.repId=c?.primary_rep_id||t.est.created_by}
+      else if(t.inv){const c=cust.find(x=>x.id===t.inv.customer_id);t.repId=c?.primary_rep_id||t.inv.created_by}
       if(t.est)t.dismissKey=t.type+':'+t.est.id;
+      else if(t.inv)t.dismissKey=t.type+':'+t.inv.id;
       else if(t.so&&t.deliverKey)t.dismissKey=t.type+':'+t.so.id+':'+t.deliverKey;
       else if(t.so&&t.jobId)t.dismissKey=t.type+':'+t.so.id+':'+t.jobId;
       else if(t.so)t.dismissKey=t.type+':'+t.so.id;
@@ -25547,6 +25542,15 @@ export default function App(){
   // supplier-invoice deep-link can trigger it. Builds PO-match candidates from the live orders
   // (every portal PO line + deco PO, tagged with customer alpha_tag + SKUs) so the matcher can
   // triangulate (PO# + customer + supplier + SKUs).
+  // Keep the shared predicate here (rather than duplicating a length check): an auto-capture is a
+  // shared accounting decision and must wait for every SO's PO children and customer join.
+  const{isBillQueueHydrated,billQueueHydrationKey}=require('./billQueueHydration');
+  const _siQueueLoadInFlight=React.useRef(false);
+  const _siQueueHydrationKey=React.useRef(null);
+  // Async queue reads close over one render. Keep the latest operational snapshot separately so a
+  // slow read can never turn its stale candidates into a shared outside_portal write.
+  const _siQueueHydrationState=React.useRef({dbLoading,sos,cust});
+  _siQueueHydrationState.current={dbLoading,sos,cust};
   const _siBuildCandidates=()=>{
     const out=[];
     for(const so of sos){
@@ -25646,7 +25650,11 @@ export default function App(){
     // space rule fires, and this writes 'outside_portal' to the SHARED queue for every user —
     // permanently, since a parked row is only re-checked on a high-confidence match. An empty
     // candidate list is an unloaded page, not evidence that a bill isn't ours.
-    if(!(cands||[]).length||!(cust||[]).length)return rows;
+    const liveState=_siQueueHydrationState.current;
+    // Re-check the live state after every async queue fetch. A hydration transition while the
+    // request was in flight invalidates its old candidate list; the effect will run a fresh load.
+    const liveSnapshot=liveState.sos===sos&&liveState.cust===cust&&liveState.dbLoading===dbLoading;
+    if(!liveSnapshot||!isBillQueueHydrated(liveState)||billQueueHydrationKey(liveState)!==_siQueueHydrationKey.current||!(cands||[]).length)return rows;
     const targets=(rows||[]).filter(r=>r._t&&r._t.bucket==='outside'&&!['approved','manual_done','outside_portal','ignored'].includes(r.status||''));
     if(!targets.length||!supabase)return rows;
     const ids=targets.map(r=>r.si_doc_number);
@@ -25659,7 +25667,16 @@ export default function App(){
     }catch(e){return rows}// next load retries; triage still hides them from real work
   };
   const loadSiQueue=async()=>{
-    if(!supabase){nf('Database not connected','error');return}
+    // The queue remains readable while the operational shell hydrates; only the shared
+    // outside_portal write below is gated. Coalesce an effect-triggered load with a manual
+    // refresh/pull so two reads cannot race and overwrite each other's classification.
+    if(!supabase)return;
+    if(_siQueueLoadInFlight.current)return;
+    // Set the key only after this invocation wins the coalescing race. If hydration changes while
+    // this request is in flight, the effect leaves the newer key pending; its loading-state rerun
+    // below then starts a fresh load from the newer render's state instead of losing that transition.
+    _siQueueHydrationKey.current=billQueueHydrationKey({dbLoading,sos,cust});
+    _siQueueLoadInFlight.current=true;
     setSiQueueLoading(true);
     try{
       await loadNetsuitePos();// ignore-list must be live before triage classifies
@@ -25670,13 +25687,18 @@ export default function App(){
       rows=await _autoCaptureOutside(rows,cands);
       setSiQueue(rows);
     }catch(e){nf('Failed to load Sports Inc queue: '+(e.message||e),'error')}
-    setSiQueueLoading(false);
+    finally{_siQueueLoadInFlight.current=false;setSiQueueLoading(false)}
   };
   // Auto-load the queue whenever the bills page opens — the grab/outside buckets now render on the
   // unified screen (Upload & Match + the exceptions drawer), so there's no tab click to hang it on.
   useEffect(()=>{
-    if(supabase&&pg==='import'&&!siQueue.length&&!siQueueLoading)loadSiQueue();
-  },[pg,billView]);// eslint-disable-line react-hooks/exhaustive-deps
+    if(!supabase||pg!=='import')return;
+    const stateKey=billQueueHydrationKey({dbLoading,sos,cust});
+    // A late child/customer hydration changes this key. Once the snapshot is complete, load even
+    // when siQueue already has rows so previously auto-parked rows are re-triaged automatically.
+    if(_siQueueHydrationKey.current===stateKey||_siQueueLoadInFlight.current)return;
+    loadSiQueue();
+  },[pg,billView,dbLoading,sos,cust,siQueueLoading]);// eslint-disable-line react-hooks/exhaustive-deps
   // ── Auto-resolve duplicates (owner: "if duplicates, just auto resolve. Document number
   // would match right?"). The sweep body lives in rImport scope (it needs _docAlreadyApplied /
   // _resolveBillWithDisposition, defined there), so rImport re-assigns this ref on every render
@@ -25721,9 +25743,17 @@ export default function App(){
       });
     }catch(e){_billHoldsLoaded.current=false;/* let a later import visit retry; localStorage still backs the queue meanwhile */}
   };
-  // Server-side applied-bills ledger (applied_bills table, unique on doc#) loaded into a Set so
+  // Runtime key format mirrors the applied_bills unique key: the credit bit is
+  // part of both document-number spaces, so invoice and credit note #s coexist
+  // (d|0|123 = invoice, d|1|123 = credit).
+  const _appliedLedgerKey=(space,value,isCredit)=>space+'|'+(isCredit?'1':'0')+'|'+String(value==null?'':value).trim().toLowerCase();
+  // Server-side applied-bills ledger (applied_bills table, unique on doc# + is_credit) loaded into a Set so
   // _docAlreadyApplied can answer cross-machine: a doc applied on ANY machine is a duplicate here,
-  // even if this browser never saw it. Keys: 'd|<doc#>' and 's|<SI/S&S order#>', lowercased.
+  // even if this browser never saw it. Keys: 'd|<credit>|<doc#>' and 's|<credit>|<SI/S&S order#>', lowercased.
+  const _billApplySession=React.useRef(null);
+  if(!_billApplySession.current)_billApplySession.current=createBillApplySession(billAttemptJournal(localStorage));
+  const _billApplyData=React.useRef(null);
+  _billApplyData.current={sos,submittedBatches,invPOs};
   const _appliedLedger=React.useRef(new Set());
   const _appliedLedgerLoaded=React.useRef(false);
   const loadAppliedLedger=async()=>{
@@ -25737,8 +25767,8 @@ export default function App(){
       if(error)throw error;
       (data||[]).forEach(r=>{
         if(r.status&&r.status!=='pushed')return;// only applied rows may dedup (future holds-merge rows must not)
-        if(r.doc_norm)_appliedLedger.current.add('d|'+r.doc_norm);
-        if(r.si_doc_number)_appliedLedger.current.add('s|'+String(r.si_doc_number).trim().toLowerCase());
+        if(r.doc_norm)_appliedLedger.current.add(_appliedLedgerKey('d',r.doc_norm,r.is_credit));
+        if(r.si_doc_number)_appliedLedger.current.add(_appliedLedgerKey('s',r.si_doc_number,r.is_credit));
       });
       setServerBills((data||[]).filter(r=>!r.status||r.status==='pushed'));
     }catch(e){_appliedLedgerLoaded.current=false;/* retry on next import visit; SO-scan dedup still guards meanwhile */}
@@ -27264,7 +27294,10 @@ export default function App(){
       const dupNote=skippedDups.length?' — '+skippedDups.length+' duplicate(s) skipped (already on the Portal)':'';
       // Persist skip detail (doc # + where it was applied) for the collapsible drawer — the
       // toast vanishes, and "where did my bill go?" deserves a durable, inspectable answer.
-      const skippedInfo=skippedDups.map(d=>({doc:d,where:_docAppliedWhere(d)}));
+      const skippedInfo=skippedDups.map(d=>{
+        const x=d&&typeof d==='object'?d:{doc:d};
+        return{doc:x.doc,where:_docAppliedWhere(x.doc,x.kind,x.is_credit)};
+      });
       if(!results.length){
         // Nothing new came in (all duplicates/scanned/unreadable). Append mode must not clobber
         // an in-progress review; a fresh import resets to the upload step as before.
@@ -27468,27 +27501,30 @@ export default function App(){
             // it and re-pushed. So ALSO treat the bill as already-applied when its SI number is on
             // the ledger's 's|' space (same check the SI-pull path already does).
             const sdn=String(parsed.si_doc_number||'').trim().toLowerCase();
-            const _alreadyApplied=_docAlreadyApplied(parsed.doc_number)||(sdn&&_docAlreadyApplied(sdn,'si'));
+            const credit=!!parsed.is_credit;
+            const dKey=_appliedLedgerKey('d',dn,credit);
+            const sKey=_appliedLedgerKey('s',sdn,credit);
+            const _alreadyApplied=_docAlreadyApplied(parsed.doc_number,undefined,credit)||(sdn&&_docAlreadyApplied(sdn,'si',credit));
             // Already on the Portal (or repeated in this batch). By design the PDF upload is a
             // silent reinforcement of the EDI/auto-pushed bill — normally there's nothing to see,
             // so a duplicate is dropped. The ONE exception worth surfacing: this PDF's total
             // disagrees with what we actually pushed. In that case keep it in review as a
             // read-only flag (it's already applied, so _validateBillForPush blocks any re-push and
             // it can never double-bill) instead of dropping the disagreement silently.
-            if((dn&&seenDocs.has(dn))||(sdn&&seenDocs.has('si|'+sdn))||_alreadyApplied){
-              const appliedTot=seenDocs.has(dn)?null:_appliedDocTotal(parsed.doc_number);
+            if((dn&&seenDocs.has(dKey))||(sdn&&seenDocs.has(sKey))||_alreadyApplied){
+              const appliedTot=seenDocs.has(dKey)?null:_appliedDocTotal(parsed.doc_number,credit);
               if(pdfCrossCheckConflict(parsed.doc_total,appliedTot)){
-                const where=_docAppliedWhere(parsed.doc_number);
+                const where=_docAppliedWhere(parsed.doc_number,undefined,credit);
                 parsed._already_applied=true;
                 parsed.warnings=[...(parsed.warnings||[]),'⚠ Cross-check: this PDF shows $'+safeNum(parsed.doc_total).toFixed(2)+' but the bill already pushed for doc #'+(parsed.doc_number||'').trim()+(where?' ('+where+')':'')+' was $'+safeNum(appliedTot).toFixed(2)+'. Already applied — reference only; review the difference.'];
                 const clabel=bills.length>1?file.name+' (Invoice '+(bi+1)+'/'+bills.length+' — Doc #'+parsed.doc_number+')':file.name;
                 results.push({id:'BILL-'+Date.now()+'-'+idx,file:clabel,text,parsed,selected:false,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now()});
                 idx++;
-              }else{skippedDups.push(parsed.doc_number||parsed.si_doc_number)}
-              if(dn)seenDocs.add(dn);if(sdn)seenDocs.add('si|'+sdn);
+              }else{skippedDups.push({doc:parsed.doc_number||parsed.si_doc_number,kind:parsed.doc_number?'d':'si',is_credit:credit})}
+              if(dn)seenDocs.add(dKey);if(sdn)seenDocs.add(sKey);
               continue;
             }
-            if(dn)seenDocs.add(dn);if(sdn)seenDocs.add('si|'+sdn);
+            if(dn)seenDocs.add(dKey);if(sdn)seenDocs.add(sKey);
             const label=bills.length>1?file.name+' (Invoice '+(bi+1)+'/'+bills.length+' — Doc #'+parsed.doc_number+')':file.name;
             results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text,parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now()});
             idx++;
@@ -27547,10 +27583,14 @@ export default function App(){
         // supplierDocNumber cutover recorded their siDocNumber on the PO line, so checking only
         // doc_number would re-add — and let staff re-push — an already-billed invoice (double-bill).
         const sdn=String(parsed.si_doc_number||'').trim();
-        if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number)||(sdn&&_docAlreadyApplied(sdn,'si')))){skippedDups.push(parsed.doc_number);return}
+        const credit=!!parsed.is_credit;
+        const dKey=_appliedLedgerKey('d',dn,credit);
+        const sKey=_appliedLedgerKey('s',sdn,credit);
+        if((dn||sdn)&&((dn&&seenDocs.has(dKey))||(sdn&&seenDocs.has(sKey))||_docAlreadyApplied(parsed.doc_number,undefined,credit)||(sdn&&_docAlreadyApplied(sdn,'si',credit)))){skippedDups.push({doc:parsed.doc_number||sdn,kind:parsed.doc_number?'d':'si',is_credit:credit});return}
         // Already set aside in Look at Later (server-backed hold) — leave it parked, don't re-add.
         if((dn||sdn)&&_docHeld(parsed)){heldSkip.push(parsed.doc_number);return}
-        if(dn)seenDocs.add(dn);
+        if(dn)seenDocs.add(dKey);
+        else if(sdn)seenDocs.add(sKey);// numberless duplicates; distinct invoice numbers may share an order
         const label='Sports Inc · '+(parsed.supplier||'Supplier')+' · Inv '+(parsed.supplier_doc_number||parsed.doc_number||'?')+(parsed.po_number?' · '+parsed.po_number:'');
         results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text:'',parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now(),source:'sportsinc'});
         idx++;
@@ -27611,10 +27651,14 @@ export default function App(){
         // invoice # was keyed by its order # (si_doc_number); checking only the invoice # would
         // re-add it. Checking both the invoice # and the order # catches it either way.
         const sdn=String(parsed.si_doc_number||'').trim();
-        if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number)||(sdn&&_docAlreadyApplied(sdn,'si')))){skippedDups.push(parsed.doc_number);return}
+        const credit=!!parsed.is_credit;
+        const dKey=_appliedLedgerKey('d',dn,credit);
+        const sKey=_appliedLedgerKey('s',sdn,credit);
+        if((dn||sdn)&&((dn&&seenDocs.has(dKey))||(sdn&&seenDocs.has(sKey))||_docAlreadyApplied(parsed.doc_number,undefined,credit)||(sdn&&_docAlreadyApplied(sdn,'si',credit)))){skippedDups.push({doc:parsed.doc_number||sdn,kind:parsed.doc_number?'d':'si',is_credit:credit});return}
         // Already set aside in Look at Later (server-backed hold) — leave it parked, don't re-add.
         if((dn||sdn)&&_docHeld(parsed)){heldSkip.push(parsed.doc_number);return}
-        if(dn)seenDocs.add(dn);
+        if(dn)seenDocs.add(dKey);
+        else if(sdn)seenDocs.add(sKey);// preserve split-shipment invoices with distinct document numbers
         const label='S&S Activewear · Inv '+(parsed.supplier_doc_number||parsed.doc_number||'?')+(parsed.po_number?' · '+parsed.po_number:'');
         results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text:'',parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now(),source:'ss_orders'});
         idx++;
@@ -27790,15 +27834,16 @@ export default function App(){
       // tick, so billImport.parsed here is the STALE pre-pull list — deduping against it would
       // silently drop any Sports Inc bill that happened to sit in the old session. When given,
       // dedup against what the list actually contains now.
-      const inReview=new Set((freshList||billImport.parsed).map(b=>(b.parsed?.doc_number||'').trim().toLowerCase()).filter(Boolean));
+      const inReview=new Set((freshList||billImport.parsed).map(b=>b?.parsed?.doc_number?_appliedLedgerKey('d',b.parsed.doc_number,b.parsed.is_credit):b?.parsed?.si_doc_number?_appliedLedgerKey('s',b.parsed.si_doc_number,b.parsed.is_credit):'').filter(Boolean));
       const results=[];const dups=[];let idx=0;
       rows.forEach(row=>{
         const t=row._t||_siTriage(row,cands);
         const parsed={...t.parsed};
         // Already billed (from either door)? Self-heal: capture the queue row, don't re-add.
         const sdn=String(parsed.si_doc_number||row.si_doc_number||'').trim();
-        if(_docAlreadyApplied(parsed.doc_number)||(sdn&&_docAlreadyApplied(sdn,'si'))){
-          dups.push(parsed.doc_number||row.si_doc_number);
+        const credit=!!parsed.is_credit;
+        if(_docAlreadyApplied(parsed.doc_number,undefined,credit)||(sdn&&_docAlreadyApplied(sdn,'si',credit))){
+          dups.push({doc:parsed.doc_number||row.si_doc_number,kind:parsed.doc_number?'d':'si',is_credit:credit});
           const upd={status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),
             match_method:'duplicate',match_reason:'Already billed on the Portal — captured without re-applying',applied_doc_number:parsed.doc_number||null};
           _siMarkDoc(row.si_doc_number,upd);
@@ -27806,8 +27851,10 @@ export default function App(){
           return;
         }
         const dn=(parsed.doc_number||'').trim().toLowerCase();
-        if(dn&&inReview.has(dn))return;// already sitting in the review list — don't add twice
-        if(dn)inReview.add(dn);
+        const dKey=_appliedLedgerKey('d',dn,credit);
+        const reviewKey=dn?dKey:_appliedLedgerKey('s',sdn,credit);
+        if((dn||sdn)&&inReview.has(reviewKey))return;// already sitting in the review list — don't add twice
+        if(dn||sdn)inReview.add(reviewKey);
         // Seed the queue's triangulated match (PO# + customer alpha-tag + SKUs — richer than a raw
         // string compare) as the PO, then run the standard rematch so the review card behaves like
         // any other bill: wizard, AI reconcile, write plan and validation all apply before money moves.
@@ -27965,12 +28012,74 @@ export default function App(){
       return new RegExp('\\b'+bs+'\\b').test((item?.name||'').toUpperCase().replace(/[^A-Z0-9]/g,' '));
     };
 
-    // Bill-push save gate (see _applyBillsToPortal): while a push is collecting confirmations,
-    // every SO save an apply helper dispatches is recorded under the bill's _applyKey so the
-    // applied-bills ledger is only written AFTER the save actually confirmed. Outside a push
-    // (_billApplyCollect null) saves pass through unchanged.
-    let _billApplyCollect=null;
-    const _billApplySave=(bill,so)=>{const p=_dbSaveSO(so);if(_billApplyCollect)_billApplyCollect.push({key:bill&&bill._applyKey,p});return p};
+    // Prepare mutations synchronously, outside React updater callbacks. Nothing is
+    // persisted/published until the complete set of changed targets is known.
+    const _billStages=new WeakMap();
+    const _billStage=(bill)=>{const tx=_billStages.get(bill);if(!tx)throw new Error('Bill apply requires a save-confirmation session');return tx};
+    const _billUpdateSOs=(bill,update)=>{const tx=_billStage(bill);tx.sos=update(tx.sos)};
+    const _billUpdateBatches=(bill,update)=>{const tx=_billStage(bill);tx.submittedBatches=update(tx.submittedBatches)};
+    const _billUpdateInvPOs=(bill,update)=>{const tx=_billStage(bill);tx.invPOs=update(tx.invPOs)};
+    const _billApplySave=(bill,so)=>{_billStage(bill);return so};// preparation only; saves below
+    const _validateBillApplyTargets=(bill)=>{
+      const tx=_billStage(bill);
+      const soId=bill._manualTarget?.soId||bill.matchedPO?.so_id||bill.matchedPO?.so?.id;
+      const so=tx.sos.find(s=>s.id===soId);
+      const fail=()=>{throw new Error('Billing target is missing or changed — re-match the bill before applying.')};
+      if(bill.kind==='decoration'){
+        if(!so)return fail();
+        if(bill._manualTarget?.mode==='create')return;
+        const id=bill._manualTarget?.decoPoId||bill.matchedPO?.deco_po?.id;
+        const norm=v=>String(v||'').toLowerCase().replace(/\s+/g,'');
+        const po=norm(bill.po_number);
+        if(!(so.deco_pos||[]).some(dp=>id?dp.id===id:po&&norm(dp.po_id).startsWith(po)))fail();
+      }else if(bill.matchedPOSource==='batch'){
+        const id=bill.matchedPO?.id||bill.matchedPO?.po_number;
+        if(!id||!tx.submittedBatches.some(b=>(b.id||b.po_number)===id))fail();
+        const ids=[...(bill.matchedPO?.source_pos||[]).map(sp=>sp.so_id),...(bill._lineMappings||[]).map(mp=>mp.so_id)].filter(Boolean);
+        if(ids.some(id=>!tx.sos.some(s=>s.id===id)))fail();
+      }else if(bill.matchedPOSource==='inv_po'){
+        if(!bill.matchedPO?.id||!tx.invPOs.some(p=>p.id===bill.matchedPO.id))fail();
+      }else{
+        const maps=(bill._lineMappings||[]).filter(mp=>mp.allocated_qty>0);
+        if(!maps.length){if(!so)fail();return}
+        for(const mp of maps){
+          const target=tx.sos.find(s=>s.id===mp.so_id);
+          if(!target)fail();
+          if(mp.add_to_po)continue;
+          const it=(target.items||[])[resolveMappedSoItemIndex(target.items||[],mp)];
+          if(!it||!(it.po_lines||[]).some(pl=>!mp.po_id||(pl.po_id||'')===mp.po_id))fail();
+        }
+      }
+    };
+    const _prepareBillWrites=(bill,mutate)=>{
+      const before=_billApplyData.current;
+      const tx={...before};_billStages.set(bill,tx);
+      try{mutate()}finally{_billStages.delete(bill)}
+      const writes=[];
+      for(const so of tx.sos){
+        const old=before.sos.find(s=>s.id===so.id);
+        if(sameBillingSnapshot(old,so))continue;
+        writes.push({
+          isCurrent:()=>{const current=_billApplyData.current.sos.find(s=>s.id===so.id);return sameBillingSnapshot(current,old)||sameBillingSnapshot(current,so)},
+          save:()=>_dbSaveSO(so,{exactAttempt:true}),
+          publish:()=>{_billApplyData.current={..._billApplyData.current,sos:_billApplyData.current.sos.map(s=>s.id===so.id?so:s)};setSOs(prev=>prev.map(s=>s.id===so.id?so:s))},
+        });
+      }
+      for(const [field,key,setter] of [['submittedBatches','submitted_batches',setSubmittedBatches],['invPOs','inv_pos',setInvPOs]]){
+        if(sameBillingSnapshot(before[field],tx[field]))continue;
+        const value=tx[field];
+        writes.push({
+          isCurrent:()=>sameBillingSnapshot(_billApplyData.current[field],before[field])||sameBillingSnapshot(_billApplyData.current[field],value),
+          save:async()=>{
+            if(!supabase||!_initialLoadDone.current||!_dbLoadSuccess.current)return false;
+            const {error}=await supabase.from('app_state').upsert({id:key,value:JSON.stringify(value),updated_at:new Date().toISOString()},{onConflict:'id'});
+            return !error;
+          },
+          publish:()=>{_billApplyData.current={..._billApplyData.current,[field]:value};setter(value)},
+        });
+      }
+      return writes;
+    };
     // Apply parsed bill data (billed sizes, tracking, freight) to matched SO/PO
     // Helper: apply freight from a bill to one or more SOs by ID
     const _applyFreightToSOs=(bill,soIds)=>{
@@ -27986,7 +28095,7 @@ export default function App(){
       const _resolveSku=it=>{const sk=(it.sku||'').toUpperCase();if(costBySku.hasOwnProperty(sk))return sk;return _billSkus.find(bs=>_billSkuMatchesItem(bs,it))||sk;};
       // Split freight evenly across matched SOs
       const perSOFreight=Math.round(billFreight/soIds.length*100)/100;
-      setSOs(prev=>{
+      _billUpdateSOs(bill,prev=>{
         let changed=false;
         const next=prev.map(s=>{
           if(!soIds.includes(s.id))return s;
@@ -28552,7 +28661,7 @@ export default function App(){
       const freight=safeNum(bill.freight||0);
       const decoCost=Math.round((safeNum(bill.doc_total||0)-freight)*100)/100;
       const billDetail={doc:bill.doc_number,date:bill.doc_date,supplier:bill.supplier,cost:decoCost,freight,tracking:bill.tracking};
-      setSOs(prev=>prev.map(s=>{
+      _billUpdateSOs(bill,prev=>prev.map(s=>{
         if(s.id!==t.soId)return s;
         let nextDecoPos=s.deco_pos||[];
         if(t.mode==='existing'&&t.decoPoId){
@@ -28594,7 +28703,7 @@ export default function App(){
       const decoCost=Math.round((safeNum(bill.doc_total||0)-freight)*100)/100;
       const billDetail={doc:bill.doc_number,date:bill.doc_date,supplier:bill.supplier,cost:decoCost,freight,tracking:bill.tracking};
       const poLc=(bill.po_number||'').toLowerCase().replace(/\s+/g,'');
-      setSOs(prev=>prev.map(s=>{
+      _billUpdateSOs(bill,prev=>prev.map(s=>{
         if(s.id!==soId)return s;
         let hit=false;
         const nextDecoPos=(s.deco_pos||[]).map(dp=>{
@@ -28631,7 +28740,7 @@ export default function App(){
       const batchKeys=[batch?.po_number,batch?.id].filter(Boolean).map(x=>String(x).toLowerCase());
       const fBySO=freightBySO||{};
       if(!batchKeys.length&&!Object.keys(fBySO).length)return;
-      setSOs(prev=>{
+      _billUpdateSOs(bill,prev=>{
         // Index every po_line linked to this batch
         const lines=[];
         prev.forEach(s=>{(s.items||[]).forEach((it,ii)=>{(it.po_lines||[]).forEach((pl,pi)=>{
@@ -28732,7 +28841,7 @@ export default function App(){
       });
 
       if(bill.matchedPOSource==='so_po'){
-        setSOs(prev=>prev.map(s=>{
+        _billUpdateSOs(bill,prev=>prev.map(s=>{
           const soMaps=maps.filter(mp=>mp.so_id===s.id);
           if(!soMaps.length)return s;
           // Resolve every mapping to exactly ONE item up front. The saved SO item position
@@ -28831,7 +28940,7 @@ export default function App(){
         const batchId=bill.matchedPO.id||bill.matchedPO.po_number;
         const billedSizes={};
         maps.forEach(mp=>{if(mp.size)billedSizes[mp.size]=(billedSizes[mp.size]||0)+mp.allocated_qty});
-        setSubmittedBatches(prev=>prev.map(sb=>{
+        _billUpdateBatches(bill,prev=>prev.map(sb=>{
           if((sb.id||sb.po_number)!==batchId)return sb;
           const newBilled={...(sb.billed||{})};
           Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
@@ -28850,8 +28959,8 @@ export default function App(){
     };
 
     const applyBillToSO=(bill)=>{
-      if(bill._applied)return;
-      bill._applied=true;
+      _billStage(bill);
+      // Applied is set only after every write and the ledger confirm.
       // Manually-matched bills carry explicit per-line mappings — apply those directly.
       if(bill.kind!=='decoration'&&bill._lineMappings?.length){if(_applyBillByMappings(bill))return;}
       // Decoration bills — route to dedicated apply (total cost → deco PO; freight → outbound)
@@ -28875,7 +28984,7 @@ export default function App(){
         const batchSoIds=(bill.matchedPO.source_pos||[]).map(sp=>sp.so_id).filter(Boolean);
         // Also check single so_id field
         if(!batchSoIds.length&&bill.matchedPO.so_id)batchSoIds.push(bill.matchedPO.so_id);
-        setSubmittedBatches(prev=>prev.map(sb=>{
+        _billUpdateBatches(bill,prev=>prev.map(sb=>{
           if((sb.id||sb.po_number)!==batchId)return sb;
           // Grab SO IDs from the stored batch if matchedPO didn't have them
           if(!batchSoIds.length)(sb.source_pos||[]).forEach(sp=>{if(sp.so_id)batchSoIds.push(sp.so_id)});
@@ -28900,7 +29009,7 @@ export default function App(){
         const poId=bill.matchedPO.id;
         const billedSizes={};
         bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
-        setInvPOs(prev=>prev.map(po=>{
+        _billUpdateInvPOs(bill,prev=>prev.map(po=>{
           if(po.id!==poId)return po;
           const existingBilled=po.billed||{};
           const newBilled={...existingBilled};
@@ -28929,18 +29038,30 @@ export default function App(){
 
     // Like _docAlreadyApplied, but answers WHERE: returns a human label ("SO-1396 · PO 3517")
     // for the skipped-duplicates drawer, so "where did my bill go?" is answered in place.
-    const _docAppliedWhere=(doc)=>{
+    const _docAppliedWhere=(doc,kind,isCredit=false)=>{
       const d=(doc||'').trim().toLowerCase();
       if(!d)return null;
-      const sb=submittedBatches.find(x=>(x.bill_doc_number||'').trim().toLowerCase()===d);
+      const credit=!!isCredit;
+      const sb=submittedBatches.find(x=>!!x.is_credit===credit&&(x.bill_doc_number||'').trim().toLowerCase()===d);
       if(sb)return 'Batch '+(sb.po_number||sb.id);
-      const inD=arr=>(arr||[]).some(dt=>(dt.doc||'').trim().toLowerCase()===d);
+      // Credits written by the current path carry is_credit/credit_of.  A few legacy
+      // reversal details predate both markers, but retain their negative cost or size
+      // deltas; infer those conservatively so an old credit cannot be re-applied as an
+      // invoice.  An explicit false wins over the fallback inference.
+      const detailIsCredit=dt=>{
+        if(dt?.is_credit===true)return true;
+        if(dt?.is_credit===false)return false;
+        if(dt?.credit_of)return true;
+        if(Number(dt?.cost)<0)return true;
+        return !!dt?.sizes&&Object.values(dt.sizes).some(v=>Number(v)<0);
+      };
+      const inD=arr=>(arr||[]).some(dt=>detailIsCredit(dt)===credit&&(dt.doc||'').trim().toLowerCase()===d);
       for(const so of sos){
         for(const it of (so.items||[]))for(const po of (it.po_lines||[]))if(inD(po._bill_details))return so.id+(po.po_id?' · '+po.po_id:'');
         for(const dp of (so.deco_pos||[]))if(inD(dp._bill_details))return so.id+(dp.po_id?' · deco '+dp.po_id:' · deco');
       }
-      if(_appliedLedger.current.has('d|'+d))return 'applied earlier (server ledger — possibly another machine)';
-      if(savedBills.some(x=>x.portalStatus==='success'&&(x.parsed?.doc_number||'').trim().toLowerCase()===d))return 'pushed earlier (bill history)';
+      if(_appliedLedger.current.has(_appliedLedgerKey(kind==='si'?'s':'d',d,credit)))return 'applied earlier (server ledger — possibly another machine)';
+      if(savedBills.some(x=>x.portalStatus==='success'&&!!x.parsed?.is_credit===credit&&((kind==='si'?x.parsed?.si_doc_number:x.parsed?.doc_number)||'').trim().toLowerCase()===d))return 'pushed earlier (bill history)';
       return null;
     };
 
@@ -28949,20 +29070,29 @@ export default function App(){
     // total disagrees (see the dedup branch in processBillPdfs). Same-machine only: the server
     // ledger dedups cross-machine by key without a local total, so a cross-machine push returns
     // null here and the PDF drops silently — no comparison, no false alarm.
-    const _appliedDocTotal=(doc)=>{
+    const _appliedDocTotal=(doc,isCredit=false)=>{
       const d=(doc||'').trim().toLowerCase();
       if(!d)return null;
-      const hit=savedBills.find(sb=>sb.portalStatus==='success'&&(sb.parsed?.doc_number||'').trim().toLowerCase()===d&&safeNum(sb.parsed?.doc_total)>0);
+      const hit=savedBills.find(sb=>sb.portalStatus==='success'&&!!sb.parsed?.is_credit===!!isCredit&&(sb.parsed?.doc_number||'').trim().toLowerCase()===d&&safeNum(sb.parsed?.doc_total)>0);
       return hit?safeNum(hit.parsed.doc_total):null;
     };
 
     // True if a bill with this doc number was already applied to the Portal — checks the
     // applied state on POs/batches (authoritative) plus pushed bill history as a fallback.
-    const _docAlreadyApplied=(doc,kind)=>{
+    const _docAlreadyApplied=(doc,kind,isCredit=false)=>{
       const d=(doc||'').trim().toLowerCase();
       if(!d)return false;
-      if(submittedBatches.some(sb=>(sb.bill_doc_number||'').trim().toLowerCase()===d))return true;
-      const inDetails=arr=>(arr||[]).some(dt=>(dt.doc||'').trim().toLowerCase()===d);
+      try{if(_billApplySession.current.isUnfinished(billingAttemptKey({parsed:{doc_number:d,is_credit:isCredit}})))return false}catch{return false}
+      const credit=!!isCredit;
+      if(submittedBatches.some(sb=>!!sb.is_credit===credit&&(sb.bill_doc_number||'').trim().toLowerCase()===d))return true;
+      const detailIsCredit=dt=>{
+        if(dt?.is_credit===true)return true;
+        if(dt?.is_credit===false)return false;
+        if(dt?.credit_of)return true;
+        if(Number(dt?.cost)<0)return true;
+        return !!dt?.sizes&&Object.values(dt.sizes).some(v=>Number(v)<0);
+      };
+      const inDetails=arr=>(arr||[]).some(dt=>detailIsCredit(dt)===credit&&(dt.doc||'').trim().toLowerCase()===d);
       for(const so of sos){
         for(const it of (so.items||[]))for(const po of (it.po_lines||[]))if(inDetails(po._bill_details))return true;
         for(const dp of (so.deco_pos||[]))if(inDetails(dp._bill_details))return true;
@@ -28970,37 +29100,36 @@ export default function App(){
       // Server ledger: applied on ANY machine (loaded once per import visit; also fed live on push).
       // Consulted BEFORE the localStorage fallback — it's the system of record for pushed bills.
       // Key spaces are separate — vendor doc#s and SI/S&S order#s are independent numbering systems
-      // that can collide numerically, so a doc# is only ever checked against 'd|' keys and an
-      // order# (callers pass kind='si') only against 's|' keys.
-      if(_appliedLedger.current.has((kind==='si'?'s|':'d|')+d))return true;
+      // that can collide numerically, and each space also carries the invoice/credit bit. A doc# is
+      // only ever checked against d|<credit>| keys and an order# (callers pass kind='si') against
+      // s|<credit>| keys.
+      if(_appliedLedger.current.has(_appliedLedgerKey(kind==='si'?'s':'d',d,credit)))return true;
       // localStorage cache fallback — covers this browser's pushes made while the ledger was
       // unreachable (write retried, but the row may not have landed).
-      if(savedBills.some(sb=>sb.portalStatus==='success'&&(sb.parsed?.doc_number||'').trim().toLowerCase()===d))return true;
+      if(savedBills.some(sb=>sb.portalStatus==='success'&&!!sb.parsed?.is_credit===credit&&((kind==='si'?sb.parsed?.si_doc_number:sb.parsed?.doc_number)||'').trim().toLowerCase()===d))return true;
       return false;
     };
 
     // Record applied bills to the server ledger (applied_bills, unique on doc# per credit-flag) —
     // the supplier-bill system of record. Belt on top of the client checks: the unique index makes
     // "same doc applied twice" a database refusal rather than a scan-and-hope, and loading the
-    // ledger makes dedup + Bill History cross-machine. The in-memory set updates FIRST so this
-    // session's own dedup is immediate; the upsert is then AWAITED with retry+backoff (same shape
+    // ledger makes dedup + Bill History cross-machine. The in-memory set updates ONLY once
+    // the upsert is confirmed, with retry+backoff (same shape
     // as _siMarkDoc) and loud on final failure. Pre-00184 fallback: a missing-column error
     // downgrades the payload to the legacy 00178 row shape, so behavior before the migration is
     // exactly the old ledger write. Returns true once the row landed.
     const _recordAppliedBills=async(bills,retries=3)=>{
       const rows=buildAppliedBillRows(bills,(cu?.name||cu?.email||null));
-      rows.forEach(r=>{
-        if(r.doc_norm)_appliedLedger.current.add('d|'+r.doc_norm);
-        if(r.si_doc_number)_appliedLedger.current.add('s|'+r.si_doc_number);
-      });
-      if(!rows.length||!supabase)return true;
+      if(!rows.length)return false;
+      if(!supabase)return false;
       // Pre-check warns if any doc was already recorded elsewhere (ignoreDuplicates below would
       // otherwise swallow the collision silently).
       const docKeys=rows.map(r=>r.doc_norm).filter(Boolean);
       if(docKeys.length){
         try{
-          const{data}=await supabase.from('applied_bills').select('doc_norm').in('doc_norm',docKeys);
-          if(data&&data.length)nf('⚠ '+data.length+' doc(s) in this push were already on the applied ledger (possibly pushed from another machine) — check Billed tracking for a double-apply','error');
+          const{data}=await supabase.from('applied_bills').select('doc_norm,is_credit').in('doc_norm',docKeys);
+          const duplicates=(data||[]).filter(r=>rows.some(row=>row.doc_norm===r.doc_norm&&!!row.is_credit===!!r.is_credit));
+          if(duplicates.length)nf('⚠ '+duplicates.length+' doc(s) in this push were already on the applied ledger (possibly pushed from another machine) — check Billed tracking for a double-apply','error');
         }catch{/* pre-check is advisory only */}
       }
       let payload=rows,downgraded=false,lastErr=null;
@@ -29009,6 +29138,10 @@ export default function App(){
         try{
           const{error}=await supabase.from('applied_bills').upsert(payload,{onConflict:'doc_norm,is_credit',ignoreDuplicates:true});
           if(!error){
+            rows.forEach(r=>{
+              if(r.doc_norm)_appliedLedger.current.add(_appliedLedgerKey('d',r.doc_norm,r.is_credit));
+              if(r.si_doc_number)_appliedLedger.current.add(_appliedLedgerKey('s',r.si_doc_number,r.is_credit));
+            });
             // Row landed — mirror it into the history union now (the server re-load only happens
             // on the next import visit). Mirrored from the FULL shape even if the write was the
             // legacy one: locally we know the extra fields; the server just doesn't store them yet.
@@ -29361,7 +29494,7 @@ export default function App(){
     const _resolveDuplicateBills=(sbs)=>{
       if(!sbs||!sbs.length)return;
       if(!window.confirm('Resolve '+sbs.length+' bill'+(sbs.length===1?'':'s')+' as duplicates? Each is stamped with where its doc # was already applied.'))return;
-      sbs.forEach(sb=>_resolveBillWithDisposition(sb.id,'duplicate','Duplicate of '+(_docAppliedWhere(sb.parsed?.doc_number)||'an earlier push'),{quiet:true}));
+      sbs.forEach(sb=>_resolveBillWithDisposition(sb.id,'duplicate','Duplicate of '+(_docAppliedWhere(sb.parsed?.doc_number,undefined,sb.parsed?.is_credit)||'an earlier push'),{quiet:true}));
       nf(sbs.length+' duplicate'+(sbs.length===1?'':'s')+' resolved');
     };
     // ── Auto-resolve duplicates (owner ask). Any UNPUSHED working-set copy — review list or
@@ -29379,7 +29512,7 @@ export default function App(){
         // to reach the QBO-only pipeline; every portal writer excludes it.
         if(wrapper&&(x.reviewLater||x.qbStatus==='success'||x._qbBackfill))return false;
         const d=(x.parsed?.doc_number||'').trim();
-        return !!d&&_docAlreadyApplied(d);
+        return !!d&&_docAlreadyApplied(d,undefined,!!x.parsed?.is_credit);
       };
       const parsedDups=(billImport.parsed||[]).filter(b=>isDup(b,true));
       const parsedIds=new Set(parsedDups.map(b=>b.id));
@@ -29387,7 +29520,7 @@ export default function App(){
       const all=[...parsedDups,...parkedDups];
       if(!all.length)return;
       if(parsedDups.length)setBillImport(x=>({...x,parsed:x.parsed.filter(p=>!parsedIds.has(p.id))}));
-      all.forEach(b=>_resolveBillWithDisposition(b.id,'duplicate','Duplicate of '+(_docAppliedWhere(b.parsed?.doc_number)||'an earlier push')+' — auto-resolved',{quiet:true}));
+      all.forEach(b=>_resolveBillWithDisposition(b.id,'duplicate','Duplicate of '+(_docAppliedWhere(b.parsed?.doc_number,undefined,b.parsed?.is_credit)||'an earlier push')+' — auto-resolved',{quiet:true}));
       nf(all.length+' duplicate bill'+(all.length===1?'':'s')+' auto-resolved — see history');
     };
     _dupSweepRef.current=_autoResolveDuplicates;
@@ -29441,32 +29574,43 @@ export default function App(){
     // credit doc can't be applied twice and never collides with its invoice.
     const _applyCreditToPortal=async(b,plan,targets,opts={})=>{
       const p=b.parsed;
-      const soId=p.matchedPO?.so_id||p.matchedPO?.so?.id;const so=sos.find(s2=>s2.id===soId);
-      if(!so){if(!opts.auto)nf('Order not found — reload and retry','error');return}
-      if(opts.auto)p._auto_pushed=true;// → ledger resolution.auto_pushed → the daily ⚡ banner
+      if(!p?.is_credit){nf('This document is not a credit','error');return false}
       let reversedCost=0;
-      const items=(so.items||[]).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>{
-        const mine=plan.ties.map(t=>({t,tg:targets[t.target_idx]})).filter(({tg})=>tg.item_id===it.id&&tg.po_id===(pl.po_id||''));
-        if(!mine.length)return pl;
-        const billed={...(pl.billed||{})};const detSizes={};let cost=0;
-        mine.forEach(({t,tg})=>{
-          billed[tg.size]=Math.max(0,safeNum(billed[tg.size])-t.qty);
-          detSizes[tg.size]=-t.qty;
-          const unit=Math.abs(safeNum((p.items[t.bill_idx]||{}).unit_price))||tg.unit_cost;
-          cost+=t.qty*unit;
-        });
-        cost=Math.round(cost*100)/100;reversedCost+=cost;
-        const det=[...(pl._bill_details||[]),{doc:(p.doc_number||'credit'),cost:-cost,date:p.doc_date||new Date().toLocaleDateString(),sizes:detSizes,credit_of:plan.originalDoc||undefined,tracking:''}];
-        return{...pl,billed,_bill_details:det,_bill_cost:Math.round((safeNum(pl._bill_cost)-cost)*100)/100};
-      })}));
-      savSO({...so,items,updated_at:new Date().toLocaleString()});
-      // Bill bookkeeping: ledger (is_credit-keyed dedup), local status, SI queue capture.
-      b.portalStatus='success';p._credit_applied={units:plan.totalUnits,cost:reversedCost,so_id:so.id,at:new Date().toISOString()};
-      setBillImport(x=>({...x,parsed:x.parsed.map(pp=>pp.id===b.id?{...pp,portalStatus:'success',parsed:{...pp.parsed,_credit_applied:p._credit_applied}}:pp)}));
-      setSavedBills(prev=>{const u=prev.map(sb=>sb.id===b.id?{...sb,portalStatus:'success',parsed:{...sb.parsed,_credit_applied:p._credit_applied}}:sb);_lsSet('nsa_saved_bills',JSON.stringify(u));return u});
-      try{await _recordAppliedBills([b])}catch(e){/* ledger retry path already loud */}
-      if(p.si_doc_number)_siMarkDoc(p.si_doc_number,{status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),applied_doc_number:p.doc_number||null,updated_at:new Date().toISOString()});
-      nf((opts.auto?'⚡↩ Credit auto-applied':'↩ Credit applied')+' — un-billed '+plan.totalUnits+' unit(s) ($'+reversedCost.toFixed(2)+') on '+so.id+(plan.originalDoc?' against doc #'+plan.originalDoc:'')+'. The re-ship invoice can now push normally.','success');
+      const mutate=()=>{
+        const soId=p.matchedPO?.so_id||p.matchedPO?.so?.id;
+        const so=_billStage(p).sos.find(s=>s.id===soId);
+        if(!so||!plan?.ties?.length)throw new Error('Credit has no matched reversal targets');
+        // Validate the complete plan against CURRENT quantities before changing anything.
+        const quantities=new Map();
+        for(const t of plan.ties){
+          const tg=targets[t.target_idx];
+          const matches=(so.items||[]).flatMap(it=>(it.po_lines||[]).filter(pl=>it.id===tg?.item_id&&(pl.po_id||'')===tg?.po_id));
+          if(matches.length!==1||!(t.qty>0))throw new Error('Credit target is missing or ambiguous — reconcile again');
+          const pl=matches[0];let sizes=quantities.get(pl);if(!sizes){sizes={};quantities.set(pl,sizes)}
+          sizes[tg.size]=(sizes[tg.size]||0)+t.qty;
+          if(sizes[tg.size]>safeNum((pl.billed||{})[tg.size]))throw new Error('Credit exceeds current billed quantity — reconcile again');
+        }
+        const items=(so.items||[]).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>{
+          const mine=plan.ties.map(t=>({t,tg:targets[t.target_idx]})).filter(({tg})=>tg.item_id===it.id&&tg.po_id===(pl.po_id||''));
+          if(!mine.length)return pl;
+          const billed={...(pl.billed||{})};const detSizes={};let cost=0;
+          mine.forEach(({t,tg})=>{
+            billed[tg.size]=safeNum(billed[tg.size])-t.qty;
+            detSizes[tg.size]=(detSizes[tg.size]||0)-t.qty;
+            const unit=Math.abs(safeNum((p.items[t.bill_idx]||{}).unit_price))||tg.unit_cost;
+            cost+=t.qty*unit;
+          });
+          cost=Math.round(cost*100)/100;reversedCost+=cost;
+          const det=[...(pl._bill_details||[]),{doc:p.doc_number,is_credit:true,cost:-cost,date:p.doc_date||new Date().toLocaleDateString(),sizes:detSizes,credit_of:plan.originalDoc||undefined,tracking:''}];
+          return{...pl,billed,_bill_details:det,_bill_cost:Math.round((safeNum(pl._bill_cost)-cost)*100)/100};
+        })}));
+        _billUpdateSOs(p,prev=>prev.map(s=>s.id===so.id?{...so,items,updated_at:new Date().toLocaleString()}:s));
+        return {_credit_applied:{units:plan.totalUnits,cost:reversedCost,so_id:so.id,at:new Date().toISOString()}};
+      };
+      if(opts.auto)p._auto_pushed=true;
+      const applied=await _applyBillsToPortal([b],{mutate});
+      if(!applied){if(!opts.auto)nf(b.portalMsg,'error');return false}
+      nf((opts.auto?'Credit auto-applied':'Credit applied')+' — save and ledger confirmed'+(reversedCost?' ($'+reversedCost.toFixed(2)+')':''),'success');
       return true;
     };
     // Auto-apply sweep for OBVIOUS credits (owner 2026-07-23): matched credit, every line
@@ -29498,7 +29642,7 @@ export default function App(){
       // the SI number. Check both so the same physical invoice can never be pushed twice — the
       // backstop that would have stopped the PO 3294 double-bill even if parse-dedup missed it.
       const _sdn=String(p.si_doc_number||'').trim();
-      if(!p._qbBackfill&&(_docAlreadyApplied(p.doc_number)||(_sdn&&_docAlreadyApplied(_sdn,'si'))))errs.push('Already pushed to the Portal (duplicate doc #'+((p.doc_number||_sdn||'').toString().trim())+')');
+      if(!p._qbBackfill&&(_docAlreadyApplied(p.doc_number,undefined,!!p.is_credit)||(_sdn&&_docAlreadyApplied(_sdn,'si',!!p.is_credit))))errs.push('Already pushed to the Portal (duplicate doc #'+((p.doc_number||_sdn||'').toString().trim())+')');
       // Credits reverse goods; the normal push ADDS. Block the normal path outright — the
       // ↩ Apply-credit panel on the card is the one door for credits (owner 2026-07-23).
       if(p.is_credit)errs.push('Credit memo — use ↩ Apply credit on the card (it un-bills the returned goods); the normal push would ADD what the credit reverses.');
@@ -29653,7 +29797,7 @@ export default function App(){
     // Bills the AI pass is allowed to touch: matched a PO, not a duplicate, have an
     // order context with sizes, AND currently fail over-billing (a real mismatch to
     // fix). Clean bills are left alone — no point spending a call to confirm a match.
-    const _billNeedsAi=p=>!!p&&_billHasTarget(p)&&!_docAlreadyApplied(p.doc_number)&&!!_billOrderContext(p)&&_billOverBillingErrors(p).length>0;
+    const _billNeedsAi=p=>!!p&&_billHasTarget(p)&&!_docAlreadyApplied(p.doc_number,undefined,!!p.is_credit)&&!!_billOrderContext(p)&&_billOverBillingErrors(p).length>0;
 
     // Apply Claude's mapping onto the bill's lines in place: rewrite sku/size to the
     // order's labels (keeping the raw value in _aiRaw for display), so the existing
@@ -29682,7 +29826,7 @@ export default function App(){
       if(!p)return{ok:false,error:'No bill'};
       if(!supabase)return{ok:false,error:'Supabase not configured'};
       if(!_billHasTarget(p))return{ok:false,error:'No PO match — left in 🕒 Set aside'};
-      if(_docAlreadyApplied(p.doc_number))return{ok:false,error:'Duplicate doc#'};
+      if(_docAlreadyApplied(p.doc_number,undefined,!!p.is_credit))return{ok:false,error:'Duplicate doc#'};
       const ctx=_billOrderContext(p);
       if(!ctx)return{ok:false,error:'No order lines to reconcile against'};
       const payload={
@@ -29821,73 +29965,43 @@ export default function App(){
     // ASYNC: the applied-bills ledger is only written after each bill's SO saves CONFIRM — the
     // ledger's unique-doc# constraint refuses re-pushes forever, so recording "applied" while the
     // SO save later failed would permanently strand the bill's costs off the SO.
-    const _applyBillsToPortal=async(bills)=>{
-      let applied=0;
-      const _collect=[];_billApplyCollect=_collect;
+    const _confirmPortalBill=async(b,{retry=false,mutate}={})=>{
       try{
-      bills.forEach(b=>{
-        try{
-          const p=b.parsed;
-          const holdReasons=_liveBillPushHoldReasons(p);
-          // Defense in depth: stale dialogs and parked-bill actions can retain an old array even
-          // after the visible selector re-renders. Never let such a direct call cross the write
-          // boundary. Leave portalStatus untouched so fixing/rematching can re-qualify the bill.
-          if(holdReasons.length){b.portalMsg='Held for review: '+holdReasons.join(' · ');return}
-          if(p)p._applyKey=b.id;// routes this bill's SO-save confirmations back to it (save gate below)
-          // $0-freight so_po bills apply through explicit line mappings (the freight-carried
-          // default path writes nothing at $0). Build them now; if they can't be built, fail
-          // HONESTLY instead of recording a success that wrote nothing and dedups forever.
-          if(p&&p.matchedPOSource==='so_po'&&p.matchedPO&&p.kind!=='decoration'&&!(p._lineMappings||[]).length&&safeNum(p.freight)<=0){
-            const auto=_soPoAutoMappings(p);
-            if(auto)p._lineMappings=auto;
-            else{b.portalStatus='error';b.portalMsg='Nothing to apply: $0 freight and lines don\'t match the PO — use Match manually';return}
-          }
-          applyBillToSO(p);
-          b.portalStatus='success';b.portalMsg='Applied to SO';
-          applied++;
-        }catch(e){
-          b.portalStatus='error';b.portalMsg='Failed: '+e.message;
+        const p=b.parsed;
+        const key=billingAttemptKey(b);
+        const session=_billApplySession.current;
+        let recordBill;
+        if(!session.hasPending(key)&&!retry&&portalBillAlreadyApplied(p,_docAlreadyApplied)){
+          b.portalStatus='success';b.portalMsg='Already applied to Portal';return true;
         }
-      });
-      // The apply helpers dispatch their SO saves inside setSOs updaters — wait one macrotask so
-      // React flushes them and _collect holds every save this push triggered.
-      await new Promise(r=>setTimeout(r,0));
-      }finally{_billApplyCollect=null}
-      // Save gate: a bill only counts as applied once every SO save it dispatched confirmed.
-      // `false` is _dbSaveSOInner's explicit failure signal; undefined means the save was queued
-      // behind an in-flight one, which the per-entity queue completes with the latest data —
-      // treated as dispatched-ok (same ok!==false convention as savSONow). Bills that collected
-      // no SO saves are split below: batch-record / inventory-PO bills legitimately dispatch none
-      // (their state persists via its own save effects), but an so_po-matched bill that dispatched
-      // none wrote nothing and is failed rather than recorded as applied.
-      for(const b of bills){
-        if(b.portalStatus!=='success')continue;
-        const _ps=_collect.filter(e=>e.key===b.id).map(e=>e.p);
-        if(!_ps.length){
-          // An SO-PO bill that dispatched NO save wrote nothing to the order. Recording it as
-          // applied flips the SI row to approved AND burns its doc# in applied_bills' unique
-          // index, so it can never be re-applied — the bill's cost is stranded off the SO for
-          // good (2026-08-31 audit: 125 approved docs, $52,412, that reached no PO line).
-          // Batch-record / inventory-PO bills legitimately collect no SO save, so only the
-          // so_po path fails here.
-          if(b.parsed?.matchedPOSource==='so_po'&&b.parsed?.kind!=='decoration'){
-            b.portalStatus='error';
-            b.portalMsg='Nothing was written to the order — no SO save was dispatched. Use Match manually or Find PO with AI.';
-            applied--;
-          }
-          continue;
-        }
-        const _rs=await Promise.all(_ps.map(p=>Promise.resolve(p).catch(()=>false)));
-        if(_rs.some(r=>r===false)){
-          b.portalStatus='error';b.portalMsg='Applied locally but the SO save FAILED — not recorded as applied. Check your connection and push again.';
-          applied--;
-        }
-      }
-      // Hard ledger: record every successful apply server-side (unique doc# constraint) so a
-      // re-push of the same doc — this machine or any other — is refused/loudly flagged. Awaited
-      // with retry — this runs AFTER the save gate above, so the ledger row is only written once
-      // the SO saves confirmed (recording "applied" for a failed save would strand the bill).
-      await _recordAppliedBills(bills.filter(b=>b.portalStatus==='success'));
+        await session.run(key,{
+          retry,
+          prepare:()=>{
+            const holdReasons=_liveBillPushHoldReasons(p);
+            if(holdReasons.length)throw new Error('Held for review: '+holdReasons.join(' · '));
+            if(!mutate&&p.is_credit)throw new Error('Use the credit reconciliation action to apply this credit.');
+            if(!mutate&&p.matchedPOSource==='so_po'&&p.matchedPO&&p.kind!=='decoration'&&!(p._lineMappings||[]).length){
+              const auto=_soPoAutoMappings(p);
+              if(!auto)throw new Error('Nothing to apply: lines do not match the PO — use Match manually');
+              p._lineMappings=auto;
+            }
+            let metadata={};
+            const writes=_prepareBillWrites(p,()=>{_validateBillApplyTargets(p);if(mutate)metadata=mutate()||{};else applyBillToSO(p)});
+            recordBill=JSON.parse(JSON.stringify({...b,parsed:{...p,...metadata},portalStatus:'success'}));
+            return writes;
+          },
+          record:()=>_recordAppliedBills([recordBill]),
+          complete:(priorMetadata)=>{
+            const metadata=priorMetadata||(recordBill?.parsed?{_credit_applied:recordBill.parsed._credit_applied}:{});
+            Object.assign(p,metadata,{_applied:true});b.portalStatus='success';b.portalMsg='Applied to Portal (save confirmed)';return metadata;
+          },
+        });
+        return true;
+      }catch(e){b.portalStatus='error';b.portalMsg=e.message||'Portal save failed';return false}
+    };
+    const _applyBillsToPortal=async(bills,opts={})=>{
+      let applied=0;
+      for(const b of bills){if(await _confirmPortalBill(b,opts))applied++}
       // Close the loop in the shared S&S queue (lifecycle: new → reviewed → applied) so
       // accounting's completeness view reconciles. Best-effort — billing already applied.
       if(supabase)bills.forEach(b=>{
@@ -29920,7 +30034,7 @@ export default function App(){
             .catch(e=>console.warn('[SI] marking',siPushed.length,'doc(s) Historical failed after retry — self-heals via dedup next pull:',(e&&e.message)||e)));
       }
       setBillImport(x=>({...x,parsed:[...x.parsed]}));
-      setSavedBills(prev=>{const updated=prev.map(sb=>{const match=bills.find(s=>s.id===sb.id);return match?{...sb,portalStatus:match.portalStatus}:sb});_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
+      setSavedBills(prev=>{const updated=prev.map(sb=>{const match=bills.find(s=>s.id===sb.id);return match?{...sb,parsed:{...match.parsed,rawText:undefined},portalStatus:match.portalStatus,portalMsg:match.portalMsg}:sb});_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
       return applied;
     };
 
@@ -29947,20 +30061,12 @@ export default function App(){
         .then(rs=>{const failed=rs.filter(r=>r&&r.ok===false&&!r.offline).length;if(failed)nf(failed+' bill(s) parked on this device only — server save failed; they may reappear on another machine’s pull','error')});
     };
 
-    // Retry the SO save for a bill whose apply ran locally but whose save didn't confirm
-    // (portalStatus 'error' from the save gate). The billed quantities are ALREADY in local
-    // state — re-applying would be wrong — so retry = re-save that SO, then mark applied +
-    // ledger only once the save confirms. Surfaced as ↻ Retry on the red failed rows.
+    // Retry only a retained, prepared attempt — never save an arbitrary current SO
+    // for a no-match/no-op error. All target writes and bookkeeping use the same gate.
     const _retryBillSave=async(b)=>{
-      const p=b?.parsed||{};
-      const soId=p.matchedPO?.so_id||p.matchedPO?.so?.id;
-      const so=soId&&sos.find(s=>s.id===soId);
-      if(!so){nf('Can’t find the order to re-save — open the bill and re-check its match','error');return}
-      const r=await Promise.resolve(_dbSaveSO(so)).catch(()=>false);
-      if(r===false){nf('Save failed again — check your connection and retry','error');return}
-      setBillImport(x=>({...x,parsed:x.parsed.map(q=>q.id===b.id?{...q,portalStatus:'success',portalMsg:'Applied to SO (save retried)'}:q)}));
-      try{await _recordAppliedBills([{parsed:p}])}catch(e){/* ledger retried internally */}
-      nf('Saved — '+(p.doc_number||'bill')+' is now recorded as applied');
+      const applied=await _applyBillsToPortal([b],{retry:true});
+      nf(applied?'Saved — '+(b.parsed?.doc_number||'bill')+' is now recorded as applied':b.portalMsg,applied?'success':'error');
+      return !!applied;
     };
 
     // Push bills to Portal (apply to SOs). force=true skips the duplicate/over-billing gate.
@@ -30078,7 +30184,7 @@ export default function App(){
           }
           const portalVendor=vendor||decoVendor;
           if(!portalVendor)throw new Error('Supplier '+vendorName+' does not uniquely match an active portal vendor; no QBO bill was sent.');
-          let qbVendorId=portalVendor?.qb_vendor_id;
+          let qbVendorId=qbConfig.vendorQBMap?.[portalVendor?.id]||portalVendor?.qb_vendor_id;
           if(qbVendorId&&!existingQBVendors.some(v=>String(v.Id)===String(qbVendorId)&&v.Active!==false))qbVendorId=null;
 
           if(!qbVendorId){
@@ -30207,16 +30313,12 @@ export default function App(){
           // portal ledger even though it has never reached QBO. Treat that as
           // an already-complete portal side, rather than applying its quantity
           // and cost again and manufacturing an over-bill warning.
-          const portalWasAlreadyApplied=portalBillAlreadyApplied(bill,_docAlreadyApplied);
+          const portalWasAlreadyApplied=!_billApplySession.current.hasPending(billingAttemptKey(b))&&portalBillAlreadyApplied(bill,_docAlreadyApplied);
           let portalApplied=portalWasAlreadyApplied;
           let portalWarning='';
           if(!portalApplied){
-            try{applyBillToSO(bill);portalApplied=true}
+            try{portalApplied=!!(await _applyBillsToPortal([b]));if(!portalApplied)portalWarning='QBO Bill #'+qboBillId+' exists, but Portal save did not confirm: '+b.portalMsg}
             catch(e){portalWarning='QBO Bill #'+qboBillId+' exists, but portal apply failed: '+(e.message||'unknown error')}
-          }
-          if(portalApplied&&!portalWasAlreadyApplied&&_billHasTarget(bill)){
-            try{await _recordAppliedBills([{parsed:bill}])}
-            catch(e){portalWarning='QBO Bill #'+qboBillId+' and portal quantities were applied, but ledger write failed: '+(e.message||'unknown error')}
           }
           if(portalApplied&&!portalWarning){
             b.portalStatus='success';
@@ -32519,7 +32621,7 @@ export default function App(){
             const matched=_billHasTarget(p);
             const holdReasons=_liveBillPushHoldReasons(p);
             const errs=matched?[...holdReasons,..._validateBillForPush(p)]:[];
-            const dup=_docAlreadyApplied(p.doc_number);
+            const dup=_docAlreadyApplied(p.doc_number,undefined,!!p.is_credit);
             const bucket=dup?'duplicate':!matched?'nomatch':holdReasons.length?'held':!errs.length?'ready'
               :errs.some(e=>e.indexOf(' exceeds ')>-1)?'overbilled':'noapply';// ' exceeds ' only occurs in _billOverBillingErrors strings
             return{sb,p,matched,errs,clean:matched&&!errs.length,bucket};
@@ -32636,7 +32738,7 @@ export default function App(){
                   })()}
                   </div>
                   {expanded&&(()=>{
-                    const dupWhere=_docAlreadyApplied(p.doc_number)?_docAppliedWhere(p.doc_number):null;
+                    const dupWhere=_docAlreadyApplied(p.doc_number,undefined,!!p.is_credit)?_docAppliedWhere(p.doc_number,undefined,!!p.is_credit):null;
                     const recon=_billReconData(p);
                     const plan=_billApplyPlan(p);
                     const MAX_OPEN=25;// keep untouched-order rows from swamping big POs
@@ -32729,7 +32831,7 @@ export default function App(){
                     </>}
                     {(bucket==='noapply'||bucket==='nomatch')&&skBtn({bg:NAVY,fg:'#fff',fs:12,pad:'10px 18px',title:'Open this bill in Review with the Match manually wizard already open',onClick:()=>{_moveBackToReview(sb,{_wizard:{open:true,query:p.po_number||'',target:null,mappings:{}}});nf('Opened in Review — Match manually is ready')},children:'🧵 Fix match…'})}
                     {bucket==='nomatch'&&skBtn({bg:'#fff',fg:NAVY,border:'1.5px solid '+MGRAY,fs:12,pad:'9px 16px',title:'Move to Review and let AI search your open POs/SOs for the order this bill belongs to',onClick:()=>{_moveBackToReview(sb,null,w=>_runAiBillFindPO(w));nf('Moved to Review — ✨ AI is searching your open orders')},children:'✨ Find PO with AI'})}
-                    {bucket==='duplicate'&&skBtn({bg:'#8790a3',fg:'#fff',fs:12,pad:'10px 18px',title:'Confirm this is a duplicate of the already-applied doc and resolve it',onClick:()=>_resolveBillWithDisposition(sb.id,'duplicate','Duplicate of '+(_docAppliedWhere(p.doc_number)||'an earlier push')),children:'♻️ Resolve as duplicate'})}
+                    {bucket==='duplicate'&&skBtn({bg:'#8790a3',fg:'#fff',fs:12,pad:'10px 18px',title:'Confirm this is a duplicate of the already-applied doc and resolve it',onClick:()=>_resolveBillWithDisposition(sb.id,'duplicate','Duplicate of '+(_docAppliedWhere(p.doc_number,undefined,!!p.is_credit)||'an earlier push')),children:'♻️ Resolve as duplicate'})}
                     {skBtn({bg:'#fff',fg:NAVY,border:'1.5px solid '+MGRAY,fs:12,pad:'9px 16px',title:'Pull this bill back into the review list so you can fix and push it',onClick:()=>{_moveBackToReview(sb);nf('Moved back to Import & Review')},children:'📤 Move back to Review'})}
                     {skBtn({bg:'#fff',fg:NAVY,border:'1.5px solid '+MGRAY,fs:12,pad:'9px 16px',title:"Mark handled — you'll pick why, and it's kept on the bill in Bill History",onClick:()=>setBillResolveId(billResolveId===sb.id?null:sb.id),children:'✓ Resolve ▾'})}
                     <button title="Delete this bill from history entirely" onClick={()=>{if(window.confirm('Delete this bill from history?')){setSavedBills(prev=>{const u=prev.filter(s=>s.id!==sb.id);_lsSet('nsa_saved_bills',JSON.stringify(u));return u});_deleteBillHold(sb.id)}}} style={{marginLeft:'auto',background:'none',border:'none',color:TXTL,cursor:'pointer',fontSize:16}}>🗑</button>
@@ -35408,18 +35510,24 @@ export default function App(){
     }).map(so=>({so,dt:parseDate(so.expected_date),daysOut:Math.ceil((parseDate(so.expected_date).getTime()-_mdNow)/864e5)}))
       .sort((a,b)=>a.dt-b.dt);
 
-    // Orders ready to invoice (production done) that haven't been invoiced yet.
-    const _mdInvoicedSoIds=new Set(invs.filter(iv=>(iv.status||'').toLowerCase()!=='void'&&iv.so_id).map(iv=>iv.so_id));
+    // Reconcile actual invoiced units, including history, so deposits and partial
+    // invoices leave the remaining work visible. Prefer the live portal row when
+    // the same invoice appears in both sources; never count its quantities twice.
+    const _mdBillingInvoices=[...new Map([...(histInvs||[]),...invs].map(iv=>[iv.id,iv])).values()];
+    const _mdBillingBySo=new Map();
+    _mdBillingInvoices.forEach(iv=>{if(iv.so_id){const rows=_mdBillingBySo.get(iv.so_id)||[];rows.push(iv);_mdBillingBySo.set(iv.so_id,rows)}});
+    const _mdFullyInvoiced=(so)=>isOrderFullyInvoiced(so,_mdBillingBySo.get(so.id)||[]);
+    const _mdCoverageCache=new Map();
+    const _mdInvoiceCoverage=(so)=>{if(!_mdCoverageCache.has(so.id))_mdCoverageCache.set(so.id,getOrderInvoiceCoverage(so,_mdBillingBySo.get(so.id)||[]));return _mdCoverageCache.get(so.id)};
     const mdReadyInv=sos.filter(so=>{
-      if(!_mdMine(_mdRepOf(so))||so.deleted_at)return false;
-      return opsReadyToInvoice(so,_mdFF(so))&&!_mdInvoicedSoIds.has(so.id);
+      if(!_mdMine(_mdRepOf(so))||so.deleted_at||['cancelled','canceled','void','archived','deleted'].includes(so.status)||so.source==='webstore')return false;
+      return opsReadyToInvoice(so,_mdFF(so))&&!_mdFullyInvoiced(so);
     }).sort((a,b)=>parseDate(b.updated_at)-parseDate(a.updated_at));
 
-    // Shipped but never invoiced — money leak. NOT windowed (like Past Due, a live
-    // view): a shipped order with no invoice needs chasing no matter how old it is.
+    // Shipped with units still to invoice — a standing task, regardless of age.
     const mdShipNoInv=sos.filter(so=>{
-      if(!_mdMine(_mdRepOf(so))||so.deleted_at||so.status==='cancelled')return false;
-      return opsShippedNotInvoiced(so,_mdFF(so))&&!_mdInvoicedSoIds.has(so.id);
+      if(!_mdMine(_mdRepOf(so))||so.deleted_at||['cancelled','canceled','void','archived','deleted'].includes(so.status))return false;
+      return opsShippedNotInvoiced(so,_mdFF(so))&&!_mdFullyInvoiced(so);
     }).sort((a,b)=>parseDate(b._ship_date||b.updated_at)-parseDate(a._ship_date||a.updated_at));
 
     // Past-due invoices for my customers (live view — every currently-overdue open invoice).
@@ -35456,7 +35564,7 @@ export default function App(){
       {stTab==='myday'&&(()=>{
         const _mdPastDueTotal=mdPastDue.reduce((a,p)=>a+p.balance,0);
         const _mdPaidTotal=mdPaid.reduce((a,p)=>a+p.amount,0);
-        const _mdShipNoInvTotal=mdShipNoInv.reduce((a,so)=>a+safeNum(calcOrderMargin(so,sos).rev),0);
+        const _mdShipNoInvUnits=mdShipNoInv.reduce((a,so)=>a+_mdInvoiceCoverage(so).remaining,0);
         const tiles=[
           {id:'shipped',label:'Shipped',icon:'box',color:'#0e7490',n:mdShipped.length},
           {id:'approved',label:'Estimates Approved',icon:'check',color:'#047857',n:mdApproved.length},
@@ -35464,7 +35572,7 @@ export default function App(){
           {id:'checkedin',label:'All Checked In',icon:'warehouse',color:'#7c3aed',n:mdCheckedIn.length},
           {id:'paid',label:'Paid',icon:'check',color:'#047857',n:mdPaid.length,sub:_mdPaidTotal>0?_md$(_mdPaidTotal)+' in':''},
           {id:'readyinv',label:'Ready to Invoice',icon:'file',color:'#0891b2',n:mdReadyInv.length},
-          {id:'shipnoinv',label:'Shipped — Not Invoiced',icon:'dollar',color:'#c2410c',n:mdShipNoInv.length,sub:_mdShipNoInvTotal>0?_md$(_mdShipNoInvTotal)+' unbilled':''},
+          {id:'shipnoinv',label:'Shipped — Billing Remaining',icon:'dollar',color:'#c2410c',n:mdShipNoInv.length,sub:_mdShipNoInvUnits>0?_mdShipNoInvUnits.toLocaleString()+' units to invoice':''},
           {id:'pastdue',label:'Past Due',icon:'dollar',color:'#b91c1c',n:mdPastDue.length,sub:_mdPastDueTotal>0?_md$(_mdPastDueTotal)+' open':''},
           {id:'deadlines',label:'Deadlines ≤'+stMdDeadline+'d',icon:'clock',color:'#be123c',n:mdDeadlines.length},
         ];
@@ -35566,18 +35674,18 @@ export default function App(){
               </tr>)}</tbody></table></Section>}
 
           {mdReadyInv.length>0&&<Section id="readyinv" title="🧾 Ready to Invoice" count={mdReadyInv.length}>
-            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Value</th><th></th></tr></thead>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Order Value</th><th></th></tr></thead>
               <tbody>{mdReadyInv.map(so=><tr key={so.id}>
-                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}<div style={{fontSize:10,color:'#0891b2',fontWeight:600}}>production done · not invoiced</div></td>
+                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}<div style={{fontSize:10,color:'#0891b2',fontWeight:600}}>production done · {_mdInvoiceCoverage(so).remaining.toLocaleString()} units to invoice</div></td>
                 <td>{_mdCustName(so.customer_id)}</td>
                 <td style={{fontWeight:700,color:'#0891b2'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
                 <td><button className="btn btn-sm btn-primary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Invoice</button></td>
               </tr>)}</tbody></table></Section>}
 
-          {mdShipNoInv.length>0&&<Section id="shipnoinv" title="🚨 Shipped — Not Invoiced" count={mdShipNoInv.length}>
-            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Value</th><th>Shipped</th><th></th></tr></thead>
+          {mdShipNoInv.length>0&&<Section id="shipnoinv" title="🚨 Shipped — Billing Remaining" count={mdShipNoInv.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Order Value</th><th>Shipped</th><th></th></tr></thead>
               <tbody>{mdShipNoInv.map(so=><tr key={so.id} style={{background:'#fff7ed'}}>
-                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}<div style={{fontSize:10,color:'#c2410c',fontWeight:600}}>shipped out · never invoiced</div></td>
+                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}<div style={{fontSize:10,color:'#c2410c',fontWeight:600}}>shipped out · {_mdInvoiceCoverage(so).remaining.toLocaleString()} units to invoice</div></td>
                 <td>{_mdCustName(so.customer_id)}</td>
                 <td style={{fontWeight:700,color:'#c2410c'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
                 <td style={{color:'#64748b'}}>{_mdWhen(so._ship_date||so.updated_at)}</td>
@@ -37790,7 +37898,7 @@ export default function App(){
           })()}
         </div>}
       </div>}
-      {memoCommand&&memoCommand.ownerId===String(cu?.id)&&<OrderMemoDialog key={String(cu?.id)+':'+memoCommand.id} initial={memoCommand} owner={cu?.id} saveCommand={_dbSaveMemoCommand} onSaved={(id,memo)=>{if(memoOwnerRef.current===memoCommand.ownerId)memoSaved(id,memo);}} onClose={()=>{if(memoOwnerRef.current===memoCommand.ownerId)setMemoCommand(current=>current===memoCommand?null:current);}} onPendingChange={pending=>{const key='memo:'+memoCommand.id;if(pending)_dbSavePendingIds.add(key);else _dbSavePendingIds.delete(key);}}/>}
+      {memoCommand&&memoCommand.ownerId===String(cu?.id)&&<OrderMemoDialog inlineTarget={memoCommand.id===eSO?.id?memoInlineTarget:null} key={String(cu?.id)+':'+memoCommand.id} initial={memoCommand} owner={cu?.id} saveCommand={_dbSaveMemoCommand} onSaved={(id,memo)=>{if(memoOwnerRef.current===memoCommand.ownerId)memoSaved(id,memo);}} onClose={()=>{if(memoOwnerRef.current===memoCommand.ownerId)setMemoCommand(current=>current===memoCommand?null:current);}} onPendingChange={pending=>{const key='memo:'+memoCommand.id;if(pending)_dbSavePendingIds.add(key);else _dbSavePendingIds.delete(key);}}/>}
       <DraftRecoveryPanel owner={cu?.id} onReview={(payload,table)=>{if(table===MEMO_DRAFT_TABLE){if(dirtyRef.current||_dbSavePendingIds.has(payload.id)||_dbSaveFailedIds.has(payload.id)){nf('Save or review the open order changes before recovering its memo.','error');return;}if(!memoCommandsReady){nf('Memo saving is not available yet. Your recovery copy is kept.','error');return;}setMemoCommand({...payload,ownerId:String(cu.id)});return;}const entry={table,id:payload.id,payload,baseVersion:payload._obBaseVersion??payload._version??null,ts:Date.now()};setOutboxConflicts(prev=>[...prev.filter(x=>x.table!==table||x.id!==payload.id),entry])}}/>
       {outboxConflicts.length>0&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b',fontSize:12,fontWeight:600}}>
         <div style={{padding:'8px 16px',display:'flex',alignItems:'center',gap:8}}>

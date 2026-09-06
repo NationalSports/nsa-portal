@@ -9,7 +9,8 @@ describe.each(['OrderEditor.js', 'OrderEditorClassic.js'])('%s quantity draft sa
 
   test('commits the focused size draft synchronously before Save reads the order', () => {
     expect(source).toContain("import { createPortal, flushSync } from 'react-dom';");
-    expect(source).toContain('data-sizing-draft="true"');
+    expect(source).toContain("import QuantityDraftInput from './QuantityDraftInput';");
+    expect(fs.readFileSync(path.join(__dirname,'..','QuantityDraftInput.js'),'utf8')).toContain('data-sizing-draft="true"');
     expect(source).toContain(file==='OrderEditor.js'
       ?'flushSync(()=>{uSz(idx,sz,v);_dropSizingDraft(_draftKey)})'
       :'flushSync(()=>{uSz(idx,sz,v);_dropSizingDraft(k)})');

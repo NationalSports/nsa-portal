@@ -324,16 +324,19 @@ const _sbResetPassword=async(email)=>{
 const _sbSignOut=async()=>{if(supabase)await supabase.auth.signOut({scope:'local'})};
 const _sbGetSession=async()=>{
   if(!supabase)return null;
-  const{data}=await supabase.auth.getSession();
+  const{data,error}=await supabase.auth.getSession();
+  if(error)throw new Error('Could not restore your session: '+error.message);
   return data?.session||null;
 };
 const _sbLinkTeamAuth=async(teamId,authId)=>{
   if(!supabase)return;
-  await supabase.rpc('link_team_auth',{p_team_id:teamId,p_auth_id:authId});
+  const{error}=await supabase.rpc('link_team_auth',{p_team_id:teamId,p_auth_id:authId});
+  if(error)throw new Error('Could not link your staff profile: '+error.message);
 };
 const _sbGetMyProfile=async()=>{
   if(!supabase)return null;
-  const{data}=await supabase.rpc('get_my_profile');
+  const{data,error}=await supabase.rpc('get_my_profile');
+  if(error)throw new Error('Could not load your staff profile: '+error.message);
   return data?.[0]||null;
 };
 // Reshape one customer_invoices row into the read-only _hist invoice object the app merges into
@@ -1329,6 +1332,14 @@ const _poLineToRow=(itemId,po)=>{const{po_id,vendor,received,cancelled,shipments
     sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined,drop_ship:drop_ship||undefined,_bill_details:_bill_details||undefined,_bill_cost:_bill_cost||undefined}};};
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return false;
+  // Stale-write circuit breaker (mirrors _dbSaveEstimateInner). A save rejected as STALE_SO_WRITE is
+  // preserved in the conflict card; re-POSTing the identical stale copy can never succeed. Without this
+  // gate, the auto-save effect re-fired the rejected save on every state change — 3.9M rejections in
+  // 11 hours on 2026-09-05, exhausting the DB connection pool and taking PostgREST down (503s for
+  // every user). Skip the network entirely until the cooldown elapses; _diffSave honors the same
+  // cooldown so it does not roll its snapshot back and re-queue the edit in the meantime.
+  const _cd=_dbStaleCooldown.get(so.id);
+  if(_cd&&Date.now()<_cd)return false;
   await _ensureFreshSession();// proactive token refresh before the write (see _dbSaveEstimateInner) — fewer reactive 401s from an idle tab
   // Optimistic locking: check version before saving (auto-heal on conflict). Record the conflict
   // rather than only adopting the server version: a bumped server version means ANOTHER session saved
@@ -2328,8 +2339,10 @@ const _dbSaveSOInner = async (so) => {
     }));
     if(commitError){
       if(commitError.code==='40001'||/STALE_SO_WRITE/.test(commitError.message||'')){
+        console.warn('[DB] save_sales_order_atomic rejected a stale write for',so.id,'—',commitError.message);
         _emitOutboxConflict('sales_orders',so);
         _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();
+        _dbStaleCooldown.set(so.id,Date.now()+_STALE_COOLDOWN_MS);// throttle re-POSTs until realtime heals the copy
         return false;
       }
       throw new Error(commitError.message||'Atomic save failed');
@@ -2360,7 +2373,12 @@ const _captureSoSave = (so, savePromise) => {
     } catch (_) { /* never let capture affect the save */ }
   }).catch(() => {});
 };
-const _dbSaveSO = (so) => { const _p = _saveDocument('sales_orders',so,_dbSaveSOInner); _captureSoSave(so, _p); return _p; };
+const _dbSaveSO = (so, opts) => {
+  // Bill confirmation must correspond to this exact mutation, not the result
+  // of a later editor/autosave that supersedes a coalesced pending payload.
+  const save = opts?.exactAttempt ? snapshot => _dbSaveSOInner(snapshot) : _dbSaveSOInner;
+  const _p = _saveDocument('sales_orders',so,save); _captureSoSave(so, _p); return _p;
+};
 // Narrow memo operation: no full-save wrapper, outbox, pricing or child writes.
 // Its dedicated dialog owns field-level recovery; sharing the full-document
 // outbox here would let a memo receipt erase an unrelated failed order edit.
@@ -3841,6 +3859,9 @@ const _dbSave = (table, data) => { if(supabase && data) return _retryNet(()=>sup
 // reads the live bindings exported below.
 export const _setDbNotify=(fn)=>{_dbNotify=fn};
 export const _clearDocumentConflictCooldown=id=>_dbStaleCooldown.delete(id);
+// True while a stale-write rejection for this document is cooling down. App's _diffSave uses it to
+// keep its snapshot (no rollback) so the rejected edit is not re-queued on every state change.
+export const _isDocumentConflictCooling=id=>{const t=_dbStaleCooldown.get(id);return !!t&&Date.now()<t};
 export const _setDataLossAlert=(fn)=>{_dataLossAlert=fn};
 export const _setRestoredLinesSync=(fn)=>{_restoredLinesSync=fn};
 export const _setOnEstStatusMerge=(fn)=>{_onEstStatusMerge=fn};

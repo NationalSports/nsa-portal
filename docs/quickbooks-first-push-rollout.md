@@ -48,6 +48,74 @@ Tag them `NSA-QB-CANARY:<run_id>`. Read each record back from QBO and compare do
 
 Pause. The operator opens the records in QBO and sends screenshots/photos. Production remains locked until the API read-back and visual review are both approved.
 
+## 3a. Blank portal payment terms
+
+Most portal customers (2,338 of 2,540 active on September 6, 2026) have no payment terms saved, and the portal itself bills them as Net 30. The customer review handles that without guessing a financial term:
+
+- A customer that already exists in QBO is linked with the QBO terms it has today. No QBO write happens, and the plan is marked "kept from QBO".
+- A customer that is not in QBO yet, or whose QBO term is inactive, gets the reviewer's selected default, Net 30 (the portal's own due-date default, approved by Steve Peterson on September 6, 2026); the reviewer can switch the selector to Block before the review. The plan is marked "reviewer default", and the batch is rejected if the default changed after the review.
+- Real portal terms always win over both.
+
+Every receipt records `term_source` (`portal`, `qbo`, or `default`) so the choice is auditable.
+
+A blocked row always reports the QBO customer it matched, when it matched one. Terms are
+resolved after identity precisely so that a terms gap cannot disguise itself as a naming
+failure; a blocked row with an empty QBO ID means genuinely no match, and one carrying an
+ID means the identity is settled and only terms are missing.
+
+Reading the review counters correctly matters here. With the selector on **Block**, a blank-terms customer is unblocked only if it already matches a QBO customer; everything else still counts as blocked, which is the pre-change behavior. With the selector on **Net 30**, those same rows become proposed creations. A Block-mode review is therefore a measurement of name matching, not of this control.
+
+## 3c. Duplicate-creation guard
+
+Exact matching is case- and whitespace-insensitive only, so `Crean Lutheran Boy's Volleyball` and `Crean Lutheran Boys Volleyball` were two different customers to it, and the second one would have been created as a duplicate in QBO. Before proposing a creation the review now also compares a looser key: apostrophes removed, `&` read as `and`, punctuation flattened, a leading `The` and trailing `Inc`/`LLC`/`Ltd`/`Co`/`Corp`/`Company` dropped. A hit blocks the row and names the QBO record and ID. It never links on that basis; a human decides.
+
+Sibling accounts that genuinely differ (`Crean Lutheran High School` and `Crean Lutheran High School Staff`) still propose creation, and an inactive QBO near-match does not block.
+
+## 3d. Name-match diagnostic
+
+Customers tab, **Name Match Diagnostic — No QBO Changes**. It reads both customer lists and reports how many QBO records are claimed by a portal customer, how many are unclaimed, and how many portal customers have no QBO match, with a sample of the actual unmatched names on each side and a full downloadable comparison.
+
+This exists because the counters cannot answer the question that gates the whole customer migration: when the portal fails to match a QBO customer, is that a naming difference or genuinely a different account? Creating on the wrong answer duplicates a live customer list. Run it before approving any batch that contains creations.
+
+## 3b. Sales-tax setup read
+
+The Invoices tab has **Read Sales Tax Setup — No QBO Changes**. It reads Preferences (Automated Sales Tax on or off), TaxCode, TaxRate, and TaxAgency, logs them to the sync log, and keeps a compact copy in `qb_config.taxPreflight`. It writes nothing and does not unblock taxable invoices; accounting still has to approve a mapping from those codes before any taxable invoice can post.
+
+## 3e. Batch size
+
+Reviewed batches are capped at `QB_MAX_REVIEWED_BATCH` (500), not 20. The old cap was
+not a safety judgement about record count; it was forced by cost. Every record in a
+customer batch re-read all QBO terms and all QBO customers and rebuilt the entire
+plan for all 2,500 portal customers, and every record in a product batch re-read the
+whole QBO item catalogue and rebuilt the plan for all 62,000 portal product rows. Both
+are quadratic, so a 500-record run was hours of work and tens of thousands of API calls.
+
+Those reads and plan builds are now hoisted to once per run. Each record still proves
+itself the same way it always did — a write, then a full QBO API read-back, then a
+durable receipt — and the run still stops on the first failure with the remainder
+reported as `not_attempted`. What changed is that a run of 500 costs about 500 write
+plus 500 read-back calls instead of several thousand list pages.
+
+The snapshot is kept current inside the run: every verified customer or item is folded
+back into it, so a later record sees what earlier records created. The one property
+given up is re-reading the full QBO list immediately before each individual record; a
+concurrent external change to a *different* record is now noticed at the next review
+rather than mid-run. A concurrent change to *this* record is still caught, because the
+read-back verifies identity, terms and accounts on the actual written record, and QBO
+independently rejects a duplicate customer display name or item name.
+
+Runs are sequential and browser-resident, so the reconciliation report is written after
+every record and a reload leaves a truthful partial report rather than an unknown state.
+
+## 3f. Products: only the SKUs that are actually needed
+
+The portal holds about 48,000 active SKUs and the product review proposes roughly 10,325
+creations, but QBO only needs an item for a SKU that appears on a document being posted.
+The pending purchase orders reference 2,134 distinct SKUs. The product batch therefore
+offers an "only SKUs on purchase orders awaiting sync" filter, on by default, which
+reduces the product phase by about 80%. Clearing it restores the full catalogue for
+anyone who wants it.
+
 ## 4. Resumable production batches
 
 Process dependencies in this order:
@@ -66,6 +134,28 @@ Batch cursors rotate across customers, invoices, SKUs, estimates, and purchase o
 After a clean 20-record pilot, continue in batches of 20. Increase concurrency only for independent non-posting records and only after error/rate-limit results are clean. Do not depend on one long browser request to process the entire migration.
 
 Retry 429 and transient network/5xx errors with bounded exponential backoff and jitter. Respect `Retry-After`. Do not automatically retry account, tax, duplicate-conflict, or payload validation errors; mark them for review.
+
+## 4a. Customer payments
+
+The payment push is the only place the portal moves cash into QBO, and it was the only
+write without the proof every other path carries. Its QBO response was discarded
+entirely, so a rejected payment was reported to the operator as money successfully sent.
+
+It now behaves like the rest of the migration:
+
+- **Duplicate preflight.** QBO cannot be queried by `LinkedTxn`, so the customer's
+  payments are read and the lines pointing at this invoice are totalled. Money QBO
+  already records against the invoice is never sent again, and a partial existing
+  payment only tops up the remainder.
+- **Checked response.** A fault blocks the record and is reported as blocked.
+- **API read-back.** The created payment is re-read and its total, customer, deposit
+  account and link to the invoice are all verified before success is claimed.
+- **Durable receipt** under `qbPaymentMap`, keyed by portal invoice and QBO payment ID,
+  recording the amount, what was already applied, and the deposit account.
+
+Payments still deposit to 11010 Undeposited Funds per the approved matrix. The pull
+direction, where QBO is ahead of the portal, is unchanged: it reads QBO's balance as
+authoritative each run and is self-correcting.
 
 ## 5. Completion checks
 
