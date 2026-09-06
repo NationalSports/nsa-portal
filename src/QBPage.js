@@ -111,6 +111,12 @@ export default function QBPage(){
   // portal terms on September 6, 2026. The reviewer can still switch to Block.
   const [customerBlankTermsDefault,setCustomerBlankTermsDefault]=useState('net30');
   const [qbTaxReading,setQbTaxReading]=useState(false);
+  // Washington first on purpose: 4 invoices and about $319 of collected tax, against
+  // 56 invoices and about $20,455 in California. Learn QBO's behaviour on the small one.
+  const [taxSetupState,setTaxSetupState]=useState('WA');
+  const [taxAgencyName,setTaxAgencyName]=useState('Washington Department of Revenue');
+  const [taxRateName,setTaxRateName]=useState('WA Sales Tax');
+  const [taxRatePercent,setTaxRatePercent]=useState('');
   const [matchDiagnostic,setMatchDiagnostic]=useState(null);
   const [matchDiagnosticBusy,setMatchDiagnosticBusy]=useState(false);
   const [poBatchReview,setPoBatchReview]=useState(null);
@@ -214,7 +220,7 @@ export default function QBPage(){
 
     // Sync engine — one copy of the logic (see qbSyncEngine.js); the App-level
     // auto-sync builds the same engine from fresh state, no page visit required.
-    const {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,reviewPurchaseOrderBillCandidate,linkPurchaseOrderBill,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,persistQbLink,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
+    const {syncTaxRateCanary,syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,reviewPurchaseOrderBillCandidate,linkPurchaseOrderBill,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,persistQbLink,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
 
     // Read-only live-company inspection. This is the mandatory first step and
     // performs no QBO create/update calls.
@@ -250,6 +256,18 @@ export default function QBPage(){
     // Read-only inspection of the live Sales Tax Center. Taxable invoices stay
     // blocked until accounting approves a mapping from these codes/rates; this
     // only records what QBO has so that decision can be made from evidence.
+    const runTaxRateCanary=async()=>{
+      const args={state:taxSetupState,agencyName:taxAgencyName,rateName:taxRateName,ratePercent:taxRatePercent};
+      const result=await syncTaxRateCanary(args);
+      if(result?.status!=='needs_confirmation')return;
+      const approved=window.confirm('Create manual sales tax in QuickBooks for '+result.state+'?\n\n'
+        +(result.agencyExists?'Reuse existing tax agency #'+result.agencyId+': ':'Create ONE new tax agency: ')+result.agency
+        +'\nCreate ONE tax code and rate: '+result.rate+' at '+result.percent+'%'
+        +'\n\nThis does not post any invoice. Both records are verified by API read-back.'
+        +'\n\nNote: enabling manual sales tax in QuickBooks is how tax gets recorded; it is not Automated Sales Tax and does not switch it on.');
+      if(!approved){nf('Tax rate setup cancelled — nothing was created in QuickBooks');return}
+      await syncTaxRateCanary({...args,allowCreate:true});
+    };
     const runQBTaxPreflight=async()=>{
       setQbTaxReading(true);
       const log={ts:new Date().toLocaleString(),type:'tax_preflight',status:'success',details:['READ ONLY — no QuickBooks records were created or changed']};
@@ -1080,6 +1098,22 @@ export default function QBPage(){
             <div style={{fontSize:12,fontWeight:700,color:'#92400e',marginBottom:4}}>Sales-tax setup (read-only)</div>
             <div style={{fontSize:11,color:'#475569',marginBottom:8}}>{unsyncedInvs.filter(inv=>safeNum(inv.tax)>0).length} of {unsyncedInvs.length} pending invoices carry sales tax and stay blocked until accounting approves a QBO tax-code mapping. This reads the live Sales Tax Center so that decision can be made from evidence. Nothing is written.</div>
             <button className="btn btn-sm" disabled={qbTaxReading||qbSyncing||!livePreflightReady} title={!livePreflightReady?'Run a successful read-only live preflight first':''} onClick={runQBTaxPreflight}>{qbTaxReading?'Reading QBO tax setup...':'Read Sales Tax Setup — No QBO Changes'}</button>
+            <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid #fde68a'}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#92400e',marginBottom:4}}>Set up one manual tax rate</div>
+              <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Creates one QuickBooks tax agency and one tax code/rate for a single state. It posts no invoice and does not enable Automated Sales Tax. Two things are unknown until a real record exists: which liability account QuickBooks assigns, and whether one rate per state can carry the Portal&apos;s own per-invoice amount across its 39 distinct local rates. Start with Washington, the smallest exposure.</div>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                <label>State <select aria-label="Tax state" value={taxSetupState} disabled={qbSyncing} onChange={e=>setTaxSetupState(e.target.value)}>
+                  {Object.keys(QB_STATE_TAX_ACCOUNT_KEYS).map(code=><option key={code} value={code}>{code}</option>)}
+                </select></label>
+                <label>Agency <input className="form-input" style={{minWidth:240}} aria-label="Tax agency name" value={taxAgencyName} disabled={qbSyncing} onChange={e=>setTaxAgencyName(e.target.value)}/></label>
+                <label>Rate name <input className="form-input" style={{minWidth:160}} aria-label="Tax rate name" value={taxRateName} disabled={qbSyncing} onChange={e=>setTaxRateName(e.target.value)}/></label>
+                <label>Percent <input className="form-input" style={{width:90}} aria-label="Tax rate percent" inputMode="decimal" placeholder="8.8" value={taxRatePercent} disabled={qbSyncing} onChange={e=>setTaxRatePercent(e.target.value)}/></label>
+                <button className="btn btn-primary btn-sm" style={{background:'#b45309'}} disabled={qbSyncing||!livePreflightReady||!taxRatePercent||!taxAgencyName.trim()||!taxRateName.trim()} onClick={runTaxRateCanary}>{qbSyncing?'Working...':'Create 1 Tax Rate'}</button>
+              </div>
+              {Object.keys(qbConfig.qbTaxRateMap||{}).length>0&&<div style={{fontSize:11,color:'#166534',marginTop:8,fontWeight:600}}>
+                Tax rates linked: {Object.entries(qbConfig.qbTaxRateMap).map(([code,id])=>code+' → QBO rate #'+id).join(' · ')}
+              </div>}
+            </div>
             {qbConfig.taxPreflight&&String(qbConfig.taxPreflight.realm_id||'')===String(qbConfig.realm_id||'')&&<div style={{fontSize:11,color:'#1e3a8a',marginTop:8}}>
               <div>Read {new Date(qbConfig.taxPreflight.at).toLocaleString()} · Automated Sales Tax {qbConfig.taxPreflight.partnerTaxEnabled?'enabled':'not enabled'} · {qbConfig.taxPreflight.codeCount} tax codes · {qbConfig.taxPreflight.rateCount} tax rates</div>
               <table style={{fontSize:10,marginTop:6}}><thead><tr><th>Tax code</th><th>Type</th><th>Rates</th></tr></thead><tbody>
