@@ -11,7 +11,7 @@ import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
 import { authFetch } from './utils';
-import { buildQBCustomerManifest, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName, qbResponseErrorDetail } from './qbSyncEngine';
+import { buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName, qbResponseErrorDetail } from './qbSyncEngine';
 import {
   QB_ACCOUNT_MAPPING_DEFAULTS,
   QB_ACCOUNT_POSTING_MATRIX,
@@ -106,6 +106,8 @@ export default function QBPage(){
   // portal terms on September 6, 2026. The reviewer can still switch to Block.
   const [customerBlankTermsDefault,setCustomerBlankTermsDefault]=useState('net30');
   const [qbTaxReading,setQbTaxReading]=useState(false);
+  const [matchDiagnostic,setMatchDiagnostic]=useState(null);
+  const [matchDiagnosticBusy,setMatchDiagnosticBusy]=useState(false);
   const [poBatchReview,setPoBatchReview]=useState(null);
   const [poBatchApproved,setPoBatchApproved]=useState(false);
   const [vendorReview,setVendorReview]=useState(null);
@@ -487,6 +489,25 @@ export default function QBPage(){
         setQBConfig(prev=>({...prev,lastCustomerReview:review}));
         nf('Customer review complete — no QBO records changed');
       }catch(e){nf('Customer review failed — '+e.message,'error')}finally{setCustomerReviewBusy(false)}
+    };
+    // Read-only. The review counters say how many customers matched; they cannot say
+    // whether the QBO records we failed to match are the same accounts under other
+    // names. This shows the actual unmatched names on both sides so that is decidable.
+    const runMatchDiagnostic=async()=>{
+      if(!livePreflightReady)return;
+      setMatchDiagnosticBusy(true);setMatchDiagnostic(null);
+      try{
+        const qboCustomers=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active',1000);
+        const report=buildQBCustomerMatchDiagnostic(cust,qboCustomers,qbConfig.custQBMap||{});
+        setMatchDiagnostic({...report,readAt:new Date().toISOString(),realm:qbConfig.realm_id});
+        nf('Name-match diagnostic complete — no QBO records changed');
+      }catch(e){nf('Name-match diagnostic failed — '+e.message,'error')}finally{setMatchDiagnosticBusy(false)}
+    };
+    const downloadMatchDiagnostic=()=>{
+      if(!matchDiagnostic)return;
+      const url=URL.createObjectURL(new Blob([JSON.stringify(matchDiagnostic,null,2)],{type:'application/json'}));
+      const anchor=document.createElement('a');anchor.href=url;anchor.download='qbo-name-match-'+matchDiagnostic.readAt.slice(0,10)+'.json';anchor.click();
+      URL.revokeObjectURL(url);
     };
     const customerBatchRows=(customerManifest?.rows||[]).filter(row=>['link','create','update_terms'].includes(row.action)
       &&(!qbConfig.custQBMap?.[row.sourceId]||row.action==='update_terms')).slice(0,customerBatchLimit);
@@ -945,6 +966,27 @@ export default function QBPage(){
                 <option value="">Block — no default assumed</option>
               </select></label>
               <div style={{marginTop:4}}>A customer that already exists in QBO keeps the QBO terms it has today (no write). The default above applies only to customers with blank portal terms that are not in QBO yet, or whose QBO term is inactive. Changing it requires a fresh review.</div>
+            </div>
+            <div style={{padding:'10px 12px',marginBottom:10,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e'}}>
+              <div style={{fontWeight:700,marginBottom:3}}>Check this before approving any customer creations</div>
+              <div>QuickBooks already holds its own customer list. If the Portal cannot match a customer by name, the review proposes creating it, and a wrong answer here means a second copy of a real account in QuickBooks. This reads both name lists and shows what is not matching. It changes nothing.</div>
+              <button className="btn btn-sm" style={{marginTop:8}} disabled={matchDiagnosticBusy||qbSyncing||!livePreflightReady} onClick={runMatchDiagnostic}>{matchDiagnosticBusy?'Reading QBO names...':'Name Match Diagnostic — No QBO Changes'}</button>
+              {matchDiagnostic&&<div style={{marginTop:10,color:'#1e3a8a'}}>
+                <div>QBO active customers: <strong>{matchDiagnostic.qboActive}</strong> · claimed by a Portal customer: <strong>{matchDiagnostic.qboClaimed}</strong> · unclaimed: <strong>{matchDiagnostic.qboUnclaimed}</strong></div>
+                <div>Portal active customers: <strong>{matchDiagnostic.portalActive}</strong> · with no QBO match: <strong>{matchDiagnostic.portalUnmatched}</strong></div>
+                <div style={{marginTop:6,fontWeight:600}}>If both unmatched numbers are large, the two lists are probably the same accounts under different names. Do not run creations until that is resolved.</div>
+                <button className="btn btn-sm" style={{marginTop:8}} onClick={downloadMatchDiagnostic}>Download Full Name Comparison</button>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginTop:10}}>
+                  <div><div style={{fontWeight:700,marginBottom:4}}>QBO names with no Portal match</div>
+                    <table style={{fontSize:10}}><thead><tr><th>QBO ID</th><th>Display name</th></tr></thead><tbody>
+                      {matchDiagnostic.qboUnclaimedSample.map(row=><tr key={row.id}><td>{row.id}</td><td>{row.displayName||row.companyName}</td></tr>)}
+                    </tbody></table></div>
+                  <div><div style={{fontWeight:700,marginBottom:4}}>Portal names with no QBO match</div>
+                    <table style={{fontSize:10}}><thead><tr><th>Portal customer</th></tr></thead><tbody>
+                      {matchDiagnostic.portalUnmatchedSample.map(row=><tr key={row.sourceId}><td>{row.displayName}</td></tr>)}
+                    </tbody></table></div>
+                </div>
+              </div>}
             </div>
             <button className="btn btn-sm" disabled={qbSyncing||customerReviewBusy||!livePreflightReady} onClick={reviewCustomerMigration}>{customerReviewBusy?'Reviewing customers...':'Review Customers — No QBO Changes'}</button>
             {customerManifest&&<>

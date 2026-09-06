@@ -101,3 +101,34 @@ Read from the production database, not from the UI counters.
 The OAuth connection itself is healthy: the National realm token refreshed at 07:45 UTC on September 6, `initialMigrationApproved` is true, and the last read-only preflight succeeded against the correct realm.
 
 `app_state.qb_config` is 3.3 MB, and almost all of it is the three saved review row sets (the product review alone is about 2.3 MB). Every QuickBooks setting change rewrites that row. Not changed in this release; flagged for a follow-up that keeps only counts and the reviewed batch rows.
+
+
+## Operator run — September 6, 2026, 9:42 AM Pacific
+
+Run against the PR 2202 preview on commit `3b8f69e`. Preflight passed for the correct
+company and realm. No QBO record was created, updated or linked during the run.
+
+The customer review was run with blank terms set to **Block** and returned 2,541 rows:
+43 existing matches, 125 proposed creations, 35 term changes, 2,337 blocked, 1 excluded,
+1 customer taking its terms from QBO. That is the correct result for Block mode, where a
+blank-terms customer only clears if it already matches in QBO. It measures name matching,
+not the blank-terms control, and the run's expectation of a large drop in Block mode was
+wrong.
+
+The result that matters is underneath it. QBO holds 2,385 active customers against 2,540
+active portal customers, and the review matched roughly 36 of them organically; the rest
+of the 43 links are records this portal created in earlier batches, whose QBO IDs run
+contiguously from 2385. Portal customers carrying payment terms (202 of them, almost all
+created in the portal itself) matched at about 38%, while blank-terms customers, almost
+all carrying NetSuite-derived IDs, matched at about 0.04%. Either those 2,300-odd QBO
+customers are different accounts, or they are the same accounts under different names.
+Until that is settled, approving creations risks duplicating a live customer list.
+
+Sales tax was read read-only: Automated Sales Tax is not enabled, sales tax is not in
+use, and the company has 3 tax codes (TAX, NON, CustomSalesTax) with **zero tax rates and
+zero tax agencies**. The state liability accounts exist on the chart of accounts while
+the sales-tax feature behind them does not. The 60 blocked taxable invoices cannot post
+until that is configured in QuickBooks; no portal change resolves it.
+
+Also outstanding: 20 customers created by an earlier batch (QBO IDs from about 2385)
+predate the duplicate guard and were never checked against a looser name key.

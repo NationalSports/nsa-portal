@@ -52,3 +52,40 @@ describe('blank portal payment terms',()=>{
     expect(buildQBCustomerManifest([blank],[],terms,{},{blankTermsDefault:'net45'})[0]).toMatchObject({action:'blocked',reason:expect.stringMatching(/was not found/)});
   });
 });
+
+describe('duplicate-candidate guard before creating a customer',()=>{
+  const {buildQBCustomerMatchDiagnostic,normalizeQBDuplicateKey}=require('../qbSyncEngine');
+  test('a QBO name differing only by punctuation blocks the creation and names the record',()=>{
+    const portal={id:'C9',name:"Crean Lutheran Boy's Volleyball",alpha_tag:'CLBV',payment_terms:'net30'};
+    const qbo=[{Id:'900',DisplayName:'Crean Lutheran Boys Volleyball',Active:true,SalesTermRef:{value:'8'}}];
+    const row=buildQBCustomerManifest([portal],qbo,terms)[0];
+    expect(row.action).toBe('blocked');
+    expect(row.reason).toMatch(/Possible existing QBO customer "Crean Lutheran Boys Volleyball" \(#900\)/);
+  });
+  test('ampersand and company suffix differences are caught too',()=>{
+    const qbo=[{Id:'901',DisplayName:'A and B Athletics, Inc.',Active:true}];
+    expect(buildQBCustomerManifest([{id:'C10',name:'A & B Athletics',alpha_tag:'AB',payment_terms:'net30'}],qbo,terms)[0].action).toBe('blocked');
+  });
+  test('genuinely different sibling accounts still propose creation',()=>{
+    const qbo=[{Id:'902',DisplayName:'Crean Lutheran High School',Active:true}];
+    expect(buildQBCustomerManifest([{id:'C11',name:'Crean Lutheran High School Staff',alpha_tag:'CLHSS',payment_terms:'net30'}],qbo,terms)[0].action).toBe('create');
+  });
+  test('an inactive QBO near-match does not block a creation',()=>{
+    const qbo=[{Id:'903',DisplayName:'Crean Lutheran Boys Volleyball',Active:false}];
+    expect(buildQBCustomerManifest([{id:'C12',name:"Crean Lutheran Boy's Volleyball",alpha_tag:'CLBV',payment_terms:'net30'}],qbo,terms)[0].action).toBe('create');
+  });
+  test('the loose key strips punctuation, ampersands, leading "the" and company suffixes',()=>{
+    expect(normalizeQBDuplicateKey("Crean Lutheran Boy's Volleyball")).toBe('crean lutheran boys volleyball');
+    expect(normalizeQBDuplicateKey('A & B Athletics, Inc.')).toBe('a and b athletics');
+    expect(normalizeQBDuplicateKey('The Sports Barn LLC')).toBe('sports barn');
+    expect(normalizeQBDuplicateKey('   ')).toBe('');
+  });
+  test('the diagnostic counts both sides and samples real names',()=>{
+    const portal=[{id:'C1',name:'School',alpha_tag:'S',payment_terms:'net30'},{id:'C2',name:'Only In Portal',alpha_tag:'OIP',payment_terms:'net30'}];
+    const qbo=[existing,{Id:'77',DisplayName:'Only In QBO',Active:true},{Id:'78',DisplayName:'Retired',Active:false}];
+    const report=buildQBCustomerMatchDiagnostic(portal,qbo,{});
+    expect(report).toMatchObject({qboActive:2,qboClaimed:1,qboUnclaimed:1,portalActive:2,portalUnmatched:1});
+    expect(report.qboUnclaimedSample).toEqual([{id:'77',displayName:'Only In QBO',companyName:''}]);
+    expect(report.portalUnmatchedSample[0]).toMatchObject({sourceId:'C2',displayName:'Only In Portal (OIP)'});
+  });
+});

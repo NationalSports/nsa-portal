@@ -58,6 +58,20 @@ Most portal customers (2,338 of 2,540 active on September 6, 2026) have no payme
 
 Every receipt records `term_source` (`portal`, `qbo`, or `default`) so the choice is auditable.
 
+Reading the review counters correctly matters here. With the selector on **Block**, a blank-terms customer is unblocked only if it already matches a QBO customer; everything else still counts as blocked, which is the pre-change behavior. With the selector on **Net 30**, those same rows become proposed creations. A Block-mode review is therefore a measurement of name matching, not of this control.
+
+## 3c. Duplicate-creation guard
+
+Exact matching is case- and whitespace-insensitive only, so `Crean Lutheran Boy's Volleyball` and `Crean Lutheran Boys Volleyball` were two different customers to it, and the second one would have been created as a duplicate in QBO. Before proposing a creation the review now also compares a looser key: apostrophes removed, `&` read as `and`, punctuation flattened, a leading `The` and trailing `Inc`/`LLC`/`Ltd`/`Co`/`Corp`/`Company` dropped. A hit blocks the row and names the QBO record and ID. It never links on that basis; a human decides.
+
+Sibling accounts that genuinely differ (`Crean Lutheran High School` and `Crean Lutheran High School Staff`) still propose creation, and an inactive QBO near-match does not block.
+
+## 3d. Name-match diagnostic
+
+Customers tab, **Name Match Diagnostic — No QBO Changes**. It reads both customer lists and reports how many QBO records are claimed by a portal customer, how many are unclaimed, and how many portal customers have no QBO match, with a sample of the actual unmatched names on each side and a full downloadable comparison.
+
+This exists because the counters cannot answer the question that gates the whole customer migration: when the portal fails to match a QBO customer, is that a naming difference or genuinely a different account? Creating on the wrong answer duplicates a live customer list. Run it before approving any batch that contains creations.
+
 ## 3b. Sales-tax setup read
 
 The Invoices tab has **Read Sales Tax Setup — No QBO Changes**. It reads Preferences (Automated Sales Tax on or off), TaxCode, TaxRate, and TaxAgency, logs them to the sync log, and keeps a compact copy in `qb_config.taxPreflight`. It writes nothing and does not unblock taxable invoices; accounting still has to approve a mapping from those codes before any taxable invoice can post.

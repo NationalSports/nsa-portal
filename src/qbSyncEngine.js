@@ -24,6 +24,75 @@ export function rotatingBatch(items = [], offset = 0, size = 20) {
 }
 
 const normalizeQBCustomerName = value => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+// A second, deliberately looser key used ONLY to spot a probable duplicate before
+// creating a customer. Exact matching (above) is case/space insensitive but still
+// misses "Boy's" vs "Boys" and "A & B" vs "A and B", which is exactly how a second
+// copy of a real customer gets created in QuickBooks. This never links anything on
+// its own — a hit blocks the row and names the QBO candidate for a human to judge.
+const QB_NAME_SUFFIXES = new Set(['inc', 'llc', 'lc', 'ltd', 'co', 'corp', 'company']);
+export function normalizeQBDuplicateKey(value) {
+  const base = String(value || '').toLowerCase()
+    .replace(/&/g, ' and ')
+    // Apostrophes join a word — "Boy's" is one token, not two. Dropping them before
+    // the general punctuation pass is what makes "Boy's" and "Boys" the same key.
+    .replace(/['\u2018\u2019\u02bc`]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+  const tokens = base.split(' ').filter(Boolean);
+  while (tokens.length > 1 && QB_NAME_SUFFIXES.has(tokens[tokens.length - 1])) tokens.pop();
+  if (tokens.length > 1 && tokens[0] === 'the') tokens.shift();
+  return tokens.join(' ');
+}
+
+// Candidates are QBO customers whose loose key equals the portal customer's, after
+// exact matching already failed. Inactive QBO records are ignored.
+export function findQBDuplicateCandidates(customer, qboCustomers = []) {
+  const keys = new Set([
+    normalizeQBDuplicateKey(customer?.name),
+    normalizeQBDuplicateKey(portalCustomerDisplayName(customer)),
+  ].filter(Boolean));
+  if (!keys.size) return [];
+  const hits = (qboCustomers || []).filter(qbo => {
+    if (!qbo || qbo.Active === false) return false;
+    return keys.has(normalizeQBDuplicateKey(qbo.DisplayName)) || keys.has(normalizeQBDuplicateKey(qbo.CompanyName));
+  });
+  return [...new Map(hits.map(hit => [String(hit.Id), hit])).values()];
+}
+
+// Read-only. Answers one question the counters cannot: are the QBO customers we are
+// failing to match actually the same accounts under different names, or a different
+// population entirely? Samples real QBO names so the answer is visible, not guessed.
+export function buildQBCustomerMatchDiagnostic(customers = [], qboCustomers = [], savedMap = {}, sampleSize = 40) {
+  const activeQBO = (qboCustomers || []).filter(qbo => qbo && qbo.Active !== false);
+  const claimed = new Set();
+  (customers || []).forEach(customer => {
+    const saved = String(savedMap[customer?.id] || customer?.qb_customer_id || '');
+    if (saved) claimed.add(saved);
+    findExactQBCustomerMatches(customer, activeQBO).forEach(match => claimed.add(String(match.Id)));
+    findQBDuplicateCandidates(customer, activeQBO).forEach(match => claimed.add(String(match.Id)));
+  });
+  const unclaimed = activeQBO.filter(qbo => !claimed.has(String(qbo.Id)));
+  const unmatchedPortal = (customers || []).filter(customer =>
+    customer?.is_active !== false && !customer?.deleted_at
+    && !String(savedMap[customer.id] || customer.qb_customer_id || '')
+    && !findExactQBCustomerMatches(customer, activeQBO).length
+    && !findQBDuplicateCandidates(customer, activeQBO).length);
+  const size = Math.max(1, Math.min(200, Number(sampleSize) || 40));
+  return {
+    qboActive: activeQBO.length,
+    qboClaimed: claimed.size,
+    qboUnclaimed: unclaimed.length,
+    portalActive: (customers || []).filter(c => c?.is_active !== false && !c?.deleted_at).length,
+    portalUnmatched: unmatchedPortal.length,
+    qboUnclaimedSample: unclaimed.slice(0, size).map(qbo => ({
+      id: String(qbo.Id), displayName: qbo.DisplayName || '', companyName: qbo.CompanyName || '',
+    })),
+    portalUnmatchedSample: unmatchedPortal.slice(0, size).map(customer => ({
+      sourceId: String(customer.id), name: customer.name || '', displayName: portalCustomerDisplayName(customer),
+    })),
+  };
+}
 const qbCurrency = value => Math.round((safeNum(value) + Number.EPSILON) * 100) / 100;
 
 export function qbResponseErrorDetail(response, fallback = 'unknown') {
@@ -126,7 +195,15 @@ export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms
         row.termSource = 'default';termNote = '; portal terms blank, reviewer default ' + term.name;
       }else throw new Error('Missing portal payment terms; no default is assumed');
       row.desiredTerm = term;
-      if(!existing)return {...row,action:'create',reason:'Requires explicit creation approval' + termNote};
+      if(!existing){
+        // Never create a second copy of a customer QBO already has under a name that
+        // differs only by punctuation, "and"/"&", or a company suffix.
+        const nearby = findQBDuplicateCandidates(customer,qboCustomers);
+        if(nearby.length)throw new Error('Possible existing QBO customer '
+          + nearby.map(hit=>'"' + (hit.DisplayName || hit.CompanyName || '') + '" (#' + hit.Id + ')').join(', ')
+          + '; link or rename it before creating a second record');
+        return {...row,action:'create',reason:'Requires explicit creation approval' + termNote};
+      }
       row.qboId = String(existing.Id);
       row.currentTerm = existing.SalesTermRef || null;
       row.action = String(existing.SalesTermRef?.value || '') === term.value ? 'link' : 'update_terms';
