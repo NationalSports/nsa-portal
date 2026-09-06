@@ -128,3 +128,34 @@ describe('a matched QBO customer with no terms on either side',()=>{
     expect(row.reason).toBe('Missing portal payment terms; no default is assumed');
   });
 });
+
+describe('two portal customers that name the same real-world account',()=>{
+  // The live case: "Populous (Populous)" and "Populous (POP)", neither in QBO.
+  const a={id:'P1',name:'Populous',alpha_tag:'Populous',payment_terms:'net30'};
+  const b={id:'P2',name:'Populous',alpha_tag:'POP',payment_terms:'net30'};
+  test('both creations are blocked, naming the other record',()=>{
+    const rows=buildQBCustomerManifest([a,b],[],terms);
+    expect(rows.map(row=>row.action)).toEqual(['blocked','blocked']);
+    expect(rows[0].reason).toMatch(/same QuickBooks name \(Populous \(POP\)\)/);
+    expect(rows[1].reason).toMatch(/same QuickBooks name \(Populous \(Populous\)\)/);
+  });
+  test('punctuation and company suffixes do not hide the collision',()=>{
+    const rows=buildQBCustomerManifest([
+      {...a,name:"Boy's Club Inc"},{...b,name:'Boys Club'},
+    ],[],terms);
+    expect(rows.every(row=>row.action==='blocked')).toBe(true);
+  });
+  test('a create is blocked when another portal row already links that name in QBO',()=>{
+    const rows=buildQBCustomerManifest([
+      {...a,name:'School',alpha_tag:'S'},{...b,name:'School',alpha_tag:'SCH'},
+    ],[existing],terms);
+    expect(rows.find(row=>row.sourceId==='P1').action).toBe('link');
+    expect(rows.find(row=>row.sourceId==='P2')).toMatchObject({action:'blocked'});
+  });
+  test('distinct teams under one school still create independently',()=>{
+    const rows=buildQBCustomerManifest([
+      {...a,name:'Hug High School Tennis'},{...b,name:'Hug High School Volleyball'},
+    ],[],terms);
+    expect(rows.map(row=>row.action)).toEqual(['create','create']);
+  });
+});

@@ -123,3 +123,37 @@ describe('a generic single word must not claim an unrelated vendor',()=>{
     expect(review('Pacific Screen Print Int., Inc')).toMatchObject({action:'blocked'});
   });
 });
+
+describe('a QBO vendor that is the same business as a Portal vendor under another spelling',()=>{
+  // The first pair is the live case: the 2026-09-06 QBO vendor export carries
+  // "Astra Sport LLC" for the Portal's "Astra Sport". The rest are the same
+  // shape -- legal form in QBO, short form in the Portal.
+  const portal = name => ({id:'p1',name,vendor_type:'upload',is_active:true});
+  const qbo = name => ({Id:'50',DisplayName:name});
+  test.each([
+    ['Astra Sport LLC','Astra Sport'],
+    ['AGRON INC.','Agron'],
+    ['MIZUNO USA INC','Mizuno USA, Inc.'],
+    ['MUELLER SPORTS MEDICINE INC','MUELLER SPORTS MEDICINE'],
+    ['KWIK GOAL LTD','Kwik Goal'],
+    ['S AND S ACTIVEWEAR','S&S Activewear'],
+  ])('holds %s against Portal %s instead of creating a duplicate',(qboName,portalName)=>{
+    const row = buildQBVendorReview([portal(portalName)],[qbo(qboName)],{},'realm')[0];
+    expect(row.action).toBe('blocked');
+    expect(row.reason).toMatch(/Possible existing Portal vendor/);
+    expect(row.reason).toContain(portalName);
+  });
+  test('a genuinely new vendor still imports',()=>{
+    expect(buildQBVendorReview([portal('Agron')],[qbo('Augusta Sportswear')],{},'realm')[0].action).toBe('create');
+  });
+  test('two different businesses sharing a first word are not held',()=>{
+    expect(buildQBVendorReview([portal('Pacific Embroidery')],[qbo('Pacific Headwear')],{},'realm')[0].action).toBe('create');
+  });
+  test('an inactive Portal vendor does not hold an import',()=>{
+    const row = buildQBVendorReview([{...portal('Agron'),is_active:false}],[qbo('AGRON INC.')],{},'realm')[0];
+    expect(row.action).toBe('create');
+  });
+  test('an exact match still links rather than blocking',()=>{
+    expect(buildQBVendorReview([portal('Schutt Sports')],[qbo('SCHUTT SPORTS')],{},'realm')[0].action).toBe('link');
+  });
+});
