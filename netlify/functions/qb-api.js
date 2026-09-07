@@ -244,6 +244,13 @@ exports.handler = async (event) => {
       return { statusCode: res.status, headers: corsHeaders(origin), body: JSON.stringify(res.data) };
     }
 
+    // ── POST INVENTORY VALUATION JOURNAL ENTRY ──
+    if (action === 'upsert_journalentry') {
+      const { journalentry } = body;
+      const res = await qbRequest('POST', `${basePath}/journalentry`, access_token, journalentry, sandbox);
+      return { statusCode: res.status, headers: corsHeaders(origin), body: JSON.stringify(res.data) };
+    }
+
     // ── CREATE BANK DEPOSIT ──
     if (action === 'upsert_deposit') {
       const { deposit } = body;
@@ -254,7 +261,7 @@ exports.handler = async (event) => {
     // ── READ SINGLE ENTITY ──
     if (action === 'read') {
       const { entity, id } = body;
-      const validEntities = ['customer', 'vendor', 'invoice', 'bill', 'billpayment', 'purchaseorder', 'item', 'payment', 'deposit', 'account'];
+      const validEntities = ['customer', 'vendor', 'invoice', 'bill', 'billpayment', 'purchaseorder', 'item', 'payment', 'deposit', 'account', 'journalentry'];
       if (!validEntities.includes(entity)) {
         return { statusCode: 400, headers: corsHeaders(origin), body: JSON.stringify({ error: 'Invalid entity: ' + entity }) };
       }

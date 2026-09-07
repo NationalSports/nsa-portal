@@ -120,6 +120,8 @@ export default function QBPage(){
   const [matchDiagnostic,setMatchDiagnostic]=useState(null);
   const [matchDiagnosticBusy,setMatchDiagnosticBusy]=useState(false);
   const [poBatchReview,setPoBatchReview]=useState(null);
+  const [invValuationReview,setInvValuationReview]=useState(null);
+  const [invValuationApproved,setInvValuationApproved]=useState(false);
   const [poBatchApproved,setPoBatchApproved]=useState(false);
   const [vendorReview,setVendorReview]=useState(null);
   const [vendorBusy,setVendorBusy]=useState(false);
@@ -229,7 +231,7 @@ export default function QBPage(){
 
     // Sync engine — one copy of the logic (see qbSyncEngine.js); the App-level
     // auto-sync builds the same engine from fresh state, no page visit required.
-    const {syncTaxRateCanary,syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,reviewPurchaseOrderBillCandidate,linkPurchaseOrderBill,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,persistQbLink,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
+    const {syncTaxRateCanary,syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,syncInventoryValuation,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,reviewPurchaseOrderBillCandidate,linkPurchaseOrderBill,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,persistQbLink,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
 
     // Read-only live-company inspection. This is the mandatory first step and
     // performs no QBO create/update calls.
@@ -472,8 +474,12 @@ export default function QBPage(){
     const selectedCanaryPO=canaryPOs.find(group=>String(group.poId)===String(qbCanaryPOId));
     const poPreviewRows=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{});
     const poBatchRows=(poBatchReview?.rows||[]).filter(row=>row.action==='ready').slice(0,poBatchLimit);
+    const poPreviewById=new Map(poPreviewRows.map(row=>[String(row.poId),row]));
+    const poAccountSkus=poId=>poPreviewById.get(String(poId))?.accountSkus||[];
     const selectedInvoiceCustomer=selectedCanaryInvoice&&cust.find(c=>c.id===selectedCanaryInvoice.customer_id);
-    const invoiceCanaryBlock=selectedCanaryInvoice&&!_custQBMap[selectedCanaryInvoice.customer_id]?'Sync this invoice customer first':selectedCanaryInvoice&&safeNum(selectedCanaryInvoice.tax)>0?'Taxable invoices remain blocked until QBO tax-code mapping is deployed':'';
+    const invoiceCanaryTaxState=selectedCanaryInvoice?String(selectedInvoiceCustomer?.shipping_state||selectedInvoiceCustomer?.billing_state||'').trim().toUpperCase():'';
+    const invoiceCanaryBlock=selectedCanaryInvoice&&!_custQBMap[selectedCanaryInvoice.customer_id]?'Sync this invoice customer first'
+      :selectedCanaryInvoice&&safeNum(selectedCanaryInvoice.tax)>0&&!(qbConfig.qbTaxRateMap||{})[invoiceCanaryTaxState]?'Taxable invoice: run the tax-rate canary for '+(invoiceCanaryTaxState||'the customer state')+' first (Settings tab)':'';
     const soCanaryBlock=selectedCanarySO&&!_custQBMap[selectedCanarySO.customer_id]?'Sync this sales-order customer first':'';
     const poCanaryBlock=selectedCanaryPO?.invalidReason||'';
     const runCustomerCanary=async()=>{
@@ -624,6 +630,17 @@ export default function QBPage(){
       const poId=poCanaryReview.poId;
       setPoCanaryReview(null);
       await syncPurchaseOrders({}, {canaryPOId:poId});
+    };
+    const reviewInventoryValuation=async()=>{
+      setInvValuationApproved(false);
+      const result=await syncInventoryValuation({approved:false});
+      setInvValuationReview(result&&['needs_confirmation','unchanged'].includes(result.status)?result:null);
+    };
+    const postInventoryValuation=async()=>{
+      if(!invValuationReview||invValuationReview.status!=='needs_confirmation'||!invValuationApproved)return;
+      const review=invValuationReview;
+      setInvValuationReview(null);setInvValuationApproved(false);
+      await syncInventoryValuation({approved:true,asOf:review.asOf,expectedDelta:review.delta});
     };
     const reviewPurchaseOrderBatch=()=>{
       const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows:poPreviewRows,
@@ -845,13 +862,14 @@ export default function QBPage(){
               <div style={{fontSize:10,color:'#475569',marginBottom:8}}>Non-posting. The canary will not create a vendor or QBO item as a side effect.</div>
               <select className="form-input" aria-label="Purchase order to test in QuickBooks" disabled={qbSyncing} value={qbCanaryPOId} onChange={e=>{setQbCanaryPOId(e.target.value);setPoCanaryReview(null)}}>
                 <option value="">Select one purchase order...</option>
-                {canaryPOs.map(group=><option key={group.poId} value={group.poId}>{group.poId} — {group.vendor||'Unknown'}{group.invalidReason?' — BLOCKED':''}</option>)}
+                {canaryPOs.map(group=><option key={group.poId} value={group.poId}>{group.poId} — {group.vendor||'Unknown'}{group.invalidReason?' — BLOCKED':poAccountSkus(group.poId).length?' — '+poAccountSkus(group.poId).length+' unlinked SKU'+(poAccountSkus(group.poId).length===1?'':'s')+' to Purchases':''}</option>)}
               </select>
               <button className="btn btn-primary btn-sm" style={{marginTop:8,background:'#6d28d9'}} disabled={qbSyncing||!livePreflightReady||!selectedCanaryPO||!!poCanaryBlock} onClick={reviewPurchaseOrderCanary}>{qbSyncing?'Testing...':'Test 1 Purchase Order'}</button>
               {poCanaryReview&&<section role="region" aria-label="Confirm one purchase order" style={{marginTop:12,padding:12,background:'#fff',border:'2px solid #6d28d9',borderRadius:8}}>
                 <strong>Create or link exactly one QBO Purchase Order</strong>
                 <div style={{marginTop:8}}>{poCanaryReview.poId} — {poCanaryReview.vendor||'Unknown'}</div>
                 <div style={{fontWeight:700,marginTop:4}}>Saved PO total: ${poCanaryReview.total.toFixed(2)}</div>
+                {poAccountSkus(poCanaryReview.poId).length>0&&<div style={{fontSize:11,marginTop:4,color:'#92400e'}}>No linked QBO item for {poAccountSkus(poCanaryReview.poId).join(', ')} — these post as one line to the Purchases account with the SKU and description in the memo.</div>}
                 <p>This is non-posting. No vendor or item will be created. The PO will be verified by API read-back.</p>
                 <button className="btn btn-primary btn-sm" disabled={qbSyncing||!livePreflightReady} onClick={runPurchaseOrderCanary}>Confirm and test this PO</button>
                 <button className="btn btn-sm" style={{marginLeft:8}} disabled={qbSyncing} onClick={()=>{setPoCanaryReview(null);nf('Purchase-order canary cancelled — nothing was sent')}}>Cancel</button>
@@ -882,11 +900,11 @@ export default function QBPage(){
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header"><h2>Controlled Purchase-Order Batch</h2></div>
           <div className="card-body">
-            <p style={{fontSize:11,color:'#475569'}}>Reviews portal readiness first, then processes at most 20 exact PO IDs. Every created or matched PO must pass API header and line read-back before its durable link is saved. Missing vendors and product items block without being created as side effects.</p>
+            <p style={{fontSize:11,color:'#475569'}}>Reviews portal readiness first, then processes at most 20 exact PO IDs. Every created or matched PO must pass API header and line read-back before its durable link is saved. Missing vendors block without being created as side effects. Lines whose SKU has no linked QBO item post to the Purchases account as one line instead of blocking the PO.</p>
             <button className="btn btn-sm" disabled={qbSyncing||!livePreflightReady} onClick={reviewPurchaseOrderBatch}>Review POs — No QBO Changes</button>
             {poBatchReview&&<>
               <p>Readiness: {JSON.stringify(poBatchReview.counts)}. Proposed batch: {poBatchRows.length} ready POs.</p>
-              <table><thead><tr><th>Portal PO</th><th>Vendor</th><th>Date</th><th>Lines</th><th>Total</th></tr></thead><tbody>{poBatchRows.map(row=><tr key={row.poId}><td>{row.poId}</td><td>{row.vendor}</td><td>{row.date}</td><td>{row.lineCount}</td><td>${row.total.toFixed(2)}</td></tr>)}</tbody></table>
+              <table><thead><tr><th>Portal PO</th><th>Vendor</th><th>Date</th><th>Lines</th><th>To Purchases acct</th><th>Total</th></tr></thead><tbody>{poBatchRows.map(row=><tr key={row.poId}><td>{row.poId}</td><td>{row.vendor}</td><td>{row.date}</td><td>{row.lineCount}</td><td title={(row.accountSkus||[]).join(', ')}>{(row.accountSkus||[]).length?(row.accountSkus||[]).length+' SKU'+((row.accountSkus||[]).length===1?'':'s'):'—'}</td><td>${row.total.toFixed(2)}</td></tr>)}</tbody></table>
               <label style={{marginRight:12}}>Batch size <select aria-label="Purchase order batch size" value={poBatchLimit} disabled={qbSyncing} onChange={e=>{setPoBatchLimit(Number(e.target.value));setPoBatchApproved(false)}}>{QB_BATCH_SIZES.map(size=><option key={size} value={size}>{size}</option>)}</select></label>
               <label><input type="checkbox" checked={poBatchApproved} disabled={qbSyncing} onChange={e=>setPoBatchApproved(e.target.checked)}/> I approve only the listed POs in this batch.</label>
               <button className="btn btn-primary btn-sm" disabled={qbSyncing||!poBatchApproved||!poBatchRows.length||!qbConfig.qbPOBillMap?.['PO 58971 SHHGS']} onClick={runPurchaseOrderBatch}>Run Reviewed PO Batch</button>
@@ -1311,7 +1329,7 @@ export default function QBPage(){
             <button className="btn btn-primary btn-sm" disabled title="Locked until the product-item canaries are approved">Review Required Below</button>
           </div>
           <div style={{padding:'8px 16px',background:'#fffbeb',fontSize:11,color:'#92400e',borderBottom:'1px solid #fef3c7'}}>
-            The portal is the inventory source of truth. QBO will receive one NonInventory purchase item per SKU using 40000 Sales and 51300 Purchases. QBO will not receive quantity on hand or inventory value. Review and approve at most 20 SKUs after the existing-item and new-item canaries pass.
+            The portal is the inventory source of truth. QBO will receive one NonInventory purchase item per SKU using 40000 Sales and 51300 Purchases. QBO does not track quantity per item; the inventory value reaches the balance sheet through the valuation entry below. Review and approve at most 20 SKUs after the existing-item and new-item canaries pass.
           </div>
           <div style={{padding:14}}>
             <button className="btn btn-sm" disabled={qbSyncing||productReviewBusy||!livePreflightReady} onClick={reviewProducts}>Review Products — No QBO Changes</button>
@@ -1380,6 +1398,33 @@ export default function QBPage(){
                   </tr>})}
               </tbody>
             </table>
+          </div>
+        </div>
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h2>Inventory Value on the Balance Sheet</h2></div>
+          <div style={{padding:'8px 16px',background:'#f0f9ff',fontSize:11,color:'#0c4a6e',borderBottom:'1px solid #bae6fd'}}>
+            Values every unit in portal stock at its cost (size cost, else catalog cost) and posts one journal entry that moves {qbConfig.mapping.inventory_asset_account} Inventory Asset to that value against {qbConfig.mapping.cogs_account} Cost of Goods Sold. One entry per day, read back and receipted like every other write. Units with no cost are excluded and listed, never guessed.
+          </div>
+          <div style={{padding:14}}>
+            <button className="btn btn-sm" disabled={qbSyncing||!livePreflightReady} onClick={reviewInventoryValuation}>Review Inventory Value — No QBO Changes</button>
+            {invValuationReview&&<section role="region" aria-label="Confirm inventory valuation entry" style={{marginTop:12,padding:12,background:'#fff',border:'2px solid #0369a1',borderRadius:8}}>
+              <table style={{fontSize:12}}><tbody>
+                <tr><td>Portal inventory value ({invValuationReview.asOf})</td><td style={{textAlign:'right',fontWeight:700}}>${safeNum(invValuationReview.value).toFixed(2)}</td></tr>
+                <tr><td>Units / products valued</td><td style={{textAlign:'right'}}>{invValuationReview.units} / {invValuationReview.products}</td></tr>
+                <tr><td>QBO Inventory Asset balance now</td><td style={{textAlign:'right'}}>${safeNum(invValuationReview.currentBalance).toFixed(2)}</td></tr>
+                <tr><td style={{fontWeight:700}}>Adjustment</td><td style={{textAlign:'right',fontWeight:700,color:invValuationReview.delta>=0?'#166534':'#b91c1c'}}>{invValuationReview.delta>=0?'Debit':'Credit'} Inventory Asset ${Math.abs(safeNum(invValuationReview.delta)).toFixed(2)}</td></tr>
+              </tbody></table>
+              {invValuationReview.unpricedCount>0&&<div style={{fontSize:11,color:'#92400e',marginTop:8}}>
+                <strong>{invValuationReview.unpricedUnits} units on {invValuationReview.unpricedCount} products have no cost and are excluded.</strong> Add a cost on the product to include them: {invValuationReview.unpriced.slice(0,20).map(row=>row.sku+' ('+row.units+')').join(', ')}{invValuationReview.unpricedCount>20?' …':''}
+              </div>}
+              {invValuationReview.negative?.length>0&&<div style={{fontSize:11,color:'#b91c1c',marginTop:6}}>Negative stock counted as zero: {invValuationReview.negative.slice(0,20).map(row=>row.sku+' '+row.size+' ('+row.quantity+')').join(', ')}</div>}
+              {invValuationReview.status==='unchanged'?<p style={{marginTop:8}}>QBO already matches the portal value. No entry is needed today.</p>:<>
+                <label style={{display:'block',marginTop:10}}><input type="checkbox" checked={invValuationApproved} disabled={qbSyncing} onChange={e=>setInvValuationApproved(e.target.checked)}/> I approve posting exactly this one journal entry ({invValuationReview.docNumber}).</label>
+                <button className="btn btn-primary btn-sm" style={{marginTop:8}} disabled={qbSyncing||!livePreflightReady||!invValuationApproved} onClick={postInventoryValuation}>Post Inventory Valuation Entry</button>
+                <button className="btn btn-sm" style={{marginLeft:8,marginTop:8}} disabled={qbSyncing} onClick={()=>{setInvValuationReview(null);setInvValuationApproved(false);nf('Inventory valuation cancelled — nothing was sent')}}>Cancel</button>
+              </>}
+            </section>}
+            {qbConfig.lastInventoryValuation&&<p style={{fontSize:11,color:'#475569',marginTop:10}}>Last valuation {qbConfig.lastInventoryValuation.asOf}: {qbConfig.lastInventoryValuation.status}{qbConfig.lastInventoryValuation.qboId?' (QBO journal entry #'+qbConfig.lastInventoryValuation.qboId+')':''} · portal value ${safeNum(qbConfig.lastInventoryValuation.value).toFixed(2)} · adjustment ${safeNum(qbConfig.lastInventoryValuation.delta).toFixed(2)}{qbConfig.lastInventoryValuation.unpricedUnits?' · '+qbConfig.lastInventoryValuation.unpricedUnits+' units unpriced':''}</p>}
           </div>
         </div>
       </>}
