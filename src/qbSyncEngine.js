@@ -342,6 +342,44 @@ export function buildQBPurchaseOrderPreviewRows(sos = [], products = [], prodQBM
 // QBO cannot be queried by LinkedTxn, so both payment directions read the customer's
 // payments and pick out the lines applied to one invoice. Shared so the push preflight
 // and the pull cannot drift apart.
+// The QBO Payments to send for a Portal invoice, one per Portal payment row,
+// each dated the day the Portal recorded it. QuickBooks is being populated
+// for the first time, so a payment dated on the sync day instead of the day
+// the money arrived would misdate cash receipts and A/R aging. An invoice
+// marked paid with no payment rows is dated 30 days after the invoice date
+// (decided 2026-09-07), never later than today. Amounts QBO already records
+// against the invoice are skipped in date order, and the total sent never
+// exceeds `cap`.
+export function buildPortalPaymentPushRows({ invoice, alreadyApplied = 0, cap, today }) {
+  const cents = value => Math.round(safeNum(value) * 100) / 100;
+  const limit = cents(cap);
+  if (!(limit > 0)) return [];
+  const todayIso = parseQBDateValue(today) || new Date().toISOString().slice(0, 10);
+  let rows = (invoice?.payments || []).filter(row => cents(row?.amount) > 0).map(row => {
+    const date = parseQBDateValue(row.date);
+    if (!date) throw new Error('portal payment ' + (row.ref ? '"' + row.ref + '" ' : '') + 'of $' + cents(row.amount).toFixed(2) + ' has no usable date');
+    return { amount: cents(row.amount), date, ref: String(row.ref || ''), note: '' };
+  }).sort((a, b) => a.date.localeCompare(b.date));
+  if (!rows.length) {
+    const invoiceDate = parseQBDateValue(invoice?.invoice_date || invoice?.date || invoice?.created_at);
+    if (!invoiceDate) throw new Error('invoice has no date to derive a payment date from');
+    const plus30 = new Date(Date.UTC(Number(invoiceDate.slice(0, 4)), Number(invoiceDate.slice(5, 7)) - 1, Number(invoiceDate.slice(8, 10)) + 30)).toISOString().slice(0, 10);
+    rows = [{ amount: cents(invoice?.paid), date: plus30 < todayIso ? plus30 : todayIso, ref: '', note: 'dated 30 days after the invoice; the Portal has no payment date' }];
+  }
+  const out = [];
+  let covered = cents(alreadyApplied), remaining = limit;
+  for (const row of rows) {
+    if (remaining <= 0) break;
+    let amount = row.amount;
+    if (covered > 0) { const skip = Math.min(covered, amount); covered = cents(covered - skip); amount = cents(amount - skip); }
+    if (amount <= 0) continue;
+    amount = Math.min(amount, remaining);
+    remaining = cents(remaining - amount);
+    out.push({ ...row, amount });
+  }
+  return out;
+}
+
 export function qbPaymentsAppliedToInvoice(payments = [], qbInvoiceId) {
   const target = String(qbInvoiceId || '');
   if (!target) return [];
@@ -1193,36 +1231,47 @@ export function createQBSyncEngine(ctx){
               // invoice. QBO cannot be queried by LinkedTxn, so read the customer's
               // payments and total the lines that point at this invoice.
               const existing=await queryQBReadOnly(qbApi,"SELECT * FROM Payment WHERE CustomerRef = '"+String(cQBId).replace(/'/g,"\\'")+"' MAXRESULTS 1000",'existing payment preflight');
-              const linkedTotal=qbPaymentsAppliedToInvoice(existing?.QueryResponse?.Payment||[],inv.qb_invoice_id)
+              let linkedTotal=qbPaymentsAppliedToInvoice(existing?.QueryResponse?.Payment||[],inv.qb_invoice_id)
                 .reduce((sum,row)=>sum+row.amount,0);
               if(linkedTotal>=portalPaid-0.005){
                 log.details.push(docId+' — no payment sent: QBO already records $'+linkedTotal.toFixed(2)+' against this invoice');
                 continue;
               }
-              const send=Math.round(Math.min(diff,portalPaid-linkedTotal)*100)/100;
-              if(send<=0){log.details.push(docId+' — no payment sent: nothing left to apply');continue}
-              const qbPmt={CustomerRef:{value:cQBId},DepositToAccountRef:paidRefs.payment_deposit_account,TotalAmt:send,
-                PrivateNote:'Portal invoice '+docId,
-                Line:[{Amount:send,LinkedTxn:[{TxnId:inv.qb_invoice_id,TxnType:'Invoice'}]}]};
-              const response=await qbApi('upsert_payment',{payment:qbPmt});
-              const paymentId=String(response?.Payment?.Id||'');
-              // The old code discarded this response, so a QBO fault was reported to the
-              // operator as a successful payment push.
-              if(!paymentId)throw new Error(qbResponseErrorDetail(response,'QuickBooks did not return a payment ID'));
-              const readback=await queryQBReadOnly(qbApi,"SELECT * FROM Payment WHERE Id = '"+paymentId.replace(/'/g,"\\'")+"' MAXRESULTS 1",'payment API read-back');
-              const verified=readback?.QueryResponse?.Payment?.[0];
-              if(!verified||String(verified.Id)!==paymentId)throw new Error('payment was not returned by API read-back');
-              if(Math.abs(safeNum(verified.TotalAmt)-send)>=0.005)throw new Error('payment total did not match on read-back');
-              if(String(verified.CustomerRef?.value||'')!==String(cQBId))throw new Error('payment customer did not match on read-back');
-              if(String(verified.DepositToAccountRef?.value||'')!==String(paidRefs.payment_deposit_account.value))throw new Error('payment deposit account did not match on read-back');
-              if(!(verified.Line||[]).some(line=>(line.LinkedTxn||[]).some(link=>link.TxnType==='Invoice'&&String(link.TxnId)===String(inv.qb_invoice_id))))throw new Error('payment is not linked to this invoice on read-back');
-              const receiptLog={ts:log.ts,type:'payment_record',status:'success',details:[
-                docId+' — PAID $'+send.toFixed(2)+' → QBO Payment #'+paymentId,
-                'READ-BACK VERIFIED: Payment #'+paymentId+' · $'+safeNum(verified.TotalAmt).toFixed(2)+' · deposit account '+String(verified.DepositToAccountRef?.value||'')]};
-              await persistQbLink({mapKey:'qbPaymentMap',sourceIds:[String(inv.id)+':'+paymentId],qboId:paymentId,log:receiptLog,
-                evidence:{result:'created',invoice_id:String(inv.id),qb_invoice_id:String(inv.qb_invoice_id),
-                  amount:send,already_applied:linkedTotal,deposit_account:String(verified.DepositToAccountRef?.value||''),api_readback:true}});
-              log.details.push(docId+' — pushed and verified $'+send.toFixed(2)+' payment → QBO Payment #'+paymentId);updated++;
+              const cap=Math.round(Math.min(diff,portalPaid-linkedTotal)*100)/100;
+              if(cap<=0){log.details.push(docId+' — no payment sent: nothing left to apply');continue}
+              // One QBO Payment per Portal payment row, dated the day the Portal
+              // recorded it; see buildPortalPaymentPushRows for the undated case.
+              const rows=buildPortalPaymentPushRows({invoice:inv,alreadyApplied:linkedTotal,cap});
+              if(!rows.length){log.details.push(docId+' — no payment sent: nothing left to apply');continue}
+              for(const row of rows){
+                const send=row.amount;
+                const qbPmt={CustomerRef:{value:cQBId},DepositToAccountRef:paidRefs.payment_deposit_account,TotalAmt:send,TxnDate:row.date,
+                  ...(row.ref?{PaymentRefNum:row.ref.slice(0,21)}:{}),
+                  PrivateNote:'Portal invoice '+docId+(row.note?' — '+row.note:''),
+                  Line:[{Amount:send,LinkedTxn:[{TxnId:inv.qb_invoice_id,TxnType:'Invoice'}]}]};
+                const response=await qbApi('upsert_payment',{payment:qbPmt});
+                const paymentId=String(response?.Payment?.Id||'');
+                // The old code discarded this response, so a QBO fault was reported to the
+                // operator as a successful payment push.
+                if(!paymentId)throw new Error(qbResponseErrorDetail(response,'QuickBooks did not return a payment ID'));
+                const readback=await queryQBReadOnly(qbApi,"SELECT * FROM Payment WHERE Id = '"+paymentId.replace(/'/g,"\\'")+"' MAXRESULTS 1",'payment API read-back');
+                const verified=readback?.QueryResponse?.Payment?.[0];
+                if(!verified||String(verified.Id)!==paymentId)throw new Error('payment was not returned by API read-back');
+                if(Math.abs(safeNum(verified.TotalAmt)-send)>=0.005)throw new Error('payment total did not match on read-back');
+                if(String(verified.TxnDate||'').slice(0,10)!==row.date)throw new Error('payment date did not match on read-back ('+String(verified.TxnDate||'')+' vs '+row.date+')');
+                if(String(verified.CustomerRef?.value||'')!==String(cQBId))throw new Error('payment customer did not match on read-back');
+                if(String(verified.DepositToAccountRef?.value||'')!==String(paidRefs.payment_deposit_account.value))throw new Error('payment deposit account did not match on read-back');
+                if(!(verified.Line||[]).some(line=>(line.LinkedTxn||[]).some(link=>link.TxnType==='Invoice'&&String(link.TxnId)===String(inv.qb_invoice_id))))throw new Error('payment is not linked to this invoice on read-back');
+                const receiptLog={ts:log.ts,type:'payment_record',status:'success',details:[
+                  docId+' — PAID $'+send.toFixed(2)+' dated '+row.date+' → QBO Payment #'+paymentId,
+                  'READ-BACK VERIFIED: Payment #'+paymentId+' · $'+safeNum(verified.TotalAmt).toFixed(2)+' · '+String(verified.TxnDate||'').slice(0,10)+' · deposit account '+String(verified.DepositToAccountRef?.value||'')]};
+                await persistQbLink({mapKey:'qbPaymentMap',sourceIds:[String(inv.id)+':'+paymentId],qboId:paymentId,log:receiptLog,
+                  evidence:{result:'created',invoice_id:String(inv.id),qb_invoice_id:String(inv.qb_invoice_id),
+                    amount:send,date:row.date,already_applied:linkedTotal,deposit_account:String(verified.DepositToAccountRef?.value||''),api_readback:true}});
+                log.details.push(docId+' — pushed and verified $'+send.toFixed(2)+' payment dated '+row.date+(row.note?' ('+row.note+')':'')+' → QBO Payment #'+paymentId);
+                linkedTotal=Math.round((linkedTotal+send)*100)/100;
+              }
+              updated++;
             }catch(pe){log.details.push(docId+' — payment BLOCKED: '+(pe.message||'unknown error'));log.status='partial'}
           }else{
             log.details.push((inv.display_id||inv.id)+' — already up to date');

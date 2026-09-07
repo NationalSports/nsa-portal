@@ -1,4 +1,4 @@
-import {createQBSyncEngine} from '../qbSyncEngine';
+import {buildPortalPaymentPushRows,createQBSyncEngine} from '../qbSyncEngine';
 import {QB_LINK_MAPS} from '../qbLinkLedger';
 
 const mapping={income_account:'40000',discount_account:'40200',ar_account:'11000',payment_deposit_account:'11010'};
@@ -9,8 +9,8 @@ const accounts=[
   {Id:'13',AcctNum:'11010',Name:'Undeposited Funds',AccountType:'Other Current Asset',Active:true},
 ];
 // Portal says $100 paid; QBO shows the invoice fully open.
-function setup({paymentResponse,existingPayments=[],readback,invoicePaid=100,qbBalance=100,custMap={C1:'55'}}={}){
-  const invs=[{id:'INV1',display_id:'INV-1',customer_id:'C1',total:100,paid:invoicePaid,qb_invoice_id:'900'}];
+function setup({paymentResponse,existingPayments=[],readback,invoicePaid=100,qbBalance=100,custMap={C1:'55'},payments}={}){
+  const invs=[{id:'INV1',display_id:'INV-1',customer_id:'C1',total:100,paid:invoicePaid,qb_invoice_id:'900',date:'2026-06-01',...(payments?{payments}:{})}];
   let config={realm_id:'r1',preflight:{status:'success',realm_id:'r1'},mapping,initialMigrationApproved:true,
     custQBMap:custMap,syncLog:[]};
   let sent=null;
@@ -20,7 +20,7 @@ function setup({paymentResponse,existingPayments=[],readback,invoicePaid=100,qbB
       if(q.includes('FROM Account'))return{QueryResponse:{Account:accounts}};
       if(q.includes("FROM Item"))return{QueryResponse:{Item:[{Id:'7',Name:'NSA Portal Sales',Type:'Service',Active:true,IncomeAccountRef:{value:'10'}}]}};
       if(q.includes('FROM Invoice'))return{QueryResponse:{Invoice:[{Id:'900',DocNumber:'INV-1',Balance:qbBalance,TotalAmt:100,SyncToken:'0'}]}};
-      if(q.includes('FROM Payment')&&q.includes('WHERE Id'))return{QueryResponse:{Payment:readback===undefined?[{Id:'77',TotalAmt:100,CustomerRef:{value:'55'},DepositToAccountRef:{value:'13'},Line:[{Amount:100,LinkedTxn:[{TxnType:'Invoice',TxnId:'900'}]}]}]:readback}};
+      if(q.includes('FROM Payment')&&q.includes('WHERE Id'))return{QueryResponse:{Payment:readback===undefined?[{Id:'77',TotalAmt:sent?.TotalAmt??100,TxnDate:sent?.TxnDate,CustomerRef:{value:'55'},DepositToAccountRef:{value:'13'},Line:[{Amount:sent?.TotalAmt??100,LinkedTxn:[{TxnType:'Invoice',TxnId:'900'}]}]}]:readback}};
       if(q.includes('FROM Payment'))return{QueryResponse:{Payment:existingPayments}};
       return{QueryResponse:{}};
     }
@@ -38,13 +38,13 @@ const lastLog=run=>(run.config().syncLog||[]).find(l=>l.type==='paid_sync')||{de
 test('the payment map is a durable link map',()=>{expect(QB_LINK_MAPS).toContain('qbPaymentMap')});
 
 test('a verified push saves a receipt and reports the QBO payment id',async()=>{
-  const run=setup();
+  const run=setup({payments:[{amount:100,ref:'Check 1',date:'2026-06-15'}]});
   await run.engine.syncPaidFromQB();
   expect(run.sent()).toMatchObject({TotalAmt:100,CustomerRef:{value:'55'},DepositToAccountRef:{value:'13'},PrivateNote:'Portal invoice INV-1'});
   const receipt=run.persistQbLink.mock.calls[0][0];
   expect(receipt).toMatchObject({mapKey:'qbPaymentMap',sourceIds:['INV1:77'],qboId:'77'});
   expect(receipt.evidence).toMatchObject({result:'created',amount:100,api_readback:true,deposit_account:'13'});
-  expect(lastLog(run).details.join(' ')).toMatch(/pushed and verified \$100\.00 payment → QBO Payment #77/);
+  expect(lastLog(run).details.join(' ')).toMatch(/pushed and verified \$100\.00 payment dated 2026-06-15 → QBO Payment #77/);
 });
 
 test('a QBO fault is reported as blocked, never as a successful push',async()=>{
@@ -66,7 +66,7 @@ test('money QBO already records against the invoice is never sent twice',async()
 
 test('a partial existing payment only tops up the remainder',async()=>{
   const run=setup({existingPayments:[{Id:'70',Line:[{Amount:40,LinkedTxn:[{TxnType:'Invoice',TxnId:'900'}]}]}],
-    readback:[{Id:'77',TotalAmt:60,CustomerRef:{value:'55'},DepositToAccountRef:{value:'13'},Line:[{Amount:60,LinkedTxn:[{TxnType:'Invoice',TxnId:'900'}]}]}]});
+    readback:[{Id:'77',TotalAmt:60,TxnDate:'2026-07-01',CustomerRef:{value:'55'},DepositToAccountRef:{value:'13'},Line:[{Amount:60,LinkedTxn:[{TxnType:'Invoice',TxnId:'900'}]}]}]});
   await run.engine.syncPaidFromQB();
   expect(run.sent().TotalAmt).toBe(60);
   expect(run.persistQbLink.mock.calls[0][0].evidence).toMatchObject({amount:60,already_applied:40});
@@ -267,5 +267,59 @@ describe('voided Portal invoices',()=>{
     expect(log.details.join(' ')).toMatch(/INV-2 — VOID in the Portal but posted as QBO Invoice #559; void it in QuickBooks, nothing was sent/);
     expect(log.status).toBe('partial');
     expect(qbApi.mock.calls.some(([a])=>a==='upsert_payment'||a==='upsert_invoice')).toBe(false);
+  });
+});
+
+// QuickBooks is being populated for the first time, so the day a payment is
+// dated is the day cash shows as received.
+describe('payment dates on push',()=>{
+  test('a Portal payment row posts on the day it was recorded, with its reference',async()=>{
+    const run=setup({payments:[{amount:100,method:'check',ref:'Check 4471',date:'07/18/2026'}]});
+    await run.engine.syncPaidFromQB();
+    expect(run.sent()).toMatchObject({TotalAmt:100,TxnDate:'2026-07-18',PaymentRefNum:'Check 4471'});
+    expect(run.persistQbLink.mock.calls[0][0].evidence).toMatchObject({amount:100,date:'2026-07-18'});
+    expect(lastLog(run).details.join(' ')).toMatch(/pushed and verified \$100\.00 payment dated 2026-07-18 → QBO Payment #77/);
+  });
+  test('an invoice marked paid with no payment rows is dated 30 days after the invoice',async()=>{
+    const run=setup();
+    await run.engine.syncPaidFromQB();
+    expect(run.sent()).toMatchObject({TotalAmt:100,TxnDate:'2026-07-01'});
+    expect(run.sent().PaymentRefNum).toBeUndefined();
+    expect(run.sent().PrivateNote).toMatch(/dated 30 days after the invoice/);
+  });
+  test('a read-back with a different date is a blocked push, not a success',async()=>{
+    const run=setup({readback:[{Id:'77',TotalAmt:100,TxnDate:'2026-09-07',CustomerRef:{value:'55'},DepositToAccountRef:{value:'13'},Line:[{Amount:100,LinkedTxn:[{TxnType:'Invoice',TxnId:'900'}]}]}]});
+    await run.engine.syncPaidFromQB();
+    expect(run.persistQbLink).not.toHaveBeenCalled();
+    expect(lastLog(run).details.join(' ')).toMatch(/payment BLOCKED: payment date did not match on read-back \(2026-09-07 vs 2026-07-01\)/);
+  });
+  test('a Portal payment row without a usable date blocks rather than guessing',async()=>{
+    const run=setup({payments:[{amount:100,ref:'Check 1',date:''}]});
+    await run.engine.syncPaidFromQB();
+    expect(run.qbApi.mock.calls.some(([a])=>a==='upsert_payment')).toBe(false);
+    expect(lastLog(run).details.join(' ')).toMatch(/payment BLOCKED: portal payment "Check 1" of \$100\.00 has no usable date/);
+  });
+  describe('buildPortalPaymentPushRows',()=>{
+    test('several rows post separately in date order and skip what QBO already records',()=>{
+      const rows=buildPortalPaymentPushRows({invoice:{paid:300,payments:[
+        {amount:100,ref:'B',date:'2026-08-01'},{amount:150,ref:'A',date:'2026-07-01'},{amount:50,ref:'C',date:'2026-08-15'}]},alreadyApplied:150,cap:150});
+      expect(rows).toEqual([{amount:100,date:'2026-08-01',ref:'B',note:''},{amount:50,date:'2026-08-15',ref:'C',note:''}]);
+    });
+    test('a partly recorded row sends only its remainder',()=>{
+      const rows=buildPortalPaymentPushRows({invoice:{paid:100,payments:[{amount:100,ref:'A',date:'2026-07-01'}]},alreadyApplied:40,cap:60});
+      expect(rows).toEqual([{amount:60,date:'2026-07-01',ref:'A',note:''}]);
+    });
+    test('the total sent never exceeds the cap',()=>{
+      const rows=buildPortalPaymentPushRows({invoice:{paid:100,payments:[{amount:100,ref:'A',date:'2026-07-01'}]},alreadyApplied:0,cap:75});
+      expect(rows).toEqual([{amount:75,date:'2026-07-01',ref:'A',note:''}]);
+    });
+    test('the derived date is never in the future',()=>{
+      const rows=buildPortalPaymentPushRows({invoice:{paid:100,date:'2026-08-20'},cap:100,today:'2026-09-07'});
+      expect(rows[0].date).toBe('2026-09-07');
+      expect(buildPortalPaymentPushRows({invoice:{paid:100,date:'2026-07-31'},cap:100,today:'2026-09-07'})[0].date).toBe('2026-08-30');
+    });
+    test('no invoice date and no rows is an error, not a guessed date',()=>{
+      expect(()=>buildPortalPaymentPushRows({invoice:{paid:100},cap:100})).toThrow(/no date to derive a payment date/);
+    });
   });
 });
