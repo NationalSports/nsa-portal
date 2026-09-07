@@ -267,3 +267,27 @@ describe('buildQboBackfillRows', () => {
     expect(rows.map((r) => r.id)).toEqual(['local', 'other']);
   });
 });
+
+describe('qboBackfillHistory', () => {
+  const { qboBackfillHistory, buildQboBackfillRows } = require('../appliedBillsLedger');
+  const server = [
+    { id: 1, doc_number: '9046517', doc_norm: '9046517', si_doc_number: '55501', vendor: 'ADIDAS US TEAM SERVICES', doc_total: 100, applied_at: '2026-08-01T00:00:00Z', raw_meta: { doc_number: '9046517', si_doc_number: '55501', vendor: 'ADIDAS US TEAM SERVICES', doc_total: 100 } },
+    { id: 2, doc_number: '9046518', doc_norm: '9046518', si_doc_number: '55502', vendor: 'SANMAR', doc_total: 50, applied_at: '2026-08-02T00:00:00Z', raw_meta: { doc_number: '9046518', si_doc_number: '55502', vendor: 'SANMAR', doc_total: 50 } },
+  ];
+
+  it('a stale parked hold sharing the SI document number does not hide the ledger row', () => {
+    const parkedHold = { id: 'hold-1', reviewLater: true, qbStatus: null, portalStatus: null, parsed: { doc_number: 'X1', si_doc_number: '55501', vendor: 'ADIDAS US TEAM SERVICES' } };
+    expect(buildQboBackfillRows(mergeServerBillsWith(parkedHold)).map((r) => r.parsed.doc_number)).toEqual(['9046518']);
+    expect(buildQboBackfillRows(qboBackfillHistory([parkedHold], server)).map((r) => r.parsed.doc_number).sort()).toEqual(['9046517', '9046518']);
+  });
+
+  it('a local row already in QBO still hides its ledger twin', () => {
+    const synced = { id: 'local-1', qbStatus: 'success', portalStatus: 'success', parsed: { doc_number: '9046517', si_doc_number: '55501', vendor: 'ADIDAS US TEAM SERVICES', doc_total: 100 } };
+    expect(buildQboBackfillRows(qboBackfillHistory([synced], server)).map((r) => r.parsed.doc_number)).toEqual(['9046518']);
+  });
+
+  function mergeServerBillsWith(local) {
+    const { mergeServerBills } = require('../appliedBillsLedger');
+    return mergeServerBills([local], server);
+  }
+});
