@@ -11,23 +11,8 @@ import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
 import { authFetch } from './utils';
-import { buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName, qbCustomerBatchReady, qbResponseErrorDetail } from './qbSyncEngine';
-import {
-  QB_ACCOUNT_MAPPING_DEFAULTS,
-  QB_ACCOUNT_POSTING_MATRIX,
-  QB_ACCOUNT_SPECS,
-  QB_STATE_TAX_ACCOUNT_KEYS,
-  buildVendorBillLines,
-  calculateCustomerShipping,
-  loadAllQBEntities,
-  loadQBAccounts,
-  queryQBReadOnly,
-  readQBWithRetry,
-  manualBillAccountKey,
-  normalizeVendorName,
-  qbWriteAccountRef,
-  resolveQBAccountRefs,
-} from './qbAccountMappings';
+import { buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, isVoidInvoice, portalCustomerDisplayName, qbCustomerBatchReady, qbResponseErrorDetail } from './qbSyncEngine';
+import { QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_POSTING_MATRIX, QB_ACCOUNT_SPECS, QB_STATE_TAX_ACCOUNT_KEYS, buildVendorBillLines, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, manualBillAccountKey, normalizeVendorName, qbWriteAccountRef, queryQBReadOnly, readQBWithRetry, resolveQBAccountRefs } from './qbAccountMappings';
 
 const stripeBackfillErrorSummary=(errors=[])=>{
   const counts={};
@@ -452,7 +437,7 @@ export default function QBPage(){
       return hasItems&&!soMap[so.id];
     });
     const unsyncedPOGroups=groupPortalPurchaseOrders(sos,poMap);
-    const unsyncedInvs=invs.filter(i=>!i.qb_invoice_id);
+    const unsyncedInvs=invs.filter(i=>!i.qb_invoice_id&&!isVoidInvoice(i));
     const _custQBMap=qbConfig.custQBMap||{};
     const _prodQBMap=qbConfig.prodQBMap||{};
     const custWithQB=cust.filter(c=>_custQBMap[c.id]).length;
@@ -478,8 +463,30 @@ export default function QBPage(){
     const poAccountSkus=poId=>poPreviewById.get(String(poId))?.accountSkus||[];
     const selectedInvoiceCustomer=selectedCanaryInvoice&&cust.find(c=>c.id===selectedCanaryInvoice.customer_id);
     const invoiceCanaryTaxState=selectedCanaryInvoice?String(selectedInvoiceCustomer?.shipping_state||selectedInvoiceCustomer?.billing_state||'').trim().toUpperCase():'';
+    // A taxable invoice needs a mechanism to carry the portal's own tax amount,
+    // but which mechanism depends on the company file. Under manual sales tax
+    // that is the state's verified TaxRate; under Automated Sales Tax no manual
+    // rate can exist, so it is the CustomSalesTax override code instead. Gate on
+    // whichever one actually applies, read from the stored tax preflight.
+    const taxPreflight=qbConfig.taxPreflight||null;
+    const astTaxOn=!!taxPreflight?.partnerTaxEnabled;
+    const taxableInvoiceBlock=state=>{
+      if(!taxPreflight)return'Taxable invoice: read the sales-tax setup first (Settings tab) so the right tax mechanism is known';
+      // Under AST the tax posts as its own line against the state's approved
+      // liability account; no QBO tax code is needed. The only precondition is
+      // that the state has one, so the label says so instead of inviting a run
+      // that the engine will block for the same reason.
+      if(astTaxOn)return QB_STATE_TAX_ACCOUNT_KEYS[state]?'':'Taxable invoice: customer state "'+(state||'blank')+'" has no approved sales-tax account';
+      return(qbConfig.qbTaxRateMap||{})[state]?'':'Taxable invoice: run the tax-rate canary for '+(state||'the customer state')+' first (Settings tab)';
+    };
+    // The dropdown label has to answer the same question the button does. A flat
+    // "TAX BLOCKED" on every taxable invoice said nothing about whether this one
+    // can post, and kept reading as blocked after the mechanism to post it existed.
+    const invoiceTaxState=inv=>{const c=cust.find(cc=>cc.id===inv.customer_id);
+      return String(c?.shipping_state||c?.billing_state||'').trim().toUpperCase()};
+    const invoiceTaxBlocked=inv=>safeNum(inv.tax)>0&&!!taxableInvoiceBlock(invoiceTaxState(inv));
     const invoiceCanaryBlock=selectedCanaryInvoice&&!_custQBMap[selectedCanaryInvoice.customer_id]?'Sync this invoice customer first'
-      :selectedCanaryInvoice&&safeNum(selectedCanaryInvoice.tax)>0&&!(qbConfig.qbTaxRateMap||{})[invoiceCanaryTaxState]?'Taxable invoice: run the tax-rate canary for '+(invoiceCanaryTaxState||'the customer state')+' first (Settings tab)':'';
+      :selectedCanaryInvoice&&safeNum(selectedCanaryInvoice.tax)>0?taxableInvoiceBlock(invoiceCanaryTaxState):'';
     const soCanaryBlock=selectedCanarySO&&!_custQBMap[selectedCanarySO.customer_id]?'Sync this sales-order customer first':'';
     const poCanaryBlock=selectedCanaryPO?.invalidReason||'';
     const runCustomerCanary=async()=>{
@@ -813,7 +820,7 @@ export default function QBPage(){
                 <div>Initial-migration safety lock is active. Run the read-only live preflight, then use the one-record test on each data tab. Production batches remain locked; verified parsed supplier-bill canaries: <strong>{verifiedCanaryBills}/3 minimum</strong>.</div>
                 <button className="btn btn-sm btn-secondary" style={{marginTop:8}} disabled={!livePreflightReady||verifiedCanaryBills<3}
                   title={!livePreflightReady?'Run a successful live preflight first':verifiedCanaryBills<3?'At least three live canaries must pass API read-back first':''}
-                  onClick={()=>{if(window.confirm('I reviewed the verified canary bills in the correct QuickBooks company, checked the screenshots/transaction details and account impact, and approve 20-record production batches.'))setQBConfig(prev=>({...prev,initialMigrationApproved:true,autoSync:'manual'}))}}>
+                  onClick={()=>{if(window.confirm('I reviewed the verified canary bills in the correct QuickBooks company, checked the screenshots/transaction details and account impact, and approve 100-record production batches.'))setQBConfig(prev=>({...prev,initialMigrationApproved:true,autoSync:'manual'}))}}>
                   Approve Reviewed Canaries &amp; Unlock Batches
                 </button>
               </div>}
@@ -1156,7 +1163,7 @@ export default function QBPage(){
             <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
               <select className="form-input" aria-label="Invoice to test in QuickBooks" style={{minWidth:420,maxWidth:700}} value={qbCanaryInvoiceId} onChange={e=>setQbCanaryInvoiceId(e.target.value)}>
                 <option value="">Select one pending invoice...</option>
-                {canaryInvoices.map(inv=>{const c=cust.find(cc=>cc.id===inv.customer_id);return<option key={inv.id} value={inv.id}>{inv.display_id||inv.id} — {c?.name||'Unknown'} — ${safeNum(inv.total).toFixed(2)}{safeNum(inv.tax)>0?' — TAX BLOCKED':''}{!_custQBMap[inv.customer_id]?' — CUSTOMER NOT SYNCED':''}</option>})}
+                {canaryInvoices.map(inv=>{const c=cust.find(cc=>cc.id===inv.customer_id);return<option key={inv.id} value={inv.id}>{inv.display_id||inv.id} — {c?.name||'Unknown'} — ${safeNum(inv.total).toFixed(2)}{safeNum(inv.tax)>0?(invoiceTaxBlocked(inv)?' — TAX BLOCKED':' — tax $'+safeNum(inv.tax).toFixed(2)):''}{!_custQBMap[inv.customer_id]?' — CUSTOMER NOT SYNCED':''}</option>})}
               </select>
               <label><input type="checkbox" checked={productCreateApproved} disabled={qbSyncing} onChange={e=>setProductCreateApproved(e.target.checked)}/> Approve creation of this one SKU if no existing item matches.</label>
               <button className="btn btn-primary btn-sm" style={{background:'#0369a1'}} disabled={qbSyncing||!livePreflightReady||!selectedCanaryInvoice||!!invoiceCanaryBlock} onClick={runInvoiceCanary}>{qbSyncing?'Testing...':'Test 1 Invoice'}</button>

@@ -505,6 +505,12 @@ export default function InvoicesPage(){
                   shipping_custom:!!(inv.shipping_name||inv.shipping_address),
                   shipping:safeNum(inv.shipping),
                   tax:safeNum(inv.tax),
+                  // Tax is a dollar figure, so it does not follow the lines on its
+                  // own. Track whether the lines moved and whether someone typed a
+                  // tax by hand, so an edited invoice recomputes instead of keeping
+                  // the amount that belonged to the old subtotal.
+                  linesTouched:false,
+                  taxTouched:false,
                   line_items:(lineItems.length?lineItems:[]).map(li=>({...li,qty:safeNum(li.qty),rate:safeNum(li.rate),amount:safeNum(li.amount)})),
                   customerSearch:'',
                   customerSearchOpen:false
@@ -1103,15 +1109,21 @@ export default function InvoicesPage(){
           const emCust=cust.find(c=>c.id===em.customer_id);
           const custMatches=em.customerSearch?cust.filter(c=>{const q2=em.customerSearch.toLowerCase();return(c.name||'').toLowerCase().includes(q2)||(c.alpha_tag||'').toLowerCase().includes(q2)||(c.id||'').toLowerCase().includes(q2)}).slice(0,10):[];
           const emSubtotal=em.line_items.reduce((a,l)=>a+safeNum(l.amount),0);
-          const emTotal=Math.round((emSubtotal+safeNum(em.shipping)+safeNum(em.tax)-safeNum(em.inv.credit_amount))*100)/100;
+          // Shipping is excluded from the base: that is how the portal computes tax
+          // for all but a handful of customers, and a hand-entered figure still wins.
+          const emRate=em.inv.tax_exempt?0:safeNum(em.inv.tax_rate);
+          const emAutoTax=Math.round(emSubtotal*emRate*100)/100;
+          const emTax=em.taxTouched||!em.linesTouched?safeNum(em.tax):emAutoTax;
+          const emTaxRecalculated=!em.taxTouched&&em.linesTouched&&Math.abs(emTax-safeNum(em.tax))>=0.005;
+          const emTotal=Math.round((emSubtotal+safeNum(em.shipping)+emTax-safeNum(em.inv.credit_amount))*100)/100;
           const updateLine=(i,patch)=>setInvEditModal(s=>{
             const next=[...s.line_items];
             const merged={...next[i],...patch};
             if(patch.qty!==undefined||patch.rate!==undefined){merged.amount=Math.round(safeNum(merged.qty)*safeNum(merged.rate)*100)/100}
-            next[i]=merged;return{...s,line_items:next};
+            next[i]=merged;return{...s,line_items:next,linesTouched:true};
           });
-          const addLine=()=>setInvEditModal(s=>({...s,line_items:[...s.line_items,{desc:'',qty:1,rate:0,amount:0,_sku:'',_name:'',_color:''}]}));
-          const rmLine=i=>setInvEditModal(s=>({...s,line_items:s.line_items.filter((_,x)=>x!==i)}));
+          const addLine=()=>setInvEditModal(s=>({...s,line_items:[...s.line_items,{desc:'',qty:1,rate:0,amount:0,_sku:'',_name:'',_color:''}],linesTouched:true}));
+          const rmLine=i=>setInvEditModal(s=>({...s,line_items:s.line_items.filter((_,x)=>x!==i),linesTouched:true}));
           return<div className="modal-overlay" onClick={()=>setInvEditModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:980,maxHeight:'92vh',display:'flex',flexDirection:'column'}}>
           <div className="modal-header"><h2>Edit Invoice — {em.inv.id}</h2><button className="modal-close" onClick={()=>setInvEditModal(null)}>x</button></div>
           <div className="modal-body" style={{overflow:'auto',flex:1}}>
@@ -1155,7 +1167,10 @@ export default function InvoicesPage(){
               <div><label className="form-label">Shipping</label>
                 <input className="form-input" type="number" step="0.01" value={em.shipping} onChange={e=>setInvEditModal(s=>({...s,shipping:e.target.value===''?'':parseFloat(e.target.value)||0}))}/></div>
               <div><label className="form-label">Tax</label>
-                <input className="form-input" type="number" step="0.01" value={em.tax} onChange={e=>setInvEditModal(s=>({...s,tax:e.target.value===''?'':parseFloat(e.target.value)||0}))}/></div>
+                <input className="form-input" type="number" step="0.01" value={em.taxTouched||!em.linesTouched?em.tax:emAutoTax}
+                  onChange={e=>setInvEditModal(s=>({...s,tax:e.target.value===''?'':parseFloat(e.target.value)||0,taxTouched:true}))}/>
+                {emTaxRecalculated&&<div style={{fontSize:10,color:'#166534',marginTop:2}}>Recalculated at {(emRate*100).toFixed(3).replace(/\.?0+$/,'')}% — was ${safeNum(em.tax).toFixed(2)}</div>}
+                {em.taxTouched&&emRate>0&&Math.abs(safeNum(em.tax)-emAutoTax)>=0.005&&<div style={{fontSize:10,color:'#b45309',marginTop:2}}>Manual — {(emRate*100).toFixed(3).replace(/\.?0+$/,'')}% of ${emSubtotal.toFixed(2)} is ${emAutoTax.toFixed(2)}</div>}</div>
             </div>
 
             {/* Bill To / Ship To selector */}
@@ -1240,7 +1255,7 @@ export default function InvoicesPage(){
               <div style={{minWidth:240}}>
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:3}}><span style={{color:'#64748b'}}>Subtotal</span><span style={{fontWeight:600}}>${emSubtotal.toFixed(2)}</span></div>
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:3}}><span style={{color:'#64748b'}}>Shipping</span><span>${safeNum(em.shipping).toFixed(2)}</span></div>
-                <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:3}}><span style={{color:'#64748b'}}>Tax</span><span>${safeNum(em.tax).toFixed(2)}</span></div>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:3}}><span style={{color:'#64748b'}}>Tax</span><span>${emTax.toFixed(2)}</span></div>
                 {safeNum(em.inv.credit_amount)>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:3,color:'#065f46'}}><span>Credit</span><span>-${safeNum(em.inv.credit_amount).toFixed(2)}</span></div>}
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:15,fontWeight:800,paddingTop:6,borderTop:'2px solid #cbd5e1',color:'#1e3a5f'}}><span>New Total</span><span>${emTotal.toFixed(2)}</span></div>
                 {Math.abs(emTotal-em.inv.total)>0.01&&<div style={{fontSize:10,color:'#dc2626',textAlign:'right',marginTop:3}}>Was ${safeNum(em.inv.total).toFixed(2)}</div>}
@@ -1264,7 +1279,7 @@ export default function InvoicesPage(){
                 shipping_name:em.shipping_name||null,
                 shipping_address:em.shipping_address||null,
                 shipping:safeNum(em.shipping),
-                tax:safeNum(em.tax),
+                tax:emTax,
                 line_items:cleanLines,
                 total:emTotal,
                 updated_at:new Date().toLocaleString()};
