@@ -500,3 +500,56 @@ describe('OMG and internal labor source routing', () => {
     expect(manifest.inHouseArt.amount).toBe(0);
   });
 });
+
+describe('QuickBooks bill backfill (account lines only)', () => {
+  const { buildVendorBillLines, findUniqueVendorMatch, normalizeVendorName, qboAccountOnlyBill } = require('../qbAccountMappings');
+  const refs = {
+    purchases_account: { value: '51300' }, freight_account: { value: '51000' },
+    sports_inc_fee_account: { value: '58000' }, deco_account: { value: '52000' }, ap_account: { value: '21100' },
+  };
+  const bill = {
+    doc_number: '9046517', po_number: 'PO 63417 FPUWS', supplier: 'ADIDAS US TEAM SERVICES', source: 'sportsinc',
+    doc_total: 1250.75, freight: 22.5, si_upcharge: 6.25, merchandise_total: 1219.0,
+    items: [{ sku: 'IP1234', qty: 10, amount: 900 }, { sku: 'IP5678', qty: 4, amount: 322 }],
+  };
+
+  test('posts merchandise as one purchases line, no items, freight and fee separate', () => {
+    const only = qboAccountOnlyBill(bill);
+    expect(only.items).toEqual([]);
+    expect(only.merchandise_total).toBe(1222);
+    const { lines, total } = buildVendorBillLines(only, refs, {});
+    expect(total).toBe(1250.75);
+    expect(lines.map(l => [l.Amount, l.AccountBasedExpenseLineDetail.AccountRef.value])).toEqual([[1222, '51300'], [22.5, '51000'], [6.25, '58000']]);
+    expect(lines[0].Description).toBe('Merchandise (2 line items) — vendor doc #9046517 — PO PO 63417 FPUWS — ADIDAS US TEAM SERVICES');
+    expect(lines.every(l => l.DetailType === 'AccountBasedExpenseLineDetail')).toBe(true);
+  });
+
+  test('a parser merchandise total that disagrees with the document no longer blocks', () => {
+    // The itemized path refuses this bill (SKU lines 1222 vs merchandise 1219).
+    expect(() => buildVendorBillLines({ ...bill, merchandise_total: 1219 }, refs, { IP1234: { value: '1' }, IP5678: { value: '2' } })).toThrow(/merchandise total/);
+    expect(buildVendorBillLines(qboAccountOnlyBill({ ...bill, merchandise_total: 1219 }), refs, {}).total).toBe(1250.75);
+  });
+
+  test('a decoration bill is untouched by the account-only shaping', () => {
+    const deco = { kind: 'decoration', doc_total: 400, freight: 0, supplier: 'Silver Screen', po_number: 'PO 1' };
+    const { lines } = buildVendorBillLines(qboAccountOnlyBill(deco), refs, {});
+    expect(lines).toEqual([expect.objectContaining({ Amount: 400, AccountBasedExpenseLineDetail: { AccountRef: { value: '52000' } } })]);
+  });
+
+  test('Sports Inc statement billing names resolve to the brand vendor', () => {
+    const vendors = [
+      { id: 'v6', name: 'Rawlings' }, { id: 'v5', name: 'Richardson' }, { id: 'v7', name: 'Badger' },
+      { id: 'ns_155', name: 'Twin City (TCK)' }, { id: 'ns_47', name: 'Champion' }, { id: 'ns_115', name: 'Outdoor Cap' },
+      { id: 'a1', name: 'All Star Sporting Goods' }, { id: 'a2', name: 'Augusta Sportswear' }, { id: 'v1', name: 'Adidas' },
+      { id: 'ns_96', name: 'Mizuno USA, Inc.' }, { id: 'ns_100', name: 'MUELLER SPORTS MEDICINE' },
+    ];
+    const cases = [
+      ['RAWLINGS SPORTING GOODS CO INC', 'v6'], ['RICHARDSON CAP CO', 'v5'], ['BADGER SPORTSWEAR', 'v7'], ['BADGER FOR UNDER ARMOUR', 'v7'],
+      ['TWIN CITY KNITTING CO', 'ns_155'], ['CHAMPION SPORTS', 'ns_47'], ['OUTDOOR CAP CO INC A', 'ns_115'],
+      ['ALL STAR SPTG GOODS PRODUCTS', 'a1'], ['AUGUSTA SPORTSWEAR/ASI', 'a2'], ['ADIDAS US TEAM SERVICES', 'v1'],
+      ['MIZUNO USA INC', 'ns_96'], ['MUELLER SPORTS MEDICINE INC', 'ns_100'],
+    ];
+    cases.forEach(([printed, id]) => expect(findUniqueVendorMatch(printed, vendors)?.id).toBe(id));
+    expect(normalizeVendorName('Twin City (TCK)')).toBe('twin city tck');
+  });
+});

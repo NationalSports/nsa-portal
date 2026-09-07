@@ -97,6 +97,17 @@ const VENDOR_LEGAL_SUFFIXES = new Set([
 // unlike legal-suffix cleanup, each entry represents a known trading identity.
 const VENDOR_NAME_ALIASES = new Map([
   ['adidas us team services', 'adidas'],
+  // Sports Inc statements print the brand's billing entity; the portal vendor
+  // is the trading name. Confirmed 2026-09-07: each brand stays its own vendor.
+  ['rawlings sporting goods', 'rawlings'],
+  ['richardson cap', 'richardson'],
+  ['badger sportswear', 'badger'],
+  ['badger for under armour', 'badger'],
+  ['twin city knitting', 'twin city tck'],
+  ['champion sports', 'champion'],
+  ['outdoor cap co inc a', 'outdoor cap'],
+  ['all star sptg goods products', 'all star sporting goods'],
+  ['augusta sportswear asi', 'augusta sportswear'],
 ]);
 
 export function normalizeVendorName(value) {
@@ -730,6 +741,27 @@ function itemExpenseLine(group, po, itemRef) {
 
 // Builds posting lines for a parsed supplier bill and asserts that every cent of
 // the document total is categorized. A discrepancy blocks the bill.
+// A Bill History backfill posts the money without per-SKU QuickBooks items:
+// one merchandise line to 51300 plus the freight and Sports Inc fee lines, so a
+// historical load does not create thousands of QBO items for goods the portal
+// already tracks. Merchandise is what was billed less freight and fee — the
+// parser's merchandise_total can disagree with the document by a discount or
+// a rounding, and what was billed is what is owed.
+export function qboAccountOnlyBill(bill) {
+  const b = bill && typeof bill === 'object' ? bill : {};
+  const total = money(b.doc_total);
+  const freight = money(b.freight);
+  const fee = money(b.si_upcharge);
+  const n = Array.isArray(b.items) ? b.items.length : 0;
+  return {
+    ...b,
+    items: [],
+    _lineMappings: [],
+    merchandise_total: money(total - freight - fee),
+    merchandise_label: 'Merchandise' + (n ? ` (${n} line item${n === 1 ? '' : 's'})` : '') + (b.doc_number ? ` — vendor doc #${String(b.doc_number).trim()}` : ''),
+  };
+}
+
 export function buildVendorBillLines(bill, accountRefs, itemRefsBySku = {}) {
   if (!bill || bill.is_credit) throw new Error('Credit memos cannot use the normal bill push.');
   const freight = money(bill.freight);
@@ -759,7 +791,7 @@ export function buildVendorBillLines(bill, accountRefs, itemRefsBySku = {}) {
       lines.push(expenseLine(grouped.noSkuAmount, `No-SKU supplies — PO ${po}${supplier}`, accountRefs.purchases_account));
     }
     if (!grouped.skuItems.length && grouped.noSkuAmount <= 0) {
-      lines.push(expenseLine(merchandise, `No-SKU supplies / merchandise — PO ${po}${supplier}`, accountRefs.purchases_account));
+      lines.push(expenseLine(merchandise, `${bill.merchandise_label || 'No-SKU supplies / merchandise'} — PO ${po}${supplier}`, accountRefs.purchases_account));
     }
     if (freight > 0) lines.push(expenseLine(freight, `Freight in — PO ${po}`, accountRefs.freight_account));
     if (sportsFee > 0) lines.push(expenseLine(sportsFee, `Sports Inc fee — PO ${po}`, accountRefs.sports_inc_fee_account));

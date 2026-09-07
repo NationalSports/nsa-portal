@@ -101,6 +101,33 @@ export const isMissingLedgerColumnError = (e) => !!e && (e.code === '42703' || e
 // edits); server rows this browser has never seen become read-only pushed entries,
 // so pushed history survives cleared localStorage and the local cache cap.
 // Credit notes and invoices legitimately share a doc # — keys include is_credit.
+// Bill History rows that are complete on the portal side but have never
+// reached QuickBooks, shaped for the QBO-only backfill path: the portal writer
+// never runs for them (`_qbBackfill`), credits are excluded (they need the
+// credit path), and one row per vendor + document.
+export const buildQboBackfillRows = (histBills, normalize = (p) => p) => {
+  const seen = new Set();
+  const rows = [];
+  (histBills || []).forEach((sb) => {
+    const p = sb?.parsed || {};
+    if (!sb || sb.reviewLater || sb.qbStatus === 'success' || sb.portalStatus !== 'success' || p.is_credit) return;
+    const key = _norm(p.vendor || p.supplier) + '|' + _norm(p.doc_number || sb.id);
+    if (seen.has(key)) return;
+    seen.add(key);
+    rows.push({
+      ...sb,
+      selected: true,
+      qbStatus: null,
+      qbMsg: '',
+      portalStatus: 'success',
+      portalMsg: 'Already applied to Portal; QBO backfill',
+      _qbBackfill: true,
+      parsed: { ...normalize(p), _qbBackfill: true },
+    });
+  });
+  return rows;
+};
+
 export const mergeServerBills = (savedBills, serverRows) => {
   const local = savedBills || [];
   const seen = new Set();

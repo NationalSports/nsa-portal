@@ -239,3 +239,31 @@ describe('numeric-string doc_total coercion', () => {
     expect(rows[0].doc_norm).toBe(rows[1].doc_norm);
   });
 });
+
+describe('buildQboBackfillRows', () => {
+  const { buildQboBackfillRows } = require('../appliedBillsLedger');
+  const row = (over) => ({ id: 'srv-1', parsed: { doc_number: '100', vendor: 'SanMar', doc_total: 50 }, portalStatus: 'success', qbStatus: null, ...over });
+
+  it('takes portal-complete rows that never reached QBO and marks them backfill-only', () => {
+    const rows = buildQboBackfillRows([row()], (p) => ({ ...p, normalized: true }));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ selected: true, qbStatus: null, portalStatus: 'success', _qbBackfill: true });
+    expect(rows[0].parsed).toMatchObject({ doc_number: '100', normalized: true, _qbBackfill: true });
+  });
+
+  it('skips rows already in QBO, not applied to the portal, parked, or credits', () => {
+    const rows = buildQboBackfillRows([
+      row({ id: 'a', qbStatus: 'success' }),
+      row({ id: 'b', portalStatus: null }),
+      row({ id: 'c', reviewLater: true }),
+      row({ id: 'd', parsed: { doc_number: '101', vendor: 'SanMar', is_credit: true } }),
+      row({ id: 'e', parsed: { doc_number: '102', vendor: 'SanMar' } }),
+    ]);
+    expect(rows.map((r) => r.id)).toEqual(['e']);
+  });
+
+  it('keeps one row per vendor and document', () => {
+    const rows = buildQboBackfillRows([row({ id: 'local' }), row({ id: 'srv-9' }), row({ id: 'other', parsed: { doc_number: '100', vendor: 'S&S Activewear' } })]);
+    expect(rows.map((r) => r.id)).toEqual(['local', 'other']);
+  });
+});
