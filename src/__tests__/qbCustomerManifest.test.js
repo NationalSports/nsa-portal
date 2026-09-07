@@ -159,3 +159,23 @@ describe('two portal customers that name the same real-world account',()=>{
     expect(rows.map(row=>row.action)).toEqual(['create','create']);
   });
 });
+
+describe('a failed customer write reports what QuickBooks actually said',()=>{
+  const {qbResponseErrorDetail} = require('../qbSyncEngine');
+  test('a QBO Fault detail is preferred',()=>{
+    expect(qbResponseErrorDetail({Fault:{Error:[{Detail:'Duplicate Name Exists Error',Message:'Duplicate'}]}},'fallback'))
+      .toBe('Duplicate Name Exists Error');
+  });
+  test('a transport error from the proxy is surfaced, not swallowed',()=>{
+    // qbApi returns this shape on a timeout or HTTP error; it carries no Fault,
+    // so reading only Fault left the operator with an unactionable message.
+    expect(qbResponseErrorDetail({__qbTransportError:true,status:504,error:'QBO request timed out.'},'fallback'))
+      .toBe('QBO request timed out.');
+    expect(qbResponseErrorDetail({__qbTransportError:true,status:500,error:'QBO API returned HTTP 500.'},'fallback'))
+      .toBe('QBO API returned HTTP 500.');
+  });
+  test('only a genuinely empty response falls back',()=>{
+    expect(qbResponseErrorDetail(null,'QuickBooks did not return the new customer.'))
+      .toBe('QuickBooks did not return the new customer.');
+  });
+});
