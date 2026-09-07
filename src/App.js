@@ -25919,7 +25919,14 @@ export default function App(){
       if(!r.ok&&r.status!==401&&r.status!==409){
         const txt=await r.text();console.warn('[QB] API returned',r.status,txt);nf('QB API error ('+r.status+')','error');
         const timedOut=r.status===504||/timed?\s*out|inactivity timeout/i.test(txt);
-        return{__qbTransportError:true,status:r.status,error:timedOut?'QBO request timed out.':'QBO API returned HTTP '+r.status+'.'};
+        // A 4xx from QBO is a business-validation answer, not a transport failure:
+        // the Fault body names exactly what it rejected. Discarding it left callers
+        // reporting a bare status code and no way to act on it. Carry the parsed
+        // body through so qbResponseErrorDetail can read the real Detail/Message.
+        let faultBody=null;
+        if(!timedOut){try{const parsed=JSON.parse(txt);if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))faultBody=parsed}catch(e){/* not JSON — keep the status-code fallback */}}
+        return{__qbTransportError:true,status:r.status,...(faultBody||{}),
+          error:faultBody?.error||(timedOut?'QBO request timed out.':'QBO API returned HTTP '+r.status+'.')};
       }
       const d=await r.json();
       if(r.status===401||r.status===409){
