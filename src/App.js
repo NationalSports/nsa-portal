@@ -31,7 +31,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import GlobalSearch from './GlobalSearch';
-import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills, portalBillAlreadyApplied } from './appliedBillsLedger';
+import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills, portalBillAlreadyApplied,buildQboBackfillRows} from './appliedBillsLedger';
 import { createBillApplySession, billAttemptJournal, billingAttemptKey, sameBillingSnapshot } from './billApplySession';
 import { canViewAiInbox, resolveAccessUser } from './lib/pageAccess';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
@@ -463,7 +463,7 @@ import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
 import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, billAutoHoldReasons, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku, resolveMappedSoItemIndex } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
-import { QB_ACCOUNT_MAPPING_DEFAULTS, billVendorMatchName, buildVendorBillLines, calculateOmgInvoicePayment, findExistingVendorBill, findUniqueVendorMatch, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, planQBNonInventoryItems, qbBillNeedsSync, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
+import { QB_ACCOUNT_MAPPING_DEFAULTS, billVendorMatchName, buildVendorBillLines, calculateOmgInvoicePayment, findExistingVendorBill, findUniqueVendorMatch, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, planQBNonInventoryItems, qbBillNeedsSync, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs,qboAccountOnlyBill} from './qbAccountMappings';
 import { BaggingQueueTile } from './baggingstation/BaggingDashCard';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, mergeAllContents, mergeAllSourceRefs, crossCustomerGroups, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -28230,7 +28230,9 @@ export default function App(){
       if(!b||b.reviewLater)return false;
       if(b.portalStatus&&b.portalStatus!=='success'&&!b._qbBackfill)return false;
       if(!_billHasTarget(b.parsed))return false;
-      if(_liveBillPushHoldReasons(b.parsed).length)return false;
+      // Live push holds guard the portal writer; a portal-complete backfill row
+      // never reaches it, and its money is already in the portal as applied.
+      if(!(b._qbBackfill&&b.portalStatus==='success')&&_liveBillPushHoldReasons(b.parsed).length)return false;
       // A not-yet-applied bill must pass the full live review gate before QBO
       // can receive it. Portal-complete rows were already reviewed/applied and
       // may use the separate backfill path above.
@@ -30136,7 +30138,7 @@ export default function App(){
       // Before approval, send exactly one explicitly confirmed canary per click
       // and no more than three total. After approval, use resumable batches of 20.
       // Posting transactions stay sequential in both modes.
-      const batchLimit=canaryMode?1:20;
+      const batchLimit=canaryMode?1:100;
       const batch=selectedEntries.slice(0,batchLimit);
       if(canaryMode){
         const preview=batch.map(({row})=>{
@@ -30219,7 +30221,9 @@ export default function App(){
             ?['deco_account','freight_account','ap_account']
             :['income_account','purchases_account','freight_account','sports_inc_fee_account','ap_account'];
           const billRefs=resolveQBAccountRefs(qbAccounts,qbConfig.mapping,keys);
-          const qboRoutedBill=decorationCategory?routedBill:{...routedBill,items:mapBillItemsToPortalSkus(routedBill.items,routedBill._lineMappings)};
+          // A Bill History backfill posts account lines only — no per-SKU QBO
+          // items for goods the portal already tracks (see qboAccountOnlyBill).
+          const qboRoutedBill=decorationCategory?routedBill:b._qbBackfill?qboAccountOnlyBill(routedBill):{...routedBill,items:mapBillItemsToPortalSkus(routedBill.items,routedBill._lineMappings)};
           const requiredSkus=decorationCategory?[]:(qboRoutedBill.items||[]).map(item=>item?.sku).filter(Boolean);
           const itemDescriptions={};
           (qboRoutedBill.items||[]).forEach(item=>{const sku=String(item?.sku||'').trim().toUpperCase();if(sku&&!itemDescriptions[sku])itemDescriptions[sku]=String(item?.desc||sku).trim()});
@@ -30252,7 +30256,7 @@ export default function App(){
           if(bill.due_date&&!dueDate)throw new Error('Bill due date is invalid; no QBO bill was sent.');
           const billDocNumber=String(bill.doc_number||b.id||'').trim();
           if(!billDocNumber)throw new Error('Bill has no vendor document number or portal source ID; no QBO bill was sent.');
-          const memo=[canaryMode?'NSA-QB-CANARY:'+String(b.id||bill.doc_number||bi):'','PO: '+bill.po_number,bill.tracking?'Tracking: '+bill.tracking:'',bill.doc_number?'Doc #'+bill.doc_number:''].filter(Boolean).join(' | ');
+          const memo=[canaryMode?'NSA-QB-CANARY:'+String(b.id||bill.doc_number||bi):'','PO: '+bill.po_number,bill.tracking?'Tracking: '+bill.tracking:'',bill.doc_number?'Doc #'+bill.doc_number:'',bill.si_doc_number?'SI Doc #'+bill.si_doc_number:'',bill.source==='sportsinc'?'Pay via Sports Inc':''].filter(Boolean).join(' | ');
           const qbBill={VendorRef:{value:String(qbVendorId)},APAccountRef:qbWriteAccountRef(billRefs.ap_account),TxnDate:txnDate,
             DueDate:dueDate,DocNumber:billDocNumber,Line:lineItems,PrivateNote:memo};
 
@@ -30270,6 +30274,13 @@ export default function App(){
             const billRes=await qbApi('upsert_bill',{bill:qbBill});
             if(!billRes?.Bill?.Id)throw new Error(billRes?.Fault?.Error?.[0]?.Detail||'Unknown QBO bill error');
             qboBillId=billRes.Bill.Id;created=true;
+            // QBO returns the stored bill on create. A total, vendor or date that
+            // differs from what was sent means the bill exists in QBO with the
+            // wrong figures: report its ID and do not count it as synced.
+            const storedBill=billRes.Bill;
+            if(storedBill.TotalAmt!==undefined&&Math.abs(safeNum(storedBill.TotalAmt)-amt)>=0.005)throw new Error('QBO Bill #'+qboBillId+' was created but stored total $'+safeNum(storedBill.TotalAmt).toFixed(2)+' instead of $'+amt.toFixed(2)+'; correct it in QuickBooks.');
+            if(storedBill.VendorRef&&String(storedBill.VendorRef.value||'')!==String(qbVendorId))throw new Error('QBO Bill #'+qboBillId+' was created but stored a different vendor; correct it in QuickBooks.');
+            if(storedBill.TxnDate&&String(storedBill.TxnDate).slice(0,10)!==txnDate)throw new Error('QBO Bill #'+qboBillId+' was created but stored date '+String(storedBill.TxnDate).slice(0,10)+' instead of '+txnDate+'; correct it in QuickBooks.');
             const savedQBBill={Id:qboBillId,DocNumber:billDocNumber,VendorRef:{value:String(qbVendorId)},TotalAmt:amt,TxnDate:txnDate};
             existingQBBills.push(savedQBBill);
             billsByDoc.set(docKey,[...(billsByDoc.get(docKey)||[]),savedQBBill]);
@@ -31462,7 +31473,7 @@ export default function App(){
                 </div>
                 <div style={{marginLeft:'auto',display:'flex',flexDirection:'column',justifyContent:'center',gap:9,padding:'16px 24px',background:'rgba(0,0,0,.16)'}}>
                   {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!portalReady.length,onClick:()=>pushBillsToPortal(),children:<>Push {portalReady.length} matched → Portal{portalReadyTotal>0?' · '+nsaMoney(portalReadyTotal):''}</>})}
-                  {qbOperator&&skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for portal-complete or currently matched rows':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!qbReady.length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':(qbConfig.initialMigrationApproved===true?'Push next batch to QuickBooks ('+Math.min(20,qbReady.length)+' of '+qbReady.length+')':'Test 1 in QuickBooks')})}
+                  {qbOperator&&skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for portal-complete or currently matched rows':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!qbReady.length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':(qbConfig.initialMigrationApproved===true?'Push next batch to QuickBooks ('+Math.min(100,qbReady.length)+' of '+qbReady.length+')':'Test 1 in QuickBooks')})}
                   <label title="Push high-confidence matched bills to the portal automatically at pull time (and after the AI pass) — any bill the push button would take with zero problems. Anything with an exception waits for review. Auto-pushed bills are tagged in Bill History and covered by the daily anomaly email." style={{display:'flex',alignItems:'center',gap:7,cursor:'pointer',fontSize:11,color:'rgba(255,255,255,.75)',fontFamily:FD,fontWeight:600,letterSpacing:.4}}>
                     <input type="checkbox" checked={billAutoPush} onChange={e=>{const on=e.target.checked;setBillAutoPush(on);try{localStorage.setItem('nsa_bill_autopush',on?'on':'off')}catch(err){}}} style={{accentColor:'#6FD59A',margin:0}}/>
                     ⚡ Auto-push clean bills</label>
@@ -32979,6 +32990,14 @@ export default function App(){
                 {chip('all','All',scoped.length,'#475569')}
               </div>;})()}
             <button className="btn btn-sm btn-secondary" style={{fontSize:10,fontWeight:700}} title="CSV of every pushed bill in the current scope — vendor, invoice #, SI doc #, PO, amount, Portal/QB — for archiving at Sports Inc" onClick={_dlArchiveCsv}>⬇ Download for SI archive</button>
+            {qbOperator&&(()=>{
+              const backfill=buildQboBackfillRows(histBills,normalizeBillForReview);
+              const backfillTotal=backfill.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
+              return backfill.length>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,fontWeight:700,color:'#1e40af',borderColor:'#93c5fd'}}
+                title="Load every bill that is applied in the Portal but not yet in QuickBooks. They post as account lines (Purchases / Freight / Sports Inc fee) under each bill's own vendor; the Portal side is not applied again."
+                onClick={()=>{setBillImport({step:'review',files:[],parsed:backfill,uploading:false,showRaw:{}});nf(backfill.length+' bill(s) loaded for QuickBooks backfill — '+nsaMoney(backfillTotal)+' · the Portal side will not be applied again');window.scrollTo({top:0,behavior:'smooth'})}}>
+                Load {backfill.length} for QuickBooks backfill · {nsaMoney(backfillTotal)}</button>;
+            })()}
             <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{if(window.confirm('Clear all saved bill history?')){setSavedBills([]);localStorage.removeItem('nsa_saved_bills')}}}>Clear History</button>
           </div>
           <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
