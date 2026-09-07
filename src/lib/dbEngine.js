@@ -19,6 +19,7 @@ import { createSaveRetryCoordinator } from './saveRetryCoordinator';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './requestBreaker';
 import { _sbAuthLock } from './supabase';
+import { resolveOutgoingLineIds } from './orderLineIdentity';
 import { _pick, _pickSoItem, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, _vendCols, _firmDateCols, _omgStoreCols } from '../constants';
 import { itemEditReconciles, itemsWithWipedQty, decorationShrinkConflicts, unaccountedDroppedItems, jobAllRoutedOutside } from '../businessLogic';
 import { soItemKey } from '../safeHelpers';
@@ -1153,7 +1154,7 @@ const _dbSaveEstimateInner = async (est) => {
     // safety guards above still decide WHETHER to save (they only read); this performs the write.
     let _serverVersioned=false;// true when save_estimate returned the post-save version (base is exact, no bump needed)
     {
-      const _rpcItems=(items||[]).map((item,idx)=>{const{decorations,...itemData}=item;return{..._pick(itemData,_itemCols),item_index:idx,decorations:(decorations||[]).map(d=>_pick(_sanitizeDeco(d),_decoCols))}});
+      const _rpcItems=resolveOutgoingLineIds(items||[],_oldEstItems).map((item,idx)=>{const{decorations,...itemData}=item;return{..._pick(itemData,_itemCols),item_index:idx,decorations:(decorations||[]).map(d=>_pick(_sanitizeDeco(d),_decoCols))}});
       const _estPayload=_fuDefaults(_pick(estRow,_estCols));
       // Optimistic concurrency (server-side): pass the _version this edit is based on so the DB rejects a
       // stale clobber — the multi-tab / realtime-echo fight that silently wiped sizes, deleted items, and
