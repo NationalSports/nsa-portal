@@ -541,7 +541,13 @@ export function buildQBInvoicePostingLines({ invoice, salesItemId, discountAccou
 export function createQBSyncEngine(ctx){
   const {cust,sos,invs,prod,vend,invAdjLog=[],invPOs,submittedBatches,qbApi,qbConfig,persistQbLink,nf,dP,
     setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend}=ctx;
-    const QB_SYNC_BATCH_SIZE=20;
+    // Raised from 20 after the tax-line design was verified on two canaries and
+    // two clean 20-record production batches (QB #455–#494, 0 verify failures).
+    // Every invoice still gets the same per-record checks; the batch size only
+    // decides how many run per click and how long one log entry is. Chosen
+    // over "all at once" so each log stays readable and a sleeping tab loses
+    // at most a couple of minutes of work — the loop is resumable either way.
+    const QB_SYNC_BATCH_SIZE=100;
     const requireDurableLinks=()=>{
       if(typeof persistQbLink==='function')return true;
       nf('Durable QBO link storage is unavailable; no migration record was sent','error');return false;

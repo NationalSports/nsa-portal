@@ -820,7 +820,7 @@ export default function QBPage(){
                 <div>Initial-migration safety lock is active. Run the read-only live preflight, then use the one-record test on each data tab. Production batches remain locked; verified parsed supplier-bill canaries: <strong>{verifiedCanaryBills}/3 minimum</strong>.</div>
                 <button className="btn btn-sm btn-secondary" style={{marginTop:8}} disabled={!livePreflightReady||verifiedCanaryBills<3}
                   title={!livePreflightReady?'Run a successful live preflight first':verifiedCanaryBills<3?'At least three live canaries must pass API read-back first':''}
-                  onClick={()=>{if(window.confirm('I reviewed the verified canary bills in the correct QuickBooks company, checked the screenshots/transaction details and account impact, and approve 20-record production batches.'))setQBConfig(prev=>({...prev,initialMigrationApproved:true,autoSync:'manual'}))}}>
+                  onClick={()=>{if(window.confirm('I reviewed the verified canary bills in the correct QuickBooks company, checked the screenshots/transaction details and account impact, and approve 100-record production batches.'))setQBConfig(prev=>({...prev,initialMigrationApproved:true,autoSync:'manual'}))}}>
                   Approve Reviewed Canaries &amp; Unlock Batches
                 </button>
               </div>}
