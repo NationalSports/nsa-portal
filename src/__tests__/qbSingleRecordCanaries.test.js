@@ -50,6 +50,60 @@ describe('QuickBooks one-record canaries', () => {
     expect(setters.setInvs).toHaveBeenCalledTimes(1);
   });
 
+  const taxableInvoice={id:'INV-63848',display_id:'INV-63848',customer_id:'C1',invoice_date:'2026-09-05',total:3083.2,tax:237.17,tax_rate:0.0875,shipping:135.53,paid:0};
+  const taxCodeRows=[{Id:'TC-CA',Name:'CA Sales Tax',Active:true,SalesTaxRateList:{TaxRateDetail:[{TaxRateRef:{value:'TR-CA'}}]}}];
+  const taxableQbApi=({readbackTax=237.17,partnerTax=false}={})=>{
+    let sent;
+    return jest.fn(async(action,{query,invoice:payload}={})=>{
+      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
+      if(action==='query'&&query.includes("FROM Item WHERE Name = 'NSA Portal Sales'"))return{QueryResponse:{Item:[portalSalesItem]}};
+      if(action==='query'&&query.includes("FROM Customer WHERE Id = 'C-QB'"))return{QueryResponse:{Customer:[{Id:'C-QB',SalesTermRef:{value:'T30',name:'Net 30'}}]}};
+      if(action==='query'&&query.includes('FROM Preferences'))return{QueryResponse:{Preferences:[{TaxPrefs:{UsingSalesTax:true,PartnerTaxEnabled:partnerTax}}]}};
+      if(action==='query'&&query.includes('FROM TaxCode'))return{QueryResponse:{TaxCode:taxCodeRows}};
+      if(action==='upsert_invoice'){sent=payload;return{Invoice:{Id:'950',...payload,TotalAmt:3083.2}}}
+      if(action==='query'&&query.includes("FROM Invoice WHERE Id = '950'"))return{QueryResponse:{Invoice:[{Id:'950',DocNumber:'INV-63848',CustomerRef:{value:'C-QB'},TotalAmt:3083.2,TxnDate:'2026-09-05',SalesTermRef:{value:'T30'},TxnTaxDetail:{...sent.TxnTaxDetail,TotalTax:readbackTax}}]}};
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+  };
+  const taxableCustomer={id:'C1',name:'Exeter Boys Basketball',shipping_state:'CA'};
+
+  test('posts one taxable invoice with the portal tax amount through the verified state tax code', async() => {
+    const qbApi=taxableQbApi();
+    const{engine,getConfig,setters}=makeEngine({qbApi,cust:[taxableCustomer],invs:[taxableInvoice]});
+    getConfig().qbTaxRateMap={CA:'TR-CA'};
+    await expect(engine.syncInvoices({}, {}, {canaryInvoiceId:'INV-63848'})).resolves.toEqual({status:'success',synced:1});
+    const payload=qbApi.mock.calls.find(([action])=>action==='upsert_invoice')[1].invoice;
+    expect(payload.TxnTaxDetail).toEqual({TxnTaxCodeRef:{value:'TC-CA'},TotalTax:237.17,
+      TaxLine:[{Amount:237.17,DetailType:'TaxLineDetail',TaxLineDetail:{TaxRateRef:{value:'TR-CA'},PercentBased:false,NetAmountTaxable:2710.5}}]});
+    expect(payload.Line.map(line=>[line.Amount,line.SalesItemLineDetail.TaxCodeRef.value])).toEqual([[2710.5,'TAX'],[135.53,'NON']]);
+    expect(setters.setInvs).toHaveBeenCalledTimes(1);
+  });
+
+  test('blocks a taxable invoice before writing when the state has no verified tax rate', async() => {
+    const qbApi=taxableQbApi();
+    const{engine,setters}=makeEngine({qbApi,cust:[taxableCustomer],invs:[taxableInvoice]});
+    await expect(engine.syncInvoices({}, {}, {canaryInvoiceId:'INV-63848'})).resolves.toEqual({status:'blocked',synced:0});
+    expect(qbApi.mock.calls.filter(([action])=>action==='upsert_invoice')).toHaveLength(0);
+    expect(setters.setInvs).not.toHaveBeenCalled();
+  });
+
+  test('blocks taxable invoices before writing when Automated Sales Tax is on', async() => {
+    const qbApi=taxableQbApi({partnerTax:true});
+    const{engine,getConfig}=makeEngine({qbApi,cust:[taxableCustomer],invs:[taxableInvoice]});
+    getConfig().qbTaxRateMap={CA:'TR-CA'};
+    await expect(engine.syncInvoices({}, {}, {canaryInvoiceId:'INV-63848'})).resolves.toEqual({status:'blocked',synced:0});
+    expect(qbApi.mock.calls.filter(([action])=>action==='upsert_invoice')).toHaveLength(0);
+  });
+
+  test('does not save a taxable invoice link when QBO stored a different tax amount', async() => {
+    const qbApi=taxableQbApi({readbackTax:250});
+    const{engine,getConfig,setters}=makeEngine({qbApi,cust:[taxableCustomer],invs:[taxableInvoice]});
+    getConfig().qbTaxRateMap={CA:'TR-CA'};
+    await expect(engine.syncInvoices({}, {}, {canaryInvoiceId:'INV-63848'})).resolves.toEqual({status:'blocked',synced:0});
+    expect(setters.setInvs).not.toHaveBeenCalled();
+    expect(getConfig().syncLog[0].details.join(' ')).toMatch(/sales tax did not match/);
+  });
+
   test('does not save an invoice link when QBO read-back does not match', async() => {
     const invoice={id:'INV-2',customer_id:'C1',invoice_date:'2026-09-01',total:100,paid:0,tax:0};
     const qbApi=jest.fn(async(action,{query,invoice:payload}={})=>{
