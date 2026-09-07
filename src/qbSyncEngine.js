@@ -10,6 +10,7 @@ import { D_V } from './constants';
 import { _dbSaveSO } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { QB_MAX_REVIEWED_BATCH, QB_STATE_TAX_ACCOUNT_KEYS, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, parseQBDateValue, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
+import {buildQBInventoryValuation, buildQBInventoryValuationEntry, findQBInventoryValuationEntries, loadQBInventoryAssetBalance, loadQBJournalEntry, qbInventoryValuationDocNumber, verifyQBInventoryValuationReadback} from './qbInventoryValuation';
 
 // Return a circular batch and the cursor for the next run. Permanent blockers
 // in the first N records must not starve every later customer/invoice/item/PO.
@@ -1235,6 +1236,52 @@ export function createQBSyncEngine(ctx){
         verifyReadback:verifyCanaryReadback,persistQbLink,setQBConfig,setQbSyncing,nf});
     };
 
+    // Balance-sheet inventory. The portal values what it holds and posts one
+    // journal entry per day that trues up Inventory Asset to that value against
+    // COGS. Read-only until approved; the approving call recomputes and must
+    // land on the delta the operator reviewed, or nothing is posted.
+    const syncInventoryValuation=async(options={})=>{
+      if(!canaryPreflightReady()||!requireDurableLinks())return{status:'blocked'};
+      const asOf=String(options.asOf||new Date().toISOString().slice(0,10)).slice(0,10);
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:'inventory_valuation',status:'success',details:[]};
+      try{
+        const refs=await requiredAccountRefs(['inventory_asset_account','cogs_account']);
+        const valuation=buildQBInventoryValuation(prod,{asOf});
+        const currentBalance=await loadQBInventoryAssetBalance(qbApi,refs.inventory_asset_account.value);
+        const payload=buildQBInventoryValuationEntry({valuation,currentBalance,inventoryAssetRef:refs.inventory_asset_account,cogsRef:refs.cogs_account});
+        const docNumber=qbInventoryValuationDocNumber(asOf);
+        const summary={asOf,docNumber,value:valuation.value,units:valuation.units,products:valuation.products,currentBalance,delta:payload?payload._delta:0,
+          unpricedUnits:valuation.unpricedUnits,unpriced:valuation.unpriced.slice(0,50),unpricedCount:valuation.unpriced.length,negative:valuation.negative.slice(0,50)};
+        const existing=await findQBInventoryValuationEntries(qbApi,docNumber);
+        if(existing.length)throw new Error('QBO already holds journal entry '+docNumber+' (#'+existing.map(e=>e.Id).join(', ')+'); one valuation per day. Nothing was posted.');
+        if(!payload){
+          log.details.push(docNumber+' — Inventory Asset already equals the portal value $'+valuation.value.toFixed(2)+'; no entry needed');
+          setQBConfig(prev=>({...prev,lastInventoryValuation:{...summary,status:'unchanged',at:new Date().toISOString()},syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));
+          return{status:'unchanged',...summary};
+        }
+        if(!options.approved)return{status:'needs_confirmation',...summary};
+        if(options.expectedDelta!==undefined&&Math.abs(safeNum(options.expectedDelta)-payload._delta)>=0.005)
+          throw new Error('Inventory value changed since it was reviewed (adjustment now $'+payload._delta.toFixed(2)+'); review it again. Nothing was posted.');
+        const {_delta,...journalentry}=payload;
+        const response=await qbApi('upsert_journalentry',{journalentry});
+        const id=String(response?.JournalEntry?.Id||'');
+        if(!id)throw new Error(qbResponseErrorDetail(response,'QBO did not return the journal entry.'));
+        const verified=verifyQBInventoryValuationReadback(await loadQBJournalEntry(qbApi,id),payload);
+        log.details.push('READ-BACK VERIFIED: JournalEntry #'+verified.Id+' '+docNumber+' · '+(payload._delta>0?'Dr':'Cr')+' Inventory Asset $'+Math.abs(payload._delta).toFixed(2)+' · portal value $'+valuation.value.toFixed(2)+' ('+valuation.units+' units, '+valuation.products+' products)'+(valuation.unpricedUnits?' · '+valuation.unpricedUnits+' units unpriced and excluded':''));
+        await persistQbLink({mapKey:'qbInventoryValuationMap',sourceIds:[docNumber],qboId:verified.Id,log,
+          evidence:{result:'created',as_of:asOf,value:valuation.value,units:valuation.units,products:valuation.products,balance_before:currentBalance,delta:payload._delta,unpriced_units:valuation.unpricedUnits,api_readback:true}});
+        setQBConfig(prev=>({...prev,lastInventoryValuation:{...summary,status:'posted',qboId:verified.Id,at:new Date().toISOString()},syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])]),lastSync:new Date().toLocaleString()}));
+        nf('Posted and verified inventory valuation '+docNumber+' (QBO #'+verified.Id+')','success');
+        return{status:'success',...summary,qboId:verified.Id};
+      }catch(e){
+        log.status='error';log.details.push(e.message||'Inventory valuation failed');
+        setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));
+        nf('Inventory valuation blocked — '+(e.message||'error'),'error');
+        return{status:'blocked',error:e.message};
+      }finally{setQbSyncing(false)}
+    };
+
     // Remove only a stale portal link whose exact QBO item has already been
     // made inactive. The first call is read-only and asks the UI for explicit
     // confirmation; the confirmed call reads QBO again immediately before the
@@ -1692,5 +1739,5 @@ export function createQBSyncEngine(ctx){
       setQbSyncing(false);
     };
 
-    return {syncTaxRateCanary,syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,reviewPurchaseOrderBillCandidate,linkPurchaseOrderBill,syncAll};
+    return {syncTaxRateCanary,syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,syncInventoryValuation,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,reviewPurchaseOrderBillCandidate,linkPurchaseOrderBill,syncAll};
 }
