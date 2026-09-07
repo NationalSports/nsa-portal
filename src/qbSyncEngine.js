@@ -414,18 +414,51 @@ export function buildQBBillPOReplacement({bill, purchaseOrder}) {
 // tax canary created and read back, plus TotalTax override on the invoice. The
 // plan is built before anything is written and fails closed on every mismatch,
 // because a wrong liability posting is worse than a blocked invoice.
+// Automated Sales Tax normally computes tax itself from the ship-to address and
+// discards a supplied amount. QuickBooks' own escape hatch is the CustomSalesTax
+// code, which exists precisely to carry an externally-calculated figure — the
+// portal's 39 distinct local rates cannot be reproduced by one AST calculation
+// per address, so that override is the only mechanism that keeps QBO's A/R equal
+// to what the customer was actually billed.
+//
+// UNPROVEN against this company file: whether QBO honours the override or still
+// recalculates. Treated as a hypothesis, not a fact — every caller asserts the
+// read-back tax and total, so a recalculation blocks the invoice instead of
+// linking a wrong one. The canary is what settles it.
+export const QB_AST_OVERRIDE_TAX_CODE_NAME = 'CustomSalesTax';
+
+function resolveASTOverrideTaxCode(taxCodes = []) {
+  const normName = value => String(value == null ? '' : value).trim().toLowerCase();
+  const usable = (taxCodes || []).filter(tc => tc && tc.Active !== false && tc.Taxable === true);
+  const named = usable.filter(tc => normName(tc.Name) === normName(QB_AST_OVERRIDE_TAX_CODE_NAME));
+  if (named.length === 1) return String(named[0].Id);
+  const found = usable.length ? ' Taxable codes present: ' + usable.map(tc => (tc.Name || '(unnamed)') + ' #' + tc.Id).join(', ') + '.' : ' No active taxable tax codes exist.';
+  throw new Error(named.length
+    ? 'more than one active ' + QB_AST_OVERRIDE_TAX_CODE_NAME + ' tax code exists.' + found
+    : 'Automated Sales Tax is on and no ' + QB_AST_OVERRIDE_TAX_CODE_NAME + ' code was found to carry the portal amount.' + found);
+}
+
 export function buildQBInvoiceTaxPlan({ invoice, state, taxRateMap = {}, taxCodes = [], partnerTaxEnabled = false }) {
   const cents = value => Math.round(safeNum(value) * 100) / 100;
   const tax = cents(invoice?.tax);
   if (!(tax > 0)) return null;
-  if (partnerTaxEnabled) throw new Error('QuickBooks Automated Sales Tax is enabled; the portal tax amount would be ignored. Switch the company to manual sales tax before posting taxable invoices.');
   const code = String(state || '').trim().toUpperCase();
   if (!QB_STATE_TAX_ACCOUNT_KEYS[code]) throw new Error('customer state "' + (code || 'blank') + '" has no approved sales-tax account');
-  const rateId = String(taxRateMap[code] || '');
-  if (!rateId) throw new Error('no verified QuickBooks tax rate for ' + code + '; run the tax-rate canary for that state first');
-  const matches = (taxCodes || []).filter(tc => tc && tc.Active !== false
-    && (tc.SalesTaxRateList?.TaxRateDetail || []).some(d => String(d?.TaxRateRef?.value || '') === rateId));
-  if (matches.length !== 1) throw new Error(matches.length ? 'more than one QuickBooks tax code uses rate #' + rateId : 'QuickBooks tax code for rate #' + rateId + ' (' + code + ') was not found or is inactive');
+  // Under AST there are no manual TaxRate records to match, so the rate-map and
+  // rate-to-code checks below do not apply; the override code replaces them.
+  // The rate reconciliation further down still runs — it is the portal's own
+  // arithmetic and is what proves the amount before anything is written.
+  let taxCodeId, rateId = '';
+  if (partnerTaxEnabled) {
+    taxCodeId = resolveASTOverrideTaxCode(taxCodes);
+  } else {
+    rateId = String(taxRateMap[code] || '');
+    if (!rateId) throw new Error('no verified QuickBooks tax rate for ' + code + '; run the tax-rate canary for that state first');
+    const matches = (taxCodes || []).filter(tc => tc && tc.Active !== false
+      && (tc.SalesTaxRateList?.TaxRateDetail || []).some(d => String(d?.TaxRateRef?.value || '') === rateId));
+    if (matches.length !== 1) throw new Error(matches.length ? 'more than one QuickBooks tax code uses rate #' + rateId : 'QuickBooks tax code for rate #' + rateId + ' (' + code + ') was not found or is inactive');
+    taxCodeId = String(matches[0].Id);
+  }
   const rate = safeNum(invoice?.tax_rate);
   if (!(rate > 0)) throw new Error('invoice has tax but no tax rate to reconcile it against');
   const total = cents(invoice?.total), shipping = cents(invoice?.shipping);
@@ -437,11 +470,15 @@ export function buildQBInvoiceTaxPlan({ invoice, state, taxRateMap = {}, taxCode
   const shippingTaxable = !reconciles(taxableExShipping) && shipping > 0 && reconciles(taxableIncShipping);
   const taxable = shippingTaxable ? taxableIncShipping : taxableExShipping;
   if (!reconciles(taxable)) throw new Error('tax $' + tax.toFixed(2) + ' does not reconcile with ' + (rate * 100).toFixed(3).replace(/\.?0+$/, '') + '% of the taxable amount; not posted');
-  return { state: code, tax, taxable, shipping, shippingTaxable, taxCodeId: String(matches[0].Id), rateId };
+  return { state: code, tax, taxable, shipping, shippingTaxable, taxCodeId, rateId, astOverride: !!partnerTaxEnabled };
 }
 
 export function buildQBInvoiceTxnTaxDetail(plan) {
   if (!plan) return null;
+  // An AST override carries the amount alone: there is no manual TaxRate record
+  // for a TaxLine to reference, and sending a TaxLineDetail without a real
+  // TaxRateRef would be inventing one.
+  if (plan.astOverride) return { TxnTaxCodeRef: { value: plan.taxCodeId }, TotalTax: plan.tax };
   return { TxnTaxCodeRef: { value: plan.taxCodeId }, TotalTax: plan.tax,
     TaxLine: [{ Amount: plan.tax, DetailType: 'TaxLineDetail',
       TaxLineDetail: { TaxRateRef: { value: plan.rateId }, PercentBased: false, NetAmountTaxable: plan.taxable } }] };
