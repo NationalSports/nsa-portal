@@ -1,4 +1,5 @@
 import {useOrderCatalogResults} from './lib/orderCatalogSearch';
+import { poEligibleVendors } from './lib/vendorPoEligibility';
 import QuantityDraftInput from './QuantityDraftInput';
 /* ═══════════════════════════════════════════════════════════════
    ORDER EDITOR — CLASSIC
@@ -9079,7 +9080,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{fontSize:10,fontWeight:700,color:'#dc2626',textTransform:'uppercase',marginBottom:6}}>⚠️ Items Without Vendor</div>
             {unlinkedItems.map((it,i)=>{const idx=safeItems(o).findIndex(x=>x.sku===it.sku&&x.color===it.color&&x.name===it.name);
               const q=(poVendorSearch[idx]||'').trim().toLowerCase();
-              const activeVendors=vendorList.filter(v=>v.is_active!==false);
+              const activeVendors=poEligibleVendors(vendorList);
               const matches=q?activeVendors.filter(v=>(v.name||'').toLowerCase().includes(q)):activeVendors;
               const assignVendor=(v)=>{if(idx<0)return;uI(idx,'vendor_id',v.id);uI(idx,'brand',v.name||it.brand);nf('Assigned '+v.name+' to '+it.sku);setShowPO(null);setTimeout(()=>setShowPO('select'),100)};
               return<div key={i} style={{padding:'8px 12px',border:'1px solid #fca5a5',borderRadius:8,marginBottom:4,background:'#fef2f2'}}>
@@ -16015,7 +16016,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             <div style={{fontSize:12,color:'#475569'}}><strong>{it.sku}</strong>{it.color?' · '+it.color:''} — {it.name}</div>
             <div style={{fontSize:12,color:'#64748b'}}>Currently ordered from: <strong style={{color:'#0f172a'}}>{curName||'(unassigned)'}</strong></div>
             <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Order from vendor</label>
-              <SearchSelect options={vendorList.map(v=>({value:v.id,label:v.name}))} value={curVid} onChange={vid=>{if(vid&&vid!==curVid)reassignVendor(vendorModal.itemIdx,vid);else setVendorModal(null)}} placeholder="Search vendors..." menuPortal/></div>
+              <SearchSelect options={poEligibleVendors(vendorList,curVid).map(v=>({value:v.id,label:v.name}))} value={curVid} onChange={vid=>{if(vid&&vid!==curVid)reassignVendor(vendorModal.itemIdx,vid);else setVendorModal(null)}} placeholder="Search vendors..." menuPortal/></div>
             {hasPO&&<div style={{fontSize:11,color:'#b45309',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,padding:'8px 10px'}}>⚠️ This item already has a PO. Switching won't move quantities already on that PO or change its cost — review the existing PO after switching.</div>}
             <div style={{fontSize:11,color:'#94a3b8'}}>Cost is refreshed from the new vendor (live wholesale price, then catalog). The customer sell price and the item's brand are left unchanged.</div>
           </div>

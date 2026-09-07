@@ -453,6 +453,7 @@ const MethodicArtQueue = lazyRetry(() => import('./methodic/MethodicArtQueue'));
 const UniformBuilderSettingsAdmin = lazyRetry(() => import('./uniform/BuilderSettingsAdmin'));
 const LoginGate = lazyRetry(() => import('./LoginGate'));
 import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal } from './modals';
+import { poEligibleVendors } from './lib/vendorPoEligibility';
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
@@ -22764,7 +22765,7 @@ export default function App(){
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}}>
               <div><label className="form-label">Vendor *</label><select className="form-select" value={showStockPO.vendor_id} onChange={e=>{const v=vend.find(x=>x.id===e.target.value);setShowStockPO(x=>({...x,vendor_id:e.target.value,vendor_name:v?.name||''}))}}>
                 {/* Every DB vendor, not just the v1–v8 D_V seed — a stock PO for A4/Champro/etc. was unpickable. */}
-                <option value="">Select vendor...</option>{vend.filter(v=>v.is_active!==false).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
+                <option value="">Select vendor...</option>{poEligibleVendors(vend,showStockPO.vendor_id).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
               <div><label className="form-label">Memo</label><input className="form-input" value={showStockPO.memo||''} onChange={e=>setShowStockPO(x=>({...x,memo:e.target.value}))} placeholder="Restock reason..."/></div>
             </div>
             <label className="form-label">Items</label>
@@ -38284,7 +38285,7 @@ export default function App(){
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:16}}>
           <div><label className="form-label">Vendor *</label>
             <select className="form-select" data-tour-id="inv-po-vendor-select" style={{width:'100%'}} value={invPOModal.vendor_id} onChange={e=>setInvPOModal(x=>({...x,vendor_id:e.target.value}))}>
-              <option value="">Select vendor...</option>{vend.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
+              <option value="">Select vendor...</option>{poEligibleVendors(vend,invPOModal.vendor_id).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
           <div><label className="form-label">Expected Date</label>
             <input type="date" className="form-input" style={{width:'100%'}} value={invPOModal.expected_date} onChange={e=>setInvPOModal(x=>({...x,expected_date:e.target.value}))}/></div>
           <div><label className="form-label">Memo</label>
