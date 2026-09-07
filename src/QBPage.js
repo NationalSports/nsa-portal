@@ -473,7 +473,9 @@ export default function QBPage(){
     const poPreviewRows=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{});
     const poBatchRows=(poBatchReview?.rows||[]).filter(row=>row.action==='ready').slice(0,poBatchLimit);
     const selectedInvoiceCustomer=selectedCanaryInvoice&&cust.find(c=>c.id===selectedCanaryInvoice.customer_id);
-    const invoiceCanaryBlock=selectedCanaryInvoice&&!_custQBMap[selectedCanaryInvoice.customer_id]?'Sync this invoice customer first':selectedCanaryInvoice&&safeNum(selectedCanaryInvoice.tax)>0?'Taxable invoices remain blocked until QBO tax-code mapping is deployed':'';
+    const invoiceCanaryTaxState=selectedCanaryInvoice?String(selectedInvoiceCustomer?.shipping_state||selectedInvoiceCustomer?.billing_state||'').trim().toUpperCase():'';
+    const invoiceCanaryBlock=selectedCanaryInvoice&&!_custQBMap[selectedCanaryInvoice.customer_id]?'Sync this invoice customer first'
+      :selectedCanaryInvoice&&safeNum(selectedCanaryInvoice.tax)>0&&!(qbConfig.qbTaxRateMap||{})[invoiceCanaryTaxState]?'Taxable invoice: run the tax-rate canary for '+(invoiceCanaryTaxState||'the customer state')+' first (Settings tab)':'';
     const soCanaryBlock=selectedCanarySO&&!_custQBMap[selectedCanarySO.customer_id]?'Sync this sales-order customer first':'';
     const poCanaryBlock=selectedCanaryPO?.invalidReason||'';
     const runCustomerCanary=async()=>{
