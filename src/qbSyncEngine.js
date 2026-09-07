@@ -1049,6 +1049,8 @@ export function createQBSyncEngine(ctx){
         let invoiceLines;
         try{invoiceLines=buildQBInvoicePostingLines({invoice:inv,salesItemId,discountAccountRef:invoiceRefs.discount_account,description:invoiceDescription,taxPlan,taxItemId})}
         catch(e){log.details.push((inv.display_id||inv.id)+' — BLOCKED: '+e.message);log.status='partial';continue}
+        // In line mode the portal's tax is proven by the line that carries it.
+        const taxLineOk=row=>!taxPlan?.taxLine||(row?.Line||[]).some(l=>l?.DetailType==='SalesItemLineDetail'&&String(l.SalesItemLineDetail?.ItemRef?.value||'')===String(taxItemId)&&Math.abs(safeNum(l.Amount)-taxPlan.tax)<0.005);
         const qbInvoice={
           DocNumber:inv.display_id||inv.id,
           TxnDate:invoiceDate,
@@ -1076,8 +1078,30 @@ export function createQBSyncEngine(ctx){
             String(existing.CustomerRef?.value||'')===String(cQBId)
             &&Math.abs(safeNum(existing.TotalAmt)-invoiceTotal)<0.005
             &&String(existing.TxnDate||'').slice(0,10)===String(qbInvoice.TxnDate||'').slice(0,10));
-          if(matches.length===1){res={Invoice:matches[0]};log.details.push(docNum+' — exact existing invoice verified (QB #'+matches[0].Id+')')}
-          else{log.details.push(docNum+' — BLOCKED: duplicate QBO document number is not one exact customer/date/total match');log.status='partial';continue}
+          if(matches.length!==1){log.details.push(docNum+' — BLOCKED: duplicate QBO document number is not one exact customer/date/total match');log.status='partial';continue}
+          // The match is this invoice, created by a run that was cut off before
+          // it could save the link (a reload mid-batch). Its lines may not carry
+          // the tax line — a total can match with the tax buried in sales — so
+          // the full record is read and, when the tax line is missing, rebuilt
+          // from the same posting lines. Either way it is proven below exactly
+          // like a fresh create before the link is saved.
+          const matchId=String(matches[0].Id);
+          let existingRow;
+          try{
+            const full=await queryQBReadOnly(qbApi,"SELECT * FROM Invoice WHERE Id = '"+matchId.replace(/'/g,"\\'")+"' MAXRESULTS 1",'invoice duplicate read');
+            existingRow=full?.QueryResponse?.Invoice?.[0];
+            if(!existingRow||String(existingRow.Id)!==matchId)throw new Error('QBO Invoice #'+matchId+' was not returned by API read');
+          }catch(e){log.details.push(docNum+' — BLOCKED: duplicate read failed: '+e.message);log.status='partial';continue}
+          if(taxLineOk(existingRow)){res={Invoice:existingRow};log.details.push(docNum+' — exact existing invoice verified (QB #'+matchId+')')}
+          else{
+            const rebuilt={Id:matchId,SyncToken:existingRow.SyncToken,sparse:true,Line:invoiceLines,
+              ...(taxPlan&&buildQBInvoiceTxnTaxDetail(taxPlan)?{TxnTaxDetail:buildQBInvoiceTxnTaxDetail(taxPlan)}:{})};
+            let upd;
+            try{upd=await qbApi('upsert_invoice',{invoice:rebuilt})}
+            catch(e){log.details.push(docNum+' — FAILED: rebuild of QBO Invoice #'+matchId+': '+e.message);log.status='partial';continue}
+            if(!upd?.Invoice?.Id){log.details.push(docNum+' — FAILED: rebuild of QBO Invoice #'+matchId+': '+qbResponseErrorDetail(upd));log.status='partial';continue}
+            res=upd;log.details.push(docNum+' — existing QBO Invoice #'+matchId+' had no $'+taxPlan.tax.toFixed(2)+' sales-tax line; rebuilt with the portal lines');
+          }
         }
         if(res?.Invoice?.Id){
           // QBO returns the stored entity on create. If it recomputed the tax or
@@ -1086,7 +1110,6 @@ export function createQBSyncEngine(ctx){
           // In line mode QBO's own TotalTax must be 0 — AST added nothing — and
           // the portal's tax is proven by the line that carries it instead.
           const storedTax=Math.round(safeNum(res.Invoice.TxnTaxDetail?.TotalTax)*100)/100, expectedTax=taxPlan&&!taxPlan.taxLine?taxPlan.tax:0;
-          const taxLineOk=row=>!taxPlan?.taxLine||(row?.Line||[]).some(l=>l?.DetailType==='SalesItemLineDetail'&&String(l.SalesItemLineDetail?.ItemRef?.value||'')===String(taxItemId)&&Math.abs(safeNum(l.Amount)-taxPlan.tax)<0.005);
           if(res.Invoice.Line&&!taxLineOk(res.Invoice)){
             log.details.push((inv.display_id||inv.id)+' — VERIFY FAILED: QBO Invoice #'+res.Invoice.Id+' came back without a $'+taxPlan.tax.toFixed(2)+' sales-tax line on the '+taxPlan.state+' item; link not saved, correct it in QuickBooks');
             log.status='error';continue;

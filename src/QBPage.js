@@ -1132,7 +1132,7 @@ export default function QBPage(){
           </div>
           <div style={{padding:'12px 14px',background:'#fffbeb',borderBottom:'1px solid #fde68a'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#92400e',marginBottom:4}}>Sales-tax setup (read-only)</div>
-            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>{unsyncedInvs.filter(inv=>safeNum(inv.tax)>0).length} of {unsyncedInvs.length} pending invoices carry sales tax and stay blocked until accounting approves a QBO tax-code mapping. This reads the live Sales Tax Center so that decision can be made from evidence. Nothing is written.</div>
+            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>{unsyncedInvs.filter(inv=>safeNum(inv.tax)>0).length} of {unsyncedInvs.length} pending invoices carry sales tax. With Automated Sales Tax on, that tax posts as its own invoice line to the state's liability account (25200 for CA); without it, a verified manual tax code is required. This reads the live Sales Tax Center. Nothing is written.</div>
             <button className="btn btn-sm" disabled={qbTaxReading||qbSyncing||!livePreflightReady} title={!livePreflightReady?'Run a successful read-only live preflight first':''} onClick={runQBTaxPreflight}>{qbTaxReading?'Reading QBO tax setup...':'Read Sales Tax Setup — No QBO Changes'}</button>
             <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid #fde68a'}}>
               <div style={{fontSize:12,fontWeight:700,color:'#92400e',marginBottom:4}}>Set up one manual tax rate</div>
