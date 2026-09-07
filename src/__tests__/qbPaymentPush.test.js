@@ -182,3 +182,67 @@ describe('pulling QBO payments into the Portal',()=>{
     expect(qbPaymentsAppliedToInvoice([{Id:'1',Line:[]}],'')).toEqual([]);
   });
 });
+
+describe('correcting a stale QBO total on a taxable invoice',()=>{
+  // QB #196 case: the invoice was posted as one lump line before tax posting
+  // existed, then edited in the Portal. The rebuild must carry the tax line.
+  const taxMapping={...mapping,tax_ca_account:'25200'};
+  const taxAccounts=[...accounts,{Id:'90',AcctNum:'25200',Name:'Sales Tax Payables:CA',AccountType:'Other Current Liability',Active:true}];
+  function setupStale({partnerTax=true,invoiceResponse}={}){
+    const inv={id:'INV1001',display_id:'INV-1001',customer_id:'C1',total:17134.06,tax:1203.61,tax_rate:0.0775,shipping:400,paid:17134.06,qb_invoice_id:'196',
+      line_items:[{qty:1,rate:15530.45,amount:15530.45,desc:'Uniforms'}]};
+    let config={realm_id:'r1',preflight:{status:'success',realm_id:'r1'},mapping:taxMapping,initialMigrationApproved:true,custQBMap:{C1:'55'},syncLog:[]};
+    let sent=null;
+    const qbApi=jest.fn(async(action,args={})=>{
+      if(action==='query'){
+        const q=args.query||'';
+        if(q.includes('FROM Account'))return{QueryResponse:{Account:taxAccounts}};
+        if(q.includes('FROM Preferences'))return{QueryResponse:{Preferences:[{TaxPrefs:{UsingSalesTax:true,PartnerTaxEnabled:partnerTax}}]}};
+        if(q.includes('FROM TaxCode'))return{QueryResponse:{TaxCode:[]}};
+        if(q.includes("FROM Item")&&q.includes('Sales Tax'))return{QueryResponse:{Item:[{Id:'8',Name:'NSA Portal Sales Tax — CA',Type:'Service',Active:true,IncomeAccountRef:{value:'90'}}]}};
+        if(q.includes("FROM Item"))return{QueryResponse:{Item:[{Id:'7',Name:'NSA Portal Sales',Type:'Service',Active:true,IncomeAccountRef:{value:'10'}}]}};
+        if(q.includes('FROM Invoice'))return{QueryResponse:{Invoice:[{Id:'196',DocNumber:'INV-1001',Balance:16929.76,TotalAmt:16929.76,SyncToken:'3'}]}};
+        return{QueryResponse:{}};
+      }
+      if(action==='upsert_invoice'){
+        sent=args.invoice;
+        if(invoiceResponse)return invoiceResponse;
+        return{Invoice:{Id:'196',TotalAmt:17134.06,TxnTaxDetail:{TotalTax:0},Line:sent.Line}};
+      }
+      throw new Error('Unexpected '+action);
+    });
+    const engine=createQBSyncEngine({cust:[{id:'C1',name:'Orange Lutheran Football',shipping_state:'CA'}],sos:[],invs:[inv],prod:[],vend:[],qbApi,qbConfig:config,
+      persistQbLink:jest.fn(async()=>{}),nf:jest.fn(),setQbSyncing:jest.fn(),setInvs:jest.fn(),setQBConfig:fn=>{config=fn(config);}});
+    return{engine,qbApi,sent:()=>sent,config:()=>config};
+  }
+
+  test('the rebuilt invoice carries sales, shipping and a tax line on the CA liability item',async()=>{
+    const run=setupStale();
+    await run.engine.syncPaidFromQB();
+    const sent=run.sent();
+    expect(sent).toMatchObject({Id:'196',SyncToken:'3',sparse:true});
+    expect(sent.TxnTaxDetail).toBeUndefined();
+    const amounts=sent.Line.map(l=>l.Amount);
+    expect(amounts).toEqual([15530.45,400,1203.61]);
+    expect(sent.Line.every(l=>l.SalesItemLineDetail.TaxCodeRef.value==='NON')).toBe(true);
+    expect(sent.Line[2].SalesItemLineDetail.ItemRef).toEqual({value:'8',name:'NSA Portal Sales Tax — CA'});
+    expect(lastLog(run).details.join(' ')).toMatch(/QB total corrected \$16929\.76 → \$17134\.06 · tax \$1203\.61 → NSA Portal Sales Tax — CA/);
+    // No payment is sent on the correction run; paid is re-checked next run.
+    expect(run.qbApi.mock.calls.some(([a])=>a==='upsert_payment')).toBe(false);
+  });
+
+  test('a stored total that does not match the Portal is reported, not counted as corrected',async()=>{
+    const run=setupStale({invoiceResponse:{Invoice:{Id:'196',TotalAmt:16929.76,TxnTaxDetail:{TotalTax:0},Line:[]}}});
+    await run.engine.syncPaidFromQB();
+    const log=lastLog(run);
+    expect(log.status).toBe('error');
+    expect(log.details.join(' ')).toMatch(/total correction VERIFY FAILED: QBO Invoice #196 stored total \$16929\.76/);
+    expect(log.details.join(' ')).not.toMatch(/corrected \$/);
+  });
+
+  test('a QBO fault on the rebuild is surfaced with its detail',async()=>{
+    const run=setupStale({invoiceResponse:{Fault:{Error:[{Detail:'Stale SyncToken',code:'5010'}]}}});
+    await run.engine.syncPaidFromQB();
+    expect(lastLog(run).details.join(' ')).toMatch(/total correction FAILED: Stale SyncToken \[code 5010\]/);
+  });
+});

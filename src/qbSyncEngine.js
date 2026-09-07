@@ -919,6 +919,40 @@ export function createQBSyncEngine(ctx){
     };
 
     // ── SYNC: Invoices (totals) ──
+    // Tax setup (the AST flag and the tax codes) is read once per run, and the
+    // line-mode tax item is resolved once per state per run. Both passes that
+    // write invoice lines — the initial post and the paid pass's total
+    // correction — share this so a taxable invoice is never rebuilt without
+    // its tax line.
+    const createInvoiceTaxContext=()=>{
+      let taxSetup=null;
+      const taxItemByState={};
+      const loadInvoiceTaxSetup=async()=>{
+        const prefs=await queryQBReadOnly(qbApi,'SELECT * FROM Preferences','tax preferences recheck');
+        const partnerTaxEnabled=!!prefs?.QueryResponse?.Preferences?.[0]?.TaxPrefs?.PartnerTaxEnabled;
+        const taxCodes=await loadAllQBEntities(qbApi,'TaxCode','*',100);
+        return{partnerTaxEnabled,taxCodes};
+      };
+      const resolveTaxItem=async plan=>{
+        if(!plan?.taxLine)return null;
+        if(taxItemByState[plan.state])return taxItemByState[plan.state];
+        const refs=await requiredAccountRefs([plan.taxAccountKey]);
+        const id=await ensurePortalSalesTaxItem(plan.state,refs[plan.taxAccountKey]);
+        taxItemByState[plan.state]=id;return id;
+      };
+      // Returns {taxPlan:null,taxItemId:null} for a non-taxable invoice; throws
+      // when a taxable invoice cannot be posted with its tax intact.
+      const resolve=async inv=>{
+        if(safeNum(inv.tax)<=0)return{taxPlan:null,taxItemId:null};
+        if(!taxSetup)taxSetup=await loadInvoiceTaxSetup();
+        const c=cust.find(cc=>cc.id===inv.customer_id);
+        const taxPlan=buildQBInvoiceTaxPlan({invoice:inv,state:c?.shipping_state||c?.billing_state,taxRateMap:qbConfig.qbTaxRateMap||{},taxCodes:taxSetup.taxCodes,partnerTaxEnabled:taxSetup.partnerTaxEnabled});
+        return{taxPlan,taxItemId:await resolveTaxItem(taxPlan)};
+      };
+      const warning=(inv,plan)=>(inv.display_id||inv.id)+' — WARNING: tax $'+plan.tax.toFixed(2)+' posted as collected; '+plan.ratePct+'% of $'+plan.taxable.toFixed(2)+' would be $'+plan.expectedTax.toFixed(2);
+      return{resolve,warning};
+    };
+
     const syncInvoices=async(custQBMap={},prodQBMap={},options={})=>{
       const canaryInvoiceId=String(options?.canaryInvoiceId||'');
       const canary=!!canaryInvoiceId;
@@ -938,23 +972,7 @@ export function createQBSyncEngine(ctx){
         log.status='error';log.details.push(e.message||'Required invoice account could not be resolved');
         setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('Invoice sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return;
       }
-      // Read once per run, and only when a taxable invoice is in the batch.
-      let taxSetup=null;
-      // Line-mode tax items are resolved once per state per run.
-      const taxItemByState={};
-      const resolveTaxItem=async plan=>{
-        if(!plan?.taxLine)return null;
-        if(taxItemByState[plan.state])return taxItemByState[plan.state];
-        const refs=await requiredAccountRefs([plan.taxAccountKey]);
-        const id=await ensurePortalSalesTaxItem(plan.state,refs[plan.taxAccountKey]);
-        taxItemByState[plan.state]=id;return id;
-      };
-      const loadInvoiceTaxSetup=async()=>{
-        const prefs=await queryQBReadOnly(qbApi,'SELECT * FROM Preferences','tax preferences recheck');
-        const partnerTaxEnabled=!!prefs?.QueryResponse?.Preferences?.[0]?.TaxPrefs?.PartnerTaxEnabled;
-        const taxCodes=await loadAllQBEntities(qbApi,'TaxCode','*',100);
-        return{partnerTaxEnabled,taxCodes};
-      };
+      const taxCtx=createInvoiceTaxContext();
       for(const inv of unsyncedInvs2){
         const c=cust.find(cc=>cc.id===inv.customer_id);
         const cQBId=custQBMap[inv.customer_id]||(qbConfig.custQBMap||{})[inv.customer_id];
@@ -964,19 +982,10 @@ export function createQBSyncEngine(ctx){
         // verified manual tax code. Every precondition is checked before the
         // write; a miss blocks this invoice so tax is never credited to 40000
         // or guessed into a liability account.
-        let taxPlan=null;
-        if(safeNum(inv.tax)>0){
-          try{
-            if(!taxSetup)taxSetup=await loadInvoiceTaxSetup();
-            taxPlan=buildQBInvoiceTaxPlan({invoice:inv,state:c?.shipping_state||c?.billing_state,taxRateMap:qbConfig.qbTaxRateMap||{},taxCodes:taxSetup.taxCodes,partnerTaxEnabled:taxSetup.partnerTaxEnabled});
-          }catch(e){log.details.push((inv.display_id||inv.id)+' — BLOCKED: $'+safeNum(inv.tax).toFixed(2)+' sales tax — '+e.message);log.status='partial';continue}
-        }
-        if(taxPlan?.reconciled===false)log.details.push((inv.display_id||inv.id)+' — WARNING: tax $'+taxPlan.tax.toFixed(2)+' posted as collected; '+taxPlan.ratePct+'% of $'+taxPlan.taxable.toFixed(2)+' would be $'+taxPlan.expectedTax.toFixed(2));
-        let taxItemId=null;
-        if(taxPlan?.taxLine){
-          try{taxItemId=await resolveTaxItem(taxPlan)}
-          catch(e){log.details.push((inv.display_id||inv.id)+' — BLOCKED: $'+safeNum(inv.tax).toFixed(2)+' sales tax — '+e.message);log.status='partial';continue}
-        }
+        let taxPlan=null,taxItemId=null;
+        try{({taxPlan,taxItemId}=await taxCtx.resolve(inv))}
+        catch(e){log.details.push((inv.display_id||inv.id)+' — BLOCKED: $'+safeNum(inv.tax).toFixed(2)+' sales tax — '+e.message);log.status='partial';continue}
+        if(taxPlan?.reconciled===false)log.details.push(taxCtx.warning(inv,taxPlan));
         const invoiceDate=parseQBDateValue(inv.invoice_date||inv.date||inv.created_at);
         if(!invoiceDate){log.details.push((inv.display_id||inv.id)+' — BLOCKED: invoice date could not be converted to a QBO date');log.status='partial';continue}
         const invoiceTotal=safeNum(inv.total);
@@ -1077,6 +1086,7 @@ export function createQBSyncEngine(ctx){
       const nextPaidOffset=allLinkedInvs.length?(paidOffset+linkedInvs.length)%allLinkedInvs.length:0;
       if(linkedInvs.length===0){log.details.push('No QB-linked invoices to check');setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('No invoices to sync');setQbSyncing(false);return}
       let paidRefs,salesItemId;
+      const taxCtx=createInvoiceTaxContext();
       try{
         paidRefs=await requiredAccountRefs(['income_account','discount_account','ar_account','payment_deposit_account']);
         salesItemId=await ensurePortalSalesItem(paidRefs.income_account);
@@ -1101,13 +1111,30 @@ export function createQBSyncEngine(ctx){
           // (this run's Balance was computed against the old total).
           const portalTotal=safeNum(inv.total);
           if(portalTotal>0&&Math.abs(portalTotal-qbTotal)>0.005){
-            if(safeNum(inv.tax)>0){log.details.push((inv.display_id||inv.id)+' — total correction BLOCKED: taxable invoice needs QBO tax-code mapping');log.status='partial';continue}
+            const docId=inv.display_id||inv.id;
+            // A taxable invoice is rebuilt with the same tax plan the initial
+            // post uses, so its tax lands on the state liability line and not
+            // in the lump sales amount.
+            let taxPlan=null,taxItemId=null;
+            try{({taxPlan,taxItemId}=await taxCtx.resolve(inv))}
+            catch(e){log.details.push(docId+' — total correction BLOCKED: $'+safeNum(inv.tax).toFixed(2)+' sales tax — '+e.message);log.status='partial';continue}
+            if(taxPlan?.reconciled===false)log.details.push(taxCtx.warning(inv,taxPlan));
             let correctionLines;
-            try{correctionLines=buildQBInvoicePostingLines({invoice:inv,salesItemId,discountAccountRef:paidRefs.discount_account,description:'Invoice '+(inv.display_id||inv.id)})}
-            catch(e){log.details.push((inv.display_id||inv.id)+' — total correction BLOCKED: '+e.message);log.status='partial';continue}
-            const upd=await qbApi('upsert_invoice',{invoice:{Id:inv.qb_invoice_id,SyncToken:qbInv.SyncToken,sparse:true,Line:correctionLines}});
-            if(upd?.Invoice?.Id){log.details.push((inv.display_id||inv.id)+' — QB total corrected $'+qbTotal.toFixed(2)+' → $'+portalTotal.toFixed(2)+' (paid re-checks next run)');updated++}
-            else{log.details.push((inv.display_id||inv.id)+' — total correction FAILED: '+(upd?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
+            try{correctionLines=buildQBInvoicePostingLines({invoice:inv,salesItemId,discountAccountRef:paidRefs.discount_account,description:'Invoice '+docId,taxPlan,taxItemId})}
+            catch(e){log.details.push(docId+' — total correction BLOCKED: '+e.message);log.status='partial';continue}
+            const txnTaxDetail=taxPlan?buildQBInvoiceTxnTaxDetail(taxPlan):null;
+            const upd=await qbApi('upsert_invoice',{invoice:{Id:inv.qb_invoice_id,SyncToken:qbInv.SyncToken,sparse:true,Line:correctionLines,...(txnTaxDetail?{TxnTaxDetail:txnTaxDetail}:{})}});
+            if(!upd?.Invoice?.Id){log.details.push(docId+' — total correction FAILED: '+qbResponseErrorDetail(upd));log.status='partial';continue}
+            // QBO returns the stored invoice: prove the total and the tax line
+            // the same way the initial post does before counting this corrected.
+            const storedTotal=safeNum(upd.Invoice.TotalAmt), storedTax=Math.round(safeNum(upd.Invoice.TxnTaxDetail?.TotalTax)*100)/100;
+            const expectedTax=taxPlan&&!taxPlan.taxLine?taxPlan.tax:0;
+            const taxLineOk=!taxPlan?.taxLine||(upd.Invoice.Line||[]).some(l=>l?.DetailType==='SalesItemLineDetail'&&String(l.SalesItemLineDetail?.ItemRef?.value||'')===String(taxItemId)&&Math.abs(safeNum(l.Amount)-taxPlan.tax)<0.005);
+            if(Math.abs(storedTotal-portalTotal)>=0.005||Math.abs(storedTax-expectedTax)>=0.005||!taxLineOk){
+              log.details.push(docId+' — total correction VERIFY FAILED: QBO Invoice #'+inv.qb_invoice_id+' stored total $'+storedTotal.toFixed(2)+' / tax $'+storedTax.toFixed(2)+(taxLineOk?'':' without the sales-tax line')+', expected $'+portalTotal.toFixed(2)+' / $'+expectedTax.toFixed(2)+'; correct it in QuickBooks');
+              log.status='error';continue;
+            }
+            log.details.push(docId+' — QB total corrected $'+qbTotal.toFixed(2)+' → $'+portalTotal.toFixed(2)+(taxPlan?.taxLine?' · tax $'+taxPlan.tax.toFixed(2)+' → '+portalSalesTaxItemName(taxPlan.state):'')+' (paid re-checks next run)');updated++;
             continue;
           }
           const qbPaid=qbTotal-qbBalance;
