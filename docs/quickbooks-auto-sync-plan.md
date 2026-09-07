@@ -132,7 +132,7 @@ browser merges that state on load, the way it already merges ledger rows.
 | Payments pulled | 0 |
 | PO-to-bill links | 1 (the canary) |
 
-### 1.6 The orphan-SKU ceiling (found 2026-09-07, unresolved)
+### 1.6 The orphan-SKU ceiling (found 2026-09-07, resolved the same night)
 
 Of the 2,134 distinct SKUs on the 2,156 pending purchase orders:
 
@@ -154,20 +154,18 @@ Effect on the PO stage: 987 of 2,156 pending POs have every item linked today;
 the remaining 1,169 are mostly waiting on orphan SKUs. Finishing the creatable
 175 gets the product gate to its ceiling, not to done.
 
-**Decision D9 (open) — how to handle orphan SKUs.** Two candidate fixes:
-
-- *Backfill*: create product records from the order lines (SKU, name, brand,
-  cost) for SKUs that are genuinely products, then let the normal product stage
-  create their QBO items. Correct if these are real catalogue gaps.
-- *Generic line*: post orphan lines against a shared NonInventory item
-  (e.g. `NSA Portal Purchase`, 51300) carrying the SKU in the line description.
-  Correct if these are one-off custom items that should never become catalogue
-  entries.
-
-The two are not exclusive: backfill the real products, generic-line the
-one-offs. Until D9 is decided the PO stage must ship with a cap that skips
-orphan-SKU POs rather than failing on them, and the digest must report the
-count so it does not silently stall at 45% coverage.
+**Decision D9 (made 2026-09-07) — account line, no items.** A sample of the
+orphan SKUs split cleanly: about half are SanMar/S&S blanks typed straight onto
+orders (Gildan 18500, PC54, ST350…), the other half one-off team-dealer items
+(`CUSTOM`, `MISC ADI`, style numbers with colour suffixes; 542 lines flagged
+`is_custom`). The owner's rule: QuickBooks holds items only for stock; every
+other line is a total in the right account. So the PO stage now posts any line
+whose SKU has no linked QBO item as **one `AccountBasedExpense` line to 51300
+Purchases**, the way decoration lines already post to 52000, with the SKU,
+description, quantity and rate in the line memo (capped under QBO's 4,000-char
+limit). No orphan SKU ever needs a product record or a QBO item, and the PO
+ceiling is gone. Read-back already verified account lines, so canary and batch
+receipts cover the new line unchanged.
 
 ---
 
@@ -353,9 +351,10 @@ duplicate preflight → write → API read-back → receipt → only then counte
 
 ### 5.4 Purchase orders
 - **Select:** grouped portal POs (`groupPortalPurchaseOrders`) with no
-  `qbPOMap` row, whose vendor **is already linked** and whose every SKU **is
-  already linked**. POs containing an orphan SKU (§1.6) are skipped and counted
-  in the digest, never retried in a loop, until decision D9 lands.
+  `qbPOMap` row, whose vendor **is already linked**. Lines with a linked QBO
+  item post as item lines; every other line rolls into one 51300 Purchases
+  account line (decision D9, §1.6). The digest reports how many lines went to
+  the account line so a catalogue gap is visible, not silent.
 - **Guards:** the preview's `blocked` reasons; header and line read-back.
 - **Writes:** QBO PurchaseOrder; ledger `qbPOMap`.
 - **Never:** create a vendor as a side effect (the browser engine does this
@@ -369,8 +368,18 @@ duplicate preflight → write → API read-back → receipt → only then counte
 ### 5.6 Invoices (posting)
 - **Select:** invoices with empty `qb_invoice_id`, created on or after the
   2026-09-01 cutover (61 today), customer linked, `NSA Portal Sales` verified.
-- **Guards:** taxable invoices stay blocked until the tax mapping is approved
-  (existing rule); discount and A/R account mappings must resolve.
+- **Tax (decision D6, made 2026-09-07):** manual sales tax in QuickBooks, the
+  portal supplies the amount. `buildQBInvoiceTaxPlan` runs before any write:
+  the customer's state must map to an approved liability account and a
+  verified rate in `qbTaxRateMap`, exactly one active QBO TaxCode must carry
+  that rate, Automated Sales Tax must be off, and the portal tax must equal
+  rate × taxable base to the cent (shipping untaxed unless only the
+  shipping-inclusive base reconciles). The invoice posts total − tax − shipping
+  as a TAX sales line, shipping as a NON line, and the tax through
+  `TxnTaxDetail.TotalTax`; the create response and the read-back are both
+  checked for the stored total and tax. Any miss blocks that invoice with the
+  reason.
+- **Guards:** discount and A/R account mappings must resolve.
 - **Writes:** QBO Invoice; `invoices.qb_invoice_id`; **a new ledger map
   `qbInvoiceMap`** so invoices get the same receipt every other entity has
   (closes the gap in §1.1).
@@ -394,7 +403,23 @@ duplicate preflight → write → API read-back → receipt → only then counte
 - **Note:** `VendorCredit` is still unhandled anywhere in the sync (Silver
   Screen has one for $1,539.47). Out of scope here; tracked separately.
 
-### 5.9 Stage isolation
+### 5.9 Inventory valuation (balance sheet)
+- **Why:** QBO items are NonInventory and invoices post totals, so quantity on
+  hand cannot live in QuickBooks. The balance sheet still needs the number.
+- **Select:** every `product_inventory` quantity, valued at size cost, else
+  catalog cost. Units with no cost are excluded and listed; negative counts are
+  reported and counted as zero. Team-store transfer stock has no unit cost yet
+  and is left out.
+- **Writes:** one JournalEntry per day, `INV-VAL-<date>`, that trues up 12000
+  Inventory Asset to the portal value against 50000 COGS (debit the asset when
+  stock grew, credit when it shrank, nothing when equal). Duplicate preflight
+  on the DocNumber; read-back of every line; receipt in `qbInventoryValuationMap`.
+- **Cadence:** nightly after the bills pull, so purchases received that day are
+  already in COGS before the true-up. Month-end is the number accounting uses.
+- **Open with accounting:** catalog cost vs. receiving-PO cost; whether
+  shrinkage should post to 52400 Inventory Loss rather than COGS.
+
+### 5.10 Stage isolation
 A failure inside a stage stops **that stage** at the failing record (matching
 today's batch behaviour) and the run continues to the next stage. A readiness
 failure stops the whole run before any stage.
@@ -480,11 +505,16 @@ finish line for the manual migration:
 
 - [ ] Product batches complete for the creatable PO-scoped SKUs (175 remain of
       2,134); the 9 blocked SKUs reviewed.
-- [ ] **Decision D9 on the 850 orphan SKUs (§1.6)** — backfill, generic line, or
-      both. Without it the PO stage tops out near 45% coverage.
-- [ ] Purchase-order canary passed (**Test 1 Purchase Order**), then PO batches.
+- [x] Decision D9 on the orphan SKUs (§1.6): account line to 51300, shipped.
+- [ ] Purchase-order canary passed (**Test 1 Purchase Order**) on a PO with
+      unlinked SKUs, so the account line is seen in QuickBooks; then PO batches.
 - [ ] Payment pull canary passed on one paid invoice.
-- [ ] Tax mapping decision from accounting (blocks 60 taxable invoices, $20,774).
+- [x] Tax decision (D6): manual rates, portal sends the amount. Shipped.
+- [ ] Sales tax switched on in QuickBooks as **manual rates** (not Automated
+      Sales Tax), then **Test Tax Rate** run for CA (all 60 pending taxable
+      invoices, $277,590, are California), then one taxable invoice canary.
+- [ ] Inventory valuation reviewed once and the first entry posted; the 87
+      unpriced stock rows given a cost, or accepted as excluded.
 - [ ] The 16 customer exceptions resolved or explicitly accepted as permanent
       (Liberty and Lincoln parents are also mis-parented; see session notes).
 - [ ] Visalia Youth Baseball Club: reactivate and run once with PR #2210 live
@@ -505,10 +535,11 @@ finish line for the manual migration:
 | D3 | Auto-imported vendors arrive with **Can be written POs** off? | Yes. A human turns it on for a real supplier; overhead never leaks into pickers. |
 | D4 | Products: auto-create only SKUs on purchase orders awaiting sync? | Yes. Never the 62k catalogue. |
 | D5 | Schedule: nightly full run at 09:00 UTC plus an hourly payments-only pull 06:00–18:00 PT? | Yes. Payments feed commissions and A/R; the pull is cheap and read-mostly. |
-| D6 | Taxable invoices stay blocked until accounting approves the state tax codes? | Yes. Existing rule; nothing changes until Andrea signs off. |
+| D6 | How does sales tax reach QuickBooks? | **Decided 2026-09-07:** manual sales tax, the portal sends the amount per invoice (§5.6). Automated Sales Tax is refused by the engine. |
 | D7 | May the server **create** customers (guard-clean rows only), or link-only with creations reported for a human? | Create. Tonight's 136 guard-clean creations produced zero duplicates; every creation is listed in the digest. |
 | D8 | Digest recipients | accounting@ and steve@, matching the bill anomaly digest. |
-| D9 | Orphan SKUs on purchase orders (§1.6): backfill product records, post against a shared generic item, or both? | Both, split by kind. Backfill genuine catalogue gaps; generic-line true one-offs. Needs a sample of the 850 to classify. |
+| D9 | Orphan SKUs on purchase orders (§1.6)? | **Decided 2026-09-07:** no items for them; one 51300 Purchases account line per PO carrying the SKUs in the memo. Items exist in QuickBooks only for stock. |
+| D10 | Inventory on the balance sheet? | **Decided 2026-09-07:** nightly valuation journal entry (§5.9), not QBO inventory-type items. Cost basis and shrinkage account still to confirm with accounting. |
 
 ---
 
