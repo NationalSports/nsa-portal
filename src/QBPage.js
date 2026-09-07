@@ -11,7 +11,7 @@ import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
 import { authFetch } from './utils';
-import { buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName, qbCustomerBatchReady, qbResponseErrorDetail } from './qbSyncEngine';
+import { QB_AST_OVERRIDE_TAX_CODE_NAME, buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName, qbCustomerBatchReady, qbResponseErrorDetail } from './qbSyncEngine';
 import {
   QB_ACCOUNT_MAPPING_DEFAULTS,
   QB_ACCOUNT_POSTING_MATRIX,
@@ -478,8 +478,22 @@ export default function QBPage(){
     const poAccountSkus=poId=>poPreviewById.get(String(poId))?.accountSkus||[];
     const selectedInvoiceCustomer=selectedCanaryInvoice&&cust.find(c=>c.id===selectedCanaryInvoice.customer_id);
     const invoiceCanaryTaxState=selectedCanaryInvoice?String(selectedInvoiceCustomer?.shipping_state||selectedInvoiceCustomer?.billing_state||'').trim().toUpperCase():'';
+    // A taxable invoice needs a mechanism to carry the portal's own tax amount,
+    // but which mechanism depends on the company file. Under manual sales tax
+    // that is the state's verified TaxRate; under Automated Sales Tax no manual
+    // rate can exist, so it is the CustomSalesTax override code instead. Gate on
+    // whichever one actually applies, read from the stored tax preflight.
+    const taxPreflight=qbConfig.taxPreflight||null;
+    const astTaxOn=!!taxPreflight?.partnerTaxEnabled;
+    const astOverrideCode=(taxPreflight?.codes||[]).find(c=>c&&c.active&&c.taxable
+      &&String(c.name||'').trim().toLowerCase()===QB_AST_OVERRIDE_TAX_CODE_NAME.toLowerCase());
+    const taxableInvoiceBlock=()=>{
+      if(!taxPreflight)return'Taxable invoice: read the sales-tax setup first (Settings tab) so the right tax mechanism is known';
+      if(astTaxOn)return astOverrideCode?'':'Taxable invoice: Automated Sales Tax is on but no active '+QB_AST_OVERRIDE_TAX_CODE_NAME+' code was found to carry the portal amount — re-read the sales-tax setup (Settings tab)';
+      return(qbConfig.qbTaxRateMap||{})[invoiceCanaryTaxState]?'':'Taxable invoice: run the tax-rate canary for '+(invoiceCanaryTaxState||'the customer state')+' first (Settings tab)';
+    };
     const invoiceCanaryBlock=selectedCanaryInvoice&&!_custQBMap[selectedCanaryInvoice.customer_id]?'Sync this invoice customer first'
-      :selectedCanaryInvoice&&safeNum(selectedCanaryInvoice.tax)>0&&!(qbConfig.qbTaxRateMap||{})[invoiceCanaryTaxState]?'Taxable invoice: run the tax-rate canary for '+(invoiceCanaryTaxState||'the customer state')+' first (Settings tab)':'';
+      :selectedCanaryInvoice&&safeNum(selectedCanaryInvoice.tax)>0?taxableInvoiceBlock():'';
     const soCanaryBlock=selectedCanarySO&&!_custQBMap[selectedCanarySO.customer_id]?'Sync this sales-order customer first':'';
     const poCanaryBlock=selectedCanaryPO?.invalidReason||'';
     const runCustomerCanary=async()=>{
