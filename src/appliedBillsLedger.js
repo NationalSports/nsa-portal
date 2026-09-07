@@ -105,6 +105,16 @@ export const isMissingLedgerColumnError = (e) => !!e && (e.code === '42703' || e
 // reached QuickBooks, shaped for the QBO-only backfill path: the portal writer
 // never runs for them (`_qbBackfill`), credits are excluded (they need the
 // credit path), and one row per vendor + document.
+// The history used to seed a QuickBooks backfill. Bill History merges the
+// server ledger against every local row, and a local row that shares a
+// Sports Inc document number hides the ledger row — including a stale
+// "Look at later" hold for a bill the ledger says was applied. Seeding with
+// only local rows that are complete (in the Portal or in QBO) keeps the
+// ledger as the source of record and still lets a QBO-complete local row
+// hide its already-synced twin.
+export const qboBackfillHistory = (savedBills, serverRows) =>
+  mergeServerBills((savedBills || []).filter((sb) => sb && (sb.portalStatus === 'success' || sb.qbStatus === 'success')), serverRows);
+
 export const buildQboBackfillRows = (histBills, normalize = (p) => p) => {
   const seen = new Set();
   const rows = [];
