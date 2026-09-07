@@ -246,3 +246,26 @@ describe('correcting a stale QBO total on a taxable invoice',()=>{
     expect(lastLog(run).details.join(' ')).toMatch(/total correction FAILED: Stale SyncToken \[code 5010\]/);
   });
 });
+
+describe('voided Portal invoices',()=>{
+  test('a voided invoice that reached QBO is reported and never paid or corrected',async()=>{
+    const invs=[{id:'INV2',display_id:'INV-2',customer_id:'C1',total:930,paid:930,status:'void',qb_invoice_id:'559'}];
+    let config={realm_id:'r1',preflight:{status:'success',realm_id:'r1'},mapping,initialMigrationApproved:true,custQBMap:{C1:'55'},syncLog:[]};
+    const qbApi=jest.fn(async(action,args={})=>{
+      if(action==='query'){
+        const q=args.query||'';
+        if(q.includes('FROM Account'))return{QueryResponse:{Account:accounts}};
+        if(q.includes('FROM Item'))return{QueryResponse:{Item:[{Id:'7',Name:'NSA Portal Sales',Type:'Service',Active:true,IncomeAccountRef:{value:'10'}}]}};
+        return{QueryResponse:{}};
+      }
+      throw new Error('Unexpected '+action);
+    });
+    const engine=createQBSyncEngine({cust:[{id:'C1',name:'Club'}],sos:[],invs,prod:[],vend:[],qbApi,qbConfig:config,
+      persistQbLink:jest.fn(async()=>{}),nf:jest.fn(),setQbSyncing:jest.fn(),setInvs:jest.fn(),setQBConfig:fn=>{config=fn(config);}});
+    await engine.syncPaidFromQB();
+    const log=(config.syncLog||[]).find(l=>l.type==='paid_sync');
+    expect(log.details.join(' ')).toMatch(/INV-2 — VOID in the Portal but posted as QBO Invoice #559; void it in QuickBooks, nothing was sent/);
+    expect(log.status).toBe('partial');
+    expect(qbApi.mock.calls.some(([a])=>a==='upsert_payment'||a==='upsert_invoice')).toBe(false);
+  });
+});

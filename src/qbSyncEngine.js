@@ -434,6 +434,10 @@ export function buildQBBillPOReplacement({bill, purchaseOrder}) {
 // described for state sales tax: "25200–25230 state subaccounts, Credit, portal
 // amount". QBO's own Sales Tax Center will not see this tax; returns are filed
 // from the portal, which is the source of truth for the figure anyway.
+export function isVoidInvoice(inv) {
+  return String(inv?.status || '').toLowerCase() === 'void';
+}
+
 export function portalSalesTaxItemName(state) {
   return 'NSA Portal Sales Tax — ' + String(state || '').trim().toUpperCase();
 }
@@ -461,7 +465,10 @@ export function buildQBInvoiceTaxPlan({ invoice, state, taxRateMap = {}, taxCode
     taxCodeId = String(matches[0].Id);
   }
   const rate = safeNum(invoice?.tax_rate);
-  if (!(rate > 0)) throw new Error('invoice has tax but no tax rate to reconcile it against');
+  // The rate is only the check figure. Manual mode needs it because the amount
+  // goes through a QBO tax code; line mode posts the stored figure as collected
+  // and reports that no rate was on the invoice to check it against.
+  if (!(rate > 0) && !taxLine) throw new Error('invoice has tax but no tax rate to reconcile it against');
   const total = cents(invoice?.total), shipping = cents(invoice?.shipping);
   // Shipping is usually untaxed, but some customers are taxed on it. Let the
   // portal's own arithmetic say which: the tax must equal rate × one of the two
@@ -470,8 +477,8 @@ export function buildQBInvoiceTaxPlan({ invoice, state, taxRateMap = {}, taxCode
   const taxableExShipping = cents(total - tax - shipping), taxableIncShipping = cents(total - tax);
   const shippingTaxable = !reconciles(taxableExShipping) && shipping > 0 && reconciles(taxableIncShipping);
   const taxable = shippingTaxable ? taxableIncShipping : taxableExShipping;
-  const reconciled = reconciles(taxable);
-  const ratePct = (rate * 100).toFixed(3).replace(/\.?0+$/, '');
+  const reconciled = rate > 0 && reconciles(taxable);
+  const ratePct = rate > 0 ? (rate * 100).toFixed(3).replace(/\.?0+$/, '') : '';
   // Manual mode routes the figure through a QBO tax code, where a mismatch would
   // misstate the return, so it stays a hard block. Line mode posts the stored
   // dollar figures — what the customer was billed and what was collected is
@@ -949,7 +956,7 @@ export function createQBSyncEngine(ctx){
         const taxPlan=buildQBInvoiceTaxPlan({invoice:inv,state:c?.shipping_state||c?.billing_state,taxRateMap:qbConfig.qbTaxRateMap||{},taxCodes:taxSetup.taxCodes,partnerTaxEnabled:taxSetup.partnerTaxEnabled});
         return{taxPlan,taxItemId:await resolveTaxItem(taxPlan)};
       };
-      const warning=(inv,plan)=>(inv.display_id||inv.id)+' — WARNING: tax $'+plan.tax.toFixed(2)+' posted as collected; '+plan.ratePct+'% of $'+plan.taxable.toFixed(2)+' would be $'+plan.expectedTax.toFixed(2);
+      const warning=(inv,plan)=>(inv.display_id||inv.id)+' — WARNING: tax $'+plan.tax.toFixed(2)+' posted as collected; '+(plan.ratePct?plan.ratePct+'% of $'+plan.taxable.toFixed(2)+' would be $'+plan.expectedTax.toFixed(2):'the invoice has no tax rate to check it against');
       return{resolve,warning};
     };
 
@@ -960,7 +967,8 @@ export function createQBSyncEngine(ctx){
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:canary?'invoice_canary':'invoices',status:'success',details:[]};
       let synced=0;
-      const allUnsyncedInvs=invs.filter(i=>!i.qb_invoice_id);
+      // A voided invoice is not a receivable; it never posts, whatever its total.
+      const allUnsyncedInvs=invs.filter(i=>!i.qb_invoice_id&&!isVoidInvoice(i));
       const invoiceBatch=rotatingBatch(allUnsyncedInvs,qbConfig._invoiceSyncOffset,QB_SYNC_BATCH_SIZE);
       const unsyncedInvs2=canary?allUnsyncedInvs.filter(i=>String(i.id)===canaryInvoiceId):invoiceBatch.items;
       if(canary&&unsyncedInvs2.length!==1){nf('Choose exactly one pending portal invoice','error');setQbSyncing(false);return}
@@ -1080,7 +1088,12 @@ export function createQBSyncEngine(ctx){
       const log={ts:new Date().toLocaleString(),type:'paid_sync',status:'success',details:[]};
       let updated=0;
       // Include all QB-linked invoices (not just unpaid) so portal-paid invoices can push to QB
-      const allLinkedInvs=invs.filter(i=>i.qb_invoice_id);
+      // A voided Portal invoice that already reached QBO is reported, never paid
+      // or corrected: the QBO invoice must be voided by hand.
+      const voidLinked=invs.filter(i=>i.qb_invoice_id&&isVoidInvoice(i));
+      voidLinked.forEach(i=>log.details.push((i.display_id||i.id)+' — VOID in the Portal but posted as QBO Invoice #'+i.qb_invoice_id+'; void it in QuickBooks, nothing was sent'));
+      if(voidLinked.length)log.status='partial';
+      const allLinkedInvs=invs.filter(i=>i.qb_invoice_id&&!isVoidInvoice(i));
       const paidOffset=Math.min(Math.max(0,Number(qbConfig._paidSyncOffset)||0),Math.max(0,allLinkedInvs.length-1));
       const linkedInvs=[...allLinkedInvs.slice(paidOffset),...allLinkedInvs.slice(0,paidOffset)].slice(0,QB_SYNC_BATCH_SIZE);
       const nextPaidOffset=allLinkedInvs.length?(paidOffset+linkedInvs.length)%allLinkedInvs.length:0;

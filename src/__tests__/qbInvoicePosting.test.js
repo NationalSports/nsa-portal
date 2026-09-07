@@ -1,4 +1,4 @@
-import { buildQBInvoicePostingLines, buildQBInvoiceTaxPlan, buildQBInvoiceTxnTaxDetail, portalSalesTaxItemName, qbResponseErrorDetail } from '../qbSyncEngine';
+import { buildQBInvoicePostingLines, buildQBInvoiceTaxPlan, buildQBInvoiceTxnTaxDetail, isVoidInvoice, portalSalesTaxItemName, qbResponseErrorDetail } from '../qbSyncEngine';
 
 describe('QuickBooks invoice account routing', () => {
   test('posts ordinary sales entirely to the 40000-linked item', () => {
@@ -167,5 +167,29 @@ describe('QBO error surfacing', () => {
   test('still returns the plain fallback when there is nothing to report', () => {
     expect(qbResponseErrorDetail({})).toBe('unknown');
     expect(qbResponseErrorDetail(null)).toBe('unknown');
+  });
+});
+
+describe('isVoidInvoice',()=>{
+  test('only a void status counts, case-insensitively',()=>{
+    expect(isVoidInvoice({status:'void'})).toBe(true);
+    expect(isVoidInvoice({status:'VOID'})).toBe(true);
+    expect(isVoidInvoice({status:'paid'})).toBe(false);
+    expect(isVoidInvoice({})).toBe(false);
+    expect(isVoidInvoice(null)).toBe(false);
+  });
+});
+
+describe('line mode with no tax rate on the invoice',()=>{
+  const inv={id:'INV-63086',total:352.73,tax:31.33,shipping:0,tax_rate:0,line_items:[]};
+  test('posts the stored tax as collected and says no rate was there to check',()=>{
+    const plan=buildQBInvoiceTaxPlan({invoice:inv,state:'CA',partnerTaxEnabled:true});
+    expect(plan).toMatchObject({tax:31.33,taxable:321.4,taxLine:true,reconciled:false,ratePct:''});
+    const lines=buildQBInvoicePostingLines({invoice:inv,salesItemId:'7',discountAccountRef:{value:'11'},description:'Invoice INV-63086',taxPlan:plan,taxItemId:'tax-ca'});
+    expect(lines[lines.length-1]).toMatchObject({Amount:31.33,Description:'Sales tax — CA (as collected)'});
+  });
+  test('manual mode still refuses without a rate',()=>{
+    expect(()=>buildQBInvoiceTaxPlan({invoice:inv,state:'CA',taxRateMap:{CA:'r1'},taxCodes:[{Id:'t1',Active:true,SalesTaxRateList:{TaxRateDetail:[{TaxRateRef:{value:'r1'}}]}}],partnerTaxEnabled:false}))
+      .toThrow(/no tax rate to reconcile/);
   });
 });
