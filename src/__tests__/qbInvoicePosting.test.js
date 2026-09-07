@@ -34,7 +34,7 @@ const taxRateMap={CA:'TR-CA'};
 describe('QuickBooks invoice sales tax plan', () => {
   test('reconciles the portal tax against the rate with shipping untaxed', () => {
     const plan=buildQBInvoiceTaxPlan({invoice:{total:3083.2,tax:237.17,tax_rate:0.0875,shipping:135.53},state:'ca',taxRateMap,taxCodes});
-    expect(plan).toEqual({state:'CA',tax:237.17,taxable:2710.5,shipping:135.53,shippingTaxable:false,taxCodeId:'TC-CA',rateId:'TR-CA',taxLine:false,taxAccountKey:''});
+    expect(plan).toEqual({state:'CA',tax:237.17,taxable:2710.5,shipping:135.53,shippingTaxable:false,taxCodeId:'TC-CA',rateId:'TR-CA',taxLine:false,taxAccountKey:'',reconciled:true,expectedTax:237.17,ratePct:'8.75'});
     expect(buildQBInvoiceTxnTaxDetail(plan)).toEqual({TxnTaxCodeRef:{value:'TC-CA'},TotalTax:237.17,
       TaxLine:[{Amount:237.17,DetailType:'TaxLineDetail',TaxLineDetail:{TaxRateRef:{value:'TR-CA'},PercentBased:false,NetAmountTaxable:2710.5}}]});
   });
@@ -105,8 +105,26 @@ describe('Automated Sales Tax — tax as a liability line', () => {
       .toThrow(/sales-tax item for CA is required/);
   });
 
-  test('still reconciles the amount against the portal rate before posting', () => {
-    expect(()=>buildQBInvoiceTaxPlan({invoice:{...inv,tax:999.99},state:'CA',partnerTaxEnabled:true})).toThrow(/does not reconcile/);
+  test('posts a non-reconciling tax as collected and flags it, instead of refusing', () => {
+    // INV-1029 shape: stored tax does not equal rate × base. What was collected is what is owed.
+    const drifted={total:1000,tax:29.51,tax_rate:0.0975,shipping:0};
+    const p=buildQBInvoiceTaxPlan({invoice:drifted,state:'CA',partnerTaxEnabled:true});
+    expect(p).toMatchObject({tax:29.51,taxLine:true,reconciled:false,ratePct:'9.75'});
+    expect(p.expectedTax).toBe(94.62); // 9.75% of 970.49
+    const lines=buildQBInvoicePostingLines({invoice:drifted,salesItemId:'sales',description:'INV-1029',taxPlan:p,taxItemId:'tax-ca'});
+    expect(lines[1].Amount).toBe(29.51);
+    expect(lines[1].Description).toBe('Sales tax — CA (as collected)');
+    expect(Math.round(lines.reduce((a,l)=>a+l.Amount,0)*100)/100).toBe(1000);
+  });
+
+  test('a reconciling line-mode tax still carries the rate × base description', () => {
+    expect(plan()).toMatchObject({reconciled:true,ratePct:'8.75'});
+  });
+
+  test('manual mode still refuses a tax that does not reconcile', () => {
+    const manual={Id:'9',Name:'CA Sales Tax',Taxable:true,Active:true,SalesTaxRateList:{TaxRateDetail:[{TaxRateRef:{value:'77'}}]}};
+    expect(()=>buildQBInvoiceTaxPlan({invoice:{...inv,tax:999.99},state:'CA',taxRateMap:{CA:'77'},taxCodes:[manual],partnerTaxEnabled:false}))
+      .toThrow(/does not reconcile/);
   });
 
   test('still refuses a state with no approved sales-tax account', () => {

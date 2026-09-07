@@ -470,8 +470,16 @@ export function buildQBInvoiceTaxPlan({ invoice, state, taxRateMap = {}, taxCode
   const taxableExShipping = cents(total - tax - shipping), taxableIncShipping = cents(total - tax);
   const shippingTaxable = !reconciles(taxableExShipping) && shipping > 0 && reconciles(taxableIncShipping);
   const taxable = shippingTaxable ? taxableIncShipping : taxableExShipping;
-  if (!reconciles(taxable)) throw new Error('tax $' + tax.toFixed(2) + ' does not reconcile with ' + (rate * 100).toFixed(3).replace(/\.?0+$/, '') + '% of the taxable amount; not posted');
-  return { state: code, tax, taxable, shipping, shippingTaxable, taxCodeId, rateId, taxLine, taxAccountKey };
+  const reconciled = reconciles(taxable);
+  const ratePct = (rate * 100).toFixed(3).replace(/\.?0+$/, '');
+  // Manual mode routes the figure through a QBO tax code, where a mismatch would
+  // misstate the return, so it stays a hard block. Line mode posts the stored
+  // dollar figures — what the customer was billed and what was collected is
+  // what is owed — so a mismatch is reported, not refused: the 55 drifted
+  // invoices reach QuickBooks at the amounts that actually changed hands, and
+  // the log names each one with the figure the rate would have produced.
+  if (!reconciled && !taxLine) throw new Error('tax $' + tax.toFixed(2) + ' does not reconcile with ' + ratePct + '% of the taxable amount; not posted');
+  return { state: code, tax, taxable, shipping, shippingTaxable, taxCodeId, rateId, taxLine, taxAccountKey, reconciled, expectedTax: cents(taxable * rate), ratePct };
 }
 
 export function buildQBInvoiceTxnTaxDetail(plan) {
@@ -515,7 +523,10 @@ export function buildQBInvoicePostingLines({ invoice, salesItemId, discountAccou
   });
   if (lineMode) lines.push({
     DetailType:'SalesItemLineDetail', Amount:tax,
-    Description:'Sales tax — ' + taxPlan.state + ' ' + (safeNum(invoice?.tax_rate) * 100).toFixed(3).replace(/\.?0+$/, '') + '% on $' + cents(taxPlan.taxable).toFixed(2),
+    // A rate × base claim only goes on the invoice when it is true.
+    Description:taxPlan.reconciled===false
+      ? 'Sales tax — ' + taxPlan.state + ' (as collected)'
+      : 'Sales tax — ' + taxPlan.state + ' ' + taxPlan.ratePct + '% on $' + cents(taxPlan.taxable).toFixed(2),
     SalesItemLineDetail:{Qty:1,UnitPrice:tax,ItemRef:{value:String(taxItemId),name:portalSalesTaxItemName(taxPlan.state)},TaxCodeRef:{value:'NON'}},
   });
   if (discount > 0) lines.push({
@@ -954,6 +965,7 @@ export function createQBSyncEngine(ctx){
             taxPlan=buildQBInvoiceTaxPlan({invoice:inv,state:c?.shipping_state||c?.billing_state,taxRateMap:qbConfig.qbTaxRateMap||{},taxCodes:taxSetup.taxCodes,partnerTaxEnabled:taxSetup.partnerTaxEnabled});
           }catch(e){log.details.push((inv.display_id||inv.id)+' — BLOCKED: $'+safeNum(inv.tax).toFixed(2)+' sales tax — '+e.message);log.status='partial';continue}
         }
+        if(taxPlan?.reconciled===false)log.details.push((inv.display_id||inv.id)+' — WARNING: tax $'+taxPlan.tax.toFixed(2)+' posted as collected; '+taxPlan.ratePct+'% of $'+taxPlan.taxable.toFixed(2)+' would be $'+taxPlan.expectedTax.toFixed(2));
         let taxItemId=null;
         if(taxPlan?.taxLine){
           try{taxItemId=await resolveTaxItem(taxPlan)}
