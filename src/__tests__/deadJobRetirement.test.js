@@ -57,7 +57,7 @@ jest.mock('@supabase/supabase-js', () => {
       getSession: () => Promise.resolve({ data: { session: null } }),
       onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
     },
-    rpc: () => Promise.resolve({ data: null, error: null }),
+    rpc: (name,args) => require('../testHelpers/atomicSaveRpc')(state,name,args),
   };
   return { createClient: () => client, __mockState: state };
 });
@@ -86,7 +86,7 @@ const baseRules = ({ jobsInDb, liveArt, liveItems, liveDecos }) => [
   // identity probe: same created_at → same document, no collision handling engaged
   { table: 'sales_orders', sel: 'updated_at,deco_pos,created_at,status,po_number', resp: { data: { updated_at: 'x', deco_pos: null, created_at: '5/20/2026, 11:04:22 AM' }, error: null } },
   // pre-save reads of existing children (all empty — nothing to guard)
-  { table: 'so_items', sel: 'id,item_index,sku,color,product_id', resp: { data: [], error: null } },
+  { table: 'so_items', sel: 'id,line_id,item_index,sku,color,product_id', resp: { data: [], error: null } },
   { table: 'so_art_files', sel: '*', resp: { data: [], error: null } },
   // the wipe branch's own read of existing jobs
   { table: 'so_jobs', sel: 'id,key,art_status,art_file_id,_art_ids,items', resp: { data: jobsInDb, error: null } },

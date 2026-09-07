@@ -119,11 +119,18 @@ def load_csv(path: Path):
     with path.open(newline="", encoding="utf-8-sig") as f:
         sniff = f.read(4096)
         f.seek(0)
+        # Sniff ONLY the delimiter. csv.Sniffer also guesses quoting, and on these
+        # exports it returns doublequote=False -- which silently mis-splits every
+        # field holding an escaped "" (size runs like 5/XXL", inch marks). The row
+        # count still matches, so the damage lands as columns shifted one place
+        # left on ~1.2k rows rather than a parse error: item ends up holding a
+        # quantity, amount lands NULL. Excel quoting is what NetSuite writes, so
+        # pin it instead of letting the sniffer vote.
         try:
-            dialect = csv.Sniffer().sniff(sniff, delimiters=",\t;")
+            delimiter = csv.Sniffer().sniff(sniff, delimiters=",\t;").delimiter
         except csv.Error:
-            dialect = csv.excel
-        reader = csv.reader(f, dialect=dialect)
+            delimiter = ","
+        reader = csv.reader(f, delimiter=delimiter, quotechar='"', doublequote=True)
         raw_headers = next(reader)
         headers = _dedupe_headers(raw_headers)
         out = []
@@ -236,11 +243,36 @@ def emit_sql(merged: list[dict], out_path: Path):
 
     lines = ["BEGIN;"]
     if txn_ids:
+        # Snapshot the customer link of every transaction this batch replaces.
+        # The insert below always lands customer_id NULL and the nsid join
+        # re-derives it -- so a link that came from anywhere ELSE (a name match, a
+        # manual fix, or a customer whose NetSuite internal id has since changed)
+        # is silently dropped, orphaning those lines off the customer page. Seen
+        # for real: NetSuite moved INV61856 to customer 4170 and SO135596 to 5341,
+        # neither of which exists here, so 7 previously-linked lines went NULL.
+        # Restored after the join and only where it is still NULL, so a fresh nsid
+        # match always wins; the snapshot is just a floor, never an override.
+        # Ambiguous transactions (lines disagreeing on the customer) are left out
+        # rather than picking a side.
+        lines.append(
+            "CREATE TEMP TABLE _prior_links ON COMMIT DROP AS\n"
+            "SELECT netsuite_internal_id, customer_id\n"
+            "FROM customer_invoice_lines WHERE false;"
+        )
         # Chunk the IN-list so we don't blow past statement size limits on
         # very large batches.
         for i in range(0, len(txn_ids), 5000):
             chunk = txn_ids[i:i + 5000]
             in_list = ", ".join(sql_str(t) for t in chunk)
+            lines.append(
+                f"INSERT INTO _prior_links (netsuite_internal_id, customer_id)\n"
+                f"SELECT netsuite_internal_id, min(customer_id)\n"
+                f"FROM customer_invoice_lines\n"
+                f"WHERE netsuite_internal_id IN ({in_list})\n"
+                f"  AND customer_id IS NOT NULL\n"
+                f"GROUP BY netsuite_internal_id\n"
+                f"HAVING count(DISTINCT customer_id) = 1;"
+            )
             lines.append(
                 f"DELETE FROM customer_invoice_lines "
                 f"WHERE netsuite_internal_id IN ({in_list});"
@@ -286,6 +318,16 @@ FROM customers c
 WHERE cil.customer_id IS NULL
   AND cil.raw_customer_nsid IS NOT NULL
   AND c.netsuite_internal_id = cil.raw_customer_nsid;
+""")
+    # Fall back to the pre-delete link for anything the join above could not
+    # resolve, so re-importing a transaction never costs it a customer it already had.
+    if txn_ids:
+        lines.append("""
+UPDATE customer_invoice_lines cil
+SET customer_id = p.customer_id
+FROM _prior_links p
+WHERE cil.customer_id IS NULL
+  AND cil.netsuite_internal_id = p.netsuite_internal_id;
 """)
     lines.append("COMMIT;")
     out_path.parent.mkdir(parents=True, exist_ok=True)

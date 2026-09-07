@@ -41,6 +41,37 @@ The QBO export currently classifies 51300 Purchases as **Expenses / Supplies & M
 
 This follows accounting's instruction that QBO will not track inventory items or per-size stock and that purchases go straight to 51300 under COGS.
 
+## Live sales-tax configuration — September 6, 2026
+
+Read read-only from the connected company, superseding the assumptions below drawn from
+the CSV export. **Automated Sales Tax is not enabled and sales tax is not in use.** The
+company holds 3 tax codes (`TAX`, `NON`, `CustomSalesTax`) and **zero tax rates and zero
+tax agencies**. The state liability accounts exist on the chart while the sales-tax
+feature behind them does not, so a taxable invoice has nothing to attach tax to.
+
+Exposure since the cutover: 60 invoices carrying $20,774 of collected tax on $277,590 of
+invoices, in two states only — 56 California ($20,455) and 4 Washington ($319). Portal
+customers carry 2,040 active tax rates spanning 39 distinct values from 6.2% to 11.25%.
+
+The decision was made not to enable Automated Sales Tax. It computes its own tax from the
+ship-to address, which introduces a second calculator that will disagree with what was
+actually billed and collected, and enabling it is understood to be irreversible. Manual
+rates keep the portal as the single source of truth.
+
+Two things about QBO manual sales tax are unknown until real records exist, and the setup
+canary is built to discover rather than assume them:
+
+1. **Which liability account QBO uses.** The approved matrix expects 25200 and 25230, but
+   QBO manual sales tax posts through an agency-managed account it assigns. The canary
+   reports the approved account alongside what QBO actually created; the first taxable
+   invoice must confirm which account moves before the matrix is relied upon.
+2. **Whether one rate per state can carry a portal-computed amount.** The portal holds 39
+   distinct local rates, so a single state rate cannot match every invoice arithmetically.
+   Whether QBO honours a supplied `TxnTaxDetail` total against that rate is untested.
+
+Washington is the deliberate first subject: 4 invoices and $319, against California's 56
+and $20,455.
+
 ## Sales-tax gate
 
 The state account numbers are approved, but a taxable QBO invoice still needs the live company's QBO TaxCode/TxnTaxDetail configuration. Until the live Sales Tax Center IDs and behavior are inspected, taxable invoice writes remain blocked. The sync must not book tax as 40000 revenue or fake it as a normal line to 25201.

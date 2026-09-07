@@ -12,7 +12,7 @@
  * pure logic over its arguments + module state.
  */
 import {
-  _diffCmp, _soDiffCmp, _estDiffCmp, _prodDiffCmp, _buildInvMergeRows,
+  _diffCmp, _soDiffCmp, _estDiffCmp, _prodDiffCmp, _invDiffCmp, _buildInvMergeRows,
   _sanitizeArtRow, _unionArtFiles, _mergeArtConflict, _resolveArtRows, _adoptResolvedArtRow,
   _matchRestoreItem, _queuedEntitySave, _isNetErr, _retryNet,
   _lsSet, _setOnCacheFullChange, _setLsQuotaWarned,
@@ -31,6 +31,15 @@ describe('diff comparators (phantom-save guards)', () => {
     expect(_diffCmp(a)).not.toBe(_diffCmp({ ...a, memo: 'edited' }));
   });
 
+  test('_invDiffCmp ignores attached credit memo history but sees invoice edits', () => {
+    const invoice = { id: 'INV-1', memo: 'original', credit_memos: [] };
+    expect(_invDiffCmp(invoice)).toBe(_invDiffCmp({
+      ...invoice,
+      credit_memos: [{ id: 'CM-1001', amount: 20 }],
+    }));
+    expect(_invDiffCmp(invoice)).not.toBe(_invDiffCmp({ ...invoice, memo: 'changed' }));
+  });
+
   test('_soDiffCmp ignores per-item session scalars but sees item content', () => {
     const so = (extra) => ({
       id: 'SO-1', memo: 'm', _version: 1, updated_at: 't',
@@ -40,6 +49,8 @@ describe('diff comparators (phantom-save guards)', () => {
     expect(_soDiffCmp(so({ _sizeCosts: { M: 4 } }))).toBe(_soDiffCmp(so({ _sizeCosts: { M: 9 } })));
     // real item content still counts
     expect(_soDiffCmp(so({}))).not.toBe(_soDiffCmp({ ...so({}), items: [{ sku: 'TEE', sizes: { M: 3 }, decorations: [], pick_lines: [], po_lines: [] }] }));
+    // SO-only invoice aliases are durable content and must trigger persistence.
+    expect(_soDiffCmp(so({}))).not.toBe(_soDiffCmp(so({ invoice_line_keys: ['OLD|Blue|0'] })));
     // decorations / pick / po lines are compared whole
     expect(_soDiffCmp(so({ pick_lines: [{ M: 1 }] }))).not.toBe(_soDiffCmp(so({ pick_lines: [] })));
   });
@@ -267,6 +278,17 @@ describe('_queuedEntitySave', () => {
       _queuedEntitySave('B', { v: 'b' }, async (d) => { saved.push(d.v); }),
     ]);
     expect(saved.sort()).toEqual(['a', 'b']);
+  });
+
+  test('an exact bill-attempt wrapper cannot be replaced by a later ordinary autosave', async () => {
+    let release;const gate=new Promise(r=>{release=r});const saved=[];
+    const ordinary=async d=>{saved.push(d.v);if(d.v==='block')await gate;return true};
+    const exact=snapshot=>ordinary(snapshot);// same unique wrapper used by _dbSaveSO exactAttempt
+    const first=_queuedEntitySave('E-exact',{v:'block'},ordinary);
+    const bill=_queuedEntitySave('E-exact',{v:'bill'},exact);
+    const autosave=_queuedEntitySave('E-exact',{v:'editor'},ordinary);
+    release();await expect(Promise.all([first,bill,autosave])).resolves.toEqual([true,true,true]);
+    expect(saved).toEqual(['block','bill','editor']);
   });
 });
 

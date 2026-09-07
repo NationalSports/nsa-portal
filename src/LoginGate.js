@@ -1,5 +1,6 @@
 /* eslint-disable */
 import React, { useState, useEffect } from 'react';
+import { withStartupDeadline } from './lib/startupDeadline';
 import { NSA } from './constants';
 
 const ADMIN_PW_HASH=(process.env.REACT_APP_ADMIN_PW_HASH||'').trim();
@@ -34,14 +35,18 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
       setSessionChecked(true);
       return;
     }
+    let cancelled=false;
     (async()=>{
-      const session=await _sbGetSession();
-      if(session?.user){
-        const profile=await _sbGetMyProfile();
-        if(profile){onLogin({...profile,_authSession:true});return}
-      }
-      setSessionChecked(true);
+      try{
+        const profile=await withStartupDeadline(async()=>{
+          const session=await _sbGetSession();
+          return session?.user?await _sbGetMyProfile():null;
+        },'Restoring your session');
+        if(!cancelled&&profile)onLogin({...profile,_authSession:true});
+      }catch(err){if(!cancelled)setError(err.message||'Could not restore your session. Please sign in again.')}
+      finally{if(!cancelled)setSessionChecked(true)}
     })();
+    return()=>{cancelled=true};
   },[]);// eslint-disable-line
 
   const handleLogin=async(e)=>{
@@ -65,27 +70,29 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
         // Check that this email belongs to a team member
         const member=REPS.find(r=>r.email&&r.email.toLowerCase()===email.trim().toLowerCase());
         if(!member){setError('No team member found with this email. Contact your admin.');return}
-        const res=await _sbSignUp(email.trim(),password);
+        const res=await withStartupDeadline(()=>_sbSignUp(email.trim(),password),'Account setup');
         if(res.error){setError(res.error);return}
         // Link auth account to team member
-        if(res.user&&member)await _sbLinkTeamAuth(member.id,res.user.id);
+        if(res.user&&member)await withStartupDeadline(()=>_sbLinkTeamAuth(member.id,res.user.id),'Linking your staff profile');
         // Try auto sign-in; if email confirmation required, show confirm screen
-        const signIn=await _sbSignIn(email.trim(),password);
+        const signIn=await withStartupDeadline(()=>_sbSignIn(email.trim(),password),'Signing in');
         if(signIn.error){setMode('confirm');return}
         onLogin({...member,_authSession:true});
       }else{
         // Normal sign-in
-        const res=await _sbSignIn(email.trim(),password);
+        const res=await withStartupDeadline(()=>_sbSignIn(email.trim(),password),'Signing in');
         if(res.error){setError(res.error.includes('Email not confirmed')?'Please check your email to confirm your account before signing in.':res.error);return}
         // Look up team member profile
-        const profile=await _sbGetMyProfile();
+        const profile=await withStartupDeadline(()=>_sbGetMyProfile(),'Loading your staff profile');
         if(profile){onLogin({...profile,_authSession:true})}
         else{
           // Try to find and link by email
           const member=REPS.find(r=>r.email&&r.email.toLowerCase()===email.trim().toLowerCase());
           if(member&&res.user){
-            await _sbLinkTeamAuth(member.id,res.user.id);
-            onLogin({...member,_authSession:true});
+            await withStartupDeadline(()=>_sbLinkTeamAuth(member.id,res.user.id),'Linking your staff profile');
+            const linkedProfile=await withStartupDeadline(()=>_sbGetMyProfile(),'Loading your staff profile');
+            if(!linkedProfile){setError('Your staff profile could not be verified after linking. Please contact your admin.');return}
+            onLogin({...linkedProfile,_authSession:true});
           }else{
             setError('No team member profile found for this account');return;
           }

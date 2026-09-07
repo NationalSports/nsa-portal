@@ -67,6 +67,13 @@ describe('skusMissingMockups — reused art with only a proof needs setup, not r
     expect(skusMissingMockups(job, so)).toEqual(['A2009']);
   });
 
+  test('a screen-print proof in prod_files counts as the approval mockup', () => {
+    const art = { id: 'af-proof', deco_type: 'screen_print', item_mockups: {}, mockup_files: [], files: [], prod_files: [{ url: 'http://x/garment-proof.png' }] };
+    const { job, so } = makeCase(art);
+    job.deco_type = 'screen_print';
+    expect(skusMissingMockups(job, so)).toEqual([]);
+  });
+
   test('an empty reused clone (no mock of any kind) reports the garment missing', () => {
     const art = { id: 'af-empty', deco_type: 'screen_print', item_mockups: {}, mockup_files: [], files: [], prod_files: [] };
     const { job, so } = makeCase(art);

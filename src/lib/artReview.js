@@ -22,7 +22,9 @@
 // on the dashboard (the derived array the workboard reads). We do not choose for them.
 
 import { closeOpenArtRequests } from './artRequests';
-import { markDstsStale, prodFilesStatusFor, artProdFilesConfirmed, artDstOnFile } from '../constants';
+import {
+  markDstsStale, prodFilesStatusFor, artProdFilesConfirmed, artDstOnFile, pendingProdFileGroups,
+} from '../constants';
 
 // Where an approval lands. 'art_complete' ONLY when every live art file already carries a
 // CONFIRMED production separation (or a live .dst — approving IS the sign-off on the current
@@ -37,11 +39,18 @@ import { markDstsStale, prodFilesStatusFor, artProdFilesConfirmed, artDstOnFile 
 // Callers that can prompt — the order page — may instead ask the rep which of the two it is.
 // Callers that can't must take the conservative branch this returns: a job that still owes
 // separations landing in art_complete is how unprintable work reaches the floor.
+// `deco` is the job's primary method and only decides the fallback: the stage returned is the one
+// belonging to a design that is ACTUALLY still owed. On a mixed job (screen-printed front + DTF
+// sleeve) the primary can easily be the method that is already done, which parked the job in
+// "Order DTF Transfers" while what it really wanted was the print separation (SO-2145).
 export function artApproveTarget(artFiles, deco) {
   const files = artFiles || [];
   const allConfirmed = files.length === 0
     || files.every((a) => !!a && (artProdFilesConfirmed(a) || artDstOnFile(a)));
-  return { allConfirmed, targetStatus: allConfirmed ? 'art_complete' : prodFilesStatusFor(deco) };
+  if (allConfirmed) return { allConfirmed, targetStatus: 'art_complete' };
+  const pending = pendingProdFileGroups(files, deco,
+    (a) => artProdFilesConfirmed(a) || artDstOnFile(a));
+  return { allConfirmed, targetStatus: prodFilesStatusFor(pending.length ? pending[0].deco : deco) };
 }
 
 // Every path that pulls art back for rework must clear the same approval residue — one shared
@@ -63,7 +72,10 @@ export const ART_PULLBACK_CLEARS = {
 // confirmed separation is the failure this split exists to prevent.
 //
 // stampProd sets prod_files_attached on the approved art so a confirmed job stays out of the
-// seps stage on the next buildJobs pass.
+// seps stage on the next buildJobs pass. `true` stamps every id; an ARRAY stamps only those ids
+// and leaves the rest unconfirmed. The array form is what a mixed-method job needs: one garment
+// can carry a screen-printed front and a DTF sleeve, and confirming the DTF's films must never
+// also claim the print separation is done (SO-2145). Anything else stamps nothing.
 //
 // coach_rejected is cleared in the SAME write as the status: an approved job still flagged
 // rejected is the SO-1199 contradictory shape (rejections[] keeps the history either way).
@@ -77,9 +89,10 @@ export function approveArtOnSO(so, { match, artIds, targetStatus, stampProd, upd
       art_requests: closeOpenArtRequests(jj.art_requests || []),
     }
     : jj));
+  const stampIds = stampProd === true ? ids : (Array.isArray(stampProd) ? stampProd : []);
   const art_files = ids.length
     ? (so.art_files || []).map((a) => (ids.includes(a.id)
-      ? { ...a, status: 'approved', ...(stampProd ? { prod_files_attached: true } : {}) }
+      ? { ...a, status: 'approved', ...(stampIds.includes(a.id) ? { prod_files_attached: true } : {}) }
       : a))
     : (so.art_files || []);
   return { ...so, jobs, art_files, ...(updatedAt ? { updated_at: updatedAt } : {}) };

@@ -6,6 +6,9 @@ import {
   sumBoxContents,
   makeBoxRow,
   mergeSourceRefs,
+  mergeAllContents,
+  mergeAllSourceRefs,
+  crossCustomerGroups,
   buildBoxLabel,
   BOX_STATUS_META,
 } from '../boxTracking';
@@ -77,6 +80,116 @@ describe('sumBoxContents (combine)', () => {
     expect(merged).toHaveLength(1);
     expect(merged[0].sku).toBe('A');
     expect(a).toEqual(aCopy);
+  });
+});
+
+describe('sumBoxContents — PO traceability', () => {
+  // The merge must never destroy which PO a garment came from: short-ship claims and
+  // invoice reconciliation are argued off exactly this. Same SKU+size from two POs
+  // stays two lines; the same PO combines into one.
+  it('keeps the same SKU+size split when it came from different POs', () => {
+    const a = [{ sku: 'KD9803', color: 'Navy', so_id: 'SO-1', po_id: 'PO-A', sizes: { L: 5 } }];
+    const b = [{ sku: 'KD9803', color: 'Navy', so_id: 'SO-1', po_id: 'PO-B', sizes: { L: 3 } }];
+    const merged = sumBoxContents(a, b);
+    expect(merged).toHaveLength(2);
+    expect(merged.map((e) => e.po_id).sort()).toEqual(['PO-A', 'PO-B']);
+    expect(boxUnits(merged)).toBe(8);
+  });
+  it('combines the same SKU+size when it came from the SAME PO', () => {
+    const a = [{ sku: 'KD9803', color: 'Navy', so_id: 'SO-1', po_id: 'PO-A', sizes: { L: 5 } }];
+    const b = [{ sku: 'KD9803', color: 'Navy', so_id: 'SO-1', po_id: 'PO-A', sizes: { L: 3 } }];
+    const merged = sumBoxContents(a, b);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].sizes).toEqual({ L: 8 });
+    expect(merged[0].po_id).toBe('PO-A');
+  });
+  it('every content row still carries its source PO after a merge', () => {
+    const merged = mergeAllContents([
+      [{ sku: 'A', po_id: 'PO-1', sizes: { M: 2 } }],
+      [{ sku: 'A', po_id: 'PO-2', sizes: { M: 4 } }],
+      [{ sku: 'B', po_id: 'PO-1', sizes: { S: 1 } }],
+    ]);
+    expect(merged).toHaveLength(3);
+    expect(merged.every((e) => !!e.po_id)).toBe(true);
+  });
+});
+
+describe('mergeAllContents / mergeAllSourceRefs (2+ boxes at once)', () => {
+  it('folds three boxes in one pass, target first', () => {
+    const merged = mergeAllContents([
+      [{ sku: 'A', color: 'Red', sizes: { S: 1 } }],
+      [{ sku: 'A', color: 'Red', sizes: { S: 2 } }],
+      [{ sku: 'B', color: 'Blue', sizes: { L: 3 } }],
+    ]);
+    expect(merged).toHaveLength(2);
+    expect(merged[0].sizes).toEqual({ S: 3 });
+    expect(boxUnits(merged)).toBe(6);
+  });
+  it('is a no-op for an empty or missing list', () => {
+    expect(mergeAllContents([])).toEqual([]);
+    expect(mergeAllContents(null)).toEqual([]);
+  });
+  it('de-dupes source_refs across every box', () => {
+    const refs = mergeAllSourceRefs([
+      [{ type: 'PO', id: 'PO-1' }],
+      [{ type: 'PO', id: 'PO-1' }, { type: 'PO', id: 'PO-2' }],
+      [{ type: 'SO', id: 'SO-9' }],
+    ]);
+    expect(refs).toEqual([
+      { type: 'PO', id: 'PO-1' },
+      { type: 'PO', id: 'PO-2' },
+      { type: 'SO', id: 'SO-9' },
+    ]);
+  });
+});
+
+describe('crossCustomerGroups (merge guard)', () => {
+  it('passes when every box belongs to the same customer', () => {
+    const g = crossCustomerGroups([
+      { id: 'BX-1', customerId: 'c1', customerName: 'Fresno Pacific' },
+      { id: 'BX-2', customerId: 'c1', customerName: 'Fresno Pacific' },
+    ]);
+    expect(g.mismatch).toBe(false);
+    expect(g.groups).toHaveLength(1);
+  });
+  it('flags a cross-customer merge and names both sides with their plates', () => {
+    const g = crossCustomerGroups([
+      { id: 'BX-1041', customerId: 'c1', customerName: "Fresno Pacific Men's Soccer" },
+      { id: 'BX-1042', customerId: 'c2', customerName: 'Orange Lutheran Baseball' },
+    ]);
+    expect(g.mismatch).toBe(true);
+    expect(g.groups).toHaveLength(2);
+    expect(g.groups[0]).toEqual({ key: 'c1', name: "Fresno Pacific Men's Soccer", boxIds: ['BX-1041'] });
+    expect(g.groups[1].boxIds).toEqual(['BX-1042']);
+  });
+  it('falls back to so_id when the customer cannot be resolved', () => {
+    const g = crossCustomerGroups([
+      { id: 'BX-1', customerId: '', soId: 'SO-5', customerName: '' },
+      { id: 'BX-2', customerId: '', soId: 'SO-5', customerName: '' },
+    ]);
+    expect(g.mismatch).toBe(false);
+  });
+  it('treats an unidentifiable box as its own group — worth the second tap', () => {
+    const g = crossCustomerGroups([
+      { id: 'BX-1', customerId: 'c1', customerName: 'Fresno Pacific' },
+      { id: 'BX-2', customerId: '', soId: '', customerName: '' },
+    ]);
+    expect(g.mismatch).toBe(true);
+    expect(g.groups[1].name).toBe('Unknown customer');
+  });
+});
+
+describe('buildBoxLabel — supersedes', () => {
+  it('lists the absorbed plates so the floor kills the dead labels', () => {
+    const lbl = buildBoxLabel(
+      { id: 'BX-1055', status: 'staged', contents: [{ sku: 'A', sizes: { M: 2 } }], updated_at: '2026-09-03T00:00:00.000Z' },
+      { supersedes: ['BX-1041', 'BX-1042'] }
+    );
+    expect(lbl.supersedes).toBe('SUPERSEDES: BX-1041, BX-1042');
+  });
+  it('is blank on an ordinary (non-merged) label', () => {
+    const lbl = buildBoxLabel({ id: 'BX-1055', status: 'staged', contents: [] });
+    expect(lbl.supersedes).toBe('');
   });
 });
 

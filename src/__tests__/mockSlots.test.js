@@ -124,13 +124,23 @@ describe('skusMissingMockups — reversible garments require every side mocked',
     expect(skusMissingMockups(job, so)).toEqual([]);
   });
 
-  test("POLICY: a digitizer sew-out proof in prod_files does NOT satisfy the gate — jobs require a real mockup", () => {
+  test("POLICY: an embroidery sew-out proof in prod_files does NOT satisfy the gate — jobs require a real mockup", () => {
     // Reused library art arriving with only the sew-out (SO-1661): Approve / Send to
     // Coach must stay blocked until a real garment mockup is reused or made. The proof
     // remains a labeled display fallback (artProofFallback) but can't pass approval.
     const { job, so } = revCase({});
+    so.art_files[0].deco_type = 'embroidery';
+    job.deco_type = 'embroidery';
     so.art_files[0].prod_files = [{ url: 'http://x/sewout.pdf' }, { url: 'http://x/sewout.jpg' }];
     expect(skusMissingMockups(job, so)).toEqual(['JSY']);
+  });
+
+  test('a screen-print production proof satisfies the approval gate', () => {
+    const { job, so } = revCase({});
+    so.art_files[0].deco_type = 'screen_print';
+    job.deco_type = 'screen_print';
+    so.art_files[0].prod_files = [{ url: 'http://x/garment-proof.png' }];
+    expect(skusMissingMockups(job, so)).toEqual([]);
   });
 
   test('slots are scoped to the decos THIS job owns (deco_idxs)', () => {

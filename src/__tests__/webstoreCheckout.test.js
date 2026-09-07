@@ -91,6 +91,19 @@ describe('sales tax availability — fail closed where NSA is registered', () =>
     expect(r).toEqual({ tax: 0, rate: 0, state: 'TX', source: 'taxcloud' });
   });
 
+  test('a fully comped order still preserves its tax jurisdiction', async () => {
+    process.env.TAX_COLLECT_STATES = 'CA';
+    global.fetch = jest.fn();
+    const r = await checkout.calcTax(
+      { delivery_mode: 'club_delivery' },
+      {},
+      0,
+      { street1: '1 Main St', city: 'Reno', state: 'NV', zip: '89501' },
+    );
+    expect(r).toEqual({ tax: 0, rate: 0, state: 'NV', source: 'zero_base' });
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   test('a non-California pickup requires enough billing address data to source tax', async () => {
     process.env.TAX_COLLECT_STATES = 'CA,TX';
     global.fetch = jest.fn();

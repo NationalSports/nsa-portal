@@ -73,6 +73,23 @@ describe('supplier-bill apply paths (App.js)', () => {
   it('imports the shared guard rather than reimplementing it', () => {
     expect(APP).toMatch(/import\s*\{[^}]*duplicateBillDetail[^}]*\}\s*from\s*'\.\/lib\/billAnomalies'/);
   });
+
+  it('treats a portal-ledger duplicate as an already-applied QBO backfill', () => {
+    expect(APP.includes('const portalWasAlreadyApplied=!_billApplySession.current.hasPending(billingAttemptKey(b))&&portalBillAlreadyApplied(bill,_docAlreadyApplied)')).toBe(true);
+    expect(APP).toContain("b.portalMsg=portalWasAlreadyApplied?'Already applied to Portal; QBO backfill verified':'Applied to Portal after QBO verification'");
+    expect(APP.includes('portalApplied=!!(await _applyBillsToPortal([b]))')).toBe(true);
+  });
+
+  it('admits an explicit history backfill only to QBO and persists server-row results', () => {
+    expect(APP).toContain('if(b.portalStatus&&!b._qbBackfill)return false');
+    expect(APP.includes('if(!p._qbBackfill&&(_docAlreadyApplied(p.doc_number,undefined,!!p.is_credit)')).toBe(true);
+    expect(APP).toContain('const selected=billImport.parsed.filter(b=>!b._qbBackfill&&_billIsReadyToPush(b)');
+    expect(APP).toContain("_qbBackfill:true,parsed:{...normalizeBillForReview(sb.parsed),_qbBackfill:true}");
+    expect(APP).toContain('updated.push({...cleanSource,parsed:cleanParsed,qbStatus:result.qbStatus');
+    expect(APP).toContain("x.reviewLater||x.qbStatus==='success'||x._qbBackfill");
+    expect(APP).toContain("filter(b=>b&&!b._qbBackfill&&b.parsed");
+    expect(APP).toContain("if(!p._qbBackfill&&!(p._overage_ok");
+  });
 });
 
 describe('duplicateBillDetail against the real SO-1468 shape', () => {

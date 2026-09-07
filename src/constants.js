@@ -9,7 +9,21 @@ export const _soCols=['id','customer_id','estimate_id','memo','status','created_
 // React state only. Including them here would cause batch inserts to fail on
 // schemas that don't have those columns, and the retry-with-extras-stripped
 // path silently drops est_qty / qty_only along with them — losing user input.
-export const _itemCols=['product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','notes','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','_promo_credit','_promo_partial_qty','is_free_promo','_pre_free_promo_sell','est_qty','qty_only','size_availability','is_footwear','customer_supplied'];
+export const _itemCols=['line_id','product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','notes','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','_promo_credit','_promo_partial_qty','is_free_promo','_pre_free_promo_sell','est_qty','qty_only','size_availability','is_footwear','customer_supplied'];
+// Sales-order-only item fields. Keep these separate from _itemCols because that base list also
+// feeds estimate_items writes, while invoice reconciliation history has no meaning on an estimate.
+export const _soItemCols=['invoice_line_keys'];
+// PostgREST builds one column set for an entire bulk insert. If an existing line carries
+// invoice_line_keys while a newly-added line omits it, the missing value becomes explicit NULL for
+// that row; the database default is not used and the NOT NULL constraint rejects the whole batch.
+// Use this projection for BOTH dirty comparison and persistence so missing/null legacy payloads are
+// canonically [] and do not create either failed saves or a missing-vs-empty phantom-save loop.
+export const _pickSoItem=(item)=>{
+  const row=_pick(item||{},[..._itemCols,..._soItemCols]);
+  row.invoice_line_keys=Array.isArray(row.invoice_line_keys)?row.invoice_line_keys:[];
+  if(row.line_id==null)delete row.line_id;
+  return row;
+};
 // Topstar digitizing / vector-file billing line. This qty_only line bills the customer for a
 // file-creation service whose PO lives in so.deco_pos (a deco PO) — an item-level vendor PO is
 // never created for it. It must therefore be treated as already covered in SO status math and
@@ -295,7 +309,7 @@ export const garmentColorClass=(color)=>{
   return null;
 };
 
-export const _vendCols=['id','name','vendor_type','api_provider','nsa_carries_inventory','click_automation','is_active','contact_name','contact_email','contact_phone','address_line1','address_line2','city','state','zip','rep_name','payment_terms','notes','b2b_url','b2b_username','b2b_password','catalog_files'];
+export const _vendCols=['id','name','vendor_type','po_eligible','api_provider','nsa_carries_inventory','click_automation','is_active','contact_name','contact_email','contact_phone','address_line1','address_line2','city','state','zip','rep_name','payment_terms','notes','b2b_url','b2b_username','b2b_password','catalog_files'];
 export const _firmDateCols=['item_desc','date','approved'];
 export const _issueCols=['id','status','description','priority','page','viewing','reported_by','role','timestamp','resolved_at','resolution'];
 export const _omgStoreCols=['id','store_name','customer_id','rep_id','csr_id','artist_id','status','open_date','close_date','orders','total_sales','fundraise_total','items_sold','unique_buyers','_omg_source','_omg_id','_omg_sale_code','_last_synced','subdomain','channel_type','_report_url','_report_id','_report_imported_at','_omg_shipping','_omg_processing','_omg_tax','_omg_fundraise','_omg_grand_total','_omg_acct_collected','_omg_omg_fees','_omg_cc_fees','_omg_invoiced_fees','_omg_net_revenue','delivery_mode'];
@@ -303,6 +317,11 @@ export const _omgStoreCols=['id','store_name','customer_id','rep_id','csr_id','a
 // ─── Team & Company Defaults ───
 // Warehouse staff who can delegate tasks to other warehouse workers (in addition to admins/GM).
 export const WAREHOUSE_LEAD_IDS=['00000000-0000-0000-0000-000000000050']; // Kellen Coates
+// Staff cleared to make MANUAL stock corrections on the Inventory page (Adjust Inventory / INV).
+// Deliberately separate from WAREHOUSE_LEAD_IDS: that list also grants warehouse task delegation,
+// and someone can be trusted to correct counts without running the warehouse queue. Admins always
+// have this; this list adds individuals by id, one at a time.
+export const INVENTORY_ADJUST_IDS=['tm-mpn3xnfieezi']; // Vic Damian (CSR)
 export const DEFAULT_REPS=[
   // Admins
   {id:'00000000-0000-0000-0000-000000000001',name:'Steve Peterson',role:'admin'},
@@ -427,6 +446,41 @@ export const dgCodeOf=name=>{const m=String(name||'').match(/DG[-_ ]?(\d{4,})/i)
 // looser gate for marking an already-staged job complete. Matches _prodConfirmed in businessLogic.js
 // (which only runs its .dst check under the af.status==='approved' branch).
 export const artProdFilesConfirmed=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if((af.deco_type||'')==='embroidery'&&af.status==='approved')return artLiveDsts(af).length>0;return false};
+// ── PRODUCTION FILES ARE PER DESIGN, NOT PER JOB ──────────────────────────────────────────────
+// One garment can carry a screen-printed front AND a DTF sleeve. buildJobs deliberately keeps
+// those on ONE job (one tech sheet, one trip across the floor), but each design still owes its
+// OWN production file: a color separation for the print, ordered films for the DTF, a DST for the
+// embroidery. The order page used to classify the whole job by its PRIMARY art's deco_type and
+// then stamp prod_files_attached on EVERY art file the job touches — so "Films Ordered — Mark
+// Complete" on a mixed job silently claimed the screen-print separation was done too and sent the
+// job to production with no seps (SO-2145: DTF sleeve ordered, the PAL front separation never
+// made, and 3 production files showing on the banner — all of them the DTF's). These helpers
+// split a job's live art into the method buckets that still owe a file, so each bucket can be
+// asked for, and confirmed, on its own.
+export const prodFileMethodOf=(af,fallbackDeco)=>{const d=(af&&af.deco_type)||fallbackDeco||'screen_print';return d==='embroidery'?'embroidery':(d==='dtf'||d==='heat_press')?'dtf':'print'};
+// Print first: a separation is the long-lead item (an artist has to draw it), while films are
+// ordered and DSTs are uploaded. A fixed order also keeps the banner from reshuffling on rerender.
+export const PROD_FILE_METHOD_ORDER=['print','dtf','embroidery'];
+// The method buckets on this job that still owe a production file, in PROD_FILE_METHOD_ORDER.
+// `isConfirmed` defaults to the strict artProdFilesConfirmed; approve-time callers pass the
+// looser artProdFilesConfirmed||artDstOnFile (approving IS the sign-off on the current art, so a
+// live .dst counts before the file's status has flipped to 'approved').
+export const pendingProdFileGroups=(liveArt,fallbackDeco,isConfirmed)=>{
+  const ok=isConfirmed||artProdFilesConfirmed;const by={};
+  (liveArt||[]).forEach(a=>{if(!a||ok(a))return;
+    const m=prodFileMethodOf(a,fallbackDeco);
+    if(!by[m])by[m]={method:m,deco:(a.deco_type||fallbackDeco||'screen_print'),ids:[],arts:[]};
+    by[m].ids.push(a.id);by[m].arts.push(a);});
+  return PROD_FILE_METHOD_ORDER.filter(m=>by[m]).map(m=>by[m]);
+};
+// Where a job lands once `confirmedIds` are confirmed: 'art_complete' ONLY when nothing is still
+// owed, otherwise the stage of whatever method is still outstanding. Confirming the DTF films on
+// a mixed job leaves it in 'production_files_needed' — the print separation is still missing.
+export const artStatusAfterProdConfirm=(liveArt,confirmedIds,fallbackDeco,isConfirmed)=>{
+  const done=new Set(confirmedIds||[]);
+  const rest=pendingProdFileGroups((liveArt||[]).filter(a=>a&&!done.has(a.id)),fallbackDeco,isConfirmed);
+  return rest.length?prodFilesStatusFor(rest[0].deco):'art_complete';
+};
 // "Does this art file have anything to review" — mirrors App.js totalMocks / the approval-card UI.
 // An art file can carry a stale 'needs_approval'/'uploaded' status with 0 files/0 mockups (e.g. a
 // recall that didn't reset status), which must NOT read as waiting_approval or it regenerates a
@@ -545,7 +599,7 @@ export const SZ_ORD=['YXS','YS','YM','YL','YXL','YOUTH','XXS','XS','S','M','L','
 // 19). Neither form is in SZ_ORD, so both landed in the unknown-label bucket and piled up at the
 // end of a size row — a shoe grid read 4,7,8,…,12,4-,5-,…,14-,18,19 instead of by number. Rank
 // those numerically inside the footwear block so a run reads 9, 9-, 10, 10-, 11 … left to right.
-// Ordering only: unrecognized labels still sort last, and nothing here changes size membership.
+// szRank only controls ordering; the footwear helpers below canonicalize those aliases for display.
 const _FW_NUM=/^(\d{1,2})(\.5|-|½)?$/;
 const _I17=SZ_ORD.indexOf('17');
 export const szRank=(s)=>{
@@ -561,12 +615,45 @@ export const szRank=(s)=>{
   return 999;
 };
 const _szCompare=(a,b)=>szRank(a)-szRank(b);
+// Adidas represents half shoe sizes with a trailing dash ("10-"), while catalog/order data may
+// already contain the normal decimal spelling ("10.5"). Keep one internal display spelling so a
+// mixed feed cannot render duplicate columns. The fraction form is accepted for the same reason.
+export const normalizeFootwearSize=(size)=>{
+  const s=String(size??'').trim();
+  const m=/^(\d{1,2})(-|½)$/.exec(s);
+  return m?String(Number(m[1])+0.5):s;
+};
+export const normalizeFootwearSizeList=(sizes)=>[...new Set((Array.isArray(sizes)?sizes:[]).map(normalizeFootwearSize).filter(Boolean))].sort(_szCompare);
+
+// Size run to seed on an ORDER LINE from a catalog product's available_sizes. Many Adidas /
+// Under Armour catalog rows carry the vendor's ENTIRE run — XS, 3XL–5XL, and the tall block
+// (ST/MT/LT/XLT/2XLT…) — because the B2B feed lists every size the style is made in. A normal
+// team order only fills S–2XL, so dropping that whole run onto a fresh line (add-from-catalog,
+// SKU change, NetSuite import, AI build) turns the grid into a wall of empty columns. For a
+// standard adult-apparel run we seed just the core S–2XL; a rep adds outliers with +Size.
+// Non-standard runs (youth, OSFA, numeric, footwear, tall-only) have no core overlap and pass
+// through untouched. Any size that already carries a quantity is always kept so entered qtys
+// never drop. Lives here (not in the editors) so the order editors and the AI build paths all
+// seed the SAME run — this used to be a hand-synced copy in OrderEditor + OrderEditorClassic.
+export const CORE_APPAREL_SIZES=['S','M','L','XL','2XL'];
+export const orderLineSizes=(catalogSizes,qtySizes=[])=>{
+  const all=(Array.isArray(catalogSizes)?catalogSizes:[]).filter(Boolean);
+  const core=all.filter(s=>CORE_APPAREL_SIZES.includes(s));
+  const base=(core.length&&all.some(s=>!CORE_APPAREL_SIZES.includes(s)))?core:all;
+  return normalizeFootwearSizeList([...base,...(Array.isArray(qtySizes)?qtySizes:[]).filter(Boolean)]);
+};
+// Quantity maps need collision handling too: if legacy data contains both 10- and 10.5, preserve
+// every ordered unit under the single canonical 10.5 key rather than hiding or dropping either.
+export const normalizeFootwearSizeQtyMap=(sizes)=>Object.entries(sizes||{}).reduce((out,[size,qty])=>{
+  const key=normalizeFootwearSize(size);const n=Number(qty)||0;
+  out[key]=(out[key]||0)+n;return out;
+},{});
 // Union of the size labels present across one or more size maps (pass their flattened keys),
 // ordered for display with custom/unrecognized labels last.
 export const orderedSizeKeys=(keys)=>[...new Set(keys)].sort(_szCompare);
 // "qty size" breakdown string for a line item's sizes map, e.g. "1 S, 5 M, 3 L, 2 Womens X-Large".
 // Footwear renders "qty/size" (e.g. "2/10.5"); apparel renders "qty size". Custom labels are kept.
-export const sizeBreakdownStr=(sizes,isFootwear)=>Object.entries(sizes||{})
+export const sizeBreakdownStr=(sizes,isFootwear)=>Object.entries(isFootwear?normalizeFootwearSizeQtyMap(sizes):(sizes||{}))
   .filter(([,v])=>Number(v)>0)
   .sort((a,b)=>_szCompare(a[0],b[0]))
   .map(([sz,v])=>v+(isFootwear?'/':' ')+sz).join(', ');

@@ -596,7 +596,7 @@ function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});co
           <div style={{flex:2}}><label style={{fontSize:11,fontWeight:700,color:'#475569',display:'block',marginBottom:4}}>Reason / Notes</label>
             <input className="form-input" value={reason} onChange={e=>setReason(e.target.value)} placeholder="Why is this being adjusted?" style={{width:'100%'}}/></div>
         </div>
-        <div style={{fontSize:11,color:'#64748b',background:'#fffbeb',padding:'6px 10px',borderRadius:4,border:'1px solid #fef3c7'}}>This adjustment will be logged and synced to QuickBooks.</div>
+        <div style={{fontSize:11,color:'#64748b',background:'#fffbeb',padding:'6px 10px',borderRadius:4,border:'1px solid #fef3c7'}}>This adjustment will be logged in the portal.</div>
       </div>}
     </div><div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={!hasChanges} onClick={()=>{onSave(product.id,a,d,reason,adjType,sortSz(avail));onClose()}}>Save</button></div></div></div>);
 }
@@ -974,7 +974,7 @@ function QuoteForm({token}){// supabaseClient prop no longer used — all I/O go
 // ─── VENDOR MODAL (create / edit) ───
 
 function VendorModal({isOpen,onClose,onSave,vendor,allVendors}){
-  const baseV={id:null,name:'',vendor_type:'upload',api_provider:'',contact_name:'',contact_email:'',contact_phone:'',address_line1:'',address_line2:'',city:'',state:'',zip:'',website:'',rep_name:'',payment_terms:'net30',nsa_carries_inventory:false,click_automation:false,invoice_scan_enabled:false,notes:'',is_active:true,b2b_url:'',b2b_username:'',b2b_password:'',catalog_files:[]};
+  const baseV={id:null,name:'',vendor_type:'upload',po_eligible:true,api_provider:'',contact_name:'',contact_email:'',contact_phone:'',address_line1:'',address_line2:'',city:'',state:'',zip:'',website:'',rep_name:'',payment_terms:'net30',nsa_carries_inventory:false,click_automation:false,invoice_scan_enabled:false,notes:'',is_active:true,b2b_url:'',b2b_username:'',b2b_password:'',catalog_files:[]};
   const[f,setF]=useState(baseV);
   const[err,setErr]=useState('');
   const[showPw,setShowPw]=useState(false);
@@ -1057,6 +1057,7 @@ function VendorModal({isOpen,onClose,onSave,vendor,allVendors}){
         <label style={{display:'flex',gap:8,alignItems:'center',fontSize:13}}><input type="checkbox" checked={!!f.click_automation} onChange={e=>sv('click_automation',e.target.checked)}/>Click automation enabled</label>
         <label style={{display:'flex',gap:8,alignItems:'center',fontSize:13}}><input type="checkbox" checked={!!f.invoice_scan_enabled} onChange={e=>sv('invoice_scan_enabled',e.target.checked)}/>Invoice scan enabled</label>
         <label style={{display:'flex',gap:8,alignItems:'center',fontSize:13}}><input type="checkbox" checked={f.is_active!==false} onChange={e=>sv('is_active',e.target.checked)}/>Active</label>
+        <label style={{display:'flex',gap:8,alignItems:'center',fontSize:13}} title="Uncheck for overhead accounts like payroll, rent, utilities or shipping carriers. They stay in the vendor list and on bills, but drop out of every purchase-order vendor picker."><input type="checkbox" checked={f.po_eligible!==false} onChange={e=>sv('po_eligible',e.target.checked)}/>Can be written POs</label>
       </div>
       <div style={{marginTop:14,padding:12,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8}}>
         <div style={{fontSize:11,fontWeight:800,color:'#475569',textTransform:'uppercase',letterSpacing:0.4,marginBottom:10}}>B2B Login &amp; Catalogs</div>

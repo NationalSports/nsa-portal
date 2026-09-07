@@ -38,7 +38,7 @@ jest.mock('@supabase/supabase-js', () => {
       getSession: () => Promise.resolve({ data: { session: null } }),
       onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
     },
-    rpc: () => Promise.resolve({ data: null, error: null }),
+    rpc: (name,args) => require('../testHelpers/atomicSaveRpc')(state,name,args),
   };
   return { createClient: () => client, __mockState: state };
 });
@@ -71,34 +71,16 @@ const soWith = (jobs, over = {}) => ({
 });
 
 // One full save's response queue. dbRows feeds both the coach/art guard read and the cleanup read.
-const saveResponses = (dbRows, { jobUpsert = { error: null } } = {}) => ({
-  sales_orders: [
-    { data: { updated_at: 'yesterday', deco_pos: null }, error: null },
-    { error: null },
-  ],
-  so_items: [
-    { data: [], error: null },
-    { data: [{ id: 'ni-1' }], error: null },
-  ],
+const saveResponses = (dbRows) => ({
+  sales_orders: [{ data: { updated_at: 'yesterday', deco_pos: null }, error: null }],
+  so_items: [{ data: [], error: null }],
   so_art_files: [{ data: [], error: null }],
-  so_item_po_lines: [
-    { data: [], error: null }, { data: [], error: null }, { data: [], error: null },
-  ],
-  so_item_pick_lines: [{ data: [], error: null }, { data: [], error: null }],
-  so_jobs: [
-    { data: dbRows, error: null },
-    jobUpsert,
-    { data: dbRows.map(r => ({ id: r.id })), error: null },
-  ],
+  so_item_po_lines: [{ data: [], error: null }],
+  so_jobs: [{ data: dbRows, error: null },{ data: dbRows.map(r=>({id:r.id})),error:null }],
 });
-
-// Append a second save's responses onto an existing queue (sequential _dbSaveSO calls drain FIFO).
-// A save's TAIL makes two more sales_orders calls (the final updated_at bump and the own-version
-// read-back) — pad those first or the next save's existingSO select drains misaligned responses.
-const pushSave = (responses, dbRows, opts) => {
-  responses.sales_orders = [...(responses.sales_orders || []), { data: null, error: null }, { data: { _version: 1 }, error: null }];
-  const next = saveResponses(dbRows, opts);
-  Object.keys(next).forEach(t => { responses[t] = [...(responses[t] || []), ...next[t]]; });
+const pushSave = (responses,dbRows) => {
+  const next=saveResponses(dbRows);
+  Object.keys(next).forEach(t=>{responses[t]=[...(responses[t]||[]),...next[t]]});
   return responses;
 };
 
@@ -238,7 +220,7 @@ describe('adversarial — failure injection and malformed data', () => {
   beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
   afterEach(() => { restoreEnv(); jest.resetModules(); });
 
-  test('guard read failure never blocks the save — it degrades to the pre-guard blind write', async () => {
+  test('guard read failure blocks the transaction rather than performing a blind write', async () => {
     const { __mockState } = require('@supabase/supabase-js');
     __mockState.calls.length = 0;
     const responses = saveResponses([]);
@@ -251,14 +233,15 @@ describe('adversarial — failure injection and malformed data', () => {
     const { _dbSaveSO } = require('../lib/dbEngine');
     const job = { id: 'JOB-A-01', _version: 60, items: [], art_status: 'waiting_approval' };
     const result = await _dbSaveSO(soWith([job]));
-    expect(result).toBe(true);
-    expect(jobUpserts(__mockState.calls)[0].args[0][0].art_status).toBe('waiting_approval');
+    expect(result).toBe(false);
+    expect(jobUpserts(__mockState.calls)).toEqual([]);
   });
 
   test('a failed job upsert keeps the one-shot markers and the old version for the retry', async () => {
     const { __mockState } = require('@supabase/supabase-js');
     __mockState.calls.length = 0;
-    __mockState.responses = saveResponses([APPROVED_DB_ROW()], { jobUpsert: { error: { message: 'boom' } } });
+    __mockState.responses = saveResponses([APPROVED_DB_ROW()]);
+    __mockState.atomicError={message:'boom',code:'23514'};
     const { _dbSaveSO } = require('../lib/dbEngine');
     const job = { id: 'JOB-A-01', _version: 60, items: [], art_status: 'art_requested', _coach_cleared: true, _art_moved: true };
     const result = await _dbSaveSO(soWith([job]));
@@ -293,12 +276,13 @@ describe('adversarial — failure injection and malformed data', () => {
     const { _dbSaveSO } = require('../lib/dbEngine');
     const job = { id: 'JOB-A-01', _version: 77, items: [], art_status: 'art_complete', fulfilled_units: 6, item_status: 'partially_received',
       art_messages: APPROVED_DB_ROW().art_messages, sent_history: APPROVED_DB_ROW().sent_history, rejections: APPROVED_DB_ROW().rejections };
-    await _dbSaveSO(soWith([job]));                       // save 1: forward, from current copy
-    expect(job._version).toBe(78);                        // rebased to match the trigger bump
-    job.art_status = 'waiting_approval';                  // same tab now moves it backward…
-    await _dbSaveSO(soWith([job]));                       // save 2: version 78 == db 78 → current, allowed
+    const savedOrder=soWith([job]);
+    await _dbSaveSO(savedOrder);                       // save 1: forward, from current copy
+    expect(savedOrder.jobs[0]._version).toBe(78);                        // rebased to match the trigger bump
+    savedOrder.jobs[0].art_status = 'waiting_approval';                  // same tab now moves it backward…
+    await _dbSaveSO(savedOrder);                       // save 2: version 78 == db 78 → current, allowed
     const ups = jobUpserts(__mockState.calls);
     expect(ups[1].args[0][0].art_status).toBe('waiting_approval');
-    expect(job._version).toBe(79);
+    expect(savedOrder.jobs[0]._version).toBe(79);
   });
 });

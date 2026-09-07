@@ -1,4 +1,4 @@
-import { buildQBInvoicePostingLines } from '../qbSyncEngine';
+import { buildQBInvoicePostingLines, buildQBInvoiceTaxPlan, buildQBInvoiceTxnTaxDetail } from '../qbSyncEngine';
 
 describe('QuickBooks invoice account routing', () => {
   test('posts ordinary sales entirely to the 40000-linked item', () => {
@@ -26,51 +26,50 @@ describe('QuickBooks invoice account routing', () => {
   });
 });
 
-describe('taxable invoice posting (Automated Sales Tax)', () => {
-  const taxCodeRef={value:'7',name:'California'};
+// Live shape: INV-63848 — total 3083.20 = 2710.50 taxable + 237.17 tax (8.75%) + 135.53 untaxed shipping.
+const taxCodes=[{Id:'TC-CA',Name:'CA Sales Tax',Active:true,SalesTaxRateList:{TaxRateDetail:[{TaxRateRef:{value:'TR-CA'}}]}},
+  {Id:'TC-OLD',Name:'Old CA',Active:false,SalesTaxRateList:{TaxRateDetail:[{TaxRateRef:{value:'TR-CA-OLD'}}]}}];
+const taxRateMap={CA:'TR-CA'};
 
-  test('carves tax out of the total so 40000 receives only pre-tax revenue', () => {
-    // Portal invoice INV-63788: total 681.05 INCLUDES 57.87 tax.
-    const lines=buildQBInvoicePostingLines({
-      invoice:{total:681.05,tax:57.87},salesItemId:'sales-item',
-      discountAccountRef:{value:'discount-40200'},description:'INV-63788',taxCodeRef,
-    });
-    expect(lines).toHaveLength(1);
-    expect(lines[0].Amount).toBe(623.18);
-    expect(lines[0].SalesItemLineDetail.UnitPrice).toBe(623.18);
-    expect(lines[0].SalesItemLineDetail.TaxCodeRef).toEqual(taxCodeRef);
-    // Pre-tax revenue plus the tax QBO is told to post must reconstruct the portal total.
-    expect(Math.round((lines[0].Amount+57.87)*100)/100).toBe(681.05);
+describe('QuickBooks invoice sales tax plan', () => {
+  test('reconciles the portal tax against the rate with shipping untaxed', () => {
+    const plan=buildQBInvoiceTaxPlan({invoice:{total:3083.2,tax:237.17,tax_rate:0.0875,shipping:135.53},state:'ca',taxRateMap,taxCodes});
+    expect(plan).toEqual({state:'CA',tax:237.17,taxable:2710.5,shipping:135.53,shippingTaxable:false,taxCodeId:'TC-CA',rateId:'TR-CA'});
+    expect(buildQBInvoiceTxnTaxDetail(plan)).toEqual({TxnTaxCodeRef:{value:'TC-CA'},TotalTax:237.17,
+      TaxLine:[{Amount:237.17,DetailType:'TaxLineDetail',TaxLineDetail:{TaxRateRef:{value:'TR-CA'},PercentBased:false,NetAmountTaxable:2710.5}}]});
   });
 
-  test('carves tax out before adding the credit back for gross sales', () => {
-    const lines=buildQBInvoicePostingLines({
-      invoice:{total:110,tax:10,credit_amount:25},salesItemId:'sales-item',
-      discountAccountRef:{value:'discount-40200'},description:'INV-3',taxCodeRef,
-    });
-    expect(lines[0].Amount).toBe(125); // (110 − 10) + 25
-    expect(lines[1].Amount).toBe(25);
+  test('detects taxed shipping when only that base reconciles', () => {
+    // 100 goods + 10 shipping, taxed at 7.75% on both = 8.53
+    const plan=buildQBInvoiceTaxPlan({invoice:{total:118.53,tax:8.53,tax_rate:0.0775,shipping:10},state:'CA',taxRateMap,taxCodes});
+    expect(plan).toEqual(expect.objectContaining({taxable:110,shippingTaxable:true}));
   });
 
-  test('fails closed when a taxable invoice has no resolved tax code', () => {
-    expect(()=>buildQBInvoicePostingLines({
-      invoice:{total:681.05,tax:57.87},salesItemId:'sales-item',
-      discountAccountRef:{value:'discount-40200'},description:'INV-4',
-    })).toThrow(/tax code is required/i);
+  test('returns null for untaxed invoices and fails closed on every mismatch', () => {
+    expect(buildQBInvoiceTaxPlan({invoice:{total:100,tax:0},state:'CA',taxRateMap,taxCodes})).toBeNull();
+    const good={invoice:{total:107.75,tax:7.75,tax_rate:0.0775,shipping:0},state:'CA',taxRateMap,taxCodes};
+    expect(buildQBInvoiceTaxPlan(good)).toEqual(expect.objectContaining({taxable:100}));
+    expect(()=>buildQBInvoiceTaxPlan({...good,partnerTaxEnabled:true})).toThrow(/Automated Sales Tax/);
+    expect(()=>buildQBInvoiceTaxPlan({...good,state:'OR'})).toThrow(/no approved sales-tax account/);
+    expect(()=>buildQBInvoiceTaxPlan({...good,state:'WA'})).toThrow(/no verified QuickBooks tax rate for WA/);
+    expect(()=>buildQBInvoiceTaxPlan({...good,taxCodes:[]})).toThrow(/was not found or is inactive/);
+    expect(()=>buildQBInvoiceTaxPlan({...good,taxCodes:[...taxCodes,{...taxCodes[0],Id:'TC-DUP'}]})).toThrow(/more than one/);
+    expect(()=>buildQBInvoiceTaxPlan({...good,invoice:{...good.invoice,tax_rate:null}})).toThrow(/no tax rate/);
+    expect(()=>buildQBInvoiceTaxPlan({...good,invoice:{...good.invoice,tax:9}})).toThrow(/does not reconcile/);
   });
 
-  test('fails closed when tax would consume the whole invoice', () => {
-    expect(()=>buildQBInvoicePostingLines({
-      invoice:{total:50,tax:50},salesItemId:'sales-item',description:'INV-5',taxCodeRef,
-    })).toThrow(/tax cannot equal or exceed/i);
+  test('posts total minus tax to 40000, shipping on its own untaxed line, and tax through TxnTaxDetail', () => {
+    const invoice={total:3083.2,tax:237.17,tax_rate:0.0875,shipping:135.53};
+    const taxPlan=buildQBInvoiceTaxPlan({invoice,state:'CA',taxRateMap,taxCodes});
+    const lines=buildQBInvoicePostingLines({invoice,salesItemId:'sales-item',discountAccountRef:{value:'discount-40200'},description:'INV-63848',taxPlan});
+    expect(lines).toEqual([
+      {DetailType:'SalesItemLineDetail',Amount:2710.5,Description:'INV-63848',SalesItemLineDetail:{Qty:1,UnitPrice:2710.5,ItemRef:{value:'sales-item',name:'NSA Portal Sales'},TaxCodeRef:{value:'TAX'}}},
+      {DetailType:'SalesItemLineDetail',Amount:135.53,Description:'Customer shipping',SalesItemLineDetail:{Qty:1,UnitPrice:135.53,ItemRef:{value:'sales-item',name:'NSA Portal Sales'},TaxCodeRef:{value:'NON'}}},
+    ]);
+    expect(lines.reduce((sum,line)=>sum+line.Amount,0)+taxPlan.tax).toBeCloseTo(3083.2,2);
   });
 
-  test('leaves non-taxable invoices byte-identical to the pre-tax behaviour', () => {
-    expect(buildQBInvoicePostingLines({
-      invoice:{total:100,tax:0},salesItemId:'sales-item',description:'INV-6',
-    })).toEqual([{
-      DetailType:'SalesItemLineDetail',Amount:100,Description:'INV-6',
-      SalesItemLineDetail:{Qty:1,UnitPrice:100,ItemRef:{value:'sales-item',name:'NSA Portal Sales'}},
-    }]);
+  test('leaves untaxed invoices in their one-line shape', () => {
+    expect(buildQBInvoicePostingLines({invoice:{total:100,shipping:10},salesItemId:'sales-item',description:'INV-9'})).toHaveLength(1);
   });
 });

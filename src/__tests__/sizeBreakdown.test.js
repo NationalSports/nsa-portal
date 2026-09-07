@@ -5,7 +5,7 @@
 // list. The line total (summed from every size) stayed correct, so a 12-unit line printed
 // only its 9 standard units — exactly what SO-1535 showed. The shared helpers below keep
 // every ordered size, standard sizes first (in SZ_ORD order) and custom labels appended.
-import { orderedSizeKeys, sizeBreakdownStr } from '../constants';
+import { normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, orderedSizeKeys, sizeBreakdownStr } from '../constants';
 
 describe('sizeBreakdownStr — keeps custom vendor size labels', () => {
   test('SO-1535 DT6105: custom Womens sizes are NOT dropped', () => {
@@ -33,6 +33,26 @@ describe('sizeBreakdownStr — keeps custom vendor size labels', () => {
     expect(sizeBreakdownStr({ S: 0, M: 3 }, false)).toBe('3 M');
     expect(sizeBreakdownStr({}, false)).toBe('');
     expect(sizeBreakdownStr(null, false)).toBe('');
+  });
+});
+
+describe('footwear size normalization — one decimal half-size column', () => {
+  test('converts Adidas dash and fraction aliases to .5', () => {
+    expect(normalizeFootwearSize('10-')).toBe('10.5');
+    expect(normalizeFootwearSize('10½')).toBe('10.5');
+    expect(normalizeFootwearSize('10.5')).toBe('10.5');
+  });
+
+  test('dedupes a mixed Adidas/catalog run and keeps numeric order', () => {
+    expect(normalizeFootwearSizeList(['11', '10-', '10.5', '9', '9-', '9.5', '10']))
+      .toEqual(['9', '9.5', '10', '10.5', '11']);
+  });
+
+  test('combines quantities stored under both spellings', () => {
+    expect(normalizeFootwearSizeQtyMap({ '9-': 2, '9.5': 3, '10': 1 }))
+      .toEqual({ '9.5': 5, '10': 1 });
+    expect(sizeBreakdownStr({ '9-': 2, '9.5': 3, '10': 1 }, true))
+      .toBe('5/9.5, 1/10');
   });
 });
 

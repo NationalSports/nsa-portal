@@ -3,7 +3,7 @@
 // refreshed server-side when stale — tokens are never supplied by, or returned to, the client.
 const https = require('https');
 const { verifyQBOUser } = require('./_shared');
-const { getSupabaseAdmin, getValidAccessToken } = require('./_qb');
+const { getSupabaseAdmin, getValidAccessToken, normalizeCompanyKey, qbRequest } = require('./_qb');
 
 const corsHeaders = (origin) => ({
   'Access-Control-Allow-Origin': origin || '*',
@@ -12,39 +12,8 @@ const corsHeaders = (origin) => ({
   'Content-Type': 'application/json',
 });
 
-const QB_BASE = 'https://quickbooks.api.intuit.com'; // Production
-const QB_SANDBOX = 'https://sandbox-quickbooks.api.intuit.com'; // Sandbox
-
-function qbRequest(method, path, accessToken, body, useSandbox) {
-  const base = useSandbox ? QB_SANDBOX : QB_BASE;
-  const url = new URL(path, base);
-  return new Promise((resolve, reject) => {
-    const options = {
-      hostname: url.hostname,
-      path: url.pathname + url.search,
-      method,
-      headers: {
-        'Authorization': 'Bearer ' + accessToken,
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-    };
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk; });
-      res.on('end', () => {
-        try { resolve({ status: res.statusCode, data: JSON.parse(data) }); }
-        catch { resolve({ status: res.statusCode, data }); }
-      });
-    });
-    req.on('error', reject);
-    // Fail before the Netlify function's hard timeout so the client receives a
-    // structured 500 and can perform its one permitted read-only retry.
-    req.setTimeout(8000, () => req.destroy(new Error('QBO upstream request timed out')));
-    if (body) req.write(typeof body === 'string' ? body : JSON.stringify(body));
-    req.end();
-  });
-}
+const QB_BASE = 'https://quickbooks.api.intuit.com';
+const QB_SANDBOX = 'https://sandbox-quickbooks.api.intuit.com';
 
 exports.handler = async (event) => {
   const origin = event.headers?.origin || event.headers?.Origin || '*';
@@ -65,6 +34,9 @@ exports.handler = async (event) => {
   let body;
   try { body = JSON.parse(event.body || '{}'); } catch { body = {}; }
   const { action, sandbox } = body;
+  let companyKey;
+  try { companyKey = normalizeCompanyKey(body.company || 'national'); }
+  catch (error) { return { statusCode: 400, headers: corsHeaders(origin), body: JSON.stringify({ error: error.message }) }; }
 
   const admin = getSupabaseAdmin();
 
@@ -73,8 +45,8 @@ exports.handler = async (event) => {
   // status until the first live read failed.
   if (action === 'connection_status') {
     try {
-      const valid = await getValidAccessToken(admin);
-      return { statusCode: 200, headers: corsHeaders(origin), body: JSON.stringify({ connected: true, realm_id: valid.realm_id || null }) };
+      const valid = await getValidAccessToken(admin, companyKey);
+      return { statusCode: 200, headers: corsHeaders(origin), body: JSON.stringify({ company: companyKey, connected: true, realm_id: valid.realm_id || null }) };
     } catch (err) {
       const notConnected = err.code === 'NOT_CONNECTED';
       return { statusCode: 200, headers: corsHeaders(origin), body: JSON.stringify({
@@ -89,7 +61,7 @@ exports.handler = async (event) => {
   // Every other action needs a valid access token from the store (refreshed server-side if stale).
   let access_token, realm_id;
   try {
-    ({ access_token, realm_id } = await getValidAccessToken(admin));
+    ({ access_token, realm_id } = await getValidAccessToken(admin, companyKey));
   } catch (e) {
     const notConnected = e.code === 'NOT_CONNECTED';
     return {
@@ -227,6 +199,22 @@ exports.handler = async (event) => {
       return { statusCode: res.status, headers: corsHeaders(origin), body: JSON.stringify(res.data) };
     }
 
+    // ── CREATE TAX AGENCY ── manual sales tax only; QBO owns the liability account it
+    // assigns, so the caller must read the created records back to learn where tax posts.
+    if (action === 'upsert_taxagency') {
+      const { taxagency } = body;
+      const res = await qbRequest('POST', `${basePath}/taxagency`, access_token, taxagency, sandbox);
+      return { statusCode: res.status, headers: corsHeaders(origin), body: JSON.stringify(res.data) };
+    }
+
+    // ── CREATE TAX CODE + RATES ── the TaxService endpoint is the only supported way to
+    // create a manual sales-tax rate; plain TaxRate creates are rejected by QBO.
+    if (action === 'create_taxcode') {
+      const { taxcode } = body;
+      const res = await qbRequest('POST', `${basePath}/taxservice/taxcode`, access_token, taxcode, sandbox);
+      return { statusCode: res.status, headers: corsHeaders(origin), body: JSON.stringify(res.data) };
+    }
+
     // ── CREATE/UPDATE VENDOR ──
     if (action === 'upsert_vendor') {
       const { vendor } = body;
@@ -242,19 +230,24 @@ exports.handler = async (event) => {
       return { statusCode: res.status, headers: corsHeaders(origin), body: JSON.stringify(res.data) };
     }
 
-    // ── INVENTORY ADJUSTMENT ──
-    if (action === 'inventory_adjustment') {
-      const { adjustment } = body;
-      // adjustment: { Line: [{ ItemRef, QtyDiff }], AdjustmentAccountRef }
-      // Note: QBO uses InventoryAdjustment entity — create one per adjustment
-      const res = await qbRequest('POST', `${basePath}/inventoryadjustment`, access_token, adjustment, sandbox);
-      return { statusCode: res.status, headers: corsHeaders(origin), body: JSON.stringify(res.data) };
-    }
-
     // ── RECORD PAYMENT ──
     if (action === 'upsert_payment') {
       const { payment } = body;
       const res = await qbRequest('POST', `${basePath}/payment`, access_token, payment, sandbox);
+      return { statusCode: res.status, headers: corsHeaders(origin), body: JSON.stringify(res.data) };
+    }
+
+    // ── RECORD VENDOR BILL PAYMENT ──
+    if (action === 'upsert_billpayment') {
+      const { billpayment } = body;
+      const res = await qbRequest('POST', `${basePath}/billpayment`, access_token, billpayment, sandbox);
+      return { statusCode: res.status, headers: corsHeaders(origin), body: JSON.stringify(res.data) };
+    }
+
+    // ── POST INVENTORY VALUATION JOURNAL ENTRY ──
+    if (action === 'upsert_journalentry') {
+      const { journalentry } = body;
+      const res = await qbRequest('POST', `${basePath}/journalentry`, access_token, journalentry, sandbox);
       return { statusCode: res.status, headers: corsHeaders(origin), body: JSON.stringify(res.data) };
     }
 
@@ -268,7 +261,7 @@ exports.handler = async (event) => {
     // ── READ SINGLE ENTITY ──
     if (action === 'read') {
       const { entity, id } = body;
-      const validEntities = ['customer', 'vendor', 'invoice', 'bill', 'purchaseorder', 'item', 'payment', 'deposit', 'account'];
+      const validEntities = ['customer', 'vendor', 'invoice', 'bill', 'billpayment', 'purchaseorder', 'item', 'payment', 'deposit', 'account', 'journalentry'];
       if (!validEntities.includes(entity)) {
         return { statusCode: 400, headers: corsHeaders(origin), body: JSON.stringify({ error: 'Invalid entity: ' + entity }) };
       }

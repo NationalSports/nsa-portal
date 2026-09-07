@@ -16,11 +16,13 @@ export function isCommissionEarnedInvoice(invoice) {
   return !!invoice && invoice.status === 'paid';
 }
 
-// A line may be frozen only when freezing it would freeze the TRUTH:
+// Is the data behind this line loaded well enough to freeze anything at all?
 //  - fully paid (a partial's final payment date isn't known yet — it keeps rendering live)
 //  - payment rows hydrated and present (else paid_date would be the invoice-date fallback)
 //  - the SO and its cost inputs hydrated (else calcGP under-counts cost and over-states GP)
-export function canSnapshotLine(line) {
+// This is the gate for a DELIBERATE re-freeze (an admin correcting a paid order). The
+// automatic first freeze adds the cost check below — see canSnapshotLine.
+export function lineDataReady(line) {
   if (!line || !line.inv) return false;
   if (!isCommissionEarnedInvoice(line.inv)) return false;
   if (line.inv._paymentsHydrated === false) return false;
@@ -29,6 +31,52 @@ export function canSnapshotLine(line) {
   if (!so) return false;
   if (so._itemsHydrated === false || so._posHydrated === false) return false;
   return true;
+}
+
+// Has a real cost actually landed on this line? A line billing revenue at $0 cost is
+// almost always MISSING its cost inputs (catalog cost still blank, PO unit cost not
+// entered yet, item rows not loaded) — not a costless job. The hydration flags above
+// don't catch it: the rows load fine, they just carry no cost yet.
+//
+// INV-63327 is the case this exists for: it froze at rev $5,498 / cost $0, paying 30% of
+// 100% GP ($1,649.46) — five minutes before the real $89 and $47 unit costs were typed in,
+// which put the true GP at $1,183 and the commission at ~$355.
+export function costInputsBooked(line) {
+  const gp = (line && line.gp) || {};
+  const cost = Number(gp.cost) || 0;
+  if (cost > 0) return true;
+  // No revenue either → nothing to overstate; freezing is harmless.
+  return !((Number(gp.rev) || 0) > 0);
+}
+
+// A line may be frozen automatically only when freezing it would freeze the TRUTH.
+export function canSnapshotLine(line) {
+  return lineDataReady(line) && costInputsBooked(line);
+}
+
+// An already-written freeze that captured $0 cost while today's live numbers carry a real
+// cost was never valid — it froze missing data, not truth. Repairing it can only move
+// commission DOWN toward the real GP, so it is the one frozen row the page corrects on its
+// own; every other correction still goes through the deliberate Re-freeze button.
+export function staleZeroCostSnapshot(snap, liveLine) {
+  if (!snap || !liveLine) return false;
+  if ((Number(snap.gp && snap.gp.cost) || 0) > 0) return false;
+  return (Number(liveLine.gp && liveLine.gp.cost) || 0) > 0;
+}
+
+// Repair patch for the case above: re-freeze the GP at today's real cost and re-run the
+// commission at the ALREADY-FROZEN rate. Paid date, days-to-pay, statement month and any
+// admin override are left exactly as frozen — only the bad cost moves.
+export function zeroCostRepairPatch(snap, liveLine, basis) {
+  const gp = liveLine.gp || {};
+  // A 0% rate is a legitimate admin override; a missing/garbage one is not — that keeps the
+  // frozen amount rather than silently zeroing (or NaN-ing) the rep's line.
+  const rate = snap && snap.rate != null ? Number(snap.rate) : NaN;
+  const base = basis === 'revenue' ? (Number(gp.rev) || 0) : (Number(gp.gp) || 0);
+  return {
+    gp,
+    amount: Number.isFinite(rate) ? Math.round(base * rate * 100) / 100 : Number(snap.amount) || 0,
+  };
 }
 
 // Build the DB row from a buildCommLines line. The line's commRate/commAmt already

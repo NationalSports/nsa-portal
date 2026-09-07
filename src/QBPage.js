@@ -1,13 +1,17 @@
+import {supabase} from './lib/dbEngine';
+import {loadQBVendorReview,applyQBVendorReview} from './qbVendorSync';
+import {buildQBProductManifest,loadQBProductItems,qbProductBatchReadiness} from './qbProductMigration';
 // QuickBooks Online sync page — lifted verbatim out of App() (was `function rQB()`)
 // as step 3 of the App.js decomposition. All shared state comes from useAppData();
 // this component holds no state of its own, so mount/unmount on page switch is
 // behavior-identical to the old closure call.
-import { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAppData } from './AppContext';
 import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
-import { createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName } from './qbSyncEngine';
+import { authFetch } from './utils';
+import { buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName, qbCustomerBatchReady, qbResponseErrorDetail } from './qbSyncEngine';
 import {
   QB_ACCOUNT_MAPPING_DEFAULTS,
   QB_ACCOUNT_POSTING_MATRIX,
@@ -21,11 +25,30 @@ import {
   readQBWithRetry,
   manualBillAccountKey,
   normalizeVendorName,
+  qbWriteAccountRef,
   resolveQBAccountRefs,
 } from './qbAccountMappings';
 
+const stripeBackfillErrorSummary=(errors=[])=>{
+  const counts={};
+  errors.forEach(({error})=>{
+    const message=String(error||'Unknown Stripe error');
+    const category=/no such payment_intent/i.test(message)?'PaymentIntent not found in the current Stripe account':
+      /no balance transaction/i.test(message)?'PaymentIntent has no settled balance transaction':
+      /no such charge/i.test(message)?'Charge not found in the current Stripe account':
+      /rate limit|temporar|timeout|connection/i.test(message)?'Temporary Stripe/API error':'Other reconciliation error';
+    counts[category]=(counts[category]||0)+1;
+  });
+  return Object.entries(counts);
+};
+
+const QB_BATCH_SIZES = [10, 20, 50, 100, 250, 500];
+
 const QB_MAPPING_FIELDS = [
   ['income_account', 'Customer sales + shipping'],
+  ['inventory_asset_account', 'Inventory asset'],
+  ['cogs_account', 'Inventory COGS'],
+  ['inventory_loss_account', 'Inventory loss / corrections'],
   ['discount_account', 'Customer discounts'],
   ['purchases_account', 'SKU purchases + supplies'],
   ['freight_account', 'Vendor freight in'],
@@ -50,7 +73,7 @@ const QB_MAPPING_FIELDS = [
 ];
 
 export default function QBPage(){
-  const {connectQB,cust,decoVendors,disconnectQB,invAdjLog,invPOs,invs,nf,prod,qbApi,qbBillAmount,qbBillDate,qbBillFile,qbBillMemo,qbBillUploading,qbBillVendor,qbConfig,qbSyncing,qbTab,setInvPOs,setInvs,setQBConfig,setQbBillAmount,setQbBillDate,setQbBillFile,setQbBillMemo,setQbBillUploading,setQbBillVendor,setQbSyncing,setQbTab,setSOs,setSubmittedBatches,setVend,sos,submittedBatches,vend}=useAppData();
+  const {connectQB,cust,decoVendors,disconnectQB,invAdjLog,invPOs,invs,nf,prod,persistQbLink,qbApi,qbBillAmount,qbBillDate,qbBillFile,qbBillMemo,qbBillUploading,qbBillVendor,qbConfig,qbSyncing,qbTab,setInvPOs,setInvs,setQBConfig,setQbBillAmount,setQbBillDate,setQbBillFile,setQbBillMemo,setQbBillUploading,setQbBillVendor,setQbSyncing,setQbTab,setSOs,setSubmittedBatches,setVend,sos,submittedBatches,vend}=useAppData();
   const [qbBillFreight,setQbBillFreight]=useState('');
   const [qbBillSportsFee,setQbBillSportsFee]=useState('');
   const [qbCanaryMode,setQbCanaryMode]=useState(true);
@@ -59,12 +82,156 @@ export default function QBPage(){
   const [qbCanaryProductId,setQbCanaryProductId]=useState('');
   const [qbCanarySOId,setQbCanarySOId]=useState('');
   const [qbCanaryPOId,setQbCanaryPOId]=useState('');
+  const [qbReconcilePOId,setQbReconcilePOId]=useState('');
+  const [qbReconcileBillId,setQbReconcileBillId]=useState('');
+  const [poBillLinkReview,setPoBillLinkReview]=useState(null);
+  const [poCanaryReview,setPoCanaryReview]=useState(null);
   const [qbPreflighting,setQbPreflighting]=useState(false);
+  const [stripePayouts,setStripePayouts]=useState([]);
+  const [stripePayoutId,setStripePayoutId]=useState('');
+  const [stripePayoutDetail,setStripePayoutDetail]=useState(null);
+  const [stripePayoutLoading,setStripePayoutLoading]=useState(false);
+  const [stripePayoutError,setStripePayoutError]=useState('');
+  const [qbAuditItemId,setQbAuditItemId]=useState('');
+  const [qbItemAudit,setQbItemAudit]=useState(null);
+  const [customerManifest,setCustomerManifest]=useState(null);
+  const [customerReviewBusy,setCustomerReviewBusy]=useState(false);
+  const [productReview,setProductReview]=useState(null);
+  const [productApproved,setProductApproved]=useState(false);
+  const [productCreateApproved,setProductCreateApproved]=useState(false);
+  const [productFilter,setProductFilter]=useState('link');
+  const [productReviewBusy,setProductReviewBusy]=useState(false);
+  const [customerBatchApproved,setCustomerBatchApproved]=useState(false);
+  const [customerBatchLimit,setCustomerBatchLimit]=useState(20);
+  const [productBatchLimit,setProductBatchLimit]=useState(20);
+  const [poBatchLimit,setPoBatchLimit]=useState(20);
+  const [productPoOnly,setProductPoOnly]=useState(true);
+  const [customerReviewFilter,setCustomerReviewFilter]=useState('all');
+  // Steve Peterson approved Net 30 (the portal's own due-date default) for blank
+  // portal terms on September 6, 2026. The reviewer can still switch to Block.
+  const [customerBlankTermsDefault,setCustomerBlankTermsDefault]=useState('net30');
+  const [qbTaxReading,setQbTaxReading]=useState(false);
+  // Washington first on purpose: 4 invoices and about $319 of collected tax, against
+  // 56 invoices and about $20,455 in California. Learn QBO's behaviour on the small one.
+  const [taxSetupState,setTaxSetupState]=useState('WA');
+  const [taxAgencyName,setTaxAgencyName]=useState('Washington Department of Revenue');
+  const [taxRateName,setTaxRateName]=useState('WA Sales Tax');
+  const [taxRatePercent,setTaxRatePercent]=useState('');
+  const [matchDiagnostic,setMatchDiagnostic]=useState(null);
+  const [matchDiagnosticBusy,setMatchDiagnosticBusy]=useState(false);
+  const [poBatchReview,setPoBatchReview]=useState(null);
+  const [invValuationReview,setInvValuationReview]=useState(null);
+  const [invValuationApproved,setInvValuationApproved]=useState(false);
+  const [poBatchApproved,setPoBatchApproved]=useState(false);
+  const [vendorReview,setVendorReview]=useState(null);
+  const [vendorBusy,setVendorBusy]=useState(false);
+  const [vendorResults,setVendorResults]=useState(null);
+  const downloadVendorReview=()=>{
+    if(!vendorReview)return;
+    const payload={realm:qbConfig.realm_id,readAt:new Date().toISOString(),
+      counts:vendorReview.reduce((acc,row)=>({...acc,[row.action]:(acc[row.action]||0)+1}),{}),rows:vendorReview};
+    const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));
+    const anchor=document.createElement('a');anchor.href=url;
+    anchor.download='qbo-vendor-review-'+payload.readAt.slice(0,10)+'.json';anchor.click();
+    URL.revokeObjectURL(url);
+  };
+  const reviewVendors=async()=>{
+    setVendorBusy(true);setVendorReview(null);setVendorResults(null);
+    try{setVendorReview(await loadQBVendorReview({client:supabase,qbApi,links:qbConfig.vendorQBMap||{},realmId:qbConfig.realm_id}))}
+    catch(e){nf(e.message,'error')}finally{setVendorBusy(false)}
+  };
+  const importVendors=async()=>{
+    setVendorBusy(true);
+    try{
+      const results=await applyQBVendorReview({client:supabase,qbApi,links:qbConfig.vendorQBMap||{},realmId:qbConfig.realm_id,reviewed:vendorReview,persistQbLink,
+        onSaved:saved=>setVend(prev=>prev.some(v=>v.id===saved.id)?prev.map(v=>v.id===saved.id?{...v,...saved}:v):[...prev,saved])});
+      setVendorResults(results);setVendorReview(null);
+      nf(results.filter(r=>r.status==='saved').length+' vendors imported; '+results.filter(r=>r.status==='error').length+' errors');
+    }catch(e){setVendorReview(null);nf(e.message,'error')}finally{setVendorBusy(false)}
+  };
+  const [stripeBackfill,setStripeBackfill]=useState(null);
+  const [stripeWebhookStatus,setStripeWebhookStatus]=useState(null);
+
+  const stripeReconApi=async(action,payload={})=>{
+    const res=await authFetch('/.netlify/functions/stripe-reconciliation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,...payload})});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok)throw new Error(data.error||('Stripe reconciliation returned HTTP '+res.status));
+    return data;
+  };
+  const loadStripePayouts=async()=>{
+    setStripePayoutLoading(true);setStripePayoutError('');
+    try{const data=await stripeReconApi('list_payouts');setStripePayouts(data.payouts||[])}
+    catch(e){setStripePayoutError(e.message)}finally{setStripePayoutLoading(false)}
+  };
+  const loadStripePayoutDetail=async(id)=>{
+    setStripePayoutLoading(true);setStripePayoutError('');
+    try{const data=await stripeReconApi('payout_detail',{payout_id:id});setStripePayoutDetail(data)}
+    catch(e){setStripePayoutError(e.message)}finally{setStripePayoutLoading(false)}
+  };
+  const reconcileStripePayout=async(id)=>{
+    const payoutId=String(id||'').trim();
+    if(!/^po_[A-Za-z0-9_]+$/.test(payoutId)){setStripePayoutError('Enter a valid Stripe payout ID (po_...).');return}
+    setStripePayoutLoading(true);setStripePayoutError('');
+    try{
+      await stripeReconApi('reconcile_payout',{payout_id:payoutId});
+      setStripePayoutId('');await loadStripePayouts();await loadStripePayoutDetail(payoutId);
+      nf('Stripe payout reconciled to its balance transactions');
+    }catch(e){setStripePayoutError(e.message);setStripePayoutLoading(false)}
+  };
+  const loadStripeWebhookStatus=async()=>{
+    try{const data=await stripeReconApi('webhook_status');setStripeWebhookStatus(data);return data}
+    catch(e){setStripeWebhookStatus({healthy:false,error:e.message,missing_events:[]});throw e}
+  };
+  const repairStripeWebhookEvents=async()=>{
+    setStripePayoutLoading(true);setStripePayoutError('');
+    try{const data=await stripeReconApi('repair_webhook_events');setStripeWebhookStatus(data);nf('Stripe webhook payout, refund, and dispute coverage verified')}
+    catch(e){setStripePayoutError(e.message)}finally{setStripePayoutLoading(false)}
+  };
+  const runStripeHistoricalBackfill=async()=>{
+    setStripePayoutLoading(true);setStripePayoutError('');
+    const progress={phase:'orders',orders_processed:0,orders_linked:0,orders_skipped:0,payouts_processed:0,errors:[]};
+    setStripeBackfill({...progress});
+    try{
+      let cursor=null;
+      for(let page=0;page<100;page+=1){
+        const batch=await stripeReconApi('backfill_orders',{starting_after:cursor,limit:10});
+        progress.orders_processed+=Number(batch.processed||0);progress.orders_linked+=Number(batch.linked||0);
+        progress.orders_skipped+=(batch.skipped||[]).length;
+        progress.errors.push(...(batch.errors||[]));cursor=batch.next_cursor||null;setStripeBackfill({...progress});
+        if(!batch.has_more||!cursor)break;
+      }
+      progress.phase='payouts';setStripeBackfill({...progress});
+      cursor=null;let createdGte=null;
+      for(let page=0;page<100;page+=1){
+        const batch=await stripeReconApi('backfill_payouts',{starting_after:cursor,created_gte:createdGte,limit:5});
+        createdGte=batch.created_gte||createdGte;progress.payouts_processed+=Number(batch.processed||0);
+        progress.errors.push(...(batch.errors||[]));cursor=batch.next_cursor||null;setStripeBackfill({...progress});
+        if(!batch.has_more||!cursor)break;
+      }
+      const [status,webhook,payoutData]=await Promise.all([
+        stripeReconApi('reconciliation_status'),loadStripeWebhookStatus(),stripeReconApi('list_payouts'),
+      ]);
+      setStripePayouts(payoutData.payouts||[]);
+      setStripeBackfill({...progress,phase:'done',...status,webhook_healthy:webhook.healthy});
+      const reviewCount=Number(status.unlinked_card_orders||0)+Number(status.portal_payment_review_count||0)+Number(status.charge_amount_mismatch_count||0)+Number(status.actionable_automatic_payouts||0);
+      nf(reviewCount===0?'Stripe historical backfill complete':'Stripe backfill complete with review items',reviewCount===0?'success':'error');
+    }catch(e){setStripePayoutError(e.message);setStripeBackfill({...progress,phase:'error'});}finally{setStripePayoutLoading(false)}
+  };
+  const exportStripePayoutCsv=()=>{
+    const detail=stripePayoutDetail;if(!detail?.payout)return;
+    const head=['Payout ID','Balance Transaction','Webstore Order','Entry Type','Posting Account Key','Tax State','Amount Cents','QBO Ready'];
+    const rows=(detail.qbo_entries||[]).map(e=>[detail.payout.stripe_payout_id,e.stripe_balance_transaction_id,e.webstore_order_id||'',e.entry_type,e.posting_account_key,e.tax_state||'',e.amount_cents,e.qbo_ready?'Yes':'No']);
+    const esc=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
+    const csv=[head,...rows].map(row=>row.map(esc).join(',')).join('\r\n');
+    const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download='stripe-payout-'+detail.payout.stripe_payout_id+'.csv';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
+  };
+  useEffect(()=>{if(qbTab==='stripe'){loadStripePayouts();loadStripeWebhookStatus().catch(()=>{})}},[qbTab]);
 
 
     // Sync engine — one copy of the logic (see qbSyncEngine.js); the App-level
     // auto-sync builds the same engine from fresh state, no page visit required.
-    const {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
+    const {syncTaxRateCanary,syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,syncInventoryValuation,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,reviewPurchaseOrderBillCandidate,linkPurchaseOrderBill,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,persistQbLink,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
 
     // Read-only live-company inspection. This is the mandatory first step and
     // performs no QBO create/update calls.
@@ -97,6 +264,53 @@ export default function QBPage(){
         nf('Live QBO preflight failed — '+(e.message||'setup error'),'error');
       }finally{setQbPreflighting(false)}
     };
+    // Read-only inspection of the live Sales Tax Center. Taxable invoices stay
+    // blocked until accounting approves a mapping from these codes/rates; this
+    // only records what QBO has so that decision can be made from evidence.
+    const runTaxRateCanary=async()=>{
+      const args={state:taxSetupState,agencyName:taxAgencyName,rateName:taxRateName,ratePercent:taxRatePercent};
+      const result=await syncTaxRateCanary(args);
+      if(result?.status!=='needs_confirmation')return;
+      const approved=window.confirm('Create manual sales tax in QuickBooks for '+result.state+'?\n\n'
+        +(result.agencyExists?'Reuse existing tax agency #'+result.agencyId+': ':'Create ONE new tax agency: ')+result.agency
+        +'\nCreate ONE tax code and rate: '+result.rate+' at '+result.percent+'%'
+        +'\n\nThis does not post any invoice. Both records are verified by API read-back.'
+        +'\n\nNote: enabling manual sales tax in QuickBooks is how tax gets recorded; it is not Automated Sales Tax and does not switch it on.');
+      if(!approved){nf('Tax rate setup cancelled — nothing was created in QuickBooks');return}
+      await syncTaxRateCanary({...args,allowCreate:true});
+    };
+    const runQBTaxPreflight=async()=>{
+      setQbTaxReading(true);
+      const log={ts:new Date().toLocaleString(),type:'tax_preflight',status:'success',details:['READ ONLY — no QuickBooks records were created or changed']};
+      try{
+        const prefsRes=await queryQBReadOnly(qbApi,'SELECT * FROM Preferences','tax preferences query');
+        const taxPrefs=prefsRes?.QueryResponse?.Preferences?.[0]?.TaxPrefs||{};
+        const [codes,rates,agencies]=await Promise.all([
+          loadAllQBEntities(qbApi,'TaxCode','*',100),
+          loadAllQBEntities(qbApi,'TaxRate','*',100),
+          loadAllQBEntities(qbApi,'TaxAgency','*',100),
+        ]);
+        const agencyName=ref=>agencies.find(a=>String(a.Id)===String(ref?.value||''))?.DisplayName||ref?.name||'';
+        const rateById=new Map(rates.map(r=>[String(r.Id),r]));
+        const summary=codes.slice(0,200).map(code=>({
+          id:String(code.Id),name:code.Name||'',active:code.Active!==false,taxable:code.Taxable!==false,group:!!code.TaxGroup,
+          rates:(code.SalesTaxRateList?.TaxRateDetail||[]).map(detail=>{const rate=rateById.get(String(detail.TaxRateRef?.value||''));
+            return{id:String(detail.TaxRateRef?.value||''),name:rate?.Name||detail.TaxRateRef?.name||'',rate:rate?.RateValue??null,agency:agencyName(rate?.AgencyRef)}}),
+        }));
+        log.details.push('Company realm: '+(qbConfig.realm_id||'unknown'));
+        log.details.push('Automated Sales Tax: '+(taxPrefs.PartnerTaxEnabled?'ENABLED':'not enabled')+' · sales tax in use: '+(taxPrefs.UsingSalesTax?'yes':'no'));
+        log.details.push(codes.length+' tax codes · '+rates.length+' tax rates · '+agencies.length+' tax agencies');
+        summary.filter(code=>code.active).forEach(code=>log.details.push('TaxCode #'+code.id+' '+code.name+' — '+(code.taxable?'taxable':'non-taxable')
+          +(code.rates.length?' — '+code.rates.map(r=>r.name+(r.rate!=null?' '+r.rate+'%':'')+(r.agency?' ('+r.agency+')':'')).join(', '):'')));
+        log.details.push('Taxable invoices remain blocked until accounting approves a tax-code mapping from this list.');
+        setQBConfig(prev=>({...prev,taxPreflight:{at:new Date().toISOString(),realm_id:prev.realm_id,partnerTaxEnabled:!!taxPrefs.PartnerTaxEnabled,usingSalesTax:!!taxPrefs.UsingSalesTax,codeCount:codes.length,rateCount:rates.length,codes:summary},syncLog:[log,...(prev.syncLog||[])].slice(0,100)}));
+        nf('Sales-tax setup read from QBO — no records changed');
+      }catch(e){
+        log.status='error';log.details.push(e.message||'Sales-tax read failed');
+        setQBConfig(prev=>({...prev,syncLog:[log,...(prev.syncLog||[])].slice(0,100)}));
+        nf('Sales-tax read failed — '+(e.message||'QBO error'),'error');
+      }finally{setQbTaxReading(false)}
+    };
 
     // ── BILL UPLOAD — upload vendor bill to QB ──
     const uploadBill=async()=>{
@@ -121,7 +335,7 @@ export default function QBPage(){
       if(isCanary&&!window.confirm('Create exactly ONE QBO bill?\n\nVendor: '+vendor.name+'\nTotal: $'+amt.toFixed(2)+'\nBill date: '+qbBillDate+'\nPurchases/decoration: $'+(amt-freight-sportsFee).toFixed(2)+'\nFreight in (51000): $'+freight.toFixed(2)+'\nSports Inc fee (58000): $'+sportsFee.toFixed(2)+'\n\nThe bill will be verified by QBO API read-back.')){nf('Bill canary cancelled — nothing was sent');return}
       setQbBillUploading(true);
       const log={ts:new Date().toLocaleString(),type:isCanary?'bill_canary':'bill_upload',status:'success',details:[]};
-      let qbVendorId=vendor.qb_vendor_id;
+      let qbVendorId=qbConfig.vendorQBMap?.[vendor.id]||vendor.qb_vendor_id;
       if(!qbVendorId){
         // Reuse an existing QBO vendor before attempting a create, so a decoration
         // vendor stored in its own portal table cannot create duplicates.
@@ -178,14 +392,14 @@ export default function QBPage(){
       }
       const qbBill={
         VendorRef:{value:qbVendorId},
-        APAccountRef:apAccountRef,
+        APAccountRef:qbWriteAccountRef(apAccountRef),
         TxnDate:qbBillDate,
         Line:billLines,
         ...((isCanary||qbBillMemo)?{PrivateNote:[isCanary?'NSA-QB-CANARY:'+new Date().toISOString():'',qbBillMemo].filter(Boolean).join(' | ')}:{}),
       };
       const billRes=await qbApi('upsert_bill',{bill:qbBill});
       if(!billRes?.Bill?.Id){
-        log.details.push('Bill creation failed: '+(billRes?.Fault?.Error?.[0]?.Detail||'unknown'));
+        log.details.push('Bill creation failed: '+qbResponseErrorDetail(billRes));
         log.status='error';
         setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
         nf('Bill upload failed','error');
@@ -258,21 +472,27 @@ export default function QBPage(){
     const selectedCanaryProduct=canaryProducts.find(p=>String(p.id)===String(qbCanaryProductId));
     const selectedCanarySO=canarySOs.find(so=>String(so.id)===String(qbCanarySOId));
     const selectedCanaryPO=canaryPOs.find(group=>String(group.poId)===String(qbCanaryPOId));
+    const poPreviewRows=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{});
+    const poBatchRows=(poBatchReview?.rows||[]).filter(row=>row.action==='ready').slice(0,poBatchLimit);
+    const poPreviewById=new Map(poPreviewRows.map(row=>[String(row.poId),row]));
+    const poAccountSkus=poId=>poPreviewById.get(String(poId))?.accountSkus||[];
     const selectedInvoiceCustomer=selectedCanaryInvoice&&cust.find(c=>c.id===selectedCanaryInvoice.customer_id);
-    const invoiceCanaryBlock=selectedCanaryInvoice&&!_custQBMap[selectedCanaryInvoice.customer_id]?'Sync this invoice customer first':selectedCanaryInvoice&&safeNum(selectedCanaryInvoice.tax)>0?'Taxable invoices remain blocked until QBO tax-code mapping is deployed':'';
+    const invoiceCanaryTaxState=selectedCanaryInvoice?String(selectedInvoiceCustomer?.shipping_state||selectedInvoiceCustomer?.billing_state||'').trim().toUpperCase():'';
+    const invoiceCanaryBlock=selectedCanaryInvoice&&!_custQBMap[selectedCanaryInvoice.customer_id]?'Sync this invoice customer first'
+      :selectedCanaryInvoice&&safeNum(selectedCanaryInvoice.tax)>0&&!(qbConfig.qbTaxRateMap||{})[invoiceCanaryTaxState]?'Taxable invoice: run the tax-rate canary for '+(invoiceCanaryTaxState||'the customer state')+' first (Settings tab)':'';
     const soCanaryBlock=selectedCanarySO&&!_custQBMap[selectedCanarySO.customer_id]?'Sync this sales-order customer first':'';
     const poCanaryBlock=selectedCanaryPO?.invalidReason||'';
     const runCustomerCanary=async()=>{
       if(!qbCanaryCustomerId)return;
-      const result=await syncCustomerCanary(qbCanaryCustomerId);
+      const result=await syncCustomerCanary(qbCanaryCustomerId,{blankTermsDefault:customerBlankTermsDefault});
       if(result?.status==='needs_confirmation'){
         const approved=window.confirm('No exact active QBO customer matches "'+result.customerName+'".\n\nCreate exactly ONE new QBO customer with its mapped QBO payment terms and verify it by API read-back?');
         if(!approved){nf('Customer test cancelled — no QBO customer was created');return}
-        await syncCustomerCanary(qbCanaryCustomerId,{allowCreate:true});
+        await syncCustomerCanary(qbCanaryCustomerId,{allowCreate:true,blankTermsDefault:customerBlankTermsDefault});
       }else if(result?.status==='needs_term_confirmation'){
         const approved=window.confirm('QBO customer #'+result.qbId+' ("'+result.customerName+'") currently has terms "'+result.currentTerm+'".\n\nUpdate exactly this ONE customer to "'+result.desiredTerm+'" and verify it by API read-back?');
         if(!approved){nf('Customer terms update cancelled — no QBO customer was changed');return}
-        await syncCustomerCanary(qbCanaryCustomerId,{allowTermUpdate:true});
+        await syncCustomerCanary(qbCanaryCustomerId,{allowTermUpdate:true,blankTermsDefault:customerBlankTermsDefault});
       }
     };
     const runInvoiceCanary=async()=>{
@@ -281,10 +501,111 @@ export default function QBPage(){
       if(!window.confirm('Create exactly ONE QBO invoice?\n\nInvoice: '+doc+'\nCustomer: '+(selectedInvoiceCustomer?.name||'Unknown')+'\nTotal: $'+safeNum(selectedCanaryInvoice.total).toFixed(2)+'\nPaid in portal: $'+safeNum(selectedCanaryInvoice.paid).toFixed(2)+'\n\nThis test creates no payment. QBO customer terms and the invoice will be verified by API read-back.')){nf('Invoice canary cancelled — nothing was sent');return}
       await syncInvoices({}, {}, {canaryInvoiceId:selectedCanaryInvoice.id});
     };
+    const auditQBOItem=async()=>{
+      const id=String(qbAuditItemId).trim();
+      if(!/^\d+$/.test(id)||!livePreflightReady)return;
+      setQbSyncing(true);setQbItemAudit(null);
+      try{
+        const response=await queryQBReadOnly(qbApi,"SELECT * FROM Item WHERE Id = '"+id+"' AND Active IN (true, false) MAXRESULTS 1",'item recovery audit');
+        const item=response?.QueryResponse?.Item?.[0];
+        const result=item?{realm:qbConfig.realm_id,id:item.Id,name:item.Name,sku:item.Sku,active:item.Active,type:item.Type,income:item.IncomeAccountRef,purchases:item.ExpenseAccountRef}:{realm:qbConfig.realm_id,id,not_found:true};
+        setQbItemAudit(result);
+        setQBConfig(prev=>({...prev,syncLog:[{ts:new Date().toLocaleString(),type:'item_recovery_audit',status:item?'success':'error',details:['READ ONLY — no QBO records changed',JSON.stringify(result)]},...(prev.syncLog||[])].slice(0,100)}));
+      }catch(e){setQbItemAudit({error:e.message})}finally{setQbSyncing(false)}
+    };
+    const reviewCustomerMigration=async()=>{
+      if(!livePreflightReady)return;
+      setCustomerReviewBusy(true);setCustomerManifest(null);setCustomerBatchApproved(false);
+      try{
+        const terms=await loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000);
+        const customers=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SalesTermRef',1000);
+        const rows=buildQBCustomerManifest(cust,customers,terms,qbConfig.custQBMap||{},{blankTermsDefault:customerBlankTermsDefault});
+        const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,blankTermsDefault:customerBlankTermsDefault,
+          counts:rows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{}),
+          termSources:rows.reduce((counts,row)=>({...counts,[row.termSource||'portal']:(counts[row.termSource||'portal']||0)+1}),{})};
+        setCustomerManifest(review);
+        setQBConfig(prev=>({...prev,lastCustomerReview:review}));
+        nf('Customer review complete — no QBO records changed');
+      }catch(e){nf('Customer review failed — '+e.message,'error')}finally{setCustomerReviewBusy(false)}
+    };
+    // Read-only. The review counters say how many customers matched; they cannot say
+    // whether the QBO records we failed to match are the same accounts under other
+    // names. This shows the actual unmatched names on both sides so that is decidable.
+    const runMatchDiagnostic=async()=>{
+      if(!livePreflightReady)return;
+      setMatchDiagnosticBusy(true);setMatchDiagnostic(null);
+      try{
+        const qboCustomers=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active',1000);
+        const report=buildQBCustomerMatchDiagnostic(cust,qboCustomers,qbConfig.custQBMap||{});
+        setMatchDiagnostic({...report,readAt:new Date().toISOString(),realm:qbConfig.realm_id});
+        nf('Name-match diagnostic complete — no QBO records changed');
+      }catch(e){nf('Name-match diagnostic failed — '+e.message,'error')}finally{setMatchDiagnosticBusy(false)}
+    };
+    const downloadMatchDiagnostic=()=>{
+      if(!matchDiagnostic)return;
+      const url=URL.createObjectURL(new Blob([JSON.stringify(matchDiagnostic,null,2)],{type:'application/json'}));
+      const anchor=document.createElement('a');anchor.href=url;anchor.download='qbo-name-match-'+matchDiagnostic.readAt.slice(0,10)+'.json';anchor.click();
+      URL.revokeObjectURL(url);
+    };
+    const customerBatchRows=(customerManifest?.rows||[]).filter(row=>['link','create','update_terms'].includes(row.action)
+      &&(!qbConfig.custQBMap?.[row.sourceId]||row.action==='update_terms')).slice(0,customerBatchLimit);
+    const customerCanariesReady=qbCustomerBatchReady(qbConfig);
+    const productReadiness=qbProductBatchReadiness(qbConfig);
+    const runCustomerBatch=async()=>{
+      const report=await syncCustomers({manifest:{...customerManifest,rows:customerBatchRows},approved:customerBatchApproved});
+      setCustomerBatchApproved(false);
+      if(report?.results)setCustomerManifest(null);
+    };
+    const downloadCustomerBatch=()=>{
+      const report=qbConfig.lastCustomerBatch;if(!report)return;
+      const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:'application/json'}));
+      const anchor=document.createElement('a');anchor.href=url;anchor.download='qbo-'+report.id.replace(/[:.]/g,'-')+'.json';anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    };
+    const downloadCustomerManifest=()=>{
+      if(!customerManifest)return;
+      const url=URL.createObjectURL(new Blob([JSON.stringify(customerManifest,null,2)],{type:'application/json'}));
+      const anchor=document.createElement('a');anchor.href=url;anchor.download='qbo-customer-review-'+customerManifest.reviewedAt.slice(0,10)+'.json';anchor.click();
+      setTimeout(()=>URL.revokeObjectURL(url),1000);
+    };
+    const downloadProductEvidence=()=>{
+      const data={review:productReview||qbConfig.lastProductReview,run:qbConfig.lastProductRun};
+      const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
+      const anchor=document.createElement('a');anchor.href=url;anchor.download='qbo-product-evidence.json';anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    };
+    const reviewProducts=async()=>{
+      if(!livePreflightReady)return;
+      setProductReviewBusy(true);setProductApproved(false);
+      try{
+        const refs=resolveQBAccountRefs(await loadQBAccounts(qbApi),qbConfig.mapping,['income_account','purchases_account']);
+        const rows=buildQBProductManifest(prod,await loadQBProductItems(qbApi),qbConfig.prodQBMap||{},refs);
+        const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,counts:rows.reduce((a,r)=>(a[r.action]=(a[r.action]||0)+1,a),{})};
+        setProductReview(review);setQBConfig(prev=>({...prev,lastProductReview:review}));
+        nf('Product review complete — no QBO changes');
+      }catch(e){nf('Product review failed — '+e.message,'error')}finally{setProductReviewBusy(false)}
+    };
+    // Only SKUs that actually appear on a purchase order awaiting sync need a QBO item.
+    // The full catalogue is about 48,000 SKUs and QBO never needs most of them.
+    const poPendingSkus=React.useMemo(()=>new Set((poBatchReview?.rows||qbConfig.lastPurchaseOrderReview?.rows||[])
+      .flatMap(row=>row.skus||[]).map(sku=>String(sku).trim().toUpperCase()).filter(Boolean)),[poBatchReview,qbConfig.lastPurchaseOrderReview]);
+    const productBatchRows=(productReview?.rows||[]).filter(r=>['link','create'].includes(r.action)&&!r.complete)
+      .filter(r=>!productPoOnly||!poPendingSkus.size||poPendingSkus.has(String(r.sku).trim().toUpperCase()))
+      .slice(0,productBatchLimit);
+    const runProductBatch=async()=>{
+      await syncInventory({approved:productApproved,manifest:{...productReview,rows:productBatchRows}});
+      setProductReview(null);setProductApproved(false);
+    };
     const runProductCanary=async()=>{
       if(!selectedCanaryProduct)return;
-      if(!window.confirm('Create or update exactly ONE QBO NonInventory item?\n\nSKU: '+selectedCanaryProduct.sku+'\nProduct: '+selectedCanaryProduct.name+'\nSales account: 40000\nPurchase account: 51300\n\nNo size/color quantities or inventory value will be sent. The item will be verified by API read-back.')){nf('QBO item canary cancelled — nothing was sent');return}
-      await syncInventory({canaryProductId:selectedCanaryProduct.id});
+      await syncInventory({canaryProductId:selectedCanaryProduct.id,allowCreate:productCreateApproved});
+      setProductCreateApproved(false);setProductReview(null);
+    };
+    const runInactiveProductLinkCleanup=async()=>{
+      if(!selectedCanaryProduct||!_prodQBMap[selectedCanaryProduct.id])return;
+      const result=await clearInactiveProductLink(selectedCanaryProduct.id);
+      if(result?.status!=='needs_confirmation')return;
+      const approved=window.confirm('Remove exactly ONE stale portal-to-QBO product link?\n\nSKU: '+result.sku+'\nQBO item: #'+result.itemId+'\n\nQBO API read-back verified this item is inactive. This removes only the portal link; it does not change or delete the QBO item.');
+      if(!approved){nf('Inactive-link cleanup cancelled — no portal link was removed');return}
+      await clearInactiveProductLink(selectedCanaryProduct.id,{allowUnlink:true});
     };
     const runPortalSalesItemCanary=async()=>{
       if(!window.confirm('Create or repair exactly ONE required QBO service item?\n\nName: NSA Portal Sales\nType: Service\nSales account: 40000 Sales\n\nThis item carries portal invoice totals and customer-billed shipping. No invoice, payment, quantity, cost, or inventory value will be sent. The item will be verified by API read-back.')){nf('NSA Portal Sales test cancelled — nothing was sent');return}
@@ -296,11 +617,42 @@ export default function QBPage(){
       if(!window.confirm('Create or link exactly ONE QBO Estimate?\n\nPortal sales order: '+selectedCanarySO.id+'\nCustomer: '+preview.customerRef+'\nTotal: $'+safeNum(preview.total).toFixed(2)+'\n\nThis is non-posting and will be verified by API read-back.')){nf('Sales-order canary cancelled — nothing was sent');return}
       await syncSalesOrders({}, {}, {canarySOId:selectedCanarySO.id});
     };
-    const runPurchaseOrderCanary=async()=>{
+    const reviewPurchaseOrderCanary=()=>{
       if(!selectedCanaryPO||poCanaryBlock)return;
       const total=selectedCanaryPO.entries.reduce((sum,{pl,so,it})=>sum+safeNum(buildQBPurchaseOrder(pl,so,it).total),0);
-      if(!window.confirm('Create or link exactly ONE QBO Purchase Order?\n\nPortal PO: '+selectedCanaryPO.poId+'\nVendor: '+(selectedCanaryPO.vendor||'Unknown')+'\nTotal: $'+total.toFixed(2)+'\n\nThis is non-posting. The test will not create a vendor or item, and the PO will be verified by API read-back.')){nf('Purchase-order canary cancelled — nothing was sent');return}
-      await syncPurchaseOrders({}, {canaryPOId:selectedCanaryPO.poId});
+      setPoCanaryReview({poId:selectedCanaryPO.poId,vendor:selectedCanaryPO.vendor,total,fingerprint:JSON.stringify(selectedCanaryPO)});
+    };
+    const runPurchaseOrderCanary=async()=>{
+      if(qbSyncing||!livePreflightReady||!poCanaryReview)return;
+      if(!selectedCanaryPO||poCanaryBlock||poCanaryReview.fingerprint!==JSON.stringify(selectedCanaryPO)){
+        setPoCanaryReview(null);nf('Purchase order changed — review it again before testing','error');return;
+      }
+      const poId=poCanaryReview.poId;
+      setPoCanaryReview(null);
+      await syncPurchaseOrders({}, {canaryPOId:poId});
+    };
+    const reviewInventoryValuation=async()=>{
+      setInvValuationApproved(false);
+      const result=await syncInventoryValuation({approved:false});
+      setInvValuationReview(result&&['needs_confirmation','unchanged'].includes(result.status)?result:null);
+    };
+    const postInventoryValuation=async()=>{
+      if(!invValuationReview||invValuationReview.status!=='needs_confirmation'||!invValuationApproved)return;
+      const review=invValuationReview;
+      setInvValuationReview(null);setInvValuationApproved(false);
+      await syncInventoryValuation({approved:true,asOf:review.asOf,expectedDelta:review.delta});
+    };
+    const reviewPurchaseOrderBatch=()=>{
+      const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows:poPreviewRows,
+        counts:poPreviewRows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{})};
+      setPoBatchReview(review);setPoBatchApproved(false);setQBConfig(prev=>({...prev,lastPurchaseOrderReview:review}));
+      nf('Purchase-order readiness review complete — no QBO records changed');
+    };
+    const runPurchaseOrderBatch=async()=>{
+      const current=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{});
+      const currentById=new Map(current.map(row=>[row.poId,row]));
+      if(poBatchRows.some(row=>JSON.stringify(currentById.get(row.poId))!==JSON.stringify(row))){nf('Purchase-order batch changed since review — review it again','error');setPoBatchApproved(false);return}
+      await syncPurchaseOrders({}, {approved:poBatchApproved,approvedPOIds:poBatchRows.map(row=>row.poId)});setPoBatchApproved(false);setPoBatchReview(null);
     };
 
     // Build what a QB sync would push
@@ -329,7 +681,8 @@ export default function QBPage(){
 
     const buildQBPurchaseOrder=(pl,so,it)=>{
       const qty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!k.startsWith('_')&&!['unit_cost','billed','tracking_numbers','vendor','drop_ship'].includes(k)&&k.match(/^[A-Z0-9]/)).reduce((a,[,v])=>a+v,0);
-      const rate=pl.po_type==='outside_deco'?safeNum(pl.unit_cost):safeNum(it.nsa_cost);
+      const hasSavedRate=pl.unit_cost!==undefined&&pl.unit_cost!==null&&pl.unit_cost!=='';
+      const rate=Math.round((safeNum(hasSavedRate?pl.unit_cost:it.nsa_cost)+Number.EPSILON)*100)/100;
       return{docType:'PurchaseOrder',docNumber:pl.po_id,vendorRef:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand,
         date:pl.created_at,soRef:so.id,lines:[{desc:it.sku+' '+it.name,qty,rate,amount:qty*rate}],
         account:pl.po_type==='outside_deco'?qbConfig.mapping.deco_account:qbConfig.mapping.purchases_account,
@@ -385,6 +738,9 @@ export default function QBPage(){
     };
 
     return(<>
+      {/* Deployment marker: forces a fresh lazy-loaded QBO chunk after the
+          account-reference payload hardening shipped. */}
+      <span hidden data-qb-payload-version="account-ref-v2" />
       {/* Connection Status */}
       <div className="card" style={{marginBottom:16,borderLeft:'4px solid '+(qbConfig.connected?'#22c55e':'#d97706')}}>
         <div className="card-body">
@@ -413,18 +769,31 @@ export default function QBPage(){
       {qbConfig.connected&&<>
       {/* Stats */}
       <div className="stats-row" style={{marginBottom:16}}>
-        <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">Customers in QB</div><div className="stat-value" style={{color:'#2563eb'}}>{custWithQB}/{cust.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label" title="Customers the Portal has a saved, verified QuickBooks link for. QuickBooks may already hold customers the Portal has not linked yet.">Customers linked</div><div className="stat-value" style={{color:'#2563eb'}}>{custWithQB}/{cust.length}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}><div className="stat-label">Invoices to Sync</div><div className="stat-value" style={{color:'#d97706'}}>{unsyncedInvs.length}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #16a34a'}}><div className="stat-label">SOs to Sync</div><div className="stat-value" style={{color:'#16a34a'}}>{unsyncedSOs.length}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">POs to Sync</div><div className="stat-value" style={{color:'#7c3aed'}}>{unsyncedPOGroups.length}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Products in QB</div><div className="stat-value" style={{color:'#166534'}}>{prodWithQB}/{prod.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label" title="SKUs the Portal has a saved, verified QuickBooks item link for. QuickBooks may already hold items the Portal has not linked yet.">Products linked</div><div className="stat-value" style={{color:'#166534'}}>{prodWithQB}/{prod.length}</div></div>
       </div>
 
       {/* Tabs */}
       <div className="tab-bar" style={{marginBottom:16}}>
-        {[['overview','Overview'],['customers','Customers'],['invoices','Invoices'],['bills','Bill Upload'],['inventory','QBO Items'],['settings','Settings'],['log','Sync Log']].map(([k,l])=>
+        {[['overview','Overview'],['customers','Customers'],['vendors','Vendors'],['invoices','Invoices'],['stripe','Stripe Payouts'],['bills','Bill Upload'],['inventory','QBO Items'],['settings','Settings'],['log','Sync Log']].map(([k,l])=>
           <button key={k} className={`tab ${qbTab===k?'active':''}`} onClick={()=>setQbTab(k)}>{l}</button>)}
       </div>
+
+      {qbTab==='vendors'&&<div className="card"><div className="card-header"><h2>QBO Vendors → Portal</h2></div><div className="card-body">
+        <p>Match existing vendors or import missing vendors from QuickBooks. Portal names, purchasing settings and existing contacts are preserved; missing email and phone fields are filled from QBO. Possible decoration-vendor matches, ambiguous matches and inactive Portal vendors require review.</p>
+        <p>Vendor imports do not change QuickBooks. During migration, run this review when QBO vendors change.</p>
+        <button className="btn btn-secondary" disabled={vendorBusy||qbSyncing||!qbConfig.realm_id} onClick={reviewVendors}>{vendorBusy?'Working…':'Review QBO Vendors'}</button>
+        {vendorReview&&<>
+          <table><thead><tr><th>QBO vendor</th><th>Portal vendor</th><th>Action</th><th>Details</th></tr></thead><tbody>{vendorReview.map((r,i)=><tr key={r.qboId+'-'+i}><td>{r.name}</td><td>{r.portalName||'—'}</td><td>{r.action}</td><td>{r.reason||Object.entries(r.patch).map(([k,v])=>k+': '+v).join('; ')}</td></tr>)}</tbody></table>
+          <button className="btn btn-sm" style={{marginRight:8}} onClick={downloadVendorReview}>Download Vendor Review — No Changes</button>
+          <button className="btn btn-primary" disabled={vendorBusy||!vendorReview.some(r=>['create','link','update'].includes(r.action))} onClick={importVendors}>Import Reviewed Vendors to Portal</button>
+        </>}
+        {vendorResults&&<div role="status">{vendorResults.filter(r=>r.status==='saved').length} saved; {vendorResults.filter(r=>r.status==='error').length} errors.
+          {vendorResults.filter(r=>r.status==='error').map(r=><p key={r.qboId}>{r.name}: {r.reason}</p>)}</div>}
+      </div></div>}
 
       {/* ── OVERVIEW TAB ── */}
       {qbTab==='overview'&&<>
@@ -436,7 +805,7 @@ export default function QBPage(){
                 <label className="form-label">Sync Mode</label>
                 <div style={{display:'flex',gap:4}}>
                   {[['manual','Manual'],['hourly','Hourly'],['daily','Daily'],['realtime','Real-time']].map(([v,l])=>
-                    <button key={v} disabled={!migrationUnlocked&&v!=='manual'} title={!migrationUnlocked&&v!=='manual'?'Enabled only after canary approval':''} className={`btn btn-sm ${qbConfig.autoSync===v?'btn-primary':'btn-secondary'}`}
+                    <button key={v} disabled={v!=='manual'} title={v!=='manual'?'Controlled migration uses manual, reconciled batches':''} className={`btn btn-sm ${qbConfig.autoSync===v?'btn-primary':'btn-secondary'}`}
                       onClick={()=>setQBConfig(prev=>({...prev,autoSync:v}))}>{l}</button>)}
                 </div>
               </div>
@@ -450,13 +819,13 @@ export default function QBPage(){
               </div>}
               <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
                 <button className="btn btn-primary" style={{flex:1,background:'#0369a1'}} disabled={qbPreflighting||qbSyncing} onClick={runQBPreflight}>{qbPreflighting?'Reading live QBO...':'Read-Only Live Preflight'}</button>
-                <button className="btn btn-primary" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={syncAll}>{qbSyncing?'Syncing...':'Sync Everything'}</button>
-                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncCustomers}>Customers</button>
-                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={()=>syncSalesOrders()}>Sales Orders</button>
+                <button className="btn btn-primary" disabled title="Controlled migration: run and reconcile one entity at a time" onClick={syncAll}>{qbSyncing?'Syncing...':'Sync Everything'}</button>
+                <button className="btn btn-secondary" disabled title="Use the reviewed customer batch below">Customers</button>
+                <button className="btn btn-secondary" disabled title="Locked pending customer links and Estimate rollout review" onClick={()=>syncSalesOrders()}>Sales Orders</button>
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={()=>syncInvoices()}>Invoices</button>
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncPaidFromQB}>Sync Paid</button>
-                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={()=>syncPurchaseOrders()}>POs</button>
-                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={()=>syncInventory()}>QBO Items</button>
+                <button className="btn btn-secondary" disabled title="Locked pending native PO-to-existing-bill reconciliation" onClick={()=>syncPurchaseOrders()}>POs</button>
+                <button className="btn btn-secondary" disabled title="Locked until the product-item canaries are approved">QBO Product Items Locked</button>
               </div>
             </div>
           </div>
@@ -469,7 +838,8 @@ export default function QBPage(){
               <div style={{marginBottom:4}}>&#8226; <strong>Purchase Orders</strong> — total quantity per SKU plus outside-decoration lines</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Bills</strong> — parsed portal vendor bills push to QBO only after account, item, total, and duplicate checks</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Bill direction</strong> — the initial migration does not auto-pull QBO bills back into portal POs</div>
-              <div>&#8226; <strong>Products</strong> — one QBO NonInventory item per SKU; size/color inventory remains in the portal</div>
+              <div>&#8226; <strong>Product items</strong> — one QBO NonInventory purchase item per SKU using 40000 Sales and 51300 Purchases; portal inventory remains authoritative</div>
+              <div>&#8226; <strong>Inventory quantities and adjustments</strong> — remain in the portal and are not posted to QBO</div>
             </div>
           </div>
         </div>
@@ -490,15 +860,60 @@ export default function QBPage(){
             <div style={{padding:12,background:'#f5f3ff',border:'1px solid #ddd6fe',borderRadius:8}}>
               <div style={{fontSize:12,fontWeight:700,color:'#5b21b6',marginBottom:4}}>Test exactly one purchase order</div>
               <div style={{fontSize:10,color:'#475569',marginBottom:8}}>Non-posting. The canary will not create a vendor or QBO item as a side effect.</div>
-              <select className="form-input" aria-label="Purchase order to test in QuickBooks" value={qbCanaryPOId} onChange={e=>setQbCanaryPOId(e.target.value)}>
+              <select className="form-input" aria-label="Purchase order to test in QuickBooks" disabled={qbSyncing} value={qbCanaryPOId} onChange={e=>{setQbCanaryPOId(e.target.value);setPoCanaryReview(null)}}>
                 <option value="">Select one purchase order...</option>
-                {canaryPOs.map(group=><option key={group.poId} value={group.poId}>{group.poId} — {group.vendor||'Unknown'}{group.invalidReason?' — BLOCKED':''}</option>)}
+                {canaryPOs.map(group=><option key={group.poId} value={group.poId}>{group.poId} — {group.vendor||'Unknown'}{group.invalidReason?' — BLOCKED':poAccountSkus(group.poId).length?' — '+poAccountSkus(group.poId).length+' unlinked SKU'+(poAccountSkus(group.poId).length===1?'':'s')+' to Purchases':''}</option>)}
               </select>
-              <button className="btn btn-primary btn-sm" style={{marginTop:8,background:'#6d28d9'}} disabled={qbSyncing||!livePreflightReady||!selectedCanaryPO||!!poCanaryBlock} onClick={runPurchaseOrderCanary}>{qbSyncing?'Testing...':'Test 1 Purchase Order'}</button>
+              <button className="btn btn-primary btn-sm" style={{marginTop:8,background:'#6d28d9'}} disabled={qbSyncing||!livePreflightReady||!selectedCanaryPO||!!poCanaryBlock} onClick={reviewPurchaseOrderCanary}>{qbSyncing?'Testing...':'Test 1 Purchase Order'}</button>
+              {poCanaryReview&&<section role="region" aria-label="Confirm one purchase order" style={{marginTop:12,padding:12,background:'#fff',border:'2px solid #6d28d9',borderRadius:8}}>
+                <strong>Create or link exactly one QBO Purchase Order</strong>
+                <div style={{marginTop:8}}>{poCanaryReview.poId} — {poCanaryReview.vendor||'Unknown'}</div>
+                <div style={{fontWeight:700,marginTop:4}}>Saved PO total: ${poCanaryReview.total.toFixed(2)}</div>
+                {poAccountSkus(poCanaryReview.poId).length>0&&<div style={{fontSize:11,marginTop:4,color:'#92400e'}}>No linked QBO item for {poAccountSkus(poCanaryReview.poId).join(', ')} — these post as one line to the Purchases account with the SKU and description in the memo.</div>}
+                <p>This is non-posting. No vendor or item will be created. The PO will be verified by API read-back.</p>
+                <button className="btn btn-primary btn-sm" disabled={qbSyncing||!livePreflightReady} onClick={runPurchaseOrderCanary}>Confirm and test this PO</button>
+                <button className="btn btn-sm" style={{marginLeft:8}} disabled={qbSyncing} onClick={()=>{setPoCanaryReview(null);nf('Purchase-order canary cancelled — nothing was sent')}}>Cancel</button>
+              </section>}
               {poCanaryBlock&&<div style={{fontSize:10,color:'#b91c1c',marginTop:6,fontWeight:600}}>{poCanaryBlock}</div>}
+              <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid #ddd6fe'}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#5b21b6'}}>Verify an existing native PO-to-bill link</div>
+                <select className="form-input" aria-label="Linked purchase order to verify" style={{marginTop:6}} disabled={qbSyncing} value={qbReconcilePOId} onChange={e=>setQbReconcilePOId(e.target.value)}>
+                  <option value="">Select a linked purchase order...</option>
+                  {Object.keys(qbConfig.qbPOMap||{}).map(id=><option key={id} value={id}>{id} — QBO #{qbConfig.qbPOMap[id]}{qbConfig.qbPOBillMap?.[id]?' — previously verified':''}</option>)}
+                </select>
+                <label style={{display:'block',fontSize:11,marginTop:8}}>Existing QBO bill ID reviewed in QuickBooks
+                  <input className="form-input" aria-label="Existing QBO bill ID" value={qbReconcileBillId} disabled={qbSyncing} onChange={e=>setQbReconcileBillId(e.target.value.trim())} inputMode="numeric" />
+                </label>
+                <button className="btn btn-primary btn-sm" style={{marginTop:8,background:'#5b21b6'}} disabled={qbSyncing||!livePreflightReady||!qbReconcilePOId||!/^\d+$/.test(qbReconcileBillId)} onClick={()=>verifyPurchaseOrderBillLinks({canaryPOId:qbReconcilePOId,expectedBillId:qbReconcileBillId})}>Verify link by API read-back</button>
+                <div style={{fontSize:10,color:'#64748b',marginTop:6}}>Reads both existing QBO records and saves a receipt only when the reviewed bill, vendor, PO number, memo reference and reciprocal links agree. This verifies an existing link; it does not create a link or unlock PO batches.</div>
+                {qbConfig.lastPOBillVerification&&<details style={{marginTop:8}}><summary>Latest saved PO-to-bill API evidence</summary><pre style={{whiteSpace:'pre-wrap',fontSize:11}}>{JSON.stringify(qbConfig.lastPOBillVerification,null,2)}</pre></details>}
+                <button className="btn btn-secondary btn-sm" style={{marginTop:8}} disabled={qbSyncing||!livePreflightReady||!qbReconcilePOId||(qbConfig.qbPOBillMap||{})[qbReconcilePOId]} onClick={async()=>setPoBillLinkReview(await reviewPurchaseOrderBillCandidate(qbReconcilePOId))}>Review one unlinked bill candidate</button>
+                {poBillLinkReview&&<section role="region" aria-label="Confirm one PO to bill API link" style={{marginTop:8,padding:10,border:'2px solid #7c3aed',borderRadius:6,background:'#fff'}}>
+                  {poBillLinkReview.status==='ready'?<><strong>{poBillLinkReview.portalPOId} → existing Bill #{poBillLinkReview.billId}</strong><div>{poBillLinkReview.vendor} · Bill {poBillLinkReview.billDocNumber} · ${poBillLinkReview.billTotal.toFixed(2)} · PO ${poBillLinkReview.poTotal.toFixed(2)}</div><p style={{fontSize:10}}>This replaces only matched unlinked bill lines with identical PO-linked lines. Bill identity, date, vendor, descriptions, quantities, rates, amounts, fees and total are preserved and verified by API read-back.</p><button className="btn btn-primary btn-sm" disabled={qbSyncing} onClick={async()=>{await linkPurchaseOrderBill({portalPOId:poBillLinkReview.portalPOId,expectedBillId:poBillLinkReview.billId,approved:true});setPoBillLinkReview(null)}}>Confirm and link this existing bill</button></>:<strong>Blocked: {poBillLinkReview.reason||'candidate is not ready'}</strong>}
+                </section>}
+              </div>
             </div>
           </div>
           {!livePreflightReady&&<div style={{padding:'0 16px 12px',fontSize:11,color:'#92400e',fontWeight:600}}>Buttons disabled: run Read-Only Live Preflight first.</div>}
+        </div>
+
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h2>Controlled Purchase-Order Batch</h2></div>
+          <div className="card-body">
+            <p style={{fontSize:11,color:'#475569'}}>Reviews portal readiness first, then processes at most 20 exact PO IDs. Every created or matched PO must pass API header and line read-back before its durable link is saved. Missing vendors block without being created as side effects. Lines whose SKU has no linked QBO item post to the Purchases account as one line instead of blocking the PO.</p>
+            <button className="btn btn-sm" disabled={qbSyncing||!livePreflightReady} onClick={reviewPurchaseOrderBatch}>Review POs — No QBO Changes</button>
+            {poBatchReview&&<>
+              <p>Readiness: {JSON.stringify(poBatchReview.counts)}. Proposed batch: {poBatchRows.length} ready POs.</p>
+              <table><thead><tr><th>Portal PO</th><th>Vendor</th><th>Date</th><th>Lines</th><th>To Purchases acct</th><th>Total</th></tr></thead><tbody>{poBatchRows.map(row=><tr key={row.poId}><td>{row.poId}</td><td>{row.vendor}</td><td>{row.date}</td><td>{row.lineCount}</td><td title={(row.accountSkus||[]).join(', ')}>{(row.accountSkus||[]).length?(row.accountSkus||[]).length+' SKU'+((row.accountSkus||[]).length===1?'':'s'):'—'}</td><td>${row.total.toFixed(2)}</td></tr>)}</tbody></table>
+              <label style={{marginRight:12}}>Batch size <select aria-label="Purchase order batch size" value={poBatchLimit} disabled={qbSyncing} onChange={e=>{setPoBatchLimit(Number(e.target.value));setPoBatchApproved(false)}}>{QB_BATCH_SIZES.map(size=><option key={size} value={size}>{size}</option>)}</select></label>
+              <label><input type="checkbox" checked={poBatchApproved} disabled={qbSyncing} onChange={e=>setPoBatchApproved(e.target.checked)}/> I approve only the listed POs in this batch.</label>
+              <button className="btn btn-primary btn-sm" disabled={qbSyncing||!poBatchApproved||!poBatchRows.length||!qbConfig.qbPOBillMap?.['PO 58971 SHHGS']} onClick={runPurchaseOrderBatch}>Run Reviewed PO Batch</button>
+              <h3>First readiness exceptions</h3>
+              <table><thead><tr><th>Portal PO</th><th>Vendor</th><th>Reason</th></tr></thead><tbody>{poBatchReview.rows.filter(row=>row.action==='blocked').slice(0,20).map(row=><tr key={row.poId}><td>{row.poId}</td><td>{row.vendor}</td><td>{row.reason}</td></tr>)}</tbody></table>
+            </>}
+            {qbConfig.lastPurchaseOrderBatch&&<><h3>Latest PO batch: {qbConfig.lastPurchaseOrderBatch.status}</h3><table><thead><tr><th>Portal PO</th><th>Result</th><th>QBO ID</th><th>Error</th></tr></thead><tbody>{(qbConfig.lastPurchaseOrderBatch.results||[]).map(row=><tr key={row.poId}><td>{row.poId}</td><td>{row.result}</td><td>{row.qboId||''}</td><td>{row.error||''}</td></tr>)}</tbody></table><p>{JSON.stringify(qbConfig.lastPurchaseOrderBatch.counts)}</p></>}
+            <p style={{fontSize:10,color:'#92400e'}}>This batch creates or links only the listed purchase orders. Existing bills are handled separately through the one-record review above and are never recreated by this batch.</p>
+          </div>
         </div>
 
         <div className="card">
@@ -600,8 +1015,64 @@ export default function QBPage(){
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2>Customer Sync</h2>
-            <button className="btn btn-primary btn-sm" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={syncCustomers}>{qbSyncing?'Syncing...':'Sync All Customers'}</button>
+            <button className="btn btn-primary btn-sm" disabled title="Use the reviewed customer batch below">{qbSyncing?'Syncing...':'Review Required Below'}</button>
           </div>
+          <div style={{padding:14,borderBottom:'1px solid #e2e8f0'}}>
+            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>
+              <label>Blank portal payment terms <select aria-label="Blank portal payment terms" value={customerBlankTermsDefault} disabled={qbSyncing||customerReviewBusy} onChange={e=>{setCustomerBlankTermsDefault(e.target.value);setCustomerManifest(null);setCustomerBatchApproved(false)}}>
+                <option value="net30">Net 30 — approved default (portal due-date default)</option>
+                <option value="">Block — no default assumed</option>
+              </select></label>
+              <div style={{marginTop:4}}>A customer that already exists in QBO keeps the QBO terms it has today (no write). The default above applies only to customers with blank portal terms that are not in QBO yet, or whose QBO term is inactive. Changing it requires a fresh review.</div>
+            </div>
+            <div style={{padding:'10px 12px',marginBottom:10,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e'}}>
+              <div style={{fontWeight:700,marginBottom:3}}>Check this before approving any customer creations</div>
+              <div>QuickBooks already holds its own customer list. If the Portal cannot match a customer by name, the review proposes creating it, and a wrong answer here means a second copy of a real account in QuickBooks. This reads both name lists and shows what is not matching. It changes nothing.</div>
+              <button className="btn btn-sm" style={{marginTop:8}} disabled={matchDiagnosticBusy||qbSyncing||!livePreflightReady} onClick={runMatchDiagnostic}>{matchDiagnosticBusy?'Reading QBO names...':'Name Match Diagnostic — No QBO Changes'}</button>
+              {matchDiagnostic&&<div style={{marginTop:10,color:'#1e3a8a'}}>
+                <div>QBO active customers: <strong>{matchDiagnostic.qboActive}</strong> · claimed by a Portal customer: <strong>{matchDiagnostic.qboClaimed}</strong> · unclaimed: <strong>{matchDiagnostic.qboUnclaimed}</strong></div>
+                <div>Portal active customers: <strong>{matchDiagnostic.portalActive}</strong> · with no QBO match: <strong>{matchDiagnostic.portalUnmatched}</strong></div>
+                <div style={{marginTop:6,fontWeight:600}}>If both unmatched numbers are large, the two lists are probably the same accounts under different names. Do not run creations until that is resolved.</div>
+                <button className="btn btn-sm" style={{marginTop:8}} onClick={downloadMatchDiagnostic}>Download Full Name Comparison</button>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginTop:10}}>
+                  <div><div style={{fontWeight:700,marginBottom:4}}>QBO names with no Portal match</div>
+                    <table style={{fontSize:10}}><thead><tr><th>QBO ID</th><th>Display name</th></tr></thead><tbody>
+                      {matchDiagnostic.qboUnclaimedSample.map(row=><tr key={row.id}><td>{row.id}</td><td>{row.displayName||row.companyName}</td></tr>)}
+                    </tbody></table></div>
+                  <div><div style={{fontWeight:700,marginBottom:4}}>Portal names with no QBO match</div>
+                    <table style={{fontSize:10}}><thead><tr><th>Portal customer</th></tr></thead><tbody>
+                      {matchDiagnostic.portalUnmatchedSample.map(row=><tr key={row.sourceId}><td>{row.displayName}</td></tr>)}
+                    </tbody></table></div>
+                </div>
+              </div>}
+            </div>
+            <button className="btn btn-sm" disabled={qbSyncing||customerReviewBusy||!livePreflightReady} onClick={reviewCustomerMigration}>{customerReviewBusy?'Reviewing customers...':'Review Customers — No QBO Changes'}</button>
+            {!customerManifest&&<div style={{fontSize:11,color:'#475569',marginTop:6}}>The batch size, approval box and <strong>Run Reviewed Customer Batch</strong> button appear here once this review finishes. There is no separate sync button.</div>}
+            {customerManifest&&<>
+              <p>Reviewed {customerManifest.rows.length} customers in company realm {customerManifest.realm}. Existing matches: {customerManifest.counts.link||0}; proposed creations: {customerManifest.counts.create||0}; term changes: {customerManifest.counts.update_terms||0}; blocked: {customerManifest.counts.blocked||0}; excluded: {customerManifest.counts.excluded||0}. Terms from QBO: {customerManifest.termSources?.qbo||0}; reviewer default applied: {customerManifest.termSources?.default||0}.</p>
+              <button className="btn btn-sm" onClick={downloadCustomerManifest}>Download Full Customer Review</button>
+              <h3>Proposed customer batch ({customerBatchRows.length} of {(customerManifest?.rows||[]).filter(row=>['link','create','update_terms'].includes(row.action)&&(!qbConfig.custQBMap?.[row.sourceId]||row.action==='update_terms')).length} eligible)</h3>
+              <label>Batch size <select aria-label="Customer batch size" value={customerBatchLimit} disabled={qbSyncing} onChange={e=>{setCustomerBatchLimit(Number(e.target.value));setCustomerBatchApproved(false)}}>{QB_BATCH_SIZES.map(size=><option key={size} value={size}>{size}</option>)}</select></label>
+              <div style={{fontSize:10,color:'#475569',marginTop:4}}>Each record is written and read back one at a time, so a run of {customerBatchLimit} takes roughly {Math.max(1,Math.round(customerBatchLimit*0.7/60))} minute(s). Keep the tab open. The first failure stops the run and the rest are reported as not attempted.</div>
+              <table><thead><tr><th>Customer</th><th>Action</th><th>QBO ID</th><th>Current term</th><th>Approved portal term</th></tr></thead><tbody>
+                {customerBatchRows.map(row=><tr key={row.sourceId}><td>{row.displayName}</td><td>{row.action}</td><td>{row.qboId||'New'}</td><td>{row.currentTerm?.name||row.currentTerm?.value||'None'}</td><td>{row.desiredTerm?.name}{row.termSource==='qbo'?' (kept from QBO)':row.termSource==='default'?' (reviewer default)':''}</td></tr>)}
+              </tbody></table>
+              {!customerCanariesReady&&<p style={{color:'#b91c1c',fontWeight:600}}>Run button disabled: this needs at least two saved customer links and one verified term-update canary. Use &quot;Test exactly one customer&quot; below on a customer whose QBO terms differ from the Portal.</p>}
+              <label><input type="checkbox" checked={customerBatchApproved} disabled={qbSyncing} onChange={e=>setCustomerBatchApproved(e.target.checked)}/> I approve the listed customer creations, links, and term changes in this batch.</label>
+              <button className="btn btn-primary btn-sm" disabled={qbSyncing||!customerCanariesReady||!customerBatchApproved||!customerBatchRows.length} onClick={runCustomerBatch}>Run Reviewed Customer Batch</button>
+
+              <label>Review filter <select aria-label="Customer review action filter" value={customerReviewFilter} onChange={e=>setCustomerReviewFilter(e.target.value)}><option value="all">All exceptions and approvals</option><option value="update_terms">Term changes</option><option value="create">Proposed creations</option><option value="blocked">Blocked records</option><option value="link">Existing matches</option></select></label>
+              <p>First 20 matching review records. This review does not approve or run a batch.</p>
+              <table className="table"><thead><tr><th>Customer</th><th>Action</th><th>QBO ID</th><th>Reason</th></tr></thead><tbody>
+                {customerManifest.rows.filter(row=>customerReviewFilter==='all'?!['link','excluded'].includes(row.action):row.action===customerReviewFilter).slice(0,20).map(row=><tr key={row.sourceId}><td>{row.displayName}</td><td>{row.action}</td><td>{row.qboId||'—'}</td><td>{row.reason}</td></tr>)}
+              </tbody></table>
+            </>}
+          </div>
+          {qbConfig.lastCustomerBatch&&<div style={{padding:14}}>
+            <h3>Customer batch reconciliation: {qbConfig.lastCustomerBatch.status}</h3>
+            <p>{JSON.stringify(qbConfig.lastCustomerBatch.counts)}</p>
+            <button className="btn btn-sm" onClick={downloadCustomerBatch}>Download Customer Batch Reconciliation</button>
+          </div>}
           <div style={{padding:'12px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:6}}>Test exactly one customer</div>
             <div style={{fontSize:11,color:'#475569',marginBottom:8}}>An exact QBO match is linked without changing it when its terms already match. You must confirm before creating one customer or updating one customer&apos;s QBO Terms field. Bulk sync stays locked.</div>
@@ -610,6 +1081,7 @@ export default function QBPage(){
                 <option value="">Select one customer...</option>
                 {activeCanaryCustomers.map(c=><option key={c.id} value={c.id}>{portalCustomerDisplayName(c)}{_custQBMap[c.id]?' — linked QB #'+_custQBMap[c.id]:''}</option>)}
               </select>
+              <label><input type="checkbox" checked={productCreateApproved} disabled={qbSyncing} onChange={e=>setProductCreateApproved(e.target.checked)}/> Approve creation of this one SKU if no existing item matches.</label>
               <button className="btn btn-primary btn-sm" style={{background:'#0369a1'}} disabled={qbSyncing||!qbCanaryCustomerId||!livePreflightReady}
                 title={!livePreflightReady?'Run a successful read-only live preflight first':!qbCanaryCustomerId?'Select one customer first':''} onClick={runCustomerCanary}>
                 {qbSyncing?'Testing...':'Test 1 Customer'}
@@ -651,6 +1123,33 @@ export default function QBPage(){
               <button className="btn btn-secondary btn-sm" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={()=>syncInvoices()}>{qbSyncing?'Syncing...':'Push Invoices to QB'}</button>
             </div>
           </div>
+          <div style={{padding:'12px 14px',background:'#fffbeb',borderBottom:'1px solid #fde68a'}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#92400e',marginBottom:4}}>Sales-tax setup (read-only)</div>
+            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>{unsyncedInvs.filter(inv=>safeNum(inv.tax)>0).length} of {unsyncedInvs.length} pending invoices carry sales tax and stay blocked until accounting approves a QBO tax-code mapping. This reads the live Sales Tax Center so that decision can be made from evidence. Nothing is written.</div>
+            <button className="btn btn-sm" disabled={qbTaxReading||qbSyncing||!livePreflightReady} title={!livePreflightReady?'Run a successful read-only live preflight first':''} onClick={runQBTaxPreflight}>{qbTaxReading?'Reading QBO tax setup...':'Read Sales Tax Setup — No QBO Changes'}</button>
+            <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid #fde68a'}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#92400e',marginBottom:4}}>Set up one manual tax rate</div>
+              <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Creates one QuickBooks tax agency and one tax code/rate for a single state. It posts no invoice and does not enable Automated Sales Tax. Two things are unknown until a real record exists: which liability account QuickBooks assigns, and whether one rate per state can carry the Portal&apos;s own per-invoice amount across its 39 distinct local rates. Start with Washington, the smallest exposure.</div>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                <label>State <select aria-label="Tax state" value={taxSetupState} disabled={qbSyncing} onChange={e=>setTaxSetupState(e.target.value)}>
+                  {Object.keys(QB_STATE_TAX_ACCOUNT_KEYS).map(code=><option key={code} value={code}>{code}</option>)}
+                </select></label>
+                <label>Agency <input className="form-input" style={{minWidth:240}} aria-label="Tax agency name" value={taxAgencyName} disabled={qbSyncing} onChange={e=>setTaxAgencyName(e.target.value)}/></label>
+                <label>Rate name <input className="form-input" style={{minWidth:160}} aria-label="Tax rate name" value={taxRateName} disabled={qbSyncing} onChange={e=>setTaxRateName(e.target.value)}/></label>
+                <label>Percent <input className="form-input" style={{width:90}} aria-label="Tax rate percent" inputMode="decimal" placeholder="8.8" value={taxRatePercent} disabled={qbSyncing} onChange={e=>setTaxRatePercent(e.target.value)}/></label>
+                <button className="btn btn-primary btn-sm" style={{background:'#b45309'}} disabled={qbSyncing||!livePreflightReady||!taxRatePercent||!taxAgencyName.trim()||!taxRateName.trim()} onClick={runTaxRateCanary}>{qbSyncing?'Working...':'Create 1 Tax Rate'}</button>
+              </div>
+              {Object.keys(qbConfig.qbTaxRateMap||{}).length>0&&<div style={{fontSize:11,color:'#166534',marginTop:8,fontWeight:600}}>
+                Tax rates linked: {Object.entries(qbConfig.qbTaxRateMap).map(([code,id])=>code+' → QBO rate #'+id).join(' · ')}
+              </div>}
+            </div>
+            {qbConfig.taxPreflight&&String(qbConfig.taxPreflight.realm_id||'')===String(qbConfig.realm_id||'')&&<div style={{fontSize:11,color:'#1e3a8a',marginTop:8}}>
+              <div>Read {new Date(qbConfig.taxPreflight.at).toLocaleString()} · Automated Sales Tax {qbConfig.taxPreflight.partnerTaxEnabled?'enabled':'not enabled'} · {qbConfig.taxPreflight.codeCount} tax codes · {qbConfig.taxPreflight.rateCount} tax rates</div>
+              <table style={{fontSize:10,marginTop:6}}><thead><tr><th>Tax code</th><th>Type</th><th>Rates</th></tr></thead><tbody>
+                {(qbConfig.taxPreflight.codes||[]).filter(code=>code.active).map(code=><tr key={code.id}><td>#{code.id} {code.name}</td><td>{code.taxable?'taxable':'non-taxable'}</td><td>{code.rates.map(r=>r.name+(r.rate!=null?' '+r.rate+'%':'')+(r.agency?' ('+r.agency+')':'')).join(', ')||'—'}</td></tr>)}
+              </tbody></table>
+            </div>}
+          </div>
           <div style={{padding:'12px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:4}}>Test exactly one invoice</div>
             <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Creates one invoice only—never a payment—using the linked QBO customer&apos;s actual terms. Account, tax, duplicate, total, customer, and API read-back checks run before the portal link is saved.</div>
@@ -659,6 +1158,7 @@ export default function QBPage(){
                 <option value="">Select one pending invoice...</option>
                 {canaryInvoices.map(inv=>{const c=cust.find(cc=>cc.id===inv.customer_id);return<option key={inv.id} value={inv.id}>{inv.display_id||inv.id} — {c?.name||'Unknown'} — ${safeNum(inv.total).toFixed(2)}{safeNum(inv.tax)>0?' — TAX BLOCKED':''}{!_custQBMap[inv.customer_id]?' — CUSTOMER NOT SYNCED':''}</option>})}
               </select>
+              <label><input type="checkbox" checked={productCreateApproved} disabled={qbSyncing} onChange={e=>setProductCreateApproved(e.target.checked)}/> Approve creation of this one SKU if no existing item matches.</label>
               <button className="btn btn-primary btn-sm" style={{background:'#0369a1'}} disabled={qbSyncing||!livePreflightReady||!selectedCanaryInvoice||!!invoiceCanaryBlock} onClick={runInvoiceCanary}>{qbSyncing?'Testing...':'Test 1 Invoice'}</button>
             </div>
             {invoiceCanaryBlock&&<div style={{fontSize:10,color:'#b91c1c',marginTop:6,fontWeight:600}}>{invoiceCanaryBlock}</div>}
@@ -683,6 +1183,54 @@ export default function QBPage(){
             </table>
           </div>
         </div>
+      </>}
+
+      {/* ── STRIPE PAYOUT RECONCILIATION TAB ── */}
+      {qbTab==='stripe'&&<>
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
+            <h2>Stripe Payout Reconciliation</h2>
+            <button className="btn btn-secondary btn-sm" disabled={stripePayoutLoading} onClick={loadStripePayouts}>{stripePayoutLoading?'Loading...':'Refresh'}</button>
+          </div>
+          <div className="card-body">
+            <div style={{fontSize:11,color:'#475569',marginBottom:10}}>Each automatic payout is reconciled against every Stripe balance transaction in the batch. Exact payouts can be exported as cent-based semantic posting rows; this screen never posts a bank deposit to QuickBooks automatically.</div>
+            <div style={{display:'flex',gap:8,alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',padding:10,marginBottom:10,background:stripeWebhookStatus?.healthy?'#f0fdf4':'#fffbeb',border:'1px solid '+(stripeWebhookStatus?.healthy?'#bbf7d0':'#fde68a'),borderRadius:7,fontSize:11}}>
+              <div><strong>Live webhook:</strong> {stripeWebhookStatus?.healthy?'all payment, refund, dispute, and payout events covered':stripeWebhookStatus?.error?'could not verify — '+stripeWebhookStatus.error:stripeWebhookStatus?'missing '+(stripeWebhookStatus.missing_events||[]).join(', '):'checking Stripe configuration...'}</div>
+              <div style={{display:'flex',gap:6}}>{stripeWebhookStatus&&!stripeWebhookStatus.healthy&&!stripeWebhookStatus.error&&<button className="btn btn-secondary btn-sm" disabled={stripePayoutLoading} onClick={repairStripeWebhookEvents}>Add missing events</button>}<button className="btn btn-primary btn-sm" disabled={stripePayoutLoading} onClick={runStripeHistoricalBackfill}>{stripePayoutLoading&&stripeBackfill?.phase&&stripeBackfill.phase!=='done'?'Backfill running...':'Run full historical backfill'}</button></div>
+            </div>
+            {stripeBackfill&&<div style={{padding:9,marginBottom:10,background:stripeBackfill.phase==='done'&&Number(stripeBackfill.unlinked_card_orders||0)+Number(stripeBackfill.portal_payment_review_count||0)+Number(stripeBackfill.charge_amount_mismatch_count||0)+Number(stripeBackfill.actionable_automatic_payouts||0)===0?'#f0fdf4':'#eff6ff',border:'1px solid #bfdbfe',borderRadius:7,fontSize:11,color:'#1e3a8a'}}>
+              <strong>{stripeBackfill.phase==='done'?'Backfill complete':stripeBackfill.phase==='error'?'Backfill stopped':'Backfill '+stripeBackfill.phase+' in progress'}:</strong> {stripeBackfill.orders_linked||0} of {stripeBackfill.orders_processed||0} unlinked order records linked · {stripeBackfill.orders_skipped||0} non-succeeded PaymentIntents skipped · {stripeBackfill.payouts_processed||0} payouts reconciled · {(stripeBackfill.errors||[]).length} errors
+              {stripeBackfill.phase==='done'&&<span> · {stripeBackfill.unlinked_card_orders||0} settled charge links missing · {stripeBackfill.portal_payment_review_count||0} portal payment-status reviews · {stripeBackfill.charge_amount_mismatch_count||0} Stripe activity-vs-order amount reviews · {stripeBackfill.actionable_automatic_payouts||0} actionable payouts · {stripeBackfill.unavailable_payouts||0} Instant/manual payouts not batch-reconcilable</span>}
+              {stripeBackfill.phase==='done'&&stripeBackfill.card_orders&&<div style={{marginTop:6}}>Stripe-settled card charges: {stripeBackfill.settled_card_orders?.linked_count||0}/{stripeBackfill.settled_card_orders?.order_count||0} linked (${(Number(stripeBackfill.settled_card_orders?.total_cents||0)/100).toFixed(2)} actually charged) · incomplete checkout attempts: {stripeBackfill.incomplete_card_attempts?.order_count||0} (${(Number(stripeBackfill.incomplete_card_attempts?.total_cents||0)/100).toFixed(2)} intended) · SO-2313: {stripeBackfill.so_2313?.linked_count||0}/{stripeBackfill.so_2313?.order_count||0} linked (${(Number(stripeBackfill.so_2313?.linked_cents||0)/100).toFixed(2)} of ${(Number(stripeBackfill.so_2313?.total_cents||0)/100).toFixed(2)})</div>}
+              {stripeBackfill.phase==='done'&&(stripeBackfill.charge_amount_mismatches||[]).length>0&&<div style={{marginTop:6,color:'#92400e'}}>Amount review: {stripeBackfill.charge_amount_mismatches.map(row=><span key={row.order_id} style={{display:'inline-block',marginRight:12}}><strong>{row.so_id||row.order_id}</strong> Stripe net activity ${(Number(row.stripe_activity_cents||0)/100).toFixed(2)} vs order ${(Number(row.portal_total_cents||0)/100).toFixed(2)} (original charge ${(Number(row.stripe_charge_cents||0)/100).toFixed(2)})</span>)}</div>}
+              {stripeBackfill.phase==='done'&&(stripeBackfill.portal_payment_review||[]).length>0&&<div style={{marginTop:6,color:'#92400e'}}>Payment-status review: {stripeBackfill.portal_payment_review.map(row=><span key={row.order_id} style={{display:'inline-block',marginRight:12}}><strong>{row.so_id||row.order_id}</strong> is {row.portal_status||'non-pending'} in the portal but has no succeeded Stripe charge</span>)}</div>}
+              {stripeBackfill.phase==='done'&&(stripeBackfill.errors||[]).length>0&&<div style={{marginTop:6,color:'#92400e'}}>{stripeBackfillErrorSummary(stripeBackfill.errors).map(([label,count])=><span key={label} style={{display:'inline-block',marginRight:12}}>{label}: <strong>{count}</strong></span>)}</div>}
+            </div>}
+            <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',padding:10,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:7}}>
+              <input className="form-input" style={{minWidth:300,flex:'1 1 300px'}} placeholder="Historical payout ID (po_...)" value={stripePayoutId} onChange={e=>setStripePayoutId(e.target.value)}/>
+              <button className="btn btn-primary btn-sm" disabled={stripePayoutLoading||!stripePayoutId.trim()} onClick={()=>reconcileStripePayout(stripePayoutId)}>Fetch &amp; reconcile</button>
+            </div>
+            {stripePayoutError&&<div style={{marginTop:9,padding:8,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,color:'#b91c1c',fontSize:11,fontWeight:600}}>{stripePayoutError}</div>}
+          </div>
+          <div style={{padding:0,maxHeight:390,overflow:'auto'}}>
+            <table style={{fontSize:11}}><thead><tr style={{background:'#f8fafc'}}><th>Payout</th><th>Arrival</th><th>Status</th><th>Reconciliation</th><th style={{textAlign:'right'}}>Activity amount</th><th style={{textAlign:'right'}}>Stripe fees</th><th style={{textAlign:'right'}}>Bank net</th><th></th></tr></thead><tbody>
+              {!stripePayouts.length&&!stripePayoutLoading?<tr><td colSpan="8" style={{padding:20,textAlign:'center',color:'#94a3b8'}}>No payout ledger rows yet. Paste a historical payout ID above or wait for Stripe&apos;s next payout webhook.</td></tr>:
+              stripePayouts.map(p=>{const exact=p.reconciliation_status==='exact';return<tr key={p.stripe_payout_id} style={{borderBottom:'1px solid #f1f5f9'}}>
+                <td style={{fontFamily:'monospace',fontWeight:700}}>{p.stripe_payout_id}</td><td>{p.arrival_date||'—'}</td><td>{p.status}{p.method?' · '+p.method:''}</td>
+                <td><span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:700,background:exact?'#dcfce7':p.reconciliation_status==='mismatch'?'#fee2e2':'#fef3c7',color:exact?'#166534':p.reconciliation_status==='mismatch'?'#b91c1c':'#92400e'}}>{p.reconciliation_status}</span>{p.reconciliation_difference_cents?<span style={{marginLeft:5,color:'#b91c1c'}}>{p.reconciliation_difference_cents}¢ diff</span>:null}</td>
+                <td style={{textAlign:'right'}}>${(Number(p.activity_amount_cents||0)/100).toFixed(2)}</td><td style={{textAlign:'right',color:'#b45309'}}>${(Number(p.fee_cents||0)/100).toFixed(2)}</td><td style={{textAlign:'right',fontWeight:700}}>${(Number(p.amount_cents||0)/100).toFixed(2)}</td>
+                <td style={{whiteSpace:'nowrap'}}><button className="btn btn-secondary btn-sm" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>loadStripePayoutDetail(p.stripe_payout_id)}>Detail</button>{!exact&&<button className="btn btn-secondary btn-sm" style={{fontSize:9,padding:'2px 6px',marginLeft:4}} onClick={()=>reconcileStripePayout(p.stripe_payout_id)}>Retry</button>}</td>
+              </tr>})}
+            </tbody></table>
+          </div>
+        </div>
+        {stripePayoutDetail&&<div className="card" style={{marginBottom:16}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}><h2>QBO-ready entries — {stripePayoutDetail.payout?.stripe_payout_id}</h2><button className="btn btn-primary btn-sm" disabled={!stripePayoutDetail.qbo_entries?.length} onClick={exportStripePayoutCsv}>Export CSV</button></div>
+          <div style={{padding:'9px 14px',fontSize:11,background:stripePayoutDetail.qbo_ready?'#f0fdf4':'#fffbeb',color:stripePayoutDetail.qbo_ready?'#166534':'#92400e',borderBottom:'1px solid #e2e8f0'}}>{stripePayoutDetail.qbo_ready?'All entries have deterministic semantic account routing. Resolve live QBO account IDs before posting.':'Contains review_required activity (such as an unlinked charge, refund, dispute, or amount mismatch). Resolve it before creating a QBO deposit.'}</div>
+          <div style={{padding:0,maxHeight:360,overflow:'auto'}}><table style={{fontSize:10}}><thead><tr style={{background:'#f8fafc'}}><th>Balance transaction</th><th>Order</th><th>Entry</th><th>Account key</th><th>State</th><th style={{textAlign:'right'}}>Amount</th></tr></thead><tbody>
+            {(stripePayoutDetail.qbo_entries||[]).map((e,i)=><tr key={e.stripe_balance_transaction_id+':'+e.entry_type+':'+i} style={{borderBottom:'1px solid #f1f5f9',background:e.qbo_ready?'#fff':'#fffbeb'}}><td style={{fontFamily:'monospace'}}>{e.stripe_balance_transaction_id}</td><td>{e.webstore_order_id||'—'}</td><td>{e.entry_type}</td><td style={{fontFamily:'monospace',color:e.qbo_ready?'#475569':'#b91c1c'}}>{e.posting_account_key}</td><td>{e.tax_state||'—'}</td><td style={{textAlign:'right',fontWeight:700}}>${(Number(e.amount_cents||0)/100).toFixed(2)}</td></tr>)}
+          </tbody></table></div>
+        </div>}
       </>}
 
       {/* ── BILL UPLOAD TAB ── */}
@@ -778,10 +1326,29 @@ export default function QBPage(){
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2>QBO Product Items (One per SKU)</h2>
-            <button className="btn btn-primary btn-sm" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={()=>syncInventory()}>{qbSyncing?'Syncing...':'Sync NonInventory Items'}</button>
+            <button className="btn btn-primary btn-sm" disabled title="Locked until the product-item canaries are approved">Review Required Below</button>
           </div>
           <div style={{padding:'8px 16px',background:'#fffbeb',fontSize:11,color:'#92400e',borderBottom:'1px solid #fef3c7'}}>
-            Creates one NonInventory item per SKU using 40000 Sales and 51300 Purchases. QBO does not receive size/color on-hand quantities or inventory valuation; those remain in the portal.
+            The portal is the inventory source of truth. QBO will receive one NonInventory purchase item per SKU using 40000 Sales and 51300 Purchases. QBO does not track quantity per item; the inventory value reaches the balance sheet through the valuation entry below. Review and approve at most 20 SKUs after the existing-item and new-item canaries pass.
+          </div>
+          <div style={{padding:14}}>
+            <button className="btn btn-sm" disabled={qbSyncing||productReviewBusy||!livePreflightReady} onClick={reviewProducts}>Review Products — No QBO Changes</button>
+            {productReview&&<>
+              <p>Product review: {JSON.stringify(productReview.counts)}. Existing items are linked before any new SKU is created.</p>
+              <h3>Proposed product batch ({productBatchRows.length} SKUs)</h3>
+              <label style={{marginRight:12}}>Batch size <select aria-label="Product batch size" value={productBatchLimit} disabled={qbSyncing} onChange={e=>{setProductBatchLimit(Number(e.target.value));setProductApproved(false)}}>{QB_BATCH_SIZES.map(size=><option key={size} value={size}>{size}</option>)}</select></label>
+              <label><input type="checkbox" checked={productPoOnly} disabled={qbSyncing} onChange={e=>{setProductPoOnly(e.target.checked);setProductApproved(false)}}/> Only SKUs on purchase orders awaiting sync ({poPendingSkus.size||'run a PO review first'})</label>
+              <table><thead><tr><th>SKU</th><th>Action</th><th>QBO ID</th><th>Portal variants</th><th>Accounts</th></tr></thead><tbody>{productBatchRows.map(r=><tr key={r.sku}><td>{r.sku}</td><td>{r.action}</td><td>{r.qboId||'New'}</td><td>{r.sourceIds.length}</td><td>40000 / 51300</td></tr>)}</tbody></table>
+              <label><input type="checkbox" checked={productApproved} disabled={qbSyncing} onChange={e=>setProductApproved(e.target.checked)}/> I approve this reviewed product batch.</label>
+              {!productReadiness.ready&&<p style={{color:'#b91c1c',fontWeight:600}}>
+                Run button disabled: the batch needs one proven link canary{productReadiness.linked?' (done)':' (still needed)'} and one proven creation canary{productReadiness.created?' (done)':' (still needed)'}.
+                {!productReadiness.created&&' Use "Test 1 QBO Item" below on a SKU that is not in QuickBooks yet, with "Approve creation of this one SKU" ticked. One creation unlocks the batch.'}
+              </p>}
+              <button className="btn btn-sm" disabled={qbSyncing||!productApproved||!productBatchRows.length||!productReadiness.ready} onClick={runProductBatch}>Run Reviewed Product Batch</button>
+              <label>Review filter <select aria-label="Product review filter" value={productFilter} onChange={e=>setProductFilter(e.target.value)}>{['link','create','blocked','excluded'].map(a=><option key={a} value={a}>{a}</option>)}</select></label>
+              <table><thead><tr><th>SKU</th><th>Action</th><th>QBO ID</th><th>Reason</th></tr></thead><tbody>{productReview.rows.filter(r=>r.action===productFilter).slice(0,20).map((r,i)=><tr key={r.sku+i}><td>{r.sku}</td><td>{r.action}</td><td>{r.qboId||'New'}</td><td>{r.reason}</td></tr>)}</tbody></table>
+            </>}
+            {qbConfig.lastProductRun&&<><h3>Product reconciliation: {qbConfig.lastProductRun.status}</h3><button className="btn btn-sm" onClick={downloadProductEvidence}>Download Product Reconciliation</button><table><thead><tr><th>SKU</th><th>Result</th><th>QBO ID</th><th>Error</th></tr></thead><tbody>{(qbConfig.lastProductRun.results||[]).map(r=><tr key={r.sku}><td>{r.sku}</td><td>{r.result}</td><td>{r.qboId}</td><td>{r.error||''}</td></tr>)}</tbody></table><p>{JSON.stringify(qbConfig.lastProductRun.counts)}</p>{qbConfig.lastProductRun.error&&<p>{qbConfig.lastProductRun.error}</p>}</>}
           </div>
           <div style={{padding:'12px 14px',background:'#ecfdf5',borderBottom:'1px solid #a7f3d0'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:4}}>Required invoice service item</div>
@@ -790,20 +1357,31 @@ export default function QBPage(){
             {!livePreflightReady&&<div style={{fontSize:11,color:'#92400e',marginTop:7,fontWeight:600}}>Button disabled: open Overview and run Read-Only Live Preflight.</div>}
           </div>
           <div style={{padding:'12px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe'}}>
-            <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:4}}>Test exactly one QBO item</div>
-            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Creates or updates one SKU only, verifies NonInventory type plus 40000/51300 account routing, and saves the portal link only after API read-back.</div>
+            <div style={{marginBottom:12}}>
+              <label>Read an existing QBO item by ID <input className="form-input" aria-label="QBO item ID to audit" value={qbAuditItemId} onChange={e=>setQbAuditItemId(e.target.value)}/></label>
+              <button className="btn btn-sm" disabled={qbSyncing||!livePreflightReady||!/^\d+$/.test(qbAuditItemId.trim())} onClick={auditQBOItem}>Read QBO Item — No Changes</button>
+              {qbItemAudit&&<pre style={{whiteSpace:'pre-wrap'}}>{JSON.stringify(qbItemAudit,null,2)}</pre>}
+            </div>
+            <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:4}}>Test exactly one QBO NonInventory purchase item</div>
+            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Recovers an existing SKU link, verifies NonInventory type plus 40000/51300 routing, and saves only after API read-back. New items require the one-SKU creation approval below; conflicts remain blocked.</div>
             <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-              <select className="form-input" aria-label="Product SKU to test in QuickBooks" style={{minWidth:420,maxWidth:700}} value={qbCanaryProductId} onChange={e=>setQbCanaryProductId(e.target.value)}>
+              <select className="form-input" aria-label="Product SKU to test in QuickBooks" style={{minWidth:420,maxWidth:700}} value={qbCanaryProductId} onChange={e=>{setQbCanaryProductId(e.target.value);setProductCreateApproved(false)}}>
                 <option value="">Select one active SKU...</option>
                 {canaryProducts.map(p=><option key={p.id} value={p.id}>{p.sku} — {p.name}{_prodQBMap[p.id]?' — linked QB #'+_prodQBMap[p.id]:''}</option>)}
               </select>
+              <label><input type="checkbox" checked={productCreateApproved} disabled={qbSyncing} onChange={e=>setProductCreateApproved(e.target.checked)}/> Approve creation of this one SKU if no existing item matches.</label>
               <button className="btn btn-primary btn-sm" style={{background:'#0369a1'}} disabled={qbSyncing||!livePreflightReady||!selectedCanaryProduct} onClick={runProductCanary}>{qbSyncing?'Testing...':'Test 1 QBO Item'}</button>
+              {selectedCanaryProduct&&_prodQBMap[selectedCanaryProduct.id]&&<button className="btn btn-sm" style={{background:'#fff7ed',border:'1px solid #fdba74',color:'#9a3412'}} disabled={qbSyncing||!livePreflightReady} onClick={runInactiveProductLinkCleanup}>{qbSyncing?'Checking...':'Clear Inactive Link'}</button>}
             </div>
             {!livePreflightReady&&<div style={{fontSize:11,color:'#92400e',marginTop:7,fontWeight:600}}>Button disabled: open Overview and run Read-Only Live Preflight.</div>}
           </div>
+          <div style={{padding:'12px 14px',background:'#fff7ed',borderBottom:'1px solid #fdba74'}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#9a3412',marginBottom:4}}>Inventory quantities stay in the portal</div>
+            <div style={{fontSize:11,color:'#475569'}}>QBO SKU items are NonInventory purchase items, so bills and POs carry quantities without changing QBO quantity on hand or inventory value. Manual portal inventory adjustments therefore remain portal-only.</div>
+          </div>
           <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
             <table style={{fontSize:11}}>
-              <thead><tr style={{background:'#f8fafc'}}><th>SKU</th><th>Product</th><th>Brand</th><th style={{textAlign:'right'}}>Portal Qty (not sent)</th><th style={{textAlign:'right'}}>Portal Value (not sent)</th><th>QB Status</th></tr></thead>
+              <thead><tr style={{background:'#f8fafc'}}><th>SKU</th><th>Product</th><th>Brand</th><th style={{textAlign:'right'}}>Portal Qty</th><th style={{textAlign:'right'}}>Portal Value</th><th>QB Status</th></tr></thead>
               <tbody>
                 {prod.filter(p=>p.is_active!==false).map(p=>{
                   const inv=p._inv||{};
@@ -820,6 +1398,33 @@ export default function QBPage(){
                   </tr>})}
               </tbody>
             </table>
+          </div>
+        </div>
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h2>Inventory Value on the Balance Sheet</h2></div>
+          <div style={{padding:'8px 16px',background:'#f0f9ff',fontSize:11,color:'#0c4a6e',borderBottom:'1px solid #bae6fd'}}>
+            Values every unit in portal stock at its cost (size cost, else catalog cost) and posts one journal entry that moves {qbConfig.mapping.inventory_asset_account} Inventory Asset to that value against {qbConfig.mapping.cogs_account} Cost of Goods Sold. One entry per day, read back and receipted like every other write. Units with no cost are excluded and listed, never guessed.
+          </div>
+          <div style={{padding:14}}>
+            <button className="btn btn-sm" disabled={qbSyncing||!livePreflightReady} onClick={reviewInventoryValuation}>Review Inventory Value — No QBO Changes</button>
+            {invValuationReview&&<section role="region" aria-label="Confirm inventory valuation entry" style={{marginTop:12,padding:12,background:'#fff',border:'2px solid #0369a1',borderRadius:8}}>
+              <table style={{fontSize:12}}><tbody>
+                <tr><td>Portal inventory value ({invValuationReview.asOf})</td><td style={{textAlign:'right',fontWeight:700}}>${safeNum(invValuationReview.value).toFixed(2)}</td></tr>
+                <tr><td>Units / products valued</td><td style={{textAlign:'right'}}>{invValuationReview.units} / {invValuationReview.products}</td></tr>
+                <tr><td>QBO Inventory Asset balance now</td><td style={{textAlign:'right'}}>${safeNum(invValuationReview.currentBalance).toFixed(2)}</td></tr>
+                <tr><td style={{fontWeight:700}}>Adjustment</td><td style={{textAlign:'right',fontWeight:700,color:invValuationReview.delta>=0?'#166534':'#b91c1c'}}>{invValuationReview.delta>=0?'Debit':'Credit'} Inventory Asset ${Math.abs(safeNum(invValuationReview.delta)).toFixed(2)}</td></tr>
+              </tbody></table>
+              {invValuationReview.unpricedCount>0&&<div style={{fontSize:11,color:'#92400e',marginTop:8}}>
+                <strong>{invValuationReview.unpricedUnits} units on {invValuationReview.unpricedCount} products have no cost and are excluded.</strong> Add a cost on the product to include them: {invValuationReview.unpriced.slice(0,20).map(row=>row.sku+' ('+row.units+')').join(', ')}{invValuationReview.unpricedCount>20?' …':''}
+              </div>}
+              {invValuationReview.negative?.length>0&&<div style={{fontSize:11,color:'#b91c1c',marginTop:6}}>Negative stock counted as zero: {invValuationReview.negative.slice(0,20).map(row=>row.sku+' '+row.size+' ('+row.quantity+')').join(', ')}</div>}
+              {invValuationReview.status==='unchanged'?<p style={{marginTop:8}}>QBO already matches the portal value. No entry is needed today.</p>:<>
+                <label style={{display:'block',marginTop:10}}><input type="checkbox" checked={invValuationApproved} disabled={qbSyncing} onChange={e=>setInvValuationApproved(e.target.checked)}/> I approve posting exactly this one journal entry ({invValuationReview.docNumber}).</label>
+                <button className="btn btn-primary btn-sm" style={{marginTop:8}} disabled={qbSyncing||!livePreflightReady||!invValuationApproved} onClick={postInventoryValuation}>Post Inventory Valuation Entry</button>
+                <button className="btn btn-sm" style={{marginLeft:8,marginTop:8}} disabled={qbSyncing} onClick={()=>{setInvValuationReview(null);setInvValuationApproved(false);nf('Inventory valuation cancelled — nothing was sent')}}>Cancel</button>
+              </>}
+            </section>}
+            {qbConfig.lastInventoryValuation&&<p style={{fontSize:11,color:'#475569',marginTop:10}}>Last valuation {qbConfig.lastInventoryValuation.asOf}: {qbConfig.lastInventoryValuation.status}{qbConfig.lastInventoryValuation.qboId?' (QBO journal entry #'+qbConfig.lastInventoryValuation.qboId+')':''} · portal value ${safeNum(qbConfig.lastInventoryValuation.value).toFixed(2)} · adjustment ${safeNum(qbConfig.lastInventoryValuation.delta).toFixed(2)}{qbConfig.lastInventoryValuation.unpricedUnits?' · '+qbConfig.lastInventoryValuation.unpricedUnits+' units unpriced':''}</p>}
           </div>
         </div>
       </>}
@@ -903,7 +1508,7 @@ export default function QBPage(){
           <div>&#8226; <strong>Customers</strong> &#8594; QB Customers (name, contact, address, order totals in notes)</div>
           <div>&#8226; <strong>Invoices</strong> &#8594; QB Invoices (total amount as single line, payments applied)</div>
           <div>&#8226; <strong>Vendor Bills</strong> &#8594; Upload bills with PDF/image attachments directly into QB</div>
-          <div>&#8226; <strong>Products</strong> &#8594; One QBO NonInventory Item per SKU; inventory quantities and valuation stay in Portal</div>
+          <div>&#8226; <strong>Product Items</strong> &#8594; One QBO NonInventory Item per SKU using 40000 Sales / 51300 Purchases; portal inventory is the source of truth</div>
         </div>
       </div>}
     </>);

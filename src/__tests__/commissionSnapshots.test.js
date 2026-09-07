@@ -2,6 +2,10 @@
 // row contains, and that a frozen line stops moving when the underlying order changes.
 import {
   canSnapshotLine,
+  lineDataReady,
+  costInputsBooked,
+  staleZeroCostSnapshot,
+  zeroCostRepairPatch,
   snapshotRowFromLine,
   applySnapshotToLine,
   overrideSnapshotPatch,
@@ -59,6 +63,56 @@ describe('canSnapshotLine — only freeze the truth', () => {
     expect(canSnapshotLine({ ...paidLine(), so: null })).toBe(false);
     expect(canSnapshotLine(paidLine({ so: { _itemsHydrated: false } }))).toBe(false);
     expect(canSnapshotLine(paidLine({ so: { _posHydrated: false } }))).toBe(false);
+  });
+});
+
+// INV-63327: revenue $5,498 froze at $0 cost minutes before the $89/$47 unit costs were
+// entered — 30% of a 100% GP ($1,649) instead of ~$355. A $0-cost line is missing its cost
+// inputs, and the hydration flags never see it: the rows load fine, they just carry no cost.
+describe('$0-cost lines never freeze automatically', () => {
+  const zeroCost = () => paidLine({ line: { gp: { rev: 5498.19, cost: 0, gp: 5498.19 }, commAmt: 1649.46 } });
+  test('a revenue line with no cost booked stays live', () => {
+    expect(costInputsBooked(zeroCost())).toBe(false);
+    expect(canSnapshotLine(zeroCost())).toBe(false);
+    // ...but the data itself is loaded, so a deliberate admin Re-freeze is still allowed.
+    expect(lineDataReady(zeroCost())).toBe(true);
+  });
+  test('a line with no revenue either is harmless and still freezes', () => {
+    const l = paidLine({ line: { gp: { rev: 0, cost: 0, gp: 0 }, commAmt: 0 } });
+    expect(costInputsBooked(l)).toBe(true);
+    expect(canSnapshotLine(l)).toBe(true);
+  });
+  test('any real cost freezes normally', () => {
+    expect(costInputsBooked(paidLine())).toBe(true);
+    expect(canSnapshotLine(paidLine())).toBe(true);
+  });
+});
+
+describe('repairing a freeze that captured $0 cost', () => {
+  const snap = { invoice_id: 'INV-63327', gp: { rev: 5498.19, cost: 0, gp: 5498.19 }, rate: 0.3, amount: 1649.46, paid_date: '2026-08-11', days_to_pay: 14 };
+  const live = paidLine({ line: { gp: { rev: 5498.19, cost: 4315, gp: 1183.19 } } });
+  test('detects the invalid freeze only when live data now carries a cost', () => {
+    expect(staleZeroCostSnapshot(snap, live)).toBe(true);
+    expect(staleZeroCostSnapshot(snap, paidLine({ line: { gp: { rev: 5498.19, cost: 0, gp: 5498.19 } } }))).toBe(false);
+    // A freeze that captured a real cost is never touched automatically, however stale.
+    expect(staleZeroCostSnapshot({ ...snap, gp: { rev: 5498.19, cost: 100, gp: 5398.19 } }, live)).toBe(false);
+    expect(staleZeroCostSnapshot(null, live)).toBe(false);
+  });
+  test('re-runs the commission at the frozen rate and touches nothing else', () => {
+    const patch = zeroCostRepairPatch(snap, live, 'gp');
+    expect(patch.gp).toEqual({ rev: 5498.19, cost: 4315, gp: 1183.19 });
+    expect(patch.amount).toBe(354.96); // 1183.19 x 0.30
+    expect(patch.paid_date).toBeUndefined();
+    expect(patch.rate).toBeUndefined();
+    expect(patch.override).toBeUndefined();
+  });
+  test('revenue-basis reps stay on revenue x their frozen rate', () => {
+    const revSnap = { ...snap, rate: 0.01, amount: 54.98 };
+    expect(zeroCostRepairPatch(revSnap, live, 'revenue').amount).toBe(54.98);
+  });
+  test('a snapshot with an unusable rate keeps its frozen amount rather than writing NaN', () => {
+    const patch = zeroCostRepairPatch({ ...snap, rate: null, amount: 1649.46 }, live, 'gp');
+    expect(patch.amount).toBe(1649.46);
   });
 });
 

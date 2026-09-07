@@ -144,8 +144,14 @@ def load_csv(path: Path):
     with path.open(newline="") as f:
         sniff = f.read(4096)
         f.seek(0)
-        dialect = csv.Sniffer().sniff(sniff, delimiters=",\t;")
-        reader = csv.reader(f, dialect=dialect)
+        # Delimiter only -- see the note in merge-netsuite-transactions.py.
+        # csv.Sniffer returns doublequote=False on these exports, which shifts
+        # columns on any row holding an escaped "" instead of failing loudly.
+        try:
+            delimiter = csv.Sniffer().sniff(sniff, delimiters=",\t;").delimiter
+        except csv.Error:
+            delimiter = ","
+        reader = csv.reader(f, delimiter=delimiter, quotechar='"', doublequote=True)
         raw_headers = next(reader)
         headers = _dedupe_headers(raw_headers)
         out = []

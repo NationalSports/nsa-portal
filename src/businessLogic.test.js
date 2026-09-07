@@ -1648,6 +1648,48 @@ describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
     expect(back2.items[0].fulSizes).toEqual({ L: 10 });
   });
 
+  test('JOB-2130-05: custom backorder slice (split_open, -C key) claims last so the parent keeps its receipts', () => {
+    // 14 M on the line, 10 received. The rep custom-split the 4 backordered M into -C1. The slice
+    // carries split_open (its key is __split__C1, which the -S key fallback does not match), so a
+    // recalc must leave the parent's 10 received M on the parent instead of handing 4 to the slice.
+    const so = makeSO({
+      jobs: [
+        { id: 'JOB-1', key: 'k', item_status: 'partially_received', fulfilled_units: 10, total_units: 16,
+          items: [{ item_idx: 0, sizes: { S: 6, M: 10 }, fulSizes: { M: 10 } }] },
+        { id: 'JOB-1-C1', key: 'k__split__C1', split_from: 'JOB-1', split_open: true, item_status: 'need_to_order', fulfilled_units: 0, total_units: 4,
+          items: [{ item_idx: 0, sizes: { M: 4 }, fulSizes: {} }] },
+      ],
+    });
+    const items = [makeSOItem({ sizes: { S: 6, M: 14 }, po_lines: [{ po_id: 'PO-1', S: 6, M: 14, received: { M: 10 } }] })];
+    const [keep, slice] = recalcJobFulfillment(so, items);
+    expect(keep.items[0].fulSizes).toEqual({ M: 10 });
+    expect(keep.fulfilled_units).toBe(10);
+    expect(slice.fulfilled_units).toBe(0);
+    expect(slice.item_status).toBe('need_to_order');
+    // The 4 M arrive → they flow to the slice; the parent is unchanged.
+    const items2 = [makeSOItem({ sizes: { S: 6, M: 14 }, po_lines: [{ po_id: 'PO-1', S: 6, M: 14, received: { M: 14 } }] })];
+    const [keep2, slice2] = recalcJobFulfillment(so, items2);
+    expect(keep2.items[0].fulSizes).toEqual({ M: 10 });
+    expect(slice2.items[0].fulSizes).toEqual({ M: 4 });
+  });
+
+  test('a backorder split off a backorder claims after its parent, not before it', () => {
+    // Root keeps 90 received. -S (10 open) later has 3 received, and the still-open 7 are split off
+    // into -S-S. Deepest-first within the open tier would give -S-S the 3 receipts that -S holds.
+    const so = makeSO({
+      jobs: [
+        { id: 'JOB-1', key: 'k', items: [{ item_idx: 0, sizes: { L: 90 }, fulSizes: { L: 90 } }] },
+        { id: 'JOB-1-S', key: 'k__split__S', split_from: 'JOB-1', split_open: true, items: [{ item_idx: 0, sizes: { L: 3 }, fulSizes: { L: 3 } }] },
+        { id: 'JOB-1-S-S', key: 'k__split__S__split__S', split_from: 'JOB-1-S', split_open: true, items: [{ item_idx: 0, sizes: { L: 7 }, fulSizes: {} }] },
+      ],
+    });
+    const items = [makeSOItem({ sizes: { L: 100 }, po_lines: [{ po_id: 'PO-1', L: 100, received: { L: 93 } }] })];
+    const [root, mid, leaf] = recalcJobFulfillment(so, items);
+    expect(root.fulfilled_units).toBe(90);
+    expect(mid.fulfilled_units).toBe(3);
+    expect(leaf.fulfilled_units).toBe(0);
+  });
+
   test('legacy received-split without per-size allocations: slice claims the pool before the parent', () => {
     // Splits created before per-size allocations carry no gi.sizes; both halves cap at the full
     // item sizes. The slice claims the receipts first so the parent no longer re-counts them.

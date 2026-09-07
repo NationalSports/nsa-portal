@@ -1,9 +1,14 @@
+import { ourBillSku } from './billResolve';
+
 // Single source of truth for every QuickBooks account used by the portal.
 // Values are account numbers (AcctNum), not display names. Account numbers are
 // stable across renamed accounts and let us fail closed instead of guessing.
 
 export const QB_ACCOUNT_SPECS = Object.freeze({
   income_account: Object.freeze({ number: '40000', name: 'Sales', types: ['Income'] }),
+  inventory_asset_account: Object.freeze({ number: '12000', name: 'Inventory Asset', types: ['Other Current Asset'] }),
+  cogs_account: Object.freeze({ number: '50000', name: 'Cost of Goods Sold', types: ['Cost of Goods Sold'] }),
+  inventory_loss_account: Object.freeze({ number: '52400', name: 'Inventory Loss', types: ['Expense'] }),
   discount_account: Object.freeze({ number: '40200', name: 'Sales:Discounts', types: ['Income'] }),
   purchases_account: Object.freeze({ number: '51300', name: 'Purchases', types: ['Cost of Goods Sold'] }),
   freight_account: Object.freeze({ number: '51000', name: 'Cost of Goods Sold:Freight In', types: ['Cost of Goods Sold'] }),
@@ -41,6 +46,9 @@ export const QB_ACCOUNT_MAPPING_DEFAULTS = Object.freeze(
 const LEGACY_MAPPING_VALUES = Object.freeze({
   Sales: '40000',
   'Sales of Product Income': '40000',
+  'Inventory Asset': '12000',
+  'Cost of Goods Sold': '50000',
+  'Inventory Loss': '52400',
   Discounts: '40200',
   Purchases: '51300',
   'Shipping and delivery expense': '51000',
@@ -85,6 +93,12 @@ const VENDOR_LEGAL_SUFFIXES = new Set([
   'llc', 'llp', 'lp', 'ltd', 'limited',
 ]);
 
+// Exact supplier-name aliases confirmed by accounting. Keep this list narrow:
+// unlike legal-suffix cleanup, each entry represents a known trading identity.
+const VENDOR_NAME_ALIASES = new Map([
+  ['adidas us team services', 'adidas'],
+]);
+
 export function normalizeVendorName(value) {
   const tokens = norm(value)
     .replace(/&/g, ' and ')
@@ -93,7 +107,8 @@ export function normalizeVendorName(value) {
     .split(/\s+/)
     .filter(Boolean);
   while (tokens.length > 1 && VENDOR_LEGAL_SUFFIXES.has(tokens[tokens.length - 1])) tokens.pop();
-  return tokens.join(' ');
+  const normalized = tokens.join(' ');
+  return VENDOR_NAME_ALIASES.get(normalized) || normalized;
 }
 
 export function findUniqueVendorMatch(value, vendors = []) {
@@ -107,6 +122,43 @@ export function findUniqueVendorMatch(value, vendors = []) {
   }
   return matches[0] || null;
 }
+
+// PDF parsers retain the supplier's printed name, while the bill-review flow
+// stores the exact portal vendor selected for that document in `vendor`.
+// Prefer that canonical identity at the QBO write boundary, then still run it
+// through findUniqueVendorMatch so stale or ambiguous values fail closed.
+export function billVendorMatchName(bill) {
+  return String(bill?.vendor || bill?.supplier || '').trim();
+}
+
+// QBO permits different vendors to reuse the same supplier invoice number.
+// Idempotency is therefore scoped to vendor + document number; only a
+// conflicting bill for that same vendor should block a create.
+export function findExistingVendorBill(existingBills, { docNumber, vendorId, total, txnDate }) {
+  const normalizedDoc = norm(docNumber);
+  const vendorBills = (existingBills || []).filter(existing =>
+    norm(existing?.DocNumber) === normalizedDoc
+    && String(existing?.VendorRef?.value || '') === String(vendorId || '')
+  );
+  const exact = vendorBills.filter(existing =>
+    Math.abs((Number(existing?.TotalAmt) || 0) - (Number(total) || 0)) < 0.005
+    && String(existing?.TxnDate || '').slice(0, 10) === String(txnDate || '').slice(0, 10)
+  );
+  if (exact.length > 1) {
+    throw new Error(`QBO contains duplicate exact bills for document ${String(docNumber || '').trim()}; no new bill was sent.`);
+  }
+  if (vendorBills.length && exact.length !== 1) {
+    throw new Error(`QBO document ${String(docNumber || '').trim()} already exists for this vendor with a different date or total; no new bill was sent.`);
+  }
+  return exact[0] || null;
+}
+
+// Reviewed migration batches run sequentially with a full QBO read-back per record.
+// The old cap of 20 existed because each record re-downloaded the entire QBO entity
+// list and rebuilt the whole plan, which is quadratic; with those reads hoisted out
+// of the loop a run is bounded by API latency alone. 500 keeps one run inside a
+// sitting and inside QBO's per-minute request budget.
+export const QB_MAX_REVIEWED_BATCH = 500;
 
 export function parseQBDateValue(value) {
   const raw = String(value || '').trim();
@@ -430,47 +482,6 @@ export async function loadQBAccounts(qbApi) {
   return response?.QueryResponse?.Account || [];
 }
 
-// ── Sales tax codes (Automated Sales Tax) ──
-// Under AST, QuickBooks owns both the tax calculation and the agency liability
-// account it posts to — the portal's 25200–25230 subaccounts are not written by
-// an invoice. The portal's only job here is to name the right TaxCode and then
-// assert the figures QBO returns. It must never invent a code: an unresolved
-// code fails the invoice closed so tax can't land in 40000 as revenue.
-export const QB_TAX_CODE_QUERY = 'SELECT Id, Name, Description, Taxable, Active FROM TaxCode';
-
-export const QB_STATE_TAX_CODE_NAMES = Object.freeze({
-  CA: 'California', AZ: 'Arizona', CO: 'Colorado',
-  NV: 'Nevada', TX: 'Texas', WA: 'Washington',
-});
-
-export async function loadQBTaxCodes(qbApi) {
-  const response = await queryQBReadOnly(qbApi, QB_TAX_CODE_QUERY, 'tax code query');
-  return response?.QueryResponse?.TaxCode || [];
-}
-
-// Pick the taxable TaxCode for a state, or throw listing what QBO actually has.
-// The throw is the useful path on a first run: its message is the discovery
-// output that tells us what AST created in this company file.
-export function resolveQBTaxCode(taxCodes = [], state) {
-  const key = norm(state).toUpperCase();
-  const stateName = QB_STATE_TAX_CODE_NAMES[key];
-  if (!stateName) throw new Error('No QBO tax-code mapping is defined for state "' + (state || '(blank)') + '".');
-  const usable = (Array.isArray(taxCodes) ? taxCodes : [])
-    .filter(code => code?.Id && code.Active !== false && code.Taxable === true);
-  const describe = () => usable.length
-    ? ' QBO taxable codes: ' + usable.map(c => (c.Name || '(unnamed)') + ' #' + c.Id).join(', ') + '.'
-    : ' QBO returned no active taxable tax codes.';
-  const named = usable.filter(code => norm(code.Name).includes(norm(stateName)));
-  if (named.length === 1) return { value: String(named[0].Id), name: named[0].Name || stateName };
-  if (named.length > 1) throw new Error('Multiple QBO tax codes match ' + stateName + '.' + describe());
-  // Deliberately no "there is only one code, use it" fallback. AST currently has
-  // a California agency only, so a lone code would silently absorb WA/AZ tax
-  // under the CA agency and understate one return while overstating another.
-  // Failing here is also the discovery path: the message names every code QBO
-  // has, which is what a first canary run is for.
-  throw new Error('No QBO tax code resolved for ' + stateName + '.' + describe());
-}
-
 export async function loadAllQBEntities(qbApi, entity, fields = '*', pageSize = 500) {
   if (!/^[A-Za-z]+$/.test(String(entity || ''))) throw new Error('Invalid QuickBooks entity name.');
   const size = Math.max(1, Math.min(1000, Number(pageSize) || 500));
@@ -529,6 +540,15 @@ export function manualBillAccountKey(vendorSelection) {
   return String(vendorSelection || '').startsWith('deco:') ? 'deco_account' : 'purchases_account';
 }
 
+// Account resolution keeps the account number/name for portal verification and
+// display. QBO write payloads use ReferenceType, which accepts only the entity
+// id; sending portal-only metadata such as accountNumber causes validation fault
+// 2010. Normalize every account reference at the write boundary.
+export function qbWriteAccountRef(ref) {
+  if (!ref?.value) throw new Error('QuickBooks account reference is missing; no transaction was sent.');
+  return { value: String(ref.value) };
+}
+
 export function isDecorationVendorBill(bill, decorationVendors = []) {
   if (bill?.kind === 'decoration') return true;
   return !!findUniqueVendorMatch(bill?.supplier, decorationVendors);
@@ -539,11 +559,43 @@ function expenseLine(amount, description, accountRef) {
     DetailType: 'AccountBasedExpenseLineDetail',
     Amount: money(amount),
     Description: description,
-    AccountBasedExpenseLineDetail: { AccountRef: accountRef },
+    AccountBasedExpenseLineDetail: { AccountRef: qbWriteAccountRef(accountRef) },
   };
 }
 
 const skuKey = value => String(value == null ? '' : value).trim().toUpperCase();
+
+// QBO items are keyed by the portal SKU, never the vendor's internal catalog
+// number. Prefer an accepted line tie because it is the operator-approved
+// answer; otherwise use the same conservative alias/style/description resolver
+// that the bill-review UI uses. Keeping this conversion at the QBO boundary
+// preserves the raw vendor SKU for matching and audit history.
+export function mapBillItemsToPortalSkus(items = [], lineMappings = []) {
+  const mappedByIndex = new Map();
+  for (const mapping of lineMappings || []) {
+    const index = Number(mapping?.bill_idx);
+    const mappedSku = String(mapping?.sku || '').trim();
+    if (!Number.isInteger(index) || index < 0 || !mappedSku || !(Number(mapping?.allocated_qty) > 0)) continue;
+    if (!mappedByIndex.has(index)) mappedByIndex.set(index, new Map());
+    mappedByIndex.get(index).set(skuKey(mappedSku), mappedSku);
+  }
+
+  return (items || []).map((item, index) => {
+    const acceptedSkus = [...(mappedByIndex.get(index)?.values() || [])];
+    if (acceptedSkus.length > 1) {
+      throw new Error(`Bill line ${index + 1} is tied to multiple portal SKUs; no bill was sent.`);
+    }
+    const portalSku = acceptedSkus[0] || ourBillSku(item) || String(item?.sku || '').trim();
+    return portalSku ? { ...item, sku: portalSku } : item;
+  });
+}
+
+// A failed write is safe to retry because the bill sync repeats its duplicate
+// preflight before creating anything. Successful and partial results stay
+// locked for review instead of being blindly re-run.
+export function qbBillNeedsSync(status) {
+  return !status || status === 'error';
+}
 
 export function indexQBNonInventoryItems(items = [], requiredSkus = []) {
   const required = new Set((requiredSkus || []).map(skuKey).filter(Boolean));
@@ -569,6 +621,63 @@ export function indexQBNonInventoryItems(items = [], requiredSkus = []) {
     if (!refs[key]) throw new Error(`QBO NonInventory item for SKU ${key} was not found. No bill was sent.`);
   }
   return refs;
+}
+
+// Produce the smallest safe set of QBO item writes needed by a vendor bill.
+// Legacy portal orders can contain valid, reviewed SKUs that predate the
+// current product catalog, so the normal catalog-item canary cannot select
+// them. A bill still needs an ItemRef for each SKU. This planner either reuses
+// one exact active NonInventory match, repairs only its approved account
+// routing, or creates one zero-value NonInventory item. Duplicate SKUs and
+// incompatible QBO item types fail closed.
+export function planQBNonInventoryItems(items = [], requiredSkus = [], accountRefs = {}, descriptionsBySku = {}) {
+  const incomeRef = qbWriteAccountRef(accountRefs.income_account);
+  const expenseRef = qbWriteAccountRef(accountRefs.purchases_account);
+  if (!incomeRef.value || !expenseRef.value) throw new Error('QBO item routing requires the approved Sales and Purchases accounts. No bill was sent.');
+
+  const refs = {};
+  const upserts = [];
+  const uniqueSkus = [...new Set((requiredSkus || []).map(skuKey).filter(Boolean))];
+  for (const sku of uniqueSkus) {
+    const exactMatches = (items || []).filter(item => item &&
+      (skuKey(item.Sku) === sku || skuKey(item.Name) === sku));
+    const matches = exactMatches.filter(item => item.Active !== false);
+    if (matches.length > 1) throw new Error(`QBO SKU ${sku} is duplicated; no bill was sent.`);
+    if (!matches.length && exactMatches.some(item => item.Active === false)) {
+      throw new Error(`QBO SKU ${sku} exists only as an inactive item; no bill was sent.`);
+    }
+    const existing = matches[0] || null;
+    if (existing && String(existing.Type || '').toLowerCase() !== 'noninventory') {
+      throw new Error(`QBO SKU ${sku} has item type "${existing.Type || 'unknown'}"; expected NonInventory. No bill was sent.`);
+    }
+
+    const description = String(descriptionsBySku[sku] || sku)
+      .replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 3800);
+    const accountsMatch = existing &&
+      String(existing.IncomeAccountRef?.value || '') === String(incomeRef.value) &&
+      String(existing.ExpenseAccountRef?.value || '') === String(expenseRef.value);
+    if (existing && accountsMatch) {
+      refs[sku] = { value: String(existing.Id), name: existing.Name || sku };
+      continue;
+    }
+
+    upserts.push({
+      sku,
+      action: existing ? 'repair' : 'create',
+      item: {
+        Name: sku.slice(0, 100),
+        Sku: sku,
+        Description: `${description} | Portal is inventory source of truth; QBO purchase item stores quantity only on documents`,
+        PurchaseDesc: description,
+        IncomeAccountRef: incomeRef,
+        ExpenseAccountRef: expenseRef,
+        ...(existing
+          ? { Id: String(existing.Id), SyncToken: String(existing.SyncToken || '0'), sparse: true }
+          : { Type: 'NonInventory', UnitPrice: 0, PurchaseCost: 0 }),
+      },
+    });
+  }
+  return { refs, upserts };
 }
 
 export function aggregateBillItemsBySku(items = []) {

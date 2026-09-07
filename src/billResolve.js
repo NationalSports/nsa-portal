@@ -56,6 +56,31 @@ export const ourBillSku = (bl) => {
 
 const _num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
 
+// Resolve a bill-line mapping to one exact sales-order item. Copied colorway rows in
+// legacy orders can share item_id, so a persisted array position is the strongest address.
+// Older mappings fall back through id+color and SKU+color before the historical id/SKU path.
+export const resolveMappedSoItemIndex = (items, mapping) => {
+  const its = items || []; const m = mapping || {};
+  const skuEq = (it) => String(m.sku || '').toUpperCase() === String((it && it.sku) || '').toUpperCase();
+  const colorEq = (it) => String(m.color || '').trim().toUpperCase() === String((it && it.color) || '').trim().toUpperCase();
+  const poEq = (it) => !m.po_id || ((it && it.po_lines) || []).some((po) => (po.po_id || '') === m.po_id);
+  const pos = Number(m.so_item_idx);
+  if (Number.isInteger(pos) && pos >= 0 && pos < its.length && skuEq(its[pos]) && poEq(its[pos])) return pos;
+  if (m.item_id) {
+    const byId = [];
+    its.forEach((it, i) => { if (String(it && it.id) === String(m.item_id)) byId.push(i); });
+    const exact = byId.find((i) => colorEq(its[i]) && poEq(its[i]));
+    if (exact != null) return exact;
+    const withPo = byId.find((i) => poEq(its[i]));
+    if (withPo != null) return withPo;
+    if (byId.length) return byId[0];
+  }
+  let idx = its.findIndex((it) => skuEq(it) && colorEq(it) && poEq(it));
+  if (idx < 0) idx = its.findIndex((it) => skuEq(it) && poEq(it));
+  if (idx < 0) idx = its.findIndex(skuEq);
+  return idx;
+};
+
 // Agron (and some Sports Inc feeds) append a single LETTER suffix to the adidas article
 // number: "5162436D"/"5161961C" ↔ our "5162436"/"5161961". Returns the numeric base when a
 // SKU is 5+ digits followed by exactly one letter, else null. Only fires on a numeric base,
@@ -594,9 +619,8 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
 // _validateBillForPush, which checks neither price nor vendor — and at $0 freight its
 // auto-mappings can silently REWRITE order unit_cost with no cap (App.js priceSync).
 // Audit found a reachable, unguarded path (47 auto-pushes in prod; worst mapping gap
-// +103%, though no >25% cost REWRITE had fired yet). This gate closes it for the
-// UNATTENDED path only — the human push button keeps today's behavior (the money-check
-// UI is their gate, and intentional price syncs are a feature).
+// +103%, though no >25% cost REWRITE had fired yet). The caller treats this gate as a
+// hard hold for every Portal/QBO write path; a human must correct/rematch the bill first.
 // Returns [] when safe, else dedup'd blocker reasons.
 export const autoPushSafety = ({ poExact, pricePairs, billVendor, targetVendors, docTotal }) => {
   const reasons = new Set();
@@ -622,6 +646,17 @@ export const autoPushSafety = ({ poExact, pricePairs, billVendor, targetVendors,
     reasons.add('supplier differs — bill from ' + billVendor + ', order lines from ' + tv.join('/'));
   }
   return [...reasons];
+};
+
+// A direct-path safety finding is a real push hold, not merely an auto-push hint.
+// Keep this predicate pure so the Portal, QBO, parked-bill, and review paths share
+// one fail-closed interpretation of `_auto_hold`. Older saved rows may contain a
+// single string, so normalize that shape too.
+export const billAutoHoldReasons = (bill) => {
+  const value = bill && bill._auto_hold;
+  if (Array.isArray(value)) return value.map((reason) => String(reason || '').trim()).filter(Boolean);
+  const reason = String(value || '').trim();
+  return reason ? [reason] : [];
 };
 
 export const highConfidenceAutoAccept = (prop) => {

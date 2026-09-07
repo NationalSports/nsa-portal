@@ -4,7 +4,7 @@ jest.mock('../lib/supabase', () => ({
 }));
 
 import { fetchStockMap, stockSkuAliases, stockSkuKey } from '../lib/storeInventory';
-import { haveSameDecorations, variantGroupFields } from '../lib/webstoreGrouping';
+import { haveSameDecorations, variantGroupFields, sharedCardFields, webstoreDecorationCost } from '../lib/webstoreGrouping';
 
 describe('webstore vendor SKU matching', () => {
   test('matches SanMar catalog and inventory spellings for ST650 True Navy', () => {
@@ -72,5 +72,22 @@ describe('webstore color grouping', () => {
   test('different-logo color flow leaves the new row outside the variant group', () => {
     expect(variantGroupFields('primary-id', true)).toEqual({});
     expect(variantGroupFields('primary-id', false)).toEqual({ variant_group_id: 'primary-id' });
+  });
+
+  test('card pricing fans out without copying color-specific fields', () => {
+    expect(sharedCardFields({
+      retail_price: 39, deco_upcharge: 5, deco_cost_estimate: 2,
+      decorations: [logo('crest')], options: [{ name: 'Name' }],
+      image_url: 'navy.png', sizes_offered: ['M'],
+    })).toEqual({
+      retail_price: 39, deco_upcharge: 5, deco_cost_estimate: 2,
+      decorations: [logo('crest')], options: [{ name: 'Name' }],
+    });
+  });
+
+  test('saved decoration cost wins over the legacy $5 default, including zero', () => {
+    expect(webstoreDecorationCost(null, true)).toBe(5);
+    expect(webstoreDecorationCost(2, true)).toBe(2);
+    expect(webstoreDecorationCost(0, true)).toBe(0);
   });
 });

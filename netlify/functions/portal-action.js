@@ -33,6 +33,50 @@ const pick = (obj, allowed) => {
 
 const ART_DECISION_STATUSES = new Set(['production_files_needed', 'order_dtf_transfers', 'upload_emb_files', 'art_complete']);
 const STALE_MSG = 'This artwork was updated since this page loaded — please refresh and try again.';
+const MONITORED_INBOX = 'steve@nationalsportsapparel.com';
+
+const cleanEmail = (value) => {
+  const email = String(value || '').trim().toLowerCase();
+  return /^\S+@\S+\.\S+$/.test(email) ? email : '';
+};
+
+// Notification routing must be resolved server-side from the document owner. The
+// coach portal is public, so a browser-supplied `email.to` is neither authoritative
+// nor safe. Prefer the customer's primary rep, then the document creator. Older
+// team rows sometimes have a linked auth account but a blank roster email; use the
+// auth email and self-heal the roster instead of silently sending that rep's alert
+// to the monitored admin inbox (EST-2374).
+async function resolveNotificationRep(admin, primaryRepId, creatorId) {
+  const ids = [...new Set([primaryRepId, creatorId].filter(Boolean))];
+  if (!ids.length) return { email: MONITORED_INBOX, name: 'Steve Peterson', id: null, source: 'fallback' };
+
+  const { data: rows, error } = await admin.from('team_members')
+    .select('id,name,email,auth_id,is_active')
+    .in('id', ids);
+  if (error) throw error;
+  const byId = new Map((rows || []).map((row) => [row.id, row]));
+
+  for (const id of ids) {
+    const member = byId.get(id);
+    if (!member || member.is_active === false) continue;
+    const rosterEmail = cleanEmail(member.email);
+    if (rosterEmail) return { email: rosterEmail, name: member.name || '', id, source: 'team_members' };
+
+    if (member.auth_id && admin.auth?.admin?.getUserById) {
+      const { data: authData, error: authError } = await admin.auth.admin.getUserById(member.auth_id);
+      const authEmail = !authError && cleanEmail(authData?.user?.email);
+      if (authEmail) {
+        // Best-effort repair. Delivery should still proceed if the roster update fails.
+        try {
+          await admin.from('team_members').update({ email: authEmail }).eq('id', id);
+        } catch (_) { /* notification routing already has the authenticated email */ }
+        return { email: authEmail, name: member.name || '', id, source: 'auth' };
+      }
+    }
+  }
+
+  return { email: MONITORED_INBOX, name: 'Steve Peterson', id: null, source: 'fallback' };
+}
 
 // ── Coach art decision — ONE guarded transaction (migration 00172) ──
 // apply_coach_art_decision locks the job, verifies it is still waiting_approval
@@ -136,26 +180,28 @@ exports.handler = async (event) => {
     return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: 'alphaTag required' }) };
   }
   let allowedSO = new Set(), allowedEst = new Set();
+  const allowedSODocs = new Map(), allowedEstDocs = new Map(), primaryRepByCustomer = new Map();
   try {
-    const { data: parents, error: custErr } = await admin.from('customers').select('id').eq('alpha_tag', alphaTag.trim());
+    const { data: parents, error: custErr } = await admin.from('customers').select('id,primary_rep_id').eq('alpha_tag', alphaTag.trim());
     if (custErr) return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: custErr.message }) };
     if (!parents || !parents.length) return { statusCode: 403, headers: CORS, body: JSON.stringify({ error: 'Unknown portal tag' }) };
     const parentIds = parents.map(p => p.id);
-    const { data: kids, error: kidErr } = await admin.from('customers').select('id').in('parent_id', parentIds);
+    const { data: kids, error: kidErr } = await admin.from('customers').select('id,primary_rep_id').in('parent_id', parentIds);
     if (kidErr) return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: kidErr.message }) };
     const famIds = new Set([...parentIds, ...(kids || []).map(k => k.id)]);
+    [...parents, ...(kids || [])].forEach(c => primaryRepByCustomer.set(c.id, c.primary_rep_id || null));
 
     const soIds = [...new Set([...jobs, ...artFiles].map(r => r?.so_id).concat(touchSO ? [touchSO] : []).concat(artDecision?.so_id ? [artDecision.so_id] : []).filter(Boolean))];
     if (soIds.length) {
-      const { data: sos, error: soErr } = await admin.from('sales_orders').select('id,customer_id').in('id', soIds);
+      const { data: sos, error: soErr } = await admin.from('sales_orders').select('id,customer_id,created_by').in('id', soIds);
       if (soErr) return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: soErr.message }) };
-      (sos || []).forEach(s => { if (famIds.has(s.customer_id)) allowedSO.add(s.id); });
+      (sos || []).forEach(s => { if (famIds.has(s.customer_id)) { allowedSO.add(s.id); allowedSODocs.set(s.id, s); } });
     }
     const estIds = [...new Set(estimates.map(r => r?.id).filter(Boolean))];
     if (estIds.length) {
-      const { data: ests, error: estErr } = await admin.from('estimates').select('id,customer_id').in('id', estIds);
+      const { data: ests, error: estErr } = await admin.from('estimates').select('id,customer_id,created_by').in('id', estIds);
       if (estErr) return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: estErr.message }) };
-      (ests || []).forEach(e => { if (famIds.has(e.customer_id)) allowedEst.add(e.id); });
+      (ests || []).forEach(e => { if (famIds.has(e.customer_id)) { allowedEst.add(e.id); allowedEstDocs.set(e.id, e); } });
     }
   } catch (e) {
     return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: e.message }) };
@@ -246,13 +292,23 @@ exports.handler = async (event) => {
       emailError = 'BREVO_API_KEY not configured';
     } else {
       try {
+        // Derive the recipient from the owned document, never from the public
+        // request body. `email.to` remains required only as a signal that this
+        // action includes a notification and for compatibility with old clients.
+        const estimateDoc = estimates.map(r => allowedEstDocs.get(r?.id)).find(Boolean);
+        const soId = artDecision?.so_id || jobs.find(r => r?.so_id)?.so_id || artFiles.find(r => r?.so_id)?.so_id || touchSO;
+        const soDoc = soId ? allowedSODocs.get(soId) : null;
+        const doc = estimateDoc || soDoc;
+        const rep = doc
+          ? await resolveNotificationRep(admin, primaryRepByCustomer.get(doc.customer_id), doc.created_by)
+          : { email: MONITORED_INBOX, name: 'Steve Peterson' };
         const payload = {
           sender: { name: email.senderName || 'NSA Portal', email: email.senderEmail || 'noreply@nationalsportsapparel.com' },
-          to: Array.isArray(email.to) ? email.to : [{ email: email.to }],
+          to: [{ email: rep.email, ...(rep.name ? { name: rep.name } : {}) }],
           subject: email.subject,
           htmlContent: email.htmlContent || undefined,
         };
-        if (email.replyTo) payload.replyTo = email.replyTo;
+        payload.replyTo = { email: rep.email, ...(rep.name ? { name: rep.name } : {}) };
         if (email.cc) {
           const toSet = new Set(payload.to.map(t => (t.email || '').toLowerCase()));
           const cc = (Array.isArray(email.cc) ? email.cc : [email.cc]).filter(c => c && c.email && !toSet.has(c.email.toLowerCase()));
@@ -275,3 +331,4 @@ exports.handler = async (event) => {
 
 // Test surface — Netlify invokes `handler`; this export is inert in prod.
 module.exports.applyArtDecision = applyArtDecision;
+module.exports.resolveNotificationRep = resolveNotificationRep;

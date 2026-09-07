@@ -20,3 +20,17 @@ export const haveSameDecorations = (left, right) =>
 
 export const variantGroupFields = (groupId, separate) =>
   separate ? {} : { variant_group_id: groupId };
+
+const SHARED_CARD_FIELDS = new Set([
+  'retail_price', 'fundraise_amount', 'deco_upcharge', 'deco_cost_estimate',
+  'decorations', 'options', 'track_inventory',
+]);
+
+export const sharedCardFields = (fields) => Object.fromEntries(
+  Object.entries(fields || {}).filter(([key]) => SHARED_CARD_FIELDS.has(key))
+);
+
+// A missing value is a legacy row and keeps the historical $5 default. Saved
+// zero is intentional and must not be mistaken for a missing value.
+export const webstoreDecorationCost = (savedCost, decorated) =>
+  savedCost == null ? (decorated ? 5 : 0) : Math.max(0, Number(savedCost) || 0);
