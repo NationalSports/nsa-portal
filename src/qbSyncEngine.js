@@ -276,6 +276,26 @@ export function groupPortalPurchaseOrders(sos = [], poMap = {}) {
   return [...groups.values()];
 }
 
+// QBO caps a line Description at 4000 characters; a PO with dozens of unlinked
+// SKUs would overflow it. Keep the leading detail and say how much was cut.
+export const QB_PO_ACCOUNT_LINE_DESCRIPTION_MAX = 1000;
+export function qbPOAccountLineDescription(parts = [], soIds = []) {
+  const prefix = 'Unlinked goods: ';
+  const suffix = ' (SO: ' + soIds.join(', ') + ')';
+  const budget = QB_PO_ACCOUNT_LINE_DESCRIPTION_MAX - prefix.length - suffix.length;
+  const kept = [];
+  let length = 0;
+  for (const part of parts) {
+    const next = length + part.length + (kept.length ? 2 : 0);
+    if (next > budget) break;
+    kept.push(part);
+    length = next;
+  }
+  const dropped = parts.length - kept.length;
+  const body = kept.join('; ') + (dropped ? (kept.length ? '; ' : '') + '+' + dropped + ' more line' + (dropped === 1 ? '' : 's') : '');
+  return prefix + body + suffix;
+}
+
 export function buildQBPurchaseOrderPreviewRows(sos = [], products = [], prodQBMap = {}, poMap = {}) {
   const productIdBySku = new Map(products.map(product => [String(product.sku || '').trim().toUpperCase(), product.id]));
   return groupPortalPurchaseOrders(sos, poMap).map(group => {
@@ -284,6 +304,7 @@ export function buildQBPurchaseOrderPreviewRows(sos = [], products = [], prodQBM
     if (!parseQBDateValue(group.created_at)) reasons.add('invalid or missing PO date');
     let total = 0;
     const skus = new Set();
+    const accountSkus = new Set();
     group.entries.forEach(({pl, it}) => {
       const qty = Object.entries(pl || {}).filter(([key,value]) => typeof value === 'number'
         && !key.startsWith('_') && !['unit_cost','billed','tracking_numbers','vendor','drop_ship'].includes(key)
@@ -295,12 +316,15 @@ export function buildQBPurchaseOrderPreviewRows(sos = [], products = [], prodQBM
       const sku = String(it?.sku || '').trim().toUpperCase();
       const productId = it?.product_id || productIdBySku.get(sku);
       skus.add(sku || '(blank SKU)');
-      if (!sku || !productId || !prodQBMap[productId]) reasons.add('missing QBO NonInventory item for ' + (sku || '(blank SKU)'));
+      // Lines without a linked QBO item post to the purchases account instead
+      // (see syncPurchaseOrders), so they no longer block the PO; surface them so
+      // the reviewer can see which lines will not carry an item.
+      if (!sku || !productId || !prodQBMap[productId]) accountSkus.add(sku || '(blank SKU)');
     });
     total = qbCurrency(total);
     if (!(total > 0)) reasons.add('no positive purchase-order lines');
     return {poId:String(group.poId),vendor:String(group.vendor || ''),date:parseQBDateValue(group.created_at) || '',
-      lineCount:group.entries.length,skus:[...skus],total,action:reasons.size ? 'blocked' : 'ready',reason:[...reasons].join('; ')};
+      lineCount:group.entries.length,skus:[...skus],accountSkus:[...accountSkus],total,action:reasons.size ? 'blocked' : 'ready',reason:[...reasons].join('; ')};
   });
 }
 
@@ -1381,7 +1405,11 @@ export function createQBSyncEngine(ctx){
           vendorQBMap[vendorName]=qbVendorId;
           if(v)setVend(prev=>prev.map(vv=>vv.id===v.id?{...vv,qb_vendor_id:qbVendorId}:vv));
         }
-        let missingSkuItem=null;
+        // Lines whose SKU has no linked QBO item (one-off custom goods, blanks
+        // typed straight onto an order) post as one account line to the purchases
+        // account, the same way decoration lines do. The books only need the
+        // vendor total in the right account; per-SKU items are for stock only.
+        const accountLine={amount:0,parts:[],soIds:new Set()};
         const itemGroups=new Map();
         const qbLines=[];
         group.entries.forEach(({pl:p,so:s,it:i})=>{
@@ -1400,14 +1428,20 @@ export function createQBSyncEngine(ctx){
           const sku=String(i.sku||'').trim().toUpperCase();
           const productId=i.product_id||(prod.find(pp=>String(pp.sku||'').trim().toUpperCase()===sku)||{}).id;
           const itemId=effectiveProdQBMap[productId];
-          if(!sku||!itemId){missingSkuItem=sku||'(blank SKU)';return}
+          if(!sku||!itemId){
+            accountLine.amount+=qty*rate;accountLine.soIds.add(s.id);
+            accountLine.parts.push((sku||'(blank SKU)')+' '+String(i.name||'').trim()+' x'+qty+' @$'+rate.toFixed(2));
+            return;
+          }
           const entry=itemGroups.get(sku)||{sku,itemId,qty:0,amount:0,names:new Set(),soIds:new Set()};
           entry.qty+=qty;entry.amount+=qty*rate;entry.names.add(i.name);entry.soIds.add(s.id);itemGroups.set(sku,entry);
         });
-        if(missingSkuItem){const error='QBO NonInventory item missing for '+missingSkuItem;log.details.push(group.poId+' — BLOCKED: '+error);results.push({poId:group.poId,result:'blocked',error});log.status='partial';continue}
         itemGroups.forEach(entry=>qbLines.push({DetailType:'ItemBasedExpenseLineDetail',Amount:Math.round(entry.amount*100)/100,
           Description:entry.sku+' '+[...entry.names].filter(Boolean).join(' / ')+' (SO: '+[...entry.soIds].join(', ')+')',
           ItemBasedExpenseLineDetail:{ItemRef:{value:String(entry.itemId)},Qty:entry.qty,UnitPrice:Math.round((entry.amount/entry.qty)*1e6)/1e6}}));
+        if(accountLine.parts.length)qbLines.push({DetailType:'AccountBasedExpenseLineDetail',Amount:Math.round(accountLine.amount*100)/100,
+          Description:qbPOAccountLineDescription(accountLine.parts,[...accountLine.soIds]),
+          AccountBasedExpenseLineDetail:{AccountRef:poAccountRefs.purchases_account}});
         const totalAmount=qbCurrency(qbLines.reduce((a,l)=>a+l.Amount,0));
         if(!qbLines.length||!(totalAmount>0)){const error='no positive purchase-order lines';log.details.push(group.poId+' — BLOCKED: '+error);results.push({poId:group.poId,result:'blocked',error});log.status='partial';continue}
         const soRefs=[...new Set(group.entries.map(({so:s})=>s.id))].join(', ');

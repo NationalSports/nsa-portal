@@ -1,4 +1,4 @@
-import { billReferencesPortalPO, buildQBBillPOReplacement, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions } from '../qbSyncEngine';
+import { QB_PO_ACCOUNT_LINE_DESCRIPTION_MAX, billReferencesPortalPO, buildQBBillPOReplacement, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions, qbPOAccountLineDescription } from '../qbSyncEngine';
 import { indexQBNonInventoryItems, QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_SPECS } from '../qbAccountMappings';
 
 const accountRows = Object.values(QB_ACCOUNT_SPECS).map((spec,index)=>({
@@ -219,6 +219,35 @@ describe('QuickBooks one-record canaries', () => {
     expect(getConfig().qbPOMap['PO-1']).toBe('PO-QB');
   });
 
+  test('posts lines without a linked QBO item as one purchases-account line and verifies the read-back', async() => {
+    const so={id:'SO-1',items:[
+      {product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:5,sizes:{S:2},po_lines:[{po_id:'PO-1',created_at:'2026-09-01',S:2,unit_cost:5}]},
+      {product_id:null,sku:'CUSTOM',name:'Sublimated uniforms',brand:'Acme',nsa_cost:30,is_custom:true,po_lines:[{po_id:'PO-1',created_at:'2026-09-01',L:2,unit_cost:30}]},
+      {product_id:null,sku:'PC54',name:'Core Cotton Tee',brand:'Acme',nsa_cost:3.1,po_lines:[{po_id:'PO-1',created_at:'2026-09-01',M:3,unit_cost:3.1}]},
+    ]};
+    let sentPO;
+    const qbApi=jest.fn(async(action,{query,purchase_order}={})=>{
+      if(action==='query'&&query.includes('FROM Vendor STARTPOSITION'))return{QueryResponse:{Vendor:[{Id:'V-QB',DisplayName:'Acme',CompanyName:'Acme'}]}};
+      if(action==='query'&&query.includes('FROM PurchaseOrder STARTPOSITION'))return{QueryResponse:{PurchaseOrder:[]}};
+      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
+      if(action==='upsert_purchase_order'){sentPO=purchase_order;return{PurchaseOrder:{Id:'PO-QB',...purchase_order}}}
+      if(action==='query'&&query.includes("FROM PurchaseOrder WHERE Id = 'PO-QB'"))return{QueryResponse:{PurchaseOrder:[{Id:'PO-QB',...sentPO,TotalAmt:79.3}]}};
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const{engine,getConfig,persistQbLink}=makeEngine({qbApi,sos:[so],prod:[{id:'P1',sku:'SKU-1'}],vend:[{id:'V1',name:'Acme'}]});
+    getConfig().prodQBMap.P1='I-1';
+    await expect(engine.syncPurchaseOrders({}, {canaryPOId:'PO-1'})).resolves.toEqual({status:'success',synced:1});
+    expect(qbApi.mock.calls.filter(([action])=>action==='upsert_item')).toHaveLength(0);
+    expect(sentPO.Line).toHaveLength(2);
+    expect(sentPO.Line[0]).toEqual(expect.objectContaining({DetailType:'ItemBasedExpenseLineDetail',Amount:10,
+      ItemBasedExpenseLineDetail:expect.objectContaining({ItemRef:{value:'I-1'},Qty:2})}));
+    expect(sentPO.Line[1]).toEqual({DetailType:'AccountBasedExpenseLineDetail',Amount:69.3,
+      Description:'Unlinked goods: CUSTOM Sublimated uniforms x2 @$30.00; PC54 Core Cotton Tee x3 @$3.10 (SO: SO-1)',
+      AccountBasedExpenseLineDetail:{AccountRef:{value:accountId(QB_ACCOUNT_MAPPING_DEFAULTS.purchases_account)}}});
+    expect(persistQbLink).toHaveBeenCalledWith(expect.objectContaining({mapKey:'qbPOMap',sourceIds:['PO-1'],qboId:'PO-QB',
+      evidence:expect.objectContaining({api_readback:true,total:79.3,line_count:2})}));
+  });
+
   test('uses the saved PO line cost rounded to cents instead of a changed catalog cost', async() => {
     const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:99.999,sizes:{S:1},po_lines:[{po_id:'PO-1',created_at:'2026-09-01',S:1,unit_cost:37.115}]}]};
     let sentPO;
@@ -385,12 +414,23 @@ test('PO-to-bill matching uses exact memo references and line links',()=>{
   expect(findQbPOBillCandidates([lineLinked], 'different', '418')).toEqual([lineLinked]);
 });
 
-test('purchase-order preview identifies ready POs and missing item links without writing',()=>{
+test('purchase-order preview keeps POs with unlinked SKUs ready and lists the SKUs headed to the purchases account',()=>{
   const sos=[{id:'SO-1',items:[
     {product_id:'P1',sku:'READY',name:'Ready',brand:'Acme',nsa_cost:5,po_lines:[{po_id:'PO-1',created_at:'2026-09-01',S:2,unit_cost:5}]},
     {product_id:'P2',sku:'MISSING',name:'Missing',brand:'Acme',nsa_cost:4,po_lines:[{po_id:'PO-2',created_at:'2026-09-01',M:1,unit_cost:4}]},
+    {product_id:null,sku:'CUSTOM',name:'Sublimated uniforms',brand:'Acme',nsa_cost:30,is_custom:true,po_lines:[{po_id:'PO-2',created_at:'2026-09-01',L:2,unit_cost:30}]},
   ]}];
   const rows=buildQBPurchaseOrderPreviewRows(sos,[{id:'P1',sku:'READY'},{id:'P2',sku:'MISSING'}],{P1:'I-1'},{});
-  expect(rows.find(row=>row.poId==='PO-1')).toEqual(expect.objectContaining({action:'ready',total:10}));
-  expect(rows.find(row=>row.poId==='PO-2')).toEqual(expect.objectContaining({action:'blocked',reason:'missing QBO NonInventory item for MISSING'}));
+  expect(rows.find(row=>row.poId==='PO-1')).toEqual(expect.objectContaining({action:'ready',total:10,accountSkus:[]}));
+  expect(rows.find(row=>row.poId==='PO-2')).toEqual(expect.objectContaining({action:'ready',total:64,reason:'',accountSkus:['MISSING','CUSTOM']}));
+});
+
+test('purchase-order account line description names every unlinked line until the QBO cap, then counts the rest',()=>{
+  expect(qbPOAccountLineDescription(['CUSTOM Sublimated uniforms x2 @$30.00','PC54 Core Cotton Tee x12 @$3.10'],['SO-1','SO-2']))
+    .toBe('Unlinked goods: CUSTOM Sublimated uniforms x2 @$30.00; PC54 Core Cotton Tee x12 @$3.10 (SO: SO-1, SO-2)');
+  const parts=Array.from({length:60},(_,index)=>'SKU'+index+' Some long product name x1 @$1.00');
+  const description=qbPOAccountLineDescription(parts,['SO-9']);
+  expect(description.length).toBeLessThanOrEqual(QB_PO_ACCOUNT_LINE_DESCRIPTION_MAX);
+  expect(description).toMatch(/; \+\d+ more lines \(SO: SO-9\)$/);
+  expect(description.startsWith('Unlinked goods: SKU0 Some long product name x1 @$1.00; SKU1 ')).toBe(true);
 });
