@@ -97,8 +97,18 @@ export function buildQBCustomerMatchDiagnostic(customers = [], qboCustomers = []
 const qbCurrency = value => Math.round((safeNum(value) + Number.EPSILON) * 100) / 100;
 
 export function qbResponseErrorDetail(response, fallback = 'unknown') {
-  return response?.Fault?.Error?.[0]?.Detail || response?.Fault?.Error?.[0]?.Message ||
-    response?.error || response?.message || fallback;
+  const err = response?.Fault?.Error?.[0];
+  const text = err?.Detail || err?.Message || response?.error || response?.message;
+  // A bare "unknown" ends an investigation before it starts. QBO returns its
+  // reason in several shapes depending on whether the rejection is a business
+  // validation, an auth failure or a malformed request, so when none of them
+  // parse, hand back enough of the raw response to identify which.
+  if (text) return text + (err?.code ? ' [code ' + err.code + ']' : '');
+  try {
+    const raw = JSON.stringify(response);
+    if (raw && raw !== '{}' && raw !== 'null') return fallback + ' — QBO returned: ' + raw.slice(0, 500);
+  } catch { /* circular or unserialisable — fall through */ }
+  return fallback;
 }
 
 export function portalCustomerDisplayName(customer = {}) {
@@ -982,7 +992,7 @@ export function createQBSyncEngine(ctx){
           setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,qb_invoice_id:res.Invoice.Id}:ii));
           log.details.push((inv.display_id||inv.id)+' → QB Invoice #'+res.Invoice.Id+' ($'+invoiceTotal.toFixed(2)+')');synced++;
           if(safeNum(inv.paid)>0)log.details.push((inv.display_id||inv.id)+' — payment queued for the paid-status pass after the QBO invoice link is persisted');
-        }else{log.details.push((inv.display_id||inv.id)+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
+        }else{log.details.push((inv.display_id||inv.id)+' — FAILED: '+qbResponseErrorDetail(res));log.status='partial'}
       }
       if(synced===0&&unsyncedInvs2.length>0)log.status='error';
       log.details.unshift(synced+'/'+unsyncedInvs2.length+(canary?' invoice canary':' invoices completed in this batch')+(allUnsyncedInvs.length>unsyncedInvs2.length?' · '+(allUnsyncedInvs.length-unsyncedInvs2.length)+' remain':''));
@@ -1472,7 +1482,7 @@ export function createQBSyncEngine(ctx){
           }
           soMap[so.id]=res.Estimate.Id;
           log.details.push(so.id+' → QB Estimate #'+res.Estimate.Id);synced++;
-        }else{log.details.push(so.id+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
+        }else{log.details.push(so.id+' — FAILED: '+qbResponseErrorDetail(res));log.status='partial'}
       }
       if(synced===0&&toSync.length>0)log.status='error';
       log.details.unshift(synced+'/'+toSync.length+(canary?' sales-order canary':' sales orders completed in this batch')+(allToSync.length>toSync.length?' · '+(allToSync.length-toSync.length)+' remain':''));

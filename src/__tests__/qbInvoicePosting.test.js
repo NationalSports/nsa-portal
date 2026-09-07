@@ -1,4 +1,4 @@
-import { buildQBInvoicePostingLines, buildQBInvoiceTaxPlan, buildQBInvoiceTxnTaxDetail } from '../qbSyncEngine';
+import { buildQBInvoicePostingLines, buildQBInvoiceTaxPlan, buildQBInvoiceTxnTaxDetail, qbResponseErrorDetail } from '../qbSyncEngine';
 
 describe('QuickBooks invoice account routing', () => {
   test('posts ordinary sales entirely to the 40000-linked item', () => {
@@ -114,5 +114,28 @@ describe('Automated Sales Tax override plan', () => {
     const plan=buildQBInvoiceTaxPlan({invoice:inv,state:'CA',taxRateMap:{CA:'77'},taxCodes:[manual],partnerTaxEnabled:false});
     expect(plan).toMatchObject({taxCodeId:'9',rateId:'77',astOverride:false});
     expect(buildQBInvoiceTxnTaxDetail(plan).TaxLine).toHaveLength(1);
+  });
+});
+
+describe('QBO error surfacing', () => {
+  test('prefers Detail, and names the fault code', () => {
+    expect(qbResponseErrorDetail({Fault:{Error:[{Detail:'Tax code invalid',Message:'Business Validation Error',code:'6000'}]}}))
+      .toBe('Tax code invalid [code 6000]');
+  });
+
+  test('falls back to Message when Detail is absent', () => {
+    expect(qbResponseErrorDetail({Fault:{Error:[{Message:'Business Validation Error',code:'6000'}]}}))
+      .toBe('Business Validation Error [code 6000]');
+  });
+
+  test('hands back the raw response rather than a bare "unknown"', () => {
+    const out=qbResponseErrorDetail({Invoice:null,warnings:['AST override rejected']});
+    expect(out).toMatch(/^unknown — QBO returned: /);
+    expect(out).toContain('AST override rejected');
+  });
+
+  test('still returns the plain fallback when there is nothing to report', () => {
+    expect(qbResponseErrorDetail({})).toBe('unknown');
+    expect(qbResponseErrorDetail(null)).toBe('unknown');
   });
 });
