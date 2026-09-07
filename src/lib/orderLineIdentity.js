@@ -21,3 +21,24 @@ export function matchingClientLine(dbItem, clientItems) {
 }
 
 export const newOrderLineId = () => typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'line-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
+
+// Outgoing save payload: every line leaves the client carrying a line_id. A line the rep just
+// added has none, and save_estimate's legacy matcher then hands it the id of the EXISTING line
+// with the same SKU/color/product — so the upsert hits that row twice and the whole save is
+// rejected (ESTIMATE_DUPLICATE_LINE_ID; EST-2434, a second "R095ZM / Default" line, 47 rejections
+// in a day). A blank line adopts an existing line's id only when exactly one DB line with the
+// same garment identity is not already claimed by another client line — the offline-draft case
+// the matcher exists for. A claimed sole match means this is a NEW line: it gets a fresh id.
+// Zero or several unclaimed matches are left to the server (fresh id / AMBIGUOUS), unchanged.
+export function resolveOutgoingLineIds(clientItems, dbItems) {
+  const claimed = new Set((clientItems || []).map(it => it?.line_id).filter(Boolean));
+  return (clientItems || []).map(it => {
+    if (!it || it.line_id) return it;
+    const key = garmentIdentity(it);
+    const matches = (dbItems || []).filter(db => db?.line_id && garmentIdentity(db) === key);
+    const open = matches.filter(db => !claimed.has(db.line_id));
+    if (matches.length && !open.length) { const line_id = newOrderLineId(); claimed.add(line_id); return { ...it, line_id }; }
+    if (open.length === 1) { claimed.add(open[0].line_id); return { ...it, line_id: open[0].line_id }; }
+    return it;
+  });
+}
