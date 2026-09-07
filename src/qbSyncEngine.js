@@ -424,28 +424,18 @@ export function buildQBBillPOReplacement({bill, purchaseOrder}) {
 // tax canary created and read back, plus TotalTax override on the invoice. The
 // plan is built before anything is written and fails closed on every mismatch,
 // because a wrong liability posting is worse than a blocked invoice.
-// Automated Sales Tax normally computes tax itself from the ship-to address and
-// discards a supplied amount. QuickBooks' own escape hatch is the CustomSalesTax
-// code, which exists precisely to carry an externally-calculated figure — the
-// portal's 39 distinct local rates cannot be reproduced by one AST calculation
-// per address, so that override is the only mechanism that keeps QBO's A/R equal
-// to what the customer was actually billed.
-//
-// UNPROVEN against this company file: whether QBO honours the override or still
-// recalculates. Treated as a hypothesis, not a fact — every caller asserts the
-// read-back tax and total, so a recalculation blocks the invoice instead of
-// linking a wrong one. The canary is what settles it.
-export const QB_AST_OVERRIDE_TAX_CODE_NAME = 'CustomSalesTax';
-
-function resolveASTOverrideTaxCode(taxCodes = []) {
-  const normName = value => String(value == null ? '' : value).trim().toLowerCase();
-  const usable = (taxCodes || []).filter(tc => tc && tc.Active !== false && tc.Taxable === true);
-  const named = usable.filter(tc => normName(tc.Name) === normName(QB_AST_OVERRIDE_TAX_CODE_NAME));
-  if (named.length === 1) return String(named[0].Id);
-  const found = usable.length ? ' Taxable codes present: ' + usable.map(tc => (tc.Name || '(unnamed)') + ' #' + tc.Id).join(', ') + '.' : ' No active taxable tax codes exist.';
-  throw new Error(named.length
-    ? 'more than one active ' + QB_AST_OVERRIDE_TAX_CODE_NAME + ' tax code exists.' + found
-    : 'Automated Sales Tax is on and no ' + QB_AST_OVERRIDE_TAX_CODE_NAME + ' code was found to carry the portal amount.' + found);
+// Under Automated Sales Tax QuickBooks computes tax from the ship-to address and
+// discards a supplied amount, and its CustomSalesTax code is refused on a
+// transaction outright (fault 6160 — verified live on this company file). The
+// portal's 39 local rates cannot be reproduced by one AST calculation per
+// address, so the tax is carried as its own invoice line against the state's
+// approved liability account instead, with every line marked NON so AST adds
+// nothing on top. That is exactly the routing qbAccountMappings has always
+// described for state sales tax: "25200–25230 state subaccounts, Credit, portal
+// amount". QBO's own Sales Tax Center will not see this tax; returns are filed
+// from the portal, which is the source of truth for the figure anyway.
+export function portalSalesTaxItemName(state) {
+  return 'NSA Portal Sales Tax — ' + String(state || '').trim().toUpperCase();
 }
 
 export function buildQBInvoiceTaxPlan({ invoice, state, taxRateMap = {}, taxCodes = [], partnerTaxEnabled = false }) {
@@ -455,13 +445,14 @@ export function buildQBInvoiceTaxPlan({ invoice, state, taxRateMap = {}, taxCode
   const code = String(state || '').trim().toUpperCase();
   if (!QB_STATE_TAX_ACCOUNT_KEYS[code]) throw new Error('customer state "' + (code || 'blank') + '" has no approved sales-tax account');
   // Under AST there are no manual TaxRate records to match, so the rate-map and
-  // rate-to-code checks below do not apply; the override code replaces them.
-  // The rate reconciliation further down still runs — it is the portal's own
-  // arithmetic and is what proves the amount before anything is written.
-  let taxCodeId, rateId = '';
-  if (partnerTaxEnabled) {
-    taxCodeId = resolveASTOverrideTaxCode(taxCodes);
-  } else {
+  // rate-to-code checks below do not apply: the tax posts as a line against the
+  // state's liability account and no QBO tax code is involved. The rate
+  // reconciliation further down still runs — it is the portal's own arithmetic
+  // and is what proves the amount before anything is written.
+  const taxLine = !!partnerTaxEnabled;
+  const taxAccountKey = taxLine ? QB_STATE_TAX_ACCOUNT_KEYS[code] : '';
+  let taxCodeId = '', rateId = '';
+  if (!taxLine) {
     rateId = String(taxRateMap[code] || '');
     if (!rateId) throw new Error('no verified QuickBooks tax rate for ' + code + '; run the tax-rate canary for that state first');
     const matches = (taxCodes || []).filter(tc => tc && tc.Active !== false
@@ -480,21 +471,20 @@ export function buildQBInvoiceTaxPlan({ invoice, state, taxRateMap = {}, taxCode
   const shippingTaxable = !reconciles(taxableExShipping) && shipping > 0 && reconciles(taxableIncShipping);
   const taxable = shippingTaxable ? taxableIncShipping : taxableExShipping;
   if (!reconciles(taxable)) throw new Error('tax $' + tax.toFixed(2) + ' does not reconcile with ' + (rate * 100).toFixed(3).replace(/\.?0+$/, '') + '% of the taxable amount; not posted');
-  return { state: code, tax, taxable, shipping, shippingTaxable, taxCodeId, rateId, astOverride: !!partnerTaxEnabled };
+  return { state: code, tax, taxable, shipping, shippingTaxable, taxCodeId, rateId, taxLine, taxAccountKey };
 }
 
 export function buildQBInvoiceTxnTaxDetail(plan) {
   if (!plan) return null;
-  // An AST override carries the amount alone: there is no manual TaxRate record
-  // for a TaxLine to reference, and sending a TaxLineDetail without a real
-  // TaxRateRef would be inventing one.
-  if (plan.astOverride) return { TxnTaxCodeRef: { value: plan.taxCodeId }, TotalTax: plan.tax };
+  // In line mode the tax is an ordinary invoice line, so QBO's own tax detail
+  // must stay empty: a TxnTaxDetail here would double-count it.
+  if (plan.taxLine) return null;
   return { TxnTaxCodeRef: { value: plan.taxCodeId }, TotalTax: plan.tax,
     TaxLine: [{ Amount: plan.tax, DetailType: 'TaxLineDetail',
       TaxLineDetail: { TaxRateRef: { value: plan.rateId }, PercentBased: false, NetAmountTaxable: plan.taxable } }] };
 }
 
-export function buildQBInvoicePostingLines({ invoice, salesItemId, discountAccountRef, description, taxPlan = null }) {
+export function buildQBInvoicePostingLines({ invoice, salesItemId, discountAccountRef, description, taxPlan = null, taxItemId = null }) {
   const cents = value => Math.round(safeNum(value) * 100) / 100;
   const total = cents(invoice?.total);
   const discount = cents(invoice?.credit_amount);
@@ -502,6 +492,7 @@ export function buildQBInvoicePostingLines({ invoice, salesItemId, discountAccou
   if (discount < 0) throw new Error('Invoice discount cannot be negative.');
   if (!salesItemId) throw new Error('QBO sales item is required.');
   if (discount > 0 && !discountAccountRef?.value) throw new Error('40200 Discounts account is required.');
+  if (taxPlan?.taxLine && !taxItemId) throw new Error('QBO sales-tax item for ' + taxPlan.state + ' is required.');
   // Tax rides on TxnTaxDetail, never inside the sales line, so a taxable invoice
   // posts total − tax to 40000 and QBO adds the tax back to reach the same total.
   // Shipping becomes its own line only on taxable invoices, so QBO's taxable-sales
@@ -511,13 +502,21 @@ export function buildQBInvoicePostingLines({ invoice, salesItemId, discountAccou
   const grossSales = cents(total - tax - shipping + discount);
   if (!(grossSales > 0)) throw new Error('Invoice sales amount must be positive after tax and shipping.');
   const salesItemRef = {value:String(salesItemId),name:'NSA Portal Sales'};
+  // Line mode: the tax is its own line, so every line is NON and AST computes
+  // nothing. Manual mode: the sales line is TAX and QBO computes from the code.
+  const lineMode = !!taxPlan?.taxLine;
   const lines = [{
     DetailType:'SalesItemLineDetail', Amount:grossSales, Description:description,
-    SalesItemLineDetail:{Qty:1,UnitPrice:grossSales,ItemRef:salesItemRef,...(taxPlan?{TaxCodeRef:{value:'TAX'}}:{})},
+    SalesItemLineDetail:{Qty:1,UnitPrice:grossSales,ItemRef:salesItemRef,...(taxPlan?{TaxCodeRef:{value:lineMode?'NON':'TAX'}}:{})},
   }];
   if (shipping > 0) lines.push({
     DetailType:'SalesItemLineDetail', Amount:shipping, Description:'Customer shipping',
-    SalesItemLineDetail:{Qty:1,UnitPrice:shipping,ItemRef:salesItemRef,TaxCodeRef:{value:taxPlan.shippingTaxable?'TAX':'NON'}},
+    SalesItemLineDetail:{Qty:1,UnitPrice:shipping,ItemRef:salesItemRef,TaxCodeRef:{value:!lineMode&&taxPlan.shippingTaxable?'TAX':'NON'}},
+  });
+  if (lineMode) lines.push({
+    DetailType:'SalesItemLineDetail', Amount:tax,
+    Description:'Sales tax — ' + taxPlan.state + ' ' + (safeNum(invoice?.tax_rate) * 100).toFixed(3).replace(/\.?0+$/, '') + '% on $' + cents(taxPlan.taxable).toFixed(2),
+    SalesItemLineDetail:{Qty:1,UnitPrice:tax,ItemRef:{value:String(taxItemId),name:portalSalesTaxItemName(taxPlan.state)},TaxCodeRef:{value:'NON'}},
   });
   if (discount > 0) lines.push({
     DetailType:'DiscountLineDetail', Amount:discount, Description:'Customer discount / credit — 40200',
@@ -575,6 +574,28 @@ export function createQBSyncEngine(ctx){
         :{Name:name,Type:'Service',Description:'Portal sales and customer-billed shipping — 40000 Sales',IncomeAccountRef:incomeAccountRef};
       const res=await qbApi('upsert_item',{item});
       if(!res?.Item?.Id)throw new Error(res?.Fault?.Error?.[0]?.Detail||'Could not create or update the NSA Portal Sales item');
+      return String(res.Item.Id);
+    };
+    // One Service item per state, mapped to that state's approved liability
+    // account. Created on demand and verified by read-back: the account is
+    // already accounting-approved in qbAccountMappings, and the read-back is
+    // what proves QBO accepted a liability account on a Service item — the one
+    // assumption this design rests on that a canary has to settle.
+    const ensurePortalSalesTaxItem=async(state,liabilityAccountRef)=>{
+      const name=portalSalesTaxItemName(state);
+      const qRes=await queryQBReadOnly(qbApi,"SELECT * FROM Item WHERE Name = '"+name.replace(/'/g,"\\'")+"' MAXRESULTS 2",'portal sales-tax item query');
+      const matches=qRes?.QueryResponse?.Item||[];
+      if(matches.length>1)throw new Error('Multiple QBO items are named "'+name+'"; no record was sent.');
+      const existing=matches[0];
+      if(existing?.Id&&existing.Active!==false&&String(existing.IncomeAccountRef?.value||'')===String(liabilityAccountRef.value))return String(existing.Id);
+      const item=existing?.Id
+        ?{Id:existing.Id,SyncToken:existing.SyncToken,sparse:true,Name:name,Active:true,IncomeAccountRef:liabilityAccountRef}
+        :{Name:name,Type:'Service',Description:'Portal-calculated '+String(state).toUpperCase()+' sales tax — posts to the state liability account, not income',IncomeAccountRef:liabilityAccountRef};
+      const res=await qbApi('upsert_item',{item});
+      if(!res?.Item?.Id)throw new Error(qbResponseErrorDetail(res,'Could not create or update the "'+name+'" item'));
+      const back=await queryQBReadOnly(qbApi,"SELECT * FROM Item WHERE Id = '"+String(res.Item.Id)+"' MAXRESULTS 1",'portal sales-tax item read-back');
+      const row=back?.QueryResponse?.Item?.[0];
+      if(!row||String(row.IncomeAccountRef?.value||'')!==String(liabilityAccountRef.value))throw new Error('"'+name+'" did not read back mapped to the state liability account; no invoice was sent.');
       return String(res.Item.Id);
     };
     const requireExistingPortalSalesItem=async(incomeAccountRef)=>{
@@ -902,6 +923,15 @@ export function createQBSyncEngine(ctx){
       }
       // Read once per run, and only when a taxable invoice is in the batch.
       let taxSetup=null;
+      // Line-mode tax items are resolved once per state per run.
+      const taxItemByState={};
+      const resolveTaxItem=async plan=>{
+        if(!plan?.taxLine)return null;
+        if(taxItemByState[plan.state])return taxItemByState[plan.state];
+        const refs=await requiredAccountRefs([plan.taxAccountKey]);
+        const id=await ensurePortalSalesTaxItem(plan.state,refs[plan.taxAccountKey]);
+        taxItemByState[plan.state]=id;return id;
+      };
       const loadInvoiceTaxSetup=async()=>{
         const prefs=await queryQBReadOnly(qbApi,'SELECT * FROM Preferences','tax preferences recheck');
         const partnerTaxEnabled=!!prefs?.QueryResponse?.Preferences?.[0]?.TaxPrefs?.PartnerTaxEnabled;
@@ -924,6 +954,11 @@ export function createQBSyncEngine(ctx){
             taxPlan=buildQBInvoiceTaxPlan({invoice:inv,state:c?.shipping_state||c?.billing_state,taxRateMap:qbConfig.qbTaxRateMap||{},taxCodes:taxSetup.taxCodes,partnerTaxEnabled:taxSetup.partnerTaxEnabled});
           }catch(e){log.details.push((inv.display_id||inv.id)+' — BLOCKED: $'+safeNum(inv.tax).toFixed(2)+' sales tax — '+e.message);log.status='partial';continue}
         }
+        let taxItemId=null;
+        if(taxPlan?.taxLine){
+          try{taxItemId=await resolveTaxItem(taxPlan)}
+          catch(e){log.details.push((inv.display_id||inv.id)+' — BLOCKED: $'+safeNum(inv.tax).toFixed(2)+' sales tax — '+e.message);log.status='partial';continue}
+        }
         const invoiceDate=parseQBDateValue(inv.invoice_date||inv.date||inv.created_at);
         if(!invoiceDate){log.details.push((inv.display_id||inv.id)+' — BLOCKED: invoice date could not be converted to a QBO date');log.status='partial';continue}
         const invoiceTotal=safeNum(inv.total);
@@ -939,7 +974,7 @@ export function createQBSyncEngine(ctx){
           }catch(e){log.details.push((inv.display_id||inv.id)+' — BLOCKED: '+e.message);log.status='error';continue}
         }
         let invoiceLines;
-        try{invoiceLines=buildQBInvoicePostingLines({invoice:inv,salesItemId,discountAccountRef:invoiceRefs.discount_account,description:invoiceDescription,taxPlan})}
+        try{invoiceLines=buildQBInvoicePostingLines({invoice:inv,salesItemId,discountAccountRef:invoiceRefs.discount_account,description:invoiceDescription,taxPlan,taxItemId})}
         catch(e){log.details.push((inv.display_id||inv.id)+' — BLOCKED: '+e.message);log.status='partial';continue}
         const qbInvoice={
           DocNumber:inv.display_id||inv.id,
@@ -948,7 +983,7 @@ export function createQBSyncEngine(ctx){
           ARAccountRef:invoiceRefs.ar_account,
           ...(customerTermRef?{SalesTermRef:customerTermRef}:{}),
           Line:invoiceLines,
-          ...(taxPlan?{TxnTaxDetail:buildQBInvoiceTxnTaxDetail(taxPlan)}:{}),
+          ...(taxPlan&&buildQBInvoiceTxnTaxDetail(taxPlan)?{TxnTaxDetail:buildQBInvoiceTxnTaxDetail(taxPlan)}:{}),
           ...(inv.qb_invoice_id?{Id:inv.qb_invoice_id,sparse:true}:{}),
         };
         let res;
@@ -975,7 +1010,14 @@ export function createQBSyncEngine(ctx){
           // QBO returns the stored entity on create. If it recomputed the tax or
           // the total, the invoice exists in QBO with the wrong figures: report
           // the QBO ID so it can be corrected, and do not save the link.
-          const storedTax=Math.round(safeNum(res.Invoice.TxnTaxDetail?.TotalTax)*100)/100, expectedTax=taxPlan?taxPlan.tax:0;
+          // In line mode QBO's own TotalTax must be 0 — AST added nothing — and
+          // the portal's tax is proven by the line that carries it instead.
+          const storedTax=Math.round(safeNum(res.Invoice.TxnTaxDetail?.TotalTax)*100)/100, expectedTax=taxPlan&&!taxPlan.taxLine?taxPlan.tax:0;
+          const taxLineOk=row=>!taxPlan?.taxLine||(row?.Line||[]).some(l=>l?.DetailType==='SalesItemLineDetail'&&String(l.SalesItemLineDetail?.ItemRef?.value||'')===String(taxItemId)&&Math.abs(safeNum(l.Amount)-taxPlan.tax)<0.005);
+          if(res.Invoice.Line&&!taxLineOk(res.Invoice)){
+            log.details.push((inv.display_id||inv.id)+' — VERIFY FAILED: QBO Invoice #'+res.Invoice.Id+' came back without a $'+taxPlan.tax.toFixed(2)+' sales-tax line on the '+taxPlan.state+' item; link not saved, correct it in QuickBooks');
+            log.status='error';continue;
+          }
           if(res.Invoice.TotalAmt!==undefined&&(Math.abs(safeNum(res.Invoice.TotalAmt)-invoiceTotal)>=0.005||Math.abs(storedTax-expectedTax)>=0.005)){
             log.details.push((inv.display_id||inv.id)+' — VERIFY FAILED: QBO Invoice #'+res.Invoice.Id+' stored total $'+safeNum(res.Invoice.TotalAmt).toFixed(2)+' / tax $'+storedTax.toFixed(2)+', expected $'+invoiceTotal.toFixed(2)+' / $'+expectedTax.toFixed(2)+'; link not saved, correct it in QuickBooks');
             log.status='error';continue;
@@ -985,6 +1027,8 @@ export function createQBSyncEngine(ctx){
               const verified=await verifyCanaryReadback('Invoice',res.Invoice.Id,{docNumber:inv.display_id||inv.id,refField:'CustomerRef',refValue:cQBId,total:invoiceTotal});
               if(verified.Active===false)throw new Error('QBO customer was inactive on read-back; the portal link was not saved.');
               if(Math.abs(safeNum(verified.TxnTaxDetail?.TotalTax)-expectedTax)>=0.005)throw new Error('Invoice sales tax did not match on API read-back ($'+safeNum(verified.TxnTaxDetail?.TotalTax).toFixed(2)+' vs $'+expectedTax.toFixed(2)+').');
+              if(!taxLineOk(verified))throw new Error('Invoice read back without the $'+taxPlan.tax.toFixed(2)+' '+taxPlan.state+' sales-tax line.');
+              if(taxPlan?.taxLine)log.details.push('TAX LINE VERIFIED: $'+taxPlan.tax.toFixed(2)+' → '+portalSalesTaxItemName(taxPlan.state)+' · QBO TotalTax $'+safeNum(verified.TxnTaxDetail?.TotalTax).toFixed(2));
         if(String(verified.SalesTermRef?.value||'')!==String(customerTermRef?.value||''))throw new Error('Invoice customer terms did not match on API read-back.');
               log.details.push('READ-BACK VERIFIED: Invoice #'+verified.Id+' · '+(verified.SalesTermRef?.name||'QBO terms ID '+verified.SalesTermRef?.value));
             }catch(e){log.details.push((inv.display_id||inv.id)+' — VERIFY FAILED: '+e.message);log.status='error';continue}

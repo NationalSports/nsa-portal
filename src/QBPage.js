@@ -11,23 +11,8 @@ import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
 import { authFetch } from './utils';
-import { QB_AST_OVERRIDE_TAX_CODE_NAME, buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName, qbCustomerBatchReady, qbResponseErrorDetail } from './qbSyncEngine';
-import {
-  QB_ACCOUNT_MAPPING_DEFAULTS,
-  QB_ACCOUNT_POSTING_MATRIX,
-  QB_ACCOUNT_SPECS,
-  QB_STATE_TAX_ACCOUNT_KEYS,
-  buildVendorBillLines,
-  calculateCustomerShipping,
-  loadAllQBEntities,
-  loadQBAccounts,
-  queryQBReadOnly,
-  readQBWithRetry,
-  manualBillAccountKey,
-  normalizeVendorName,
-  qbWriteAccountRef,
-  resolveQBAccountRefs,
-} from './qbAccountMappings';
+import { buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName, qbCustomerBatchReady, qbResponseErrorDetail } from './qbSyncEngine';
+import { QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_POSTING_MATRIX, QB_ACCOUNT_SPECS, QB_STATE_TAX_ACCOUNT_KEYS, buildVendorBillLines, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, manualBillAccountKey, normalizeVendorName, qbWriteAccountRef, queryQBReadOnly, readQBWithRetry, resolveQBAccountRefs } from './qbAccountMappings';
 
 const stripeBackfillErrorSummary=(errors=[])=>{
   const counts={};
@@ -485,11 +470,13 @@ export default function QBPage(){
     // whichever one actually applies, read from the stored tax preflight.
     const taxPreflight=qbConfig.taxPreflight||null;
     const astTaxOn=!!taxPreflight?.partnerTaxEnabled;
-    const astOverrideCode=(taxPreflight?.codes||[]).find(c=>c&&c.active&&c.taxable
-      &&String(c.name||'').trim().toLowerCase()===QB_AST_OVERRIDE_TAX_CODE_NAME.toLowerCase());
     const taxableInvoiceBlock=state=>{
       if(!taxPreflight)return'Taxable invoice: read the sales-tax setup first (Settings tab) so the right tax mechanism is known';
-      if(astTaxOn)return astOverrideCode?'':'Taxable invoice: Automated Sales Tax is on but no active '+QB_AST_OVERRIDE_TAX_CODE_NAME+' code was found to carry the portal amount — re-read the sales-tax setup (Settings tab)';
+      // Under AST the tax posts as its own line against the state's approved
+      // liability account; no QBO tax code is needed. The only precondition is
+      // that the state has one, so the label says so instead of inviting a run
+      // that the engine will block for the same reason.
+      if(astTaxOn)return QB_STATE_TAX_ACCOUNT_KEYS[state]?'':'Taxable invoice: customer state "'+(state||'blank')+'" has no approved sales-tax account';
       return(qbConfig.qbTaxRateMap||{})[state]?'':'Taxable invoice: run the tax-rate canary for '+(state||'the customer state')+' first (Settings tab)';
     };
     // The dropdown label has to answer the same question the button does. A flat

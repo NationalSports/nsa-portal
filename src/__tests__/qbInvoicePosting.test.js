@@ -1,4 +1,4 @@
-import { buildQBInvoicePostingLines, buildQBInvoiceTaxPlan, buildQBInvoiceTxnTaxDetail, qbResponseErrorDetail } from '../qbSyncEngine';
+import { buildQBInvoicePostingLines, buildQBInvoiceTaxPlan, buildQBInvoiceTxnTaxDetail, portalSalesTaxItemName, qbResponseErrorDetail } from '../qbSyncEngine';
 
 describe('QuickBooks invoice account routing', () => {
   test('posts ordinary sales entirely to the 40000-linked item', () => {
@@ -34,7 +34,7 @@ const taxRateMap={CA:'TR-CA'};
 describe('QuickBooks invoice sales tax plan', () => {
   test('reconciles the portal tax against the rate with shipping untaxed', () => {
     const plan=buildQBInvoiceTaxPlan({invoice:{total:3083.2,tax:237.17,tax_rate:0.0875,shipping:135.53},state:'ca',taxRateMap,taxCodes});
-    expect(plan).toEqual({state:'CA',tax:237.17,taxable:2710.5,shipping:135.53,shippingTaxable:false,taxCodeId:'TC-CA',rateId:'TR-CA',astOverride:false});
+    expect(plan).toEqual({state:'CA',tax:237.17,taxable:2710.5,shipping:135.53,shippingTaxable:false,taxCodeId:'TC-CA',rateId:'TR-CA',taxLine:false,taxAccountKey:''});
     expect(buildQBInvoiceTxnTaxDetail(plan)).toEqual({TxnTaxCodeRef:{value:'TC-CA'},TotalTax:237.17,
       TaxLine:[{Amount:237.17,DetailType:'TaxLineDetail',TaxLineDetail:{TaxRateRef:{value:'TR-CA'},PercentBased:false,NetAmountTaxable:2710.5}}]});
   });
@@ -49,7 +49,9 @@ describe('QuickBooks invoice sales tax plan', () => {
     expect(buildQBInvoiceTaxPlan({invoice:{total:100,tax:0},state:'CA',taxRateMap,taxCodes})).toBeNull();
     const good={invoice:{total:107.75,tax:7.75,tax_rate:0.0775,shipping:0},state:'CA',taxRateMap,taxCodes};
     expect(buildQBInvoiceTaxPlan(good)).toEqual(expect.objectContaining({taxable:100}));
-    expect(()=>buildQBInvoiceTaxPlan({...good,partnerTaxEnabled:true})).toThrow(/Automated Sales Tax/);
+    // Under AST the plan no longer refuses: the tax posts as a line against the
+    // state's liability account, with no QBO tax code or manual rate involved.
+    expect(buildQBInvoiceTaxPlan({...good,partnerTaxEnabled:true})).toEqual(expect.objectContaining({taxable:100,taxLine:true,taxAccountKey:'tax_ca_account',taxCodeId:'',rateId:''}));
     expect(()=>buildQBInvoiceTaxPlan({...good,state:'OR'})).toThrow(/no approved sales-tax account/);
     expect(()=>buildQBInvoiceTaxPlan({...good,state:'WA'})).toThrow(/no verified QuickBooks tax rate for WA/);
     expect(()=>buildQBInvoiceTaxPlan({...good,taxCodes:[]})).toThrow(/was not found or is inactive/);
@@ -74,46 +76,56 @@ describe('QuickBooks invoice sales tax plan', () => {
   });
 });
 
-describe('Automated Sales Tax override plan', () => {
-  const CUSTOM={Id:'5',Name:'CustomSalesTax',Taxable:true,Active:true};
-  const TAX={Id:'1',Name:'TAX',Taxable:true,Active:true};
-  const NON={Id:'2',Name:'NON',Taxable:false,Active:true};
+describe('Automated Sales Tax — tax as a liability line', () => {
   // 8.75% on 2710.51 = 237.17; total 3083.20 includes tax, shipping 135.53 untaxed.
   const inv={total:3083.20,tax:237.17,tax_rate:0.0875,shipping:135.53};
+  const plan=()=>buildQBInvoiceTaxPlan({invoice:inv,state:'CA',partnerTaxEnabled:true});
 
-  test('routes the portal amount through CustomSalesTax when AST is on', () => {
-    const plan=buildQBInvoiceTaxPlan({invoice:inv,state:'CA',taxCodes:[TAX,NON,CUSTOM],partnerTaxEnabled:true});
-    expect(plan).toMatchObject({state:'CA',tax:237.17,taxCodeId:'5',astOverride:true,rateId:''});
-    expect(plan.shippingTaxable).toBe(false);
+  test('plans a tax line against the state liability account, no tax code', () => {
+    expect(plan()).toMatchObject({state:'CA',tax:237.17,taxable:2710.5,shippingTaxable:false,taxLine:true,taxAccountKey:'tax_ca_account',taxCodeId:'',rateId:''});
   });
 
-  test('omits TaxLine on an override — there is no manual rate to reference', () => {
-    const plan=buildQBInvoiceTaxPlan({invoice:inv,state:'CA',taxCodes:[TAX,NON,CUSTOM],partnerTaxEnabled:true});
-    expect(buildQBInvoiceTxnTaxDetail(plan)).toEqual({TxnTaxCodeRef:{value:'5'},TotalTax:237.17});
+  test('sends no TxnTaxDetail — the tax is a line, QBO must add nothing', () => {
+    expect(buildQBInvoiceTxnTaxDetail(plan())).toBeNull();
+  });
+
+  test('posts every line NON plus a tax line on the state item, summing to the portal total', () => {
+    const lines=buildQBInvoicePostingLines({invoice:inv,salesItemId:'sales',description:'INV-63848',taxPlan:plan(),taxItemId:'tax-ca'});
+    expect(lines.map(l=>l.SalesItemLineDetail.TaxCodeRef.value)).toEqual(['NON','NON','NON']);
+    expect(lines[0]).toMatchObject({Amount:2710.5,SalesItemLineDetail:{ItemRef:{value:'sales'}}});
+    expect(lines[1]).toMatchObject({Amount:135.53,Description:'Customer shipping'});
+    expect(lines[2]).toMatchObject({Amount:237.17,SalesItemLineDetail:{ItemRef:{value:'tax-ca',name:'NSA Portal Sales Tax — CA'}}});
+    expect(lines[2].Description).toBe('Sales tax — CA 8.75% on $2710.50');
+    const sum=Math.round(lines.reduce((a,l)=>a+l.Amount,0)*100)/100;
+    expect(sum).toBe(3083.20);
+  });
+
+  test('refuses to post a tax line without the state item', () => {
+    expect(()=>buildQBInvoicePostingLines({invoice:inv,salesItemId:'sales',description:'x',taxPlan:plan()}))
+      .toThrow(/sales-tax item for CA is required/);
   });
 
   test('still reconciles the amount against the portal rate before posting', () => {
-    expect(()=>buildQBInvoiceTaxPlan({
-      invoice:{...inv,tax:999.99},state:'CA',taxCodes:[TAX,NON,CUSTOM],partnerTaxEnabled:true,
-    })).toThrow(/does not reconcile/);
+    expect(()=>buildQBInvoiceTaxPlan({invoice:{...inv,tax:999.99},state:'CA',partnerTaxEnabled:true})).toThrow(/does not reconcile/);
   });
 
   test('still refuses a state with no approved sales-tax account', () => {
-    expect(()=>buildQBInvoiceTaxPlan({invoice:inv,state:'SD',taxCodes:[CUSTOM],partnerTaxEnabled:true}))
-      .toThrow(/no approved sales-tax account/);
-  });
-
-  test('fails closed, naming what exists, when no CustomSalesTax code is there', () => {
-    expect(()=>buildQBInvoiceTaxPlan({invoice:inv,state:'CA',taxCodes:[TAX,NON],partnerTaxEnabled:true}))
-      .toThrow(/no CustomSalesTax code was found.*TAX #1/s);
+    expect(()=>buildQBInvoiceTaxPlan({invoice:inv,state:'SD',partnerTaxEnabled:true})).toThrow(/no approved sales-tax account/);
   });
 
   test('leaves the manual-rate path untouched when AST is off', () => {
-    const manual={Id:'9',Name:'CA Sales Tax',Taxable:true,Active:true,
-      SalesTaxRateList:{TaxRateDetail:[{TaxRateRef:{value:'77'}}]}};
-    const plan=buildQBInvoiceTaxPlan({invoice:inv,state:'CA',taxRateMap:{CA:'77'},taxCodes:[manual],partnerTaxEnabled:false});
-    expect(plan).toMatchObject({taxCodeId:'9',rateId:'77',astOverride:false});
-    expect(buildQBInvoiceTxnTaxDetail(plan).TaxLine).toHaveLength(1);
+    const manual={Id:'9',Name:'CA Sales Tax',Taxable:true,Active:true,SalesTaxRateList:{TaxRateDetail:[{TaxRateRef:{value:'77'}}]}};
+    const p=buildQBInvoiceTaxPlan({invoice:inv,state:'CA',taxRateMap:{CA:'77'},taxCodes:[manual],partnerTaxEnabled:false});
+    expect(p).toMatchObject({taxCodeId:'9',rateId:'77',taxLine:false});
+    expect(buildQBInvoiceTxnTaxDetail(p).TaxLine).toHaveLength(1);
+    const lines=buildQBInvoicePostingLines({invoice:inv,salesItemId:'sales',description:'x',taxPlan:p});
+    expect(lines).toHaveLength(2);
+    expect(lines[0].SalesItemLineDetail.TaxCodeRef.value).toBe('TAX');
+  });
+
+  test('names the item per state', () => {
+    expect(portalSalesTaxItemName('ca')).toBe('NSA Portal Sales Tax — CA');
+    expect(portalSalesTaxItemName(' wa ')).toBe('NSA Portal Sales Tax — WA');
   });
 });
 
