@@ -7,7 +7,7 @@
 import { D_V } from './constants';
 import { _dbSaveSO } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
-import { calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, parseQBDateValue, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
+import { calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, loadQBTaxCodes, parseQBDateValue, queryQBReadOnly, resolveQBAccountRefs, resolveQBTaxCode } from './qbAccountMappings';
 
 // Return a circular batch and the cursor for the next run. Permanent blockers
 // in the first N records must not starve every later customer/invoice/item/PO.
@@ -95,18 +95,30 @@ export function groupPortalPurchaseOrders(sos = [], poMap = {}) {
   return [...groups.values()];
 }
 
-export function buildQBInvoicePostingLines({ invoice, salesItemId, discountAccountRef, description }) {
+export function buildQBInvoicePostingLines({ invoice, salesItemId, discountAccountRef, description, taxCodeRef }) {
   const cents = value => Math.round(safeNum(value) * 100) / 100;
   const total = cents(invoice?.total);
+  const tax = cents(invoice?.tax);
   const discount = cents(invoice?.credit_amount);
   if (!(total > 0)) throw new Error('Invoice total must be positive.');
   if (discount < 0) throw new Error('Invoice discount cannot be negative.');
+  if (tax < 0) throw new Error('Invoice tax cannot be negative.');
   if (!salesItemId) throw new Error('QBO sales item is required.');
   if (discount > 0 && !discountAccountRef?.value) throw new Error('40200 Discounts account is required.');
-  const grossSales = cents(total + discount);
+  // invoices.total INCLUDES tax — verified against every taxable invoice in the
+  // portal: total = line_items + shipping + cc_fee + tax − credit_amount (672 of
+  // 674; the 2 exceptions are partial-billing deposits whose line_items exceed
+  // the billed total, which is why the taxable base is derived from total − tax
+  // and never from summing line_items). Posting `total` to the 40000-linked item
+  // would book collected sales tax as revenue, so tax is carved out here and
+  // travels in TxnTaxDetail against the AST agency account instead.
+  if (tax > 0 && !taxCodeRef?.value) throw new Error('A QBO tax code is required for a taxable invoice.');
+  const preTax = cents(total - tax);
+  if (!(preTax > 0)) throw new Error('Invoice tax cannot equal or exceed the invoice total.');
+  const grossSales = cents(preTax + discount);
   const lines = [{
     DetailType:'SalesItemLineDetail', Amount:grossSales, Description:description,
-    SalesItemLineDetail:{Qty:1,UnitPrice:grossSales,ItemRef:{value:String(salesItemId),name:'NSA Portal Sales'}},
+    SalesItemLineDetail:{Qty:1,UnitPrice:grossSales,ItemRef:{value:String(salesItemId),name:'NSA Portal Sales'},...(taxCodeRef?.value?{TaxCodeRef:taxCodeRef}:{})},
   }];
   if (discount > 0) lines.push({
     DetailType:'DiscountLineDetail', Amount:discount, Description:'Customer discount / credit — 40200',
@@ -370,10 +382,12 @@ export function createQBSyncEngine(ctx){
       const invoiceBatch=rotatingBatch(allUnsyncedInvs,qbConfig._invoiceSyncOffset,QB_SYNC_BATCH_SIZE);
       const unsyncedInvs2=canary?allUnsyncedInvs.filter(i=>String(i.id)===canaryInvoiceId):invoiceBatch.items;
       if(canary&&unsyncedInvs2.length!==1){nf('Choose exactly one pending portal invoice','error');setQbSyncing(false);return}
-      let invoiceRefs,salesItemId;
+      let invoiceRefs,salesItemId,qbTaxCodes=null;
       try{
         invoiceRefs=await requiredAccountRefs(['income_account','discount_account','ar_account']);
         salesItemId=canary?await requireExistingPortalSalesItem(invoiceRefs.income_account):await ensurePortalSalesItem(invoiceRefs.income_account);
+        // One read for the batch, and only when something in it is taxable.
+        if(unsyncedInvs2.some(i=>safeNum(i.tax)>0))qbTaxCodes=await loadQBTaxCodes(qbApi);
       }catch(e){
         log.status='error';log.details.push(e.message||'Required invoice account could not be resolved');
         setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Invoice sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return;
@@ -384,11 +398,17 @@ export function createQBSyncEngine(ctx){
         if(!cQBId){log.details.push((inv.display_id||inv.id)+' — skipped: customer "'+c?.name+'" not synced to QB');continue}
         const so=sos.find(s=>s.id===(inv.so_id||inv.sales_order_id));
         // A taxable QBO invoice needs the company's QBO TaxCode/TxnTaxDetail,
-        // not a made-up revenue or liability line. Until that mapping exists,
-        // fail this invoice closed so tax is never credited to 40000 by mistake.
-        if(safeNum(inv.tax)>0){
-          log.details.push((inv.display_id||inv.id)+' — BLOCKED: $'+safeNum(inv.tax).toFixed(2)+' sales tax requires a QBO tax-code mapping. It was not posted to 40000 or guessed into 25201.');
-          log.status='partial';continue;
+        // not a made-up revenue or liability line. Resolve the code for the
+        // customer's own state or fail this invoice closed — tax is never
+        // credited to 40000, and never posted under another state's agency.
+        let taxCodeRef=null;
+        const invTax=safeNum(inv.tax);
+        if(invTax>0){
+          try{taxCodeRef=resolveQBTaxCode(qbTaxCodes||[],c?.billing_state)}
+          catch(e){
+            log.details.push((inv.display_id||inv.id)+' — BLOCKED: $'+invTax.toFixed(2)+' sales tax — '+e.message);
+            log.status='partial';continue;
+          }
         }
         const invoiceDate=parseQBDateValue(inv.invoice_date||inv.date||inv.created_at);
         if(!invoiceDate){log.details.push((inv.display_id||inv.id)+' — BLOCKED: invoice date could not be converted to a QBO date');log.status='partial';continue}
@@ -405,7 +425,7 @@ export function createQBSyncEngine(ctx){
           }catch(e){log.details.push((inv.display_id||inv.id)+' — BLOCKED: '+e.message);log.status='error';continue}
         }
         let invoiceLines;
-        try{invoiceLines=buildQBInvoicePostingLines({invoice:inv,salesItemId,discountAccountRef:invoiceRefs.discount_account,description:invoiceDescription})}
+        try{invoiceLines=buildQBInvoicePostingLines({invoice:inv,salesItemId,discountAccountRef:invoiceRefs.discount_account,description:invoiceDescription,taxCodeRef})}
         catch(e){log.details.push((inv.display_id||inv.id)+' — BLOCKED: '+e.message);log.status='partial';continue}
         const qbInvoice={
           DocNumber:inv.display_id||inv.id,
@@ -414,6 +434,7 @@ export function createQBSyncEngine(ctx){
           ARAccountRef:invoiceRefs.ar_account,
           ...(customerTermRef?{SalesTermRef:customerTermRef}:{}),
           Line:invoiceLines,
+          ...(taxCodeRef?{TxnTaxDetail:{TxnTaxCodeRef:taxCodeRef,TotalTax:invTax}}:{}),
           ...(inv.qb_invoice_id?{Id:inv.qb_invoice_id,sparse:true}:{}),
         };
         let res;
@@ -437,9 +458,34 @@ export function createQBSyncEngine(ctx){
           else{log.details.push(docNum+' — BLOCKED: duplicate QBO document number is not one exact customer/date/total match');log.status='partial';continue}
         }
         if(res?.Invoice?.Id){
+          // The canary read-back below only runs for one invoice. Every taxable
+          // invoice in a batch still has to prove QBO did not re-tax it, or a
+          // silently wrong total would be linked and never looked at again. The
+          // create response already carries TotalAmt, so this costs no extra
+          // call. (The duplicate-DocNumber branch above matched on total, so a
+          // recovered invoice passes here for the same reason it was accepted.)
+          if(invTax>0){
+            const postedTotal=safeNum(res.Invoice.TotalAmt);
+            if(Math.abs(postedTotal-invoiceTotal)>=0.005){
+              log.details.push((inv.display_id||inv.id)+' — NOT LINKED: QBO posted $'+postedTotal.toFixed(2)+' against the portal total $'+invoiceTotal.toFixed(2)+' (Automated Sales Tax re-taxed it). QB Invoice #'+res.Invoice.Id+' exists and should be voided.');
+              log.status='error';continue;
+            }
+          }
           if(canary){
             try{
-              const verified=await verifyCanaryReadback('Invoice',res.Invoice.Id,{docNumber:inv.display_id||inv.id,refField:'CustomerRef',refValue:cQBId,total:invoiceTotal});
+              // A taxable canary asserts tax before total: under Automated Sales
+              // Tax QBO may recompute tax from the customer address and ignore
+              // the figure we sent, and "total did not match" alone would not say
+              // that is what happened. Report both numbers so the log is the
+              // answer, not the start of another investigation.
+              const verified=await verifyCanaryReadback('Invoice',res.Invoice.Id,{docNumber:inv.display_id||inv.id,refField:'CustomerRef',refValue:cQBId,...(invTax>0?{}:{total:invoiceTotal})});
+              if(invTax>0){
+                const qbTax=safeNum(verified.TxnTaxDetail?.TotalTax);
+                const qbTotal=safeNum(verified.TotalAmt);
+                if(Math.abs(qbTax-invTax)>=0.005)throw new Error('QBO returned sales tax of $'+qbTax.toFixed(2)+' against the portal\'s $'+invTax.toFixed(2)+' — Automated Sales Tax recalculated it. QB Invoice #'+verified.Id+' exists and should be voided before retrying.');
+                if(Math.abs(qbTotal-invoiceTotal)>=0.005)throw new Error('QBO total $'+qbTotal.toFixed(2)+' does not match the portal total $'+invoiceTotal.toFixed(2)+' even though tax matched. QB Invoice #'+verified.Id+' exists and should be voided before retrying.');
+                log.details.push('TAX VERIFIED: $'+qbTax.toFixed(2)+' posted via '+(taxCodeRef.name||'tax code '+taxCodeRef.value)+' · pre-tax $'+(invoiceTotal-invTax).toFixed(2)+' to 40000');
+              }
               if(String(verified.SalesTermRef?.value||'')!==String(customerTermRef?.value||''))throw new Error('Invoice customer terms did not match on API read-back.');
               log.details.push('READ-BACK VERIFIED: Invoice #'+verified.Id+' · '+(verified.SalesTermRef?.name||'QBO terms ID '+verified.SalesTermRef?.value));
             }catch(e){log.details.push((inv.display_id||inv.id)+' — VERIFY FAILED: '+e.message);log.status='error';continue}
@@ -494,7 +540,12 @@ export function createQBSyncEngine(ctx){
           // (this run's Balance was computed against the old total).
           const portalTotal=safeNum(inv.total);
           if(portalTotal>0&&Math.abs(portalTotal-qbTotal)>0.005){
-            if(safeNum(inv.tax)>0){log.details.push((inv.display_id||inv.id)+' — total correction BLOCKED: taxable invoice needs QBO tax-code mapping');log.status='partial';continue}
+            // Creating a taxable invoice is now mapped, but CORRECTING one is a
+            // sparse update whose interaction with Automated Sales Tax has not
+            // been proven by a canary. Until it has, a changed taxable total is
+            // reported rather than pushed — a drifted total is visible, a
+            // silently re-taxed one is not.
+            if(safeNum(inv.tax)>0){log.details.push((inv.display_id||inv.id)+' — total correction BLOCKED: portal $'+safeNum(inv.total).toFixed(2)+' vs QB $'+qbTotal.toFixed(2)+'; taxable corrections are not yet canary-proven under Automated Sales Tax');log.status='partial';continue}
             let correctionLines;
             try{correctionLines=buildQBInvoicePostingLines({invoice:inv,salesItemId,discountAccountRef:paidRefs.discount_account,description:'Invoice '+(inv.display_id||inv.id)})}
             catch(e){log.details.push((inv.display_id||inv.id)+' — total correction BLOCKED: '+e.message);log.status='partial';continue}

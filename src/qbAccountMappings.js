@@ -430,6 +430,47 @@ export async function loadQBAccounts(qbApi) {
   return response?.QueryResponse?.Account || [];
 }
 
+// ── Sales tax codes (Automated Sales Tax) ──
+// Under AST, QuickBooks owns both the tax calculation and the agency liability
+// account it posts to — the portal's 25200–25230 subaccounts are not written by
+// an invoice. The portal's only job here is to name the right TaxCode and then
+// assert the figures QBO returns. It must never invent a code: an unresolved
+// code fails the invoice closed so tax can't land in 40000 as revenue.
+export const QB_TAX_CODE_QUERY = 'SELECT Id, Name, Description, Taxable, Active FROM TaxCode';
+
+export const QB_STATE_TAX_CODE_NAMES = Object.freeze({
+  CA: 'California', AZ: 'Arizona', CO: 'Colorado',
+  NV: 'Nevada', TX: 'Texas', WA: 'Washington',
+});
+
+export async function loadQBTaxCodes(qbApi) {
+  const response = await queryQBReadOnly(qbApi, QB_TAX_CODE_QUERY, 'tax code query');
+  return response?.QueryResponse?.TaxCode || [];
+}
+
+// Pick the taxable TaxCode for a state, or throw listing what QBO actually has.
+// The throw is the useful path on a first run: its message is the discovery
+// output that tells us what AST created in this company file.
+export function resolveQBTaxCode(taxCodes = [], state) {
+  const key = norm(state).toUpperCase();
+  const stateName = QB_STATE_TAX_CODE_NAMES[key];
+  if (!stateName) throw new Error('No QBO tax-code mapping is defined for state "' + (state || '(blank)') + '".');
+  const usable = (Array.isArray(taxCodes) ? taxCodes : [])
+    .filter(code => code?.Id && code.Active !== false && code.Taxable === true);
+  const describe = () => usable.length
+    ? ' QBO taxable codes: ' + usable.map(c => (c.Name || '(unnamed)') + ' #' + c.Id).join(', ') + '.'
+    : ' QBO returned no active taxable tax codes.';
+  const named = usable.filter(code => norm(code.Name).includes(norm(stateName)));
+  if (named.length === 1) return { value: String(named[0].Id), name: named[0].Name || stateName };
+  if (named.length > 1) throw new Error('Multiple QBO tax codes match ' + stateName + '.' + describe());
+  // Deliberately no "there is only one code, use it" fallback. AST currently has
+  // a California agency only, so a lone code would silently absorb WA/AZ tax
+  // under the CA agency and understate one return while overstating another.
+  // Failing here is also the discovery path: the message names every code QBO
+  // has, which is what a first canary run is for.
+  throw new Error('No QBO tax code resolved for ' + stateName + '.' + describe());
+}
+
 export async function loadAllQBEntities(qbApi, entity, fields = '*', pageSize = 500) {
   if (!/^[A-Za-z]+$/.test(String(entity || ''))) throw new Error('Invalid QuickBooks entity name.');
   const size = Math.max(1, Math.min(1000, Number(pageSize) || 500));
