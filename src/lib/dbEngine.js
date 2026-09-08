@@ -14,7 +14,8 @@
 // bottom are new. Behavior contracts are pinned by
 // src/__tests__/dbEngine.characterization.test.js.
 // ═══════════════════════════════════════════════════════════════════════
-import { protectDocumentDraft, currentDraftOwner } from './draftJournal';
+import { protectDocumentDraft, currentDraftOwner, draftJournal } from './draftJournal';
+import { savedDocumentMatchesDraft, reconcileSavedOrderDrafts } from './savedDraftComparison';
 import { createSaveRetryCoordinator } from './saveRetryCoordinator';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './requestBreaker';
@@ -76,6 +77,8 @@ const _missing404Tables=new Map();// table → timestamp
 const _MISSING_TABLE_TTL=5*60*1000;// 5 minutes
 // Track which tables timed out during the most recent _dbLoad — cleared at start of each load
 const _lastLoadTimedOut=new Set();
+// Missing/denied reads are tolerated by public pages, but cannot confirm saved drafts.
+const _unconfirmedLoadTables=new Set();
 // Tables whose paged fetch hit the hardLimit row cap with more rows still on the server.
 // Anything aggregating over these arrays (Reports especially) is silently missing rows and
 // must warn the user. Set/cleared per table on each fetch so partial reloads self-correct.
@@ -120,7 +123,7 @@ const _CATALOG_PROD_COLS='id,vendor_id,sku,name,brand,color,category,retail_pric
 const _PAGE_TIEBREAK_PARENT={so_jobs:'so_id',so_art_files:'so_id',estimate_art_files:'estimate_id'};
 const _safeQuery=(table,opts)=>{
   const cachedAt=_missing404Tables.get(table);
-  if(cachedAt&&(Date.now()-cachedAt)<_MISSING_TABLE_TTL)return Promise.resolve({data:[],error:null,status:200});
+  if(cachedAt&&(Date.now()-cachedAt)<_MISSING_TABLE_TTL){_unconfirmedLoadTables.add(table);return Promise.resolve({data:[],error:null,status:200});}
   if(cachedAt)_missing404Tables.delete(table);// expired — retry
   const hardLimit=opts?.limit||20000;// safety cap to avoid runaway paging
   const pageSize=1000;// PostgREST default max-rows; requesting more is silently capped
@@ -138,13 +141,13 @@ const _safeQuery=(table,opts)=>{
     return q.range(start,start+pageSize-1);
   };
   const _classifyPage=(r)=>{
-    if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204'))return'missing';
+    if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204')){_unconfirmedLoadTables.add(table);return'missing';}
     // RLS/grant denial (Postgres 42501): the table is intentionally unreadable for this role — e.g.
     // `messages` after migration 00162 revoked anon access. Empty is the authoritative view for this
     // role, NOT a load failure: the anonymous coach portal (?portal=) boots through _dbLoad, and a
     // fatal error here blanked the whole load and broke every portal link. Matched narrowly by code/
     // message (not HTTP 401) so expired-JWT errors still reach _isAuthError → _recoverSession.
-    if(r.error?.code==='42501'||(r.error?.message||'').includes('permission denied'))return'denied';
+    if(r.error?.code==='42501'||(r.error?.message||'').includes('permission denied')){_unconfirmedLoadTables.add(table);return'denied';}
     if(r.error)return'error';
     return'ok';
   };
@@ -383,7 +386,10 @@ const _dbLoad = async (opts={}) => {
   if (!supabase) return null;
   if (_dbSavingCount>0) { console.log('[DB] Skipping load — save in progress'); return null; }
   try {
-    _lastLoadTimedOut.clear();
+    const recoveryOwner=currentDraftOwner();
+    // Read the small recovery index alongside network I/O, not on every render.
+    const recoveryDrafts=recoveryOwner?draftJournal.list(recoveryOwner).catch(()=>[]):Promise.resolve([]);
+    _lastLoadTimedOut.clear();_unconfirmedLoadTables.clear();
     // Load tables in batches to avoid overwhelming Supabase connection pool
     const _batch=async(queries,size=5)=>{const results=[];for(let i=0;i<queries.length;i+=size){results.push(...await Promise.all(queries.slice(i,i+size).map(q=>q())));} return results};
     // When coreOnly, skip slow-changing tables (team, vendors, omg, issues, deco, promo, etc.)
@@ -637,7 +643,7 @@ const _dbLoad = async (opts={}) => {
       const _hydratedPickIds=[...new Set(items.flatMap(it=>(it.pick_lines||[]).map(p=>p.pick_id).filter(Boolean)))];
       const _soItemsHydrated=!_lastLoadTimedOut.has('so_items');if(_soItemsHydrated)_everHydratedItems.add(so.id);
       const _decosHydrated=!_lastLoadTimedOut.has('so_item_decorations')&&!_lastLoadTimedOut.has('so_items');
-      return{...so,items,art_files,firm_dates,jobs,..._decoPosGuard(so),_itemsHydrated:_soItemsHydrated,_decosHydrated,_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:_rawSoArt.map(a=>a.id).filter(Boolean)}});
+      return{...so,items,art_files,firm_dates,jobs,..._decoPosGuard(so),_recoveryHydrated:!['sales_orders','so_items','so_item_decorations','so_item_po_lines','so_item_pick_lines','so_jobs','so_art_files','so_firm_dates'].some(t=>_lastLoadTimedOut.has(t)||_unconfirmedLoadTables.has(t)||_truncatedTables.has(t)),_itemsHydrated:_soItemsHydrated,_decosHydrated,_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:_rawSoArt.map(a=>a.id).filter(Boolean)}});
     // Invoices: attach payments and items
     const invoices=invRaw.map(inv=>{
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
@@ -681,6 +687,12 @@ const _dbLoad = async (opts={}) => {
     // branch's is-the-DB-really-empty check) so the table list lives HERE, next to where the flags
     // are set, instead of being hand-synced across App.js call sites.
     const _parentTimedOut=_custTimedOut||_soTimedOut||_estTimedOut||_invTimedOut||_msgTimedOut;
+    const recoveryCandidates=await recoveryDrafts;
+    const recoveryTables=['sales_orders','so_items','so_item_decorations','so_item_po_lines','so_item_pick_lines','so_jobs','so_art_files','so_firm_dates'];
+    if((!only||only.has('sales_orders'))&&!recoveryTables.some(table=>_lastLoadTimedOut.has(table)||_unconfirmedLoadTables.has(table)||_truncatedTables.has(table))){
+      // Does not write orders or retry stale payloads. Storage failure keeps the copies.
+      reconcileSavedOrderDrafts({owner:recoveryOwner,drafts:recoveryCandidates,orders:sales_orders,journal:draftJournal,currentOwner:currentDraftOwner}).catch(error=>console.warn('[Draft recovery] Could not confirm saved copies:',error.message));
+    }
     return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_custTimedOut,_soTimedOut,_estTimedOut,_invTimedOut,_msgTimedOut,_parentTimedOut,_coreOnly:coreOnly};
   }catch(e){console.error('[DB] Load failed:',e);return null}
 };
@@ -3791,6 +3803,7 @@ const _outboxValEq=(a,b)=>{if(a===b)return true;if(a==null&&b==null)return true;
 // drift in those arrays (Postgres timestamp/numeric formatting vs the client's ISO strings and
 // numbers) defeated the match and turned no-op payloads into conflict cards.
 const _outboxMatchesRow=(payload,row,table)=>{if(!payload||!row)return false;
+  if(table==='sales_orders'||table==='estimates')return savedDocumentMatchesDraft(payload,row);
   for(const k of Object.keys(payload)){if(k.startsWith('_'))continue;if(_OUTBOX_IGNORE_KEYS.has(k))continue;if(table==='customers'&&_CUST_CHILD_KEYS.includes(k))continue;if(!_outboxValEq(payload[k],row[k]))return false}
   return true};
 const _outboxGate=(entry,dbRow)=>{
