@@ -131,9 +131,9 @@ test('durable receipt hydration reads only the requested realm in deterministic 
   const all=[r1a,r1b,other].sort((a,b)=>a.id.localeCompare(b.id));
   const calls=[];
   const client={from:()=>{
-    let pattern='';
-    const query={select:()=>query,like:(_key,value)=>{pattern=value.slice(0,-1);return query},order:()=>query,
-      range:(start,end)=>{calls.push([start,end]);const filtered=all.filter(row=>row.id.startsWith(pattern));return Promise.resolve({data:filtered.slice(start,end+1),error:null})}};
+    let lower='',upper='';
+    const query={select:()=>query,gte:(_key,value)=>{lower=value;return query},lt:(_key,value)=>{upper=value;return query},order:()=>query,
+      range:(start,end)=>{calls.push([start,end]);const filtered=all.filter(row=>row.id>=lower&&row.id<upper);return Promise.resolve({data:filtered.slice(start,end+1),error:null})}};
     return query;
   }};
   await expect(loadDurableQBLinkReceipts(client,'r1',{pageSize:1,hardLimit:10})).resolves.toEqual({[r1a.id]:'one',[r1b.id]:'two'});
@@ -141,7 +141,7 @@ test('durable receipt hydration reads only the requested realm in deterministic 
 });
 
 test('durable receipt hydration fails closed on a page error',async()=>{
-  const client={from:()=>{const query={select:()=>query,like:()=>query,order:()=>query,range:()=>Promise.resolve({data:null,error:{message:'offline'}})};return query}};
+  const client={from:()=>{const query={select:()=>query,gte:()=>query,lt:()=>query,order:()=>query,range:()=>Promise.resolve({data:null,error:{message:'offline'}})};return query}};
   await expect(loadDurableQBLinkReceipts(client,'r1')).rejects.toThrow('offline');
 });
 

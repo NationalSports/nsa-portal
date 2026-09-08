@@ -87,7 +87,10 @@ export async function loadDurableQBLinkReceipts(client, realmId, {pageSize=1000,
   const prefix=realmKeyPrefix(realm);
   const rows=[];
   for(let start=0;start<hardLimit;start+=pageSize){
-    const query=client.from('app_state').select('id,value').like('id',prefix+'%').order('id',{ascending:true}).range(start,start+pageSize-1);
+    // The keys are URL-encoded and therefore contain literal "%" characters.
+    // A LIKE filter interprets those as wildcards; a lexical prefix range does
+    // not, and remains indexable on app_state.id.
+    const query=client.from('app_state').select('id,value').gte('id',prefix).lt('id',prefix+'\uffff').order('id',{ascending:true}).range(start,start+pageSize-1);
     const page=await Promise.race([
       query,
       new Promise(resolve=>setTimeout(()=>resolve({data:null,error:{message:'receipt page timed out'}}),20000)),
