@@ -445,7 +445,7 @@ export default function QBPage(){
       const hasItems=safeItems(so).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
       return hasItems&&!soMap[so.id];
     });
-    const unsyncedPOGroups=groupPortalPurchaseOrders(sos,poMap);
+    const unsyncedPOGroups=groupPortalPurchaseOrders(sos,poMap,vend);
     const unsyncedInvs=invs.filter(i=>!i.qb_invoice_id&&!isVoidInvoice(i));
     const _custQBMap=qbConfig.custQBMap||{};
     const _prodQBMap=qbConfig.prodQBMap||{};
@@ -466,7 +466,7 @@ export default function QBPage(){
     const selectedCanaryProduct=canaryProducts.find(p=>String(p.id)===String(qbCanaryProductId));
     const selectedCanarySO=canarySOs.find(so=>String(so.id)===String(qbCanarySOId));
     const selectedCanaryPO=canaryPOs.find(group=>String(group.poId)===String(qbCanaryPOId));
-    const poPreviewRows=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{});
+    const poPreviewRows=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{},vend);
     const poBatchRows=(poBatchReview?.rows||[]).filter(row=>row.action==='ready').slice(0,poBatchLimit);
     const taxPreflight=qbConfig.taxPreflight&&String(qbConfig.taxPreflight.realm_id||'')===String(qbConfig.realm_id||'')?qbConfig.taxPreflight:null;
     const astTaxOn=!!taxPreflight?.partnerTaxEnabled;
@@ -685,7 +685,7 @@ export default function QBPage(){
       finally{setQbSyncing(false)}
     };
     const runPurchaseOrderBatch=async()=>{
-      const current=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{});
+      const current=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{},vend);
       const currentById=new Map(current.map(row=>[row.poId,row]));
       if(poBatchRows.some(row=>JSON.stringify(qbPurchaseOrderSourceFingerprint(currentById.get(row.poId)))!==JSON.stringify(qbPurchaseOrderSourceFingerprint(row)))){nf('Purchase-order batch changed since review — review it again','error');setPoBatchApproved(false);return}
       await syncPurchaseOrders({}, {approved:poBatchApproved,approvedPOIds:poBatchRows.map(row=>row.poId)});setPoBatchApproved(false);setPoBatchReview(null);
