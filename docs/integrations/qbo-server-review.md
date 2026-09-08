@@ -11,7 +11,12 @@ refresh storage), never invoices, payments, links, customers, or accounting data
 2. Deploy the functions to production. Preview workers always refuse to run.
 3. Explicitly configure `QBO_REVIEW_REALM_ID` to the reviewed National company
    realm and `QBO_SERVER_REVIEW_ENABLED=true`. Missing configuration fails closed.
-4. Accounting/admin users can POST to `/.netlify/functions/qbo-review-background`
+4. In QuickBooks Sync, use **Server QBO review — read only** → **Refresh server
+   history** to check readiness, then **Run read-only server review**. Refresh
+   history after acceptance to inspect the actual durable outcome. A request with
+   an unknown outcome disables another start in that tab. Expanding a run shows
+   exclusions and exact source IDs; old completed runs do not verify a new request.
+   Accounting/admin users can also POST to `/.netlify/functions/qbo-review-background`
    using their existing Supabase bearer JWT. Request bodies cannot select a
    company, query, write operation, or mode. Netlify's background HTTP acceptance
    is **not success**; inspect `GET /.netlify/functions/qbo-review-status` with the
@@ -42,7 +47,7 @@ refresh storage), never invoices, payments, links, customers, or accounting data
 
 ## Remaining stages
 
-UI run controls/history, production SQL verification and repeated live dry runs;
+Production verification of run controls/history and repeated live dry runs;
 explain browser-vs-database population differences; real payment-detail canary;
 shared write fencing and durable per-operation receipts; controlled retry policy;
 accounting reconciliation/sign-off; then a separately approved schedule and small

@@ -1,5 +1,6 @@
 import StripePaymentVerification from './StripePaymentVerification';
 import QBCustomerLinkRepair from './QBCustomerLinkRepairCard';
+import QBServerReviewCard from './QBServerReviewCard';
 import {supabase} from './lib/dbEngine';
 import {loadQBVendorReview,applyQBVendorReview} from './qbVendorSync';
 import {buildQBProductManifest,loadQBProductItems,qbProductBatchReadiness} from './qbProductMigration';
@@ -1441,6 +1442,7 @@ export default function QBPage(){
         </div>
       </>}
 
+      <QBServerReviewCard/>
       {qbConfig.lastPaymentReview&&<div className="card" style={{padding:16,marginBottom:16}}>
         <h2>Payment review</h2>
         <p>{qbConfig.lastPaymentReview.at} · {qbConfig.lastPaymentReview.status} · {(qbConfig.lastPaymentReview.rows||[]).filter(r=>r.action==='aligned').length} aligned</p>
