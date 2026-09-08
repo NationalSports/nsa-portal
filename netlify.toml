@@ -329,3 +329,5 @@
 # source for profit and commissions.
 [functions."omg-order-sync-cron"]
   schedule = "15 8 * * *"
+[functions."financial-expenses"]
+  timeout = 26

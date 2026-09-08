@@ -21,6 +21,7 @@ import {
 } from './lib/financeEngine';
 import { LEGACY_STATEMENTS } from './data/legacyStatements';
 import ARWorkspace from './ARWorkspace';
+import ExpensesWorkspace from './ExpensesWorkspace';
 import { canViewFinancials } from './lib/financialAccess';
 // Mounted in `adminReports` mode: the SAME component the Commissions page uses, showing
 // only its admin-only report tabs. Reusing it (rather than moving the tabs' code here)
@@ -352,7 +353,7 @@ export default function FinancialsPage() {
   const tabs = [
     ['overview', 'Overview'], ['pl', 'P&L'], ['statement', 'Statement'],
     ['profit', 'Profitability'], ['stale', 'Stale Orders'], ['ar', 'Receivables'], ['forecast', 'Forecast'],
-    ['comm', 'Commission Reports'],
+    ['comm', 'Commission Reports'], ['expenses', 'Expenses'],
   ];
   const S = { h2: { fontFamily: FD, fontSize: 17, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: NAVY, margin: '0 0 8px' } };
   const card = { background: '#fff', border: '1px solid ' + HAIR, borderRadius: 12, padding: 16 };
@@ -379,8 +380,9 @@ export default function FinancialsPage() {
         </div>
       </div>
 
-      {/* KPI tiles (always visible) */}
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+      {tab === 'expenses' && <ExpensesWorkspace />}
+      {/* Financial overview KPIs are separate from expense submission totals. */}
+      {tab !== 'expenses' && <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         <Tile label={MONTHS_S[today.getMonth()] + ' billed (net)'} value={$k(monthRow?.net || 0)}
           sub={(() => { const ly = lyByMon.get(today.getMonth() + 1)?.net || 0; if (!ly) return 'no prior-year data'; const d = ((monthRow?.net || 0) / ly - 1) * 100; return (d >= 0 ? '+' : '') + d.toFixed(0) + '% vs last ' + MONTHS_S[today.getMonth()]; })()}
           subColor={(monthRow?.net || 0) >= (lyByMon.get(today.getMonth() + 1)?.net || 0) ? GOOD : CRIT}
@@ -394,7 +396,7 @@ export default function FinancialsPage() {
           subColor={(aging.buckets.d61_90 + aging.buckets.d90plus) / Math.max(1, aging.total) > 0.1 ? WARN : INK2} />
         <Tile label="Open order book" value={$k(backlog.totalValue)} sub={backlog.orders + ' orders · ' + $k(backlog.totalGp) + ' GP inside'} />
         <Tile label="WIP cost (unbilled work)" value={$k(pl.wip)} sub="cost on orders not yet invoiced" />
-      </div>
+      </div>}
 
       {tab === 'overview' && (
         <>
