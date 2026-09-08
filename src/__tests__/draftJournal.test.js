@@ -1,5 +1,5 @@
 import {IDBFactory} from 'fake-indexeddb';
-import {createDraftJournal,protectDocumentDraft} from '../lib/draftJournal';
+import {createDraftJournal,protectDocumentDraft,DRAFT_CHANGE_KEY} from '../lib/draftJournal';
 
 // CRA's jsdom predates structuredClone. The test data is JSON document data.
 beforeAll(()=>{if(!global.structuredClone)global.structuredClone=value=>JSON.parse(JSON.stringify(value));});
@@ -62,4 +62,21 @@ test('recovering an older tab draft clears only that selected revision after suc
  const source={...x.payload,_draftRecovery:{key:x.key,owner:x.owner,revision:x.revision}};
  await protectDocumentDraft('sales_orders',source,async()=>true,jest.fn(),a);
  expect(await a.list('staff-a')).toHaveLength(0);
+});
+
+test('journal changes signal other tabs without publishing draft content',async()=>{
+ const x=await a.stage('staff-a','sales_orders',payload('private draft text'));
+ const stagedSignal=localStorage.getItem(DRAFT_CHANGE_KEY);
+ expect(stagedSignal).toBeTruthy();
+ expect(stagedSignal).not.toContain('private draft text');
+ await a.acknowledge(x);
+ expect(localStorage.getItem(DRAFT_CHANGE_KEY)).not.toBe(stagedSignal);
+});
+
+test('a failed discard keeps a memory-only recovery copy available',async()=>{
+ const denied=createDraftJournal({factory:{open(){throw new Error('Storage denied');}},session:'denied'});
+ let receipt;
+ try{await denied.stage('staff-a','sales_orders',payload('keep me'));}catch(error){receipt=error.draftReceipt;}
+ await expect(denied.acknowledge(receipt)).rejects.toThrow('Storage denied');
+ expect((await denied.list('staff-a'))[0].payload.memo).toBe('keep me');
 });

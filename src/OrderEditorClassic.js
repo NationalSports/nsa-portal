@@ -1786,7 +1786,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Size inputs deliberately buffer keystrokes until blur so clearing "8" on the way to "13"
   // does not trip the committed-quantity guards. Mirror that buffer in a ref: Save follows blur
   // immediately, before React would normally expose the new order state to the click handler.
-  const _stageSizingDraft=(k,v)=>{const first=!(k in sizingDraftRef.current);sizingDraftRef.current={...sizingDraftRef.current,[k]:v};if(first){dirtyRef2.current=true;setDirty(true)}};
+  // Buffered keystrokes are newer edits even before blur commits them to order state.
+  const _stageSizingDraft=(k,v)=>{orderEditRevision.current++;const first=!(k in sizingDraftRef.current);sizingDraftRef.current={...sizingDraftRef.current,[k]:v};if(first){dirtyRef2.current=true;setDirty(true)}};
   const _dropSizingDraft=k=>{if(!(k in sizingDraftRef.current))return;const next={...sizingDraftRef.current};delete next[k];sizingDraftRef.current=next};
   const _flushActiveSizingDraft=()=>{
     if(!Object.keys(sizingDraftRef.current).length)return true;
@@ -4611,7 +4612,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const validItems=safeItems(current).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
         if(validItems.length===0){nf('Add at least one item with quantities','error');return}
         if(_shipPrefRequired()){nf('Select how this order gets to the customer (Ship or Deliver) before saving','error');return}
+        const preparingRevision=orderEditRevision.current;
         const synced=await reconcilePromoDraw(current,promoTotals?.promoAmount);if(!synced.ok)return;
+        if(preparingRevision!==orderEditRevision.current){nf('Newer edits are still here. Click Save again to include them.','error');return}
         await saveSONow(synced.order,isE?'Estimate':'Sales order')}} style={{padding:'6px 20px',fontSize:13,fontWeight:700}}><Icon name="check" size={14}/> Save</button>
     </div>
     {/* COACH APPROVED BANNER */}
@@ -4795,11 +4798,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>before ship</div>
         </div>}
         <button className="btn btn-primary" onClick={async()=>{
+          if(!_flushActiveSizingDraft()){nf('Finish editing the quantity before saving','error');return}
+          const current=oRef.current||o;
           if(!cust){nf('Select a customer first','error');return}
-          const curMemo=(memoInputRef.current?.value??o.memo??'').trim();
+          const curMemo=(memoInputRef.current?.value??current.memo??'').trim();
           if(!curMemo){nf('Memo is required','error');return}
-          const curPO=isSO?(poInputRef.current?.value??o.po_number??''):o.po_number;
-          const saveO=(curMemo!==o.memo||curPO!==o.po_number)?{...o,memo:curMemo,...(isSO?{po_number:curPO}:{})}:o;
+          const curPO=isSO?(poInputRef.current?.value??current.po_number??''):current.po_number;
+          const saveO=(curMemo!==current.memo||curPO!==current.po_number)?{...current,memo:curMemo,...(isSO?{po_number:curPO}:{})}:current;
           const validItems=safeItems(saveO).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
           if(validItems.length===0){nf('Add at least one item with quantities','error');return}
           const noSku=validItems.find(it=>!skuOk(it.sku)&&!legacySkuItems.has(it));
@@ -4807,7 +4812,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const noPrice=validItems.find(it=>!it.is_free_promo&&!it.customer_supplied&&safeNum(it.unit_sell)<=0);
           if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
           if(_shipPrefRequired()){nf('Select how this order gets to the customer (Ship or Deliver) before saving','error');return}
+          const preparingRevision=orderEditRevision.current;
           const synced=await reconcilePromoDraw(saveO,promoTotals?.promoAmount);if(!synced.ok)return;
+          if(preparingRevision!==orderEditRevision.current){nf('Newer edits are still here. Click Save again to include them.','error');return}
           await saveSONow(synced.order,isE?'Estimate':'Sales order')}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
         {isE&&saved&&(o.status==='sent'||o.status==='draft'||o.status==='open')&&<button className="btn btn-primary" style={{background:'#22c55e'}} onClick={()=>{sv('status','approved');onSave({...o,status:'approved'});nf('Estimate approved')}}><Icon name="check" size={14}/> Approve</button>}
         {isE&&o.status==='approved'&&!linkedSO&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>{

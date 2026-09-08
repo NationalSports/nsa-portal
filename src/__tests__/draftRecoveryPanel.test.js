@@ -1,6 +1,7 @@
 import React from 'react';
-import {render,screen,fireEvent,waitFor} from '@testing-library/react';
+import {render,screen,fireEvent,waitFor,act} from '@testing-library/react';
 import DraftRecoveryPanel from '../DraftRecoveryPanel';
+import {DRAFT_CHANGE_KEY} from '../lib/draftJournal';
 const draft={key:'k',owner:'staff-a',revision:'r',id:'SO-1',ts:1,table:'sales_orders',payload:{id:'SO-1',memo:'Unsaved memo',items:[{}]},durable:true};
 
 test('recovery requires review and carries the exact revision without acknowledging it',async()=>{
@@ -21,4 +22,44 @@ test('changing staff clears previously displayed recovery content',async()=>{
  const {rerender}=render(<DraftRecoveryPanel owner="staff-a" journal={journal} onReview={()=>{}}/>);
  await screen.findByText('SO-1');rerender(<DraftRecoveryPanel owner="staff-b" journal={journal} onReview={()=>{}}/>);
  expect(screen.queryByText('SO-1')).toBeNull();resolveB([]);
+});
+
+test('a save acknowledgement in another tab clears the banner',async()=>{
+ const journal={list:jest.fn().mockResolvedValueOnce([draft]).mockResolvedValue([])};
+ render(<DraftRecoveryPanel owner="staff-a" journal={journal} onReview={()=>{}}/>);
+ await screen.findByText('SO-1');
+ fireEvent(window,new StorageEvent('storage',{key:DRAFT_CHANGE_KEY,newValue:'changed'}));
+ await waitFor(()=>expect(screen.queryByText(/Draft recovery/)).toBeNull());
+});
+
+test('a slow older refresh cannot bring back a cleared recovery copy',async()=>{
+ let resolveOld;
+ const journal={list:jest.fn().mockResolvedValueOnce([draft]).mockImplementationOnce(()=>new Promise(r=>{resolveOld=r})).mockResolvedValue([])};
+ render(<DraftRecoveryPanel owner="staff-a" journal={journal} onReview={()=>{}}/>);
+ await screen.findByText('SO-1');fireEvent.click(screen.getByText('Refresh drafts'));
+ fireEvent(window,new StorageEvent('storage',{key:DRAFT_CHANGE_KEY,newValue:'changed'}));
+ await waitFor(()=>expect(screen.queryByText('SO-1')).toBeNull());
+ await act(async()=>resolveOld([draft]));
+ expect(screen.queryByText('SO-1')).toBeNull();
+});
+
+test('discard requires confirmation and removes only the displayed revision',async()=>{
+ const confirm=jest.spyOn(window,'confirm').mockReturnValue(false);
+ const journal={list:jest.fn().mockResolvedValue([draft]),acknowledge:jest.fn(async()=>{journal.list.mockResolvedValue([]);return true})};
+ render(<DraftRecoveryPanel owner="staff-a" journal={journal} onReview={()=>{}}/>);
+ await screen.findByText('SO-1');fireEvent.click(screen.getByText('Discard recovery copy'));
+ expect(journal.acknowledge).not.toHaveBeenCalled();
+ confirm.mockReturnValue(true);fireEvent.click(screen.getByText('Discard recovery copy'));
+ await waitFor(()=>expect(screen.queryByText('SO-1')).toBeNull());
+ expect(journal.acknowledge).toHaveBeenCalledWith({key:'k',owner:'staff-a',revision:'r'});
+ confirm.mockRestore();
+});
+
+test('discard preserves a newer draft that arrived during review',async()=>{
+ const confirm=jest.spyOn(window,'confirm').mockReturnValue(true);
+ const journal={list:jest.fn().mockResolvedValueOnce([draft]).mockResolvedValue([{...draft,revision:'new'}]),acknowledge:jest.fn().mockResolvedValue(false)};
+ render(<DraftRecoveryPanel owner="staff-a" journal={journal} onReview={()=>{}}/>);
+ await screen.findByText('SO-1');fireEvent.click(screen.getByText('Discard recovery copy'));
+ expect((await screen.findByRole('alert')).textContent).toContain('newer copy has been kept');
+ expect(screen.getByText('SO-1')).toBeTruthy();confirm.mockRestore();
 });
