@@ -41,6 +41,22 @@ test('conflicting IDs cannot overwrite a verified link',async()=>{
   expect(JSON.parse([...rows.values()][0].value).qbo_id).toBe('2380');
 });
 
+const repair=()=>record('custQBMap',{qboId:'650',expectedPreviousQboId:'2380',evidence:{result:'customer_link_repaired',api_readback:true,reviewer_approved:true,previous_qbo_id:'2380'}});
+test('reviewed repair preserves previous receipt and survives reload',async()=>{
+  const {client,rows}=database();await persistVerifiedQBLink(client,record());
+  const saved=await persistVerifiedQBLink(client,repair());
+  const row=JSON.parse([...rows.values()][0].value);
+  expect(row.qbo_id).toBe('650');expect(row.previous_link.qbo_id).toBe('2380');
+  expect(mergeDurableQBLinks({realm_id:record().realmId},saved).custQBMap['source-1']).toBe('650');
+  await expect(persistVerifiedQBLink(client,record())).rejects.toThrow('Conflicting');
+  await expect(persistVerifiedQBLink(client,repair())).rejects.toThrow('changed');
+});
+test('repair requires explicit evidence and does not apply to other maps',async()=>{
+  const {client}=database();
+  await expect(persistVerifiedQBLink(client,{...repair(),evidence:{}})).rejects.toThrow('Invalid');
+  await expect(persistVerifiedQBLink(client,{...repair(),mapKey:'prodQBMap'})).rejects.toThrow('Invalid');
+});
+
 test('database failure cannot produce a successful receipt',async()=>{
   const client={from:()=>({select:()=>({eq:()=>({maybeSingle:async()=>({error:{message:'offline'}})})})})};
   await expect(persistVerifiedQBLink(client,record())).rejects.toThrow('offline');

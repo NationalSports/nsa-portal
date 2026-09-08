@@ -77,9 +77,11 @@ export function mergeDurableQBLinks(config = {}, appState = {}) {
 
 // Call only after QBO read-back. A rejected/uncertain save never earns success.
 // The final SELECT also detects RLS writes that silently affected zero rows.
-export async function persistVerifiedQBLink(client, {realmId, mapKey, sourceIds, qboId, log, evidence = {}, active = true}) {
+export async function persistVerifiedQBLink(client, {realmId, mapKey, sourceIds, qboId, log, evidence = {}, active = true, expectedPreviousQboId = ''}) {
   if (!client) throw new Error('Durable QuickBooks link storage is unavailable.');
   if (!clean(qboId) || !Array.isArray(sourceIds) || !sourceIds.length) throw new Error('Verified QuickBooks and source IDs are required.');
+  const repairing=!!clean(expectedPreviousQboId);
+  if(repairing&&(mapKey!=='custQBMap'||sourceIds.length!==1||!active||clean(qboId)===clean(expectedPreviousQboId)||evidence.result!=='customer_link_repaired'||evidence.api_readback!==true||evidence.reviewer_approved!==true||clean(evidence.previous_qbo_id)!==clean(expectedPreviousQboId)))throw new Error('Invalid reviewed customer link repair.');
   const verifiedAt = new Date().toISOString();
   const savedLog = {...log, id: log?.id || 'qb-link-' + mapKey + '-' + clean(qboId) + '-' + verifiedAt,
     verified_at: verifiedAt};
@@ -95,7 +97,11 @@ export async function persistVerifiedQBLink(client, {realmId, mapKey, sourceIds,
     if (before.error) throw new Error('Cannot read durable QBO link: ' + before.error.message);
     if (before.data) {
       const existing = parse(before.data.value);
-      if (existing.active !== false && clean(existing.qbo_id) !== clean(qboId)) throw new Error('Conflicting durable QBO link; review the existing ID before changing it.');
+      if(repairing){
+        if(existing.active===false||clean(existing.qbo_id)!==clean(expectedPreviousQboId))throw new Error('Reviewed customer link changed; reload and review again.');
+        row.value=JSON.stringify({...parse(row.value),previous_link:existing});
+      }
+      if (!repairing && existing.active !== false && clean(existing.qbo_id) !== clean(qboId)) throw new Error('Conflicting durable QBO link; review the existing ID before changing it.');
       if (existing.active === false && active && clean(existing.qbo_id) === clean(qboId)) throw new Error('This QBO link was explicitly removed; it cannot be restored by a stale retry.');
       const update = await client.from('app_state').update(row).eq('id',row.id).eq('value',before.data.value);
       if (update.error) throw new Error('Durable QBO link save failed: ' + update.error.message);

@@ -1,4 +1,5 @@
 import StripePaymentVerification from './StripePaymentVerification';
+import QBCustomerLinkRepair from './QBCustomerLinkRepairCard';
 import {supabase} from './lib/dbEngine';
 import {loadQBVendorReview,applyQBVendorReview} from './qbVendorSync';
 import {buildQBProductManifest,loadQBProductItems,qbProductBatchReadiness} from './qbProductMigration';
@@ -1097,6 +1098,7 @@ export default function QBPage(){
               </button>
             </div>
             {!livePreflightReady&&<div style={{fontSize:11,color:'#92400e',marginTop:7,fontWeight:600}}>Button disabled: open Overview and run Read-Only Live Preflight, then return here.</div>}
+            <QBCustomerLinkRepair key={qbCanaryCustomerId+':'+qbConfig.realm_id} customerId={qbCanaryCustomerId} qbApi={qbApi} qbConfig={qbConfig} customers={cust} invoices={invs} salesOrders={sos} persistQbLink={persistQbLink} qbSyncing={qbSyncing} setQbSyncing={setQbSyncing}/>
           </div>
           <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
             <table style={{fontSize:11}}>
