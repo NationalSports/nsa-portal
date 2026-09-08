@@ -266,14 +266,20 @@ export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms
 // will receive. Mixed vendors or mixed merchandise/decoration categories under
 // one document number are unsafe and must block instead of inheriting the first
 // line's routing.
-export function groupPortalPurchaseOrders(sos = [], poMap = {}) {
+export function groupPortalPurchaseOrders(sos = [], poMap = {}, portalVendors = []) {
+  const vendorRecords = [...(portalVendors || []), ...D_V];
+  const resolveSavedVendor = value => {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    return vendorRecords.find(vendor => String(vendor?.id || '') === raw)?.name || raw;
+  };
   const groups = new Map();
   (sos || []).forEach(so => safeItems(so).forEach(it => (it.po_lines || []).forEach(pl => {
     if (!pl?.po_id || poMap[pl.po_id]) return;
     // The saved PO line is the accounting source of truth for who received the
     // order. A product's catalog vendor or brand can change later and must not
     // silently reroute an existing PO in QBO.
-    const vendor = pl.vendor || pl.deco_vendor || D_V.find(v => v.id === it.vendor_id)?.name || it.brand || '';
+    const vendor = resolveSavedVendor(pl.vendor || pl.deco_vendor || it.vendor_id) || it.brand || '';
     const accountKey = pl.po_type === 'outside_deco' ? 'deco_account' : 'purchases_account';
     let group = groups.get(pl.po_id);
     if (!group) {
@@ -307,9 +313,9 @@ export function qbPOAccountLineDescription(parts = [], soIds = []) {
   return prefix + body + suffix;
 }
 
-export function buildQBPurchaseOrderPreviewRows(sos = [], products = [], prodQBMap = {}, poMap = {}) {
+export function buildQBPurchaseOrderPreviewRows(sos = [], products = [], prodQBMap = {}, poMap = {}, portalVendors = []) {
   const productIdBySku = new Map(products.map(product => [String(product.sku || '').trim().toUpperCase(), product.id]));
-  return groupPortalPurchaseOrders(sos, poMap).map(group => {
+  return groupPortalPurchaseOrders(sos, poMap, portalVendors).map(group => {
     const reasons = new Set(group.invalidReason ? [group.invalidReason] : []);
     if (!String(group.vendor || '').trim()) reasons.add('missing saved vendor');
     if (!parseQBDateValue(group.created_at)) reasons.add('invalid or missing PO date');
@@ -1980,7 +1986,7 @@ export function createQBSyncEngine(ctx){
         setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('Purchase-order sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return;
       }
       // Group PO lines by po_id so we push one QB PO with all line items
-      const allPoGroups=groupPortalPurchaseOrders(sos,poMap);
+      const allPoGroups=groupPortalPurchaseOrders(sos,poMap,vend);
       const effectiveProdQBMap={...(qbConfig.prodQBMap||{}),...(prodQBMapArg||{})};
       const requestedIds=canary?[canaryPOId]:approvedPOIds;
       const poGroups=requestedIds.map(id=>allPoGroups.find(group=>String(group.poId)===id)).filter(Boolean);
