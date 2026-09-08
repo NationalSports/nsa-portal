@@ -25764,8 +25764,16 @@ export default function App(){
       // select('*') works both pre- and post-00184 (it just returns whatever columns exist), so
       // there is no missing-column failure mode here; a missing TABLE lands in the catch below and
       // leaves today's behavior intact (SO-scan + localStorage dedup, local-only history).
-      const{data,error}=await supabase.from('applied_bills').select('*').order('applied_at',{ascending:false}).limit(20000);
-      if(error)throw error;
+      // PostgREST caps a single request at 1,000 rows whatever .limit() asks
+      // for, and the ledger is past that: page through it so dedup and the
+      // QuickBooks backfill see every applied bill, not the newest 1,000.
+      const data=[];
+      for(let from=0;from<20000;from+=1000){
+        const{data:page,error}=await supabase.from('applied_bills').select('*').order('applied_at',{ascending:false}).order('id',{ascending:false}).range(from,from+999);
+        if(error)throw error;
+        data.push(...(page||[]));
+        if(!page||page.length<1000)break;
+      }
       (data||[]).forEach(r=>{
         if(r.status&&r.status!=='pushed')return;// only applied rows may dedup (future holds-merge rows must not)
         if(r.doc_norm)_appliedLedger.current.add(_appliedLedgerKey('d',r.doc_norm,r.is_credit));
