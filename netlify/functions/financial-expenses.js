@@ -2,8 +2,14 @@ const { verifyQBOUser } = require('./_shared');
 const { getValidAccessToken, qbRequest } = require('./_qb');
 const { OWNERS, UUID, check, validateInput, validateMappings, buildPayload, matchesPosting, receiptBuffer } = require('./_financialExpenses');
 const TABLE = 'financial_expenses';
+const RECURRING_TABLE = 'financial_recurring_expenses';
 const BUCKET = 'expense-receipts';
-const FIELDS = 'id,company_key,realm_id,submitted_by,merchant,expense_date,amount_cents,currency,purpose,payment_kind,expense_account_id,expense_account_number,expense_account_name,payment_account_id,payment_account_number,payment_account_name,vendor_id,vendor_name,receipt_name,status,qb_entity_type,qb_entity_id,last_error,posted_at,created_at,updated_at';
+const FIELDS = 'id,company_key,realm_id,submitted_by,merchant,expense_date,amount_cents,currency,purpose,payment_kind,expense_account_id,expense_account_number,expense_account_name,payment_account_id,payment_account_number,payment_account_name,vendor_id,vendor_name,receipt_name,recurring_template_id,recurring_month,status,qb_entity_type,qb_entity_id,last_error,posted_at,created_at,updated_at';
+const RECURRING_FIELDS = 'id,company_key,label,merchant,default_amount_cents,currency,purpose,payment_kind,frequency,starts_on,ends_on,is_active,requires_accounting_split';
+const currentMonth = () => {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit' }).formatToParts(new Date());
+  return `${parts.find(part => part.type === 'year').value}-${parts.find(part => part.type === 'month').value}-01`;
+};
 const db = (result) => { if (result.error) throw new Error(result.error.message); return result.data; };
 async function connection(admin, company) {
   const { access_token, realm_id } = await getValidAccessToken(admin, company);
@@ -48,7 +54,16 @@ exports.handler = async (event) => {
       check(Number.isInteger(offset) && offset >= 0 && offset <= 100000, 'Invalid page.');
       const rows = db(await admin.from(TABLE).select(FIELDS).eq('company_key', company)
         .order('created_at', { ascending: false }).order('id').range(offset, offset + 49));
-      return reply(200, { expenses: rows, nextOffset: rows.length === 50 ? offset + 50 : null });
+      let recurring = [];
+      if (offset === 0) {
+        const month = currentMonth();
+        const templates = db(await admin.from(RECURRING_TABLE).select(RECURRING_FIELDS).eq('company_key', company).eq('is_active', true).order('label'))
+          .filter(template => template.starts_on <= month && (!template.ends_on || template.ends_on >= month));
+        let occurrences = [];
+        if (templates.length) occurrences = db(await admin.from(TABLE).select(FIELDS).eq('company_key', company).eq('recurring_month', month));
+        recurring = templates.map(template => ({ ...template, month, current_expense: occurrences.find(row => row.recurring_template_id === template.id && row.status !== 'cancelled') || null }));
+      }
+      return reply(200, { expenses: rows, recurring, nextOffset: rows.length === 50 ? offset + 50 : null });
     }
     if (body.action === 'options') {
       const qbo = await connection(admin, company);
@@ -75,7 +90,22 @@ exports.handler = async (event) => {
       return reply(200, { vendors: vendors.filter(v => !v.CurrencyRef?.value || v.CurrencyRef.value === 'USD').map(v => ({ Id: v.Id, DisplayName: v.DisplayName })) });
     }
     if (body.action === 'submit') {
+      let recurringTemplate = null;
+      if (body.recurring_template_id != null || body.recurring_month != null) {
+        check(UUID.test(body.recurring_template_id || ''), 'Choose a valid monthly expense.');
+        check(body.recurring_month === currentMonth(), 'This monthly expense can only be recorded for the current month.');
+        recurringTemplate = db(await admin.from(RECURRING_TABLE).select(RECURRING_FIELDS).eq('id', body.recurring_template_id)
+          .eq('company_key', company).eq('is_active', true).maybeSingle());
+        check(recurringTemplate && recurringTemplate.starts_on <= body.recurring_month && (!recurringTemplate.ends_on || recurringTemplate.ends_on >= body.recurring_month), 'This monthly expense is not active for the selected month.');
+        check(!recurringTemplate.requires_accounting_split, 'Split loan principal and interest before posting this payment in QuickBooks. The monthly reminder will remain visible.');
+        body = { ...body, merchant: recurringTemplate.merchant, purpose: recurringTemplate.purpose, payment_kind: recurringTemplate.payment_kind };
+        if (recurringTemplate.default_amount_cents != null) check(String(body.amount) === (recurringTemplate.default_amount_cents / 100).toFixed(2), 'The amount does not match this fixed monthly expense.');
+      }
       const row = validateInput(body);
+      if (recurringTemplate) {
+        row.recurring_template_id = recurringTemplate.id;
+        row.recurring_month = body.recurring_month;
+      }
       const existing = db(await admin.from(TABLE).select(FIELDS).eq('id', row.id).maybeSingle());
       if (existing) {
         check(existing.company_key === company && existing.submitted_by === auth.teamMemberId, 'Submission ID already belongs to another expense.');
@@ -103,9 +133,13 @@ exports.handler = async (event) => {
       }
       const inserted = await admin.from(TABLE).insert(row).select(FIELDS).single();
       if (inserted.error?.code === '23505') {
-        const prior = db(await admin.from(TABLE).select(FIELDS).eq('id', row.id).single());
-        check(prior.company_key === company && prior.submitted_by === auth.teamMemberId, 'Submission ID conflict.');
-        return reply(200, { expense: prior, alreadySubmitted: true });
+        const prior = db(await admin.from(TABLE).select(FIELDS).eq('id', row.id).maybeSingle());
+        if (prior) {
+          check(prior.company_key === company && prior.submitted_by === auth.teamMemberId, 'Submission ID conflict.');
+          return reply(200, { expense: prior, alreadySubmitted: true });
+        }
+        check(!row.recurring_template_id, 'This monthly expense has already been recorded for the current month.');
+        throw new Error('Expense submission conflict.');
       }
       return reply(200, { expense: db(inserted) });
     }

@@ -14,6 +14,11 @@ const row = { id: 'c0402a77-6564-4a70-8b98-09256bfba465', merchant: 'Airline', e
   purpose: 'Customer meeting', payment_kind: 'personal', expense_account_number: '62000', expense_account_name: 'Travel',
   payment_account_number: '20000', payment_account_name: 'Accounts Payable',
   vendor_name: 'Steve Peterson', status: 'submitted', qb_entity_type: 'Bill' };
+const recurring = [
+  { id: '74d77c6a-3d62-4c30-8e27-6dcfca8f1c51', label: 'Tesla loan payment', merchant: 'SchoolsFirst FCU', default_amount_cents: 112977, purpose: 'Tesla loan payment', payment_kind: 'business', month: '2026-09-01', requires_accounting_split: true, current_expense: null },
+  { id: '88a51d3c-d1aa-45a8-b841-2f0bd242d3d4', label: 'Rivian loan payment', merchant: 'SchoolsFirst FCU', default_amount_cents: 121199, purpose: 'Rivian loan payment', payment_kind: 'business', month: '2026-09-01', requires_accounting_split: true, current_expense: null },
+  { id: 'a50f6e8d-1c53-4f88-9f91-dc7d3c4b74cb', label: 'T-Mobile service', merchant: 'T-Mobile', default_amount_cents: null, purpose: 'Monthly T-Mobile mobile service.', payment_kind: 'business', month: '2026-09-01', requires_accounting_split: false, current_expense: null },
+];
 let requests, submitFail;
 beforeEach(() => {
   requests = []; submitFail = false;
@@ -22,7 +27,7 @@ beforeEach(() => {
   global.fetch = jest.fn(async (_, opts) => {
     const body = JSON.parse(opts.body); requests.push(body);
     let data;
-    if (body.action === 'list') data = { expenses: [row], nextOffset: null };
+    if (body.action === 'list') data = { expenses: [row], recurring: body.company === 'national' ? recurring : [], nextOffset: null };
     if (body.action === 'options') data = { realm_id: '123', accounts: body.company === 'methodic' ? [{ Id: '20', AcctNum: '62100', Name: 'Methodic Travel', AccountType: 'Expense' }] : accounts };
     if (body.action === 'vendors') data = { vendors: [{ Id: '4', DisplayName: 'Steve Peterson' }] };
     if (body.action === 'post') data = { expense: { ...row, status: 'posted', qb_entity_id: '900' } };
@@ -42,6 +47,19 @@ test('defaults to personal reimbursement and shows only payable accounts', async
   fireEvent.change(screen.getByLabelText('Who paid?'), { target: { value: 'business' } });
   expect(within(screen.getByLabelText('Paid from account')).getByRole('option', { name: '10100 · Business Checking · Bank' })).toBeInTheDocument();
   expect(screen.queryByLabelText('Reimbursement payee')).not.toBeInTheDocument();
+});
+test('shows fixed vehicle reminders and prepares the variable T-Mobile bill for this month', async () => {
+  render(<ExpensesWorkspace />);
+  expect(await screen.findByText('Tesla loan payment')).toBeInTheDocument();
+  expect(screen.getByText('$1,129.77')).toBeInTheDocument();
+  expect(screen.getByText('$1,211.99')).toBeInTheDocument();
+  expect(screen.getAllByText('Split required')).toHaveLength(2);
+  fireEvent.click(screen.getByRole('button', { name: 'Record September 2026' }));
+  expect(screen.getByLabelText('Merchant')).toHaveValue('T-Mobile');
+  expect(screen.getByLabelText('Merchant')).toHaveAttribute('readonly');
+  expect(screen.getByLabelText('Amount (USD)')).toHaveValue(null);
+  expect(screen.getByLabelText('Who paid?')).toHaveValue('business');
+  expect(screen.getByLabelText('QuickBooks expense account')).toHaveValue('');
 });
 test('business changes clear prior account selections and load the other chart', async () => {
   render(<ExpensesWorkspace />);

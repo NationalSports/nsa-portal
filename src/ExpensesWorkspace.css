@@ -16,6 +16,16 @@
 .expense-tiles strong { color: #192853; font-size: 28px; font-variant-numeric: tabular-nums; }
 .expense-tiles small, .expense-muted { color: #64748b; font-size: 12px; }
 .expense-panel { background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 22px; }
+.expense-month { border: 1px solid #dbe4f0; border-radius: 999px; color: #475569; font-size: 12px; font-weight: 700; padding: 7px 11px; }
+.expense-recurring-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.expense-recurring-card { border: 1px solid #dbe4f0; border-radius: 10px; display: flex; flex-direction: column; gap: 8px; padding: 16px; }
+.expense-recurring-card.split { background: #fffbeb; border-color: #fde68a; }
+.expense-recurring-card h4 { color: #192853; font-size: 16px; margin: 2px 0 0; }
+.expense-recurring-card > strong { color: #192853; font-size: 22px; font-variant-numeric: tabular-nums; }
+.expense-recurring-card > button { align-self: flex-start; margin-top: auto; }
+.expense-recurring-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.expense-frequency { color: #64748b; font-size: 10px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; }
+.expense-split-note { color: #92400e; font-size: 12px !important; }
 .expenses-workspace fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 18px; min-width: 0; }
 .expense-form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
 .expense-account-help { grid-column: 1 / -1; margin: -6px 0 0 !important; color: #64748b; font-size: 11.5px !important; }
@@ -41,4 +51,4 @@
 .expense-review .expense-panel { width: min(520px, 100%); box-sizing: border-box; max-height: 90vh; overflow: auto; }
 .expense-review dl { display: grid; grid-template-columns: 140px 1fr; gap: 12px; font-size: 13px; }
 .expense-review dt { color: #64748b; }.expense-review dd { margin: 0; }
-@media(max-width: 760px) { .expense-tiles, .expense-form-grid, .expense-payee { grid-template-columns: 1fr; } .expense-form-footer, .expense-row { flex-direction: column; align-items: stretch; } .expense-row-actions { align-items: flex-start; } .expense-panel { padding: 16px; } }
+@media(max-width: 760px) { .expense-tiles, .expense-form-grid, .expense-payee, .expense-recurring-grid { grid-template-columns: 1fr; } .expense-form-footer, .expense-row { flex-direction: column; align-items: stretch; } .expense-row-actions { align-items: flex-start; } .expense-panel { padding: 16px; } }

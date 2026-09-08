@@ -2,6 +2,12 @@
 
 The Expenses tab lets the existing Financials owners (Steve, Gayle, and Mike) submit USD business expenses, retain a private receipt, review the exact account mapping, and post to National or Methodic's existing QuickBooks connection. No expense data is seeded or imported from Expensify.
 
+## Monthly schedules
+
+National starts with three monthly reminders in September 2026: SchoolsFirst FCU Tesla ($1,129.77), SchoolsFirst FCU Rivian ($1,211.99), and T-Mobile. The T-Mobile amount is intentionally variable because the connected historical bills change month to month; the current statement amount is required when recording each occurrence. A partial unique index permits one active occurrence per schedule and month, while a cancelled entry can be corrected and re-entered.
+
+Schedules create a monthly review item in the portal, not an unattended QuickBooks transaction. T-Mobile can be submitted through the normal account-number review and QBO posting flow. The vehicle payments remain flagged for principal/interest allocation and are blocked from the single-line expense flow: principal normally reduces the loan liability, while interest uses an expense account. Record the split in QuickBooks until the portal supports split-line loan transactions.
+
 ## Accounting behavior
 
 - Business-paid: creates a QBO `Purchase` (the QuickBooks Expense screen), debiting the chosen expense/COGS account and using the explicitly selected business bank or credit card account. Bank feeds should be matched to the resulting transaction rather than added again.
@@ -12,7 +18,7 @@ The Expenses tab lets the existing Financials owners (Steve, Gayle, and Mike) su
 
 ## Security and recovery
 
-`financial-expenses` verifies the existing QBO role gate and the Financials identity allowlist for every action. The browser has no direct table or receipt-bucket access. Table RLS is enabled with client grants revoked; the endpoint uses the existing server-only Supabase client. A restrictive storage policy prevents pre-existing permissive policies from exposing the new receipt bucket. Receipt links are generated on demand and expire after 60 seconds.
+`financial-expenses` verifies the existing QBO role gate and the Financials identity allowlist for every action. The browser has no direct expense, monthly-schedule, or receipt-bucket access. RLS is enabled on both finance tables with client grants revoked; the endpoint uses the existing server-only Supabase client. A restrictive storage policy prevents pre-existing permissive policies from exposing the new receipt bucket. Receipt links are generated on demand and expire after 60 seconds.
 
 Submissions use a client-generated UUID, with same-ID retries returning the stored record. Posting claims use a conditional database update; active claims cannot be reused for two minutes. A fixed QBO payload, stable `requestid`, deterministic document number, and remote identity/amount/account verification recover from an upstream success followed by a lost local acknowledgement. Conflicting or subsequently edited remote records block automatic linking. The form freezes ambiguous failed submissions for retry while it remains mounted; after navigating away, inspect the queue before re-entering an expense.
 

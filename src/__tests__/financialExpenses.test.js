@@ -21,13 +21,22 @@ const makeRow = () => {
 const event = body => ({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ company: 'national', ...body }) });
 // Stateful database fake exercises claims, company filters, persistence failures,
 // and repeated calls rather than merely asserting the same payload twice.
-function fakeAdmin(initial) {
+function fakeAdmin(initial, recurringTemplates = []) {
   let row = initial && JSON.parse(JSON.stringify(initial));
   let failSave = false;
   const admin = {
     storage: { from: jest.fn(() => ({ upload: jest.fn(async () => ({ data: {} })), createSignedUrl: jest.fn(async () => ({ data: { signedUrl: 'https://private.example/receipt' } })) })) },
-    from: jest.fn(() => {
+    from: jest.fn(table => {
       let op = 'select', values, filters = [], claim = false;
+      if (table === 'financial_recurring_expenses') {
+        const recurringQuery = {
+          select: () => recurringQuery, order: () => recurringQuery,
+          eq: (key, value) => { filters.push([key, value]); return recurringQuery; },
+          maybeSingle: async () => ({ data: recurringTemplates.find(item => filters.every(([k, v]) => item[k] === v)) || null }),
+          then: (resolve, reject) => Promise.resolve({ data: recurringTemplates.filter(item => filters.every(([k, v]) => item[k] === v)) }).then(resolve, reject),
+        };
+        return recurringQuery;
+      }
       const q = {
         select: () => q, order: () => q, range: () => q,
         eq: (key, value) => { filters.push([key, value]); return q; },
@@ -130,6 +139,29 @@ test('submits once without touching QBO transaction writes', async () => {
   const second = await handler(event({ ...input, action: 'submit' }));
   expect(JSON.parse(second.body).alreadySubmitted).toBe(true);
   expect(qbRequest.mock.calls.filter(c => c[0] === 'POST')).toHaveLength(0);
+});
+test('records a variable monthly T-Mobile occurrence with server-owned schedule details', async () => {
+  const template = { id: 'a50f6e8d-1c53-4f88-9f91-dc7d3c4b74cb', company_key: 'national', label: 'T-Mobile service', merchant: 'T-Mobile',
+    default_amount_cents: null, purpose: 'Monthly T-Mobile mobile service.', payment_kind: 'business', starts_on: '2026-09-01', ends_on: null,
+    is_active: true, requires_accounting_split: false };
+  const admin = fakeAdmin(null, [template]); fakeQbo();
+  verifyQBOUser.mockResolvedValue({ ok: true, teamMemberId: owner, admin });
+  const response = await handler(event({ ...input, action: 'submit', merchant: 'Forged merchant', purpose: 'Forged purpose', amount: '502.63',
+    recurring_template_id: template.id, recurring_month: new Date().toISOString().slice(0, 7) + '-01' }));
+  expect(response.statusCode).toBe(200);
+  expect(admin.row()).toMatchObject({ merchant: 'T-Mobile', purpose: template.purpose, amount_cents: 50263,
+    recurring_template_id: template.id, recurring_month: new Date().toISOString().slice(0, 7) + '-01' });
+});
+test('keeps vehicle loan reminders out of the one-line QBO expense flow', async () => {
+  const template = { id: '74d77c6a-3d62-4c30-8e27-6dcfca8f1c51', company_key: 'national', label: 'Tesla loan payment', merchant: 'SchoolsFirst FCU',
+    default_amount_cents: 112977, purpose: 'Tesla loan payment', payment_kind: 'business', starts_on: '2026-09-01', ends_on: null,
+    is_active: true, requires_accounting_split: true };
+  const admin = fakeAdmin(null, [template]); verifyQBOUser.mockResolvedValue({ ok: true, teamMemberId: owner, admin });
+  const response = await handler(event({ ...input, action: 'submit', amount: '1129.77', recurring_template_id: template.id,
+    recurring_month: new Date().toISOString().slice(0, 7) + '-01' }));
+  expect(response.statusCode).toBe(400);
+  expect(JSON.parse(response.body).error).toMatch(/principal and interest/i);
+  expect(getValidAccessToken).not.toHaveBeenCalled();
 });
 test('cannot post another business’s expense or to a reconnected realm', async () => {
   const admin = fakeAdmin(makeRow()); verifyQBOUser.mockResolvedValue({ ok: true, teamMemberId: owner, admin }); fakeQbo();
