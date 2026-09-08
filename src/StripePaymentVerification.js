@@ -22,6 +22,7 @@ export default function StripePaymentVerification() {
   return <div className="card" style={{marginBottom:16}}>
     <div className="card-header"><h2>Stripe Connection &amp; Payment Verification</h2></div>
     <div className="card-body">
+      <p>Automatic invoice checks run nightly. Only issues generate an accounting alert; healthy runs stay quiet. Recent payments have a one-hour grace period.</p>
       <p>Check the portal’s server connection and compare Stripe captured payments with invoice payment records. A match verifies the portal record; QuickBooks posting and bank reconciliation remain separate checks.</p>
       <button className="btn btn-secondary" disabled={busy} onClick={()=>run('connection')}>Check Stripe connection</button>
       {connection && <div style={{marginTop:12}}>

@@ -1,5 +1,6 @@
 /** @jest-environment node */
 
+jest.mock('../../netlify/functions/_stripeInvoiceMonitor', () => ({monitorInvoicePayments:jest.fn().mockResolvedValue({findings:[],checked:0,complete:true})}));
 jest.mock('stripe', () => jest.fn());
 jest.mock('../../netlify/functions/_shared', () => ({ getSupabaseAdmin: jest.fn() }));
 jest.mock('../../netlify/functions/_webstoreNotifications', () => ({
@@ -80,6 +81,7 @@ const order = (id, overrides = {}) => ({
 });
 
 beforeEach(() => {
+  require('../../netlify/functions/_stripeInvoiceMonitor').monitorInvoicePayments.mockResolvedValue({findings:[],checked:0,complete:true});
   sendBrevoEmail.mockClear();
   sendBrevoEmail.mockResolvedValue('brevo-msg-1');
 });
@@ -337,13 +339,15 @@ describe('sweep composition', () => {
       webhookEndpoints: { list: jest.fn().mockResolvedValue({ data: [{ id: 'we_1', url: 'https://nsa-portal.netlify.app/.netlify/functions/stripe-webhook', status: 'enabled', enabled_events: ['*'] }], has_more: false }) },
     };
 
+    const invoiceFinding = {incident_key:'stripe:invoice:pi_test',category:'stripe_invoice_payment',severity:'warning'};
+    require('../../netlify/functions/_stripeInvoiceMonitor').monitorInvoicePayments.mockResolvedValueOnce({findings:[invoiceFinding],checked:1,complete:true});
     const result = await runSweep(admin, client);
 
     expect(result).toMatchObject({ ok: false, open_incident_count: 1, alert_sent: true, checks_recorded: 1 });
     const recorded = admin.calls.rpc.find((call) => call.name === 'record_stripe_reconciliation_order_checks');
     expect(recorded.params.p_checks[0]).toMatchObject({ order_id: 'unpaid-1', disposition: 'not_succeeded', portal_status: 'paid' });
     const synced = admin.calls.rpc.find((call) => call.name === 'sync_stripe_reconciliation_incidents');
-    expect(synced.params.p_runtime_findings).toEqual([]);
+    expect(synced.params.p_runtime_findings).toEqual([invoiceFinding]);
     // Exactly one claim per invocation: a retry cannot fan out into extra sends.
     expect(admin.calls.claims).toBe(1);
     expect(result.timings.total_ms).toBeGreaterThanOrEqual(0);
