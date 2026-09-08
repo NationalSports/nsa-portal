@@ -84,6 +84,24 @@ describe('clampSplitOverrideSizes', () => {
   });
 });
 
+describe('the clamp is a fixed point', () => {
+  // syncJobs is a fixed point over its own output — the auto-sync effect re-runs it on every
+  // change and re-fires whenever per-item units move. A clamp that oscillated would loop
+  // forever, so re-feeding a clamped map must be a no-op.
+  test.each([
+    ['SO-1480', { '3XL': 5, M: 4 }, { '3XL': 4, M: 4 }, { '3XL': 4, M: 4 }, {}],
+    ['sibling share', { M: 8 }, {}, { M: 10 }, { M: 4 }],
+    ['received exceeds the line', { M: 6 }, { M: 5 }, { M: 4 }, {}],
+    ['slices claim more than the line', { M: 4 }, {}, { M: 2 }, { M: 6 }],
+    ['size removed outright', { M: 4, L: 2 }, {}, { M: 4 }, {}],
+  ])('%s', (_label, ex, ful, live, own) => {
+    const once = clampSplitOverrideSizes(ex, ful, live, own);
+    const twice = clampSplitOverrideSizes(once, ful, live, own);
+    expect(twice).toEqual(once);
+    expect(clampSplitOverrideSizes(twice, ful, live, own)).toEqual(once);
+  });
+});
+
 describe('re-shape gate', () => {
   test('only pre-floor jobs re-clamp; an in-process or finished run keeps its committed count', () => {
     ['', 'draft', 'hold', 'ready'].forEach((st) => expect(SLICE_PRUNE_STATUSES.has(st)).toBe(true));
