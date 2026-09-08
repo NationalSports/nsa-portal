@@ -1,4 +1,4 @@
-import { QB_PO_ACCOUNT_LINE_DESCRIPTION_MAX, billReferencesPortalPO, buildQBBillPOReplacement, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions, qbPOAccountLineDescription } from '../qbSyncEngine';
+import { QB_PO_ACCOUNT_LINE_DESCRIPTION_MAX, applyQBPurchaseOrderLiveReadiness, billReferencesPortalPO, buildQBBillPOReplacement, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions, qbPOAccountLineDescription, qbPurchaseOrderSourceFingerprint } from '../qbSyncEngine';
 import { indexQBNonInventoryItems, QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_SPECS } from '../qbAccountMappings';
 
 const accountRows = Object.values(QB_ACCOUNT_SPECS).map((spec,index)=>({
@@ -466,6 +466,25 @@ describe('QuickBooks one-record canaries', () => {
     expect(result).toEqual(expect.objectContaining({status:'success',synced:1,report:expect.objectContaining({counts:{created:1}})}));
     expect(persistQbLink).toHaveBeenCalledWith(expect.objectContaining({mapKey:'qbPOMap',sourceIds:['PO-1'],evidence:expect.objectContaining({api_readback:true,line_count:1})}));
     expect(getConfig().lastPurchaseOrderBatch.results[0]).toEqual(expect.objectContaining({poId:'PO-1',qboId:'PO-QB',result:'created'}));
+  });
+
+  test('live PO review removes QBO vendor and document conflicts before approval', () => {
+    const rows=[
+      {poId:'PO-NEW',vendor:'Acme',date:'2026-09-01',lineCount:1,skus:['SKU-1'],accountSkus:[],total:10,action:'ready',reason:''},
+      {poId:'PO-EXACT',vendor:'Acme',date:'2026-09-01',lineCount:1,skus:['SKU-2'],accountSkus:[],total:20,action:'ready',reason:''},
+      {poId:'PO-CONFLICT',vendor:'Acme',date:'2026-09-01',lineCount:1,skus:['SKU-3'],accountSkus:[],total:30,action:'ready',reason:''},
+      {poId:'PO-NOVENDOR',vendor:'Missing',date:'2026-09-01',lineCount:1,skus:['SKU-4'],accountSkus:[],total:40,action:'ready',reason:''},
+    ];
+    const reviewed=applyQBPurchaseOrderLiveReadiness(rows,[{Id:'V1',DisplayName:'Acme',Active:true}],[
+      {Id:'Q1',DocNumber:'PO-EXACT',VendorRef:{value:'V1'},TxnDate:'2026-09-01',TotalAmt:20},
+      {Id:'Q2',DocNumber:'PO-CONFLICT',VendorRef:{value:'V1'},TxnDate:'2026-09-01',TotalAmt:31},
+    ]);
+    expect(reviewed.map(row=>[row.poId,row.action,row.qboDisposition])).toEqual([
+      ['PO-NEW','ready','create'],['PO-EXACT','ready','link_existing'],['PO-CONFLICT','blocked','blocked'],['PO-NOVENDOR','blocked','blocked'],
+    ]);
+    expect(reviewed[2].reason).toMatch(/different vendor, date, or total/);
+    expect(reviewed[3].reason).toMatch(/not linked or uniquely present/);
+    expect(qbPurchaseOrderSourceFingerprint(reviewed[1])).toEqual(qbPurchaseOrderSourceFingerprint(rows[1]));
   });
 
   test('verifies reciprocal PO-to-existing-bill links and persists one durable receipt', async() => {
