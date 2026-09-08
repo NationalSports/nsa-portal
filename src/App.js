@@ -4560,10 +4560,10 @@ export default function App(){
   };
   React.useEffect(()=>{
     const realmId=String(qbConfig.realm_id||'');
-    if(dbLoading||!_dbLoadSuccess.current||!storedUserCanManageQuickBooks()||!realmId)return;
+    if(dbLoading||!_dbLoadSuccess.current||!storedUserCanManageQuickBooks()||!realmId||!cust.length)return;
     if(_qbDurableHydrationRef.current===realmId||_qbDurableHydrationRef.current===realmId+':loading')return;
     let cancelled=false;_qbDurableHydrationRef.current=realmId+':loading';
-    loadDurableQBLinkReceipts(supabase,realmId).then(rows=>{
+    loadDurableQBLinkReceipts(supabase,realmId,{sourceIds:cust.map(customer=>customer.id)}).then(rows=>{
       if(cancelled)return;
       Object.assign(_qbDurableRowsRef.current,rows);
       setQBConfig(prev=>String(prev.realm_id||'')===realmId?mergeDurableQBLinks(prev,rows):prev);
@@ -4575,7 +4575,7 @@ export default function App(){
       nf('Could not load durable QuickBooks links — '+error.message+'; sync remains locked','error');
     });
     return()=>{cancelled=true};
-  },[dbLoading,qbConfig.realm_id]);
+  },[dbLoading,qbConfig.realm_id,cust.length]);
   React.useEffect(()=>{if(storedUserCanManageQuickBooks())_saveAppState('qb_config',qbConfig)},[qbConfig]);
   // QB background auto-sync — self-contained: builds the sync engine from CURRENT
   // state at fire time. The old wiring called a ref only a mounted QBPage assigned,

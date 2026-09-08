@@ -81,9 +81,25 @@ export function mergeDurableQBLinks(config = {}, appState = {}) {
 // fallbacks. Loading every row in one request made the durable QBO receipts miss
 // the generic query's deadline once the customer migration passed ~2,500 links.
 // Read just this company's receipts in deterministic pages instead.
-export async function loadDurableQBLinkReceipts(client, realmId, {pageSize=1000, hardLimit=20000}={}) {
+export async function loadDurableQBLinkReceipts(client, realmId, {sourceIds=[],pageSize=200, hardLimit=20000}={}) {
   const realm=clean(realmId);
   if(!client||!realm)throw new Error('Durable QuickBooks link load requires a database and realm.');
+  const exactIds=[...new Set((sourceIds||[]).map(clean).filter(Boolean))]
+    .map(sourceId=>qbLinkKey(realm,'custQBMap',sourceId));
+  if(exactIds.length){
+    if(exactIds.length>hardLimit)throw new Error('Durable QBO link load exceeded the safety limit.');
+    const output={};
+    for(let start=0;start<exactIds.length;start+=pageSize){
+      const ids=exactIds.slice(start,start+pageSize);
+      const page=await Promise.race([
+        client.from('app_state').select('id,value').in('id',ids),
+        new Promise(resolve=>setTimeout(()=>resolve({data:null,error:{message:'receipt page timed out'}}),20000)),
+      ]);
+      if(page.error)throw new Error('Durable QBO link load failed: '+page.error.message);
+      (page.data||[]).forEach(row=>{if(ids.includes(row?.id)&&row.value!=null)output[row.id]=row.value});
+    }
+    return output;
+  }
   const prefix=realmKeyPrefix(realm);
   const rows=[];
   for(let start=0;start<hardLimit;start+=pageSize){
