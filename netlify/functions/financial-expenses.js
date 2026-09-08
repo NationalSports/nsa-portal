@@ -3,7 +3,7 @@ const { getValidAccessToken, qbRequest } = require('./_qb');
 const { OWNERS, UUID, check, validateInput, validateMappings, buildPayload, matchesPosting, receiptBuffer } = require('./_financialExpenses');
 const TABLE = 'financial_expenses';
 const BUCKET = 'expense-receipts';
-const FIELDS = 'id,company_key,realm_id,submitted_by,merchant,expense_date,amount_cents,currency,purpose,payment_kind,expense_account_id,expense_account_name,payment_account_id,payment_account_name,vendor_id,vendor_name,receipt_name,status,qb_entity_type,qb_entity_id,last_error,posted_at,created_at,updated_at';
+const FIELDS = 'id,company_key,realm_id,submitted_by,merchant,expense_date,amount_cents,currency,purpose,payment_kind,expense_account_id,expense_account_number,expense_account_name,payment_account_id,payment_account_number,payment_account_name,vendor_id,vendor_name,receipt_name,status,qb_entity_type,qb_entity_id,last_error,posted_at,created_at,updated_at';
 const db = (result) => { if (result.error) throw new Error(result.error.message); return result.data; };
 async function connection(admin, company) {
   const { access_token, realm_id } = await getValidAccessToken(admin, company);
@@ -59,7 +59,13 @@ exports.handler = async (event) => {
         if (page.length < 1000) break;
         check(start < 5000, 'Too many accounts to load. Contact support.');
       }
-      return reply(200, { realm_id: qbo.realm_id, accounts: accounts.map(a => ({ Id: a.Id, Name: a.FullyQualifiedName || a.Name, AccountType: a.AccountType, CurrencyRef: a.CurrencyRef })) });
+      return reply(200, { realm_id: qbo.realm_id, accounts: accounts.map(a => ({
+        Id: a.Id,
+        AcctNum: a.AcctNum || '',
+        Name: a.FullyQualifiedName || a.Name,
+        AccountType: a.AccountType,
+        CurrencyRef: a.CurrencyRef,
+      })) });
     }
     if (body.action === 'vendors') {
       check(typeof body.search === 'string' && body.search.trim().length >= 2 && body.search.length <= 100, 'Enter at least two characters of the reimbursement payee name.');
@@ -81,7 +87,9 @@ exports.handler = async (event) => {
       const mapping = await getMappings(qbo, row);
       row.realm_id = qbo.realm_id;
       row.submitted_by = auth.teamMemberId;
+      row.expense_account_number = mapping.expense.AcctNum || null;
       row.expense_account_name = mapping.expense.FullyQualifiedName || mapping.expense.Name;
+      row.payment_account_number = mapping.payment.AcctNum || null;
       row.payment_account_name = mapping.payment.FullyQualifiedName || mapping.payment.Name;
       row.vendor_name = mapping.vendor?.DisplayName || null;
       row.qb_entity_type = row.payment_kind === 'personal' ? 'Bill' : 'Purchase';

@@ -6,12 +6,13 @@ import ExpensesWorkspace from '../ExpensesWorkspace';
 import { supabase } from '../lib/supabase';
 jest.mock('../lib/supabase', () => ({ supabase: { auth: { getSession: jest.fn(async () => ({ data: { session: { access_token: 'test' } } })) } } }));
 const accounts = [
-  { Id: '1', Name: 'Travel', AccountType: 'Expense' },
-  { Id: '2', Name: 'Business Checking', AccountType: 'Bank' },
-  { Id: '3', Name: 'Accounts Payable', AccountType: 'Accounts Payable' },
+  { Id: '1', AcctNum: '62000', Name: 'Travel', AccountType: 'Expense' },
+  { Id: '2', AcctNum: '10100', Name: 'Business Checking', AccountType: 'Bank' },
+  { Id: '3', AcctNum: '20000', Name: 'Accounts Payable', AccountType: 'Accounts Payable' },
 ];
 const row = { id: 'c0402a77-6564-4a70-8b98-09256bfba465', merchant: 'Airline', expense_date: '2026-08-31', amount_cents: 12495,
-  purpose: 'Customer meeting', payment_kind: 'personal', expense_account_name: 'Travel', payment_account_name: 'Accounts Payable',
+  purpose: 'Customer meeting', payment_kind: 'personal', expense_account_number: '62000', expense_account_name: 'Travel',
+  payment_account_number: '20000', payment_account_name: 'Accounts Payable',
   vendor_name: 'Steve Peterson', status: 'submitted', qb_entity_type: 'Bill' };
 let requests, submitFail;
 beforeEach(() => {
@@ -22,7 +23,7 @@ beforeEach(() => {
     const body = JSON.parse(opts.body); requests.push(body);
     let data;
     if (body.action === 'list') data = { expenses: [row], nextOffset: null };
-    if (body.action === 'options') data = { realm_id: '123', accounts: body.company === 'methodic' ? [{ Id: '20', Name: 'Methodic Travel', AccountType: 'Expense' }] : accounts };
+    if (body.action === 'options') data = { realm_id: '123', accounts: body.company === 'methodic' ? [{ Id: '20', AcctNum: '62100', Name: 'Methodic Travel', AccountType: 'Expense' }] : accounts };
     if (body.action === 'vendors') data = { vendors: [{ Id: '4', DisplayName: 'Steve Peterson' }] };
     if (body.action === 'post') data = { expense: { ...row, status: 'posted', qb_entity_id: '900' } };
     if (body.action === 'submit') {
@@ -36,19 +37,19 @@ afterEach(() => { delete global.fetch; });
 test('defaults to personal reimbursement and shows only payable accounts', async () => {
   render(<ExpensesWorkspace />);
   const account = await screen.findByLabelText('Accounts payable account');
-  expect(within(account).getByRole('option', { name: 'Accounts Payable' })).toBeInTheDocument();
-  expect(within(account).queryByRole('option', { name: 'Business Checking' })).not.toBeInTheDocument();
+  expect(within(account).getByRole('option', { name: '20000 · Accounts Payable · Accounts Payable' })).toBeInTheDocument();
+  expect(within(account).queryByRole('option', { name: /Business Checking/ })).not.toBeInTheDocument();
   fireEvent.change(screen.getByLabelText('Who paid?'), { target: { value: 'business' } });
-  expect(within(screen.getByLabelText('Paid from account')).getByRole('option', { name: 'Business Checking' })).toBeInTheDocument();
+  expect(within(screen.getByLabelText('Paid from account')).getByRole('option', { name: '10100 · Business Checking · Bank' })).toBeInTheDocument();
   expect(screen.queryByLabelText('Reimbursement payee')).not.toBeInTheDocument();
 });
 test('business changes clear prior account selections and load the other chart', async () => {
   render(<ExpensesWorkspace />);
   fireEvent.change(await screen.findByLabelText('QuickBooks expense account'), { target: { value: '1' } });
   fireEvent.change(screen.getByLabelText('Business'), { target: { value: 'methodic' } });
-  await screen.findByRole('option', { name: /Methodic Travel/ });
+  await screen.findByRole('option', { name: '62100 · Methodic Travel · Expense' });
   expect(screen.getByLabelText('QuickBooks expense account')).toHaveValue('');
-  expect(screen.queryByRole('option', { name: /^Travel/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole('option', { name: /62000 · Travel/ })).not.toBeInTheDocument();
 });
 test('reviewing a mapping never posts until the explicit posting action', async () => {
   render(<ExpensesWorkspace />);
@@ -56,6 +57,8 @@ test('reviewing a mapping never posts until the explicit posting action', async 
   const dialog = screen.getByRole('dialog');
   expect(within(dialog).getByText('National Sports Apparel')).toBeInTheDocument();
   expect(within(dialog).getByText('Steve Peterson')).toBeInTheDocument();
+  expect(within(dialog).getByText('62000 · Travel')).toBeInTheDocument();
+  expect(within(dialog).getByText('20000 · Accounts Payable')).toBeInTheDocument();
   expect(requests.filter(r => r.action === 'post')).toHaveLength(0);
   fireEvent.click(within(dialog).getByRole('button', { name: 'Post to QuickBooks' }));
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());

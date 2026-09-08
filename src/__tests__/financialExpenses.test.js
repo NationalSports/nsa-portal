@@ -8,8 +8,8 @@ const id = 'c0402a77-6564-4a70-8b98-09256bfba465';
 const owner = '00000000-0000-0000-0000-000000000001';
 const input = { id, company: 'national', realm_id: '123', merchant: 'Airline', amount: '124.95', currency: 'USD',
   expense_date: '2026-08-31', purpose: 'Customer visit', payment_kind: 'business', expense_account_id: '1', payment_account_id: '2' };
-const expense = { Id: '1', Name: 'Travel', AccountType: 'Expense', Active: true };
-const bank = { Id: '2', Name: 'Checking', AccountType: 'Bank', Active: true, CurrencyRef: { value: 'USD' } };
+const expense = { Id: '1', AcctNum: '62000', Name: 'Travel', AccountType: 'Expense', Active: true };
+const bank = { Id: '2', AcctNum: '10100', Name: 'Checking', AccountType: 'Bank', Active: true, CurrencyRef: { value: 'USD' } };
 const card = { ...bank, AccountType: 'Credit Card' };
 const payable = { ...bank, AccountType: 'Accounts Payable' };
 const vendor = { Id: '3', DisplayName: 'Steve Peterson', Active: true };
@@ -110,12 +110,23 @@ test('blocks unauthorized callers before database or QBO reads', async () => {
   expect((await handler(event({ action: 'options' }))).statusCode).toBe(403);
   expect(getValidAccessToken).not.toHaveBeenCalled();
 });
+test('options return live QuickBooks account numbers with each applicable account', async () => {
+  const admin = fakeAdmin(null); verifyQBOUser.mockResolvedValue({ ok: true, teamMemberId: owner, admin });
+  qbRequest.mockResolvedValueOnce({ status: 200, data: { QueryResponse: { Account: [expense, bank] } } });
+  const response = await handler(event({ action: 'options' }));
+  expect(response.statusCode).toBe(200);
+  expect(JSON.parse(response.body).accounts).toEqual([
+    expect.objectContaining({ Id: '1', AcctNum: '62000', Name: 'Travel', AccountType: 'Expense' }),
+    expect.objectContaining({ Id: '2', AcctNum: '10100', Name: 'Checking', AccountType: 'Bank' }),
+  ]);
+});
 test('submits once without touching QBO transaction writes', async () => {
   const admin = fakeAdmin(null); fakeQbo();
   verifyQBOUser.mockResolvedValue({ ok: true, teamMemberId: owner, admin });
   const first = await handler(event({ ...input, action: 'submit' }));
   expect(first.statusCode).toBe(200);
-  expect(admin.row()).toMatchObject({ submitted_by: owner, amount_cents: 12495, realm_id: '123', expense_account_name: 'Travel' });
+  expect(admin.row()).toMatchObject({ submitted_by: owner, amount_cents: 12495, realm_id: '123',
+    expense_account_number: '62000', expense_account_name: 'Travel', payment_account_number: '10100', payment_account_name: 'Checking' });
   const second = await handler(event({ ...input, action: 'submit' }));
   expect(JSON.parse(second.body).alreadySubmitted).toBe(true);
   expect(qbRequest.mock.calls.filter(c => c[0] === 'POST')).toHaveLength(0);

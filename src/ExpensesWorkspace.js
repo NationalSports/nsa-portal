@@ -15,6 +15,12 @@ export async function expenseRequest(body) {
   return result;
 }
 const money = cents => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cents / 100);
+const accountLabel = account => `${account.AcctNum || 'No account number'} · ${account.Name}`;
+const savedAccountLabel = (number, name) => `${number || 'No account number'} · ${name}`;
+const accountSort = (a, b) => {
+  if (!!a.AcctNum !== !!b.AcctNum) return a.AcctNum ? -1 : 1;
+  return String(a.AcctNum || '').localeCompare(String(b.AcctNum || ''), undefined, { numeric: true }) || a.Name.localeCompare(b.Name);
+};
 const freshForm = () => ({ merchant: '', expense_date: new Date().toLocaleDateString('en-CA'), amount: '', purpose: '',
   payment_kind: 'personal', expense_account_id: '', payment_account_id: '', vendor_id: '' });
 const statusLabel = { submitted: 'Ready to post', posting: 'Posting…', posted: 'Posted to QuickBooks', error: 'Needs attention', cancelled: 'Cancelled' };
@@ -75,8 +81,8 @@ export default function ExpensesWorkspace() {
   }, [company]);
 
   const accounts = (options?.accounts || []).filter(a => !a.CurrencyRef?.value || a.CurrencyRef.value === 'USD');
-  const expenseAccounts = accounts.filter(a => ['Expense', 'Other Expense', 'Cost of Goods Sold'].includes(a.AccountType));
-  const paymentAccounts = accounts.filter(a => form.payment_kind === 'personal' ? a.AccountType === 'Accounts Payable' : ['Bank', 'Credit Card'].includes(a.AccountType));
+  const expenseAccounts = accounts.filter(a => ['Expense', 'Other Expense', 'Cost of Goods Sold'].includes(a.AccountType)).sort(accountSort);
+  const paymentAccounts = accounts.filter(a => form.payment_kind === 'personal' ? a.AccountType === 'Accounts Payable' : ['Bank', 'Credit Card'].includes(a.AccountType)).sort(accountSort);
   const update = (field, value) => setForm(prev => ({ ...prev, [field]: value }));
   const run = async (key, fn) => {
     if (operationInProgress.current) return;
@@ -144,12 +150,13 @@ export default function ExpensesWorkspace() {
               <option value="personal">I paid personally · reimburse me</option><option value="business">Business bank account or card</option>
             </select></label>
             <label>QuickBooks expense account<select required value={form.expense_account_id} onChange={e => update('expense_account_id', e.target.value)}>
-              <option value="">Choose an expense account</option>{expenseAccounts.map(a => <option key={a.Id} value={a.Id}>{a.Name} · {a.AccountType}</option>)}
+              <option value="">Choose an account number</option>{expenseAccounts.map(a => <option key={a.Id} value={a.Id}>{accountLabel(a)} · {a.AccountType}</option>)}
             </select></label>
             <label>{form.payment_kind === 'personal' ? 'Accounts payable account' : 'Paid from account'}<select required value={form.payment_account_id} onChange={e => update('payment_account_id', e.target.value)}>
-              <option value="">Choose an account</option>{paymentAccounts.map(a => <option key={a.Id} value={a.Id}>{a.Name}</option>)}
+              <option value="">Choose an account number</option>{paymentAccounts.map(a => <option key={a.Id} value={a.Id}>{accountLabel(a)} · {a.AccountType}</option>)}
             </select></label>
           </div>
+          <p className="expense-account-help">Account numbers come directly from this business’s QuickBooks chart. Choose a different account here before submitting. If you renumber an account in QuickBooks, refresh this tab to bring in the change.</p>
           {form.payment_kind === 'personal' && <div className="expense-payee">
             <label>Find your reimbursement payee in QuickBooks<div className="expense-inline"><input value={vendorSearch} onChange={e => setVendorSearch(e.target.value)} placeholder="Your name or reimbursement vendor" /><button type="button" disabled={vendorSearch.trim().length < 2} onClick={searchVendors}>Search</button></div></label>
             <label>Reimbursement payee<select required value={form.vendor_id} onChange={e => update('vendor_id', e.target.value)}><option value="">Choose who should be reimbursed</option>{vendors.map(v => <option key={v.Id} value={v.Id}>{v.DisplayName}</option>)}</select></label>
@@ -172,7 +179,7 @@ export default function ExpensesWorkspace() {
       {!loading && !shown.length && <div className="expense-empty"><h4>{rows.length ? 'No expenses match this filter' : 'Your next expense starts here'}</h4><p>Submit the merchant, amount, business purpose, and account mapping above.</p></div>}
       <div className="expense-list">{shown.map(row => <article key={row.id} className="expense-row">
         <div><strong>{row.merchant}</strong><div className="expense-muted">{row.expense_date} · {row.payment_kind === 'personal' ? 'Personal reimbursement' : 'Business paid'}</div><p>{row.purpose}</p>
-          <div className="expense-mapping">{row.expense_account_name}<span> → </span>{row.payment_account_name}{row.vendor_name && ` · Payee: ${row.vendor_name}`}</div>
+          <div className="expense-mapping">{savedAccountLabel(row.expense_account_number, row.expense_account_name)}<span> → </span>{savedAccountLabel(row.payment_account_number, row.payment_account_name)}{row.vendor_name && ` · Payee: ${row.vendor_name}`}</div>
           {row.last_error && <p className="expense-error-text">{row.last_error}</p>}
         </div>
         <div className="expense-row-actions"><strong>{money(row.amount_cents)}</strong><span className={`expense-status ${row.status}`}>{statusLabel[row.status]}</span>
@@ -199,7 +206,7 @@ export default function ExpensesWorkspace() {
       }
     }}>
       <div className="expense-panel"><h3 id="expense-review-title">Post expense to QuickBooks</h3><p><b>{review.merchant} · {money(review.amount_cents)}</b></p>
-        <dl><dt>Business</dt><dd>{company === 'national' ? 'National Sports Apparel' : 'Methodic'}</dd><dt>Date</dt><dd>{review.expense_date}</dd><dt>Expense account</dt><dd>{review.expense_account_name}</dd><dt>{review.payment_kind === 'personal' ? 'Accounts payable' : 'Paid from'}</dt><dd>{review.payment_account_name}</dd>{review.vendor_name && <><dt>Reimburse</dt><dd>{review.vendor_name}</dd></>}</dl>
+        <dl><dt>Business</dt><dd>{company === 'national' ? 'National Sports Apparel' : 'Methodic'}</dd><dt>Date</dt><dd>{review.expense_date}</dd><dt>Expense account</dt><dd>{savedAccountLabel(review.expense_account_number, review.expense_account_name)}</dd><dt>{review.payment_kind === 'personal' ? 'Accounts payable' : 'Paid from'}</dt><dd>{savedAccountLabel(review.payment_account_number, review.payment_account_name)}</dd>{review.vendor_name && <><dt>Reimburse</dt><dd>{review.vendor_name}</dd></>}</dl>
         <p>{review.payment_kind === 'personal' ? 'Creates an unpaid bill. This records the expense and amount owed; it does not send a reimbursement.' : 'Creates an expense in this business’s books. Match any imported bank transaction to this expense.'}</p>
         <p className="expense-muted">{review.receipt_name ? 'Receipt is stored privately in the portal.' : 'No receipt attached.'}</p>
         {review.status === 'submitted' && <p className="expense-muted">Need to change these details? <button disabled={!!busy} onClick={() => run('cancel', async () => {

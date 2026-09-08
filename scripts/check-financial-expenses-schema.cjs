@@ -23,6 +23,8 @@ async function main() {
     `);
     await db.exec(fs.readFileSync(path.join(__dirname, '../supabase/migrations/20260908012527_financial_expenses.sql'), 'utf8'));
     ok((await db.query("select relrowsecurity from pg_class where oid = 'public.financial_expenses'::regclass")).rows[0].relrowsecurity);
+    const accountNumberColumns = (await db.query("select column_name from information_schema.columns where table_schema='public' and table_name='financial_expenses' and column_name in ('expense_account_number','payment_account_number') order by column_name")).rows;
+    ok(accountNumberColumns.length === 2);
     ok((await db.query("select public from storage.buckets where id = 'expense-receipts'")).rows[0].public === false);
     await db.exec(`insert into storage.objects values ('11111111-1111-4111-8111-111111111111','expense-receipts'), ('22222222-2222-4222-8222-222222222222','other');`);
     for (const role of ['anon', 'authenticated']) {
