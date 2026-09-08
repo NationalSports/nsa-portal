@@ -58,7 +58,7 @@ import { mergeDurableQBLinks, persistVerifiedQBLink } from './qbLinkLedger';
 import { canViewFinancials } from './lib/financialAccess';
 import { consolidateOmgProductRows } from './lib/storeSkuGrouping';
 import { acquireOmgCreationGuard, omgCollectedUnitPrice, omgInvoiceIdempotencyKey, webstoreInvoiceIdempotencyKey } from './lib/omgCreationGuard';
-import { matchedBillPoNumber, normalizeBillForReview } from './qbBillReview';
+import { matchedBillPoNumber, normalizeBillForReview, prepareQboBackfillBill } from './qbBillReview';
 import { resolvePoDisplayVendor } from './lib/poVendor';
 import { removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
 
@@ -33102,7 +33102,10 @@ export default function App(){
               </div>;})()}
             <button className="btn btn-sm btn-secondary" style={{fontSize:10,fontWeight:700}} title="CSV of every pushed bill in the current scope — vendor, invoice #, SI doc #, PO, amount, Portal/QB — for archiving at Sports Inc" onClick={_dlArchiveCsv}>⬇ Download for SI archive</button>
             {qbOperator&&(()=>{
-              const backfill=buildQboBackfillRows(qboBackfillHistory(savedBills,serverBills),normalizeBillForReview);
+              // Old ledger rows can have a valid DPO/PO number but no browser-local
+              // matchedPO wrapper. Resolve those through the current live PO matcher
+              // before deciding whether the QBO backfill row is sendable.
+              const backfill=buildQboBackfillRows(qboBackfillHistory(savedBills,serverBills),p=>prepareQboBackfillBill(p,rematchBill));
               const backfillTotal=backfill.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
               return backfill.length>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,fontWeight:700,color:'#1e40af',borderColor:'#93c5fd'}}
                 title="Load every bill that is applied in the Portal but not yet in QuickBooks. They post as account lines (Purchases / Freight / Sports Inc fee) under each bill's own vendor; the Portal side is not applied again."
