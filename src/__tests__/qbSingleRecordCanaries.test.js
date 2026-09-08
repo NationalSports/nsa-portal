@@ -1,4 +1,4 @@
-import { QB_PO_ACCOUNT_LINE_DESCRIPTION_MAX, billReferencesPortalPO, buildQBBillPOReplacement, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions, qbPOAccountLineDescription } from '../qbSyncEngine';
+import { QB_PO_ACCOUNT_LINE_DESCRIPTION_MAX, billReferencesPortalPO, buildQBBillPOReplacement, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions, qbPOAccountLineDescription } from '../qbSyncEngine';
 import { indexQBNonInventoryItems, QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_SPECS } from '../qbAccountMappings';
 
 const accountRows = Object.values(QB_ACCOUNT_SPECS).map((spec,index)=>({
@@ -292,6 +292,37 @@ describe('QuickBooks one-record canaries', () => {
     await expect(engine.syncSalesOrders({}, {}, {canarySOId:'SO-1'})).resolves.toEqual({status:'success',synced:1});
     expect(qbApi.mock.calls.filter(([action])=>action==='upsert_estimate')).toHaveLength(1);
     expect(getConfig().qbSOMap['SO-1']).toBe('E-1');
+  });
+
+  test('sales-order review exposes ready and taxable-blocked Estimates without writing', () => {
+    const base={customer_id:'C1',created_at:'2026-09-01',items:[{sku:'SKU-1',name:'Jersey',unit_sell:25,sizes:{S:2},decorations:[]}]};
+    const rows=buildQBSalesOrderPreviewRows([{...base,id:'SO-1',tax_exempt:true},{...base,id:'SO-2',tax:4}],
+      [{id:'C1',name:'Test Customer'}],{C1:'C-QB'},{},jest.fn(()=>({sell:0})));
+    expect(rows).toEqual([
+      expect.objectContaining({salesOrderId:'SO-1',customer:'Test Customer',qboCustomerId:'C-QB',date:'2026-09-01',lineCount:1,total:50,action:'ready'}),
+      expect.objectContaining({salesOrderId:'SO-2',action:'blocked',reason:'taxable Estimates await approved QBO tax-code mapping'}),
+    ]);
+  });
+
+  test('bulk Estimate writes require an approved exact review and read back the approved row', async() => {
+    const so={id:'SO-1',customer_id:'C1',created_at:'2026-09-01',tax_exempt:true,items:[{sku:'SKU-1',name:'Jersey',unit_sell:25,sizes:{S:2},decorations:[]}]};
+    let sent;
+    const qbApi=jest.fn(async(action,{query,estimate}={})=>{
+      if(action==='query'&&query.includes('FROM Estimate STARTPOSITION'))return{QueryResponse:{Estimate:[]}};
+      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
+      if(action==='query'&&query.includes("FROM Item WHERE Name = 'NSA Portal Sales'"))return{QueryResponse:{Item:[portalSalesItem]}};
+      if(action==='upsert_estimate'){sent=estimate;return{Estimate:{Id:'E-1',...estimate}}}
+      if(action==='query'&&query.includes("FROM Estimate WHERE Id = 'E-1'"))return{QueryResponse:{Estimate:[{Id:'E-1',...sent,TotalAmt:50}]}};
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const {engine,getConfig,persistQbLink}=makeEngine({qbApi,cust:[{id:'C1',name:'Test Customer'}],sos:[so]});
+    getConfig().initialMigrationApproved=true;
+    await expect(engine.syncSalesOrders()).resolves.toEqual({status:'blocked',synced:0});
+    expect(qbApi).not.toHaveBeenCalled();
+    const expectedRows=buildQBSalesOrderPreviewRows([so],[{id:'C1',name:'Test Customer'}],{C1:'C-QB'},{},jest.fn(()=>({sell:0})));
+    await expect(engine.syncSalesOrders({}, {}, {approved:true,approvedSOIds:['SO-1'],expectedRows})).resolves.toEqual({status:'success',synced:1});
+    expect(qbApi.mock.calls.filter(([action])=>action==='upsert_estimate')).toHaveLength(1);
+    expect(persistQbLink).toHaveBeenCalledWith(expect.objectContaining({mapKey:'qbSOMap',sourceIds:['SO-1'],qboId:'E-1',evidence:expect.objectContaining({api_readback:true})}));
   });
 
   test('creates one PO without creating a vendor or item and verifies read-back', async() => {
