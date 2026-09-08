@@ -9,6 +9,11 @@ refresh storage), never invoices, payments, links, customers, or accounting data
 1. Apply `20260908061438_qbo_server_review_runs.sql` after review. Verify RLS and
    service-role-only grants on the table and snapshot function.
 2. Deploy the functions to production. Preview workers always refuse to run.
+   The npm postbuild step bundles the build-time Netlify context in
+   `_qboDeployContext.json`; runtime guards do not rely on `process.env.CONTEXT`,
+   which Netlify does not supply to Lambda functions. The checked-in stamp is
+   `unknown` (disabled). Do not commit a generated production stamp. Stamp-write
+   failures fail the build; every preview/local build overwrites the stamp.
 3. Explicitly configure `QBO_REVIEW_REALM_ID` to the reviewed National company
    realm and `QBO_SERVER_REVIEW_ENABLED=true`. Missing configuration fails closed.
 4. In QuickBooks Sync, use **Server QBO review — read only** → **Refresh server

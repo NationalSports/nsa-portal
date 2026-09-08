@@ -1,6 +1,7 @@
 const { verifyQBOUser, getSupabaseAdmin } = require('./_shared');
 const { getValidAccessToken, qbRequest } = require('./_qb');
 const { runReview, reviewStore } = require('./_qboServerReview');
+const { reviewEnabled } = require('./_qboReviewConfig');
 
 exports.handler = async event => {
   if (event.httpMethod !== 'POST') return { statusCode: 405 };
@@ -8,7 +9,7 @@ exports.handler = async event => {
   if (!auth.ok) return { statusCode: auth.status };
   // Preview deployments must never run against the production ledger.
   const expectedRealm = process.env.QBO_REVIEW_REALM_ID;
-  if (process.env.CONTEXT !== 'production' || process.env.QBO_SERVER_REVIEW_ENABLED !== 'true' || !/^\d+$/.test(expectedRealm || ''))
+  if (!reviewEnabled())
     return { statusCode: 409, body: 'Server review is disabled' };
   const admin = getSupabaseAdmin();
   const result = await runReview({ store: reviewStore(admin), realm: expectedRealm, requestedBy: auth.userId,
