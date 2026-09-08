@@ -14,7 +14,7 @@ import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
 import { authFetch } from './utils';
-import { applyQBPurchaseOrderLiveReadiness, buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, isVoidInvoice, portalCustomerDisplayName, qbCustomerBatchReady, qbPurchaseOrderSourceFingerprint, qbResponseErrorDetail } from './qbSyncEngine';
+import { applyQBPurchaseOrderLiveReadiness, applyQBSalesOrderLiveReadiness, buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, isVoidInvoice, portalCustomerDisplayName, qbCustomerBatchReady, qbPurchaseOrderSourceFingerprint, qbResponseErrorDetail, qbSalesOrderSourceFingerprint } from './qbSyncEngine';
 import { QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_POSTING_MATRIX, QB_ACCOUNT_SPECS, QB_STATE_TAX_ACCOUNT_KEYS, buildVendorBillLines, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, manualBillAccountKey, normalizeVendorName, qbWriteAccountRef, queryQBReadOnly, readQBWithRetry, resolveQBAccountRefs } from './qbAccountMappings';
 
 const stripeBackfillErrorSummary=(errors=[])=>{
@@ -703,17 +703,23 @@ export default function QBPage(){
       await syncInvoices({}, {}, {approved:invoiceBatchApproved,approvedInvoiceIds:invoiceBatchRows.map(row=>row.invoiceId),expectedRows:invoiceBatchRows});
       setInvoiceBatchApproved(false);setInvoiceBatchReview(null);
     };
-    const reviewSalesOrderBatch=()=>{
-      const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows:salesOrderPreviewRows,
-        counts:salesOrderPreviewRows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{})};
-      setSalesOrderBatchReview(review);setSalesOrderBatchApproved(false);setQBConfig(prev=>({...prev,lastSalesOrderReview:review}));
-      nf('Sales-order readiness review complete — no QBO records changed');
+    const reviewSalesOrderBatch=async()=>{
+      setQbSyncing(true);setSalesOrderBatchApproved(false);
+      try{
+        const qboEstimates=await loadAllQBEntities(qbApi,'Estimate','Id, DocNumber, CustomerRef, TotalAmt, TxnDate',500);
+        const rows=applyQBSalesOrderLiveReadiness(salesOrderPreviewRows,qboEstimates);
+        const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,
+          counts:rows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{})};
+        setSalesOrderBatchReview(review);setQBConfig(prev=>({...prev,lastSalesOrderReview:review}));
+        nf('Sales-order readiness review complete — live QBO checked; no records changed');
+      }catch(e){setSalesOrderBatchReview(null);nf('Sales-order readiness review failed — '+e.message,'error')}
+      finally{setQbSyncing(false)}
     };
     const runSalesOrderBatch=async()=>{
       const current=buildQBSalesOrderPreviewRows(sos,cust,qbConfig.custQBMap||{},qbConfig.qbSOMap||{},dP,
         {partnerTaxEnabled:astTaxOn,taxBlockReason:({taxState})=>taxableEstimateBlock(taxState)});
       const currentById=new Map(current.map(row=>[row.salesOrderId,row]));
-      if(salesOrderBatchRows.some(row=>JSON.stringify(currentById.get(row.salesOrderId))!==JSON.stringify(row))){nf('Sales-order batch changed since review — review it again','error');setSalesOrderBatchApproved(false);return}
+      if(salesOrderBatchRows.some(row=>JSON.stringify(qbSalesOrderSourceFingerprint(currentById.get(row.salesOrderId)))!==JSON.stringify(qbSalesOrderSourceFingerprint(row)))){nf('Sales-order batch changed since review — review it again','error');setSalesOrderBatchApproved(false);return}
       await syncSalesOrders({}, {}, {approved:salesOrderBatchApproved,approvedSOIds:salesOrderBatchRows.map(row=>row.salesOrderId),expectedRows:salesOrderBatchRows});
       setSalesOrderBatchApproved(false);setSalesOrderBatchReview(null);
     };
