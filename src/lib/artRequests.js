@@ -35,3 +35,14 @@ export function closeOpenArtRequests(reqs) {
   });
   return changed ? out : reqs;
 }
+
+// True when the ball is still with the ARTIST: the job carries an open request AND its own
+// art_status agrees the artist has not delivered yet. Both halves matter — an open request next to
+// a waiting_approval/art_complete job is the SO-1625 contradictory shape above, not live work, and
+// an art_requested job whose only request was recalled is nobody's ask.
+export function jobAwaitingArtist(job) {
+  if (!job) return false;
+  if (job.art_status !== 'art_requested' && job.art_status !== 'art_in_progress') return false;
+  return (Array.isArray(job.art_requests) ? job.art_requests : [])
+    .some((r) => r && OPEN_ART_REQ_STATUSES.includes(r.status));
+}
