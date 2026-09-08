@@ -54,7 +54,7 @@ import { canManageQuickBooksRole, storedUserCanManageQuickBooks } from './qbAcce
 import { applyTaxRemittanceLedger, reversedTaxRemittanceIds } from './lib/taxRemittanceLedger';
 import { qboProductionReconnectUrl } from './qbOAuthCallback';
 import { mergeDurableQbCanaries, qbCanaryLedgerRecord } from './qbCanaryLedger';
-import { mergeDurableQBLinks, persistVerifiedQBLink } from './qbLinkLedger';
+import { loadDurableQBLinkReceipts, mergeDurableQBLinks, persistVerifiedQBLink } from './qbLinkLedger';
 import { canViewFinancials } from './lib/financialAccess';
 import { consolidateOmgProductRows } from './lib/storeSkuGrouping';
 import { acquireOmgCreationGuard, omgCollectedUnitPrice, omgInvoiceIdempotencyKey, webstoreInvoiceIdempotencyKey } from './lib/omgCreationGuard';
@@ -2330,6 +2330,7 @@ export default function App(){
   const[dashCustRepFilter,setDashCustRepFilter]=useState('all');// Top Customers report: 'all' or a rep id
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
   const _qbDurableRowsRef=useRef({});
+  const _qbDurableHydrationRef=useRef('');
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,
     realm_id:'',sandbox:false,// access/refresh tokens live server-side (qb_oauth_tokens), never in client state
     mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},
@@ -4557,6 +4558,24 @@ export default function App(){
     setQBConfig(prev=>String(prev.realm_id||'')===realmId?mergeDurableQBLinks(prev,rows):prev);
     return rows;
   };
+  React.useEffect(()=>{
+    const realmId=String(qbConfig.realm_id||'');
+    if(dbLoading||!_dbLoadSuccess.current||!storedUserCanManageQuickBooks()||!realmId)return;
+    if(_qbDurableHydrationRef.current===realmId||_qbDurableHydrationRef.current===realmId+':loading')return;
+    let cancelled=false;_qbDurableHydrationRef.current=realmId+':loading';
+    loadDurableQBLinkReceipts(supabase,realmId).then(rows=>{
+      if(cancelled)return;
+      Object.assign(_qbDurableRowsRef.current,rows);
+      setQBConfig(prev=>String(prev.realm_id||'')===realmId?mergeDurableQBLinks(prev,rows):prev);
+      _qbDurableHydrationRef.current=realmId;
+    }).catch(error=>{
+      if(cancelled)return;
+      _qbDurableHydrationRef.current='';
+      console.error('[QB] Durable link hydration failed:',error);
+      nf('Could not load durable QuickBooks links — sync remains locked','error');
+    });
+    return()=>{cancelled=true};
+  },[dbLoading,qbConfig.realm_id]);
   React.useEffect(()=>{if(storedUserCanManageQuickBooks())_saveAppState('qb_config',qbConfig)},[qbConfig]);
   // QB background auto-sync — self-contained: builds the sync engine from CURRENT
   // state at fire time. The old wiring called a ref only a mounted QBPage assigned,
