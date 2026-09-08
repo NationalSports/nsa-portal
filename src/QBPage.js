@@ -16,6 +16,7 @@ import { dP } from './App';
 import { authFetch } from './utils';
 import { applyQBPurchaseOrderLiveReadiness, applyQBSalesOrderLiveReadiness, buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, isVoidInvoice, portalCustomerDisplayName, qbCustomerBatchReady, qbPurchaseOrderSourceFingerprint, qbResponseErrorDetail, qbSalesOrderSourceFingerprint } from './qbSyncEngine';
 import { QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_POSTING_MATRIX, QB_ACCOUNT_SPECS, QB_STATE_TAX_ACCOUNT_KEYS, buildVendorBillLines, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, manualBillAccountKey, normalizeVendorName, qbWriteAccountRef, queryQBReadOnly, readQBWithRetry, resolveQBAccountRefs } from './qbAccountMappings';
+import { mergeDurableQBLinks, persistVerifiedQBCustomerLinkRecovery } from './qbLinkLedger';
 
 const stripeBackfillErrorSummary=(errors=[])=>{
   const counts={};
@@ -84,6 +85,7 @@ export default function QBPage(){
   const [qbItemAudit,setQbItemAudit]=useState(null);
   const [customerManifest,setCustomerManifest]=useState(null);
   const [customerReviewBusy,setCustomerReviewBusy]=useState(false);
+  const [customerRecoveryApproved,setCustomerRecoveryApproved]=useState(false);
   const [productReview,setProductReview]=useState(null);
   const [productApproved,setProductApproved]=useState(false);
   const [productCreateApproved,setProductCreateApproved]=useState(false);
@@ -554,6 +556,31 @@ export default function QBPage(){
         setQBConfig(prev=>({...prev,lastCustomerReview:review}));
         nf('Customer review complete — no QBO records changed');
       }catch(e){nf('Customer review failed — '+e.message,'error')}finally{setCustomerReviewBusy(false)}
+    };
+    const customerRecoveryRows=(customerManifest?.rows||[]).filter(row=>row.action==='link'&&!qbConfig.custQBMap?.[row.sourceId]);
+    const recoverExactCustomerLinks=async()=>{
+      if(!customerRecoveryApproved||!livePreflightReady||!customerRecoveryRows.length)return;
+      setCustomerReviewBusy(true);setQbSyncing(true);
+      try{
+        const reviewedAt=new Date().toISOString();
+        const [terms,customers]=await Promise.all([
+          loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000),
+          loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SalesTermRef',1000),
+        ]);
+        const current=buildQBCustomerManifest(cust,customers,terms,qbConfig.custQBMap||{},{blankTermsDefault:customerBlankTermsDefault})
+          .filter(row=>row.action==='link'&&!qbConfig.custQBMap?.[row.sourceId]);
+        const reviewed=new Map(customerRecoveryRows.map(row=>[String(row.sourceId),String(row.qboId)]));
+        if(current.length!==customerRecoveryRows.length||current.some(row=>reviewed.get(String(row.sourceId))!==String(row.qboId))){
+          throw new Error('Exact customer matches changed since review; review customers again.');
+        }
+        const recovered=await persistVerifiedQBCustomerLinkRecovery(supabase,{realmId:qbConfig.realm_id,reviewedAt,
+          records:current.map(row=>({sourceId:row.sourceId,qboId:row.qboId,displayName:row.displayName,termId:row.desiredTerm?.value||row.currentTerm?.value||''}))});
+        const report={status:'success',at:reviewedAt,count:current.length,details:['PORTAL LINK RECOVERY ONLY — no QBO customer was created or changed']};
+        setQBConfig(prev=>mergeDurableQBLinks({...prev,lastCustomerLinkRecovery:report,lastSync:new Date().toLocaleString()},recovered));
+        setCustomerManifest(null);setCustomerRecoveryApproved(false);
+        nf('Recovered and verified '+current.length+' existing QBO customer links — no QBO records changed');
+      }catch(e){nf('Customer-link recovery stopped — '+e.message,'error')}
+      finally{setCustomerReviewBusy(false);setQbSyncing(false)}
     };
     // Read-only. The review counters say how many customers matched; they cannot say
     // whether the QBO records we failed to match are the same accounts under other
@@ -1138,6 +1165,12 @@ export default function QBPage(){
             {!customerManifest&&<div style={{fontSize:11,color:'#475569',marginTop:6}}>The batch size, approval box and <strong>Run Reviewed Customer Batch</strong> button appear here once this review finishes. There is no separate sync button.</div>}
             {customerManifest&&<>
               <p>Reviewed {customerManifest.rows.length} customers in company realm {customerManifest.realm}. Existing matches: {customerManifest.counts.link||0}; proposed creations: {customerManifest.counts.create||0}; term changes: {customerManifest.counts.update_terms||0}; blocked: {customerManifest.counts.blocked||0}; excluded: {customerManifest.counts.excluded||0}. Terms from QBO: {customerManifest.termSources?.qbo||0}; reviewer default applied: {customerManifest.termSources?.default||0}.</p>
+              {customerRecoveryRows.length>0&&<div style={{padding:'10px 12px',margin:'10px 0',background:'#ecfdf5',border:'1px solid #a7f3d0',borderRadius:6,fontSize:11,color:'#166534'}}>
+                <div style={{fontWeight:700}}>Recover {customerRecoveryRows.length} exact existing customer links</div>
+                <div>This re-reads QBO, requires the exact reviewed one-to-one matches, and saves durable Portal link receipts. It never creates or changes a QBO customer.</div>
+                <label><input type="checkbox" checked={customerRecoveryApproved} disabled={qbSyncing||customerReviewBusy} onChange={e=>setCustomerRecoveryApproved(e.target.checked)}/> I approve recovering only these exact existing links.</label>
+                <button className="btn btn-primary btn-sm" style={{marginLeft:8}} disabled={qbSyncing||customerReviewBusy||!customerRecoveryApproved} onClick={recoverExactCustomerLinks}>Recover Exact Existing Links</button>
+              </div>}
               <button className="btn btn-sm" onClick={downloadCustomerManifest}>Download Full Customer Review</button>
               <h3>Proposed customer batch ({customerBatchRows.length} of {(customerManifest?.rows||[]).filter(row=>['link','create','update_terms'].includes(row.action)&&(!qbConfig.custQBMap?.[row.sourceId]||row.action==='update_terms')).length} eligible)</h3>
               <label>Batch size <select aria-label="Customer batch size" value={customerBatchLimit} disabled={qbSyncing} onChange={e=>{setCustomerBatchLimit(Number(e.target.value));setCustomerBatchApproved(false)}}>{QB_BATCH_SIZES.map(size=><option key={size} value={size}>{size}</option>)}</select></label>
