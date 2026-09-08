@@ -54,7 +54,7 @@ import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit, unfulfilledSizes, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantRemoveLineApply, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
-import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors, splitSliceOwnedKeys, pruneStaleSliceRows, reparentOrphanSplitJobs, remapFrozenJobItemIndexes } from './lib/syncJobsMatch';
+import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors, splitSliceOwnedKeys, splitSliceOwnedSizes, clampSplitOverrideSizes, SLICE_PRUNE_STATUSES, pruneStaleSliceRows, reparentOrphanSplitJobs, remapFrozenJobItemIndexes } from './lib/syncJobsMatch';
 import { itemVendorInvSource, vendorInvCacheKey } from './vendorInventory';
 import { stampSplitRuns } from './lib/splitJobPricing';
 import { allocateCustomSplit, openSizes, freeSplitSuffix } from './lib/splitJobItems';
@@ -4072,7 +4072,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // TRANSITIVE across the family: a slice of a slice still owns its garments — scanning only
       // direct children re-added a grandchild-owned garment to the family root on every sync
       // (SO-1634: KC4512 lived on JOB-1634-01-B-B and got duplicated back onto JOB-1634-01).
-      const sliceOwned=existing.id?splitSliceOwnedKeys(_sourceJobs,existing.id,sj=>sj._merged||_isRel(sj)):new Set();
+      const _exclSlice=sj=>sj._merged||_isRel(sj);
+      const sliceOwned=existing.id?splitSliceOwnedKeys(_sourceJobs,existing.id,_exclSlice):new Set();
+      // Those same slices' PER-SIZE shares, so a preserved override can be reconciled against the
+      // live line below instead of being copied forward forever. Only while the job is still
+      // quiet (nobody has taken it to the floor) — an in-process/finished run has committed to
+      // the count it was printed for, the same bar pruneStaleSliceRows and the frozen-deco
+      // consolidation hold slices and merged jobs to.
+      const sliceOwnedSizes=existing.id?splitSliceOwnedSizes(_sourceJobs,existing.id,_exclSlice):new Map();
+      const _canReshape=SLICE_PRUNE_STATUSES.has(existing.prod_status||'');
+      // Live per-size for a garment row, resolved the same way as everywhere else in this pass
+      // (a qty-only line buckets under 'QTY'). null when the line is gone — a deleted line keeps
+      // its snapshot rather than being clamped away.
+      const _liveRowSizes=gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return null;
+        const out={};Object.entries(safeSizes(it)).forEach(([sz,v])=>{if(safeNum(v)>0)out[sz]=safeNum(v)});
+        if(Object.keys(out).length===0&&safeNum(it.est_qty)>0)out.QTY=safeNum(it.est_qty);
+        return out};
       let hasOverride=false;
       const rebuilt=[];
       nj.items.forEach(gi=>{
@@ -4085,8 +4100,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           rebuilt.push(gi);return;
         }
         hasOverride=true;
-        const sizes={...ex.sizes};
         const fulSizes=ex.fulSizes?{...ex.fulSizes}:{};
+        // The override is a SNAPSHOT of the parent's remainder taken at split time. Units removed
+        // from the line afterwards never reached it, so the job kept printing and billing a size
+        // the order no longer carries (SO-1480's stale 3XL) — clamp it back down to what the live
+        // line still holds beyond the slices' shares. See clampSplitOverrideSizes.
+        const _ownKey=gi.item_idx+'-'+gi.sku;
+        const _ownSz=sliceOwnedSizes.has(_ownKey)?sliceOwnedSizes.get(_ownKey):{};
+        const sizes=_canReshape?clampSplitOverrideSizes(ex.sizes,fulSizes,_liveRowSizes(gi),_ownSz):{...ex.sizes};
         const u=Object.values(sizes).reduce((a,v)=>a+safeNum(v),0);
         const f=Object.values(fulSizes).reduce((a,v)=>a+safeNum(v),0);
         rebuilt.push({...gi,sizes,fulSizes,units:u,fulfilled:f});

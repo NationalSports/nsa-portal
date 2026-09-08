@@ -741,9 +741,8 @@ export function mergeJobsArtState(sources) {
  * The walk is cycle-safe: `fam` only grows, so a corrupted split_from loop simply
  * stops adding members.
  */
-export function splitSliceOwnedKeys(jobs, parentId, excludeSlice) {
-  const owned = new Set();
-  if (!parentId) return owned;
+function descendantSlices(jobs, parentId, excludeSlice) {
+  if (!parentId) return [];
   const list = (jobs || []).filter((j) => j && j.id);
   const fam = new Set([parentId]);
   for (let grew = true; grew;) {
@@ -752,12 +751,72 @@ export function splitSliceOwnedKeys(jobs, parentId, excludeSlice) {
       if (j.split_from && fam.has(j.split_from) && !fam.has(j.id)) { fam.add(j.id); grew = true; }
     });
   }
-  list.forEach((j) => {
-    if (j.id === parentId || !fam.has(j.id)) return;
-    if (excludeSlice && excludeSlice(j)) return;
+  return list.filter((j) => j.id !== parentId && fam.has(j.id) && !(excludeSlice && excludeSlice(j)));
+}
+
+export function splitSliceOwnedKeys(jobs, parentId, excludeSlice) {
+  const owned = new Set();
+  descendantSlices(jobs, parentId, excludeSlice).forEach((j) => {
     (j.items || []).forEach((gi) => owned.add(gi.item_idx + '-' + gi.sku));
   });
   return owned;
+}
+
+/**
+ * Per-size quantities this job's split slices own, keyed by `item_idx-sku`.
+ *
+ * Same family walk and same exclusions as `splitSliceOwnedKeys` — this reports HOW MANY of
+ * each size the slices took, so a parent's frozen share can be reconciled against the live
+ * line instead of only asking whether a slice owns the row at all.
+ *
+ * A slice carrying no per-size map owns its WHOLE garment row; there is no per-size share to
+ * subtract, so that row reports `null` and callers must leave the parent's override alone.
+ */
+export function splitSliceOwnedSizes(jobs, parentId, excludeSlice) {
+  const owned = new Map();
+  descendantSlices(jobs, parentId, excludeSlice).forEach((j) => {
+    (j.items || []).forEach((gi) => {
+      if (!gi) return;
+      const k = gi.item_idx + '-' + gi.sku;
+      if (owned.get(k) === null) return;
+      if (!gi.sizes || Object.keys(gi.sizes).length === 0) { owned.set(k, null); return; }
+      const acc = owned.get(k) || {};
+      Object.entries(gi.sizes).forEach(([sz, v]) => {
+        const n = typeof v === 'number' && !isNaN(v) ? v : 0;
+        if (n > 0) acc[sz] = (acc[sz] || 0) + n;
+      });
+      owned.set(k, acc);
+    });
+  });
+  return owned;
+}
+
+/**
+ * Reconcile a split parent's frozen per-size share against the live SO line.
+ *
+ * The override is the parent's remainder after its slices took theirs, snapshotted when the
+ * split was made — and it was previously copied forward verbatim on every sync. Units removed
+ * from the line afterwards therefore never reached the job, which kept sending a size the order
+ * no longer carries to the floor and to the deco billing tier (SO-1480: JOB-1480-01 still read
+ * 3XL 5 / 50 units on KD2999 after the rep dropped the 5th 3XL from both the line and its PO,
+ * so the Jobs tab showed 54/55 against a 54-piece order).
+ *
+ * Clamp DOWN only. Growth stays with the auto-builder and the closed-job auto-split, which
+ * already decide whether added units join this run or earn their own. A size that has already
+ * been pulled or received holds at its received count so garments physically in hand never
+ * vanish from the sheet. `sliceOwned === null` — a slice owning the row with no per-size map —
+ * leaves the override untouched, since the parent's true share can't be derived.
+ */
+export function clampSplitOverrideSizes(exSizes, exFulSizes, liveSizes, sliceOwned) {
+  const base = { ...(exSizes || {}) };
+  if (!liveSizes || sliceOwned === null) return base;
+  const num = (v) => (typeof v === 'number' && !isNaN(v) ? v : 0);
+  const out = {};
+  Object.entries(base).forEach(([sz, v]) => {
+    const avail = Math.max(0, num(liveSizes[sz]) - num((sliceOwned || {})[sz]));
+    out[sz] = Math.max(Math.min(num(v), avail), num((exFulSizes || {})[sz]));
+  });
+  return out;
 }
 
 /** Ids of every job in `jobId`'s split family — its root and all descendants (cycle-safe). */
@@ -780,7 +839,7 @@ export function splitFamilyMembers(jobs, jobId) {
   return fam;
 }
 
-/** Slices quiet enough to prune — nobody has taken them to the floor yet. */
+/** Jobs quiet enough to re-shape (prune slice rows, re-clamp a split share) — nobody has taken them to the floor yet. */
 export const SLICE_PRUNE_STATUSES = new Set(['', 'draft', 'hold', 'ready']);
 
 /**
