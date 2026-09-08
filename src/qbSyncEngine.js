@@ -1873,7 +1873,7 @@ export function createQBSyncEngine(ctx){
       const canary=!!canaryPOId;
       const approvedPOIds=[...new Set((options?.approvedPOIds||[]).map(id=>String(id).trim()).filter(Boolean))];
       if(!canary&&(options?.approved!==true||!approvedPOIds.length||approvedPOIds.length>QB_SYNC_BATCH_SIZE)){
-        nf('Purchase-order batch blocked — approve a reviewed list of 1 to 20 exact PO IDs','error');
+        nf('Purchase-order batch blocked — approve a reviewed list of 1 to '+QB_SYNC_BATCH_SIZE+' exact PO IDs','error');
         return{status:'blocked',synced:0};
       }
       if(!canary&&(!canaryPreflightReady()||productionSyncLocked()))return{status:'blocked',synced:0};

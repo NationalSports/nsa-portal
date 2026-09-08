@@ -973,14 +973,14 @@ export default function QBPage(){
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header"><h2>Controlled Purchase-Order Batch</h2></div>
           <div className="card-body">
-            <p style={{fontSize:11,color:'#475569'}}>Reviews portal readiness first, then processes at most 20 exact PO IDs. Every created or matched PO must pass API header and line read-back before its durable link is saved. Missing vendors block without being created as side effects. Lines whose SKU has no linked QBO item post to the Purchases account as one line instead of blocking the PO.</p>
+            <p style={{fontSize:11,color:'#475569'}}>Reviews portal readiness first, then processes at most 100 exact PO IDs. Every created or matched PO must pass API header and line read-back before its durable link is saved. Missing vendors block without being created as side effects. Lines whose SKU has no linked QBO item post to the Purchases account as one line instead of blocking the PO.</p>
             <button className="btn btn-sm" disabled={qbSyncing||!livePreflightReady} onClick={reviewPurchaseOrderBatch}>Review POs — No QBO Changes</button>
             {poBatchReview&&<>
               <p>Readiness: {JSON.stringify(poBatchReview.counts)}. Proposed batch: {poBatchRows.length} ready POs.</p>
               <table><thead><tr><th>Portal PO</th><th>Vendor</th><th>Date</th><th>Lines</th><th>To Purchases acct</th><th>Total</th></tr></thead><tbody>{poBatchRows.map(row=><tr key={row.poId}><td>{row.poId}</td><td>{row.vendor}</td><td>{row.date}</td><td>{row.lineCount}</td><td title={(row.accountSkus||[]).join(', ')}>{(row.accountSkus||[]).length?(row.accountSkus||[]).length+' SKU'+((row.accountSkus||[]).length===1?'':'s'):'—'}</td><td>${row.total.toFixed(2)}</td></tr>)}</tbody></table>
-              <label style={{marginRight:12}}>Batch size <select aria-label="Purchase order batch size" value={poBatchLimit} disabled={qbSyncing} onChange={e=>{setPoBatchLimit(Number(e.target.value));setPoBatchApproved(false)}}>{QB_BATCH_SIZES.map(size=><option key={size} value={size}>{size}</option>)}</select></label>
+              <label style={{marginRight:12}}>Batch size <select aria-label="Purchase order batch size" value={poBatchLimit} disabled={qbSyncing} onChange={e=>{setPoBatchLimit(Number(e.target.value));setPoBatchApproved(false)}}>{QB_BATCH_SIZES.filter(size=>size<=100).map(size=><option key={size} value={size}>{size}</option>)}</select></label>
               <label><input type="checkbox" checked={poBatchApproved} disabled={qbSyncing} onChange={e=>setPoBatchApproved(e.target.checked)}/> I approve only the listed POs in this batch.</label>
-              <button className="btn btn-primary btn-sm" disabled={qbSyncing||!poBatchApproved||!poBatchRows.length||!qbConfig.qbPOBillMap?.['PO 58971 SHHGS']} onClick={runPurchaseOrderBatch}>Run Reviewed PO Batch</button>
+              <button className="btn btn-primary btn-sm" disabled={qbSyncing||!poBatchApproved||!poBatchRows.length} onClick={runPurchaseOrderBatch}>Run Reviewed PO Batch</button>
               <h3>First readiness exceptions</h3>
               <table><thead><tr><th>Portal PO</th><th>Vendor</th><th>Reason</th></tr></thead><tbody>{poBatchReview.rows.filter(row=>row.action==='blocked').slice(0,20).map(row=><tr key={row.poId}><td>{row.poId}</td><td>{row.vendor}</td><td>{row.reason}</td></tr>)}</tbody></table>
             </>}
