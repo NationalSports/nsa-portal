@@ -166,6 +166,25 @@ describe('mergeServerBills (Bill History union)', () => {
     expect(merged[0].uploadedTs).toBe(Date.parse('2026-07-01T10:00:00Z'));
   });
 
+  it('hydrates a server-only QuickBooks receipt into Bill History', () => {
+    const merged = mergeServerBills([], [srv({
+      qb_status: 'success', qb_bill_id: '1631',
+      qb_message: 'QB Bill #1631 (existing verified)', qb_synced_at: '2026-09-08T02:00:00Z',
+    })]);
+    expect(merged[0]).toMatchObject({
+      qbStatus: 'success', qbBillId: '1631',
+      qbMsg: 'QB Bill #1631 (existing verified)', qbSyncedAt: '2026-09-08T02:00:00Z',
+    });
+  });
+
+  it('lets a server receipt upgrade a stale local row from another browser origin', () => {
+    const local = [{ id: 'preview-copy', qbStatus: null, parsed: { doc_number: 'INV-9' }, uploadedTs: 5 }];
+    const merged = mergeServerBills(local, [srv({ qb_status: 'success', qb_bill_id: '1631' })]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ id: 'preview-copy', qbStatus: 'success', qbBillId: '1631' });
+    expect(merged[0].qbMsg).toContain('server verified');
+  });
+
   it('prefers raw_meta as the parsed payload when present', () => {
     const merged = mergeServerBills([], [srv({ raw_meta: { doc_number: 'INV-9', items: [{ sku: 'A', qty: 2 }], freight: 3 } })]);
     expect(merged[0].parsed.items).toHaveLength(1);
