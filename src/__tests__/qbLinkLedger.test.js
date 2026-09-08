@@ -1,4 +1,4 @@
-import {mergeQBSyncLogs, mergeDurableQBLinks, persistVerifiedQBLink, qbLinkKey, QB_LINK_MAPS} from '../qbLinkLedger';
+import {mergeQBSyncLogs, mergeDurableQBLinks, persistVerifiedQBLink, persistVerifiedQBCustomerLinkRecovery, qbLinkKey, QB_LINK_MAPS} from '../qbLinkLedger';
 
 function database() {
   const rows = new Map();
@@ -83,6 +83,45 @@ test('variant links share an item, and cleanup tombstones survive stale configur
 
 test('source key encoding does not collapse punctuation into a collision',()=>{
   expect(qbLinkKey('realm','qbPOMap','PO/A')).not.toBe(qbLinkKey('realm','qbPOMap','PO_A'));
+});
+
+function recoveryDatabase(seed=[]) {
+  const rows=new Map(seed.map(row=>[row.id,{...row}]));
+  const client={from:jest.fn(()=>{
+    let ids=[];
+    const query={
+      select:()=>query,
+      in:(_key,values)=>{ids=values;return Promise.resolve({data:ids.map(id=>rows.get(id)).filter(Boolean),error:null})},
+      upsert:async input=>{input.forEach(row=>rows.set(row.id,{...row}));return{error:null}},
+    };
+    return query;
+  })};
+  return{client,rows};
+}
+
+test('fresh exact customer review recovers durable links in bulk without a QBO write path',async()=>{
+  const{client,rows}=recoveryDatabase();
+  const reviewedAt=new Date().toISOString();
+  const saved=await persistVerifiedQBCustomerLinkRecovery(client,{realmId:'r1',reviewedAt,records:[
+    {sourceId:'C1',qboId:'101',displayName:'Customer One',termId:'3'},
+    {sourceId:'C2',qboId:'102',displayName:'Customer Two',termId:'3'},
+  ]});
+  expect(rows).toHaveProperty('size',2);
+  expect(mergeDurableQBLinks({realm_id:'r1'},saved).custQBMap).toEqual({C1:'101',C2:'102'});
+  expect([...rows.values()].every(row=>JSON.parse(row.value).evidence.duplicate_preflight==='unique_exact_active_customer_match')).toBe(true);
+});
+
+test('customer recovery rejects stale, non-numeric, duplicate, and conflicting matches before writing',async()=>{
+  const reviewedAt=new Date().toISOString();
+  const duplicate=[{sourceId:'C1',qboId:'101',displayName:'One'},{sourceId:'C2',qboId:'101',displayName:'Two'}];
+  await expect(persistVerifiedQBCustomerLinkRecovery(recoveryDatabase().client,{realmId:'r1',reviewedAt,records:duplicate})).rejects.toThrow('one-to-one');
+  await expect(persistVerifiedQBCustomerLinkRecovery(recoveryDatabase().client,{realmId:'r1',reviewedAt,records:[{sourceId:'C1',qboId:'bad',displayName:'One'}]})).rejects.toThrow('invalid');
+  await expect(persistVerifiedQBCustomerLinkRecovery(recoveryDatabase().client,{realmId:'r1',reviewedAt:'2020-01-01T00:00:00Z',records:[{sourceId:'C1',qboId:'101',displayName:'One'}]})).rejects.toThrow('fresh');
+  const id=qbLinkKey('r1','custQBMap','C1');
+  const conflict={id,value:JSON.stringify({realm_id:'r1',map_key:'custQBMap',source_id:'C1',qbo_id:'999',active:true,verified_at:reviewedAt})};
+  const db=recoveryDatabase([conflict]);
+  await expect(persistVerifiedQBCustomerLinkRecovery(db.client,{realmId:'r1',reviewedAt,records:[{sourceId:'C1',qboId:'101',displayName:'One'}]})).rejects.toThrow('Conflicting');
+  expect(db.rows.get(id).value).toBe(conflict.value);
 });
 
 

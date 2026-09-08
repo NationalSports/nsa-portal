@@ -122,3 +122,110 @@ export async function persistVerifiedQBLink(client, {realmId, mapKey, sourceIds,
   }
   return output;
 }
+
+// Recover a legacy customer map after the shared qb_config blob was replaced.
+// This is deliberately narrower than persistVerifiedQBLink: callers must have
+// just read every active QBO customer and proved a one-to-one exact match. The
+// recovery writes Portal link receipts only; it never calls the QBO write API.
+export async function persistVerifiedQBCustomerLinkRecovery(client, {realmId, reviewedAt, records}) {
+  const realm = clean(realmId);
+  const age = Date.now() - Date.parse(reviewedAt || '');
+  if (!client) throw new Error('Durable QuickBooks link storage is unavailable.');
+  if (!realm || !Number.isFinite(age) || age < 0 || age > 15 * 60 * 1000) {
+    throw new Error('Customer-link recovery requires a fresh QBO review.');
+  }
+  if (!Array.isArray(records) || !records.length || records.length > 5000) {
+    throw new Error('Customer-link recovery requires 1–5000 reviewed matches.');
+  }
+  const normalized = records.map(record => ({
+    sourceId: clean(record?.sourceId),
+    qboId: clean(record?.qboId),
+    displayName: clean(record?.displayName),
+    termId: clean(record?.termId),
+  }));
+  if (normalized.some(record => !record.sourceId || !/^\d+$/.test(record.qboId) || !record.displayName)) {
+    throw new Error('Customer-link recovery contains an invalid reviewed match.');
+  }
+  if (new Set(normalized.map(record => record.sourceId)).size !== normalized.length
+    || new Set(normalized.map(record => record.qboId)).size !== normalized.length) {
+    throw new Error('Customer-link recovery is not one-to-one.');
+  }
+
+  const verifiedAt = new Date().toISOString();
+  const rows = normalized.map(record => {
+    const log = {
+      id: 'qb-link-recovery-cust-' + encodeURIComponent(record.sourceId) + '-' + verifiedAt,
+      verified_at: verifiedAt,
+      ts: verifiedAt,
+      type: 'customer_link_recovery',
+      status: 'success',
+      details: ['LINK RECOVERY ONLY — no QBO customer was changed', record.displayName + ' → QB #' + record.qboId],
+    };
+    return {
+      id: qbLinkKey(realm, 'custQBMap', record.sourceId),
+      value: JSON.stringify({
+        realm_id: realm,
+        map_key: 'custQBMap',
+        source_id: record.sourceId,
+        qbo_id: record.qboId,
+        active: true,
+        verified_at: verifiedAt,
+        evidence: {
+          result: 'linked',
+          api_readback: true,
+          duplicate_preflight: 'unique_exact_active_customer_match',
+          reviewed_at: reviewedAt,
+          display_name: record.displayName,
+          term_id: record.termId || null,
+        },
+        log,
+      }),
+      updated_at: verifiedAt,
+    };
+  });
+  const chunks = [];
+  for (let index = 0; index < rows.length; index += 200) chunks.push(rows.slice(index, index + 200));
+
+  // Inspect every existing receipt before writing any chunk, so one conflict
+  // cannot leave a half-recovered map.
+  for (const chunk of chunks) {
+    const before = await client.from('app_state').select('id,value').in('id', chunk.map(row => row.id));
+    if (before.error) throw new Error('Cannot read durable QBO links: ' + before.error.message);
+    const byId = new Map((before.data || []).map(row => [row.id, row]));
+    for (const row of chunk) {
+      const existingRow = byId.get(row.id);
+      if (!existingRow) continue;
+      const existing = parse(existingRow.value);
+      const proposed = parse(row.value);
+      if (existing.active === false || clean(existing.qbo_id) !== clean(proposed.qbo_id)) {
+        throw new Error('Conflicting durable QBO customer link; review ' + proposed.source_id + ' before recovery.');
+      }
+      // Preserve the earlier verified receipt when it already proves the same
+      // active link; there is no reason to rewrite its evidence or timestamp.
+      row.value = existingRow.value;
+      row.updated_at = existingRow.updated_at || row.updated_at;
+    }
+  }
+
+  for (const chunk of chunks) {
+    const saved = await client.from('app_state').upsert(chunk, {onConflict:'id'});
+    if (saved.error) throw new Error('Durable QBO link recovery failed: ' + saved.error.message);
+  }
+
+  const output = {};
+  for (const chunk of chunks) {
+    const after = await client.from('app_state').select('id,value').in('id', chunk.map(row => row.id));
+    if (after.error) throw new Error('Cannot verify durable QBO link recovery: ' + after.error.message);
+    const byId = new Map((after.data || []).map(row => [row.id, row]));
+    for (const row of chunk) {
+      const actual = byId.get(row.id);
+      if (!actual || actual.value !== row.value) throw new Error('Durable QBO link recovery failed database read-back.');
+      const verified = parse(actual.value);
+      if (verified.active !== true || verified.realm_id !== realm || verified.map_key !== 'custQBMap') {
+        throw new Error('Durable QBO customer link changed during recovery.');
+      }
+      output[row.id] = verified;
+    }
+  }
+  return output;
+}
