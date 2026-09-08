@@ -1,3 +1,4 @@
+import StripePaymentVerification from './StripePaymentVerification';
 import {supabase} from './lib/dbEngine';
 import {loadQBVendorReview,applyQBVendorReview} from './qbVendorSync';
 import {buildQBProductManifest,loadQBProductItems,qbProductBatchReadiness} from './qbProductMigration';
@@ -1194,6 +1195,7 @@ export default function QBPage(){
 
       {/* ── STRIPE PAYOUT RECONCILIATION TAB ── */}
       {qbTab==='stripe'&&<>
+        <StripePaymentVerification />
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
             <h2>Stripe Payout Reconciliation</h2>
