@@ -45,7 +45,7 @@ import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/r
 import { consolidateArtFamilies, artFamilyIds, artFamilyIdsIn } from './lib/artSplitFamily';
 import { approveArtOnSO, sendArtBackOnSO, artApproveTarget } from './lib/artReview';
 import { approvalArtContext } from './lib/artApproval';
-import { closeOpenArtRequests } from './lib/artRequests';
+import { closeOpenArtRequests, jobAwaitingArtist } from './lib/artRequests';
 import { completedJobInvoiceExplanation, getOrderInvoiceCoverage, hasResponsePoForPull, isOrderFullyInvoiced, isFreshNotificationDate, picksForCurrentSku, pulledItemsHaveMovedInLine, shouldShowCompletedJobNotice, shouldShowMockupReviewNotice } from './lib/dashboardNotificationRules';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { AppDataProvider } from './AppContext';
@@ -23300,7 +23300,15 @@ export default function App(){
     // job back into an artist's active queue. Keep its genuinely completed jobs available in the
     // Completed reference list below, but suppress stale/inconsistent active states (SO-1576:
     // a fulfilled names-only job remained art_in_progress and resurfaced a month later).
-    const _orderOpenForArt=j=>j.so?.status!=='complete';
+    // ...but a request the artist has NOT delivered yet is live work, not stale drift: a rep can
+    // request art on an order that is already marked complete (an add-on, a reorder, a late
+    // decoration), and suppressing it hid the job from every column on this page while the SO page
+    // kept showing it as "Art Requested" — invisible to the artist it was assigned to (SO-2256
+    // JOB-01/-02, requested on release and assigned to Mo). jobAwaitingArtist needs BOTH an open
+    // request and an art_status still owned by the artist, so the shapes this guard exists for stay
+    // suppressed: SO-1576's fulfilled job has no open request, and a waiting_approval job with a
+    // stray open one is the SO-1625 contradiction, not an ask.
+    const _orderOpenForArt=j=>j.so?.status!=='complete'||(jobAwaitingArtist(j)&&!['completed','shipped'].includes(j.prod_status));
     const artistJobs=_famed(filtered.filter(j=>_orderOpenForArt(j)&&j.art_status!=='art_complete'&&!j.art_hidden&&!_repOwnsProdStep(j)
       &&(j.art_status!=='needs_art'||_assignedButNeverRequested(j))));
     // In Production: art complete but decoration not finished yet
