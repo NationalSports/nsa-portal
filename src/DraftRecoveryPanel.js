@@ -1,25 +1,30 @@
 import React, {useCallback,useEffect,useState,useRef} from 'react';
-import {draftJournal} from './lib/draftJournal';
+import {draftJournal,DRAFT_CHANGE_KEY} from './lib/draftJournal';
 
 export default function DraftRecoveryPanel({owner,onReview,journal=draftJournal}) {
   const [drafts,setDrafts]=useState([]),[error,setError]=useState(''),[busy,setBusy]=useState(false);
   const ownerRef=useRef(owner);ownerRef.current=owner;
+  const refreshSequence=useRef(0);
   const refresh=useCallback(async()=>{
+    const sequence=++refreshSequence.current;
     if(!owner){setDrafts([]);return;}
-    try{const rows=await journal.list(String(owner));if(ownerRef.current===owner){setDrafts(rows);setError('');}}
-    catch{setError('Draft recovery is unavailable. Keep unsaved work open until its cloud save is confirmed.');}
+    try{const rows=await journal.list(String(owner));if(ownerRef.current===owner&&sequence===refreshSequence.current){setDrafts(rows);setError('');}}
+    catch{if(ownerRef.current===owner&&sequence===refreshSequence.current)setError('Draft recovery is unavailable. Keep unsaved work open until its cloud save is confirmed.');}
   },[owner,journal]);
   useEffect(()=>{
-    let active=true;
     setDrafts([]);setError('');
-    journal.list(String(owner||'')).then(rows=>{if(active)setDrafts(rows);},()=>{if(active&&owner)setError('Draft recovery is unavailable. Keep unsaved work open until its cloud save is confirmed.');});
-    return()=>{active=false;};
-  },[owner,journal]);
+    refresh();
+    return()=>{refreshSequence.current++;};
+  },[refresh]);
   useEffect(()=>{
     const changed=()=>refresh();
+    const storage=e=>{if(e.key===DRAFT_CHANGE_KEY)refresh();};
+    const visible=()=>{if(document.visibilityState==='visible')refresh();};
     window.addEventListener('nsa:drafts-changed',changed);
     window.addEventListener('focus',changed);
-    return()=>{window.removeEventListener('nsa:drafts-changed',changed);window.removeEventListener('focus',changed);};
+    window.addEventListener('storage',storage);
+    document.addEventListener('visibilitychange',visible);
+    return()=>{window.removeEventListener('nsa:drafts-changed',changed);window.removeEventListener('focus',changed);window.removeEventListener('storage',storage);document.removeEventListener('visibilitychange',visible);};
   },[refresh]);
   if(!owner||(!drafts.length&&!error))return null;
   const download=()=>{
@@ -30,7 +35,7 @@ export default function DraftRecoveryPanel({owner,onReview,journal=draftJournal}
   return <details style={{background:'#fff7ed',border:'1px solid #fed7aa',padding:'10px 16px',fontSize:12}}>
     <summary style={{cursor:'pointer',fontWeight:600}}>Draft recovery{drafts.length?' ('+drafts.length+')':''}</summary>
     {error&&<p role="alert">{error}</p>}
-    <p>These are recovery copies from this browser. Review a copy before applying it; another tab may still be saving. Copies are cleared when their save is confirmed.</p>
+    <p>These are browser backups, not a save error for the page you are viewing. A copy clears when its own save is confirmed. Older copies from another session stay until you review and save them, or discard them. Download a backup first if you are unsure.</p>
     <button onClick={refresh}>Refresh drafts</button>{' '}
     {!!drafts.length&&<button onClick={download}>Download recovery copy</button>}
     {drafts.filter(d=>d.owner===String(owner)).map(d=><div key={d.key} style={{borderTop:'1px solid #fed7aa',marginTop:8,paddingTop:8}}>
@@ -43,6 +48,16 @@ export default function DraftRecoveryPanel({owner,onReview,journal=draftJournal}
         catch{setError('Could not open this draft for review. Its recovery copy is still available.');}
         finally{setBusy(false);}
       }}>Review draft</button>
+      {' '}<button disabled={busy} onClick={async()=>{
+        if(!window.confirm('Discard this recovery copy of '+d.id+'? This removes only this browser backup, not the saved order. Download a recovery copy first if you might need these edits.'))return;
+        setBusy(true);
+        try{
+          const removed=await journal.acknowledge({key:d.key,owner:d.owner,revision:d.revision});
+          await refresh();
+          if(!removed&&ownerRef.current===owner)setError('This recovery copy changed while you were reviewing it. The newer copy has been kept.');
+        }catch{if(ownerRef.current===owner)setError('Could not discard this recovery copy. It is still available.');}
+        finally{setBusy(false);}
+      }}>Discard recovery copy</button>
     </div>)}
   </details>;
 }
