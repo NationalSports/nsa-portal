@@ -569,6 +569,23 @@ describe('QuickBooks one-record canaries', () => {
     expect(qbPurchaseOrderSourceFingerprint(reviewed[1])).toEqual(qbPurchaseOrderSourceFingerprint(rows[1]));
   });
 
+  test('live PO review blocks an exact header whose QBO lines differ from the approved line plan', () => {
+    const expectedLines=[{type:'AccountBasedExpenseLineDetail',amount:20,item:'',qty:0,unitPrice:0,accountKey:'purchases_account'}];
+    const rows=[
+      {poId:'PO-MATCH',vendor:'Acme',date:'2026-09-01',lineCount:1,skus:['SKU-1'],accountSkus:['SKU-1'],total:20,expectedLines,action:'ready',reason:''},
+      {poId:'PO-LINE-DRIFT',vendor:'Acme',date:'2026-09-01',lineCount:1,skus:['SKU-2'],accountSkus:['SKU-2'],total:20,expectedLines,action:'ready',reason:''},
+    ];
+    const accountLine=(account,amount=20)=>({DetailType:'AccountBasedExpenseLineDetail',Amount:amount,AccountBasedExpenseLineDetail:{AccountRef:{value:account}}});
+    const reviewed=applyQBPurchaseOrderLiveReadiness(rows,[{Id:'V1',DisplayName:'Acme',Active:true}],[
+      {Id:'Q1',DocNumber:'PO-MATCH',VendorRef:{value:'V1'},TxnDate:'2026-09-01',TotalAmt:20,Line:[accountLine('A1')]},
+      {Id:'Q2',DocNumber:'PO-LINE-DRIFT',VendorRef:{value:'V1'},TxnDate:'2026-09-01',TotalAmt:20,Line:[accountLine('A2')]},
+    ],[],{},{purchases_account:{value:'A1'},deco_account:{value:'A3'}});
+    expect(reviewed.map(row=>[row.poId,row.action,row.qboDisposition])).toEqual([
+      ['PO-MATCH','ready','link_existing'],['PO-LINE-DRIFT','blocked','blocked'],
+    ]);
+    expect(reviewed[1].reason).toMatch(/line items, quantities, rates, amounts, or accounts differ/);
+  });
+
   test('verifies reciprocal PO-to-existing-bill links and persists one durable receipt', async() => {
     const po={Id:'PO-QB',DocNumber:'PO-1',VendorRef:{value:'V-QB'},TotalAmt:10,TxnDate:'2026-09-01',LinkedTxn:[{TxnId:'B-1',TxnType:'Bill'}]};
     const bill={Id:'B-1',DocNumber:'BILL-1',VendorRef:{value:'V-QB'},TotalAmt:12,TxnDate:'2026-09-02',PrivateNote:'PO: PO-1 | Tracking: 123',Line:[{Id:'1',LinkedTxn:[{TxnId:'PO-QB',TxnType:'PurchaseOrder',TxnLineId:'1'}]}]};

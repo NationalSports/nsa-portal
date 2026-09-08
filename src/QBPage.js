@@ -699,11 +699,15 @@ export default function QBPage(){
     const reviewPurchaseOrderBatch=async()=>{
       setQbSyncing(true);setPoBatchApproved(false);
       try{
-        const [qboVendors,qboPurchaseOrders]=await Promise.all([
+        const [qboVendors,qboPurchaseOrders,qboAccounts]=await Promise.all([
           loadAllQBEntities(qbApi,'Vendor','Id, DisplayName, CompanyName, Active',500),
-          loadAllQBEntities(qbApi,'PurchaseOrder','Id, DocNumber, VendorRef, TotalAmt, TxnDate',500),
+          // Full lines are required here: a header-only match can still fail the
+          // execution read-back and otherwise returns at the front of every batch.
+          loadAllQBEntities(qbApi,'PurchaseOrder','*',500),
+          loadQBAccounts(qbApi),
         ]);
-        const rows=applyQBPurchaseOrderLiveReadiness(poPreviewRows,qboVendors,qboPurchaseOrders,vend,qbConfig.vendorQBMap||{});
+        const poAccountRefs=resolveQBAccountRefs(qboAccounts,qbConfig.mapping,['purchases_account','deco_account']);
+        const rows=applyQBPurchaseOrderLiveReadiness(poPreviewRows,qboVendors,qboPurchaseOrders,vend,qbConfig.vendorQBMap||{},poAccountRefs);
         const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,
           counts:rows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{})};
         setPoBatchReview(review);setQBConfig(prev=>({...prev,lastPurchaseOrderReview:review}));

@@ -334,36 +334,89 @@ export function qbPOAccountLineDescription(parts = [], soIds = []) {
   return prefix + body + suffix;
 }
 
+// Build the exact accounting line plan once so the read-only readiness review
+// and the write path cannot disagree about how a Portal PO will be represented
+// in QBO. Account lines keep their mapping key here; the caller resolves that
+// key to the live QBO account id before comparing or sending the payload.
+export function buildQBPurchaseOrderLinePlan(group = {}, products = [], prodQBMap = {}) {
+  const productBySku = new Map((products || []).map(product => [String(product?.sku || '').trim().toUpperCase(), product]));
+  const accountLine = {amount:0, parts:[], soIds:new Set()};
+  const itemGroups = new Map();
+  const lines = [];
+  const skus = new Set();
+  const accountSkus = new Set();
+  (group.entries || []).forEach(({pl = {}, so = {}, it = {}}) => {
+    const qty = Object.entries(pl).filter(([key,value]) => typeof value === 'number'
+      && !key.startsWith('_') && !['unit_cost','billed','tracking_numbers','vendor','drop_ship'].includes(key)
+      && /^[A-Z0-9]/.test(key)).reduce((sum,[,value]) => sum + value, 0);
+    const hasSavedRate = pl.unit_cost !== undefined && pl.unit_cost !== null && pl.unit_cost !== '';
+    const rate = qbCurrency(hasSavedRate ? pl.unit_cost : it.nsa_cost);
+    if (!(qty > 0) || rate < 0) return;
+    if (group.accountKey === 'deco_account') {
+      lines.push({kind:'account',accountKey:'deco_account',amount:qbCurrency(qty * rate),
+        description:String(it.sku || '')+' '+String(it.name || '')+' x'+qty+' @$'+rate.toFixed(2)+' (SO: '+so.id+')'});
+      return;
+    }
+    const sku = String(it.sku || '').trim().toUpperCase();
+    const productId = it.product_id || productBySku.get(sku)?.id;
+    const itemId = productId ? prodQBMap[productId] : '';
+    skus.add(sku || '(blank SKU)');
+    if (!sku || !itemId) {
+      accountSkus.add(sku || '(blank SKU)');
+      accountLine.amount += qty * rate;
+      accountLine.soIds.add(so.id);
+      accountLine.parts.push((sku || '(blank SKU)')+' '+String(it.name || '').trim()+' x'+qty+' @$'+rate.toFixed(2));
+      return;
+    }
+    const entry = itemGroups.get(sku) || {sku,itemId,qty:0,amount:0,names:new Set(),soIds:new Set()};
+    entry.qty += qty;
+    entry.amount += qty * rate;
+    entry.names.add(it.name);
+    entry.soIds.add(so.id);
+    itemGroups.set(sku, entry);
+  });
+  itemGroups.forEach(entry => lines.push({kind:'item',itemId:String(entry.itemId),qty:entry.qty,
+    amount:qbCurrency(entry.amount),unitPrice:Math.round((entry.amount / entry.qty) * 1e6) / 1e6,
+    description:entry.sku+' '+[...entry.names].filter(Boolean).join(' / ')+' (SO: '+[...entry.soIds].join(', ')+')'}));
+  if (accountLine.parts.length) lines.push({kind:'account',accountKey:'purchases_account',amount:qbCurrency(accountLine.amount),
+    description:qbPOAccountLineDescription(accountLine.parts,[...accountLine.soIds])});
+  return {lines,total:qbCurrency(lines.reduce((sum,line) => sum + line.amount, 0)),skus:[...skus],accountSkus:[...accountSkus]};
+}
+
+const qbPurchaseOrderExpectedLine = line => ({
+  type:line.kind === 'item' ? 'ItemBasedExpenseLineDetail' : 'AccountBasedExpenseLineDetail',
+  amount:qbCurrency(line.amount), item:String(line.itemId || ''), qty:safeNum(line.qty),
+  unitPrice:safeNum(line.unitPrice), accountKey:String(line.accountKey || ''),
+});
+
+export function qbPurchaseOrderLinesMatch(expectedLines = [], actualLines = [], accountRefs = {}) {
+  const remaining = (actualLines || []).map(line => ({type:line.DetailType,amount:qbCurrency(line.Amount),
+    item:String(line.ItemBasedExpenseLineDetail?.ItemRef?.value || ''),qty:safeNum(line.ItemBasedExpenseLineDetail?.Qty),
+    unitPrice:safeNum(line.ItemBasedExpenseLineDetail?.UnitPrice),account:String(line.AccountBasedExpenseLineDetail?.AccountRef?.value || '')}));
+  const matches = (expectedLines || []).every(line => {
+    const expectedAccount = line.accountKey ? String(accountRefs[line.accountKey]?.value || '') : '';
+    const index = remaining.findIndex(actual => actual.type === line.type && actual.item === line.item && actual.account === expectedAccount
+      && Math.abs(actual.amount - line.amount) < 0.005 && Math.abs(actual.qty - line.qty) < 0.000001
+      && Math.abs(actual.unitPrice - line.unitPrice) < 0.000001);
+    if (index < 0) return false;
+    remaining.splice(index, 1);
+    return true;
+  });
+  return matches && remaining.length === 0;
+}
+
 export function buildQBPurchaseOrderPreviewRows(sos = [], products = [], prodQBMap = {}, poMap = {}, portalVendors = []) {
-  const productIdBySku = new Map(products.map(product => [String(product.sku || '').trim().toUpperCase(), product.id]));
   return groupPortalPurchaseOrders(sos, poMap, portalVendors).map(group => {
     const reasons = new Set(group.invalidReason ? [group.invalidReason] : []);
     if (String(group.poId || '').length > 21) reasons.add('QBO purchase-order number exceeds the 21-character limit');
     if (!String(group.vendor || '').trim()) reasons.add('missing saved vendor');
     if (!parseQBDateValue(group.created_at)) reasons.add('invalid or missing PO date');
-    let total = 0;
-    const skus = new Set();
-    const accountSkus = new Set();
-    group.entries.forEach(({pl, it}) => {
-      const qty = Object.entries(pl || {}).filter(([key,value]) => typeof value === 'number'
-        && !key.startsWith('_') && !['unit_cost','billed','tracking_numbers','vendor','drop_ship'].includes(key)
-        && /^[A-Z0-9]/.test(key)).reduce((sum,[,value]) => sum + value, 0);
-      const rate = qbCurrency(pl?.unit_cost !== undefined && pl?.unit_cost !== null && pl?.unit_cost !== '' ? pl.unit_cost : it?.nsa_cost);
-      if (!(qty > 0) || rate < 0) return;
-      total += qty * rate;
-      if (group.accountKey === 'deco_account') return;
-      const sku = String(it?.sku || '').trim().toUpperCase();
-      const productId = it?.product_id || productIdBySku.get(sku);
-      skus.add(sku || '(blank SKU)');
-      // Lines without a linked QBO item post to the purchases account instead
-      // (see syncPurchaseOrders), so they no longer block the PO; surface them so
-      // the reviewer can see which lines will not carry an item.
-      if (!sku || !productId || !prodQBMap[productId]) accountSkus.add(sku || '(blank SKU)');
-    });
-    total = qbCurrency(total);
+    const plan = buildQBPurchaseOrderLinePlan(group, products, prodQBMap);
+    const {total,skus,accountSkus} = plan;
     if (!(total > 0)) reasons.add('no positive purchase-order lines');
     return {poId:String(group.poId),vendor:String(group.vendor || ''),date:parseQBDateValue(group.created_at) || '',
-      lineCount:group.entries.length,skus:[...skus],accountSkus:[...accountSkus],total,action:reasons.size ? 'blocked' : 'ready',reason:[...reasons].join('; ')};
+      lineCount:group.entries.length,skus,accountSkus,total,expectedLines:plan.lines.map(qbPurchaseOrderExpectedLine),
+      action:reasons.size ? 'blocked' : 'ready',reason:[...reasons].join('; ')};
   });
 }
 
@@ -371,7 +424,7 @@ export function buildQBPurchaseOrderPreviewRows(sos = [], products = [], prodQBM
 // read-only: it classifies missing/ambiguous vendors and document-number
 // collisions before an operator approves a batch, so a "ready" row is not just
 // rediscovered as a blocker during the write run.
-export function applyQBPurchaseOrderLiveReadiness(rows = [], qboVendors = [], qboPurchaseOrders = [], portalVendors = [], vendorMap = {}) {
+export function applyQBPurchaseOrderLiveReadiness(rows = [], qboVendors = [], qboPurchaseOrders = [], portalVendors = [], vendorMap = {}, accountRefs = {}) {
   return (rows || []).map(row => {
     if (row.action !== 'ready') return row;
     const vendorName = String(row.vendor || '');
@@ -395,13 +448,17 @@ export function applyQBPurchaseOrderLiveReadiness(rows = [], qboVendors = [], qb
     if (sameNumber.length && !(sameNumber.length === 1 && exact.length === 1)) {
       return {...row, action:'blocked', reason:'QBO purchase-order number exists with a different vendor, date, or total', qboVendorId, qboDisposition:'blocked'};
     }
+    if (exact.length === 1 && Array.isArray(row.expectedLines)
+      && !qbPurchaseOrderLinesMatch(row.expectedLines, exact[0]?.Line || [], accountRefs)) {
+      return {...row, action:'blocked', reason:'QBO line items, quantities, rates, amounts, or accounts differ from the reviewed PO', qboVendorId, qboDisposition:'blocked'};
+    }
     return {...row, qboVendorId, qboDisposition:exact.length === 1 ? 'link_existing' : 'create', qboId:exact[0]?.Id ? String(exact[0].Id) : ''};
   });
 }
 
 export function qbPurchaseOrderSourceFingerprint(row = {}) {
-  const {poId='',vendor='',date='',lineCount=0,skus=[],accountSkus=[],total=0} = row;
-  return {poId,vendor,date,lineCount,skus,accountSkus,total};
+  const {poId='',vendor='',date='',lineCount=0,skus=[],accountSkus=[],total=0,expectedLines=[]} = row;
+  return {poId,vendor,date,lineCount,skus,accountSkus,total,expectedLines};
 }
 
 // A stable, read-only manifest for the exact invoices an operator may approve.
@@ -2060,42 +2117,17 @@ export function createQBSyncEngine(ctx){
         }
         // Lines whose SKU has no linked QBO item (one-off custom goods, blanks
         // typed straight onto an order) post as one account line to the purchases
-        // account, the same way decoration lines do. The books only need the
-        // vendor total in the right account; per-SKU items are for stock only.
-        const accountLine={amount:0,parts:[],soIds:new Set()};
-        const itemGroups=new Map();
-        const qbLines=[];
-        group.entries.forEach(({pl:p,so:s,it:i})=>{
-          const qty=Object.entries(p).filter(([k,v])=>typeof v==='number'&&!k.startsWith('_')&&!['unit_cost','billed','tracking_numbers','vendor','drop_ship'].includes(k)&&k.match(/^[A-Z0-9]/)).reduce((a,[,v])=>a+v,0);
-          // The saved PO line is the accounting source of truth for cost. The
-          // product catalog cost can change after a PO is issued, and raw
-          // half-cent values can otherwise be rounded differently by QBO.
-          const hasSavedRate=p.unit_cost!==undefined&&p.unit_cost!==null&&p.unit_cost!=='';
-          const rate=qbCurrency(hasSavedRate?p.unit_cost:i.nsa_cost);
-          if(!(qty>0)||rate<0)return;
-          if(group.accountKey==='deco_account'){
-            qbLines.push({DetailType:'AccountBasedExpenseLineDetail',Amount:qty*rate,
-              Description:i.sku+' '+i.name+' x'+qty+' @$'+rate.toFixed(2)+' (SO: '+s.id+')',
-              AccountBasedExpenseLineDetail:{AccountRef:poAccountRefs.deco_account}});return;
-          }
-          const sku=String(i.sku||'').trim().toUpperCase();
-          const productId=i.product_id||(prod.find(pp=>String(pp.sku||'').trim().toUpperCase()===sku)||{}).id;
-          const itemId=effectiveProdQBMap[productId];
-          if(!sku||!itemId){
-            accountLine.amount+=qty*rate;accountLine.soIds.add(s.id);
-            accountLine.parts.push((sku||'(blank SKU)')+' '+String(i.name||'').trim()+' x'+qty+' @$'+rate.toFixed(2));
-            return;
-          }
-          const entry=itemGroups.get(sku)||{sku,itemId,qty:0,amount:0,names:new Set(),soIds:new Set()};
-          entry.qty+=qty;entry.amount+=qty*rate;entry.names.add(i.name);entry.soIds.add(s.id);itemGroups.set(sku,entry);
+        // account, the same way decoration lines do. Use the same pure plan as
+        // the read-only review so approval and execution compare identical lines.
+        const linePlan=buildQBPurchaseOrderLinePlan(group,prod,effectiveProdQBMap);
+        const qbLines=linePlan.lines.map(line=>line.kind==='item'?{
+          DetailType:'ItemBasedExpenseLineDetail',Amount:line.amount,Description:line.description,
+          ItemBasedExpenseLineDetail:{ItemRef:{value:line.itemId},Qty:line.qty,UnitPrice:line.unitPrice},
+        }:{
+          DetailType:'AccountBasedExpenseLineDetail',Amount:line.amount,Description:line.description,
+          AccountBasedExpenseLineDetail:{AccountRef:poAccountRefs[line.accountKey]},
         });
-        itemGroups.forEach(entry=>qbLines.push({DetailType:'ItemBasedExpenseLineDetail',Amount:Math.round(entry.amount*100)/100,
-          Description:entry.sku+' '+[...entry.names].filter(Boolean).join(' / ')+' (SO: '+[...entry.soIds].join(', ')+')',
-          ItemBasedExpenseLineDetail:{ItemRef:{value:String(entry.itemId)},Qty:entry.qty,UnitPrice:Math.round((entry.amount/entry.qty)*1e6)/1e6}}));
-        if(accountLine.parts.length)qbLines.push({DetailType:'AccountBasedExpenseLineDetail',Amount:Math.round(accountLine.amount*100)/100,
-          Description:qbPOAccountLineDescription(accountLine.parts,[...accountLine.soIds]),
-          AccountBasedExpenseLineDetail:{AccountRef:poAccountRefs.purchases_account}});
-        const totalAmount=qbCurrency(qbLines.reduce((a,l)=>a+l.Amount,0));
+        const totalAmount=linePlan.total;
         if(!qbLines.length||!(totalAmount>0)){const error='no positive purchase-order lines';log.details.push(group.poId+' — BLOCKED: '+error);results.push({poId:group.poId,result:'blocked',error});log.status='partial';continue}
         const soRefs=[...new Set(group.entries.map(({so:s})=>s.id))].join(', ');
         const qbPO={
@@ -2108,19 +2140,8 @@ export function createQBSyncEngine(ctx){
         };
         const verifyPOReadback=async id=>{
           const verified=await verifyCanaryReadback('PurchaseOrder',id,{docNumber:group.poId,refField:'VendorRef',refValue:qbVendorId,total:totalAmount,txnDate:poDate});
-          const lineValues=line=>({type:line.DetailType,amount:safeNum(line.Amount),
-            item:String(line.ItemBasedExpenseLineDetail?.ItemRef?.value||''),qty:safeNum(line.ItemBasedExpenseLineDetail?.Qty),
-            unitPrice:safeNum(line.ItemBasedExpenseLineDetail?.UnitPrice),account:String(line.AccountBasedExpenseLineDetail?.AccountRef?.value||'')});
-          const remaining=(verified.Line||[]).map(lineValues);
-          const matches=qbLines.every(line=>{
-            const expected=lineValues(line);
-            const index=remaining.findIndex(actual=>actual.type===expected.type&&actual.item===expected.item&&actual.account===expected.account
-              &&Math.abs(actual.amount-expected.amount)<0.005&&Math.abs(actual.qty-expected.qty)<0.000001&&Math.abs(actual.unitPrice-expected.unitPrice)<0.000001);
-            if(index<0)return false;
-            remaining.splice(index,1);
-            return true;
-          });
-          if(!matches||remaining.length)throw new Error('QBO line items, quantities, rates, amounts, or accounts differ from the reviewed PO');
+          const expectedLines=linePlan.lines.map(qbPurchaseOrderExpectedLine);
+          if(!qbPurchaseOrderLinesMatch(expectedLines,verified.Line||[],poAccountRefs))throw new Error('QBO line items, quantities, rates, amounts, or accounts differ from the reviewed PO');
           return verified;
         };
         const sameNumber=existingQBPOs.filter(existing=>String(existing.DocNumber||'')===String(group.poId));
