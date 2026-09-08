@@ -14,7 +14,7 @@ import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
 import { authFetch } from './utils';
-import { buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, isVoidInvoice, portalCustomerDisplayName, qbCustomerBatchReady, qbResponseErrorDetail } from './qbSyncEngine';
+import { applyQBPurchaseOrderLiveReadiness, buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, isVoidInvoice, portalCustomerDisplayName, qbCustomerBatchReady, qbPurchaseOrderSourceFingerprint, qbResponseErrorDetail } from './qbSyncEngine';
 import { QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_POSTING_MATRIX, QB_ACCOUNT_SPECS, QB_STATE_TAX_ACCOUNT_KEYS, buildVendorBillLines, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, manualBillAccountKey, normalizeVendorName, qbWriteAccountRef, queryQBReadOnly, readQBWithRetry, resolveQBAccountRefs } from './qbAccountMappings';
 
 const stripeBackfillErrorSummary=(errors=[])=>{
@@ -669,16 +669,25 @@ export default function QBPage(){
       setInvValuationReview(null);setInvValuationApproved(false);
       await syncInventoryValuation({approved:true,asOf:review.asOf,expectedDelta:review.delta});
     };
-    const reviewPurchaseOrderBatch=()=>{
-      const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows:poPreviewRows,
-        counts:poPreviewRows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{})};
-      setPoBatchReview(review);setPoBatchApproved(false);setQBConfig(prev=>({...prev,lastPurchaseOrderReview:review}));
-      nf('Purchase-order readiness review complete — no QBO records changed');
+    const reviewPurchaseOrderBatch=async()=>{
+      setQbSyncing(true);setPoBatchApproved(false);
+      try{
+        const [qboVendors,qboPurchaseOrders]=await Promise.all([
+          loadAllQBEntities(qbApi,'Vendor','Id, DisplayName, CompanyName, Active',500),
+          loadAllQBEntities(qbApi,'PurchaseOrder','Id, DocNumber, VendorRef, TotalAmt, TxnDate',500),
+        ]);
+        const rows=applyQBPurchaseOrderLiveReadiness(poPreviewRows,qboVendors,qboPurchaseOrders,vend,qbConfig.vendorQBMap||{});
+        const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,
+          counts:rows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{})};
+        setPoBatchReview(review);setQBConfig(prev=>({...prev,lastPurchaseOrderReview:review}));
+        nf('Purchase-order readiness review complete — live QBO checked; no records changed');
+      }catch(e){setPoBatchReview(null);nf('Purchase-order readiness review failed — '+e.message,'error')}
+      finally{setQbSyncing(false)}
     };
     const runPurchaseOrderBatch=async()=>{
       const current=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{});
       const currentById=new Map(current.map(row=>[row.poId,row]));
-      if(poBatchRows.some(row=>JSON.stringify(currentById.get(row.poId))!==JSON.stringify(row))){nf('Purchase-order batch changed since review — review it again','error');setPoBatchApproved(false);return}
+      if(poBatchRows.some(row=>JSON.stringify(qbPurchaseOrderSourceFingerprint(currentById.get(row.poId)))!==JSON.stringify(qbPurchaseOrderSourceFingerprint(row)))){nf('Purchase-order batch changed since review — review it again','error');setPoBatchApproved(false);return}
       await syncPurchaseOrders({}, {approved:poBatchApproved,approvedPOIds:poBatchRows.map(row=>row.poId)});setPoBatchApproved(false);setPoBatchReview(null);
     };
     const reviewInvoiceBatch=()=>{
