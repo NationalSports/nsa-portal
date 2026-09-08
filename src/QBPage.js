@@ -14,7 +14,7 @@ import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
 import { authFetch } from './utils';
-import { buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, isVoidInvoice, portalCustomerDisplayName, qbCustomerBatchReady, qbResponseErrorDetail } from './qbSyncEngine';
+import { buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, isVoidInvoice, portalCustomerDisplayName, qbCustomerBatchReady, qbResponseErrorDetail } from './qbSyncEngine';
 import { QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_POSTING_MATRIX, QB_ACCOUNT_SPECS, QB_STATE_TAX_ACCOUNT_KEYS, buildVendorBillLines, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, manualBillAccountKey, normalizeVendorName, qbWriteAccountRef, queryQBReadOnly, readQBWithRetry, resolveQBAccountRefs } from './qbAccountMappings';
 
 const stripeBackfillErrorSummary=(errors=[])=>{
@@ -111,6 +111,9 @@ export default function QBPage(){
   const [invoiceBatchReview,setInvoiceBatchReview]=useState(null);
   const [invoiceBatchLimit,setInvoiceBatchLimit]=useState(20);
   const [invoiceBatchApproved,setInvoiceBatchApproved]=useState(false);
+  const [salesOrderBatchReview,setSalesOrderBatchReview]=useState(null);
+  const [salesOrderBatchLimit,setSalesOrderBatchLimit]=useState(20);
+  const [salesOrderBatchApproved,setSalesOrderBatchApproved]=useState(false);
   const [invValuationReview,setInvValuationReview]=useState(null);
   const [invValuationApproved,setInvValuationApproved]=useState(false);
   const [poBatchApproved,setPoBatchApproved]=useState(false);
@@ -465,6 +468,8 @@ export default function QBPage(){
     const selectedCanaryPO=canaryPOs.find(group=>String(group.poId)===String(qbCanaryPOId));
     const poPreviewRows=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{});
     const poBatchRows=(poBatchReview?.rows||[]).filter(row=>row.action==='ready').slice(0,poBatchLimit);
+    const salesOrderPreviewRows=buildQBSalesOrderPreviewRows(sos,cust,_custQBMap,qbConfig.qbSOMap||{},dP);
+    const salesOrderBatchRows=(salesOrderBatchReview?.rows||[]).filter(row=>row.action==='ready').slice(0,salesOrderBatchLimit);
     const poPreviewById=new Map(poPreviewRows.map(row=>[String(row.poId),row]));
     const poAccountSkus=poId=>poPreviewById.get(String(poId))?.accountSkus||[];
     const selectedInvoiceCustomer=selectedCanaryInvoice&&cust.find(c=>c.id===selectedCanaryInvoice.customer_id);
@@ -682,6 +687,19 @@ export default function QBPage(){
       await syncInvoices({}, {}, {approved:invoiceBatchApproved,approvedInvoiceIds:invoiceBatchRows.map(row=>row.invoiceId),expectedRows:invoiceBatchRows});
       setInvoiceBatchApproved(false);setInvoiceBatchReview(null);
     };
+    const reviewSalesOrderBatch=()=>{
+      const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows:salesOrderPreviewRows,
+        counts:salesOrderPreviewRows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{})};
+      setSalesOrderBatchReview(review);setSalesOrderBatchApproved(false);setQBConfig(prev=>({...prev,lastSalesOrderReview:review}));
+      nf('Sales-order readiness review complete — no QBO records changed');
+    };
+    const runSalesOrderBatch=async()=>{
+      const current=buildQBSalesOrderPreviewRows(sos,cust,qbConfig.custQBMap||{},qbConfig.qbSOMap||{},dP);
+      const currentById=new Map(current.map(row=>[row.salesOrderId,row]));
+      if(salesOrderBatchRows.some(row=>JSON.stringify(currentById.get(row.salesOrderId))!==JSON.stringify(row))){nf('Sales-order batch changed since review — review it again','error');setSalesOrderBatchApproved(false);return}
+      await syncSalesOrders({}, {}, {approved:salesOrderBatchApproved,approvedSOIds:salesOrderBatchRows.map(row=>row.salesOrderId),expectedRows:salesOrderBatchRows});
+      setSalesOrderBatchApproved(false);setSalesOrderBatchReview(null);
+    };
 
     // Build what a QB sync would push
     const buildQBSalesOrder=(so)=>{
@@ -849,8 +867,8 @@ export default function QBPage(){
                 <button className="btn btn-primary" style={{flex:1,background:'#0369a1'}} disabled={qbPreflighting||qbSyncing} onClick={runQBPreflight}>{qbPreflighting?'Reading live QBO...':'Read-Only Live Preflight'}</button>
                 <button className="btn btn-primary" disabled title="Controlled migration: run and reconcile one entity at a time" onClick={syncAll}>{qbSyncing?'Syncing...':'Sync Everything'}</button>
                 <button className="btn btn-secondary" disabled title="Use the reviewed customer batch below">Customers</button>
-                <button className="btn btn-secondary" disabled title="Locked pending customer links and Estimate rollout review" onClick={()=>syncSalesOrders()}>Sales Orders</button>
-                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={()=>syncInvoices()}>Invoices</button>
+                <button className="btn btn-secondary" disabled title="Use the reviewed sales-order batch below">Sales Orders</button>
+                <button className="btn btn-secondary" disabled title="Use the reviewed invoice batch on the Invoices tab">Invoices</button>
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={()=>syncPaidFromQB()}>Sync Payments Both Ways</button>
                 <button className="btn btn-secondary" disabled={qbSyncing||!livePreflightReady} onClick={()=>syncPaidFromQB({reviewOnly:true})}>Review Payments — No Changes</button>
                 <button className="btn btn-secondary" disabled title="Locked pending native PO-to-existing-bill reconciliation" onClick={()=>syncPurchaseOrders()}>POs</button>
@@ -924,6 +942,24 @@ export default function QBPage(){
             </div>
           </div>
           {!livePreflightReady&&<div style={{padding:'0 16px 12px',fontSize:11,color:'#92400e',fontWeight:600}}>Buttons disabled: run Read-Only Live Preflight first.</div>}
+        </div>
+
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h2>Controlled Sales-Order Batch</h2></div>
+          <div className="card-body">
+            <p style={{fontSize:11,color:'#475569'}}>Reviews portal readiness first, then creates or links only the exact listed non-posting QBO Estimates. Every Estimate must match its reviewed customer, date and total by API read-back before the durable link is saved. The batch stops after the first failure.</p>
+            <button className="btn btn-sm" disabled={qbSyncing||!livePreflightReady} onClick={reviewSalesOrderBatch}>Review Sales Orders — No QBO Changes</button>
+            {salesOrderBatchReview&&<>
+              <p>Readiness: {JSON.stringify(salesOrderBatchReview.counts)}. Proposed batch: {salesOrderBatchRows.length} ready sales orders.</p>
+              <table><thead><tr><th>Portal SO</th><th>Customer</th><th>Date</th><th>Lines</th><th>Total</th></tr></thead><tbody>{salesOrderBatchRows.map(row=><tr key={row.salesOrderId}><td>{row.salesOrderId}</td><td>{row.customer}</td><td>{row.date}</td><td>{row.lineCount}</td><td>${row.total.toFixed(2)}</td></tr>)}</tbody></table>
+              <label style={{marginRight:12}}>Batch size <select aria-label="Sales order batch size" value={salesOrderBatchLimit} disabled={qbSyncing} onChange={e=>{setSalesOrderBatchLimit(Number(e.target.value));setSalesOrderBatchApproved(false)}}>{QB_BATCH_SIZES.filter(size=>size<=100).map(size=><option key={size} value={size}>{size}</option>)}</select></label>
+              <label><input type="checkbox" checked={salesOrderBatchApproved} disabled={qbSyncing||!salesOrderBatchRows.length} onChange={e=>setSalesOrderBatchApproved(e.target.checked)}/> I approve only the listed sales orders in this batch.</label>
+              <button className="btn btn-primary btn-sm" disabled={qbSyncing||!salesOrderBatchApproved||!salesOrderBatchRows.length} onClick={runSalesOrderBatch}>Run Reviewed Sales-Order Batch</button>
+              <h3>First readiness exceptions</h3>
+              <table><thead><tr><th>Portal SO</th><th>Customer</th><th>Reason</th></tr></thead><tbody>{salesOrderBatchReview.rows.filter(row=>row.action==='blocked').slice(0,50).map(row=><tr key={row.salesOrderId}><td>{row.salesOrderId}</td><td>{row.customer}</td><td>{row.reason}</td></tr>)}</tbody></table>
+            </>}
+            {qbConfig.lastSalesOrderBatch&&<><h3>Latest sales-order batch: {qbConfig.lastSalesOrderBatch.status}</h3><table><thead><tr><th>Portal SO</th><th>Result</th><th>QBO ID</th><th>Error</th></tr></thead><tbody>{(qbConfig.lastSalesOrderBatch.results||[]).map(row=><tr key={row.salesOrderId}><td>{row.salesOrderId}</td><td>{row.result}</td><td>{row.qboId||''}</td><td>{row.error||''}</td></tr>)}</tbody></table><p>{JSON.stringify(qbConfig.lastSalesOrderBatch.counts)}</p></>}
+          </div>
         </div>
 
         <div className="card" style={{marginBottom:16}}>
