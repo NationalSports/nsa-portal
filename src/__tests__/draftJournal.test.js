@@ -11,6 +11,26 @@ beforeEach(()=>{
 afterEach(async()=>{await a.close();await b.close();localStorage.removeItem('nsa_user');});
 const payload=memo=>({id:'SO-1',memo,items:[{sku:'A',sizes:{M:2}}],_version:3});
 
+test('pending save remains durable but becomes recovery only after failure or in another session',async()=>{
+ let finish,started;
+ const dispatched=new Promise(resolve=>{started=resolve});
+ const operation=protectDocumentDraft('sales_orders',payload('revision request'),()=>{started();return new Promise(resolve=>{finish=resolve})},jest.fn(),a);
+ await dispatched;
+ const [backup]=await a.list('staff-a');
+ expect(backup.payload.memo).toBe('revision request');
+ expect(a.isSaving(backup)).toBe(true);
+ expect(b.isSaving((await b.list('staff-a'))[0])).toBe(false);
+ finish(false);await operation;
+ expect(a.isSaving(backup)).toBe(false);
+ expect(await a.list('staff-a')).toHaveLength(1);
+});
+
+test('confirmed action clears its backup without exposing it as failed recovery',async()=>{
+ const run=async()=>{const [entry]=await a.list('staff-a');expect(a.isSaving(entry)).toBe(true);return true};
+ await protectDocumentDraft('sales_orders',payload('reject mock'),run,jest.fn(),a);
+ expect(await a.list('staff-a')).toEqual([]);
+});
+
 test('independent tabs preserve separate drafts of the same document',async()=>{
  const [x,y]=await Promise.all([a.stage('staff-a','sales_orders',payload('first')),b.stage('staff-a','sales_orders',payload('second'))]);
  expect(await a.list('staff-a')).toHaveLength(2);

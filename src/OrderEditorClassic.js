@@ -3352,11 +3352,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Result-checked FULL save (jobs + art together) for reuse/forward mutations that change both. Mirrors
   // saveArtFilesNow's failure contract: on a failed persist, keep the editor dirty and tell the user NOT
   // to reload. Uses onSaveNow (App savSONow) which returns true/false; falls back to fire-and-forget onSave.
+  const [actionSaving,setActionSaving]=useState(0);
   const saveSONow=async(updated,label,okMsg)=>{
+    setActionSaving(count=>count+1);
     setO(updated);oRef.current=updated;dirtyRef2.current=true;setDirty(true);
     const revision=orderEditRevision.current,attempt=++editorSaveSeq.current;
     let ok=false;
-    try{if(onSaveNow)ok=await onSaveNow(updated);else onSave(updated)}catch(error){console.error('[Editor] save failed:',error)}
+    try{if(onSaveNow)ok=await onSaveNow(updated);else onSave(updated)}catch(error){console.error('[Editor] save failed:',error)}finally{setActionSaving(count=>count-1)}
     if(canAcknowledgeSave(ok,revision,orderEditRevision.current,attempt,editorSaveSeq.current)){
       setSaved(true);dirtyRef2.current=false;setDirty(false);
       if(okMsg!==null)nf(okMsg||('✅ '+(label||'Changes')+' saved'));
@@ -4603,7 +4605,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {isSO&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:SC[o.status]?.bg||'#f1f5f9',color:SC[o.status]?.c||'#475569'}}>{o.status?.replace(/_/g,' ')}</span>}
       {cust&&<span style={{fontSize:12,fontWeight:600,color:'#1e40af',cursor:'pointer',textDecoration:'underline',textDecorationStyle:'dotted',textUnderlineOffset:2}} onClick={()=>{if(onNavCustomer&&cust)onNavCustomer(cust)}} title={'View '+cust.name}>{cust.name}</span>}
       <span style={{fontSize:11,color:'#94a3b8',flex:1}}>{o.memo||''}</span>
-      {dirty&&<span style={{fontSize:10,color:'#d97706',fontWeight:600}}>● Unsaved</span>}
+      {actionSaving>0?<span role="status" style={{fontSize:11,color:"#64748b",fontWeight:600}}>Saving…</span>:dirty&&<span style={{fontSize:10,color:'#d97706',fontWeight:600}}>● Unsaved</span>}
       <button className="btn btn-sm btn-primary" onClick={async()=>{
         if(!_flushActiveSizingDraft()){nf('Finish editing the quantity before saving','error');return}
         const current=oRef.current||o;
