@@ -462,7 +462,7 @@ import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
 import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, billAutoHoldReasons, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku, resolveMappedSoItemIndex } from './billResolve';
-import { createQBSyncEngine } from './qbSyncEngine';
+import { createQBSyncEngine,qbResponseErrorDetail} from './qbSyncEngine';
 import { QB_ACCOUNT_MAPPING_DEFAULTS, billVendorMatchName, buildVendorBillLines, calculateOmgInvoicePayment, findExistingVendorBill, findUniqueVendorMatch, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, planQBNonInventoryItems, qbBillNeedsSync, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs,qboAccountOnlyBill} from './qbAccountMappings';
 import { BaggingQueueTile } from './baggingstation/BaggingDashCard';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
@@ -30226,7 +30226,7 @@ export default function App(){
           if(!qbVendorId){
             const displayName=String(portalVendor?.name||vendorName).trim();
             const vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:displayName,CompanyName:displayName}});
-            if(!vRes?.Vendor?.Id)throw new Error(vRes?.Fault?.Error?.[0]?.Detail||'Vendor was not found or created.');
+            if(!vRes?.Vendor?.Id)throw new Error(qbResponseErrorDetail(vRes,'Vendor was not found or created.'));
             qbVendorId=vRes.Vendor.Id;
             existingQBVendors.push({Id:qbVendorId,DisplayName:displayName,CompanyName:displayName,Active:true});
           }
@@ -30252,7 +30252,7 @@ export default function App(){
           for(const planned of itemPlan.upserts){
             const itemRes=await qbApi('upsert_item',{item:planned.item});
             const saved=itemRes?.Item;
-            if(!saved?.Id)throw new Error('QBO '+planned.sku+' item '+planned.action+' failed: '+(itemRes?.Fault?.Error?.[0]?.Detail||'unknown QBO item error')+'. No bill was sent.');
+            if(!saved?.Id)throw new Error('QBO '+planned.sku+' item '+planned.action+' failed: '+qbResponseErrorDetail(itemRes,'unknown QBO item error')+'. No bill was sent.');
             const readRes=await qbApi('read',{entity:'item',id:saved.Id});
             const verified=readRes?.Item;
             if(!verified||String(verified.Id)!==String(saved.Id)||String(verified.Type||'').toLowerCase()!=='noninventory'
@@ -30291,7 +30291,11 @@ export default function App(){
             qboBillId=existingVendorBill.Id;
           }else{
             const billRes=await qbApi('upsert_bill',{bill:qbBill});
-            if(!billRes?.Bill?.Id)throw new Error(billRes?.Fault?.Error?.[0]?.Detail||'Unknown QBO bill error');
+            // "Unknown QBO bill error" hid the real reason on 40 bills in the
+            // first production backfill: a throttled or 5xx response carries no
+            // Fault, and its body was dropped here. qbResponseErrorDetail reads
+            // the fault code/message and falls back to the raw response.
+            if(!billRes?.Bill?.Id)throw new Error(qbResponseErrorDetail(billRes,'QuickBooks did not return a bill ID'));
             qboBillId=billRes.Bill.Id;created=true;
             // QBO returns the stored bill on create. A total, vendor or date that
             // differs from what was sent means the bill exists in QBO with the
