@@ -45,6 +45,13 @@ describe('QuickBooks purchase-order grouping', () => {
     expect(groups[0]).toMatchObject({poId:'PO 58993 WVCSOC',vendor:'Agron',invalidReason:''});
   });
 
+  test('resolves a legacy vendor id saved on the PO line to the current portal vendor name', () => {
+    const groups=groupPortalPurchaseOrders([
+      so('SO-1',[{po_id:'PO 3064 HBMS',S:12,vendor:'ns_3863',created_at:'2026-09-02'}]),
+    ],{},[{id:'ns_3863',name:'Champro'}]);
+    expect(groups[0]).toMatchObject({poId:'PO 3064 HBMS',vendor:'Champro',invalidReason:''});
+  });
+
   test('blocks a shared PO number that mixes vendors', () => {
     const groups=groupPortalPurchaseOrders([
       so('SO-1',[{po_id:'PO MIXED',S:1,vendor:'Champro'}]),
