@@ -367,8 +367,25 @@ export function buildQBInvoicePreviewRows(invoices = [], customers = [], custome
   }).sort((a,b)=>a.documentNumber.localeCompare(b.documentNumber,undefined,{numeric:true}));
 }
 
-export function buildQBSalesOrderPreviewRows(salesOrders = [], customers = [], customerMap = {}, salesOrderMap = {}, priceDecoration = () => ({sell:0})) {
+export function buildPortalSalesOrderTax(salesOrder = {}, customer = {}, salesSubtotal = 0, shipping = 0) {
+  // Sales orders snapshot their tax rate when they are created. Keep that
+  // historical rate even if the customer changes later; webstore orders are
+  // the important zero-rate exception because tax was collected at checkout.
+  const taxRate = salesOrder.tax_exempt ? 0 : salesOrder.source === 'webstore'
+    ? safeNum(salesOrder.tax_rate)
+    : safeNum(salesOrder.tax_rate || customer?.tax_rate);
+  const tax = qbCurrency(safeNum(salesSubtotal) * taxRate);
+  return {
+    taxRate,
+    tax,
+    taxState:String(customer?.shipping_state || customer?.billing_state || '').trim().toUpperCase(),
+    total:qbCurrency(safeNum(salesSubtotal) + safeNum(shipping) + tax),
+  };
+}
+
+export function buildQBSalesOrderPreviewRows(salesOrders = [], customers = [], customerMap = {}, salesOrderMap = {}, priceDecoration = () => ({sell:0}), options = {}) {
   const customerById = new Map(customers.map(customer => [String(customer.id), customer]));
+  const taxBlockReason = typeof options.taxBlockReason === 'function' ? options.taxBlockReason : () => 'taxable Estimates await approved QBO tax-code mapping';
   return salesOrders.filter(so => {
     const hasItems = safeItems(so).some(item => Object.values(safeSizes(item)).reduce((sum,value)=>sum+safeNum(value),0)>0);
     return hasItems && !salesOrderMap[so.id];
@@ -390,13 +407,16 @@ export function buildQBSalesOrderPreviewRows(salesOrders = [], customers = [], c
     });
     const shipping=calculateCustomerShipping(so,salesSubtotal);
     if(shipping>0)lineCount++;
-    const total=qbCurrency(salesSubtotal+shipping);
+    const {taxRate,tax,taxState,total}=buildPortalSalesOrderTax(so,customer,salesSubtotal,shipping);
+    if(tax>0&&options.partnerTaxEnabled)lineCount++;
     const reasons=[];
-    if(safeNum(so.tax)>0||(!so.tax_exempt&&safeNum(so.tax_rate)>0))reasons.push('taxable Estimates await approved QBO tax-code mapping');
+    const taxReason=tax>0?String(taxBlockReason({salesOrder:so,customer,taxRate,tax,taxState,total})||''):'';
+    if(taxReason)reasons.push(taxReason);
     if(!qboCustomerId)reasons.push('customer is not linked to QBO');
     if(!date)reasons.push('invalid or missing sales-order date');
     if(!(total>0)||!lineCount)reasons.push('no positive estimate lines');
-    return {salesOrderId:String(so.id),customerId:String(so.customer_id||''),customer:portalCustomerDisplayName(customer||{}),qboCustomerId:String(qboCustomerId),date,lineCount,total,
+    return {salesOrderId:String(so.id),customerId:String(so.customer_id||''),customer:portalCustomerDisplayName(customer||{}),qboCustomerId:String(qboCustomerId),date,lineCount,
+      salesSubtotal:qbCurrency(salesSubtotal),shipping:qbCurrency(shipping),taxRate,tax,taxState,total,
       action:reasons.length?'blocked':'ready',reason:reasons.join('; ')};
   }).sort((a,b)=>a.salesOrderId.localeCompare(b.salesOrderId,undefined,{numeric:true}));
 }
@@ -730,6 +750,15 @@ export function createQBSyncEngine(ctx){
       if(item.Active===false||String(item.IncomeAccountRef?.value||'')!==String(incomeAccountRef.value))throw new Error('QBO item "NSA Portal Sales" is inactive or not mapped to 40000 Sales; no record was sent.');
       return String(item.Id);
     };
+    const requireExistingPortalSalesTaxItem=async(state,liabilityAccountRef)=>{
+      const name=portalSalesTaxItemName(state);
+      const qRes=await queryQBReadOnly(qbApi,"SELECT * FROM Item WHERE Name = '"+name.replace(/'/g,"\\'")+"' MAXRESULTS 2",'portal sales-tax item query');
+      const matches=qRes?.QueryResponse?.Item||[];
+      if(matches.length!==1)throw new Error(matches.length?'Multiple QBO items are named "'+name+'"; no record was sent.':'QBO item "'+name+'" is missing; create and verify that state tax item before this batch.');
+      const item=matches[0];
+      if(item.Active===false||String(item.IncomeAccountRef?.value||'')!==String(liabilityAccountRef.value))throw new Error('QBO item "'+name+'" is inactive or not mapped to the approved '+String(state).toUpperCase()+' liability account; no record was sent.');
+      return String(item.Id);
+    };
     const verifyCanaryReadback=async(entity,id,expected={})=>{
       const res=await queryQBReadOnly(qbApi,"SELECT * FROM "+entity+" WHERE Id = '"+String(id).replace(/'/g,"\\'")+"' MAXRESULTS 1",entity+' API read-back');
       const row=res?.QueryResponse?.[entity]?.[0];
@@ -1031,7 +1060,7 @@ export function createQBSyncEngine(ctx){
     // write invoice lines — the initial post and the paid pass's total
     // correction — share this so a taxable invoice is never rebuilt without
     // its tax line.
-    const createInvoiceTaxContext=()=>{
+    const createInvoiceTaxContext=({allowTaxItemWrite=true}={})=>{
       let taxSetup=null;
       const taxItemByState={};
       const loadInvoiceTaxSetup=async()=>{
@@ -1044,7 +1073,9 @@ export function createQBSyncEngine(ctx){
         if(!plan?.taxLine)return null;
         if(taxItemByState[plan.state])return taxItemByState[plan.state];
         const refs=await requiredAccountRefs([plan.taxAccountKey]);
-        const id=await ensurePortalSalesTaxItem(plan.state,refs[plan.taxAccountKey]);
+        const id=allowTaxItemWrite
+          ?await ensurePortalSalesTaxItem(plan.state,refs[plan.taxAccountKey])
+          :await requireExistingPortalSalesTaxItem(plan.state,refs[plan.taxAccountKey]);
         taxItemByState[plan.state]=id;return id;
       };
       // Returns {taxPlan:null,taxItemId:null} for a non-taxable invoice; throws
@@ -1682,6 +1713,15 @@ export function createQBSyncEngine(ctx){
       if(!requireDurableLinks())return{status:'blocked'};
       const approvedSOIds=[...new Set((options?.approvedSOIds||[]).map(String).filter(Boolean))];
       const expectedRows=Array.isArray(options?.expectedRows)?options.expectedRows:[];
+      const reviewedTaxSetup=qbConfig.taxPreflight&&String(qbConfig.taxPreflight.realm_id||'')===String(qbConfig.realm_id||'')?qbConfig.taxPreflight:null;
+      const reviewTaxOptions={
+        partnerTaxEnabled:!!reviewedTaxSetup?.partnerTaxEnabled,
+        taxBlockReason:({taxState})=>{
+          if(!reviewedTaxSetup)return'Taxable Estimate: read the sales-tax setup first so the QBO tax mechanism is known';
+          if(reviewedTaxSetup.partnerTaxEnabled)return QB_STATE_TAX_ACCOUNT_KEYS[taxState]?'':'Taxable Estimate: customer state "'+(taxState||'blank')+'" has no approved sales-tax account';
+          return(qbConfig.qbTaxRateMap||{})[taxState]?'':'Taxable Estimate: run the tax-rate canary for '+(taxState||'the customer state')+' first';
+        },
+      };
       if(!canary&&(!options?.approved||approvedSOIds.length<1||approvedSOIds.length>QB_MAX_REVIEWED_BATCH||expectedRows.length!==approvedSOIds.length)){
         nf('Sales-order batch blocked: approve a fresh read-only review of the exact sales orders first','error');return{status:'blocked',synced:0};
       }
@@ -1699,7 +1739,7 @@ export function createQBSyncEngine(ctx){
       if(!canary&&toSync.length!==approvedSOIds.length){nf('Sales-order batch changed since review — review it again','error');setQbSyncing(false);return{status:'blocked',synced:0}}
       if(!canary){
         const expectedById=new Map(expectedRows.map(row=>[String(row.salesOrderId),row]));
-        const current=buildQBSalesOrderPreviewRows(toSync,cust,{...(qbConfig.custQBMap||{}),...custQBMap},{},dP);
+        const current=buildQBSalesOrderPreviewRows(toSync,cust,{...(qbConfig.custQBMap||{}),...custQBMap},{},dP,reviewTaxOptions);
         if(current.some(row=>JSON.stringify(row)!==JSON.stringify(expectedById.get(row.salesOrderId)))){nf('Sales-order batch changed since review — review it again','error');setQbSyncing(false);return{status:'blocked',synced:0}}
       }
       const results=[];
@@ -1719,8 +1759,10 @@ export function createQBSyncEngine(ctx){
         setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('Sales-order sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return;
       }
       const effectiveProdQBMap={...(qbConfig.prodQBMap||{}),...(prodQBMap||{})};
+      // Estimate batches may use an existing, verified state tax item, but they
+      // never create or repair one as a side effect of approving sales orders.
+      const estimateTaxCtx=createInvoiceTaxContext({allowTaxItemWrite:false});
       for(const so of toSync){
-        if(safeNum(so.tax)>0||(!so.tax_exempt&&safeNum(so.tax_rate)>0)){const error='taxable Estimates await approved QBO tax-code mapping';log.details.push(so.id+' — BLOCKED: '+error);results.push({salesOrderId:String(so.id),result:'blocked',error});log.status='partial';if(!canary)break;continue}
         const c=cust.find(x=>x.id===so.customer_id);
         const cQBId=custQBMap[so.customer_id]||(qbConfig.custQBMap||{})[so.customer_id];
         if(!cQBId){const error='customer not synced to QBO';log.details.push(so.id+' — BLOCKED: '+error);results.push({salesOrderId:String(so.id),result:'blocked',error});log.status='partial';if(!canary)break;continue}
@@ -1753,21 +1795,47 @@ export function createQBSyncEngine(ctx){
         if(customerShipping>0)lines.push({DetailType:'SalesItemLineDetail',Amount:customerShipping,
           Description:'Customer shipping — 40000 Sales',
           SalesItemLineDetail:{Qty:1,UnitPrice:customerShipping,ItemRef:{value:String(fallbackSalesItemId)}}});
+        const taxSource=buildPortalSalesOrderTax(so,c,salesSubtotal,customerShipping);
+        let taxPlan=null,taxItemId=null;
+        try{
+          ({taxPlan,taxItemId}=await estimateTaxCtx.resolve({...so,customer_id:so.customer_id,total:taxSource.total,
+            tax:taxSource.tax,tax_rate:taxSource.taxRate,shipping:customerShipping}));
+        }catch(e){const error='$'+taxSource.tax.toFixed(2)+' sales tax — '+e.message;log.details.push(so.id+' — BLOCKED: '+error);results.push({salesOrderId:String(so.id),result:'blocked',error});log.status='partial';if(!canary)break;continue}
+        if(taxPlan){
+          lines.forEach(line=>{
+            if(line.DetailType!=='SalesItemLineDetail')return;
+            const shippingLine=String(line.Description||'').startsWith('Customer shipping');
+            line.SalesItemLineDetail={...line.SalesItemLineDetail,TaxCodeRef:{value:taxPlan.taxLine?'NON':shippingLine&&!taxPlan.shippingTaxable?'NON':'TAX'}};
+          });
+          if(taxPlan.taxLine)lines.push({DetailType:'SalesItemLineDetail',Amount:taxPlan.tax,
+            Description:'Sales tax — '+taxPlan.state+' '+taxPlan.ratePct+'% on $'+qbCurrency(taxPlan.taxable).toFixed(2),
+            SalesItemLineDetail:{Qty:1,UnitPrice:taxPlan.tax,ItemRef:{value:String(taxItemId),name:portalSalesTaxItemName(taxPlan.state)},TaxCodeRef:{value:'NON'}}});
+        }
         const qbEstimate={
           DocNumber:so.id,
           TxnDate:estimateDate,
           CustomerRef:{value:cQBId},
           Line:lines,
+          ...(taxPlan&&buildQBInvoiceTxnTaxDetail(taxPlan)?{TxnTaxDetail:buildQBInvoiceTxnTaxDetail(taxPlan)}:{}),
           PrivateNote:'Portal SO: '+so.id+(so.memo?' — '+so.memo:''),
           ...(soMap[so.id]?{Id:soMap[so.id],sparse:true}:{}),
         };
-        const estimateTotal=Math.round(lines.reduce((sum,line)=>sum+safeNum(line.Amount),0)*100)/100;
+        const estimateTotal=taxSource.total;
+        const verifyEstimateTax=row=>{
+          if(!taxPlan)return;
+          const storedTax=qbCurrency(row?.TxnTaxDetail?.TotalTax);
+          const expectedTax=taxPlan.taxLine?0:taxPlan.tax;
+          if(Math.abs(storedTax-expectedTax)>=0.005)throw new Error('Estimate sales tax did not match on API read-back ($'+storedTax.toFixed(2)+' vs $'+expectedTax.toFixed(2)+').');
+          if(taxPlan.taxLine&&!(row?.Line||[]).some(line=>line?.DetailType==='SalesItemLineDetail'
+            &&String(line.SalesItemLineDetail?.ItemRef?.value||'')===String(taxItemId)
+            &&Math.abs(safeNum(line.Amount)-taxPlan.tax)<0.005))throw new Error('Estimate read back without the $'+taxPlan.tax.toFixed(2)+' '+taxPlan.state+' sales-tax line.');
+        };
         const sameNumber=existingQBEstimates.filter(existing=>String(existing.DocNumber||'')===String(so.id));
         const exact=sameNumber.filter(existing=>String(existing.CustomerRef?.value||'')===String(cQBId)
           &&Math.abs(safeNum(existing.TotalAmt)-estimateTotal)<0.005
           &&String(existing.TxnDate||'').slice(0,10)===String(qbEstimate.TxnDate||'').slice(0,10));
         if(exact.length===1&&sameNumber.length===1){
-          try{const verified=await verifyCanaryReadback('Estimate',exact[0].Id,{docNumber:so.id,refField:'CustomerRef',refValue:cQBId,total:estimateTotal,txnDate:estimateDate});
+          try{const verified=await verifyCanaryReadback('Estimate',exact[0].Id,{docNumber:so.id,refField:'CustomerRef',refValue:cQBId,total:estimateTotal,txnDate:estimateDate});verifyEstimateTax(verified);
             await persistQbLink({mapKey:'qbSOMap',sourceIds:[so.id],qboId:verified.Id,log:{...log,details:[so.id+' — linked and verified QBO Estimate #'+verified.Id]},evidence:{result:'linked',batch_id:canary?null:log.ts,api_readback:true,doc_number:so.id,customer_id:cQBId,date:estimateDate,total:estimateTotal}});
             results.push({salesOrderId:String(so.id),result:'linked',qboId:String(verified.Id),total:estimateTotal});}
           catch(e){const error=e.message;log.details.push(so.id+' — VERIFY FAILED: '+error);results.push({salesOrderId:String(so.id),result:'failed',qboId:String(exact[0].Id),error});log.status='error';if(!canary)break;continue}
@@ -1779,7 +1847,7 @@ export function createQBSyncEngine(ctx){
         catch(e){const error=e.message;log.details.push(so.id+' — FAILED: '+error);results.push({salesOrderId:String(so.id),result:'failed',error});log.status='partial';if(!canary)break;continue}
         if(res?.Estimate?.Id){
           try{
-            const verified=await verifyCanaryReadback('Estimate',res.Estimate.Id,{docNumber:so.id,refField:'CustomerRef',refValue:cQBId,total:estimateTotal,txnDate:estimateDate});
+            const verified=await verifyCanaryReadback('Estimate',res.Estimate.Id,{docNumber:so.id,refField:'CustomerRef',refValue:cQBId,total:estimateTotal,txnDate:estimateDate});verifyEstimateTax(verified);
             await persistQbLink({mapKey:'qbSOMap',sourceIds:[so.id],qboId:verified.Id,log:{...log,details:[so.id+' — created and verified QBO Estimate #'+verified.Id]},evidence:{result:'created',batch_id:canary?null:log.ts,api_readback:true,doc_number:so.id,customer_id:cQBId,date:estimateDate,total:estimateTotal}});
             results.push({salesOrderId:String(so.id),result:'created',qboId:String(verified.Id),total:estimateTotal});
             log.details.push('READ-BACK VERIFIED: '+so.id+' · QBO Estimate #'+verified.Id+' · $'+safeNum(verified.TotalAmt).toFixed(2));

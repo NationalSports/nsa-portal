@@ -468,7 +468,15 @@ export default function QBPage(){
     const selectedCanaryPO=canaryPOs.find(group=>String(group.poId)===String(qbCanaryPOId));
     const poPreviewRows=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{});
     const poBatchRows=(poBatchReview?.rows||[]).filter(row=>row.action==='ready').slice(0,poBatchLimit);
-    const salesOrderPreviewRows=buildQBSalesOrderPreviewRows(sos,cust,_custQBMap,qbConfig.qbSOMap||{},dP);
+    const taxPreflight=qbConfig.taxPreflight&&String(qbConfig.taxPreflight.realm_id||'')===String(qbConfig.realm_id||'')?qbConfig.taxPreflight:null;
+    const astTaxOn=!!taxPreflight?.partnerTaxEnabled;
+    const taxableEstimateBlock=state=>{
+      if(!taxPreflight)return'Taxable Estimate: read the sales-tax setup first (Settings tab) so the QBO tax mechanism is known';
+      if(astTaxOn)return QB_STATE_TAX_ACCOUNT_KEYS[state]?'':'Taxable Estimate: customer state "'+(state||'blank')+'" has no approved sales-tax account';
+      return(qbConfig.qbTaxRateMap||{})[state]?'':'Taxable Estimate: run the tax-rate canary for '+(state||'the customer state')+' first (Settings tab)';
+    };
+    const salesOrderPreviewRows=buildQBSalesOrderPreviewRows(sos,cust,_custQBMap,qbConfig.qbSOMap||{},dP,
+      {partnerTaxEnabled:astTaxOn,taxBlockReason:({taxState})=>taxableEstimateBlock(taxState)});
     const salesOrderBatchRows=(salesOrderBatchReview?.rows||[]).filter(row=>row.action==='ready').slice(0,salesOrderBatchLimit);
     const poPreviewById=new Map(poPreviewRows.map(row=>[String(row.poId),row]));
     const poAccountSkus=poId=>poPreviewById.get(String(poId))?.accountSkus||[];
@@ -479,8 +487,6 @@ export default function QBPage(){
     // that is the state's verified TaxRate; under Automated Sales Tax no manual
     // rate can exist, so it is the CustomSalesTax override code instead. Gate on
     // whichever one actually applies, read from the stored tax preflight.
-    const taxPreflight=qbConfig.taxPreflight||null;
-    const astTaxOn=!!taxPreflight?.partnerTaxEnabled;
     const taxableInvoiceBlock=state=>{
       if(!taxPreflight)return'Taxable invoice: read the sales-tax setup first (Settings tab) so the right tax mechanism is known';
       // Under AST the tax posts as its own line against the state's approved
@@ -500,7 +506,8 @@ export default function QBPage(){
     const invoiceBatchRows=(invoiceBatchReview?.rows||[]).filter(row=>row.action==='ready').slice(0,invoiceBatchLimit);
     const invoiceCanaryBlock=selectedCanaryInvoice&&!_custQBMap[selectedCanaryInvoice.customer_id]?'Sync this invoice customer first'
       :selectedCanaryInvoice&&safeNum(selectedCanaryInvoice.tax)>0?taxableInvoiceBlock(invoiceCanaryTaxState):'';
-    const soCanaryBlock=selectedCanarySO&&!_custQBMap[selectedCanarySO.customer_id]?'Sync this sales-order customer first':'';
+    const selectedSalesOrderPreview=selectedCanarySO&&salesOrderPreviewRows.find(row=>row.salesOrderId===String(selectedCanarySO.id));
+    const soCanaryBlock=selectedSalesOrderPreview?.action==='blocked'?selectedSalesOrderPreview.reason:'';
     const poCanaryBlock=selectedCanaryPO?.invalidReason||'';
     const runCustomerCanary=async()=>{
       if(!qbCanaryCustomerId)return;
@@ -633,8 +640,8 @@ export default function QBPage(){
     };
     const runSalesOrderCanary=async()=>{
       if(!selectedCanarySO||soCanaryBlock)return;
-      const preview=buildQBSalesOrder(selectedCanarySO);
-      if(!window.confirm('Create or link exactly ONE QBO Estimate?\n\nPortal sales order: '+selectedCanarySO.id+'\nCustomer: '+preview.customerRef+'\nTotal: $'+safeNum(preview.total).toFixed(2)+'\n\nThis is non-posting and will be verified by API read-back.')){nf('Sales-order canary cancelled — nothing was sent');return}
+      const preview=selectedSalesOrderPreview||buildQBSalesOrder(selectedCanarySO);
+      if(!window.confirm('Create or link exactly ONE QBO Estimate?\n\nPortal sales order: '+selectedCanarySO.id+'\nCustomer: '+(preview.customer||preview.customerRef)+'\nTax: $'+safeNum(preview.tax).toFixed(2)+'\nTotal: $'+safeNum(preview.total).toFixed(2)+'\n\nThis is non-posting and will be verified by API read-back.')){nf('Sales-order canary cancelled — nothing was sent');return}
       await syncSalesOrders({}, {}, {canarySOId:selectedCanarySO.id});
     };
     const reviewPurchaseOrderCanary=()=>{
@@ -694,7 +701,8 @@ export default function QBPage(){
       nf('Sales-order readiness review complete — no QBO records changed');
     };
     const runSalesOrderBatch=async()=>{
-      const current=buildQBSalesOrderPreviewRows(sos,cust,qbConfig.custQBMap||{},qbConfig.qbSOMap||{},dP);
+      const current=buildQBSalesOrderPreviewRows(sos,cust,qbConfig.custQBMap||{},qbConfig.qbSOMap||{},dP,
+        {partnerTaxEnabled:astTaxOn,taxBlockReason:({taxState})=>taxableEstimateBlock(taxState)});
       const currentById=new Map(current.map(row=>[row.salesOrderId,row]));
       if(salesOrderBatchRows.some(row=>JSON.stringify(currentById.get(row.salesOrderId))!==JSON.stringify(row))){nf('Sales-order batch changed since review — review it again','error');setSalesOrderBatchApproved(false);return}
       await syncSalesOrders({}, {}, {approved:salesOrderBatchApproved,approvedSOIds:salesOrderBatchRows.map(row=>row.salesOrderId),expectedRows:salesOrderBatchRows});
@@ -947,11 +955,11 @@ export default function QBPage(){
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header"><h2>Controlled Sales-Order Batch</h2></div>
           <div className="card-body">
-            <p style={{fontSize:11,color:'#475569'}}>Reviews portal readiness first, then creates or links only the exact listed non-posting QBO Estimates. Every Estimate must match its reviewed customer, date and total by API read-back before the durable link is saved. The batch stops after the first failure.</p>
+            <p style={{fontSize:11,color:'#475569'}}>Reviews portal readiness first, then creates or links only the exact listed non-posting QBO Estimates. Portal-calculated tax is carried through the approved state mechanism; Automated Sales Tax batches require an existing verified state liability item and never create one as a side effect. Every Estimate must match its reviewed customer, date, tax and total by API read-back before the durable link is saved. The batch stops after the first failure.</p>
             <button className="btn btn-sm" disabled={qbSyncing||!livePreflightReady} onClick={reviewSalesOrderBatch}>Review Sales Orders — No QBO Changes</button>
             {salesOrderBatchReview&&<>
               <p>Readiness: {JSON.stringify(salesOrderBatchReview.counts)}. Proposed batch: {salesOrderBatchRows.length} ready sales orders.</p>
-              <table><thead><tr><th>Portal SO</th><th>Customer</th><th>Date</th><th>Lines</th><th>Total</th></tr></thead><tbody>{salesOrderBatchRows.map(row=><tr key={row.salesOrderId}><td>{row.salesOrderId}</td><td>{row.customer}</td><td>{row.date}</td><td>{row.lineCount}</td><td>${row.total.toFixed(2)}</td></tr>)}</tbody></table>
+              <table><thead><tr><th>Portal SO</th><th>Customer</th><th>Date</th><th>Lines</th><th>Tax</th><th>Total</th></tr></thead><tbody>{salesOrderBatchRows.map(row=><tr key={row.salesOrderId}><td>{row.salesOrderId}</td><td>{row.customer}</td><td>{row.date}</td><td>{row.lineCount}</td><td>${row.tax.toFixed(2)}{row.taxState?' '+row.taxState:''}</td><td>${row.total.toFixed(2)}</td></tr>)}</tbody></table>
               <label style={{marginRight:12}}>Batch size <select aria-label="Sales order batch size" value={salesOrderBatchLimit} disabled={qbSyncing} onChange={e=>{setSalesOrderBatchLimit(Number(e.target.value));setSalesOrderBatchApproved(false)}}>{QB_BATCH_SIZES.filter(size=>size<=100).map(size=><option key={size} value={size}>{size}</option>)}</select></label>
               <label><input type="checkbox" checked={salesOrderBatchApproved} disabled={qbSyncing||!salesOrderBatchRows.length} onChange={e=>setSalesOrderBatchApproved(e.target.checked)}/> I approve only the listed sales orders in this batch.</label>
               <button className="btn btn-primary btn-sm" disabled={qbSyncing||!salesOrderBatchApproved||!salesOrderBatchRows.length} onClick={runSalesOrderBatch}>Run Reviewed Sales-Order Batch</button>
