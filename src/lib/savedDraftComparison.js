@@ -38,14 +38,16 @@ export function savedDocumentMatchesDraft(payload, row) {
 // Called only with freshly loaded, complete cloud data. Compare every candidate
 // synchronously before awaiting storage, so later UI mutations cannot become
 // evidence of a successful cloud save. Acknowledge exact revisions only.
-export async function reconcileSavedOrderDrafts({owner, drafts, orders, journal, currentOwner}) {
-  if (!owner || currentOwner() !== owner) return;
-  const byId = new Map(orders.map(row => [row.id, row]));
+export async function reconcileSavedDocumentDrafts({owner, drafts, documents, table, journal, currentOwner}) {
+  const required = {
+    sales_orders: ['_recoveryHydrated', '_itemsHydrated', '_decosHydrated', '_artHydrated', '_jobsHydrated', '_posHydrated', '_picksHydrated'],
+    estimates: ['_recoveryHydrated', '_itemsHydrated', '_decosHydrated', '_artHydrated'],
+  }[table];
+  if (!required || !owner || currentOwner() !== owner) return;
+  const byId = new Map(documents.map(row => [row.id, row]));
   const receipts = drafts.filter(draft => {
     const row = byId.get(draft.id);
-    return draft.owner === owner && draft.table === 'sales_orders' &&
-      ['_recoveryHydrated', '_itemsHydrated', '_decosHydrated', '_artHydrated', '_jobsHydrated', '_posHydrated', '_picksHydrated']
-        .every(key => row?.[key] === true) && savedDocumentMatchesDraft(draft.payload, row);
+    return draft.owner === owner && draft.table === table && required.every(key => row?.[key] === true) && savedDocumentMatchesDraft(draft.payload, row);
   }).map(({key, owner: draftOwner, revision}) => ({key, owner: draftOwner, revision}));
   await Promise.all(receipts.map(receipt => currentOwner() === owner ? journal.acknowledge(receipt) : false));
 }

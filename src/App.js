@@ -1,8 +1,10 @@
+import {createCoalescedReload} from './lib/coalescedReload';
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import * as Sentry from '@sentry/react';
 import './portal.css';
 import DraftRecoveryPanel from './DraftRecoveryPanel';
+import {createRepSaveNoticeFilter} from './lib/repSaveNoticeScope';
 import OrderMemoDialog,{MEMO_DRAFT_TABLE} from './OrderMemoDialog';
 import {draftJournal} from './lib/draftJournal';
 import { classifySaveAlert } from './lib/saveAlertClassification';
@@ -2451,7 +2453,7 @@ export default function App(){
   const[omgProbeLines,setOmgProbeLines]=useState([]);
   const[dbLoading,setDbLoading]=useState(!!supabase);const[dbError,setDbError]=useState(null);const _dbReady=useRef(false);const _dbLoadSuccess=useRef(false);
   const _runPollRef=useRef(null);const _lastNavRefreshAt=useRef(0);
-  const[failedSaveCount,setFailedSaveCount]=useState(_dbSaveFailedIds.size);_setOnFailedIdsChange(setFailedSaveCount);
+  const[failedSaveRevision,setFailedSaveRevision]=useState(0);_setOnFailedIdsChange(()=>setFailedSaveRevision(value=>value+1));
   const[failedSaveOpen,setFailedSaveOpen]=useState(false);
   const[failedSaveBusy,setFailedSaveBusy]=useState(false);
   // Outbox entries whose base version the server moved past — need a human decision (apply anyway /
@@ -3004,23 +3006,19 @@ export default function App(){
     })();
     // ─── Supabase Realtime subscriptions ───
     const channels=[];
+    let stopRealtimeReload=()=>{};
     if(supabase){
-      let _rtTimer=null;
       const _jsonEq=(a,b)=>{try{return JSON.stringify(a)===JSON.stringify(b)}catch{return false}};
       // Selective reload bookkeeping: realtime events queue their entity group here and the
       // debounced reload fetches only those groups. '__all__' (tab-visibility regain / unknown
       // table) forces a full reload. Pending groups are consumed only once a load actually
       // starts, so deferred reloads (save in flight) keep accumulating events.
-      const _rtPending=new Set();
       const _RT_GROUP={estimates:'estimates',sales_orders:'sales_orders',invoices:'invoices',messages:'messages',customers:'customers',products:'products',so_item_pick_lines:'sales_orders',assigned_todos:'assigned_todos',todo_comments:'assigned_todos'};
-      const reloadAll=async()=>{
-        // Skip reload if saves are in-flight or just finished — prevents stale data from overwriting local changes
-        if(_dbSavingCount>0){console.log('[DB] Reload deferred — save in progress');_rtTimer=setTimeout(reloadAll,1000);return}
-        if(Date.now()-_dbLastSaveAt<1500){console.log('[DB] Reload deferred — save just finished');_rtTimer=setTimeout(reloadAll,1500);return}
-        const groups=(_rtPending.size===0||_rtPending.has('__all__'))?null:new Set(_rtPending);
-        _rtPending.clear();
+      const reloadAll=async(pendingGroups)=>{
+        if(cancelled)return;
+        const groups=pendingGroups.has('__all__')?null:pendingGroups;
         const _has=g=>!groups||groups.has(g);
-        const d=await _dbLoad(groups?{only:groups}:{});if(!d||!d.hasData)return;
+        const d=await _dbLoad(groups?{only:groups}:{});if(cancelled||!d||!d.hasData)return;
         // If a child-table query (items/decorations) timed out or failed mid-load, this load is
         // partial — estimates/SOs would come back with empty items. Skip it so the hollowed-out
         // data never reaches state (which would then trip the "0 items but DB has N" save guard).
@@ -3094,7 +3092,13 @@ export default function App(){
       // 10s (was 2s): every reload is a burst of REST page-fetches per client, and with several
       // active users the 2s debounce turned each save into an all-client re-download storm that
       // saturated the database. The 60s poll remains the freshness backstop.
-      const debouncedReloadGroups=(groups,delay=10000)=>{groups.forEach(g=>_rtPending.add(g));if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,delay)};
+      const realtimeReload=createCoalescedReload({
+        load:reloadAll,
+        canRun:()=>!cancelled&&_dbReady.current&&!document.hidden&&_dbSavingCount===0&&Date.now()-_dbLastSaveAt>=1500,
+        onError:error=>console.warn('[DB] Realtime reload failed:',error?.message||error),
+      });
+      stopRealtimeReload=()=>realtimeReload.stop();
+      const debouncedReloadGroups=(groups,delay=10000)=>realtimeReload.enqueue(groups,delay);
       const debouncedReload=(tbl,delay=10000)=>debouncedReloadGroups([_RT_GROUP[tbl]||'__all__'],delay);
       // Subscribe to core tables + pick_lines for instant warehouse sync.
       // products is intentionally excluded: the full 53k-row catalog re-download triggered
@@ -3126,7 +3130,7 @@ export default function App(){
       document.addEventListener('visibilitychange',onVis);
       channels._onVis=onVis;
     }
-    return()=>{cancelled=true;_realtimeHealthy=false;channels.forEach(ch=>supabase?.removeChannel(ch));if(channels._onVis)document.removeEventListener('visibilitychange',channels._onVis)};
+    return()=>{cancelled=true;stopRealtimeReload();_realtimeHealthy=false;channels.forEach(ch=>supabase?.removeChannel(ch));if(channels._onVis)document.removeEventListener('visibilitychange',channels._onVis)};
   },[]);
 
   // NetSuite history is large and read-only. Load it after the operational shell is usable so
@@ -6082,6 +6086,14 @@ export default function App(){
   // may move follow_up_at; inspecting an order must leave its reminder due.
   const _todoClickedThrough=()=>{};
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
+  const isMySaveNotice=useMemo(()=>createRepSaveNoticeFilter({repId:cu?.id,customers:cust,salesOrders:sos,estimates:ests,invoices:invs}),[cu?.id,cust,sos,ests,invs]);
+  const visibleOutboxConflicts=outboxConflicts.filter(isMySaveNotice);
+  const visibleFailedSaveIds=useMemo(()=>{
+    const entries=new Map(_outboxList().map(entry=>[entry.id,entry]));
+    return [..._dbSaveFailedIds].filter(id=>isMySaveNotice(entries.get(id)||{id}));
+  },[failedSaveRevision,isMySaveNotice,outboxConflicts]);
+  const failedSaveCount=visibleFailedSaveIds.length;
+
   const[uiMode,setUiMode]=useState(()=>{try{return localStorage.getItem('nsa_ui_mode')||'classic'}catch{return'classic'}});// defaults to the classic portal until the team opts into the redesign// 'new' | 'classic' — portal-wide redesign switch. Every redesigned surface keys off this and falls back to its legacy UI in classic mode.
   const toggleUiMode=()=>setUiMode(m=>{const n=m==='new'?'classic':'new';try{localStorage.setItem('nsa_ui_mode',n)}catch{}return n});
   const ActiveOrderEditor=uiMode==='new'?OrderEditor:OrderEditorClassic;// classic gets the frozen pre-redesign editor, not a reskin
@@ -38049,14 +38061,14 @@ export default function App(){
           <button disabled={failedSaveBusy} onClick={async()=>{
             setFailedSaveBusy(true);
             try{
-              const {saved,failed,skipped}=await _retryFailedSaves({manual:true});
+              const {saved,failed,skipped}=await _retryFailedSaves({manual:true,ids:visibleFailedSaveIds});
               nf([saved?saved+' saved':'',failed?failed+' still failing':'',skipped?skipped+' need review or are already saving':''].filter(Boolean).join(' · ')||'Nothing to retry',failed||skipped?'error':'success');
             }finally{setFailedSaveBusy(false);}
           }} style={{background:'#92400e',border:'none',color:'#fff',cursor:failedSaveBusy?'wait':'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap',opacity:failedSaveBusy?0.6:1}}>{failedSaveBusy?'Retrying…':'Retry now'}</button>
           <button onClick={()=>setFailedSaveOpen(o=>!o)} style={{background:'none',border:'none',color:'#92400e',cursor:'pointer',fontWeight:700,fontSize:11,padding:'2px 4px'}}>{failedSaveOpen?'Hide details ▲':'Details ▼'}</button>
         </div>
         {failedSaveOpen&&<div style={{padding:'8px 16px 10px',borderTop:'1px solid #fde68a',background:'#fffbeb',maxHeight:240,overflowY:'auto',fontWeight:400}}>
-          {(()=>{const ids=[..._dbSaveFailedIds];if(!ids.length)return null;
+          {(()=>{const ids=visibleFailedSaveIds;if(!ids.length)return null;
             return ids.slice(0,50).map(id=>{const err=_dbSaveFailedErrors.get(id);return(
               <div key={id} style={{fontSize:11,padding:'4px 0',borderBottom:'1px dashed #fde68a',display:'flex',gap:8,alignItems:'flex-start'}}>
                 <span style={{fontWeight:700,minWidth:90,color:'#92400e'}}>{id}</span>
@@ -38067,14 +38079,14 @@ export default function App(){
         </div>}
       </div>}
       {memoCommand&&memoCommand.ownerId===String(cu?.id)&&<OrderMemoDialog inlineTarget={memoCommand.id===eSO?.id?memoInlineTarget:null} key={String(cu?.id)+':'+memoCommand.id} initial={memoCommand} owner={cu?.id} saveCommand={_dbSaveMemoCommand} onSaved={(id,memo)=>{if(memoOwnerRef.current===memoCommand.ownerId)memoSaved(id,memo);}} onClose={()=>{if(memoOwnerRef.current===memoCommand.ownerId)setMemoCommand(current=>current===memoCommand?null:current);}} onPendingChange={pending=>{const key='memo:'+memoCommand.id;if(pending)_dbSavePendingIds.add(key);else _dbSavePendingIds.delete(key);}}/>}
-      <DraftRecoveryPanel owner={cu?.id} onReview={(payload,table)=>{if(table===MEMO_DRAFT_TABLE){if(dirtyRef.current||_dbSavePendingIds.has(payload.id)||_dbSaveFailedIds.has(payload.id)){nf('Save or review the open order changes before recovering its memo.','error');return;}if(!memoCommandsReady){nf('Memo saving is not available yet. Your recovery copy is kept.','error');return;}setMemoCommand({...payload,ownerId:String(cu.id)});return;}const entry={table,id:payload.id,payload,baseVersion:payload._obBaseVersion??payload._version??null,ts:Date.now()};setOutboxConflicts(prev=>[...prev.filter(x=>x.table!==table||x.id!==payload.id),entry])}}/>
-      {outboxConflicts.length>0&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b',fontSize:12,fontWeight:600}}>
+      <DraftRecoveryPanel owner={cu?.id} isVisible={isMySaveNotice} onReview={(payload,table)=>{if(table===MEMO_DRAFT_TABLE){if(dirtyRef.current||_dbSavePendingIds.has(payload.id)||_dbSaveFailedIds.has(payload.id)){nf('Save or review the open order changes before recovering its memo.','error');return;}if(!memoCommandsReady){nf('Memo saving is not available yet. Your recovery copy is kept.','error');return;}setMemoCommand({...payload,ownerId:String(cu.id)});return;}const entry={table,id:payload.id,payload,baseVersion:payload._obBaseVersion??payload._version??null,ts:Date.now()};setOutboxConflicts(prev=>[...prev.filter(x=>x.table!==table||x.id!==payload.id),entry])}}/>
+      {visibleOutboxConflicts.length>0&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b',fontSize:12,fontWeight:600}}>
         <div style={{padding:'8px 16px',display:'flex',alignItems:'center',gap:8}}>
           <span style={{fontSize:14}}>&#9888;</span>
-          <span style={{flex:1}}>{outboxConflicts.length} unsaved edit{outboxConflicts.length>1?'s':''} from this browser need review before saving. Review each one below &mdash; nothing is overwritten until you choose.</span>
+          <span style={{flex:1}}>{visibleOutboxConflicts.length} unsaved edit{visibleOutboxConflicts.length>1?'s':''} from this browser need review before saving. Review each one below &mdash; nothing is overwritten until you choose.</span>
         </div>
         <div style={{padding:'0 16px 10px',fontWeight:400}}>
-          {outboxConflicts.map(en=>{
+          {visibleOutboxConflicts.map(en=>{
             const label=en.id+(en.payload?.customer_name?' — '+en.payload.customer_name:(en.payload?.name?' — '+en.payload.name:''));
             const key=en.table+':'+en.id;
             return(<div key={key} style={{fontSize:11,padding:'6px 0',borderBottom:'1px dashed #fecaca',display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>

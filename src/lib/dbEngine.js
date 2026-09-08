@@ -15,7 +15,7 @@
 // src/__tests__/dbEngine.characterization.test.js.
 // ═══════════════════════════════════════════════════════════════════════
 import { protectDocumentDraft, currentDraftOwner, draftJournal } from './draftJournal';
-import { savedDocumentMatchesDraft, reconcileSavedOrderDrafts } from './savedDraftComparison';
+import { savedDocumentMatchesDraft, reconcileSavedDocumentDrafts } from './savedDraftComparison';
 import { createSaveRetryCoordinator } from './saveRetryCoordinator';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './requestBreaker';
@@ -575,7 +575,7 @@ const _dbLoad = async (opts={}) => {
       // _itemsHydrated: true only when estimate_items loaded cleanly this session. Lets save guards tell a
       // deliberate rep deletion (hydrated→empty) apart from items vanishing on a timed-out load (never hydrated).
       const _estItemsHydrated=!_lastLoadTimedOut.has('estimate_items');if(_estItemsHydrated)_everHydratedItems.add(est.id);
-      return{...est,items,art_files,..._decoPosGuard(est),_itemsHydrated:_estItemsHydrated,_decosHydrated:!_lastLoadTimedOut.has('estimate_item_decorations')&&!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files'),_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
+      return{...est,items,art_files,..._decoPosGuard(est),_recoveryHydrated:!['estimates','estimate_items','estimate_item_decorations','estimate_art_files'].some(t=>_lastLoadTimedOut.has(t)||_unconfirmedLoadTables.has(t)||_truncatedTables.has(t)),_itemsHydrated:_estItemsHydrated,_decosHydrated:!_lastLoadTimedOut.has('estimate_item_decorations')&&!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files'),_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
     // Sales Orders: attach items (with decorations, pick_lines, po_lines), art_files, firm_dates, jobs
     const sales_orders=soRaw.map(so=>{
       // Recycled-number carry-over guard: a reused SO id can inherit jobs/art from the order that
@@ -690,10 +690,11 @@ const _dbLoad = async (opts={}) => {
     // are set, instead of being hand-synced across App.js call sites.
     const _parentTimedOut=_custTimedOut||_soTimedOut||_estTimedOut||_invTimedOut||_msgTimedOut;
     const recoveryCandidates=await recoveryDrafts;
-    const recoveryTables=['sales_orders','so_items','so_item_decorations','so_item_po_lines','so_item_pick_lines','so_jobs','so_art_files','so_firm_dates'];
-    if((!only||only.has('sales_orders'))&&!recoveryTables.some(table=>_lastLoadTimedOut.has(table)||_unconfirmedLoadTables.has(table)||_truncatedTables.has(table))){
-      // Does not write orders or retry stale payloads. Storage failure keeps the copies.
-      reconcileSavedOrderDrafts({owner:recoveryOwner,drafts:recoveryCandidates,orders:sales_orders,journal:draftJournal,currentOwner:currentDraftOwner}).catch(error=>console.warn('[Draft recovery] Could not confirm saved copies:',error.message));
+    for(const [table,documents] of [['sales_orders',sales_orders],['estimates',estimates]]){
+      if(only&&!only.has(table))continue;
+      // Each document's _recoveryHydrated flag covers its own full set of tables.
+      // Storage failure keeps the copies; reconciliation never writes cloud data.
+      reconcileSavedDocumentDrafts({owner:recoveryOwner,drafts:recoveryCandidates,documents,table,journal:draftJournal,currentOwner:currentDraftOwner}).catch(error=>console.warn('[Draft recovery] Could not confirm saved copies:',error.message));
     }
     return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_custTimedOut,_soTimedOut,_estTimedOut,_invTimedOut,_msgTimedOut,_parentTimedOut,_coreOnly:coreOnly};
   }catch(e){console.error('[DB] Load failed:',e);return null}
@@ -3730,10 +3731,10 @@ const _rememberSaveRetry=(table,payload)=>{
   const receipt=_saveRetryCoordinator.begin(currentDraftOwner(),table,payload);
   _saveRetryCoordinator.finish(receipt,false);
 };
-const _retryFailedSaves=({manual=false}={})=>{
+const _retryFailedSaves=({manual=false,ids:requestedIds=null}={})=>{
  const owner=currentDraftOwner();
  return _saveRetryCoordinator.retry({
-  ids:[..._dbSaveFailedIds].filter(id=>manual||(!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000)&&!_permDenialParked(id))),
+  ids:[..._dbSaveFailedIds].filter(id=>!requestedIds||requestedIds.includes(id)).filter(id=>manual||(!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000)&&!_permDenialParked(id))),
   owner,
   canRetry:id=>currentDraftOwner()===owner&&!_isSessionDead()&&_dbSaveFailedIds.has(id)&&!_dbSavePendingIds.has(id),
   save:(table,payload)=>{
