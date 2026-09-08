@@ -25449,7 +25449,7 @@ export default function App(){
   // renders the union of these + savedBills, so pushed history survives cleared localStorage and
   // the local cache cap. Loaded by loadAppliedLedger alongside the dedup key Set.
   const[serverBills,setServerBills]=useState([]);
-  const[billHistFilter,setBillHistFilter]=useState('pushed');// Bill History (quiet, bottom of the unified screen): pushed | all — review/notpushed retired, the sections above carry that state
+  const[billHistFilter,setBillHistFilter]=useState('pushed');// Bill History: portal-or-QB | portal | QBO | all
   const[billHistVendor,setBillHistVendor]=useState('all');// Bill History / Look-at-later: filter by vendor
   const[billHistTime,setBillHistTime]=useState('all');// Bill History / Look-at-later: filter by time range (all|today|7d|30d)
   const[billPushModal,setBillPushModal]=useState(null);// {cleanBills:[...],problemBills:[{bill,errs}]} — styled push-problems dialog
@@ -29190,6 +29190,47 @@ export default function App(){
       return false;
     };
 
+    // Persist QBO success separately from Portal apply state. The old path kept
+    // this only in nsa_saved_bills, which is browser-origin local: a push from a
+    // deploy preview therefore looked completely unsynced on production. The
+    // RPC upserts only rows the client already treats as Portal-complete, and
+    // returns the durable count so any receipt that stayed browser-only is loud.
+    const _recordQboBillReceipts=async(receipts,retries=3)=>{
+      const unique=new Map();
+      (receipts||[]).forEach(r=>{
+        const rawDoc=String(r?.doc_number==null?'':r.doc_number).trim();const d=_docNorm(rawDoc);const id=String(r?.qb_bill_id||'').trim();
+        if(!d||!id)return;
+        const row={...r,doc_number:rawDoc,is_credit:!!r.is_credit,qb_bill_id:id,qb_message:r.qb_message||'',qb_synced_at:r.qb_synced_at||new Date().toISOString()};
+        unique.set((row.is_credit?'1':'0')+'|'+d,row);
+      });
+      const payload=[...unique.values()];
+      if(!payload.length)return{saved:0,total:0,error:null};
+      if(!supabase)return{saved:0,total:payload.length,error:new Error('server ledger unavailable')};
+      let lastErr=null;
+      for(let i=0;i<=retries;i++){
+        if(i)await new Promise(r=>setTimeout(r,800*Math.pow(2,i-1)));
+        try{
+          const{data,error}=await supabase.rpc('record_qbo_bill_receipts',{p_receipts:payload});
+          if(!error){
+            const keyOf=r=>(r.is_credit?'1':'0')+'|'+_docNorm(r.doc_norm||r.doc_number);
+            const byKey=new Map(payload.map(r=>[keyOf(r),r]));
+            setServerBills(prev=>{
+              const seen=new Set(prev.map(keyOf));
+              const updated=prev.map(row=>{
+                const receipt=byKey.get(keyOf(row));if(!receipt)return row;
+                return{...row,qb_status:'success',qb_bill_id:receipt.qb_bill_id,qb_message:receipt.qb_message,qb_synced_at:receipt.qb_synced_at,updated_at:new Date().toISOString()};
+              });
+              const add=payload.filter(r=>!seen.has(keyOf(r))).map((r,i)=>({id:'receipt-'+Date.now()+'-'+i,doc_norm:_docNorm(r.doc_number),doc_number:r.doc_number,si_doc_number:r.si_doc_number,is_credit:r.is_credit,vendor:r.vendor,po_number:r.po_number,doc_total:r.doc_total,source:r.source,applied_by:r.applied_by,status:'pushed',portal_status:'success',raw_meta:r.raw_meta,qb_status:'success',qb_bill_id:r.qb_bill_id,qb_message:r.qb_message,qb_synced_at:r.qb_synced_at,applied_at:new Date().toISOString(),updated_at:new Date().toISOString()}));
+              return add.length?[...add,...updated]:updated;
+            });
+            return{saved:Number(data)||0,total:payload.length,error:null};
+          }
+          lastErr=error;
+        }catch(e){lastErr=e}
+      }
+      return{saved:0,total:payload.length,error:lastErr||new Error('unknown receipt save error')};
+    };
+
     // True if the bill being pulled is currently SET ASIDE in Look at Later — parked or
     // resolved there (server-backed via supplier_bill_holds, loaded into savedBills by
     // loadBillHolds), so a fresh pull skips it on EVERY machine, not just the one that parked
@@ -30190,9 +30231,9 @@ export default function App(){
         if(!billsByDoc.has(key))billsByDoc.set(key,[]);
         billsByDoc.get(key).push(qbBill);
       });
-      const setRowResult=(bi,b,status,message)=>{
-        setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:status,qbMsg:message}:p)}));
-        return {[b.id]:{qbStatus:status,qbMsg:message,portalStatus:b.portalStatus||null,portalMsg:b.portalMsg||''}};
+      const setRowResult=(bi,b,status,message,extra={})=>{
+        setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:status,qbMsg:message,...extra}:p)}));
+        return {[b.id]:{qbStatus:status,qbMsg:message,portalStatus:b.portalStatus||null,portalMsg:b.portalMsg||'',...extra}};
       };
 
       let success=0,failed=0;
@@ -30385,7 +30426,7 @@ export default function App(){
           }
           const status=portalWarning?'partial':'success';
           const msg=portalWarning||('QB Bill #'+qboBillId+(created?'':' (existing verified)'));
-          Object.assign(qbResults,setRowResult(bi,b,status,msg));
+          Object.assign(qbResults,setRowResult(bi,b,status,msg,{qbBillId:String(qboBillId),qbSyncedAt:new Date().toISOString()}));
           if(portalWarning)failed++;else success++;
         }catch(e){
           const msg=e.message||'Bill sync failed';
@@ -30395,13 +30436,19 @@ export default function App(){
       }
 
       setBillImport(x=>({...x,uploading:false}));
+      const sourceRows=new Map((billImport.parsed||[]).map(row=>[row.id,row]));
+      const receiptOutcome=await _recordQboBillReceipts(Object.entries(qbResults).map(([id,result])=>{
+        const source=sourceRows.get(id);const p=source?.parsed||{};
+        if(!result.qbBillId||!source)return null;
+        const rawMeta={...p};delete rawMeta.rawText;delete rawMeta._wizard;delete rawMeta._applyKey;delete rawMeta._qbBackfill;
+        return{doc_number:p.doc_number,si_doc_number:p.si_doc_number,is_credit:!!p.is_credit,vendor:p.vendor||p.supplier||'',po_number:p.po_number||'',doc_total:safeNum(p.doc_total)||null,source:p.source||source.source||'',applied_by:cu?.name||cu?.email||'',raw_meta:rawMeta,qb_bill_id:result.qbBillId,qb_message:result.qbMsg,qb_synced_at:result.qbSyncedAt};
+      }).filter(Boolean));
       setSavedBills(prev=>{
-        const sourceRows=new Map((billImport.parsed||[]).map(row=>[row.id,row]));
         const persistedIds=new Set();
         const updated=prev.map(sb=>{
           const result=qbResults[sb.id];
           if(result)persistedIds.add(sb.id);
-          return result?{...sb,qbStatus:result.qbStatus,qbMsg:result.qbMsg||'',...(result.portalStatus?{portalStatus:result.portalStatus,portalMsg:result.portalMsg||''}:{})}:sb;
+          return result?{...sb,qbStatus:result.qbStatus,qbMsg:result.qbMsg||'',qbBillId:result.qbBillId,qbSyncedAt:result.qbSyncedAt,...(result.portalStatus?{portalStatus:result.portalStatus,portalMsg:result.portalMsg||''}:{})}:sb;
         });
         // Server-ledger rows are not necessarily present in this browser's
         // local cache. Persist their QBO result so Bill History keeps the
@@ -30412,12 +30459,13 @@ export default function App(){
           const source=sourceRows.get(id);if(!source)return;
           const {_qbBackfill,...cleanSource}=source;
           const cleanParsed={...(source.parsed||{})};delete cleanParsed._qbBackfill;
-          updated.push({...cleanSource,parsed:cleanParsed,qbStatus:result.qbStatus,qbMsg:result.qbMsg||'',...(result.portalStatus?{portalStatus:result.portalStatus,portalMsg:result.portalMsg||''}:{})});
+          updated.push({...cleanSource,parsed:cleanParsed,qbStatus:result.qbStatus,qbMsg:result.qbMsg||'',qbBillId:result.qbBillId,qbSyncedAt:result.qbSyncedAt,...(result.portalStatus?{portalStatus:result.portalStatus,portalMsg:result.portalMsg||''}:{})});
         });
         _lsSet('nsa_saved_bills',JSON.stringify(updated));
         return updated;
       });
-      nf((canaryMode?'TEST: ':'')+success+' bill(s) completed in this batch'+(failed?' · '+failed+' need review':'')+(remainingAfterBatch?(canaryMode?' · full push remains locked for review':' · '+remainingAfterBatch+' ready for the next batch'):''));
+      const receiptGap=Math.max(0,receiptOutcome.total-receiptOutcome.saved);
+      nf((canaryMode?'TEST: ':'')+success+' bill(s) completed in this batch'+(failed?' · '+failed+' need review':'')+(remainingAfterBatch?(canaryMode?' · full push remains locked for review':' · '+remainingAfterBatch+' ready for the next batch'):'')+(receiptGap?' · '+receiptGap+' QBO receipt(s) saved on this browser only — server ledger write failed':''),receiptGap?'error':undefined);
     };
     // Import sub-tabs visible per role. Admins see everything; reps and CSRs
     // see only the NetSuite order import; accounting also gets supplier bills.
@@ -32987,10 +33035,15 @@ export default function App(){
           const _vendorOf=sb=>(sb.parsed?.vendor||sb.parsed?.supplier||'').trim();
           const _vendorOk=sb=>billHistVendor==='all'||_vendorOf(sb)===billHistVendor;
           const scoped=histBills.filter(sb=>_timeOk(sb)&&_vendorOk(sb));
+          const portalPushed=scoped.filter(b=>b.portalStatus==='success').length;
+          const qboPushed=scoped.filter(b=>b.qbStatus==='success').length;
+          const bothPushed=scoped.filter(b=>b.portalStatus==='success'&&b.qbStatus==='success').length;
           const pushed=scoped.filter(b=>b.qbStatus==='success'||b.portalStatus==='success').length;
           const rows=scoped.filter(sb=>{
             if(billHistFilter==='review')return sb.reviewLater;
             if(billHistFilter==='pushed')return sb.qbStatus==='success'||sb.portalStatus==='success';
+            if(billHistFilter==='portal')return sb.portalStatus==='success';
+            if(billHistFilter==='qbo')return sb.qbStatus==='success';
             if(billHistFilter==='notpushed')return !sb.reviewLater&&sb.qbStatus!=='success'&&sb.portalStatus!=='success';
             return true;
           });
@@ -33035,14 +33088,16 @@ export default function App(){
             nf('⬇ '+pushedRows.length+' pushed bill(s) exported — work the SI Invoice Center archive list from this','success');
           };
           return<details style={{marginTop:24}}>
-          <summary style={{cursor:'pointer',fontFamily:FD,fontWeight:700,fontSize:13,color:TXTL,textTransform:'uppercase',letterSpacing:.4,padding:'6px 0'}}>✅ Pushed — Portal &amp; QuickBooks ({pushed} pushed · {rows.length} shown) · archive these at Sports Inc</summary>
+          <summary style={{cursor:'pointer',fontFamily:FD,fontWeight:700,fontSize:13,color:TXTL,textTransform:'uppercase',letterSpacing:.4,padding:'6px 0'}}>✅ Bill history — Portal {portalPushed} · QuickBooks {qboPushed} · Both {bothPushed} · {rows.length} shown</summary>
           <div className="card" style={{marginTop:8}}>
           <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
             <h2 style={{margin:0}}>Bill History</h2>
             {(()=>{
               const chip=(key,label,n,activeColor)=><button key={key} onClick={()=>setBillHistFilter(key)} style={{fontSize:10,padding:'3px 10px',borderRadius:12,cursor:'pointer',fontWeight:700,border:'1px solid '+(billHistFilter===key?activeColor:'#e2e8f0'),background:billHistFilter===key?activeColor:'#fff',color:billHistFilter===key?'#fff':'#475569'}}>{label} ({n})</button>;
               return<div style={{display:'flex',gap:6,flex:1,flexWrap:'wrap'}}>
-                {chip('pushed','Pushed',pushed,'#16a34a')}
+                {chip('pushed','Portal or QB',pushed,'#16a34a')}
+                {chip('portal','Portal',portalPushed,'#0f766e')}
+                {chip('qbo','QuickBooks',qboPushed,'#1d4ed8')}
                 {chip('all','All',scoped.length,'#475569')}
               </div>;})()}
             <button className="btn btn-sm btn-secondary" style={{fontSize:10,fontWeight:700}} title="CSV of every pushed bill in the current scope — vendor, invoice #, SI doc #, PO, amount, Portal/QB — for archiving at Sports Inc" onClick={_dlArchiveCsv}>⬇ Download for SI archive</button>

@@ -139,7 +139,30 @@ export const buildQboBackfillRows = (histBills, normalize = (p) => p) => {
 };
 
 export const mergeServerBills = (savedBills, serverRows) => {
-  const local = savedBills || [];
+  // QBO receipts are server-authoritative. A local row may come from another
+  // origin (for example a Netlify deploy preview) or predate the server receipt;
+  // upgrade that row before deduping so stale browser state cannot turn a
+  // verified QBO bill back into "Not pushed".
+  const serverQboByDoc = new Map();
+  (serverRows || []).forEach((r) => {
+    if (r?.qb_status !== 'success') return;
+    const d = _norm(r.doc_norm || r.doc_number);
+    if (d) serverQboByDoc.set((r.is_credit ? '1' : '0') + '|' + d, r);
+  });
+  const rawLocal = savedBills || [];
+  const local = serverQboByDoc.size ? rawLocal.map((sb) => {
+    const p = sb?.parsed || {};
+    const d = _norm(p.doc_number);
+    const receipt = d && serverQboByDoc.get((p.is_credit ? '1' : '0') + '|' + d);
+    if (!receipt) return sb;
+    return {
+      ...sb,
+      qbStatus: 'success',
+      qbMsg: receipt.qb_message || (receipt.qb_bill_id ? 'QB Bill #' + receipt.qb_bill_id + ' (server verified)' : 'Server verified'),
+      qbBillId: receipt.qb_bill_id || undefined,
+      qbSyncedAt: receipt.qb_synced_at || undefined,
+    };
+  }) : rawLocal;
   const seen = new Set();
   const localDocKeys = new Set();
   const locallyCompletedInQbo = new Set();
@@ -198,7 +221,10 @@ export const mergeServerBills = (savedBills, serverRows) => {
       uploadedAt: Number.isFinite(ts) && ts ? new Date(ts).toLocaleString() : '',
       uploadedTs: Number.isFinite(ts) ? ts : 0,
       parsed,
-      qbStatus: null,
+      qbStatus: r.qb_status || null,
+      qbMsg: r.qb_message || (r.qb_bill_id ? 'QB Bill #' + r.qb_bill_id + ' (server verified)' : ''),
+      qbBillId: r.qb_bill_id || undefined,
+      qbSyncedAt: r.qb_synced_at || undefined,
       portalStatus: r.portal_status || 'success',
       reviewLater: false,
       _serverLedger: true, // read-only in the UI: can't be parked/deleted locally
