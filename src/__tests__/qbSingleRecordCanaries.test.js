@@ -1,4 +1,4 @@
-import { QB_PO_ACCOUNT_LINE_DESCRIPTION_MAX, applyQBPurchaseOrderLiveReadiness, billReferencesPortalPO, buildQBBillPOReplacement, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions, qbPOAccountLineDescription, qbPurchaseOrderSourceFingerprint } from '../qbSyncEngine';
+import { QB_PO_ACCOUNT_LINE_DESCRIPTION_MAX, applyQBPurchaseOrderLiveReadiness, applyQBSalesOrderLiveReadiness, billReferencesPortalPO, buildQBBillPOReplacement, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions, qbPOAccountLineDescription, qbPurchaseOrderSourceFingerprint, qbSalesOrderSourceFingerprint } from '../qbSyncEngine';
 import { indexQBNonInventoryItems, QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_SPECS } from '../qbAccountMappings';
 
 const accountRows = Object.values(QB_ACCOUNT_SPECS).map((spec,index)=>({
@@ -330,6 +330,23 @@ describe('QuickBooks one-record canaries', () => {
     await expect(engine.syncSalesOrders({}, {}, {approved:true,approvedSOIds:['SO-1'],expectedRows})).resolves.toEqual({status:'success',synced:1});
     expect(qbApi.mock.calls.filter(([action])=>action==='upsert_estimate')).toHaveLength(1);
     expect(persistQbLink).toHaveBeenCalledWith(expect.objectContaining({mapKey:'qbSOMap',sourceIds:['SO-1'],qboId:'E-1',evidence:expect.objectContaining({api_readback:true})}));
+  });
+
+  test('live sales-order review removes conflicting QBO Estimate numbers before approval', () => {
+    const rows=[
+      {salesOrderId:'SO-NEW',customerId:'C1',customer:'Acme',qboCustomerId:'Q-C1',date:'2026-09-01',lineCount:1,salesSubtotal:10,shipping:0,taxRate:0,tax:0,taxState:'CA',total:10,action:'ready',reason:''},
+      {salesOrderId:'SO-EXACT',customerId:'C1',customer:'Acme',qboCustomerId:'Q-C1',date:'2026-09-01',lineCount:1,salesSubtotal:20,shipping:0,taxRate:0,tax:0,taxState:'CA',total:20,action:'ready',reason:''},
+      {salesOrderId:'SO-CONFLICT',customerId:'C1',customer:'Acme',qboCustomerId:'Q-C1',date:'2026-09-01',lineCount:1,salesSubtotal:30,shipping:0,taxRate:0,tax:0,taxState:'CA',total:30,action:'ready',reason:''},
+    ];
+    const reviewed=applyQBSalesOrderLiveReadiness(rows,[
+      {Id:'E1',DocNumber:'SO-EXACT',CustomerRef:{value:'Q-C1'},TxnDate:'2026-09-01',TotalAmt:20},
+      {Id:'E2',DocNumber:'SO-CONFLICT',CustomerRef:{value:'Q-C1'},TxnDate:'2026-09-01',TotalAmt:31},
+    ]);
+    expect(reviewed.map(row=>[row.salesOrderId,row.action,row.qboDisposition])).toEqual([
+      ['SO-NEW','ready','create'],['SO-EXACT','ready','link_existing'],['SO-CONFLICT','blocked','blocked'],
+    ]);
+    expect(reviewed[2].reason).toMatch(/different customer, date, or total/);
+    expect(qbSalesOrderSourceFingerprint(reviewed[1])).toEqual(qbSalesOrderSourceFingerprint(rows[1]));
   });
 
   test('reviewed AST Estimate carries Portal tax on the existing CA liability item and verifies it', async() => {
