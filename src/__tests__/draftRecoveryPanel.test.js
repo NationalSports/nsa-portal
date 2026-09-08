@@ -4,6 +4,17 @@ import DraftRecoveryPanel from '../DraftRecoveryPanel';
 import {DRAFT_CHANGE_KEY} from '../lib/draftJournal';
 const draft={key:'k',owner:'staff-a',revision:'r',id:'SO-1',ts:1,table:'sales_orders',payload:{id:'SO-1',memo:'Unsaved memo',items:[{}]},durable:true};
 
+test('running save is quiet, but failure exposes the preserved backup',async()=>{
+ let saving=true;
+ const journal={list:jest.fn().mockImplementation(async()=>[{...draft}]),isSaving:()=>saving,acknowledge:jest.fn()};
+ render(<DraftRecoveryPanel owner="staff-a" journal={journal} onReview={()=>{}}/>);
+ await act(async()=>{});
+ expect(screen.queryByText('SO-1')).toBeNull();
+ saving=false;fireEvent(window,new Event('nsa:drafts-changed'));
+ expect(await screen.findByText('SO-1')).toBeTruthy();
+ expect(journal.acknowledge).not.toHaveBeenCalled();
+});
+
 test('rep filter scopes the rows and count without acknowledging hidden copies',async()=>{
  const other={...draft,key:'other',id:'SO-2',payload:{...draft.payload,id:'SO-2'}};
  const journal={list:jest.fn().mockResolvedValue([draft,other]),acknowledge:jest.fn()};

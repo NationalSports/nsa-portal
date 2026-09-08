@@ -26,7 +26,9 @@ export default function DraftRecoveryPanel({owner,onReview,journal=draftJournal,
     document.addEventListener('visibilitychange',visible);
     return()=>{window.removeEventListener('nsa:drafts-changed',changed);window.removeEventListener('focus',changed);window.removeEventListener('storage',storage);document.removeEventListener('visibilitychange',visible);};
   },[refresh]);
-  const visibleDrafts=drafts.filter(d=>d.owner===String(owner)&&isVisible(d));
+  // A durable safety copy for a running save is not a recovery task. A failed
+  // save or a fresh session exposes it again without deleting any backup.
+  const visibleDrafts=drafts.filter(d=>d.owner===String(owner)&&isVisible(d)&&(!d.durable||!journal.isSaving?.(d)));
   if(!owner||(!visibleDrafts.length&&!error))return null;
   const download=()=>{
     const blob=new Blob([JSON.stringify({format:'nsa-draft-recovery-v1',exportedAt:new Date().toISOString(),drafts:visibleDrafts},null,2)],{type:'application/json'});
