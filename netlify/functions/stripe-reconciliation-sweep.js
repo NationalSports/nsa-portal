@@ -274,7 +274,8 @@ function buildAlertEmail(incidents) {
   const portal = String(process.env.PORTAL_PUBLIC_URL || process.env.URL || 'https://nsa-portal.netlify.app').replace(/\/+$/, '');
   return {
     sender: { name: 'NSA Stripe Reconciliation', email: 'noreply@nationalsportsapparel.com' },
-    to: alertRecipients(),
+    to: (incidents || []).some(i => ['stripe_invoice_payment', 'stripe_invoice_monitor'].includes(i.category))
+      ? [{email:'steve@nationalsportsapparel.com'}] : alertRecipients(),
     subject: `Stripe reconciliation alert — ${incidents.length} open item${incidents.length === 1 ? '' : 's'} (${criticalCount} critical)`,
     htmlContent: `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:680px;color:#1e293b">
       <h2 style="margin-bottom:4px;color:#991b1b">Stripe reconciliation needs attention</h2>

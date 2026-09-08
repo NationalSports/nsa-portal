@@ -370,3 +370,12 @@ describe('sweep composition', () => {
     expect(sendBrevoEmail).not.toHaveBeenCalled();
   });
 });
+
+test('invoice issue emails go to Steve even when legacy alert routing differs',()=>{
+ const previous=process.env.STRIPE_RECONCILIATION_ALERT_EMAIL;
+ process.env.STRIPE_RECONCILIATION_ALERT_EMAIL='legacy@example.com';
+ try {
+  const mail=buildAlertEmail([{category:'stripe_invoice_payment',severity:'warning',summary:'Review payment',details:{}}]);
+  expect(mail.to).toEqual([{email:'steve@nationalsportsapparel.com'}]);
+ } finally { if(previous===undefined) delete process.env.STRIPE_RECONCILIATION_ALERT_EMAIL; else process.env.STRIPE_RECONCILIATION_ALERT_EMAIL=previous; }
+});
