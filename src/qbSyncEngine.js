@@ -458,6 +458,29 @@ export function buildQBSalesOrderPreviewRows(salesOrders = [], customers = [], c
   }).sort((a,b)=>a.salesOrderId.localeCompare(b.salesOrderId,undefined,{numeric:true}));
 }
 
+// Add QBO document-number evidence to the otherwise Portal-only Estimate
+// preview. A conflicting historical Estimate must be removed from the proposed
+// batch before approval; otherwise a permanent first-row conflict can stop every
+// later sales order forever.
+export function applyQBSalesOrderLiveReadiness(rows = [], qboEstimates = []) {
+  return (rows || []).map(row => {
+    if (row.action !== 'ready') return row;
+    const sameNumber = (qboEstimates || []).filter(estimate => String(estimate?.DocNumber || '') === String(row.salesOrderId));
+    const exact = sameNumber.filter(estimate => String(estimate?.CustomerRef?.value || '') === String(row.qboCustomerId)
+      && Math.abs(qbCurrency(estimate?.TotalAmt) - qbCurrency(row.total)) < 0.005
+      && String(estimate?.TxnDate || '').slice(0, 10) === String(row.date || '').slice(0, 10));
+    if (sameNumber.length && !(sameNumber.length === 1 && exact.length === 1)) {
+      return {...row, action:'blocked', reason:'QBO estimate number exists with a different customer, date, or total', qboDisposition:'blocked'};
+    }
+    return {...row, qboDisposition:exact.length === 1 ? 'link_existing' : 'create', qboId:exact[0]?.Id ? String(exact[0].Id) : ''};
+  });
+}
+
+export function qbSalesOrderSourceFingerprint(row = {}) {
+  const {salesOrderId='',customerId='',customer='',qboCustomerId='',date='',lineCount=0,salesSubtotal=0,shipping=0,taxRate=0,tax=0,taxState='',total=0} = row;
+  return {salesOrderId,customerId,customer,qboCustomerId,date,lineCount,salesSubtotal,shipping,taxRate,tax,taxState,total};
+}
+
 // QBO cannot be queried by LinkedTxn, so both payment directions read the customer's
 // payments and pick out the lines applied to one invoice. Shared so the push preflight
 // and the pull cannot drift apart.
@@ -1777,7 +1800,7 @@ export function createQBSyncEngine(ctx){
       if(!canary){
         const expectedById=new Map(expectedRows.map(row=>[String(row.salesOrderId),row]));
         const current=buildQBSalesOrderPreviewRows(toSync,cust,{...(qbConfig.custQBMap||{}),...custQBMap},{},dP,reviewTaxOptions);
-        if(current.some(row=>JSON.stringify(row)!==JSON.stringify(expectedById.get(row.salesOrderId)))){nf('Sales-order batch changed since review — review it again','error');setQbSyncing(false);return{status:'blocked',synced:0}}
+        if(current.some(row=>JSON.stringify(qbSalesOrderSourceFingerprint(row))!==JSON.stringify(qbSalesOrderSourceFingerprint(expectedById.get(row.salesOrderId))))){nf('Sales-order batch changed since review — review it again','error');setQbSyncing(false);return{status:'blocked',synced:0}}
       }
       const results=[];
       const startedAt=new Date().toISOString();
