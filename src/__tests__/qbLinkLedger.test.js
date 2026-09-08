@@ -1,4 +1,4 @@
-import {mergeQBSyncLogs, mergeDurableQBLinks, persistVerifiedQBLink, persistVerifiedQBCustomerLinkRecovery, qbLinkKey, QB_LINK_MAPS} from '../qbLinkLedger';
+import {loadDurableQBLinkReceipts, mergeQBSyncLogs, mergeDurableQBLinks, persistVerifiedQBLink, persistVerifiedQBCustomerLinkRecovery, qbLinkKey, QB_LINK_MAPS} from '../qbLinkLedger';
 
 function database() {
   const rows = new Map();
@@ -122,6 +122,27 @@ test('customer recovery rejects stale, non-numeric, duplicate, and conflicting m
   const db=recoveryDatabase([conflict]);
   await expect(persistVerifiedQBCustomerLinkRecovery(db.client,{realmId:'r1',reviewedAt,records:[{sourceId:'C1',qboId:'101',displayName:'One'}]})).rejects.toThrow('Conflicting');
   expect(db.rows.get(id).value).toBe(conflict.value);
+});
+
+test('durable receipt hydration reads only the requested realm in deterministic pages',async()=>{
+  const r1a={id:qbLinkKey('r1','custQBMap','C1'),value:'one'};
+  const r1b={id:qbLinkKey('r1','qbSOMap','SO-1'),value:'two'};
+  const other={id:qbLinkKey('r2','custQBMap','C2'),value:'other'};
+  const all=[r1a,r1b,other].sort((a,b)=>a.id.localeCompare(b.id));
+  const calls=[];
+  const client={from:()=>{
+    let pattern='';
+    const query={select:()=>query,like:(_key,value)=>{pattern=value.slice(0,-1);return query},order:()=>query,
+      range:(start,end)=>{calls.push([start,end]);const filtered=all.filter(row=>row.id.startsWith(pattern));return Promise.resolve({data:filtered.slice(start,end+1),error:null})}};
+    return query;
+  }};
+  await expect(loadDurableQBLinkReceipts(client,'r1',{pageSize:1,hardLimit:10})).resolves.toEqual({[r1a.id]:'one',[r1b.id]:'two'});
+  expect(calls).toEqual([[0,0],[1,1],[2,2]]);
+});
+
+test('durable receipt hydration fails closed on a page error',async()=>{
+  const client={from:()=>{const query={select:()=>query,like:()=>query,order:()=>query,range:()=>Promise.resolve({data:null,error:{message:'offline'}})};return query}};
+  await expect(loadDurableQBLinkReceipts(client,'r1')).rejects.toThrow('offline');
 });
 
 

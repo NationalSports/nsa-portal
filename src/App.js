@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import * as Sentry from '@sentry/react';
 import './portal.css';
 import DraftRecoveryPanel from './DraftRecoveryPanel';
+import {createRepSaveNoticeFilter} from './lib/repSaveNoticeScope';
 import OrderMemoDialog,{MEMO_DRAFT_TABLE} from './OrderMemoDialog';
 import {draftJournal} from './lib/draftJournal';
 import { classifySaveAlert } from './lib/saveAlertClassification';
@@ -54,7 +55,7 @@ import { canManageQuickBooksRole, storedUserCanManageQuickBooks } from './qbAcce
 import { applyTaxRemittanceLedger, reversedTaxRemittanceIds } from './lib/taxRemittanceLedger';
 import { qboProductionReconnectUrl } from './qbOAuthCallback';
 import { mergeDurableQbCanaries, qbCanaryLedgerRecord } from './qbCanaryLedger';
-import { mergeDurableQBLinks, persistVerifiedQBLink } from './qbLinkLedger';
+import { loadDurableQBLinkReceipts, mergeDurableQBLinks, persistVerifiedQBLink } from './qbLinkLedger';
 import { canViewFinancials } from './lib/financialAccess';
 import { consolidateOmgProductRows } from './lib/storeSkuGrouping';
 import { acquireOmgCreationGuard, omgCollectedUnitPrice, omgInvoiceIdempotencyKey, webstoreInvoiceIdempotencyKey } from './lib/omgCreationGuard';
@@ -2330,6 +2331,7 @@ export default function App(){
   const[dashCustRepFilter,setDashCustRepFilter]=useState('all');// Top Customers report: 'all' or a rep id
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
   const _qbDurableRowsRef=useRef({});
+  const _qbDurableHydrationRef=useRef('');
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,
     realm_id:'',sandbox:false,// access/refresh tokens live server-side (qb_oauth_tokens), never in client state
     mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},
@@ -2450,7 +2452,7 @@ export default function App(){
   const[omgProbeLines,setOmgProbeLines]=useState([]);
   const[dbLoading,setDbLoading]=useState(!!supabase);const[dbError,setDbError]=useState(null);const _dbReady=useRef(false);const _dbLoadSuccess=useRef(false);
   const _runPollRef=useRef(null);const _lastNavRefreshAt=useRef(0);
-  const[failedSaveCount,setFailedSaveCount]=useState(_dbSaveFailedIds.size);_setOnFailedIdsChange(setFailedSaveCount);
+  const[failedSaveRevision,setFailedSaveRevision]=useState(0);_setOnFailedIdsChange(()=>setFailedSaveRevision(value=>value+1));
   const[failedSaveOpen,setFailedSaveOpen]=useState(false);
   const[failedSaveBusy,setFailedSaveBusy]=useState(false);
   // Outbox entries whose base version the server moved past — need a human decision (apply anyway /
@@ -4557,6 +4559,24 @@ export default function App(){
     setQBConfig(prev=>String(prev.realm_id||'')===realmId?mergeDurableQBLinks(prev,rows):prev);
     return rows;
   };
+  React.useEffect(()=>{
+    const realmId=String(qbConfig.realm_id||'');
+    if(dbLoading||!_dbLoadSuccess.current||!storedUserCanManageQuickBooks()||!realmId)return;
+    if(_qbDurableHydrationRef.current===realmId||_qbDurableHydrationRef.current===realmId+':loading')return;
+    let cancelled=false;_qbDurableHydrationRef.current=realmId+':loading';
+    loadDurableQBLinkReceipts(supabase,realmId).then(rows=>{
+      if(cancelled)return;
+      Object.assign(_qbDurableRowsRef.current,rows);
+      setQBConfig(prev=>String(prev.realm_id||'')===realmId?mergeDurableQBLinks(prev,rows):prev);
+      _qbDurableHydrationRef.current=realmId;
+    }).catch(error=>{
+      if(cancelled)return;
+      _qbDurableHydrationRef.current='';
+      console.error('[QB] Durable link hydration failed:',error);
+      nf('Could not load durable QuickBooks links — sync remains locked','error');
+    });
+    return()=>{cancelled=true};
+  },[dbLoading,qbConfig.realm_id]);
   React.useEffect(()=>{if(storedUserCanManageQuickBooks())_saveAppState('qb_config',qbConfig)},[qbConfig]);
   // QB background auto-sync — self-contained: builds the sync engine from CURRENT
   // state at fire time. The old wiring called a ref only a mounted QBPage assigned,
@@ -6063,6 +6083,14 @@ export default function App(){
   // may move follow_up_at; inspecting an order must leave its reminder due.
   const _todoClickedThrough=()=>{};
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
+  const isMySaveNotice=useMemo(()=>createRepSaveNoticeFilter({repId:cu?.id,customers:cust,salesOrders:sos,estimates:ests,invoices:invs}),[cu?.id,cust,sos,ests,invs]);
+  const visibleOutboxConflicts=outboxConflicts.filter(isMySaveNotice);
+  const visibleFailedSaveIds=useMemo(()=>{
+    const entries=new Map(_outboxList().map(entry=>[entry.id,entry]));
+    return [..._dbSaveFailedIds].filter(id=>isMySaveNotice(entries.get(id)||{id}));
+  },[failedSaveRevision,isMySaveNotice,outboxConflicts]);
+  const failedSaveCount=visibleFailedSaveIds.length;
+
   const[uiMode,setUiMode]=useState(()=>{try{return localStorage.getItem('nsa_ui_mode')||'classic'}catch{return'classic'}});// defaults to the classic portal until the team opts into the redesign// 'new' | 'classic' — portal-wide redesign switch. Every redesigned surface keys off this and falls back to its legacy UI in classic mode.
   const toggleUiMode=()=>setUiMode(m=>{const n=m==='new'?'classic':'new';try{localStorage.setItem('nsa_ui_mode',n)}catch{}return n});
   const ActiveOrderEditor=uiMode==='new'?OrderEditor:OrderEditorClassic;// classic gets the frozen pre-redesign editor, not a reskin
@@ -38030,14 +38058,14 @@ export default function App(){
           <button disabled={failedSaveBusy} onClick={async()=>{
             setFailedSaveBusy(true);
             try{
-              const {saved,failed,skipped}=await _retryFailedSaves({manual:true});
+              const {saved,failed,skipped}=await _retryFailedSaves({manual:true,ids:visibleFailedSaveIds});
               nf([saved?saved+' saved':'',failed?failed+' still failing':'',skipped?skipped+' need review or are already saving':''].filter(Boolean).join(' · ')||'Nothing to retry',failed||skipped?'error':'success');
             }finally{setFailedSaveBusy(false);}
           }} style={{background:'#92400e',border:'none',color:'#fff',cursor:failedSaveBusy?'wait':'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap',opacity:failedSaveBusy?0.6:1}}>{failedSaveBusy?'Retrying…':'Retry now'}</button>
           <button onClick={()=>setFailedSaveOpen(o=>!o)} style={{background:'none',border:'none',color:'#92400e',cursor:'pointer',fontWeight:700,fontSize:11,padding:'2px 4px'}}>{failedSaveOpen?'Hide details ▲':'Details ▼'}</button>
         </div>
         {failedSaveOpen&&<div style={{padding:'8px 16px 10px',borderTop:'1px solid #fde68a',background:'#fffbeb',maxHeight:240,overflowY:'auto',fontWeight:400}}>
-          {(()=>{const ids=[..._dbSaveFailedIds];if(!ids.length)return null;
+          {(()=>{const ids=visibleFailedSaveIds;if(!ids.length)return null;
             return ids.slice(0,50).map(id=>{const err=_dbSaveFailedErrors.get(id);return(
               <div key={id} style={{fontSize:11,padding:'4px 0',borderBottom:'1px dashed #fde68a',display:'flex',gap:8,alignItems:'flex-start'}}>
                 <span style={{fontWeight:700,minWidth:90,color:'#92400e'}}>{id}</span>
@@ -38048,14 +38076,14 @@ export default function App(){
         </div>}
       </div>}
       {memoCommand&&memoCommand.ownerId===String(cu?.id)&&<OrderMemoDialog inlineTarget={memoCommand.id===eSO?.id?memoInlineTarget:null} key={String(cu?.id)+':'+memoCommand.id} initial={memoCommand} owner={cu?.id} saveCommand={_dbSaveMemoCommand} onSaved={(id,memo)=>{if(memoOwnerRef.current===memoCommand.ownerId)memoSaved(id,memo);}} onClose={()=>{if(memoOwnerRef.current===memoCommand.ownerId)setMemoCommand(current=>current===memoCommand?null:current);}} onPendingChange={pending=>{const key='memo:'+memoCommand.id;if(pending)_dbSavePendingIds.add(key);else _dbSavePendingIds.delete(key);}}/>}
-      <DraftRecoveryPanel owner={cu?.id} onReview={(payload,table)=>{if(table===MEMO_DRAFT_TABLE){if(dirtyRef.current||_dbSavePendingIds.has(payload.id)||_dbSaveFailedIds.has(payload.id)){nf('Save or review the open order changes before recovering its memo.','error');return;}if(!memoCommandsReady){nf('Memo saving is not available yet. Your recovery copy is kept.','error');return;}setMemoCommand({...payload,ownerId:String(cu.id)});return;}const entry={table,id:payload.id,payload,baseVersion:payload._obBaseVersion??payload._version??null,ts:Date.now()};setOutboxConflicts(prev=>[...prev.filter(x=>x.table!==table||x.id!==payload.id),entry])}}/>
-      {outboxConflicts.length>0&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b',fontSize:12,fontWeight:600}}>
+      <DraftRecoveryPanel owner={cu?.id} isVisible={isMySaveNotice} onReview={(payload,table)=>{if(table===MEMO_DRAFT_TABLE){if(dirtyRef.current||_dbSavePendingIds.has(payload.id)||_dbSaveFailedIds.has(payload.id)){nf('Save or review the open order changes before recovering its memo.','error');return;}if(!memoCommandsReady){nf('Memo saving is not available yet. Your recovery copy is kept.','error');return;}setMemoCommand({...payload,ownerId:String(cu.id)});return;}const entry={table,id:payload.id,payload,baseVersion:payload._obBaseVersion??payload._version??null,ts:Date.now()};setOutboxConflicts(prev=>[...prev.filter(x=>x.table!==table||x.id!==payload.id),entry])}}/>
+      {visibleOutboxConflicts.length>0&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b',fontSize:12,fontWeight:600}}>
         <div style={{padding:'8px 16px',display:'flex',alignItems:'center',gap:8}}>
           <span style={{fontSize:14}}>&#9888;</span>
-          <span style={{flex:1}}>{outboxConflicts.length} unsaved edit{outboxConflicts.length>1?'s':''} from this browser need review before saving. Review each one below &mdash; nothing is overwritten until you choose.</span>
+          <span style={{flex:1}}>{visibleOutboxConflicts.length} unsaved edit{visibleOutboxConflicts.length>1?'s':''} from this browser need review before saving. Review each one below &mdash; nothing is overwritten until you choose.</span>
         </div>
         <div style={{padding:'0 16px 10px',fontWeight:400}}>
-          {outboxConflicts.map(en=>{
+          {visibleOutboxConflicts.map(en=>{
             const label=en.id+(en.payload?.customer_name?' — '+en.payload.customer_name:(en.payload?.name?' — '+en.payload.name:''));
             const key=en.table+':'+en.id;
             return(<div key={key} style={{fontSize:11,padding:'6px 0',borderBottom:'1px dashed #fecaca',display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>

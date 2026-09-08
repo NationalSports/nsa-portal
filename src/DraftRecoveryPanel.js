@@ -1,7 +1,7 @@
 import React, {useCallback,useEffect,useState,useRef} from 'react';
 import {draftJournal,DRAFT_CHANGE_KEY} from './lib/draftJournal';
 
-export default function DraftRecoveryPanel({owner,onReview,journal=draftJournal}) {
+export default function DraftRecoveryPanel({owner,onReview,journal=draftJournal,isVisible=()=>true}) {
   const [drafts,setDrafts]=useState([]),[error,setError]=useState(''),[busy,setBusy]=useState(false);
   const ownerRef=useRef(owner);ownerRef.current=owner;
   const refreshSequence=useRef(0);
@@ -26,19 +26,20 @@ export default function DraftRecoveryPanel({owner,onReview,journal=draftJournal}
     document.addEventListener('visibilitychange',visible);
     return()=>{window.removeEventListener('nsa:drafts-changed',changed);window.removeEventListener('focus',changed);window.removeEventListener('storage',storage);document.removeEventListener('visibilitychange',visible);};
   },[refresh]);
-  if(!owner||(!drafts.length&&!error))return null;
+  const visibleDrafts=drafts.filter(d=>d.owner===String(owner)&&isVisible(d));
+  if(!owner||(!visibleDrafts.length&&!error))return null;
   const download=()=>{
-    const blob=new Blob([JSON.stringify({format:'nsa-draft-recovery-v1',exportedAt:new Date().toISOString(),drafts},null,2)],{type:'application/json'});
+    const blob=new Blob([JSON.stringify({format:'nsa-draft-recovery-v1',exportedAt:new Date().toISOString(),drafts:visibleDrafts},null,2)],{type:'application/json'});
     const url=URL.createObjectURL(blob),link=document.createElement('a');
     link.href=url;link.download='nsa-unsaved-drafts.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   };
   return <details style={{background:'#fff7ed',border:'1px solid #fed7aa',padding:'10px 16px',fontSize:12}}>
-    <summary style={{cursor:'pointer',fontWeight:600}}>Draft recovery{drafts.length?' ('+drafts.length+')':''}</summary>
+    <summary style={{cursor:'pointer',fontWeight:600}}>Draft recovery{visibleDrafts.length?' ('+visibleDrafts.length+')':''}</summary>
     {error&&<p role="alert">{error}</p>}
     <p>These are browser backups, not a save error for the page you are viewing. A copy clears when its own save is confirmed. Older copies from another session stay until you review and save them, or discard them. Download a backup first if you are unsure.</p>
     <button onClick={refresh}>Refresh drafts</button>{' '}
-    {!!drafts.length&&<button onClick={download}>Download recovery copy</button>}
-    {drafts.filter(d=>d.owner===String(owner)).map(d=><div key={d.key} style={{borderTop:'1px solid #fed7aa',marginTop:8,paddingTop:8}}>
+    {!!visibleDrafts.length&&<button onClick={download}>Download recovery copy</button>}
+    {visibleDrafts.map(d=><div key={d.key} style={{borderTop:'1px solid #fed7aa',marginTop:8,paddingTop:8}}>
       <strong>{d.id}</strong> — {d.payload.memo||d.payload.name||'Document draft'} · {new Date(d.ts).toLocaleString()}
       {Array.isArray(d.payload.items)&&<span> · {d.payload.items.length} item lines</span>}
       {!d.durable&&<p role="alert">Only available in this open tab. Download a recovery copy before closing.</p>}

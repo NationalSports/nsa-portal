@@ -4,6 +4,14 @@ jest.mock('@supabase/supabase-js',()=>({createClient:()=>null}));
 import {_saveDocument,_outboxWrap,_outboxAdd,_outboxList,_dbSaveFailedIds,_retryFailedSaves,_rememberSaveRetry,_setSessionDead} from '../lib/dbEngine';
 beforeEach(()=>{localStorage.clear();_dbSaveFailedIds.clear();_setSessionDead(false);});
 afterEach(()=>{localStorage.clear();_dbSaveFailedIds.clear();});
+test('a scoped manual retry never dispatches another rep’s snapshot',async()=>{
+ const own={id:'SO-retry-own',memo:'mine'},other={id:'SO-retry-other',memo:'theirs'};
+ _rememberSaveRetry('sales_orders',own);_rememberSaveRetry('sales_orders',other);
+ _dbSaveFailedIds.add(own.id);_dbSaveFailedIds.add(other.id);
+ await _retryFailedSaves({manual:true,ids:[own.id]});
+ expect(_outboxList().map(entry=>entry.id)).toEqual([own.id]);
+ expect(_dbSaveFailedIds.has(other.id)).toBe(true);
+});
 test('failed full-save retry restages the attempted content even if the source and legacy outbox were replaced',async()=>{
  const source={id:'SO-retry-original',memo:'my edit',items:[{sku:'TEE',sizes:{M:2}}],_version:3};
  await _saveDocument('sales_orders',source,async()=>false);

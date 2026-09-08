@@ -4,6 +4,17 @@ import DraftRecoveryPanel from '../DraftRecoveryPanel';
 import {DRAFT_CHANGE_KEY} from '../lib/draftJournal';
 const draft={key:'k',owner:'staff-a',revision:'r',id:'SO-1',ts:1,table:'sales_orders',payload:{id:'SO-1',memo:'Unsaved memo',items:[{}]},durable:true};
 
+test('rep filter scopes the rows and count without acknowledging hidden copies',async()=>{
+ const other={...draft,key:'other',id:'SO-2',payload:{...draft.payload,id:'SO-2'}};
+ const journal={list:jest.fn().mockResolvedValue([draft,other]),acknowledge:jest.fn()};
+ const {rerender}=render(<DraftRecoveryPanel owner="staff-a" journal={journal} onReview={()=>{}} isVisible={d=>d.id==='SO-1'}/>);
+ await screen.findByText('SO-1');expect(screen.queryByText('SO-2')).toBeNull();
+ expect(screen.getByText('Draft recovery (1)')).toBeTruthy();
+ rerender(<DraftRecoveryPanel owner="staff-a" journal={journal} onReview={()=>{}} isVisible={()=>false}/>);
+ expect(screen.queryByText(/Draft recovery/)).toBeNull();
+ expect(journal.acknowledge).not.toHaveBeenCalled();
+});
+
 test('recovery requires review and carries the exact revision without acknowledging it',async()=>{
  const journal={list:jest.fn().mockResolvedValue([draft]),acknowledge:jest.fn()};const review=jest.fn();
  render(<DraftRecoveryPanel owner="staff-a" journal={journal} onReview={review}/>);

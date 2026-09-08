@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 const emitConflict = (id = 'EST-9001') => act(() => {
-  _emitOutboxConflict('estimates', { id, memo: 'the rejected edit', customer_name: 'Big Team LLC', _version: 3 });
+  _emitOutboxConflict('estimates', { id, created_by:'00000000-0000-0000-0000-000000000001', memo: 'the rejected edit', customer_name: 'Big Team LLC', _version: 3 });
 });
 
 test('a stale rejection surfaces the conflict card immediately', () => {
@@ -78,4 +78,15 @@ test('Apply-anyway preserves the conflict and durable draft when cloud is unavai
   expect(_outboxList().map(e => e.id)).toContain('EST-9001');
   // cleanup module-level state so later suites aren't affected
   _dbSaveFailedIds.delete('EST-9001');
+});
+
+
+test('another rep’s conflict is retained without appearing in an admin’s personal banner', () => {
+  render(<App />);
+  act(()=>_emitOutboxConflict('estimates',{id:'EST-other-rep',created_by:'other-rep',memo:'Their preserved edit',_version:3}));
+  expect(screen.queryByText(/Apply my edit anyway/)).toBeNull();
+  expect(_outboxList().map(entry=>entry.id)).toContain('EST-other-rep');
+  emitConflict();
+  expect(screen.getByText(/1 unsaved edit from this browser/)).toBeTruthy();
+  expect(screen.queryByText('EST-other-rep')).toBeNull();
 });
