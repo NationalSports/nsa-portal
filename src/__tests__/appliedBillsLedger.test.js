@@ -291,3 +291,23 @@ describe('qboBackfillHistory', () => {
     return mergeServerBills([local], server);
   }
 });
+
+// A Sports Inc / S&S order number round-trips from Postgres jsonb as a NUMBER.
+// Trimming one threw "trim is not a function" and crashed the app mid-backfill.
+describe('numeric document numbers', () => {
+  const { portalBillAlreadyApplied } = require('../appliedBillsLedger');
+  const docNorm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+
+  it('normalizes a numeric doc number instead of trimming it', () => {
+    expect(() => docNorm(75565794)).not.toThrow();
+    expect(docNorm(75565794)).toBe('75565794');
+    expect(docNorm(null)).toBe('');
+    expect(docNorm(' AB-12 ')).toBe('ab-12');
+  });
+
+  it('portalBillAlreadyApplied matches a bill whose SI number is numeric', () => {
+    const seen = new Set(['75565794']);
+    const applied = (doc) => seen.has(String(doc == null ? '' : doc).trim().toLowerCase());
+    expect(portalBillAlreadyApplied({ doc_number: 'X', si_doc_number: 75565794 }, applied)).toBe(true);
+  });
+});

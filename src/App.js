@@ -462,7 +462,7 @@ import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
 import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, billAutoHoldReasons, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku, resolveMappedSoItemIndex } from './billResolve';
-import { createQBSyncEngine } from './qbSyncEngine';
+import { createQBSyncEngine,qbResponseErrorDetail} from './qbSyncEngine';
 import { QB_ACCOUNT_MAPPING_DEFAULTS, billVendorMatchName, buildVendorBillLines, calculateOmgInvoicePayment, findExistingVendorBill, findUniqueVendorMatch, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, planQBNonInventoryItems, qbBillNeedsSync, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs,qboAccountOnlyBill} from './qbAccountMappings';
 import { BaggingQueueTile } from './baggingstation/BaggingDashCard';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
@@ -27318,7 +27318,9 @@ export default function App(){
         // Nothing new came in (all duplicates/scanned/unreadable). Append mode must not clobber
         // an in-progress review; a fresh import resets to the upload step as before.
         if(append)setBillImport(x=>({...x,uploading:false,skipped:skippedInfo.length?skippedInfo:x.skipped,showSkipped:skippedInfo.length>0&&skippedInfo.length<=15}));
-        else setBillImport(x=>({...x,parsed:[],step:'upload',uploading:false,progress:null,files:[],skipped:skippedInfo,showSkipped:skippedInfo.length>0&&skippedInfo.length<=15}));
+        // A loaded QuickBooks backfill is in-progress work: a pull that finds
+        // nothing new (the daily auto-pull included) must not clear it.
+        else setBillImport(x=>x.parsed.some(b=>b._qbBackfill)?{...x,uploading:false,progress:null,skipped:skippedInfo,showSkipped:skippedInfo.length>0&&skippedInfo.length<=15}:({...x,parsed:[],step:'upload',uploading:false,progress:null,files:[],skipped:skippedInfo,showSkipped:skippedInfo.length>0&&skippedInfo.length<=15}));
         const base=skippedDups.length?'Skipped '+skippedDups.length+' duplicate(s) already on the Portal — nothing new to import':(extraNote?'Nothing new to import':'No bills could be parsed');
         nf(base+extraNote,(skippedDups.length||extraNote)?'success':'error');
         return;
@@ -27363,7 +27365,10 @@ export default function App(){
       // ready vs still-needs-review vs skipped — instead of a toast that flashes and is gone.
       const _batchIds=results.map(r=>r.id);
       const _lastBatch={at:new Date().toLocaleString(),atMs:Date.now(),verb,label:sourceCount+' '+sourceNoun,count:results.length,ids:_batchIds,skipped:skippedInfo.length,failed:results.filter(r=>(r.parsed&&r.parsed.warnings||[]).some(w=>/PDF read failed|timed out/i.test(w))).length};
-      setBillImport(x=>({...x,parsed:append?[...x.parsed,...results]:results,step:'review',uploading:false,progress:null,skipped:skippedInfo,showSkipped:false,lastBatch:_lastBatch}));
+      // Never replace a loaded QuickBooks backfill: the daily auto-pull fires on
+      // the first Bills visit of the day and can land after the backfill load.
+      // Pulled bills join the session instead and enter the review piles as usual.
+      setBillImport(x=>({...x,parsed:(append||x.parsed.some(b=>b._qbBackfill))?[...x.parsed,...results]:results,step:'review',uploading:false,progress:null,skipped:skippedInfo,showSkipped:false,lastBatch:_lastBatch}));
       // Auto-clear the "Upload & Match" waiting list (owner: uploaded items should drop off
       // the list, even the API ones). A scanned SI doc sits in the grab bucket until its PDF
       // arrives; now that the PDF is parsed, any waiting row whose supplier invoice # matches
@@ -29054,13 +29059,19 @@ export default function App(){
       }
     };
 
+    // Document numbers are not always strings: a Sports Inc / S&S order number
+    // round-trips from Postgres jsonb as a NUMBER, and .trim() on it threw
+    // "trim is not a function" mid-push, after ~90 QBO bills. Every doc-number
+    // comparison in the dedup helpers below goes through this.
+    const _docNorm=v=>String(v==null?'':v).trim().toLowerCase();
+
     // Like _docAlreadyApplied, but answers WHERE: returns a human label ("SO-1396 · PO 3517")
     // for the skipped-duplicates drawer, so "where did my bill go?" is answered in place.
     const _docAppliedWhere=(doc,kind,isCredit=false)=>{
-      const d=(doc||'').trim().toLowerCase();
+      const d=_docNorm(doc);
       if(!d)return null;
       const credit=!!isCredit;
-      const sb=submittedBatches.find(x=>!!x.is_credit===credit&&(x.bill_doc_number||'').trim().toLowerCase()===d);
+      const sb=submittedBatches.find(x=>!!x.is_credit===credit&&_docNorm(x.bill_doc_number)===d);
       if(sb)return 'Batch '+(sb.po_number||sb.id);
       // Credits written by the current path carry is_credit/credit_of.  A few legacy
       // reversal details predate both markers, but retain their negative cost or size
@@ -29073,13 +29084,13 @@ export default function App(){
         if(Number(dt?.cost)<0)return true;
         return !!dt?.sizes&&Object.values(dt.sizes).some(v=>Number(v)<0);
       };
-      const inD=arr=>(arr||[]).some(dt=>detailIsCredit(dt)===credit&&(dt.doc||'').trim().toLowerCase()===d);
+      const inD=arr=>(arr||[]).some(dt=>detailIsCredit(dt)===credit&&_docNorm(dt.doc)===d);
       for(const so of sos){
         for(const it of (so.items||[]))for(const po of (it.po_lines||[]))if(inD(po._bill_details))return so.id+(po.po_id?' · '+po.po_id:'');
         for(const dp of (so.deco_pos||[]))if(inD(dp._bill_details))return so.id+(dp.po_id?' · deco '+dp.po_id:' · deco');
       }
       if(_appliedLedger.current.has(_appliedLedgerKey(kind==='si'?'s':'d',d,credit)))return 'applied earlier (server ledger — possibly another machine)';
-      if(savedBills.some(x=>x.portalStatus==='success'&&!!x.parsed?.is_credit===credit&&((kind==='si'?x.parsed?.si_doc_number:x.parsed?.doc_number)||'').trim().toLowerCase()===d))return 'pushed earlier (bill history)';
+      if(savedBills.some(x=>x.portalStatus==='success'&&!!x.parsed?.is_credit===credit&&_docNorm(kind==='si'?x.parsed?.si_doc_number:x.parsed?.doc_number)===d))return 'pushed earlier (bill history)';
       return null;
     };
 
@@ -29089,20 +29100,20 @@ export default function App(){
     // ledger dedups cross-machine by key without a local total, so a cross-machine push returns
     // null here and the PDF drops silently — no comparison, no false alarm.
     const _appliedDocTotal=(doc,isCredit=false)=>{
-      const d=(doc||'').trim().toLowerCase();
+      const d=_docNorm(doc);
       if(!d)return null;
-      const hit=savedBills.find(sb=>sb.portalStatus==='success'&&!!sb.parsed?.is_credit===!!isCredit&&(sb.parsed?.doc_number||'').trim().toLowerCase()===d&&safeNum(sb.parsed?.doc_total)>0);
+      const hit=savedBills.find(sb=>sb.portalStatus==='success'&&!!sb.parsed?.is_credit===!!isCredit&&_docNorm(sb.parsed?.doc_number)===d&&safeNum(sb.parsed?.doc_total)>0);
       return hit?safeNum(hit.parsed.doc_total):null;
     };
 
     // True if a bill with this doc number was already applied to the Portal — checks the
     // applied state on POs/batches (authoritative) plus pushed bill history as a fallback.
     const _docAlreadyApplied=(doc,kind,isCredit=false)=>{
-      const d=(doc||'').trim().toLowerCase();
+      const d=_docNorm(doc);
       if(!d)return false;
       try{if(_billApplySession.current.isUnfinished(billingAttemptKey({parsed:{doc_number:d,is_credit:isCredit}})))return false}catch{return false}
       const credit=!!isCredit;
-      if(submittedBatches.some(sb=>!!sb.is_credit===credit&&(sb.bill_doc_number||'').trim().toLowerCase()===d))return true;
+      if(submittedBatches.some(sb=>!!sb.is_credit===credit&&_docNorm(sb.bill_doc_number)===d))return true;
       const detailIsCredit=dt=>{
         if(dt?.is_credit===true)return true;
         if(dt?.is_credit===false)return false;
@@ -29110,7 +29121,7 @@ export default function App(){
         if(Number(dt?.cost)<0)return true;
         return !!dt?.sizes&&Object.values(dt.sizes).some(v=>Number(v)<0);
       };
-      const inDetails=arr=>(arr||[]).some(dt=>detailIsCredit(dt)===credit&&(dt.doc||'').trim().toLowerCase()===d);
+      const inDetails=arr=>(arr||[]).some(dt=>detailIsCredit(dt)===credit&&_docNorm(dt.doc)===d);
       for(const so of sos){
         for(const it of (so.items||[]))for(const po of (it.po_lines||[]))if(inDetails(po._bill_details))return true;
         for(const dp of (so.deco_pos||[]))if(inDetails(dp._bill_details))return true;
@@ -29124,7 +29135,7 @@ export default function App(){
       if(_appliedLedger.current.has(_appliedLedgerKey(kind==='si'?'s':'d',d,credit)))return true;
       // localStorage cache fallback — covers this browser's pushes made while the ledger was
       // unreachable (write retried, but the row may not have landed).
-      if(savedBills.some(sb=>sb.portalStatus==='success'&&!!sb.parsed?.is_credit===credit&&((kind==='si'?sb.parsed?.si_doc_number:sb.parsed?.doc_number)||'').trim().toLowerCase()===d))return true;
+      if(savedBills.some(sb=>sb.portalStatus==='success'&&!!sb.parsed?.is_credit===credit&&_docNorm(kind==='si'?sb.parsed?.si_doc_number:sb.parsed?.doc_number)===d))return true;
       return false;
     };
 
@@ -30215,7 +30226,7 @@ export default function App(){
           if(!qbVendorId){
             const displayName=String(portalVendor?.name||vendorName).trim();
             const vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:displayName,CompanyName:displayName}});
-            if(!vRes?.Vendor?.Id)throw new Error(vRes?.Fault?.Error?.[0]?.Detail||'Vendor was not found or created.');
+            if(!vRes?.Vendor?.Id)throw new Error(qbResponseErrorDetail(vRes,'Vendor was not found or created.'));
             qbVendorId=vRes.Vendor.Id;
             existingQBVendors.push({Id:qbVendorId,DisplayName:displayName,CompanyName:displayName,Active:true});
           }
@@ -30241,7 +30252,7 @@ export default function App(){
           for(const planned of itemPlan.upserts){
             const itemRes=await qbApi('upsert_item',{item:planned.item});
             const saved=itemRes?.Item;
-            if(!saved?.Id)throw new Error('QBO '+planned.sku+' item '+planned.action+' failed: '+(itemRes?.Fault?.Error?.[0]?.Detail||'unknown QBO item error')+'. No bill was sent.');
+            if(!saved?.Id)throw new Error('QBO '+planned.sku+' item '+planned.action+' failed: '+qbResponseErrorDetail(itemRes,'unknown QBO item error')+'. No bill was sent.');
             const readRes=await qbApi('read',{entity:'item',id:saved.Id});
             const verified=readRes?.Item;
             if(!verified||String(verified.Id)!==String(saved.Id)||String(verified.Type||'').toLowerCase()!=='noninventory'
@@ -30280,7 +30291,11 @@ export default function App(){
             qboBillId=existingVendorBill.Id;
           }else{
             const billRes=await qbApi('upsert_bill',{bill:qbBill});
-            if(!billRes?.Bill?.Id)throw new Error(billRes?.Fault?.Error?.[0]?.Detail||'Unknown QBO bill error');
+            // "Unknown QBO bill error" hid the real reason on 40 bills in the
+            // first production backfill: a throttled or 5xx response carries no
+            // Fault, and its body was dropped here. qbResponseErrorDetail reads
+            // the fault code/message and falls back to the raw response.
+            if(!billRes?.Bill?.Id)throw new Error(qbResponseErrorDetail(billRes,'QuickBooks did not return a bill ID'));
             qboBillId=billRes.Bill.Id;created=true;
             // QBO returns the stored bill on create. A total, vendor or date that
             // differs from what was sent means the bill exists in QBO with the
@@ -32552,6 +32567,39 @@ export default function App(){
             // the PO field re-runs the matcher and flips buckets) MOVES rather than remounts —
             // preserving input focus, exactly like the old single flat map did.
             const _children=[];
+            // ── QuickBooks backfill (Bill History → "Load N for QuickBooks backfill") ──
+            // These rows are complete on the Portal side, so they never enter a review
+            // pile and the Matched push panel never renders for them; the push lives here.
+            if(_inReview&&qbOperator&&billImport.parsed.some(b=>b._qbBackfill)){
+              const all=billImport.parsed.filter(b=>b._qbBackfill);
+              const synced=all.filter(b=>b.qbStatus==='success');
+              const failed=all.filter(b=>b.qbStatus==='error');
+              const seen=new Set();
+              const left=all.filter(b=>{
+                if(!_billIsReadyForQB(b)||!qbBillNeedsSync(b.qbStatus))return false;
+                const key=_qboBillBatchKey(b);if(key&&seen.has(key))return false;if(key)seen.add(key);return true;
+              });
+              const notReady=Math.max(0,all.length-synced.length-failed.length-left.length);
+              const sum=list=>list.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
+              const stat=(n,label,color)=><div><div style={{fontFamily:FD,fontWeight:800,fontSize:26,lineHeight:1,color:color||'#fff',fontVariantNumeric:'tabular-nums'}}>{n}</div><div style={{fontFamily:FD,fontWeight:600,fontSize:11,letterSpacing:1.5,textTransform:'uppercase',color:'rgba(255,255,255,.65)',marginTop:4}}>{label}</div></div>;
+              _children.push(<div key="qb-backfill" style={{marginBottom:16,background:NAVY,backgroundImage:HASH,borderRadius:8,padding:'16px 22px',color:'#fff'}}>
+                <div style={{display:'flex',alignItems:'center',gap:30,flexWrap:'wrap'}}>
+                  {stat(left.length,'Left to send · '+nsaMoney(sum(left)),'#6FD59A')}
+                  {stat(synced.length,'In QuickBooks this session · '+nsaMoney(sum(synced)))}
+                  {failed.length>0&&stat(failed.length,'Failed · '+nsaMoney(sum(failed)),'#fca5a5')}
+                  {notReady>0&&stat(notReady,'Not sendable (no PO link / credit)','rgba(255,255,255,.6)')}
+                  <div style={{marginLeft:'auto'}}>{skBtn({bg:RED,fg:'#fff',fs:14,pad:'12px 22px',shadow:'0 8px 22px rgba(150,44,50,.4)',
+                    title:qbConfig.connected?'Create QuickBooks bills for the next batch of backfill rows':'Connect QuickBooks first',
+                    disabled:!qbConfig.connected||billImport.uploading||!left.length,onClick:pushBillsToQB,
+                    children:billImport.uploading?'Pushing to QuickBooks…':'Push next '+Math.min(100,left.length)+' to QuickBooks'})}</div>
+                </div>
+                <div style={{fontSize:11.5,color:'rgba(255,255,255,.75)',marginTop:10,lineHeight:1.45}}>QuickBooks backfill — bills already applied in the Portal. Each posts as account lines (Purchases / Freight / Sports Inc fee) under its own vendor; the Portal side is not applied again. Don't press Pull Bills until this list is empty — a pull replaces it (reload it from Bill History if that happens).</div>
+                {failed.length>0&&<div style={{marginTop:10,fontSize:11,color:'#fecaca',lineHeight:1.5}}>
+                  {failed.slice(0,8).map((b,i)=><div key={b.id||i}>{(b.parsed?.vendor||b.parsed?.supplier||'')+' · '+(b.parsed?.doc_number||b.id)+' — '+(b.qbMsg||'failed')}</div>)}
+                  {failed.length>8&&<div>…and {failed.length-8} more — every failed row is listed in Bill History with its reason.</div>}
+                </div>}
+              </div>);
+            }
             const reviewN=_bk.lines.length+_bk.no_order.length+_bk.over.length+_bk.dup.length+_bk.other.length;
             const _aiN=_inReview?billImport.parsed.filter(b=>b._aiRunning).length:0;
             _children.push(<React.Fragment key="h-toreview">{secHead({dot:RED,title:'⚠ To Review',count:reviewN+_bk.failed.length+_parkedBills.length,note:'one pile at a time'+(_aiN?' · ✨ AI working on '+_aiN:''),mt:false})}</React.Fragment>);
