@@ -7,7 +7,7 @@ const accountRows = Object.values(QB_ACCOUNT_SPECS).map((spec,index)=>({
 }));
 const accountId = number => String(Object.values(QB_ACCOUNT_SPECS).findIndex(spec=>spec.number===number)+1);
 
-const makeEngine = ({qbApi,cust=[],sos=[],invs=[],prod=[],vend=[]}) => {
+const makeEngine = ({qbApi,cust=[],sos=[],invs=[],prod=[],vend=[],dP=jest.fn(()=>({sell:0}))}) => {
   let config={
     realm_id:'9341',preflight:{status:'success',realm_id:'9341'},initialMigrationApproved:false,
     mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},custQBMap:{C1:'C-QB'},prodQBMap:{},qbSOMap:{},qbPOMap:{},syncLog:[],
@@ -21,7 +21,7 @@ const makeEngine = ({qbApi,cust=[],sos=[],invs=[],prod=[],vend=[]}) => {
   const engine=createQBSyncEngine({
       persistQbLink,
     cust,sos,invs,prod,vend,invPOs:[],submittedBatches:[],qbApi,qbConfig:config,nf:jest.fn(),
-    dP:jest.fn(()=>({sell:0})),...setters,
+    dP,...setters,
   });
   return{engine,setters,persistQbLink,getConfig:()=>config};
 };
@@ -378,6 +378,33 @@ describe('QuickBooks one-record canaries', () => {
     expect(sent.TxnTaxDetail).toBeUndefined();
     expect(persistQbLink).toHaveBeenCalledWith(expect.objectContaining({mapKey:'qbSOMap',sourceIds:['SO-2'],evidence:expect.objectContaining({total:54,api_readback:true})}));
     expect(qbApi.mock.calls.filter(([action])=>action==='upsert_item')).toHaveLength(0);
+  });
+
+  test('adds an explicit rounding line so QBO preserves the exact Portal Estimate total', async() => {
+    const so={id:'SO-ROUND',customer_id:'C1',created_at:'2026-09-01',tax_exempt:true,items:[
+      {sku:'SKU-1',name:'Jersey',unit_sell:10,sizes:{S:3},decorations:[{kind:'art',position:'Front'}]},
+      {sku:'SKU-2',name:'Short',unit_sell:10,sizes:{M:3},decorations:[{kind:'art',position:'Front'}]},
+    ]};
+    const customer={id:'C1',name:'Test Customer'};
+    const dP=jest.fn(()=>({sell:0.335}));
+    let sent;
+    const qbApi=jest.fn(async(action,{query,estimate}={})=>{
+      if(action==='query'&&query.includes('FROM Estimate STARTPOSITION'))return{QueryResponse:{Estimate:[]}};
+      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
+      if(action==='query'&&query.includes("FROM Item WHERE Name = 'NSA Portal Sales'"))return{QueryResponse:{Item:[portalSalesItem]}};
+      if(action==='upsert_estimate'){sent=estimate;return{Estimate:{Id:'E-ROUND',...estimate}}}
+      if(action==='query'&&query.includes("FROM Estimate WHERE Id = 'E-ROUND'"))return{QueryResponse:{Estimate:[{Id:'E-ROUND',...sent,TotalAmt:62.01}]}};
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const expectedRows=buildQBSalesOrderPreviewRows([so],[customer],{C1:'C-QB'},{},dP);
+    expect(expectedRows[0]).toEqual(expect.objectContaining({salesSubtotal:62.01,total:62.01,lineCount:3}));
+    const {engine,getConfig}=makeEngine({qbApi,cust:[customer],sos:[so],dP});
+    getConfig().initialMigrationApproved=true;
+    await expect(engine.syncSalesOrders({}, {}, {approved:true,approvedSOIds:['SO-ROUND'],expectedRows})).resolves.toEqual({status:'success',synced:1});
+    expect(sent.Line).toEqual(expect.arrayContaining([
+      expect.objectContaining({Amount:-0.01,Description:'Portal line-rounding adjustment'}),
+    ]));
+    expect(sent.Line.reduce((sum,line)=>sum+line.Amount,0)).toBeCloseTo(62.01,8);
   });
 
   test('creates one PO without creating a vendor or item and verifies read-back', async() => {
