@@ -5,6 +5,8 @@ const PREFIX = '_qb_link_v1_';
 const clean = value => String(value == null ? '' : value).trim();
 const parse = value => typeof value === 'string' ? JSON.parse(value) : value;
 
+const realmKeyPrefix = realmId => PREFIX + encodeURIComponent(JSON.stringify([clean(realmId)]).slice(0, -1) + ',');
+
 export function qbLinkKey(realmId, mapKey, sourceId) {
   if (!clean(realmId) || !QB_LINK_MAPS.includes(mapKey) || !clean(sourceId)) {
     throw new Error('QuickBooks link requires a realm, supported map, and source ID.');
@@ -73,6 +75,31 @@ export function mergeDurableQBLinks(config = {}, appState = {}) {
   if (itemLinkAt) result.prodLinkCanaryVerifiedAt = itemLinkAt;
   if (itemCreateAt) result.prodCreateCanaryVerifiedAt = itemCreateAt;
   return result;
+}
+
+// app_state also contains large operational blobs and thousands of product-image
+// fallbacks. Loading every row in one request made the durable QBO receipts miss
+// the generic query's deadline once the customer migration passed ~2,500 links.
+// Read just this company's receipts in deterministic pages instead.
+export async function loadDurableQBLinkReceipts(client, realmId, {pageSize=1000, hardLimit=20000}={}) {
+  const realm=clean(realmId);
+  if(!client||!realm)throw new Error('Durable QuickBooks link load requires a database and realm.');
+  const prefix=realmKeyPrefix(realm);
+  const rows=[];
+  for(let start=0;start<hardLimit;start+=pageSize){
+    const query=client.from('app_state').select('id,value').like('id',prefix+'%').order('id',{ascending:true}).range(start,start+pageSize-1);
+    const page=await Promise.race([
+      query,
+      new Promise(resolve=>setTimeout(()=>resolve({data:null,error:{message:'receipt page timed out'}}),20000)),
+    ]);
+    if(page.error)throw new Error('Durable QBO link load failed: '+page.error.message);
+    const batch=page.data||[];rows.push(...batch);
+    if(batch.length<pageSize)break;
+    if(start+pageSize>=hardLimit)throw new Error('Durable QBO link load exceeded the safety limit.');
+  }
+  const output={};
+  rows.forEach(row=>{if(row?.id?.startsWith(prefix)&&row.value!=null)output[row.id]=row.value});
+  return output;
 }
 
 // Call only after QBO read-back. A rejected/uncertain save never earns success.
