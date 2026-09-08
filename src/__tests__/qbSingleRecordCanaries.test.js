@@ -1,4 +1,4 @@
-import { QB_PO_ACCOUNT_LINE_DESCRIPTION_MAX, billReferencesPortalPO, buildQBBillPOReplacement, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions, qbPOAccountLineDescription } from '../qbSyncEngine';
+import { QB_PO_ACCOUNT_LINE_DESCRIPTION_MAX, billReferencesPortalPO, buildQBBillPOReplacement, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions, qbPOAccountLineDescription } from '../qbSyncEngine';
 import { indexQBNonInventoryItems, QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_SPECS } from '../qbAccountMappings';
 
 const accountRows = Object.values(QB_ACCOUNT_SPECS).map((spec,index)=>({
@@ -30,6 +30,46 @@ const accountResponse = {QueryResponse:{Account:accountRows}};
 const portalSalesItem = {Id:'SALES-ITEM',Name:'NSA Portal Sales',Type:'Service',Active:true,IncomeAccountRef:{value:accountId('40000')}};
 
 describe('QuickBooks one-record canaries', () => {
+  test('invoice review lists exact ready rows and blocks zero totals without writing', () => {
+    const rows=buildQBInvoicePreviewRows([
+      {id:'INV-10',customer_id:'C1',invoice_date:'2026-09-08',total:100,paid:25,tax:8},
+      {id:'INV-11',customer_id:'C1',invoice_date:'2026-09-08',total:0,paid:0,tax:0},
+      {id:'INV-12',customer_id:'C1',invoice_date:'2026-09-08',total:50,status:'void'},
+    ],[{id:'C1',name:'Exact Customer'}],{C1:'Q1'});
+    expect(rows).toEqual([
+      expect.objectContaining({invoiceId:'INV-10',documentNumber:'INV-10',customer:'Exact Customer',qboCustomerId:'Q1',date:'2026-09-08',total:100,paid:25,tax:8,action:'ready'}),
+      expect.objectContaining({invoiceId:'INV-11',action:'blocked',reason:'invoice total must be positive'}),
+    ]);
+  });
+
+  test('bulk invoice writes require an explicitly approved exact review', async() => {
+    const qbApi=jest.fn();
+    const {engine,getConfig}=makeEngine({qbApi,cust:[{id:'C1',name:'Test Customer'}],invs:[{id:'INV-1',customer_id:'C1',invoice_date:'2026-09-08',total:100}]});
+    getConfig().initialMigrationApproved=true;
+    await expect(engine.syncInvoices()).resolves.toEqual({status:'blocked',synced:0});
+    expect(qbApi).not.toHaveBeenCalled();
+  });
+
+  test('a reviewed invoice batch stops after the first write failure', async() => {
+    const invoices=[
+      {id:'INV-1',customer_id:'C1',invoice_date:'2026-09-08',total:100,paid:0,tax:0},
+      {id:'INV-2',customer_id:'C1',invoice_date:'2026-09-08',total:200,paid:0,tax:0},
+    ];
+    const qbApi=jest.fn(async(action,{query}={})=>{
+      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
+      if(action==='query'&&query.includes("FROM Item WHERE Name = 'NSA Portal Sales'"))return{QueryResponse:{Item:[portalSalesItem]}};
+      if(action==='query'&&query.includes("FROM Customer WHERE Id = 'C-QB'"))return{QueryResponse:{Customer:[{Id:'C-QB',SalesTermRef:{value:'T30',name:'Net 30'}}]}};
+      if(action==='upsert_invoice')throw new Error('transport stopped');
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const {engine,getConfig}=makeEngine({qbApi,cust:[{id:'C1',name:'Test Customer'}],invs:invoices});
+    getConfig().initialMigrationApproved=true;
+    const expectedRows=buildQBInvoicePreviewRows(invoices,[{id:'C1',name:'Test Customer'}],{C1:'C-QB'});
+    await expect(engine.syncInvoices({}, {}, {approved:true,approvedInvoiceIds:['INV-1','INV-2'],expectedRows})).resolves.toEqual({status:'blocked',synced:0});
+    expect(qbApi.mock.calls.filter(([action])=>action==='upsert_invoice')).toHaveLength(1);
+    expect(getConfig().lastInvoiceBatch.counts).toEqual({failed:1,not_attempted:1});
+  });
+
   test('creates and reads back exactly one invoice with the QBO customer terms', async() => {
     const invoice={id:'INV-1',display_id:'INV-1',customer_id:'C1',so_id:'SO-1',invoice_date:'2026-09-01',total:100,paid:0,tax:0};
     const readback={Id:'900',DocNumber:'INV-1',CustomerRef:{value:'C-QB'},TotalAmt:100,TxnDate:'2026-09-01',SalesTermRef:{value:'T30',name:'Net 30'}};
