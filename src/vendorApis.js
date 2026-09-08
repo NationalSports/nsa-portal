@@ -1358,19 +1358,31 @@ const sanmarGetWarehouseStock = async (descriptors) => {
 // pickable rows [{ sku, style, brand, color, size, price, qty }] — the `sku` is the S&S order
 // `identifier`. Best-effort: a lookup miss/failure returns [] (or throws to surface a real
 // network error to the caller's catch).
-const ssSearchProducts = async (query, { limit = 80 } = {}) => {
+//
+// `color`/`size` are the order line being matched, and they only RANK the rows (never filter):
+// the wanted colorway is floated to the top so the rep isn't scrolling a 500-row catalog, but
+// every row S&S returned is still pickable in case our color naming differs from theirs.
+const ssSearchProducts = async (query, { limit = 1200, color = '', size = '' } = {}) => {
   const q = String(query || '').trim();
   if (q.length < 2) return [];
   const styleList = await ssApiCall('/Styles?search=' + encodeURIComponent(q));
   const sa = Array.isArray(styleList) ? styleList : (styleList ? [styleList] : []);
-  const styleIDs = [...new Set(sa.map(s => s.styleID || s.StyleID).filter(Boolean))].slice(0, 5);
+  // A query that names a style EXACTLY is the style the rep meant. S&S's /Styles?search= is
+  // fuzzy and also returns every style whose name/description merely contains the number, and
+  // those styles used to spend the row budget below before the real one got its turn.
+  const qn = _smNorm(q);
+  const exact = sa.filter(s => _smNorm(s.partNumber) === qn || _smNorm(s.styleName) === qn);
+  const pool = exact.length ? exact : sa;
+  const styleIDs = [...new Set(pool.map(s => s.styleID || s.StyleID).filter(Boolean))].slice(0, 5);
   if (!styleIDs.length) return [];
   const data = await ssApiCall('/Products/?style=' + encodeURIComponent(styleIDs.join(',')));
   const items = Array.isArray(data) ? data : (data ? [data] : []);
+  const seen = new Set();
   const rows = [];
   for (const r of items) {
     const sku = String(r.sku || r.Sku || r.gtin || '');
-    if (!sku) continue;
+    if (!sku || seen.has(sku)) continue;
+    seen.add(sku);
     rows.push({
       sku,
       style: String(r.styleName || r.StyleName || '').trim(),
@@ -1380,9 +1392,25 @@ const ssSearchProducts = async (query, { limit = 80 } = {}) => {
       price: parseFloat(r.customerPrice || r.piecePrice || 0) || 0,
       qty: typeof r.qty === 'number' ? r.qty : (parseInt(r.qty, 10) || 0),
     });
-    if (rows.length >= limit) break;
   }
-  return rows;
+  // Rank the line's own color/size to the top BEFORE capping. A wide style overflows any cap
+  // S&S's own order can't be trusted to respect (owner 2026-09-08: the picker for Rabbit Skins
+  // 3321 — 105 colors × 5 sizes = 525 rows — listed colors A–B only under the old 80-row cut
+  // and never reached the ordered Rouge), so the cap must never be what decides whether the
+  // wanted row made the list.
+  const cn = _smNorm(color), szn = _smSizeNorm(size);
+  if (!cn && !szn) return rows.slice(0, limit);
+  const score = (r) => {
+    const colorHit = cn && (_smNorm(r.color) === cn || smColorSubset(r.color, color));
+    const sizeHit = szn && smSizeMatch(szn, _smSizeNorm(r.size));
+    return (colorHit ? 2 : 0) + (sizeHit ? 1 : 0);
+  };
+  // Index-keyed tie-break keeps S&S's catalog order inside each score band (a stable sort).
+  return rows
+    .map((r, i) => ({ r, i, s: score(r) }))
+    .sort((a, b) => (b.s - a.s) || (a.i - b.i))
+    .slice(0, limit)
+    .map((x) => x.r);
 };
 
 // Submit a built S&S order (the `order` object from buildSSOrderPayload) via

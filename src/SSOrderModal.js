@@ -47,6 +47,12 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   const [searchResults, setSearchResults] = useState([]);
   const [searchBusy, setSearchBusy] = useState(false);
   const [searchErr, setSearchErr] = useState('');
+  // Narrowing controls for the result list. A wide style comes back with hundreds of rows
+  // (Rabbit Skins 3321 alone is 105 colors × 5 sizes), so the picker defaults to the line's
+  // own size and lets the rep type part of the colorway — both are undoable in one click, so
+  // a color S&S names differently from us is still reachable.
+  const [rowFilter, setRowFilter] = useState('');
+  const [sizeOnly, setSizeOnly] = useState(true);
 
   // Auto-selected destination (NSA dock, or the deco/customer address the caller
   // passed), plus the rep's optional hand-edited override.
@@ -147,19 +153,32 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   };
 
   // ── Manual SKU search ──────────────────────────────────────────────────────
-  const openSearch = (l) => { setSearchLine(l); setSearchQuery(l.style || ''); setSearchResults([]); setSearchErr(''); };
-  const closeSearch = () => { setSearchLine(null); setSearchResults([]); setSearchErr(''); setSearchBusy(false); };
+  const openSearch = (l) => { setSearchLine(l); setSearchQuery(l.style || ''); setSearchResults([]); setSearchErr(''); setRowFilter(''); setSizeOnly(true); };
+  const closeSearch = () => { setSearchLine(null); setSearchResults([]); setSearchErr(''); setSearchBusy(false); setRowFilter(''); };
   const runSearch = async () => {
     const q = searchQuery.trim();
     if (q.length < 2) { setSearchErr('Type at least 2 characters (a style like NL1580, or a keyword).'); return; }
     setSearchBusy(true); setSearchErr(''); setSearchResults([]);
     try {
-      const rows = await ssSearchProducts(q);
+      // Hand S&S the line's colorway and size so the matching rows rank to the top of the
+      // list rather than landing past wherever the result cap falls.
+      const rows = await ssSearchProducts(q, { color: searchLine?.color || '', size: searchLine?.size || '' });
       setSearchResults(rows);
       if (!rows.length) setSearchErr('No S&S products found for "' + q + '".');
     } catch (e) { setSearchErr(e.message || 'S&S search failed — try again.'); }
     finally { setSearchBusy(false); }
   };
+  // What the table actually shows: the line's size only (unless the rep turns that off) and
+  // any free-text colorway/SKU narrowing they typed.
+  const visibleResults = useMemo(() => {
+    if (!searchLine) return [];
+    const f = _norm(rowFilter);
+    return searchResults.filter(r => {
+      if (sizeOnly && searchLine.size && _norm(r.size) !== _norm(searchLine.size)) return false;
+      if (f && !_norm(r.color).includes(f) && !_norm(r.sku).includes(f)) return false;
+      return true;
+    });
+  }, [searchResults, searchLine, sizeOnly, rowFilter]);
   const pickSku = (row) => {
     if (!searchLine || !row || !row.sku) return;
     setManualSku(m => ({ ...m, [searchLine.key]: row.sku }));
@@ -280,6 +299,27 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
               </div>
               {searchErr && <div style={{ fontSize: 12, color: '#991b1b', marginBottom: 6 }}>{searchErr}</div>}
               {searchResults.length > 0 && (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' }}>
+                  <input value={rowFilter} onChange={e => setRowFilter(e.target.value)}
+                    placeholder="Narrow by color or SKU (e.g. rouge)"
+                    style={{ flex: '1 1 200px', padding: '4px 8px', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: 12 }} />
+                  {searchLine.size && (
+                    <label style={{ fontSize: 11, color: '#3730a3', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+                      <input type="checkbox" checked={sizeOnly} onChange={e => setSizeOnly(e.target.checked)} />
+                      size {searchLine.size} only
+                    </label>
+                  )}
+                  <span style={{ fontSize: 11, color: '#64748b' }}>
+                    {visibleResults.length} of {searchResults.length} S&S item{searchResults.length === 1 ? '' : 's'}
+                  </span>
+                </div>
+              )}
+              {searchResults.length > 0 && visibleResults.length === 0 && (
+                <div style={{ fontSize: 12, color: '#92400e', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 6, padding: '6px 8px', marginBottom: 6 }}>
+                  Nothing matches those filters. Clear the color box{searchLine.size ? ' or untick "size ' + searchLine.size + ' only"' : ''} to see all {searchResults.length} items S&S returned.
+                </div>
+              )}
+              {visibleResults.length > 0 && (
                 <div style={{ maxHeight: 240, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 6, background: '#fff' }}>
                   <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
                     <thead style={{ background: '#eef2ff', position: 'sticky', top: 0 }}>
@@ -289,13 +329,14 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                       </tr>
                     </thead>
                     <tbody>
-                      {searchResults.map((r, i) => {
+                      {visibleResults.map((r, i) => {
                         const sizeMatch = _norm(r.size) === _norm(searchLine.size);
+                        const colorMatch = !!_norm(searchLine.color) && _norm(r.color) === _norm(searchLine.color);
                         return (
-                          <tr key={r.sku + '-' + i} style={{ borderTop: '1px solid #f1f5f9', background: sizeMatch ? '#f0fdf4' : 'transparent' }}>
+                          <tr key={r.sku + '-' + i} style={{ borderTop: '1px solid #f1f5f9', background: sizeMatch && colorMatch ? '#dcfce7' : (sizeMatch ? '#f0fdf4' : 'transparent') }}>
                             <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: '#0f766e' }}>{r.sku}</td>
                             <td style={{ ...td, fontFamily: 'monospace' }}>{r.style || '—'}</td>
-                            <td style={td}>{r.color || '—'}</td>
+                            <td style={{ ...td, fontWeight: colorMatch ? 700 : 400 }}>{r.color || '—'}{colorMatch ? ' ✓' : ''}</td>
                             <td style={{ ...td, fontWeight: 700 }}>{r.size || '—'}{sizeMatch ? ' ✓' : ''}</td>
                             <td style={{ ...td, textAlign: 'right' }}>${(r.price || 0).toFixed(2)}</td>
                             <td style={td}><button className="btn btn-primary" style={{ fontSize: 11, padding: '2px 10px', background: '#16a34a', borderColor: '#16a34a' }} onClick={() => pickSku(r)}>Use</button></td>
@@ -307,7 +348,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                 </div>
               )}
               <div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>
-                Pick the row matching this line's color and size (size-matching rows are highlighted). The chosen S&S SKU fills this line so the order can submit.
+                Pick the row matching this line's color and size — rows matching both are highlighted and sorted to the top. The chosen S&S SKU fills this line so the order can submit.
               </div>
             </div>
           )}
