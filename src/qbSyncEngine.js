@@ -1143,22 +1143,57 @@ export function createQBSyncEngine(ctx){
     };
 
     // ── SYNC: Bidirectional paid status sync between QB and portal ──
-    const syncPaidFromQB=async()=>{
+    const syncPaidFromQB=async({reviewOnly=false}={})=>{
       if(productionSyncLocked())return;
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'paid_sync',status:'success',details:[]};
       let updated=0;
       // Include all QB-linked invoices (not just unpaid) so portal-paid invoices can push to QB
-      // A voided Portal invoice that already reached QBO is reported, never paid
-      // or corrected: the QBO invoice must be voided by hand.
+      // Verify the current QBO state before asking an operator to void anything.
       const voidLinked=invs.filter(i=>i.qb_invoice_id&&isVoidInvoice(i));
-      voidLinked.forEach(i=>log.details.push((i.display_id||i.id)+' — VOID in the Portal but posted as QBO Invoice #'+i.qb_invoice_id+'; void it in QuickBooks, nothing was sent'));
-      if(voidLinked.length)log.status='partial';
+      try{
+        for(let start=0;start<voidLinked.length;start+=QB_SYNC_BATCH_SIZE){
+          const batch=voidLinked.slice(start,start+QB_SYNC_BATCH_SIZE);
+          const ids=batch.map(i=>String(i.qb_invoice_id).replace(/'/g,"\\'"));
+          const result=await queryQBReadOnly(qbApi,"SELECT Id, Balance, TotalAmt FROM Invoice WHERE Id IN ('"+ids.join("','")+"')",'void invoice verification');
+          const records=new Map((result?.QueryResponse?.Invoice||[]).map(i=>[String(i.Id),i]));
+          for(const inv of batch){
+            const record=records.get(String(inv.qb_invoice_id));
+            const zero=record&&record.TotalAmt!=null&&record.Balance!=null&&Number.isFinite(Number(record.TotalAmt))&&Number.isFinite(Number(record.Balance))&&Math.abs(Number(record.TotalAmt))<0.005&&Math.abs(Number(record.Balance))<0.005;
+            log.details.push((inv.display_id||inv.id)+' — '+(zero?'VOID in Portal; QBO Invoice #'+inv.qb_invoice_id+' verified at $0 total and $0 balance':record?'VOID in Portal; QBO Invoice #'+inv.qb_invoice_id+' still needs review (total $'+safeNum(record.TotalAmt).toFixed(2)+', balance $'+safeNum(record.Balance).toFixed(2)+')':'VOID in Portal; QBO Invoice #'+inv.qb_invoice_id+' was not returned; review required'));
+            if(!zero)log.status='partial';
+          }
+        }
+      }catch(e){log.status='error';log.details.push('Void verification failed: '+e.message)}
       const allLinkedInvs=invs.filter(i=>i.qb_invoice_id&&!isVoidInvoice(i));
       const paidOffset=Math.min(Math.max(0,Number(qbConfig._paidSyncOffset)||0),Math.max(0,allLinkedInvs.length-1));
-      const linkedInvs=[...allLinkedInvs.slice(paidOffset),...allLinkedInvs.slice(0,paidOffset)].slice(0,QB_SYNC_BATCH_SIZE);
+      const linkedInvs=reviewOnly?allLinkedInvs:[...allLinkedInvs.slice(paidOffset),...allLinkedInvs.slice(0,paidOffset)].slice(0,QB_SYNC_BATCH_SIZE);
       const nextPaidOffset=allLinkedInvs.length?(paidOffset+linkedInvs.length)%allLinkedInvs.length:0;
-      if(linkedInvs.length===0){log.details.push('No QB-linked invoices to check');setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('No invoices to sync');setQbSyncing(false);return}
+      if(linkedInvs.length===0&&!reviewOnly){log.details.push('No QB-linked invoices to check');setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('No invoices to sync');setQbSyncing(false);return}
+      if(reviewOnly){
+        log.type='payment_review';
+        const rows=[];
+        try{
+          for(let start=0;start<linkedInvs.length;start+=QB_SYNC_BATCH_SIZE){
+            const batch=linkedInvs.slice(start,start+QB_SYNC_BATCH_SIZE);
+            const ids=batch.map(i=>String(i.qb_invoice_id).replace(/'/g,"\\'"));
+            const result=await queryQBReadOnly(qbApi,"SELECT Id, DocNumber, Balance, TotalAmt FROM Invoice WHERE Id IN ('"+ids.join("','")+"')",'payment review');
+            const records=new Map((result?.QueryResponse?.Invoice||[]).map(i=>[String(i.Id),i]));
+            for(const inv of batch){
+              const q=records.get(String(inv.qb_invoice_id));
+              const valid=q&&q.TotalAmt!=null&&q.Balance!=null&&Number.isFinite(Number(q.TotalAmt))&&Number.isFinite(Number(q.Balance));
+              const total=valid?Number(q.TotalAmt):null,paid=valid?total-Number(q.Balance):null;
+              const action=!valid?'missing QBO amounts':Math.abs(safeNum(inv.total)-total)>0.005?'invoice total differs':paid-safeNum(inv.paid)>0.005?'pull payment details':safeNum(inv.paid)-paid>0.005?'review payment push':'aligned';
+              if(!valid&&log.status!=='error')log.status='partial';
+              rows.push({invoice:inv.display_id||inv.id,qboId:String(inv.qb_invoice_id),portalTotal:safeNum(inv.total),qboTotal:total,portalPaid:safeNum(inv.paid),qboPaid:paid,action});
+            }
+          }
+        }catch(e){log.status='error';log.details.push('Payment review failed: '+e.message)}
+        log.details.unshift('READ ONLY — '+rows.length+'/'+linkedInvs.length+' invoices reviewed; no invoice or payment changed');
+        const review={at:new Date().toISOString(),status:log.status,rows,details:log.details};
+        setQBConfig(prev=>({...prev,lastPaymentReview:review,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));
+        setQbSyncing(false);return review;
+      }
       let paidRefs,salesItemId;
       const taxCtx=createInvoiceTaxContext();
       try{
