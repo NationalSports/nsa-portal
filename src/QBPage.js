@@ -831,7 +831,8 @@ export default function QBPage(){
                 <button className="btn btn-secondary" disabled title="Use the reviewed customer batch below">Customers</button>
                 <button className="btn btn-secondary" disabled title="Locked pending customer links and Estimate rollout review" onClick={()=>syncSalesOrders()}>Sales Orders</button>
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={()=>syncInvoices()}>Invoices</button>
-                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncPaidFromQB}>Sync Paid</button>
+                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={()=>syncPaidFromQB()}>Sync Payments Both Ways</button>
+                <button className="btn btn-secondary" disabled={qbSyncing||!livePreflightReady} onClick={()=>syncPaidFromQB({reviewOnly:true})}>Review Payments — No Changes</button>
                 <button className="btn btn-secondary" disabled title="Locked pending native PO-to-existing-bill reconciliation" onClick={()=>syncPurchaseOrders()}>POs</button>
                 <button className="btn btn-secondary" disabled title="Locked until the product-item canaries are approved">QBO Product Items Locked</button>
               </div>
@@ -1127,7 +1128,7 @@ export default function QBPage(){
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2>Invoice Sync ({unsyncedInvs.length} pending)</h2>
             <div style={{display:'flex',gap:6}}>
-              <button className="btn btn-primary btn-sm" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={syncPaidFromQB}>{qbSyncing?'Syncing...':'Sync Paid from QB'}</button>
+              <button className="btn btn-primary btn-sm" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={()=>syncPaidFromQB()}>{qbSyncing?'Syncing...':'Sync Payments Both Ways'}</button>
               <button className="btn btn-secondary btn-sm" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={()=>syncInvoices()}>{qbSyncing?'Syncing...':'Push Invoices to QB'}</button>
             </div>
           </div>
@@ -1438,6 +1439,14 @@ export default function QBPage(){
         </div>
       </>}
 
+      {qbConfig.lastPaymentReview&&<div className="card" style={{padding:16,marginBottom:16}}>
+        <h2>Payment review</h2>
+        <p>{qbConfig.lastPaymentReview.at} · {qbConfig.lastPaymentReview.status} · {(qbConfig.lastPaymentReview.rows||[]).filter(r=>r.action==='aligned').length} aligned</p>
+        {(qbConfig.lastPaymentReview.details||[]).map((d,i)=><p key={i}>{d}</p>)}
+        <table><thead><tr><th>Invoice</th><th>Portal total</th><th>QBO total</th><th>Portal paid</th><th>QBO paid</th><th>Next action</th></tr></thead><tbody>
+          {(qbConfig.lastPaymentReview.rows||[]).filter(r=>r.action!=='aligned').map(r=><tr key={r.invoice}><td>{r.invoice}</td><td>{r.portalTotal}</td><td>{r.qboTotal??'Unavailable'}</td><td>{r.portalPaid}</td><td>{r.qboPaid??'Unavailable'}</td><td>{r.action}</td></tr>)}
+        </tbody></table>
+      </div>}
       {/* ── SETTINGS TAB ── */}
       {qbTab==='settings'&&<>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>

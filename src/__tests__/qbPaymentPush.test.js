@@ -248,12 +248,13 @@ describe('correcting a stale QBO total on a taxable invoice',()=>{
 });
 
 describe('voided Portal invoices',()=>{
-  test('a voided invoice that reached QBO is reported and never paid or corrected',async()=>{
+  test.each([[0,0,'success'],[930,930,'partial'],[930,0,'partial'],[null,null,'partial']])('checks live QBO total %s and balance %s without writing',async(total,balance,status)=>{
     const invs=[{id:'INV2',display_id:'INV-2',customer_id:'C1',total:930,paid:930,status:'void',qb_invoice_id:'559'}];
     let config={realm_id:'r1',preflight:{status:'success',realm_id:'r1'},mapping,initialMigrationApproved:true,custQBMap:{C1:'55'},syncLog:[]};
     const qbApi=jest.fn(async(action,args={})=>{
       if(action==='query'){
         const q=args.query||'';
+        if(q.includes('FROM Invoice'))return{QueryResponse:{Invoice:total==null?[]:[{Id:'559',TotalAmt:total,Balance:balance}]}};
         if(q.includes('FROM Account'))return{QueryResponse:{Account:accounts}};
         if(q.includes('FROM Item'))return{QueryResponse:{Item:[{Id:'7',Name:'NSA Portal Sales',Type:'Service',Active:true,IncomeAccountRef:{value:'10'}}]}};
         return{QueryResponse:{}};
@@ -264,10 +265,40 @@ describe('voided Portal invoices',()=>{
       persistQbLink:jest.fn(async()=>{}),nf:jest.fn(),setQbSyncing:jest.fn(),setInvs:jest.fn(),setQBConfig:fn=>{config=fn(config);}});
     await engine.syncPaidFromQB();
     const log=(config.syncLog||[]).find(l=>l.type==='paid_sync');
-    expect(log.details.join(' ')).toMatch(/INV-2 — VOID in the Portal but posted as QBO Invoice #559; void it in QuickBooks, nothing was sent/);
-    expect(log.status).toBe('partial');
+    expect(log.details.join(' ')).toContain('INV-2 — VOID in Portal');
+    if(status==='success')expect(log.details.join(' ')).toContain('verified at $0 total and $0 balance');
+    expect(log.status).toBe(status);
     expect(qbApi.mock.calls.some(([a])=>a==='upsert_payment'||a==='upsert_invoice')).toBe(false);
   });
+});
+
+test.each([[100,100,'review payment push'],[0,0,'pull payment details'],[0,100,'aligned']])('payment review classifies without writes (%s/%s)',async(invoicePaid,qbBalance,action)=>{
+  const run=setup({invoicePaid,qbBalance});
+  const result=await run.engine.syncPaidFromQB({reviewOnly:true});
+  expect(result.rows[0].action).toBe(action);
+  expect(run.qbApi.mock.calls.every(([a,args])=>a==='query'&&args.query.includes('FROM Invoice'))).toBe(true);
+  expect(run.persistQbLink).not.toHaveBeenCalled();
+  expect(run.config()._paidSyncOffset).toBeUndefined();
+});
+
+test('read-only review scans beyond one batch and reports missing records',async()=>{
+  const invs=Array.from({length:205},(_,i)=>({id:'I'+i,qb_invoice_id:String(i+1),total:100,paid:0}));
+  let config={realm_id:'r1',preflight:{status:'success',realm_id:'r1'},initialMigrationApproved:true,_paidSyncOffset:100,syncLog:[]};
+  const qbApi=jest.fn(async(action,args)=>{
+    expect(action).toBe('query');
+    const ids=[...args.query.matchAll(/'(\d+)'/g)].map(m=>m[1]);
+    return{QueryResponse:{Invoice:ids.filter(id=>id!=='205').map(Id=>({Id,TotalAmt:100,Balance:100}))}};
+  });
+  const setInvs=jest.fn(),persistQbLink=jest.fn();
+  const engine=createQBSyncEngine({cust:[],sos:[],invs,prod:[],vend:[],qbApi,qbConfig:config,persistQbLink,nf:jest.fn(),setQbSyncing:jest.fn(),setInvs,setQBConfig:fn=>{config=fn(config)}});
+  const review=await engine.syncPaidFromQB({reviewOnly:true});
+  expect(review.rows).toHaveLength(205);
+  expect(qbApi).toHaveBeenCalledTimes(3);
+  expect(review.status).toBe('partial');
+  expect(review.rows[204].action).toBe('missing QBO amounts');
+  expect(config._paidSyncOffset).toBe(100);
+  expect(setInvs).not.toHaveBeenCalled();
+  expect(persistQbLink).not.toHaveBeenCalled();
 });
 
 // QuickBooks is being populated for the first time, so the day a payment is
