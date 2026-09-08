@@ -1,4 +1,4 @@
-import {savedDocumentMatchesDraft, reconcileSavedOrderDrafts} from '../lib/savedDraftComparison';
+import {savedDocumentMatchesDraft, reconcileSavedDocumentDrafts} from '../lib/savedDraftComparison';
 import {_outboxGate} from '../lib/dbEngine';
 import {createDraftJournal} from '../lib/draftJournal';
 import {indexedDB} from 'fake-indexeddb';
@@ -51,7 +51,7 @@ test('new child properties and reordering item lines remain meaningful', () => {
 test('incomplete, absent, other-owner and other-table copies are never acknowledged', async () => {
   const journal={acknowledge:jest.fn()};
   const base={key:'a',owner:'staff',revision:'r',table:'sales_orders',id:'SO-test',payload:draft()};
-  const run=(drafts,orders,owner='staff')=>reconcileSavedOrderDrafts({owner:'staff',drafts,orders,journal,currentOwner:()=>owner});
+  const run=(drafts,orders,owner='staff')=>reconcileSavedDocumentDrafts({table:'sales_orders',owner:'staff',drafts,documents:orders,journal,currentOwner:()=>owner});
   await run([base],[{...cloud(),_jobsHydrated:false}]);
   await run([base],[{...cloud(),_jobsHydrated:undefined}]);
   await run([base],[]);
@@ -70,14 +70,42 @@ test('clears matching old-session receipts while retaining a newer revision and 
     await b.stage('staff','sales_orders',draft());
     const candidates=await a.list('staff');
     const newer=await b.stage('staff','sales_orders',{...draft(),memo:'Still unsaved'});
-    await reconcileSavedOrderDrafts({owner:'staff',drafts:candidates,orders:[cloud()],journal:a,currentOwner:()=> 'staff'});
+    await reconcileSavedDocumentDrafts({table:'sales_orders',owner:'staff',drafts:candidates,documents:[cloud()],journal:a,currentOwner:()=> 'staff'});
     expect((await a.list('staff')).map(row=>row.revision)).toEqual([newer.revision]);
-    await reconcileSavedOrderDrafts({owner:'staff',drafts:await a.list('staff'),orders:[cloud()],journal:a,currentOwner:()=> 'staff'});
+    await reconcileSavedDocumentDrafts({table:'sales_orders',owner:'staff',drafts:await a.list('staff'),documents:[cloud()],journal:a,currentOwner:()=> 'staff'});
     expect((await a.list('staff'))[0].payload.memo).toBe('Still unsaved');
   } finally {await a.close();await b.close();}
 });
 
 test('storage failures are reported to the caller without saving any cloud data', async () => {
   const journal={acknowledge:jest.fn().mockRejectedValue(new Error('storage failed'))};
-  await expect(reconcileSavedOrderDrafts({owner:'staff',drafts:[{key:'a',owner:'staff',revision:'r',table:'sales_orders',id:'SO-test',payload:draft()}],orders:[cloud()],journal,currentOwner:()=> 'staff'})).rejects.toThrow('storage failed');
+  await expect(reconcileSavedDocumentDrafts({table:'sales_orders',owner:'staff',drafts:[{key:'a',owner:'staff',revision:'r',table:'sales_orders',id:'SO-test',payload:draft()}],documents:[cloud()],journal,currentOwner:()=> 'staff'})).rejects.toThrow('storage failed');
+});
+
+const estimate = () => ({id:'EST-test',memo:'',_version:3,
+  items:[{sku:'TEE',sizes:{L:75,XL:100},unit_sell:8.5}],
+  art_files:[{id:'ART-e',_version:1,status:'approved'}]});
+const savedEstimate = () => ({...estimate(),_version:5,
+  art_files:[{status:'approved',_version:3,id:'ART-e'}],
+  _recoveryHydrated:true,_itemsHydrated:true,_decosHydrated:true,_artHydrated:true});
+
+test('estimate recovery clears only matching copies, without requiring sales-order child tables', async () => {
+  const journal={acknowledge:jest.fn().mockResolvedValue(true)};
+  const base={key:'estimate-copy',revision:'v1',owner:'staff',table:'estimates',id:'EST-test',payload:estimate()};
+  await reconcileSavedDocumentDrafts({owner:'staff',currentOwner:()=> 'staff',table:'estimates',
+    documents:[savedEstimate()],journal,drafts:[base,
+      {...base,key:'changed',payload:{...estimate(),items:[{sku:'TEE',sizes:{L:76,XL:100},unit_sell:8.5}]}},
+      {...base,key:'other-table',table:'sales_orders'},
+      {...base,key:'other-account',owner:'someone-else'}]});
+  expect(journal.acknowledge.mock.calls).toEqual([[{key:base.key,owner:base.owner,revision:base.revision}]]);
+  expect(_outboxGate({table:'estimates',payload:estimate(),baseVersion:3},savedEstimate())).toBe('drop');
+});
+
+test.each(['_recoveryHydrated','_itemsHydrated','_decosHydrated','_artHydrated'])('incomplete estimate load (%s) keeps backup and conflict', async flag => {
+  const journal={acknowledge:jest.fn()};
+  const row={...savedEstimate(),[flag]:false};
+  await reconcileSavedDocumentDrafts({owner:'staff',currentOwner:()=> 'staff',table:'estimates',
+    documents:[row],journal,drafts:[{key:'e',revision:'r',owner:'staff',table:'estimates',id:'EST-test',payload:estimate()}]});
+  expect(journal.acknowledge).not.toHaveBeenCalled();
+  expect(_outboxGate({table:'estimates',payload:estimate(),baseVersion:3},row)).toBe('conflict');
 });
