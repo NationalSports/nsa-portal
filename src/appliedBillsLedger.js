@@ -138,6 +138,34 @@ export const buildQboBackfillRows = (histBills, normalize = (p) => p) => {
   return rows;
 };
 
+// Turn one already-synced history row into a verification-only canary. This is
+// used after the durable canary ledger was introduced: older migrations can
+// have correctly posted bills and a server QBO receipt, but no per-bill canary
+// credit. The caller must still prove the exact existing QBO bill matches; the
+// recovery flags forbid creating a replacement if it does not.
+export const buildQboCanaryRecoveryRow = (sb, normalize = (p) => p) => {
+  const p = sb?.parsed || {};
+  const qboBillId = String(sb?.qbBillId || '').trim();
+  if (!sb || sb.qbStatus !== 'success' || sb.portalStatus !== 'success' || !qboBillId || p.is_credit) return null;
+  return {
+    ...sb,
+    selected: true,
+    qbStatus: null,
+    qbMsg: '',
+    portalStatus: 'success',
+    portalMsg: 'Already applied to Portal; existing QBO bill will be verified only',
+    _qbBackfill: true,
+    _qbCanaryRecoveryOnly: true,
+    _expectedQbBillId: qboBillId,
+    parsed: {
+      ...normalize(p),
+      _qbBackfill: true,
+      _qbCanaryRecoveryOnly: true,
+      _expectedQbBillId: qboBillId,
+    },
+  };
+};
+
 export const mergeServerBills = (savedBills, serverRows) => {
   // QBO receipts are server-authoritative. A local row may come from another
   // origin (for example a Netlify deploy preview) or predate the server receipt;

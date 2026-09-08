@@ -287,6 +287,24 @@ describe('buildQboBackfillRows', () => {
   });
 });
 
+describe('buildQboCanaryRecoveryRow', () => {
+  const { buildQboCanaryRecoveryRow } = require('../appliedBillsLedger');
+  const synced = { id: 'srv-1', qbStatus: 'success', portalStatus: 'success', qbBillId: '3404', parsed: { doc_number: '203290', vendor: 'Silver Screen', doc_total: 1740.18 } };
+
+  it('loads an already-synced bill as verification-only and preserves its expected QBO ID', () => {
+    const row = buildQboCanaryRecoveryRow(synced, (p) => ({ ...p, normalized: true }));
+    expect(row).toMatchObject({ selected: true, qbStatus: null, portalStatus: 'success', _qbBackfill: true, _qbCanaryRecoveryOnly: true, _expectedQbBillId: '3404' });
+    expect(row.parsed).toMatchObject({ doc_number: '203290', normalized: true, _qbBackfill: true, _qbCanaryRecoveryOnly: true, _expectedQbBillId: '3404' });
+  });
+
+  it('rejects incomplete, unsynced, and credit-note history rows', () => {
+    expect(buildQboCanaryRecoveryRow({ ...synced, qbStatus: null })).toBeNull();
+    expect(buildQboCanaryRecoveryRow({ ...synced, portalStatus: null })).toBeNull();
+    expect(buildQboCanaryRecoveryRow({ ...synced, qbBillId: '' })).toBeNull();
+    expect(buildQboCanaryRecoveryRow({ ...synced, parsed: { ...synced.parsed, is_credit: true } })).toBeNull();
+  });
+});
+
 describe('qboBackfillHistory', () => {
   const { qboBackfillHistory, buildQboBackfillRows } = require('../appliedBillsLedger');
   const server = [

@@ -33,7 +33,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import GlobalSearch from './GlobalSearch';
-import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills, portalBillAlreadyApplied,buildQboBackfillRows,qboBackfillHistory} from './appliedBillsLedger';
+import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills, portalBillAlreadyApplied,buildQboBackfillRows,buildQboCanaryRecoveryRow,qboBackfillHistory} from './appliedBillsLedger';
 import { createBillApplySession, billAttemptJournal, billingAttemptKey, sameBillingSnapshot } from './billApplySession';
 import { canViewAiInbox, resolveAccessUser } from './lib/pageAccess';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
@@ -30369,7 +30369,14 @@ export default function App(){
           let qboBillId,created=false;
           if(existingVendorBill){
             qboBillId=existingVendorBill.Id;
+            const expectedRecoveryId=String(b._expectedQbBillId||bill._expectedQbBillId||'').trim();
+            if((b._qbCanaryRecoveryOnly||bill._qbCanaryRecoveryOnly)&&expectedRecoveryId&&String(qboBillId)!==expectedRecoveryId){
+              throw new Error('Canary recovery stopped: the exact match is QBO Bill #'+qboBillId+', not the receipted Bill #'+expectedRecoveryId+'; no QBO record was changed.');
+            }
           }else{
+            if(b._qbCanaryRecoveryOnly||bill._qbCanaryRecoveryOnly){
+              throw new Error('Canary recovery stopped: the exact existing QBO bill was not found; no replacement bill was created.');
+            }
             const billRes=await qbApi('upsert_bill',{bill:qbBill});
             // "Unknown QBO bill error" hid the real reason on 40 bills in the
             // first production backfill: a throttled or 5xx response carries no
@@ -33185,6 +33192,9 @@ export default function App(){
                   <td style={{padding:'6px 12px',textAlign:'right',color:'#64748b'}}>{sb.parsed?.freight?'$'+sb.parsed.freight.toFixed(2):'—'}</td>
                   <td style={{padding:'6px 12px',textAlign:'center'}}>{sb.parsed?.items?.length||0}</td>
                   <td style={{padding:'6px 12px'}} onClick={e=>e.stopPropagation()}>{sb.qbStatus==='success'?<span style={{color:'#166534',fontWeight:700}}>Pushed{sb.qbMsg?' · '+sb.qbMsg:''}</span>:sb.qbStatus==='error'?<span style={{color:'#dc2626',fontWeight:700}}>Failed{sb.qbMsg?' · '+sb.qbMsg:''}</span>:<span style={{color:'#94a3b8'}}>Not pushed</span>}
+                    {qbConfig.initialMigrationApproved!==true&&sb.qbStatus==='success'&&sb.portalStatus==='success'&&sb.qbBillId&&!sb.parsed?.is_credit&&!new Set((qbConfig._qbCanaryBillIds||[]).map(String)).has(String(sb.qbBillId))&&<button style={{marginLeft:6,fontSize:9,padding:'2px 8px',background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:4,color:'#1e40af',fontWeight:700,cursor:'pointer'}}
+                      title="Read and verify this exact existing QBO bill, then restore its missing durable canary credit. Recovery can never create a replacement bill."
+                      onClick={e=>{e.stopPropagation();const row=buildQboCanaryRecoveryRow(sb,p=>prepareQboBackfillBill(p,rematchBill));if(!row){nf('This bill does not have a complete Portal and QBO receipt for canary recovery','error');return}setBillImport({step:'review',files:[],parsed:[row],uploading:false,showRaw:{}});nf('Existing QBO Bill #'+sb.qbBillId+' loaded for verification only — no replacement bill can be created');window.scrollTo({top:0,behavior:'smooth'})}}>Verify canary</button>}
                     {sb.qbStatus!=='success'&&<button style={{marginLeft:6,fontSize:9,padding:'2px 8px',background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:4,color:'#1e40af',fontWeight:700,cursor:'pointer'}}
                       onClick={e=>{e.stopPropagation();setBillImport({step:'review',files:[],parsed:[{...sb,selected:true,qbStatus:null,qbMsg:'',portalStatus:null,portalMsg:'',_qbBackfill:true,parsed:{...normalizeBillForReview(sb.parsed),_qbBackfill:true}}],uploading:false,showRaw:{}});nf('Bill loaded for QBO backfill — the Portal side will not be applied again')}}>Re-push</button>}</td>
                   <td style={{padding:'6px 12px',textAlign:'center'}} onClick={e=>e.stopPropagation()}>
