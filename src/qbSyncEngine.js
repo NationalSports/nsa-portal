@@ -440,15 +440,20 @@ export function buildQBSalesOrderPreviewRows(salesOrders = [], customers = [], c
     const art=safeArt(so);
     const artQty={};
     safeItems(so).forEach(item=>{const qty=Object.values(safeSizes(item)).reduce((sum,value)=>sum+safeNum(value),0);safeDecos(item).forEach(deco=>{if(deco.kind==='art'&&deco.art_file_id)artQty[deco.art_file_id]=(artQty[deco.art_file_id]||0)+qty})});
-    let lineCount=0,salesSubtotal=0;
+    let lineCount=0,rawSalesSubtotal=0,qboLineSubtotal=0;
     safeItems(so).forEach(item=>{
       const qty=Object.values(safeSizes(item)).reduce((sum,value)=>sum+safeNum(value),0);
       if(!(qty>0))return;
       lineCount++;
       let decorationTotal=0;
       safeDecos(item).forEach(deco=>{const combined=deco.kind==='art'&&deco.art_file_id?artQty[deco.art_file_id]:qty;const priced=priceDecoration(deco,qty,art,combined)||{};const chargeQty=priced._nq!=null?priced._nq:(deco.reversible?qty*2:qty);decorationTotal+=chargeQty*safeNum(priced.sell)});
-      salesSubtotal+=qty*safeNum(item.unit_sell)+decorationTotal;
+      const rawLineAmount=qty*safeNum(item.unit_sell)+decorationTotal;
+      rawSalesSubtotal+=rawLineAmount;
+      qboLineSubtotal+=qbCurrency(rawLineAmount);
     });
+    const salesSubtotal=qbCurrency(rawSalesSubtotal);
+    const roundingAdjustment=qbCurrency(salesSubtotal-qbCurrency(qboLineSubtotal));
+    if(roundingAdjustment)lineCount++;
     const shipping=calculateCustomerShipping(so,salesSubtotal);
     if(shipping>0)lineCount++;
     const {taxRate,tax,taxState,total}=buildPortalSalesOrderTax(so,customer,salesSubtotal,shipping);
@@ -460,7 +465,7 @@ export function buildQBSalesOrderPreviewRows(salesOrders = [], customers = [], c
     if(!date)reasons.push('invalid or missing sales-order date');
     if(!(total>0)||!lineCount)reasons.push('no positive estimate lines');
     return {salesOrderId:String(so.id),customerId:String(so.customer_id||''),customer:portalCustomerDisplayName(customer||{}),qboCustomerId:String(qboCustomerId),date,lineCount,
-      salesSubtotal:qbCurrency(salesSubtotal),shipping:qbCurrency(shipping),taxRate,tax,taxState,total,
+      salesSubtotal,shipping:qbCurrency(shipping),taxRate,tax,taxState,total,
       action:reasons.length?'blocked':'ready',reason:reasons.join('; ')};
   }).sort((a,b)=>a.salesOrderId.localeCompare(b.salesOrderId,undefined,{numeric:true}));
 }
@@ -1838,6 +1843,7 @@ export function createQBSyncEngine(ctx){
         const saf=safeArt(so);
         const _aq={};safeItems(so).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it2).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){_aq[d2.art_file_id]=(_aq[d2.art_file_id]||0)+q2}})});
         const lines=[];
+        let rawSalesSubtotal=0;
         safeItems(so).forEach(it=>{
           const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
           if(!qty)return;
@@ -1850,14 +1856,21 @@ export function createQBSyncEngine(ctx){
             const eq=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);
             if(dp.sell>0){decoTotal+=eq*dp.sell;decoDescs.push((d.position||d.deco_type||d.kind||'Art')+' @$'+dp.sell.toFixed(2))}
           });
-          const lineAmt=qty*(it.unit_sell||0)+decoTotal;
+          const rawLineAmt=qty*(it.unit_sell||0)+decoTotal;
+          rawSalesSubtotal+=rawLineAmt;
+          const lineAmt=qbCurrency(rawLineAmt);
           const desc=it.sku+' '+it.name+(it.color?' - '+it.color:'')+(decoDescs.length?' + '+decoDescs.join(', '):'');
           lines.push({DetailType:'SalesItemLineDetail',Amount:lineAmt,
             Description:desc,
             SalesItemLineDetail:{Qty:qty,UnitPrice:lineAmt/qty,ItemRef:{value:String(itemQBId||fallbackSalesItemId)}}});
         });
         if(!lines.length){const error='no positive estimate lines';log.details.push(so.id+' — BLOCKED: '+error);results.push({salesOrderId:String(so.id),result:'blocked',error});log.status='partial';if(!canary)break;continue}
-        const salesSubtotal=lines.reduce((sum,line)=>sum+safeNum(line.Amount),0);
+        const salesSubtotal=qbCurrency(rawSalesSubtotal);
+        const qboLineSubtotal=qbCurrency(lines.reduce((sum,line)=>sum+safeNum(line.Amount),0));
+        const roundingAdjustment=qbCurrency(salesSubtotal-qboLineSubtotal);
+        if(roundingAdjustment)lines.push({DetailType:'SalesItemLineDetail',Amount:roundingAdjustment,
+          Description:'Portal line-rounding adjustment',
+          SalesItemLineDetail:{Qty:1,UnitPrice:roundingAdjustment,ItemRef:{value:String(fallbackSalesItemId)}}});
         const customerShipping=calculateCustomerShipping(so,salesSubtotal);
         if(customerShipping>0)lines.push({DetailType:'SalesItemLineDetail',Amount:customerShipping,
           Description:'Customer shipping — 40000 Sales',
