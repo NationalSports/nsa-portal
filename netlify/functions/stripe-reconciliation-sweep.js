@@ -9,6 +9,7 @@
 // paid, and never creates a QuickBooks transaction.
 
 const stripe = require('stripe');
+const { monitorInvoicePayments } = require('./_stripeInvoiceMonitor');
 const { getSupabaseAdmin } = require('./_shared');
 const { escapeHtml, sendBrevoEmail } = require('./_webstoreNotifications');
 const {
@@ -200,6 +201,8 @@ function runtimeFindings({ webhook, payoutSweep }) {
 }
 
 const RECOMMENDED_ACTION = {
+  stripe_invoice_payment: 'Open QuickBooks → Stripe Payouts and verify the invoice payment. Review the Stripe reference and portal payment record before making any adjustment.',
+  stripe_invoice_monitor: 'The invoice check is incomplete. Inspect the scheduled function logs and Stripe permissions, then retry.',
   settled_order_unlinked: 'Stripe settled this charge. Re-run the order backfill from QuickBooks → Stripe Payouts to attach the ledger row.',
   portal_payment_status_review: 'Stripe holds no successful payment for this order. Review the portal status. Do not link or mark it paid.',
   stripe_payment_intent_missing: 'Stripe will not return this PaymentIntent. Confirm the account and inspect it in the Stripe dashboard.',
@@ -219,7 +222,12 @@ function detailLines(incident) {
     if (value == null || value === '') return;
     lines.push(`${escapeHtml(label)}: ${escapeHtml(value)}`);
   };
-  if (incident.record_type === 'webstore_order') {
+  if (incident.record_type === 'stripe_invoice' || incident.record_type === 'stripe_invoice_monitor') {
+    push('Payment', incident.record_id);
+    push('Invoices', (details.invoice_ids || []).join(', '));
+    push('Review', (details.reasons || []).join('; '));
+    push('Checked', details.checked_at);
+  } else if (incident.record_type === 'webstore_order') {
     push('Order', incident.record_id);
     push('Sales order', details.so_id || 'none');
     push('Portal status', details.portal_status);
@@ -266,13 +274,14 @@ function buildAlertEmail(incidents) {
   const portal = String(process.env.PORTAL_PUBLIC_URL || process.env.URL || 'https://nsa-portal.netlify.app').replace(/\/+$/, '');
   return {
     sender: { name: 'NSA Stripe Reconciliation', email: 'noreply@nationalsportsapparel.com' },
-    to: alertRecipients(),
+    to: (incidents || []).some(i => ['stripe_invoice_payment', 'stripe_invoice_monitor'].includes(i.category))
+      ? [{email:'steve@nationalsportsapparel.com'}] : alertRecipients(),
     subject: `Stripe reconciliation alert — ${incidents.length} open item${incidents.length === 1 ? '' : 's'} (${criticalCount} critical)`,
     htmlContent: `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:680px;color:#1e293b">
       <h2 style="margin-bottom:4px;color:#991b1b">Stripe reconciliation needs attention</h2>
       <p style="margin-top:0;color:#64748b">The nightly safety sweep found ${incidents.length} item${incidents.length === 1 ? '' : 's'} it could not prove automatically.</p>
       <ul style="padding-left:20px">${rows}</ul>
-      <p><a href="${escapeHtml(`${portal}/?qb=1`)}" style="display:inline-block;background:#0b1f3a;color:white;text-decoration:none;padding:10px 18px;border-radius:7px;font-weight:700">Open QuickBooks → Stripe Payouts</a></p>
+      <p><a href="${escapeHtml(`${portal}/?pg=qb`)}" style="display:inline-block;background:#0b1f3a;color:white;text-decoration:none;padding:10px 18px;border-radius:7px;font-weight:700">Open QuickBooks → Stripe Payouts</a></p>
       <hr style="border:none;border-top:1px solid #e2e8f0;margin-top:24px">
       <p style="font-size:11px;color:#94a3b8">No QuickBooks transaction is posted automatically. Open incidents remind at most once every 24 hours; healed incidents resolve on their own.</p>
     </div>`,
@@ -320,6 +329,9 @@ async function runSweep(admin, client, options = {}) {
   const payoutDeadline = startedAt + workBudgetMs;
   const timings = {};
 
+  const invoiceMonitor = await monitorInvoicePayments(admin, client, {now, deadlineAt:startedAt + 5000});
+  timings.invoice_monitor_ms = now() - startedAt;
+
   const catchUp = await catchUpUnlinkedOrders(admin, client, { ...options, now, deadlineAt: catchUpDeadline });
   timings.catch_up_ms = now() - startedAt;
 
@@ -340,7 +352,7 @@ async function runSweep(admin, client, options = {}) {
 
   const scanAt = now();
   const { data: scan, error: scanError } = await admin.rpc('sync_stripe_reconciliation_incidents', {
-    p_runtime_findings: runtimeFindings({ webhook, payoutSweep }),
+    p_runtime_findings: [...runtimeFindings({ webhook, payoutSweep }), ...invoiceMonitor.findings],
   });
   if (scanError) throw new Error(`Stripe reconciliation scan failed: ${scanError.message}`);
   timings.scan_ms = now() - scanAt;
@@ -359,6 +371,7 @@ async function runSweep(admin, client, options = {}) {
     alert_claimed: delivery.claimed,
     alert_sent: delivery.sent,
     checks_recorded: checksRecorded,
+    invoice_monitor: invoiceMonitor,
     webhook,
     catch_up: catchUp,
     payout_sweep: payoutSweep,
@@ -377,7 +390,7 @@ exports.handler = async (event) => {
   try {
     const secret = process.env.STRIPE_SECRET_KEY;
     if (!secret) throw new Error('STRIPE_SECRET_KEY is not configured');
-    const result = await runSweep(getSupabaseAdmin(), stripe(secret));
+    const result = await runSweep(getSupabaseAdmin(), stripe(secret, {timeout:3000, maxNetworkRetries:0}));
     console.log('[stripe-reconciliation-sweep]', JSON.stringify({
       ok: result.ok,
       linked: result.catch_up.linked.length,
