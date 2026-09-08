@@ -4572,7 +4572,7 @@ export default function App(){
       if(cancelled)return;
       _qbDurableHydrationRef.current='';
       console.error('[QB] Durable link hydration failed:',error);
-      nf('Could not load durable QuickBooks links — sync remains locked','error');
+      nf('Could not load durable QuickBooks links — '+error.message+'; sync remains locked','error');
     });
     return()=>{cancelled=true};
   },[dbLoading,qbConfig.realm_id]);
