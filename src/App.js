@@ -32552,6 +32552,39 @@ export default function App(){
             // the PO field re-runs the matcher and flips buckets) MOVES rather than remounts —
             // preserving input focus, exactly like the old single flat map did.
             const _children=[];
+            // ── QuickBooks backfill (Bill History → "Load N for QuickBooks backfill") ──
+            // These rows are complete on the Portal side, so they never enter a review
+            // pile and the Matched push panel never renders for them; the push lives here.
+            if(_inReview&&qbOperator&&billImport.parsed.some(b=>b._qbBackfill)){
+              const all=billImport.parsed.filter(b=>b._qbBackfill);
+              const synced=all.filter(b=>b.qbStatus==='success');
+              const failed=all.filter(b=>b.qbStatus==='error');
+              const seen=new Set();
+              const left=all.filter(b=>{
+                if(!_billIsReadyForQB(b)||!qbBillNeedsSync(b.qbStatus))return false;
+                const key=_qboBillBatchKey(b);if(key&&seen.has(key))return false;if(key)seen.add(key);return true;
+              });
+              const notReady=Math.max(0,all.length-synced.length-failed.length-left.length);
+              const sum=list=>list.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
+              const stat=(n,label,color)=><div><div style={{fontFamily:FD,fontWeight:800,fontSize:26,lineHeight:1,color:color||'#fff',fontVariantNumeric:'tabular-nums'}}>{n}</div><div style={{fontFamily:FD,fontWeight:600,fontSize:11,letterSpacing:1.5,textTransform:'uppercase',color:'rgba(255,255,255,.65)',marginTop:4}}>{label}</div></div>;
+              _children.push(<div key="qb-backfill" style={{marginBottom:16,background:NAVY,backgroundImage:HASH,borderRadius:8,padding:'16px 22px',color:'#fff'}}>
+                <div style={{display:'flex',alignItems:'center',gap:30,flexWrap:'wrap'}}>
+                  {stat(left.length,'Left to send · '+nsaMoney(sum(left)),'#6FD59A')}
+                  {stat(synced.length,'In QuickBooks this session · '+nsaMoney(sum(synced)))}
+                  {failed.length>0&&stat(failed.length,'Failed · '+nsaMoney(sum(failed)),'#fca5a5')}
+                  {notReady>0&&stat(notReady,'Not sendable (no PO link / credit)','rgba(255,255,255,.6)')}
+                  <div style={{marginLeft:'auto'}}>{skBtn({bg:RED,fg:'#fff',fs:14,pad:'12px 22px',shadow:'0 8px 22px rgba(150,44,50,.4)',
+                    title:qbConfig.connected?'Create QuickBooks bills for the next batch of backfill rows':'Connect QuickBooks first',
+                    disabled:!qbConfig.connected||billImport.uploading||!left.length,onClick:pushBillsToQB,
+                    children:billImport.uploading?'Pushing to QuickBooks…':'Push next '+Math.min(100,left.length)+' to QuickBooks'})}</div>
+                </div>
+                <div style={{fontSize:11.5,color:'rgba(255,255,255,.75)',marginTop:10,lineHeight:1.45}}>QuickBooks backfill — bills already applied in the Portal. Each posts as account lines (Purchases / Freight / Sports Inc fee) under its own vendor; the Portal side is not applied again. Don't press Pull Bills until this list is empty — a pull replaces it (reload it from Bill History if that happens).</div>
+                {failed.length>0&&<div style={{marginTop:10,fontSize:11,color:'#fecaca',lineHeight:1.5}}>
+                  {failed.slice(0,8).map((b,i)=><div key={b.id||i}>{(b.parsed?.vendor||b.parsed?.supplier||'')+' · '+(b.parsed?.doc_number||b.id)+' — '+(b.qbMsg||'failed')}</div>)}
+                  {failed.length>8&&<div>…and {failed.length-8} more — every failed row is listed in Bill History with its reason.</div>}
+                </div>}
+              </div>);
+            }
             const reviewN=_bk.lines.length+_bk.no_order.length+_bk.over.length+_bk.dup.length+_bk.other.length;
             const _aiN=_inReview?billImport.parsed.filter(b=>b._aiRunning).length:0;
             _children.push(<React.Fragment key="h-toreview">{secHead({dot:RED,title:'⚠ To Review',count:reviewN+_bk.failed.length+_parkedBills.length,note:'one pile at a time'+(_aiN?' · ✨ AI working on '+_aiN:''),mt:false})}</React.Fragment>);
