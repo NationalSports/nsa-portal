@@ -296,12 +296,19 @@ describe('QuickBooks one-record canaries', () => {
 
   test('sales-order review exposes ready and taxable-blocked Estimates without writing', () => {
     const base={customer_id:'C1',created_at:'2026-09-01',items:[{sku:'SKU-1',name:'Jersey',unit_sell:25,sizes:{S:2},decorations:[]}]};
-    const rows=buildQBSalesOrderPreviewRows([{...base,id:'SO-1',tax_exempt:true},{...base,id:'SO-2',tax:4}],
-      [{id:'C1',name:'Test Customer'}],{C1:'C-QB'},{},jest.fn(()=>({sell:0})));
+    const rows=buildQBSalesOrderPreviewRows([{...base,id:'SO-1',tax_exempt:true},{...base,id:'SO-2',tax_rate:0.08}],
+      [{id:'C1',name:'Test Customer',shipping_state:'CA'}],{C1:'C-QB'},{},jest.fn(()=>({sell:0})));
     expect(rows).toEqual([
-      expect.objectContaining({salesOrderId:'SO-1',customer:'Test Customer',qboCustomerId:'C-QB',date:'2026-09-01',lineCount:1,total:50,action:'ready'}),
-      expect.objectContaining({salesOrderId:'SO-2',action:'blocked',reason:'taxable Estimates await approved QBO tax-code mapping'}),
+      expect.objectContaining({salesOrderId:'SO-1',customer:'Test Customer',qboCustomerId:'C-QB',date:'2026-09-01',lineCount:1,tax:0,total:50,action:'ready'}),
+      expect.objectContaining({salesOrderId:'SO-2',tax:4,taxState:'CA',total:54,action:'blocked',reason:'taxable Estimates await approved QBO tax-code mapping'}),
     ]);
+  });
+
+  test('sales-order review admits supported AST tax as an explicit state line', () => {
+    const so={id:'SO-2',customer_id:'C1',created_at:'2026-09-01',tax_rate:0.08,items:[{sku:'SKU-1',name:'Jersey',unit_sell:25,sizes:{S:2},decorations:[]}]};
+    const rows=buildQBSalesOrderPreviewRows([so],[{id:'C1',name:'Test Customer',shipping_state:'CA'}],{C1:'C-QB'},{},jest.fn(()=>({sell:0})),
+      {partnerTaxEnabled:true,taxBlockReason:({taxState})=>taxState==='CA'?'':'unsupported'});
+    expect(rows).toEqual([expect.objectContaining({salesOrderId:'SO-2',lineCount:2,salesSubtotal:50,taxRate:0.08,tax:4,taxState:'CA',total:54,action:'ready'})]);
   });
 
   test('bulk Estimate writes require an approved exact review and read back the approved row', async() => {
@@ -323,6 +330,37 @@ describe('QuickBooks one-record canaries', () => {
     await expect(engine.syncSalesOrders({}, {}, {approved:true,approvedSOIds:['SO-1'],expectedRows})).resolves.toEqual({status:'success',synced:1});
     expect(qbApi.mock.calls.filter(([action])=>action==='upsert_estimate')).toHaveLength(1);
     expect(persistQbLink).toHaveBeenCalledWith(expect.objectContaining({mapKey:'qbSOMap',sourceIds:['SO-1'],qboId:'E-1',evidence:expect.objectContaining({api_readback:true})}));
+  });
+
+  test('reviewed AST Estimate carries Portal tax on the existing CA liability item and verifies it', async() => {
+    const so={id:'SO-2',customer_id:'C1',created_at:'2026-09-01',tax_rate:0.08,items:[{sku:'SKU-1',name:'Jersey',unit_sell:25,sizes:{S:2},decorations:[]}]};
+    const customer={id:'C1',name:'Test Customer',shipping_state:'CA'};
+    const taxItem={Id:'TAX-CA',Name:'NSA Portal Sales Tax — CA',Type:'Service',Active:true,IncomeAccountRef:{value:accountId('25200')}};
+    let sent;
+    const qbApi=jest.fn(async(action,{query,estimate}={})=>{
+      if(action==='query'&&query.includes('FROM Estimate STARTPOSITION'))return{QueryResponse:{Estimate:[]}};
+      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
+      if(action==='query'&&query.includes("FROM Item WHERE Name = 'NSA Portal Sales'"))return{QueryResponse:{Item:[portalSalesItem]}};
+      if(action==='query'&&query.includes('NSA Portal Sales Tax — CA'))return{QueryResponse:{Item:[taxItem]}};
+      if(action==='query'&&query.includes('FROM Preferences'))return{QueryResponse:{Preferences:[{TaxPrefs:{UsingSalesTax:true,PartnerTaxEnabled:true}}]}};
+      if(action==='query'&&query.includes('FROM TaxCode STARTPOSITION'))return{QueryResponse:{TaxCode:[]}};
+      if(action==='upsert_estimate'){sent=estimate;return{Estimate:{Id:'E-2',...estimate}}}
+      if(action==='query'&&query.includes("FROM Estimate WHERE Id = 'E-2'"))return{QueryResponse:{Estimate:[{Id:'E-2',...sent,TotalAmt:54,TxnTaxDetail:{TotalTax:0}}]}};
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const {engine,getConfig,persistQbLink}=makeEngine({qbApi,cust:[customer],sos:[so]});
+    getConfig().initialMigrationApproved=true;
+    getConfig().taxPreflight={realm_id:'9341',partnerTaxEnabled:true};
+    const reviewOptions={partnerTaxEnabled:true,taxBlockReason:()=>''};
+    const expectedRows=buildQBSalesOrderPreviewRows([so],[customer],{C1:'C-QB'},{},jest.fn(()=>({sell:0})),reviewOptions);
+    await expect(engine.syncSalesOrders({}, {}, {approved:true,approvedSOIds:['SO-2'],expectedRows})).resolves.toEqual({status:'success',synced:1});
+    expect(sent.Line).toEqual([
+      expect.objectContaining({Amount:50,SalesItemLineDetail:expect.objectContaining({TaxCodeRef:{value:'NON'}})}),
+      expect.objectContaining({Amount:4,SalesItemLineDetail:expect.objectContaining({ItemRef:{value:'TAX-CA',name:'NSA Portal Sales Tax — CA'},TaxCodeRef:{value:'NON'}})}),
+    ]);
+    expect(sent.TxnTaxDetail).toBeUndefined();
+    expect(persistQbLink).toHaveBeenCalledWith(expect.objectContaining({mapKey:'qbSOMap',sourceIds:['SO-2'],evidence:expect.objectContaining({total:54,api_readback:true})}));
+    expect(qbApi.mock.calls.filter(([action])=>action==='upsert_item')).toHaveLength(0);
   });
 
   test('creates one PO without creating a vendor or item and verifies read-back', async() => {
