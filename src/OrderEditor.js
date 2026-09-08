@@ -1765,7 +1765,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Size inputs deliberately buffer keystrokes until blur so clearing "8" on the way to "13"
   // does not trip the committed-quantity guards. Mirror that buffer in a ref: Save follows blur
   // immediately, before React would normally expose the new order state to the click handler.
-  const _stageSizingDraft=(k,v)=>{const first=!(k in sizingDraftRef.current);sizingDraftRef.current={...sizingDraftRef.current,[k]:v};if(first){dirtyRef2.current=true;setDirty(true)}};
+  // Buffered keystrokes are newer edits even before blur commits them to order state.
+  const _stageSizingDraft=(k,v)=>{orderEditRevision.current++;const first=!(k in sizingDraftRef.current);sizingDraftRef.current={...sizingDraftRef.current,[k]:v};if(first){dirtyRef2.current=true;setDirty(true)}};
   const _dropSizingDraft=k=>{if(!(k in sizingDraftRef.current))return;const next={...sizingDraftRef.current};delete next[k];sizingDraftRef.current=next};
   const _flushActiveSizingDraft=()=>{
     if(!Object.keys(sizingDraftRef.current).length)return true;
@@ -4620,7 +4621,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const noPrice=validItems.find(it=>!it.is_free_promo&&!it.customer_supplied&&safeNum(it.unit_sell)<=0);
         if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
         if(_shipPrefRequired()){nf('Select how this order gets to the customer (Ship or Deliver) before saving','error');return}
-        const synced=await reconcilePromoDraw(saveO,promoTotals?.promoAmount);if(!synced.ok)return;const syncedO=synced.order;
+        const preparingRevision=orderEditRevision.current;
+        const synced=await reconcilePromoDraw(saveO,promoTotals?.promoAmount);if(!synced.ok)return;
+        if(preparingRevision!==orderEditRevision.current){nf('Newer edits are still here. Click Save again to include them.','error');return}
+        const syncedO=synced.order;
         if(syncedO!==o)setO(syncedO);
         await saveSONow(syncedO,isE?'Estimate':'Sales order')}}><span><Icon name="check" size={13}/> Save</span></button>
     </div>

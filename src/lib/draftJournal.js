@@ -3,6 +3,7 @@
 // The legacy outbox remains available during rollout and is never purged here.
 const DB_NAME = 'nsa-document-drafts';
 const STORE = 'drafts';
+export const DRAFT_CHANGE_KEY = 'nsa-draft-journal-changed';
 const clone = value => JSON.parse(JSON.stringify(value));
 const unique = () => typeof crypto !== 'undefined' && crypto.randomUUID
   ? crypto.randomUUID() : Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
@@ -17,6 +18,9 @@ export function createDraftJournal({factory, name = DB_NAME, session = unique()}
   const transient = new Map();
   const changed = () => {
     if (typeof window !== 'undefined') window.dispatchEvent(new Event('nsa:drafts-changed'));
+    // IndexedDB changes do not emit storage events. Send a content-free signal
+    // so another open tab can remove a copy whose exact save was acknowledged.
+    try { localStorage.setItem(DRAFT_CHANGE_KEY,unique()); } catch {}
   };
   const open = () => {
     if (opening) return opening;
@@ -88,10 +92,11 @@ export function createDraftJournal({factory, name = DB_NAME, session = unique()}
     },
     async acknowledge(receipt) {
       // Remove the exact revision only, including across independent connections.
-      const pending=transient.get(receipt.key);
-      if(pending?.revision===receipt.revision)transient.delete(receipt.key);
       const removed=await compare(receipt,(store)=>store.delete(receipt.key));
-      changed();return removed;
+      const pending=transient.get(receipt.key);
+      const removedTransient=pending?.revision===receipt.revision;
+      if(removedTransient)transient.delete(receipt.key);
+      changed();return removed||removedTransient;
     },
     async list(owner) {
       if(!owner)return [];
