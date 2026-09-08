@@ -339,6 +339,43 @@ export function buildQBPurchaseOrderPreviewRows(sos = [], products = [], prodQBM
   });
 }
 
+// Add the live QBO facts that the Portal-only preview cannot know. This remains
+// read-only: it classifies missing/ambiguous vendors and document-number
+// collisions before an operator approves a batch, so a "ready" row is not just
+// rediscovered as a blocker during the write run.
+export function applyQBPurchaseOrderLiveReadiness(rows = [], qboVendors = [], qboPurchaseOrders = [], portalVendors = [], vendorMap = {}) {
+  return (rows || []).map(row => {
+    if (row.action !== 'ready') return row;
+    const vendorName = String(row.vendor || '');
+    const portalVendor = (portalVendors || []).find(vendor => vendor?.name === vendorName) || D_V.find(vendor => vendor?.name === vendorName);
+    const savedVendorId = vendorMap[portalVendor?.id] || portalVendor?.qb_vendor_id;
+    const exactName = (qboVendors || []).filter(vendor => vendor?.Active !== false
+      && (vendor.DisplayName === vendorName || vendor.CompanyName === vendorName));
+    const savedMatch = savedVendorId && exactName.filter(vendor => String(vendor.Id) === String(savedVendorId));
+    const matches = savedMatch?.length ? savedMatch : exactName;
+    if (matches.length !== 1) {
+      const reason = matches.length > 1
+        ? 'multiple QBO vendors exactly match "' + vendorName + '"'
+        : 'vendor "' + vendorName + '" is not linked or uniquely present in QBO';
+      return {...row, action:'blocked', reason, qboDisposition:'blocked'};
+    }
+    const qboVendorId = String(matches[0].Id);
+    const sameNumber = (qboPurchaseOrders || []).filter(po => String(po?.DocNumber || '') === String(row.poId));
+    const exact = sameNumber.filter(po => String(po?.VendorRef?.value || '') === qboVendorId
+      && Math.abs(qbCurrency(po?.TotalAmt) - qbCurrency(row.total)) < 0.005
+      && String(po?.TxnDate || '').slice(0, 10) === String(row.date || '').slice(0, 10));
+    if (sameNumber.length && !(sameNumber.length === 1 && exact.length === 1)) {
+      return {...row, action:'blocked', reason:'QBO purchase-order number exists with a different vendor, date, or total', qboVendorId, qboDisposition:'blocked'};
+    }
+    return {...row, qboVendorId, qboDisposition:exact.length === 1 ? 'link_existing' : 'create', qboId:exact[0]?.Id ? String(exact[0].Id) : ''};
+  });
+}
+
+export function qbPurchaseOrderSourceFingerprint(row = {}) {
+  const {poId='',vendor='',date='',lineCount=0,skus=[],accountSkus=[],total=0} = row;
+  return {poId,vendor,date,lineCount,skus,accountSkus,total};
+}
+
 // A stable, read-only manifest for the exact invoices an operator may approve.
 // Keep this deliberately smaller than the QBO payload: these are the source
 // fields whose drift can change the accounting result between review and write.
