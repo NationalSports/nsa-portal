@@ -1,4 +1,4 @@
-import { QB_PO_ACCOUNT_LINE_DESCRIPTION_MAX, applyQBPurchaseOrderLiveReadiness, applyQBSalesOrderLiveReadiness, billReferencesPortalPO, buildQBBillPOReplacement, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions, qbPOAccountLineDescription, qbPurchaseOrderSourceFingerprint, qbSalesOrderSourceFingerprint } from '../qbSyncEngine';
+import { QB_PO_ACCOUNT_LINE_DESCRIPTION_MAX, applyQBPurchaseOrderLiveReadiness, applyQBSalesOrderLiveReadiness, billReferencesPortalPO, buildQBBillPOReplacement, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions, qbPOAccountLineDescription, qbPurchaseOrderSourceFingerprint, qbSalesOrderSourceFingerprint, qboStandardTermDueDate } from '../qbSyncEngine';
 import { indexQBNonInventoryItems, QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_SPECS } from '../qbAccountMappings';
 
 const accountRows = Object.values(QB_ACCOUNT_SPECS).map((spec,index)=>({
@@ -30,6 +30,12 @@ const accountResponse = {QueryResponse:{Account:accountRows}};
 const portalSalesItem = {Id:'SALES-ITEM',Name:'NSA Portal Sales',Type:'Service',Active:true,IncomeAccountRef:{value:accountId('40000')}};
 
 describe('QuickBooks one-record canaries', () => {
+  test('derives due dates only for standard QBO terms', () => {
+    expect(qboStandardTermDueDate('2026-09-01','Net 30')).toBe('2026-10-01');
+    expect(qboStandardTermDueDate('2026-09-01','Due on receipt')).toBe('2026-09-01');
+    expect(qboStandardTermDueDate('2026-09-01','Date driven')).toBeNull();
+  });
+
   test('invoice review lists exact ready rows and blocks zero totals without writing', () => {
     const rows=buildQBInvoicePreviewRows([
       {id:'INV-10',customer_id:'C1',invoice_date:'2026-09-08',total:100,paid:25,tax:8},
@@ -86,8 +92,40 @@ describe('QuickBooks one-record canaries', () => {
     expect(qbApi).toHaveBeenCalledWith('upsert_invoice',{invoice:expect.objectContaining({DocNumber:'INV-1',CustomerRef:{value:'C-QB'},SalesTermRef:{value:'T30',name:'Net 30'}})});
     const invoicePayload=qbApi.mock.calls.find(([action])=>action==='upsert_invoice')[1].invoice;
     expect(invoicePayload.ARAccountRef).toEqual({value:accountId('11000')});
+    expect(invoicePayload.DueDate).toBe('2026-10-01');
     expect(qbApi.mock.calls.filter(([action])=>action==='upsert_invoice')).toHaveLength(1);
     expect(setters.setInvs).toHaveBeenCalledTimes(1);
+  });
+
+  test('accepts a QBO invoice that omits SalesTermRef only when its due date proves the customer terms', async() => {
+    const invoice={id:'INV-1',display_id:'INV-1',customer_id:'C1',invoice_date:'2026-09-01',total:100,paid:0,tax:0};
+    const qbApi=jest.fn(async(action,{query,invoice:payload}={})=>{
+      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
+      if(action==='query'&&query.includes("FROM Item WHERE Name = 'NSA Portal Sales'"))return{QueryResponse:{Item:[portalSalesItem]}};
+      if(action==='query'&&query.includes("FROM Customer WHERE Id = 'C-QB'"))return{QueryResponse:{Customer:[{Id:'C-QB',SalesTermRef:{value:'T30',name:'Net 30'}}]}};
+      if(action==='upsert_invoice')return{Invoice:{Id:'900',...payload}};
+      if(action==='query'&&query.includes("FROM Invoice WHERE Id = '900'"))return{QueryResponse:{Invoice:[{Id:'900',DocNumber:'INV-1',CustomerRef:{value:'C-QB'},TotalAmt:100,TxnDate:'2026-09-01',DueDate:'2026-10-01'}]}};
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const{engine,setters}=makeEngine({qbApi,cust:[{id:'C1',name:'Test Customer'}],invs:[invoice]});
+    await expect(engine.syncInvoices({}, {}, {canaryInvoiceId:'INV-1'})).resolves.toEqual({status:'success',synced:1});
+    expect(setters.setInvs).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not link an invoice when QBO omits the term and stores the wrong due date', async() => {
+    const invoice={id:'INV-1',display_id:'INV-1',customer_id:'C1',invoice_date:'2026-09-01',total:100,paid:0,tax:0};
+    const qbApi=jest.fn(async(action,{query,invoice:payload}={})=>{
+      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
+      if(action==='query'&&query.includes("FROM Item WHERE Name = 'NSA Portal Sales'"))return{QueryResponse:{Item:[portalSalesItem]}};
+      if(action==='query'&&query.includes("FROM Customer WHERE Id = 'C-QB'"))return{QueryResponse:{Customer:[{Id:'C-QB',SalesTermRef:{value:'T30',name:'Net 30'}}]}};
+      if(action==='upsert_invoice')return{Invoice:{Id:'900',...payload}};
+      if(action==='query'&&query.includes("FROM Invoice WHERE Id = '900'"))return{QueryResponse:{Invoice:[{Id:'900',DocNumber:'INV-1',CustomerRef:{value:'C-QB'},TotalAmt:100,TxnDate:'2026-09-01',DueDate:'2026-09-02'}]}};
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const{engine,setters,getConfig}=makeEngine({qbApi,cust:[{id:'C1',name:'Test Customer'}],invs:[invoice]});
+    await expect(engine.syncInvoices({}, {}, {canaryInvoiceId:'INV-1'})).resolves.toEqual({status:'blocked',synced:0});
+    expect(setters.setInvs).not.toHaveBeenCalled();
+    expect(getConfig().syncLog[0].details.join(' ')).toMatch(/due date did not prove/);
   });
 
   const taxableInvoice={id:'INV-63848',display_id:'INV-63848',customer_id:'C1',invoice_date:'2026-09-05',total:3083.2,tax:237.17,tax_rate:0.0875,shipping:135.53,paid:0};

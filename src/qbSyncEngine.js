@@ -129,6 +129,27 @@ export function portalCustomerTermSpec(paymentTerms) {
   return { portalValue: 'net' + days, label: 'Net ' + days, dueDays: days, names: ['net' + days] };
 }
 
+// QBO occasionally accepts a customer's standard term on an Invoice but omits
+// SalesTermRef from the subsequent query response. The operational result of a
+// standard term is the due date, so compute it deterministically for a strict
+// read-back fallback. Unknown/date-driven terms deliberately return null: those
+// still require QBO to echo the exact term id before the Portal saves a link.
+export function qboStandardTermDueDate(invoiceDate, termName) {
+  const date = parseQBDateValue(invoiceDate);
+  const name = normalizeQBTermName(termName);
+  if (!date || !name) return null;
+  let days = null;
+  if (['dueonreceipt', 'prepay', 'prepaid'].includes(name)) days = 0;
+  else {
+    const match = name.match(/^net(\d+)$/);
+    if (match) days = Number(match[1]);
+  }
+  if (!Number.isInteger(days) || days < 0 || days > 3650) return null;
+  const due = new Date(date + 'T00:00:00Z');
+  due.setUTCDate(due.getUTCDate() + days);
+  return due.toISOString().slice(0, 10);
+}
+
 // Resolve portal terms only against existing active QBO terms. We never create
 // or guess a financial term: an ambiguous or missing mapping blocks the write.
 export function resolveQBCustomerTerm(terms = [], paymentTerms) {
@@ -1217,13 +1238,14 @@ export function createQBSyncEngine(ctx){
         const invoiceTotal=safeNum(inv.total);
         if(invoiceTotal<=0){const error='invoice total must be positive; refunds require the separate 40000 credit/refund workflow.';log.details.push((inv.display_id||inv.id)+' — BLOCKED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'blocked',error});log.status='partial';if(!canary)break;continue}
         const invoiceDescription='Invoice '+(inv.display_id||inv.id)+(so?' for '+so.id:'')+(so?.memo?' — '+so.memo:'');
-        let customerTermRef=null;
+        let customerTermRef=null,customerDueDate=null;
         {
           try{
             const customerRes=await queryQBReadOnly(qbApi,"SELECT Id, SalesTermRef FROM Customer WHERE Id = '"+String(cQBId).replace(/'/g,"\\'")+"' MAXRESULTS 1",'invoice customer terms query');
             const qboCustomer=customerRes?.QueryResponse?.Customer?.[0];
             if(!qboCustomer?.SalesTermRef?.value)throw new Error('linked QBO customer has no payment terms');
             customerTermRef={value:String(qboCustomer.SalesTermRef.value),...(qboCustomer.SalesTermRef.name?{name:qboCustomer.SalesTermRef.name}:{})};
+            customerDueDate=qboStandardTermDueDate(invoiceDate,customerTermRef.name);
           }catch(e){const error=e.message;log.details.push((inv.display_id||inv.id)+' — BLOCKED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'blocked',error});log.status='error';if(!canary)break;continue}
         }
         let invoiceLines;
@@ -1237,6 +1259,7 @@ export function createQBSyncEngine(ctx){
           CustomerRef:{value:cQBId},
           ARAccountRef:invoiceRefs.ar_account,
           ...(customerTermRef?{SalesTermRef:customerTermRef}:{}),
+          ...(customerDueDate?{DueDate:customerDueDate}:{}),
           Line:invoiceLines,
           ...(taxPlan&&buildQBInvoiceTxnTaxDetail(taxPlan)?{TxnTaxDetail:buildQBInvoiceTxnTaxDetail(taxPlan)}:{}),
           ...(inv.qb_invoice_id?{Id:inv.qb_invoice_id,sparse:true}:{}),
@@ -1305,8 +1328,16 @@ export function createQBSyncEngine(ctx){
               if(Math.abs(safeNum(verified.TxnTaxDetail?.TotalTax)-expectedTax)>=0.005)throw new Error('Invoice sales tax did not match on API read-back ($'+safeNum(verified.TxnTaxDetail?.TotalTax).toFixed(2)+' vs $'+expectedTax.toFixed(2)+').');
               if(!taxLineOk(verified))throw new Error('Invoice read back without the $'+taxPlan.tax.toFixed(2)+' '+taxPlan.state+' sales-tax line.');
               if(taxPlan?.taxLine)log.details.push('TAX LINE VERIFIED: $'+taxPlan.tax.toFixed(2)+' → '+portalSalesTaxItemName(taxPlan.state)+' · QBO TotalTax $'+safeNum(verified.TxnTaxDetail?.TotalTax).toFixed(2));
-        if(String(verified.SalesTermRef?.value||'')!==String(customerTermRef?.value||''))throw new Error('Invoice customer terms did not match on API read-back.');
-              log.details.push('READ-BACK VERIFIED: Invoice #'+verified.Id+' · '+(verified.SalesTermRef?.name||'QBO terms ID '+verified.SalesTermRef?.value));
+              const verifiedTermId=String(verified.SalesTermRef?.value||'');
+              const expectedTermId=String(customerTermRef?.value||'');
+              if(verifiedTermId){
+                if(verifiedTermId!==expectedTermId)throw new Error('Invoice customer terms did not match on API read-back (QBO '+verifiedTermId+' vs customer '+expectedTermId+').');
+                log.details.push('READ-BACK VERIFIED: Invoice #'+verified.Id+' · '+(verified.SalesTermRef?.name||'QBO terms ID '+verifiedTermId));
+              }else{
+                const verifiedDueDate=String(verified.DueDate||'').slice(0,10);
+                if(!customerDueDate||verifiedDueDate!==customerDueDate)throw new Error('Invoice customer terms were omitted on API read-back and the due date did not prove them ('+(verifiedDueDate||'missing')+' vs '+(customerDueDate||'not derivable')+').');
+                log.details.push('READ-BACK VERIFIED: Invoice #'+verified.Id+' · QBO omitted the term id; due date '+verifiedDueDate+' proves '+(customerTermRef?.name||'customer terms'));
+              }
             }catch(e){const error=e.message;log.details.push((inv.display_id||inv.id)+' — VERIFY FAILED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'failed',qboId:String(res.Invoice.Id),error});log.status='error';if(!canary)break;continue}
           }
           setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,qb_invoice_id:res.Invoice.Id}:ii));

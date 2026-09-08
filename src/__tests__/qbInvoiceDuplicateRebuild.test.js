@@ -17,7 +17,7 @@ const inv={id:'INV-63433',customer_id:'C1',total:3232.4,tax:302.4,tax_rate:0.105
 const taxLine={DetailType:'SalesItemLineDetail',Amount:302.4,SalesItemLineDetail:{ItemRef:{value:'8'},TaxCodeRef:{value:'NON'}}};
 const lumpLine={DetailType:'SalesItemLineDetail',Amount:3232.4,SalesItemLineDetail:{ItemRef:{value:'7'},TaxCodeRef:{value:'NON'}}};
 
-function setup({existingLines,rebuildResponse}={}){
+function setup({existingLines,rebuildResponse,existingTermRef={value:'T30',name:'Net 30'},existingDueDate}={}){
   let config={realm_id:'r1',preflight:{status:'success',realm_id:'r1'},mapping,initialMigrationApproved:true,custQBMap:{C1:'55'},syncLog:[]};
   const upserts=[];
   let storedLines=existingLines;
@@ -31,7 +31,7 @@ function setup({existingLines,rebuildResponse}={}){
       if(q.includes('FROM Item'))return{QueryResponse:{Item:[{Id:'7',Name:'NSA Portal Sales',Type:'Service',Active:true,IncomeAccountRef:{value:'10'}}]}};
       if(q.includes("FROM Customer WHERE Id = '55'"))return{QueryResponse:{Customer:[{Id:'55',SalesTermRef:{value:'T30',name:'Net 30'}}]}};
       if(q.includes('FROM Invoice')&&q.includes('DocNumber'))return{QueryResponse:{Invoice:[{Id:'1084',CustomerRef:{value:'55'},TotalAmt:3232.4,TxnDate:'2026-08-31'}]}};
-      if(q.includes('FROM Invoice')&&q.includes("Id = '1084'"))return{QueryResponse:{Invoice:[{Id:'1084',DocNumber:'INV-63433',SyncToken:'2',CustomerRef:{value:'55'},TotalAmt:3232.4,TxnDate:'2026-08-31',SalesTermRef:{value:'T30',name:'Net 30'},TxnTaxDetail:{TotalTax:0},Line:storedLines}]}};
+      if(q.includes('FROM Invoice')&&q.includes("Id = '1084'"))return{QueryResponse:{Invoice:[{Id:'1084',DocNumber:'INV-63433',SyncToken:'2',CustomerRef:{value:'55'},TotalAmt:3232.4,TxnDate:'2026-08-31',...(existingTermRef?{SalesTermRef:existingTermRef}:{}),...(existingDueDate?{DueDate:existingDueDate}:{}),TxnTaxDetail:{TotalTax:0},Line:storedLines}]}};
       return{QueryResponse:{}};
     }
     if(action==='upsert_invoice'){
@@ -71,6 +71,14 @@ test('an existing exact match that already carries the tax line is linked withou
   await run.engine.syncInvoices({}, {}, reviewedOptions);
   expect(run.upserts).toHaveLength(1);
   expect(run.log().details.join(' | ')).toMatch(/exact existing invoice verified \(QB #1084\)/);
+  expect(run.setInvs).toHaveBeenCalledTimes(1);
+});
+
+test('an exact retry is linked when QBO omits the term id but its due date proves Net 30',async()=>{
+  const run=setup({existingLines:[{DetailType:'SalesItemLineDetail',Amount:2880,SalesItemLineDetail:{ItemRef:{value:'7'}}},{DetailType:'SalesItemLineDetail',Amount:50,SalesItemLineDetail:{ItemRef:{value:'7'}}},taxLine],existingTermRef:null,existingDueDate:'2026-09-30'});
+  await run.engine.syncInvoices({}, {}, reviewedOptions);
+  expect(run.upserts).toHaveLength(1);
+  expect(run.log().details.join(' | ')).toMatch(/due date 2026-09-30 proves Net 30/);
   expect(run.setInvs).toHaveBeenCalledTimes(1);
 });
 
