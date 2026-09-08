@@ -131,17 +131,28 @@ test('durable receipt hydration reads only the requested realm in deterministic 
   const all=[r1a,r1b,other].sort((a,b)=>a.id.localeCompare(b.id));
   const calls=[];
   const client={from:()=>{
-    let pattern='';
-    const query={select:()=>query,like:(_key,value)=>{pattern=value.slice(0,-1);return query},order:()=>query,
-      range:(start,end)=>{calls.push([start,end]);const filtered=all.filter(row=>row.id.startsWith(pattern));return Promise.resolve({data:filtered.slice(start,end+1),error:null})}};
+    let lower='',upper='';
+    const query={select:()=>query,gte:(_key,value)=>{lower=value;return query},lt:(_key,value)=>{upper=value;return query},order:()=>query,
+      range:(start,end)=>{calls.push([start,end]);const filtered=all.filter(row=>row.id>=lower&&row.id<upper);return Promise.resolve({data:filtered.slice(start,end+1),error:null})}};
     return query;
   }};
   await expect(loadDurableQBLinkReceipts(client,'r1',{pageSize:1,hardLimit:10})).resolves.toEqual({[r1a.id]:'one',[r1b.id]:'two'});
   expect(calls).toEqual([[0,0],[1,1],[2,2]]);
 });
 
+test('customer receipt hydration uses exact IDs in bounded chunks',async()=>{
+  const first={id:qbLinkKey('r1','custQBMap','C1'),value:'one'};
+  const second={id:qbLinkKey('r1','custQBMap','C2'),value:'two'};
+  const rows=new Map([[first.id,first],[second.id,second]]);
+  const calls=[];
+  const client={from:()=>{const query={select:()=>query,in:(_key,ids)=>{calls.push(ids);return Promise.resolve({data:ids.map(id=>rows.get(id)).filter(Boolean),error:null})}};return query}};
+  const result=await loadDurableQBLinkReceipts(client,'r1',{sourceIds:['C1','C2','missing'],pageSize:2});
+  expect(result).toEqual({[first.id]:'one',[second.id]:'two'});
+  expect(calls.map(chunk=>chunk.length)).toEqual([2,1]);
+});
+
 test('durable receipt hydration fails closed on a page error',async()=>{
-  const client={from:()=>{const query={select:()=>query,like:()=>query,order:()=>query,range:()=>Promise.resolve({data:null,error:{message:'offline'}})};return query}};
+  const client={from:()=>{const query={select:()=>query,gte:()=>query,lt:()=>query,order:()=>query,range:()=>Promise.resolve({data:null,error:{message:'offline'}})};return query}};
   await expect(loadDurableQBLinkReceipts(client,'r1')).rejects.toThrow('offline');
 });
 

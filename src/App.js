@@ -1,3 +1,4 @@
+import {createCoalescedReload} from './lib/coalescedReload';
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import * as Sentry from '@sentry/react';
@@ -3005,23 +3006,19 @@ export default function App(){
     })();
     // ─── Supabase Realtime subscriptions ───
     const channels=[];
+    let stopRealtimeReload=()=>{};
     if(supabase){
-      let _rtTimer=null;
       const _jsonEq=(a,b)=>{try{return JSON.stringify(a)===JSON.stringify(b)}catch{return false}};
       // Selective reload bookkeeping: realtime events queue their entity group here and the
       // debounced reload fetches only those groups. '__all__' (tab-visibility regain / unknown
       // table) forces a full reload. Pending groups are consumed only once a load actually
       // starts, so deferred reloads (save in flight) keep accumulating events.
-      const _rtPending=new Set();
       const _RT_GROUP={estimates:'estimates',sales_orders:'sales_orders',invoices:'invoices',messages:'messages',customers:'customers',products:'products',so_item_pick_lines:'sales_orders',assigned_todos:'assigned_todos',todo_comments:'assigned_todos'};
-      const reloadAll=async()=>{
-        // Skip reload if saves are in-flight or just finished — prevents stale data from overwriting local changes
-        if(_dbSavingCount>0){console.log('[DB] Reload deferred — save in progress');_rtTimer=setTimeout(reloadAll,1000);return}
-        if(Date.now()-_dbLastSaveAt<1500){console.log('[DB] Reload deferred — save just finished');_rtTimer=setTimeout(reloadAll,1500);return}
-        const groups=(_rtPending.size===0||_rtPending.has('__all__'))?null:new Set(_rtPending);
-        _rtPending.clear();
+      const reloadAll=async(pendingGroups)=>{
+        if(cancelled)return;
+        const groups=pendingGroups.has('__all__')?null:pendingGroups;
         const _has=g=>!groups||groups.has(g);
-        const d=await _dbLoad(groups?{only:groups}:{});if(!d||!d.hasData)return;
+        const d=await _dbLoad(groups?{only:groups}:{});if(cancelled||!d||!d.hasData)return;
         // If a child-table query (items/decorations) timed out or failed mid-load, this load is
         // partial — estimates/SOs would come back with empty items. Skip it so the hollowed-out
         // data never reaches state (which would then trip the "0 items but DB has N" save guard).
@@ -3095,7 +3092,13 @@ export default function App(){
       // 10s (was 2s): every reload is a burst of REST page-fetches per client, and with several
       // active users the 2s debounce turned each save into an all-client re-download storm that
       // saturated the database. The 60s poll remains the freshness backstop.
-      const debouncedReloadGroups=(groups,delay=10000)=>{groups.forEach(g=>_rtPending.add(g));if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,delay)};
+      const realtimeReload=createCoalescedReload({
+        load:reloadAll,
+        canRun:()=>!cancelled&&_dbReady.current&&!document.hidden&&_dbSavingCount===0&&Date.now()-_dbLastSaveAt>=1500,
+        onError:error=>console.warn('[DB] Realtime reload failed:',error?.message||error),
+      });
+      stopRealtimeReload=()=>realtimeReload.stop();
+      const debouncedReloadGroups=(groups,delay=10000)=>realtimeReload.enqueue(groups,delay);
       const debouncedReload=(tbl,delay=10000)=>debouncedReloadGroups([_RT_GROUP[tbl]||'__all__'],delay);
       // Subscribe to core tables + pick_lines for instant warehouse sync.
       // products is intentionally excluded: the full 53k-row catalog re-download triggered
@@ -3127,7 +3130,7 @@ export default function App(){
       document.addEventListener('visibilitychange',onVis);
       channels._onVis=onVis;
     }
-    return()=>{cancelled=true;_realtimeHealthy=false;channels.forEach(ch=>supabase?.removeChannel(ch));if(channels._onVis)document.removeEventListener('visibilitychange',channels._onVis)};
+    return()=>{cancelled=true;stopRealtimeReload();_realtimeHealthy=false;channels.forEach(ch=>supabase?.removeChannel(ch));if(channels._onVis)document.removeEventListener('visibilitychange',channels._onVis)};
   },[]);
 
   // NetSuite history is large and read-only. Load it after the operational shell is usable so
@@ -4561,10 +4564,10 @@ export default function App(){
   };
   React.useEffect(()=>{
     const realmId=String(qbConfig.realm_id||'');
-    if(dbLoading||!_dbLoadSuccess.current||!storedUserCanManageQuickBooks()||!realmId)return;
+    if(dbLoading||!_dbLoadSuccess.current||!storedUserCanManageQuickBooks()||!realmId||!cust.length)return;
     if(_qbDurableHydrationRef.current===realmId||_qbDurableHydrationRef.current===realmId+':loading')return;
     let cancelled=false;_qbDurableHydrationRef.current=realmId+':loading';
-    loadDurableQBLinkReceipts(supabase,realmId).then(rows=>{
+    loadDurableQBLinkReceipts(supabase,realmId,{sourceIds:cust.map(customer=>customer.id)}).then(rows=>{
       if(cancelled)return;
       Object.assign(_qbDurableRowsRef.current,rows);
       setQBConfig(prev=>String(prev.realm_id||'')===realmId?mergeDurableQBLinks(prev,rows):prev);
@@ -4573,10 +4576,10 @@ export default function App(){
       if(cancelled)return;
       _qbDurableHydrationRef.current='';
       console.error('[QB] Durable link hydration failed:',error);
-      nf('Could not load durable QuickBooks links — sync remains locked','error');
+      nf('Could not load durable QuickBooks links — '+error.message+'; sync remains locked','error');
     });
     return()=>{cancelled=true};
-  },[dbLoading,qbConfig.realm_id]);
+  },[dbLoading,qbConfig.realm_id,cust.length]);
   React.useEffect(()=>{if(storedUserCanManageQuickBooks())_saveAppState('qb_config',qbConfig)},[qbConfig]);
   // QB background auto-sync — self-contained: builds the sync engine from CURRENT
   // state at fire time. The old wiring called a ref only a mounted QBPage assigned,
