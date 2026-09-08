@@ -29059,13 +29059,19 @@ export default function App(){
       }
     };
 
+    // Document numbers are not always strings: a Sports Inc / S&S order number
+    // round-trips from Postgres jsonb as a NUMBER, and .trim() on it threw
+    // "trim is not a function" mid-push, after ~90 QBO bills. Every doc-number
+    // comparison in the dedup helpers below goes through this.
+    const _docNorm=v=>String(v==null?'':v).trim().toLowerCase();
+
     // Like _docAlreadyApplied, but answers WHERE: returns a human label ("SO-1396 · PO 3517")
     // for the skipped-duplicates drawer, so "where did my bill go?" is answered in place.
     const _docAppliedWhere=(doc,kind,isCredit=false)=>{
-      const d=(doc||'').trim().toLowerCase();
+      const d=_docNorm(doc);
       if(!d)return null;
       const credit=!!isCredit;
-      const sb=submittedBatches.find(x=>!!x.is_credit===credit&&(x.bill_doc_number||'').trim().toLowerCase()===d);
+      const sb=submittedBatches.find(x=>!!x.is_credit===credit&&_docNorm(x.bill_doc_number)===d);
       if(sb)return 'Batch '+(sb.po_number||sb.id);
       // Credits written by the current path carry is_credit/credit_of.  A few legacy
       // reversal details predate both markers, but retain their negative cost or size
@@ -29078,13 +29084,13 @@ export default function App(){
         if(Number(dt?.cost)<0)return true;
         return !!dt?.sizes&&Object.values(dt.sizes).some(v=>Number(v)<0);
       };
-      const inD=arr=>(arr||[]).some(dt=>detailIsCredit(dt)===credit&&(dt.doc||'').trim().toLowerCase()===d);
+      const inD=arr=>(arr||[]).some(dt=>detailIsCredit(dt)===credit&&_docNorm(dt.doc)===d);
       for(const so of sos){
         for(const it of (so.items||[]))for(const po of (it.po_lines||[]))if(inD(po._bill_details))return so.id+(po.po_id?' · '+po.po_id:'');
         for(const dp of (so.deco_pos||[]))if(inD(dp._bill_details))return so.id+(dp.po_id?' · deco '+dp.po_id:' · deco');
       }
       if(_appliedLedger.current.has(_appliedLedgerKey(kind==='si'?'s':'d',d,credit)))return 'applied earlier (server ledger — possibly another machine)';
-      if(savedBills.some(x=>x.portalStatus==='success'&&!!x.parsed?.is_credit===credit&&((kind==='si'?x.parsed?.si_doc_number:x.parsed?.doc_number)||'').trim().toLowerCase()===d))return 'pushed earlier (bill history)';
+      if(savedBills.some(x=>x.portalStatus==='success'&&!!x.parsed?.is_credit===credit&&_docNorm(kind==='si'?x.parsed?.si_doc_number:x.parsed?.doc_number)===d))return 'pushed earlier (bill history)';
       return null;
     };
 
@@ -29094,20 +29100,20 @@ export default function App(){
     // ledger dedups cross-machine by key without a local total, so a cross-machine push returns
     // null here and the PDF drops silently — no comparison, no false alarm.
     const _appliedDocTotal=(doc,isCredit=false)=>{
-      const d=(doc||'').trim().toLowerCase();
+      const d=_docNorm(doc);
       if(!d)return null;
-      const hit=savedBills.find(sb=>sb.portalStatus==='success'&&!!sb.parsed?.is_credit===!!isCredit&&(sb.parsed?.doc_number||'').trim().toLowerCase()===d&&safeNum(sb.parsed?.doc_total)>0);
+      const hit=savedBills.find(sb=>sb.portalStatus==='success'&&!!sb.parsed?.is_credit===!!isCredit&&_docNorm(sb.parsed?.doc_number)===d&&safeNum(sb.parsed?.doc_total)>0);
       return hit?safeNum(hit.parsed.doc_total):null;
     };
 
     // True if a bill with this doc number was already applied to the Portal — checks the
     // applied state on POs/batches (authoritative) plus pushed bill history as a fallback.
     const _docAlreadyApplied=(doc,kind,isCredit=false)=>{
-      const d=(doc||'').trim().toLowerCase();
+      const d=_docNorm(doc);
       if(!d)return false;
       try{if(_billApplySession.current.isUnfinished(billingAttemptKey({parsed:{doc_number:d,is_credit:isCredit}})))return false}catch{return false}
       const credit=!!isCredit;
-      if(submittedBatches.some(sb=>!!sb.is_credit===credit&&(sb.bill_doc_number||'').trim().toLowerCase()===d))return true;
+      if(submittedBatches.some(sb=>!!sb.is_credit===credit&&_docNorm(sb.bill_doc_number)===d))return true;
       const detailIsCredit=dt=>{
         if(dt?.is_credit===true)return true;
         if(dt?.is_credit===false)return false;
@@ -29115,7 +29121,7 @@ export default function App(){
         if(Number(dt?.cost)<0)return true;
         return !!dt?.sizes&&Object.values(dt.sizes).some(v=>Number(v)<0);
       };
-      const inDetails=arr=>(arr||[]).some(dt=>detailIsCredit(dt)===credit&&(dt.doc||'').trim().toLowerCase()===d);
+      const inDetails=arr=>(arr||[]).some(dt=>detailIsCredit(dt)===credit&&_docNorm(dt.doc)===d);
       for(const so of sos){
         for(const it of (so.items||[]))for(const po of (it.po_lines||[]))if(inDetails(po._bill_details))return true;
         for(const dp of (so.deco_pos||[]))if(inDetails(dp._bill_details))return true;
@@ -29129,7 +29135,7 @@ export default function App(){
       if(_appliedLedger.current.has(_appliedLedgerKey(kind==='si'?'s':'d',d,credit)))return true;
       // localStorage cache fallback — covers this browser's pushes made while the ledger was
       // unreachable (write retried, but the row may not have landed).
-      if(savedBills.some(sb=>sb.portalStatus==='success'&&!!sb.parsed?.is_credit===credit&&((kind==='si'?sb.parsed?.si_doc_number:sb.parsed?.doc_number)||'').trim().toLowerCase()===d))return true;
+      if(savedBills.some(sb=>sb.portalStatus==='success'&&!!sb.parsed?.is_credit===credit&&_docNorm(kind==='si'?sb.parsed?.si_doc_number:sb.parsed?.doc_number)===d))return true;
       return false;
     };
 
