@@ -27318,7 +27318,9 @@ export default function App(){
         // Nothing new came in (all duplicates/scanned/unreadable). Append mode must not clobber
         // an in-progress review; a fresh import resets to the upload step as before.
         if(append)setBillImport(x=>({...x,uploading:false,skipped:skippedInfo.length?skippedInfo:x.skipped,showSkipped:skippedInfo.length>0&&skippedInfo.length<=15}));
-        else setBillImport(x=>({...x,parsed:[],step:'upload',uploading:false,progress:null,files:[],skipped:skippedInfo,showSkipped:skippedInfo.length>0&&skippedInfo.length<=15}));
+        // A loaded QuickBooks backfill is in-progress work: a pull that finds
+        // nothing new (the daily auto-pull included) must not clear it.
+        else setBillImport(x=>x.parsed.some(b=>b._qbBackfill)?{...x,uploading:false,progress:null,skipped:skippedInfo,showSkipped:skippedInfo.length>0&&skippedInfo.length<=15}:({...x,parsed:[],step:'upload',uploading:false,progress:null,files:[],skipped:skippedInfo,showSkipped:skippedInfo.length>0&&skippedInfo.length<=15}));
         const base=skippedDups.length?'Skipped '+skippedDups.length+' duplicate(s) already on the Portal — nothing new to import':(extraNote?'Nothing new to import':'No bills could be parsed');
         nf(base+extraNote,(skippedDups.length||extraNote)?'success':'error');
         return;
@@ -27363,7 +27365,10 @@ export default function App(){
       // ready vs still-needs-review vs skipped — instead of a toast that flashes and is gone.
       const _batchIds=results.map(r=>r.id);
       const _lastBatch={at:new Date().toLocaleString(),atMs:Date.now(),verb,label:sourceCount+' '+sourceNoun,count:results.length,ids:_batchIds,skipped:skippedInfo.length,failed:results.filter(r=>(r.parsed&&r.parsed.warnings||[]).some(w=>/PDF read failed|timed out/i.test(w))).length};
-      setBillImport(x=>({...x,parsed:append?[...x.parsed,...results]:results,step:'review',uploading:false,progress:null,skipped:skippedInfo,showSkipped:false,lastBatch:_lastBatch}));
+      // Never replace a loaded QuickBooks backfill: the daily auto-pull fires on
+      // the first Bills visit of the day and can land after the backfill load.
+      // Pulled bills join the session instead and enter the review piles as usual.
+      setBillImport(x=>({...x,parsed:(append||x.parsed.some(b=>b._qbBackfill))?[...x.parsed,...results]:results,step:'review',uploading:false,progress:null,skipped:skippedInfo,showSkipped:false,lastBatch:_lastBatch}));
       // Auto-clear the "Upload & Match" waiting list (owner: uploaded items should drop off
       // the list, even the API ones). A scanned SI doc sits in the grab bucket until its PDF
       // arrives; now that the PDF is parsed, any waiting row whose supplier invoice # matches
