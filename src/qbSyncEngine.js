@@ -317,6 +317,7 @@ export function buildQBPurchaseOrderPreviewRows(sos = [], products = [], prodQBM
   const productIdBySku = new Map(products.map(product => [String(product.sku || '').trim().toUpperCase(), product.id]));
   return groupPortalPurchaseOrders(sos, poMap, portalVendors).map(group => {
     const reasons = new Set(group.invalidReason ? [group.invalidReason] : []);
+    if (String(group.poId || '').length > 21) reasons.add('QBO purchase-order number exceeds the 21-character limit');
     if (!String(group.vendor || '').trim()) reasons.add('missing saved vendor');
     if (!parseQBDateValue(group.created_at)) reasons.add('invalid or missing PO date');
     let total = 0;

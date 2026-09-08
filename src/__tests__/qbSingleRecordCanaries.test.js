@@ -624,6 +624,14 @@ test('purchase-order preview keeps POs with unlinked SKUs ready and lists the SK
   expect(rows.find(row=>row.poId==='PO-2')).toEqual(expect.objectContaining({action:'ready',total:64,reason:'',accountSkus:['MISSING','CUSTOM']}));
 });
 
+test('purchase-order preview parks document numbers longer than QBO accepts',()=>{
+  const poId='re_1305_162213557_fzqpgy';
+  const rows=buildQBPurchaseOrderPreviewRows([{id:'SO-1',items:[
+    {product_id:'P1',sku:'READY',name:'Ready',brand:'Acme',nsa_cost:5,po_lines:[{po_id:poId,created_at:'2026-09-01',S:2,unit_cost:5}]},
+  ]}],[{id:'P1',sku:'READY'}],{P1:'I-1'},{});
+  expect(rows).toEqual([expect.objectContaining({poId,action:'blocked',reason:'QBO purchase-order number exceeds the 21-character limit'})]);
+});
+
 test('purchase-order account line description names every unlinked line until the QBO cap, then counts the rest',()=>{
   expect(qbPOAccountLineDescription(['CUSTOM Sublimated uniforms x2 @$30.00','PC54 Core Cotton Tee x12 @$3.10'],['SO-1','SO-2']))
     .toBe('Unlinked goods: CUSTOM Sublimated uniforms x2 @$30.00; PC54 Core Cotton Tee x12 @$3.10 (SO: SO-1, SO-2)');
