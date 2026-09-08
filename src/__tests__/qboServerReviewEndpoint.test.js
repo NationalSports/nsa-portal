@@ -1,4 +1,6 @@
 jest.mock('../../netlify/functions/_shared', () => ({ verifyQBOUser: jest.fn(), getSupabaseAdmin: jest.fn() }));
+jest.mock('../../netlify/functions/_qboDeployContext.json', () => ({ context: 'production' }));
+const deployment = require('../../netlify/functions/_qboDeployContext.json');
 jest.mock('../../netlify/functions/_qb', () => ({ getValidAccessToken: jest.fn(), qbRequest: jest.fn() }));
 jest.mock('../../netlify/functions/_qboServerReview', () => ({ runReview: jest.fn(), reviewStore: jest.fn() }));
 const { verifyQBOUser, getSupabaseAdmin } = require('../../netlify/functions/_shared');
@@ -8,7 +10,8 @@ const { handler } = require('../../netlify/functions/qbo-review-background');
 const original = { ...process.env };
 beforeEach(() => {
   jest.resetAllMocks();
-  process.env.CONTEXT = 'production';
+  deployment.context = 'production';
+  delete process.env.CONTEXT;
   process.env.QBO_SERVER_REVIEW_ENABLED = 'true';
   process.env.QBO_REVIEW_REALM_ID = '123';
   verifyQBOUser.mockResolvedValue({ ok: true, userId: 'staff' });
@@ -24,7 +27,7 @@ test('unauthorized request never reaches storage or QBO', async () => {
   expect(runReview).not.toHaveBeenCalled();
 });
 test.each(['deploy-preview','branch-deploy','dev'])('refuses %s even when flag is on', async context => {
-  process.env.CONTEXT = context;
+  deployment.context = context;
   expect((await handler({ httpMethod: 'POST' })).statusCode).toBe(409);
   expect(runReview).not.toHaveBeenCalled();
 });

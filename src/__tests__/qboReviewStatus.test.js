@@ -1,9 +1,11 @@
 jest.mock('../../netlify/functions/_shared',()=>({verifyQBOUser:jest.fn(),getSupabaseAdmin:jest.fn()}));
+jest.mock('../../netlify/functions/_qboDeployContext.json',()=>({context:'production'}));
+const deployment=require('../../netlify/functions/_qboDeployContext.json');
 const {verifyQBOUser,getSupabaseAdmin}=require('../../netlify/functions/_shared');
 const {handler}=require('../../netlify/functions/qbo-review-status');
 const env={...process.env};
 beforeEach(()=>{
-  jest.resetAllMocks(); process.env.CONTEXT='production'; process.env.QBO_SERVER_REVIEW_ENABLED='true'; process.env.QBO_REVIEW_REALM_ID='123';
+  jest.resetAllMocks(); deployment.context='production'; delete process.env.CONTEXT; process.env.QBO_SERVER_REVIEW_ENABLED='true'; process.env.QBO_REVIEW_REALM_ID='123';
   verifyQBOUser.mockResolvedValue({ok:true});
   const query={select:jest.fn(()=>query),eq:jest.fn(()=>query),order:jest.fn(()=>query),limit:jest.fn(async()=>({data:[],error:null}))};
   getSupabaseAdmin.mockReturnValue({from:()=>query});
@@ -15,7 +17,7 @@ test('reports server configuration without secrets',async()=>{
   expect(result.headers['Cache-Control']).toBe('no-store');
 });
 test.each(['deploy-preview','dev'])('configuration is disabled in %s',async context=>{
-  process.env.CONTEXT=context;
+  deployment.context=context;
   expect(JSON.parse((await handler({httpMethod:'GET'})).body).enabled).toBe(false);
 });
 test('unauthorized request never reads financial history',async()=>{
