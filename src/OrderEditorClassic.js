@@ -63,6 +63,7 @@ import { artFamilyKey } from './lib/artSplitFamily';
 import { parseStitchCount, embStitchTierLabel } from './lib/embStitchParser';
 import { _dbPersistNewPoLine } from './lib/dbEngine';
 import { applyFullPromoPricing } from './lib/promoPricing';
+import { markTopstarEmailFailed, markTopstarEmailSent, topstarAttachmentName, topstarPoMatches } from './lib/topstarEmail';
 import { fetchPaidPromoHistoryInvoices, mergePromoHistoryInvoices, promoHalfWindows, withEarnedPromoAllocation } from './lib/promoHistory';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
@@ -928,6 +929,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Artwork is optional — a PO can carry written instructions only (e.g. "digitize these numbers").
       // Still require one or the other so the vendor never gets an empty request.
       if(imgs.length===0&&!String(dp.notes||'').trim()){nf('Add artwork or written instructions to this PO before sending to Topstar','error');return false}
+      setTopstarSending(true);
+      const sendingPo={...dp,status:'sending',topstar_send_error:null};
+      const sendingOrder={...o,deco_pos:(o.deco_pos||[]).map(x=>topstarPoMatches(x,dp)?{...x,...sendingPo}:x),updated_at:new Date().toLocaleString()};
+      let sendingSaved=false;
+      try{sendingSaved=onSaveNow?await onSaveNow(sendingOrder):(onSave(sendingOrder)!==false)}catch(e){console.error('[Topstar] pre-send save failed',e)}
+      if(!sendingSaved){setTopstarSending(false);nf('Topstar email was not sent because the PO could not be saved. Check your connection and retry.','error');return false}
+      setO(sendingOrder);
       const custName=cust?.name||cust?.alpha_tag||'';
       const imgList=imgs.map((u,i)=>'<li><a href="'+u+'">Image '+(i+1)+'</a></li>').join('');
       const html='<div style="font-family:Arial,sans-serif;font-size:14px;color:#1e293b">'+
@@ -943,14 +951,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         subject:'New '+svc.orderType+' Order — '+dp.po_id+' ('+svc.emailService+')',
         htmlContent:html,senderName:_ci?.name||'National Sports Apparel',
         replyTo:cuEmail?{email:cuEmail,name:cu?.name||undefined}:undefined,
-        attachment:imgs.map((u,i)=>({url:u,name:(svc.deco_type||'art')+'-'+(i+1)+'.'+((u.split('?')[0].split('.').pop())||'png')}))});
+        attachment:imgs.map((u,i)=>({url:u,name:topstarAttachmentName(u,svc.deco_type,i)}))});
       }catch(e){r={ok:false,error:e.message}}
-      if(r.ok){
-        const updated={...o,deco_pos:(o.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?{...x,status:'waiting',_topstar_sent_at:new Date().toLocaleString()}:x),updated_at:new Date().toLocaleString()};
-        setO(updated);onSave(updated);
-        setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:(updated.deco_pos||[]).find(x=>dp.id?x.id===dp.id:x.po_id===dp.po_id)||p.decoPo}:p);
+      const completedPo=r.ok?markTopstarEmailSent(sendingPo,r):markTopstarEmailFailed(sendingPo,r.error);
+      const updated={...sendingOrder,deco_pos:(sendingOrder.deco_pos||[]).map(x=>topstarPoMatches(x,dp)?{...x,...completedPo}:x),updated_at:new Date().toLocaleString()};
+      setO(updated);let completionSaved=false;
+      try{completionSaved=onSaveNow?await onSaveNow(updated):(onSave(updated)!==false)}catch(e){console.error('[Topstar] result save failed',e)}
+      setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:(updated.deco_pos||[]).find(x=>topstarPoMatches(x,dp))||p.decoPo}:p);
+      if(!completionSaved)nf(r.ok?'Topstar accepted the email, but the portal could not save its receipt. Do not resend; refresh and check the PO.':'The Topstar email failed and the portal could not save the failure status. Refresh before retrying.','error');
+      else if(r.ok){
         nf('🧵 '+dp.po_id+' sent to Topstar — cost $'+svc.cost.toFixed(2)+', customer billed $'+svc.sell.toFixed(2));
       } else nf('Email to Topstar failed: '+r.error,'error');
+      setTopstarSending(false);
       return r.ok;
     };
     // Create the job on the Silver Screen account portal for a Silver Screen deco PO
@@ -9653,7 +9665,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const decoPO={id:'TS-'+Date.now()+'-'+Math.floor(Math.random()*10000),
                 po_id:tsPoIdFinal,vendor:'Topstar',deco_vendor_id:null,deco_type:svc.deco_type,
                 topstar_service:topstarService,item_idxs:[],qty:1,unit_cost:svc.cost,expected_cost:svc.cost,
-                notes:topstarNotes,images:topstarImgs,status:planOnly?'planned':'waiting',created_at:new Date().toLocaleDateString(),
+                notes:topstarNotes,images:topstarImgs,status:planOnly?'planned':'sending',created_at:new Date().toLocaleDateString(),
                 _bill_cost:0,_bill_details:[],tracking_numbers:[]};
               const lineItem={product_id:null,sku:'DIGITIZING',name:'Topstar — '+svc.label,brand:'Topstar',vendor_id:null,color:'',
                 nsa_cost:0,unit_sell:svc.sell,retail_price:0,available_sizes:[],sizes:{},qty_only:true,est_qty:1,
@@ -9661,7 +9673,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const updated={...o,items:[...safeItems(o),lineItem],deco_pos:[...(o.deco_pos||[]),decoPO],updated_at:new Date().toLocaleString()};
               // Persist the PO BEFORE the network email — a slow/failed send (or a background poll firing
               // during the await) must not be able to drop the optimistic deco_pos record.
-              setO(updated);onSave(updated);_consumeHeldPoNumber();
+              let initialSaved=false;
+              try{initialSaved=onSaveNow?await onSaveNow(updated):(onSave(updated)!==false)}catch(e){console.error('[Topstar] initial PO save failed',e)}
+              setO(updated);
+              if(!initialSaved){setTopstarSending(false);nf('Topstar email was not sent because the PO could not be saved. Check your connection and retry.','error');return}
+              _consumeHeldPoNumber();
               if(planOnly){
                 setShowPO(null);setTopstarImgs([]);setTopstarNotes('');setTopstarService('dst');setTopstarSending(false);
                 nf('🧵 '+tsPoIdFinal+' planned — $'+svc.cost.toFixed(2)+' cost & $'+svc.sell.toFixed(2)+' customer charge will carry to the sales order. Send to Topstar when ready to order.');
@@ -9683,10 +9699,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 htmlContent:html,
                 senderName:_ci?.name||'National Sports Apparel',
                 replyTo:cuEmail?{email:cuEmail,name:cu?.name||undefined}:undefined,
-                attachment:topstarImgs.map((u,i)=>({url:u,name:(svc.deco_type||'art')+'-'+(i+1)+'.'+((u.split('?')[0].split('.').pop())||'png')}))});
+                attachment:topstarImgs.map((u,i)=>({url:u,name:topstarAttachmentName(u,svc.deco_type,i)}))});
               }catch(e){r={ok:false,error:e.message}}
+              const completedPo=r.ok?markTopstarEmailSent(decoPO,r):markTopstarEmailFailed(decoPO,r.error);
+              const completed={...updated,deco_pos:(updated.deco_pos||[]).map(x=>topstarPoMatches(x,decoPO)?completedPo:x),updated_at:new Date().toLocaleString()};
+              setO(completed);let completionSaved=false;
+              try{completionSaved=onSaveNow?await onSaveNow(completed):(onSave(completed)!==false)}catch(e){console.error('[Topstar] result save failed',e)}
               setShowPO(null);setTopstarImgs([]);setTopstarNotes('');setTopstarService('dst');setTopstarSending(false);
-              if(r.ok)nf('🧵 '+tsPoIdFinal+' sent to Topstar — cost $'+svc.cost.toFixed(2)+', customer billed $'+svc.sell.toFixed(2));
+              if(!completionSaved)nf(r.ok?'Topstar accepted the email, but the portal could not save its receipt. Do not resend; refresh and check the PO.':'The Topstar email failed and the portal could not save the failure status. Refresh before retrying.','error');
+              else if(r.ok)nf('🧵 '+tsPoIdFinal+' sent to Topstar — cost $'+svc.cost.toFixed(2)+', customer billed $'+svc.sell.toFixed(2));
               else nf('PO created & customer billed, but email to Topstar failed: '+r.error,'error');
             }}>{topstarSending?(planOnly?'Saving…':'Sending…'):(planOnly?'🧵 Plan Digitizing PO':'🧵 Create PO & Email Topstar')}</button>
           </div>
@@ -15180,7 +15201,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         const _addTrack=()=>{const tn=decoTrackAdd.trim();if(!tn)return;
           if((dp.tracking_numbers||[]).includes(tn)){nf('Tracking number already on this PO','error');return}
           _saveDp({...dp,tracking_numbers:[...(dp.tracking_numbers||[]),tn]},'Added tracking '+tn);setDecoTrackAdd('')};
-        const DECO_STATUSES=[['planned','Planned (not ordered)'],['waiting','Waiting'],['ordered','Ordered'],['received','Received'],['billed','Billed']];
+        const DECO_STATUSES=[['planned','Planned (not ordered)'],['sending','Email sending'],['email_failed','Email failed'],['waiting','Waiting'],['ordered','Ordered'],['received','Received'],['billed','Billed']];
         const DECO_TYPES=['embroidery','screen_print','dtf','heat_transfer','sublimation','vinyl','vector'];
         const _vendorOpts=(()=>{const base=DECO_VENDORS.filter(v=>v!=='Other');if(dp.vendor&&!base.includes(dp.vendor))base.unshift(dp.vendor);return[...base,'Other']})();
         const editingPo=decoEditPo&&decoEditPo.decoPoId===dpKey;
@@ -15235,7 +15256,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
                 <button className="btn btn-secondary btn-sm" onClick={()=>{setPoFullPage(null);setDecoEditItems(null);setDecoEditPo(null)}}>&larr; Back</button>
                 <h1 style={{margin:0,fontSize:22}}>{dp.po_id}</h1>
-                <span className={`badge ${dp.status==='billed'||dp.status==='received'?'badge-green':dp.status==='ordered'?'badge-blue':'badge-gray'}`} style={{fontSize:11}}>{(dp.status||'waiting').replace(/^./,c=>c.toUpperCase())}</span>
+                <span className={`badge ${dp.status==='billed'||dp.status==='received'?'badge-green':dp.status==='ordered'?'badge-blue':dp.status==='email_failed'?'badge-red':'badge-gray'}`} style={{fontSize:11}}>{dp.status==='email_failed'?'Email failed':dp.status==='sending'?'Email sending':(dp.status||'waiting').replace(/^./,c=>c.toUpperCase())}</span>
                 <span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>
                 {dp.preexisting&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>Preexisting</span>}
                 {dp.po_mode==='dtf_purchase'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#b45309',fontWeight:700}} title="Buying transfers/material — no garments sent to this vendor">🖨️ DTF Purchase</span>}
@@ -15247,8 +15268,11 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                 {dp.deco_type&&<div style={{fontSize:11,color:'#64748b'}}>Type: {dp.deco_type.replace(/_/g,' ')}</div>}
                 {dp.created_at&&<div style={{fontSize:10,color:'#94a3b8'}}>Created: {dp.created_at}</div>}
                 {dp.expected_date&&<div style={{fontSize:10,color:'#94a3b8'}}>Expected return: {dp.expected_date}</div>}
+                {dp.topstar_sent_at&&<div style={{fontSize:10,color:'#16a34a'}}>Email accepted: {new Date(dp.topstar_sent_at).toLocaleString()}</div>}
+                {dp.topstar_message_id&&<div style={{fontSize:10,color:'#64748b'}}>Brevo ID: {dp.topstar_message_id}</div>}
               </div>
             </div>
+            {isTopstar&&dp.status==='email_failed'&&<div style={{padding:'8px 12px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,marginBottom:12,fontSize:12,color:'#b91c1c'}}><b>Topstar email failed:</b> {dp.topstar_send_error||'The mail provider did not accept this message.'}</div>}
             {(dp.art_file_ids||[]).length>0&&<div style={{padding:'8px 12px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,marginBottom:12,fontSize:12,color:'#92400e'}}>
               <b>Art purchased on this PO:</b> {(dp.art_file_ids||[]).map(aid=>(o.art_files||[]).find(a=>a.id===aid)?.name||aid).join(', ')}
             </div>}
@@ -15278,7 +15302,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               </div>})()}
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:20,flexWrap:'wrap'}}>
               {!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>setDecoEditPo({decoPoId:dpKey,po_id:dp.po_id||'',vendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?dp.vendor:'Other',customVendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?'':(dp.vendor||''),deco_type:dp.deco_type||'embroidery',status:dp.status||'waiting',expected_date:dp.expected_date||'',unit_cost:dp.unit_cost!=null?String(dp.unit_cost):'',drop_ship:true,notes:dp.notes||''})}>✎ Edit PO</button>}
-              {isTopstar&&dp.status==='planned'&&!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#0891b2',borderColor:'#0891b2'}} onClick={()=>sendTopstarPO(dp)} title="Email this digitizing/vector PO to Topstar now and mark it ordered">🧵 Send to Topstar</button>}
+              {isTopstar&&['planned','sending','email_failed'].includes(dp.status)&&!editingPo&&<button className="btn btn-sm btn-primary" disabled={topstarSending} style={{fontSize:11,background:'#0891b2',borderColor:'#0891b2'}} onClick={()=>sendTopstarPO(dp)} title="Email this digitizing/vector PO to Topstar now and mark it ordered">{topstarSending?'Sending…':dp.status==='planned'?'🧵 Send to Topstar':'↻ Retry Topstar Email'}</button>}
               {(()=>{// Silver Screen: create the job on their account portal with one click.
                 if(!_isSilverScreenDp(dp)||editingPo)return null;
                 // Already sent: show the job chip, plus a re-send. A first attempt can land
