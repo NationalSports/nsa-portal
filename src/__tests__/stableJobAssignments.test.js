@@ -37,6 +37,17 @@ describe.each(['OrderEditor.js', 'OrderEditorClassic.js'])('%s stable art jobs',
       expect(jobs.find(j => j.id === original.id)).toMatchObject({ art_status: original.art_status, art_requests: original.art_requests });
     }
   });
+  test('corrected art groups keep matching garments together and different art separate', () => {
+    const orange = job('JOB-1', 'A', [row(0, 'PREGAME', 21), row(1, 'TEE', 3)], { key: 'screen_print::art_A', _merged: true });
+    const other = job('JOB-2', 'B', [row(2, 'LONGSLEEVE', 15)], { key: 'screen_print::art_B', _merged: true });
+    const unsubmitted = job('JOB-3', 'A', [row(3, 'TEE', 6)], { key: 'screen_print::art_A', art_status: 'needs_art', art_requests: [], assigned_artist: null });
+    const o = { id: 'SO-1', items: [item('PREGAME', { L: 21 }, [deco('A')]), item('TEE', { XL: 3 }, [deco('A')]), item('LONGSLEEVE', { M: 15 }, [deco('B')]), item('TEE', { S: 3, XL: 3 }, [deco('A')])], art_files: [art('A'), art('B')], jobs: [orange, other, unsubmitted] };
+    const jobs = twice(o);
+    expect(jobs).toHaveLength(2);
+    expect(jobs.find(j => j.id === 'JOB-1')).toMatchObject({ total_units: 30, art_status: 'art_requested', art_requests: orange.art_requests });
+    expect(jobs.find(j => j.id === 'JOB-1').items.map(r => r.item_idx)).toEqual([0, 1, 3]);
+    expect(jobs.find(j => j.id === 'JOB-2')).toMatchObject({ total_units: 15, art_file_id: 'B', art_status: 'art_requested' });
+  });
   test.each(['_itemsHydrated', '_decosHydrated', '_jobsHydrated', '_artHydrated'])('partial %s load leaves submissions untouched', flag => {
     const jobs = [job('JOB-1', 'A', [row(0, 'TEE', 10)])];
     expect(sync({ id: 'SO-1', items: [], art_files: [], jobs, [flag]: false })).toBe(jobs);
