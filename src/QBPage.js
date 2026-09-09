@@ -95,6 +95,7 @@ export default function QBPage(){
   const [customerBatchLimit,setCustomerBatchLimit]=useState(20);
   const [productBatchLimit,setProductBatchLimit]=useState(20);
   const [poBatchLimit,setPoBatchLimit]=useState(20);
+  const [poParkingApproved,setPoParkingApproved]=useState(false);
   const [productPoOnly,setProductPoOnly]=useState(true);
   const [customerReviewFilter,setCustomerReviewFilter]=useState('all');
   // Steve Peterson approved Net 30 (the portal's own due-date default) for blank
@@ -447,7 +448,8 @@ export default function QBPage(){
       const hasItems=safeItems(so).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
       return hasItems&&!soMap[so.id];
     });
-    const unsyncedPOGroups=groupPortalPurchaseOrders(sos,poMap,vend);
+    const parkedPurchaseOrderIds=qbConfig.parkedPurchaseOrderIds||[];
+    const unsyncedPOGroups=groupPortalPurchaseOrders(sos,poMap,vend,parkedPurchaseOrderIds);
     const unsyncedInvs=invs.filter(i=>!i.qb_invoice_id&&!isVoidInvoice(i));
     const _custQBMap=qbConfig.custQBMap||{};
     const _prodQBMap=qbConfig.prodQBMap||{};
@@ -468,8 +470,9 @@ export default function QBPage(){
     const selectedCanaryProduct=canaryProducts.find(p=>String(p.id)===String(qbCanaryProductId));
     const selectedCanarySO=canarySOs.find(so=>String(so.id)===String(qbCanarySOId));
     const selectedCanaryPO=canaryPOs.find(group=>String(group.poId)===String(qbCanaryPOId));
-    const poPreviewRows=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{},vend);
+    const poPreviewRows=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{},vend,parkedPurchaseOrderIds);
     const poBatchRows=(poBatchReview?.rows||[]).filter(row=>row.action==='ready').slice(0,poBatchLimit);
+    const poBlockedRows=(poBatchReview?.rows||[]).filter(row=>row.action==='blocked');
     const taxPreflight=qbConfig.taxPreflight&&String(qbConfig.taxPreflight.realm_id||'')===String(qbConfig.realm_id||'')?qbConfig.taxPreflight:null;
     const astTaxOn=!!taxPreflight?.partnerTaxEnabled;
     const taxableEstimateBlock=state=>{
@@ -639,8 +642,12 @@ export default function QBPage(){
     };
     // Only SKUs that actually appear on a purchase order awaiting sync need a QBO item.
     // The full catalogue is about 48,000 SKUs and QBO never needs most of them.
-    const poPendingSkus=React.useMemo(()=>new Set((poBatchReview?.rows||qbConfig.lastPurchaseOrderReview?.rows||[])
-      .flatMap(row=>row.skus||[]).map(sku=>String(sku).trim().toUpperCase()).filter(Boolean)),[poBatchReview,qbConfig.lastPurchaseOrderReview]);
+    const poPendingSkus=React.useMemo(()=>{
+      const parked=new Set((qbConfig.parkedPurchaseOrderIds||[]).map(String));
+      return new Set((poBatchReview?.rows||qbConfig.lastPurchaseOrderReview?.rows||[])
+        .filter(row=>!parked.has(String(row.poId)))
+        .flatMap(row=>row.skus||[]).map(sku=>String(sku).trim().toUpperCase()).filter(Boolean));
+    },[poBatchReview,qbConfig.lastPurchaseOrderReview,qbConfig.parkedPurchaseOrderIds]);
     const productBatchRows=(productReview?.rows||[]).filter(r=>['link','create'].includes(r.action)&&!r.complete)
       .filter(r=>!productPoOnly||!poPendingSkus.size||poPendingSkus.has(String(r.sku).trim().toUpperCase()))
       .slice(0,productBatchLimit);
@@ -697,7 +704,7 @@ export default function QBPage(){
       await syncInventoryValuation({approved:true,asOf:review.asOf,expectedDelta:review.delta});
     };
     const reviewPurchaseOrderBatch=async()=>{
-      setQbSyncing(true);setPoBatchApproved(false);
+      setQbSyncing(true);setPoBatchApproved(false);setPoParkingApproved(false);
       try{
         const [qboVendors,qboPurchaseOrders,qboAccounts]=await Promise.all([
           loadAllQBEntities(qbApi,'Vendor','Id, DisplayName, CompanyName, Active',500),
@@ -716,10 +723,27 @@ export default function QBPage(){
       finally{setQbSyncing(false)}
     };
     const runPurchaseOrderBatch=async()=>{
-      const current=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{},vend);
+      const current=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{},vend,qbConfig.parkedPurchaseOrderIds||[]);
       const currentById=new Map(current.map(row=>[row.poId,row]));
       if(poBatchRows.some(row=>JSON.stringify(qbPurchaseOrderSourceFingerprint(currentById.get(row.poId)))!==JSON.stringify(qbPurchaseOrderSourceFingerprint(row)))){nf('Purchase-order batch changed since review — review it again','error');setPoBatchApproved(false);return}
       await syncPurchaseOrders({}, {approved:poBatchApproved,approvedPOIds:poBatchRows.map(row=>row.poId)});setPoBatchApproved(false);setPoBatchReview(null);
+    };
+    const parkPurchaseOrderExceptions=()=>{
+      const ids=poBlockedRows.map(row=>String(row.poId)).filter(Boolean);
+      if(!poParkingApproved||!ids.length)return;
+      const parkedAt=new Date().toISOString();
+      setQBConfig(prev=>({...prev,
+        parkedPurchaseOrderIds:[...new Set([...(prev.parkedPurchaseOrderIds||[]).map(String),...ids])],
+        lastPurchaseOrderParking:{parkedAt,count:ids.length,reason:'Historical QBO PO collision — likely legacy NetSuite duplicate; review later'},
+      }));
+      setPoBatchApproved(false);setPoParkingApproved(false);setPoBatchReview(null);
+      nf(ids.length+' historical purchase orders parked for later; no QBO records changed','success');
+    };
+    const restoreParkedPurchaseOrders=()=>{
+      const count=(qbConfig.parkedPurchaseOrderIds||[]).length;
+      if(!count||!window.confirm('Return '+count+' parked historical purchase orders to the active QBO review queue?'))return;
+      setQBConfig(prev=>({...prev,parkedPurchaseOrderIds:[],lastPurchaseOrderParking:null}));
+      nf(count+' parked purchase orders restored to the review queue','success');
     };
     const reviewInvoiceBatch=()=>{
       const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows:invoicePreviewRows,
@@ -1020,6 +1044,10 @@ export default function QBPage(){
           <div className="card-header"><h2>Controlled Purchase-Order Batch</h2></div>
           <div className="card-body">
             <p style={{fontSize:11,color:'#475569'}}>Reviews portal readiness first, then processes at most 100 exact PO IDs. Every created or matched PO must pass API header and line read-back before its durable link is saved. Missing vendors block without being created as side effects. Lines whose SKU has no linked QBO item post to the Purchases account as one line instead of blocking the PO.</p>
+            {!!parkedPurchaseOrderIds.length&&<div style={{padding:10,marginBottom:10,background:'#f8fafc',border:'1px solid #cbd5e1',borderRadius:6,fontSize:11}}>
+              <strong>{parkedPurchaseOrderIds.length} historical POs parked</strong> — excluded from active sync; no QBO record was changed.
+              <button className="btn btn-secondary btn-sm" style={{marginLeft:8}} disabled={qbSyncing} onClick={restoreParkedPurchaseOrders}>Restore for review</button>
+            </div>}
             <button className="btn btn-sm" disabled={qbSyncing||!livePreflightReady} onClick={reviewPurchaseOrderBatch}>Review POs — No QBO Changes</button>
             {poBatchReview&&<>
               <p>Readiness: {JSON.stringify(poBatchReview.counts)}. Proposed batch: {poBatchRows.length} ready POs.</p>
@@ -1027,6 +1055,11 @@ export default function QBPage(){
               <label style={{marginRight:12}}>Batch size <select aria-label="Purchase order batch size" value={poBatchLimit} disabled={qbSyncing} onChange={e=>{setPoBatchLimit(Number(e.target.value));setPoBatchApproved(false)}}>{QB_BATCH_SIZES.filter(size=>size<=100).map(size=><option key={size} value={size}>{size}</option>)}</select></label>
               <label><input type="checkbox" checked={poBatchApproved} disabled={qbSyncing} onChange={e=>setPoBatchApproved(e.target.checked)}/> I approve only the listed POs in this batch.</label>
               <button className="btn btn-primary btn-sm" disabled={qbSyncing||!poBatchApproved||!poBatchRows.length} onClick={runPurchaseOrderBatch}>Run Reviewed PO Batch</button>
+              {!!poBlockedRows.length&&<div style={{padding:10,marginTop:10,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11}}>
+                <label><input type="checkbox" checked={poParkingApproved} disabled={qbSyncing} onChange={e=>setPoParkingApproved(e.target.checked)}/> I approve parking these {poBlockedRows.length} blocked historical POs for later review.</label>
+                <button className="btn btn-secondary btn-sm" style={{marginLeft:8}} disabled={qbSyncing||!poParkingApproved} onClick={parkPurchaseOrderExceptions}>Park {poBlockedRows.length} Historical POs</button>
+                <div style={{marginTop:4,color:'#92400e'}}>This changes only the Portal queue. It does not create, edit, or delete any QBO transaction.</div>
+              </div>}
               <h3>First readiness exceptions</h3>
               <table><thead><tr><th>Portal PO</th><th>Vendor</th><th>Reason</th></tr></thead><tbody>{poBatchReview.rows.filter(row=>row.action==='blocked').slice(0,20).map(row=><tr key={row.poId}><td>{row.poId}</td><td>{row.vendor}</td><td>{row.reason}</td></tr>)}</tbody></table>
             </>}

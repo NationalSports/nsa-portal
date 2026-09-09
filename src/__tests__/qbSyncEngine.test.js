@@ -52,6 +52,14 @@ describe('QuickBooks purchase-order grouping', () => {
     expect(groups[0]).toMatchObject({poId:'PO 3064 HBMS',vendor:'Champro',invalidReason:''});
   });
 
+  test('keeps parked historical POs out of the active sync groups without changing their source rows', () => {
+    const portalPO={po_id:'NETSUITE-PO',S:12,vendor:'Champro',created_at:'2024-09-02'};
+    const salesOrders=[so('SO-1',[portalPO]),so('SO-2',[{po_id:'NEW-PO',M:4,vendor:'Adidas'}])];
+    const groups=groupPortalPurchaseOrders(salesOrders,{},[],['NETSUITE-PO']);
+    expect(groups.map(group=>group.poId)).toEqual(['NEW-PO']);
+    expect(portalPO).toMatchObject({po_id:'NETSUITE-PO',S:12,vendor:'Champro'});
+  });
+
   test('blocks a shared PO number that mixes vendors', () => {
     const groups=groupPortalPurchaseOrders([
       so('SO-1',[{po_id:'PO MIXED',S:1,vendor:'Champro'}]),
