@@ -190,6 +190,12 @@ export function remapFrozenJobItemIndexes(job, liveItems) {
     const name = norm(row.name);
     return name ? 'name:' + name + '|color:' + color : null;
   };
+  const liveByLineId = new Map();
+  liveItems.forEach((item, idx) => {
+    if (!item?.line_id) return;
+    const indexes = liveByLineId.get(item.line_id) || [];
+    liveByLineId.set(item.line_id, [...indexes, idx]);
+  });
   const liveByIdentity = new Map();
   liveItems.forEach((item, idx) => {
     const key = identity(item);
@@ -200,6 +206,12 @@ export function remapFrozenJobItemIndexes(job, liveItems) {
   let changed = false;
   const items = job.items.map((gi) => {
     if (!gi) return gi;
+    const lineMatches = gi.line_id ? liveByLineId.get(gi.line_id) : null;
+    if (lineMatches?.length === 1) {
+      if (lineMatches[0] === gi.item_idx) return gi;
+      changed = true;
+      return { ...gi, item_idx: lineMatches[0] };
+    }
     const key = identity(gi);
     if (!key || identity(liveItems[gi.item_idx]) === key) return gi;
     const candidates = liveByIdentity.get(key) || [];
