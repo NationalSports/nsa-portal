@@ -287,8 +287,9 @@ export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms
 // will receive. Mixed vendors or mixed merchandise/decoration categories under
 // one document number are unsafe and must block instead of inheriting the first
 // line's routing.
-export function groupPortalPurchaseOrders(sos = [], poMap = {}, portalVendors = []) {
+export function groupPortalPurchaseOrders(sos = [], poMap = {}, portalVendors = [], parkedPOIds = []) {
   const vendorRecords = [...(portalVendors || []), ...D_V];
+  const parked = new Set((parkedPOIds || []).map(id => String(id).trim()).filter(Boolean));
   const resolveSavedVendor = value => {
     const raw = String(value || '').trim();
     if (!raw) return '';
@@ -296,7 +297,7 @@ export function groupPortalPurchaseOrders(sos = [], poMap = {}, portalVendors = 
   };
   const groups = new Map();
   (sos || []).forEach(so => safeItems(so).forEach(it => (it.po_lines || []).forEach(pl => {
-    if (!pl?.po_id || poMap[pl.po_id]) return;
+    if (!pl?.po_id || poMap[pl.po_id] || parked.has(String(pl.po_id).trim())) return;
     // The saved PO line is the accounting source of truth for who received the
     // order. A product's catalog vendor or brand can change later and must not
     // silently reroute an existing PO in QBO.
@@ -405,8 +406,8 @@ export function qbPurchaseOrderLinesMatch(expectedLines = [], actualLines = [], 
   return matches && remaining.length === 0;
 }
 
-export function buildQBPurchaseOrderPreviewRows(sos = [], products = [], prodQBMap = {}, poMap = {}, portalVendors = []) {
-  return groupPortalPurchaseOrders(sos, poMap, portalVendors).map(group => {
+export function buildQBPurchaseOrderPreviewRows(sos = [], products = [], prodQBMap = {}, poMap = {}, portalVendors = [], parkedPOIds = []) {
+  return groupPortalPurchaseOrders(sos, poMap, portalVendors, parkedPOIds).map(group => {
     const reasons = new Set(group.invalidReason ? [group.invalidReason] : []);
     if (String(group.poId || '').length > 21) reasons.add('QBO purchase-order number exceeds the 21-character limit');
     if (!String(group.vendor || '').trim()) reasons.add('missing saved vendor');
@@ -2088,7 +2089,7 @@ export function createQBSyncEngine(ctx){
         setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));nf('Purchase-order sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return;
       }
       // Group PO lines by po_id so we push one QB PO with all line items
-      const allPoGroups=groupPortalPurchaseOrders(sos,poMap,vend);
+      const allPoGroups=groupPortalPurchaseOrders(sos,poMap,vend,qbConfig.parkedPurchaseOrderIds||[]);
       const effectiveProdQBMap={...(qbConfig.prodQBMap||{}),...(prodQBMapArg||{})};
       const requestedIds=canary?[canaryPOId]:approvedPOIds;
       const poGroups=requestedIds.map(id=>allPoGroups.find(group=>String(group.poId)===id)).filter(Boolean);
