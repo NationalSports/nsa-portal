@@ -181,6 +181,25 @@ function Tile({ label, value, sub, subColor, spark }) {
   );
 }
 
+function downloadCsv(filename, header, rows) {
+  const cell = (v) => { const s = v == null ? '' : String(v); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const csv = [header, ...rows].map((r) => r.map(cell).join(',')).join('\r\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+function ExportButton({ onClick, label = '⬇ Export CSV' }) {
+  return (
+    <button onClick={onClick} style={{
+      marginLeft: 'auto', border: '1px solid ' + HAIR, borderRadius: 7, background: '#fff', color: NAVY,
+      fontWeight: 700, fontSize: 11, padding: '6px 10px', cursor: 'pointer', whiteSpace: 'nowrap',
+    }}>{label}</button>
+  );
+}
+
 const LEVEL_META = {
   good: { color: GOOD, icon: '▲', label: 'Good' },
   info: { color: NAVY, icon: '●', label: 'Note' },
@@ -349,6 +368,40 @@ export default function FinancialsPage() {
     setAssignedTodos?.((prev) => [todo, ...prev]); setStaleTaskTitle(''); setStaleTaskDue(''); nf?.('Stale-order action item assigned.', 'success');
   };
 
+  // ── CSV exports — each pulls the full underlying dataset, not just what's
+  //    sliced/paginated on screen, so a downloaded report always reconciles. ──
+  const exportPl = () => downloadCsv('pl-by-month-' + thisKey + '.csv',
+    ['Month', 'Revenue', 'COGS', 'Gross profit', 'Margin'],
+    pl.months.map((r) => [monLabel(r.month), r.revenue.toFixed(2), r.cogs.toFixed(2), r.gp.toFixed(2), pct1(r.gpPct)]));
+  const exportStatement = () => {
+    const rows = [];
+    const addSection = (label, section) => section.forEach((r) => rows.push([label, r.label, r.amount == null ? '' : r.amount.toFixed(2)]));
+    addSection('Income', statement.income);
+    rows.push(['Income', 'Total - Income', statement.totalIncome.toFixed(2)]);
+    addSection('Cost of Sales', statement.cogs);
+    rows.push(['Cost of Sales', 'Total - Cost Of Sales', statement.totalCogs.toFixed(2)]);
+    rows.push(['', 'Gross Profit', statement.grossProfit.toFixed(2)]);
+    addSection('Expense', statement.expense);
+    rows.push(['Expense', 'Total - Expense', statement.totalExpense.toFixed(2)]);
+    rows.push(['', 'Net Income', statement.netIncome.toFixed(2)]);
+    downloadCsv('income-statement-' + stmtKey + '.csv', ['Section', 'Line', 'Amount'], rows);
+  };
+  const exportProfit = () => downloadCsv('profitability-by-' + (profitBy === 'rep' ? 'rep' : profitCustomerLevel + '-account') + '.csv',
+    [profitBy === 'rep' ? 'Rep' : profitCustomerLevel === 'parent' ? 'Parent account' : 'Child account', 'Revenue', 'COGS', 'Gross profit', 'Margin', 'Orders', 'Open to invoice', 'Unpaid'],
+    profit.map((r) => [profitBy === 'rep' ? repName(r.key) : custName(r.key), r.revenue.toFixed(2), r.cogs.toFixed(2), r.gp.toFixed(2), pct1(r.gpPct), r.orders, r.openValue.toFixed(2), r.openBalance.toFixed(2)]));
+  const exportStale = () => downloadCsv('stale-orders-' + today.toLocaleDateString('en-CA') + '.csv',
+    ['Order', 'Account', 'Rep', 'Age (days)', 'Expected date', 'Days late', 'System state', 'Fulfilled units', 'Total units', 'Jobs done', 'Job count', 'Invoice %', 'Invoice count', 'Invoiced', 'Open to invoice', 'Reasons'],
+    staleRows.map((r) => [r.id, r.customerName, repName(r.repId), r.ageDays, r.expected ? r.expected.toLocaleDateString() : '', r.daysLate || 0, String(r.status || '').replace(/_/g, ' '), r.fulfilledUnits, r.totalUnits, r.doneJobs, r.jobCount, Math.round(r.invoicePct * 100) + '%', r.invoiceCount, r.invoiced.toFixed(2), r.openToInvoice.toFixed(2), r.reasons.join(' | ')]));
+  const exportRevForecast = () => downloadCsv('revenue-outlook.csv',
+    ['Month', 'Committed', 'New business', 'Low', 'Base', 'High'],
+    rev.months.map((r) => [monLabel(r.month), r.committed.toFixed(2), r.newBusiness.toFixed(2), r.low.toFixed(2), r.base.toFixed(2), r.high.toFixed(2)]));
+  const exportAccuracy = () => downloadCsv('forecast-accuracy.csv',
+    ['Month', 'Forecast made', 'Forecast', 'Actual', 'Miss ($)', 'Miss (%)', 'In range'],
+    accuracy.rows.map((r) => [monLabel(r.targetMonth), monLabel(r.asOfMonth), r.forecast.toFixed(2), r.actual.toFixed(2), r.error.toFixed(2), pct1(r.errorPct), r.withinBand ? 'yes' : 'no']));
+  const exportCash = () => downloadCsv('cash-forecast.csv',
+    ['Month', "From today's AR", 'From forecast billing', 'Total expected'],
+    cash.months.map((r) => [monLabel(r.month), r.fromAR.toFixed(2), r.fromNewBilling.toFixed(2), r.total.toFixed(2)]));
+
   const tabs = [
     ['overview', 'Overview'], ['pl', 'P&L'], ['statement', 'Statement'],
     ['profit', 'Profitability'], ['stale', 'Stale Orders'], ['ar', 'Receivables'], ['forecast', 'Forecast'],
@@ -427,7 +480,10 @@ export default function FinancialsPage() {
       {tab === 'pl' && (
         <>
           <div style={card}>
-            <h2 style={S.h2}>Matched P&L by month — portal business</h2>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+              <h2 style={S.h2}>Matched P&L by month — portal business</h2>
+              <ExportButton onClick={exportPl} />
+            </div>
             <div style={{ fontSize: 11.5, color: INK2, marginBottom: 8 }}>
               Revenue is invoiced work net of sales tax; cost is each order's garment + decoration cost recognized
               in step with its invoicing. Cost on in-production orders stays in WIP ({$0(pl.wip)} today), so margins
@@ -476,6 +532,7 @@ export default function FinancialsPage() {
             <select value={stmtKey} onChange={(e) => setStmtKey(e.target.value)} style={{ fontSize: 12, padding: '3px 8px', borderRadius: 6, border: '1px solid ' + HAIR, background: '#fff', color: INK2 }}>
               {legacyKeys.map((k) => <option key={k} value={k}>{LEGACY_STATEMENTS[k].periodLabel}</option>)}
             </select>
+            <ExportButton onClick={exportStatement} />
           </div>
           <div style={{ fontSize: 11.5, color: INK2, marginBottom: 10 }}>
             NetSuite (legacy ledger, imported {legacy.runDate}) plus live portal activity through the period —
@@ -559,6 +616,7 @@ export default function FinancialsPage() {
                   }}>{label}</button>
                 ))}
               </div>}
+              <ExportButton onClick={exportProfit} />
             </div>
             <div style={{ fontSize: 11.5, color: INK2, marginBottom: 10 }}>
               Ranked by gross profit earned, not by billings. Revenue is what has actually been invoiced;
@@ -659,6 +717,7 @@ export default function FinancialsPage() {
                 <option value="all">All reps</option>
                 {(REPS || []).filter(isCommissionRep).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
               </select>
+              <ExportButton onClick={exportStale} label={'⬇ Export ' + staleRows.length + ' rows'} />
             </div>
             <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 12, marginBottom: 10 }}>
               {[
@@ -922,7 +981,10 @@ export default function FinancialsPage() {
       {tab === 'forecast' && (
         <>
           <div style={card}>
-            <h2 style={S.h2}>Revenue outlook — next 4 months</h2>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+              <h2 style={S.h2}>Revenue outlook — next 4 months</h2>
+              <ExportButton onClick={exportRevForecast} />
+            </div>
             <div style={{ fontSize: 11.5, color: INK2, marginBottom: 8 }}>
               Two layers, both explainable: <b>committed</b> is the open order book scheduled into the month it should
               bill (dated orders on their dates; undated on the {backlog.medianLag}-day median completion lag), and{' '}
@@ -952,7 +1014,10 @@ export default function FinancialsPage() {
             </div>
           </div>
           <div style={card}>
-            <h2 style={S.h2}>How accurate has this forecast been?</h2>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+              <h2 style={S.h2}>How accurate has this forecast been?</h2>
+              {accuracy.scored > 0 && <ExportButton onClick={exportAccuracy} />}
+            </div>
             {snaps === null ? (
               <div style={{ fontSize: 13, color: INK2 }}>Loading snapshot history&hellip;</div>
             ) : accuracy.scored === 0 ? (
@@ -1007,7 +1072,10 @@ export default function FinancialsPage() {
             {snapNote && <div style={{ fontSize: 11, color: INK3, marginTop: 8 }}>{snapNote}</div>}
           </div>
           <div style={card}>
-            <h2 style={S.h2}>Cash coming in — next 3 months</h2>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+              <h2 style={S.h2}>Cash coming in — next 3 months</h2>
+              <ExportButton onClick={exportCash} />
+            </div>
             <div style={{ overflowX: 'auto' }}>
               <table style={{ borderCollapse: 'collapse', minWidth: 460 }}>
                 <thead><tr>
