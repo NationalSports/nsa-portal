@@ -37,6 +37,7 @@ import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit, unfulfilledSizes, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantRemoveLineApply, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
+import { remapFrozenJobDecoIndexes, detachChangedArtRow, liveArtSplitSizes, refreshOpenJobRows, attachSameArtAdditions } from './lib/stableJobAssignments';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors, splitSliceOwnedKeys, splitSliceOwnedSizes, clampSplitOverrideSizes, SLICE_PRUNE_STATUSES, pruneStaleSliceRows, reparentOrphanSplitJobs, remapFrozenJobItemIndexes } from './lib/syncJobsMatch';
 import { stampSplitRuns } from './lib/splitJobPricing';
 import { allocateCustomSplit, openSizes, freeSplitSuffix } from './lib/splitJobItems';
@@ -3155,6 +3156,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // user deliberately set.
       const _newArt=(e.art_files||[]).find(f=>f.id===newId);
       const _newFolderLoc=_newArt?.location;
+      if(safeDecos(safeItems(e)[ii]||{})[di]?.art_file_id===newId)return e;
       const newItems=safeItems(e).map((it,x)=>x===ii?{...it,decorations:it.decorations.map((d,i)=>{
         if(i!==di)return d;
         const nd={...d,art_file_id:newId};
@@ -3179,7 +3181,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(!_relJob&&!hasActiveReq)return[j];
         (j._art_ids||[j.art_file_id].filter(Boolean)).forEach(aid=>{if(aid&&aid!=='__tbd')oldArtIds.add(aid)});
         touched=true;
-        // Released jobs are dropped so syncJobs regenerates fresh under the new art (and new name).
+        // Keep unchanged garments on their submitted job; only the changed garment rebuilds.
+        const remaining=detachChangedArtRow(j,ii);
+        if(remaining)return[remaining];
         if(_relJob)return[];
         // Non-released jobs with active requests: reset status and mark requests as recalled.
         return[{...j,art_status:'needs_art',
@@ -3195,7 +3199,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _stillUsed=new Set();
       newItems.forEach(it=>safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_stillUsed.add(d.art_file_id)}));
       const updArt=touched?safeArr(e.art_files).map(a=>(oldArtIds.has(a.id)&&!_stillUsed.has(a.id))?{...a,status:'waiting_for_art'}:a):e.art_files;
-      if(touched)setTimeout(()=>nf('Art changed — previous request recalled, job will refresh'),0);
+      if(touched)setTimeout(()=>nf('Art changed — affected items will regroup; unchanged items keep their art submission'),0);
       return{...e,items:newItems,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};
     });
     setDirty(true);
@@ -3670,6 +3674,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // decorations no longer exist on any line (the orphan-preservation branch below). Auto-sync
   // never passes it, so the bad-save safety net still holds between explicit user syncs.
   const syncJobs=useCallback((opts)=>{
+    // A partial load cannot establish that an item, decoration, or submitted job disappeared.
+    if(o._itemsHydrated===false||o._decosHydrated===false||o._jobsHydrated===false||o._artHydrated===false)return safeJobs(o);
     // Heal a narrowly identifiable legacy split corruption before rebuilding: assigning art could
     // mint a new root id while its child kept the retired parent id. Using the repaired source for
     // every lookup lets the normal slice-ownership pass remove the duplicated garment and makes
@@ -3680,7 +3686,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // and strands its active art request on the old grouping.
     const _sourceJobs=reparentOrphanSplitJobs(safeJobs(o).map(j=>(j&&
       (j._released||j.key?.startsWith('released_')||j._merged||j.split_from))
-      ?remapFrozenJobItemIndexes(j,safeItems(o)):j));
+      ?remapFrozenJobDecoIndexes(remapFrozenJobItemIndexes(j,safeItems(o)),safeItems(o)):j));
     // Outsourced-deco map (item_idx -> Set of outsourced deco types, or '*'). Computed up front
     // because it gates BOTH which decorations spawn in-house jobs (itemSigs, below) AND whether a
     // frozen released/merged job is retired. A deco PO whose type matches none of an item's
@@ -3849,8 +3855,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         dis.forEach(di=>_startedPairs.add(gi.item_idx+'::'+di))});
     });
     const _consolidated=consolidateFrozenJobDecos([..._relRaw,..._mrgRaw],_liveItemDecos,_startedPairs).jobs;
-    const releasedJobs=_consolidated.filter(_isRel);
-    const mergedJobs=_consolidated.filter(j=>!_isRel(j));
+    let releasedJobs=_consolidated.filter(_isRel);
+    let mergedJobs=_consolidated.filter(j=>!_isRel(j));
     const frozenItemDecos=new Set();
     [...releasedJobs,...mergedJobs].forEach(j=>(j.items||[]).forEach(gi=>{
       const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:[gi.deco_idx];
@@ -3969,7 +3975,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // line never counts the same garments toward both logos — mirrors allocateJobFulfillment.
         const splitDeco=decos.length===1&&decos[0].d.split_group&&decos[0].d.split_sizes?decos[0].d:null;
         const sibBefore=splitDeco?safeDecos(it).filter((dd,ddi)=>dd!==splitDeco&&dd.split_group===splitDeco.split_group&&dd.split_sizes&&ddi<decos[0].di):[];
-        const baseSizes=splitDeco?(splitDeco.split_sizes||{}):safeSizes(it);
+        const baseSizes=splitDeco?liveArtSplitSizes(it,decos[0].di):safeSizes(it);
         let itemTotal=0,itemFulfilled=0;const giSizes={};
         // qty_only items (Custom — no size breakdown) hold their quantity in est_qty with an empty
         // sizes map; POs/picks track them under a single 'QTY' bucket. Mirror allocateJobFulfillment /
@@ -3986,13 +3992,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           itemFulfilled+=Math.min(cap,avail);
         });
         const decoIdxs=decos.map(x=>x.di);
-        const giItem={item_idx:ii,deco_idx:decoIdxs[0]||0,deco_idxs:decoIdxs,sku:it.sku||'—',name:safeStr(it.name)||'Unknown',color:safeStr(it.color),units:itemTotal,fulfilled:itemFulfilled};
+        const giItem={item_idx:ii,...(it.line_id?{line_id:it.line_id}:{}),deco_idx:decoIdxs[0]||0,deco_idxs:decoIdxs,sku:it.sku||'—',name:safeStr(it.name)||'Unknown',color:safeStr(it.color),units:itemTotal,fulfilled:itemFulfilled};
         if(splitDeco){giItem.sizes={...giSizes};giItem._artSplit=true;giItem.split_group=splitDeco.split_group}
         job.items.push(giItem);
         job.total_units+=itemTotal;job.fulfilled_units+=itemFulfilled;
       });
       jobMap[jobKey]=job;
     });
+    const _attached=attachSameArtAdditions(Object.values(jobMap),[...releasedJobs,...mergedJobs],_sourceJobs,safeItems(o));
+    releasedJobs=_attached.frozenJobs.filter(_isRel);
+    mergedJobs=_attached.frozenJobs.filter(j=>!_isRel(j));
     // Match rebuilt jobs to existing ones by key, then by art_file_id ONLY when that art id
     // is unique to one non-split job. Shared logos (hoodie + pants) must not inherit each
     // other's rejections / coach_rejected / art_status — SO-1159 class bleed.
@@ -4014,7 +4023,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     let jIdx=1;
     const _nextJobId=()=>{let id;do{id='JOB-'+soNum+'-'+String(jIdx).padStart(2,'0');jIdx++}while(_reserved.has(id)||_usedIds.has(id));_usedIds.add(id);return id};
     const _matchedExistingById=new Map();
-    const newJobs=Object.values(jobMap).map(j=>{
+    const newJobs=_attached.builtJobs.map(j=>{
       const {existing}=matchExistingJob(j,_jobLookups,_claimedExistingIds);
       const itemSt=j.fulfilled_units>=j.total_units&&j.total_units>0?'items_received':j.fulfilled_units>0?'partially_received':'need_to_order';
       let prodSt=existing?.prod_status||'hold';
@@ -4042,7 +4051,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _preservedArtSt=(existing?.art_status&&existing.art_status!=='needs_art')?existing.art_status:_newArtSt;
       const _wf=inheritJobWorkflowFields(existing);
       return{
-        id,key:j.key,art_file_id:j.art_file_id,art_name:existing?._name_locked?(existing.art_name||j.art_name):j.art_name,deco_type:j.deco_type,deco_types:j.deco_types||(j.deco_type?[j.deco_type]:[]),
+        id,_version:existing?._version,key:j.key,art_file_id:j.art_file_id,art_name:existing?._name_locked?(existing.art_name||j.art_name):j.art_name,deco_type:j.deco_type,deco_types:j.deco_types||(j.deco_type?[j.deco_type]:[]),
         positions:[...j.positions].filter(Boolean).join(', '),items:j.items,
         art_status:_preservedArtSt,item_status:itemSt,prod_status:prodSt,
         total_units:j.total_units,fulfilled_units:j.fulfilled_units,
@@ -4096,7 +4105,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       nj.items.forEach(gi=>{
         if(gi._artSplit){rebuilt.push(gi);return}// split-art allocations are re-derived each sync — never restore the prior slice
         const ex=existing.items.find(g=>g.item_idx===gi.item_idx&&g.sku===gi.sku);
-        if(!ex||!ex.sizes){
+        if(!ex||!ex.sizes||(!existing.split_from&&!sliceOwned.size)){
           // Not on the saved parent: a slice owns it → it was split off, so drop it here (don't
           // re-add at full size). Otherwise it's a genuinely new garment — keep the rebuilt line.
           if(sliceOwned.has(gi.item_idx+'-'+gi.sku)){hasOverride=true;return}
@@ -4232,41 +4241,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // artwork still exists in the SO's Art Library, keep the job so it stays visible and isn't lost.
     // Merged jobs are preserved as-is except for refreshed unit counts so their totals track
     // item size/receiving edits — without re-splitting the hand-merged grouping.
-    const recalcedMerged=mergedJobs.map(j=>{
-      let total=0,fulfilled=0;
-      // Deduplicate by item_idx+sku before recomputing — a merge that absorbed split children
-      // whose garments were also regenerated onto the parent would otherwise double-count.
-      // Re-derive each row's units/fulfilled from the source line too (not just the job total),
-      // so a row that was inflated by an earlier bad merge (e.g. "0/18" when the line holds 9)
-      // heals on next open instead of keeping its stale per-row count.
-      // Union deco_idxs while deduping — a legacy merge that absorbed sibling jobs kept one row
-      // per absorbed job for the same line; keeping only the first row's deco_idxs would drop the
-      // sibling's decoration ownership and hide its roster/spec from the scoped displays.
-      const _byK=new Map();(j.items||[]).forEach(gi=>{const k=gi.item_idx+'-'+gi.sku;const prev=_byK.get(k);
-        if(!prev){_byK.set(k,gi);return}
-        const a=Array.isArray(prev.deco_idxs)?prev.deco_idxs:[];const b=Array.isArray(gi.deco_idxs)?gi.deco_idxs:[];
-        if(a.length||b.length)_byK.set(k,{...prev,deco_idxs:[...new Set([...a,...b])]});
-      });const uniqueItems=[..._byK.values()];
-      // Honor a split-size override (gi.sizes) like recalcedReleased below: a merged job that was
-      // ALSO split (parent keeps _merged after a slice is carved off) owns only its slice of the
-      // line, so re-deriving from the full line inflated it back to the whole quantity — the split
-      // modal then offered to "split off" phantom units that were really on the sibling slice.
-      const healedItems=uniqueItems.map(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return gi;const giSz=gi.sizes&&Object.keys(gi.sizes).length>0?gi.sizes:null;let _szE=Object.entries(giSz||safeSizes(it)).filter(([,v])=>safeNum(v)>0);if(_szE.length===0&&!giSz&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];let u=0,f=0;_szE.forEach(([sz,v])=>{u+=v;if(giSz&&gi.fulSizes!=null){f+=Math.min(v,safeNum(gi.fulSizes[sz]))}else{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);f+=Math.min(v,pQ+rQ)}});total+=u;fulfilled+=f;return _refreshGarmentIdentity({...gi,units:u,fulfilled:f});});
-      const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
-      return{...j,items:healedItems,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
-    });
-    // Released jobs re-derive their unit totals from live item data (like recalcedMerged) so that
-    // adding more units to a line item after release updates the job quantity. If the live total is
-    // LESS than the frozen snapshot (e.g. units were removed), keep the frozen value — the art
-    // department already committed to printing that many. Zero-total snapshots (legacy jobs released
-    // before the est_qty fallback existed) are always healed up.
-    // Released jobs' art_name is a frozen display-name snapshot stamped at release time from the
-    // wizard's locally-typed group name (see the jobRow build below, art_name:g.name) — release an
-    // "ART TBD n" placeholder around the same time it's renamed and the job reads "ART TBD 1"
-    // forever (SO-1218 / JOB-1218-03): the recompute below heals identity/totals/art_status but
-    // never the name. Refresh it from the live linked art file(s), same heal pattern: only when
-    // every declared art id resolves to a live named file, the joined live name differs, and the
-    // live name isn't itself a TBD-ish placeholder. _name_locked (a rep's manual rename) wins.
+    const recalcedMerged=mergedJobs.map(j=>refreshOpenJobRows(j,safeItems(o),_sourceJobs));
+    // Refresh generated labels after assignment while respecting explicit names.
     const _healReleasedArtName=j=>{
       if(j._name_locked)return j;
       const _ids=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(id=>id&&id!=='__tbd');
@@ -4279,51 +4255,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(_nm===j.art_name||/^art tbd/i.test(_nm))return j;
       return{...j,art_name:_nm};
     };
-    // A released split-art item may have been snapshotted before the split share was persisted
-    // (older releases copied only units, dropping sizes/split_group), leaving gi.sizes empty. Falling
-    // back to safeSizes(it) then bills the WHOLE garment line to EACH design, so the two split jobs
-    // both inflate to the full line (SO-1131: Servite read 55 total, Friars 66, vs the real 17/39
-    // shares). Recover the share from the deco this item actually owns.
-    const _ownedSplitDeco=(gi,it)=>{
-      const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:(gi.deco_idx!=null?[gi.deco_idx]:null);
-      if(!dis||dis.length!==1)return null;
-      const d=safeDecos(it)[dis[0]];
-      return d&&d.kind==='art'&&d.split_group&&d.split_sizes&&Object.keys(d.split_sizes).length>0?{d,di:dis[0]}:null;
-    };
-    const recalcedReleased=releasedJobs.map(j=>{
-      // Garment identity refreshes in EVERY branch (incl. the keep-frozen unit paths) —
-      // the frozen thing is the quantity commitment, not which product the line now is.
-      let total=0,fulfilled=0,_healedSplit=false;
-      const _snapItems=(j.items||[]).map(_refreshGarmentIdentity).map(gi=>{
-        const it=safeItems(o)[gi.item_idx];if(!it)return gi;
-        const _hasSz=gi.sizes&&Object.keys(gi.sizes).length>0;
-        const _osd=_hasSz?null:_ownedSplitDeco(gi,it);
-        if(_osd)_healedSplit=true;
-        const giSz=_hasSz?gi.sizes:(_osd?_osd.d.split_sizes:null);
-        let _szE=Object.entries(giSz||safeSizes(it)).filter(([,v])=>safeNum(v)>0);
-        if(_szE.length===0&&!giSz&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];
-        // Received-unit apportioning across split siblings: the lower-index design claims first, so a
-        // partially-received line never double-counts the same garments toward both designs (mirrors
-        // the auto-builder's sibBefore logic and allocateJobFulfillment).
-        const _sib=_osd?safeDecos(it).filter((dd,ddi)=>dd!==_osd.d&&dd.split_group===_osd.d.split_group&&dd.split_sizes&&ddi<_osd.di):[];
-        let u=0,f=0;
-        _szE.forEach(([sz,v])=>{total+=v;u+=v;if(gi.fulSizes!=null){f+=Math.min(v,safeNum(gi.fulSizes[sz]))}else{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);let avail=pQ+rQ;if(_osd){const claimedBefore=_sib.reduce((a,dd)=>a+safeNum((dd.split_sizes||{})[sz]),0);avail=Math.max(0,avail-claimedBefore)}f+=Math.min(v,avail)}});
-        fulfilled+=f;
-        // Only the healed split branch rewrites the item — stamp its true share (sizes/split_group
-        // + the _artSplit marker) so the size grid, the split modal, allocateJobFulfillment and
-        // jobsShareGarments all read the share, not the line.
-        return _osd?{...gi,units:u,fulfilled:f,sizes:{...giSz},split_group:_osd.d.split_group,_artSplit:true}:gi;
-      });
-      const _idCh=_snapItems.some((gi,ix)=>gi!==(j.items||[])[ix]);
-      if(total===0)return _idCh?{...j,items:_snapItems}:j;// no real units anywhere — leave the (empty) snapshot as-is
-      const frozenTotal=safeNum(j.total_units);
-      // Fewer units than the frozen snapshot normally means a rep removed units after release — keep the
-      // committed count. EXCEPTION: when the drop is only because we corrected an inflated full-line split
-      // snapshot back down to its real share, the smaller number IS the correct commitment.
-      if(frozenTotal>0&&total<frozenTotal&&!_healedSplit)return _idCh?{...j,items:_snapItems}:j;// fewer units than snapshot — keep frozen
-      const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
-      return{...j,items:_snapItems,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
-    }).map(_healReleasedArtName);
+    const recalcedReleased=releasedJobs.map(j=>refreshOpenJobRows(j,safeItems(o),_sourceJobs)).map(_healReleasedArtName);
     // A job whose art is still the TBD placeholder (or a deleted art file) has no artwork that
     // could have been approved, so a completed-ish art status must never survive — it read
     // "Art Complete — Ready for Production" with no real art applied. Applies uniformly to
@@ -4347,7 +4279,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // re-point declared art at what the claimed decorations now carry, then refresh the display
     // name from the live files (_name_locked still wins).
     const healedSplitJobs=splitJobs.map(_healArtPointers).map(_healReleasedArtName);
-    const _kept=[...newJobs,...healedSplitJobs,...autoSplitAdds,...recalcedReleased,...recalcedMerged].map(_healUnresolvedArt).map(j=>healOrphanArtRequest(j,o));
+    const _kept=[...newJobs,...healedSplitJobs,...autoSplitAdds,...recalcedReleased,...recalcedMerged.map(j=>/^(unassigned art|art tbd)/i.test(j.art_name||'')?_healReleasedArtName(j):j)].map(_healUnresolvedArt).map(j=>healOrphanArtRequest(j,o));
     const _keptIds=new Set(_kept.map(j=>j.id));
     const _keptKeys=new Set(_kept.map(j=>j.key));
     // Recycled-number carry-over guard: when an SO number is reused (e.g. after a purge/re-import),
@@ -4420,9 +4352,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // second numbers location leaves ids, units, statuses and names identical — so the frozen-deco
     // consolidation was computed and then silently discarded here. Claims only change on a real
     // structural heal and every one of them converges, so this can't ping-pong.
-    const _decoSig=gi=>gi.item_idx+'.'+(Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:(gi.deco_idx!=null?[gi.deco_idx]:[])).join('-');
+    const _decoSig=gi=>gi.item_idx+'.'+(gi.line_id||'')+'.'+(Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:(gi.deco_idx!=null?[gi.deco_idx]:[])).join('-');
     const _claimSig=js=>js.map(j=>(j.id||j.key)+'@'+(j.split_from||'')+':'+(j.items||[]).map(_decoSig).sort().join('|')).sort().join(',');
-    const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units+'-'+(j.art_status||'')+'-'+_artSig(j)+':'+(j.items||[]).map(gi=>safeNum(gi.units)+'.'+safeNum(gi.fulfilled)+'.'+(gi.sku||'')+'.'+(gi.color||'')).join('|')).sort().join(',');
+    const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units+'-'+(j.art_status||'')+'-'+_artSig(j)+':'+(j.items||[]).map(gi=>safeNum(gi.units)+'.'+safeNum(gi.fulfilled)+'.'+(gi.sku||'')+'.'+(gi.color||'')+'.'+JSON.stringify(gi.sizes||{})+'.'+JSON.stringify(gi.fulSizes||{})).join('|')).sort().join(',');
     const _claimsChanged=_claimSig(currentJobs)!==_claimSig(synced);
     if(_keySig(currentJobs)!==_keySig(synced)||_unitSig(currentJobs)!==_unitSig(synced)||_claimsChanged){
       setO(e=>{
@@ -13137,7 +13069,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
             // garment line, inflating each split design back to the full quantity (SO-1131: Servite 55 /
             // Friars 66 vs 17 / 39); without _artSplit the released split designs read as falsely
             // coupled siblings again (jobsShareGarments).
-            items:releaseItems.map(({item_idx,deco_idx,deco_idxs,sku,name,color,units,fulfilled,sizes,split_group})=>({item_idx,deco_idx,deco_idxs:Array.isArray(deco_idxs)&&deco_idxs.length?deco_idxs:(deco_idx!=null?[deco_idx]:[]),sku,name,color,units,fulfilled:fulfilled||0,...(sizes&&Object.keys(sizes).length>0?{sizes:{...sizes}}:{}),...(split_group?{split_group,_artSplit:true}:{})}))
+            items:releaseItems.map(({item_idx,deco_idx,deco_idxs,sku,name,color,units,fulfilled,sizes,split_group})=>({item_idx,...(safeItems(o)[item_idx]?.line_id?{line_id:safeItems(o)[item_idx].line_id}:{}),deco_idx,deco_idxs:Array.isArray(deco_idxs)&&deco_idxs.length?deco_idxs:(deco_idx!=null?[deco_idx]:[]),sku,name,color,units,fulfilled:fulfilled||0,...(sizes&&Object.keys(sizes).length>0?{sizes:{...sizes}}:{}),...(split_group?{split_group,_artSplit:true}:{})}))
           });
         });
         // Store rep's sample art files on the art file records (separate from artist mockups)
