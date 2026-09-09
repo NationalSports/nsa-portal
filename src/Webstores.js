@@ -21,6 +21,7 @@ import { ptToIso, ptDateInput, ptTimeInput, ptDateLabel, ptTimeLabel, isCustomCl
 import { ColorWaysEditor } from './components';
 import { knockoutWhiteBackground } from './lib/imageKnockout';
 import { normalizeSizeSkuOverride, resolveSizeSkuSource, sizeSkuCode } from './lib/sizeSkuOverrides';
+import { normalizeOmgSize } from './lib/omgReport';
 import QuickMockBuilder from './QuickMockBuilder';
 import { activeWebstoreLines, downloadPlayerReportCsv, isLiveWebstoreOrder, mapLinesToSoItems, materializeMappedLine, reportBlockingIssues, resolveWebstoreReportLines } from './lib/soPlayerReport';
 import { attachAdidasTagSkus } from './lib/adidasSsReport';
@@ -1942,7 +1943,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         // apart by SKU alone, so group by the per-row color SKU (falling back to color text).
         const groups = {};
         rows.forEach((row) => {
-          const rawSz = (row.size || 'OS').trim().replace(/["''″]+$/, '');
+          const rawSz = normalizeOmgSize(row.size);
           // OMG labels sized apparel with an age/gender qualifier — "Adult S", "Adult Medium",
           // "Youth L". normSzName strips the qualifier and normalizes the remainder (Adult Small → S).
           // A bare "Adult" with no size is a genuine one-size item → OSFA. The old /^adult\b/ shortcut

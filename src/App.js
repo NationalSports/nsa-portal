@@ -15,6 +15,7 @@ import BotStatus from './BotStatus';
 import AiInbox from './AiInbox';
 import AiTasks from './AiTasks';
 import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, decoShipToPresets, botProgress } from './lib/botTasks';
+import { normalizeOmgSize } from './lib/omgReport';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './lib/requestBreaker';
 import { _sbAuthLock } from './lib/supabase';
@@ -5425,7 +5426,7 @@ export default function App(){
           // SKU/vendor per color).
           const groups = {};
           rows.forEach(row => {
-            const rawSz = (row.size || 'OS').trim().replace(/["''″]+$/,'');
+            const rawSz = normalizeOmgSize(row.size);
             // OMG labels sized apparel with an age/gender qualifier — "Adult S", "Adult Medium",
             // "Youth L". normSzName strips the qualifier and normalizes the remainder (Adult Small → S).
             // A bare "Adult" with no size is a genuine one-size item → OSFA. The old /^adult\b/ shortcut

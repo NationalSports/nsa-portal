@@ -14,6 +14,7 @@ import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub,
 import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled, greetLine, withGreeting, emailMoney } from './utils';
 import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms } from './App';
 import { stripePaymentRepairCandidate } from './lib/invoicePaymentReconciliation';
+import { invoiceDetailBalance, normalizeInvoiceForDetail } from './lib/invoiceDetail';
 
 // The sent_history entry Brevo told us never arrived (hard bounce / blocked / spam).
 // Read from history rather than the client-only _delivery_* fields so the failure is
@@ -193,7 +194,12 @@ export default function InvoicesPage(){
       // to the NetSuite record from histInvs — otherwise the page renders it as an editable $0 portal
       // invoice with "No line items recorded" (INV60425), and Edit/Delete on it endanger the real
       // NetSuite record.
-      const inv=viewInvoice._hist?viewInvoice:(invs.find(i=>i.id===viewInvoice.id)||(histInvs||[]).find(h=>h.id===viewInvoice.id)||viewInvoice);
+      const resolvedInv=viewInvoice._hist?viewInvoice:(invs.find(i=>i.id===viewInvoice.id)||(histInvs||[]).find(h=>h.id===viewInvoice.id)||viewInvoice);
+      // Customer history can open a NetSuite header that has no portal-only
+      // `paid` value, while stale/sparse portal rows may omit numeric fields.
+      // Normalize once at the detail boundary so formatting cannot white-screen
+      // the entire Invoices page and historical balances still use open_balance.
+      const inv=normalizeInvoiceForDetail(resolvedInv);
       const ic=cust.find(c=>c.id===inv.customer_id);
       const so=sos.find(s=>s.id===inv.so_id);
       // Older invoices have no shipping override stored — fall back to the SO's selected ship-to
@@ -203,7 +209,7 @@ export default function InvoicesPage(){
       const repObj=REPS.find(r=>r.id===(inv.rep_id||ic?.primary_rep_id||so?.created_by))||null;
       const repIsOverride=!!(inv.rep_id&&inv.rep_id!==ic?.primary_rep_id);
       const acctRepName=REPS.find(r=>r.id===ic?.primary_rep_id)?.name||'none';
-      const bal=inv.total-(inv.paid??0);
+      const bal=invoiceDetailBalance(inv);
       const storedLineItems=inv.line_items||[];
       // Fallback: compute line items from SO when not stored on invoice
       const soComputedItems=(!storedLineItems.length&&so)?safeItems(so).map((it,_soIdx)=>{
