@@ -1,5 +1,6 @@
+import { searchSalesOrders } from './lib/searchSalesOrders';
 import React from 'react';
-import { Icon } from './components';
+import { Icon, calcSOStatus } from './components';
 import { safeItems, safePicks, safePOs, safeJobs } from './safeHelpers';
 
 const labels={customer:'Customers',order:'Sales Orders',webstore:'Webstore Orders',estimate:'Estimates',product:'Products',txn:'Ordered Items',pick:'Item Fulfillments',po:'Purchase Orders',job:'Jobs',invoice:'Invoices',vendor:'Vendors'};
@@ -69,6 +70,7 @@ export default React.memo(function GlobalSearch({
     const q=deferredQuery.trim().toLowerCase();if(q.length<2)return{};
     const tokens=q.split(/\s+/).filter(Boolean);const out={};
     index.entries.forEach(entry=>{if(!tokens.every(token=>entry.hay.includes(token)))return;(out[entry.kind]||(out[entry.kind]=[])).push(entry.value)});
+    if(out.order)out.order=searchSalesOrders(out.order,q,calcSOStatus);
     if(out.customer)out.customer.sort((a,b)=>Number(!!a.parent_id)-Number(!!b.parent_id));
     Object.keys(out).forEach(kind=>{out[kind]=out[kind].slice(0,limits[kind]||4)});
     out.product=remote.products.slice(0,6);out.txn=remote.txn.slice(0,5);out.webstore=remote.webstore.slice(0,5);
@@ -78,7 +80,7 @@ export default React.memo(function GlobalSearch({
   const clear=()=>{setQuery('');setOpen(false);setRemote({products:[],txn:[],webstore:[]})};
   const select=(kind,value,event)=>{if(event&&(event.ctrlKey||event.metaKey||event.shiftKey||event.button===1))return;event?.preventDefault();clear();onOpen(kind,value,index.customerById)};
   const seeAll=()=>{const q=query.trim();if(q.length<2)return;setOpen(false);onSeeAll(q)};
-  const kinds=['customer','order','webstore','estimate','product','txn','pick','po','job','invoice','vendor'];
+  const kinds=['customer','order','estimate','webstore','product','txn','pick','po','job','invoice','vendor'];
   const total=kinds.reduce((n,k)=>n+(grouped[k]?.length||0),0);
   const hrefFor=(kind,v)=>kind==='customer'?newTabHref({cust:v.id}):kind==='estimate'?newTabHref({est:v.id}):kind==='order'?newTabHref({so:v.id}):kind==='product'?newTabHref({prod:v.id}):kind==='invoice'?newTabHref({inv:v.id}):kind==='vendor'?newTabHref({vend:v.id}):(kind==='pick'||kind==='po'||kind==='job')&&v.so_id?newTabHref({so:v.so_id}):null;
   const row=(kind,v)=>{

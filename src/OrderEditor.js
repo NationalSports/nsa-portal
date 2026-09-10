@@ -1,3 +1,4 @@
+import { jobArtBadgeSt } from './lib/jobArtBadge';
 import {useOrderCatalogResults} from './lib/orderCatalogSearch';
 import { poEligibleVendors } from './lib/vendorPoEligibility';
 import QuantityDraftInput from './QuantityDraftInput';
@@ -11231,24 +11232,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const prodStatuses=['draft','hold','staging','in_process','completed'];
       const prodLabels={draft:'Draft',hold:'On Hold',staging:'In Line',in_process:'In Process',completed:'Completed'};
       const artLabels=ART_LABELS;
-      // Art-name badge status — mirrors the Art Dashboard's getArtFileStatus so the job list,
-      // job detail, and dashboard always agree. The JOB's own art_status wins; the art file's
-      // status is only a fallback for stages the job doesn't track. Without this, a file that's
-      // been uploaded/approved for one job wrongly badges a sibling job (same art_file_id) that's
-      // still being worked — e.g. JOB-1171-03 reading "Needs Approval" off the shared Wolf Head FC
-      // file that was uploaded for JOB-1171-02. Returns an ART_FILE_LABELS key.
-      const jobArtBadgeSt=(jb,artFile)=>{
-        // Coach sent the art back: badge it "Changes Requested" while it's with the artist (still a
-        // Waiting-for-Art job for column/sort purposes — see getArtFileStatus, which is unchanged).
-        if(jb.coach_rejected&&(jb.art_status==='art_requested'||jb.art_status==='art_in_progress'))return'changes_requested';
-        if(jb.art_status==='art_requested'||jb.art_status==='art_in_progress')return'waiting_for_art';
-        if(jb.art_status==='waiting_approval')return'needs_approval';
-        if(PROD_FILES_STATUSES.includes(jb.art_status))return'approved';
-        if(jb.art_status==='art_complete')return'art_complete';
-        const wasRecalled=(jb.art_requests||[]).some(r=>r.status==='recalled')&&!(jb.art_requests||[]).some(r=>r.status==='requested'||r.status==='in_progress');
-        if(wasRecalled)return'waiting_for_art';
-        const s=artFile?.status;return s==='uploaded'?'needs_approval':(!s||s==='needs_art')?'waiting_for_art':s;
-      };
       const itemLabels={need_to_order:'Need to Order',on_order:'On Order',waiting_receive:'Ordered — Waiting',needs_pull:'Waiting for Pull',partially_received:'Partially Received',items_received:'Items Received'};
       // Family-apportioned receipts for every job, so the live ITEMS STATUS badge counts only a job's
       // OWN share of shared line receipts — a backorder slice must not read its received sibling's
@@ -11354,7 +11337,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{flex:1}}>
                 <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                   <span style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{j.id}</span>
-                  {_needsMockCheck?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef9c3',color:'#854d0e',border:'1px solid #fde047'}} title="Reused art — confirm a mock for this garment before it's production-ready">🔍 Check Mock</span>:(()=>{const fSt=artF?jobArtBadgeSt(j,artF):null;return fSt?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||fSt}</span>:null})()}
+                  {_needsMockCheck?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef9c3',color:'#854d0e',border:'1px solid #fde047'}} title="Reused art — confirm a mock for this garment before it's production-ready">🔍 Check Mock</span>:(()=>{const fSt=artF?jobArtBadgeSt(j,artF):null;return fSt?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:(ART_FILE_SC[fSt]||SC[fSt])?.bg||'#f1f5f9',color:(ART_FILE_SC[fSt]||SC[fSt])?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||ART_LABELS[fSt]||fSt}</span>:null})()}
                   {(()=>{const _is=jItemStatus(j);return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[_is]?.bg,color:SC[_is]?.c}}>{itemLabels[_is]}</span>})()}
                   <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}}>{prodLabels[j.prod_status]}</span>
                 </div>
@@ -13505,7 +13488,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
               <td><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span>
                 {j.split_from&&<div style={{fontSize:9,color:'#7c3aed'}}>split from {j.split_from}</div>}
                 {j.counted_at&&<div style={{fontSize:9,color:'#166534'}}>✅ counted</div>}</td>
-              <td><div style={{display:'flex',gap:6,alignItems:'center'}}><span style={{fontWeight:600}}>{j.art_name}</span>{_cm?null:(()=>{const afs=j.art_file_id&&af.find(a=>a.id===j.art_file_id);const fSt=afs?jobArtBadgeSt(j,afs):null;return fSt?<span style={{padding:'1px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||fSt}</span>:null})()}</div>
+              <td><div style={{display:'flex',gap:6,alignItems:'center'}}><span style={{fontWeight:600}}>{j.art_name}</span>{_cm?null:(()=>{const afs=j.art_file_id&&af.find(a=>a.id===j.art_file_id);const fSt=afs?jobArtBadgeSt(j,afs):null;return fSt?<span style={{padding:'1px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:(ART_FILE_SC[fSt]||SC[fSt])?.bg||'#f1f5f9',color:(ART_FILE_SC[fSt]||SC[fSt])?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||ART_LABELS[fSt]||fSt}</span>:null})()}</div>
                 {(()=>{const firstGi=(j.items||[])[0];const jIt=firstGi?safeItems(o)[firstGi.item_idx]:null;
                   // Only this job's own decorations, collapsed to distinct process·position lines.
                   // A split-art line repeats the same "screen print · Front Center" once per design
