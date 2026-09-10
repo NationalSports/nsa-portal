@@ -29,7 +29,7 @@ export const newOrderLineId = () => typeof crypto !== 'undefined' && crypto.rand
 // in a day). A blank line adopts an existing line's id only when exactly one DB line with the
 // same garment identity is not already claimed by another client line — the offline-draft case
 // the matcher exists for. A claimed sole match means this is a NEW line: it gets a fresh id.
-// Zero or several unclaimed matches are left to the server (fresh id / AMBIGUOUS), unchanged.
+// New garments receive an ID before the request; ambiguous legacy matches still fail closed.
 export function resolveOutgoingLineIds(clientItems, dbItems) {
   const claimed = new Set((clientItems || []).map(it => it?.line_id).filter(Boolean));
   return (clientItems || []).map(it => {
@@ -37,8 +37,20 @@ export function resolveOutgoingLineIds(clientItems, dbItems) {
     const key = garmentIdentity(it);
     const matches = (dbItems || []).filter(db => db?.line_id && garmentIdentity(db) === key);
     const open = matches.filter(db => !claimed.has(db.line_id));
-    if (matches.length && !open.length) { const line_id = newOrderLineId(); claimed.add(line_id); return { ...it, line_id }; }
+    if (!matches.length || !open.length) { const line_id = newOrderLineId(); claimed.add(line_id); return { ...it, line_id }; }
     if (open.length === 1) { claimed.add(open[0].line_id); return { ...it, line_id: open[0].line_id }; }
     return it;
+  });
+}
+
+// Stamp the editor's actual draft before price-locking clones it for persistence.
+// Otherwise the server acknowledgement only updates the clone, and the next edit
+// of two identical garments arrives without the IDs from their first save.
+export function stampEstimateDraftLineIds(draft, base) {
+  if (!base || base._itemsHydrated === false || base._recoveryHydrated === false) return;
+  const previous = base.items || [];
+  if (previous.some(item => !item.line_id)) return;
+  resolveOutgoingLineIds(draft.items || [], previous).forEach((item, index) => {
+    if (item?.line_id && !draft.items[index].line_id) draft.items[index].line_id = item.line_id;
   });
 }
