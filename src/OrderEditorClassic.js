@@ -2,6 +2,7 @@ import { jobArtBadgeSt } from './lib/jobArtBadge';
 import {useOrderCatalogResults} from './lib/orderCatalogSearch';
 import { poEligibleVendors } from './lib/vendorPoEligibility';
 import QuantityDraftInput from './QuantityDraftInput';
+import TextDraftInput from './TextDraftInput';
 /* ═══════════════════════════════════════════════════════════════
    ORDER EDITOR — CLASSIC
    Rendered when the portal-wide UI toggle is on "classic", which is
@@ -4552,7 +4553,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <span style={{fontSize:11,color:'#94a3b8',flex:1}}>{o.memo||''}</span>
       {actionSaving>0?<span role="status" style={{fontSize:11,color:"#64748b",fontWeight:600}}>Saving…</span>:dirty&&<span style={{fontSize:10,color:'#d97706',fontWeight:600}}>● Unsaved</span>}
       <button className="btn btn-sm btn-primary" onClick={async()=>{
-        if(!_flushActiveSizingDraft()){nf('Finish editing the quantity before saving','error');return}
+        if(!_flushActiveSizingDraft()){nf('Finish editing this field before saving','error');return}
         const current=oRef.current||o;
         if(!cust){nf('Select a customer first','error');return}
         if(!current.memo?.trim()){nf('Memo is required','error');return}
@@ -4745,7 +4746,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>before ship</div>
         </div>}
         <button className="btn btn-primary" onClick={async()=>{
-          if(!_flushActiveSizingDraft()){nf('Finish editing the quantity before saving','error');return}
+          if(!_flushActiveSizingDraft()){nf('Finish editing this field before saving','error');return}
           const current=oRef.current||o;
           if(!cust){nf('Select a customer first','error');return}
           const curMemo=(memoInputRef.current?.value??current.memo??'').trim();
@@ -5336,16 +5337,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     line — so a line that came in without one can be fixed here. Only the ones
                     that actually block Save (i.e. not grandfathered) are flagged red. */}
                 {item.is_custom||!skuOk(item.sku)?(()=>{const _bad=!skuOk(item.sku)&&!legacySkuItems.has(item);const _legacy=!_bad&&!skuOk(item.sku);
-                  return<input className="form-input" value={item.sku||''} onChange={e=>uI(idx,'sku',e.target.value)} placeholder="SKU"
+                  return<TextDraftInput className="form-input" value={item.sku||''} placeholder="SKU" draftKey={idx+'_sku'} onStage={_stageSizingDraft}
                     title={_bad?'Enter the vendor\'s style number — placeholder SKUs are no longer accepted'
                       :_legacy?'Placeholder SKU from before this order was opened — kept as-is, but worth replacing with the vendor\'s style number':undefined}
-                    onFocus={e=>{e.currentTarget.dataset.prevSku=item.sku||'';e.currentTarget.dataset.prevColor=item.color||''}} onBlur={e=>_rekeyLineMocks(idx,e.currentTarget.dataset.prevSku,e.currentTarget.dataset.prevColor)}
+                    onCommit={(v,prevSku)=>{const k=idx+'_sku';if(!(k in sizingDraftRef.current))return;const prevColor=item.color||'';flushSync(()=>{uI(idx,'sku',v);_dropSizingDraft(k)});_rekeyLineMocks(idx,prevSku,prevColor)}}
                     style={{fontFamily:'monospace',fontWeight:800,color:_bad?'#b91c1c':'#1e40af',background:_bad?'#fef2f2':'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15,width:100,border:'1px solid '+(_bad?'#fca5a5':'#93c5fd')}}/>;})()
                   :<span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15}}>{item.sku}</span>}
-                {item.is_custom||editingItemName===idx?<input className="form-input" autoFocus={editingItemName===idx} value={item.name} onChange={e=>uI(idx,'name',e.target.value)} onFocus={e=>{e.currentTarget.dataset.prevName=item.name||''}} onBlur={e=>{const _pn=e.currentTarget.dataset.prevName;if(_pn!==undefined)_rekeyLineMocks(idx,item.sku,item.color,_pn);if(editingItemName===idx)setEditingItemName(null)}} onKeyDown={e=>{if(e.key==='Enter'||e.key==='Escape')e.target.blur()}} style={{fontWeight:700,fontSize:15,flex:1,minWidth:150}} placeholder="Item name..."/>
+                {item.is_custom||editingItemName===idx?<TextDraftInput className="form-input" autoFocus={editingItemName===idx} value={item.name} placeholder="Item name..." draftKey={idx+'_name'} onStage={_stageSizingDraft} onCommit={(v,prevName)=>{const k=idx+'_name';if(k in sizingDraftRef.current){flushSync(()=>{uI(idx,'name',v);_dropSizingDraft(k)});_rekeyLineMocks(idx,item.sku,item.color,prevName)}if(editingItemName===idx)setEditingItemName(null)}} style={{fontWeight:700,fontSize:15,flex:1,minWidth:150}}/>
                   :<span style={{fontWeight:700,fontSize:15}}>{item.name}</span>}
                 {item._colors&&!isAU(item.brand)?(()=>{const opts=[...new Set([item.color,...item._colors].filter(Boolean))];return<select className="form-select" style={{fontSize:12,width:150}} value={item.color||opts[0]} onChange={e=>{const _pSku=item.sku||'',_pCol=item.color||'';uI(idx,'color',e.target.value);_rekeyLineMocks(idx,_pSku,_pCol)}}>{opts.map(c=><option key={c}>{c}</option>)}</select>})()
-                  :item.is_custom?<input className="form-input" value={item.color||''} onChange={e=>uI(idx,'color',e.target.value)} onFocus={e=>{e.currentTarget.dataset.prevSku=item.sku||'';e.currentTarget.dataset.prevColor=item.color||''}} onBlur={e=>_rekeyLineMocks(idx,e.currentTarget.dataset.prevSku,e.currentTarget.dataset.prevColor)} style={{fontSize:12,width:100}} placeholder="Color"/>
+                  :item.is_custom?<TextDraftInput className="form-input" value={item.color||''} placeholder="Color" draftKey={idx+'_color'} onStage={_stageSizingDraft} onCommit={(v,prevColor)=>{const k=idx+'_color';if(!(k in sizingDraftRef.current))return;const prevSku=item.sku||'';flushSync(()=>{uI(idx,'color',v);_dropSizingDraft(k)});_rekeyLineMocks(idx,prevSku,prevColor)}} style={{fontSize:12,width:100}}/>
                   :(()=>{const liveSrc=item._ss_live?'ss':item._sm_live?'sm':item._mt_live?'mt':item._rs_live?'rs':(isSSItem(item)?'ss':isSanMarItem(item)?'sm':isMomentecItem(item)?'mt':isRichardsonItem(item)?'rs':null);
                     return liveSrc?<button onClick={()=>setColorPickerModal(m=>m&&m.itemIdx===idx?null:{itemIdx:idx,sku:item.sku,source:liveSrc})} className="badge badge-gray" style={{cursor:'pointer',border:'1px dashed #94a3b8',display:'inline-flex',alignItems:'center',gap:4}} title="Click to change color">{item.color||'(set color)'} ▾</button>
                       :<span className="badge badge-gray">{item.color}</span>;
