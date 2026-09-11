@@ -172,22 +172,36 @@ would have gone the same way as Jered's.
 
 ---
 
-## 6. Recommended fix (not yet implemented)
+## 6. The fix (implemented)
 
-The one-line cause is the format-blind string compare. Suggested direction, smallest first:
+`src/lib/pollMergeRecency.js` — two pure helpers, imported by the estimate poll-merge in `App.js`:
 
-1. **Compare times as times, not strings.** Parse both sides before comparing, so an ISO DB value
-   and a locale client value order correctly. This alone ends the unconditional local win.
-2. **Never let the merge drop `_version`.** Even when the local copy legitimately wins on content,
-   adopt the DB row's `_version` (and `updated_at`) so the next save can succeed. Content
-   protection and concurrency bookkeeping should not be the same decision — this is the change
-   that actually breaks the deadlock, and it holds even if (1) is imperfect.
-3. **Make a sustained lockout visible.** A tab whose saves have been refused N times in a row
-   should say so unmissably, rather than leaving the rep to print from a document that does not
-   exist on the server.
+1. **`localRowIsNewer(localTs, dbTs)`** — parses both sides to epoch ms instead of comparing strings,
+   so an ISO DB value and a locale client value order correctly. `toLocaleString` round-trips through
+   `Date.parse` in the tab's own timezone — the same tab that produced it — so both land on the right
+   instant. If either side fails to parse, the DB row wins, so `_version` always heals.
+2. **`keepLocalAdoptVersion(local, dbRow)`** — when the local copy legitimately wins on content, it now
+   adopts the DB row's `_version` instead of keeping its own stale one. This is the load-bearing change:
+   it breaks the deadlock even if (1) ever judges recency wrong.
 
-Item 2 is the load-bearing one. Items 1 and 3 reduce how often it is reached and how long it goes
-unnoticed.
+`updated_at` deliberately stays the local value in (2). It is the signal (1) reads, so overwriting it
+with the DB's older timestamp would make the next poll judge the local copy stale and drop the rep's
+unsaved lines — trading a save deadlock for visible content loss.
 
-Standardising the 321 `toLocaleString()` writes onto ISO is the deeper cleanup, but it is a large,
-risky sweep and is **not** required to stop this bug.
+**Applied to Jered's exact situation:** his local copy (13:39:18) *was* genuinely newer than the DB row
+(13:29:46), so the merge keeps his seven items on screen **and** adopts version 4 — his next save
+succeeds. Nothing is lost and nothing snaps back.
+
+Covered by `src/__tests__/pollMergeRecency.test.js` (20 tests) using the real EST-2522 timestamps,
+including a month-by-month table pinning where the old string compare disagreed with the truth (it is
+wrong for ten months of the year — Mar–Sep wrongly favouring the local copy, Oct–Dec wrongly favouring
+the DB).
+
+### Not done, deliberately
+
+- **Sustained-lockout visibility.** A tab whose saves have been refused N times in a row should say so
+  unmissably. `dbEngine.js` only notifies on foreground saves (`if(!_bgSync…)`), so a background save
+  loop can still be refused in silence. Worth doing; a separate change.
+- **Standardising the 321 `toLocaleString()` writes onto ISO.** The deeper cleanup, and a large risky
+  sweep. Not required to stop this bug, and the parse-based compare handles both formats.
+- **The SO poll-merge** (`App.js`, `mergeSO`) does not carry this comparison and was left alone.
