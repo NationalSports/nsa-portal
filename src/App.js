@@ -1037,8 +1037,55 @@ const _upTrayGc=()=>{const tr=document.getElementById('nsa-upload-tray');if(tr&&
 const _upTrayAdd=(name)=>{try{const it=document.createElement('div');it.style.cssText='background:#1e293b;color:#e2e8f0;border-radius:8px;padding:8px 12px;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,.25);display:flex;align-items:center;gap:8px';it.innerHTML='<span style="flex:none">⬆️</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Uploading '+_upEsc(name)+'…</span>';_upTrayEl().appendChild(it);return it}catch(e){return null}};
 const _upTrayDone=(it,name)=>{if(!it)return;try{it.style.background='#166534';it.innerHTML='<span style="flex:none">✓</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+_upEsc(name)+' uploaded</span>';setTimeout(()=>{it.remove();_upTrayGc()},4000)}catch(e){}};
 const _upTrayFail=(it,name,msg)=>{if(!it)return;try{it.style.background='#991b1b';it.innerHTML='<span style="flex:none">✕</span><span style="min-width:0"><b>'+_upEsc(name)+'</b> failed — '+_upEsc(msg||'upload error')+'. Try again.</span><button style="flex:none;background:none;border:none;color:#fecaca;cursor:pointer;font-size:14px;padding:0 2px">✕</button>';it.lastChild.onclick=()=>{it.remove();_upTrayGc()}}catch(e){}};
-const cloudUpload=async(file,folder='nsa-products')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);const resType=file.type?.startsWith('image/')?'image':'auto';const ctrl=new AbortController();const timer=setTimeout(()=>ctrl.abort(),300000);const t0=Date.now();_upStart();const _tr=_upTrayAdd(file.name);try{const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`,{method:'POST',body:fd,signal:ctrl.signal});const d=await r.json();if(d.error)throw new Error(d.error.message);console.log('[upload]',file.name,Math.round(file.size/1024)+'KB',(Date.now()-t0)+'ms');_upTrayDone(_tr,file.name);return d.secure_url}catch(e){_upTrayFail(_tr,file.name,e.name==='AbortError'?'timed out after 5 minutes':(e.message||e));if(e.name==='AbortError')throw new Error('Upload timed out: '+file.name);throw e}finally{clearTimeout(timer);_upDone()}};
-const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);fd.append('filename_override',file.name);const resType=file.type?.startsWith('image/')?'image':'auto';const ctrl=new AbortController();const timer=setTimeout(()=>ctrl.abort(),300000);const t0=Date.now();_upStart();const _tr=_upTrayAdd(file.name);try{const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`,{method:'POST',body:fd,signal:ctrl.signal});const d=await r.json();if(d.error)throw new Error(d.error.message);console.log('[upload]',file.name,Math.round(file.size/1024)+'KB',(Date.now()-t0)+'ms');_upTrayDone(_tr,file.name);return d.secure_url}catch(e){_upTrayFail(_tr,file.name,e.name==='AbortError'?'timed out after 5 minutes':(e.message||e));if(e.name==='AbortError')throw new Error('Upload timed out: '+file.name);throw e}finally{clearTimeout(timer);_upDone()}};
+const _upTrayRetry=(it,name,n,max)=>{if(!it)return;try{it.style.background='#78350f';it.innerHTML='<span style="flex:none">⏳</span><span style="min-width:0">Upload server busy — retrying <b>'+_upEsc(name)+'</b> ('+n+'/'+max+')…</span>'}catch(e){}};
+const _upSleep=ms=>new Promise(r=>setTimeout(r,ms));
+// Cloudinary answers a saturated processing queue with HTTP 420 "Slow Down, Out of Processing
+// Capacity" (and 429/5xx under load). It clears on its own within seconds, so retry instead of
+// handing the rep a dead upload — a logo lost to a transient throttle costs a real job.
+const _upTransient=(status,msg)=>status===408||status===420||status===429||(status>=500&&status<600)
+  ||/slow down|processing capacity|rate limit|too many requests|failed to fetch|networkerror|load failed|connection/i.test(String(msg||''));
+const UP_RETRIES=4;
+// Resource type: `auto` lets Cloudinary classify the file. Design sources MUST stay on `auto` —
+// it files .ai/.eps as image assets, and Webstores' vectorPreviewUrl / QuickMockBuilder's vecThumb
+// rasterize exactly those to a placeable PNG preview. A raw-uploaded asset is not addressable at
+// /image/upload/, so routing them to /raw/ would quietly break every vector preview.
+const _upResType=file=>file&&file.type&&file.type.startsWith('image/')?'image':'auto';
+// One POST. Throws an Error carrying .transient when the failure is worth retrying.
+const _cloudPostOnce=async(file,folder,withName,resType,signal)=>{
+  const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);
+  if(withName)fd.append('filename_override',file.name);
+  let r;
+  try{r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`,{method:'POST',body:fd,signal})}
+  catch(ne){if(ne.name==='AbortError')throw ne;const er=new Error(ne.message||String(ne));er.transient=_upTransient(0,er.message);throw er}
+  const d=await r.json().catch(()=>null);
+  if(r.ok&&d&&d.secure_url&&!d.error)return d.secure_url;
+  const er=new Error((d&&d.error&&d.error.message)||('upload failed (HTTP '+r.status+')'));
+  er.transient=_upTransient(r.status,er.message);throw er;
+};
+const _cloudPost=async(file,folder,withName)=>{
+  const resType=_upResType(file);const ctrl=new AbortController();const timer=setTimeout(()=>ctrl.abort(),300000);
+  const t0=Date.now();_upStart();const _tr=_upTrayAdd(file.name);
+  try{
+    for(let a=0;;a++){
+      if(a){_upTrayRetry(_tr,file.name,a,UP_RETRIES);await _upSleep(1000*Math.pow(2,a)+Math.floor(Math.random()*400))}
+      try{
+        const url=await _cloudPostOnce(file,folder,withName,resType,ctrl.signal);
+        console.log('[upload]',file.name,Math.round(file.size/1024)+'KB',(Date.now()-t0)+'ms',a?'retry '+a:'');
+        _upTrayDone(_tr,file.name);return url;
+      }catch(e){
+        if(e.name==='AbortError')throw e;
+        if(a<UP_RETRIES&&e.transient)continue;
+        throw e;
+      }
+    }
+  }catch(e){
+    _upTrayFail(_tr,file.name,e.name==='AbortError'?'timed out after 5 minutes':(e.message||e));
+    if(e.name==='AbortError')throw new Error('Upload timed out: '+file.name);
+    throw e;
+  }finally{clearTimeout(timer);_upDone()}
+};
+const cloudUpload=(file,folder='nsa-products')=>_cloudPost(file,folder,false);
+const fileUpload=(file,folder='nsa-art-files')=>_cloudPost(file,folder,true);
 const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
 const fileDisplayName=f=>{if(typeof f==='object'&&f?.name)return f.name;const s=typeof f==='string'?f:(f?.url||'');return isUrl(s)?decodeURIComponent(s.split('/').pop().split('?')[0]):s};
 const fileBaseName=f=>fileDisplayName(f).replace(/\.[^.]+$/,'');
