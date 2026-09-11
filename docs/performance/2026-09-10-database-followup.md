@@ -38,3 +38,13 @@ A fresh sample from 01:14:50.841 to 01:15:32.314 UTC showed no additional calls 
 4. Restore backend health diagnostics only after reviewing staff authorization and security-definer behavior. Do not solve the permission error with an unrestricted grant.
 
 The existing UPS timeout and refresh lookup fixes address demonstrated issues. They do not establish that UPS caused the save failures, nor that all remaining slowness is resolved.
+
+## Follow-up repair (2026-09-11 02:10 UTC)
+
+Production diagnostics now have staff-authorized invoker facades over a private implementation schema. Restored the missing dismissal table with RLS and user attribution checks. Both functions successfully returned under service-role and active-staff test contexts. Non-staff callers were rejected with 42501; anon execute grants are absent. The security advisor reported no findings for the changed diagnostic functions/schema/table.
+
+Restoring the report exposed a slow query shape: repeated audit scans and text casts on numeric item IDs. The final implementation materializes deletion evidence once and uses a validated numeric join. An EXPLAIN ANALYZE of the full report query completed in 3,244 ms after cache warming; this is not a cold-cache or end-to-end guarantee. The seven-day removal function returned 21,190 events, so the UI requests only the newest 100 and labels its counts as displayed events. Deletion attribution labels now describe evidence rather than claiming confirmed data loss or user intent.
+
+Order/estimate reconstruction now indexes child collections once per load instead of repeatedly filtering entire item, decoration, PO, pick, job, and art collections. Regression fixtures compare the complete resulting documents against filter-based lookups, including duplicate-row recovery, child ordering, carry-over art/jobs, and hydration metadata. This reduces browser processing; it does not remove or shrink the approximately 14.4 MB of history text. No saved history or business records were deleted or rewritten.
+
+Browser follow-up: neither EST-2487 nor EST-2516 was in the open tab URLs; EST-2495 was open. Chrome inspection was blocked by a pending reload warning. After that dialog cleared, EST-2495 rendered four lines without a visible save/recovery error. Its logs report one preserved outbox conflict, not identified by the visible UI. The backup tab was at sign-in. Do not interpret this as proof that no preserved drafts exist. The two estimates have no recorded failures since the 00:50:38 deployment, but recovery of a particular old draft remains unverified.

@@ -9,3 +9,15 @@ export function indexFirstById(rows = []) {
   }
   return index;
 }
+
+// Return a fresh array like filter(), preserving source order and strict key equality.
+export function rowsByKey(rows, key) {
+  const groups = new Map();
+  for (const row of rows) {
+    const value = row[key];
+    if (value !== value) continue;
+    if (!groups.has(value)) groups.set(value, []);
+    groups.get(value).push(row);
+  }
+  return value => (groups.get(value) || []).slice();
+}

@@ -1970,7 +1970,7 @@ function LostArtJobsCard(){
     setLoading(true);setErr('');
     try{
       const sinceIso=new Date(Date.now()-since*86400000).toISOString();
-      const{data,error}=await supabase.rpc('recent_lost_art_and_jobs',{p_since:sinceIso});
+      const{data,error}=await supabase.rpc('recent_lost_art_and_jobs',{p_since:sinceIso}).limit(100);
       if(error)throw error;
       setRows(data||[]);
     }catch(e){setErr(e.message||String(e));setRows(null)}
@@ -1995,14 +1995,14 @@ function LostArtJobsCard(){
             <option value={90}>Last 90 days</option>
           </select>
           <button className="btn btn-sm btn-secondary" onClick={load} disabled={loading} style={{fontSize:11}}>{loading?'…':'Refresh'}</button>
-          <span style={{fontSize:12,color:statusColor,fontWeight:600}}>{loading?'Loading…':err?'Check unavailable':!ready?'Not checked':ok?'No removals':`${total} removed`}</span>
+          <span style={{fontSize:12,color:statusColor,fontWeight:600}}>{loading?'Loading…':err?'Check unavailable':!ready?'Not checked':ok?'No removals':`${total} recent removals shown`}</span>
         </div>
       </div>
       <div className="card-body">
-        <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Audit-log backed: shows ART decorations and jobs that were DELETED from sales orders, with attribution. Distinguishes a person removing it (named) vs a system / unknown actor.</div>
+        <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Shows up to the 100 most recent art and job deletion events in this window. Counts below describe the displayed events. Deletion events alone do not prove data loss or intent; saves and background processes can also replace rows.</div>
         {err&&<div style={{padding:8,background:'#fef2f2',color:'#dc2626',fontSize:12,borderRadius:6,marginBottom:8}}>Error: {err}</div>}
         {ready&&<div style={{display:'flex',gap:12,marginBottom:10,fontSize:12}}>
-          <div style={{padding:'6px 10px',background:'#f1f5f9',borderRadius:6}}>Total: <strong>{total}</strong></div>
+          <div style={{padding:'6px 10px',background:'#f1f5f9',borderRadius:6}}>Shown: <strong>{total}</strong></div>
           <div style={{padding:'6px 10px',background:'#fef2f2',borderRadius:6}}>By a person: <strong>{byUser}</strong></div>
           <div style={{padding:'6px 10px',background:'#fffbeb',borderRadius:6}}>System / unknown: <strong>{bySystem}</strong></div>
         </div>}
@@ -2072,7 +2072,7 @@ function SystemHealthCard({sos,cust,setESO,setESOC,setPg,nf}){
     load();
   },[load,nf]);
   const Verdict=({v})=>{
-    const map={system_loss:{bg:'#fee2e2',fg:'#991b1b',label:'CONFIRMED DATA LOSS'},user_removed:{bg:'#fef3c7',fg:'#92400e',label:'PERSON-REMOVED'},no_audit:{bg:'#e2e8f0',fg:'#475569',label:'NO AUDIT TRAIL'}};
+    const map={system_loss:{bg:'#fee2e2',fg:'#991b1b',label:'UNATTRIBUTED DELETION'},user_removed:{bg:'#fef3c7',fg:'#92400e',label:'ATTRIBUTED DELETION'},no_audit:{bg:'#e2e8f0',fg:'#475569',label:'NO AUDIT TRAIL'}};
     const m=map[v]||map.no_audit;
     return<span style={{display:'inline-block',padding:'1px 7px',borderRadius:10,background:m.bg,color:m.fg,fontSize:10,fontWeight:600,whiteSpace:'nowrap'}}>{m.label}</span>;
   };
@@ -2088,9 +2088,9 @@ function SystemHealthCard({sos,cust,setESO,setESOC,setPg,nf}){
   const ready=!loading&&!err&&report!==null;
   const headlineColor=!ready?'#64748b':actionable>0?'#dc2626':orphanCount+missingCount>0?'#d97706':'#16a34a';
   const headline=loading?'Loading…':err?'Check unavailable':!ready?'Not checked':actionable>0
-    ?`${actionable} confirmed data-loss issue${actionable===1?'':'s'}`
+    ?`${actionable} issue with unattributed deletion evidence${actionable===1?'':' (multiple)'}`
     :orphanCount+missingCount>0
-      ?`${orphanCount+missingCount} flagged (no confirmed loss)`
+      ?`${orphanCount+missingCount} flagged for review`
       :'All checks passing';
   const orphans=report?.orphan_jobs||[];
   const missing=report?.missing_deco_sos||[];
@@ -2129,14 +2129,14 @@ function SystemHealthCard({sos,cust,setESO,setESOC,setPg,nf}){
         {err&&<div style={{padding:8,background:'#fef2f2',color:'#dc2626',fontSize:12,borderRadius:6,marginBottom:8}}>Error: {err}</div>}
         {ready&&<>
         <div style={{display:'flex',gap:10,marginBottom:12,flexWrap:'wrap',fontSize:12}}>
-          <div style={{padding:'6px 10px',background:'#fef2f2',borderRadius:6,borderLeft:'3px solid #dc2626'}}><strong>{orphanSysLoss}</strong> confirmed data loss</div>
-          <div style={{padding:'6px 10px',background:'#fffbeb',borderRadius:6,borderLeft:'3px solid #d97706'}}><strong>{orphanUserRemoved}</strong> person-removed</div>
+          <div style={{padding:'6px 10px',background:'#fef2f2',borderRadius:6,borderLeft:'3px solid #dc2626'}}><strong>{orphanSysLoss}</strong> unattributed deletion evidence</div>
+          <div style={{padding:'6px 10px',background:'#fffbeb',borderRadius:6,borderLeft:'3px solid #d97706'}}><strong>{orphanUserRemoved}</strong> attributed deletion evidence</div>
           <div style={{padding:'6px 10px',background:'#f1f5f9',borderRadius:6,borderLeft:'3px solid #64748b'}}><strong>{orphanNoAudit}</strong> no audit trail</div>
           <div style={{padding:'6px 10px',background:'#f8fafc',borderRadius:6}}>Missing-deco SOs: <strong>{missingCount}</strong> ({missingSysLoss} w/ confirmed delete)</div>
           <div style={{padding:'6px 10px',background:'#f8fafc',borderRadius:6}}>Last 24h: <strong style={{color:lost24hSys>0?'#dc2626':'#16a34a'}}>{lost24hSys}</strong> system / <strong style={{color:'#92400e'}}>{lost24hUser}</strong> person</div>
         </div>
         <div style={{padding:10,background:'#f8fafc',borderRadius:6,fontSize:11,color:'#475569',marginBottom:12}}>
-          <strong>How to read this:</strong> a row is a <em>real persistence regression</em> only when verdict is <strong>CONFIRMED DATA LOSS</strong> — that means <code>audit_log</code> shows a decoration was DELETEd with no authenticated user. Person-removed = a teammate did it on purpose but a job/item was orphaned. No audit trail = likely never had decoration data (blanks SO, in-progress entry). Click an SO to fix it; click "Not a problem" to dismiss the row from this card and the scheduled email.
+          <strong>How to read this:</strong> flagged rows need review. An unattributed deletion has no authenticated user recorded; an attributed deletion records a user but does not establish their intent. Background processes and row replacements can produce deletion events. Neither label alone confirms data loss. No audit trail means no matching deletion evidence was found. Click an SO to investigate; use "Not a problem" only after reviewing it.
         </div>
         <div style={{marginBottom:14}}>
           <div style={{fontWeight:600,fontSize:13,marginBottom:6}}>Orphan Jobs ({orphanCount})</div>
