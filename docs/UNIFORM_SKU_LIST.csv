@@ -1,0 +1,127 @@
+Sport,Item,Option,SKU
+All Sports,Crew Sock with Logo,,MTH-ALL-SOK-CRW
+All Sports,OTC Sock with Logo,,MTH-ALL-SOK-OTC
+All Sports,Warm-Up Jacket,,MTH-ALL-WUJ
+All Sports,Warm-Up Jacket,Full Zip,MTH-ALL-WUJ-FZP
+All Sports,Warm-Up Jacket,Quarter Zip,MTH-ALL-WUJ-QZP
+All Sports,Warm-Up Pant,,MTH-ALL-WUP
+All Sports,Warm-Up Pant,Open Hem,MTH-ALL-WUP-OPN
+All Sports,Warm-Up Pant,Snap Side,MTH-ALL-WUP-SNP
+All Sports,Practice Tee,,MTH-ALL-TEE
+All Sports,Practice Tee,Short Sleeve,MTH-ALL-TEE-SSL
+All Sports,Practice Tee,Long Sleeve,MTH-ALL-TEE-LSL
+Baseball,Baseball Jersey,,MTH-BSB-JSY
+Baseball,Baseball Jersey,V-Neck Pullover,MTH-BSB-JSY-VNK
+Baseball,Baseball Jersey,Crew Neck Pullover,MTH-BSB-JSY-CRW
+Baseball,Baseball Jersey,2-Button Henley,MTH-BSB-JSY-HEN
+Baseball,Baseball Jersey,Full Button,MTH-BSB-JSY-FBT
+Baseball,Baseball Jersey,Full Twill (sewn),MTH-BSB-JSY-TWL
+Baseball,Baseball Pant,,MTH-BSB-PNT
+Baseball,Baseball Pant,Full Length,MTH-BSB-PNT-FUL
+Baseball,Baseball Pant,Knicker,MTH-BSB-PNT-KNK
+Baseball,Baseball Pant,Piped,MTH-BSB-PNT-PIP
+Baseball,Baseball Cap,,MTH-BSB-CAP
+Baseball,Baseball Cap,Fitted,MTH-BSB-CAP-FIT
+Baseball,Baseball Cap,Adjustable,MTH-BSB-CAP-ADJ
+Softball,Softball Jersey,,MTH-SFB-JSY
+Softball,Softball Jersey,V-Neck Pullover,MTH-SFB-JSY-VNK
+Softball,Softball Jersey,Crew Neck Pullover,MTH-SFB-JSY-CRW
+Softball,Softball Jersey,2-Button Henley,MTH-SFB-JSY-HEN
+Softball,Softball Jersey,Full Button,MTH-SFB-JSY-FBT
+Softball,Softball Jersey,Full Twill (sewn),MTH-SFB-JSY-TWL
+Softball,Softball Pant,,MTH-SFB-PNT
+Softball,Softball Pant,Full Length,MTH-SFB-PNT-FUL
+Softball,Softball Pant,Knicker,MTH-SFB-PNT-KNK
+Softball,Softball Short,,MTH-SFB-SHT
+Softball,Softball Headwear,,MTH-SFB-CAP
+Softball,Softball Headwear,Adjustable Cap,MTH-SFB-CAP-ADJ
+Softball,Softball Headwear,Visor,MTH-SFB-CAP-VIS
+Football,Football Jersey,,MTH-FTB-JSY
+Football,Football Jersey,Game Cut,MTH-FTB-JSY-GAM
+Football,Football Jersey,Practice,MTH-FTB-JSY-PRC
+Football,Football Jersey,Full Twill (sewn),MTH-FTB-JSY-TWL
+Football,Football Pant,,MTH-FTB-PNT
+Football,Football Pant,Integrated Pad,MTH-FTB-PNT-INT
+Football,Football Pant,Slotted (pad pockets),MTH-FTB-PNT-SLT
+Football,Football Pant,Practice,MTH-FTB-PNT-PRC
+Basketball,Basketball Jersey,,MTH-BKB-JSY
+Basketball,Basketball Jersey,Standard,MTH-BKB-JSY-STD
+Basketball,Basketball Jersey,Piping on Sleeves,MTH-BKB-JSY-PIP
+Basketball,Basketball Jersey,Full Twill (sewn),MTH-BKB-JSY-TWL
+Basketball,Basketball Short,,MTH-BKB-SHT
+Basketball,Basketball Short,Standard,MTH-BKB-SHT-STD
+Basketball,Basketball Short,Piping on Hem,MTH-BKB-SHT-PIP
+Basketball,Basketball Short,Side Panel,MTH-BKB-SHT-PNL
+Basketball,Reversible Jersey,,MTH-BKB-JSY-REV
+Basketball,Reversible Short,,MTH-BKB-SHT-REV
+Basketball,Shooting Shirt,,MTH-BKB-TEE-SHO
+Volleyball,Volleyball Jersey,,MTH-VLB-JSY
+Volleyball,Volleyball Jersey,Short Sleeve,MTH-VLB-JSY-SSL
+Volleyball,Volleyball Jersey,Long Sleeve,MTH-VLB-JSY-LSL
+Volleyball,Volleyball Jersey,Sleeveless,MTH-VLB-JSY-NSL
+Volleyball,Volleyball Jersey,Libero (contrast),MTH-VLB-JSY-LIB
+Volleyball,Volleyball Short,,MTH-VLB-SHT
+Volleyball,Volleyball Short,3-inch Inseam,MTH-VLB-SHT-3IN
+Volleyball,Volleyball Short,5-inch Inseam,MTH-VLB-SHT-5IN
+Soccer,Soccer Jersey,,MTH-SOC-JSY
+Soccer,Soccer Jersey,Short Sleeve,MTH-SOC-JSY-SSL
+Soccer,Soccer Jersey,Long Sleeve,MTH-SOC-JSY-LSL
+Soccer,Soccer Jersey,Keeper,MTH-SOC-JSY-KPR
+Soccer,Soccer Short,,MTH-SOC-SHT
+Soccer,Soccer Short,Standard,MTH-SOC-SHT-STD
+Soccer,Soccer Short,Keeper (padded),MTH-SOC-SHT-KPR
+Soccer,Soccer Sock (OTC),,MTH-ALL-SOK-OTC
+Wrestling,Wrestling Singlet,,MTH-WRE-SNG
+Wrestling,Compression Top,,MTH-WRE-TOP
+Wrestling,Compression Top,Short Sleeve,MTH-WRE-TOP-SSL
+Wrestling,Compression Top,Long Sleeve,MTH-WRE-TOP-LSL
+Wrestling,Fight Short,,MTH-WRE-SHT
+Track & Field,Track Singlet,,MTH-TRK-SNG
+Track & Field,Track Singlet,Men's Cut,MTH-TRK-SNG-MEN
+Track & Field,Track Singlet,Women's Cut,MTH-TRK-SNG-WMN
+Track & Field,Track Short,,MTH-TRK-SHT
+Track & Field,Track Short,Split,MTH-TRK-SHT-SPT
+Track & Field,Track Short,4-inch Trainer,MTH-TRK-SHT-4IN
+Track & Field,Half Tight,,MTH-TRK-TGT
+Track & Field,Uniform Brief,,MTH-TRK-BRF
+Cross Country,XC Singlet,,MTH-XCT-SNG
+Cross Country,XC Singlet,Men's Cut,MTH-XCT-SNG-MEN
+Cross Country,XC Singlet,Women's Cut,MTH-XCT-SNG-WMN
+Cross Country,XC Short,,MTH-XCT-SHT
+Cross Country,XC Short,Split,MTH-XCT-SHT-SPT
+Cross Country,XC Short,5-inch Inseam,MTH-XCT-SHT-5IN
+Lacrosse,Lacrosse Jersey,,MTH-LAX-JSY
+Lacrosse,Lacrosse Jersey,Short Sleeve,MTH-LAX-JSY-SSL
+Lacrosse,Lacrosse Jersey,Long Sleeve,MTH-LAX-JSY-LSL
+Lacrosse,Lacrosse Jersey,Sleeveless,MTH-LAX-JSY-NSL
+Lacrosse,Lacrosse Short,,MTH-LAX-SHT
+Lacrosse,Lacrosse Kilt,,MTH-LAX-KLT
+Lacrosse,Reversible Pinnie,,MTH-LAX-PIN-REV
+Hockey,Hockey Jersey,,MTH-HKY-JSY
+Hockey,Hockey Jersey,Game,MTH-HKY-JSY-GAM
+Hockey,Hockey Jersey,Practice,MTH-HKY-JSY-PRC
+Hockey,Hockey Sock,,MTH-HKY-SOK
+Hockey,Hockey Sock,Knit,MTH-HKY-SOK-KNT
+Hockey,Hockey Sock,Cut & Sew,MTH-HKY-SOK-CNS
+Golf,Golf Polo,,MTH-GLF-PLO
+Golf,Golf Polo,Short Sleeve,MTH-GLF-PLO-SSL
+Golf,Golf Polo,Long Sleeve,MTH-GLF-PLO-LSL
+Golf,Golf Quarter Zip,,MTH-GLF-QTR
+Golf,Golf Short,,MTH-GLF-SHT
+Golf,Golf Pant,,MTH-GLF-PNT
+Golf,Golf Skort,,MTH-GLF-SKT
+Tennis,Tennis Polo,,MTH-TEN-PLO
+Tennis,Tennis Tank,,MTH-TEN-TNK
+Tennis,Tennis Short,,MTH-TEN-SHT
+Tennis,Tennis Skort,,MTH-TEN-SKT
+Swim & Dive,Team Suit,,MTH-SWM-SUT
+Swim & Dive,Team Suit,Men's Brief,MTH-SWM-SUT-BRF
+Swim & Dive,Team Suit,Jammer,MTH-SWM-SUT-JAM
+Swim & Dive,Team Suit,Women's One-Piece,MTH-SWM-SUT-ONE
+Swim & Dive,Swim Cap,,MTH-SWM-CAP
+Cheer,Cheer Shell,,MTH-CHR-TOP
+Cheer,Cheer Shell,Short Sleeve,MTH-CHR-TOP-SSL
+Cheer,Cheer Shell,Long Sleeve,MTH-CHR-TOP-LSL
+Cheer,Cheer Shell,Sleeveless,MTH-CHR-TOP-NSL
+Cheer,Cheer Skirt,,MTH-CHR-SKT
+Cheer,Cheer Brief,,MTH-CHR-BRF
