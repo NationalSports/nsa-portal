@@ -1,4 +1,4 @@
-const { rowTimeMs, localRowIsNewer, keepLocalAdoptVersion } = require('../lib/pollMergeRecency');
+const { rowTimeMs, localRowIsNewer, estimatePollRecencyDecision } = require('../lib/pollMergeRecency');
 
 // Real values from the EST-2522 loss (2026-09-11).
 const DB_TS = '2026-09-11 13:44:52.177736+00';   // set_updated_at trigger — ISO
@@ -76,35 +76,37 @@ describe('poll-merge recency: date formats must be compared as times, not string
   });
 });
 
-describe('keeping the local copy must not strand its _version', () => {
-  test('adopts the DB _version so the next save is not rejected as stale', () => {
-    // Jered's tab: 7 items built locally, still on v3, while the DB had moved to v4.
-    const local = { id: 'EST-2522', _version: 3, updated_at: LOCAL_TS, items: new Array(7) };
+describe('a newer local timestamp never bypasses optimistic concurrency', () => {
+  const newerLocalTs = localStringAt(DB_INSTANT, 5 * MINUTE);
+
+  test('same-base local edits stay in the editor while their save is pending', () => {
+    const local = { id: 'EST-2522', _version: 4, updated_at: newerLocalTs, items: new Array(7) };
     const dbRow = { id: 'EST-2522', _version: 4, updated_at: DB_TS, items: new Array(1) };
-
-    const merged = keepLocalAdoptVersion(local, dbRow);
-
-    expect(merged._version).toBe(4);        // unblocked — the save can now succeed
-    expect(merged.items).toHaveLength(7);   // and his work is still on screen
+    expect(estimatePollRecencyDecision(local, dbRow)).toBe('keep-local');
   });
 
-  test('keeps the local updated_at — overwriting it would drop the rep\'s lines on the next poll', () => {
-    const local = { id: 'EST-2522', _version: 3, updated_at: LOCAL_TS, items: new Array(7) };
-    const dbRow = { id: 'EST-2522', _version: 4, updated_at: DB_TS };
-
-    expect(keepLocalAdoptVersion(local, dbRow).updated_at).toBe(LOCAL_TS);
-  });
-
-  test('does not mutate the local object', () => {
-    const local = { id: 'EST-2522', _version: 3 };
-    keepLocalAdoptVersion(local, { _version: 4 });
+  test('a DB advance preserves the local document as a conflict instead of adopting its version', () => {
+    const local = { id: 'EST-2522', _version: 3, updated_at: newerLocalTs, items: new Array(7) };
+    const dbRow = { id: 'EST-2522', _version: 4, updated_at: DB_TS, items: new Array(1) };
+    expect(estimatePollRecencyDecision(local, dbRow)).toBe('conflict');
     expect(local._version).toBe(3);
+    expect(local.items).toHaveLength(7);
   });
 
-  test('returns the same object when there is nothing to adopt, keeping change-detection cheap', () => {
-    const local = { id: 'EST-2522', _version: 4 };
-    expect(keepLocalAdoptVersion(local, { _version: 4 })).toBe(local);
-    expect(keepLocalAdoptVersion(local, { _version: null })).toBe(local);
-    expect(keepLocalAdoptVersion(local, null)).toBe(local);
+  test('_obBaseVersion remains authoritative after dbEngine has observed the newer DB version', () => {
+    // This is the exact hole in #2276: dbEngine had already changed _version to 4, but the content
+    // was still authored against v3 and the save RPC still (correctly) sent v3.
+    const local = { id: 'EST-2522', _version: 4, _obBaseVersion: 3, updated_at: newerLocalTs };
+    const dbRow = { id: 'EST-2522', _version: 4, updated_at: DB_TS };
+    expect(estimatePollRecencyDecision(local, dbRow)).toBe('conflict');
+  });
+
+  test('missing version proof fails closed to conflict review', () => {
+    expect(estimatePollRecencyDecision({ updated_at: newerLocalTs }, { updated_at: DB_TS, _version: 4 })).toBe('conflict');
+    expect(estimatePollRecencyDecision({ updated_at: newerLocalTs, _version: 4 }, { updated_at: DB_TS })).toBe('conflict');
+  });
+
+  test('an older/equal local timestamp continues through the existing DB field merge', () => {
+    expect(estimatePollRecencyDecision({ updated_at: localStringAt(DB_INSTANT, -MINUTE), _version: 3 }, { updated_at: DB_TS, _version: 4 })).toBe('merge-db');
   });
 });
