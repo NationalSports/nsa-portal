@@ -17,6 +17,8 @@ import WarehouseChips, {
 import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
 import { NSA, NSA_WAREHOUSE } from './constants';
 import { apiLineSourceKey } from './lib/apiOrderLines';
+import { collapseVendorLines } from './lib/vendorOrderGuards';
+import { DuplicateMergeWarning } from './VendorOrderGuardPanels';
 
 // SanMar Option 3, "Warehouse Selection": the rep names the warehouse and it rides
 // on each line as <shar:fobId>. It only takes effect once SanMar reconfigures our
@@ -191,6 +193,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   // order", and it was checked against the previous set of parts.
   const manualKey = useMemo(() => JSON.stringify(manualParts), [manualParts]);
   useEffect(() => { setConfirmed(false); }, [manualKey]);
+  const [dupAck, setDupAck] = useState(false); // rep confirmed the merged duplicate quantities
   const warnings = useMemo(
     () => lines.filter(l => !l.partId).map(l => `Line ${l.lineNumber} (${[l.style, l.color, l.size].filter(Boolean).join(' ')}) is missing a SanMar partId / Unique_Key`),
     [lines]
@@ -202,10 +205,23 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     () => lines.map((l, index) => ({ ...l, lineNumber: index + 1, ...(forcedWhse ? { fobId: String(forcedWhse) } : {}) })),
     [lines, forcedWhse]
   );
+  // One LineItem per partId. Two SOs in a batch wanting the same part is normal and merging
+  // is correct; sending it as two LineItems leaves how they combine up to SanMar — and S&S,
+  // which adds them, is how NSA 4632 double-ordered 53 units. lineNumber is positional in the
+  // SOAP envelope, so renumber after the merge. `submitLines` stays uncollapsed: it is what
+  // gets recorded as vendor_keys, where one row per source line is what the PO verification
+  // (apiVerificationForPoLine) needs to spot a duplicated queue after the fact.
+  const { merged: mergedLines, duplicates } = useMemo(() => collapseVendorLines(submitLines, l => l.partId), [submitLines]);
+  const payloadLines = useMemo(() => mergedLines.map((l, index) => ({ ...l, lineNumber: index + 1 })), [mergedLines]);
+  // Re-tick required whenever WHAT is merged changes — hand-picking a part can retarget a
+  // merge onto different quantities, and a stale tick would stand in for a confirmation the
+  // rep never gave.
+  const dupSig = duplicates.map(d => `${d.key}:${d.quantity}`).join(',');
+  useEffect(() => { setDupAck(false); }, [dupSig]);
   const payload = useMemo(() => {
     const totalAmount = submitLines.reduce((sum, line) => sum + line.quantity * (line.unitPrice || 0), 0);
-    return { ...base.payload, PO: { ...base.payload.PO, lineItems: submitLines, totalAmount: Number(totalAmount.toFixed(2)) } };
-  }, [base.payload, submitLines]);
+    return { ...base.payload, PO: { ...base.payload.PO, lineItems: payloadLines, totalAmount: Number(totalAmount.toFixed(2)) } };
+  }, [base.payload, submitLines, payloadLines]);
   const soap = useMemo(() => buildSanMarPOSoap(payload, { id: '<from env>' }), [payload]);
   const totals = useMemo(() => ({
     totalQty: submitLines.reduce((sum, line) => sum + line.quantity, 0),
@@ -334,7 +350,8 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   // Whatever the source, the address that actually goes to SanMar has to be complete.
   const shipIncomplete = shipToIncomplete(ship);
 
-  const blocked = lines.length === 0 || warnings.length > 0 || resolving || decoAddrIncomplete || decoNoVendor || shipIncomplete || !!removalErr;
+  const needsDupAck = duplicates.length > 0 && !dupAck;
+  const blocked = lines.length === 0 || warnings.length > 0 || resolving || decoAddrIncomplete || decoNoVendor || shipIncomplete || !!removalErr || needsDupAck;
   const done = submitState === 'success';
   const submitting = submitState === 'submitting';
   const canSubmit = !blocked && confirmed && !submitting && !done;
@@ -447,6 +464,10 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                 </div>
               )}
             </div>
+          )}
+
+          {!done && !resolving && (
+            <DuplicateMergeWarning duplicates={duplicates} acknowledged={dupAck} onAcknowledge={setDupAck} vendorName="SanMar" disabled={submitting} />
           )}
 
           {!done && removalErr && (
@@ -799,6 +820,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                   resolving ? 'Looking up Part IDs…'
                   : decoAddrIncomplete ? 'Enter the decorator\'s full address first'
                   : decoNoVendor ? 'Select a decorator first'
+                  : needsDupAck ? 'Confirm the combined quantities for the repeated Part IDs first'
                   : shipIncomplete ? 'The ship-to address is incomplete — company, street, city, state and zip are all required'
                   : blocked ? 'Every line needs a matched SanMar Part ID first'
                   : !confirmed ? 'Check the confirmation box first'

@@ -10,6 +10,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { buildMomentecOrderPayload, buildMomentecOrderLines } from './momentecOrder';
 import { momentecSubmitOrder, momentecResolveSkus, momentecOrderDetails } from './vendorApis';
 import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
+import { DuplicateMergeWarning } from './VendorOrderGuardPanels';
 import { NSA, NSA_WAREHOUSE } from './constants';
 
 // Momentec ships integrated orders to NSA's receiving dock (caller can override via shipTo).
@@ -36,6 +37,7 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [bookErr, setBookErr] = useState(''); // order placed at vendor but NOT recorded in the portal
+  const [dupAck, setDupAck] = useState(false); // rep confirmed the merged duplicate quantities
   const [resolving, setResolving] = useState(true);
   const [resolvedSkus, setResolvedSkus] = useState({}); // line key -> sku
   const [candidates, setCandidates] = useState({});     // STYLE -> [{color,colorCode,size,sku}]
@@ -82,8 +84,16 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
   const totals = built.summary;
   const unresolvedStyles = useMemo(() => [...new Set(lines.filter(l => !l.sku).map(l => String(l.style || '').toUpperCase().trim()))], [lines]);
 
+  // Repeated SKUs are merged into one payload item (buildMomentecOrderPayload) — the rep has
+  // to confirm the combined quantity, since a duplicated batch queue is indistinguishable
+  // from two SOs legitimately wanting the same item until you look at the totals (NSA 4632).
+  const duplicates = built.duplicates || [];
+  const needsDupAck = duplicates.length > 0 && !dupAck;
+  const dupSig = duplicates.map(d => `${d.key}:${d.quantity}`).join(',');
+  useEffect(() => { setDupAck(false); }, [dupSig]);
+
   const shipIncomplete = shipToIncomplete(ship);
-  const blocked = lines.length === 0 || warnings.length > 0 || resolving || shipIncomplete;
+  const blocked = lines.length === 0 || warnings.length > 0 || resolving || shipIncomplete || needsDupAck;
   const done = submitState === 'success';
   const submitting = submitState === 'submitting';
   const canSubmit = !blocked && confirmed && !submitting && !done;
@@ -240,6 +250,10 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
             </div>
           )}
 
+          {!done && !resolving && (
+            <DuplicateMergeWarning duplicates={duplicates} acknowledged={dupAck} onAcknowledge={setDupAck} vendorName="Momentec" disabled={submitting} />
+          )}
+
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 8, marginBottom: 12 }}>
             <Stat label="PO Number" value={poNumber} mono />
             <Stat label="Line Items" value={totals.lineCount} />
@@ -332,7 +346,7 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
                 className="btn btn-primary"
                 onClick={doSubmit}
                 disabled={!canSubmit}
-                title={resolving ? 'Looking up SKUs…' : shipIncomplete ? 'The ship-to address is incomplete — company, street, city, state and zip are all required' : blocked ? 'Every line needs a Momentec SKU first' : !confirmed ? 'Check the confirmation box first' : ''}
+                title={resolving ? 'Looking up SKUs…' : shipIncomplete ? 'The ship-to address is incomplete — company, street, city, state and zip are all required' : needsDupAck ? 'Confirm the combined quantities for the repeated SKUs first' : blocked ? 'Every line needs a Momentec SKU first' : !confirmed ? 'Check the confirmation box first' : ''}
                 style={{ background: live ? '#b91c1c' : '#1e40af', borderColor: live ? '#b91c1c' : '#1e40af', opacity: canSubmit ? 1 : 0.55 }}
               >
                 {submitting ? 'Submitting…' : resolving ? 'Looking up SKUs…' : live ? '🚀 Place Order with Momentec' : '🧪 Submit Stage Order'}

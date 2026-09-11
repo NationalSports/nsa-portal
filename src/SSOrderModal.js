@@ -5,6 +5,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { buildSSOrderPayload, buildSSOrderLines } from './ssOrder';
 import { ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock } from './vendorApis';
+import { reconcileVendorLines } from './lib/vendorOrderGuards';
+import { DuplicateMergeWarning, UnacceptedLinesPanel } from './VendorOrderGuardPanels';
 import WarehouseChips, { rankWarehouses, SS_WAREHOUSES } from './WarehouseChips';
 import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
 import { NSA, NSA_WAREHOUSE } from './constants';
@@ -31,6 +33,8 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [bookErr, setBookErr] = useState(''); // order placed at vendor but NOT recorded in the portal
+  const [dupAck, setDupAck] = useState(false);   // rep confirmed the merged duplicate quantities
+  const [reconcile, setReconcile] = useState(null); // what S&S accepted vs. what we sent
   const [resolving, setResolving] = useState(true);
   const [resolvedSkus, setResolvedSkus] = useState({}); // line key -> sku
   const [candidates, setCandidates] = useState({});     // STYLE -> [{color,size,sku}]
@@ -114,8 +118,18 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
     return () => { cancelled = true; };
   }, [skuKey, resolving]);
 
+  // Duplicate item numbers must be acknowledged before the order can be confirmed: S&S adds
+  // lines that share an identifier, so an un-noticed duplicate silently doubles the buy.
+  const duplicates = built.duplicates || [];
+  const needsDupAck = duplicates.length > 0 && !dupAck;
+  // Re-tick required whenever WHAT is merged changes — hand-matching a SKU can retarget a
+  // merge onto different quantities, and a stale tick would stand in for a confirmation the
+  // rep never gave. Keyed on the quantities, not just the count.
+  const dupSig = duplicates.map(d => `${d.key}:${d.quantity}`).join(',');
+  useEffect(() => { setDupAck(false); }, [dupSig]);
+
   const shipIncomplete = shipToIncomplete(ship);
-  const blocked = lines.length === 0 || warnings.length > 0 || resolving || shipIncomplete;
+  const blocked = lines.length === 0 || warnings.length > 0 || resolving || shipIncomplete || needsDupAck;
   const done = submitState === 'success';
   const submitting = submitState === 'submitting';
   const live = !testMode;
@@ -134,6 +148,11 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
     }
     // S&S accepted the order — success regardless of local bookkeeping.
     setResult(r); setSubmitState('success');
+    // ...but "accepted" is not "accepted in full". rejectLineErrors:false tells S&S to place
+    // what it can and drop the rest, so check the acknowledgement against what we sent before
+    // anyone treats this batch as bought (NSA 4632's AT203 Team Power Red was never on it).
+    try { setReconcile(reconcileVendorLines(built.merged || [], r, l => l.sku)); }
+    catch (e) { console.warn('[S&S] line reconciliation skipped:', e); }
     // Learn each line's S&S-SKU ↔ our-style pairing (test OR live: a validated test proves
     // S&S accepted these exact part numbers). Fire-and-forget; never affects the success UI.
     if (onLearnSkus) { try { onLearnSkus(lines, vendorName); } catch (e) { console.warn('[S&S] alias learn skipped:', e); } }
@@ -225,6 +244,9 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
             </div>
           )}
 
+          {/* Placed, but not necessarily placed in full — see UnacceptedLinesPanel. */}
+          {done && <UnacceptedLinesPanel reconcile={reconcile} vendorName="S&S" poNumber={poNumber} />}
+
           {/* Ship-to, plainly visible (owner 2026-07-23): drop-ship orders carry a CUSTOMER
               address — the human must see where goods will land without digging into the JSON. */}
           {!done && shipTo && (
@@ -279,6 +301,10 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                 </div>
               )}
             </div>
+          )}
+
+          {!done && !resolving && (
+            <DuplicateMergeWarning duplicates={duplicates} acknowledged={dupAck} onAcknowledge={setDupAck} vendorName="S&S" disabled={submitting} />
           )}
 
           {!done && searchLine && (
@@ -448,7 +474,9 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
         <div className="modal-footer" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           {done ? (
             <>
-              <span style={{ flex: 1, fontSize: 12, color: '#166534', fontWeight: 700 }}>✓ {live ? 'Order' : 'Test'} {result?.orderNumber}</span>
+              {reconcile && !reconcile.verified && (reconcile.missing.length || reconcile.short.length || reconcile.lineErrors.length)
+                ? <span style={{ flex: 1, fontSize: 12, color: '#991b1b', fontWeight: 800 }}>⚠ {live ? 'Order' : 'Test'} {result?.orderNumber} — {reconcile.missing.length + reconcile.short.length} line(s) S&S did not accept in full. Read the red panel above before closing.</span>
+                : <span style={{ flex: 1, fontSize: 12, color: '#166534', fontWeight: 700 }}>✓ {live ? 'Order' : 'Test'} {result?.orderNumber}</span>}
               <button className="btn btn-primary" onClick={onClose}>Done</button>
             </>
           ) : (
@@ -462,7 +490,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                 className="btn btn-primary"
                 onClick={doSubmit}
                 disabled={!canSubmit}
-                title={resolving ? 'Looking up SKUs…' : shipIncomplete ? 'The ship-to address is incomplete — company, street, city, state and zip are all required' : blocked ? 'Every line needs a matched S&S SKU first' : !confirmed ? 'Check the confirmation box first' : ''}
+                title={resolving ? 'Looking up SKUs…' : shipIncomplete ? 'The ship-to address is incomplete — company, street, city, state and zip are all required' : needsDupAck ? 'Confirm the combined quantities for the repeated item numbers first' : blocked ? 'Every line needs a matched S&S SKU first' : !confirmed ? 'Check the confirmation box first' : ''}
                 style={{ background: live ? '#b91c1c' : '#1e40af', borderColor: live ? '#b91c1c' : '#1e40af', opacity: canSubmit ? 1 : 0.55 }}
               >
                 {submitting ? 'Submitting…' : resolving ? 'Looking up SKUs…' : live ? '🚀 Place Order with S&S' : '🧪 Submit Test Order'}
