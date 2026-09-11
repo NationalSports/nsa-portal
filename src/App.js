@@ -1970,19 +1970,21 @@ function LostArtJobsCard(){
     setLoading(true);setErr('');
     try{
       const sinceIso=new Date(Date.now()-since*86400000).toISOString();
-      const{data,error}=await supabase.rpc('recent_lost_art_and_jobs',{p_since:sinceIso});
+      const{data,error}=await supabase.rpc('recent_lost_art_and_jobs',{p_since:sinceIso}).order('removed_at',{ascending:false}).limit(100);
       if(error)throw error;
       setRows(data||[]);
-    }catch(e){setErr(e.message||String(e));setRows([])}
+    }catch(e){setErr(e.message||String(e));setRows(null)}
     finally{setLoading(false)}
   },[since]);
   React.useEffect(()=>{load()},[load]);
   const total=rows?rows.length:0;
   const byUser=rows?rows.filter(r=>r.removed_by_uid).length:0;
   const bySystem=total-byUser;
-  const ok=total===0;
+  const ready=!loading&&!err&&rows!==null;
+  const ok=ready&&total===0;
+  const statusColor=!ready?'#64748b':ok?'#16a34a':'#dc2626';
   return(
-    <div className="card" style={{marginBottom:16,borderLeft:`4px solid ${ok?'#16a34a':'#dc2626'}`}}>
+    <div className="card" style={{marginBottom:16,borderLeft:`4px solid ${statusColor}`}}>
       <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <h2>🎨 Lost Art &amp; Jobs</h2>
         <div style={{display:'flex',alignItems:'center',gap:8}}>
@@ -1993,18 +1995,18 @@ function LostArtJobsCard(){
             <option value={90}>Last 90 days</option>
           </select>
           <button className="btn btn-sm btn-secondary" onClick={load} disabled={loading} style={{fontSize:11}}>{loading?'…':'Refresh'}</button>
-          <span style={{fontSize:12,color:ok?'#16a34a':'#dc2626',fontWeight:600}}>{ok?'No removals':`${total} removed`}</span>
+          <span style={{fontSize:12,color:statusColor,fontWeight:600}}>{loading?'Loading…':err?'Check unavailable':!ready?'Not checked':ok?'No removals':`${total} recent removals shown`}</span>
         </div>
       </div>
       <div className="card-body">
-        <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Audit-log backed: shows ART decorations and jobs that were DELETED from sales orders, with attribution. Distinguishes a person removing it (named) vs a system / unknown actor.</div>
+        <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Shows up to the 100 most recent art and job deletion events in this window. Counts below describe the displayed events. Deletion events alone do not prove data loss or intent; saves and background processes can also replace rows.</div>
         {err&&<div style={{padding:8,background:'#fef2f2',color:'#dc2626',fontSize:12,borderRadius:6,marginBottom:8}}>Error: {err}</div>}
-        <div style={{display:'flex',gap:12,marginBottom:10,fontSize:12}}>
-          <div style={{padding:'6px 10px',background:'#f1f5f9',borderRadius:6}}>Total: <strong>{total}</strong></div>
+        {ready&&<div style={{display:'flex',gap:12,marginBottom:10,fontSize:12}}>
+          <div style={{padding:'6px 10px',background:'#f1f5f9',borderRadius:6}}>Shown: <strong>{total}</strong></div>
           <div style={{padding:'6px 10px',background:'#fef2f2',borderRadius:6}}>By a person: <strong>{byUser}</strong></div>
           <div style={{padding:'6px 10px',background:'#fffbeb',borderRadius:6}}>System / unknown: <strong>{bySystem}</strong></div>
-        </div>
-        {rows&&rows.length>0&&(
+        </div>}
+        {ready&&rows.length>0&&(
           <div style={{maxHeight:280,overflowY:'auto',border:'1px solid #e2e8f0',borderRadius:6}}>
             <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
               <thead style={{background:'#f8fafc',position:'sticky',top:0}}>
@@ -2024,7 +2026,7 @@ function LostArtJobsCard(){
             </table>
           </div>
         )}
-        {rows&&rows.length===0&&!err&&<div style={{fontSize:12,color:'#16a34a'}}>✅ No art or jobs were removed in this window.</div>}
+        {ready&&rows.length===0&&<div style={{fontSize:12,color:'#16a34a'}}>✅ No art or jobs were removed in this window.</div>}
       </div>
     </div>
   );
@@ -2070,7 +2072,7 @@ function SystemHealthCard({sos,cust,setESO,setESOC,setPg,nf}){
     load();
   },[load,nf]);
   const Verdict=({v})=>{
-    const map={system_loss:{bg:'#fee2e2',fg:'#991b1b',label:'CONFIRMED DATA LOSS'},user_removed:{bg:'#fef3c7',fg:'#92400e',label:'PERSON-REMOVED'},no_audit:{bg:'#e2e8f0',fg:'#475569',label:'NO AUDIT TRAIL'}};
+    const map={system_loss:{bg:'#fee2e2',fg:'#991b1b',label:'UNATTRIBUTED DELETION'},user_removed:{bg:'#fef3c7',fg:'#92400e',label:'ATTRIBUTED DELETION'},no_audit:{bg:'#e2e8f0',fg:'#475569',label:'NO AUDIT TRAIL'}};
     const m=map[v]||map.no_audit;
     return<span style={{display:'inline-block',padding:'1px 7px',borderRadius:10,background:m.bg,color:m.fg,fontSize:10,fontWeight:600,whiteSpace:'nowrap'}}>{m.label}</span>;
   };
@@ -2083,11 +2085,12 @@ function SystemHealthCard({sos,cust,setESO,setESOC,setPg,nf}){
   const lost24hSys=report?.lost_art_jobs_24h_system||0;
   const lost24hUser=report?.lost_art_jobs_24h_user||0;
   const actionable=orphanSysLoss+missingSysLoss;
-  const headlineColor=actionable>0?'#dc2626':orphanCount+missingCount>0?'#d97706':'#16a34a';
-  const headline=actionable>0
-    ?`${actionable} confirmed data-loss issue${actionable===1?'':'s'}`
+  const ready=!loading&&!err&&report!==null;
+  const headlineColor=!ready?'#64748b':actionable>0?'#dc2626':orphanCount+missingCount>0?'#d97706':'#16a34a';
+  const headline=loading?'Loading…':err?'Check unavailable':!ready?'Not checked':actionable>0
+    ?`${actionable} issue with unattributed deletion evidence${actionable===1?'':' (multiple)'}`
     :orphanCount+missingCount>0
-      ?`${orphanCount+missingCount} flagged (no confirmed loss)`
+      ?`${orphanCount+missingCount} flagged for review`
       :'All checks passing';
   const orphans=report?.orphan_jobs||[];
   const missing=report?.missing_deco_sos||[];
@@ -2124,15 +2127,16 @@ function SystemHealthCard({sos,cust,setESO,setESOC,setPg,nf}){
       </div>
       <div className="card-body">
         {err&&<div style={{padding:8,background:'#fef2f2',color:'#dc2626',fontSize:12,borderRadius:6,marginBottom:8}}>Error: {err}</div>}
+        {ready&&<>
         <div style={{display:'flex',gap:10,marginBottom:12,flexWrap:'wrap',fontSize:12}}>
-          <div style={{padding:'6px 10px',background:'#fef2f2',borderRadius:6,borderLeft:'3px solid #dc2626'}}><strong>{orphanSysLoss}</strong> confirmed data loss</div>
-          <div style={{padding:'6px 10px',background:'#fffbeb',borderRadius:6,borderLeft:'3px solid #d97706'}}><strong>{orphanUserRemoved}</strong> person-removed</div>
+          <div style={{padding:'6px 10px',background:'#fef2f2',borderRadius:6,borderLeft:'3px solid #dc2626'}}><strong>{orphanSysLoss}</strong> unattributed deletion evidence</div>
+          <div style={{padding:'6px 10px',background:'#fffbeb',borderRadius:6,borderLeft:'3px solid #d97706'}}><strong>{orphanUserRemoved}</strong> attributed deletion evidence</div>
           <div style={{padding:'6px 10px',background:'#f1f5f9',borderRadius:6,borderLeft:'3px solid #64748b'}}><strong>{orphanNoAudit}</strong> no audit trail</div>
           <div style={{padding:'6px 10px',background:'#f8fafc',borderRadius:6}}>Missing-deco SOs: <strong>{missingCount}</strong> ({missingSysLoss} w/ confirmed delete)</div>
           <div style={{padding:'6px 10px',background:'#f8fafc',borderRadius:6}}>Last 24h: <strong style={{color:lost24hSys>0?'#dc2626':'#16a34a'}}>{lost24hSys}</strong> system / <strong style={{color:'#92400e'}}>{lost24hUser}</strong> person</div>
         </div>
         <div style={{padding:10,background:'#f8fafc',borderRadius:6,fontSize:11,color:'#475569',marginBottom:12}}>
-          <strong>How to read this:</strong> a row is a <em>real persistence regression</em> only when verdict is <strong>CONFIRMED DATA LOSS</strong> — that means <code>audit_log</code> shows a decoration was DELETEd with no authenticated user. Person-removed = a teammate did it on purpose but a job/item was orphaned. No audit trail = likely never had decoration data (blanks SO, in-progress entry). Click an SO to fix it; click "Not a problem" to dismiss the row from this card and the scheduled email.
+          <strong>How to read this:</strong> flagged rows need review. An unattributed deletion has no authenticated user recorded; an attributed deletion records a user but does not establish their intent. Background processes and row replacements can produce deletion events. Neither label alone confirms data loss. No audit trail means no matching deletion evidence was found. Click an SO to investigate; use "Not a problem" only after reviewing it.
         </div>
         <div style={{marginBottom:14}}>
           <div style={{fontWeight:600,fontSize:13,marginBottom:6}}>Orphan Jobs ({orphanCount})</div>
@@ -2146,6 +2150,7 @@ function SystemHealthCard({sos,cust,setESO,setESOC,setPg,nf}){
             ?<div style={{padding:10,background:'#f0fdf4',color:'#15803d',fontSize:12,borderRadius:6}}>✅ None</div>
             :<div style={{border:'1px solid #fecaca',borderRadius:6,maxHeight:280,overflowY:'auto'}}>{missing.map(renderMissing)}</div>}
         </div>
+        </>}
       </div>
     </div>
   );
@@ -3152,6 +3157,10 @@ export default function App(){
     return()=>{cancelled=true;if(idleId!=null&&typeof window.cancelIdleCallback==='function')window.cancelIdleCallback(idleId);if(timerId!=null)clearTimeout(timerId)};
   },[dbLoading]);
 
+  // Match the unload warning: a preserved conflict is still unsaved work even
+  // after it has left the failed-save retry set. Only an explicit user reload
+  // may proceed to the browser's own warning while this is true.
+  const _autoReloadHasUnsavedWork=()=>dirtyRef.current||_dbSavePendingIds.size>0||_dbSaveFailedIds.size>0||_outboxList().length>0;
   // ─── Deploy-aware auto-reload ───
   // Long-lived/abandoned tabs keep running stale JS and can hammer the API. Watch for a new
   // build and reload once the tab is idle — no save in flight, none just finished, none failed
@@ -3178,6 +3187,7 @@ export default function App(){
       // (bounded by the watcher's defer cap; past it the review-session snapshot + Resume
       // banner recover the list, so a forced reload costs one click instead of the session).
       isSafe:()=>_dbSavingCount===0 && (Date.now()-_dbLastSaveAt>3000) && _dbSaveFailedIds.size===0 && _dbSavePendingIds.size===0 && !_billReviewBusyRef.current,
+      hasUnsavedWork:_autoReloadHasUnsavedWork,
       hasFailedSaves:()=>_dbSaveFailedIds.size>0,
       isUserIdle:()=>document.hidden||Date.now()-_lastTabInput.t>120000,
       onPendingReload:(reloadNow)=>setDeployReloadPending(()=>reloadNow),
@@ -3471,12 +3481,13 @@ export default function App(){
   // the version-reload autosave. A 10-minute cap keeps a busy tab from deferring the
   // new build indefinitely.
   React.useEffect(()=>{
-    let knownHash=null;
+    let knownHash=null;let reloadPending=false;let reloadTimer;let cancelled=false;
     let lastInput=Date.now();
     const markInput=()=>{lastInput=Date.now()};
     window.addEventListener('pointerdown',markInput,{capture:true,passive:true});
     window.addEventListener('keydown',markInput,{capture:true,passive:true});
     const check=async()=>{
+      if(reloadPending||cancelled)return;
       try{
         const res=await fetch('/asset-manifest.json?_='+Date.now(),{cache:'no-store'});
         if(!res.ok)return;
@@ -3485,24 +3496,27 @@ export default function App(){
         if(!hash)return;
         if(knownHash===null){knownHash=hash;return}// record on first run
         if(hash===knownHash)return;
+        reloadPending=true;
         window.dispatchEvent(new Event('nsa:version-reload-pending'));
         const deferStart=Date.now();
         const doReload=()=>{
-          if(qbSyncBusyRef.current){setTimeout(doReload,2000);return;}
+          if(cancelled)return;
+          if(_autoReloadHasUnsavedWork()){reloadTimer=setTimeout(doReload,2000);return;}
+          if(qbSyncBusyRef.current){reloadTimer=setTimeout(doReload,2000);return;}
           const savesIdle=_dbSavePendingIds.size===0&&_bgSync===0&&!dirtyRef.current;
           // An active bill review counts as activity even when the tab is hidden or the mouse
           // is idle (staff cross-check invoices in other tabs mid-review). Still bounded by the
           // 10-minute cap; past it the review-session snapshot + Resume banner recover the list.
           const userIdle=((document.hidden||Date.now()-lastInput>60000)&&!_billReviewBusyRef.current)||Date.now()-deferStart>10*60*1000;
           if(_authErrorDetected||(savesIdle&&userIdle))window.location.reload();
-          else setTimeout(doReload,2000);
+          else reloadTimer=setTimeout(doReload,2000);
         };
         doReload();
       }catch(e){/* network error — skip this poll */}
     };
     check();
     const t=setInterval(check,5*60*1000);
-    return()=>{clearInterval(t);window.removeEventListener('pointerdown',markInput,{capture:true});window.removeEventListener('keydown',markInput,{capture:true})};
+    return()=>{cancelled=true;clearTimeout(reloadTimer);clearInterval(t);window.removeEventListener('pointerdown',markInput,{capture:true});window.removeEventListener('keydown',markInput,{capture:true})};
   },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Idle auto-reload: force-reload an idle tab ONLY when it's stuck in a save loop ───
@@ -3520,7 +3534,7 @@ export default function App(){
     window.addEventListener('pointerdown',mark,{capture:true,passive:true});
     window.addEventListener('keydown',mark,{capture:true,passive:true});
     const tick=async()=>{
-      if(qbSyncBusyRef.current)return;
+      if(qbSyncBusyRef.current||_autoReloadHasUnsavedWork())return;
       if(fired||Date.now()-lastAct<IDLE_RELOAD_MS)return;
       // Reload only a STUCK idle tab (pending/looping saves) — the case the deploy-reload can't handle.
       // A healthy idle tab just does this cheap in-memory check and sits (no reload, no load).
@@ -3536,7 +3550,7 @@ export default function App(){
       // Jitter (2–20s, matching the deploy-reload) so a fleet of simultaneously-idle tabs does not
       // reload-and-refetch in the same instant and spike the DB.
       const jitter=2000+Math.floor(Math.random()*18000);
-      setTimeout(()=>{if(qbSyncBusyRef.current){fired=false;return;}try{window.location.reload()}catch(_){/* noop */}},jitter);
+      setTimeout(()=>{if(qbSyncBusyRef.current||_autoReloadHasUnsavedWork()){fired=false;return;}try{window.location.reload()}catch(_){/* noop */}},jitter);
     };
     const iv=setInterval(tick,60000); // check every minute
     return()=>{clearInterval(iv);window.removeEventListener('pointerdown',mark,{capture:true});window.removeEventListener('keydown',mark,{capture:true})};

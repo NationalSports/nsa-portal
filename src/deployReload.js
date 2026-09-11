@@ -72,6 +72,7 @@ async function _fingerprint() {
  * @param {number} [opts.intervalMs=180000] How often to check for a new build (min 60s, default 3 min).
  * @param {() => boolean} [opts.isSafe] Save pipeline quiet? False defers the reload (e.g. a save is in flight).
  * @param {() => boolean} [opts.isBlocked] External operation active? Blocks every reload path, including deadlines and the banner button.
+ * @param {() => boolean} [opts.hasUnsavedWork] Preserved drafts/pending edits? Blocks automatic reloads, including force deadlines.
  * @param {() => boolean} [opts.hasFailedSaves] Tab stuck in a failed-save loop? Only these tabs may be
  *   force-reloaded while unsafe (past maxDeferMs). Defaults to true, which preserves the pre-2026-07-28
  *   behavior for callers that don't distinguish.
@@ -92,6 +93,7 @@ export function startDeployReloadWatcher(opts = {}) {
   const isSafe = typeof opts.isSafe === 'function' ? opts.isSafe : () => true;
   // External writes must finish even if saves fail or the user requests a reload.
   const isBlocked = typeof opts.isBlocked === 'function' ? opts.isBlocked : () => false;
+  const hasUnsavedWork = typeof opts.hasUnsavedWork === 'function' ? opts.hasUnsavedWork : () => false;
   const hasFailedSaves = typeof opts.hasFailedSaves === 'function' ? opts.hasFailedSaves : () => true;
   const isUserIdle = typeof opts.isUserIdle === 'function' ? opts.isUserIdle : () => true;
   const maxDeferMs = Math.max(30000, opts.maxDeferMs || 90000);
@@ -101,14 +103,14 @@ export function startDeployReloadWatcher(opts = {}) {
   let _reloading = false;
 
   const doReload = (reason) => {
-    if (_reloading || isBlocked()) return;
+    if (_reloading || isBlocked() || (reason !== 'user' && hasUnsavedWork())) return;
     _reloading = true;
     try { if (typeof opts.onReload === 'function') opts.onReload(reason); } catch (_) { /* telemetry must never block the reload */ }
     // Small random delay so a fleet of tabs doesn't reload — and then re-fetch all data —
     // at the same instant, which would itself spike the DB. User-initiated reloads skip it.
     const jitter = reason === 'user' ? 0 : 2000 + Math.floor(Math.random() * 18000); // 2–20s
     setTimeout(() => {
-      if (isBlocked()) { _reloading = false; setTimeout(tick, 5000); return; }
+      if (isBlocked() || (reason !== 'user' && hasUnsavedWork())) { _reloading = false; setTimeout(tick, 5000); return; }
       try { window.location.reload(); } catch (_) { /* noop */ }
     }, jitter);
   };
@@ -119,7 +121,7 @@ export function startDeployReloadWatcher(opts = {}) {
 
   const tick = () => {
     if (_reloading) return;
-    if (isBlocked()) { setTimeout(tick, 5000); return; }
+    if (isBlocked() || hasUnsavedWork()) { setTimeout(tick, 5000); return; }
     if (isSafe() && isUserIdle()) { doReload('safe-idle'); return; }
     if (hasFailedSaves() && Date.now() >= _stuckDeadline) { doReload('stuck-forced'); return; }
     if (Date.now() >= _idleDeadline && isSafe()) { doReload('deadline'); return; }

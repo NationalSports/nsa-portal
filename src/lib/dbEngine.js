@@ -21,6 +21,7 @@ import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './requestBreaker';
 import { _sbAuthLock } from './supabase';
 import { resolveOutgoingLineIds } from './orderLineIdentity';
+import { rowsByKey } from './rowLookup';
 import { _pick, _pickSoItem, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, _vendCols, _firmDateCols, _omgStoreCols } from '../constants';
 import { itemEditReconciles, itemsWithWipedQty, decorationShrinkConflicts, unaccountedDroppedItems, jobAllRoutedOutside } from '../businessLogic';
 import { soItemKey } from '../safeHelpers';
@@ -558,19 +559,30 @@ const _dbLoad = async (opts={}) => {
       pending_shipping_usage:pendingShipUsageRecords.filter(pu=>pendingShipRecords.filter(ps=>ps.customer_id===c.id).some(ps=>ps.id===pu.pending_id))}});
     // Products: attach _inv and _alerts from product_inventory
     const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});const _pimg=_pimgMap[p.id];return{...p,image_url:p.image_url||p.image_front_url||(_pimg&&_pimg.front)||'',back_image_url:p.back_image_url||p.image_back_url||(_pimg&&_pimg.back)||'',images:p.images||(_pimg&&_pimg.gallery)||[],_sizeCosts:(p.size_costs&&Object.keys(p.size_costs).length)?p.size_costs:undefined,_inv,_alerts}});
+    // Index child collections once per load; keep filter ordering and independent arrays.
+    const _estItemsFor=rowsByKey(estItems,'estimate_id');
+    const _estDecosFor=rowsByKey(estDecos,'estimate_item_id');
+    const _estArtFor=rowsByKey(estArt,'estimate_id');
+    const _soItemsFor=rowsByKey(soItems,'so_id');
+    const _soDecosFor=rowsByKey(soDecos,'so_item_id');
+    const _soPicksFor=rowsByKey(soPicks,'so_item_id');
+    const _soPOsFor=rowsByKey(soPOs,'so_item_id');
+    const _soJobsFor=rowsByKey(soJobs,'so_id');
+    const _soArtFor=rowsByKey(soArt,'so_id');
+    const _soFirmFor=rowsByKey(soFirm,'so_id');
     // Estimates: attach items (with decorations) and art_files
     const estimates=estRaw.map(est=>{
-      const art_files=estArt.filter(a=>a.estimate_id===est.id).map(_loadArtRow);
+      const art_files=_estArtFor(est.id).map(_loadArtRow);
       // Dedup orphaned duplicate estimate_items sharing an item_index. These arise when an "insert-new-then-delete-old"
       // save swap was interrupted after the new rows were inserted but before the old ones were deleted — leaving
       // phantom rows with duplicate item_indexes. Keep, per item_index, the row with the most decorations (the real
       // one; newest id breaks ties).
-      const _estItemsRaw=estItems.filter(i=>i.estimate_id===est.id);
-      const _itemChildCount=it=>estDecos.filter(d=>d.estimate_item_id===it.id).length;
+      const _estItemsRaw=_estItemsFor(est.id);
+      const _itemChildCount=it=>_estDecosFor(it.id).length;
       const _itemByIdx=new Map();
       _estItemsRaw.forEach(it=>{const cur=_itemByIdx.get(it.item_index);if(!cur){_itemByIdx.set(it.item_index,it);return}const a=_itemChildCount(it),b=_itemChildCount(cur);if(a>b||(a===b&&it.id>cur.id))_itemByIdx.set(it.item_index,it)});
       const items=[..._itemByIdx.values()].sort((a,b)=>a.item_index-b.item_index).map(item=>{
-        const decorations=estDecos.filter(d=>d.estimate_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,estimate_item_id:__,deco_index:___,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
+        const decorations=_estDecosFor(item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,estimate_item_id:__,deco_index:___,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
         const{id:_,estimate_id:__,item_index:___,...rest}=item;return{...rest,decorations}});
       // _itemsHydrated: true only when estimate_items loaded cleanly this session. Lets save guards tell a
       // deliberate rep deletion (hydrated→empty) apart from items vanishing on a timed-out load (never hydrated).
@@ -586,15 +598,15 @@ const _dbLoad = async (opts={}) => {
       // live decoration. Fail safe (keep) whenever a date is missing/unparseable.
       const _soCreatedMs=(()=>{const t=Date.parse(so.created_at);return Number.isNaN(t)?null:t})();
       const _isCarryJob=ca=>{if(_soCreatedMs==null)return false;const t=Date.parse(ca);if(Number.isNaN(t))return false;return t<_soCreatedMs-864e5;};
-      const _myItemIds=new Set(soItems.filter(i=>i.so_id===so.id).map(i=>i.id));
+      const _myItemIds=new Set(_soItemsFor(so.id).map(i=>i.id));
       const _liveArtIds=new Set(soDecos.filter(d=>_myItemIds.has(d.so_item_id)&&d.art_file_id).map(d=>d.art_file_id));
-      const _rawJobs=soJobs.filter(j=>j.so_id===so.id);
+      const _rawJobs=_soJobsFor(so.id);
       const _carryArtIds=new Set();
       _rawJobs.forEach(j=>{if(_isCarryJob(j.created_at))(Array.isArray(j._art_ids)&&j._art_ids.length?j._art_ids:[j.art_file_id]).forEach(aid=>{if(aid)_carryArtIds.add(aid)})});
       // All DB art rows for this SO (before carry-over filtering). Kept as _hydratedArtIds so a
       // later save can delete rows we hid at load — otherwise filtered carry-over art stays in
       // so_art_files forever because the delete guard only removes ids the client "knew about".
-      const _rawSoArt=soArt.filter(a=>a.so_id===so.id);
+      const _rawSoArt=_soArtFor(so.id);
       const art_files=_rawSoArt.filter(a=>{
         if(_liveArtIds.has(a.id))return true;// still wired to a live decoration — keep
         if(_carryArtIds.has(a.id))return false;// only referenced by carry-over jobs
@@ -607,7 +619,7 @@ const _dbLoad = async (opts={}) => {
         }
         return true;
       }).map(_loadArtRow);
-      const firm_dates=soFirm.filter(f=>f.so_id===so.id).map(f=>({item_desc:f.item_desc,date:f.date,approved:f.approved}));
+      const firm_dates=_soFirmFor(so.id).map(f=>({item_desc:f.item_desc,date:f.date,approved:f.approved}));
       // Keep dead frozen jobs in the loaded payload so OrderEditor.syncJobs can see them, retire
       // them (no live decorations), and persist jobs:[] — which now deletes so_jobs rows. Filtering
       // them out here would hide the UI symptom without ever writing the delete.
@@ -617,16 +629,16 @@ const _dbLoad = async (opts={}) => {
       // an empty phantom row alongside the real one. If both reach the client the phantom can land at the canonical
       // index and trip the per-item decoration safety guard ("had N decos in DB but client has 0"), blocking every
       // subsequent save. Keep, per item_index, the row carrying the most children (the real one; newest id breaks ties).
-      const _soItemsRaw=soItems.filter(i=>i.so_id===so.id);
-      const _itemChildCount=it=>soDecos.filter(d=>d.so_item_id===it.id).length+soPicks.filter(p=>p.so_item_id===it.id).length+soPOs.filter(p=>p.so_item_id===it.id).length;
+      const _soItemsRaw=_soItemsFor(so.id);
+      const _itemChildCount=it=>_soDecosFor(it.id).length+_soPicksFor(it.id).length+_soPOsFor(it.id).length;
       const _itemByIdx=new Map();
       _soItemsRaw.forEach(it=>{const cur=_itemByIdx.get(it.item_index);if(!cur){_itemByIdx.set(it.item_index,it);return}const a=_itemChildCount(it),b=_itemChildCount(cur);if(a>b||(a===b&&it.id>cur.id))_itemByIdx.set(it.item_index,it)});
       const items=[..._itemByIdx.values()].sort((a,b)=>a.item_index-b.item_index).map(item=>{
-        const decorations=soDecos.filter(d=>d.so_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,so_item_id:__,deco_index:___,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
+        const decorations=_soDecosFor(item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,so_item_id:__,deco_index:___,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
         // Snapshot the SKU into legacy pick lines at hydration time. The snapshot travels with the
         // line on the next save, allowing a later SKU replacement to resolve its old short-pull alert.
-        const pick_lines=soPicks.filter(pk=>pk.so_item_id===item.id).map(pk=>{const{id:_,so_item_id:__,...rest}=pk;const sizes=rest.sizes||{};delete rest.sizes;return{_sku:item.sku,...rest,...sizes}});
-        const po_lines=soPOs.filter(po=>po.so_item_id===item.id).map(po=>{const{id:_,so_item_id:__,...rest}=po;const sizes=rest.sizes||{};delete rest.sizes;
+        const pick_lines=_soPicksFor(item.id).map(pk=>{const{id:_,so_item_id:__,...rest}=pk;const sizes=rest.sizes||{};delete rest.sizes;return{_sku:item.sku,...rest,...sizes}});
+        const po_lines=_soPOsFor(item.id).map(po=>{const{id:_,so_item_id:__,...rest}=po;const sizes=rest.sizes||{};delete rest.sizes;
           // Recover billed/tracking_numbers from sizes JSONB if they were stored as fallback
           const recovered={...rest,...sizes};
           if(sizes._billed&&!recovered.billed){recovered.billed=sizes._billed;delete recovered._billed}
