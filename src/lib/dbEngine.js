@@ -465,10 +465,10 @@ const _dbLoad = async (opts={}) => {
       // (re)built this load (they feed product image fallbacks and nothing else).
       ()=>{
         if(only&&!only.has('products')&&!only.has('app_state'))return _skip();
-        if(fullState&&!essential)return _safeQuery('app_state');// full incl _pimg_ (non-essential initial load)
+        if(fullState&&!essential)return _safeQuery('app_state',{not:[['id','in','(so_history,est_history)']]});// full incl _pimg_ (non-essential initial load)
         // essential tier-1 load keeps the init-only config blobs but drops the ~10k _pimg_ image rows
         // (those ride with products in tier 2); routine reloads drop the init-only blobs too.
-        const not=[];
+        const not=[['id','in','(so_history,est_history)']];
         if(!fullState)not.push(['id','in','('+_APPSTATE_INIT_ONLY_KEYS.map(k=>'"'+k+'"').join(',')+')']);
         // Durable QBO receipts are loaded by realm through qbLinkLedger after the
         // essential data load. Keeping thousands of them in this generic app_state
