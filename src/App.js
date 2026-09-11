@@ -1045,12 +1045,11 @@ const _upSleep=ms=>new Promise(r=>setTimeout(r,ms));
 const _upTransient=(status,msg)=>status===408||status===420||status===429||(status>=500&&status<600)
   ||/slow down|processing capacity|rate limit|too many requests|failed to fetch|networkerror|load failed|connection/i.test(String(msg||''));
 const UP_RETRIES=4;
-// Design sources (.ai/.eps/.psd/.dst/...) are download-only in the portal — _isDownloadOnly means
-// nothing ever renders them — so upload them as `raw`. `auto` hands a .ai to Cloudinary's
-// rasterizer, which is the exact queue that returns "Out of Processing Capacity" on a big logo.
-// `auto` stays behind it as a fallback in case the unsigned preset ever refuses the raw endpoint.
-const _upResTypes=file=>_isDownloadOnly(String(file&&file.name||''))?['raw','auto']
-  :[file&&file.type&&file.type.startsWith('image/')?'image':'auto'];
+// Resource type: `auto` lets Cloudinary classify the file. Design sources MUST stay on `auto` —
+// it files .ai/.eps as image assets, and Webstores' vectorPreviewUrl / QuickMockBuilder's vecThumb
+// rasterize exactly those to a placeable PNG preview. A raw-uploaded asset is not addressable at
+// /image/upload/, so routing them to /raw/ would quietly break every vector preview.
+const _upResType=file=>file&&file.type&&file.type.startsWith('image/')?'image':'auto';
 // One POST. Throws an Error carrying .transient when the failure is worth retrying.
 const _cloudPostOnce=async(file,folder,withName,resType,signal)=>{
   const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);
@@ -1064,26 +1063,21 @@ const _cloudPostOnce=async(file,folder,withName,resType,signal)=>{
   er.transient=_upTransient(r.status,er.message);throw er;
 };
 const _cloudPost=async(file,folder,withName)=>{
-  const types=_upResTypes(file);const ctrl=new AbortController();const timer=setTimeout(()=>ctrl.abort(),300000);
+  const resType=_upResType(file);const ctrl=new AbortController();const timer=setTimeout(()=>ctrl.abort(),300000);
   const t0=Date.now();_upStart();const _tr=_upTrayAdd(file.name);
   try{
-    let last=null;
-    for(let ti=0;ti<types.length;ti++){
-      for(let a=0;a<=UP_RETRIES;a++){
-        if(a){_upTrayRetry(_tr,file.name,a,UP_RETRIES);await _upSleep(1000*Math.pow(2,a)+Math.floor(Math.random()*400))}
-        try{
-          const url=await _cloudPostOnce(file,folder,withName,types[ti],ctrl.signal);
-          console.log('[upload]',file.name,Math.round(file.size/1024)+'KB',(Date.now()-t0)+'ms',types[ti],a?'retry '+a:'');
-          _upTrayDone(_tr,file.name);return url;
-        }catch(e){
-          if(e.name==='AbortError')throw e;
-          last=e;
-          if(!e.transient)break;        // permanent for this resource type — fall through to the next one
-          if(a===UP_RETRIES)throw e;    // still throttled after every retry — another resource type won't help
-        }
+    for(let a=0;;a++){
+      if(a){_upTrayRetry(_tr,file.name,a,UP_RETRIES);await _upSleep(1000*Math.pow(2,a)+Math.floor(Math.random()*400))}
+      try{
+        const url=await _cloudPostOnce(file,folder,withName,resType,ctrl.signal);
+        console.log('[upload]',file.name,Math.round(file.size/1024)+'KB',(Date.now()-t0)+'ms',a?'retry '+a:'');
+        _upTrayDone(_tr,file.name);return url;
+      }catch(e){
+        if(e.name==='AbortError')throw e;
+        if(a<UP_RETRIES&&e.transient)continue;
+        throw e;
       }
     }
-    throw last||new Error('upload error');
   }catch(e){
     _upTrayFail(_tr,file.name,e.name==='AbortError'?'timed out after 5 minutes':(e.message||e));
     if(e.name==='AbortError')throw new Error('Upload timed out: '+file.name);

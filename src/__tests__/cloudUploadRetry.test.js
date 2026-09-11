@@ -2,9 +2,9 @@
  * Upload resilience (src/utils.js cloudUpload/fileUpload).
  *
  * Cloudinary answers a saturated processing queue with HTTP 420 "Slow Down, Out of Processing
- * Capacity" — a rep dropping a logo .ai into the Art Library saw that surfaced as a dead upload.
- * These cover the two halves of the fix: retry the transient throttle, and keep design sources
- * (.ai/.eps/...) off the rasterizer that produces it in the first place.
+ * Capacity" — a rep dropping a logo .ai into the Art Library saw that surfaced as a dead upload,
+ * because the helpers had no retry at all. These cover the retry, and pin the resource-type
+ * routing that the retry must not disturb.
  */
 import { cloudUpload, fileUpload } from '../utils';
 
@@ -36,18 +36,15 @@ test('gives up after the retry budget rather than looping forever', async () => 
   expect(global.fetch).toHaveBeenCalledTimes(5); // first attempt + UP_RETRIES
 });
 
-test('sends a design source to /raw/ so Cloudinary never rasterizes it', async () => {
-  global.fetch.mockResolvedValueOnce(ok('https://res.cloudinary.com/x/raw/upload/v1/logo.ai'));
+// Regression guard. A .ai/.eps must keep going to /auto/, which Cloudinary files as an IMAGE
+// asset (all 1352 .ai files in so_art_files sit under /image/upload/). Webstores' vectorPreviewUrl
+// and QuickMockBuilder's vecThumb rasterize those to a placeable PNG preview, and a raw-uploaded
+// asset is not addressable at /image/upload/ — so sending them to /raw/ silently breaks previews.
+test('a design source stays on /auto/ so its vector preview still resolves', async () => {
+  global.fetch.mockResolvedValue(ok('https://res.cloudinary.com/x/image/upload/v1/logo.ai'));
   await fileUpload(new File(['x'], 'logo.ai'), 'nsa-production');
-  expect(urls()[0]).toContain('/raw/upload');
-});
-
-test('falls back to /auto/ if the raw endpoint refuses a design source', async () => {
-  global.fetch.mockResolvedValueOnce(rejected('Unsupported resource type'))
-    .mockResolvedValueOnce(ok('https://res.cloudinary.com/x/image/upload/v1/logo.eps'));
-  await expect(fileUpload(new File(['x'], 'logo.eps'), 'nsa-production')).resolves.toBeTruthy();
-  expect(urls()[0]).toContain('/raw/upload');
-  expect(urls()[1]).toContain('/auto/upload');
+  expect(urls()[0]).toContain('/auto/upload');
+  expect(urls()[0]).not.toContain('/raw/upload');
 });
 
 test('an ordinary image still goes to /image/ and a real rejection is not retried', async () => {
