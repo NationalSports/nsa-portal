@@ -178,4 +178,34 @@ describe('startDeployReloadWatcher — health-aware reload', () => {
     await advanceAsync(25000);
     expect(reloadSpy).toHaveBeenCalledTimes(1);
   });
+  test('preserved drafts block automatic reload past force deadlines, then resume when cleared', async () => {
+    let unsaved=true;
+    await start({hasUnsavedWork:()=>unsaved,hasFailedSaves:()=>true,isSafe:()=>true,isUserIdle:()=>true,maxDeferMs:30000});
+    buildId=2;
+    await advanceAsync(12*60*1000);
+    expect(reloadSpy).not.toHaveBeenCalled();
+    unsaved=false;
+    await advanceAsync(30000);
+    expect(reloadSpy).toHaveBeenCalledTimes(1);
+  });
+  test('rechecks preserved drafts during the reload jitter', async () => {
+    let unsaved=false;
+    jest.spyOn(Math,'random').mockReturnValue(0.99);
+    await start({hasUnsavedWork:()=>unsaved,isSafe:()=>true,isUserIdle:()=>true});
+    buildId=2;
+    await advanceAsync(180000);
+    unsaved=true;
+    await advanceAsync(60000);
+    expect(reloadSpy).not.toHaveBeenCalled();
+    jest.restoreAllMocks();
+  });
+  test('explicit user reload remains available with the normal browser unload warning', async () => {
+    const onPendingReload=jest.fn();
+    await start({hasUnsavedWork:()=>true,onPendingReload});
+    buildId=2;await advanceAsync(180000);
+    onPendingReload.mock.calls[0][0]();
+    await advanceAsync(1);
+    expect(reloadSpy).toHaveBeenCalledTimes(1);
+  });
+
 });

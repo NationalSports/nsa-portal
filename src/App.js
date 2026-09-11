@@ -3157,6 +3157,10 @@ export default function App(){
     return()=>{cancelled=true;if(idleId!=null&&typeof window.cancelIdleCallback==='function')window.cancelIdleCallback(idleId);if(timerId!=null)clearTimeout(timerId)};
   },[dbLoading]);
 
+  // Match the unload warning: a preserved conflict is still unsaved work even
+  // after it has left the failed-save retry set. Only an explicit user reload
+  // may proceed to the browser's own warning while this is true.
+  const _autoReloadHasUnsavedWork=()=>dirtyRef.current||_dbSavePendingIds.size>0||_dbSaveFailedIds.size>0||_outboxList().length>0;
   // ─── Deploy-aware auto-reload ───
   // Long-lived/abandoned tabs keep running stale JS and can hammer the API. Watch for a new
   // build and reload once the tab is idle — no save in flight, none just finished, none failed
@@ -3183,6 +3187,7 @@ export default function App(){
       // (bounded by the watcher's defer cap; past it the review-session snapshot + Resume
       // banner recover the list, so a forced reload costs one click instead of the session).
       isSafe:()=>_dbSavingCount===0 && (Date.now()-_dbLastSaveAt>3000) && _dbSaveFailedIds.size===0 && _dbSavePendingIds.size===0 && !_billReviewBusyRef.current,
+      hasUnsavedWork:_autoReloadHasUnsavedWork,
       hasFailedSaves:()=>_dbSaveFailedIds.size>0,
       isUserIdle:()=>document.hidden||Date.now()-_lastTabInput.t>120000,
       onPendingReload:(reloadNow)=>setDeployReloadPending(()=>reloadNow),
@@ -3476,12 +3481,13 @@ export default function App(){
   // the version-reload autosave. A 10-minute cap keeps a busy tab from deferring the
   // new build indefinitely.
   React.useEffect(()=>{
-    let knownHash=null;
+    let knownHash=null;let reloadPending=false;let reloadTimer;let cancelled=false;
     let lastInput=Date.now();
     const markInput=()=>{lastInput=Date.now()};
     window.addEventListener('pointerdown',markInput,{capture:true,passive:true});
     window.addEventListener('keydown',markInput,{capture:true,passive:true});
     const check=async()=>{
+      if(reloadPending||cancelled)return;
       try{
         const res=await fetch('/asset-manifest.json?_='+Date.now(),{cache:'no-store'});
         if(!res.ok)return;
@@ -3490,24 +3496,27 @@ export default function App(){
         if(!hash)return;
         if(knownHash===null){knownHash=hash;return}// record on first run
         if(hash===knownHash)return;
+        reloadPending=true;
         window.dispatchEvent(new Event('nsa:version-reload-pending'));
         const deferStart=Date.now();
         const doReload=()=>{
-          if(qbSyncBusyRef.current){setTimeout(doReload,2000);return;}
+          if(cancelled)return;
+          if(_autoReloadHasUnsavedWork()){reloadTimer=setTimeout(doReload,2000);return;}
+          if(qbSyncBusyRef.current){reloadTimer=setTimeout(doReload,2000);return;}
           const savesIdle=_dbSavePendingIds.size===0&&_bgSync===0&&!dirtyRef.current;
           // An active bill review counts as activity even when the tab is hidden or the mouse
           // is idle (staff cross-check invoices in other tabs mid-review). Still bounded by the
           // 10-minute cap; past it the review-session snapshot + Resume banner recover the list.
           const userIdle=((document.hidden||Date.now()-lastInput>60000)&&!_billReviewBusyRef.current)||Date.now()-deferStart>10*60*1000;
           if(_authErrorDetected||(savesIdle&&userIdle))window.location.reload();
-          else setTimeout(doReload,2000);
+          else reloadTimer=setTimeout(doReload,2000);
         };
         doReload();
       }catch(e){/* network error — skip this poll */}
     };
     check();
     const t=setInterval(check,5*60*1000);
-    return()=>{clearInterval(t);window.removeEventListener('pointerdown',markInput,{capture:true});window.removeEventListener('keydown',markInput,{capture:true})};
+    return()=>{cancelled=true;clearTimeout(reloadTimer);clearInterval(t);window.removeEventListener('pointerdown',markInput,{capture:true});window.removeEventListener('keydown',markInput,{capture:true})};
   },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Idle auto-reload: force-reload an idle tab ONLY when it's stuck in a save loop ───
@@ -3525,7 +3534,7 @@ export default function App(){
     window.addEventListener('pointerdown',mark,{capture:true,passive:true});
     window.addEventListener('keydown',mark,{capture:true,passive:true});
     const tick=async()=>{
-      if(qbSyncBusyRef.current)return;
+      if(qbSyncBusyRef.current||_autoReloadHasUnsavedWork())return;
       if(fired||Date.now()-lastAct<IDLE_RELOAD_MS)return;
       // Reload only a STUCK idle tab (pending/looping saves) — the case the deploy-reload can't handle.
       // A healthy idle tab just does this cheap in-memory check and sits (no reload, no load).
@@ -3541,7 +3550,7 @@ export default function App(){
       // Jitter (2–20s, matching the deploy-reload) so a fleet of simultaneously-idle tabs does not
       // reload-and-refetch in the same instant and spike the DB.
       const jitter=2000+Math.floor(Math.random()*18000);
-      setTimeout(()=>{if(qbSyncBusyRef.current){fired=false;return;}try{window.location.reload()}catch(_){/* noop */}},jitter);
+      setTimeout(()=>{if(qbSyncBusyRef.current||_autoReloadHasUnsavedWork()){fired=false;return;}try{window.location.reload()}catch(_){/* noop */}},jitter);
     };
     const iv=setInterval(tick,60000); // check every minute
     return()=>{clearInterval(iv);window.removeEventListener('pointerdown',mark,{capture:true});window.removeEventListener('keydown',mark,{capture:true})};
