@@ -3631,7 +3631,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // `cost` — mirrors calcGP (commissions) so margin treats shipping as a wash, leaving only an
     // over/under-quote to move it. `rev` stays product+deco (tax, grand, and the REV tile use it),
     // so shipping is applied to margin/pct only. priorShip is excluded (its cost isn't in `cost`).
-    const marginRev=rev+ship+fundraiseRev;
+    // ESTIMATES take no `ship` into marginRev: the wash only works when a real shipping cost can
+    // land in `cost`, and an estimate structurally has none — the estimates table carries
+    // shipping_value/shipping_type/ship_to_id and no actual-cost column, so actualShipCost is
+    // always 0 there. Folding `ship` in anyway booked the whole quoted freight as phantom margin
+    // on the one surface reps discount from (EST-2526 showed 43.7% on a true 40.9%; 365 of 366
+    // open estimates quote shipping). A quote now reports product+deco margin; SOs are unchanged.
+    const marginRev=rev+(isE?0:ship)+fundraiseRev;
     return{rev,cost,ship,priorShip,tax,taxRate,omgFee,omgRevFee,omgTaxRev,omgCostFees,fundraiseRev,actualShipCost,inboundFreight,manualPoCost,grand:rev+ship+priorShip+tax,margin:marginRev-cost,pct:marginRev>0?((marginRev-cost)/marginRev*100):0}},[o,artQty,cust,costArtQty,outsourcedByItemCost]); // eslint-disable-line
 
   // Promo totals — separate calc to not disturb existing totals
