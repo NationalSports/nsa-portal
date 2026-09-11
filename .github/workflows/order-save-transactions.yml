@@ -4,6 +4,8 @@ on:
     paths:
       - 'supabase/migrations/**'
       - 'scripts/pgtest/order_save*'
+      - 'scripts/pgtest/document_history_scenarios.cjs'
+      - 'supabase/tests/document_history_snapshots_regression.sql'
       - 'src/lib/dbEngine.js'
       - '.github/workflows/order-save-transactions.yml'
   workflow_dispatch:
@@ -19,3 +21,5 @@ jobs:
         run: npm install --prefix "$RUNNER_TEMP/order-save-pg" @electric-sql/pglite@0.3.14
       - name: Verify atomic saves and rollback
         run: PGLITE_MODULE="$RUNNER_TEMP/order-save-pg/node_modules/@electric-sql/pglite" node scripts/pgtest/order_save_scenarios.cjs
+      - name: Verify append-only document history
+        run: PGLITE_MODULE="$RUNNER_TEMP/order-save-pg/node_modules/@electric-sql/pglite" node scripts/pgtest/document_history_scenarios.cjs

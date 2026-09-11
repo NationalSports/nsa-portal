@@ -1,3 +1,4 @@
+import {createHistoryStore} from './lib/documentHistory';
 import {createCoalescedReload} from './lib/coalescedReload';
 import { indexFirstById } from './lib/rowLookup';
 /* eslint-disable */
@@ -2699,10 +2700,10 @@ export default function App(){
   React.useEffect(()=>{if(!issueFocus)return;setIssueFilter('all');setOpenIssueThreads(o=>({...o,[issueFocus]:true}));markIssueThreadRead(issueFocus);const t=setTimeout(()=>{try{const el=document.getElementById('issue-'+issueFocus);if(el)el.scrollIntoView({behavior:'smooth',block:'center'})}catch(_){}setIssueFocus(null)},200);return()=>clearTimeout(t)},[issueFocus]);// eslint-disable-line react-hooks/exhaustive-deps
   const exportIssuesCSV=()=>{const hdr=['ID','Status','Priority','Description','Page','Context','Reported By','Role','Timestamp','Resolution','Resolved At'];const rows=issues.map(i=>[i.id,i.status,i.priority,'"'+i.description.replace(/"/g,'""')+'"',i.page,i.viewing||'',i.reported_by||i.reportedBy||'',i.role,i.timestamp,i.resolution||'',i.resolved_at||i.resolvedAt||'']);const csv=[hdr.join(','),...rows.map(r=>r.join(','))].join('\n');const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='issues_export_'+new Date().toISOString().slice(0,10)+'.csv';a.click();URL.revokeObjectURL(url)};
   // SO version history
-  const[soHistory,setSOHistory]=useState(()=>loadState('so_history',{}));// {soId:[{ts,user,snapshot}]}
+  const[soHistory,setSOHistory]=useState({});// {soId:[{ts,user,snapshot}]}
   // Estimate version history — same shape/mechanism as soHistory so a blanked estimate (the EST-1119 failure mode)
-  // can be restored from its last good snapshot. Cloud-backed via app_state, skips localStorage (_LS_SKIP_APPSTATE).
-  const[estHistory,setEstHistory]=useState(()=>loadState('est_history',{}));// {estId:[{ts,user,snapshot}]}
+  // can be restored from its last good snapshot. Snapshots load on the backup page.
+  const[estHistory,setEstHistory]=useState({});// {estId:[{ts,user,snapshot}]}
   const[msgs,setMsgs]=useState(()=>_migrated.msgs);const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});const[vM,setVM]=useState({open:false,v:null});
   // ─── Supabase: load on mount ───
   const _pendingQBTokens=useRef(null);
@@ -2713,11 +2714,9 @@ export default function App(){
   // mutations, never for values just applied from a DB load.
   const _jobTimeLogsApplied=useRef(JSON.stringify(loadState('job_time_logs',[])));
   // Append-blob log keys (Tier-2 item C piece 3): same applied-marker + dirty-window treatment.
-  // These four are in _LS_SKIP_APPSTATE (cloud-only), so loadState returns the same value the
+  // These keys are in _LS_SKIP_APPSTATE (cloud-only), so loadState returns the same value the
   // state initializers got — the mount-time save effect can't open a spurious dirty window.
   const _changeLogApplied=useRef(JSON.stringify(loadState('change_log',[])));
-  const _soHistoryApplied=useRef(JSON.stringify(loadState('so_history',{})));
-  const _estHistoryApplied=useRef(JSON.stringify(loadState('est_history',{})));
   const _invAdjLogApplied=useRef(JSON.stringify(loadState('inv_adj_log',[])));
   // Mirrors whRecentActions' own initializer so the mount-time save effect doesn't open a spurious dirty window.
   const _whActionsApplied=useRef((()=>{try{return JSON.stringify(JSON.parse(localStorage.getItem('nsa_wh_recent_actions')||localStorage.getItem('nsa_wh_recent')||'[]'))}catch{return'[]'}})());
@@ -2891,8 +2890,6 @@ export default function App(){
           if(as.batch_counter)setBatchCounter(as.batch_counter);
           if(as.batch_vendor_counters)setBatchVendorCounters(as.batch_vendor_counters);
           if(as.change_log)setChangeLog(prev=>{const incStr=JSON.stringify(as.change_log);if(JSON.stringify(prev)===incStr){_changeLogApplied.current=incStr;return prev}if(_appStateDirty('change_log'))return prev;_changeLogApplied.current=incStr;return as.change_log});
-          if(as.so_history)setSOHistory(prev=>{const incStr=JSON.stringify(as.so_history);if(JSON.stringify(prev)===incStr){_soHistoryApplied.current=incStr;return prev}if(_appStateDirty('so_history'))return prev;_soHistoryApplied.current=incStr;return as.so_history});
-          if(as.est_history)setEstHistory(prev=>{const incStr=JSON.stringify(as.est_history);if(JSON.stringify(prev)===incStr){_estHistoryApplied.current=incStr;return prev}if(_appStateDirty('est_history'))return prev;_estHistoryApplied.current=incStr;return as.est_history});
           // Whole-blob keys mutated by warehouse tabs: honor the dirty window (same guard as
           // batch_pos at the reload sites) so a receive/clock-out landed during this load isn't
           // replaced by the stale DB copy the load already read.
@@ -2949,7 +2946,7 @@ export default function App(){
             try{
               await _dbSeed({team:REPS,customers:cust,vendors:vend,products:prod,estimates:ests,sales_orders:sos,invoices:invs,messages:msgs,omg_stores:omgStores,issues});
               if(issues?.length) _dbSave('issues',issues.map(i=>_pick(i,_issueCols)));
-              const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,batch_vendor_counters:batchVendorCounters,change_log:changeLog,so_history:soHistory,est_history:estHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter,company_info:companyInfo,wh_recent_actions:whRecentActions};
+              const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,batch_vendor_counters:batchVendorCounters,change_log:changeLog,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter,company_info:companyInfo,wh_recent_actions:whRecentActions};
               for(const[k,v]of Object.entries(_as)){if(v!==undefined&&v!==null)_dbSave('app_state',[{id:k,value:JSON.stringify(v),updated_at:new Date().toISOString()}])}
               await supabase.from('app_state').upsert({id:lockId,value:'"done"',updated_at:new Date().toISOString()});
               console.log('[DB] Seeded Supabase from localStorage');
@@ -2981,8 +2978,6 @@ export default function App(){
               if(as2.batch_pos){_batchPosApplied.current=JSON.stringify(as2.batch_pos);setBatchPOs(as2.batch_pos)}if(as2.submitted_batches)setSubmittedBatches(as2.submitted_batches);
               if(as2.batch_counter)setBatchCounter(as2.batch_counter);if(as2.batch_vendor_counters)setBatchVendorCounters(as2.batch_vendor_counters);
               if(as2.change_log)setChangeLog(prev=>{const incStr=JSON.stringify(as2.change_log);if(JSON.stringify(prev)===incStr){_changeLogApplied.current=incStr;return prev}if(_appStateDirty('change_log'))return prev;_changeLogApplied.current=incStr;return as2.change_log});
-              if(as2.so_history)setSOHistory(prev=>{const incStr=JSON.stringify(as2.so_history);if(JSON.stringify(prev)===incStr){_soHistoryApplied.current=incStr;return prev}if(_appStateDirty('so_history'))return prev;_soHistoryApplied.current=incStr;return as2.so_history});
-              if(as2.est_history)setEstHistory(prev=>{const incStr=JSON.stringify(as2.est_history);if(JSON.stringify(prev)===incStr){_estHistoryApplied.current=incStr;return prev}if(_appStateDirty('est_history'))return prev;_estHistoryApplied.current=incStr;return as2.est_history});
               if(as2.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as2.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as2.job_time_logs});
               if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]},parkedPurchaseOrderIds:[]};const _qbLoaded={..._qbDef,...as2.qb_config,mapping:migrateQBAccountMapping(as2.qb_config.mapping),autoSync:as2.qb_config.initialMigrationApproved===true?(as2.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]};setQBConfig(mergeDurableQBLinks(mergeDurableQbCanaries(_qbLoaded,as2),{...as2,..._qbDurableRowsRef.current}))}if(as2.inv_pos)setInvPOs(as2.inv_pos);
               if(as2.inv_adj_log)setInvAdjLog(prev=>{const incStr=JSON.stringify(as2.inv_adj_log);if(JSON.stringify(prev)===incStr){_invAdjLogApplied.current=incStr;return prev}if(_appStateDirty('inv_adj_log'))return prev;_invAdjLogApplied.current=incStr;return as2.inv_adj_log});if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);if(as2.comm_overrides)setCommOverrides(as2.comm_overrides);if(as2.labor_rates)setLaborRates(as2.labor_rates);
@@ -2995,7 +2990,7 @@ export default function App(){
               try{
                 await _dbSeed({team:REPS,customers:cust,vendors:vend,products:prod,estimates:ests,sales_orders:sos,invoices:invs,messages:msgs,omg_stores:omgStores,issues});
                 if(issues?.length) _dbSave('issues',issues.map(i=>_pick(i,_issueCols)));
-                const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,batch_vendor_counters:batchVendorCounters,change_log:changeLog,so_history:soHistory,est_history:estHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter,company_info:companyInfo,wh_recent_actions:whRecentActions};
+                const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,batch_vendor_counters:batchVendorCounters,change_log:changeLog,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter,company_info:companyInfo,wh_recent_actions:whRecentActions};
                 for(const[k,v]of Object.entries(_as)){if(v!==undefined&&v!==null)_dbSave('app_state',[{id:k,value:JSON.stringify(v),updated_at:new Date().toISOString()}])}
                 await supabase.from('app_state').upsert({id:lockId,value:'"done"',updated_at:new Date().toISOString()});
                 console.log('[DB] Seeded Supabase from localStorage (fallback)');
@@ -3160,7 +3155,7 @@ export default function App(){
   // Match the unload warning: a preserved conflict is still unsaved work even
   // after it has left the failed-save retry set. Only an explicit user reload
   // may proceed to the browser's own warning while this is true.
-  const _autoReloadHasUnsavedWork=()=>dirtyRef.current||_dbSavePendingIds.size>0||_dbSaveFailedIds.size>0||_outboxList().length>0;
+  const _autoReloadHasUnsavedWork=()=>dirtyRef.current||_dbSavePendingIds.size>0||_dbSaveFailedIds.size>0||_outboxList().length>0||Boolean(_historyStoreRef.current?.hasPending());
   // ─── Deploy-aware auto-reload ───
   // Long-lived/abandoned tabs keep running stale JS and can hammer the API. Watch for a new
   // build and reload once the tab is idle — no save in flight, none just finished, none failed
@@ -4497,8 +4492,49 @@ export default function App(){
     if(newCounter!==batchCounter)setBatchCounter(newCounter);
   },[batchPOs,batchVendorCounters,submittedBatches]);// eslint-disable-line react-hooks/exhaustive-deps
   React.useEffect(()=>{const cur=JSON.stringify(changeLog);if(_changeLogApplied.current!==cur)_setAppStateDirtyUntil('change_log',Date.now()+12000);_saveAppState('change_log',changeLog)},[changeLog]);
-  React.useEffect(()=>{const cur=JSON.stringify(soHistory);if(_soHistoryApplied.current!==cur)_setAppStateDirtyUntil('so_history',Date.now()+12000);_saveAppState('so_history',soHistory)},[soHistory]);
-  React.useEffect(()=>{const cur=JSON.stringify(estHistory);if(_estHistoryApplied.current!==cur)_setAppStateDirtyUntil('est_history',Date.now()+12000);_saveAppState('est_history',estHistory)},[estHistory]);
+  // History is append-only and independent of the document save/load guard. Only
+  // the backup page downloads snapshots; startup integrity checks use small summaries.
+  const _historyStoreRef=useRef(null);
+  if(!_historyStoreRef.current)_historyStoreRef.current=createHistoryStore({client:supabase});
+  const _historyStore=_historyStoreRef.current;
+  const[historyStatus,setHistoryStatus]=useState('idle');
+  const[historyError,setHistoryError]=useState('');
+  const[historySummary,setHistorySummary]=useState(null);
+  const[historyCheckError,setHistoryCheckError]=useState('');
+  const _historySummaryLoaded=useRef(false);
+  const _refreshHistorySummary=async()=>{
+    try{const rows=await _historyStore.summary();setHistorySummary(rows);_historySummaryLoaded.current=true;setHistoryCheckError('');}
+    catch(e){setHistoryCheckError('History checks unavailable: '+e.message);throw e;}
+  };
+  const _historyRevision=useRef(0);
+  const _historyLoading=useRef(null);
+  const _recordHistory=(kind,id,previous)=>{
+    const entry={ts:new Date().toLocaleString(),captured_at:new Date().toISOString(),user:cu?.name||'Portal Coach',snapshot:JSON.parse(JSON.stringify(previous))};
+    _historyRevision.current++;
+    (kind==='so_history'?setSOHistory:setEstHistory)(h=>({...h,[id]:[entry,...(h[id]||[])]}));
+    _historyStore.append(kind,id,entry).catch(e=>{
+      setHistoryError(e.message||'History could not sync. Keep this tab open and retry.');
+      nf('Version history has not synced. Your order save is tracked separately.','error');
+    });
+  };
+  const _loadHistory=()=>{
+    if(_historyLoading.current)return _historyLoading.current;
+    setHistoryStatus('loading');
+    _historyLoading.current=(async()=>{
+      for(let attempt=0;attempt<3;attempt++){
+        const revision=_historyRevision.current;
+        await _historyStore.flush();
+        const data=await _historyStore.loadAll();
+        if(revision!==_historyRevision.current)continue;
+        setSOHistory(data.so_history);setEstHistory(data.est_history);
+        setHistoryStatus('ready');setHistoryError('');return data;
+      }
+      throw new Error('History changed during loading. Please retry once saving finishes.');
+    })().catch(e=>{setHistoryStatus('error');setHistoryError(e.message);throw e;})
+      .finally(()=>{_historyLoading.current=null;});
+    return _historyLoading.current;
+  };
+  React.useEffect(()=>{if(pg==='backup'&&!dbLoading&&_dbLoadSuccess.current)_loadHistory().catch(()=>{});},[pg,dbLoading]);
   // Boot-time snapshot regression scan: walk each SO's snapshot history and flag any whose latest
   // snapshot has fewer items than the one before it. One-shot per session — useful for catching anything
   // that slipped through the live guards before they existed.
@@ -4508,22 +4544,22 @@ export default function App(){
     // Wait for the initial cloud load to finish before scanning — otherwise the `issues` list below
     // isn't authoritative yet and we'd re-file/re-alert issues that were already logged or resolved.
     if(!_dbLoadSuccess.current)return;
-    if(!soHistory||Object.keys(soHistory).length===0)return;
+    if(!historySummary)return;
     if(!sos||sos.length===0)return;
     _bootScanRanRef.current=true;
     const flagged=[];
-    Object.entries(soHistory).forEach(([soId,snaps])=>{
-      if(!Array.isArray(snaps)||snaps.length<2)return;
+    historySummary.filter(row=>row.kind==='so_history').forEach(row=>{
+      const soId=row.document_id;
+      if(Number(row.snapshot_count)<2)return;
       // snaps[0] is the most-recent prev (just before the latest save). Compare it to the live SO state.
       const liveSO=sos.find(s=>s.id===soId);if(!liveSO||liveSO.deleted_at)return;
       const liveCount=(liveSO.items||[]).length;
       // Find the most recent snapshot whose snapshot.items.length > 0
-      const lastGood=snaps.find(s=>(s?.snapshot?.items||[]).length>0);
-      if(!lastGood)return;
-      const lastGoodCount=lastGood.snapshot.items.length;
+      const lastGoodCount=Number(row.last_good_count)||0;
+      if(!lastGoodCount)return;
       // Only flag a *significant* loss — the SO wiped to zero, or lost more than half its items.
       // Reps routinely delete a line or two as normal workflow, so small drops are not data loss.
-      if(liveCount<lastGoodCount&&(liveCount===0||(lastGoodCount-liveCount)>lastGoodCount/2)){flagged.push({soId,liveCount,lastGoodCount,lastGoodTs:lastGood.ts})}
+      if(liveCount<lastGoodCount&&(liveCount===0||(lastGoodCount-liveCount)>lastGoodCount/2)){flagged.push({soId,liveCount,lastGoodCount,lastGoodTs:row.last_good_ts})}
     });
     // Admin-only: reps and other users should never see this internal data-integrity alert.
     const _isAdminRole=cu?.role==='admin'||cu?.role==='super_admin';
@@ -4543,26 +4579,26 @@ export default function App(){
         nf('⚠️ '+newIssues.length+' SO(s) may have lost items vs. snapshot history — logged to the Issues page','error');
       }
     }
-  },[sos,soHistory]);
+  },[sos,historySummary]);
   // Boot-time snapshot regression scan for Estimates — mirrors the SO scan above.
   const _estBootScanRanRef=React.useRef(false);
   React.useEffect(()=>{
     if(_estBootScanRanRef.current)return;
     // Same load gate as the SO scan — don't scan until the cloud `issues` list is authoritative.
     if(!_dbLoadSuccess.current)return;
-    if(!estHistory||Object.keys(estHistory).length===0)return;
+    if(!historySummary)return;
     if(!ests||ests.length===0)return;
     _estBootScanRanRef.current=true;
     const flagged=[];
-    Object.entries(estHistory).forEach(([estId,snaps])=>{
-      if(!Array.isArray(snaps)||snaps.length<2)return;
+    historySummary.filter(row=>row.kind==='est_history').forEach(row=>{
+      const estId=row.document_id;
+      if(Number(row.snapshot_count)<2)return;
       const liveEst=ests.find(e=>e.id===estId);if(!liveEst||liveEst.deleted_at)return;
       const liveCount=(liveEst.items||[]).length;
-      const lastGood=snaps.find(s=>(s?.snapshot?.items||[]).length>0);
-      if(!lastGood)return;
-      const lastGoodCount=lastGood.snapshot.items.length;
+      const lastGoodCount=Number(row.last_good_count)||0;
+      if(!lastGoodCount)return;
       // Only flag a wipe to zero or losing more than half the items — routine line deletions are normal.
-      if(liveCount<lastGoodCount&&(liveCount===0||(lastGoodCount-liveCount)>lastGoodCount/2)){flagged.push({estId,liveCount,lastGoodCount,lastGoodTs:lastGood.ts})}
+      if(liveCount<lastGoodCount&&(liveCount===0||(lastGoodCount-liveCount)>lastGoodCount/2)){flagged.push({estId,liveCount,lastGoodCount,lastGoodTs:row.last_good_ts})}
     });
     const _isAdminRole=cu?.role==='admin'||cu?.role==='super_admin';
     if(flagged.length&&_isAdminRole){
@@ -4579,7 +4615,7 @@ export default function App(){
         nf('⚠️ '+newIssues.length+' Estimate(s) may have lost items vs. snapshot history — logged to the Issues page','error');
       }
     }
-  },[ests,estHistory]);
+  },[ests,historySummary]);
   const persistQbLink=async(record)=>{
     if(!storedUserCanManageQuickBooks()||!_initialLoadDone.current||!_dbLoadSuccess.current)throw new Error('Wait for a successful portal load before saving QBO links.');
     const realmId=String(qbConfig.realm_id||'');
@@ -4632,7 +4668,7 @@ export default function App(){
   // Warn user before closing/reloading if there are failed saves (data at risk of loss).
   // Cloud is source of truth — heavy tables reload from Supabase, no need to flush them to localStorage.
   React.useEffect(()=>{const h=e=>{
-    if(window.location.search.includes('portal='))return;if(_dbSaveFailedIds.size>0||_dbSavePendingIds.size>0||_outboxList().length>0){e.preventDefault();e.returnValue=''}};window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h)},[]);
+    if(window.location.search.includes('portal='))return;if(_dbSaveFailedIds.size>0||_dbSavePendingIds.size>0||_outboxList().length>0||_historyStore.hasPending()){e.preventDefault();e.returnValue=''}};window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h)},[]);
   // Retry failed saves immediately when tab regains visibility (don't wait 60s).
   // Heavy tables are no longer flushed to localStorage on hide — cloud is the source of truth.
   React.useEffect(()=>{
@@ -6112,6 +6148,19 @@ export default function App(){
   // may move follow_up_at; inspecting an order must leave its reminder due.
   const _todoClickedThrough=()=>{};
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
+  React.useEffect(()=>{
+    if(dbLoading||!_dbLoadSuccess.current||!cu?.id)return;
+    let cancelled=false;
+    const retry=async()=>{
+      try{await _historyStore.flush();if(cancelled)return;setHistoryError('');}
+      catch(e){if(!cancelled)setHistoryError(e.message);return;}
+      if(!_historySummaryLoaded.current)await _refreshHistorySummary().catch(()=>{});
+    };
+    retry();
+    const timer=setInterval(retry,30000);
+    window.addEventListener('online',retry);
+    return()=>{cancelled=true;clearInterval(timer);window.removeEventListener('online',retry)};
+  },[dbLoading,cu?.id]);
   const isMySaveNotice=useMemo(()=>createRepSaveNoticeFilter({repId:cu?.id,customers:cust,salesOrders:sos,estimates:ests,invoices:invs}),[cu?.id,cust,sos,ests,invs]);
   const visibleOutboxConflicts=outboxConflicts.filter(isMySaveNotice);
   const visibleFailedSaveIds=useMemo(()=>{
@@ -6930,8 +6979,8 @@ export default function App(){
     // Mark AFTER the abort guard — a blocked save must not arm the merge protection with a status that never persisted.
     if(prev&&prev.status!==e2.status)_markEstStatusChange(e2);
     // Snapshot the prior state before overwriting so a blanked estimate can be restored from Estimate Version
-    // History. Keeps the last 20 saves, cloud-backed via app_state (est_history).
-    if(prev){setEstHistory(h=>{const existing=h[e2.id]||[];return{...h,[e2.id]:[{ts:new Date().toLocaleString(),user:cu?.name||'Portal Coach',snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
+    // History. Appends a durable per-document snapshot without rewriting other estimates.
+    if(prev)_recordHistory('est_history',e2.id,prev);
     setEsts(p=>{const ex=p.find(x=>x.id===e2.id);return ex?p.map(x=>x.id===e2.id?e2:x):[...p,e2]});
     logChange(prev?'updated':'created','Estimate',e2.id,e2.memo||'');return e2};
   // Result-checked estimate save, matching savSONow. Autosave and emergency editor flushes must enter the
@@ -7017,7 +7066,7 @@ export default function App(){
       const lost=prev.items.length-(sl.items?.length||0);
       if(_dataLossAlert)_dataLossAlert({kind:'lost',soId:sl.id,prevCount:prev.items.length,newCount:sl.items.length,reason:lost+' line item(s) removed from save (source data not fully loaded)'});
     }
-    if(prev){setSOHistory(h=>{const existing=h[sl.id]||[];return{...h,[sl.id]:[{ts:new Date().toLocaleString(),user:cu?.name||'Portal Coach',snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
+    if(prev)_recordHistory('so_history',sl.id,prev);
     // Merge pick_line statuses — preserve 'pulled' status from current state so warehouse pulls aren't lost
     // Skip merge when warehouse is intentionally editing/reverting pick_line statuses
     if(!skipMerge&&prev&&sl.items&&prev.items){
@@ -15172,15 +15221,16 @@ export default function App(){
 
 
   // BACKUP & DATA PAGE
-  const getFullState=()=>({
+  const getFullState=(history)=>({
     _meta:{version:'1.0',exported_at:new Date().toISOString(),exported_by:cu.name,app:'NSA Portal'},
     customers:cust,estimates:ests,sales_orders:sos,products:prod,messages:msgs,invoices:invs,
     batch_queue:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,batch_vendor_counters:batchVendorCounters,
-    change_log:changeLog,so_history:soHistory,est_history:estHistory,
+    change_log:changeLog,so_history:history.so_history,est_history:history.est_history,
     inv_adj_log:invAdjLog,inv_pos:invPOs,inv_po_counter:invPOCounter
   });
-  const exportBackup=()=>{
-    const data=getFullState();
+  const exportBackup=async()=>{
+    let history;try{history=await _loadHistory()}catch(e){nf("Backup cancelled: "+e.message,"error");return;}
+    const data=getFullState(history);
     const json=JSON.stringify(data,null,2);
     const blob=new Blob([json],{type:'application/json'});
     const url=URL.createObjectURL(blob);
@@ -15194,11 +15244,14 @@ export default function App(){
   };
   const importBackup=(file)=>{
     const reader=new FileReader();
-    reader.onload=e=>{
+    reader.onload=async e=>{
       try{
         const data=JSON.parse(e.target.result);
         if(!data._meta)throw new Error('Not a valid NSA backup file');
-        if(window.confirm('⚠️ This will REPLACE all current data with the backup from '+data._meta.exported_at+' by '+data._meta.exported_by+'. Are you sure?')){
+        if(window.confirm('⚠️ This will REPLACE all current data with the backup from '+data._meta.exported_at+' by '+data._meta.exported_by+'. Existing version history will be preserved. Are you sure?')){
+          await _historyStore.importAll(data);
+          _historyRevision.current++;
+          await _loadHistory();
           if(data.customers)setCust(data.customers);
           if(data.estimates)setEsts(data.estimates);
           if(data.sales_orders)setSOs(data.sales_orders);
@@ -15210,8 +15263,6 @@ export default function App(){
           if(data.batch_counter)setBatchCounter(data.batch_counter);
           if(data.batch_vendor_counters)setBatchVendorCounters(data.batch_vendor_counters);
           if(data.change_log)setChangeLog(data.change_log);
-          if(data.so_history)setSOHistory(data.so_history);
-          if(data.est_history)setEstHistory(data.est_history);
           if(data.inv_adj_log)setInvAdjLog(data.inv_adj_log);
           if(data.inv_pos)setInvPOs(data.inv_pos);
           if(data.inv_po_counter)setInvPOCounter(data.inv_po_counter);
@@ -15228,13 +15279,16 @@ export default function App(){
     try{localStorage.removeItem('nsa_auto_backup');localStorage.removeItem('nsa_auto_backup_ts')}catch{}
   },[]);
 
-  const restoreAutoBackup=()=>{
+  const restoreAutoBackup=async()=>{
     try{
       const raw=localStorage.getItem('nsa_auto_backup');
       if(!raw){nf('No auto-backup found');return}
       const data=JSON.parse(raw);
       const ts=localStorage.getItem('nsa_auto_backup_ts')||'unknown';
       if(window.confirm('Restore auto-backup from '+new Date(ts).toLocaleString()+'?\n\n'+(data._meta?.version==='2.0'?'(Lightweight backup — restores batch POs, changelog, inventory data. Main data loads from cloud.)':'(Full backup — restores all data.)'))){
+        await _historyStore.importAll(data);
+        _historyRevision.current++;
+        await _loadHistory();
         // Support both legacy v1 full backups and new v2 lightweight backups
         if(data.customers)setCust(data.customers);
         if(data.estimates)setEsts(data.estimates);
@@ -15247,7 +15301,6 @@ export default function App(){
         if(data.batch_counter)setBatchCounter(data.batch_counter);
         if(data.batch_vendor_counters)setBatchVendorCounters(data.batch_vendor_counters);
         if(data.change_log)setChangeLog(data.change_log);
-        if(data.so_history)setSOHistory(data.so_history);if(data.est_history)setEstHistory(data.est_history);
         if(data.inv_adj_log)setInvAdjLog(data.inv_adj_log);
         if(data.inv_pos)setInvPOs(data.inv_pos);
         if(data.inv_po_counter)setInvPOCounter(data.inv_po_counter);
@@ -33729,8 +33782,9 @@ export default function App(){
         </div>
         <div className="card-body">
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
-            <button className="btn btn-primary" style={{background:'#4285f4',borderColor:'#4285f4',padding:'12px 20px',fontSize:13}} onClick={()=>{
-              const data=getFullState();
+            <button className="btn btn-primary" style={{background:'#4285f4',borderColor:'#4285f4',padding:'12px 20px',fontSize:13}} onClick={async()=>{
+              let history;try{history=await _loadHistory()}catch(e){nf('Backup cancelled: '+e.message,'error');return;}
+              const data=getFullState(history);
               const json=JSON.stringify(data,null,2);
               const blob=new Blob([json],{type:'application/json'});
               const ts=new Date().toISOString().split('T')[0];
@@ -33760,11 +33814,12 @@ export default function App(){
         </div>
       </div>
 
+      {(historyError||historyCheckError)&&<div role="alert" style={{padding:12,color:'#991b1b'}}>{historyError||historyCheckError} <button className="btn btn-secondary" onClick={()=>_loadHistory().then(()=>_refreshHistorySummary()).catch(()=>{})}>Retry history</button></div>}
       {/* SO Version History */}
       <div className="card" style={{marginBottom:16}}>
         <div className="card-header"><h2>📜 SO Version History</h2><span style={{fontSize:12,color:'#64748b'}}>{Object.keys(soHistory).length} SOs tracked</span></div>
         <div className="card-body" style={{padding:0}}>
-          {Object.keys(soHistory).length===0?<div className="empty" style={{padding:20}}>No version history yet. Changes to SOs will be tracked here.</div>:
+          {historyStatus!=='ready'?<div className="empty" style={{padding:20}}>History {historyStatus==='error'?'could not load':'is loading'} — recovery entries are not yet available.</div>:Object.keys(soHistory).length===0?<div className="empty" style={{padding:20}}>No version history yet. Changes to SOs will be tracked here.</div>:
           <table><thead><tr><th>SO</th><th>Versions</th><th>Latest Save</th><th>Action</th></tr></thead><tbody>
           {Object.entries(soHistory).map(([soId,versions])=><tr key={soId}>
             <td style={{fontWeight:700,color:'#1e40af'}}>{soId}</td>
@@ -33785,7 +33840,7 @@ export default function App(){
       <div className="card" style={{marginBottom:16}}>
         <div className="card-header"><h2>📜 Estimate Version History</h2><span style={{fontSize:12,color:'#64748b'}}>{Object.keys(estHistory).length} estimates tracked</span></div>
         <div className="card-body" style={{padding:0}}>
-          {Object.keys(estHistory).length===0?<div className="empty" style={{padding:20}}>No version history yet. Changes to estimates will be tracked here.</div>:
+          {historyStatus!=='ready'?<div className="empty" style={{padding:20}}>History {historyStatus==='error'?'could not load':'is loading'} — recovery entries are not yet available.</div>:Object.keys(estHistory).length===0?<div className="empty" style={{padding:20}}>No version history yet. Changes to estimates will be tracked here.</div>:
           <table><thead><tr><th>Estimate</th><th>Versions</th><th>Latest Save</th><th>Action</th></tr></thead><tbody>
           {Object.entries(estHistory).map(([estId,versions])=><tr key={estId}>
             <td style={{fontWeight:700,color:'#1e40af'}}>{estId}</td>
