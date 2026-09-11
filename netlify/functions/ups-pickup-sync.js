@@ -23,30 +23,37 @@ const ptNow = () => new Date().toLocaleString('en-US', { timeZone: 'America/Los_
 
 // Same status logic as netlify/functions/ups-tracking.js (the browser endpoint).
 async function upsStatus(tracking) {
-  const response = await fetch('https://webapis.ups.com/track/api/Track/GetStatus?loc=en_US', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'User-Agent': 'Mozilla/5.0',
-      'Origin': 'https://www.ups.com',
-      'Referer': 'https://www.ups.com/track',
-    },
-    body: JSON.stringify({ Locale: 'en_US', TrackingNumber: [tracking] }),
-  });
-  if (!response.ok) return { pickedUp: false, status: 'http_' + response.status };
-  const data = await response.json();
-  const pkg = data?.trackDetails?.[0];
-  if (!pkg) return { pickedUp: false, status: 'not_found' };
-  const statusDesc = (pkg.packageStatus || '').toLowerCase();
-  const activities = pkg.shipmentProgressActivities || [];
-  const delivered = statusDesc.includes('delivered');
-  const pickedUp = delivered ||
-    statusDesc.includes('in transit') ||
-    statusDesc.includes('on the way') ||
-    statusDesc.includes('out for delivery') ||
-    statusDesc.includes('departed') ||
-    activities.length > 1; // multiple scan activities means UPS has the package
-  return { pickedUp, delivered, status: pkg.packageStatus || 'unknown' };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6000);
+  try {
+    const response = await fetch('https://webapis.ups.com/track/api/Track/GetStatus?loc=en_US', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0',
+        'Origin': 'https://www.ups.com',
+        'Referer': 'https://www.ups.com/track',
+      },
+      body: JSON.stringify({ Locale: 'en_US', TrackingNumber: [tracking] }),
+    });
+    if (!response.ok) throw new Error('UPS returned ' + response.status);
+    const data = await response.json();
+    const pkg = data?.trackDetails?.[0];
+    if (!pkg) return { pickedUp: false, status: 'not_found' };
+    const statusDesc = (pkg.packageStatus || '').toLowerCase();
+    const activities = pkg.shipmentProgressActivities || [];
+    const delivered = statusDesc.includes('delivered');
+    const pickedUp = delivered ||
+      statusDesc.includes('in transit') ||
+      statusDesc.includes('on the way') ||
+      statusDesc.includes('out for delivery') ||
+      statusDesc.includes('departed') ||
+      activities.length > 1; // multiple scan activities means UPS has the package
+    return { pickedUp, delivered, status: pkg.packageStatus || 'unknown' };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 exports.handler = async () => {
@@ -85,6 +92,7 @@ exports.handler = async () => {
   }
 
   let checked = 0, confirmed = 0, updatedSOs = 0, errors = 0;
+  let upsUnavailable = false;
   const cache = new Map(); // tracking number -> UPS result (dedupe across shipments)
 
   for (const row of rows) {
@@ -96,7 +104,7 @@ exports.handler = async () => {
     const updated = [];
     for (const s of shipments) {
       const tn = s && s.tracking_number ? String(s.tracking_number).trim() : '';
-      if (!tn || s.carrier_picked_up || !/^1Z/i.test(tn) || checked >= MAX_CHECKS_PER_RUN) {
+      if (!tn || s.carrier_picked_up || !/^1Z/i.test(tn) || checked >= MAX_CHECKS_PER_RUN || upsUnavailable) {
         updated.push(s);
         continue;
       }
@@ -108,6 +116,7 @@ exports.handler = async () => {
           console.warn('[ups-pickup-sync] UPS check failed for', tn, e.message);
           res = { pickedUp: false, status: 'error' };
           errors++;
+          upsUnavailable = true; // Stop the batch during an upstream outage.
         }
         cache.set(tn, res);
         checked++;

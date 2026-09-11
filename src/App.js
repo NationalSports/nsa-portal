@@ -36,6 +36,7 @@ import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, r
 import { stampEstimateDraftLineIds } from './lib/orderLineIdentity';
 import { searchSalesOrders } from './lib/searchSalesOrders';
 import GlobalSearch from './GlobalSearch';
+import { checkUpsTracking } from './lib/upsTracking';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills, portalBillAlreadyApplied,buildQboBackfillRows,buildQboCanaryRecoveryRow,qboBackfillHistory} from './appliedBillsLedger';
 import { createBillApplySession, billAttemptJournal, billingAttemptKey, sameBillingSnapshot } from './billApplySession';
 import { canViewAiInbox, resolveAccessUser } from './lib/pageAccess';
@@ -19369,7 +19370,11 @@ export default function App(){
   const[shippedCustF,setShippedCustF]=useState('all');const[shippedDateF,setShippedDateF]=useState('all');
   const[whRecentActions,setWhRecentActions]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_wh_recent_actions')||localStorage.getItem('nsa_wh_recent')||'[]')}catch{return[]}});
   // Auto-check UPS pickup status once daily after 3 AM (moved out of rWarehouse to avoid conditional hook call)
+  const upsCheckRunning=React.useRef(false);
+  const upsPageRef=React.useRef(pg);upsPageRef.current=pg;
+  const[upsChecking,setUpsChecking]=useState(false);
   React.useEffect(()=>{
+    if(pg!=='warehouse'||upsCheckRunning.current)return;
     let count=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(!shp.carrier_picked_up)count++})});
     if(!count)return;
     const lastCheck=localStorage.getItem('nsa_ups_pickup_check');
@@ -19387,29 +19392,37 @@ export default function App(){
         });
       });
       if(!pending.length)return;
-      console.log('[UPS] Auto-checking',pending.length,'packages for pickup status');
-      // Group by SO and save once per SO — saving inside the per-shipment loop from the
-      // original snapshot let each save overwrite the previous shipment's pickup flag.
-      const bySO=new Map();
-      pending.forEach(p=>{if(!bySO.has(p.so.id))bySO.set(p.so.id,{so:p.so,shps:[]});bySO.get(p.so.id).shps.push(p)});
-      for(const{so,shps}of bySO.values()){
-        let ships=so._shipments||[];let changed=false;
-        for(const shp of shps){
-          try{
-            const resp=await fetch('/.netlify/functions/ups-tracking?tracking='+encodeURIComponent(shp.tracking_number));
-            if(!resp.ok){console.warn('[UPS] Tracking API returned',resp.status,'for',shp.tracking_number);continue}
-            const data=await resp.json();
-            if(data.pickedUp){
-              ships=ships.map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString(),ups_status:data.status}:s);
-              changed=true;
+      upsCheckRunning.current=true;setUpsChecking(true);
+      try{
+        console.log('[UPS] Auto-checking',pending.length,'packages for pickup status');
+        // Group by SO and save once per SO — saving inside the per-shipment loop from the
+        // original snapshot let each save overwrite the previous shipment's pickup flag.
+        const bySO=new Map();
+        pending.forEach(p=>{if(!bySO.has(p.so.id))bySO.set(p.so.id,{so:p.so,shps:[]});bySO.get(p.so.id).shps.push(p)});
+        for(const{so,shps}of bySO.values()){
+          let ships=so._shipments||[];let changed=false;
+          for(const shp of shps){
+            if(upsPageRef.current!=='warehouse'){
+              if(changed)savSO({...so,_shipments:ships});
+              return;
             }
-          }catch(e){console.warn('[UPS] Auto-check failed for',shp.tracking_number,e)}
+            try{
+              const data=await checkUpsTracking(shp.tracking_number);
+              if(data.pickedUp){
+                ships=ships.map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString(),ups_status:data.status}:s);
+                changed=true;
+              }
+            }catch(e){
+              if(changed)savSO({...so,_shipments:ships});
+              console.warn('[UPS] Auto-check paused:',e.message);return;
+            }
+          }
+          if(changed)savSO({...so,_shipments:ships});
         }
-        if(changed)savSO({...so,_shipments:ships});
-      }
+      }finally{upsCheckRunning.current=false;setUpsChecking(false)}
     };
     checkPickups();
-  },[sos]); // eslint-disable-line react-hooks/exhaustive-deps
+  },[sos,pg]); // eslint-disable-line react-hooks/exhaustive-deps
   const addWhAction=(action)=>{setWhRecentActions(prev=>[{...action,ts:Date.now(),at:new Date().toLocaleString()},...prev].slice(0,500))};
   // ─── Mobile "Ready for decoration" pop-up ──────────────────────────────────────────────
   // Desktop shows a persistent green banner listing the ready job(s) and every garment line
@@ -21020,35 +21033,42 @@ export default function App(){
           awaitingPickup.sort((a,b)=>(a.created_at||'').localeCompare(b.created_at||''));
           if(awaitingPickup.length===0)return null;
           const checkUPSPickups=async()=>{
+            if(upsCheckRunning.current)return;
             const upsShipments=awaitingPickup.filter(s=>/^1Z/i.test(s.tracking_number));
             if(!upsShipments.length){nf('No UPS packages to check');return}
-            nf('Checking '+upsShipments.length+' UPS package'+(upsShipments.length!==1?'s':'')+'...');
-            let confirmed=0;
-            // Group by SO and save once per SO — per-shipment saves from the same stale base
-            // overwrite each other when one SO has multiple pending UPS shipments.
-            const bySO=new Map();
-            upsShipments.forEach(p=>{if(!bySO.has(p.so.id))bySO.set(p.so.id,{so:p.so,shps:[]});bySO.get(p.so.id).shps.push(p)});
-            for(const{so,shps}of bySO.values()){
-              let ships=so._shipments||[];let changed=false;
-              for(const shp of shps){
-                try{
-                  const resp=await fetch('/.netlify/functions/ups-tracking?tracking='+encodeURIComponent(shp.tracking_number));
-                  const data=await resp.json();
-                  if(data.pickedUp){
-                    ships=ships.map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString(),ups_status:data.status}:s);
-                    addWhAction({type:'pickup_confirmed',soId:shp.soId,customer:shp.cName,tracking:shp.tracking_number,carrier:'ups',by:'auto-check'});
-                    confirmed++;changed=true;
+            upsCheckRunning.current=true;setUpsChecking(true);
+            try{
+              nf('Checking '+upsShipments.length+' UPS package'+(upsShipments.length!==1?'s':'')+'...');
+              let confirmed=0;
+              // Group by SO and save once per SO — per-shipment saves from the same stale base
+              // overwrite each other when one SO has multiple pending UPS shipments.
+              const bySO=new Map();
+              upsShipments.forEach(p=>{if(!bySO.has(p.so.id))bySO.set(p.so.id,{so:p.so,shps:[]});bySO.get(p.so.id).shps.push(p)});
+              for(const{so,shps}of bySO.values()){
+                let ships=so._shipments||[];let changed=false;
+                for(const shp of shps){
+                  try{
+                    const data=await checkUpsTracking(shp.tracking_number);
+                    if(data.pickedUp){
+                      ships=ships.map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString(),ups_status:data.status}:s);
+                      addWhAction({type:'pickup_confirmed',soId:shp.soId,customer:shp.cName,tracking:shp.tracking_number,carrier:'ups',by:'auto-check'});
+                      confirmed++;changed=true;
+                    }
+                  }catch(e){
+                    if(changed)savSO({...so,_shipments:ships});
+                    nf('UPS tracking is unavailable. Check stopped; remaining packages were not checked.'+(confirmed?' '+confirmed+' pickup(s) confirmed.':''),'error');
+                    return;
                   }
-                }catch(e){console.warn('[UPS] Check failed for',shp.tracking_number,e)}
+                }
+                if(changed)savSO({...so,_shipments:ships});
               }
-              if(changed)savSO({...so,_shipments:ships});
-            }
-            nf(confirmed>0?confirmed+' package'+(confirmed!==1?'s':'')+' confirmed picked up':'No new pickups detected');
+              nf(confirmed>0?confirmed+' package'+(confirmed!==1?'s':'')+' confirmed picked up':'No new pickups detected');
+            }finally{upsCheckRunning.current=false;setUpsChecking(false)}
           };
           return<div style={{marginTop:16}}>
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
               <span style={{fontSize:12,fontWeight:800,color:'#d97706',textTransform:'uppercase'}}>Awaiting Carrier Pickup ({awaitingPickup.length})</span>
-              <button style={{fontSize:9,background:'#d97706',color:'white',border:'none',padding:'3px 10px',borderRadius:4,fontWeight:700,cursor:'pointer'}} onClick={checkUPSPickups}>Check UPS Pickups</button>
+              <button style={{fontSize:9,background:'#d97706',color:'white',border:'none',padding:'3px 10px',borderRadius:4,fontWeight:700,cursor:'pointer'}} disabled={upsChecking} onClick={checkUPSPickups}>{upsChecking?'Checking UPS…':'Check UPS Pickups'}</button>
             </div>
             <div style={{display:'grid',gap:6}}>
               {awaitingPickup.map((shp,si)=>{
