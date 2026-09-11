@@ -162,7 +162,7 @@ const rosterPage = (d, r, pageLabel) => {
       <div style="display:grid;grid-template-columns:1fr 1fr"><div style="border-right:1px solid ${C.line}">${left.map(groupHtml).join('')}</div><div>${rightG.map(groupHtml).join('')}</div></div>
     </div>
     <div style="margin-top:9px;font-size:10.5px;color:${C.gray};line-height:1.45">Verify all spellings against the coach-approved roster before pressing. Flag any TBD / add-on players to the account rep.</div>
-    ${footer(d.footerLeft, `${esc(d.id)} · Roster`, pageLabel)}`;
+    ${footer(d.footerLeft, `${esc(d.id)} · Roster${r.garment ? ` · ${esc(r.garment)}` : ''}`, pageLabel)}`;
   return sheet(inner, 'margin-top:24px;');
 };
 
@@ -193,7 +193,10 @@ export function buildWorkOrderDoc(data) {
   const d = data || {};
   const mocks = d.mocks || [];
   const dual = mocks.length > 1;
-  const hasRoster = !!(d.roster && d.roster.groups && d.roster.groups.length);
+  // A job can carry a roster per garment line (d.rosters). d.roster stays as the first
+  // block so older callers/tests that pass a single roster still render one page.
+  const rosters = (d.rosters && d.rosters.length ? d.rosters : (d.roster ? [d.roster] : []))
+    .filter((r) => r && r.groups && r.groups.length);
   const rushMethod = `<div style="margin-top:6px;display:inline-flex;align-items:center;gap:7px">${d.rush ? `<span style="font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#fff;background:${C.red};padding:3px 8px;border-radius:4px">Rush</span>` : ''}<span style="font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${C.navy};border:1px solid #C9CFDD;padding:3px 8px;border-radius:4px">${esc(d.methodName)}</span></div>`;
 
   // The Line Items & Pick List is an item-fulfillment concern, rendered on its
@@ -203,7 +206,7 @@ export function buildWorkOrderDoc(data) {
   // independent.
   const showPick = !!d.includePickList;
   // page count for footers
-  const totalPages = 1 + (showPick ? 1 : 0) + (hasRoster ? 1 : 0);
+  const totalPages = 1 + (showPick ? 1 : 0) + rosters.length;
   let pageNo = 0;
   const pg = () => { pageNo += 1; return totalPages > 1 ? `Page ${pageNo} of ${totalPages}` : ''; };
 
@@ -243,7 +246,7 @@ export function buildWorkOrderDoc(data) {
       ${footer(d.footerLeft, `${esc(d.id)} · Pick list`, pg())}
     `, 'margin-top:24px;');
   }
-  if (hasRoster) pages += rosterPage(d, d.roster, pg());
+  rosters.forEach((r) => { pages += rosterPage(d, r, pg()); });
 
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

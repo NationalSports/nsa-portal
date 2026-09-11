@@ -1513,27 +1513,38 @@ const buildWorkOrderOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
   else if(_bUrl)mocks=[{label:fLabel,dim:_fDim,side:'front'},{label:bLabel,imgUrl:_bUrl,side:'back'}];
   else mocks=hasBack?[{label:fLabel,dim:_fDim,side:'front'},{label:bLabel,side:'back',backArt:crest}]:[{label:fLabel,dim:_fDim,side:'front'}];
 
-  // Names & numbers roster — pair by index within each size; DO NOT sort (that
-  // would break number↔name alignment for roster-seeded orders).
-  const roster=(()=>{
-    let rd=null;
+  // Names & numbers rosters — pair by index within each size; DO NOT sort (that
+  // would break number↔name alignment for roster-seeded orders). ONE BLOCK PER GARMENT:
+  // a job can carry several lines that each hold their own roster, and stopping at the
+  // first one dropped the rest from the sheet entirely (SO-2361/JOB-2361-01 printed the
+  // jersey's 30 numbers and silently left off the second jersey's 8).
+  const rosters=(()=>{
+    const out=[];
     for(const d of itemDetails){
       const nd=jobItemDecosOfKind(d.gi,d.it,'numbers')[0];const nameD=jobItemDecosOfKind(d.gi,d.it,'names')[0];
-      if(nd||nameD){rd={nd,nameD,gi:d.gi,it:d.it,sku:d.it.sku||d.gi.sku,color:d.it.color||d.gi.color||''};break}
+      if(!nd&&!nameD)continue;
+      // Scope to the garment's real sizes — stale roster keys (copied size curves) otherwise
+      // print phantom sizes / duplicated numbers on the floor sheet (SO-1588).
+      const _rosterSz=(d.gi&&d.gi.sizes)||safeSizes(d.it);
+      const rosterMap=scopeRosterToSizes((d.gi&&d.gi.roster)||(nd&&nd.roster),_rosterSz);const namesMap=scopeRosterToSizes(nameD&&nameD.names,_rosterSz);
+      const {groups,total}=pairRoster(rosterMap,namesMap,SZ_ORD);
+      if(!total)continue;
+      const personalization=[];
+      if(nameD)personalization.push({k:'Back name',v:'Player name'});
+      if(nd&&nd.num_size)personalization.push({k:'Number height',v:nd.num_size});
+      const nnColor=(nd&&nd.print_color)||(nameD&&nameD.print_color);if(nnColor)personalization.push({k:'Color',v:nnColor});
+      const sku=d.it.sku||d.gi.sku;const color=d.it.color||d.gi.color||'';
+      const garment=(sku||'')+(color?' · '+color:'');
+      // Garments carrying the SAME list are one team roster copied onto each piece — print
+      // it once, naming every garment it covers, instead of N identical pages (SO-1588).
+      const sig=JSON.stringify(groups);
+      const hit=out.find(b=>b.sig===sig);
+      if(hit){if(garment&&!hit.garments.includes(garment)){hit.garments.push(garment);hit.garment=hit.garments.join(' + ')}continue}
+      out.push({sig,garments:garment?[garment]:[],title:'Names & numbers · '+total+' pcs',garment,personalization,summary:groups.map(g=>({s:g.size,q:g.count})),total,groups});
     }
-    if(!rd)return null;
-    // Scope to the garment's real sizes — stale roster keys (copied size curves) otherwise
-    // print phantom sizes / duplicated numbers on the floor sheet (SO-1588).
-    const _rosterSz=(rd.gi&&rd.gi.sizes)||safeSizes(rd.it);
-    const rosterMap=scopeRosterToSizes((rd.gi&&rd.gi.roster)||(rd.nd&&rd.nd.roster),_rosterSz);const namesMap=scopeRosterToSizes(rd.nameD&&rd.nameD.names,_rosterSz);
-    const {groups,total}=pairRoster(rosterMap,namesMap,SZ_ORD);
-    if(!total)return null;
-    const personalization=[];
-    if(rd.nameD)personalization.push({k:'Back name',v:'Player name'});
-    if(rd.nd&&rd.nd.num_size)personalization.push({k:'Number height',v:rd.nd.num_size});
-    const nnColor=(rd.nd&&rd.nd.print_color)||(rd.nameD&&rd.nameD.print_color);if(nnColor)personalization.push({k:'Color',v:nnColor});
-    return{title:'Names & numbers · '+total+' pcs',garment:(rd.sku||'')+(rd.color?' · '+rd.color:''),personalization,summary:groups.map(g=>({s:g.size,q:g.count})),total,groups};
+    return out.map(({sig,garments,...b})=>b);
   })();
+  const roster=rosters[0]||null;
 
   // Runs-together siblings — jobs sharing this art/screen, ready to run now.
   const _pid=(c&&(c.parent_id||c.id))||null;const _gk=jobGroupKey(j,_pid);
@@ -1574,7 +1585,7 @@ const buildWorkOrderOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     lines,totalPieces,
     notes:j.notes||(so.production_notes?('SO Notes: '+so.production_notes):'')||'',
     signoff:[{role:'Picked by'},{role:'Decorated by'},{role:'QC by'},{role:'Packed by'}],
-    prodFiles,siblings,roster,
+    prodFiles,siblings,roster,rosters,
   };
 };
 // Display-size variant of a Cloudinary image: the originals are full-res uploads (mock
@@ -1904,6 +1915,10 @@ export { RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLin
 // Exported for its unit test — the dashboard's inline art preview resolves what a rep sees
 // before opening the order, so its scoping (mock vs. raw design art) is worth pinning down.
 export { dashArtShots };
+// Exported for its unit test — the Work Order sheet is what the floor decorates from, so
+// which garment rosters reach it (SO-2361: a second numbered line was being dropped) is
+// pinned down directly rather than only through the renderer.
+export { buildWorkOrderOpts };
 
 // ── Combined deco COST for manually-linked jobs that share a screen ──
 // Per-unit decoration COST priced at the COMBINED linked-job tier qty (from linkedArtCostQty)

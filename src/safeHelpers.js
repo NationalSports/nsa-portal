@@ -91,6 +91,44 @@ export const jobItemDecosOfKind = (gi, it, kind) => {
   const dis = jobItemDecoIdxs(gi);
   return safeDecos(it).filter((d, di) => d?.kind === kind && (!dis || dis.includes(di)));
 };
+
+// ── Job roster blocks ──
+// The "numbers to print" roll-up for a job. A job can carry several garment lines, and
+// their rosters are NOT interchangeable. Garments holding the SAME list are one team
+// roster copied onto each piece, so it must be counted once (SO-1588: five garments
+// listed every number 5×). Garments holding DIFFERENT lists are different rosters, and
+// each one must be shown in full. The old rule merged every garment into one list by
+// (size, number), which silently dropped any number that legitimately appeared on two
+// different garments — SO-2361/JOB-2361-01 carried two jersey lines with 38 numbers
+// between them and the job showed 36 (an S 23 and an M 3 collapsed).
+// Returns [{ labels:[garment…], rows:[[size, numbers[]]…], total }], sizes in szOrder.
+export const jobRosterBlocks = (job, items, szOrder = []) => {
+  const rank = (s) => (szOrder.indexOf(s) < 0 ? 99 : szOrder.indexOf(s));
+  const clean = (v) => String(v == null ? '' : v).trim();
+  const blocks = [];
+  safeArr(job?.items).forEach((gi) => {
+    const it = safeArr(items)[gi?.item_idx];
+    if (!it) return;
+    // Split jobs carry their own roster/size slice on the job item — prefer it so a split
+    // only ever lists the numbers it actually runs.
+    const nd = jobItemDecosOfKind(gi, it, 'numbers')[0];
+    const raw = gi?.roster || nd?.roster || null;
+    if (!raw) return;
+    const rows = Object.entries(safeObj(scopeRosterToSizes(raw, gi?.sizes || safeSizes(it))))
+      .map(([sz, arr]) => [sz, safeArr(arr).map(clean).filter(Boolean)])
+      .filter(([, nums]) => nums.length > 0)
+      .sort((a, b) => rank(a[0]) - rank(b[0]));
+    if (!rows.length) return;
+    const color = clean(it.color || gi.color);
+    const label = clean(it.sku || gi.sku) + (color ? ' · ' + color : '');
+    // Same numbers in the same sizes = the same list, however the slots were ordered.
+    const sig = JSON.stringify(rows.map(([sz, nums]) => [sz, [...nums].sort()]));
+    const hit = blocks.find((b) => b.sig === sig);
+    if (hit) { if (label && !hit.labels.includes(label)) hit.labels.push(label); return; }
+    blocks.push({ sig, labels: label ? [label] : [], rows, total: rows.reduce((a, [, n]) => a + n.length, 0) });
+  });
+  return blocks.map(({ sig, ...b }) => b);
+};
 // Promote an unresolved art slot owned by a job to a real art-file id. Art Dashboard uploads
 // can begin on the reserved `__tbd` placeholder; once the first proof exists, both the job and
 // its decoration must point at a normal id or the line-item picker/approval guard will continue
