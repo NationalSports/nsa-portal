@@ -1973,16 +1973,18 @@ function LostArtJobsCard(){
       const{data,error}=await supabase.rpc('recent_lost_art_and_jobs',{p_since:sinceIso});
       if(error)throw error;
       setRows(data||[]);
-    }catch(e){setErr(e.message||String(e));setRows([])}
+    }catch(e){setErr(e.message||String(e));setRows(null)}
     finally{setLoading(false)}
   },[since]);
   React.useEffect(()=>{load()},[load]);
   const total=rows?rows.length:0;
   const byUser=rows?rows.filter(r=>r.removed_by_uid).length:0;
   const bySystem=total-byUser;
-  const ok=total===0;
+  const ready=!loading&&!err&&rows!==null;
+  const ok=ready&&total===0;
+  const statusColor=!ready?'#64748b':ok?'#16a34a':'#dc2626';
   return(
-    <div className="card" style={{marginBottom:16,borderLeft:`4px solid ${ok?'#16a34a':'#dc2626'}`}}>
+    <div className="card" style={{marginBottom:16,borderLeft:`4px solid ${statusColor}`}}>
       <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <h2>🎨 Lost Art &amp; Jobs</h2>
         <div style={{display:'flex',alignItems:'center',gap:8}}>
@@ -1993,18 +1995,18 @@ function LostArtJobsCard(){
             <option value={90}>Last 90 days</option>
           </select>
           <button className="btn btn-sm btn-secondary" onClick={load} disabled={loading} style={{fontSize:11}}>{loading?'…':'Refresh'}</button>
-          <span style={{fontSize:12,color:ok?'#16a34a':'#dc2626',fontWeight:600}}>{ok?'No removals':`${total} removed`}</span>
+          <span style={{fontSize:12,color:statusColor,fontWeight:600}}>{loading?'Loading…':err?'Check unavailable':!ready?'Not checked':ok?'No removals':`${total} removed`}</span>
         </div>
       </div>
       <div className="card-body">
         <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Audit-log backed: shows ART decorations and jobs that were DELETED from sales orders, with attribution. Distinguishes a person removing it (named) vs a system / unknown actor.</div>
         {err&&<div style={{padding:8,background:'#fef2f2',color:'#dc2626',fontSize:12,borderRadius:6,marginBottom:8}}>Error: {err}</div>}
-        <div style={{display:'flex',gap:12,marginBottom:10,fontSize:12}}>
+        {ready&&<div style={{display:'flex',gap:12,marginBottom:10,fontSize:12}}>
           <div style={{padding:'6px 10px',background:'#f1f5f9',borderRadius:6}}>Total: <strong>{total}</strong></div>
           <div style={{padding:'6px 10px',background:'#fef2f2',borderRadius:6}}>By a person: <strong>{byUser}</strong></div>
           <div style={{padding:'6px 10px',background:'#fffbeb',borderRadius:6}}>System / unknown: <strong>{bySystem}</strong></div>
-        </div>
-        {rows&&rows.length>0&&(
+        </div>}
+        {ready&&rows.length>0&&(
           <div style={{maxHeight:280,overflowY:'auto',border:'1px solid #e2e8f0',borderRadius:6}}>
             <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
               <thead style={{background:'#f8fafc',position:'sticky',top:0}}>
@@ -2024,7 +2026,7 @@ function LostArtJobsCard(){
             </table>
           </div>
         )}
-        {rows&&rows.length===0&&!err&&<div style={{fontSize:12,color:'#16a34a'}}>✅ No art or jobs were removed in this window.</div>}
+        {ready&&rows.length===0&&<div style={{fontSize:12,color:'#16a34a'}}>✅ No art or jobs were removed in this window.</div>}
       </div>
     </div>
   );
@@ -2083,8 +2085,9 @@ function SystemHealthCard({sos,cust,setESO,setESOC,setPg,nf}){
   const lost24hSys=report?.lost_art_jobs_24h_system||0;
   const lost24hUser=report?.lost_art_jobs_24h_user||0;
   const actionable=orphanSysLoss+missingSysLoss;
-  const headlineColor=actionable>0?'#dc2626':orphanCount+missingCount>0?'#d97706':'#16a34a';
-  const headline=actionable>0
+  const ready=!loading&&!err&&report!==null;
+  const headlineColor=!ready?'#64748b':actionable>0?'#dc2626':orphanCount+missingCount>0?'#d97706':'#16a34a';
+  const headline=loading?'Loading…':err?'Check unavailable':!ready?'Not checked':actionable>0
     ?`${actionable} confirmed data-loss issue${actionable===1?'':'s'}`
     :orphanCount+missingCount>0
       ?`${orphanCount+missingCount} flagged (no confirmed loss)`
@@ -2124,6 +2127,7 @@ function SystemHealthCard({sos,cust,setESO,setESOC,setPg,nf}){
       </div>
       <div className="card-body">
         {err&&<div style={{padding:8,background:'#fef2f2',color:'#dc2626',fontSize:12,borderRadius:6,marginBottom:8}}>Error: {err}</div>}
+        {ready&&<>
         <div style={{display:'flex',gap:10,marginBottom:12,flexWrap:'wrap',fontSize:12}}>
           <div style={{padding:'6px 10px',background:'#fef2f2',borderRadius:6,borderLeft:'3px solid #dc2626'}}><strong>{orphanSysLoss}</strong> confirmed data loss</div>
           <div style={{padding:'6px 10px',background:'#fffbeb',borderRadius:6,borderLeft:'3px solid #d97706'}}><strong>{orphanUserRemoved}</strong> person-removed</div>
@@ -2146,6 +2150,7 @@ function SystemHealthCard({sos,cust,setESO,setESOC,setPg,nf}){
             ?<div style={{padding:10,background:'#f0fdf4',color:'#15803d',fontSize:12,borderRadius:6}}>✅ None</div>
             :<div style={{border:'1px solid #fecaca',borderRadius:6,maxHeight:280,overflowY:'auto'}}>{missing.map(renderMissing)}</div>}
         </div>
+        </>}
       </div>
     </div>
   );
