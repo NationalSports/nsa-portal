@@ -130,8 +130,11 @@ const _safeQuery=(table,opts)=>{
   const pageSize=1000;// PostgREST default max-rows; requesting more is silently capped
   // Paged fetch: .range(start, end) repeatedly until the last chunk returns fewer than pageSize
   // rows (meaning we're done) or we hit hardLimit. Fixes missing rows when tables exceed 1000.
-  const fetchPage=(start)=>{
-    let q=supabase.from(table).select(opts?.select||'*');
+  const fetchPage=(start,withCount)=>{
+    // Page 0 also asks PostgREST for a row-count estimate, so the wave loop below can avoid firing
+    // pages that cannot hold rows. 'estimated' is a planner lookup on large tables and a trivial
+    // COUNT on small ones, so it costs nothing next to the empty page-fetches it removes.
+    let q=supabase.from(table).select(opts?.select||'*',withCount?{count:'estimated'}:undefined);
     if(opts?.not)for(const[c,o,v]of opts.not)q=q.not(c,o,v);// raw PostgREST not.<op>.<val> filters
     if(opts?.or)q=q.or(opts.or);// raw PostgREST or=(cond,cond,…) filter — applied to every page
     if(opts?.order)q=q.order(opts.order,opts.orderOpts||{});
@@ -154,7 +157,7 @@ const _safeQuery=(table,opts)=>{
   };
   const pagedFetch=async()=>{
     // Fetch page 0 first — most tables fit in one page, and it tells us whether to keep going.
-    const first=await fetchPage(0);
+    const first=await fetchPage(0,true);
     const c0=_classifyPage(first);
     if(c0==='missing'){_missing404Tables.set(table,Date.now());return{data:[],error:null,status:200};}
     // Not cached in _missing404Tables: after a staff login the same table becomes readable, and the
@@ -178,10 +181,17 @@ const _safeQuery=(table,opts)=>{
     // one at a time — a network round-trip each — which dominated the ~16s load. Pages stay correctly
     // ordered because each is a fixed .range() slice of the same ordered query.
     const WAVE=5;
+    // Pages the server's row count implies, used ONLY to shrink a wave — never to end paging.
+    // A short page stays the sole stop condition, so an under-estimate merely costs another
+    // (smaller) wave and can never truncate a load; an absent count keeps the old full-WAVE
+    // behaviour exactly. Without this, a 1373-row table fetched 6 pages to fill 2, and every
+    // reload spent 4 round-trips per table confirming emptiness (30% of all portal requests).
+    const _estPages=typeof first.count==='number'&&first.count>0?Math.ceil(first.count/pageSize):null;
     let start=pageSize,done=false;
     while(!done&&start<hardLimit){
       const starts=[];
-      for(let k=0;k<WAVE&&start<hardLimit;k++,start+=pageSize)starts.push(start);
+      const _wave=_estPages?Math.max(1,Math.min(WAVE,_estPages-(start/pageSize))):WAVE;
+      for(let k=0;k<_wave&&start<hardLimit;k++,start+=pageSize)starts.push(start);
       const results=await Promise.all(starts.map(s=>fetchPage(s)));
       for(const r of results){
         const c=_classifyPage(r);

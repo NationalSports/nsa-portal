@@ -8,6 +8,7 @@ import { canAcknowledgeSave } from './lib/saveAcknowledgement';
 import { lineIntentKey, newOrderLineId } from './lib/orderLineIdentity';
 import { liveSoInvoices, soInvoiceBalance, invoiceBalanceSnapshot } from './lib/soInvoiceBalance';
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { buildProductIndex } from './lib/productIndex';
 import { createPortal, flushSync } from 'react-dom';
 import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
@@ -175,6 +176,9 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
 }
 
 function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onEditMemo,memoEditorRef,memoEditing,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onManualShip,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,onOpenMethodicDashboard,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText,ui='new'}){
+  // O(1) catalog lookup. Replaces a products.find() linear scan that ran once per size cell
+  // (~11ms per render on a 10-line order, ~41ms at 40 lines) on every keystroke-driven render.
+  const findProd=useMemo(()=>buildProductIndex(products),[products]);
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -971,7 +975,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(qty===0)return null;
         // Supplier on their product line = the garment's actual vendor (blanks ship to Silver
         // Screen from them, not from NSA). Same resolution chain as the is*Item brand checks.
-        const vId=it.vendor_id||products.find(p=>p.id===it.product_id||p.sku===it.sku)?.vendor_id||dbVendorBySku[it.sku];
+        const vId=it.vendor_id||findProd(it)?.vendor_id||dbVendorBySku[it.sku];
         const vendor=(vendorList.find(v=>v.id===vId)?.name)||it.brand||'';
         return{sku:it.sku||'',name:it.name||it.custom_desc||'',color:it.color||'',vendor,sizes:Object.fromEntries(sizes),qty}}).filter(Boolean);
       if(rows.length===0){nf('No covered items with quantities — nothing to send to Silver Screen','error');return Promise.resolve()}
@@ -1157,7 +1161,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   },[o.items?.length]);// eslint-disable-line react-hooks/exhaustive-deps
 
   const itemVendorSource=useCallback((item)=>{
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
+    const vId=item.vendor_id||findProd(item)?.vendor_id||dbVendorBySku[item.sku];
     // Treat a vendor resolved from the catalog/server map as authoritative too.
     // Legacy webstore lines often omitted vendor_id even though their SKU was
     // correctly mapped; otherwise an old `ssa-*` product id wins and shows S&S.
@@ -1179,7 +1183,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Check if item is from Adidas (for B2B inventory display)
   const isAdidasItem=useCallback((item)=>{
     if((item.brand||'').toLowerCase().startsWith('adidas'))return true;
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
+    const vId=item.vendor_id||findProd(item)?.vendor_id||dbVendorBySku[item.sku];
     if(!vId)return false;
     const vRec=vendorList.find(v=>v.id===vId);
     if(vRec)return(vRec.name||'').toLowerCase().startsWith('adidas');
@@ -1189,7 +1193,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // inventory_unified view, fetched by fetchAdidasInventory) as Adidas.
   const isUAItem=useCallback((item)=>{
     if((item.brand||'').toLowerCase()==='under armour')return true;
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
+    const vId=item.vendor_id||findProd(item)?.vendor_id||dbVendorBySku[item.sku];
     if(!vId)return false;
     const vRec=vendorList.find(v=>v.id===vId);
     if(vRec)return(vRec.name||'').toLowerCase()==='under armour';
@@ -1307,7 +1311,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Helper to get vendor image for an item (used in itemDetails builders)
   const _vImg=(it,field)=>{const k=(it?.sku||'')+'|'+(it?.color||'').toLowerCase();const c=vendorImgs[k];return field==='front'?c?.front||'':c?.back||''};
   // Resolve the best front-image URL for a line item (same priority as itemDetails)
-  const _itemImg=(it)=>{const prd=products.find(pp=>pp.id===it.product_id||pp.sku===it.sku);return prd?.image_front_url||prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||_vImg(it,'front')||''};
+  const _itemImg=(it)=>{const prd=findProd(it);return prd?.image_front_url||prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||_vImg(it,'front')||''};
   // Resolve a swatch hex from a color name — local common-color map first, then the shared pantone map.
   const _swatchHex=(name)=>{const M={navy:'#001f3f',white:'#ffffff',black:'#111827',red:'#dc2626',royal:'#4169e1',blue:'#3b82f6',grey:'#9aa1ac',gray:'#9aa1ac',green:'#166534',forest:'#14532d',kelly:'#16a34a',orange:'#ea580c',gold:'#c9a227',yellow:'#eab308',maroon:'#800000',cardinal:'#8c1515',silver:'#c0c0c0',purple:'#6d28d9',pink:'#ec4899',brown:'#7c4a21',tan:'#d2b48c',cream:'#f5f5dc',teal:'#0d9488',charcoal:'#374151',heather:'#9aa1ac'};const s=String(name||'').trim().toLowerCase();if(!s)return null;if(M[s])return M[s];const hit=Object.keys(M).find(k=>s.includes(k));return hit?M[hit]:(pantoneHex(name)||null)};
   // Small color thumbnail for a line item: a colored swatch (two-tone split for "Navy,White"),
@@ -1754,7 +1758,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const items=safeItems(o);
     items.forEach(item=>{
       if(!(isSSItem(item)||isSanMarItem(item)||isMomentecItem(item)))return;
-      const prd=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
+      const prd=findProd(item);
       const hasImg=prd?.image_front_url||prd?.image_url||(prd?.images&&prd.images[0])||item._colorImage;
       if(hasImg)return;
       const cacheKey=item.sku+'|'+(item.color||'').toLowerCase();
@@ -1831,7 +1835,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const adjustInvForPick=(pick,item,direction)=>{
     // direction: -1 = pulling (decrement inv), +1 = un-pulling (restore inv)
     if(!onAdjustInv)return;
-    const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
+    const p=findProd(item);
     if(!p)return;
     const newInv={...p._inv};
     Object.entries(pick).forEach(([k,v])=>{if(k!=='status'&&k!=='pick_id'&&typeof v==='number'&&v>0){newInv[k]=Math.max(0,(newInv[k]||0)+(direction*v))}});
@@ -1866,7 +1870,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // restore-then-draw pair of adjustInvForPick calls would both read the same base and the last write wins.
   const reconcilePulledInv=(oldPick,curPick,item)=>{
     if(!onAdjustInv)return;
-    const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
+    const p=findProd(item);
     if(!p)return;
     const newInv={...p._inv};
     const applyPick=(pick,sign)=>{if(!pick)return;Object.entries(pick).forEach(([k,v])=>{if(k!=='status'&&k!=='pick_id'&&typeof v==='number'&&v>0){newInv[k]=Math.max(0,(newInv[k]||0)+sign*v)}})};
@@ -1900,7 +1904,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const{reservedInvMap,reservedInvSrc}=useMemo(()=>{
     const m={},src={};
     const addFrom=so=>safeItems(so).forEach(it=>{
-      const p=products.find(pp=>pp.id===it.product_id||pp.sku===it.sku);if(!p)return;
+      const p=findProd(it);if(!p)return;
       safePicks(it).forEach(pk=>{if((pk.status||'pick')==='pulled')return;
         Object.entries(pk).forEach(([sz,v])=>{if(typeof v==='number'&&v>0&&sz!=='status'&&sz!=='pick_id'){const k=p.id+'|'+sz;m[k]=(m[k]||0)+v;(src[k]=src[k]||[]).push({pickId:pk.pick_id||'IF',soId:so.id,qty:v})}})});
     });
@@ -4483,7 +4487,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       (j2.items||[]).forEach(it0=>{const full=safeItems(o)[it0.item_idx];if(!full)return;safeDecos(full).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_artIdSet.add(d.art_file_id)})});
       const artIds=[..._artIdSet];
       const primaryId=_declaredArtIds[0]||artIds[0];
-      const _back=full=>{const prd=products.find(pp=>pp.id===full?.product_id||pp.sku===full?.sku);return prd?.image_back_url||prd?.back_image_url||(prd?.images&&prd.images[1])||full?._colorBackImage||_vImg(full,'back')||''};
+      const _back=full=>{const prd=findProd(full);return prd?.image_back_url||prd?.back_image_url||(prd?.images&&prd.images[1])||full?._colorBackImage||_vImg(full,'back')||''};
       const garments=[];const seenG=new Set();
       (j2.items||[]).forEach(it0=>{const full=safeItems(o)[it0.item_idx];const sku=it0.sku||full?.sku||'';const color=it0.color||full?.color||'';const key=garmentMockKey(full||it0);if(seenG.has(key))return;seenG.add(key);garments.push({key,sku,color,name:it0.name||full?.name||'',frontUrl:full?_itemImg(full):'',backUrl:full?_back(full):''})});
       // Map each art file in the job to the garment keys (sku|color) it actually decorates, read
@@ -5480,7 +5484,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 onCommit={v=>{if(!(_draftKey in sizingDraftRef.current))return;flushSync(()=>{uSz(idx,sz,v);_dropSizingDraft(_draftKey)})}}
                 style={{width:44,textAlign:'center',borderRadius:6,padding:'5px 0',fontSize:15,fontWeight:700}}
                 filledStyle={{border:'1.5px solid #192853',color:'#192853',background:'#F4F7FF'}} emptyStyle={{border:'1px solid #E2E6EF',color:'#C2C7D2',background:'#fff'}}/>
-              {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];
+              {(()=>{const p=findProd(item);const stk=p?._inv?.[sz];
                 // Show stock FREE TO PULL, not gross on-hand: units claimed by an open IF (here or on
                 // another SO) are already spoken for, and showing them green invites double-allocating.
                 // Same number the IF picker uses, so the two screens can't disagree. `*` = some held.
@@ -5532,7 +5536,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:12}}>
             {isSO&&!isQtyOnly&&szQty===0&&safeNum(item.est_qty)>0&&<span style={{fontSize:11,color:'#dc2626',fontWeight:700}}>Enter sizes ({item.est_qty} total)</span>}
             {isQtyOnly&&safeNum(item.est_qty)>0&&<span style={{fontSize:10,color:'#64748b',fontStyle:'italic'}}>Custom — no size breakdown</span>}
-            {isSO&&!isQtyOnly&&(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
+            {isSO&&!isQtyOnly&&(()=>{const p=findProd(item);
               const szList=Object.entries(lineSizes).filter(([,v])=>v>0).sort((a,b)=>szRank(a[0])-szRank(b[0]));
               const anyUnassigned=szList.some(([sz,v])=>{const picked=(item.pick_lines||[]).reduce((a2,pk)=>a2+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);return v-picked-po>0});
               if(!anyUnassigned)return<span style={{fontSize:12,color:'#1E7A46',fontWeight:700,background:'#EAF6EE',border:'1px solid #C9E7D4',padding:'3px 9px',borderRadius:20,whiteSpace:'nowrap'}}>✓ All assigned</span>;
@@ -9786,7 +9790,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // (Restores the pre-collapse submit semantics: el?parseInt(el.value)||0:v.)
       const _poQtyVal=(vi,sz,fallback)=>{const el=document.getElementById('po-qty-'+vi+'-'+sz);if(!el)return fallback;const raw=String(el.value).trim();if(raw==='')return 0;const n=parseInt(raw,10);return isNaN(n)?0:n};
       const _poPriceVal=(vi,sz,fallback)=>{const elS=document.getElementById('po-price-'+vi+'-'+sz);const el=elS||document.getElementById('po-price-'+vi);if(!el)return fallback;const v=parseFloat(String(el.value).replace(/[$,\s]/g,''));return isNaN(v)?fallback:v};
-      const poLineTotal=(it,vi)=>{const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const _lc=safeNum(it.nsa_cost);const rawC=_lc>0?_lc:(catP?safeNum(catP.nsa_cost):0);const cc=isAdidas?Math.floor(rawC*100)/100:rawC;const liveInv=vendorInvForItem(it);const scMap={...((liveInv&&liveInv.price)||{}),...(it._sizeCosts||{})};const pFor=sz=>{const sc=safeNum(scMap[sz]);return sc>0?(isAdidas?Math.floor(sc*100)/100:sc):cc};return it.openSizes.reduce((a,[sz,v])=>a+_poQtyVal(vi,sz,v)*_poPriceVal(vi,sz,pFor(sz)),0)};
+      const poLineTotal=(it,vi)=>{const catP=findProd(it);const _lc=safeNum(it.nsa_cost);const rawC=_lc>0?_lc:(catP?safeNum(catP.nsa_cost):0);const cc=isAdidas?Math.floor(rawC*100)/100:rawC;const liveInv=vendorInvForItem(it);const scMap={...((liveInv&&liveInv.price)||{}),...(it._sizeCosts||{})};const pFor=sz=>{const sc=safeNum(scMap[sz]);return sc>0?(isAdidas?Math.floor(sc*100)/100:sc):cc};return it.openSizes.reduce((a,[sz,v])=>a+_poQtyVal(vi,sz,v)*_poPriceVal(vi,sz,pFor(sz)),0)};
       const poManualCostValue=Math.max(0,parseFloat(String(poManualCost).replace(/[$,\s]/g,''))||0);
       const poMerchandiseTotal=poItems.reduce((a,it,vi)=>poExcluded[vi]?a:a+poLineTotal(it,vi),0);
       const poOrderTotal=poMerchandiseTotal+poManualCostValue;
@@ -10184,7 +10188,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{fontSize:11,color:'#b91c1c',marginTop:2}}>{_poDsInHouse.map(x=>x.it.sku).join(', ')} — drop ship skips the warehouse, so these blanks would never reach Emerson to be decorated. Uncheck them here and create a separate 🏭 In-House PO for them.</div>
             <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:11,marginTop:6}} onClick={()=>setPOExcluded(x=>{const n={...x};_poDsInHouse.forEach(({vi})=>{n[vi]=true});return n})}>Uncheck the in-house item{_poDsInHouse.length!==1?'s':''}</button>
           </div>}
-          {poItems.map((it,vi)=>{const soQ=it._soQty!=null?it._soQty:(Object.values(it.sizes).reduce((a,v)=>a+safeNum(v),0)||safeNum(it.est_qty));const excluded=!!poExcluded[vi];const collapsed=(it.members||[]).length>1;const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);
+          {poItems.map((it,vi)=>{const soQ=it._soQty!=null?it._soQty:(Object.values(it.sizes).reduce((a,v)=>a+safeNum(v),0)||safeNum(it.est_qty));const excluded=!!poExcluded[vi];const collapsed=(it.members||[]).length>1;const catP=findProd(it);
             // The cost the rep set on the line ("Cost: $X/ea", stored as nsa_cost) is this order's cost
             // of record — default the PO to it so a cost edit on the estimate/SO carries through, instead
             // of the possibly-stale catalog cost. Genuine per-size vendor upcharges (_sizeCosts / live
@@ -10265,7 +10269,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const batchItems=[];let totalCost=0;
             poItems.forEach((grp,vi)=>{
               if(poExcluded[vi])return;
-              const batchCatProd=products.find(p=>p.id===grp.product_id||p.sku===grp.sku);
+              const batchCatProd=findProd(grp);
               // Prefer the line's cost of record (nsa_cost) over the catalog cost so an edited line
               // cost carries into the PO even when a price input is left blank.
               const fallbackCost=safeNum(grp.nsa_cost)>0?safeNum(grp.nsa_cost):safeNum(batchCatProd?.nsa_cost);
@@ -10377,7 +10381,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const apiPayloadItems=[];// same shape the vendor API modals consume, for the decorator marry-up below
           poItems.forEach((grp,vi)=>{
             if(poExcluded[vi])return;
-            const catProd=products.find(p=>p.id===grp.product_id||p.sku===grp.sku);
+            const catProd=findProd(grp);
             // Prefer the line's cost of record (nsa_cost) over the catalog cost so an edited line
             // cost carries into the PO even when a price input is left blank.
             const fallbackCost=safeNum(grp.nsa_cost)>0?safeNum(grp.nsa_cost):safeNum(catProd?.nsa_cost);
@@ -10729,12 +10733,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <div className="modal-header"><h2>{typeof showPick==='object'?'IF — '+pickId:'Create IF — Select Items'}</h2><button className="modal-close" onClick={()=>{setShowPick(false);setPickSel({})}}>x</button></div>
       {typeof showPick!=='object'?<div className="modal-body">
         <p style={{fontSize:13,color:'#64748b',marginBottom:12}}>Select items to include on this IF:</p>
-        {(()=>{const availableIdxs=[];safeItems(o).forEach((item,idx)=>{const szList=Object.entries(item.sizes).filter(([,v])=>v>0);const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const hasOpen=szList.some(([sz,v])=>{const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const inv=availInv(p,sz);return v-picked-po>0&&inv>0});if(hasOpen)availableIdxs.push(idx)});
+        {(()=>{const availableIdxs=[];safeItems(o).forEach((item,idx)=>{const szList=Object.entries(item.sizes).filter(([,v])=>v>0);const p=findProd(item);const hasOpen=szList.some(([sz,v])=>{const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const inv=availInv(p,sz);return v-picked-po>0&&inv>0});if(hasOpen)availableIdxs.push(idx)});
         const allChecked=availableIdxs.length>0&&availableIdxs.every(i=>pickSel[i]);
         return<><div style={{marginBottom:8,display:'flex',alignItems:'center',gap:8}}>
           <label style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer',fontSize:12,fontWeight:600,color:'#475569'}}><input type="checkbox" checked={allChecked} onChange={()=>{if(allChecked){setPickSel({})}else{const sel={};availableIdxs.forEach(i=>{sel[i]=true});setPickSel(sel)}}} style={{width:16,height:16}}/> Select All ({availableIdxs.length})</label></div>
         {safeItems(o).map((item,idx)=>{const q=Object.values(item.sizes).reduce((a,v)=>a+v,0);const szList=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ord=SZ_ORD;return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
-          const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
+          const p=findProd(item);
           const hasOpen=szList.some(([sz,v])=>{const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const inv=availInv(p,sz);return v-picked-po>0&&inv>0});
           if(!hasOpen){
             // hasOpen=false has two meanings: (a) every size is already picked/on PO ("Fully assigned"),
@@ -10797,7 +10801,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <label style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Notes for Warehouse</label>
           <textarea className="form-input" rows={2} value={pickNotes} onChange={e=>setPickNotes(e.target.value)} placeholder="Special instructions for warehouse team..." style={{fontSize:12,resize:'vertical'}}/>
         </div>
-        {showPick.map((item,vi)=>{const szList=Object.entries(item._pick).filter(([,v])=>v>0);const q=szList.reduce((a,[,v])=>a+v,0);const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
+        {showPick.map((item,vi)=>{const szList=Object.entries(item._pick).filter(([,v])=>v>0);const q=szList.reduce((a,[,v])=>a+v,0);const p=findProd(item);
           return<div key={vi} style={{padding:12,border:'1px solid #e2e8f0',borderRadius:6,marginBottom:12}}>
             <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}><div><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:8}}>{item.sku}</span><strong>{item.name}</strong> — {item.color}</div><div style={{fontWeight:700}}>IF Qty: {q}</div></div>
             <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'2px solid #0f172a'}}>{szList.map(([sz])=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:50}}>{sz}</th>)}<th style={{padding:'4px 8px'}}>TOTAL</th></tr></thead>
@@ -11308,7 +11312,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
             fulSizes[sz]=Math.min(safeNum(v),pQ+rQ);
           });
-          const prd=products.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
+          const prd=findProd(it);
           return{...gi,sizes,fulSizes,color:safeStr(it.color),brand:safeStr(it.brand),product_id:prd?.id||null,image_url:prd?.image_front_url||prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||_vImg(it,'front')||'',back_image_url:prd?.image_back_url||prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||_vImg(it,'back')||'',images:prd?.images||[]};
         });
         const allSizes=[...new Set(itemDetails.flatMap(gi=>Object.keys(gi.sizes||{})))];
@@ -13350,7 +13354,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
         {mockBuilder&&(()=>{
           const g=jobWizard.groups[mockBuilder.gi];if(!g)return null;
           const rel=g.items.filter(it=>!it._excluded);
-          const _back=full=>{const prd=products.find(pp=>pp.id===full?.product_id||pp.sku===full?.sku);return prd?.image_back_url||prd?.back_image_url||(prd?.images&&prd.images[1])||full?._colorBackImage||_vImg(full,'back')||''};
+          const _back=full=>{const prd=findProd(full);return prd?.image_back_url||prd?.back_image_url||(prd?.images&&prd.images[1])||full?._colorBackImage||_vImg(full,'back')||''};
           const garments=[];const seenG=new Set();
           rel.forEach(it=>{const full=safeItems(o)[it.item_idx];const line=full||it;const key=garmentMockKey(line);if(seenG.has(key))return;seenG.add(key);const sku=line.sku||it.sku||'';const color=line.color||it.color||'';const front=_itemImg(full),back=_back(full);const vendorItem=!!(full&&(isSSItem(full)||isSanMarItem(full)||isMomentecItem(full)));const vKey=sku+'|'+color.toLowerCase();const pending=vendorItem&&!front&&vendorImgs[vKey]===undefined;garments.push({key,sku,color,name:line.name||it.name||'',frontUrl:front,backUrl:back,pending})});
           const locations=[];const seenL=new Set();
@@ -14529,7 +14533,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                   <div style={{fontSize:10,fontWeight:700,color:'#6d28d9',textTransform:'uppercase',marginBottom:4}}>Add another item from this order</div>
                   <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
                     {addable.map(({it2,i2})=>{
-                      const cat=products.find(p=>p.id===it2.product_id||p.sku===it2.sku);
+                      const cat=findProd(it2);
                       const itemVendor=vendorList.find(v=>v.id===(it2.vendor_id||cat?.vendor_id))?.name||'';
                       const offVendor=poVendorName&&itemVendor&&itemVendor!==poVendorName;
                       return<div key={i2} style={{padding:'4px 8px',borderRadius:5,cursor:'pointer',border:'1px dashed #94a3b8',background:'white',fontSize:11,display:'flex',gap:4,alignItems:'center'}} onClick={()=>{
