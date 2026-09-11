@@ -16,6 +16,7 @@ import { CatalogKitStyles, KitScope, DISPLAY } from './ui/catalogKit';
 import { fetchStockMap } from './lib/storeInventory';
 import StoreBuilder from './storefront/BuildStore';
 import { RosterOrdersCoach } from './RosterOrders';
+import ClubStockPanel from './ClubStockPanel';
 // Lazy so the uniform designer (and its jsPDF/canvas deps) only loads when opened.
 const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
 
@@ -939,6 +940,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // Roster orders — invite-gated per customer (Catalog Access → coach_roster), same
   // pattern as coach_ai_builder/coach_livelook/coach_build_orders.
   const hasRoster=!!customer.coach_roster;
+  // Club stock on hand — same invite-gated pattern, its own switch so an account
+  // can be shown its inventory without the roster module (and vice versa).
+  const hasStock=!!customer.coach_stock;
   // ── National Team Shop crossover (Coach Crossover, Workstream 1) ──
   // Connect itself has no coach sign-in (the portal is alpha-tag gated), so the
   // one-click handoff keys off a supabaseCoach session — the same isolated
@@ -2341,6 +2345,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     {key:'home',label:'Home',icon:'🏠'},
     {key:'orders',label:'Orders',icon:'📦',badge:activeSOs.length},
     ...(hasRoster?[{key:'roster',label:'Roster',icon:'📋'}]:[]),
+    ...(hasStock?[{key:'stock',label:'Stock',icon:'📦'}]:[]),
     ...(hasStore?[{key:'store',label:'Store',icon:'🛍️',badge:openStoreCount}]:[]),
     {key:'billing',label:'Billing',icon:'💳',badge:openInvs.length},
     {key:'art',label:'Art',icon:'🎨'},
@@ -2355,7 +2360,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     try{window.open(href,CP_LINK_TARGET,'noopener');}catch(e){window.location.href=href;}
   };
   // ── NSA nav (design tokens are hoisted to the top of the component) ──
-  const _nsaNav=[['home','Dashboard'],['orders','Orders'],...(hasRoster?[['roster','Roster']]:[]),...(hasStore?[['store','Team Store']]:[]),['art','Art Locker'],['billing','Billing'],['shop','Shop']];
+  const _nsaNav=[['home','Dashboard'],['orders','Orders'],...(hasRoster?[['roster','Roster']]:[]),...(hasStock?[['stock','Stock']]:[]),...(hasStore?[['store','Team Store']]:[]),['art','Art Locker'],['billing','Billing'],['shop','Shop']];
   // AD-only "filter by sport" — the parent's sub-customers (teams) + the dept itself.
   const _teamName=id=>id==='all'?'all':(((allCustomers||[]).find(c=>c.id===id)||{}).name||'');
   const _teamOpts=isP?[{id:customer.id,name:'Athletic Dept.'},...[...subs].sort((a,b)=>(a.name||'').localeCompare(b.name||''))]:[];
@@ -2465,6 +2470,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               // Estimates live inside the Orders section now (the "Estimates to Approve"
               // dropdown), so there's no separate Estimates tile here.
               ...(hasRoster?[{k:'roster',t:'Roster',sub:'Fill player sizes & submit',icon:'📋',accent:false}]:[]),
+              ...(hasStock?[{k:'stock',t:'Your Stock',sub:'What we hold for you',icon:'📦',accent:false}]:[]),
               ...(hasStore?[{k:'store',t:'Team Store',sub:openStoreCount>0?('Open now'+(_storeClose?' · closes '+_storeClose:'')):'View store',icon:'🛒',accent:true,sa:openStoreCount>0}]:[]),
               {k:'art',t:'Art Locker',sub:artLibrary.length+' design'+(artLibrary.length!==1?'s':''),icon:'🎨',accent:false},
               {k:'billing',t:'Billing',sub:totalDue>0?'$'+totalDue.toLocaleString(undefined,{minimumFractionDigits:2})+' due':'Up to date',icon:'💳',accent:true,sa:totalDue>0},
@@ -2980,6 +2986,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           <div className="nsa-disp" style={{fontWeight:800,fontSize:'clamp(26px,4vw,34px)',textTransform:'uppercase',color:tPrimary,lineHeight:1,marginBottom:6}}>Roster Orders</div>
           <div style={{fontSize:14,color:'#5A6075',marginBottom:22}}>Build your team, fill in player sizes, and submit to {rep?.name||'your rep'} when you're ready.</div>
           <RosterOrdersCoach customer={customer} />
+        </div>}
+
+        {/* Club stock on hand — the inventory NSA holds for this account */}
+        {page==='stock'&&<div>
+          <div className="nsa-disp" style={{fontWeight:800,fontSize:'clamp(26px,4vw,34px)',textTransform:'uppercase',color:tPrimary,lineHeight:1,marginBottom:6}}>Your Stock</div>
+          <div style={{fontSize:14,color:'#5A6075',marginBottom:22}}>Everything we're holding for you at National Sports Apparel, size by size.</div>
+          <ClubStockPanel customerId={customer.id} customerName={customer.name} />
         </div>}
 
         {page==='shop'&&<div>
