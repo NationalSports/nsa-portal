@@ -721,6 +721,40 @@ export const itemMockFiles = (mocks, it, sub) => {
   if (!sub && it?.sku != null && Object.prototype.hasOwnProperty.call(m, it.sku)) return safeArr(m[it.sku]);
   return own;
 };
+// Numbers / names slot keys (`|numbers`, `|names_1`, `|numbers_b`). They are the BACK proof and
+// must never stand in for a garment's art mockup — see artSlotMocks below and nnMockCounts.
+const NN_SLOT_RE = /\|(?:numbers|names)(?:_\d+)?(?:_b)?$/;
+// Every mockup this garment has in a NON-PRIMARY art slot, across `artFiles`.
+//
+// Slot keys are positional (mockSlotKeys): the FIRST art decoration on a garment owns the bare
+// `sku|color` key and every later one gets a discriminated key (`|<colorWayId>` / `|d1`). The
+// approval gate used to read only the bare key, so a garment whose mockup happened to sit on its
+// SECOND design read as "no mockup" — while every display surface (slotMockFiles) showed that
+// mockup on screen. Which design is "first" is an accident of decoration order, and the gate
+// passed the very same garment with the very same unmocked design when the mock was filed under
+// the bare key instead: it was never enforcing "each design is mocked", only "the first slot's
+// key exists". SO-1998 hit the dead end — IA9145 / IA9155's Left Chest decoration was repointed
+// from the patch art to a new DTF art file, leaving the bare-key mock stranded on the old file
+// while the live mock sat under `IA9145||d1` on the front-center art.
+//
+// Numbers/names slots are excluded: a back-proof must not satisfy the garment's art mockup.
+// Legacy fallback mirrors itemMockFiles — the garment's own base first, the shared placeholder
+// base only when it has written nothing of its own.
+export const artSlotMocks = (artFiles, it) => {
+  const base = garmentMockKey(it);
+  const legacy = legacyMockKeyOf(it);
+  const readUnder = (m, pfx) => Object.keys(m)
+    .filter((k) => k.startsWith(pfx + '|') && !NN_SLOT_RE.test(k))
+    .flatMap((k) => safeArr(m[k]).filter(Boolean));
+  const out = [];
+  safeArr(artFiles).forEach((a) => {
+    const m = safeObj(a?.item_mockups);
+    const own = readUnder(m, base);
+    if (own.length > 0 || !legacy) { out.push(...own); return; }
+    out.push(...readUnder(m, legacy));
+  });
+  return out;
+};
 // Resolve the root source key this garment is linked to, or null when unlinked.
 export const resolveMockLink = (anchorArts, sku, color) => {
   const links = {};
@@ -748,6 +782,15 @@ export const mockLinkSourceFiles = (anchorArts, sourceKey) => {
     const im = a?.item_mockups || {};
     if (safeArr(im[sourceKey]).length > 0) return safeArr(im[sourceKey]);
     if (safeArr(im[srcSku]).length > 0) return safeArr(im[srcSku]);
+  }
+  // The source garment's mock may sit in a NON-PRIMARY art slot (`|<colorWayId>` / `|d1`) — the
+  // same positional accident artSlotMocks documents. A link must not dead-end on it: on SO-1998
+  // IA9155 was linked to IA9145, whose only live mock was under `IA9145||d1`. Checked after the
+  // exact-key reads above so a real primary mock still wins wherever one exists.
+  for (const a of safeArr(anchorArts)) {
+    const m = safeObj(a?.item_mockups);
+    const k = Object.keys(m).find((x) => x.startsWith(sourceKey + '|') && !NN_SLOT_RE.test(x) && safeArr(m[x]).length > 0);
+    if (k) return safeArr(m[k]);
   }
   return [];
 };
@@ -1270,7 +1313,12 @@ export const skusMissingMockups = (job, so) => {
     const perSku = artFiles.flatMap(a => {
       return itemMockFiles(a?.item_mockups, mLine);
     });
-    if (perSku.length > 0) {
+    // The primary (bare-key) slot is only the FIRST art decoration's slot. A garment mocked on a
+    // later design keys its mock `|<colorWayId>` / `|d1` and used to read as unmocked here even
+    // though the rep was looking at that mockup on screen (SO-1998). Accept any art slot — the
+    // gate never enforced per-design mockups, only that the garment has one (see artSlotMocks).
+    const slotMocks = perSku.length > 0 ? perSku : artSlotMocks(artFiles, mLine);
+    if (slotMocks.length > 0) {
       // Primary mock present — additionally require every slot a REVERSIBLE decoration
       // creates (Side B art, both numbers/names sides). A reversible garment approved
       // with only one color way mocked is exactly the SO-1116 rejection. Scoped to
