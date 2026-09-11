@@ -73,9 +73,28 @@ const _upTrayFail = (it, name, msg) => {
     it.lastChild.onclick = () => { it.remove(); _upTrayGc(); };
   } catch (e) {}
 };
-const cloudUpload = async (file, folder = 'nsa-store-logos') => {
+// A FormData body is consumed by fetch, so each retry attempt builds a fresh one.
+const fd_ = (file, folder) => {
   const fd = new FormData();
   fd.append('file', file); fd.append('upload_preset', CLOUDINARY_PRESET); fd.append('folder', folder);
+  return fd;
+};
+const _upTrayRetry = (it, name, n, max) => {
+  if (!it) return;
+  try {
+    it.style.background = '#78350f';
+    it.innerHTML = '<span style="flex:none">⏳</span><span style="min-width:0">Upload server busy — retrying <b>' + _upEsc(name) + '</b> (' + n + '/' + max + ')…</span>';
+  } catch (e) {}
+};
+const _upSleep = ms => new Promise(r => setTimeout(r, ms));
+// Cloudinary answers a saturated processing queue with HTTP 420 "Slow Down, Out of Processing
+// Capacity" (and 429/5xx under load). It clears on its own within seconds, so retry instead of
+// handing the rep a dead upload. (utils.js/App.js carry the same helper; this builder only ever
+// uploads image/* store logos, so it has no need of their .ai/.eps raw-upload routing.)
+const _upTransient = (status, msg) => status === 408 || status === 420 || status === 429 || (status >= 500 && status < 600)
+  || /slow down|processing capacity|rate limit|too many requests|failed to fetch|networkerror|load failed|connection/i.test(String(msg || ''));
+const UP_RETRIES = 4;
+const cloudUpload = async (file, folder = 'nsa-store-logos') => {
   const resType = file.type?.startsWith('image/') ? 'image' : 'auto';
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 300000);
@@ -83,12 +102,26 @@ const cloudUpload = async (file, folder = 'nsa-store-logos') => {
   _upStart();
   const _tr = _upTrayAdd(file.name);
   try {
-    const r = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`, { method: 'POST', body: fd, signal: ctrl.signal });
-    const d = await r.json();
-    if (d.error) throw new Error(d.error.message);
-    console.log('[upload]', file.name, Math.round(file.size / 1024) + 'KB', (Date.now() - t0) + 'ms');
-    _upTrayDone(_tr, file.name);
-    return d.secure_url;
+    for (let a = 0; ; a++) {
+      if (a) { _upTrayRetry(_tr, file.name, a, UP_RETRIES); await _upSleep(1000 * Math.pow(2, a) + Math.floor(Math.random() * 400)); }
+      let r;
+      try {
+        r = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`, { method: 'POST', body: fd_(file, folder), signal: ctrl.signal });
+      } catch (ne) {
+        if (ne.name === 'AbortError') throw ne;
+        if (a < UP_RETRIES && _upTransient(0, ne.message)) continue;
+        throw ne;
+      }
+      const d = await r.json().catch(() => null);
+      if (r.ok && d && d.secure_url && !d.error) {
+        console.log('[upload]', file.name, Math.round(file.size / 1024) + 'KB', (Date.now() - t0) + 'ms', a ? 'retry ' + a : '');
+        _upTrayDone(_tr, file.name);
+        return d.secure_url;
+      }
+      const msg = (d && d.error && d.error.message) || ('upload failed (HTTP ' + r.status + ')');
+      if (a < UP_RETRIES && _upTransient(r.status, msg)) continue;
+      throw new Error(msg);
+    }
   } catch (e) {
     _upTrayFail(_tr, file.name, e.name === 'AbortError' ? 'timed out after 5 minutes' : (e.message || e));
     if (e.name === 'AbortError') throw new Error('Upload timed out: ' + file.name);
