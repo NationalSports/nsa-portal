@@ -1970,7 +1970,7 @@ function LostArtJobsCard(){
     setLoading(true);setErr('');
     try{
       const sinceIso=new Date(Date.now()-since*86400000).toISOString();
-      const{data,error}=await supabase.rpc('recent_lost_art_and_jobs',{p_since:sinceIso}).limit(100);
+      const{data,error}=await supabase.rpc('recent_lost_art_and_jobs',{p_since:sinceIso}).order('removed_at',{ascending:false}).limit(100);
       if(error)throw error;
       setRows(data||[]);
     }catch(e){setErr(e.message||String(e));setRows(null)}
