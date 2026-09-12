@@ -1,0 +1,104 @@
+name: Migrations Lint
+
+on:
+  pull_request:
+    paths:
+      - 'supabase/migrations/**'
+      - '.github/workflows/migrations-lint.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/migrations/**'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for duplicate migration number prefixes (excluding grandfathered)
+        shell: bash
+        run: |
+          set -uo pipefail
+          shopt -s nullglob
+
+          # Historical duplicates, present before the lint check existed.
+          # See supabase/migrations/README.md. Do not extend this list — fix
+          # the duplicate by renumbering instead.
+          GRANDFATHERED="00028 00029 00059 00060 00065 00066 00069 00070"
+
+          files=(supabase/migrations/*.sql)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No migration files found at top level."
+            exit 0
+          fi
+
+          # All prefixes that appear more than once.
+          all_dupes=$(
+            for f in "${files[@]}"; do
+              base=$(basename "$f")
+              echo "${base%%_*}"
+            done | sort | uniq -d
+          )
+
+          # Subtract the grandfathered set.
+          new_dupes=""
+          for prefix in $all_dupes; do
+            if ! echo " $GRANDFATHERED " | grep -q " $prefix "; then
+              new_dupes="$new_dupes $prefix"
+            fi
+          done
+          new_dupes=$(echo "$new_dupes" | xargs)  # trim whitespace
+
+          if [ -n "$new_dupes" ]; then
+            echo "::error::New duplicate migration number prefixes found (not grandfathered):"
+            for prefix in $new_dupes; do
+              echo "  $prefix:"
+              for f in "${files[@]}"; do
+                base=$(basename "$f")
+                if [ "${base%%_*}" = "$prefix" ]; then
+                  echo "    - $f"
+                fi
+              done
+            done
+            echo ""
+            echo "Each migration must have a unique number prefix. Pick the next"
+            echo "sequential number for new migrations. See supabase/migrations/README.md"
+            exit 1
+          fi
+          echo "OK — no new duplicate migration number prefixes."
+
+      - name: Check for app.settings GUC pattern (broken on Supabase managed PG)
+        shell: bash
+        run: |
+          set -uo pipefail
+          # current_setting('app.settings.X') and ALTER DATABASE SET app.settings.X
+          # both fail silently on Supabase. Use vault.decrypted_secrets instead.
+          # Search top-level migrations only; _archive/ is exempt.
+
+          # Historical files that already contain the broken pattern. Their
+          # cron-scheduling portions did not actually take effect on prod
+          # (see supabase/migrations/README.md, "Known broken historical
+          # files"). Do not extend this list — write a new migration that
+          # uses vault.decrypted_secrets instead.
+          GRANDFATHERED_FILES="00011_taxcloud_quarterly_cron.sql 00066_taxcloud_daily_missing_rates_cron.sql 00067_scheduled_emails.sql"
+
+          matches=$(grep -nE "current_setting\(\s*'app\.settings\.|SET\s+app\.settings\." supabase/migrations/*.sql || true)
+          new_matches=""
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            file=$(basename "$(echo "$line" | cut -d: -f1)")
+            if ! echo " $GRANDFATHERED_FILES " | grep -q " $file "; then
+              new_matches="$new_matches$line"$'\n'
+            fi
+          done <<< "$matches"
+
+          if [ -n "$new_matches" ]; then
+            echo "::error::Found app.settings.* GUC pattern in a migration:"
+            echo "$new_matches"
+            echo "This pattern does not work on Supabase managed Postgres."
+            echo "Use (SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name = '...') instead."
+            echo "See supabase/migrations/README.md for an example."
+            exit 1
+          fi
+          echo "OK — no new broken app.settings.* GUC patterns."
