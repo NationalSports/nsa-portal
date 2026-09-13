@@ -929,7 +929,7 @@ export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format
         let handed = false;
         try {
           onBlocked({
-            so, storeName: ws.name || '', soItems, orderById, lines, issues: blocking, label, jobUnits,
+            so, storeName: ws.name || '', soItems, orderById, lines, issues: blocking, label, jobUnits, format,
             matchup: buildFulfillmentMatchup({ lines, soItems, orderById }),
             verifyDetail: buildVerifyDetail({ lines, orderById }),
           });

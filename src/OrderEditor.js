@@ -2498,6 +2498,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     nf('Applied '+probe.applied.length+' fix'+(probe.applied.length===1?'':'es')+' to the sales order'+(probe.skipped.length?', skipped '+probe.skipped.length+' whose line changed':'')+' — review the items, then Save.',probe.skipped.length?'error':undefined)};
   const _reconcilePin=(idx,sku)=>{setO(e=>({...e,items:pinSourceSku(safeItems(e),idx,sku),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Matched '+sku+' to that line — Save to keep it.')};
   const _reconcileUnpin=(sku)=>{setO(e=>({...e,items:unpinSourceSku(safeItems(e),sku),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Cleared the match for '+sku+' — the system will pick again.')};
+  // Closes the loop: persist the reconciliation, then run the same report again so
+  // the rep finds out immediately whether it actually cleared. If anything is still
+  // wrong the panel simply reopens with what is left; the file only downloads when
+  // it genuinely passes.
+  const _reconcileSaveRecheck=async()=>{
+    const fmt=(reconcile&&reconcile.format)||'pdf';
+    const saved={...o,updated_at:new Date().toLocaleString()};
+    setReconcile(null);
+    await saveSONow(saved,'Reconcile',null);
+    await downloadSoPlayerReport({so:saved,soItems:safeItems(saved),supabase,nf,onBlocked:setReconcile,format:fmt,customer:cust});
+  };
   // Returns _deletedItemKeys with `it`'s OLD sku|color identity appended (deduped) — the same
   // session tombstone rmI stamps on a deletion, reused by every in-place re-key path (Change SKU
   // modal, color change, inline sku/color edits via _rekeyLineMocks). The engine's version-conflict
@@ -4444,7 +4455,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
   return(<div className={ui==='new'?'oe2':'oe2-base'}>
     <MultiItemAddModal open={isE&&multiAddOpen} onClose={()=>{setMultiAddOpen(false);setMultiAddQuery('')}} catalogResults={multiCatalogResults} vendorResults={multiVendorResults} searching={ssSearching||smSearching||mtSearching||rsSearching} onActiveQuery={setMultiAddQuery} artFiles={safeArt(o).filter(f=>f.id!=='__tbd')} positions={POSITIONS} onApply={applyMultiItems}/>
-    {reconcile&&<FulfillmentReconcileModal data={reconcile} onClose={()=>setReconcile(null)} onApply={_reconcileApply} onPin={_reconcilePin} onUnpin={_reconcileUnpin}/>}
+    {reconcile&&<FulfillmentReconcileModal data={reconcile} onClose={()=>setReconcile(null)} onApply={_reconcileApply} onPin={_reconcilePin} onUnpin={_reconcileUnpin} onSaveRecheck={_reconcileSaveRecheck} dirty={dirty} saving={actionSaving>0}/>}
     {/* ── Mockup lightbox overlay ── */}
     {mockupLightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setMockupLightbox(null)}>
       <button style={{position:'absolute',top:16,right:20,background:'rgba(255,255,255,0.15)',border:'none',color:'white',fontSize:28,borderRadius:'50%',width:44,height:44,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setMockupLightbox(null)}>×</button>

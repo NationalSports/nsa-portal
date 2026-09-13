@@ -26,7 +26,7 @@ const H = ({ children, right }) => (
   </div>
 );
 
-export default function FulfillmentReconcileModal({ data, onClose, onApply, onPin, onUnpin }) {
+export default function FulfillmentReconcileModal({ data, onClose, onApply, onPin, onUnpin, onSaveRecheck, dirty, saving }) {
   const [applied, setApplied] = useState([]);
   // Any change makes the figures below historical: they were computed when the
   // report ran and nothing here recomputes them.
@@ -55,16 +55,17 @@ export default function FulfillmentReconcileModal({ data, onClose, onApply, onPi
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 940, maxHeight: '90vh', overflow: 'auto' }}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 940 }}>
+        <div className="modal-header" style={{ position: 'sticky', top: 0, background: '#fff', zIndex: 2, borderRadius: '12px 12px 0 0' }}>
           <div>
-            <div style={{ fontSize: 17, fontWeight: 900 }}>{data.label || 'Fulfillment file'} blocked — reconcile</div>
+            <h2>{data.label || 'Fulfillment file'} blocked — reconcile</h2>
             <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{[data.storeName, data.so?.id].filter(Boolean).join(' · ')}</div>
           </div>
-          <button className="btn btn-sm" onClick={onClose}>✕</button>
+          <button className="modal-close" onClick={onClose} aria-label="Close">✕</button>
         </div>
+        <div className="modal-body">
 
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '14px 0 4px' }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '2px 0 4px' }}>
           <Chip n={matchup?.customerUnits ?? 0} label="Customer units" bad={off} />
           {!!matchup?.extraUnits && <Chip n={matchup.extraUnits} label="Unassigned extras" bad />}
           <Chip n={matchup?.soUnits ?? 0} label="Sales order units" bad={off} />
@@ -156,11 +157,20 @@ export default function FulfillmentReconcileModal({ data, onClose, onApply, onPi
           })}
         </>}
 
-        <div style={{ marginTop: 18, paddingTop: 12, borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <div style={{ fontSize: 11.5, color: '#64748b' }}>
-            Changes land in this order as <b>unsaved</b> — check the item grid, then Save. Nothing is sent to Silver Screen until you download the file again.
+        </div>
+        <div className="modal-footer" style={{ position: 'sticky', bottom: 0, background: '#fff', zIndex: 2, justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', borderTop: '1px solid #e2e8f0', borderRadius: '0 0 12px 12px' }}>
+          <div style={{ fontSize: 11.5, color: '#64748b', maxWidth: 520 }}>
+            {dirty
+              ? <>This order has <b>unsaved</b> changes. Saving writes them and runs the file again — nothing reaches Silver Screen unless it passes.</>
+              : <>Nothing changed yet. Applying a fix above edits this order; it is not saved until you say so.</>}
           </div>
-          <button className="btn btn-sm" onClick={onClose} style={{ fontWeight: 700 }}>Close</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-sm" onClick={onClose} disabled={saving} style={{ fontWeight: 700 }}>Close</button>
+            <button className="btn btn-sm" onClick={onSaveRecheck} disabled={!dirty || saving}
+              style={{ fontWeight: 800, background: dirty && !saving ? '#2563eb' : '#cbd5e1', color: '#fff', border: 'none' }}>
+              {saving ? 'Saving…' : 'Save & re-check file'}
+            </button>
+          </div>
         </div>
       </div>
     </div>
