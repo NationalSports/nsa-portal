@@ -35,6 +35,9 @@ export const QB_ACCOUNT_SPECS = Object.freeze({
 export const QB_STATE_TAX_ACCOUNT_KEYS = Object.freeze({
   CA: 'tax_ca_account', AZ: 'tax_az_account', CO: 'tax_co_account',
   NV: 'tax_nv_account', TX: 'tax_tx_account', WA: 'tax_wa_account',
+  // QBO has no dedicated WI or SD subaccounts. Keep each state's invoice tax
+  // on its own service item, but route both to the approved tax-payable parent.
+  WI: 'tax_parent_account', SD: 'tax_parent_account',
 });
 
 export const QB_REQUIRED_ACCOUNT_KEYS = Object.freeze(Object.keys(QB_ACCOUNT_SPECS));
