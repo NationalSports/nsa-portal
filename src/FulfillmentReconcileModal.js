@@ -1,0 +1,168 @@
+import React, { useMemo, useState } from 'react';
+import { suggestSoFixes, rematchOptions, isBulkSafe } from './lib/fulfillmentReconcile';
+
+// The panel a rep lands on when a Silver Screen file or player report is blocked.
+//
+// It answers three questions in order: what is blocking it, which row is actually
+// off, and what would fix it. The fixes are buttons — they edit the sales order
+// the rep already has open, so the change appears in the grid as unsaved and is
+// theirs to review or discard. Nothing here writes to the database.
+//
+// Shared by OrderEditor.js and OrderEditorClassic.js exactly as MultiItemAddModal
+// is: one component, rendered identically from both, so the two editors can never
+// drift on what "reconcile" means.
+
+const Chip = ({ n, label, bad }) => (
+  <div style={{ flex: 1, minWidth: 110, background: bad ? '#fef2f2' : '#f8fafc', border: `1px solid ${bad ? '#fecaca' : '#e2e8f0'}`, borderRadius: 10, padding: '8px 12px' }}>
+    <div style={{ fontSize: 20, fontWeight: 900, color: bad ? '#b91c1c' : '#0b1220' }}>{n}</div>
+    <div style={{ fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: .3, marginTop: 2 }}>{label}</div>
+  </div>
+);
+
+const H = ({ children, right }) => (
+  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '18px 0 8px' }}>
+    <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: .3 }}>{children}</div>
+    {right}
+  </div>
+);
+
+export default function FulfillmentReconcileModal({ data, onClose, onApply, onPin, onUnpin }) {
+  const [applied, setApplied] = useState([]);
+  // Any change makes the figures below historical: they were computed when the
+  // report ran and nothing here recomputes them.
+  const [touched, setTouched] = useState(false);
+  const soItems = data?.soItems || [];
+  const matchup = data?.matchup;
+  const fixes = useMemo(() => suggestSoFixes({ matchup, soItems }), [matchup, soItems]);
+  if (!data) return null;
+
+  const bulk = fixes.filter(isBulkSafe);
+  // Identity, not row number — two rows can share an index after an edit.
+  const key = (f) => `${f.key}|${f.size}|${f.delta}`;
+  const markApplied = (list) => setApplied((prev) => [...prev, ...list.map(key)]);
+  const apply = (list) => { if (!list.length) return; onApply(list); markApplied(list); setTouched(true); };
+  const pin = (k, sku) => { onPin(k, sku); setTouched(true); };
+  const unpin = (sku) => { onUnpin(sku); setTouched(true); };
+  const Stale = () => (touched ? (
+    <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '8px 12px', fontSize: 12, marginBottom: 10 }}>
+      These figures are from when the report ran and do not include the changes you just made. Close this and download the file again to re-check.
+    </div>
+  ) : null);
+
+  const verify = data.verifyDetail || [];
+  const jobUnits = data.jobUnits;
+  const off = matchup && matchup.reportUnits !== matchup.soUnits;
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 940, maxHeight: '90vh', overflow: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 17, fontWeight: 900 }}>{data.label || 'Fulfillment file'} blocked — reconcile</div>
+            <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{[data.storeName, data.so?.id].filter(Boolean).join(' · ')}</div>
+          </div>
+          <button className="btn btn-sm" onClick={onClose}>✕</button>
+        </div>
+
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '14px 0 4px' }}>
+          <Chip n={matchup?.customerUnits ?? 0} label="Customer units" bad={off} />
+          {!!matchup?.extraUnits && <Chip n={matchup.extraUnits} label="Unassigned extras" bad />}
+          <Chip n={matchup?.soUnits ?? 0} label="Sales order units" bad={off} />
+          {jobUnits != null && <Chip n={jobUnits} label="Silver Screen job" bad={jobUnits !== matchup?.reportUnits} />}
+        </div>
+
+        <H>What's blocking it ({(data.issues || []).length})</H>
+        <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '8px 14px', fontSize: 12.5, lineHeight: 1.7 }}>
+          <ul style={{ margin: '4px 0', paddingLeft: 18 }}>{(data.issues || []).map((i, n) => <li key={n}>{i}</li>)}</ul>
+        </div>
+
+        <H right={bulk.length > 1 && (
+          <button className="btn btn-sm" style={{ background: '#2563eb', color: '#fff', fontWeight: 700 }}
+            onClick={() => apply(bulk.filter((f) => !applied.includes(key(f))))}>
+            Apply all {bulk.filter((f) => !applied.includes(key(f))).length} additions
+          </button>
+        )}>Suggested fixes ({fixes.length})</H>
+        {!fixes.length && <div style={{ fontSize: 12.5, color: '#64748b' }}>Every item and size on the sales order already matches what customers ordered. Anything left in the list above is not a unit-count problem.</div>}
+        {fixes.map((f, n) => {
+          const done = applied.includes(key(f));
+          const actionable = f.itemIndex != null;
+          return (
+            <div key={n} style={{ border: '1px solid #e2e8f0', borderLeft: `3px solid ${done ? '#16a34a' : f.kind === 'add' ? '#2563eb' : '#b45309'}`, borderRadius: 8, padding: '8px 12px', marginBottom: 8, display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 13 }}>{f.label || f.row?.name}</div>
+                <div style={{ fontSize: 12, color: f.kind === 'add' ? '#1d4ed8' : '#92400e', marginTop: 2 }}>{f.note}</div>
+                {!!f.row?.who?.length && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>{f.row.who.slice(0, 4).join(', ')}{f.row.who.length > 4 ? ` +${f.row.who.length - 4} more` : ''}</div>}
+              </div>
+              {actionable && (done
+                ? <span style={{ fontSize: 12, fontWeight: 800, color: '#16a34a', whiteSpace: 'nowrap' }}>✓ Applied</span>
+                : <button className="btn btn-sm" style={{ whiteSpace: 'nowrap', fontWeight: 700 }} onClick={() => apply([f])}>
+                    {f.kind === 'add' ? `Add ${f.delta} × ${f.size}` : `Remove ${Math.abs(f.delta)} × ${f.size}`}
+                  </button>)}
+            </div>
+          );
+        })}
+
+        <Stale />
+        <H>Unit match-up{matchup?.diffRows?.length ? ` — ${matchup.diffRows.length} row${matchup.diffRows.length === 1 ? '' : 's'} differ` : ' — every row agrees'}</H>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+            <thead><tr>{['Item', 'Size', 'Customer', 'Sales order', 'Diff', 'Where'].map((h, i) => (
+              <th key={h} style={{ textAlign: i > 0 && i < 5 ? 'center' : 'left', borderBottom: '1px solid #cbd5e1', padding: '6px 8px', color: '#64748b', fontSize: 10, textTransform: 'uppercase' }}>{h}</th>
+            ))}</tr></thead>
+            <tbody>{(matchup?.rows || []).map((r) => (
+              <tr key={r.key} style={{ background: r.delta ? '#fffbeb' : undefined }}>
+                <td style={{ padding: '7px 8px', borderBottom: '1px solid #f1f5f9' }}>
+                  <b>{r.name}</b>{r.sku && <div style={{ fontSize: 11, color: '#94a3b8' }}>{r.sku}{r.color ? ` · ${r.color}` : ''}</div>}
+                </td>
+                <td style={{ padding: '7px 8px', borderBottom: '1px solid #f1f5f9', textAlign: 'center' }}>{r.size}</td>
+                <td style={{ padding: '7px 8px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', fontWeight: 800 }}>
+                  {r.customerUnits}{!!r.extraUnits && <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 400 }}>+{r.extraUnits} unassigned</div>}
+                </td>
+                <td style={{ padding: '7px 8px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', fontWeight: 800 }}>{r.soUnits}</td>
+                <td style={{ padding: '7px 8px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', fontWeight: 800, color: r.delta ? '#b91c1c' : '#cbd5e1' }}>{r.delta ? `${r.delta > 0 ? '+' : ''}${r.delta}` : '—'}</td>
+                <td style={{ padding: '7px 8px', borderBottom: '1px solid #f1f5f9', fontSize: 11, color: '#94a3b8' }}>
+                  {r.who.slice(0, 4).join(', ')}{r.who.length > 4 ? ` +${r.who.length - 4} more` : ''}
+                </td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+
+        {!!verify.length && <>
+          <H>Needs your confirmation ({verify.length})</H>
+          {verify.map((v, n) => {
+            const sourceSku = v.wasSku || v.sku || '';
+            const opts = rematchOptions(soItems, sourceSku);
+            const current = opts.find((o) => o.pinned);
+            return (
+              <div key={n} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 12px', marginBottom: 8 }}>
+                <div style={{ fontSize: 12.5 }}>
+                  <b>{v.order}</b>{v.player ? ` · ${v.player}` : ''} — {v.name}{v.size ? ` · ${v.size}` : ''}
+                </div>
+                <div style={{ fontSize: 11.5, color: v.unmatched ? '#b91c1c' : '#b45309', fontWeight: 700, marginTop: 2 }}>
+                  {v.unmatched ? '⚠ not on the sales order' : [v.wasSku && `↺ was SKU ${v.wasSku}`, v.wasSize && `↺ was size ${v.wasSize}`].filter(Boolean).join(' · ') || 'best-match swap'}
+                </div>
+                {!!sourceSku && <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 11, color: '#64748b' }}>Match {sourceSku} to:</span>
+                  <select value={current ? current.key : ''} style={{ fontSize: 12, maxWidth: 380 }}
+                    onChange={(e) => (e.target.value === '' ? unpin(sourceSku) : pin(e.target.value, sourceSku))}>
+                    <option value="">Whatever the system picks (auto)</option>
+                    {opts.map((o) => <option key={o.key} value={o.key}>{o.label}{o.sizes ? ` — ${o.sizes}` : ''}</option>)}
+                  </select>
+                  {current && <span style={{ fontSize: 11, color: '#16a34a', fontWeight: 700 }}>✓ confirmed by you</span>}
+                </div>}
+              </div>
+            );
+          })}
+        </>}
+
+        <div style={{ marginTop: 18, paddingTop: 12, borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 11.5, color: '#64748b' }}>
+            Changes land in this order as <b>unsaved</b> — check the item grid, then Save. Nothing is sent to Silver Screen until you download the file again.
+          </div>
+          <button className="btn btn-sm" onClick={onClose} style={{ fontWeight: 700 }}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}

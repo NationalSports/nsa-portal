@@ -237,7 +237,7 @@ function allocateCurrentSizes(g) {
 //  Anything still unmatched keeps its original data and is flagged for review.
 export function mapLinesToSoItems(lines, soItems) {
   // SO side, grouped by sku (blank-sku customs key by name), with per-colorway subgroups.
-  const soGroups = {}; const soOrder = [];
+  const soGroups = {}; const soOrder = []; const pinBySku = {};
   (soItems || []).forEach((it) => {
     const sku = (it.sku || '').trim();
     const key = (sku || (it.name || it.custom_desc || '')).toLowerCase();
@@ -249,6 +249,16 @@ export function mapLinesToSoItems(lines, soItems) {
     const color = (it.color || '').trim();
     let cw = g.colorways.find((c) => c.color.toLowerCase() === color.toLowerCase());
     if (!cw) { cw = { color, profile: {}, labels: {} }; g.colorways.push(cw); }
+    // A pairing a rep confirmed in the reconciliation panel, stored on the SO item.
+    (Array.isArray(it._matchSkus) ? it._matchSkus : []).forEach((src) => {
+      const from = String(src == null ? '' : src).trim().toLowerCase();
+      if (!from) return;
+      // Duplicating a sales-order line copies its pins too, which would leave two
+      // lines claiming the same source SKU and the first in array order winning
+      // silently. Two owners is not a decision, so it falls back to automatic
+      // matching — which flags for review — rather than guessing a winner.
+      pinBySku[from] = pinBySku[from] ? { ambiguous: true } : { key, color };
+    });
     Object.entries(it.sizes || {}).forEach(([s, q]) => {
       const key = sizeKey(s); cw.profile[key] = (cw.profile[key] || 0) + (Number(q) || 0);
       if (!cw.labels[key]) cw.labels[key] = String(s || key).trim() || key;
@@ -269,6 +279,17 @@ export function mapLinesToSoItems(lines, soItems) {
     if (!soGroups[key] && g.product_id) key = soOrder.find((sk) => soGroups[sk].pids.has(g.product_id)) || '';
     if (soGroups[key]) { g.so = soGroups[key]; g.soKey = key; g.matched = 'direct'; }
   });
+  // A rep already told us which SO line these units belong to, so no automatic rule
+  // below may second-guess it: a pinned group is never released, re-paired, or
+  // flagged for verification again. It still allocates sizes normally — a pin says
+  // WHICH item is right, never that the SO buys sizes it does not.
+  order.forEach((k) => {
+    const g = groups[k];
+    const pin = pinBySku[(g.sku || '').trim().toLowerCase()];
+    if (!pin || pin.ambiguous || !soGroups[pin.key]) return;
+    g.so = soGroups[pin.key]; g.soKey = pin.key; g.soColor = pin.color;
+    g.matched = 'swap'; g.verify = false; g.pinned = true;
+  });
   // A surviving sku is not proof the SO still buys it. Reps swap an item by zeroing
   // the old line's sizes and adding the replacement, so the old sku sits on the SO
   // covering nothing that was ordered (live: St. Francis Tennis SO-2035 — 1203.080
@@ -278,7 +299,7 @@ export function mapLinesToSoItems(lines, soItems) {
   // store and SO can never turn into a false "not on the SO" flag.
   order.forEach((k) => {
     const g = groups[k];
-    if (!g.so) return;
+    if (!g.so || g.pinned) return;
     const covered = {};
     g.so.colorways.forEach((cw) => Object.entries(cw.profile).forEach(([s, q]) => { covered[s] = (covered[s] || 0) + q; }));
     if (profileScore(sizeProfile(g.lines, (l) => ({ size: l.size, qty: l.qty || 1 })), covered) === 0) { g.released = true; g.so = null; g.matched = null; }
@@ -404,7 +425,13 @@ export function mapLinesToSoItems(lines, soItems) {
       const color = g.matched === 'swap' ? (g.soColor || '')
         : (g.so.colorways.length === 1 ? (g.so.colorways[0].color || l.color || '') : (l.color || ''));
       const productId = g.so.pids.size === 1 ? [...g.so.pids][0] : null;
-      out.push({ ...l, _sku: g.so.sku, _name: g.so.name || l.name || '', _color: color, _productId: productId, _wasSku: changed ? sourceSku : '', _verify: !!g.verify || !!l._sizeVerify });
+      // A pin clears the PAIRING doubt and nothing else. allocateCurrentSizes will
+      // happily move an uncovered unit onto the line's one spare size without
+      // flagging it (_sizeVerify only fires when the choice was ambiguous), so on a
+      // pinned group any size that actually moved still has to be confirmed —
+      // otherwise confirming the garment would silently ship a customer's XL as an S.
+      const sizeMoved = !!l._sizeVerify || (!!g.pinned && !!l._wasSize);
+      out.push({ ...l, _sku: g.so.sku, _name: g.so.name || l.name || '', _color: color, _productId: productId, _wasSku: changed ? sourceSku : '', _verify: !!g.verify || sizeMoved });
     });
     if (g.so && g.matched === 'swap') substitutions.push({ from: g.sku || g.name, to: (g.so.sku || g.so.name) + (g.soColor ? ' ' + g.soColor : ''), verify: !!g.verify });
     if (!g.so) unmatched.push(g.sku || g.name);
@@ -435,7 +462,7 @@ export function materializeMappedLine(l) {
 const sumSoUnits = (items) => (items || []).reduce((n, it) => n + Object.entries(it.sizes || {})
   .reduce((a, [k, q]) => a + (/^(drop_ship|unit_cost|_)/i.test(k) ? 0 : (Number(q) || 0)), 0), 0);
 
-const reportItemKey = (sku, name, color, size) => [
+export const reportItemKey = (sku, name, color, size) => [
   String(sku || name || '').trim().toUpperCase(),
   String(color || '').trim().toUpperCase().replace(/\s*\/\s*/g, '/').replace(/\s+/g, ' '),
   norm(size),
@@ -813,7 +840,7 @@ async function fetchLines(supabase, orderIds) {
 // format: 'pdf' (default — the printable per-player sheet) | 'csv' (flat one-row-per-line
 // file, ordered by order number, ship-to repeated on every row) | 'product' (Silver
 // Screen Domestic XLSX, reconciled to the same active customer lines and current SO).
-export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format = 'pdf', customer = null }) {
+export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format = 'pdf', customer = null, onBlocked = null }) {
   const toast = nf || ((m) => alert(m));
   if (!supabase) { toast('No database connection — player report needs the store orders.', 'error'); return false; }
   try {
@@ -890,17 +917,36 @@ export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format
       // Every issue plus a per item/size match-up, rather than the first five of them
       // in a toast that names the disagreement but not where it is.
       const label = format === 'product' ? 'Silver Screen file' : format === 'csv' ? 'Player report CSV' : 'Player report';
-      // The reconciliation is an aid, never the message itself: if rendering it fails
-      // for any reason, the rep must still be told exactly why their file was rejected.
+      // Only when target.units really is the job's own quantity. A Silver Screen
+      // deco PO with a job id but no numeric qty falls back to the SO total, and
+      // showing that as "the job quantity" would invent a number nobody submitted
+      // — and the reconciliation tells the rep to go change the job to match it.
+      const jobUnits = target.targetLabel === 'Silver Screen job units' ? target.units : null;
+      // A caller that can actually change the order (the editors) takes the findings
+      // and opens its own panel, where each difference is a button it can apply.
+      // Everyone else still gets the read-only popup below.
+      if (onBlocked) {
+        let handed = false;
+        try {
+          onBlocked({
+            so, storeName: ws.name || '', soItems, orderById, lines, issues: blocking, label, jobUnits,
+            matchup: buildFulfillmentMatchup({ lines, soItems, orderById }),
+            verifyDetail: buildVerifyDetail({ lines, orderById }),
+          });
+          handed = true;
+        } catch (e) { console.warn('Reconciliation panel failed to open', e); }
+        if (handed) {
+          toast(`${label} blocked: ${blocking.length} issue${blocking.length === 1 ? '' : 's'} — opened the reconciliation.`, 'error');
+          return false;
+        }
+      }
+      // Popup fallback for callers with no panel of their own. (An editor's onBlocked
+      // is a state setter, so it hands off here and the real render happens on the
+      // next React commit — past this try, under the editor's own error boundary.)
       let opened = false;
       try {
         ({ opened } = renderFulfillmentReconciliation({
-          so, storeName: ws.name || '', lines, soItems, orderById, issues: blocking, label,
-          // Only when target.units really is the job's own quantity. A Silver Screen
-          // deco PO with a job id but no numeric qty falls back to the SO total, and
-          // showing that as "the job quantity" would invent a number nobody submitted
-          // — and this popup tells the rep to go change the job to match it.
-          jobUnits: target.targetLabel === 'Silver Screen job units' ? target.units : null,
+          so, storeName: ws.name || '', lines, soItems, orderById, issues: blocking, label, jobUnits,
         }));
       } catch (e) { console.warn('Reconciliation view failed to render', e); opened = false; }
       toast(opened
