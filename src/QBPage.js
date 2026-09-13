@@ -450,7 +450,9 @@ export default function QBPage(){
     });
     const parkedPurchaseOrderIds=qbConfig.parkedPurchaseOrderIds||[];
     const unsyncedPOGroups=groupPortalPurchaseOrders(sos,poMap,vend,parkedPurchaseOrderIds);
-    const unsyncedInvs=invs.filter(i=>!i.qb_invoice_id&&!isVoidInvoice(i));
+    // Zero-dollar source records remain in portal history but are not QBO
+    // accounting documents and must not keep the migration queue open.
+    const unsyncedInvs=invs.filter(i=>!i.qb_invoice_id&&!isVoidInvoice(i)&&safeNum(i.total)>0);
     const _custQBMap=qbConfig.custQBMap||{};
     const _prodQBMap=qbConfig.prodQBMap||{};
     const custWithQB=cust.filter(c=>_custQBMap[c.id]).length;

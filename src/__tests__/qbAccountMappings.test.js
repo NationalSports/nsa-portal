@@ -108,6 +108,7 @@ describe('QuickBooks account resolution', () => {
     expect(QB_STATE_TAX_ACCOUNT_KEYS).toEqual({
       CA: 'tax_ca_account', AZ: 'tax_az_account', CO: 'tax_co_account',
       NV: 'tax_nv_account', TX: 'tax_tx_account', WA: 'tax_wa_account',
+      WI: 'tax_parent_account', SD: 'tax_parent_account',
     });
   });
 

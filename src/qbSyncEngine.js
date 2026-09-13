@@ -468,7 +468,7 @@ export function qbPurchaseOrderSourceFingerprint(row = {}) {
 export function buildQBInvoicePreviewRows(invoices = [], customers = [], customerMap = {}, options = {}) {
   const customerById = new Map(customers.map(customer => [String(customer.id), customer]));
   const taxBlockReason = typeof options.taxBlockReason === 'function' ? options.taxBlockReason : () => '';
-  return invoices.filter(invoice => !invoice.qb_invoice_id && !isVoidInvoice(invoice)).map(invoice => {
+  return invoices.filter(invoice => !invoice.qb_invoice_id && !isVoidInvoice(invoice) && qbCurrency(invoice.total) > 0).map(invoice => {
     const customer = customerById.get(String(invoice.customer_id));
     const qboCustomerId = customerMap[invoice.customer_id] || invoice.qb_customer_id || '';
     const date = parseQBDateValue(invoice.invoice_date || invoice.date || invoice.created_at) || '';

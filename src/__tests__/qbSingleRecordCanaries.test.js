@@ -36,7 +36,7 @@ describe('QuickBooks one-record canaries', () => {
     expect(qboStandardTermDueDate('2026-09-01','Date driven')).toBeNull();
   });
 
-  test('invoice review lists exact ready rows and blocks zero totals without writing', () => {
+  test('invoice review lists exact ready rows and excludes zero totals without writing', () => {
     const rows=buildQBInvoicePreviewRows([
       {id:'INV-10',customer_id:'C1',invoice_date:'2026-09-08',total:100,paid:25,tax:8},
       {id:'INV-11',customer_id:'C1',invoice_date:'2026-09-08',total:0,paid:0,tax:0},
@@ -44,7 +44,6 @@ describe('QuickBooks one-record canaries', () => {
     ],[{id:'C1',name:'Exact Customer'}],{C1:'Q1'});
     expect(rows).toEqual([
       expect.objectContaining({invoiceId:'INV-10',documentNumber:'INV-10',customer:'Exact Customer',qboCustomerId:'Q1',date:'2026-09-08',total:100,paid:25,tax:8,action:'ready'}),
-      expect.objectContaining({invoiceId:'INV-11',action:'blocked',reason:'invoice total must be positive'}),
     ]);
   });
 
