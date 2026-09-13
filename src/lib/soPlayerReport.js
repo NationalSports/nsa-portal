@@ -11,7 +11,7 @@
 // store is one SO (the OMG flow) and every order counts.
 
 import { attachAdidasTagSkus } from './adidasSsReport';
-import { downloadSilverScreenFulfillment } from './silverScreenFulfillment';
+import { downloadSilverScreenFulfillment, buildSilverScreenDomesticRows } from './silverScreenFulfillment';
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 
@@ -630,6 +630,172 @@ export function buildSoProductRows(lines) {
     .sort((a, b) => a.name.localeCompare(b.name) || a.sku.localeCompare(b.sku));
 }
 
+// ── Blocked-report reconciliation ────────────────────────────────────────────
+// A blocked file used to surface only as a truncated toast ("43 active customer units
+// do not match 42 Silver Screen job units"), which names the disagreement but not
+// WHERE it is — leaving the rep to hand-count two lists to find one stray unit.
+// Everything below is reporting only: it turns the same audit into a per
+// item/color/size match-up. Nothing here decides whether a file blocks — that stays
+// with reportBlockingIssues() and buildSilverScreenDomesticRows().
+
+// Customer units vs SO units on the same item/color/size key the fulfillment extras
+// builder uses, so the two can never disagree about what "the same row" means.
+export function buildFulfillmentMatchup({ lines = [], soItems = [], orderById = {} } = {}) {
+  const rows = new Map();
+  const touch = (key, seed) => {
+    let r = rows.get(key);
+    if (!r) { r = { key, ...seed, customerUnits: 0, extraUnits: 0, soUnits: 0, who: [] }; rows.set(key, r); }
+    return r;
+  };
+
+  // Every field is coerced: these feed localeCompare below, and this runs at the one
+  // moment the rep is already blocked — a throw here would replace the reason their
+  // file was rejected with a bare TypeError.
+  const str = (v) => String(v == null ? '' : v);
+
+  (lines || []).filter(Boolean).forEach((raw) => {
+    const l = materializeMappedLine(raw) || raw;
+    const sku = str(l._effSku || l.sku);
+    const name = str(l.name || sku || 'Item');
+    const size = str(l.size || 'OS');
+    const r = touch(reportItemKey(sku, name, l.color, size), { name, sku, color: str(l.color), size });
+    // Order extras are synthesised FROM the SO's own residual, so counting them as
+    // customer demand would make this table agree with itself by construction and
+    // hide that those units have no player behind them. They are units the file
+    // will carry, so they still count toward the report — just never as "customer".
+    if (l._orderExtra) r.extraUnits += Number(l.qty) || 0;
+    else r.customerUnits += Number(l.qty) || 0;
+    // Who to go look at when this row is the one that's off.
+    const label = [orderNo(orderById[l.order_id] || {}), str(l.player_name).trim()].filter(Boolean).join(' · ');
+    if (label && !r.who.includes(label)) r.who.push(label);
+  });
+
+  (soItems || []).filter(Boolean).forEach((it) => Object.entries(it.sizes || {}).forEach(([size, rawQty]) => {
+    if (/^(drop_ship|unit_cost|_)/i.test(size)) return;
+    const qty = Math.max(0, Number(rawQty) || 0);
+    if (!qty) return;
+    const name = str(it.name || it.custom_desc || it.sku || 'Item');
+    touch(reportItemKey(it.sku, name, it.color, size), { name, sku: str(it.sku), color: str(it.color), size: str(size) }).soUnits += qty;
+  }));
+
+  // Biggest disagreement first — the rep should not have to hunt for the odd row.
+  const all = [...rows.values()]
+    .map((r) => ({ ...r, reportUnits: r.customerUnits + r.extraUnits, delta: (r.customerUnits + r.extraUnits) - r.soUnits }))
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || a.name.localeCompare(b.name)
+      || a.sku.localeCompare(b.sku) || reportSizeRank(a.size) - reportSizeRank(b.size) || a.size.localeCompare(b.size));
+  const sum = (f) => all.reduce((n, r) => n + f(r), 0);
+  return {
+    rows: all,
+    diffRows: all.filter((r) => r.delta !== 0),
+    customerUnits: sum((r) => r.customerUnits),
+    extraUnits: sum((r) => r.extraUnits),
+    reportUnits: sum((r) => r.reportUnits),
+    soUnits: sum((r) => r.soUnits),
+  };
+}
+
+// The per-line detail behind "<order>: substituted item or size still needs
+// verification" / "is not matched" — that issue text names an order number and
+// nothing else, so on its own it can't be acted on.
+export function buildVerifyDetail({ lines = [], orderById = {} } = {}) {
+  const out = []; const seen = new Set();
+  (lines || []).forEach((raw) => {
+    if (!raw || (!raw._verify && !raw._unmatched)) return;
+    const l = materializeMappedLine(raw) || raw;
+    const item = {
+      order: orderNo(orderById[l.order_id] || {}),
+      player: String(l.player_name || '').trim(),
+      name: l.name || '', sku: l._effSku || l.sku || '', color: l.color || '', size: l.size || '',
+      wasSku: raw._wasSku || '', wasSize: raw._wasSize || '', unmatched: !!raw._unmatched,
+    };
+    const k = Object.values(item).join('|');
+    if (seen.has(k)) return;
+    seen.add(k); out.push(item);
+  });
+  return out;
+}
+
+// Which pair of counts actually disagrees, in the order a rep would fix them.
+function matchupGuidance({ matchup, verifyDetail, jobUnits }) {
+  const steps = [];
+  if (matchup.diffRows.length) {
+    const over = matchup.reportUnits - matchup.soUnits;
+    steps.push(`What this file would carry and what the sales order lists disagree by ${over > 0 ? '+' : ''}${over} unit${Math.abs(over) === 1 ? '' : 's'}. The highlighted rows below are the ones that differ — for each, either correct the size/quantity on the sales order, or fix the customer order. The "Where" column names the store order and player to open.`);
+  }
+  if (jobUnits != null && jobUnits !== matchup.reportUnits && !matchup.diffRows.length) {
+    steps.push(`The orders and the sales order agree at ${matchup.reportUnits} units, but the Silver Screen job was submitted for ${jobUnits}. The job is the stale side — update the quantity on the Silver Screen deco PO (or re-send the job) so it reads ${matchup.reportUnits}.`);
+  } else if (jobUnits != null && jobUnits !== matchup.soUnits && matchup.diffRows.length) {
+    steps.push(`The Silver Screen job was submitted for ${jobUnits} units, against ${matchup.soUnits} now on the sales order. Once the rows above agree, re-check the job quantity too.`);
+  }
+  if (matchup.extraUnits) {
+    const one = matchup.extraUnits === 1;
+    steps.push(`${matchup.extraUnits} unit${one ? '' : 's'} on this order ${one ? 'has' : 'have'} no player behind ${one ? 'it' : 'them'} — ${one ? 'it was' : 'they were'} added straight to the sales order, and ${one ? 'it ships' : 'they ship'} as "Order Extra / Unassigned". Confirm that is intended before sending.`);
+  }
+  if (verifyDetail.some((v) => !v.unmatched)) steps.push('Confirm each substitution listed under "Needs your confirmation" — the swap was auto-matched and is waiting on a human to say it is right. Correct the item or size on the sales order if it is not.');
+  if (verifyDetail.some((v) => v.unmatched)) steps.push('Items marked "not on the sales order" are being ordered in the store but have no matching sales-order line. Add them to the sales order, or cancel them in the store.');
+  return steps;
+}
+
+// Same popup pattern as the printable reports, minus the auto-print — this one is a
+// worksheet the rep reads and acts on, not something they hand to anybody.
+function openHtml(html) {
+  try {
+    const w = window.open('', '_blank');
+    if (!w) return false;
+    w.document.write(html); w.document.close(); w.focus();
+    return true;
+  } catch (e) { console.warn('Reconciliation popup failed to open', e); return false; }
+}
+
+export function renderFulfillmentReconciliation({ so = {}, storeName = '', lines = [], soItems = [], orderById = {}, issues = [], label = 'Fulfillment file', jobUnits = null } = {}) {
+  const matchup = buildFulfillmentMatchup({ lines, soItems, orderById });
+  const verifyDetail = buildVerifyDetail({ lines, orderById });
+  const steps = matchupGuidance({ matchup, verifyDetail, jobUnits });
+  const chip = (n, l, warn) => `<div class="chip${warn ? ' bad' : ''}"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`;
+  const delta = (d) => (d === 0 ? '<span class="ok">—</span>' : `<span class="bad">${d > 0 ? '+' : ''}${d}</span>`);
+  const row = (r) => `<tr${r.delta ? ' class="warnrow"' : ''}>
+    <td><b>${esc(r.name)}</b>${r.sku ? `<div class="sub">${esc(r.sku)}${r.color ? ' · ' + esc(r.color) : ''}</div>` : ''}</td>
+    <td class="c">${esc(r.size)}</td>
+    <td class="c b">${r.customerUnits}${r.extraUnits ? `<div class="sub">+${r.extraUnits} unassigned</div>` : ''}</td>
+    <td class="c b">${r.soUnits}</td>
+    <td class="c b">${delta(r.delta)}</td><td class="sub">${esc(r.who.slice(0, 4).join(', '))}${r.who.length > 4 ? ` +${r.who.length - 4} more` : ''}</td></tr>`;
+  const vRow = (v) => `<tr><td>${esc(v.order)}</td><td>${esc(v.player) || '<span class="sub">—</span>'}</td>
+    <td><b>${esc(v.name)}</b>${v.sku ? `<div class="sub">${esc(v.sku)}${v.color ? ' · ' + esc(v.color) : ''}</div>` : ''}</td>
+    <td class="c">${esc(v.size)}</td>
+    <td>${v.unmatched ? '<span class="bad">⚠ not on the sales order</span>'
+      : [v.wasSku ? `↺ was SKU ${esc(v.wasSku)}` : '', v.wasSize ? `↺ was size ${esc(v.wasSize)}` : ''].filter(Boolean).join('<br>') || '<span class="sub">best-match swap</span>'}</td></tr>`;
+
+  const ok = openHtml(`<!doctype html><html><head><title>Reconciliation — ${esc(so.id)}</title><style>
+    body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0b1220;max-width:900px;margin:32px auto;padding:0 24px}
+    h1{font-size:21px;margin:0 0 2px}h2{font-size:13px;text-transform:uppercase;letter-spacing:.3px;color:#64748b;margin:22px 0 8px}
+    .meta{color:#64748b;font-size:13px;margin-bottom:16px}
+    .chips{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0 4px}
+    .chip{flex:1;min-width:120px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px}
+    .chip.bad{background:#fef2f2;border-color:#fecaca}
+    .chip .n{font-size:22px;font-weight:900}.chip .l{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.3px;margin-top:2px}
+    table{width:100%;border-collapse:collapse;font-size:13px}
+    th{text-align:left;border-bottom:1px solid #cbd5e1;padding:6px 8px;color:#64748b;font-size:11px;text-transform:uppercase}
+    td{padding:7px 8px;border-bottom:1px solid #f1f5f9;vertical-align:top}td.c{text-align:center}td.b{font-weight:800}
+    .sub{font-size:11px;color:#94a3b8}.bad{color:#b91c1c;font-weight:800}.ok{color:#cbd5e1}
+    .warnrow td{background:#fffbeb}
+    .warn{background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 14px;font-size:13px;line-height:1.7;margin:0 0 14px}
+    .warn li{margin:2px 0}.fix{background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 14px;font-size:13px;line-height:1.6}
+    .fix li{margin:6px 0}ol,ul{margin:6px 0 0;padding-left:20px}
+  </style></head><body>
+    <h1>${esc(label)} blocked — reconciliation</h1>
+    <div class="meta">${esc(storeName)} · ${esc(so.id)} · ${new Date().toLocaleString()}</div>
+    <div class="chips">${chip(matchup.customerUnits, 'Customer units', matchup.reportUnits !== matchup.soUnits)}${matchup.extraUnits ? chip(matchup.extraUnits, 'Unassigned extras', true) : ''}${chip(matchup.soUnits, 'Sales order units', matchup.reportUnits !== matchup.soUnits)}${jobUnits != null ? chip(jobUnits, 'Silver Screen job', jobUnits !== matchup.reportUnits) : ''}</div>
+    <h2>What's blocking it (${issues.length})</h2>
+    <div class="warn"><ul>${issues.map((i) => `<li>${esc(i)}</li>`).join('')}</ul></div>
+    ${steps.length ? `<h2>How to match them up</h2><div class="fix"><ol>${steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ol></div>` : ''}
+    <h2>Unit match-up${matchup.diffRows.length ? ` — ${matchup.diffRows.length} row${matchup.diffRows.length === 1 ? '' : 's'} differ` : ' — every row agrees'}</h2>
+    ${matchup.rows.length ? `<table><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Customer</th><th class="c">Sales order</th><th class="c">Diff</th><th>Where</th></tr></thead><tbody>${matchup.rows.map(row).join('')}</tbody></table>` : '<div class="meta">No active items.</div>'}
+    ${verifyDetail.length ? `<h2>Needs your confirmation (${verifyDetail.length})</h2>
+    <table><thead><tr><th>Store order</th><th>Player</th><th>Item</th><th class="c">Size</th><th>Why</th></tr></thead><tbody>${verifyDetail.map(vRow).join('')}</tbody></table>` : ''}
+  </body></html>`);
+  return { opened: ok, matchup, verifyDetail, steps };
+}
+
 // Chunked fetch of all line items for a set of order ids (id lists too long for one
 // `in()` are split — same reason Webstores chunks this).
 async function fetchLines(supabase, orderIds) {
@@ -703,22 +869,47 @@ export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format
       externalIssues: silverScreenExternalIssues(so),
       orderExtras: extras.units ? [{ soId: so.id, units: extras.units }] : [],
     };
-    const blocking = reportBlockingIssues(audit);
-    if (format !== 'product' && blocking.length) {
-      toast(`Player report blocked: ${blocking.slice(0, 5).join('; ')}${blocking.length > 5 ? `; plus ${blocking.length - 5} more issue(s)` : ''}.`, 'error');
+    let fulfillmentCustomer = customer;
+    // The editor can hold a stale/partial customer object even after the linked
+    // customer address has been completed in Supabase (live: St. Francis Golf).
+    // Club delivery rows must use the freshest customer tied to the webstore,
+    // so hydrate it at download time instead of trusting the editor snapshot.
+    // Hydrated before the block check because the fulfillment builder's own
+    // per-row checks (missing address fields) read this customer.
+    if (format === 'product' && ws.customer_id) {
+      const { data } = await supabase.from('customers').select('id,name,contact_name,shipping_attention,shipping_address_line1,shipping_address_line2,shipping_city,shipping_state,shipping_zip').eq('id', ws.customer_id).maybeSingle();
+      fulfillmentCustomer = data || fulfillmentCustomer || null;
+    }
+    // The Silver Screen path layers per-row checks (unverified substitutions, missing
+    // destination fields) on top of the shared audit; its issue list already contains
+    // the audit's own fatal issues, so it is the complete set for that format.
+    const blocking = format === 'product'
+      ? buildSilverScreenDomesticRows({ store: ws, lines, orderById, customer: fulfillmentCustomer, audit }).issues
+      : reportBlockingIssues(audit);
+    if (blocking.length) {
+      // Every issue plus a per item/size match-up, rather than the first five of them
+      // in a toast that names the disagreement but not where it is.
+      const label = format === 'product' ? 'Silver Screen file' : format === 'csv' ? 'Player report CSV' : 'Player report';
+      // The reconciliation is an aid, never the message itself: if rendering it fails
+      // for any reason, the rep must still be told exactly why their file was rejected.
+      let opened = false;
+      try {
+        ({ opened } = renderFulfillmentReconciliation({
+          so, storeName: ws.name || '', lines, soItems, orderById, issues: blocking, label,
+          // Only when target.units really is the job's own quantity. A Silver Screen
+          // deco PO with a job id but no numeric qty falls back to the SO total, and
+          // showing that as "the job quantity" would invent a number nobody submitted
+          // — and this popup tells the rep to go change the job to match it.
+          jobUnits: target.targetLabel === 'Silver Screen job units' ? target.units : null,
+        }));
+      } catch (e) { console.warn('Reconciliation view failed to render', e); opened = false; }
+      toast(opened
+        ? `${label} blocked: ${blocking.length} issue${blocking.length === 1 ? '' : 's'} — opened a reconciliation showing exactly what to match up.`
+        : `${label} blocked: ${blocking.slice(0, 5).join('; ')}${blocking.length > 5 ? `; plus ${blocking.length - 5} more issue(s)` : ''}. Allow pop-ups to see the full reconciliation.`, 'error');
       return false;
     }
     if (format === 'csv') downloadPlayerReportCsv({ so, storeName: ws.name || '', lines, orderById });
     else if (format === 'product') {
-      let fulfillmentCustomer = customer;
-      // The editor can hold a stale/partial customer object even after the linked
-      // customer address has been completed in Supabase (live: St. Francis Golf).
-      // Club delivery rows must use the freshest customer tied to the webstore,
-      // so hydrate it at download time instead of trusting the editor snapshot.
-      if (ws.customer_id) {
-        const { data } = await supabase.from('customers').select('id,name,contact_name,shipping_attention,shipping_address_line1,shipping_address_line2,shipping_city,shipping_state,shipping_zip').eq('id', ws.customer_id).maybeSingle();
-        fulfillmentCustomer = data || fulfillmentCustomer || null;
-      }
       const result = downloadSilverScreenFulfillment({ store: ws, lines, orderById, customer: fulfillmentCustomer, audit, reference: so.id });
       toast(`Downloaded ${result.unitCount} Silver Screen fulfillment unit${result.unitCount === 1 ? '' : 's'}`);
     }
