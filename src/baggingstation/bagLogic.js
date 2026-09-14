@@ -92,6 +92,111 @@ export function playerHeader(order, items) {
   };
 }
 
+// ── What the packer actually reads on a line ─────────────────────────────────
+// Store lines carry the storefront's mashed-together sku ("PC55-JetBlack") and,
+// on OMG imports, no name at all — so the screen and the label could only say
+// "PC55-JetBlack", which tells the packer nothing about WHICH garment it is.
+// These split a line back into the three things she needs to match it to a pile
+// on the table: the style number, the garment's real name, and the color.
+// (The catalog name is backfilled server-side — netlify/functions/bagging-api.js.)
+
+const canon = (s) => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, '');
+const words = (s) => String(s == null ? '' : s).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+
+// "PC55-JetBlack" + color "Jet Black" -> "PC55". Only strips a trailing run of
+// sku tokens that canonically EQUALS the color, so a style number that merely
+// looks suffixed ("JST488", "229162.080") is returned untouched — a wrong style
+// number on a bag label is worse than a noisy one.
+export function styleNumber(sku, color) {
+  const raw = String(sku == null ? '' : sku).trim();
+  const c = canon(color);
+  if (!raw || !c) return raw;
+  const parts = raw.split(/([-_. ])/); // separators land on the odd indices
+  for (let start = 2; start < parts.length; start += 2) {
+    // "112 -5 BLACK/WHITE/RED" leaves "112 -5" behind — the style is its first word.
+    if (canon(parts.slice(start).join('')) === c) return parts.slice(0, start - 1).join('').trim().split(/\s+/)[0];
+  }
+  // Free-text skus the storefront never normalised ("18500 BLACK",
+  // "1379806 (BLACK 001) - 5"): the style is the first word and the rest is the
+  // colorway spelled some other way — a substring either way, or the same words
+  // in another order. Anything less certain returns the sku whole.
+  const head = raw.split(/\s+/)[0];
+  if (head && head !== raw) {
+    const tail = raw.slice(head.length);
+    const rest = canon(tail);
+    const restWords = new Set(words(tail));
+    const colorWords = words(color);
+    if (rest && (rest.includes(c) || c.includes(rest)
+      || (colorWords.length > 0 && colorWords.every((w) => restWords.has(w))))) return head;
+  }
+  return raw;
+}
+
+// The garment's own name, with the noise vendor feeds leave behind stripped:
+// a doubled brand prefix ("Port & Co Port & Co Core Blend Tee"), the style
+// number repeated at the end ("... Pro Tee. ST420 ST420"), and a trailing
+// "- <color>". Never returns empty when a name was given — falling back to the
+// raw name beats showing nothing.
+export function garmentName(name, sku, color) {
+  const original = String(name == null ? '' : name).trim();
+  if (!original) return '';
+  let s = original;
+
+  // "X X rest" -> "X rest" (longest repeated prefix wins)
+  const w = s.split(/\s+/);
+  for (let k = Math.floor(w.length / 2); k >= 1; k--) {
+    if (w.slice(0, k).join(' ').toLowerCase() === w.slice(k, 2 * k).join(' ').toLowerCase()) {
+      s = w.slice(k).join(' ');
+      break;
+    }
+  }
+
+  // trailing style number(s), with whatever "." or "-" the feed left attached
+  const seen = new Set();
+  for (const tok of [String(sku == null ? '' : sku).trim(), styleNumber(sku, color)]) {
+    if (!tok || seen.has(tok)) continue;
+    seen.add(tok);
+    const lit = tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    s = s.replace(new RegExp('(?:[\\s.,-]*\\b' + lit + '\\b)+[\\s.,-]*$', 'i'), '').trim();
+  }
+
+  // trailing "- <color>" ("Gildan Softstyle® T-Shirt - Black"). The catalog name
+  // often carries a SHORTER spelling than the line does ("- Black" against a
+  // line color of "Black (001)"), so a color that contains the trailing token
+  // counts — but never the other way round, which would strip real words.
+  if (color) {
+    const m = s.match(/^(.*?)\s*[-–—]\s*([^-–—]+)$/);
+    const tok = m ? canon(m[2]) : '';
+    if (tok.length >= 3 && (tok === canon(color) || canon(color).includes(tok))) s = m[1].trim();
+  }
+
+  s = s.replace(/[\s.,-]+$/, '').trim();
+  return s || original;
+}
+
+// A style number a packer can read back off a bag: no whitespace, catalog length.
+const CLEAN_STYLE = /^[A-Za-z0-9][A-Za-z0-9./-]{0,19}$/;
+
+// One line's identity for the screen, the label and the staging sheet:
+// { style: 'PC55', garment: 'Port & Co Core Blend Tee', color: 'Jet Black' },
+// plus the two lines they all print: `head` (big) and `desc` (under it).
+// `text` is the flat one-line form for places that can't lay out two.
+export function itemDisplay(item) {
+  const i = item || {};
+  const sku = String(i.sku == null ? '' : i.sku).trim();
+  const color = String(i.color == null ? '' : i.color).trim();
+  const style = styleNumber(sku, color);
+  let garment = garmentName(i.name, sku, color);
+  // "PC55 · PC55" helps nobody — drop the name when it IS the style number.
+  if (garment && canon(garment) === canon(style)) garment = '';
+  // `head` is the big line, `desc` the one under it. The style number leads when
+  // it IS one; a sku the storefront left as free text ("1382622 (GREY 011) - 5")
+  // reads worse than the garment's own name, so the name leads instead.
+  const head = (CLEAN_STYLE.test(style) ? style : '') || garment || sku || 'Item';
+  const desc = [garment === head ? '' : garment, color].filter(Boolean).join(' · ');
+  return { style, garment, color, head, desc, text: [head, desc].filter(Boolean).join(' · ') };
+}
+
 // Short lines for the label warning block + resolve list rows.
 export function shortSummary(items) {
   return (items || [])
@@ -100,7 +205,7 @@ export function shortSummary(items) {
       id: i.id,
       qty: Number(i.short_qty) || 0,
       status: i.short_status,
-      text: `${i.short_qty}× ${i.name || i.sku || 'item'}${i.size ? ' ' + i.size : ''}`,
+      text: `${i.short_qty}× ${itemDisplay(i).text}${i.size ? ' ' + i.size : ''}`,
     }));
 }
 
@@ -119,7 +224,10 @@ export function batchItemTotals(orders) {
       const qty = Number(i.qty) || 0;
       if (!qty) continue;
       const key = `${i.sku || ''}|${i.name || ''}|${i.color || ''}`;
-      if (!rows.has(key)) rows.set(key, { sku: i.sku || '', name: i.name || i.sku || 'Item', color: i.color || '', sizes: new Map() });
+      if (!rows.has(key)) {
+        const d = itemDisplay(i);
+        rows.set(key, { sku: i.sku || '', name: i.name || i.sku || 'Item', color: i.color || '', head: d.head, desc: d.desc, sizes: new Map() });
+      }
       const size = i.size || '—';
       sizeSet.add(size);
       const cell = rows.get(key).sizes.get(size) || { total: 0, bagged: 0, short: 0 };

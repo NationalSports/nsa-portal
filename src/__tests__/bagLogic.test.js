@@ -3,6 +3,7 @@
 import {
   claimIsStale, lineSatisfied, lineOnOrder, orderProgress, sortLinesForBag,
   playerHeader, shortSummary, nextOrderPick, batchItemTotals, sortOrders, dominantSize, orderInDeco, CLAIM_STALE_MS,
+  styleNumber, garmentName, itemDisplay,
 } from '../baggingstation/bagLogic';
 
 const NOW = Date.parse('2026-08-12T12:00:00Z');
@@ -156,5 +157,93 @@ describe('nextOrderPick', () => {
     expect(nextOrderPick(orders, 'me', NOW).id).toBe('mine');
     expect(nextOrderPick(orders.filter((o) => o.id !== 'mine'), 'me', NOW).id).toBe('stale');
     expect(nextOrderPick([], 'me', NOW)).toBeNull();
+  });
+});
+
+describe('styleNumber — peel the color off the storefront sku', () => {
+  test('strips a trailing run of tokens that IS the color', () => {
+    expect(styleNumber('PC55-JetBlack', 'Jet Black')).toBe('PC55');
+    expect(styleNumber('PC55-Jet-black', 'Jet Black')).toBe('PC55');
+    expect(styleNumber('NEA200-TrueNavy', 'True Navy')).toBe('NEA200');
+    expect(styleNumber('LST484-IronGrey', 'Iron Grey')).toBe('LST484');
+    expect(styleNumber('64000 BLACK', 'Black')).toBe('64000');
+  });
+
+  test('pulls the style off a free-text sku when the rest is plainly the color', () => {
+    expect(styleNumber('18500 SPORT GREY', 'Sport Grey')).toBe('18500');
+    expect(styleNumber('1379806 (BLACK 001) - 5', 'Black (001)')).toBe('1379806'); // substring
+    expect(styleNumber('A557 NAVY', 'Collegiate Navy')).toBe('A557');              // the other way
+    expect(styleNumber('112 BLACK/RED/WHITE - 5', 'Black/White/Red')).toBe('112'); // same words, reordered
+    expect(styleNumber('112 -5 BLACK/WHITE/RED', 'Black/White/Red')).toBe('112');  // pack marker dropped too
+  });
+
+  test('leaves the sku alone when the suffix is not the color', () => {
+    // a wrong style number on a bag label is worse than a noisy one
+    expect(styleNumber('JST488', 'True Navy')).toBe('JST488');
+    expect(styleNumber('229162.080', 'Black')).toBe('229162.080');
+    expect(styleNumber('1387011-001', 'Black')).toBe('1387011-001');
+    expect(styleNumber('1382622 (GREY 011) - 5', 'Mod Gray (011)')).toBe('1382622 (GREY 011) - 5');
+    expect(styleNumber('ST485', '')).toBe('ST485');
+    expect(styleNumber(null, 'Black')).toBe('');
+  });
+});
+
+describe('garmentName — what the vendor feed actually meant', () => {
+  test('drops the doubled brand and the repeated style number', () => {
+    expect(garmentName('Port & Co Port & Co Core Blend Tee. PC55', 'PC55-Navy', 'Navy'))
+      .toBe('Port & Co Core Blend Tee');
+    expect(garmentName('Sport-Tek Posi-UV Pro Tee. ST420 ST420', 'ST420', 'Black'))
+      .toBe('Sport-Tek Posi-UV Pro Tee');
+    expect(garmentName('A4 A4 Sprint 7" Mesh Short A4N5293', 'A4N5293-Black', 'Black'))
+      .toBe('A4 Sprint 7" Mesh Short');
+  });
+
+  test('drops a trailing "- <color>", including the catalog\'s shorter spelling', () => {
+    expect(garmentName('Gildan Softstyle® T-Shirt - Black', '64000 BLACK', 'Black'))
+      .toBe('Gildan Softstyle® T-Shirt');
+    // catalog says "- Navy", the line says "Collegiate Navy" — same color
+    expect(garmentName("adidas Women's Blended T-Shirt - Navy", 'A557 NAVY', 'Collegiate Navy'))
+      .toBe("adidas Women's Blended T-Shirt");
+    // ...but never a trailing word the color merely resembles
+    expect(garmentName('Trucker - Black/Red/White', '112', 'Black/White/Red'))
+      .toBe('Trucker - Black/Red/White');
+  });
+
+  test('never strips itself down to nothing', () => {
+    expect(garmentName('ST485', 'ST485', 'Black')).toBe('ST485');
+    expect(garmentName('', 'PC55-Navy', 'Navy')).toBe('');
+  });
+});
+
+describe('itemDisplay — the three things the packer needs', () => {
+  test('splits a storefront line into style / garment / color', () => {
+    const d = itemDisplay({ sku: 'PC55-JetBlack', color: 'Jet Black', name: 'Port & Co Port & Co Core Blend Tee. PC55' });
+    expect(d).toMatchObject({ style: 'PC55', garment: 'Port & Co Core Blend Tee', color: 'Jet Black' });
+    expect(d.text).toBe('PC55 · Port & Co Core Blend Tee · Jet Black');
+  });
+
+  test('never repeats the style number as its own description', () => {
+    expect(itemDisplay({ sku: 'ST485', name: 'ST485', color: 'Black' }).text).toBe('ST485 · Black');
+  });
+
+  test('an un-enriched line still reads as something', () => {
+    expect(itemDisplay({ sku: 'NEA200-TrueNavy', color: 'True Navy', name: null }).text).toBe('NEA200 · True Navy');
+    expect(itemDisplay({}).text).toBe('Item');
+  });
+});
+
+describe('itemDisplay — head/desc, the two lines the label and the screen share', () => {
+  test('style number leads, garment + color underneath', () => {
+    const d = itemDisplay({ sku: 'PC55-JetBlack', color: 'Jet Black', name: 'Port & Co Port & Co Core Blend Tee. PC55' });
+    expect(d.head).toBe('PC55');
+    expect(d.desc).toBe('Port & Co Core Blend Tee · Jet Black');
+  });
+
+  test('a sku left as free text never becomes the big line — the garment name does', () => {
+    // "1382622 (GREY 011) - 5" against a catalog color of "Mod Gray (011)": the
+    // style can't be pulled out safely, so the packer reads the name instead.
+    const d = itemDisplay({ sku: '1382622 (GREY 011) - 5', color: 'Mod Gray (011)', name: 'Under Armour Mens Ua Launch Unlined 7" Shorts - Grey' });
+    expect(d.head).toBe('Under Armour Mens Ua Launch Unlined 7" Shorts - Grey');
+    expect(d.desc).toBe('Mod Gray (011)');
   });
 });
