@@ -24,7 +24,7 @@ const data = () => ({
 });
 
 const noop = () => {};
-const props = (over = {}) => ({ data: data(), onClose: noop, onApply: noop, onPin: noop, onUnpin: noop, onSaveRecheck: noop, dirty: false, saving: false, ...over });
+const props = (over = {}) => ({ data: data(), onClose: noop, onApply: noop, onPin: noop, onUnpin: noop, onSaveRecheck: noop, onForce: noop, dirty: false, saving: false, ...over });
 
 describe('reconcile panel layout', () => {
   // The app's padding lives on these classes, not on .modal — content placed
@@ -161,5 +161,41 @@ describe('when the sales order is right but the Silver Screen job is stale', () 
     expect(link.getAttribute('href')).toBe('https://example.invalid/orders/58505');
     // Named in the guidance step as well as the link.
     expect(screen.getAllByText(/job #58505 on the Silver Screen portal/i).length).toBeGreaterThan(1);
+  });
+});
+
+// "i just need to print the damn file. i need an option for that."
+describe('the escape hatch', () => {
+  const withOverride = (over = {}) => ({ ...data(), canOverride: true, ...over });
+
+  test('offers both the workbook and the CSV as they stand', () => {
+    const onForce = jest.fn();
+    render(<FulfillmentReconcileModal {...props({ data: withOverride(), onForce })} />);
+    fireEvent.click(screen.getByRole('button', { name: /Download anyway/i }));
+    expect(onForce).toHaveBeenCalledWith('product');
+    fireEvent.click(screen.getByRole('button', { name: /Export CSV anyway/i }));
+    expect(onForce).toHaveBeenCalledWith('csv');
+  });
+
+  test('keeps re-check as the primary action, not the override', () => {
+    render(<FulfillmentReconcileModal {...props({ data: withOverride() })} />);
+    // The override is a plain button; only the re-check carries the primary fill.
+    const recheck = screen.getByRole('button', { name: /Re-check file/i });
+    expect(recheck.style.background).toBe('rgb(37, 99, 235)');
+    expect(screen.getByRole('button', { name: /Download anyway/i }).style.background).toBe('');
+  });
+
+  test('withholds it when the file could not be built at all', () => {
+    // Missing required ship-to columns: overriding would hand Silver Screen a sheet
+    // their importer rejects, so there is nothing here to overrule.
+    render(<FulfillmentReconcileModal {...props({ data: { ...data(), canOverride: false } })} />);
+    expect(screen.queryByRole('button', { name: /anyway/i })).toBeNull();
+    expect(screen.getByText(/their importer would reject it/i)).toBeTruthy();
+  });
+
+  test('only offers the CSV when the blocked report was not the workbook', () => {
+    render(<FulfillmentReconcileModal {...props({ data: withOverride({ format: 'pdf', label: 'Player report' }) })} />);
+    expect(screen.queryByRole('button', { name: /Download anyway/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /Export CSV anyway/i })).toBeTruthy();
   });
 });

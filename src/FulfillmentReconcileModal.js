@@ -27,7 +27,7 @@ const H = ({ children, right }) => (
   </div>
 );
 
-export default function FulfillmentReconcileModal({ data, onClose, onApply, onPin, onUnpin, onSaveRecheck, dirty, saving }) {
+export default function FulfillmentReconcileModal({ data, onClose, onApply, onPin, onUnpin, onSaveRecheck, onForce, dirty, saving }) {
   const [applied, setApplied] = useState([]);
   // Any change makes the figures below historical: they were computed when the
   // report ran and nothing here recomputes them.
@@ -184,11 +184,29 @@ export default function FulfillmentReconcileModal({ data, onClose, onApply, onPi
         </div>
         <div className="modal-footer" style={{ position: 'sticky', bottom: 0, background: '#fff', zIndex: 2, justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', borderTop: '1px solid #e2e8f0', borderRadius: '0 0 12px 12px' }}>
           <div style={{ fontSize: 11.5, color: '#64748b', maxWidth: 520 }}>
-            {dirty
-              ? <>This order has <b>unsaved</b> changes. Saving writes them and runs the file again — nothing reaches Silver Screen unless it passes.</>
-              : <>Nothing changed here yet. If you fixed something elsewhere — the deco PO, or the job on their portal — re-check to see where it stands now.</>}
+            {/* Only an explicit false means "structurally unbuildable". An absent flag
+                is not evidence of that, and saying so would be a scary claim made on
+                no information. */}
+            {data.canOverride === false
+              ? <>These are required by Silver Screen's import template, so the file cannot be built until they are filled in — their importer would reject it.</>
+              : dirty
+                ? <>This order has <b>unsaved</b> changes. Saving writes them and runs the file again{data.canOverride ? <> — or take it as it stands with <b>Download anyway</b></> : ''}.</>
+                : <>Fixed something elsewhere — the deco PO, or the job on their portal? Re-check{data.canOverride ? <>, or take the file as it stands with <b>Download anyway</b></> : ''}.</>}
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {/* The escape hatch. The checks above are advice, not a veto — a rep who
+                knows the situation can send the file. Offered only when the workbook
+                would actually be usable; a row their importer rejects is not a
+                judgement call, so there is nothing to overrule. */}
+            {data.canOverride && !!onForce && <>
+              {data.format === 'product' && <button className="btn btn-sm" disabled={saving} onClick={() => onForce('product')}
+                title="Download the Silver Screen workbook as it stands, with the issues above unresolved"
+                style={{ fontWeight: 700 }}>Download anyway</button>}
+              <button className="btn btn-sm" disabled={saving} onClick={() => onForce('csv')}
+                title="Export the flat one-row-per-line CSV as it stands, with the issues above unresolved"
+                style={{ fontWeight: 700 }}>Export CSV anyway</button>
+              <span style={{ width: 1, alignSelf: 'stretch', background: '#e2e8f0', margin: '0 2px' }} />
+            </>}
             <button className="btn btn-sm" onClick={onClose} disabled={saving} style={{ fontWeight: 700 }}>Close</button>
             {/* Re-checking just re-runs the report, so it is always available. Gating it
                 on unsaved changes stranded reps who had fixed the real problem outside

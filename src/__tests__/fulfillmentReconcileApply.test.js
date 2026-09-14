@@ -272,3 +272,65 @@ describe('a pin means "this item", never more', () => {
     expect(pinSourceSku(dupes, 'A|RED', 'SRC')).toBe(dupes);
   });
 });
+
+// "i just need to print the damn file. i need an option for that."
+// The reconciliation is advice, not a veto. A rep who knows the situation can send
+// the file — except where the workbook would be structurally unusable, since
+// overriding there just produces something Silver Screen's importer rejects.
+describe('sending the file anyway', () => {
+  // The CSV path really writes a Blob and clicks a link; stub the DOM side of that.
+  beforeEach(() => {
+    XLSX.writeFile.mockClear();
+    global.Blob = function Blob(parts) { this.parts = parts; };
+    global.URL = { createObjectURL: () => 'blob:x', revokeObjectURL: () => {} };
+    jest.spyOn(document, 'createElement').mockReturnValue({ click: () => {}, set href(v) {}, set download(v) {} });
+    jest.spyOn(document.body, 'appendChild').mockImplementation(() => {});
+    jest.spyOn(document.body, 'removeChild').mockImplementation(() => {});
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  const SHORT_SO = () => [{ sku: 'AT203', name: "Men's Fleece Hooded Sweatshirt", color: 'Team Power Red/ White', sizes: { S: 1 } }];
+
+  test('a unit mismatch blocks by default and downloads when forced', async () => {
+    expect(await run(SHORT_SO(), () => {})).toBe(false);
+    expect(XLSX.writeFile).not.toHaveBeenCalled();
+
+    const forced = await downloadSoPlayerReport({
+      so: { id: 'SO-2021', webstore_id: 'ws-1', memo: '' },
+      soItems: SHORT_SO(), supabase: supabaseStub(), nf: () => {}, format: 'product',
+      customer: null, onBlocked: () => {}, force: true,
+    });
+    expect(forced).toBe(true);
+    expect(XLSX.writeFile).toHaveBeenCalledTimes(1);
+    // Every customer unit is in the file, including the one the SO was short on.
+    const rows = XLSX.utils.sheet_to_json(XLSX.writeFile.mock.calls[0][0].Sheets.Domestic, { header: 1, defval: '' });
+    expect(rows.slice(1).reduce((n, r) => n + Number(r[3]), 0)).toBe(2);
+  });
+
+  test('the CSV exports even when the workbook would not', async () => {
+    const ok = await downloadSoPlayerReport({
+      so: { id: 'SO-2021', webstore_id: 'ws-1', memo: '' },
+      soItems: SHORT_SO(), supabase: supabaseStub(), nf: () => {}, format: 'csv',
+      customer: null, onBlocked: () => {}, force: true,
+    });
+    expect(ok).toBe(true);
+  });
+
+  test('but a row their importer would reject still refuses, and says why', async () => {
+    // No customer and no shipping address anywhere: the required ship-to columns
+    // cannot be filled, so "anyway" would hand Silver Screen an unusable sheet.
+    let blocked = null;
+    const noAddress = supabaseStub({ customers: [], webstores: [{ id: 'ws-1', name: 'St. Francis XC', omg_sale_code: 'SFXC', customer_id: null, delivery_mode: 'deliver_club', shipstation_carrier: 'ups' }] });
+    const res = await downloadSoPlayerReport({
+      so: { id: 'SO-2021', webstore_id: 'ws-1', memo: '' },
+      soItems: SHORT_SO(), supabase: noAddress, nf: () => {}, format: 'product',
+      customer: null, onBlocked: (d) => { blocked = d; }, force: true,
+    });
+    expect(res).toBe(false);
+    expect(XLSX.writeFile).not.toHaveBeenCalled();
+    expect(blocked.canOverride).toBe(false);
+    expect(blocked.issues.join(' ')).toMatch(/missing (ship-to attention|address line 1|city|state|postal code)/);
+    // The unit mismatch is waived; only the unfillable columns are left.
+    expect(blocked.issues.join(' ')).not.toMatch(/do not match/);
+  });
+});

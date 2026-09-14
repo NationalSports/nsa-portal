@@ -847,7 +847,7 @@ async function fetchLines(supabase, orderIds) {
 // format: 'pdf' (default — the printable per-player sheet) | 'csv' (flat one-row-per-line
 // file, ordered by order number, ship-to repeated on every row) | 'product' (Silver
 // Screen Domestic XLSX, reconciled to the same active customer lines and current SO).
-export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format = 'pdf', customer = null, onBlocked = null }) {
+export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format = 'pdf', customer = null, onBlocked = null, force = false }) {
   const toast = nf || ((m) => alert(m));
   if (!supabase) { toast('No database connection — player report needs the store orders.', 'error'); return false; }
   try {
@@ -917,10 +917,18 @@ export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format
     // The Silver Screen path layers per-row checks (unverified substitutions, missing
     // destination fields) on top of the shared audit; its issue list already contains
     // the audit's own fatal issues, so it is the complete set for that format.
-    const blocking = format === 'product'
-      ? buildSilverScreenDomesticRows({ store: ws, lines, orderById, customer: fulfillmentCustomer, audit }).issues
-      : reportBlockingIssues(audit);
-    if (blocking.length) {
+    const built = format === 'product'
+      ? buildSilverScreenDomesticRows({ store: ws, lines, orderById, customer: fulfillmentCustomer, audit })
+      : null;
+    const blocking = built ? built.issues : reportBlockingIssues(audit);
+    // Structural problems only exist for the Silver Screen workbook — the player
+    // report and the CSV are ours, so there is nothing there a rep cannot overrule.
+    const hardIssues = built ? built.hardIssues : [];
+    // force: the rep read the reconciliation and chose to send it anyway. It waives
+    // the judgement calls; a file their importer would reject still stops, because
+    // handing them one of those helps nobody.
+    const stop = force ? hardIssues : blocking;
+    if (stop.length) {
       // Every issue plus a per item/size match-up, rather than the first five of them
       // in a toast that names the disagreement but not where it is.
       const label = format === 'product' ? 'Silver Screen file' : format === 'csv' ? 'Player report CSV' : 'Player report';
@@ -936,7 +944,9 @@ export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format
         let handed = false;
         try {
           onBlocked({
-            so, storeName: ws.name || '', soItems, orderById, lines, issues: blocking, label, jobUnits, format,
+            so, storeName: ws.name || '', soItems, orderById, lines, issues: stop, label, jobUnits, format,
+            // Whether "download anyway" is even on the table for this one.
+            hardIssues, canOverride: !hardIssues.length, forced: force,
             jobId: (silverScreenDpo(so) || {})._silverscreen_job_id || '',
             jobUrl: (silverScreenDpo(so) || {})._silverscreen_job_url || '',
             matchup: buildFulfillmentMatchup({ lines, soItems, orderById }),
@@ -945,7 +955,9 @@ export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format
           handed = true;
         } catch (e) { console.warn('Reconciliation panel failed to open', e); }
         if (handed) {
-          toast(`${label} blocked: ${blocking.length} issue${blocking.length === 1 ? '' : 's'} — opened the reconciliation.`, 'error');
+          toast(force
+            ? `${label} cannot be built: ${stop.length} required field${stop.length === 1 ? '' : 's'} missing — opened the reconciliation.`
+            : `${label} blocked: ${stop.length} issue${stop.length === 1 ? '' : 's'} — opened the reconciliation.`, 'error');
           return false;
         }
       }
@@ -955,19 +967,22 @@ export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format
       let opened = false;
       try {
         ({ opened } = renderFulfillmentReconciliation({
-          so, storeName: ws.name || '', lines, soItems, orderById, issues: blocking, label, jobUnits,
+          so, storeName: ws.name || '', lines, soItems, orderById, issues: stop, label, jobUnits,
           jobId: (silverScreenDpo(so) || {})._silverscreen_job_id || '',
         }));
       } catch (e) { console.warn('Reconciliation view failed to render', e); opened = false; }
       toast(opened
         ? `${label} blocked: ${blocking.length} issue${blocking.length === 1 ? '' : 's'} — opened a reconciliation showing exactly what to match up.`
-        : `${label} blocked: ${blocking.slice(0, 5).join('; ')}${blocking.length > 5 ? `; plus ${blocking.length - 5} more issue(s)` : ''}. Allow pop-ups to see the full reconciliation.`, 'error');
+        : `${label} blocked: ${stop.slice(0, 5).join('; ')}${stop.length > 5 ? `; plus ${stop.length - 5} more issue(s)` : ''}. Allow pop-ups to see the full reconciliation.`, 'error');
       return false;
     }
-    if (format === 'csv') downloadPlayerReportCsv({ so, storeName: ws.name || '', lines, orderById });
+    if (format === 'csv') {
+      downloadPlayerReportCsv({ so, storeName: ws.name || '', lines, orderById });
+      if (force && blocking.length) toast(`Exported the CSV with ${blocking.length} unresolved issue${blocking.length === 1 ? '' : 's'}`);
+    }
     else if (format === 'product') {
-      const result = downloadSilverScreenFulfillment({ store: ws, lines, orderById, customer: fulfillmentCustomer, audit, reference: so.id });
-      toast(`Downloaded ${result.unitCount} Silver Screen fulfillment unit${result.unitCount === 1 ? '' : 's'}`);
+      const result = downloadSilverScreenFulfillment({ store: ws, lines, orderById, customer: fulfillmentCustomer, audit, reference: so.id, force });
+      toast(`Downloaded ${result.unitCount} Silver Screen fulfillment unit${result.unitCount === 1 ? '' : 's'}${force && blocking.length ? ` — sent with ${blocking.length} unresolved issue${blocking.length === 1 ? '' : 's'}` : ''}`);
     }
     else renderReport({ so, storeName: ws.name || '', lines, orderById, substitutions, unmatched });
     return true;

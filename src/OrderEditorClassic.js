@@ -2525,6 +2525,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // the rep finds out immediately whether it actually cleared. If anything is still
   // wrong the panel simply reopens with what is left; the file only downloads when
   // it genuinely passes.
+  // Send it as it stands. The reconciliation is advice; the rep decides.
+  const _reconcileForce=async(fmt)=>{
+    setReconcile(null);
+    await downloadSoPlayerReport({so:o,soItems:safeItems(o),supabase,nf,onBlocked:setReconcile,format:fmt||'product',customer:cust,force:true});
+  };
   const _reconcileSaveRecheck=async()=>{
     const fmt=(reconcile&&reconcile.format)||'pdf';
     setReconcile(null);
@@ -4457,7 +4462,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
   return(<div>
     <MultiItemAddModal open={isE&&multiAddOpen} onClose={()=>{setMultiAddOpen(false);setMultiAddQuery('')}} catalogResults={multiCatalogResults} vendorResults={multiVendorResults} searching={ssSearching||smSearching||mtSearching||rsSearching} onActiveQuery={setMultiAddQuery} artFiles={safeArt(o).filter(f=>f.id!=='__tbd')} positions={POSITIONS} onApply={applyMultiItems}/>
-    {reconcile&&<FulfillmentReconcileModal data={reconcile} onClose={()=>setReconcile(null)} onApply={_reconcileApply} onPin={_reconcilePin} onUnpin={_reconcileUnpin} onSaveRecheck={_reconcileSaveRecheck} dirty={dirty} saving={actionSaving>0}/>}
+    {reconcile&&<FulfillmentReconcileModal data={reconcile} onClose={()=>setReconcile(null)} onApply={_reconcileApply} onPin={_reconcilePin} onUnpin={_reconcileUnpin} onSaveRecheck={_reconcileSaveRecheck} onForce={_reconcileForce} dirty={dirty} saving={actionSaving>0}/>}
     {/* ── Mockup lightbox overlay ── */}
     {mockupLightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setMockupLightbox(null)}>
       <button style={{position:'absolute',top:16,right:20,background:'rgba(255,255,255,0.15)',border:'none',color:'white',fontSize:28,borderRadius:'50%',width:44,height:44,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setMockupLightbox(null)}>×</button>
