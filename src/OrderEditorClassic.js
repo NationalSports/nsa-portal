@@ -46,6 +46,9 @@ import MethodicRequestForm from './methodic/MethodicRequestForm';
 import { methodicApi } from './methodic/methodicApi';
 import { isMethodicItem } from './methodic/methodicWorkflow';
 import MultiItemAddModal from './MultiItemAddModal';
+import FulfillmentReconcileModal from './FulfillmentReconcileModal';
+import { applySoFixes, pinSourceSku, unpinSourceSku } from './lib/fulfillmentReconcile';
+import { decoPoTotals, decoPoDrift } from './lib/decoPoUnits';
 import { downloadSoPlayerReport, omgCodeFromMemo } from './lib/soPlayerReport';
 // Lazy so the uniform designer only loads when a rep opens it.
 const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
@@ -1904,6 +1907,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);const[editBatchPO,setEditBatchPO]=useState(null);const[poFullPage,setPoFullPage]=useState(null);const[poEmail,setPoEmail]=useState(null);const[apiOrder,setApiOrder]=useState(null);// apiOrder: {vendorKey,poNumber,vendorName,batchPOs} — single-PO API order modal
   // Shown after a PO partial/full receive — summary modal with Print/Download label actions for the box that was just received.
   const[receivedConfirm,setReceivedConfirm]=useState(null);
+  // Findings from a blocked Silver Screen file / player report. Held here rather than
+  // shown in a popup so each difference can be a button that edits THIS order.
+  const[reconcile,setReconcile]=useState(null);
   // Open the IF (pick) modal aggregating ALL line items that share the same pick_id.
   // Falls back to single-line edit when no pick_id is set (legacy/unsaved picks).
   const openPickModal=(pickId,fallbackLineIdx,fallbackPickIdx)=>{
@@ -2504,6 +2510,61 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // the list and scrolls it into view, so adding a line doesn't mean scrolling past every item.
   const openAddItem=()=>{setShowAdd(true);setTimeout(()=>{const el=document.getElementById('oe-add-product-card');if(el)el.scrollIntoView({behavior:'smooth',block:'center'})},60)};
   const uI=(i,k,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===i?{...it,[k]:v}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
+  // Reconciliation actions. All three only touch the draft the rep is already looking
+  // at — the change shows up in the item grid as unsaved and is theirs to keep or
+  // discard. Nothing is written to the database and nothing is sent to Silver Screen.
+  const _reconcileApply=(fixes)=>{if(!fixes||!fixes.length)return;
+    // Dry run against the current draft purely to report honestly: a line that has
+    // changed since the report ran is skipped, never written to by row number.
+    const probe=applySoFixes(safeItems(o),fixes);
+    if(!probe.applied.length){nf('Nothing applied — those sales-order lines have changed since the report ran. Re-run the file to get fresh suggestions.','error');return}
+    setO(e=>({...e,items:applySoFixes(safeItems(e),fixes).items,updated_at:new Date().toLocaleString()}));setDirty(true);
+    nf('Applied '+probe.applied.length+' fix'+(probe.applied.length===1?'':'es')+' to the sales order'+(probe.skipped.length?', skipped '+probe.skipped.length+' whose line changed':'')+' — review the items, then Save.',probe.skipped.length?'error':undefined)};
+  const _reconcilePin=(idx,sku)=>{setO(e=>({...e,items:pinSourceSku(safeItems(e),idx,sku),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Matched '+sku+' to that line — Save to keep it.')};
+  const _reconcileUnpin=(sku)=>{setO(e=>({...e,items:unpinSourceSku(safeItems(e),sku),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Cleared the match for '+sku+' — the system will pick again.')};
+  // Closes the loop: persist the reconciliation, then run the same report again so
+  // the rep finds out immediately whether it actually cleared. If anything is still
+  // wrong the panel simply reopens with what is left; the file only downloads when
+  // it genuinely passes.
+  // Record, on the deco PO, what Silver Screen is making. Same write its own Sync
+  // button performs, through the same shared totals helper, recomputed from the live
+  // order at click time rather than from the snapshot the report ran on.
+  const _reconcileSyncDecoPo=()=>{
+    const poId=reconcile&&reconcile.jobPoId;
+    const idx=(o.deco_pos||[]).findIndex(x=>x&&x.po_id===poId);
+    if(idx<0){nf('Could not find deco PO '+(poId||'')+' on this order.','error');return}
+    const drift=decoPoDrift((o.deco_pos||[])[idx],safeItems(o));
+    if(!drift){nf((poId||'That deco PO')+' already matches the items it covers.');return}
+    const updated={...o,deco_pos:(o.deco_pos||[]).map((x,i)=>i===idx?{...x,qty:drift.to,expected_cost:drift.expected}:x),updated_at:new Date().toLocaleString()};
+    setO(updated);setDirty(true);
+    setReconcile(r=>r?{...r,jobPoSync:null}:r);
+    nf('Recorded '+drift.to+' units on '+(poId||'the deco PO')+' (was '+drift.from+') — Save, then re-check.');
+  };
+  // Hand the rep to the deco PO page, where its own Sync button (and the drift
+  // banner explaining it) already live. Deliberately a jump, not a second copy of
+  // that button: it recomputes an expected cost, and a duplicated money calculation
+  // is exactly the kind of drift this codebase keeps getting bitten by.
+  const _reconcileOpenDecoPo=()=>{
+    const poId=reconcile&&reconcile.jobPoId;
+    const dp=(o.deco_pos||[]).find(x=>x&&x.po_id===poId);
+    if(!dp){nf('Could not find deco PO '+(poId||'')+' on this order.','error');return}
+    setReconcile(null);
+    setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)});
+  };
+  // Send it as it stands. The reconciliation is advice; the rep decides.
+  const _reconcileForce=async(fmt)=>{
+    setReconcile(null);
+    await downloadSoPlayerReport({so:o,soItems:safeItems(o),supabase,nf,onBlocked:setReconcile,format:fmt||'product',customer:cust,force:true});
+  };
+  const _reconcileSaveRecheck=async()=>{
+    const fmt=(reconcile&&reconcile.format)||'pdf';
+    setReconcile(null);
+    // Re-check alone is read-only, so a clean order skips the save entirely and just
+    // re-runs — that is the whole point when the fix was made somewhere else.
+    let current=o;
+    if(dirty){current={...o,updated_at:new Date().toLocaleString()};await saveSONow(current,'Reconcile',null)}
+    await downloadSoPlayerReport({so:current,soItems:safeItems(current),supabase,nf,onBlocked:setReconcile,format:fmt,customer:cust});
+  };
   // Returns _deletedItemKeys with `it`'s OLD sku|color identity appended (deduped) — the same
   // session tombstone rmI stamps on a deletion, reused by every in-place re-key path (Change SKU
   // modal, color change, inline sku/color edits via _rekeyLineMocks). The engine's version-conflict
@@ -4427,6 +4488,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
   return(<div>
     <MultiItemAddModal open={isE&&multiAddOpen} onClose={()=>{setMultiAddOpen(false);setMultiAddQuery('')}} catalogResults={multiCatalogResults} vendorResults={multiVendorResults} searching={ssSearching||smSearching||mtSearching||rsSearching} onActiveQuery={setMultiAddQuery} artFiles={safeArt(o).filter(f=>f.id!=='__tbd')} positions={POSITIONS} onApply={applyMultiItems}/>
+    {reconcile&&<FulfillmentReconcileModal data={reconcile} onClose={()=>setReconcile(null)} onApply={_reconcileApply} onPin={_reconcilePin} onUnpin={_reconcileUnpin} onSaveRecheck={_reconcileSaveRecheck} onForce={_reconcileForce} onOpenDecoPo={_reconcileOpenDecoPo} onSyncDecoPo={_reconcileSyncDecoPo} dirty={dirty} saving={actionSaving>0}/>}
     {/* ── Mockup lightbox overlay ── */}
     {mockupLightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setMockupLightbox(null)}>
       <button style={{position:'absolute',top:16,right:20,background:'rgba(255,255,255,0.15)',border:'none',color:'white',fontSize:28,borderRadius:'50%',width:44,height:44,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setMockupLightbox(null)}>×</button>
@@ -4670,7 +4732,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               we're actually buying, so this is the copy that goes to Silver Screen. */}
           {/* Three formats off one reconciliation source. Keep in sync with the same group
               in OrderEditor.js. */}
-          {isSO&&supabase&&(o.webstore_id||omgCodeFromMemo(o.memo))&&<div style={{fontSize:11,color:'#166534'}}>👥 <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>downloadSoPlayerReport({so:o,soItems:safeItems(o),supabase,nf})} title="Print the per-player report using the items as they are on THIS sales order — items swapped for stock/speed show the replacement, marked with what it replaced">Player Report</span> · <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>downloadSoPlayerReport({so:o,soItems:safeItems(o),supabase,nf,format:'product',customer:cust})} title="Download Silver Screen's Domestic fulfillment workbook using active customer quantities and the current items/sizes on this sales order">📋 Silver Screen XLSX</span> · <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>downloadSoPlayerReport({so:o,soItems:safeItems(o),supabase,nf,format:'csv'})} title="Download the same report as a CSV — one row per line, ordered by order number, with the ship-to address repeated on every row">⬇ CSV</span></div>}
+          {isSO&&supabase&&(o.webstore_id||omgCodeFromMemo(o.memo))&&<div style={{fontSize:11,color:'#166534'}}>👥 <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>downloadSoPlayerReport({so:o,soItems:safeItems(o),supabase,nf,onBlocked:setReconcile})} title="Print the per-player report using the items as they are on THIS sales order — items swapped for stock/speed show the replacement, marked with what it replaced">Player Report</span> · <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>downloadSoPlayerReport({so:o,soItems:safeItems(o),supabase,nf,onBlocked:setReconcile,format:'product',customer:cust})} title="Download Silver Screen's Domestic fulfillment workbook using active customer quantities and the current items/sizes on this sales order">📋 Silver Screen XLSX</span> · <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>downloadSoPlayerReport({so:o,soItems:safeItems(o),supabase,nf,onBlocked:setReconcile,format:'csv'})} title="Download the same report as a CSV — one row per line, ordered by order number, with the ship-to address repeated on every row">⬇ CSV</span></div>}
           {isE&&linkedSO&&onViewSO&&<div style={{fontSize:11,color:'#7c3aed'}}>Converted to: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewSO(linkedSO.id)} title="Open sales order">{linkedSO.id}</span></div>}
           <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</div>
           {isSO&&cust&&<div style={{display:'flex',alignItems:'center',gap:6,marginTop:2}}>
@@ -15116,8 +15178,9 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           const rate=_rowRate(ii);
           return{idx:ii,it,sizes,qty,decos,rate,lineTotal:Math.round(qty*rate*100)/100};
         }).filter(Boolean);
-        const liveQty=coveredRows.reduce((a,r)=>a+r.qty,0);
-        const liveExpected=Math.round(coveredRows.reduce((a,r)=>a+r.lineTotal,0)*100)/100;
+        // Same helper the reconciliation panel writes with, so the two can never
+        // disagree about what "Sync" would set.
+        const {liveQty,liveExpected}=decoPoTotals(dp,soItems);
         const qtyDrift=coveredRows.length>0&&liveQty!==safeNum(dp.qty);
         const decoInstr=coveredRows.flatMap(r=>r.decos.map(d=>({sku:r.it.sku,position:d.position,deco_type:d.deco_type,vendor:d.vendor,notes:d.notes})));
         const _trackUrl=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};

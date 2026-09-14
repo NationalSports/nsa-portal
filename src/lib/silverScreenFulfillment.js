@@ -93,7 +93,13 @@ const REQUIRED = [
 ];
 
 export function buildSilverScreenDomesticRows({ store = {}, lines = [], orderById = {}, customer = null, audit = null } = {}) {
-  const issues = [];
+  // Two kinds of problem, and only one of them is the rep's call. `hardIssues` are
+  // the ones that make the workbook unusable — Silver Screen's importer rejects a row
+  // with no ship-to or no size — so overriding them just wastes a trip. Everything
+  // else (unit counts, an unverified swap) produces a perfectly valid file that the
+  // rep may have good reason to send anyway.
+  const issues = []; const hardIssues = [];
+  const hard = (msg) => { hardIssues.push(msg); issues.push(msg); };
   const fatalAudit = [
     ...(audit?.missingSos || []).map((soId) => `${soId}: linked sales order could not be loaded`),
     ...(audit?.wrongStoreLinks || []).map((x) => `${x.soId}: linked sales order belongs to another store`),
@@ -134,14 +140,14 @@ export function buildSilverScreenDomesticRows({ store = {}, lines = [], orderByI
     const ref = row[0] || `row ${index + 2}`;
     if (item.unmatched) issues.push(`${ref}: item is not matched to the current sales order`);
     if (item.verify) issues.push(`${ref}: substituted item or size still needs verification`);
-    if (destination.country && !/^(US|USA|UNITED STATES)$/i.test(destination.country)) issues.push(`${ref}: destination is not domestic (${destination.country})`);
+    if (destination.country && !/^(US|USA|UNITED STATES)$/i.test(destination.country)) hard(`${ref}: destination is not domestic (${destination.country})`);
     REQUIRED.forEach(([column, label]) => {
-      if (row[column] === '' || row[column] == null || (column === 3 && !(row[column] > 0))) issues.push(`${ref}: missing ${label}`);
+      if (row[column] === '' || row[column] == null || (column === 3 && !(row[column] > 0))) hard(`${ref}: missing ${label}`);
     });
     rows.push(row);
   });
 
-  return { headers: SILVER_SCREEN_DOMESTIC_HEADERS, rows, issues: [...new Set(issues)] };
+  return { headers: SILVER_SCREEN_DOMESTIC_HEADERS, rows, issues: [...new Set(issues)], hardIssues: [...new Set(hardIssues)] };
 }
 
 const SAFE_FILENAME = /[^A-Za-z0-9._-]+/g;
@@ -150,12 +156,19 @@ const dateStamp = () => {
   return `${d.getMonth() + 1}.${d.getDate()}.${d.getFullYear()}`;
 };
 
-export function downloadSilverScreenFulfillment({ store = {}, lines = [], orderById = {}, customer = null, audit = null, reference = '' } = {}) {
+// force: the rep has read the reconciliation and chosen to send the file anyway.
+// It waives the judgement calls only — a workbook their importer would reject still
+// refuses, because "downloading anyway" there produces nothing anyone can use.
+export function downloadSilverScreenFulfillment({ store = {}, lines = [], orderById = {}, customer = null, audit = null, reference = '', force = false } = {}) {
   const built = buildSilverScreenDomesticRows({ store, lines, orderById, customer, audit });
   if (!built.rows.length) throw new Error('No active fulfillment items to export.');
-  if (built.issues.length) {
-    const shown = built.issues.slice(0, 5).join('; ');
-    throw new Error(`Silver Screen file blocked: ${shown}${built.issues.length > 5 ? `; plus ${built.issues.length - 5} more issue(s)` : ''}.`);
+  const stop = force ? built.hardIssues : built.issues;
+  if (stop.length) {
+    const shown = stop.slice(0, 5).join('; ');
+    const more = stop.length > 5 ? `; plus ${stop.length - 5} more issue(s)` : '';
+    throw new Error(force
+      ? `Silver Screen file cannot be built: ${shown}${more}. These fields are required by their import template, so the file would be rejected.`
+      : `Silver Screen file blocked: ${shown}${more}.`);
   }
 
   const worksheet = XLSX.utils.aoa_to_sheet([built.headers, ...built.rows]);
