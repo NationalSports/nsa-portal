@@ -3,13 +3,12 @@ const stripe = require('stripe');
 const { corsHeaders, verifyQBOUser, getSupabaseAdmin } = require('./_shared');
 const { selectAllRows } = require('./_stripeReconciliation');
 
-// Cents still owed on an invoice summary row. Integer cents so float drift never decides
-// whether money is outstanding. Callers MUST select total/paid/status — a row selected as
-// `id` alone reads as a $0 balance and would silently skip the applied-payment check, so
-// both call sites share INVOICE_SETTLEMENT_COLS below and a test pins them.
-const INVOICE_SETTLEMENT_COLS = 'id,total,paid,status';
-const openBalanceCents = (invoice) =>
-  Math.round(((Number(invoice.total) || 0) - (Number(invoice.paid) || 0)) * 100);
+// Integer cents, so float drift never decides whether money is applied.
+// Callers MUST select `paid` — a row selected as `id` alone reads as $0 paid and would turn the
+// applied-payment check below into a false alarm on every invoice, so both call sites share
+// INVOICE_SETTLEMENT_COLS and a test pins every invoice select in both files.
+const INVOICE_SETTLEMENT_COLS = 'id,paid';
+const centsOf = (value) => Math.round((Number(value) || 0) * 100);
 
 function verifyPayment(pi, payments, invoices) {
   const ids = [...new Set(String(pi.metadata?.invoice_id || '').split(/[\s,]+/).filter(Boolean))];
@@ -29,16 +28,26 @@ function verifyPayment(pi, payments, invoices) {
     const matches = rows.filter(r => r.invoice_id === id);
     if (matches.length !== 1) reasons.push(`${id}: ${matches.length ? 'duplicate' : 'missing'} payment record`);
     else if (!Number.isFinite(Number(matches[0].amount)) || Number(matches[0].amount) <= 0) reasons.push(`${id}: invalid payment amount`);
-    // The audit row is NOT the settlement. A staff tab that loaded before the payment can save
-    // the invoice summary back to paid=0/status=open while this immutable payment row survives
-    // (the payment-restore logic in dbEngine deliberately keeps it). That leaves a fully paid
-    // invoice sitting in AR, on the customer's statement, and in the dunning sweep.
-    // Verifying only the payment row reports that state as healthy: INV-63359 and INV-63664 both
-    // carry a correct, correctly-valued payment row and still read "open" to the rep and to
-    // accounting — the failure Jered reported. Nothing raised an incident for either.
-    // 'void' is a deliberate staff decision, so it is not treated as an unapplied payment.
-    if (invoice && invoice.status !== 'void' && openBalanceCents(invoice) > 0) {
-      reasons.push(`${id}: captured payment is not applied — invoice still shows an open balance`);
+    // The payment row is NOT the settlement. A staff tab that loaded before the card payment can
+    // save the invoice summary back to paid=0/status=open while this immutable row survives
+    // (dbEngine's payment-restore keeps it on purpose), leaving a fully paid invoice in AR and on
+    // the customer's statement. INV-63359 and INV-63664 both sat in exactly that state — a
+    // correct, correctly-valued payment row on an invoice reading "open" — and verifying only the
+    // row's existence reported both as healthy, so nothing ever raised an incident.
+    //
+    // The invariant is that `paid` accounts for at least what this intent recorded against the
+    // invoice — NOT that the invoice has a zero balance. Staff legitimately raise `total` on an
+    // already-paid invoice (Edit Invoice rewrites total and leaves paid/status alone), and a
+    // balance test would flag that as an unapplied payment forever: a finding only clears when
+    // verifyPayment passes, so a false positive is permanent and costs a paymentIntents.retrieve
+    // on every later scan, inside the monitor's 7-second deadline.
+    //
+    // Deliberately no 'void' exemption: voiding keeps the payment rows and issues no refund, so a
+    // void sitting at paid=0 is money captured against nothing — exactly a state worth reviewing.
+    // A void that kept its applied payment has paid >= recorded and never trips this.
+    const recordedCents = matches.reduce((sum, r) => sum + centsOf(r.amount), 0);
+    if (invoice && centsOf(invoice.paid) + 1 < recordedCents) {
+      reasons.push(`${id}: captured payment is not applied — invoice shows $${(centsOf(invoice.paid) / 100).toFixed(2)} paid against $${(recordedCents / 100).toFixed(2)} recorded`);
     }
   });
   if (rows.some(r => !ids.includes(r.invoice_id))) reasons.push('Payment reference recorded on another invoice');
