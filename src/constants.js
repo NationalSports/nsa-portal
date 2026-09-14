@@ -395,6 +395,13 @@ export const artNeedsAttention=(artStatus,sinceDate)=>{
 export const prodFilesStatusFor=(deco)=>(deco==='dtf'||deco==='heat_press')?'order_dtf_transfers':deco==='embroidery'?'upload_emb_files':'production_files_needed';
 // A .dst IS the embroidery production file — if one is attached anywhere on the art, prod files are effectively done.
 export const isDstFile=(f)=>{const n=(typeof f==='string'?f:(f&&(f.name||f.url))||'').toLowerCase();return n.endsWith('.dst')};
+// Extensions that are ONLY ever production art — vector separations and stitch files. A drag-and-drop
+// ignores an <input accept> entirely, so a rep dropping seps on the Mockup zone used to file a .ai/.dst
+// as a mockup: it then satisfied no production gate and never reached a job sheet. Route by extension
+// instead of by which zone caught the drop. PDF/PNG/JPG are deliberately absent — those are legitimately
+// either a proof or a sep, so the zone the rep chose stays authoritative for them.
+const _PROD_ONLY_EXT=/\.(ai|eps|dst|emb|exp|dsb|pxf|cnd|ofm)$/i;
+export const isProdArtFile=(f)=>{const n=(typeof f==='string'?f:(f&&(f.name||f.url))||'');return _PROD_ONLY_EXT.test(n)};
 // Recall/update-request paths tag the old DSTs {stale:true} instead of deleting them (history stays
 // downloadable) — a stale stitch file belongs to the superseded design and must never satisfy any gate.
 export const isStaleFile=(f)=>!!(f&&typeof f==='object'&&f.stale);
