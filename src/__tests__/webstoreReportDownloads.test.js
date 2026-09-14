@@ -39,6 +39,26 @@ describe('webstore report downloads', () => {
     expect(body).toContain('buildPlayerReport(sel, scope.lines, orderById, roster, stockByPid, audit, scope.label)');
   });
 
+  // Four handoffs, one control. The condensed PDF must sit beside the others.
+  test('Condensed PDF is offered from the same Player Report control', () => {
+    expect(source).toContain('<option value="condensed">📃 Condensed PDF</option>');
+    const fn = source.slice(source.indexOf('const playerReportCondensed = useCallback'));
+    const body = fn.slice(0, fn.indexOf('}, [sel, detail, gatherAll, flash]);'));
+    expect(body).toContain('selectFulfillmentReportScope(lines)');
+    expect(body).toContain('reportBlockingIssues(audit)');
+    expect(body).toContain('buildCondensedPlayerReport(sel, scope.lines, orderById, audit, scope.label)');
+  });
+
+  // The condensed total must come from the shared order-money helper, never from a
+  // line sum: unit_price is $0 on OMG-imported lines and on bundle components.
+  test('condensed report values orders through the shared money helper', () => {
+    expect(source).toContain("from './lib/webstoreOrderMoney'");
+    const fn = source.slice(source.indexOf('function buildCondensedPlayerReport('));
+    const body = fn.slice(0, fn.indexOf('\nfunction '));
+    expect(body).toContain('buildCondensedPlayerRows({ lines, orderById })');
+    expect(body).not.toMatch(/unit_price/);
+  });
+
   // One slip per player, page-broken — that is what "as if packing slips" means here.
   test('player report renders one page-broken slip per player', () => {
     const fn = source.slice(source.indexOf('function buildPlayerReport('));
