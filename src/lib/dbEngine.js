@@ -2548,6 +2548,23 @@ const _dbSaveInvoiceInner = async (inv) => {
         ||Math.abs(_n(ex.total)-_n(inv.total))>=0.005;
     };
     const{data:_existInv,error:_existInvErr}=await supabase.from('invoices').select('id,created_at,customer_id,so_id,total,paid,cc_fee,status').eq('id',inv.id).maybeSingle();
+    // FAIL CLOSED. This one read powers BOTH the id-collision guard above and the payment-summary
+    // preservation below, and it used to fail open: on a read error both guards were skipped and the
+    // save proceeded, so a stale tab's paid=0/status=open could overwrite a portal card payment that
+    // had already settled the invoice.
+    // To be precise about the history: INV-63359 ($838.34) and INV-63664 ($73.57) were unapplied this
+    // way BEFORE preserveAppliedInvoiceSummary existed (it shipped 2026-09-07, after both), so this
+    // fail-open path is not their proven cause — it is the remaining way to reproduce the same loss
+    // once the guard is in place, since an errored read silently disables it.
+    // The invoice_payments read further down already fails closed for the same reason; an errored
+    // read is "cannot verify", never "nothing to preserve".
+    // A missing row is NOT an error here (maybeSingle returns data:null, error:null), so creating a
+    // brand-new invoice is unaffected.
+    if(_existInvErr){
+      console.error('[DB] SAFETY: Blocking invoice save — could not read the existing invoice for',inv.id,':',_existInvErr.message);
+      if(_dbNotify)_dbNotify('Save blocked — could not verify the current invoice (payments may be unsaved). Please reload the page.','error');
+      _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoices SELECT errored: '+_existInvErr.message);_persistFailedIds();return false;
+    }
     if(!_existInvErr&&_existInv&&_invDifferentDoc(_existInv)){
       const oldId=inv.id;
       // Which signal caught it — the alerts are read during incident triage, so say which.

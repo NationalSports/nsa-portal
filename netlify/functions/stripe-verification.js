@@ -3,6 +3,13 @@ const stripe = require('stripe');
 const { corsHeaders, verifyQBOUser, getSupabaseAdmin } = require('./_shared');
 const { selectAllRows } = require('./_stripeReconciliation');
 
+// Integer cents, so float drift never decides whether money is applied.
+// Callers MUST select `paid` — a row selected as `id` alone reads as $0 paid and would turn the
+// applied-payment check below into a false alarm on every invoice, so both call sites share
+// INVOICE_SETTLEMENT_COLS and a test pins every invoice select in both files.
+const INVOICE_SETTLEMENT_COLS = 'id,paid';
+const centsOf = (value) => Math.round((Number(value) || 0) * 100);
+
 function verifyPayment(pi, payments, invoices) {
   const ids = [...new Set(String(pi.metadata?.invoice_id || '').split(/[\s,]+/).filter(Boolean))];
   const rows = payments.filter(r => r.ref === `Stripe ${pi.id}`);
@@ -16,10 +23,32 @@ function verifyPayment(pi, payments, invoices) {
   if (charge?.amount_refunded > 0) reasons.push('Refund requires review');
   if (charge?.disputed) reasons.push('Dispute requires review');
   ids.forEach(id => {
-    if (!invoices.some(r => r.id === id)) reasons.push(`Invoice ${id} not found`);
+    const invoice = invoices.find(r => r.id === id);
+    if (!invoice) reasons.push(`Invoice ${id} not found`);
     const matches = rows.filter(r => r.invoice_id === id);
     if (matches.length !== 1) reasons.push(`${id}: ${matches.length ? 'duplicate' : 'missing'} payment record`);
     else if (!Number.isFinite(Number(matches[0].amount)) || Number(matches[0].amount) <= 0) reasons.push(`${id}: invalid payment amount`);
+    // The payment row is NOT the settlement. A staff tab that loaded before the card payment can
+    // save the invoice summary back to paid=0/status=open while this immutable row survives
+    // (dbEngine's payment-restore keeps it on purpose), leaving a fully paid invoice in AR and on
+    // the customer's statement. INV-63359 and INV-63664 both sat in exactly that state — a
+    // correct, correctly-valued payment row on an invoice reading "open" — and verifying only the
+    // row's existence reported both as healthy, so nothing ever raised an incident.
+    //
+    // The invariant is that `paid` accounts for at least what this intent recorded against the
+    // invoice — NOT that the invoice has a zero balance. Staff legitimately raise `total` on an
+    // already-paid invoice (Edit Invoice rewrites total and leaves paid/status alone), and a
+    // balance test would flag that as an unapplied payment forever: a finding only clears when
+    // verifyPayment passes, so a false positive is permanent and costs a paymentIntents.retrieve
+    // on every later scan, inside the monitor's 7-second deadline.
+    //
+    // Deliberately no 'void' exemption: voiding keeps the payment rows and issues no refund, so a
+    // void sitting at paid=0 is money captured against nothing — exactly a state worth reviewing.
+    // A void that kept its applied payment has paid >= recorded and never trips this.
+    const recordedCents = matches.reduce((sum, r) => sum + centsOf(r.amount), 0);
+    if (invoice && centsOf(invoice.paid) + 1 < recordedCents) {
+      reasons.push(`${id}: captured payment is not applied — invoice shows $${(centsOf(invoice.paid) / 100).toFixed(2)} paid against $${(recordedCents / 100).toFixed(2)} recorded`);
+    }
   });
   if (rows.some(r => !ids.includes(r.invoice_id))) reasons.push('Payment reference recorded on another invoice');
   const recorded = rows.reduce((sum, r) => sum + Math.round(Number(r.amount) * 100), 0);
@@ -62,7 +91,7 @@ exports.handler = async event => {
     const sb = getSupabaseAdmin();
     const [payments, invoices] = await Promise.all([
       refs.length ? selectAllRows(() => sb.from('invoice_payments').select('id,invoice_id,amount,ref', {count:'exact'}).in('ref', refs).order('id'), {label:'invoice payment evidence'}) : [],
-      ids.length ? selectAllRows(() => sb.from('invoices').select('id', {count:'exact'}).in('id', ids).order('id'), {label:'invoice evidence'}) : [],
+      ids.length ? selectAllRows(() => sb.from('invoices').select(INVOICE_SETTLEMENT_COLS, {count:'exact'}).in('id', ids).order('id'), {label:'invoice evidence'}) : [],
     ]);
     return reply(200, { payments: page.data.map(pi => verifyPayment(pi, payments, invoices)), has_more: page.has_more,
       next_cursor: page.has_more ? page.data[page.data.length - 1]?.id : null, checked_at: new Date().toISOString() });
@@ -72,3 +101,4 @@ exports.handler = async event => {
   }
 };
 exports.verifyPayment = verifyPayment;
+exports.INVOICE_SETTLEMENT_COLS = INVOICE_SETTLEMENT_COLS;
