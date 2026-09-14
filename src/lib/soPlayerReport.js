@@ -12,6 +12,7 @@
 
 import { attachAdidasTagSkus } from './adidasSsReport';
 import { downloadSilverScreenFulfillment, buildSilverScreenDomesticRows } from './silverScreenFulfillment';
+import { decoPoDrift } from './decoPoUnits';
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 
@@ -953,6 +954,9 @@ export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format
             // to the page whose own Sync button fixes it. Naming it is not enough —
             // it is reached by a small chip beside an item line, three screens away.
             jobPoId: (silverScreenDpo(so) || {}).po_id || '',
+            // The exact change the deco PO's own Sync button would make, so the panel
+            // can offer it here instead of describing where it lives.
+            jobPoSync: decoPoDrift(silverScreenDpo(so), soItems),
             matchup: buildFulfillmentMatchup({ lines, soItems, orderById }),
             verifyDetail: buildVerifyDetail({ lines, orderById }),
           });

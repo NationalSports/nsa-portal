@@ -24,7 +24,7 @@ const data = () => ({
 });
 
 const noop = () => {};
-const props = (over = {}) => ({ data: data(), onClose: noop, onApply: noop, onPin: noop, onUnpin: noop, onSaveRecheck: noop, onForce: noop, onOpenDecoPo: noop, dirty: false, saving: false, ...over });
+const props = (over = {}) => ({ data: data(), onClose: noop, onApply: noop, onPin: noop, onUnpin: noop, onSaveRecheck: noop, onForce: noop, onOpenDecoPo: noop, onSyncDecoPo: noop, dirty: false, saving: false, ...over });
 
 describe('reconcile panel layout', () => {
   // The app's padding lives on these classes, not on .modal — content placed
@@ -231,5 +231,33 @@ describe('getting to the deco PO', () => {
   test('no jump when nothing told us which PO it is', () => {
     render(<FulfillmentReconcileModal {...props({ data: { ...staleWithPo(), jobPoId: '' } })} />);
     expect(screen.queryByRole('button', { name: /^Open /i })).toBeNull();
+  });
+});
+
+// "still no sync button" — after being sent to the deco PO page twice. The write it
+// makes now lives in the panel too, labelled as the claim it actually is.
+describe('recording the job quantity from the panel', () => {
+  const withSync = (over = {}) => ({
+    ...data(), jobUnits: 1, jobId: 58403, jobPoId: 'DPO 57243 SFXC',
+    jobPoSync: { poId: 'DPO 57243 SFXC', from: 42, to: 43, expected: 129 }, ...over,
+  });
+
+  test('offers the write, naming the PO and the number', () => {
+    const onSyncDecoPo = jest.fn();
+    render(<FulfillmentReconcileModal {...props({ data: withSync(), onSyncDecoPo })} />);
+    fireEvent.click(screen.getByRole('button', { name: /Record 43 units on DPO 57243 SFXC/i }));
+    expect(onSyncDecoPo).toHaveBeenCalledTimes(1);
+  });
+
+  test('states plainly that it does not change their job', () => {
+    render(<FulfillmentReconcileModal {...props({ data: withSync() })} />);
+    expect(screen.getByText(/does not add anything to their job/i)).toBeTruthy();
+    expect(screen.getByText(/Only once Silver Screen is actually making 43/i)).toBeTruthy();
+    expect(screen.getByText(/42 → 43/)).toBeTruthy();
+  });
+
+  test('no button when the deco PO already agrees with the order', () => {
+    render(<FulfillmentReconcileModal {...props({ data: withSync({ jobPoSync: null }) })} />);
+    expect(screen.queryByRole('button', { name: /Record .* units on/i })).toBeNull();
   });
 });

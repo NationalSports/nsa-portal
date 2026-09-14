@@ -48,6 +48,7 @@ import { isMethodicItem } from './methodic/methodicWorkflow';
 import MultiItemAddModal from './MultiItemAddModal';
 import FulfillmentReconcileModal from './FulfillmentReconcileModal';
 import { applySoFixes, pinSourceSku, unpinSourceSku } from './lib/fulfillmentReconcile';
+import { decoPoTotals, decoPoDrift } from './lib/decoPoUnits';
 import { downloadSoPlayerReport, omgCodeFromMemo } from './lib/soPlayerReport';
 // Lazy so the uniform designer only loads when a rep opens it.
 const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
@@ -2525,6 +2526,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // the rep finds out immediately whether it actually cleared. If anything is still
   // wrong the panel simply reopens with what is left; the file only downloads when
   // it genuinely passes.
+  // Record, on the deco PO, what Silver Screen is making. Same write its own Sync
+  // button performs, through the same shared totals helper, recomputed from the live
+  // order at click time rather than from the snapshot the report ran on.
+  const _reconcileSyncDecoPo=()=>{
+    const poId=reconcile&&reconcile.jobPoId;
+    const idx=(o.deco_pos||[]).findIndex(x=>x&&x.po_id===poId);
+    if(idx<0){nf('Could not find deco PO '+(poId||'')+' on this order.','error');return}
+    const drift=decoPoDrift((o.deco_pos||[])[idx],safeItems(o));
+    if(!drift){nf((poId||'That deco PO')+' already matches the items it covers.');return}
+    const updated={...o,deco_pos:(o.deco_pos||[]).map((x,i)=>i===idx?{...x,qty:drift.to,expected_cost:drift.expected}:x),updated_at:new Date().toLocaleString()};
+    setO(updated);setDirty(true);
+    setReconcile(r=>r?{...r,jobPoSync:null}:r);
+    nf('Recorded '+drift.to+' units on '+(poId||'the deco PO')+' (was '+drift.from+') — Save, then re-check.');
+  };
   // Hand the rep to the deco PO page, where its own Sync button (and the drift
   // banner explaining it) already live. Deliberately a jump, not a second copy of
   // that button: it recomputes an expected cost, and a duplicated money calculation
@@ -4473,7 +4488,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
   return(<div>
     <MultiItemAddModal open={isE&&multiAddOpen} onClose={()=>{setMultiAddOpen(false);setMultiAddQuery('')}} catalogResults={multiCatalogResults} vendorResults={multiVendorResults} searching={ssSearching||smSearching||mtSearching||rsSearching} onActiveQuery={setMultiAddQuery} artFiles={safeArt(o).filter(f=>f.id!=='__tbd')} positions={POSITIONS} onApply={applyMultiItems}/>
-    {reconcile&&<FulfillmentReconcileModal data={reconcile} onClose={()=>setReconcile(null)} onApply={_reconcileApply} onPin={_reconcilePin} onUnpin={_reconcileUnpin} onSaveRecheck={_reconcileSaveRecheck} onForce={_reconcileForce} onOpenDecoPo={_reconcileOpenDecoPo} dirty={dirty} saving={actionSaving>0}/>}
+    {reconcile&&<FulfillmentReconcileModal data={reconcile} onClose={()=>setReconcile(null)} onApply={_reconcileApply} onPin={_reconcilePin} onUnpin={_reconcileUnpin} onSaveRecheck={_reconcileSaveRecheck} onForce={_reconcileForce} onOpenDecoPo={_reconcileOpenDecoPo} onSyncDecoPo={_reconcileSyncDecoPo} dirty={dirty} saving={actionSaving>0}/>}
     {/* ── Mockup lightbox overlay ── */}
     {mockupLightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setMockupLightbox(null)}>
       <button style={{position:'absolute',top:16,right:20,background:'rgba(255,255,255,0.15)',border:'none',color:'white',fontSize:28,borderRadius:'50%',width:44,height:44,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setMockupLightbox(null)}>×</button>
@@ -15163,8 +15178,9 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           const rate=_rowRate(ii);
           return{idx:ii,it,sizes,qty,decos,rate,lineTotal:Math.round(qty*rate*100)/100};
         }).filter(Boolean);
-        const liveQty=coveredRows.reduce((a,r)=>a+r.qty,0);
-        const liveExpected=Math.round(coveredRows.reduce((a,r)=>a+r.lineTotal,0)*100)/100;
+        // Same helper the reconciliation panel writes with, so the two can never
+        // disagree about what "Sync" would set.
+        const {liveQty,liveExpected}=decoPoTotals(dp,soItems);
         const qtyDrift=coveredRows.length>0&&liveQty!==safeNum(dp.qty);
         const decoInstr=coveredRows.flatMap(r=>r.decos.map(d=>({sku:r.it.sku,position:d.position,deco_type:d.deco_type,vendor:d.vendor,notes:d.notes})));
         const _trackUrl=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};

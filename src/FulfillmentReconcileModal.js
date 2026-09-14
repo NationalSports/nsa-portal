@@ -27,7 +27,7 @@ const H = ({ children, right }) => (
   </div>
 );
 
-export default function FulfillmentReconcileModal({ data, onClose, onApply, onPin, onUnpin, onSaveRecheck, onForce, onOpenDecoPo, dirty, saving }) {
+export default function FulfillmentReconcileModal({ data, onClose, onApply, onPin, onUnpin, onSaveRecheck, onForce, onOpenDecoPo, onSyncDecoPo, dirty, saving }) {
   const [applied, setApplied] = useState([]);
   // Any change makes the figures below historical: they were computed when the
   // report ran and nothing here recomputes them.
@@ -98,9 +98,22 @@ export default function FulfillmentReconcileModal({ data, onClose, onApply, onPi
                   item line. Telling a rep to "open the deco PO" and leaving them to
                   find it is how this step kept getting missed. */}
               {!!data.jobPoId && !!onOpenDecoPo && <button className="btn btn-sm" onClick={onOpenDecoPo} style={{ fontWeight: 700 }}
-                title="Opens the decoration PO — its Sync button is in the amber banner at the top">
+                title="Opens the decoration PO — the Sync banner is inside its Items card">
                 Open {data.jobPoId} →
               </button>}
+            </div>}
+            {/* Step 3, done here. The same write the PO page's Sync button makes, from
+                the same helper — but the label states the claim the rep is making,
+                because this records what Silver Screen holds, it does not change it. */}
+            {!!data.jobPoSync && !!onSyncDecoPo && <div style={{ marginTop: 10, padding: '8px 12px', background: '#fff', border: '1px solid #bfdbfe', borderRadius: 8 }}>
+              <button className="btn btn-sm" onClick={onSyncDecoPo} disabled={saving}
+                style={{ fontWeight: 800, background: '#b45309', color: '#fff', border: 'none' }}>
+                Record {data.jobPoSync.to} units on {data.jobPoSync.poId || 'the deco PO'}
+              </button>
+              <div style={{ fontSize: 11, color: '#92400e', marginTop: 6 }}>
+                Only once Silver Screen is actually making {data.jobPoSync.to}. This updates our record
+                ({data.jobPoSync.from} → {data.jobPoSync.to}) — it does not add anything to their job.
+              </div>
             </div>}
           </div>
         </>}
