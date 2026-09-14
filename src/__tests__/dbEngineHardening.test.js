@@ -1085,3 +1085,61 @@ describe('_dbSaveSOInner — stale SO save preserves header decisions (po_number
     expect(row.po_number == null).toBe(true);
   });
 });
+
+// ── _dbSaveInvoiceInner — a staff save must never unapply a portal card payment ─────────────
+// INV-63359 (paid $838.34 by card 8/14, reverted to open 8/19) and INV-63664 ($73.57, reverted
+// 9/2). The portal's service-role reconcile had already set paid/status; a staff tab that had
+// loaded the invoice BEFORE the payment then saved its own paid=0/status=open over it. The
+// immutable invoice_payments row survived (payment-restore keeps it), so the invoice sat in AR
+// showing "open" with a card payment in its history — what Jered reported.
+describe('_dbSaveInvoiceInner — portal payment survives a stale staff save', () => {
+  beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
+  afterEach(() => { restoreEnv(); jest.resetModules(); });
+
+  // Same created_at on both sides so the id-collision guard sees one document, not two.
+  const CREATED = '2026-07-29T23:05:51.446Z';
+  const serverRow = { id: 'INV-63359', created_at: CREATED, customer_id: 'c1784665721450', so_id: 'SO-1',
+    total: 838.34, paid: 838.34, cc_fee: 23.63, status: 'paid' };
+  // What the stale tab holds: the pre-payment summary.
+  const staleClientInvoice = () => ({ id: 'INV-63359', created_at: CREATED, customer_id: 'c1784665721450',
+    so_id: 'SO-1', total: 814.71, paid: 0, cc_fee: 0, status: 'open', payments: [] });
+
+  test('the written row keeps the settled summary instead of resurrecting the balance', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [
+        { data: serverRow, error: null }, // pre-write read: the payment already landed
+        { error: null },                  // upsert
+      ],
+      invoice_payments: [{ data: [], error: null }],
+      invoice_items: [{ count: 0, error: null }],
+    };
+
+    const { _dbSaveInvoice } = require('../lib/dbEngine');
+    await _dbSaveInvoice(staleClientInvoice());
+
+    const upsert = __mockState.calls.find(c => c.table === 'invoices' && c.method === 'upsert');
+    expect(upsert).toBeDefined();
+    expect(upsert.args[0]).toMatchObject({ id: 'INV-63359', paid: 838.34, total: 838.34, status: 'paid' });
+  });
+
+  test('an errored pre-write read blocks the save rather than writing an unverified summary', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [{ data: null, error: { message: 'statement timeout' } }],
+      invoice_payments: [{ data: [], error: null }],
+      invoice_items: [{ count: 0, error: null }],
+    };
+
+    const { _dbSaveInvoice, _dbSaveFailedIds } = require('../lib/dbEngine');
+    const result = await _dbSaveInvoice(staleClientInvoice());
+
+    expect(result).toBe(false);
+    expect(_dbSaveFailedIds.has('INV-63359')).toBe(true);
+    // Nothing may be written when we could not read what we are about to overwrite.
+    expect(__mockState.calls.some(c => c.table === 'invoices' && c.method === 'upsert')).toBe(false);
+    expect(__mockState.calls.some(c => c.table === 'invoice_payments' && c.method !== 'select')).toBe(false);
+  });
+});

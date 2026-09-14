@@ -3,6 +3,14 @@ const stripe = require('stripe');
 const { corsHeaders, verifyQBOUser, getSupabaseAdmin } = require('./_shared');
 const { selectAllRows } = require('./_stripeReconciliation');
 
+// Cents still owed on an invoice summary row. Integer cents so float drift never decides
+// whether money is outstanding. Callers MUST select total/paid/status — a row selected as
+// `id` alone reads as a $0 balance and would silently skip the applied-payment check, so
+// both call sites share INVOICE_SETTLEMENT_COLS below and a test pins them.
+const INVOICE_SETTLEMENT_COLS = 'id,total,paid,status';
+const openBalanceCents = (invoice) =>
+  Math.round(((Number(invoice.total) || 0) - (Number(invoice.paid) || 0)) * 100);
+
 function verifyPayment(pi, payments, invoices) {
   const ids = [...new Set(String(pi.metadata?.invoice_id || '').split(/[\s,]+/).filter(Boolean))];
   const rows = payments.filter(r => r.ref === `Stripe ${pi.id}`);
@@ -16,10 +24,22 @@ function verifyPayment(pi, payments, invoices) {
   if (charge?.amount_refunded > 0) reasons.push('Refund requires review');
   if (charge?.disputed) reasons.push('Dispute requires review');
   ids.forEach(id => {
-    if (!invoices.some(r => r.id === id)) reasons.push(`Invoice ${id} not found`);
+    const invoice = invoices.find(r => r.id === id);
+    if (!invoice) reasons.push(`Invoice ${id} not found`);
     const matches = rows.filter(r => r.invoice_id === id);
     if (matches.length !== 1) reasons.push(`${id}: ${matches.length ? 'duplicate' : 'missing'} payment record`);
     else if (!Number.isFinite(Number(matches[0].amount)) || Number(matches[0].amount) <= 0) reasons.push(`${id}: invalid payment amount`);
+    // The audit row is NOT the settlement. A staff tab that loaded before the payment can save
+    // the invoice summary back to paid=0/status=open while this immutable payment row survives
+    // (the payment-restore logic in dbEngine deliberately keeps it). That leaves a fully paid
+    // invoice sitting in AR, on the customer's statement, and in the dunning sweep.
+    // Verifying only the payment row reports that state as healthy: INV-63359 and INV-63664 both
+    // carry a correct, correctly-valued payment row and still read "open" to the rep and to
+    // accounting — the failure Jered reported. Nothing raised an incident for either.
+    // 'void' is a deliberate staff decision, so it is not treated as an unapplied payment.
+    if (invoice && invoice.status !== 'void' && openBalanceCents(invoice) > 0) {
+      reasons.push(`${id}: captured payment is not applied — invoice still shows an open balance`);
+    }
   });
   if (rows.some(r => !ids.includes(r.invoice_id))) reasons.push('Payment reference recorded on another invoice');
   const recorded = rows.reduce((sum, r) => sum + Math.round(Number(r.amount) * 100), 0);
@@ -62,7 +82,7 @@ exports.handler = async event => {
     const sb = getSupabaseAdmin();
     const [payments, invoices] = await Promise.all([
       refs.length ? selectAllRows(() => sb.from('invoice_payments').select('id,invoice_id,amount,ref', {count:'exact'}).in('ref', refs).order('id'), {label:'invoice payment evidence'}) : [],
-      ids.length ? selectAllRows(() => sb.from('invoices').select('id', {count:'exact'}).in('id', ids).order('id'), {label:'invoice evidence'}) : [],
+      ids.length ? selectAllRows(() => sb.from('invoices').select(INVOICE_SETTLEMENT_COLS, {count:'exact'}).in('id', ids).order('id'), {label:'invoice evidence'}) : [],
     ]);
     return reply(200, { payments: page.data.map(pi => verifyPayment(pi, payments, invoices)), has_more: page.has_more,
       next_cursor: page.has_more ? page.data[page.data.length - 1]?.id : null, checked_at: new Date().toISOString() });
@@ -72,3 +92,4 @@ exports.handler = async event => {
   }
 };
 exports.verifyPayment = verifyPayment;
+exports.INVOICE_SETTLEMENT_COLS = INVOICE_SETTLEMENT_COLS;
