@@ -200,9 +200,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   // (and SO) from the snapshot captured BEFORE that await, so anything written meanwhile — a second
   // upload, a poll/realtime merge — was silently overwritten by whichever upload happened to finish
   // last. The slow production files were always the loser, which is why .ai/.dst "didn't persist".
-  // Read the live copy at completion time instead, exactly as the order editors do with oRef.current.
-  const custRef=useRef(custLocal);custRef.current=custLocal;
-  const sosRef=useRef(sos);sosRef.current=sos;
+  // Read the live copy at completion time instead, exactly as the order editors do with oRef.current
+  // (same commit-time useEffect form, so nothing is mutated during render).
+  const custRef=useRef(custLocal);React.useEffect(()=>{custRef.current=custLocal},[custLocal]);
+  const sosRef=useRef(sos);React.useEffect(()=>{sosRef.current=sos},[sos]);
   const[promoLineHistory,setPromoLineHistory]=useState([]);
   // customer_invoice_lines is the actively refreshed NetSuite archive used by
   // Sales History. customer_invoices (the old header-only promo source) can lag
@@ -1421,12 +1422,21 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const _srcCustId=art._srcCustId;
     const _rowMatch=(a,soCustId)=>artWriteMatches(a,{artId:art.id,name:art.name,decoType:art.deco_type,soCustomerId:soCustId,srcCustId:_srcCustId});
     const _libMatch=a=>artWriteMatches(a,{artId:art.id,name:art.name,decoType:art.deco_type,soCustomerId:customer.id,srcCustId:_srcCustId||customer.id});
-    const libHasLogo=()=>(custRef.current.art_files||[]).some(_libMatch);
-    // Always rebuild from custRef.current, never from the render's `customer` snapshot: these run
-    // after an await, and basing the write on a pre-upload copy drops whatever landed in between.
-    const updateLibArt=(updater)=>{const live=custRef.current;const lib=live.art_files||[];if(!lib.some(_libMatch))return false;const newCust={...live,art_files:lib.map(a=>_libMatch(a)?updater(a):a)};setCustLocal(newCust);onRefreshCustomer(newCust);return true};
+    // The live customer — but only while it is still THIS customer. A long upload can outlast the rep
+    // clicking through to another account, and custRef would then hold the new one; writing this art
+    // into a different customer's library (or writing back the pre-upload snapshot of the old one,
+    // which is what the stale-snapshot code did) are both wrong. Returns null instead, and the caller
+    // says so rather than reporting a save that didn't happen.
+    const _liveCust=()=>{const live=custRef.current;return live&&live.id===customer.id?live:null};
+    const _custGone=()=>{nf&&nf('Switched customers while that file was uploading — reopen '+(customer.name||'the customer')+' and add it again','error')};
+    const libHasLogo=()=>((_liveCust()||{}).art_files||[]).some(_libMatch);
+    // Always rebuild from the live copy, never from the render's `customer` snapshot: these run after
+    // an await, and basing the write on a pre-upload copy drops whatever landed in between.
+    // Returns false both when the art simply isn't in the library and when the rep navigated away —
+    // callers follow up with addLibArt, which reports the navigated-away case once, not twice.
+    const updateLibArt=(updater)=>{const live=_liveCust();if(!live)return false;const lib=live.art_files||[];if(!lib.some(_libMatch))return false;const newCust={...live,art_files:lib.map(a=>_libMatch(a)?updater(a):a)};setCustLocal(newCust);onRefreshCustomer&&onRefreshCustomer(newCust);return true};
     // Add a brand-new library record (the art was only on an order until now). Same live-copy rule.
-    const addLibArt=(rec)=>{const live=custRef.current;const newCust={...live,art_files:[...(live.art_files||[]),rec]};setCustLocal(newCust);onRefreshCustomer(newCust)};
+    const addLibArt=(rec)=>{const live=_liveCust();if(!live){_custGone();return false}const newCust={...live,art_files:[...(live.art_files||[]),rec]};setCustLocal(newCust);onRefreshCustomer&&onRefreshCustomer(newCust);return true};
     // The library copy this art gets when a web logo is added to art that wasn't in the library yet.
     // It used to carry only files/mockup_files, so adding a web logo on the customer page created a
     // library record with the design's production art (.ai seps, .dst stitch files) stripped out —
@@ -1492,7 +1502,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const soId=art._so_id||(usedOnSOs[0]&&usedOnSOs[0].so_id);
       const so=(sosRef.current||[]).find(s=>s.id===soId);
       const hasLib=libHasLogo();
-      if(!so&&!hasLib){nf&&nf('No order or program-library record found to attach the file to','error');return false}
+      if(!so&&!hasLib){if(!_liveCust())_custGone();else nf&&nf('No order or program-library record found to attach the file to','error');return false}
       const _add=a=>({...a,
         ...(mocks.length?{mockup_files:[...(a.mockup_files||[]),...mocks]}:{}),
         ...(prods.length?{prod_files:[...(a.prod_files||[]),...prods]}:{})});
