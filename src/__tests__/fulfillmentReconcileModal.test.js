@@ -24,7 +24,7 @@ const data = () => ({
 });
 
 const noop = () => {};
-const props = (over = {}) => ({ data: data(), onClose: noop, onApply: noop, onPin: noop, onUnpin: noop, onSaveRecheck: noop, onForce: noop, dirty: false, saving: false, ...over });
+const props = (over = {}) => ({ data: data(), onClose: noop, onApply: noop, onPin: noop, onUnpin: noop, onSaveRecheck: noop, onForce: noop, onOpenDecoPo: noop, dirty: false, saving: false, ...over });
 
 describe('reconcile panel layout', () => {
   // The app's padding lives on these classes, not on .modal — content placed
@@ -157,10 +157,10 @@ describe('when the sales order is right but the Silver Screen job is stale', () 
   test('links straight to the job on their portal when we know it', () => {
     const d = { ...staleJob(), jobId: 58505, jobUrl: 'https://example.invalid/orders/58505' };
     render(<FulfillmentReconcileModal {...props({ data: d })} />);
-    const link = screen.getByRole('link', { name: /Open job #58505/i });
+    const link = screen.getByRole('link', { name: /Open job #58505 on their portal/i });
     expect(link.getAttribute('href')).toBe('https://example.invalid/orders/58505');
-    // Named in the guidance step as well as the link.
-    expect(screen.getAllByText(/job #58505 on the Silver Screen portal/i).length).toBeGreaterThan(1);
+    // The guidance step names the job too, so the link is not the only mention.
+    expect(screen.getByText(/add it to job #58505 on the Silver Screen portal/i)).toBeTruthy();
   });
 });
 
@@ -197,5 +197,39 @@ describe('the escape hatch', () => {
     render(<FulfillmentReconcileModal {...props({ data: withOverride({ format: 'pdf', label: 'Player report' }) })} />);
     expect(screen.queryByRole('button', { name: /Download anyway/i })).toBeNull();
     expect(screen.getByRole('button', { name: /Export CSV anyway/i })).toBeTruthy();
+  });
+});
+
+// "where is sync to 43?" — the button that fixes a stale job lives on the deco PO's
+// own page, reached by a small chip beside an item line. Naming the PO in a
+// paragraph was not enough twice running, so the panel now jumps there.
+describe('getting to the deco PO', () => {
+  const staleWithPo = () => ({
+    ...data(), jobUnits: 1, jobId: 58403, jobPoId: 'DPO 57243 SFXC',
+    matchup: buildFulfillmentMatchup({
+      lines: [{ order_id: 'o1', sku: 'A', name: 'A', color: 'Red', size: 'M', qty: 2, player_name: 'P' }],
+      soItems: [{ sku: 'A', name: 'A', color: 'Red', sizes: { M: 2 } }],
+      orderById: { o1: { id: 'o1', order_number: 1 } },
+    }),
+    soItems: [{ sku: 'A', name: 'A', color: 'Red', sizes: { M: 2 } }],
+  });
+
+  test('offers a jump straight to the PO that carries the job, by name', () => {
+    const onOpenDecoPo = jest.fn();
+    render(<FulfillmentReconcileModal {...props({ data: staleWithPo(), onOpenDecoPo })} />);
+    fireEvent.click(screen.getByRole('button', { name: /Open DPO 57243 SFXC/i }));
+    expect(onOpenDecoPo).toHaveBeenCalledTimes(1);
+  });
+
+  test('and the job link on their portal alongside it', () => {
+    const d = { ...staleWithPo(), jobUrl: 'https://example.invalid/o/58403' };
+    render(<FulfillmentReconcileModal {...props({ data: d })} />);
+    expect(screen.getByRole('link', { name: /Open job #58403/i }).getAttribute('href'))
+      .toBe('https://example.invalid/o/58403');
+  });
+
+  test('no jump when nothing told us which PO it is', () => {
+    render(<FulfillmentReconcileModal {...props({ data: { ...staleWithPo(), jobPoId: '' } })} />);
+    expect(screen.queryByRole('button', { name: /^Open /i })).toBeNull();
   });
 });

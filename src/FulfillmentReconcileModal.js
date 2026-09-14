@@ -27,7 +27,7 @@ const H = ({ children, right }) => (
   </div>
 );
 
-export default function FulfillmentReconcileModal({ data, onClose, onApply, onPin, onUnpin, onSaveRecheck, onForce, dirty, saving }) {
+export default function FulfillmentReconcileModal({ data, onClose, onApply, onPin, onUnpin, onSaveRecheck, onForce, onOpenDecoPo, dirty, saving }) {
   const [applied, setApplied] = useState([]);
   // Any change makes the figures below historical: they were computed when the
   // report ran and nothing here recomputes them.
@@ -90,10 +90,17 @@ export default function FulfillmentReconcileModal({ data, onClose, onApply, onPi
           <H>How to match them up</H>
           <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '8px 14px', fontSize: 12.5, lineHeight: 1.6 }}>
             <ol style={{ margin: '4px 0', paddingLeft: 18 }}>{steps.map((t, n) => <li key={n} style={{ margin: '6px 0' }}>{t}</li>)}</ol>
-            {!!data.jobUrl && <div style={{ marginTop: 8 }}>
-              <a href={data.jobUrl} target="_blank" rel="noreferrer" style={{ fontWeight: 700 }}>
-                Open job {data.jobId ? `#${data.jobId}` : ''} on the Silver Screen portal ↗
-              </a>
+            {(!!data.jobUrl || (!!data.jobPoId && !!onOpenDecoPo)) && <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              {!!data.jobUrl && <a href={data.jobUrl} target="_blank" rel="noreferrer" className="btn btn-sm" style={{ fontWeight: 700, textDecoration: 'none' }}>
+                Open job {data.jobId ? `#${data.jobId}` : ''} on their portal ↗
+              </a>}
+              {/* Step 3 lives on the deco PO's own page, behind a small chip next to an
+                  item line. Telling a rep to "open the deco PO" and leaving them to
+                  find it is how this step kept getting missed. */}
+              {!!data.jobPoId && !!onOpenDecoPo && <button className="btn btn-sm" onClick={onOpenDecoPo} style={{ fontWeight: 700 }}
+                title="Opens the decoration PO — its Sync button is in the amber banner at the top">
+                Open {data.jobPoId} →
+              </button>}
             </div>}
           </div>
         </>}

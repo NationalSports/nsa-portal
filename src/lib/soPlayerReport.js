@@ -757,7 +757,7 @@ export function matchupGuidance({ matchup, verifyDetail = [], jobUnits = null, j
     // exact mismatch this audit exists to catch. Both real steps, in order.
     steps.push(`${job} was submitted for ${jobUnits} unit${jobUnits === 1 ? '' : 's'} and this order now needs ${matchup.reportUnits}. Customers and the sales order already agree, so nothing on the item grid will clear this.`);
     if (short) steps.push(`Get the missing ${matchup.reportUnits - jobUnits} unit${matchup.reportUnits - jobUnits === 1 ? '' : 's'} onto their job first — add ${matchup.reportUnits - jobUnits === 1 ? 'it' : 'them'} to ${jobId ? `job #${jobId}` : 'the job'} on the Silver Screen portal, or use "↻ Unlink" on the deco PO, delete the old draft on their side, and send again. Until Silver Screen actually has ${matchup.reportUnits}, the file would ship more rows than they have garments for.`);
-    steps.push(`Then open the deco PO and use its "Sync to ${matchup.reportUnits} units" button so this order records what Silver Screen holds. Re-sending a job does not update that number on its own, so this step is needed either way.`);
+    steps.push(`Then record it here: open the deco PO and use its "Sync to ${matchup.reportUnits} units" button. Re-sending a job does not update that number on its own, so this step is needed either way.`);
   } else if (jobUnits != null && jobUnits !== matchup.soUnits && matchup.diffRows.length) {
     steps.push(`The Silver Screen job was submitted for ${jobUnits} units, against ${matchup.soUnits} now on the sales order. Once the rows above agree, re-check the job quantity too.`);
   }
@@ -949,6 +949,10 @@ export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format
             hardIssues, canOverride: !hardIssues.length, forced: force,
             jobId: (silverScreenDpo(so) || {})._silverscreen_job_id || '',
             jobUrl: (silverScreenDpo(so) || {})._silverscreen_job_url || '',
+            // Which deco PO carries that job, so the panel can hand the rep straight
+            // to the page whose own Sync button fixes it. Naming it is not enough —
+            // it is reached by a small chip beside an item line, three screens away.
+            jobPoId: (silverScreenDpo(so) || {}).po_id || '',
             matchup: buildFulfillmentMatchup({ lines, soItems, orderById }),
             verifyDetail: buildVerifyDetail({ lines, orderById }),
           });
