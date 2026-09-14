@@ -5087,7 +5087,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // surface "Create Invoice" alongside "Close Sales Order" so the user can bill the remainder.
           const _liveInvs=liveSoInvoices(allInvoices,o.id);
           const _hasAnyInv=_liveInvs.length>0;
-          const _remainingDollars=soInvoiceBalance({subtotal:totals.rev,shipping:totals.ship+totals.priorShip,tax:totals.tax,invoices:_liveInvs}).total;
+          const _remainingDollars=soInvoiceBalance({subtotal:totals.rev,shipping:totals.ship+totals.priorShip,tax:totals.tax+totals.storeTax,invoices:_liveInvs}).total;
           const _invMap=_hasAnyInv?buildInvoicedQtyMap(o,_liveInvs):new Map();
           const _hasRemaining=safeItems(o).some((it,idx)=>{
             const tot=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)||safeNum(it.est_qty);
@@ -8270,7 +8270,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const balanceSettlement=_priorInvs.length>0&&!isPromoOrder&&!o.credit_applied&&(invType==='full'||invType==='final');
       let balanceAdjustment=0;
       if(balanceSettlement){
-        const balance=soInvoiceBalance({subtotal:totals.rev,shipping:totals.ship+totals.priorShip,tax:totals.tax,invoices:_priorInvs});
+        const balance=soInvoiceBalance({subtotal:totals.rev,shipping:totals.ship+totals.priorShip,tax:totals.tax+totals.storeTax,invoices:_priorInvs});
         balanceAdjustment=Math.round((balance.subtotal-selTotals.subtotal)*100)/100;
         selTotals={...selTotals,subtotal:balance.subtotal};
         invShip=balance.shipping;invTax=balance.tax;_priorShipBill=0;

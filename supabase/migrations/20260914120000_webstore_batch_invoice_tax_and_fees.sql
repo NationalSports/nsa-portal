@@ -15,10 +15,12 @@
 --     (_omg_processing = revenue, _omg_tax = pass-through collected for the state,
 --     _omg_shipping = shipping charged, _omg_cc_fees = Stripe cost) so the SO
 --     editor, print and commissions see it;
---   * absorbs line-price averaging drift (a 2XL upcharge averaged across a line,
---     coupon scaling) with a rounding line capped at $1 so the invoice product
---     total is exactly the product money collected;
---   * returns store_money so the client can patch the SO it just created.
+--   * absorbs cents-level line-price drift (coupon scaling) with a rounding line,
+--     capped at 0.1% of product money (at least $1), so the invoice product total
+--     is exactly the product money collected; a larger gap is returned, not hidden;
+--   * scales tax / processing / shipping by each order's net-of-refund share;
+--   * returns store_money and the SO's new _version so the client can patch the
+--     SO it just created without tripping its own version guard.
 -- Same locking, claim validation, idempotency and grants as 20260902070000.
 
 create or replace function public.finalize_webstore_batch(
@@ -45,6 +47,9 @@ declare
   v_discount numeric := 0;
   v_garment_net numeric := 0;
   v_rounding numeric := 0;
+  v_rounding_gap numeric := 0;
+  v_round_cap numeric := 1.00;
+  v_so_version bigint;
   v_tax numeric := 0;
   v_processing numeric := 0;
   v_shipping numeric := 0;
@@ -120,25 +125,26 @@ begin
     coalesce(sum(greatest(coalesce(o.subtotal, 0) + coalesce(o.fundraise_amt, 0), 0)), 0),
     coalesce(sum(least(greatest(coalesce(o.discount_amt, 0), 0),
                            greatest(coalesce(o.subtotal, 0) + coalesce(o.fundraise_amt, 0), 0))), 0),
-    coalesce(round(sum(greatest(coalesce(o.tax, 0), 0)), 2), 0),
-    coalesce(round(sum(greatest(coalesce(o.processing_fee, 0), 0)), 2), 0),
-    coalesce(round(sum(greatest(coalesce(o.shipping_fee, 0), 0)), 2), 0),
+    coalesce(round(sum(greatest(coalesce(o.tax, 0), 0) * f.net_factor), 2), 0),
+    coalesce(round(sum(greatest(coalesce(o.processing_fee, 0), 0) * f.net_factor), 2), 0),
+    coalesce(round(sum(greatest(coalesce(o.shipping_fee, 0), 0) * f.net_factor), 2), 0),
     coalesce(round(sum(greatest(coalesce(o.cc_fee, 0), 0)) filter (where o.payment_mode = 'paid'), 2), 0)
     into v_card_total, v_tab_total, v_garment_gross, v_discount,
          v_tax, v_processing, v_shipping, v_cc_fees
     from public.webstore_orders o
+    -- A partial refund is not broken down by tax/fee, so the extras are scaled by the
+    -- order's net-of-refund share; the card total is already net, and this keeps the
+    -- invoice from billing tax or fees on money that was handed back. Stripe keeps its
+    -- fee on a refund, so cc_fee stays gross.
+    cross join lateral (
+      select case when coalesce(o.original_total, o.total, 0) > 0
+                  then greatest(coalesce(o.original_total, o.total, 0) - coalesce(o.refunded_amt, 0), 0)
+                       / coalesce(o.original_total, o.total, 0)
+                  else 1 end as net_factor
+    ) f
    where o.id = any(v_ids) and o.so_id = p_so_id;
 
   v_garment_net := round(greatest(v_garment_gross - v_discount, 0), 2);
-
-  -- The SO's money columns are derived here, never taken from the client.  Set on
-  -- every call so a retry after a partial failure still lands them.
-  update public.sales_orders
-     set _omg_processing = v_processing,
-         _omg_tax = v_tax,
-         _omg_shipping = v_shipping,
-         _omg_cc_fees = v_cc_fees
-   where id = p_so_id;
 
   select
     coalesce(jsonb_agg(jsonb_build_object(
@@ -164,16 +170,24 @@ begin
        where it.so_id = p_so_id and q.qty > 0
     ) li;
 
-  -- Cents-level drift only: a unit_sell averaged across sizes (or scaled by a
-  -- coupon) cannot always be multiplied back to the exact collected amount.  A
-  -- larger gap is a data problem to surface, not paper over, so leave it alone.
+  -- Cents-level drift only: a unit_sell scaled by a coupon (or averaged) cannot
+  -- always be multiplied back to the exact collected amount.  The cap scales with
+  -- the batch (0.1% of product money, at least $1) so a big coupon batch still
+  -- ties out; a larger gap (a partial refund, a data problem) is left visible and
+  -- returned as rounding_gap for the client to flag, never papered over.
+  -- Both extra lines carry _so_balance_adjustment so the SO↔invoice reconciler
+  -- treats them as billed money, not as product lines that vanished from the SO.
+  v_round_cap := greatest(1.00, round(v_garment_net * 0.001, 2));
   v_rounding := round(v_garment_net - v_items_total, 2);
-  if v_items_total > 0 and abs(v_rounding) >= 0.005 and abs(v_rounding) <= 1.00 then
+  if v_items_total > 0 and abs(v_rounding) >= 0.005 and abs(v_rounding) <= v_round_cap then
     v_line_items := v_line_items || jsonb_build_array(jsonb_build_object(
       'desc', 'Line-price rounding (ties product lines to the amount collected)',
       'qty', 1, 'rate', v_rounding, 'amount', v_rounding,
-      '_sku', '', '_name', 'Line-price rounding', '_color', ''));
+      '_sku', '', '_name', 'Line-price rounding', '_color', '', '_so_balance_adjustment', true));
     v_items_total := round(v_items_total + v_rounding, 2);
+  elsif abs(v_rounding) >= 0.005 then
+    v_rounding_gap := v_rounding;
+    v_rounding := 0;
   else
     v_rounding := 0;
   end if;
@@ -182,7 +196,7 @@ begin
     v_line_items := v_line_items || jsonb_build_array(jsonb_build_object(
       'desc', 'Online processing fee (charged at checkout)',
       'qty', 1, 'rate', v_processing, 'amount', v_processing,
-      '_sku', '', '_name', 'Online processing fee', '_color', ''));
+      '_sku', '', '_name', 'Online processing fee', '_color', '', '_so_balance_adjustment', true));
   end if;
 
   v_inv_total := round(v_items_total + v_processing + v_shipping + v_tax, 2);
@@ -210,6 +224,16 @@ begin
       into v_term_days from public.customers c where c.id = v_so.customer_id;
     v_term_days := coalesce(nullif(v_term_days, 0), 30);
     v_due_date := to_char(current_date + v_term_days, 'YYYY-MM-DD');
+
+    -- The SO's money columns are derived here, never taken from the client, and only
+    -- together with the invoice that bills them: an SO whose invoice was created by
+    -- the earlier product-only finalizer must not gain fees its invoice never billed.
+    update public.sales_orders
+       set _omg_processing = v_processing,
+           _omg_tax = v_tax,
+           _omg_shipping = v_shipping,
+           _omg_cc_fees = v_cc_fees
+     where id = p_so_id;
 
     -- tax is the amount the store collected (Stripe Tax / store rate per order),
     -- not a rate applied to the subtotal, so tax_rate stays 0 and the amount is
@@ -275,9 +299,14 @@ begin
     ) on conflict (id) do nothing;
   end if;
 
+  -- The SO update above bumps sales_orders._version; hand it back so the client
+  -- that just inserted the row does not see its own bump as a foreign edit.
+  select _version into v_so_version from public.sales_orders where id = p_so_id;
+
   return jsonb_build_object(
     'ok', true,
     'so_id', p_so_id,
+    'so_version', v_so_version,
     'linked_count', v_expected,
     'invoice_id', v_inv_id,
     'credit_id', v_credit_id,
@@ -289,7 +318,8 @@ begin
       'tax', v_tax,
       'shipping', v_shipping,
       'cc_fees', v_cc_fees,
-      'rounding', v_rounding
+      'rounding', v_rounding,
+      'rounding_gap', v_rounding_gap
     )
   );
 end;

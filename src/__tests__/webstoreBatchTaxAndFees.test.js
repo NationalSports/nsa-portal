@@ -42,13 +42,40 @@ describe('lib/webstoreSoMoney', () => {
   });
 });
 
+describe('shared order totals / margin (SO list, coach portal, dashboard) agree with the editor', () => {
+  const { calcOrderTotals, calcOrderMargin } = require('../pricing');
+  const so = { source: 'webstore', tax_exempt: true, tax_rate: 0, shipping_type: 'flat', shipping_value: 0,
+    items: [{ sku: 'NEA200', unit_sell: 23, nsa_cost: 10, sizes: { M: 2 } }],
+    _omg_processing: 5, _omg_tax: 4, _omg_shipping: 3, _omg_cc_fees: 2 };
+
+  test('grand total = product + processing + shipping charged + tax collected; tax never in rev', () => {
+    const t = calcOrderTotals(so, 0.0775);
+    expect(t.rev).toBe(51);        // 2 × $23 + $5 processing
+    expect(t.ship).toBe(3);
+    expect(t.tax).toBe(0);         // the SO's own rate stays 0 — checkout tax is not re-derived
+    expect(t.grand).toBe(58);      // 51 + 3 + 4 collected tax
+    const plain = calcOrderTotals({ ...so, source: 'portal' }, 0);
+    expect(plain.grand).toBe(46);  // no store money without the webstore source
+  });
+
+  test('margin counts processing revenue and Stripe cost, treats shipping charged as shipping revenue', () => {
+    const m = calcOrderMargin(so);
+    expect(m.rev).toBe(51);
+    expect(m.cost).toBe(22);       // 2 × $10 + $2 Stripe
+    expect(m.shipRev).toBe(3);
+    expect(m.margin).toBe(32);     // (51 + 3) − 22 — the $4 tax is not margin
+  });
+});
+
 describe('finalize_webstore_batch bills checkout money and writes it onto the SO', () => {
   const migration = read('supabase/migrations/20260914120000_webstore_batch_invoice_tax_and_fees.sql');
 
   test('money is derived from the locked orders, never the client', () => {
-    expect(migration).toContain("coalesce(round(sum(greatest(coalesce(o.tax, 0), 0)), 2), 0)");
-    expect(migration).toContain("coalesce(round(sum(greatest(coalesce(o.processing_fee, 0), 0)), 2), 0)");
-    expect(migration).toContain("coalesce(round(sum(greatest(coalesce(o.shipping_fee, 0), 0)), 2), 0)");
+    expect(migration).toContain("coalesce(round(sum(greatest(coalesce(o.tax, 0), 0) * f.net_factor), 2), 0)");
+    expect(migration).toContain("coalesce(round(sum(greatest(coalesce(o.processing_fee, 0), 0) * f.net_factor), 2), 0)");
+    expect(migration).toContain("coalesce(round(sum(greatest(coalesce(o.shipping_fee, 0), 0) * f.net_factor), 2), 0)");
+    // Extras scale by each order's net-of-refund share; the card total is already net.
+    expect(migration).toMatch(/greatest\(coalesce\(o\.original_total, o\.total, 0\) - coalesce\(o\.refunded_amt, 0\), 0\)\s+\/ coalesce\(o\.original_total, o\.total, 0\)/);
     expect(migration).toContain("coalesce(round(sum(greatest(coalesce(o.cc_fee, 0), 0)) filter (where o.payment_mode = 'paid'), 2), 0)");
     expect(migration).toMatch(/update public\.sales_orders\s+set _omg_processing = v_processing,\s+_omg_tax = v_tax,\s+_omg_shipping = v_shipping,\s+_omg_cc_fees = v_cc_fees\s+where id = p_so_id;/);
   });
@@ -65,7 +92,12 @@ describe('finalize_webstore_batch bills checkout money and writes it onto the SO
 
   test('cents-level line averaging drift is absorbed, larger gaps are left visible', () => {
     expect(migration).toContain('v_rounding := round(v_garment_net - v_items_total, 2);');
-    expect(migration).toContain('abs(v_rounding) >= 0.005 and abs(v_rounding) <= 1.00');
+    expect(migration).toContain('v_round_cap := greatest(1.00, round(v_garment_net * 0.001, 2));');
+    expect(migration).toContain('abs(v_rounding) >= 0.005 and abs(v_rounding) <= v_round_cap');
+    expect(migration).toContain('v_rounding_gap := v_rounding;');
+    expect(migration).toContain("'rounding_gap', v_rounding_gap");
+    // Fee and rounding lines are billed money, not SO product lines that went missing.
+    expect((migration.match(/'_so_balance_adjustment', true/g) || []).length).toBe(2);
   });
 
   test('the same locking, claim validation, grants and idempotency as the original finalizer', () => {
@@ -76,6 +108,11 @@ describe('finalize_webstore_batch bills checkout money and writes it onto the SO
     expect(migration).toContain('revoke all on function public.finalize_webstore_batch(text, uuid[]) from anon');
     expect(migration).toContain('grant execute on function public.finalize_webstore_batch(text, uuid[]) to authenticated');
     expect(migration).toContain("'store_money', jsonb_build_object(");
+    // The SO update lives with the invoice that bills the money, and its version bump is handed back.
+    const updAt = migration.indexOf('update public.sales_orders'), invAt = migration.indexOf('if v_inv_id is null then');
+    expect(updAt).toBeGreaterThan(invAt);
+    expect(migration).toContain('select _version into v_so_version from public.sales_orders where id = p_so_id;');
+    expect(migration).toContain("'so_version', v_so_version,");
   });
 });
 
@@ -87,11 +124,29 @@ describe('client side of the batch', () => {
   test('the SO opened after a batch carries the server-derived money', () => {
     expect(app).toContain('const _sm=finalized.store_money;');
     expect(app).toContain('_omg_processing:Number(_sm.processing)||0,_omg_tax:Number(_sm.tax)||0,_omg_shipping:Number(_sm.shipping)||0,_omg_cc_fees:Number(_sm.cc_fees)||0');
+    expect(app).toContain('if(Number(finalized.so_version)>0)_patch._version=Number(finalized.so_version);');
+    expect(app).toContain('const _gap=Number(_sm.rounding_gap)||0;');
   });
 
   test('SO lines are split per collected unit price so qty × rate is exact', () => {
     expect(webstores).toContain("const unitCollected = r2(collectedForLine(i) / q);");
-    expect(webstores).toContain("}) + '§$' + unitCollected.toFixed(2);");
+    expect(webstores).toContain("const key = baseKey + '§$' + unitCollected.toFixed(2);");
+    // …but every price-split line of one garment keeps the full size menu.
+    expect(webstores).toContain("available_sizes: [...(sizesByBaseKey[g._baseKey] || new Set(Object.keys(g.sizes)))]");
+  });
+
+  test('list totals, dashboard margin and Reports pipeline read the same money as the editors', () => {
+    const pricing = read('src/pricing.js');
+    expect(pricing).toContain("import { webstoreCheckoutMoney } from './lib/webstoreSoMoney';");
+    expect(pricing).toContain('return{rev,ship,tax,grand:rev+ship+tax+wm.tax};');
+    expect(pricing).toContain('rev+=wm.processing;cost+=wm.ccFees;');
+    expect(app).toContain('const _wm=webstoreCheckoutMoney(so);rev+=_wm.processing;cost+=_wm.ccFees;');
+  });
+
+  test('invoice page never recomputes a stored tax amount at a 0% rate, and never TaxCloud-files a batch invoice', () => {
+    const invoices = read('src/InvoicesPage.js');
+    expect(invoices).toContain('const emTax=em.taxTouched||!em.linesTouched||!(emRate>0)?safeNum(em.tax):emAutoTax;');
+    expect(invoices).toContain("inv.tax>0&&(sos.find(s=>s.id===inv.so_id)||{}).source!=='webstore'&&<button");
   });
 
   test('commissions count processing fee revenue against Stripe card-fee cost, and shipping charged at checkout', () => {
@@ -113,6 +168,9 @@ describe('classic and new order editors carry the identical webstore money logic
     expect(a).toEqual(b);
     expect(a.join('\n')).toContain('grand:rev+ship+priorShip+tax+storeTax');
     expect(a.join('\n')).toContain('margin:marginRev-cost');
+    // The SO↔invoice balance compares the collected tax too, so a later invoice on the
+    // SO never carries a negative tax line.
+    expect(a.filter((l) => l.includes('tax:totals.tax+totals.storeTax')).length).toBe(2);
   });
 
   test('print and email PDFs add the checkout rows and total in both editors', () => {

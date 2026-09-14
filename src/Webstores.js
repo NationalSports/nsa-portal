@@ -3825,15 +3825,16 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // from the money collected; a separate line per price makes every qty × rate exact,
       // so the SO, its print and the batch invoice tie to the cent.
       const unitCollected = r2(collectedForLine(i) / q);
-      const key = webstoreProductionKey({
+      const baseKey = webstoreProductionKey({
         sku: source.sku,
         color: sourceColor,
         vendorId: source.vendor_id,
         decorations: decosByKey[sourcePid] || decosByKey[source.sku] || [],
         personalize: personalize[sourcePid] || {},
         transferCodes: [...(productionTransfersByPid[sourcePid] || [])],
-      }) + '§$' + unitCollected.toFixed(2);
-      if (!byProduct[key]) byProduct[key] = { source_product_id: sourcePid, product_id: source.product_id, vendor_id: source.vendor_id, sku: source.sku, sizes: {}, numbers: {}, names: {}, collected: 0 };
+      });
+      const key = baseKey + '§$' + unitCollected.toFixed(2);
+      if (!byProduct[key]) byProduct[key] = { _baseKey: baseKey, source_product_id: sourcePid, product_id: source.product_id, vendor_id: source.vendor_id, sku: source.sku, sizes: {}, numbers: {}, names: {}, collected: 0 };
       const g = byProduct[key];
       const pdef = personalize[sourcePid] || {};
       g.sizes[sz] = (g.sizes[sz] || 0) + q;
@@ -3926,6 +3927,13 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // the two can never disagree. The rep still picks the decorator on the Deco PO.
     const outsideDeco = (sel.decoration_mode || 'in_house') === 'outsourced';
     const routing = outsideDeco ? { fulfillment: 'outside' } : {};
+    // Price-split lines of the same garment/treatment share one size menu, so a rep can
+    // still add an L to the line that only happened to carry the 2XL upcharge.
+    const sizesByBaseKey = {};
+    Object.values(byProduct).forEach((g) => {
+      const set = (sizesByBaseKey[g._baseKey] = sizesByBaseKey[g._baseKey] || new Set());
+      Object.keys(g.sizes).forEach((sz) => set.add(sz));
+    });
     const soItems = Object.values(byProduct).map((g) => {
       const sourcePid = g.source_product_id || g.product_id;
       const sourceInfo = pinfo[sourcePid] || {};
@@ -3999,7 +4007,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const unitSell = r2((g.collected || 0) / qtyTot * discRatio);
       return { sku: g.sku || info.sku || '', name: info.name || sourceInfo.name || g.sku || 'Item', brand: info.brand || sourceInfo.brand || '', color: sourceInfo.color || info.color || '',
         product_id: g.product_id || info.id || null, vendor_id: g.vendor_id || info.vendor_id || null, nsa_cost: info.nsa_cost || sourceInfo.nsa_cost || 0, retail_price: unitSell, unit_sell: unitSell,
-        sizes: g.sizes, available_sizes: Object.keys(g.sizes), no_deco: decorations.length === 0, decorations, pick_lines: [], po_lines: [] };
+        sizes: g.sizes, available_sizes: [...(sizesByBaseKey[g._baseKey] || new Set(Object.keys(g.sizes)))], no_deco: decorations.length === 0, decorations, pick_lines: [], po_lines: [] };
     });
 
     const units = soItems.reduce((a, i) => a + Object.values(i.sizes).reduce((b, v) => b + v, 0), 0);
