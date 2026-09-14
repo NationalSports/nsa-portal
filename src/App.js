@@ -6869,6 +6869,15 @@ export default function App(){
       console.error('[Webstore] atomic batch finalization failed:',finalizeErr||finalized);
       return null;
     }
+    // The server derives the checkout money (processing fee, sales tax, shipping charged,
+    // Stripe card fees) from the locked orders and writes it onto the SO row; carry it into
+    // local state so the editor opens with the same numbers without a refetch.
+    const _sm=finalized.store_money;
+    if(_sm&&typeof _sm==='object'){
+      const _patch={_omg_processing:Number(_sm.processing)||0,_omg_tax:Number(_sm.tax)||0,_omg_shipping:Number(_sm.shipping)||0,_omg_cc_fees:Number(_sm.cc_fees)||0};
+      Object.assign(newSO,_patch);
+      setSOs(prev=>prev.map(s=>s.id===id?{...s,..._patch}:s));
+    }
     // Jump the user straight into the new SO in the Sales Orders editor.
     setESO(newSO);setESOC(cust.find(c=>c.id===customer_id)||null);setPg('orders');
     nf('Created '+id+' from webstore — '+(items||[]).length+' line(s) · invoice '+(finalized.invoice_id||'recorded'));

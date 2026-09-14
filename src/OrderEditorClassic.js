@@ -1,4 +1,5 @@
 import { jobArtBadgeSt } from './lib/jobArtBadge';
+import { webstoreCheckoutMoney, webstoreDocMoneyRows } from './lib/webstoreSoMoney';
 import {useOrderCatalogResults} from './lib/orderCatalogSearch';
 import { poEligibleVendors } from './lib/vendorPoEligibility';
 import QuantityDraftInput from './QuantityDraftInput';
@@ -3607,7 +3608,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Sales tax collected at the OMG store is booked as NSA revenue (NSA remits
     // it). The SO itself stays tax_exempt (OMG already computed it), so we fold
     // the collected amount into revenue rather than re-deriving a tax line.
-    const omgTaxRev=safeNum(o._omg_tax||0);rev+=omgTaxRev;                  // collected tax = revenue
+    // WEBSTORE batches (source 'webstore', lib/webstoreSoMoney) book collected tax as a
+    // pass-through: it is on the SO total (storeTax → grand) but never in rev/margin — the
+    // state gets it, not NSA, and calcGP (commissions) already excludes it. Their shipping
+    // charged at checkout joins `ship` below. OMG keeps its historical booking.
+    const _wm=webstoreCheckoutMoney(o);
+    const omgTaxRev=_wm.isWebstore?0:safeNum(o._omg_tax||0);rev+=omgTaxRev; // OMG collected tax = revenue
+    const storeTax=_wm.tax;                                                   // webstore collected tax = pass-through
     const omgCostFees=safeNum(o._omg_omg_fees||0)+safeNum(o._omg_cc_fees||0);cost+=omgCostFees; // OMG + CC fees = cost
     const omgFee=omgCostFees; // back-compat alias used elsewhere in this component
     // OMG store fundraising — collected cash the club is paid back in Fundraiser Dollars
@@ -3618,7 +3625,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // from collected = product + fundraise (Webstores.js collectedForLine), so it's inside
     // `rev`/margin already — adding it again would double-count.
     const fundraiseRev=safeNum(o._omg_fundraise||0);
-    const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);const tax=rev*taxRate;
+    const ship=(o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0))+_wm.shipping;const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);const tax=rev*taxRate;
     // Prior shipping carried onto this order (a Manual Ship recorded against the customer when
     // they had no open order). Billed on top of the order's own shipping; not taxed.
     const priorShip=safeNum(o.pending_ship_applied?o.pending_ship_amount:0);
@@ -3638,7 +3645,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // on the one surface reps discount from (EST-2526 showed 43.7% on a true 40.9%; 365 of 366
     // open estimates quote shipping). A quote now reports product+deco margin; SOs are unchanged.
     const marginRev=rev+(isE?0:ship)+fundraiseRev;
-    return{rev,cost,ship,priorShip,tax,taxRate,omgFee,omgRevFee,omgTaxRev,omgCostFees,fundraiseRev,actualShipCost,inboundFreight,manualPoCost,grand:rev+ship+priorShip+tax,margin:marginRev-cost,pct:marginRev>0?((marginRev-cost)/marginRev*100):0}},[o,artQty,cust,costArtQty,outsourcedByItemCost]); // eslint-disable-line
+    return{rev,cost,ship,priorShip,tax,taxRate,omgFee,omgRevFee,omgTaxRev,omgCostFees,fundraiseRev,storeTax,isWebstoreSO:_wm.isWebstore,actualShipCost,inboundFreight,manualPoCost,grand:rev+ship+priorShip+tax+storeTax,margin:marginRev-cost,pct:marginRev>0?((marginRev-cost)/marginRev*100):0}},[o,artQty,cust,costArtQty,outsourcedByItemCost]); // eslint-disable-line
 
   // Promo totals — separate calc to not disturb existing totals
   const promoTotals=useMemo(()=>{
@@ -4710,7 +4717,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
         <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
           {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626',s:_costCombined?'🔗 combined':undefined},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},
-            ...(totals.omgFee>0?[{l:'OMG FEE',v:totals.omgFee,bg:'#fff7ed',c:'#9a3412',s:'in cost'}]:[]),
+            ...(totals.omgFee>0?[{l:totals.isWebstoreSO?'CARD FEES':'OMG FEE',v:totals.omgFee,bg:'#fff7ed',c:'#9a3412',s:'in cost'}]:[]),
+            ...(totals.isWebstoreSO&&totals.omgRevFee>0?[{l:'PROCESSING',v:totals.omgRevFee,bg:'#f0fdf4',c:'#166534',s:'in revenue'}]:[]),
+            ...(totals.storeTax>0?[{l:'SALES TAX',v:totals.storeTax,bg:'#fefce8',c:'#a16207',s:'collected · not margin'}]:[]),
             ...(totals.fundraiseRev>0?[{l:'FUNDRAISE',v:totals.fundraiseRev,bg:'#f0fdf4',c:'#166534',s:'revenue'}]:[]),
             ...(totals.ship>0||(totals.actualShipCost+totals.inboundFreight)>0?[{l:'SHIP',v:(totals.actualShipCost+totals.inboundFreight)>0?(totals.actualShipCost+totals.inboundFreight):totals.ship,bg:'#f0f9ff',c:'#0369a1',s:(totals.actualShipCost+totals.inboundFreight)>0?'actual':undefined}]:[]),
             ...(totals.tax>0?[{l:'TAX',v:totals.tax,bg:'#fefce8',c:'#a16207',s:(totals.taxRate*100).toFixed(3)+'%'}]:[]),
@@ -4841,7 +4850,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const _pdfReducedSub=Math.max(0,subTotal-_pdfCreditOnSub);
               const taxAmt=_pdfCredit>0?_pdfReducedSub*taxRate:subTotal*taxRate;
               const _pdfCreditApplied=Math.min(_pdfCredit,subTotal+shipAmt+priorShipAmt+taxAmt);
-              const total=subTotal+shipAmt+priorShipAmt+taxAmt-_pdfCreditApplied;
+              // Webstore batch: shipping / processing fee / sales tax collected at checkout.
+              const _wmDoc=webstoreDocMoneyRows(o,_$);
+              const total=subTotal+shipAmt+priorShipAmt+taxAmt+_wmDoc.extra-_pdfCreditApplied;
               // Bill To honors the order's selected bill-to (an alt billing address such as a
               // district office); with none selected this is the customer default it always was.
               const ddBillSel=resolveOrderBillTo(o,cust,allCustomers);
@@ -4870,6 +4881,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     ...(shipAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$(shipAmt),style:'text-align:right;border:none'}]}]:[]),
                     ...(priorShipAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Prior Shipping</strong>',style:'text-align:right;border:none'},{value:_$(priorShipAmt),style:'text-align:right;border:none'}]}]:[]),
                     ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax ('+(taxRate*100).toFixed(3)+'%)</strong>',style:'text-align:right;border:none'},{value:_$(taxAmt),style:'text-align:right;border:none'}]}]:[]),
+                    ..._wmDoc.rows,
                     ...(_pdfCreditApplied>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-'+_$(_pdfCreditApplied)+'</strong>',style:'text-align:right;border:none'}]}]:[]),
                     {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(total)+'</strong>',style:'text-align:right'}]},
                   ]}],
@@ -7633,7 +7645,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const _omgFeeOmg=safeNum(o._omg_omg_fees||0);
         const _omgFeeCc=safeNum(o._omg_cc_fees||0);
         if(_omgFeeOmg>0){costLines.push({category:'OMG Fees',sku:'—',name:'OMG Fees',vendor:'OrderMyGear',qty:1,expected:_omgFeeOmg,actual:_omgFeeOmg,poCount:1,poIds:'',allReceived:true});}
-        if(_omgFeeCc>0){costLines.push({category:'OMG Fees',sku:'—',name:'Credit Card Fees',vendor:'OrderMyGear',qty:1,expected:_omgFeeCc,actual:_omgFeeCc,poCount:1,poIds:'',allReceived:true});}
+        if(_omgFeeCc>0){const _webCc=o.source==='webstore';costLines.push({category:_webCc?'Card Fees':'OMG Fees',sku:'—',name:'Credit Card Fees',vendor:_webCc?'Stripe':'OrderMyGear',qty:1,expected:_omgFeeCc,actual:_omgFeeCc,poCount:1,poIds:'',allReceived:true});}
         // Totals computed AFTER shipping lines added
         const totalExpected=costLines.reduce((a,l)=>a+(l.isShippingSubtotal?0:l.expected),0)+quotedShip;
         const totalActual=costLines.reduce((a,l)=>a+(l.isShippingSubtotal?0:l.actual),0);
@@ -7888,7 +7900,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const shipAmt=o.shipping_type==='pct'?subTotal*(o.shipping_value||0)/100:(o.shipping_value||0);
       const _ec=o.credit_applied?safeNum(o.credit_amount):0;const _ecSub=Math.min(_ec,subTotal);const _ecRed=Math.max(0,subTotal-_ecSub);
       const taxAmt=_ec>0?_ecRed*taxRate:subTotal*taxRate;const _ecApp=Math.min(_ec,subTotal+shipAmt+taxAmt);
-      const total=subTotal+shipAmt+taxAmt-_ecApp;
+      // Webstore batch: shipping / processing fee / sales tax collected at checkout.
+      const _wmDoc=webstoreDocMoneyRows(o,_$);
+      const total=subTotal+shipAmt+taxAmt+_wmDoc.extra-_ecApp;
       // Same bill-to override as the print/download builder — the emailed PDF must not
       // bill to the default address when the order points somewhere else.
       const billSel=resolveOrderBillTo(o,cust,allCustomers);
@@ -7904,6 +7918,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$(subTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
           ...(shipAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$(shipAmt),style:'text-align:right;border:none'}]}]:[]),
           ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax ('+(taxRate*100).toFixed(3)+'%)</strong>',style:'text-align:right;border:none'},{value:_$(taxAmt),style:'text-align:right;border:none'}]}]:[]),
+          ..._wmDoc.rows,
           ...(_ecApp>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-'+_$(_ecApp)+'</strong>',style:'text-align:right;border:none'}]}]:[]),
           {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(total)+'</strong>',style:'text-align:right'}]}]}],
         footer:isE?'Prices subject to change. '+_ci.depositTerms:_ci.terms,companyInfo:_ci});
