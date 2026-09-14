@@ -43,17 +43,29 @@ describe('reconcile panel layout', () => {
     expect(footer.style.position).toBe('sticky');
     expect(footer.style.bottom).toBe('0px');
     // The save action lives in that pinned footer, not loose in the scrolling body.
-    expect(footer.textContent).toMatch(/Save & re-check file/);
+    expect(footer.textContent).toMatch(/re-check file/i);
   });
 });
 
 describe('accepting the change', () => {
-  test('offers a save action, disabled until something has actually changed', () => {
-    const { rerender } = render(<FulfillmentReconcileModal {...props({ dirty: false })} />);
-    const btn = () => screen.getByRole('button', { name: /Save & re-check file/i });
-    expect(btn().disabled).toBe(true);
-    rerender(<FulfillmentReconcileModal {...props({ dirty: true })} />);
-    expect(btn().disabled).toBe(false);
+  // Re-checking is read-only. Gating it on unsaved changes stranded a rep who had
+  // already fixed the real problem outside the panel and just wanted to know whether
+  // the file passes now: "still no way to recheck... its staying greyed out".
+  test('always lets the rep re-check, even with nothing changed here', () => {
+    render(<FulfillmentReconcileModal {...props({ dirty: false })} />);
+    const btn = screen.getByRole('button', { name: /Re-check file/i });
+    expect(btn.disabled).toBe(false);
+  });
+
+  test('offers to save as well once this order has unsaved changes', () => {
+    render(<FulfillmentReconcileModal {...props({ dirty: true })} />);
+    const btn = screen.getByRole('button', { name: /Save & re-check file/i });
+    expect(btn.disabled).toBe(false);
+  });
+
+  test('points a rep who fixed something elsewhere at the re-check', () => {
+    render(<FulfillmentReconcileModal {...props({ dirty: false })} />);
+    expect(screen.getByText(/fixed something elsewhere/i)).toBeTruthy();
   });
 
   test('saving runs the caller back through the report', () => {
@@ -63,9 +75,16 @@ describe('accepting the change', () => {
     expect(onSaveRecheck).toHaveBeenCalledTimes(1);
   });
 
-  test('shows progress and blocks double-submits while saving', () => {
+  test('and runs it from a clean order too', () => {
+    const onSaveRecheck = jest.fn();
+    render(<FulfillmentReconcileModal {...props({ dirty: false, onSaveRecheck })} />);
+    fireEvent.click(screen.getByRole('button', { name: /Re-check file/i }));
+    expect(onSaveRecheck).toHaveBeenCalledTimes(1);
+  });
+
+  test('shows progress and blocks double-submits while working', () => {
     render(<FulfillmentReconcileModal {...props({ dirty: true, saving: true })} />);
-    expect(screen.getByRole('button', { name: /Saving/i }).disabled).toBe(true);
+    expect(screen.getByRole('button', { name: /Working/i }).disabled).toBe(true);
   });
 
   test('applying a fix hands up the edit and warns the figures are now historical', () => {

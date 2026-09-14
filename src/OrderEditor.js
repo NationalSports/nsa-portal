@@ -2504,10 +2504,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // it genuinely passes.
   const _reconcileSaveRecheck=async()=>{
     const fmt=(reconcile&&reconcile.format)||'pdf';
-    const saved={...o,updated_at:new Date().toLocaleString()};
     setReconcile(null);
-    await saveSONow(saved,'Reconcile',null);
-    await downloadSoPlayerReport({so:saved,soItems:safeItems(saved),supabase,nf,onBlocked:setReconcile,format:fmt,customer:cust});
+    // Re-check alone is read-only, so a clean order skips the save entirely and just
+    // re-runs — that is the whole point when the fix was made somewhere else.
+    let current=o;
+    if(dirty){current={...o,updated_at:new Date().toLocaleString()};await saveSONow(current,'Reconcile',null)}
+    await downloadSoPlayerReport({so:current,soItems:safeItems(current),supabase,nf,onBlocked:setReconcile,format:fmt,customer:cust});
   };
   // Returns _deletedItemKeys with `it`'s OLD sku|color identity appended (deduped) — the same
   // session tombstone rmI stamps on a deletion, reused by every in-place re-key path (Change SKU

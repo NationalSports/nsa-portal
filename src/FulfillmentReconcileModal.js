@@ -186,13 +186,16 @@ export default function FulfillmentReconcileModal({ data, onClose, onApply, onPi
           <div style={{ fontSize: 11.5, color: '#64748b', maxWidth: 520 }}>
             {dirty
               ? <>This order has <b>unsaved</b> changes. Saving writes them and runs the file again — nothing reaches Silver Screen unless it passes.</>
-              : <>Nothing changed yet. Applying a fix above edits this order; it is not saved until you say so.</>}
+              : <>Nothing changed here yet. If you fixed something elsewhere — the deco PO, or the job on their portal — re-check to see where it stands now.</>}
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-sm" onClick={onClose} disabled={saving} style={{ fontWeight: 700 }}>Close</button>
-            <button className="btn btn-sm" onClick={onSaveRecheck} disabled={!dirty || saving}
-              style={{ fontWeight: 800, background: dirty && !saving ? '#2563eb' : '#cbd5e1', color: '#fff', border: 'none' }}>
-              {saving ? 'Saving…' : 'Save & re-check file'}
+            {/* Re-checking just re-runs the report, so it is always available. Gating it
+                on unsaved changes stranded reps who had fixed the real problem outside
+                this panel and only wanted to find out whether the file passes now. */}
+            <button className="btn btn-sm" onClick={onSaveRecheck} disabled={saving}
+              style={{ fontWeight: 800, background: saving ? '#cbd5e1' : '#2563eb', color: '#fff', border: 'none' }}>
+              {saving ? 'Working…' : dirty ? 'Save & re-check file' : 'Re-check file'}
             </button>
           </div>
         </div>
