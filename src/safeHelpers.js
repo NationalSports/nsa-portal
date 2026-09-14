@@ -92,6 +92,25 @@ export const jobItemDecosOfKind = (gi, it, kind) => {
   return safeDecos(it).filter((d, di) => d?.kind === kind && (!dis || dis.includes(di)));
 };
 
+/**
+ * The RESOLVED art decorations of a SO line that THIS job runs, each tagged with the
+ * positional slot index (`ai`) its mockup was keyed under. Mockup slot keys are positional
+ * (mockSlotKeys), so `ai` is assigned across the line's art decorations BEFORE the job
+ * filter — a job running only the line's SECOND design must still read that design's slot
+ * (`|<color_way_id>` / `|d1`) and not the first design's bare key.
+ *
+ * Decorations with no art file yet (`__tbd`) are dropped before numbering, matching how the
+ * order editor's job card reads these slots. Returns [{ d, di, ai }] in line order.
+ */
+export const jobItemArtSlots = (gi, it) => {
+  const dis = jobItemDecoIdxs(gi);
+  return safeDecos(it)
+    .map((d, di) => ({ d, di }))
+    .filter(({ d }) => d?.kind === 'art' && d.art_file_id && d.art_file_id !== '__tbd')
+    .map((x, ai) => ({ ...x, ai }))
+    .filter(({ di }) => !dis || dis.includes(di));
+};
+
 // ── Job roster blocks ──
 // The "numbers to print" roll-up for a job. A job can carry several garment lines, and
 // their rosters are NOT interchangeable. Garments holding the SAME list are one team

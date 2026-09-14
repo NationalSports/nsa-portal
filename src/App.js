@@ -34,7 +34,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
+import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { stampEstimateDraftLineIds } from './lib/orderLineIdentity';
 import { searchSalesOrders } from './lib/searchSalesOrders';
@@ -1056,11 +1056,16 @@ const _cloudinaryPdfThumb=u=>{if(!u||!u.includes('cloudinary.com'))return null;
   return t.replace('/image/upload/','/image/upload/pg_1,f_png/')};
 // ── Production job mockup scoping (prod-board job modal + lightbox + job-sheet PDF) ──
 // One production job can carry multiple designs: each garment line references its own
-// art via its decorations. Every art file the job touches:
+// art via its decorations. Every art file the job touches — scoped to the decorations THIS
+// job runs (jobItemDecosOfKind), not every art decoration sitting on the line. A line shared
+// by two jobs (a second design on another position) otherwise dragged the sibling job's art
+// onto this sheet: SO-2121/JOB-2121-03 printed the Soccer Creed mockup and its .ai in
+// Production Files next to the FPU logo it actually runs. The job's own primary art
+// (_art_ids / art_file_id) is always kept, so numbers/names mocks still resolve.
 const _prodJobArtFiles=(j,so)=>{const ids=new Set();
   (j._art_ids||[j.art_file_id].filter(Boolean)).forEach(id=>ids.add(id));
   (j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;
-    safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')ids.add(d.art_file_id)});
+    jobItemDecosOfKind(gi,it,'art').forEach(d=>{if(d.art_file_id&&d.art_file_id!=='__tbd')ids.add(d.art_file_id)});
   });
   return[...ids].map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
 };
@@ -1103,9 +1108,14 @@ const _prodJobItemMocks=(artFiles,so,gi)=>{
   const out=[];const seen=new Set();
   const push=f=>{if(!f)return;const u=typeof f==='string'?f:(f?.url||'');if(u&&seen.has(u))return;if(u)seen.add(u);out.push(f)};
   const it=safeItems(so)[gi.item_idx];
-  const decos=it?safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];
+  // Only the art decorations THIS job runs. Two jobs can share one garment line (a second
+  // design on another position), and the sibling's mockup must not print on this sheet —
+  // JOB-2121-03 showed the Soccer Creed tee next to the FPU logo it actually runs.
+  // jobItemArtSlots keeps each decoration's positional slot index, so a scoped decoration
+  // still reads its own slot key — same rule the order editor's job card uses.
+  const decos=it?jobItemArtSlots(gi,it):[];
   if(decos.length>0){
-    decos.forEach((d,i)=>{
+    decos.forEach(({d,ai:i})=>{
       const a=artFiles.find(x=>x?.id===d.art_file_id);if(!a)return;
       const m=a.item_mockups||{};
       const disc=i===0?'':(d.color_way_id||('d'+i));
