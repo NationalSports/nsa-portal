@@ -191,7 +191,8 @@ describe('blocked Silver Screen download', () => {
     expect(html).toContain('Silver Screen job');
     // Customers and the SO agree here (3 = 3), so the job is named as the stale side.
     expect(html).toContain('every row agrees');
-    expect(html).toMatch(/Silver Screen job was submitted for 9/);
+    // The guidance names the job itself when the deco PO carries its id.
+    expect(html).toMatch(/job #58505 was submitted for 9/);
     expect(html).toContain('How to match them up');
   });
 

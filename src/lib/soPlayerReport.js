@@ -743,14 +743,21 @@ export function buildVerifyDetail({ lines = [], orderById = {} } = {}) {
 }
 
 // Which pair of counts actually disagrees, in the order a rep would fix them.
-function matchupGuidance({ matchup, verifyDetail, jobUnits }) {
+export function matchupGuidance({ matchup, verifyDetail = [], jobUnits = null, jobId = '' } = {}) {
   const steps = [];
   if (matchup.diffRows.length) {
     const over = matchup.reportUnits - matchup.soUnits;
     steps.push(`What this file would carry and what the sales order lists disagree by ${over > 0 ? '+' : ''}${over} unit${Math.abs(over) === 1 ? '' : 's'}. The highlighted rows below are the ones that differ — for each, either correct the size/quantity on the sales order, or fix the customer order. The "Where" column names the store order and player to open.`);
   }
   if (jobUnits != null && jobUnits !== matchup.reportUnits && !matchup.diffRows.length) {
-    steps.push(`The orders and the sales order agree at ${matchup.reportUnits} units, but the Silver Screen job was submitted for ${jobUnits}. The job is the stale side — update the quantity on the Silver Screen deco PO (or re-send the job) so it reads ${matchup.reportUnits}.`);
+    const job = jobId ? `Silver Screen's job #${jobId}` : 'The Silver Screen job';
+    const short = jobUnits < matchup.reportUnits;
+    // Nothing in this app can fix this one, and saying "update the quantity" invites
+    // the rep to change our number while the decorator still has the old count — the
+    // exact mismatch this audit exists to catch. Both real steps, in order.
+    steps.push(`${job} was submitted for ${jobUnits} unit${jobUnits === 1 ? '' : 's'} and this order now needs ${matchup.reportUnits}. Customers and the sales order already agree, so nothing on the item grid will clear this.`);
+    if (short) steps.push(`Get the missing ${matchup.reportUnits - jobUnits} unit${matchup.reportUnits - jobUnits === 1 ? '' : 's'} onto their job first — add ${matchup.reportUnits - jobUnits === 1 ? 'it' : 'them'} to ${jobId ? `job #${jobId}` : 'the job'} on the Silver Screen portal, or use "↻ Unlink" on the deco PO, delete the old draft on their side, and send again. Until Silver Screen actually has ${matchup.reportUnits}, the file would ship more rows than they have garments for.`);
+    steps.push(`Then open the deco PO and use its "Sync to ${matchup.reportUnits} units" button so this order records what Silver Screen holds. Re-sending a job does not update that number on its own, so this step is needed either way.`);
   } else if (jobUnits != null && jobUnits !== matchup.soUnits && matchup.diffRows.length) {
     steps.push(`The Silver Screen job was submitted for ${jobUnits} units, against ${matchup.soUnits} now on the sales order. Once the rows above agree, re-check the job quantity too.`);
   }
@@ -774,10 +781,10 @@ function openHtml(html) {
   } catch (e) { console.warn('Reconciliation popup failed to open', e); return false; }
 }
 
-export function renderFulfillmentReconciliation({ so = {}, storeName = '', lines = [], soItems = [], orderById = {}, issues = [], label = 'Fulfillment file', jobUnits = null } = {}) {
+export function renderFulfillmentReconciliation({ so = {}, storeName = '', lines = [], soItems = [], orderById = {}, issues = [], label = 'Fulfillment file', jobUnits = null, jobId = '' } = {}) {
   const matchup = buildFulfillmentMatchup({ lines, soItems, orderById });
   const verifyDetail = buildVerifyDetail({ lines, orderById });
-  const steps = matchupGuidance({ matchup, verifyDetail, jobUnits });
+  const steps = matchupGuidance({ matchup, verifyDetail, jobUnits, jobId });
   const chip = (n, l, warn) => `<div class="chip${warn ? ' bad' : ''}"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`;
   const delta = (d) => (d === 0 ? '<span class="ok">—</span>' : `<span class="bad">${d > 0 ? '+' : ''}${d}</span>`);
   const row = (r) => `<tr${r.delta ? ' class="warnrow"' : ''}>
@@ -930,6 +937,8 @@ export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format
         try {
           onBlocked({
             so, storeName: ws.name || '', soItems, orderById, lines, issues: blocking, label, jobUnits, format,
+            jobId: (silverScreenDpo(so) || {})._silverscreen_job_id || '',
+            jobUrl: (silverScreenDpo(so) || {})._silverscreen_job_url || '',
             matchup: buildFulfillmentMatchup({ lines, soItems, orderById }),
             verifyDetail: buildVerifyDetail({ lines, orderById }),
           });
@@ -947,6 +956,7 @@ export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format
       try {
         ({ opened } = renderFulfillmentReconciliation({
           so, storeName: ws.name || '', lines, soItems, orderById, issues: blocking, label, jobUnits,
+          jobId: (silverScreenDpo(so) || {})._silverscreen_job_id || '',
         }));
       } catch (e) { console.warn('Reconciliation view failed to render', e); opened = false; }
       toast(opened

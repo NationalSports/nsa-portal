@@ -83,3 +83,64 @@ describe('accepting the change', () => {
     expect(screen.getAllByText(/1010471 · Emily Colonnello/).length).toBeGreaterThan(0);
   });
 });
+
+// The live follow-up on SO-2021: the rep applied the suggested fix, so customers and
+// the sales order now agree at 43 — but the Silver Screen job was submitted for 42
+// and the file is still blocked. There is nothing left to change on the item grid,
+// and the panel used to go completely silent about what to do next.
+describe('when the sales order is right but the Silver Screen job is stale', () => {
+  const soItemsOk = [{ sku: 'AT203', name: 'Hood', color: 'Red', sizes: { S: 1, XL: 1 } }];
+  const linesOk = [
+    { order_id: 'o1', sku: 'AT203', name: 'Hood', color: 'Red', size: 'S', qty: 1, player_name: 'Alexandra Green' },
+    { order_id: 'o2', sku: 'AT203', name: 'Hood', color: 'Red', size: 'XL', qty: 1, player_name: 'Emily Colonnello' },
+  ];
+  const orders = { o1: { id: 'o1', order_number: 1010509 }, o2: { id: 'o2', order_number: 1010471 } };
+  const staleJob = () => ({
+    so: { id: 'SO-2021' }, storeName: 'St. Francis Cross Country', label: 'Silver Screen file', format: 'product',
+    issues: ['SO-2021: 2 active customer units do not match 1 Silver Screen job units'],
+    soItems: soItemsOk, orderById: orders, jobUnits: 1, verifyDetail: [],
+    matchup: buildFulfillmentMatchup({ lines: linesOk, soItems: soItemsOk, orderById: orders }),
+  });
+
+  test('says which side is stale and what to do about it', () => {
+    render(<FulfillmentReconcileModal {...props({ data: staleJob() })} />);
+    expect(screen.getAllByText(/How to match them up/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Silver Screen job was submitted for 1/i)).toBeTruthy();
+    // The order that matters: the garment has to reach Silver Screen BEFORE the
+    // number here is changed, or the file ships more rows than they have to print.
+    expect(screen.getByText(/onto their job first/i)).toBeTruthy();
+    expect(screen.getByText(/Re-sending a job does not update that number on its own/i)).toBeTruthy();
+  });
+
+  test('does not claim the leftover issue is "not a unit-count problem"', () => {
+    render(<FulfillmentReconcileModal {...props({ data: staleJob() })} />);
+    expect(screen.getByText(/no quantity here left to change/i)).toBeTruthy();
+    expect(screen.queryByText(/not a unit-count problem/i)).toBeNull();
+    // ...and it points at the section that does explain it.
+    expect(screen.getAllByText(/How to match them up/i).length).toBeGreaterThan(1);
+  });
+
+  test('offers no sales-order fixes, because there is nothing there left to fix', () => {
+    render(<FulfillmentReconcileModal {...props({ data: staleJob() })} />);
+    expect(screen.getByText(/Suggested fixes \(0\)/)).toBeTruthy();
+  });
+
+  test('never offers a one-click way to just make the block go away', () => {
+    // Syncing the deco PO quantity on its own would clear the audit while the
+    // decorator still holds the old count. That is the mismatch this whole check
+    // exists to catch, so the panel explains it and offers no button for it.
+    render(<FulfillmentReconcileModal {...props({ data: staleJob() })} />);
+    const labels = screen.getAllByRole('button').map((b) => b.textContent);
+    expect(labels.some((l) => /sync/i.test(l))).toBe(false);
+    expect(labels.some((l) => /job/i.test(l))).toBe(false);
+  });
+
+  test('links straight to the job on their portal when we know it', () => {
+    const d = { ...staleJob(), jobId: 58505, jobUrl: 'https://example.invalid/orders/58505' };
+    render(<FulfillmentReconcileModal {...props({ data: d })} />);
+    const link = screen.getByRole('link', { name: /Open job #58505/i });
+    expect(link.getAttribute('href')).toBe('https://example.invalid/orders/58505');
+    // Named in the guidance step as well as the link.
+    expect(screen.getAllByText(/job #58505 on the Silver Screen portal/i).length).toBeGreaterThan(1);
+  });
+});

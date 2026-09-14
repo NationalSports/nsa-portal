@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { suggestSoFixes, rematchOptions, isBulkSafe } from './lib/fulfillmentReconcile';
+import { matchupGuidance } from './lib/soPlayerReport';
 
 // The panel a rep lands on when a Silver Screen file or player report is blocked.
 //
@@ -34,6 +35,14 @@ export default function FulfillmentReconcileModal({ data, onClose, onApply, onPi
   const soItems = data?.soItems || [];
   const matchup = data?.matchup;
   const fixes = useMemo(() => suggestSoFixes({ matchup, soItems }), [matchup, soItems]);
+  // Which pair of counts actually disagrees, in the order a rep would fix them. Not
+  // everything that blocks a file is fixable by changing a quantity on the sales
+  // order — a job already submitted to Silver Screen for fewer units is the obvious
+  // case, and without this the panel just goes quiet on it.
+  const steps = useMemo(
+    () => matchupGuidance({ matchup, verifyDetail: data?.verifyDetail || [], jobUnits: data?.jobUnits ?? null, jobId: data?.jobId || '' }),
+    [matchup, data],
+  );
   if (!data) return null;
 
   const bulk = fixes.filter(isBulkSafe);
@@ -77,13 +86,28 @@ export default function FulfillmentReconcileModal({ data, onClose, onApply, onPi
           <ul style={{ margin: '4px 0', paddingLeft: 18 }}>{(data.issues || []).map((i, n) => <li key={n}>{i}</li>)}</ul>
         </div>
 
+        {!!steps.length && <>
+          <H>How to match them up</H>
+          <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '8px 14px', fontSize: 12.5, lineHeight: 1.6 }}>
+            <ol style={{ margin: '4px 0', paddingLeft: 18 }}>{steps.map((t, n) => <li key={n} style={{ margin: '6px 0' }}>{t}</li>)}</ol>
+            {!!data.jobUrl && <div style={{ marginTop: 8 }}>
+              <a href={data.jobUrl} target="_blank" rel="noreferrer" style={{ fontWeight: 700 }}>
+                Open job {data.jobId ? `#${data.jobId}` : ''} on the Silver Screen portal ↗
+              </a>
+            </div>}
+          </div>
+        </>}
+
         <H right={bulk.length > 1 && (
           <button className="btn btn-sm" style={{ background: '#2563eb', color: '#fff', fontWeight: 700 }}
             onClick={() => apply(bulk.filter((f) => !applied.includes(key(f))))}>
             Apply all {bulk.filter((f) => !applied.includes(key(f))).length} additions
           </button>
         )}>Suggested fixes ({fixes.length})</H>
-        {!fixes.length && <div style={{ fontSize: 12.5, color: '#64748b' }}>Every item and size on the sales order already matches what customers ordered. Anything left in the list above is not a unit-count problem.</div>}
+        {!fixes.length && <div style={{ fontSize: 12.5, color: '#64748b' }}>
+          Every item and size on the sales order already matches what customers ordered, so there is no quantity here left to change.
+          {steps.length ? ' What is still blocking the file is above, under "How to match them up" — it is not something this order\u2019s item grid can fix.' : ''}
+        </div>}
         {fixes.map((f, n) => {
           const done = applied.includes(key(f));
           const actionable = f.itemIndex != null;
