@@ -3,7 +3,7 @@
 import {
   claimIsStale, lineSatisfied, lineOnOrder, orderProgress, sortLinesForBag,
   playerHeader, shortSummary, nextOrderPick, batchItemTotals, sortOrders, dominantSize, orderInDeco, CLAIM_STALE_MS,
-  styleNumber, garmentName, itemDisplay,
+  styleNumber, garmentName, itemDisplay, logoText,
 } from '../baggingstation/bagLogic';
 
 const NOW = Date.parse('2026-08-12T12:00:00Z');
@@ -245,5 +245,50 @@ describe('itemDisplay — head/desc, the two lines the label and the screen shar
     const d = itemDisplay({ sku: '1382622 (GREY 011) - 5', color: 'Mod Gray (011)', name: 'Under Armour Mens Ua Launch Unlined 7" Shorts - Grey' });
     expect(d.head).toBe('Under Armour Mens Ua Launch Unlined 7" Shorts - Grey');
     expect(d.desc).toBe('Mod Gray (011)');
+  });
+});
+
+describe('logoText — which logo, and where it goes', () => {
+  test('reads the label and the placement the store recorded', () => {
+    expect(logoText({ _logo: { label: 'Cougar Head', placement: 'full_front' } }))
+      .toBe('Cougar Head · full front');
+    expect(logoText({ _logo: { label: 'Academy', placement: '' } })).toBe('Academy');
+    expect(logoText({})).toBe('');
+  });
+
+  test('itemDisplay carries the logo into the line every surface prints', () => {
+    const d = itemDisplay({
+      sku: 'HR8473', color: 'Black', name: 'Adidas Fleece Hood',
+      _logo: { label: 'Cougars Football', placement: 'full_front' },
+    });
+    expect(d.desc).toBe('Adidas Fleece Hood · Black · Cougars Football · full front');
+  });
+});
+
+describe('batchItemTotals — two logos are two stacks on the table', () => {
+  const line = (pid, logo, size) => ({
+    id: pid + size, sku: 'HR8473', product_id: pid, name: 'Adidas Fleece Hood', color: 'Black',
+    size, qty: 2, image_url: 'https://art/' + logo + '.png', _image_kind: 'logo',
+    _logo: { label: logo, placement: 'full_front' },
+  });
+
+  test('the same sku and color in two logos never merge into one row', () => {
+    const { rows } = batchItemTotals([{ webstore_order_items: [
+      line('smb-HOOD-A', 'Cougar Head', 'M'),
+      line('smb-HOOD-B', 'Cougars Football', 'M'),
+    ] }]);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.logo).sort())
+      .toEqual(['Cougar Head · full front', 'Cougars Football · full front']);
+    expect(rows[0].image).not.toBe(rows[1].image);
+  });
+
+  test('the same logo in two sizes is still one row', () => {
+    const { rows } = batchItemTotals([{ webstore_order_items: [
+      line('smb-HOOD-A', 'Cougar Head', 'M'),
+      line('smb-HOOD-A', 'Cougar Head', 'L'),
+    ] }]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].sizes.size).toBe(2);
   });
 });

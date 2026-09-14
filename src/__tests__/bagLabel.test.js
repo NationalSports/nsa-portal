@@ -88,3 +88,15 @@ test('no trailing blank page — breaks go BETWEEN pages, not after the last one
   expect(html).not.toContain('page-break-after: always');
   expect(html).toContain('.page + .page { break-before: page; page-break-before: always; }');
 });
+
+test('the printed label names the logo — two black hoods are not one bag', () => {
+  const html = buildBagLabelHtml({
+    order,
+    items: [{ id: 'l1', sku: 'HR8473', color: 'Black', size: 'M', qty: 1,
+      name: 'Adidas Fleece Hood',
+      _logo: { label: 'Cougars Football', placement: 'full_front' } }],
+    store, origin: '',
+  });
+  expect(html).toContain('1× HR8473');
+  expect(html).toContain('Adidas Fleece Hood · Black · Cougars Football · full front');
+});

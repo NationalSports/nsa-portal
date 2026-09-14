@@ -174,6 +174,17 @@ export function garmentName(name, sku, color) {
   return s || original;
 }
 
+// The logo this line carries, as text. Native team stores don't composite a
+// mockup — they carry the store's artwork and where it goes — and this is the
+// only thing separating two otherwise identical garments ("Cougar Head" and
+// "Cougars Football" on the same black hood). Server-resolved into _logo by
+// netlify/functions/bagging-api.js.
+export function logoText(item) {
+  const l = item && item._logo;
+  if (!l) return '';
+  return [l.label, String(l.placement || '').replace(/_/g, ' ').trim()].filter(Boolean).join(' · ');
+}
+
 // A style number a packer can read back off a bag: no whitespace, catalog length.
 const CLEAN_STYLE = /^[A-Za-z0-9][A-Za-z0-9./-]{0,19}$/;
 
@@ -193,8 +204,9 @@ export function itemDisplay(item) {
   // it IS one; a sku the storefront left as free text ("1382622 (GREY 011) - 5")
   // reads worse than the garment's own name, so the name leads instead.
   const head = (CLEAN_STYLE.test(style) ? style : '') || garment || sku || 'Item';
-  const desc = [garment === head ? '' : garment, color].filter(Boolean).join(' · ');
-  return { style, garment, color, head, desc, text: [head, desc].filter(Boolean).join(' · ') };
+  const logo = logoText(i);
+  const desc = [garment === head ? '' : garment, color, logo].filter(Boolean).join(' · ');
+  return { style, garment, color, logo, head, desc, text: [head, desc].filter(Boolean).join(' · ') };
 }
 
 // Short lines for the label warning block + resolve list rows.
@@ -223,10 +235,17 @@ export function batchItemTotals(orders) {
       if ((i.line_status || '') === 'cancelled' || i.is_bundle_parent) continue;
       const qty = Number(i.qty) || 0;
       if (!qty) continue;
-      const key = `${i.sku || ''}|${i.name || ''}|${i.color || ''}`;
+      // product_id and the logo are part of the identity: the same sku+color in
+      // two different logos is two stacks on the table, not one.
+      const d = itemDisplay(i);
+      const key = `${i.sku || ''}|${i.product_id || ''}|${i.name || ''}|${i.color || ''}|${d.logo}`;
       if (!rows.has(key)) {
-        const d = itemDisplay(i);
-        rows.set(key, { sku: i.sku || '', name: i.name || i.sku || 'Item', color: i.color || '', head: d.head, desc: d.desc, sizes: new Map() });
+        rows.set(key, {
+          sku: i.sku || '', name: i.name || i.sku || 'Item', color: i.color || '',
+          head: d.head, desc: d.desc, logo: d.logo,
+          image: i.image_url || '', imageKind: i._image_kind || '',
+          sizes: new Map(),
+        });
       }
       const size = i.size || '—';
       sizeSet.add(size);

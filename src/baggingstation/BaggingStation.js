@@ -239,11 +239,29 @@ function LineRow({ item, onTap, onShort }) {
         {shorted ? '!' : done ? '✓' : ''}
       </div>
       {item.image_url && (
-        // Mockup thumbnail: same SKU/color can carry different logos — the
-        // picture is the fastest way to grab the right pile off the table.
-        <img src={item.image_url} alt="" loading="lazy"
-          style={{ width: 64, height: 64, objectFit: 'contain', borderRadius: 6, background: '#fff', flexShrink: 0, opacity: done && !shorted ? 0.5 : 1 }}
-          onError={(e) => { e.target.style.display = 'none'; }} />
+        // Thumbnail: the same sku and color can carry different logos, so the
+        // picture is the fastest way to grab the right pile off the table — but
+        // only when it IS this line's garment. A stock catalog photo is shared
+        // by every logo, so it gets said out loud rather than passed off as the
+        // mockup.
+        <div style={{ flexShrink: 0, width: 64, opacity: done && !shorted ? 0.5 : 1 }}>
+          <img src={item.image_url} alt="" loading="lazy"
+            style={{
+              width: 64, height: 64, objectFit: 'contain', borderRadius: 6, background: '#fff',
+              display: 'block', opacity: item._image_kind === 'stock' ? 0.45 : 1,
+            }}
+            onError={(e) => { e.target.style.display = 'none'; }} />
+          {item._image_kind === 'stock' && (
+            <div style={{ fontSize: 9, fontWeight: 800, color: '#94a3b8', textAlign: 'center', marginTop: 2, letterSpacing: 0.3 }}>
+              STOCK PHOTO
+            </div>
+          )}
+          {item._image_kind === 'logo' && (
+            <div style={{ fontSize: 9, fontWeight: 800, color: '#60a5fa', textAlign: 'center', marginTop: 2, letterSpacing: 0.3 }}>
+              LOGO ART
+            </div>
+          )}
+        </div>
       )}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 19, fontWeight: 700, textDecoration: done && !shorted ? 'line-through' : 'none', color: done && !shorted ? '#64748b' : '#f1f5f9' }}>
@@ -261,6 +279,13 @@ function LineRow({ item, onTap, onShort }) {
           {(item.player_name || '').trim() ? (item.player_name || '').trim() + ' · ' : ''}
           {onOrder ? 'ON ORDER — not arrived' : shorted ? `SHORT ${item.short_qty}` + (item.short_status !== 'open' ? ' (' + item.short_status + ')' : '') : ''}
         </div>
+        {d.logo && (
+          // Which logo, and where it goes. The one thing that separates two
+          // identical black hoods bound for different bags.
+          <div style={{ fontSize: 14, fontWeight: 800, color: done && !shorted ? '#64748b' : '#7dd3fc', marginTop: 3 }}>
+            ◆ {d.logo}
+          </div>
+        )}
       </div>
       {String(item.player_number || '').trim() && (
         // Jersey number: verify against the shirt in hand before it goes in.
@@ -604,8 +629,20 @@ function StagingTable({ orders }) {
               return (
                 <tr key={r.sku + r.name + r.color}>
                   <td style={{ ...td, textAlign: 'left', minWidth: 200 }}>
-                    <div style={{ fontSize: 17, fontWeight: 800 }}>{r.head}</div>
-                    <div style={{ fontSize: 13, color: '#94a3b8', fontWeight: 700 }}>{r.desc}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      {r.image && (
+                        <img src={r.image} alt="" loading="lazy"
+                          style={{
+                            width: 40, height: 40, objectFit: 'contain', borderRadius: 5, background: '#fff',
+                            flexShrink: 0, opacity: r.imageKind === 'stock' ? 0.45 : 1,
+                          }}
+                          onError={(e) => { e.target.style.display = 'none'; }} />
+                      )}
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 17, fontWeight: 800 }}>{r.head}</div>
+                        <div style={{ fontSize: 13, color: '#94a3b8', fontWeight: 700 }}>{r.desc}</div>
+                      </div>
+                    </div>
                   </td>
                   {cells}
                   <td style={td}>
