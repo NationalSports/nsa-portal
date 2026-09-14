@@ -29,12 +29,11 @@ import { downloadSilverScreenFulfillment } from './lib/silverScreenFulfillment';
 import { selectFulfillmentReportScope } from './lib/fulfillmentReportScope';
 import { webstoreProductionKey } from './lib/storeSkuGrouping';
 import { allocateMoneyCents } from './lib/bundleMoney';
+import { buildCondensedPlayerRows, orderNetCollected, originalOrderTotal } from './lib/webstoreOrderMoney';
 import { sanmarPricingSnapshot, sanmarStyleFromSku } from './lib/sanmarPricing';
 import { WEBSTORE_DELIVERY_WINDOWS, deliveryWindowLabel, normalizeDeliveryWindow, salesOrderDueDate } from './lib/webstoreDeliveryWindow';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
-const originalOrderTotal = (o) => Number(o && (o.original_total != null ? o.original_total : o.total)) || 0;
-const orderNetCollected = (o) => Math.max(0, originalOrderTotal(o) - (Number(o && o.refunded_amt) || 0));
 
 // Create a ShipStation label (base64 PDF) for one ship-to-home webstore order.
 async function createWebstoreLabel(order, items, store, weightByPid = {}, imageByPid = {}) {
@@ -405,10 +404,14 @@ function reportSyncBanner(audit) {
   return rows.length ? `<div class="syncwarn"><b>Sales-order reconciliation:</b><br>${rows.join('<br>')}</div>` : '';
 }
 
-// ─── Per-player roll-up ──────────────────────────────────────────────
-// One section per player: exactly what they're getting across the whole store,
-// plus the roster members who haven't ordered yet.
-function buildPlayerReport(store, lines, orderById, roster, stockByPid, audit) {
+// ─── Per-player packing slips ────────────────────────────────────────
+// One printable slip per player — their name/number, who bought for them, where
+// it ships, and exactly what they get — so a packer can work the stack by hand.
+// Same SO-scoped, substitution-aware lines the Player CSV uses, so paper and file
+// can never disagree. A cover page carries the totals, the sales-order
+// reconciliation warnings, and the roster members who never ordered; losing those
+// to the page break is how a short order ships unnoticed.
+function buildPlayerReport(store, lines, orderById, roster, stockByPid, audit, label = '') {
   const players = {};
   lines.forEach((i) => {
     const o = orderById[i.order_id] || {};
@@ -417,9 +420,9 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid, audit) {
     const key = (nm || num) ? (nm.toLowerCase() + '|' + num) : ('buyer:' + (o.buyer_email || o.buyer_name || i.order_id));
     const p = players[key] || (players[key] = { label: nm || (o.buyer_name ? o.buyer_name + ' (buyer)' : 'Unassigned'), number: num, units: 0, items: [], orders: {} });
     p.units += (i.qty || 1);
-    p.items.push({ name: _itemName(i, stockByPid), sku: i._effSku || i.sku || '', adidasTagSku: i._adidasTagSku || '', size: i.size || '', qty: i.qty || 1, buyer: o.buyer_name || '', wasSku: i._wasSku || '', wasSize: i._wasSize || '', verify: !!i._verify, unmatched: !!i._unmatched });
-    // Who placed it + where it goes — the "more info" for each player block.
-    if (o.id && !p.orders[o.id]) p.orders[o.id] = { buyer: o.buyer_name || '', email: o.buyer_email || '', phone: o.buyer_phone || '', ship: o.ship_address || null };
+    p.items.push({ name: _itemName(i, stockByPid), sku: i._effSku || i.sku || '', adidasTagSku: i._adidasTagSku || '', color: i.color || '', size: i.size || '', qty: i.qty || 1, buyer: o.buyer_name || '', wasSku: i._wasSku || '', wasSize: i._wasSize || '', verify: !!i._verify, unmatched: !!i._unmatched });
+    // Who placed it + where it goes — the "more info" for each player's slip.
+    if (o.id && !p.orders[o.id]) p.orders[o.id] = { no: o.order_number || o.omg_order_number || '', paid: o.payment_mode === 'paid', buyer: o.buyer_name || '', email: o.buyer_email || '', phone: o.buyer_phone || '', ship: o.ship_address || null };
   });
   const shipLine = (s) => s
     ? [s.name, s.street1, s.street2, [s.city, s.state, s.zip].filter(Boolean).join(', ')].filter(Boolean).join(', ')
@@ -428,38 +431,117 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid, audit) {
   const notOrdered = (roster || []).filter((r) => !r.ordered);
   const totalUnits = list.reduce((a, p) => a + p.units, 0);
   const chip = (n, l) => `<div class="chip"><div class="n">${n}</div><div class="l">${l}</div></div>`;
-  const block = (p) => {
-    const rows = p.items.map((it) => `<tr${it.unmatched ? ' class="warnrow"' : ''}><td>${esc(it.name)}${it.sku ? `<div class="sub">${it.adidasTagSku ? `<b>S&amp;S:</b> ${esc(it.sku)} · <b>Adidas tag:</b> ${esc(it.adidasTagSku)}` : esc(it.sku)}</div>` : ''}${it.wasSku ? `<div class="was">↺ was SKU ${esc(it.wasSku)}${it.verify ? ' — verify' : ''}</div>` : ''}${it.wasSize ? `<div class="was">↺ was size ${esc(it.wasSize)}${it.verify ? ' — verify' : ''}</div>` : ''}${it.unmatched ? '<div class="was">⚠ not matched to SO — verify</div>' : ''}</td><td class="c">${esc(it.size)}</td><td class="c b">${it.qty}</td><td>${esc(it.buyer)}</td></tr>`).join('');
-    const contacts = Object.values(p.orders).map((c) => {
+  const sub = (store.name || '') + (label ? ` · ${label}` : '');
+
+  const slip = (p, index) => {
+    const rows = p.items.map((it) => `<tr${it.unmatched ? ' class="warnrow"' : ''}><td>${esc(it.name)}${it.sku ? `<div class="sub">${it.adidasTagSku ? `<b>S&amp;S:</b> ${esc(it.sku)} · <b>Adidas tag:</b> ${esc(it.adidasTagSku)}` : esc(it.sku)}${it.color ? ' · ' + esc(it.color) : ''}</div>` : ''}${it.wasSku ? `<div class="was">↺ was SKU ${esc(it.wasSku)}${it.verify ? ' — verify' : ''}</div>` : ''}${it.wasSize ? `<div class="was">↺ was size ${esc(it.wasSize)}${it.verify ? ' — verify' : ''}</div>` : ''}${it.unmatched ? '<div class="was">⚠ not matched to SO — verify</div>' : ''}</td><td class="c">${esc(it.size)}</td><td class="c b">${it.qty}</td><td class="chk"></td></tr>`).join('');
+    const orders = Object.values(p.orders);
+    const contacts = orders.map((c) => {
       const sh = shipLine(c.ship);
-      return `<div class="contact">👤 <b>${esc(c.buyer || '—')}</b>${c.email ? ` · <a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : ''}${c.phone ? ` · ${esc(c.phone)}` : ''}${sh ? `<div class="ship">📦 ${esc(sh)}</div>` : ''}</div>`;
+      return `<div class="contact">👤 <b>${esc(c.buyer || '—')}</b>${c.no ? ` · order ${esc(String(c.no))}` : ''}${c.email ? ` · ${esc(c.email)}` : ''}${c.phone ? ` · ${esc(c.phone)}` : ''}${sh ? `<div class="ship">📦 ${esc(sh)}</div>` : ''}</div>`;
     }).join('');
-    return `<div class="ord"><div class="oh">${esc(p.label)}${p.number ? ` <span class="num">#${esc(p.number)}</span>` : ''}<span class="dt">${p.units} item${p.units === 1 ? '' : 's'}</span></div>
-      ${contacts}
-      <table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Qty</th><th>Buyer</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    // A player paid on one order and on the team tab for another is real; say so
+    // rather than stamping one badge over both.
+    const paidBadge = orders.length && orders.every((c) => c.paid) ? 'PAID'
+      : orders.length && orders.every((c) => !c.paid) ? 'TEAM TAB' : 'MIXED';
+    return `<div class="slip">
+      <div class="hd"><div><div class="t">${esc(p.label)}${p.number ? ` <span class="num">#${esc(p.number)}</span>` : ''}</div><div class="s">${esc(sub)} · player ${index + 1} of ${list.length}</div></div>
+      <div class="pay">${paidBadge}</div></div>
+      <div class="meta">${contacts}<div class="units">${p.units} item${p.units === 1 ? '' : 's'}</div></div>
+      <table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Qty</th><th class="c">✓</th></tr></thead><tbody>${rows}</tbody></table>
+    </div>`;
   };
+
+  const cover = `<div class="slip">
+    <h1>Player Report</h1>
+    <div class="meta2">${esc(sub)} · ${new Date().toLocaleString()}</div>
+    <div class="chips">${chip(list.length, 'Players')}${chip(totalUnits, 'Items')}${(roster && roster.length) ? chip(notOrdered.length, 'Not ordered') : ''}</div>
+    ${reportSyncBanner(audit)}
+    <h3>Slips in this stack</h3>
+    <table class="grid"><thead><tr><th>#</th><th>Player</th><th class="c">Items</th></tr></thead><tbody>${
+      list.map((p, i) => `<tr><td>${i + 1}</td><td>${esc(p.label)}${p.number ? ` <span class="num">#${esc(p.number)}</span>` : ''}</td><td class="c b">${p.units}</td></tr>`).join('')
+      || '<tr><td colspan="3">No orders yet.</td></tr>'}</tbody></table>
+    ${notOrdered.length ? `<h3>Roster — not ordered yet</h3><div class="warn">${notOrdered.map((r) => esc(r.player_name || '') + (r.player_number ? ' #' + esc(String(r.player_number)) : '')).join(' · ')}</div>` : ''}
+  </div>`;
+
   printHtml(`<!doctype html><html><head><title>Player report — ${esc(store.name)}</title><style>
-    body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0b1220;max-width:760px;margin:32px auto;padding:0 24px}
-    h1{font-size:21px;margin:0 0 2px}.meta{color:#64748b;font-size:13px;margin-bottom:16px}
+    body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0b1220;margin:0}
+    .slip{padding:24px 28px;page-break-after:always;box-sizing:border-box}
+    .slip:last-child{page-break-after:auto}
+    h1{font-size:21px;margin:0 0 2px}
     h3{font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:#475569;margin:24px 0 8px;border-bottom:2px solid #0b1220;padding-bottom:5px}
+    .meta2{color:#64748b;font-size:13px;margin-bottom:16px}
+    .hd{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #0b1f3a;padding-bottom:8px}
+    .t{font-size:22px;font-weight:800}.t .num{color:#2563eb}.s{font-size:12px;color:#64748b;margin-top:2px}
+    .pay{font-weight:800;font-size:12px;border:2px solid #0b1f3a;padding:4px 10px;border-radius:6px;white-space:nowrap}
+    .meta{margin:14px 0;font-size:13px;line-height:1.6}
+    .units{font-weight:800;margin-top:6px}
+    .contact{color:#475569;margin:0 0 6px}.contact .ship{color:#64748b;margin-top:2px}
     .chips{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0 4px}
     .chip{flex:1;min-width:96px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px}
     .chip .n{font-size:22px;font-weight:900}.chip .l{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.3px;margin-top:2px}
-    table.grid{width:100%;border-collapse:collapse;font-size:13px}
-    .grid th{text-align:left;border-bottom:1px solid #cbd5e1;padding:6px 8px;color:#64748b;font-size:11px;text-transform:uppercase}
+    table.grid{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+    .grid th{text-align:left;border-bottom:1px solid #cbd5e1;padding:6px 8px;color:#64748b;font-size:11px;text-transform:uppercase}.grid th.c{text-align:center}
     .grid td{padding:7px 8px;border-bottom:1px solid #f1f5f9}.grid td.c{text-align:center}.grid td.b{font-weight:800}
+    .grid td.chk{width:26px;border-bottom:1px solid #f1f5f9;box-shadow:inset 0 0 0 1px #cbd5e1}
     .sub{font-size:11px;color:#94a3b8}.was{font-size:11px;color:#b45309;font-weight:700}.warnrow td{background:#fffbeb}
-    .ord{border:1px solid #e2e8f0;border-radius:10px;padding:10px 14px;margin-bottom:10px;break-inside:avoid}
-    .oh{font-weight:800;font-size:14px;margin-bottom:6px}.oh .num{color:#2563eb}.oh .dt{float:right;color:#94a3b8;font-weight:600;font-size:12px}
-    .contact{font-size:12px;color:#475569;margin:0 0 8px;line-height:1.5}.contact a{color:#2563eb;text-decoration:none}.contact .ship{color:#64748b;margin-top:2px}
+    .num{color:#2563eb}
     .warn,.syncwarn{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;font-size:13px;line-height:1.7}.syncwarn{margin:12px 0}
+    @media print{.slip{padding:18px}.warnrow td,.chip,.warn,.syncwarn{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+  </style></head><body>${cover}${list.map(slip).join('')}</body></html>`);
+}
+
+// ─── Condensed player report ─────────────────────────────────────────
+// One line per player: who they are, whose card paid, how many items, what it
+// came to. The at-a-glance sheet — the packing slips are the working copy.
+//
+// Money note, and it matters: the per-line unit_price is NOT a safe basis for a
+// total here. It is $0 on 43% of OMG-imported lines (and on bundle components,
+// whose package price sits on a parent line the report scope drops), so summing
+// lines would quietly under-report whole stores. The order's own net-collected
+// figure is the authority, so this sums each player's DISTINCT orders through
+// orderNetCollected — the same helper behind the store header's Sales number,
+// so a whole-store run of this report ties out to it.
+function buildCondensedPlayerReport(store, lines, orderById, audit, label = '') {
+  const { rows: list, totalUnits, grandTotal, anyShared } = buildCondensedPlayerRows({ lines, orderById });
+  const chip = (n, l) => `<div class="chip"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+
+  const rows = list.map((p, i) => `<tr>
+    <td class="c dim">${i + 1}</td>
+    <td><b>${esc(p.label)}</b>${p.number ? ` <span class="num">#${esc(p.number)}</span>` : ''}</td>
+    <td>${esc(p.buyers.join(', ')) || '<span class="dim">—</span>'}</td>
+    <td class="c b">${p.units}</td>
+    <td class="r b">${money(p.total)}${p.shared ? '<span class="mark">†</span>' : ''}</td>
+  </tr>`).join('');
+
+  printHtml(`<!doctype html><html><head><title>Player report (condensed) — ${esc(store.name)}</title><style>
+    body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0b1220;max-width:760px;margin:32px auto;padding:0 24px}
+    h1{font-size:21px;margin:0 0 2px}.meta{color:#64748b;font-size:13px;margin-bottom:16px}
+    .chips{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0 4px}
+    .chip{flex:1;min-width:96px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px}
+    .chip .n{font-size:22px;font-weight:900}.chip .l{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.3px;margin-top:2px}
+    table.grid{width:100%;border-collapse:collapse;font-size:13px;margin-top:14px}
+    .grid th{text-align:left;border-bottom:1px solid #cbd5e1;padding:6px 8px;color:#64748b;font-size:11px;text-transform:uppercase}
+    .grid th.c{text-align:center}.grid th.r{text-align:right}
+    .grid td{padding:7px 8px;border-bottom:1px solid #f1f5f9}
+    .grid td.c{text-align:center}.grid td.r{text-align:right}.grid td.b{font-weight:800}.grid td.dim{color:#94a3b8}
+    .grid tr.tot td{border-top:2px solid #0b1220;border-bottom:none;font-weight:900;font-size:14px;padding-top:9px}
+    .num{color:#2563eb}.mark{color:#b45309;font-weight:900}
+    .foot{font-size:11px;color:#64748b;margin-top:10px;line-height:1.6}
+    .warn,.syncwarn{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;font-size:13px;line-height:1.7}.syncwarn{margin:12px 0}
+    @media print{.chip,.warn,.syncwarn{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
   </style></head><body>
-    <h1>Player Report</h1>
-    <div class="meta">${esc(store.name)} · ${new Date().toLocaleString()}</div>
-    <div class="chips">${chip(list.length, 'Players')}${chip(totalUnits, 'Items')}${(roster && roster.length) ? chip(notOrdered.length, 'Not ordered') : ''}</div>
+    <h1>Player Report — Condensed</h1>
+    <div class="meta">${esc((store.name || '') + (label ? ` · ${label}` : ''))} · ${new Date().toLocaleString()}</div>
+    <div class="chips">${chip(list.length, 'Players')}${chip(totalUnits, 'Items')}${chip(money(grandTotal), 'Total')}</div>
     ${reportSyncBanner(audit)}
-    ${list.map(block).join('') || '<div class="meta">No orders yet.</div>'}
-    ${notOrdered.length ? `<h3>Roster — not ordered yet</h3><div class="warn">${notOrdered.map((r) => esc(r.player_name || '') + (r.player_number ? ' #' + esc(String(r.player_number)) : '')).join(' · ')}</div>` : ''}
+    <table class="grid">
+      <thead><tr><th class="c">#</th><th>Player</th><th>Parent / buyer</th><th class="c">Items</th><th class="r">Total</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="5">No orders yet.</td></tr>'}
+        ${list.length ? `<tr class="tot"><td></td><td>${list.length} player${list.length === 1 ? '' : 's'}</td><td></td><td class="c">${totalUnits}</td><td class="r">${money(grandTotal)}</td></tr>` : ''}
+      </tbody>
+    </table>
+    <div class="foot">Total is each player's order(s) net of refunds — the same basis as the store's Sales figure. It covers the whole order, so any shipping or fees the parent paid are included.${anyShared ? ' <span class="mark">†</span> This player shares an order with another, so that order’s amount shows on both rows; the total row counts it once.' : ''}</div>
   </body></html>`);
 }
 
@@ -3411,6 +3493,37 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     flash(`Downloaded ${scope.label} Players CSV${scope.excludedOrders ? ` · excluded ${scope.excludedOrders} unbatched order${scope.excludedOrders === 1 ? '' : 's'}` : ''}`);
   }, [sel, detail, gatherAll, flash]);
 
+  // Player packing slips (print, or save as PDF from the print dialog): one slip
+  // per player off the SAME scoped, substitution-aware lines the Player CSV uses,
+  // behind the same blocking checks — the paper the packer works from and the file
+  // the decorator gets must never disagree about what a player is owed.
+  const playerReportPdf = useCallback(async () => {
+    if (!sel || !detail) return;
+    const { valid, lines, audit, orderById, stockByPid, roster } = await gatherAll();
+    if (!valid.length) { flash('No orders yet'); return; }
+    const scope = selectFulfillmentReportScope(lines);
+    if (!scope.ok) { flash(scope.message, 'error'); return; }
+    const blocking = reportBlockingIssues(audit);
+    if (blocking.length) { flash(`Player report blocked: ${blocking.slice(0, 5).join('; ')}${blocking.length > 5 ? `; plus ${blocking.length - 5} more issue(s)` : ''}.`, 'error'); return; }
+    buildPlayerReport(sel, scope.lines, orderById, roster, stockByPid, audit, scope.label);
+    flash(`Opened ${scope.label} player packing slips${scope.excludedOrders ? ` · excluded ${scope.excludedOrders} unbatched order${scope.excludedOrders === 1 ? '' : 's'}` : ''} — print or save as PDF`);
+  }, [sel, detail, gatherAll, flash]);
+
+  // Condensed player report: one line per player — name, parent, item count, what
+  // the order came to. Same scope and blocking checks as the other two, so the
+  // three formats always describe the same set of orders.
+  const playerReportCondensed = useCallback(async () => {
+    if (!sel || !detail) return;
+    const { valid, lines, audit, orderById } = await gatherAll();
+    if (!valid.length) { flash('No orders yet'); return; }
+    const scope = selectFulfillmentReportScope(lines);
+    if (!scope.ok) { flash(scope.message, 'error'); return; }
+    const blocking = reportBlockingIssues(audit);
+    if (blocking.length) { flash(`Player report blocked: ${blocking.slice(0, 5).join('; ')}${blocking.length > 5 ? `; plus ${blocking.length - 5} more issue(s)` : ''}.`, 'error'); return; }
+    buildCondensedPlayerReport(sel, scope.lines, orderById, audit, scope.label);
+    flash(`Opened ${scope.label} condensed player report${scope.excludedOrders ? ` · excluded ${scope.excludedOrders} unbatched order${scope.excludedOrders === 1 ? '' : 's'}` : ''} — print or save as PDF`);
+  }, [sel, detail, gatherAll, flash]);
+
   // Store-close stock report (printable): fill-from-stock vs order-from-Adidas
   // vs backorder, split by vendor.
   const stockReport = useCallback(async () => {
@@ -4097,7 +4210,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           custName={custName} repName={repName} standardCategories={wsSettings?.standard_categories || []}
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)} onOpenSO={onOpenSO} onSetStatus={setStoreStatus}
-          onAddSingle={addSingle} onAddGrouped={addManyGrouped} onAddColors={addColorsToItem} onAddFits={addFitsToItem} onCopyItem={copyToNewItem} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onApplyTemplateColors={applyTemplateColors} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onAddBundleItem={addBundleItem} onRemoveBundleItem={removeBundleItem} onReorderBundleItems={reorderBundleItems} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onBulkRemove={bulkRemove} onUpdateImage={updateImage} onUpdateCost={updateProductCost} onUpdateProductMeta={updateProductMeta} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onStockReport={stockReport} onProductReport={productReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onReorderColors={reorderColorRows} onRemoveColor={removeColorFromItem} onUpdateItem={updateCatalogItem} onBulkUpdate={bulkUpdateItems}
+          onAddSingle={addSingle} onAddGrouped={addManyGrouped} onAddColors={addColorsToItem} onAddFits={addFitsToItem} onCopyItem={copyToNewItem} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onApplyTemplateColors={applyTemplateColors} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onAddBundleItem={addBundleItem} onRemoveBundleItem={removeBundleItem} onReorderBundleItems={reorderBundleItems} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onBulkRemove={bulkRemove} onUpdateImage={updateImage} onUpdateCost={updateProductCost} onUpdateProductMeta={updateProductMeta} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onPlayerReportPdf={playerReportPdf} onPlayerReportCondensed={playerReportCondensed} onStockReport={stockReport} onProductReport={productReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onReorderColors={reorderColorRows} onRemoveColor={removeColorFromItem} onUpdateItem={updateCatalogItem} onBulkUpdate={bulkUpdateItems}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onAddRoster={addRoster} onUpdateRoster={updateRoster} onRemoveRoster={removeRoster} onInviteRoster={inviteRoster}
@@ -6336,7 +6449,7 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
   );
 }
 
-function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = null, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onBulkRemove, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onProductReport, onExportCsv, onReorder, onMove, onReorderColors, onRemoveColor, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onAddStoreArtFolder, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = null, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onBulkRemove, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onPlayerReportPdf, onPlayerReportCondensed, onStockReport, onProductReport, onExportCsv, onReorder, onMove, onReorderColors, onRemoveColor, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onAddStoreArtFolder, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
@@ -6559,7 +6672,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
           {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} teamHexes={[...new Set([...(detail?.storeColors || []).map((pc) => pc && pc.hex), s.primary_color, s.accent_color].filter(Boolean))]} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddGrouped={onAddGrouped} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onBulkRemove={onBulkRemove} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onRemoveColor={onRemoveColor} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
           {tab === 'appearance' && <ShowcaseAppearanceTab store={s} onFlash={onFlash} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onSaveArtFolder={onAddStoreArtFolder} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
-          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} nameByPid={nameByPid} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onProductReport={onProductReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
+          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} nameByPid={nameByPid} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onPlayerReportPdf={onPlayerReportPdf} onPlayerReportCondensed={onPlayerReportCondensed} onStockReport={onStockReport} onProductReport={onProductReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
@@ -13662,7 +13775,7 @@ const WS_LINE_STAGE = {
 const wsLineFullyShipped = (i) => (Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0) || i.line_status === 'shipped';
 const wsLineStage = (i) => WS_LINE_STAGE[wsLineFullyShipped(i) ? 'shipped' : (i.line_status || 'pending')] || WS_LINE_STAGE.pending;
 
-function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onProductReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, soBatch = {}, onOpenSO, focusOrderId = null, msgTagIds = [] }) {
+function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onPlayerReportPdf, onPlayerReportCondensed, onStockReport, onProductReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, soBatch = {}, onOpenSO, focusOrderId = null, msgTagIds = [] }) {
   const [q, setQ] = useState('');
   // Per-order customer message threads (same shared `messages` table the OMG
   // portal and the public order page use).
@@ -13805,20 +13918,35 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
             📋 Availability report
           </button>
         )}
-        {onPlayerReport && (
-          <button className="btn btn-secondary" onClick={onPlayerReport} title="Download the SO-scoped player report as CSV">
-            ⬇ Player report CSV
-          </button>
-        )}
         {onStockReport && (
           <button className="btn btn-secondary" onClick={onStockReport} title="What we can fill from stock, what to order from Adidas, and what's backordered">
             📦 Stock report
           </button>
         )}
-        {onProductReport && (
-          <button className="btn btn-secondary" onClick={onProductReport} title="Download the Silver Screen Domestic fulfillment template using active orders and current sales-order items">
-            🏷️ Silver Screen XLSX
-          </button>
+        {/* One Player Report control. Every per-player handoff for this store lives
+            behind it: the packing-slip PDF the warehouse works from, the flat CSV,
+            and Silver Screen's own import workbook — all built from the same scoped,
+            substitution-aware lines, so picking a different format can never change
+            what a player is owed. */}
+        {(onPlayerReportPdf || onPlayerReportCondensed || onPlayerReport || onProductReport) && (
+          <select
+            style={sel}
+            value=""
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === 'pdf') onPlayerReportPdf && onPlayerReportPdf();
+              else if (v === 'condensed') onPlayerReportCondensed && onPlayerReportCondensed();
+              else if (v === 'csv') onPlayerReport && onPlayerReport();
+              else if (v === 'xlsx') onProductReport && onProductReport();
+            }}
+            title="Per-player handoffs for this store — packing slips, a condensed one-pager, the CSV, or the Silver Screen workbook"
+          >
+            <option value="">👥 Player Report…</option>
+            {onPlayerReportPdf && <option value="pdf">📄 Packing slips PDF</option>}
+            {onPlayerReportCondensed && <option value="condensed">📃 Condensed PDF</option>}
+            {onPlayerReport && <option value="csv">⬇ Player CSV</option>}
+            {onProductReport && <option value="xlsx">🏷️ Silver Screen XLSX</option>}
+          </select>
         )}
         {onExportCsv && (
           <select style={sel} value="" onChange={(e) => { const v = e.target.value; if (v) onExportCsv(v); }} title="Download as CSV (Excel)">
