@@ -5,7 +5,7 @@ import { supabase } from './lib/supabase';
 import { fetchPublicInventory, fetchPublicStorefrontProducts } from './lib/webstorePublicData';
 import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking, _cloudinaryPdfThumb, _withTimeout, fetchWithTimeout } from './utils';
 import { shipStationCall, sanmarGetPricing, sanmarResolveSku, ssResolveSku, richardsonResolveSku, momentecResolveSku, resolveSkuAcrossVendors } from './vendorApis';
-import { searchVendorCatalogs, vendorColorToProductRow } from './vendorCatalogSearch';
+import { searchVendorCatalogs, vendorColorToProductRow, pickVendorStyle, missingVendorColorRows, canTopUpFromVendor } from './vendorCatalogSearch';
 import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank, scaleOf } from './lib/storeInventory';
@@ -8187,7 +8187,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       // somebody previously imported (ST650 had only True Navy and White locally).
       setColorSibs(data || []);
       const styleSku = String(item.sku || '').trim().toUpperCase().split('-')[0];
-      if (styleSku.length < 2) return;
+      if (styleSku.length < 2 || !canTopUpFromVendor(invSrcByPid?.[item.product_id])) return;
       setVendorColorsLoading(true);
       try {
         const { data: vendors } = await supabase.from('vendors').select('id,api_provider');
@@ -8195,18 +8195,10 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
         (vendors || []).forEach((v) => { if (v.api_provider) vendorMap[v.api_provider] = v.id; });
         const { results } = await searchVendorCatalogs(styleSku, { vendorMap });
         if (cancelled) return;
-        const sourceForInventory = { sanmar: 'sm', ss_activewear: 'ss', richardson: 'rs', momentec: 'mt' }[invSrcByPid?.[item.product_id]];
-        const exact = (results || []).filter((s) => String(s.sku || '').trim().toUpperCase() === styleSku);
-        const style = exact.find((s) => s.source === sourceForInventory) || exact[0];
-        if (!style) return;
-        const liveRows = (style.colors || []).map((color) => ({
-          ...vendorColorToProductRow(style, color),
-          _vendorStyle: style,
-          _vendorColor: color,
-        }));
+        const style = pickVendorStyle(results, styleSku, invSrcByPid?.[item.product_id]);
         // Local rows come first, so an already-imported product wins over its virtual
         // vendor equivalent when colorOptions de-duplicates the combined list.
-        setColorSibs([...(data || []), ...liveRows]);
+        setColorSibs([...(data || []), ...missingVendorColorRows(style, data || [])]);
       } catch (_) { /* local colors remain usable when a vendor API is unavailable */ }
       finally { if (!cancelled) setVendorColorsLoading(false); }
     })();
@@ -8906,15 +8898,18 @@ function SinglePriceEditor({ product, storeFund = {}, isTeam = false, onAdd, onC
   const [price, setPrice] = useState(() => price45(product.nsa_cost, isTeam ? 5 : 0) ?? (product.retail_price || 0));
   const [rows, setRows] = useState([]);       // one row per colorway (incl. base), with _stock
   const [loading, setLoading] = useState(true);
+  const [vendorLoading, setVendorLoading] = useState(false); // live vendor colorways still arriving
+  const [adding, setAdding] = useState(false);
   const [inStockOnly, setInStockOnly] = useState(false);
   const [sel, setSel] = useState(() => new Set([product.id])); // base preselected
   useEffect(() => {
-    let cancelled = false; setLoading(true);
+    let cancelled = false; setLoading(true); setVendorLoading(false);
+    const sortRows = (a, b) => (a.id === product.id ? -1 : b.id === product.id ? 1 : String(a.color || '').localeCompare(String(b.color || '')));
     (async () => {
       let sibs = [];
       if (product?.name) {
         const { data } = await supabase.from('products')
-          .select('id,sku,name,color,retail_price,image_front_url,available_sizes,category,brand')
+          .select('id,sku,name,color,retail_price,image_front_url,available_sizes,category,brand,inventory_source')
           .eq('name', product.name).order('color').limit(300);
         sibs = data || [];
       }
@@ -8929,16 +8924,55 @@ function SinglePriceEditor({ product, storeFund = {}, isTeam = false, onAdd, onC
       let stock = new Map();
       try { stock = await fetchStockMap(list); } catch { /* show without stock */ }
       for (const r of list) r._stock = stock.get(r.id) || { units: 0, sizes: [], incoming: false };
-      list.sort((a, b) => (a.id === product.id ? -1 : b.id === product.id ? 1 : String(a.color || '').localeCompare(String(b.color || ''))));
-      if (!cancelled) { setRows(list); setLoading(false); }
+      list.sort(sortRows);
+      if (cancelled) return;
+      setRows(list); setLoading(false);
+
+      // Show the imported colors immediately, then augment them from the LIVE vendor style.
+      // `products` only holds the colorways somebody previously imported — SanMar's PC55LS
+      // lists 19 colors while the catalog carried Jet Black and Royal, so the rep could
+      // never put the other 17 in a store. Same augmentation the item editor already does
+      // for its "other colorways" strip; picked live colors are imported on Add.
+      const styleSku = String(product.sku || '').trim().toUpperCase().split('-')[0];
+      const invSrc = product.inventory_source || (sibs.find((s) => s.inventory_source) || {}).inventory_source;
+      if (styleSku.length < 2 || !canTopUpFromVendor(invSrc)) return;
+      setVendorLoading(true);
+      try {
+        const { data: vendors } = await supabase.from('vendors').select('id,api_provider');
+        const vendorMap = {};
+        (vendors || []).forEach((v) => { if (v.api_provider) vendorMap[v.api_provider] = v.id; });
+        const { results } = await searchVendorCatalogs(styleSku, { vendorMap });
+        if (cancelled) return;
+        const style = pickVendorStyle(results, styleSku, invSrc);
+        const liveRows = missingVendorColorRows(style, list);
+        if (!liveRows.length || cancelled) return;
+        setRows((prev) => [...prev, ...liveRows].sort(sortRows));
+      } catch (_) { /* the imported colors stay usable when a vendor API is down */ }
+      finally { if (!cancelled) setVendorLoading(false); }
     })();
     return () => { cancelled = true; };
-  }, [product.id, product.name]);
+  }, [product.id, product.name, product.sku, product.inventory_source]);
   const toggle = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const shown = inStockOnly ? rows.filter((r) => (r._stock?.units || 0) > 0) : rows;
   const chosen = rows.filter((r) => sel.has(r.id));
   const linkBtn = { background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: 12, fontWeight: 700, padding: 0 };
-  const add = () => { if (!chosen.length) return; onAdd({ products: chosen, price: Number(price) || 0, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: [] }); };
+  const add = async () => {
+    if (!chosen.length || adding) return;
+    setAdding(true);
+    try {
+      // webstore_products needs a real `products` FK, so any colorway picked straight off
+      // the live vendor feed is imported first — same reuse/upsert + SanMar stock-backfill
+      // path "Add items" uses, so it can't double-create a color the catalog already has.
+      const vendorSelections = new Map();
+      chosen.filter((p) => p._vendorStyle && p._vendorColor).forEach((p) => {
+        vendorSelections.set(vendorKeyOf(p._vendorStyle, p._vendorColor), { style: p._vendorStyle, color: p._vendorColor });
+      });
+      const imported = vendorSelections.size ? await importVendorSelections(vendorSelections) : [];
+      const products = [...chosen.filter((p) => !p._vendorStyle), ...imported];
+      if (!products.length) return;
+      await onAdd({ products, price: Number(price) || 0, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: [] });
+    } finally { setAdding(false); }
+  };
   return (
     <div onClick={onCancel} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1100, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, width: '100%', maxWidth: 720, margin: 'auto', boxShadow: '0 24px 60px rgba(0,0,0,.3)', overflow: 'hidden' }}>
@@ -8950,11 +8984,12 @@ function SinglePriceEditor({ product, storeFund = {}, isTeam = false, onAdd, onC
           <span style={{ fontSize: 12, fontWeight: 800, color: '#475569' }}>{chosen.length} selected</span>
           <button type="button" style={linkBtn} onClick={() => setSel(new Set(shown.map((r) => r.id)))}>All</button>
           <button type="button" style={linkBtn} onClick={() => setSel(new Set())}>None</button>
+          {vendorLoading && <span style={{ fontSize: 11.5, color: '#94a3b8', fontWeight: 600 }}>Checking the vendor for more colors…</span>}
           <label style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700, color: '#475569', cursor: 'pointer' }}><input type="checkbox" checked={inStockOnly} onChange={(e) => setInStockOnly(e.target.checked)} /> In stock only</label>
         </div>
         <div style={{ maxHeight: '52vh', overflowY: 'auto', padding: 14 }}>
           {loading ? <div style={{ padding: 34, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>Loading colors…</div>
-            : shown.length === 0 ? <div style={{ padding: 34, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>No colors{inStockOnly ? ' in stock' : ''} for this style.</div>
+            : shown.length === 0 ? <div style={{ padding: 34, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>{vendorLoading ? 'Checking the vendor for colors…' : `No colors${inStockOnly ? ' in stock' : ''} for this style.`}</div>
             : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(132px,1fr))', gap: 10 }}>
               {shown.map((r) => { const on = sel.has(r.id); const u = r._stock?.units || 0; const inc = r._stock?.incoming; return (
                 <button key={r.id} type="button" onClick={() => toggle(r.id)} style={{ position: 'relative', textAlign: 'left', border: '2px solid ' + (on ? '#2563eb' : '#e2e8f0'), background: on ? '#eff6ff' : '#fff', borderRadius: 10, padding: 8, cursor: 'pointer' }}>
@@ -8962,6 +8997,7 @@ function SinglePriceEditor({ product, storeFund = {}, isTeam = false, onAdd, onC
                   <div style={{ height: 92, borderRadius: 6, background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>{r.image_front_url ? <img src={r.image_front_url} alt="" style={{ maxWidth: '92%', maxHeight: '92%', objectFit: 'contain' }} /> : <span style={{ width: 28, height: 28, borderRadius: '50%', background: colorNameToHex(r.color), boxShadow: 'inset 0 0 0 1px rgba(0,0,0,.2)' }} />}</div>
                   <div style={{ fontSize: 12, fontWeight: 700, marginTop: 6, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.color || r.sku}{r.id === product.id ? ' · base' : ''}</div>
                   <div style={{ fontSize: 10.5, fontWeight: 800, marginTop: 1, color: u > 0 ? '#166534' : inc ? '#92400e' : '#b91c1c' }}>{u > 0 ? `${u} in stock` : inc ? 'Incoming' : 'Out of stock'}</div>
+                  {r._vendorStyle && <div title="Not in the catalog yet — picking it imports this color from the vendor" style={{ fontSize: 9.5, fontWeight: 800, marginTop: 2, color: '#3730a3', background: '#eef2ff', borderRadius: 4, padding: '1px 5px', display: 'inline-block' }}>+ {VENDOR_SRC[r._vendorStyle.source] || 'vendor'}</div>}
                 </button>
               ); })}
             </div>}
@@ -8969,8 +9005,8 @@ function SinglePriceEditor({ product, storeFund = {}, isTeam = false, onAdd, onC
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 18px', borderTop: '1px solid #eef0f3', flexWrap: 'wrap' }}>
           <label style={{ fontSize: 12, fontWeight: 700, color: '#475569' }}>Price&nbsp;$<input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} style={{ width: 92, display: 'inline-block', marginLeft: 6 }} /></label>
           <span style={{ fontSize: 11.5, color: '#94a3b8' }}>Applied to each color — tweak fundraising / art per item after.</span>
-          <button className="btn btn-secondary" style={{ marginLeft: 'auto' }} onClick={onCancel}>Cancel</button>
-          <button className="btn btn-primary" disabled={!chosen.length} style={{ opacity: chosen.length ? 1 : 0.5 }} onClick={add}>Add {chosen.length || ''} {chosen.length === 1 ? 'color' : 'colors'} →</button>
+          <button className="btn btn-secondary" style={{ marginLeft: 'auto' }} disabled={adding} onClick={onCancel}>Cancel</button>
+          <button className="btn btn-primary" disabled={!chosen.length || adding} style={{ opacity: chosen.length && !adding ? 1 : 0.5 }} onClick={add}>{adding ? 'Adding…' : `Add ${chosen.length || ''} ${chosen.length === 1 ? 'color' : 'colors'} →`}</button>
         </div>
       </div>
     </div>
