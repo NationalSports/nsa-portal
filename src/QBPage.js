@@ -14,7 +14,7 @@ import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
 import { authFetch } from './utils';
-import { applyQBPurchaseOrderLiveReadiness, applyQBSalesOrderLiveReadiness, buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, isVoidInvoice, portalCustomerDisplayName, qbCustomerBatchReady, qbPurchaseOrderSourceFingerprint, qbResponseErrorDetail, qbSalesOrderSourceFingerprint } from './qbSyncEngine';
+import { applyQBInvoiceLiveReadiness, applyQBPurchaseOrderLiveReadiness, applyQBSalesOrderLiveReadiness, buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, isVoidInvoice, portalCustomerDisplayName, qbCustomerBatchReady, qbPurchaseOrderSourceFingerprint, qbResponseErrorDetail, qbSalesOrderSourceFingerprint } from './qbSyncEngine';
 import { QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_POSTING_MATRIX, QB_ACCOUNT_SPECS, QB_STATE_TAX_ACCOUNT_KEYS, buildVendorBillLines, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, manualBillAccountKey, normalizeVendorName, qbWriteAccountRef, queryQBReadOnly, readQBWithRetry, resolveQBAccountRefs } from './qbAccountMappings';
 import { mergeDurableQBLinks, persistVerifiedQBCustomerLinkRecovery } from './qbLinkLedger';
 
@@ -747,11 +747,17 @@ export default function QBPage(){
       setQBConfig(prev=>({...prev,parkedPurchaseOrderIds:[],lastPurchaseOrderParking:null}));
       nf(count+' parked purchase orders restored to the review queue','success');
     };
-    const reviewInvoiceBatch=()=>{
-      const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows:invoicePreviewRows,
-        counts:invoicePreviewRows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{})};
-      setInvoiceBatchReview(review);setInvoiceBatchApproved(false);setQBConfig(prev=>({...prev,lastInvoiceReview:review}));
-      nf('Invoice readiness review complete — no QBO records changed');
+    const reviewInvoiceBatch=async()=>{
+      setQbSyncing(true);setInvoiceBatchApproved(false);
+      try{
+        const qboInvoices=await loadAllQBEntities(qbApi,'Invoice','Id, DocNumber, CustomerRef, TotalAmt, TxnDate',500);
+        const rows=applyQBInvoiceLiveReadiness(invoicePreviewRows,qboInvoices);
+        const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,
+          counts:rows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{})};
+        setInvoiceBatchReview(review);setQBConfig(prev=>({...prev,lastInvoiceReview:review}));
+        nf('Invoice readiness review complete — live QBO checked; no records changed');
+      }catch(e){setInvoiceBatchReview(null);nf('Invoice readiness review failed — '+e.message,'error')}
+      finally{setQbSyncing(false)}
     };
     const runInvoiceBatch=async()=>{
       const current=buildQBInvoicePreviewRows(invs,cust,qbConfig.custQBMap||{},{taxBlockReason:inv=>taxableInvoiceBlock(invoiceTaxState(inv))});

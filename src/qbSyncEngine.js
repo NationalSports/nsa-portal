@@ -478,6 +478,7 @@ export function buildQBInvoicePreviewRows(invoices = [], customers = [], custome
     const reasons = [];
     if (!qboCustomerId) reasons.push('customer is not linked to QBO');
     if (!date) reasons.push('invalid or missing invoice date');
+    if (date && date > (options.today || new Date().toISOString().slice(0, 10))) reasons.push('future-dated invoice is held until '+date);
     if (!(total > 0)) reasons.push('invoice total must be positive');
     const taxReason = tax > 0 ? String(taxBlockReason(invoice) || '') : '';
     if (taxReason) reasons.push(taxReason);
@@ -488,6 +489,43 @@ export function buildQBInvoicePreviewRows(invoices = [], customers = [], custome
       action:reasons.length ? 'blocked' : 'ready',reason:reasons.join('; '),
     };
   }).sort((a,b)=>a.documentNumber.localeCompare(b.documentNumber,undefined,{numeric:true}));
+}
+
+// NetSuite/Portal and historical migration runs used three spellings for the
+// same invoice number (INV-123, INV123 and NS-INV123).  Comparing their
+// normalized identity prevents a retry from creating a second receivable,
+// while the customer/date/amount checks below prevent an unrelated reused
+// document number from being silently linked.
+export function normalizeQBInvoiceNumber(value = '') {
+  return String(value).trim().toUpperCase().replace(/^NS-?/, '').replace(/^INV-?/, 'INV');
+}
+
+export function qbInvoiceNumberAliases(value = '') {
+  const normalized = normalizeQBInvoiceNumber(value);
+  const digits = normalized.replace(/^INV/, '');
+  return [...new Set([normalized, 'INV-'+digits, 'NS-'+normalized, 'NS-INV'+digits].filter(Boolean))];
+}
+
+export function applyQBInvoiceLiveReadiness(rows = [], qboInvoices = []) {
+  return rows.map(row => {
+    if (row.action !== 'ready') return row;
+    const normalized = normalizeQBInvoiceNumber(row.documentNumber);
+    const sameNumber = qboInvoices.filter(invoice => normalizeQBInvoiceNumber(invoice?.DocNumber) === normalized);
+    const exact = sameNumber.filter(invoice =>
+      String(invoice?.CustomerRef?.value || '') === String(row.qboCustomerId)
+      && String(invoice?.TxnDate || '').slice(0, 10) === String(row.date || '').slice(0, 10)
+      && Math.abs(qbCurrency(invoice?.TotalAmt) - qbCurrency(row.total)) < 0.005);
+    if (exact.length === 1 && sameNumber.length === 1) {
+      return {...row, action:'existing', reason:'exact invoice already exists in QBO', qboId:String(exact[0].Id)};
+    }
+    if (exact.length === 1 && sameNumber.length > 1) {
+      return {...row, action:'blocked', reason:'multiple QBO invoices share this normalized number; manual review required'};
+    }
+    if (sameNumber.length) {
+      return {...row, action:'blocked', reason:'QBO invoice number exists with a different customer, date, or total'};
+    }
+    return row;
+  });
 }
 
 export function buildPortalSalesOrderTax(salesOrder = {}, customer = {}, salesSubtotal = 0, shipping = 0) {
@@ -1295,6 +1333,30 @@ export function createQBSyncEngine(ctx){
         if(!invoiceDate){const error='invoice date could not be converted to a QBO date';log.details.push((inv.display_id||inv.id)+' — BLOCKED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'blocked',error});log.status='partial';if(!canary)break;continue}
         const invoiceTotal=safeNum(inv.total);
         if(invoiceTotal<=0){const error='invoice total must be positive; refunds require the separate 40000 credit/refund workflow.';log.details.push((inv.display_id||inv.id)+' — BLOCKED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'blocked',error});log.status='partial';if(!canary)break;continue}
+        // Repeat the normalized identity check immediately before the write.
+        // The reviewed manifest can be minutes old, and another run may have
+        // created the invoice since then.  Exact existing records are linked;
+        // number collisions with different accounting identity stop the batch.
+        try{
+          const aliases=qbInvoiceNumberAliases(inv.display_id||inv.id);
+          const seen=new Map();
+          for(const alias of aliases){
+            const lookup=await queryQBReadOnly(qbApi,"SELECT Id, DocNumber, CustomerRef, TotalAmt, TxnDate FROM Invoice WHERE DocNumber = '"+alias.replace(/'/g,"\\'")+"'",'invoice pre-write duplicate query');
+            const fault=lookup?.Fault?.Error?.[0];
+            if(fault)throw new Error(fault.Detail||fault.Message||'QBO query error');
+            (lookup?.QueryResponse?.Invoice||[]).forEach(row=>seen.set(String(row.Id),row));
+          }
+          const checked=applyQBInvoiceLiveReadiness([{invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),qboCustomerId:String(cQBId),date:invoiceDate,total:invoiceTotal,action:'ready'}],[...seen.values()])[0];
+          if(checked.action==='existing'){
+            setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,qb_invoice_id:checked.qboId}:ii));
+            results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'existing',qboId:checked.qboId,total:invoiceTotal});
+            log.details.push((inv.display_id||inv.id)+' → exact existing QBO Invoice #'+checked.qboId+' linked; no invoice written');synced++;
+            continue;
+          }
+          if(checked.action==='blocked'){
+            const error=checked.reason;log.details.push((inv.display_id||inv.id)+' — BLOCKED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'blocked',error});log.status='partial';if(!canary)break;continue;
+          }
+        }catch(e){const error='pre-write duplicate check failed: '+e.message;log.details.push((inv.display_id||inv.id)+' — BLOCKED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'blocked',error});log.status='partial';if(!canary)break;continue}
         const invoiceDescription='Invoice '+(inv.display_id||inv.id)+(so?' for '+so.id:'')+(so?.memo?' — '+so.memo:'');
         let customerTermRef=null,customerDueDate=null;
         {
