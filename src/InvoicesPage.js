@@ -14,7 +14,7 @@ import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub,
 import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled, greetLine, withGreeting, emailMoney } from './utils';
 import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms } from './App';
 import { stripePaymentRepairCandidate } from './lib/invoicePaymentReconciliation';
-import { invoiceDetailBalance, normalizeInvoiceForDetail } from './lib/invoiceDetail';
+import { invoiceDetailBalance, invoicePaymentStatus, normalizeInvoiceForDetail } from './lib/invoiceDetail';
 
 // The sent_history entry Brevo told us never arrived (hard bounce / blocked / spam).
 // Read from history rather than the client-only _delivery_* fields so the failure is
@@ -154,7 +154,7 @@ export default function InvoicesPage(){
       const fee=method==='cc'?Math.round(amount*CC_FEE_PCT*100)/100:0;
       const newTotal=inv.total+fee; // CC surcharge folded into invoice total (cc_fee tracks it; GP/commissions subtract it)
       const newPaid=inv.paid+amount+fee; // Customer pays amount + fee
-      const newStatus=newPaid>=newTotal?'paid':newPaid>0?'partial':'open';
+      const newStatus=invoicePaymentStatus(newTotal,newPaid,inv.status);
       const payment={amount:amount+fee,method,ref,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),cc_fee:fee};
       const updated={...inv,total:newTotal,paid:newPaid,status:newStatus,cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment]};
       setInvs(prev=>prev.map(i=>i.id===inv.id?updated:i));
@@ -306,7 +306,13 @@ export default function InvoicesPage(){
         return{sku:it.sku,name:it.name,color:it.color,qty,decos};
       }).filter(Boolean):[];
       const dd=dueDays(inv.due_date);
-      const overdue=dd!==null&&dd<0&&inv.status!=='paid';
+      // A zero balance is settled, whatever the stored status says. Rows written before the
+      // edit path re-settled the status still carry a stale 'partial', and without this the
+      // page contradicts itself — "Balance: $0 / Paid in full" next to an Overdue due date.
+      // Portal invoices only: a NetSuite row's $0 can mean "no authoritative balance exported"
+      // rather than "paid", and historicalInvoiceAr already decides that case.
+      const settled=!inv._hist&&bal<=0.005&&safeNum(inv.paid)>0;
+      const overdue=dd!==null&&dd<0&&inv.status!=='paid'&&!settled;
       const contacts=(ic?.contacts||[]).filter(c=>c.email);
 
       // Bill-to / ship-to / PO as they print. Hoisted out of buildInvDocOpts so the packing slip
@@ -429,9 +435,9 @@ export default function InvoicesPage(){
                 <div style={{fontSize:13,opacity:0.8}}>Balance: <span style={{fontWeight:700,color:bal>0?'#fbbf24':'#86efac'}}>${bal.toLocaleString()}</span></div>
                 <div style={{marginTop:6}}>
                   <span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,
-                    background:inv.status==='paid'?'rgba(134,239,172,0.3)':inv.status==='partial'?'rgba(251,191,36,0.3)':overdue?'rgba(252,165,165,0.3)':'rgba(191,219,254,0.3)',
+                    background:inv.status==='paid'||settled?'rgba(134,239,172,0.3)':inv.status==='partial'?'rgba(251,191,36,0.3)':overdue?'rgba(252,165,165,0.3)':'rgba(191,219,254,0.3)',
                     color:'white'}}>
-                    {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':overdue?'Overdue':'Open'}
+                    {inv.status==='paid'||settled?'Paid':inv.status==='partial'?'Partial':overdue?'Overdue':'Open'}
                   </span>
                 </div>
               </div>
@@ -1291,6 +1297,9 @@ export default function InvoicesPage(){
                 tax:emTax,
                 line_items:cleanLines,
                 total:emTotal,
+                // Re-settle against what is already paid. Lowering the total to at or below
+                // the amount paid closes the invoice; raising it above re-opens it.
+                status:invoicePaymentStatus(emTotal,em.inv.paid,em.inv.status),
                 updated_at:new Date().toLocaleString()};
               setInvs(prev=>prev.map(i=>i.id===em.inv.id?updated:i));
               setViewInvoice(updated);
@@ -1492,7 +1501,9 @@ export default function InvoicesPage(){
 
     // Enrich invoices with computed fields — portal invs plus NetSuite invoice history (read-only).
     const enrichedInvs=invs.map(i=>{const age=agingDays(i.date);const dd=dueDays(i.due_date);const bal=i.total-i.paid;
-      const overdue=dd!==null&&dd<0&&i.status!=='paid';
+      // Settled is settled: a row left at a stale 'partial' with nothing owed must not turn the
+      // list red or land on the past-due email — same rule the detail page applies.
+      const overdue=dd!==null&&dd<0&&i.status!=='paid'&&bal>0.005;
       const so=sos.find(s=>s.id===i.so_id);const c=cust.find(x=>x.id===i.customer_id);const rep=i.rep_id||c?.primary_rep_id||so?.created_by||null;
       return{...i,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_rep:rep,_cname:cust.find(c=>c.id===i.customer_id)?.name||'Unknown'}});
 
