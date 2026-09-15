@@ -384,13 +384,22 @@ const _mapHistInvoice=hi=>({
 // other table is anon-readable) and it's fetched exactly once, at initial load. A tab whose
 // initial load ran without a live staff session (expired/refreshing token, tab opened at the
 // login screen) therefore loads the entire portal fine EXCEPT NetSuite invoices — and kept them
-// empty until a hard refresh, because polls never re-applied them. Returns the mapped list, or
-// null on a failed page ([] is authoritative for anon/coach tabs — the RLS-denied read).
+// empty until a hard refresh, because polls never re-applied them.
+// Returns {rows,status}. status is 'ok' (rows are the authoritative history), 'error' (the read
+// failed/timed out) or 'denied' (this tab is not allowed to read the table). rows is null unless ok,
+// so a caller can never mistake "couldn't read it" for "there is none" — the whole point of the
+// status. The UI needs that distinction: an empty history rendered as a plain empty list told reps a
+// customer had never been invoiced when the truth was that their tab never loaded the table.
 const _dbLoadHistInvoices=async()=>{
-  if(!supabase)return null;
+  if(!supabase)return{rows:null,status:'error'};
+  // _safeQuery turns a denied/missing read into an EMPTY 200 (see _classifyPage) and records it in
+  // _unconfirmedLoadTables instead. Clear this table's entry first so what's left after the await
+  // describes only this call, not a stale mark from an earlier _dbLoad.
+  _unconfirmedLoadTables.delete('customer_invoices');
   const r=await _safeQuery('customer_invoices',{order:'invoice_date',orderOpts:{ascending:false},limit:20000});
-  if(r.error)return null;// a failed/partial page — don't apply (a stale _lastLoadTimedOut entry from a prior load can't be trusted here, so judge by this result alone)
-  return (r.data||[]).map(_mapHistInvoice);
+  if(r.error)return{rows:null,status:'error'};// a failed/partial page — don't apply (a stale _lastLoadTimedOut entry from a prior load can't be trusted here, so judge by this result alone)
+  if(_unconfirmedLoadTables.has('customer_invoices'))return{rows:null,status:'denied'};
+  return{rows:(r.data||[]).map(_mapHistInvoice),status:'ok'};
 };
 const _dbLoad = async (opts={}) => {
   const {coreOnly=false, histInvoices=false, only=null, fullState=false, essential=false} = opts;

@@ -2464,6 +2464,12 @@ export default function App(){
   const[ests,setEsts]=useState(()=>_migrated.ests);const[sos,setSOs]=useState(()=>_migrated.sos);const[invs,setInvs]=useState(()=>_migrated.invs);
   // NetSuite invoice history (customer_invoices table) — read-only; kept separate from portal invs state.
   const[histInvs,setHistInvs]=useState([]);
+  // Did the NetSuite history actually LOAD? 'loading' | 'ok' | 'error' | 'denied'. customer_invoices is
+  // the only staff-gated read in the whole load, so a tab whose session wasn't live gets an empty
+  // history while every other table (anon-readable) fills in normally. Without this flag the UI can't
+  // tell that apart from a customer who has genuinely never been invoiced, and it showed reps an empty
+  // invoice list on accounts with years of paid history.
+  const[histInvsStatus,setHistInvsStatus]=useState('loading');
   // Live count for the poll's self-heal (the poll effect has [] deps, so it can't read histInvs directly).
   const _histInvsCount=useRef(0);
   React.useEffect(()=>{_histInvsCount.current=histInvs.length},[histInvs]);
@@ -3173,11 +3179,21 @@ export default function App(){
   React.useEffect(()=>{
     if(dbLoading||!supabase||_histInvoicesLoadStarted.current)return;
     _histInvoicesLoadStarted.current=true;let cancelled=false;let idleId=null;let timerId=null;
-    const load=async()=>{const rows=await _dbLoadHistInvoices();if(!cancelled&&rows)setHistInvs(rows)};
+    const load=async()=>{const{rows,status}=await _dbLoadHistInvoices();if(cancelled)return;if(rows)setHistInvs(rows);setHistInvsStatus(status)};
     if(typeof window.requestIdleCallback==='function')idleId=window.requestIdleCallback(load,{timeout:2000});
     else timerId=setTimeout(load,0);
     return()=>{cancelled=true;if(idleId!=null&&typeof window.cancelIdleCallback==='function')window.cancelIdleCallback(idleId);if(timerId!=null)clearTimeout(timerId)};
   },[dbLoading]);
+  // On-demand retry behind the customer page's "history didn't load" banner. The poll's self-heal
+  // above only fires on a FULL sync (_FULL_SYNC_MS = 30 min), which is far too long to leave a rep
+  // looking at an invoice list that renders as empty — this is the same recovery, on a button.
+  const _retryHistInvoices=React.useCallback(async()=>{
+    setHistInvsStatus('loading');
+    const{rows,status}=await _dbLoadHistInvoices();
+    if(rows)setHistInvs(rows);
+    setHistInvsStatus(status);
+    return status;
+  },[]);
 
   // Match the unload warning: a preserved conflict is still unsaved work even
   // after it has left the failed-save retry set. Only an explicit user reload
@@ -3301,7 +3317,8 @@ export default function App(){
         // Retry on full syncs while state has none; for anon/coach tabs the refetch is one cheap
         // page-0 query that stays empty, so this never hammers the DB.
         if(!d._coreOnly&&_histInvsCount.current===0){
-          const _hh=await _dbLoadHistInvoices();
+          const{rows:_hh,status:_hs}=await _dbLoadHistInvoices();
+          setHistInvsStatus(_hs);
           if(_hh&&_hh.length){setHistInvs(prev=>prev.length?prev:_hh);console.log('[DB] NetSuite invoice history recovered on poll ('+_hh.length+' invoices)')}
         }
         // Preserve local versions of entities whose saves failed — don't let DB data overwrite them
@@ -11648,7 +11665,7 @@ export default function App(){
   };
   // CUSTOMERS
   function rCust(){
-    if(selC)return<ComponentErrorBoundary name="CustDetail"><React.Suspense fallback={<LazyFallback/>}><CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={(c,product,seed)=>newE(c,product,seed)} sos={sos} msgs={msgs} onMsg={setMsgs} onInv={setInvs} companyInfo={companyInfo} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} onOpenInv={inv=>{setViewInvoice(inv);setPg('invoices')}} ests={ests} invs={invs} onSaveSO={savSO} onSaveEst={savE} onSaveArtFiles={savArtFiles} REPS={REPS} prod={prod}
+    if(selC)return<ComponentErrorBoundary name="CustDetail"><React.Suspense fallback={<LazyFallback/>}><CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={(c,product,seed)=>newE(c,product,seed)} sos={sos} msgs={msgs} onMsg={setMsgs} onInv={setInvs} companyInfo={companyInfo} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} onOpenInv={inv=>{setViewInvoice(inv);setPg('invoices')}} ests={ests} invs={invs} onSaveSO={savSO} onSaveEst={savE} onSaveArtFiles={savArtFiles} REPS={REPS} prod={prod} histStatus={histInvsStatus} onRetryHist={_retryHistInvoices}
       onMarkRead={ids=>{const s=new Set(ids);setMsgs(msgs.map(m=>s.has(m.id)?{...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]}:m))}}
       onSavePromoProgram={async(prog)=>{await _dbSavePromoProgram(prog);const isFamily=c=>c.id===prog.customer_id||c.parent_id===prog.customer_id;const upd=c=>({...c,promo_programs:[...(c.promo_programs||[]).filter(p=>p.id!==prog.id),prog]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s);nf('Promo program saved')}}
       onDeletePromoProgram={async(id)=>{await _dbDeletePromoProgram(id);const upd=c=>({...c,promo_programs:(c.promo_programs||[]).filter(p=>p.id!==id)});setCust(prev=>prev.map(c=>(c.promo_programs||[]).some(p=>p.id===id)?upd(c):c));setSelC(s=>s&&(s.promo_programs||[]).some(p=>p.id===id)?upd(s):s);nf('Promo program removed')}}

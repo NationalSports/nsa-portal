@@ -136,8 +136,9 @@ function CwMultiPrompt({title,cws=[],initialNames=[],initialDefault=false,onAppl
 
 // CUSTOMER DETAIL
 
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,onMsg,onInv,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,onOmgStoreSaved,companyInfo,nf}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,onMsg,onInv,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,onOmgStoreSaved,companyInfo,nf,histStatus,onRetryHist}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[yF,setYF]=useState('all');const[rR,setRR]=useState('thisyear');
+  const[histRetrying,setHistRetrying]=useState(false);// NetSuite-history retry in flight (banner below)
   const[jSF,setJSF]=useState('open');// Jobs tab status filter: open | done | all
   const[jFil,setJFil]=useState({search:'',deco:'all',art:'all',prod:'all'});// Jobs tab: search + deco/art/product filters
   const[expSOs,setExpSOs]=useState(()=>new Set());
@@ -645,7 +646,22 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {[['all','All'],['open','Open'],['closed','Closed']].map(([v,l])=><button key={v} className={`btn btn-sm ${sF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setSF(v)}>{l}</button>)}
         <span style={{width:1,background:'#e2e8f0',margin:'0 4px'}}/>
         {[['all','All Years'],['thisyear','This Year'],['lastyear','Last Year']].map(([v,l])=><button key={v} className={`btn btn-sm ${yF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setYF(v)}>{l}</button>)}
-      </div></div><div className="card-body" style={{padding:0}}><table style={{fontSize:12}}><thead><tr><th>ID</th><th>Type</th><th>Date</th><th>SO</th><th>Memo</th>{isP&&<th>Sub</th>}<th>Amount</th><th>Status</th></tr></thead><tbody>
+      </div></div>
+      {/* The pre-portal (NetSuite) invoice history lives in customer_invoices — the ONLY staff-gated
+          read in the load. When a tab's session isn't live, or that one request fails, those rows are
+          simply absent and this table renders "No records" on an account with years of paid invoices.
+          Reps read that as "this customer has never ordered from us" and told customers so. Say what
+          actually happened instead, and give them the retry the 30-minute poll otherwise makes them
+          wait for. Only shown on a real failure — never during the normal deferred first load. */}
+      {(histStatus==='error'||histStatus==='denied')&&<div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',padding:'9px 16px',borderBottom:'1px solid #fde68a',background:'#fffbeb',fontSize:11,color:'#92400e'}}>
+        <span style={{fontWeight:700}}>⚠ Past invoice history didn't load</span>
+        <span style={{flex:1,minWidth:220}}>{histStatus==='denied'
+          ?'Your login needs refreshing. Sign out and back in, then reopen this customer.'
+          :'Invoices from before the portal are missing from this list below. Nothing has been deleted — they just did not download.'}</span>
+        {onRetryHist&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}} disabled={histRetrying}
+          onClick={async()=>{setHistRetrying(true);try{await onRetryHist()}finally{setHistRetrying(false)}}}>{histRetrying?'Retrying…':'Retry'}</button>}
+      </div>}
+      <div className="card-body" style={{padding:0}}><table style={{fontSize:12}}><thead><tr><th>ID</th><th>Type</th><th>Date</th><th>SO</th><th>Memo</th>{isP&&<th>Sub</th>}<th>Amount</th><th>Status</th></tr></thead><tbody>
         {filt.length===0?<tr><td colSpan={8} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No records</td></tr>:
         filt.map((t,i)=><tr key={t.id+'-'+i} style={{cursor:(t._src==='order'||t.type==='estimate'||t.type==='invoice'||t.so_id)?'pointer':undefined}} onClick={()=>{if(t.type==='estimate'){const est2=(ests||[]).find(e=>e.id===t.id);if(est2&&onOpenEst)onOpenEst(est2)}else if(t.type==='invoice'){if(onOpenInv){
             // Rows here are rebuilt field-by-field (see the txns push above), which DROPS _hist —
