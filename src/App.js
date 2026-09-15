@@ -66,6 +66,7 @@ import { mergeDurableQbCanaries, qbCanaryLedgerRecord } from './qbCanaryLedger';
 import { loadDurableQBLinkReceipts, mergeDurableQBLinks, persistVerifiedQBLink } from './qbLinkLedger';
 import { canViewFinancials } from './lib/financialAccess';
 import { consolidateOmgProductRows } from './lib/storeSkuGrouping';
+import { webstoreCheckoutMoney } from './lib/webstoreSoMoney';
 import { acquireOmgCreationGuard, omgCollectedUnitPrice, omgInvoiceIdempotencyKey, webstoreInvoiceIdempotencyKey } from './lib/omgCreationGuard';
 import { matchedBillPoNumber, normalizeBillForReview, prepareQboBackfillBill } from './qbBillReview';
 import { resolvePoDisplayVendor } from './lib/poVendor';
@@ -6868,6 +6869,20 @@ export default function App(){
       }
       console.error('[Webstore] atomic batch finalization failed:',finalizeErr||finalized);
       return null;
+    }
+    // The server derives the checkout money (processing fee, sales tax, shipping charged,
+    // Stripe card fees) from the locked orders and writes it onto the SO row; carry it into
+    // local state so the editor opens with the same numbers without a refetch.
+    const _sm=finalized.store_money;
+    if(_sm&&typeof _sm==='object'){
+      const _patch={_omg_processing:Number(_sm.processing)||0,_omg_tax:Number(_sm.tax)||0,_omg_shipping:Number(_sm.shipping)||0,_omg_cc_fees:Number(_sm.cc_fees)||0};
+      // The server's SO update bumped _version; adopt it or the rep's first edit of the
+      // brand-new SO trips the version-conflict guard against our own write.
+      if(Number(finalized.so_version)>0)_patch._version=Number(finalized.so_version);
+      Object.assign(newSO,_patch);
+      setSOs(prev=>prev.map(s=>s.id===id?{...s,..._patch}:s));
+      const _gap=Number(_sm.rounding_gap)||0;
+      if(Math.abs(_gap)>=0.005)nf('Check '+id+': its product lines differ from the product money the store collected by $'+Math.abs(_gap).toFixed(2)+' (a partial refund or price edit?) — the batch invoice bills the lines as they are.','error');
     }
     // Jump the user straight into the new SO in the Sales Orders editor.
     setESO(newSO);setESOC(cust.find(c=>c.id===customer_id)||null);setPg('orders');
@@ -15660,7 +15675,10 @@ export default function App(){
     // charge is returned as shipRev and applied to margin/pct only.
     const shipCost=safeNum(so._shipping_cost||so._shipstation_cost||0)||(so._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
     cost+=shipCost+safeNum(so._inbound_freight||0)+manualPoCostTotal(so);
-    const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
+    // Webstore batch checkout money — mirrors calcGP / calcOrderMargin: processing fee
+    // revenue, Stripe card fees as cost, shipping charged at checkout as shipping revenue.
+    const _wm=webstoreCheckoutMoney(so);rev+=_wm.processing;cost+=_wm.ccFees;
+    const shipRev=(so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value))+_wm.shipping;
     const mBase=rev+shipRev;
     return{rev,cost,shipRev,margin:mBase-cost,pct:mBase>0?Math.round((mBase-cost)/mBase*100):0,units}};
 

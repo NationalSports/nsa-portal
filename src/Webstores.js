@@ -3819,7 +3819,13 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // treatment. Stale catalog ids no longer split equivalent SKU/color lines,
       // but different art, personalization, or transfer codes remain separate.
       const sourceColor = source.product?.color || i.color || baseProduct?.color || '';
-      const key = webstoreProductionKey({
+      const q = i.qty || 1;
+      // …and by the unit price the buyer actually paid. A 2XL upcharge or a mid-store
+      // price change used to be averaged into one line ($23.05 × 21), which rounds away
+      // from the money collected; a separate line per price makes every qty × rate exact,
+      // so the SO, its print and the batch invoice tie to the cent.
+      const unitCollected = r2(collectedForLine(i) / q);
+      const baseKey = webstoreProductionKey({
         sku: source.sku,
         color: sourceColor,
         vendorId: source.vendor_id,
@@ -3827,8 +3833,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         personalize: personalize[sourcePid] || {},
         transferCodes: [...(productionTransfersByPid[sourcePid] || [])],
       });
-      if (!byProduct[key]) byProduct[key] = { source_product_id: sourcePid, product_id: source.product_id, vendor_id: source.vendor_id, sku: source.sku, sizes: {}, numbers: {}, names: {}, collected: 0 };
-      const g = byProduct[key]; const q = i.qty || 1;
+      const key = baseKey + '§$' + unitCollected.toFixed(2);
+      if (!byProduct[key]) byProduct[key] = { _baseKey: baseKey, source_product_id: sourcePid, product_id: source.product_id, vendor_id: source.vendor_id, sku: source.sku, sizes: {}, numbers: {}, names: {}, collected: 0 };
+      const g = byProduct[key];
       const pdef = personalize[sourcePid] || {};
       g.sizes[sz] = (g.sizes[sz] || 0) + q;
       g.collected = r2(g.collected + collectedForLine(i));
@@ -3920,6 +3927,13 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // the two can never disagree. The rep still picks the decorator on the Deco PO.
     const outsideDeco = (sel.decoration_mode || 'in_house') === 'outsourced';
     const routing = outsideDeco ? { fulfillment: 'outside' } : {};
+    // Price-split lines of the same garment/treatment share one size menu, so a rep can
+    // still add an L to the line that only happened to carry the 2XL upcharge.
+    const sizesByBaseKey = {};
+    Object.values(byProduct).forEach((g) => {
+      const set = (sizesByBaseKey[g._baseKey] = sizesByBaseKey[g._baseKey] || new Set());
+      Object.keys(g.sizes).forEach((sz) => set.add(sz));
+    });
     const soItems = Object.values(byProduct).map((g) => {
       const sourcePid = g.source_product_id || g.product_id;
       const sourceInfo = pinfo[sourcePid] || {};
@@ -3993,7 +4007,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const unitSell = r2((g.collected || 0) / qtyTot * discRatio);
       return { sku: g.sku || info.sku || '', name: info.name || sourceInfo.name || g.sku || 'Item', brand: info.brand || sourceInfo.brand || '', color: sourceInfo.color || info.color || '',
         product_id: g.product_id || info.id || null, vendor_id: g.vendor_id || info.vendor_id || null, nsa_cost: info.nsa_cost || sourceInfo.nsa_cost || 0, retail_price: unitSell, unit_sell: unitSell,
-        sizes: g.sizes, available_sizes: Object.keys(g.sizes), no_deco: decorations.length === 0, decorations, pick_lines: [], po_lines: [] };
+        sizes: g.sizes, available_sizes: [...(sizesByBaseKey[g._baseKey] || new Set(Object.keys(g.sizes)))], no_deco: decorations.length === 0, decorations, pick_lines: [], po_lines: [] };
     });
 
     const units = soItems.reduce((a, i) => a + Object.values(i.sizes).reduce((b, v) => b + v, 0), 0);
@@ -4005,10 +4019,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const netOf = (o) => orderNetCollected(o);
     const cardTotal = r2(cardOrders.reduce((a, o) => a + netOf(o), 0));
     const tabTotal = r2(tabOrders.reduce((a, o) => a + netOf(o), 0));
-    // Team-tab extras = the tab orders' tax/shipping/processing beyond their
-    // product (+fundraise) share. The auto-invoice adds these on top of the SO's
-    // product lines so the club's open balance equals the team-tab gross.
-    const payNote = `\n\n⚠ PAYMENT — INVOICE THE CLUB FOR THE TEAM-TAB TOTAL ONLY:\n• Already paid by card (collected via Stripe): $${cardTotal.toFixed(2)} · ${cardOrders.length} order${cardOrders.length === 1 ? '' : 's'}\n• To invoice to the club (team tab): $${tabTotal.toFixed(2)} · ${tabOrders.length} order${tabOrders.length === 1 ? '' : 's'}`;
+    // Checkout sales tax, shipping and the processing fee ride on the SO (its store
+    // money columns, written by finalize_webstore_batch) and on the batch invoice, so
+    // the card payment recorded equals what the cards were charged and the club's open
+    // balance equals the team-tab gross.
+    const payNote = `\n\n⚠ PAYMENT — INVOICE THE CLUB FOR THE TEAM-TAB TOTAL ONLY (checkout tax, shipping & processing fee are already on this SO and its invoice):\n• Already paid by card (collected via Stripe): $${cardTotal.toFixed(2)} · ${cardOrders.length} order${cardOrders.length === 1 ? '' : 's'}\n• To invoice to the club (team tab): $${tabTotal.toFixed(2)} · ${tabOrders.length} order${tabOrders.length === 1 ? '' : 's'}`;
     const cutoffNote = batchMeta.cutoff ? `\nBatch cutoff: orders placed through ${batchCutoffDay(batchMeta.cutoff)} — the store stays open; later orders go into the next batch.` : '';
     const expectedDate = salesOrderDueDate(sel.close_at, sel.delivery_window_weeks);
     const notes = `Webstore: ${sel.name} (/shop/${sel.slug})${batchMeta.label ? `\nBatch: ${batchMeta.label}` : ''}${cutoffNote}\n${bOrders.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'} · expected ${deliveryWindowLabel(sel.delivery_window_weeks)} after close${expectedDate ? ` (${expectedDate})` : ''}\nNames & numbers are on each item's deco lines.${outsideDeco ? '\nDecoration: OUTSIDE — this store is set to be decorated off-site, so every deco (art, names and numbers) is routed Outside and spawns no in-house job. Add a Deco PO to pick the decorator and cost it.' : ''}${discNote}${payNote}`;
