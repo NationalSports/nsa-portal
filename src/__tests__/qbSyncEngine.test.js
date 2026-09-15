@@ -30,8 +30,8 @@ describe('QuickBooks purchase-order grouping', () => {
 
   test('shows one preview/posting group for a PO spread across several source lines', () => {
     const groups=groupPortalPurchaseOrders([
-      so('SO-1',[{po_id:'PO 5550',S:2,created_at:'2026-09-01'}]),
-      so('SO-2',[{po_id:'PO 5550',M:3,created_at:'2026-09-01'}]),
+      so('SO-1',[{po_id:'PO 5550',S:2,created_at:'2026-09-15'}]),
+      so('SO-2',[{po_id:'PO 5550',M:3,created_at:'2026-09-15'}]),
     ],{});
     expect(groups).toHaveLength(1);
     expect(groups[0]).toMatchObject({poId:'PO 5550',vendor:'Champro',accountKey:'purchases_account',invalidReason:''});
@@ -40,14 +40,14 @@ describe('QuickBooks purchase-order grouping', () => {
 
   test('uses the vendor saved on the PO line instead of the product brand', () => {
     const groups=groupPortalPurchaseOrders([
-      so('SO-1',[{po_id:'PO 58993 WVCSOC',S:36,vendor:'Agron',created_at:'2026-09-02'}]),
+      so('SO-1',[{po_id:'PO 58993 WVCSOC',S:36,vendor:'Agron',created_at:'2026-09-15'}]),
     ],{});
     expect(groups[0]).toMatchObject({poId:'PO 58993 WVCSOC',vendor:'Agron',invalidReason:''});
   });
 
   test('resolves a legacy vendor id saved on the PO line to the current portal vendor name', () => {
     const groups=groupPortalPurchaseOrders([
-      so('SO-1',[{po_id:'PO 3064 HBMS',S:12,vendor:'ns_3863',created_at:'2026-09-02'}]),
+      so('SO-1',[{po_id:'PO 3064 HBMS',S:12,vendor:'ns_3863',created_at:'2026-09-15'}]),
     ],{},[{id:'ns_3863',name:'Champro'}]);
     expect(groups[0]).toMatchObject({poId:'PO 3064 HBMS',vendor:'Champro',invalidReason:''});
   });
@@ -79,6 +79,20 @@ describe('QuickBooks purchase-order grouping', () => {
     expect(isHistoricalPortalPurchaseOrder(portalPO,order)).toBe(false);
     expect(groupPortalPurchaseOrders([order],{}).map(group=>group.poId)).toEqual(['PO 3611 NSA']);
     expect(historicalPortalPurchaseOrderIds([order],{})).toEqual([]);
+  });
+
+  test.each(['2026-09-08','9/8/2026'])('excludes Portal PO history through the migration cutover: %s',(created_at) => {
+    const portalPO={po_id:'PO 59074 SOSC',S:12,vendor:'Champro',created_at};
+    const order=so('SO-HISTORY',[portalPO]);
+    expect(isHistoricalPortalPurchaseOrder(portalPO,order)).toBe(true);
+    expect(groupPortalPurchaseOrders([order],{})).toEqual([]);
+  });
+
+  test('keeps the first post-cutover Portal PO eligible', () => {
+    const portalPO={po_id:'PO 59075 SOSC',S:12,vendor:'Champro',created_at:'9/9/2026'};
+    const order=so('SO-FORWARD',[portalPO]);
+    expect(isHistoricalPortalPurchaseOrder(portalPO,order)).toBe(false);
+    expect(groupPortalPurchaseOrders([order],{}).map(group=>group.poId)).toEqual(['PO 59075 SOSC']);
   });
 
   test('keeps a new Portal-issued PO eligible on an SO that was originally imported from NetSuite', () => {

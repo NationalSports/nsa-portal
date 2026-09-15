@@ -2374,7 +2374,7 @@ export default function App(){
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,
     realm_id:'',sandbox:false,// access/refresh tokens live server-side (qb_oauth_tokens), never in client state
     mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},
-    syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]},parkedPurchaseOrderIds:[]});
+    syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]},parkedPurchaseOrderIds:[],_durableLinksLoaded:false});
   const[qbTab,setQbTab]=useState('overview');
   const[qbSyncing,setQbSyncingState]=useState(false);
   const qbSyncBusyRef=useRef(false);
@@ -2922,7 +2922,7 @@ export default function App(){
           // replaced by the stale DB copy the load already read.
           if(as.wh_recent_actions)setWhRecentActions(prev=>{const incStr=JSON.stringify(as.wh_recent_actions);if(JSON.stringify(prev)===incStr){_whActionsApplied.current=incStr;return prev}if(_appStateDirty('wh_recent_actions'))return prev;_whActionsApplied.current=incStr;return as.wh_recent_actions});
           if(as.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as.job_time_logs});
-          if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]},parkedPurchaseOrderIds:[]};const _qbLoaded={..._qbDef,...as.qb_config,mapping:migrateQBAccountMapping(as.qb_config.mapping),autoSync:as.qb_config.initialMigrationApproved===true?(as.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)};setQBConfig(mergeDurableQBLinks(mergeDurableQbCanaries(_qbLoaded,as),{...as,..._qbDurableRowsRef.current}))}
+          if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]},parkedPurchaseOrderIds:[]};const _realm=String(as.qb_config.realm_id||'');const _qbLoaded={..._qbDef,...as.qb_config,mapping:migrateQBAccountMapping(as.qb_config.mapping),autoSync:as.qb_config.initialMigrationApproved===true?(as.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false),_durableLinksLoaded:_qbDurableHydrationRef.current===_realm};setQBConfig(mergeDurableQBLinks(mergeDurableQbCanaries(_qbLoaded,as),{...as,..._qbDurableRowsRef.current}))}
           if(as.omg_first_seen)setOmgFirstSeen(as.omg_first_seen);
           if(as.inv_pos)setInvPOs(as.inv_pos);
           if(as.inv_adj_log)setInvAdjLog(prev=>{const incStr=JSON.stringify(as.inv_adj_log);if(JSON.stringify(prev)===incStr){_invAdjLogApplied.current=incStr;return prev}if(_appStateDirty('inv_adj_log'))return prev;_invAdjLogApplied.current=incStr;return as.inv_adj_log});
@@ -3006,7 +3006,7 @@ export default function App(){
               if(as2.batch_counter)setBatchCounter(as2.batch_counter);if(as2.batch_vendor_counters)setBatchVendorCounters(as2.batch_vendor_counters);
               if(as2.change_log)setChangeLog(prev=>{const incStr=JSON.stringify(as2.change_log);if(JSON.stringify(prev)===incStr){_changeLogApplied.current=incStr;return prev}if(_appStateDirty('change_log'))return prev;_changeLogApplied.current=incStr;return as2.change_log});
               if(as2.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as2.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as2.job_time_logs});
-              if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]},parkedPurchaseOrderIds:[]};const _qbLoaded={..._qbDef,...as2.qb_config,mapping:migrateQBAccountMapping(as2.qb_config.mapping),autoSync:as2.qb_config.initialMigrationApproved===true?(as2.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]};setQBConfig(mergeDurableQBLinks(mergeDurableQbCanaries(_qbLoaded,as2),{...as2,..._qbDurableRowsRef.current}))}if(as2.inv_pos)setInvPOs(as2.inv_pos);
+              if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]},parkedPurchaseOrderIds:[]};const _realm=String(as2.qb_config.realm_id||'');const _qbLoaded={..._qbDef,...as2.qb_config,mapping:migrateQBAccountMapping(as2.qb_config.mapping),autoSync:as2.qb_config.initialMigrationApproved===true?(as2.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[],_durableLinksLoaded:_qbDurableHydrationRef.current===_realm};setQBConfig(mergeDurableQBLinks(mergeDurableQbCanaries(_qbLoaded,as2),{...as2,..._qbDurableRowsRef.current}))}if(as2.inv_pos)setInvPOs(as2.inv_pos);
               if(as2.inv_adj_log)setInvAdjLog(prev=>{const incStr=JSON.stringify(as2.inv_adj_log);if(JSON.stringify(prev)===incStr){_invAdjLogApplied.current=incStr;return prev}if(_appStateDirty('inv_adj_log'))return prev;_invAdjLogApplied.current=incStr;return as2.inv_adj_log});if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);if(as2.comm_overrides)setCommOverrides(as2.comm_overrides);if(as2.labor_rates)setLaborRates(as2.labor_rates);
               if(as2.company_info){const ci={...NSA_DEFAULTS,...as2.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
               console.log('[DB] Loaded from Supabase after seed by other browser');
@@ -4667,30 +4667,35 @@ export default function App(){
   };
   React.useEffect(()=>{
     const realmId=String(qbConfig.realm_id||'');
-    if(dbLoading||!_dbLoadSuccess.current||!storedUserCanManageQuickBooks()||!realmId||!cust.length)return;
+    if(dbLoading||!_dbLoadSuccess.current||!storedUserCanManageQuickBooks()||!realmId)return;
     if(_qbDurableHydrationRef.current===realmId||_qbDurableHydrationRef.current===realmId+':loading')return;
     let cancelled=false;_qbDurableHydrationRef.current=realmId+':loading';
-    loadDurableQBLinkReceipts(supabase,realmId,{sourceIds:cust.map(customer=>customer.id)}).then(rows=>{
+    setQBConfig(prev=>String(prev.realm_id||'')===realmId?{...prev,_durableLinksLoaded:false}:prev);
+    // Load the complete realm ledger, not only customer receipts. Restricting
+    // this to customer IDs made thousands of already-verified PO links vanish
+    // after a reload and repopulated the PO queue with migration history.
+    loadDurableQBLinkReceipts(supabase,realmId).then(rows=>{
       if(cancelled)return;
       Object.assign(_qbDurableRowsRef.current,rows);
-      setQBConfig(prev=>String(prev.realm_id||'')===realmId?mergeDurableQBLinks(prev,rows):prev);
+      setQBConfig(prev=>String(prev.realm_id||'')===realmId?mergeDurableQBLinks({...prev,_durableLinksLoaded:true},rows):prev);
       _qbDurableHydrationRef.current=realmId;
     }).catch(error=>{
       if(cancelled)return;
       _qbDurableHydrationRef.current='';
+      setQBConfig(prev=>String(prev.realm_id||'')===realmId?{...prev,_durableLinksLoaded:false}:prev);
       console.error('[QB] Durable link hydration failed:',error);
       nf('Could not load durable QuickBooks links — '+error.message+'; sync remains locked','error');
     });
-    return()=>{cancelled=true};
-  },[dbLoading,qbConfig.realm_id,cust.length]);
-  React.useEffect(()=>{if(storedUserCanManageQuickBooks())_saveAppState('qb_config',qbConfig)},[qbConfig]);
+    return()=>{cancelled=true;if(_qbDurableHydrationRef.current===realmId+':loading')_qbDurableHydrationRef.current=''};
+  },[dbLoading,qbConfig.realm_id]);
+  React.useEffect(()=>{if(storedUserCanManageQuickBooks()){const{_durableLinksLoaded,...persisted}=qbConfig;_saveAppState('qb_config',persisted)}},[qbConfig]);
   // QB background auto-sync — self-contained: builds the sync engine from CURRENT
   // state at fire time. The old wiring called a ref only a mounted QBPage assigned,
   // so hourly/daily auto-sync silently did nothing until someone opened the QB page
   // that session — and afterwards synced the stale snapshot from the last render.
   React.useEffect(()=>{_qbSyncCtxRef.current=storedUserCanManageQuickBooks()?{cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,persistQbLink,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend}:null});
   React.useEffect(()=>{
-    if(!storedUserCanManageQuickBooks()||!qbConfig.connected||qbConfig.autoSync==='manual'||qbConfig.initialMigrationApproved!==true)return;
+    if(!storedUserCanManageQuickBooks()||!qbConfig.connected||qbConfig.autoSync==='manual'||qbConfig.initialMigrationApproved!==true||qbConfig._durableLinksLoaded!==true)return;
     const intervals={hourly:3600000,daily:86400000,realtime:300000};
     const ms=intervals[qbConfig.autoSync];
     if(!ms)return;
@@ -4700,7 +4705,7 @@ export default function App(){
       if(Date.now()-last>=ms)createQBSyncEngine(_qbSyncCtxRef.current).syncAll();
     },60000);// check every 60s
     return()=>clearInterval(id);
-  },[qbConfig.connected,qbConfig.autoSync,qbConfig.initialMigrationApproved,qbSyncing]);
+  },[qbConfig.connected,qbConfig.autoSync,qbConfig.initialMigrationApproved,qbConfig._durableLinksLoaded,qbSyncing]);
   // Ref for emergency flush — holds latest state for beforeunload and visibilitychange handlers
   const _visFlushRefs=useRef({});
   // Batch groups with an orderVendorBatch submission in flight — blocks double-submits per group.

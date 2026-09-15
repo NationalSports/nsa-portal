@@ -284,6 +284,11 @@ export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms
   return rows;
 }
 
+// The Portal/QBO migration was reconciled through 2026-09-08. Purchase orders
+// dated before the first forward-sync day belong to migration history even when
+// their old normalized rows lost the original `preexisting` marker.
+export const QB_PO_FORWARD_SYNC_START_DATE = '2026-09-09';
+
 // One portal PO can span several SO item rows. Group those rows before both UI
 // preview and QBO posting so the operator sees the same one-PO payload the API
 // will receive. Mixed vendors or mixed merchandise/decoration categories under
@@ -301,6 +306,8 @@ export function isHistoricalPortalPurchaseOrder(pl = {}, so = {}) {
   // PO export rather than guessing from a bare number alone.
   const origin = siPoOrigin(pl?.po_id);
   if (origin === 'old') return true;
+  const createdDate = parseQBDateValue(pl?.created_at);
+  if (createdDate && createdDate < QB_PO_FORWARD_SYNC_START_DATE) return true;
   if (origin === 'portal') return false;
   const rawId = String(pl?.po_id || '').trim();
   if (!/^(?:NSA\s+)?\d/i.test(rawId)) return false;
@@ -858,8 +865,16 @@ export function createQBSyncEngine(ctx){
     // at most a couple of minutes of work — the loop is resumable either way.
     const QB_SYNC_BATCH_SIZE=100;
     const requireDurableLinks=()=>{
-      if(typeof persistQbLink==='function')return true;
-      nf('Durable QBO link storage is unavailable; no migration record was sent','error');return false;
+      if(typeof persistQbLink!=='function'){
+        nf('Durable QBO link storage is unavailable; no migration record was sent','error');return false;
+      }
+      // App stamps this false while the realm's receipt ledger is loading. A
+      // missing flag is accepted for isolated tests and legacy callers; the
+      // production App always supplies an explicit value.
+      if(qbConfig._durableLinksLoaded===false){
+        nf('Verified QBO links are still loading; no record was sent','error');return false;
+      }
+      return true;
     };
     const migrationBatchLocked=()=>{
       nf('Migration batches remain locked until durable links survive reload and fresh login, and this entity rollout is reviewed','error');

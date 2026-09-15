@@ -461,9 +461,10 @@ export default function QBPage(){
     const totalInvQty=prod.reduce((a,p)=>a+Object.values(p._inv||{}).reduce((a2,v)=>a2+safeNum(v),0),0);
     const totalInvValue=prod.reduce((a,p)=>{const qty=Object.values(p._inv||{}).reduce((a2,v)=>a2+safeNum(v),0);return a+qty*safeNum(p.nsa_cost)},0);
     const unsyncedInvPOs=invPOs.filter(p=>!p._qb_synced);
-    const migrationUnlocked=qbConfig.initialMigrationApproved===true;
+    const durableLinksReady=qbConfig._durableLinksLoaded===true;
+    const migrationUnlocked=qbConfig.initialMigrationApproved===true&&durableLinksReady;
     const verifiedCanaryBills=new Set((qbConfig._qbCanaryBillIds||[]).map(String)).size;
-    const livePreflightReady=qbConfig.preflight?.status==='success'&&String(qbConfig.preflight?.realm_id||'')===String(qbConfig.realm_id||'');
+    const livePreflightReady=durableLinksReady&&qbConfig.preflight?.status==='success'&&String(qbConfig.preflight?.realm_id||'')===String(qbConfig.realm_id||'');
     const activeCanaryCustomers=cust.filter(c=>c.is_active!==false&&!c.deleted_at).sort((a,b)=>portalCustomerDisplayName(a).localeCompare(portalCustomerDisplayName(b)));
     const canaryInvoices=[...unsyncedInvs].sort((a,b)=>String(a.display_id||a.id).localeCompare(String(b.display_id||b.id),undefined,{numeric:true}));
     const canaryProducts=[...new Map(prod.filter(p=>p.is_active!==false&&String(p.sku||'').trim()).sort((a,b)=>String(a.sku).localeCompare(String(b.sku),undefined,{numeric:true})).map(p=>[String(p.sku).trim().toUpperCase(),p])).values()];
@@ -899,7 +900,7 @@ export default function QBPage(){
         <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label" title="Customers the Portal has a saved, verified QuickBooks link for. QuickBooks may already hold customers the Portal has not linked yet.">Customers linked</div><div className="stat-value" style={{color:'#2563eb'}}>{custWithQB}/{cust.length}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}><div className="stat-label">Invoices to Sync</div><div className="stat-value" style={{color:'#d97706'}}>{unsyncedInvs.length}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #16a34a'}}><div className="stat-label">SOs to Sync</div><div className="stat-value" style={{color:'#16a34a'}}>{unsyncedSOs.length}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">POs to Sync</div><div className="stat-value" style={{color:'#7c3aed'}}>{unsyncedPOGroups.length}</div>{!!autoExcludedHistoricalPOIds.length&&<div style={{fontSize:9,color:'#64748b',marginTop:2}}>{autoExcludedHistoricalPOIds.length} NetSuite/preexisting excluded</div>}</div>
+        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">POs to Sync</div><div className="stat-value" style={{color:'#7c3aed'}}>{durableLinksReady?unsyncedPOGroups.length:'…'}</div>{!durableLinksReady?<div style={{fontSize:9,color:'#64748b',marginTop:2}}>loading verified QBO links</div>:!!autoExcludedHistoricalPOIds.length&&<div style={{fontSize:9,color:'#64748b',marginTop:2}}>{autoExcludedHistoricalPOIds.length} historical/cutover excluded</div>}</div>
         <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label" title="SKUs the Portal has a saved, verified QuickBooks item link for. QuickBooks may already hold items the Portal has not linked yet.">Products linked</div><div className="stat-value" style={{color:'#166534'}}>{prodWithQB}/{prod.length}</div></div>
       </div>
 
@@ -1052,7 +1053,7 @@ export default function QBPage(){
               <button className="btn btn-secondary btn-sm" style={{marginLeft:8}} disabled={qbSyncing} onClick={restoreParkedPurchaseOrders}>Restore for review</button>
             </div>}
             {!!autoExcludedHistoricalPOIds.length&&<div style={{padding:10,marginBottom:10,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,fontSize:11,color:'#166534'}}>
-              <strong>{autoExcludedHistoricalPOIds.length} NetSuite/preexisting POs automatically excluded</strong> — kept in Portal history but never eligible for QBO PO creation.
+              <strong>{autoExcludedHistoricalPOIds.length} historical POs automatically excluded</strong> — NetSuite/preexisting records and POs through the September 8 migration cutover stay in Portal history but are never eligible for QBO PO creation.
             </div>}
             <button className="btn btn-sm" disabled={qbSyncing||!livePreflightReady} onClick={reviewPurchaseOrderBatch}>Review POs — No QBO Changes</button>
             {poBatchReview&&<>
