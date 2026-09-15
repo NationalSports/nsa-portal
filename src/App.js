@@ -3187,8 +3187,11 @@ export default function App(){
   // On-demand retry behind the customer page's "history didn't load" banner. The poll's self-heal
   // above only fires on a FULL sync (_FULL_SYNC_MS = 30 min), which is far too long to leave a rep
   // looking at an invoice list that renders as empty — this is the same recovery, on a button.
+  // Deliberately does NOT flip status back to 'loading' first: that's the banner's own hide
+  // condition, so doing it would unmount the banner (and its "Retrying…" button) for the length of
+  // the request and pop it back on failure — reading as "fixed, then broken again". The banner
+  // stays put and reports the outcome; CustDetail tracks the in-flight state for the button.
   const _retryHistInvoices=React.useCallback(async()=>{
-    setHistInvsStatus('loading');
     const{rows,status}=await _dbLoadHistInvoices();
     if(rows)setHistInvs(rows);
     setHistInvsStatus(status);
