@@ -33,7 +33,7 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, REP_PROD_FILE_DECOS, artistOwesProdFiles, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { stampEstimateDraftLineIds } from './lib/orderLineIdentity';
@@ -3317,6 +3317,11 @@ export default function App(){
         const pollCust=_pollMerge(d.customers,'cust');
         const pollMsgs=_pollMerge(d.messages,'msgs');
         const pollProd=_pollMerge(d.products,'prod');
+        // omg_stores is server-written every night (netlify/functions/omg-order-sync-background.js
+        // updates orders/unique_buyers/_last_synced). The poll MUST advance the omg state whenever it
+        // advances the omg snapshot — see the setOmgStores call below for why.
+        const pollOmg=_pollMerge(d.omg_stores||[],'omg');
+        const pollOmgStr=(()=>{try{return JSON.stringify(pollOmg)}catch(_){return null}})();
         // Update snapshot before state — auto-save effects will diff against this
         // CRITICAL: When coreOnly, preserve previous snapshot for cold tables (team, vendors, omg, issues)
         // to prevent auto-save effects from seeing a false diff and re-saving all entities
@@ -3324,7 +3329,7 @@ export default function App(){
         _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:pollInvs,msgs:pollMsgs,cust:d._coreOnly?_prevSnap.cust:pollCust,prod:d._coreOnly?_prevSnap.prod:pollProd,
           vend:d._coreOnly?_prevSnap.vend:d.vendors,
           team:d._coreOnly?_prevSnap.team:d.team,
-          omg:d._coreOnly?_prevSnap.omg:d.omg_stores,
+          omg:d._coreOnly?_prevSnap.omg:pollOmg,
           issues:d._coreOnly?_prevSnap.issues:d.issues,
           assignedTodos:d._coreOnly?(_prevSnap.assignedTodos||[]):_mergeAssignedTodos(d.assignedTodos||[],_prevSnap.assignedTodos||[])};
         setEsts(prev=>{const localById=indexFirstById(prev);const mergeEst=e=>{const local=localById.get(e.id);if(local&&_localRowIsNewer(local.updated_at,e.updated_at))return _keepLocalAdoptVersion(local,e);/* Approval-status protection: if this client just changed the status (approve/unapprove), keep the local status fields against rows that PREDATE the change (row _version <= the version the change was based on) — a poll that read before the write landed would otherwise snap it back (EST-1227). Rows whose _version advanced past the base are a legitimate later write (another user, convertSO) and always win. */if(local){const _rsc=_recentEstStatusChange(e.id);if(_rsc&&e.status!==_rsc.status&&_rsc.baseVersion!=null&&e._version!=null&&Number(e._version)<=_rsc.baseVersion){e={...e,status:_rsc.status,approved_by:_rsc.approved_by,approved_at:_rsc.approved_at}}}if(local?.items?.length&&(!e.items||!e.items.length)){e={...e,items:local.items,art_files:local.art_files||e.art_files}}/* Do NOT revert to the local copy when the DB legitimately has FEWER items: the poll already bails above on any timed-out child load (_decoTimedOut), so a lower DB item count here is a real deletion, not a hollowed/partial load. The removed "else if(...) keep local.items" clause silently resurrected deliberately-deleted estimate lines (the SO poll-merge below never had it). DB-empty is still protected by the clause just above. */if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}};if(local?.print_history?.length&&!e.print_history?.length)e={...e,print_history:local.print_history};if(local?.sent_history?.length&&!e.sent_history?.length)e={...e,sent_history:local.sent_history};if(local?.email_status&&!e.email_status)e={...e,email_status:local.email_status};if(local?.email_sent_at&&!e.email_sent_at)e={...e,email_sent_at:local.email_sent_at};if(local?.email_opened_at&&!e.email_opened_at)e={...e,email_opened_at:local.email_opened_at};if(local?.email_viewed_at&&!e.email_viewed_at)e={...e,email_viewed_at:local.email_viewed_at};if(local?.follow_up_at&&!e.follow_up_at)e={...e,follow_up_at:local.follow_up_at};/* Art files: DB-empty keeps local; otherwise superset-merge only within this client's own post-save window (_recentlySavedByMe) so a stale read can't drop a just-added file while another user's deletion still reconciles after the window. */if(local?.art_files?.length){if(!e.art_files||!e.art_files.length)e={...e,art_files:local.art_files};else if(_recentlySavedByMe(e.id))e={...e,art_files:mergeArtFileSuperset(e.art_files,local.art_files)}}return e};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.estimates.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(localById.get(e.id)||e):mergeEst(e));const r1=changed(prev,merged)?merged:prev;_dbSnap.current.ests=r1;return r1}const merged2=d.estimates.map(mergeEst);const r2=changed(prev,merged2)?merged2:prev;_dbSnap.current.ests=r2;return r2});
@@ -3400,6 +3405,15 @@ export default function App(){
         }
         if(d.messages.length)setMsgs(prev=>{const localById=indexFirstById(prev);if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.messages.map(m=>(_dbSaveFailedIds.has(m.id)||_dbSavePendingIds.has(m.id))?(localById.get(m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
+        // Advancing _dbSnap.current.omg WITHOUT advancing this state is a data-loss bug: the
+        // omgStores auto-save effect writes every row where state !== snapshot, treating state as
+        // truth. A tab left open across a nightly sync then had stale rows vs a freshened snapshot,
+        // so the next unrelated edit (assigning a CSR, say) blind-wrote the WHOLE stale store list
+        // back over the sync's orders/unique_buyers/_last_synced. Keep the two in lockstep.
+        // `changed()` keys off updated_at, which omg_stores has no column for, so compare by value.
+        if(!d._coreOnly&&d.omg_stores?.length)setOmgStores(prev=>{
+          try{return pollOmgStr!==null&&JSON.stringify(prev)===pollOmgStr?prev:pollOmg}catch(_){return pollOmg}
+        });
         if(!d._coreOnly)setAssignedTodos(prev=>{const v=_mergeAssignedTodos(d.assignedTodos||[],prev);return changed(prev,v)?v:prev});
         if(d.products.length)setProd(prev=>{const localById=indexFirstById(prev);const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(localById.get(dp.id)||dp):dp):d.products;if(!changed(prev,base))return prev;const merged=base.map(dp=>{const lp=localById.get(dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dbIds)});
         // Refresh app_state keys (batch POs, inventory POs, etc.)
@@ -23449,7 +23463,22 @@ export default function App(){
     };
     // Embroidery/DTF jobs that have been approved are owned by the rep/CSR (upload DST+PDF or order films),
     // not the artist — drop them off the artist board once they reach the production-files step.
-    const _repOwnsProdStep=(j)=>j.art_status==='order_dtf_transfers'||j.art_status==='upload_emb_files'||(j.art_status==='production_files_needed'&&['embroidery','dtf','heat_press'].includes(j.artFile?.deco_type||j.deco_type));
+    // A job can carry SEVERAL designs whose production-file steps differ — a merge puts them on one
+    // row (SO-2145/JOB-2145-02 merged a DTF sleeve print with the screen-print front, keeping the DTF
+    // design as art_file_id). Judged by that primary design alone the whole job read as rep-owned and
+    // left the artist board while its screen-print SEPARATIONS were still outstanding: gathered above,
+    // then rendered in no column at all — not Approved / Needs Files, not In Production, not Hidden.
+    // So ask every design still awaiting files first; one pending screen print keeps the job here.
+    const _repOwnsProdStep=(j)=>{
+      if(!PROD_FILES_STATUSES.includes(j.art_status))return false;
+      const pendingDecos=jobLiveArtIds(j,j.so).map(id=>safeArt(j.so).find(f=>f.id===id)).filter(Boolean)
+        .filter(a=>!artProdFilesConfirmed(a)).map(a=>a.deco_type||'');
+      if(artistOwesProdFiles(pendingDecos))return false;
+      // Unchanged below: the original rule, so names/numbers jobs and every single-design job keep
+      // the exact behaviour they had.
+      return j.art_status==='order_dtf_transfers'||j.art_status==='upload_emb_files'
+        ||REP_PROD_FILE_DECOS.includes(j.artFile?.deco_type||j.deco_type);
+    };
     // ─── Split families are ONE piece of art ───
     // A split partitions one decoration's units across a parent and its slices; every slice keeps
     // the parent's artwork, so the artist draws one design, sends one mockup and needs one
