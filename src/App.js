@@ -446,6 +446,8 @@ const CoachPortal = lazyRetry(() => import('./CoachPortal'));
 const Webstores = lazyRetry(() => import('./Webstores'));
 const OmgOrderPortal = lazyRetry(() => import('./OmgOrderPortal'));
 const OmgMonthlyProfitImport = lazyRetry(() => import('./OmgMonthlyProfitImport'));
+const OmgDepositImport = lazyRetry(() => import('./OmgDepositImport'));
+const OmgStoreDeposits = lazyRetry(() => import('./OmgDepositImport').then(m => ({ default: m.OmgStoreDeposits })));
 const SalesHistory = lazyRetry(() => import('./SalesHistory'));
 const MarketingPage = lazyRetry(() => import('./MarketingPage'));
 const QBPage = lazyRetry(() => import('./QBPage'));
@@ -1772,10 +1774,11 @@ const parseOmgAccounting=(text)=>{
   // A Deposit Statement is a company-level bank deposit that can contain many
   // stores, payments, and refunds. This screen stores accounting data on one
   // selected store, so accepting that report here would silently assign the
-  // entire deposit to the wrong store. The dedicated QBO deposit importer must
-  // split/validate the statement before any accounting write.
+  // entire deposit to the wrong store. It belongs in the OMG Deposits importer
+  // on the OMG Stores page, which splits it per store and validates every row
+  // against the statement's own totals before writing anything.
   if(/Deposit\s*Statement/i.test(String(text||''))){
-    throw new Error('This is a multi-store OMG Deposit Statement. It cannot be attached to one store. Import it through the QuickBooks OMG Deposits workflow.');
+    throw new Error('This is a multi-store OMG Deposit Statement. It cannot be attached to one store — import it with “OMG Deposits” on the OMG Stores page and it will be applied to every store it lists.');
   }
   let collected=_omgLineVal(text,/Total\s*Collected/i);
   let omg      =_omgLineVal(text,/^\s*\t*OMG\s*Fees?\b/i)||_omgLineVal(text,/\bOMG\s*Fees?\b/i);
@@ -18778,6 +18781,18 @@ export default function App(){
         </div></div>
         </div>}
 
+        {/* ③ OMG DEPOSITS — cash actually received for this store, from the weekly
+            Deposit Statements imported on the OMG Stores page. Shown whether or not
+            the store has been pulled yet: deposits can land before the store is
+            processed, and the rows attach themselves when it is. */}
+        {s._omg_sale_code&&<div style={{marginBottom:12}}>
+          <ComponentErrorBoundary name="OMG Store Deposits">
+            <React.Suspense fallback={<LazyFallback/>}>
+              <OmgStoreDeposits store={s}/>
+            </React.Suspense>
+          </ComponentErrorBoundary>
+        </div>}
+
         {/* Import from OMG Report */}
         <div className="card" style={{marginBottom:12,border:(s.products||[]).length===0&&s.status==='closed'?'2px solid #166534':undefined}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
@@ -19250,6 +19265,13 @@ export default function App(){
       <ComponentErrorBoundary name="OMG Monthly Profit">
         <React.Suspense fallback={<LazyFallback/>}>
           <OmgMonthlyProfitImport stores={omgStores} customers={cust} reps={REPS} currentUser={cu} notify={nf}/>
+        </React.Suspense>
+      </ComponentErrorBoundary>
+
+      {/* Weekly OMG Deposit Statement — one PDF, applied to every store it lists. */}
+      <ComponentErrorBoundary name="OMG Deposits">
+        <React.Suspense fallback={<LazyFallback/>}>
+          <OmgDepositImport stores={omgStores} currentUser={cu} notify={nf} extractPdfText={extractPdfText}/>
         </React.Suspense>
       </ComponentErrorBoundary>
 
