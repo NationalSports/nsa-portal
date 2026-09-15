@@ -1,4 +1,4 @@
-import { createQBSyncEngine, findExactQBCustomerMatches, groupPortalPurchaseOrders, portalCustomerDisplayName, portalCustomerTermSpec, resolveQBCustomerTerm, rotatingBatch } from '../qbSyncEngine';
+import { createQBSyncEngine, findExactQBCustomerMatches, groupPortalPurchaseOrders, historicalPortalPurchaseOrderIds, isHistoricalPortalPurchaseOrder, portalCustomerDisplayName, portalCustomerTermSpec, resolveQBCustomerTerm, rotatingBatch } from '../qbSyncEngine';
 
 describe('QuickBooks rotating batches', () => {
   test('moves past a permanently blocked first batch', () => {
@@ -58,6 +58,41 @@ describe('QuickBooks purchase-order grouping', () => {
     const groups=groupPortalPurchaseOrders(salesOrders,{},[],['NETSUITE-PO']);
     expect(groups.map(group=>group.poId)).toEqual(['NEW-PO']);
     expect(portalPO).toMatchObject({po_id:'NETSUITE-PO',S:12,vendor:'Champro'});
+  });
+
+  test.each([
+    [{po_id:'PO8574SBBV',S:12}, {}, 'legacy no-space PO number'],
+    [{po_id:'PO 2453 OLUF',S:12,preexisting:true}, {}, 'explicit preexisting PO'],
+    [{po_id:'PO 2453 OLUF',S:12,memo:'Preexisting PO (NetSuite)'}, {}, 'legacy preexisting memo'],
+    [{po_id:'NSA 3611',S:12}, {}, 'non-standard number confirmed by NetSuite export'],
+    [{po_id:'PO 59075 SOSC',S:12,_import_source:'netsuite'}, {}, 'NetSuite source record'],
+  ])('excludes a historical PO: %s (%s)',(poLine,soFields)=>{
+    const order={...so('SO-OLD',[poLine]),...soFields};
+    expect(isHistoricalPortalPurchaseOrder(poLine,order)).toBe(true);
+    expect(groupPortalPurchaseOrders([order],{})).toEqual([]);
+    expect(historicalPortalPurchaseOrderIds([order],{})).toEqual([poLine.po_id]);
+  });
+
+  test('keeps a Portal-issued spaced PO eligible even when its numeric core exists in NetSuite history', () => {
+    const portalPO={po_id:'PO 3611 NSA',S:12,vendor:'Champro',created_at:'2026-09-15'};
+    const order=so('SO-NEW',[portalPO]);
+    expect(isHistoricalPortalPurchaseOrder(portalPO,order)).toBe(false);
+    expect(groupPortalPurchaseOrders([order],{}).map(group=>group.poId)).toEqual(['PO 3611 NSA']);
+    expect(historicalPortalPurchaseOrderIds([order],{})).toEqual([]);
+  });
+
+  test('keeps a new Portal-issued PO eligible on an SO that was originally imported from NetSuite', () => {
+    const portalPO={po_id:'PO 59075 SOSC',S:12,vendor:'Champro',created_at:'2026-09-15'};
+    const order={...so('SO-NEW',[portalPO]),_import_source:'netsuite'};
+    expect(isHistoricalPortalPurchaseOrder(portalPO,order)).toBe(false);
+    expect(groupPortalPurchaseOrders([order],{}).map(group=>group.poId)).toEqual(['PO 59075 SOSC']);
+  });
+
+  test('does not report already-linked or manually parked historical POs as active exclusions', () => {
+    const linked={po_id:'PO8574SBBV',S:12};
+    const parked={po_id:'PO8689SBFBQ',M:4};
+    const orders=[so('SO-1',[linked]),so('SO-2',[parked])];
+    expect(historicalPortalPurchaseOrderIds(orders,{'PO8574SBBV':'QBO-1'},['PO8689SBFBQ'])).toEqual([]);
   });
 
   test('blocks a shared PO number that mixes vendors', () => {
