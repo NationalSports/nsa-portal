@@ -445,7 +445,7 @@ describe('QuickBooks one-record canaries', () => {
   });
 
   test('creates one PO without creating a vendor or item and verifies read-back', async() => {
-    const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:5,sizes:{S:2},po_lines:[{po_id:'PO-1',created_at:'2026-09-01',S:2,unit_cost:5}]}]};
+    const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:5,sizes:{S:2},po_lines:[{po_id:'PO-1',created_at:'2026-09-15',S:2,unit_cost:5}]}]};
     let sentPO;
     const qbApi=jest.fn(async(action,{query,purchase_order}={})=>{
       if(action==='query'&&query.includes('FROM Vendor STARTPOSITION'))return{QueryResponse:{Vendor:[{Id:'V-QB',DisplayName:'Acme',CompanyName:'Acme'}]}};
@@ -463,11 +463,20 @@ describe('QuickBooks one-record canaries', () => {
     expect(getConfig().qbPOMap['PO-1']).toBe('PO-QB');
   });
 
+  test('blocks PO activity until the complete durable QBO receipt ledger is loaded', async() => {
+    const so={id:'SO-1',items:[{sku:'SKU-1',brand:'Acme',po_lines:[{po_id:'PO-1',created_at:'2026-09-15',S:2,unit_cost:5}]}]};
+    const qbApi=jest.fn();
+    const{engine,getConfig}=makeEngine({qbApi,sos:[so]});
+    getConfig()._durableLinksLoaded=false;
+    await expect(engine.syncPurchaseOrders({}, {canaryPOId:'PO-1'})).resolves.toEqual({status:'blocked'});
+    expect(qbApi).not.toHaveBeenCalled();
+  });
+
   test('posts lines without a linked QBO item as one purchases-account line and verifies the read-back', async() => {
     const so={id:'SO-1',items:[
-      {product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:5,sizes:{S:2},po_lines:[{po_id:'PO-1',created_at:'2026-09-01',S:2,unit_cost:5}]},
-      {product_id:null,sku:'CUSTOM',name:'Sublimated uniforms',brand:'Acme',nsa_cost:30,is_custom:true,po_lines:[{po_id:'PO-1',created_at:'2026-09-01',L:2,unit_cost:30}]},
-      {product_id:null,sku:'PC54',name:'Core Cotton Tee',brand:'Acme',nsa_cost:3.1,po_lines:[{po_id:'PO-1',created_at:'2026-09-01',M:3,unit_cost:3.1}]},
+      {product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:5,sizes:{S:2},po_lines:[{po_id:'PO-1',created_at:'2026-09-15',S:2,unit_cost:5}]},
+      {product_id:null,sku:'CUSTOM',name:'Sublimated uniforms',brand:'Acme',nsa_cost:30,is_custom:true,po_lines:[{po_id:'PO-1',created_at:'2026-09-15',L:2,unit_cost:30}]},
+      {product_id:null,sku:'PC54',name:'Core Cotton Tee',brand:'Acme',nsa_cost:3.1,po_lines:[{po_id:'PO-1',created_at:'2026-09-15',M:3,unit_cost:3.1}]},
     ]};
     let sentPO;
     const qbApi=jest.fn(async(action,{query,purchase_order}={})=>{
@@ -493,7 +502,7 @@ describe('QuickBooks one-record canaries', () => {
   });
 
   test('uses the saved PO line cost rounded to cents instead of a changed catalog cost', async() => {
-    const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:99.999,sizes:{S:1},po_lines:[{po_id:'PO-1',created_at:'2026-09-01',S:1,unit_cost:37.115}]}]};
+    const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:99.999,sizes:{S:1},po_lines:[{po_id:'PO-1',created_at:'2026-09-15',S:1,unit_cost:37.115}]}]};
     let sentPO;
     const qbApi=jest.fn(async(action,{query,purchase_order}={})=>{
       if(action==='query'&&query.includes('FROM Vendor STARTPOSITION'))return{QueryResponse:{Vendor:[{Id:'V-QB',DisplayName:'Acme',CompanyName:'Acme'}]}};
@@ -514,7 +523,7 @@ describe('QuickBooks one-record canaries', () => {
   });
 
   test('records the QBO transport error instead of unknown when a PO write is rejected', async() => {
-    const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:5,sizes:{S:2},po_lines:[{po_id:'PO-1',created_at:'2026-08-31',S:2,unit_cost:5}]}]};
+    const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:5,sizes:{S:2},po_lines:[{po_id:'PO-1',created_at:'2026-09-15',S:2,unit_cost:5}]}]};
     const qbApi=jest.fn(async(action,{query}={})=>{
       if(action==='query'&&query.includes('FROM Vendor STARTPOSITION'))return{QueryResponse:{Vendor:[{Id:'V-QB',DisplayName:'Acme',CompanyName:'Acme'}]}};
       if(action==='query'&&query.includes('FROM PurchaseOrder STARTPOSITION'))return{QueryResponse:{PurchaseOrder:[]}};
@@ -529,7 +538,7 @@ describe('QuickBooks one-record canaries', () => {
   });
 
   test('requires an exact approved PO list and verifies every batch line before saving a durable link', async() => {
-    const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:5,sizes:{S:2},po_lines:[{po_id:'PO-1',created_at:'2026-09-01',S:2,unit_cost:5}]}]};
+    const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:5,sizes:{S:2},po_lines:[{po_id:'PO-1',created_at:'2026-09-15',S:2,unit_cost:5}]}]};
     let sentPO;
     const qbApi=jest.fn(async(action,{query,purchase_order}={})=>{
       if(query?.includes('FROM Vendor STARTPOSITION'))return{QueryResponse:{Vendor:[{Id:'V-QB',DisplayName:'Acme'}]}};
@@ -696,9 +705,9 @@ test('PO-to-bill matching uses exact memo references and line links',()=>{
 
 test('purchase-order preview keeps POs with unlinked SKUs ready and lists the SKUs headed to the purchases account',()=>{
   const sos=[{id:'SO-1',items:[
-    {product_id:'P1',sku:'READY',name:'Ready',brand:'Acme',nsa_cost:5,po_lines:[{po_id:'PO-1',created_at:'2026-09-01',S:2,unit_cost:5}]},
-    {product_id:'P2',sku:'MISSING',name:'Missing',brand:'Acme',nsa_cost:4,po_lines:[{po_id:'PO-2',created_at:'2026-09-01',M:1,unit_cost:4}]},
-    {product_id:null,sku:'CUSTOM',name:'Sublimated uniforms',brand:'Acme',nsa_cost:30,is_custom:true,po_lines:[{po_id:'PO-2',created_at:'2026-09-01',L:2,unit_cost:30}]},
+    {product_id:'P1',sku:'READY',name:'Ready',brand:'Acme',nsa_cost:5,po_lines:[{po_id:'PO-1',created_at:'2026-09-15',S:2,unit_cost:5}]},
+    {product_id:'P2',sku:'MISSING',name:'Missing',brand:'Acme',nsa_cost:4,po_lines:[{po_id:'PO-2',created_at:'2026-09-15',M:1,unit_cost:4}]},
+    {product_id:null,sku:'CUSTOM',name:'Sublimated uniforms',brand:'Acme',nsa_cost:30,is_custom:true,po_lines:[{po_id:'PO-2',created_at:'2026-09-15',L:2,unit_cost:30}]},
   ]}];
   const rows=buildQBPurchaseOrderPreviewRows(sos,[{id:'P1',sku:'READY'},{id:'P2',sku:'MISSING'}],{P1:'I-1'},{});
   expect(rows.find(row=>row.poId==='PO-1')).toEqual(expect.objectContaining({action:'ready',total:10,accountSkus:[]}));
@@ -708,7 +717,7 @@ test('purchase-order preview keeps POs with unlinked SKUs ready and lists the SK
 test('purchase-order preview parks document numbers longer than QBO accepts',()=>{
   const poId='re_1305_162213557_fzqpgy';
   const rows=buildQBPurchaseOrderPreviewRows([{id:'SO-1',items:[
-    {product_id:'P1',sku:'READY',name:'Ready',brand:'Acme',nsa_cost:5,po_lines:[{po_id:poId,created_at:'2026-09-01',S:2,unit_cost:5}]},
+    {product_id:'P1',sku:'READY',name:'Ready',brand:'Acme',nsa_cost:5,po_lines:[{po_id:poId,created_at:'2026-09-15',S:2,unit_cost:5}]},
   ]}],[{id:'P1',sku:'READY'}],{P1:'I-1'},{});
   expect(rows).toEqual([expect.objectContaining({poId,action:'blocked',reason:'QBO purchase-order number exceeds the 21-character limit'})]);
 });
