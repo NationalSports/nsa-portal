@@ -393,6 +393,16 @@ export const artNeedsAttention=(artStatus,sinceDate)=>{
   return Math.floor((Date.now()-t)/86400000)>ART_ATTENTION_STALE_DAYS;
 };
 export const prodFilesStatusFor=(deco)=>(deco==='dtf'||deco==='heat_press')?'order_dtf_transfers':deco==='embroidery'?'upload_emb_files':'production_files_needed';
+// Decoration methods whose production files are the REP/CSR's step, not the artist's: DTF and heat
+// press mean ORDERING transfers, embroidery means uploading the digitized .dst. Screen print is the
+// exception — its production file is SEPARATIONS, which the artist draws.
+export const REP_PROD_FILE_DECOS=['embroidery','dtf','heat_press'];
+// True when some design on a job still owes ARTIST-produced production files. One job can span
+// designs with DIFFERENT production-file steps — a merge puts them on the same row (SO-2145 merged a
+// DTF sleeve print with a screen-print front) — and a job judged by its PRIMARY design alone then
+// reads as entirely rep-owned and leaves the artist board with its separations still outstanding.
+// Takes the deco types of the designs still awaiting files, so one pending screen print holds the job.
+export const artistOwesProdFiles=(pendingDecoTypes)=>(pendingDecoTypes||[]).some(d=>!REP_PROD_FILE_DECOS.includes(d||''));
 // A .dst IS the embroidery production file — if one is attached anywhere on the art, prod files are effectively done.
 export const isDstFile=(f)=>{const n=(typeof f==='string'?f:(f&&(f.name||f.url))||'').toLowerCase();return n.endsWith('.dst')};
 // Extensions that are ONLY ever production art — vector separations and stitch files. A drag-and-drop
