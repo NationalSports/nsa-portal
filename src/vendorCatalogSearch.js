@@ -194,3 +194,58 @@ export function vendorColorToProductRow(style, color) {
     inventory_source: style.source === 'sm' ? 'sanmar' : style.source === 'ss' ? 'ss_activewear' : style.source === 'rs' ? 'richardson' : style.source === 'mt' ? 'momentec' : null,
   };
 }
+
+// ── Local catalog + live vendor colorways ───────────────────────────────────
+// `products` only holds the colorways somebody previously imported, so a style the
+// catalog knows in two colors can have twenty at the vendor (SanMar lists 19 colors for
+// PC55LS; the catalog carried Jet Black and Royal). Both the webstore product picker and
+// the item editor's "other colorways" strip top their local rows up from the live feed
+// with these two helpers — one copy, so the two pickers can't drift apart.
+
+// The inventory_source values a live vendor search can actually speak for. A product
+// synced from its own feed (adidas CLICK, Agron, UA, Nike, in-house) is NOT topped up:
+// style codes collide across vendors, and falling back to "whoever answered" would offer
+// an unrelated garment's colors under this product's name and put that SKU in a store.
+// An unknown/blank source still falls back, for legacy rows that predate the column.
+const SOURCE_FOR_INVENTORY = { sanmar: 'sm', ss_activewear: 'ss', richardson: 'rs', momentec: 'mt' };
+export const canTopUpFromVendor = (inventorySource) =>
+  !inventorySource || Object.prototype.hasOwnProperty.call(SOURCE_FOR_INVENTORY, inventorySource);
+
+// Which live style a local style number refers to. Prefers the vendor that actually
+// sources the product (its inventory_source), since more than one vendor can list the
+// same style code. Returns null when no vendor lists that exact style.
+export function pickVendorStyle(results, styleSku, inventorySource) {
+  const want = String(styleSku || '').trim().toUpperCase();
+  if (!want || !canTopUpFromVendor(inventorySource)) return null;
+  const exact = (results || []).filter((s) => String(s.sku || '').trim().toUpperCase() === want);
+  const preferred = SOURCE_FOR_INVENTORY[inventorySource];
+  return exact.find((s) => s.source === preferred) || exact[0] || null;
+}
+
+// Join key for "is this the same colorway?". SanMar spells two-tone colors inconsistently
+// between its feeds ("True Royal/ White" vs "True Royal/White"), so a plain lowercase
+// compare offers a duplicate of a color the catalog already carries — the same
+// normalization the vendor import uses to reuse rather than re-create a row.
+export const vendorColorKey = (c) => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+// The vendor's colorways that `localRows` doesn't already cover, as `products`-shaped rows
+// tagged with _vendorStyle/_vendorColor so importVendorSelections can materialize the ones
+// a rep picks. `_stock` comes from the live per-color totals because nothing has synced
+// these colors yet — fetchStockMap has no rows for them and would read "out of stock".
+export function missingVendorColorRows(style, localRows = []) {
+  if (!style) return [];
+  const have = new Set((localRows || []).map((r) => vendorColorKey(r.color)).filter(Boolean));
+  const out = [];
+  for (const color of (style.colors || [])) {
+    const key = vendorColorKey(color.colorName);
+    if (!key || have.has(key)) continue;
+    have.add(key);
+    out.push({
+      ...vendorColorToProductRow(style, color),
+      _vendorStyle: style,
+      _vendorColor: color,
+      _stock: { units: Number(color.totalQty) || 0, sizes: Array.isArray(color.sizes) ? color.sizes : [], incoming: false },
+    });
+  }
+  return out;
+}
