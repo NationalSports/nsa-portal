@@ -51,6 +51,27 @@ const STATEMENT = [
   'KB5296 69CZD | Ida B Wells Cross Country 2026\t$87.25\t($3.32)\t($3.13)\t$80.80',
 ].join('\n');
 
+// The same statement as pdf.js actually extracts it in the browser. The summary
+// box is laid out in TWO COLUMNS, and pdf.js groups text by vertical position,
+// so each line carries a label/value pair from each column. Reading "the last
+// number on the line" gave Stores Included = 85, out of "$14,927.85" next to it,
+// which blocked the import of a perfectly good statement.
+const STATEMENT_TWO_COLUMN = [
+  'National Sports Apparel LLC\tDeposit Statement',
+  '2238 North Glasell Avenue Suite E',
+  'Orange, CA 92865\tVQFGYBTFP',
+  'US',
+  'Statement Date\t09/15/26\tTotal Collected\t$16,125.81',
+  'Deposit Status\tpending\tOMG Fee Withheld\t($659.38)',
+  'Bank Account FIRST FOUNDATION BANK – 7609\tProcessing Fee Withheld\t($538.58)',
+  'Stores Included\t22\tNet Amount\t$14,927.85',
+  'Stores',
+  'Work Order\tStore\tTotal Collected\tOMG Fee Processing Fee\tNet Deposit',
+  'GEX63 | Alemany HS Wresting August 2026\t$3,286.23\t($124.89)\t($112.98)\t$3,048.36',
+  'D2SVU | Dana Hills Football 2026\t($59.91)\t$2.28\t$1.79\t($55.84)',
+  'KB5259 VUG6Y | Amador Valley Cross Country 2026\t$1,148.15\t($43.63)\t($37.22)\t$1,067.30',
+].join('\n');
+
 describe('OMG deposit statement parser', () => {
   test('reads the statement header', () => {
     const parsed = parseOmgDepositStatement(STATEMENT);
@@ -161,6 +182,38 @@ describe('OMG deposit statement parser', () => {
     const parsed = parseOmgDepositStatement(STATEMENT.replace('VQFGYBTFP\n', ''));
     expect(parsed.statementNo).toBe('');
     expect(parsed.statementKey).toBe('DATE-2026-09-15');
+  });
+
+  describe('the two-column summary box pdf.js actually produces', () => {
+    test('each value is read from its own label, not its neighbour', () => {
+      const parsed = parseOmgDepositStatement(STATEMENT_TWO_COLUMN);
+      expect(parsed).toMatchObject({
+        statementNo: 'VQFGYBTFP',
+        statementDate: '2026-09-15',
+        depositStatus: 'pending',
+        bankAccount: 'FIRST FOUNDATION BANK – 7609',
+        totalCollected: 16125.81,
+        omgFee: -659.38,
+        processingFee: -538.58,
+        netAmount: 14927.85,
+      });
+    });
+
+    test('Stores Included reads 22, not the 85 inside the $14,927.85 beside it', () => {
+      expect(parseOmgDepositStatement(STATEMENT_TWO_COLUMN).storesIncluded).toBe(22);
+    });
+
+    test('the statement number is found in the right-hand cell of an address line', () => {
+      expect(parseOmgDepositStatement(STATEMENT_TWO_COLUMN).statementKey).toBe('VQFGYBTFP');
+    });
+
+    test('the column-header row is not mistaken for a summary value', () => {
+      // "Work Order  Store  Total Collected  OMG Fee Processing Fee  Net Deposit"
+      // carries every label and no amount; it must not zero out the real totals.
+      const parsed = parseOmgDepositStatement(STATEMENT_TWO_COLUMN);
+      expect(parsed.totalCollected).toBe(16125.81);
+      expect(parsed.processingFee).toBe(-538.58);
+    });
   });
 
   test('money and date helpers', () => {

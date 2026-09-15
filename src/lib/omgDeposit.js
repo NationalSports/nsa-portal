@@ -59,49 +59,78 @@ const parseStatementDate = raw => {
   return `${year}-${pad2(Number(us[1]))}-${pad2(Number(us[2]))}`;
 };
 
-// A labelled summary value. The store table's column-header row repeats these
-// words ("Total Collected  OMG Fee  Processing Fee"), so only lines that
-// actually carry a dollar amount can answer, and the value is the last column.
+// The statement's summary box is laid out as TWO COLUMNS side by side, and
+// pdf.js groups text by vertical position, so one extracted line carries a
+// label/value pair from each column:
+//
+//   "Stores Included  22        Net Amount      $14,927.85"
+//   "Bank Account FIRST FOUNDATION BANK – 7609  Processing Fee Withheld  ($538.58)"
+//
+// Reading "the last number on the line" therefore picks up the neighbouring
+// column (85, out of $14,927.85). Every summary value is instead read from just
+// after its own label and cut off at whichever label starts next.
+const SUMMARY_LABELS = /(statement\s*date|deposit\s*status|bank\s*account|stores\s*included|total\s*collected|omg\s*fees?|processing\s*fees?|credit\s*card\s*fees?|net\s*amount|net\s*deposit|work\s*order)/gi;
+
+const valueAfter = (line, labelRe) => {
+  const flat = cleanLine(line);
+  const match = flat.match(labelRe);
+  if (!match) return null;
+  const rest = flat.slice(match.index + match[0].length);
+  SUMMARY_LABELS.lastIndex = 0;
+  let cut = rest.length;
+  let next;
+  while ((next = SUMMARY_LABELS.exec(rest)) !== null) {
+    // A label at position 0 is the tail of the one we just matched
+    // ("OMG Fee" inside "OMG Fee Withheld"), not the next column.
+    if (next.index > 0) { cut = next.index; break; }
+  }
+  return rest.slice(0, cut).replace(/^[:\s]+/, '').trim();
+};
+
+// The store table's column-header row repeats these words with no values
+// ("Total Collected  OMG Fee  Processing Fee"), so a line only answers once it
+// carries an actual amount.
 const labelledAmount = (lines, labelRe) => {
   for (const line of lines) {
-    const flat = cleanLine(line);
-    if (!labelRe.test(flat)) continue;
-    const amounts = moneyOn(flat);
-    if (amounts.length) return amounts[amounts.length - 1];
+    const value = valueAfter(line, labelRe);
+    if (value == null) continue;
+    const amounts = moneyOn(value);
+    if (amounts.length) return amounts[0];
   }
   return 0;
 };
 
 const labelledText = (lines, labelRe) => {
   for (const line of lines) {
-    const flat = cleanLine(line);
-    const match = flat.match(labelRe);
-    if (!match) continue;
-    const rest = flat.slice(match.index + match[0].length).trim();
-    if (rest) return rest;
+    const value = valueAfter(line, labelRe);
+    if (value) return value;
   }
   return '';
 };
 
 const labelledInt = (lines, labelRe) => {
   for (const line of lines) {
-    const flat = cleanLine(line);
-    if (!labelRe.test(flat)) continue;
-    const nums = flat.match(/\b\d+\b/g);
-    if (nums && nums.length) return Number(nums[nums.length - 1]);
+    const value = valueAfter(line, labelRe);
+    if (value == null) continue;
+    const nums = value.match(/\b\d+\b/g);
+    if (nums && nums.length) return Number(nums[0]);
   }
   return 0;
 };
 
-// The statement number sits on its own between the letterhead and "Statement
-// Date" — an all-caps alphanumeric token with no spaces. Treated as optional:
-// if OMG ever drops it, the statement date still keys the import.
+// The statement number sits between the letterhead and "Statement Date" — an
+// all-caps alphanumeric token with no spaces, which the two-column layout may
+// park in the right-hand cell of an address line ("Orange, CA 92865  VQFGYBTFP").
+// Treated as optional: if OMG ever drops it, the statement date keys the import.
 const parseStatementNo = lines => {
   for (const line of lines.slice(0, 30)) {
-    const flat = cleanLine(line);
-    if (/^statement\s*date/i.test(flat)) break;
-    const match = flat.match(/^(?:deposit\s*statement\s*)?([A-Z0-9]{6,16})$/);
-    if (match && /[A-Z]/.test(match[1])) return match[1];
+    if (/^statement\s*date/i.test(cleanLine(line))) break;
+    for (const cell of String(line == null ? '' : line).split('\t')) {
+      const token = cell.trim();
+      if (!/^[A-Z0-9]{6,16}$/.test(token)) continue;
+      if (!/[A-Z]/.test(token)) continue;  // not a bare number (a zip, an account)
+      return token;
+    }
   }
   return '';
 };
