@@ -52,6 +52,8 @@ test('live readiness fails closed on same vendor and document with different tot
     qboBills: [{ Id: '77', DocNumber: 'A-100', VendorRef: { value: '9' }, TotalAmt: 99, TxnDate: '2026-09-10' }],
   });
   expect(reviewed[0].action).toBe('conflict');
+  expect(reviewed[0].qboCandidates).toEqual([{ id: '77', date: '2026-09-10', total: 99, balance: 0 }]);
+  expect(reviewed[0].reason).toContain('QBO: #77 2026-09-10 $99.00');
 });
 
 test('live readiness blocks missing vendor links and summarizes actions', () => {
