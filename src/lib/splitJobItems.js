@@ -79,3 +79,38 @@ export function freeSplitSuffix(jobs, parentId, letter, alwaysNumbered = false) 
   }
   return null;
 }
+
+/**
+ * What a "Merge Jobs" click should actually touch.
+ *
+ * ONLY the jobs the rep selected are merged — never one they didn't pick. The wrinkle is split
+ * slices (`split_from`): a slice whose parent is merged AWAY would be left pointing at a job id
+ * that no longer exists, so it is re-parented onto the surviving target (the same move the per-job
+ * Merge Back button makes). Slices of the TARGET need nothing at all — the target survives under
+ * its own id, so their lineage is still valid. Folding those in is what turned a 2-job merge into
+ * a 3-job merge (SO-1661: JOB-1661-01 was merged with one sibling and swallowed the other,
+ * because both siblings were -B slices of the target).
+ *
+ * @param {Array} jobs          the order's jobs, in display order
+ * @param {number[]} selectedIdxs  indexes the rep ticked in merge mode
+ * @returns {{target:Object|null, targetIdx:number, mergeIdxs:number[], removeIdxs:Set<number>,
+ *            reparentIds:Set<string>, keepSeparate:boolean}}
+ *   target       the lowest-indexed selected job — items merge INTO it and it keeps its id
+ *   mergeIdxs    the other selected jobs, whose items join the target
+ *   removeIdxs   indexes to drop from the jobs array (exactly mergeIdxs)
+ *   reparentIds  split_from values on surviving jobs that must be rewritten to the target's id
+ *   keepSeparate true when a split slice still points at the merged job, so the merged job stays
+ *                a separately-priced press run (buildSplitRunMap partitions the design's qty)
+ */
+export function planJobMerge(jobs, selectedIdxs) {
+  const list = jobs || [];
+  const sel = [...new Set(selectedIdxs || [])].filter((i) => list[i]).sort((a, b) => a - b);
+  const targetIdx = sel.length ? sel[0] : -1;
+  const target = targetIdx >= 0 ? list[targetIdx] : null;
+  const mergeIdxs = sel.slice(1);
+  const removeIdxs = new Set(mergeIdxs);
+  const reparentIds = new Set(mergeIdxs.map((i) => list[i].id).filter(Boolean));
+  const keepSeparate = !!target && list.some((j, i) => j && i !== targetIdx && !removeIdxs.has(i)
+    && j.split_from && (j.split_from === target.id || reparentIds.has(j.split_from)));
+  return { target, targetIdx, mergeIdxs, removeIdxs, reparentIds, keepSeparate };
+}
