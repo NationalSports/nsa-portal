@@ -1,5 +1,6 @@
 import { QB_PO_ACCOUNT_LINE_DESCRIPTION_MAX, applyQBPurchaseOrderLiveReadiness, applyQBSalesOrderLiveReadiness, billReferencesPortalPO, buildQBBillPOReplacement, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions, qbPOAccountLineDescription, qbPurchaseOrderSourceFingerprint, qbSalesOrderSourceFingerprint, qboStandardTermDueDate } from '../qbSyncEngine';
 import { indexQBNonInventoryItems, QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_SPECS } from '../qbAccountMappings';
+import { summarizeQBInvoicePreflight } from '../qbInvoiceSyncGuard';
 
 const accountRows = Object.values(QB_ACCOUNT_SPECS).map((spec,index)=>({
   Id:String(index+1),Name:spec.name,FullyQualifiedName:spec.name,AcctNum:spec.number,
@@ -54,6 +55,24 @@ describe('QuickBooks one-record canaries', () => {
       expect.objectContaining({invoiceId:'INV-10',documentNumber:'INV-10',customer:'Exact Customer',qboCustomerId:'Q1',date:'2026-09-08',total:100,paid:25,tax:8,action:'ready'}),
       expect.objectContaining({invoiceId:'INV-11',action:'excluded_zero',reason:expect.stringMatching(/zero-dollar/)}),
     ]);
+  });
+
+  test('live preflight passes only with zero proposed or conflicted invoices and verified aliases', () => {
+    const safeRows=[
+      {action:'excluded_zero'},
+      {action:'held_future'},
+      {action:'held_future'},
+    ];
+    const aliases=[
+      {documentNumber:'INV63133',action:'link_existing'},
+      {documentNumber:'INV63199',action:'already_synced'},
+      {documentNumber:'INV63255',action:'link_existing'},
+    ];
+    expect(summarizeQBInvoicePreflight(safeRows,aliases)).toEqual(expect.objectContaining({
+      counts:{excluded_zero:1,held_future:2},proposedCount:0,reviewCount:0,aliasFailures:[],passed:true,
+    }));
+    expect(summarizeQBInvoicePreflight([...safeRows,{action:'ready'}],aliases)).toEqual(expect.objectContaining({passed:false,proposedCount:1}));
+    expect(summarizeQBInvoicePreflight(safeRows,[...aliases,{documentNumber:'INV9',action:'manual_review'}])).toEqual(expect.objectContaining({passed:false}));
   });
 
   test('bulk invoice writes require an explicitly approved exact review', async() => {

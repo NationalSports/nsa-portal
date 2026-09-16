@@ -74,6 +74,14 @@ export function applyQBInvoiceLiveReadiness(rows = [], qboInvoices = []) {
   });
 }
 
+export function summarizeQBInvoicePreflight(rows = [], aliases = []) {
+  const counts = (rows || []).reduce((result,row) => ({...result,[row.action]:(result[row.action] || 0) + 1}), {});
+  const proposedCount = Number(counts.ready || 0);
+  const reviewCount = Number(counts.manual_review || 0) + Number(counts.blocked || 0);
+  const aliasFailures = (aliases || []).filter(row => row.action !== 'link_existing' && row.action !== 'already_synced');
+  return {counts, proposedCount, reviewCount, aliasFailures, passed:proposedCount === 0 && reviewCount === 0 && aliasFailures.length === 0};
+}
+
 const escapeQBO = value => clean(value).replace(/'/g, "\\'");
 
 export async function loadQBInvoicesForDuplicateCheck(qbApi, rows = [], {chunkSize=50} = {}) {

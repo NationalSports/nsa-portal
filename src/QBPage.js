@@ -17,7 +17,7 @@ import { authFetch } from './utils';
 import { applyQBPurchaseOrderLiveReadiness, applyQBSalesOrderLiveReadiness, buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, historicalPortalPurchaseOrderIds, isVoidInvoice, portalCustomerDisplayName, qbCustomerBatchReady, qbPurchaseOrderSourceFingerprint, qbResponseErrorDetail, qbSalesOrderSourceFingerprint } from './qbSyncEngine';
 import { QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_POSTING_MATRIX, QB_ACCOUNT_SPECS, QB_STATE_TAX_ACCOUNT_KEYS, buildVendorBillLines, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, manualBillAccountKey, normalizeVendorName, qbWriteAccountRef, queryQBReadOnly, readQBWithRetry, resolveQBAccountRefs } from './qbAccountMappings';
 import { mergeDurableQBLinks, persistVerifiedQBCustomerLinkRecovery } from './qbLinkLedger';
-import { applyQBInvoiceLiveReadiness, loadQBInvoicesForDuplicateCheck, qbInvoiceSourceKey } from './qbInvoiceSyncGuard';
+import { applyQBInvoiceLiveReadiness, loadQBInvoicesForDuplicateCheck, normalizeQBInvoiceDocumentNumber, qbInvoiceSourceKey, summarizeQBInvoicePreflight } from './qbInvoiceSyncGuard';
 
 const stripeBackfillErrorSummary=(errors=[])=>{
   const counts={};
@@ -254,7 +254,33 @@ export default function QBPage(){
             log.details.push(entity+' records currently in QBO: '+(count==null?'count unavailable':count));
           }catch(e){log.details.push(entity+' count unavailable: '+e.message);log.status='partial'}
         }
-        setQBConfig(prev=>({...prev,preflight:{status:log.status,at:new Date().toISOString(),company:ci?.CompanyName||prev.companyName,realm_id:prev.realm_id,accounts:Object.fromEntries(Object.entries(refs).map(([key,ref])=>[key,{id:ref.value,number:ref.accountNumber,name:ref.name}]))},syncLog:[log,...prev.syncLog].slice(0,100)}));
+        // The connection/account check alone is not enough to unlock invoice work.
+        // Include the same live duplicate guard used by reviewed invoice batches so
+        // the operator can see every create, exact match, exclusion, hold, and
+        // conflict before any QBO write control becomes available.
+        const qboInvoices=await loadQBInvoicesForDuplicateCheck(qbApi,invoicePreviewRows.filter(row=>row.duplicateCheckEligible));
+        const invoiceRows=applyQBInvoiceLiveReadiness(invoicePreviewRows,qboInvoices);
+        invoiceRows.forEach(row=>log.details.push(row.documentNumber+' — '+row.action+(row.reason?' — '+row.reason:'')));
+
+        const aliasNumbers=['INV63133','INV63199','INV63255'];
+        const aliasRows=[];
+        for(const number of aliasNumbers){
+          const source=invs.find(invoice=>normalizeQBInvoiceDocumentNumber(invoice.display_id||invoice.document_number||invoice.id)===number);
+          if(!source){
+            aliasRows.push({documentNumber:number,action:'source_not_found',reason:'No Portal source invoice has this exact normalized number'});
+            continue;
+          }
+          const [row]=buildQBInvoicePreviewRows([{...source,qb_invoice_id:''}],cust,_custQBMap,{invoiceMap:{},taxBlockReason:()=>''});
+          if(!row){aliasRows.push({documentNumber:number,action:'source_not_reviewable',reason:'Portal source invoice is void or otherwise not reviewable'});continue}
+          const matches=await loadQBInvoicesForDuplicateCheck(qbApi,[{...row,duplicateCheckEligible:true}]);
+          aliasRows.push(applyQBInvoiceLiveReadiness([{...row,duplicateCheckEligible:true}],matches)[0]);
+        }
+        aliasRows.forEach(row=>log.details.push('Alias '+row.documentNumber+' / NS-'+row.documentNumber+' — '+row.action+(row.qboId?' — QBO #'+row.qboId:'')+(row.reason?' — '+row.reason:'')));
+        const summary=summarizeQBInvoicePreflight(invoiceRows,aliasRows);
+        log.details.push('Invoice guard — '+JSON.stringify(summary.counts)+' · proposed for creation: '+summary.proposedCount+' · acceptance: '+(summary.passed?'PASS':'FAIL'));
+        if(!summary.passed)log.status='partial';
+        const invoiceAudit={reviewedAt:new Date().toISOString(),...summary,rows:invoiceRows,aliases:aliasRows};
+        setQBConfig(prev=>({...prev,preflight:{status:log.status,at:new Date().toISOString(),company:ci?.CompanyName||prev.companyName,realm_id:prev.realm_id,accounts:Object.fromEntries(Object.entries(refs).map(([key,ref])=>[key,{id:ref.value,number:ref.accountNumber,name:ref.name}])),invoiceAudit},syncLog:[log,...prev.syncLog].slice(0,100)}));
         nf('Live QBO preflight complete — no records changed');
       }catch(e){
         log.status='error';log.details.push(e.message||'Preflight failed');
