@@ -64,9 +64,9 @@ describe('QuickBooks one-record canaries', () => {
       {action:'held_future'},
     ];
     const aliases=[
-      {documentNumber:'INV63133',action:'link_existing'},
-      {documentNumber:'INV63199',action:'already_synced'},
-      {documentNumber:'INV63255',action:'link_existing'},
+      {documentNumber:'INV-63133',action:'link_existing'},
+      {documentNumber:'INV-63199',action:'already_synced'},
+      {documentNumber:'INV-63255',action:'link_existing'},
     ];
     expect(summarizeQBInvoicePreflight(safeRows,aliases)).toEqual(expect.objectContaining({
       counts:{excluded_zero:1,held_future:2},proposedCount:0,reviewCount:0,aliasFailures:[],passed:true,
