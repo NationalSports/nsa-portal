@@ -211,7 +211,11 @@ export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms
       if(mapped && embedded && mapped !== embedded)throw new Error('Conflicting saved customer IDs');
       const savedId = mapped || embedded;
       const matches = findExactQBCustomerMatches(customer,qboCustomers);
-      if(matches.length > 1)throw new Error('Multiple exact QBO customer matches');
+      // A durable source-to-QBO mapping disambiguates intentionally separate
+      // customers that happen to share a display name. Only an unmapped source
+      // requires a unique name match; a saved ID still has to be returned and
+      // must be one of the exact identity matches below.
+      if(!savedId && matches.length > 1)throw new Error('Multiple exact QBO customer matches');
       const existing = savedId ? qboCustomers.find(q=>String(q.Id) === savedId) : matches[0];
       if(savedId && !existing)throw new Error('Saved QBO customer was not returned; audit its ID before relinking');
       if(existing?.Active === false)throw new Error('Saved QBO customer is inactive');

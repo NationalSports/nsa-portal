@@ -22,6 +22,10 @@ test('duplicate QBO identities and competing portal sources are blocked',()=>{
   expect(buildQBCustomerManifest([customer],[existing,{...existing,Id:'13'}],terms)[0].action).toBe('blocked');
   expect(buildQBCustomerManifest([customer,{...customer,id:'C2'}],[existing],terms).every(row=>row.action==='blocked')).toBe(true);
 });
+test('a durable mapping disambiguates intentional same-name QBO customers',()=>{
+  const second={...existing,Id:'13'};
+  expect(buildQBCustomerManifest([customer],[existing,second],terms,{C1:'13'})[0]).toMatchObject({action:'link',qboId:'13'});
+});
 test('deleted sources are intentionally excluded',()=>{
   expect(buildQBCustomerManifest([{...customer,deleted_at:'2026-01-01'}],[],terms)[0].action).toBe('excluded');
 });
