@@ -250,7 +250,9 @@ export default function QBPage(){
         log.details.push('READ ONLY — no QuickBooks records were created or changed');
         log.details.push('Company: '+(ci?.CompanyName||qbConfig.companyName||'Unknown')+' · Realm: '+(qbConfig.realm_id||'unknown'));
         Object.entries(refs).forEach(([key,ref])=>log.details.push(key+' → '+ref.accountNumber+' '+ref.name+' (QB #'+ref.value+')'));
-        const entities=['Customer','Vendor','Item','Invoice','Bill','BillCredit','BillPayment','PurchaseOrder','Payment'];
+        // QuickBooks calls an A/P credit a VendorCredit. "BillCredit" is a
+        // NetSuite-style label and is not a queryable QBO entity.
+        const entities=['Customer','Vendor','Item','Invoice','Bill','VendorCredit','BillPayment','PurchaseOrder','Payment'];
         for(const entity of entities){
           try{
             const res=await queryQBReadOnly(qbApi,'SELECT count(*) FROM '+entity,entity+' count query');
@@ -780,7 +782,7 @@ export default function QBPage(){
         const [qboVendors,qboBills,qboBillCredits,qboAccounts]=await Promise.all([
           loadAllQBEntities(qbApi,'Vendor','Id, DisplayName, CompanyName, Active',500),
           loadAllQBEntities(qbApi,'Bill','Id, DocNumber, VendorRef, TotalAmt, TxnDate, Balance',500),
-          loadAllQBEntities(qbApi,'BillCredit','Id, DocNumber, VendorRef, TotalAmt, TxnDate, Balance',500),
+          loadAllQBEntities(qbApi,'VendorCredit','Id, DocNumber, VendorRef, TotalAmt, TxnDate, Balance',500),
           loadQBAccounts(qbApi),
         ]);
         const accountRefs=resolveQBAccountRefs(qboAccounts,qbConfig.mapping,['purchases_account','freight_account','sports_inc_fee_account','deco_account']);
