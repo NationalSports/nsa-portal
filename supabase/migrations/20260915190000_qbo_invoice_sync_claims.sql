@@ -23,12 +23,12 @@ create or replace function public.acquire_qbo_invoice_sync_claim(
 returns boolean
 language plpgsql
 security definer
-set search_path = public
+set search_path = ''
 as $$
 declare
   v_allowed boolean;
 begin
-  select auth.role() = 'service_role' or exists (
+  select coalesce(auth.jwt()->>'role','') = 'service_role' or exists (
     select 1 from public.team_members tm
      where tm.auth_id = auth.uid()
        and tm.is_active is not false
@@ -70,13 +70,13 @@ create or replace function public.release_qbo_invoice_sync_claim(
 returns boolean
 language plpgsql
 security definer
-set search_path = public
+set search_path = ''
 as $$
 declare
   v_allowed boolean;
   v_count integer;
 begin
-  select auth.role() = 'service_role' or exists (
+  select coalesce(auth.jwt()->>'role','') = 'service_role' or exists (
     select 1 from public.team_members tm
      where tm.auth_id = auth.uid()
        and tm.is_active is not false
@@ -93,10 +93,12 @@ begin
 end;
 $$;
 
-revoke all on function public.acquire_qbo_invoice_sync_claim(text,text,uuid,integer) from public, anon;
-revoke all on function public.release_qbo_invoice_sync_claim(text,text,uuid) from public, anon;
+revoke all on function public.acquire_qbo_invoice_sync_claim(text,text,uuid,integer) from public, anon, authenticated, service_role;
+revoke all on function public.release_qbo_invoice_sync_claim(text,text,uuid) from public, anon, authenticated, service_role;
 grant execute on function public.acquire_qbo_invoice_sync_claim(text,text,uuid,integer) to authenticated;
 grant execute on function public.release_qbo_invoice_sync_claim(text,text,uuid) to authenticated;
+grant execute on function public.acquire_qbo_invoice_sync_claim(text,text,uuid,integer) to service_role;
+grant execute on function public.release_qbo_invoice_sync_claim(text,text,uuid) to service_role;
 
 comment on table public.qbo_invoice_sync_claims is
   'Short leases preventing simultaneous QBO creates for one immutable Portal/NetSuite invoice.';
