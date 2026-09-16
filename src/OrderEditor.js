@@ -18,6 +18,7 @@ import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, pendingProdFileGroups, prodFileMethodOf, artStatusAfterProdConfirm, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, orderLineSizes, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
 import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, skusMissingRevColorWays, missingRevColorWaysMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, replaceMockLinkGroup, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemArtSlots, jobItemDecosOfKind, jobRosterBlocks, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor, TaxExemptModal } from './components';
+import { unfinishedProdSummary } from './lib/orderCloseGuard';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { CustModal } from './modals';
 import { applyTaxExempt, clearTaxExempt, taxExemptInfo, taxExemptLabel } from './lib/taxExempt';
@@ -5170,7 +5171,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(_hasRemaining)return<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>_openCreateInv('partial')}><Icon name="dollar" size={14}/> Create Invoice</button>;
           // Fully invoiced but SO still open — this is the "invoiced ahead" case; offer Close Sales Order.
           return<button className="btn btn-secondary" style={{color:'#166534',borderColor:'#86efac'}} onClick={()=>{
-            if(!window.confirm('Close sales order '+o.id+'? It will be marked complete.'))return;
+            // Deliberate close, so it's allowed — but name what's still on the floor first. A
+            // closed SO reads "Complete" to every rep and "Delivered" on the coach portal.
+            const _closeProdOpen=unfinishedProdSummary(o);
+            if(!window.confirm(_closeProdOpen
+              ?'Close sales order '+o.id+'?\n\n'+_closeProdOpen+'\n\nClosing marks it Complete — it drops off the production board and the coach portal will show it as Delivered. Close anyway?'
+              :'Close sales order '+o.id+'? It will be marked complete.'))return;
             const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' closed');
           }}><Icon name="check" size={14}/> Close Sales Order</button>;
         })()}
@@ -5286,7 +5292,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {statusFlow.map((sf,i)=>{const cur=sf===displaySt;const done=_curIdx>=0&&i<_curIdx;
             return<React.Fragment key={sf}>
               <span className={'step'+(cur?' current':done?' done':'')+(sf==='complete'?' clickable':'')}
-                onClick={()=>{if(sf==='complete')sv('status','complete')}}
+                onClick={()=>{if(sf!=='complete')return;
+                  // Same guard as Close Sales Order — this chip is the third way into the manual pin.
+                  const _chipProdOpen=unfinishedProdSummary(o);
+                  if(_chipProdOpen&&!window.confirm('Mark '+o.id+' Complete?\n\n'+_chipProdOpen+'\n\nIt will drop off the production board and show as Delivered on the coach portal. Continue?'))return;
+                  sv('status','complete')}}
                 title={sf==='complete'?'Click to manually mark complete':'Auto-calculated'}>{SO_STATUS_LABELS[sf]||sf}</span>
               {i<statusFlow.length-1&&<span className={'conn'+(done?' done':'')}/>}
             </React.Fragment>})}
@@ -8625,7 +8635,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // When Final is $0 AND prior invoices/deposits already cover the balance, skip a
             // redundant $0 invoice and just close the SO. Never-invoiced $0 orders (FREE PROMO
             // with no billable deco, etc.) still get a $0 invoice for AR/audit + promo paid-spend.
-            if(shouldSkipZeroFinalInvoice({invType,invTotal,isPromoOrder,priorInvs:soInvs,depositApplied})){const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' closed — fully paid');setShowInvCreate(false);return;}
+            if(shouldSkipZeroFinalInvoice({invType,invTotal,isPromoOrder,priorInvs:soInvs,depositApplied})){
+              // Balance already covered, so there's no invoice to cut — but "fully paid" is not
+              // "fully made". Only pin status='complete' when production has nothing left; see the
+              // _closeOnFinal note below.
+              const _paidProdOpen=unfinishedProdSummary(o);
+              if(_paidProdOpen){nf(o.id+' is fully paid — left open, still in production ('+_paidProdOpen.split('\n')[0]+')');setShowInvCreate(false);return;}
+              const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' closed — fully paid');setShowInvCreate(false);return;}
             setInvCreating(true);
             try{
             // Re-read this SO's invoices immediately before creation. A second tab may have
@@ -8688,18 +8704,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               ...(depositApplied>0?{deposit_applied:Math.round(depositApplied*100)/100}:{}),
               line_items:lineItems,
               items:activeItems.map(idx=>{const it=items[idx];const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{sku:it.sku,name:it.name,qty:_sq>0?_sq:safeNum(it.est_qty),unit_sell:it.is_free_promo?0:safeNum(it.unit_sell)}})};
+            // A Final invoice is a BILLING event, not a fulfillment one — reps here invoice ahead
+            // of the floor on purpose. Closing the SO anyway pinned status='complete', which
+            // calcSOStatus honours ahead of every job state, so the order read "Complete" to the rep
+            // and "Delivered" on the coach portal while the garments were still on a machine
+            // (SO-1985: Final invoice 8/26 with the goods not even received; its 15 hats were still
+            // In Process on 9/16). Close only when production has nothing outstanding — otherwise
+            // leave the SO on its real status so it stays on the board and workable. Nothing is lost
+            // by waiting: App.js's fully-invoiced auto-closer pins 'complete' by itself the moment
+            // the last job finishes.
+            const _prodOpen=unfinishedProdSummary(o);
+            const _closeOnFinal=!_prodOpen;
             let invSaved=true;
             if(invType==='final'&&onInvCommit){
               // Persist the invoice and WAIT — only a confirmed invoice save may close the SO.
               // A failed insert used to leave a completed SO with no invoice (unbilled work).
               invSaved=await onInvCommit(inv);
-              if(invSaved){const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated)}
+              if(invSaved&&_closeOnFinal){const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated)}
             }else{
               onInv(prev=>[...prev,inv]);
-              if(invType==='final'){const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated)}
+              if(invType==='final'&&_closeOnFinal){const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated)}
             }
             setShowInvCreate(false);
-            if(invSaved)nf('Invoice '+inv.id+' created for $'+invTotal.toFixed(2)+(invType==='final'?' — SO marked complete':''));
+            if(invSaved)nf('Invoice '+inv.id+' created for $'+invTotal.toFixed(2)+(invType==='final'?(_closeOnFinal?' — SO marked complete':' — SO left open, still in production'):''));
             else nf('Invoice '+inv.id+' created but NOT saved to the database — the SO was left open. The save will retry in the background; mark the SO complete once it saves.','error');
             // Show invoice review page instead of navigating away
             setInvReview({...inv,_customer:cust,_so:o,_lineItems:lineItems,_shipAmt:invShipAmt,_taxAmt:invTaxAmt});
