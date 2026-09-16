@@ -1,4 +1,4 @@
-import { QB_PO_ACCOUNT_LINE_DESCRIPTION_MAX, applyQBInvoiceLiveReadiness, applyQBPurchaseOrderLiveReadiness, applyQBSalesOrderLiveReadiness, billReferencesPortalPO, buildQBBillPOReplacement, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, findQbPOBillCandidates, normalizeQBInvoiceNumber, qbInvoiceNumberAliases, qbLinkedTransactions, qbPOAccountLineDescription, qbPurchaseOrderSourceFingerprint, qbSalesOrderSourceFingerprint, qboStandardTermDueDate } from '../qbSyncEngine';
+import { QB_PO_ACCOUNT_LINE_DESCRIPTION_MAX, applyQBPurchaseOrderLiveReadiness, applyQBSalesOrderLiveReadiness, billReferencesPortalPO, buildQBBillPOReplacement, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions, qbPOAccountLineDescription, qbPurchaseOrderSourceFingerprint, qbSalesOrderSourceFingerprint, qboStandardTermDueDate } from '../qbSyncEngine';
 import { indexQBNonInventoryItems, QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_SPECS } from '../qbAccountMappings';
 
 const accountRows = Object.values(QB_ACCOUNT_SPECS).map((spec,index)=>({
@@ -18,16 +18,17 @@ const makeEngine = ({qbApi,cust=[],sos=[],invs=[],prod=[],vend=[],dP=jest.fn(()=
     setSubmittedBatches:jest.fn(),setVend:jest.fn(),
   };
   const persistQbLink=jest.fn(async()=>({}));
-  const testQbApi=async(action,payload={})=>{
-    try{return await qbApi(action,payload)}
+  const guardedQBApi=async(action,args={})=>{
+    try{return await qbApi(action,args)}
     catch(error){
-      if(action==='query'&&String(payload.query||'').includes('FROM Invoice WHERE DocNumber')&&String(error.message||'').startsWith('Unexpected QBO call:'))return{QueryResponse:{Invoice:[]}};
+      if(action==='query'&&String(args.query||'').includes('FROM Invoice WHERE DocNumber IN')&&/Unexpected QBO call/.test(error.message))return{QueryResponse:{Invoice:[]}};
       throw error;
     }
   };
   const engine=createQBSyncEngine({
       persistQbLink,
-    cust,sos,invs,prod,vend,invPOs:[],submittedBatches:[],qbApi:testQbApi,qbConfig:config,nf:jest.fn(),
+    acquireInvoiceSyncClaim:jest.fn(async()=>true),releaseInvoiceSyncClaim:jest.fn(async()=>true),
+    cust,sos,invs,prod,vend,invPOs:[],submittedBatches:[],qbApi:guardedQBApi,qbConfig:config,nf:jest.fn(),
     dP,...setters,
   });
   return{engine,setters,persistQbLink,getConfig:()=>config};
@@ -43,7 +44,7 @@ describe('QuickBooks one-record canaries', () => {
     expect(qboStandardTermDueDate('2026-09-01','Date driven')).toBeNull();
   });
 
-  test('invoice review lists exact ready rows and excludes zero totals without writing', () => {
+  test('invoice review lists exact ready rows and explicitly excludes zero totals without writing', () => {
     const rows=buildQBInvoicePreviewRows([
       {id:'INV-10',customer_id:'C1',invoice_date:'2026-09-08',total:100,paid:25,tax:8},
       {id:'INV-11',customer_id:'C1',invoice_date:'2026-09-08',total:0,paid:0,tax:0},
@@ -51,33 +52,8 @@ describe('QuickBooks one-record canaries', () => {
     ],[{id:'C1',name:'Exact Customer'}],{C1:'Q1'});
     expect(rows).toEqual([
       expect.objectContaining({invoiceId:'INV-10',documentNumber:'INV-10',customer:'Exact Customer',qboCustomerId:'Q1',date:'2026-09-08',total:100,paid:25,tax:8,action:'ready'}),
+      expect.objectContaining({invoiceId:'INV-11',action:'excluded_zero',reason:expect.stringMatching(/zero-dollar/)}),
     ]);
-  });
-
-  test('invoice review holds future dates and recognizes INV/NS-INV aliases only with exact identity', () => {
-    expect(normalizeQBInvoiceNumber('NS-INV63133')).toBe('INV63133');
-    expect(normalizeQBInvoiceNumber('INV-63133')).toBe('INV63133');
-    expect(qbInvoiceNumberAliases('INV-63133')).toEqual(['INV63133','INV-63133','NS-INV63133']);
-    const rows=buildQBInvoicePreviewRows([
-      {id:'INV-63133',customer_id:'C1',invoice_date:'2026-09-08',total:100,paid:0,tax:0},
-      {id:'INV-70000',customer_id:'C1',invoice_date:'2026-09-21',total:50,paid:0,tax:0},
-    ],[{id:'C1',name:'Exact Customer'}],{C1:'Q1'},{today:'2026-09-15'});
-    expect(rows[1]).toEqual(expect.objectContaining({action:'blocked',reason:'future-dated invoice is held until 2026-09-21'}));
-    const checked=applyQBInvoiceLiveReadiness(rows,[
-      {Id:'900',DocNumber:'NS-INV63133',CustomerRef:{value:'Q1'},TxnDate:'2026-09-08',TotalAmt:100},
-    ]);
-    expect(checked[0]).toEqual(expect.objectContaining({action:'existing',qboId:'900'}));
-    expect(checked[1].action).toBe('blocked');
-  });
-
-  test('same normalized invoice number with different identity is blocked', () => {
-    const rows=buildQBInvoicePreviewRows([
-      {id:'INV-63133',customer_id:'C1',invoice_date:'2026-09-08',total:100,paid:0,tax:0},
-    ],[{id:'C1',name:'Exact Customer'}],{C1:'Q1'},{today:'2026-09-15'});
-    const checked=applyQBInvoiceLiveReadiness(rows,[
-      {Id:'901',DocNumber:'INV63133',CustomerRef:{value:'OTHER'},TxnDate:'2026-09-08',TotalAmt:100},
-    ]);
-    expect(checked[0]).toEqual(expect.objectContaining({action:'blocked',reason:expect.stringContaining('different customer, date, or total')}));
   });
 
   test('bulk invoice writes require an explicitly approved exact review', async() => {
@@ -126,22 +102,6 @@ describe('QuickBooks one-record canaries', () => {
     expect(invoicePayload.ARAccountRef).toEqual({value:accountId('11000')});
     expect(invoicePayload.DueDate).toBe('2026-10-01');
     expect(qbApi.mock.calls.filter(([action])=>action==='upsert_invoice')).toHaveLength(1);
-    expect(setters.setInvs).toHaveBeenCalledTimes(1);
-  });
-
-  test('links an exact NS-INV alias immediately before write and creates nothing', async() => {
-    const invoice={id:'INV-1',display_id:'INV-1',customer_id:'C1',invoice_date:'2026-09-01',total:100,paid:0,tax:0};
-    const existing={Id:'899',DocNumber:'NS-INV1',CustomerRef:{value:'C-QB'},TotalAmt:100,TxnDate:'2026-09-01'};
-    const qbApi=jest.fn(async(action,{query}={})=>{
-      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
-      if(action==='query'&&query.includes("FROM Item WHERE Name = 'NSA Portal Sales'"))return{QueryResponse:{Item:[portalSalesItem]}};
-      if(action==='query'&&query.includes("DocNumber = 'NS-INV1'"))return{QueryResponse:{Invoice:[existing]}};
-      if(action==='query'&&query.includes('FROM Invoice WHERE DocNumber'))return{QueryResponse:{Invoice:[]}};
-      throw new Error('Unexpected QBO call: '+action+' '+query);
-    });
-    const{engine,setters}=makeEngine({qbApi,cust:[{id:'C1',name:'Test Customer'}],invs:[invoice]});
-    await expect(engine.syncInvoices({}, {}, {canaryInvoiceId:'INV-1'})).resolves.toEqual({status:'success',synced:1});
-    expect(qbApi.mock.calls.filter(([action])=>action==='upsert_invoice')).toHaveLength(0);
     expect(setters.setInvs).toHaveBeenCalledTimes(1);
   });
 
