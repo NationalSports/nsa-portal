@@ -284,7 +284,12 @@ export default function QBPage(){
         aliasRows.forEach(row=>log.details.push('Alias '+row.documentNumber+' / NS-'+row.documentNumber+' — '+row.action+(row.qboId?' — QBO #'+row.qboId:'')+(row.reason?' — '+row.reason:'')));
         const summary=summarizeQBInvoicePreflight(invoiceRows,aliasRows);
         log.details.push('Invoice guard — '+JSON.stringify(summary.counts)+' · proposed for creation: '+summary.proposedCount+' · acceptance: '+(summary.passed?'PASS':'FAIL'));
-        if(!summary.passed)log.status='partial';
+        // Ready invoices are the expected input to the explicitly approved
+        // reviewed-batch flow. Only conflicts, blocked rows, or alias failures
+        // should keep those review controls locked. The stricter `passed` flag
+        // remains false while any creation is proposed, so unattended posting
+        // still fails closed.
+        if(!summary.safeToReview)log.status='partial';
         const invoiceAudit={reviewedAt:new Date().toISOString(),...summary,rows:invoiceRows,aliases:aliasRows};
         setQBConfig(prev=>({...prev,preflight:{status:log.status,at:new Date().toISOString(),company:ci?.CompanyName||prev.companyName,realm_id:prev.realm_id,accounts:Object.fromEntries(Object.entries(refs).map(([key,ref])=>[key,{id:ref.value,number:ref.accountNumber,name:ref.name}])),invoiceAudit},syncLog:[log,...prev.syncLog].slice(0,100)}));
         nf('Live QBO preflight complete — no records changed');
