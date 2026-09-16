@@ -976,10 +976,13 @@ export default function QBPage(){
               <div style={{marginBottom:12}}>
                 <label className="form-label">Sync Mode</label>
                 <div style={{display:'flex',gap:4}}>
-                  {[['manual','Manual'],['hourly','Hourly'],['daily','Daily'],['realtime','Real-time']].map(([v,l])=>
-                    <button key={v} disabled={v!=='manual'} title={v!=='manual'?'Controlled migration uses manual, reconciled batches':''} className={`btn btn-sm ${qbConfig.autoSync===v?'btn-primary':'btn-secondary'}`}
-                      onClick={()=>setQBConfig(prev=>({...prev,autoSync:v}))}>{l}</button>)}
+                  {[['manual','Manual'],['hourly','Hourly'],['daily','Daily'],['realtime','Real-time']].map(([v,l])=>{
+                    const disabled=v==='realtime'||(v!=='manual'&&!migrationUnlocked);
+                    const title=v==='realtime'?'Real-time remains locked; use the reviewed hourly or daily sales sync':v!=='manual'&&!migrationUnlocked?'Complete the reviewed migration gates first':'Customers, invoices and verified payments only; runs while an authorized Portal session is open';
+                    return <button key={v} disabled={disabled} title={title} className={`btn btn-sm ${qbConfig.autoSync===v?'btn-primary':'btn-secondary'}`}
+                      onClick={()=>setQBConfig(prev=>({...prev,autoSync:v}))}>{l}</button>})}
                 </div>
+                {qbConfig.autoSync!=='manual'&&<div style={{fontSize:10,color:'#475569',marginTop:6}}>Automatic scope: customers, invoices and verified customer payments only. Purchasing, bills, products and inventory remain locked. The browser runner requires an authorized Portal session to remain open.</div>}
               </div>
               {!migrationUnlocked&&<div style={{padding:10,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e',marginBottom:10}}>
                 <div>Initial-migration safety lock is active. Run the read-only live preflight, then use the one-record test on each data tab. Production batches remain locked; verified parsed supplier-bill canaries: <strong>{verifiedCanaryBills}/3 minimum</strong>.</div>

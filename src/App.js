@@ -4722,7 +4722,7 @@ export default function App(){
     const id=setInterval(()=>{
       if(!storedUserCanManageQuickBooks()||qbSyncing||!_qbSyncCtxRef.current)return;
       const last=qbConfig.lastSync?new Date(qbConfig.lastSync).getTime():0;
-      if(Date.now()-last>=ms)createQBSyncEngine(_qbSyncCtxRef.current).syncAll();
+      if(Date.now()-last>=ms)createQBSyncEngine(_qbSyncCtxRef.current).syncSalesAuto();
     },60000);// check every 60s
     return()=>clearInterval(id);
   },[qbConfig.connected,qbConfig.autoSync,qbConfig.initialMigrationApproved,qbConfig._durableLinksLoaded,qbSyncing]);
