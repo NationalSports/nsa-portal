@@ -1,6 +1,7 @@
 import StripePaymentVerification from './StripePaymentVerification';
 import QBCustomerLinkRepair from './QBCustomerLinkRepairCard';
 import QBServerReviewCard from './QBServerReviewCard';
+import QBBackgroundSalesCard from './QBBackgroundSalesCard';
 import {supabase} from './lib/dbEngine';
 import {loadQBVendorReview,applyQBVendorReview} from './qbVendorSync';
 import {buildQBProductManifest,loadQBProductItems,qbProductBatchReadiness} from './qbProductMigration';
@@ -1006,12 +1007,15 @@ export default function QBPage(){
                 <label className="form-label">Sync Mode</label>
                 <div style={{display:'flex',gap:4}}>
                   {[['manual','Manual'],['hourly','Hourly'],['daily','Daily'],['realtime','Real-time']].map(([v,l])=>{
-                    const disabled=v==='realtime'||(v!=='manual'&&!migrationUnlocked);
-                    const title=v==='realtime'?'Real-time remains locked; use the reviewed hourly or daily sales sync':v!=='manual'&&!migrationUnlocked?'Complete the reviewed migration gates first':'Customers, invoices and verified payments only; runs while an authorized Portal session is open';
+                    const serverManaged=qbConfig.backgroundSalesAutomation===true||qbConfig.browserSalesRunnerDisabled===true;
+                    const disabled=serverManaged||v==='realtime'||(v!=='manual'&&!migrationUnlocked);
+                    const title=serverManaged?'Browser scheduling is disabled because the server now owns hourly sales automation':v==='realtime'?'Real-time remains locked; use the reviewed hourly or daily sales sync':v!=='manual'&&!migrationUnlocked?'Complete the reviewed migration gates first':'Customers, invoices and verified payments only';
                     return <button key={v} disabled={disabled} title={title} className={`btn btn-sm ${qbConfig.autoSync===v?'btn-primary':'btn-secondary'}`}
                       onClick={()=>setQBConfig(prev=>({...prev,autoSync:v}))}>{l}</button>})}
                 </div>
-                {qbConfig.autoSync!=='manual'&&<div style={{fontSize:10,color:'#475569',marginTop:6}}>Automatic scope: customers, invoices and verified customer payments only. Purchasing, bills, products and inventory remain locked. The browser runner requires an authorized Portal session to remain open.</div>}
+                {(qbConfig.backgroundSalesAutomation===true||qbConfig.browserSalesRunnerDisabled===true)
+                  ?<div style={{fontSize:10,color:'#166534',marginTop:6}}>The server owns hourly customer, invoice and verified-payment automation. This browser is status-only; purchasing, bills, products and inventory remain locked.</div>
+                  :qbConfig.autoSync!=='manual'&&<div style={{fontSize:10,color:'#475569',marginTop:6}}>Automatic scope: customers, invoices and verified customer payments only. Purchasing, bills, products and inventory remain locked.</div>}
               </div>
               {!migrationUnlocked&&<div style={{padding:10,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e',marginBottom:10}}>
                 <div>Initial-migration safety lock is active. Run the read-only live preflight, then use the one-record test on each data tab. Production batches remain locked; verified parsed supplier-bill canaries: <strong>{verifiedCanaryBills}/3 minimum</strong>.</div>
@@ -1706,6 +1710,7 @@ export default function QBPage(){
         </div>
       </>}
 
+      <QBBackgroundSalesCard/>
       <QBServerReviewCard/>
       {qbConfig.lastPaymentReview&&<div className="card" style={{padding:16,marginBottom:16}}>
         <h2>Payment review</h2>
