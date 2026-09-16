@@ -66,7 +66,7 @@ import { remapFrozenJobDecoIndexes, detachChangedArtRow, liveArtSplitSizes, refr
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors, splitSliceOwnedKeys, splitSliceOwnedSizes, clampSplitOverrideSizes, SLICE_PRUNE_STATUSES, pruneStaleSliceRows, reparentOrphanSplitJobs, remapFrozenJobItemIndexes } from './lib/syncJobsMatch';
 import { itemVendorInvSource, vendorInvCacheKey } from './vendorInventory';
 import { stampSplitRuns } from './lib/splitJobPricing';
-import { allocateCustomSplit, openSizes, freeSplitSuffix } from './lib/splitJobItems';
+import { allocateCustomSplit, openSizes, freeSplitSuffix, planJobMerge } from './lib/splitJobItems';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { artFamilyKey } from './lib/artSplitFamily';
 import { parseStitchCount, embStitchTierLabel } from './lib/embStitchParser';
@@ -13411,14 +13411,11 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
           {jobs.some(j=>j.art_status==='needs_art')&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={openJobWizard}>Submit to Art</button>}
           {jobs.length>1&&!mergeMode&&<button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={()=>setMergeMode({selected:[]})}>Merge Jobs</button>}
           {mergeMode&&(()=>{const _ms=mergeMode.selected.map(i=>jobs[i]).filter(Boolean);const _he=_ms.some(j=>j.deco_type==='embroidery'),_hs=_ms.some(j=>j.deco_type==='screen_print');const _cross=_he&&_hs;const _sameG=!_cross||(_ms.length>=2&&(()=>{const ss=_ms.map(j=>new Set((j.items||[]).map(it=>it.item_idx)));const f=ss[0]||new Set();return ss.every(s=>s.size===f.size&&[...f].every(i=>s.has(i)));})());const _mOk=mergeMode.selected.length>=2&&(!_cross||_sameG);return<><button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} disabled={!_mOk} onClick={()=>{
-            const sel=mergeMode.selected.sort((a,b)=>a-b);const target=jobs[sel[0]];
-            // Auto-absorb any split children of the selected jobs (recursively) so no
-            // orphaned slices are left behind with split_from pointing to the now-merged job.
-            const _absorbIds=new Set(sel.map(i=>jobs[i]?.id).filter(Boolean));
-            let _ac=true;while(_ac){_ac=false;jobs.forEach(j=>{if(j.split_from&&_absorbIds.has(j.split_from)&&!_absorbIds.has(j.id)){_absorbIds.add(j.id);_ac=true}})}
-            const _extraIdxs=[];jobs.forEach((j,i)=>{if(_absorbIds.has(j.id)&&!sel.includes(i))_extraIdxs.push(i)});
+            // Merge EXACTLY the jobs the rep ticked — planJobMerge works out which slices need
+            // re-parenting instead of being swallowed (see src/lib/splitJobItems.js, SO-1661).
+            const _plan=planJobMerge(jobs,mergeMode.selected);const target=_plan.target;if(!target)return;
             const allItems=[...(target.items||[])];
-            [...sel.slice(1),..._extraIdxs].forEach(ji=>{const mj=jobs[ji];if(mj)allItems.push(...(mj.items||[]))});
+            _plan.mergeIdxs.forEach(ji=>{const mj=jobs[ji];if(mj)allItems.push(...(mj.items||[]))});
             const mergeItems=_mergeJobItems(allItems);
             // Seed only — recalcJobFulfillment below re-derives both from live sizes/receipts.
             // _mergeJobItems sums the constituents' STORED gi.units/gi.fulfilled, which are
@@ -13435,8 +13432,9 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
             // (never synthesized) so the right production-files variant (dtf/emb/screen) is kept.
             // Clear split_from — a merged job is its own standalone job, not a split-off slice.
             // Leaving it set would make the job match BOTH the split and merged preservation filters
-            // in syncJobs and get double-counted (the runaway-duplication bug).
-            const _mergedFrom=[target,...[...sel.slice(1),..._extraIdxs].map(i=>jobs[i]).filter(Boolean)];
+            // in syncJobs and get double-counted (the runaway-duplication bug). It stays priced as a
+            // separate press run only while a slice of its own is still out there (plan.keepSeparate).
+            const _mergedFrom=[target,..._plan.mergeIdxs.map(i=>jobs[i]).filter(Boolean)];
             const _as=mergeJobsArtState(_mergedFrom);
             // Coach columns clear unless every design carried the coach's approval (see helper);
             // ART_PULLBACK_CLEARS also stamps _coach_cleared so dbEngine keeps the deliberate nulls.
@@ -13444,15 +13442,18 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
             const merged={...target,items:mergeItems,total_units:mergeUnits,fulfilled_units:mergeFulfilled,
               art_status:_as.art_status,art_file_id:_as.art_file_id,_art_ids:_as._art_ids,assigned_artist:_as.assigned_artist,
               art_requests:_as.art_requests,art_messages:_as.art_messages,sent_history:_as.sent_history,rejections:_as.rejections,
-              ..._coachFields,_merged:true,split_from:null,priced_separately:false,price_override:null};
-            const removeIdxs=new Set([...sel.slice(1),..._extraIdxs]);const newJobs=jobs.map((j,i)=>i===sel[0]?merged:j).filter((j,i)=>!removeIdxs.has(i));
+              ..._coachFields,_merged:true,split_from:null,priced_separately:_plan.keepSeparate,price_override:null};
+            // Re-parent the merged-away jobs' split slices onto the target: their old parent id is
+            // gone, and a dangling split_from strands the slice (Merge Back can't find its parent).
+            const newJobs=jobs.filter((j,i)=>!_plan.removeIdxs.has(i))
+              .map(j=>j===target?merged:(j.split_from&&_plan.reparentIds.has(j.split_from)?{...j,split_from:target.id}:j));
             // Re-derive units/receipts from the live line items — same step splitBySku takes, and
             // for the same reason: merged jobs are preserved verbatim by the job sync, so a stale
             // snapshot baked in here would never self-heal. Runs on the POST-filter array so the
-            // absorbed slices are already gone and the merged job is its own clean split family.
+            // merged-away jobs are already gone and every surviving slice points at a live parent.
             const recalcedMerged=recalcJobFulfillment({...o,jobs:newJobs},safeItems(o));
             const updated=stampSplitRuns({...o,jobs:recalcedMerged,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);setMergeMode(null);
-            nf('Merged '+(sel.length+_extraIdxs.length)+' jobs into '+target.id);
+            nf('Merged '+(_plan.mergeIdxs.length+1)+' jobs into '+target.id);
           }}>Merge {mergeMode.selected.length} Selected</button>
           <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>setMergeMode(null)}>Cancel</button></>})()}
         </div>
