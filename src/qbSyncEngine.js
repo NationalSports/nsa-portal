@@ -2371,6 +2371,25 @@ export function createQBSyncEngine(ctx){
       }catch(e){log.status='error';log.details.push(portalPOId+' — BLOCKED: '+e.message);setQBConfig(prev=>({...prev,syncLog:mergeQBSyncLogs([log,...(prev.syncLog||[])])}));setQbSyncing(false);nf('PO-to-bill link stopped — '+e.message,'error');return{status:'blocked',reason:e.message}}
     };
 
+    // ── SCOPED SALES AUTO-SYNC ──
+    // This is deliberately narrower than the legacy syncAll path. Customer,
+    // invoice and payment automation may be enabled independently without
+    // authorizing estimates, purchase orders, bills, products or inventory.
+    // Each stage keeps its existing production lock, duplicate protection,
+    // durable receipt and QBO read-back rules.
+    const syncSalesAuto=async()=>{
+      if(productionSyncLocked())return{status:'blocked'};
+      setQbSyncing(true);
+      try{
+        const custQBMap=await syncCustomers();
+        await syncInvoices(custQBMap,{...(qbConfig.prodQBMap||{})});
+        await syncPaidFromQB();
+        return{status:'success'};
+      }finally{
+        setQbSyncing(false);
+      }
+    };
+
     // ── SYNC ALL ──
     const syncAll=async()=>{
       if(migrationBatchLocked())return{status:'blocked'};
@@ -2387,5 +2406,5 @@ export function createQBSyncEngine(ctx){
       setQbSyncing(false);
     };
 
-    return {syncTaxRateCanary,syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,syncInventoryValuation,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,reviewPurchaseOrderBillCandidate,linkPurchaseOrderBill,syncAll};
+    return {syncTaxRateCanary,syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,syncInventoryValuation,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,verifyPurchaseOrderBillLinks,reviewPurchaseOrderBillCandidate,linkPurchaseOrderBill,syncSalesAuto,syncAll};
 }
