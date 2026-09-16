@@ -16,12 +16,10 @@ test('automatic QBO runner is limited to customers, invoices and payments',()=>{
   expect(scoped).not.toMatch(/syncSalesOrders|syncPurchaseOrders|syncBillsFromQB|syncInventory/);
 });
 
-test('browser scheduler is disabled when the server owns sales automation',()=>{
+test('browser scheduler remains scoped while the proxy owns the sales write lock',()=>{
   const app=read('App.js');
   expect(app).toContain('createQBSyncEngine(_qbSyncCtxRef.current).syncSalesAuto()');
   expect(app).not.toContain('createQBSyncEngine(_qbSyncCtxRef.current).syncAll()');
-  expect(app).toContain('qbConfig.backgroundSalesAutomation===true');
-  expect(app).toContain('qbConfig.browserSalesRunnerDisabled===true');
 });
 
 test('real-time remains locked and the browser becomes status-only',()=>{
