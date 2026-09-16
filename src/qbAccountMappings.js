@@ -145,24 +145,23 @@ export function billVendorMatchName(bill) {
   return String(bill?.vendor || bill?.supplier || '').trim();
 }
 
-// QBO permits different vendors to reuse the same supplier invoice number.
-// Idempotency is therefore scoped to vendor + document number; only a
-// conflicting bill for that same vendor should block a create.
-export function findExistingVendorBill(existingBills, { docNumber, vendorId, total, txnDate }) {
+// Search the full QBO payables population for the supplier document number.
+// A number collision under another vendor is not safe to ignore: it is routed
+// to manual review so an incorrect vendor mapping cannot create a duplicate.
+export function findExistingVendorBill(existingBills, { docNumber, vendorId, total, txnDate, entityType = 'Bill' }) {
   const normalizedDoc = norm(docNumber);
-  const vendorBills = (existingBills || []).filter(existing =>
+  const numberedBills = (existingBills || []).filter(existing =>
     norm(existing?.DocNumber) === normalizedDoc
-    && String(existing?.VendorRef?.value || '') === String(vendorId || '')
   );
-  const exact = vendorBills.filter(existing =>
+  const exact = numberedBills.filter(existing =>
+    String(existing?._qboEntityType || 'Bill') === String(entityType || 'Bill')
+    && String(existing?.VendorRef?.value || '') === String(vendorId || '')
+    &&
     Math.abs((Number(existing?.TotalAmt) || 0) - (Number(total) || 0)) < 0.005
     && String(existing?.TxnDate || '').slice(0, 10) === String(txnDate || '').slice(0, 10)
   );
-  if (exact.length > 1) {
-    throw new Error(`QBO contains duplicate exact bills for document ${String(docNumber || '').trim()}; no new bill was sent.`);
-  }
-  if (vendorBills.length && exact.length !== 1) {
-    throw new Error(`QBO document ${String(docNumber || '').trim()} already exists for this vendor with a different date or total; no new bill was sent.`);
+  if (numberedBills.length > 1 || (numberedBills.length === 1 && exact.length !== 1)) {
+    throw new Error(`QBO document ${String(docNumber || '').trim()} already exists with a different vendor, date, or total; manual review is required and no new bill was sent.`);
   }
   return exact[0] || null;
 }

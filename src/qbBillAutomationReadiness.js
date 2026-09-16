@@ -15,7 +15,6 @@ const normalizedDocument = value => clean(value).toLowerCase();
 export const isPendingQboBillLedgerRow = row => !!row
   && row.status === 'pushed'
   && row.portal_status === 'success'
-  && !row.is_credit
   && !(row.qb_status === 'success' && clean(row.qb_bill_id));
 
 export const buildQboBillReadinessRows = ledgerRows => (ledgerRows || [])
@@ -36,6 +35,8 @@ export const buildQboBillReadinessRows = ledgerRows => (ledgerRows || [])
       vendor: billVendorMatchName(bill),
       date: parseQBDateValue(bill.doc_date),
       total: money(bill.doc_total),
+      isCredit: !!row.is_credit,
+      transactionType: row.is_credit ? 'BillCredit' : 'Bill',
       source: clean(row.source || bill.source),
     };
   });
@@ -64,43 +65,52 @@ export const qboBillReadinessFingerprint = row => ({
   vendor: clean(row?.vendor),
   date: clean(row?.date),
   total: money(row?.total),
+  transactionType: clean(row?.transactionType || 'Bill'),
 });
 
 export const applyQboBillLiveReadiness = ({
-  rows = [], qboVendors = [], qboBills = [], portalVendors = [], vendorLinks = {}, accountRefs = {},
+  rows = [], qboVendors = [], qboBills = [], qboBillCredits = [], portalVendors = [], vendorLinks = {}, accountRefs = {},
 } = {}) => rows.map(row => {
   const block = reason => ({ ...row, action: 'blocked', reason });
   if (!row.ledgerId) return block('Bill ledger row is missing its immutable ID');
   if (!row.documentNumber) return block('Vendor document number is missing');
   if (!row.vendor) return block('Canonical portal vendor is missing');
   if (!row.date) return block('Bill date is missing or invalid');
-  if (!(row.total > 0)) return block('Bill total must be positive');
+  const comparisonTotal = row.isCredit ? Math.abs(row.total) : row.total;
+  if (!(comparisonTotal > 0)) return block(`${row.transactionType || 'Bill'} total must be non-zero`);
   let qboVendor;
   try { qboVendor = resolveBillVendor(row, portalVendors, qboVendors, vendorLinks); }
   catch (error) { return block(error.message); }
   if (!qboVendor) return block(`Vendor "${row.vendor}" is not linked or uniquely present in QBO`);
 
-  let linePlan;
-  try { linePlan = buildVendorBillLines(qboAccountOnlyBill(row.bill), accountRefs); }
-  catch (error) { return block(error.message); }
+  let linePlan = null;
+  if (!row.isCredit) {
+    try { linePlan = buildVendorBillLines(qboAccountOnlyBill(row.bill), accountRefs); }
+    catch (error) { return block(error.message); }
+  }
 
+  const payables = [
+    ...(qboBills || []).map(item => ({ ...item, _qboEntityType: 'Bill' })),
+    ...(qboBillCredits || []).map(item => ({ ...item, _qboEntityType: 'BillCredit' })),
+  ];
   try {
-    const existing = findExistingVendorBill(qboBills, {
+    const existing = findExistingVendorBill(payables, {
       docNumber: row.documentNumber,
       vendorId: qboVendor.Id,
-      total: linePlan.total,
+      total: row.isCredit ? comparisonTotal : linePlan.total,
       txnDate: row.date,
+      entityType: row.transactionType,
     });
-    if (existing) return { ...row, action: 'already_exists', reason: `Exact QBO Bill #${existing.Id}`, qboBillId: clean(existing.Id), qboVendorId: clean(qboVendor.Id), linePlan };
+    if (existing) return { ...row, action: 'already_exists', reason: `Exact QBO ${existing._qboEntityType} #${existing.Id}`, qboBillId: clean(existing.Id), qboEntityType: existing._qboEntityType, qboVendorId: clean(qboVendor.Id), linePlan };
   } catch (error) {
-    const candidates = (qboBills || []).filter(bill => normalizedDocument(bill?.DocNumber) === normalizedDocument(row.documentNumber)
-      && clean(bill?.VendorRef?.value) === clean(qboVendor.Id)).map(bill => ({
-        id: clean(bill.Id), date: clean(bill.TxnDate).slice(0, 10), total: money(bill.TotalAmt), balance: money(bill.Balance),
+    const candidates = payables.filter(bill => normalizedDocument(bill?.DocNumber) === normalizedDocument(row.documentNumber)).map(bill => ({
+        id: clean(bill.Id), type: bill._qboEntityType, vendorId: clean(bill?.VendorRef?.value), date: clean(bill.TxnDate).slice(0, 10), total: money(bill.TotalAmt), balance: money(bill.Balance),
       }));
-    const evidence = candidates.length ? ' QBO: '+candidates.map(candidate => `#${candidate.id} ${candidate.date || 'no date'} $${candidate.total.toFixed(2)}`).join('; ')+'.' : '';
+    const evidence = candidates.length ? ' QBO: '+candidates.map(candidate => `${candidate.type} #${candidate.id} vendor ${candidate.vendorId || 'unknown'} ${candidate.date || 'no date'} $${candidate.total.toFixed(2)}`).join('; ')+'.' : '';
     return { ...row, action: 'conflict', reason: error.message+evidence, qboVendorId: clean(qboVendor.Id), qboCandidates: candidates, linePlan };
   }
 
+  if (row.isCredit) return block('Bill credit creation is not enabled; no existing exact QBO BillCredit was found');
   return { ...row, action: 'ready', reason: '', qboVendorId: clean(qboVendor.Id), linePlan };
 });
 
