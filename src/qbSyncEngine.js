@@ -1495,7 +1495,10 @@ export function createQBSyncEngine(ctx){
 
     // ── SYNC: Bidirectional paid status sync between QB and portal ──
     const syncPaidFromQB=async({reviewOnly=false}={})=>{
-      if(productionSyncLocked())return;
+      // A read-only review is the evidence required before the production
+      // payment gate can be unlocked. Keep all write paths locked, but do not
+      // make the review itself depend on that later approval.
+      if(!reviewOnly&&productionSyncLocked())return;
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'paid_sync',status:'success',details:[]};
       let updated=0;

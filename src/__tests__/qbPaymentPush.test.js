@@ -9,9 +9,9 @@ const accounts=[
   {Id:'13',AcctNum:'11010',Name:'Undeposited Funds',AccountType:'Other Current Asset',Active:true},
 ];
 // Portal says $100 paid; QBO shows the invoice fully open.
-function setup({paymentResponse,existingPayments=[],readback,invoicePaid=100,qbBalance=100,custMap={C1:'55'},payments}={}){
+function setup({paymentResponse,existingPayments=[],readback,invoicePaid=100,qbBalance=100,custMap={C1:'55'},payments,initialMigrationApproved=true}={}){
   const invs=[{id:'INV1',display_id:'INV-1',customer_id:'C1',total:100,paid:invoicePaid,qb_invoice_id:'900',date:'2026-06-01',...(payments?{payments}:{})}];
-  let config={realm_id:'r1',preflight:{status:'success',realm_id:'r1'},mapping,initialMigrationApproved:true,
+  let config={realm_id:'r1',preflight:{status:'success',realm_id:'r1'},mapping,initialMigrationApproved,
     custQBMap:custMap,syncLog:[]};
   let sent=null;
   const qbApi=jest.fn(async(action,args={})=>{
@@ -279,6 +279,15 @@ test.each([[100,100,'review payment push'],[0,0,'pull payment details'],[0,100,'
   expect(run.qbApi.mock.calls.every(([a,args])=>a==='query'&&args.query.includes('FROM Invoice'))).toBe(true);
   expect(run.persistQbLink).not.toHaveBeenCalled();
   expect(run.config()._paidSyncOffset).toBeUndefined();
+});
+
+test('read-only payment review remains available while production writes are locked',async()=>{
+  const run=setup({invoicePaid:0,qbBalance:100,initialMigrationApproved:false});
+  const review=await run.engine.syncPaidFromQB({reviewOnly:true});
+  expect(review.rows).toHaveLength(1);
+  expect(review.rows[0].action).toBe('aligned');
+  expect(run.qbApi.mock.calls.every(([action])=>action==='query')).toBe(true);
+  expect(run.persistQbLink).not.toHaveBeenCalled();
 });
 
 test('read-only review scans beyond one batch and reports missing records',async()=>{
