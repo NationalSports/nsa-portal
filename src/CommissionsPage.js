@@ -7,6 +7,7 @@ import { calcSOStatus } from './components';
 import { commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, garmentCost, calcRepPayout } from './businessLogic';
 import { decoSplitQty, linkedArtCostQty } from './pricing';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes, manualPoCostRows, manualPoCostTotal } from './safeHelpers';
+import { webstoreCheckoutMoney } from './lib/webstoreSoMoney';
 import { dP, rQ, parseDate, _decoUnitCostComb } from './App';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { supabase } from './lib/dbEngine';
@@ -228,12 +229,23 @@ export default function CommissionsPage({adminReports=false}={}){
       // never bills the fundraise, so it's added on top of invRev.
       // (Pre-2026-07 webstore fundraise was booked as a cost here.)
       const fundraiseRev=safeNum(so._omg_fundraise||0);
+      // WEBSTORE batch checkout money (finalize_webstore_batch writes it onto the SO and
+      // bills it on the batch invoice): the processing fee charged to buyers is revenue,
+      // shipping charged at checkout is shipping revenue, Stripe's card fees are a real
+      // cost. Sales tax stays out — invRev already drops inv.tax. Both sides must move
+      // together or `scale` (invRev ÷ SO revenue) drifts: the invoice now carries the fee,
+      // so the SO revenue it is compared against must too. Webstore only: an OMG store's
+      // auto-invoice bills product only, so its fee columns would skew the scale instead.
+      const _wm=webstoreCheckoutMoney(so);
+      const storeProcRev=_wm.processing,storeShipRev=_wm.shipping,storeCardCost=_wm.ccFees;
       if(dtl){
         if(shipRev||shipCost)dtl.push({kind:'bucket',label:'Shipping (charged to customer vs cost)',rev:shipRev,cost:shipCost});
         if(inboundFreight)dtl.push({kind:'bucket',label:'Inbound freight (supplier bills)',rev:0,cost:inboundFreight});
         if(fundraiseRev)dtl.push({kind:'bucket',label:'OMG fundraise revenue',rev:fundraiseRev,cost:0});
+        if(storeProcRev||storeCardCost)dtl.push({kind:'bucket',label:'Webstore processing fee (charged to buyers vs Stripe card fees)',rev:storeProcRev,cost:storeCardCost});
+        if(storeShipRev)dtl.push({kind:'bucket',label:'Webstore shipping charged at checkout',rev:storeShipRev,cost:0});
       }
-      const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight;
+      const totalRev=rev+shipRev+storeProcRev+storeShipRev;const totalCost=cost+shipCost+inboundFreight+storeCardCost;
       // Scale to invoice proportion (invoice may be partial payment of SO)
       const soTotal=totalRev||1;const scale=invRev/soTotal;
       return{rev:invRev+fundraiseRev,cost:Math.round(totalCost*scale*100)/100,gp:Math.round((invRev+fundraiseRev-totalCost*scale)*100)/100,shipRev:Math.round(shipRev*scale*100)/100,shipCost:Math.round(shipCost*scale*100)/100,inboundFreight:Math.round(inboundFreight*scale*100)/100};

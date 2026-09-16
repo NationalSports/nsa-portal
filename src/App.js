@@ -33,8 +33,8 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, REP_PROD_FILE_DECOS, artistOwesProdFiles, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { stampEstimateDraftLineIds } from './lib/orderLineIdentity';
 import { searchSalesOrders } from './lib/searchSalesOrders';
@@ -66,6 +66,7 @@ import { mergeDurableQbCanaries, qbCanaryLedgerRecord } from './qbCanaryLedger';
 import { loadDurableQBLinkReceipts, mergeDurableQBLinks, persistVerifiedQBLink } from './qbLinkLedger';
 import { canViewFinancials } from './lib/financialAccess';
 import { consolidateOmgProductRows } from './lib/storeSkuGrouping';
+import { webstoreCheckoutMoney } from './lib/webstoreSoMoney';
 import { acquireOmgCreationGuard, omgCollectedUnitPrice, omgInvoiceIdempotencyKey, webstoreInvoiceIdempotencyKey } from './lib/omgCreationGuard';
 import { matchedBillPoNumber, normalizeBillForReview, prepareQboBackfillBill } from './qbBillReview';
 import { resolvePoDisplayVendor } from './lib/poVendor';
@@ -1056,11 +1057,16 @@ const _cloudinaryPdfThumb=u=>{if(!u||!u.includes('cloudinary.com'))return null;
   return t.replace('/image/upload/','/image/upload/pg_1,f_png/')};
 // ── Production job mockup scoping (prod-board job modal + lightbox + job-sheet PDF) ──
 // One production job can carry multiple designs: each garment line references its own
-// art via its decorations. Every art file the job touches:
+// art via its decorations. Every art file the job touches — scoped to the decorations THIS
+// job runs (jobItemDecosOfKind), not every art decoration sitting on the line. A line shared
+// by two jobs (a second design on another position) otherwise dragged the sibling job's art
+// onto this sheet: SO-2121/JOB-2121-03 printed the Soccer Creed mockup and its .ai in
+// Production Files next to the FPU logo it actually runs. The job's own primary art
+// (_art_ids / art_file_id) is always kept, so numbers/names mocks still resolve.
 const _prodJobArtFiles=(j,so)=>{const ids=new Set();
   (j._art_ids||[j.art_file_id].filter(Boolean)).forEach(id=>ids.add(id));
   (j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;
-    safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')ids.add(d.art_file_id)});
+    jobItemDecosOfKind(gi,it,'art').forEach(d=>{if(d.art_file_id&&d.art_file_id!=='__tbd')ids.add(d.art_file_id)});
   });
   return[...ids].map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
 };
@@ -1103,9 +1109,14 @@ const _prodJobItemMocks=(artFiles,so,gi)=>{
   const out=[];const seen=new Set();
   const push=f=>{if(!f)return;const u=typeof f==='string'?f:(f?.url||'');if(u&&seen.has(u))return;if(u)seen.add(u);out.push(f)};
   const it=safeItems(so)[gi.item_idx];
-  const decos=it?safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];
+  // Only the art decorations THIS job runs. Two jobs can share one garment line (a second
+  // design on another position), and the sibling's mockup must not print on this sheet —
+  // JOB-2121-03 showed the Soccer Creed tee next to the FPU logo it actually runs.
+  // jobItemArtSlots keeps each decoration's positional slot index, so a scoped decoration
+  // still reads its own slot key — same rule the order editor's job card uses.
+  const decos=it?jobItemArtSlots(gi,it):[];
   if(decos.length>0){
-    decos.forEach((d,i)=>{
+    decos.forEach(({d,ai:i})=>{
       const a=artFiles.find(x=>x?.id===d.art_file_id);if(!a)return;
       const m=a.item_mockups||{};
       const disc=i===0?'':(d.color_way_id||('d'+i));
@@ -2363,7 +2374,7 @@ export default function App(){
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,
     realm_id:'',sandbox:false,// access/refresh tokens live server-side (qb_oauth_tokens), never in client state
     mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},
-    syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]},parkedPurchaseOrderIds:[]});
+    syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]},parkedPurchaseOrderIds:[],_durableLinksLoaded:false});
   const[qbTab,setQbTab]=useState('overview');
   const[qbSyncing,setQbSyncingState]=useState(false);
   const qbSyncBusyRef=useRef(false);
@@ -2453,6 +2464,12 @@ export default function App(){
   const[ests,setEsts]=useState(()=>_migrated.ests);const[sos,setSOs]=useState(()=>_migrated.sos);const[invs,setInvs]=useState(()=>_migrated.invs);
   // NetSuite invoice history (customer_invoices table) — read-only; kept separate from portal invs state.
   const[histInvs,setHistInvs]=useState([]);
+  // Did the NetSuite history actually LOAD? 'loading' | 'ok' | 'error' | 'denied'. customer_invoices is
+  // the only staff-gated read in the whole load, so a tab whose session wasn't live gets an empty
+  // history while every other table (anon-readable) fills in normally. Without this flag the UI can't
+  // tell that apart from a customer who has genuinely never been invoiced, and it showed reps an empty
+  // invoice list on accounts with years of paid history.
+  const[histInvsStatus,setHistInvsStatus]=useState('loading');
   // Live count for the poll's self-heal (the poll effect has [] deps, so it can't read histInvs directly).
   const _histInvsCount=useRef(0);
   React.useEffect(()=>{_histInvsCount.current=histInvs.length},[histInvs]);
@@ -2911,7 +2928,7 @@ export default function App(){
           // replaced by the stale DB copy the load already read.
           if(as.wh_recent_actions)setWhRecentActions(prev=>{const incStr=JSON.stringify(as.wh_recent_actions);if(JSON.stringify(prev)===incStr){_whActionsApplied.current=incStr;return prev}if(_appStateDirty('wh_recent_actions'))return prev;_whActionsApplied.current=incStr;return as.wh_recent_actions});
           if(as.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as.job_time_logs});
-          if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]},parkedPurchaseOrderIds:[]};const _qbLoaded={..._qbDef,...as.qb_config,mapping:migrateQBAccountMapping(as.qb_config.mapping),autoSync:as.qb_config.initialMigrationApproved===true?(as.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)};setQBConfig(mergeDurableQBLinks(mergeDurableQbCanaries(_qbLoaded,as),{...as,..._qbDurableRowsRef.current}))}
+          if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]},parkedPurchaseOrderIds:[]};const _realm=String(as.qb_config.realm_id||'');const _qbLoaded={..._qbDef,...as.qb_config,mapping:migrateQBAccountMapping(as.qb_config.mapping),autoSync:as.qb_config.initialMigrationApproved===true?(as.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false),_durableLinksLoaded:_qbDurableHydrationRef.current===_realm};setQBConfig(mergeDurableQBLinks(mergeDurableQbCanaries(_qbLoaded,as),{...as,..._qbDurableRowsRef.current}))}
           if(as.omg_first_seen)setOmgFirstSeen(as.omg_first_seen);
           if(as.inv_pos)setInvPOs(as.inv_pos);
           if(as.inv_adj_log)setInvAdjLog(prev=>{const incStr=JSON.stringify(as.inv_adj_log);if(JSON.stringify(prev)===incStr){_invAdjLogApplied.current=incStr;return prev}if(_appStateDirty('inv_adj_log'))return prev;_invAdjLogApplied.current=incStr;return as.inv_adj_log});
@@ -2995,7 +3012,7 @@ export default function App(){
               if(as2.batch_counter)setBatchCounter(as2.batch_counter);if(as2.batch_vendor_counters)setBatchVendorCounters(as2.batch_vendor_counters);
               if(as2.change_log)setChangeLog(prev=>{const incStr=JSON.stringify(as2.change_log);if(JSON.stringify(prev)===incStr){_changeLogApplied.current=incStr;return prev}if(_appStateDirty('change_log'))return prev;_changeLogApplied.current=incStr;return as2.change_log});
               if(as2.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as2.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as2.job_time_logs});
-              if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]},parkedPurchaseOrderIds:[]};const _qbLoaded={..._qbDef,...as2.qb_config,mapping:migrateQBAccountMapping(as2.qb_config.mapping),autoSync:as2.qb_config.initialMigrationApproved===true?(as2.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]};setQBConfig(mergeDurableQBLinks(mergeDurableQbCanaries(_qbLoaded,as2),{...as2,..._qbDurableRowsRef.current}))}if(as2.inv_pos)setInvPOs(as2.inv_pos);
+              if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]},parkedPurchaseOrderIds:[]};const _realm=String(as2.qb_config.realm_id||'');const _qbLoaded={..._qbDef,...as2.qb_config,mapping:migrateQBAccountMapping(as2.qb_config.mapping),autoSync:as2.qb_config.initialMigrationApproved===true?(as2.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[],_durableLinksLoaded:_qbDurableHydrationRef.current===_realm};setQBConfig(mergeDurableQBLinks(mergeDurableQbCanaries(_qbLoaded,as2),{...as2,..._qbDurableRowsRef.current}))}if(as2.inv_pos)setInvPOs(as2.inv_pos);
               if(as2.inv_adj_log)setInvAdjLog(prev=>{const incStr=JSON.stringify(as2.inv_adj_log);if(JSON.stringify(prev)===incStr){_invAdjLogApplied.current=incStr;return prev}if(_appStateDirty('inv_adj_log'))return prev;_invAdjLogApplied.current=incStr;return as2.inv_adj_log});if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);if(as2.comm_overrides)setCommOverrides(as2.comm_overrides);if(as2.labor_rates)setLaborRates(as2.labor_rates);
               if(as2.company_info){const ci={...NSA_DEFAULTS,...as2.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
               console.log('[DB] Loaded from Supabase after seed by other browser');
@@ -3162,11 +3179,24 @@ export default function App(){
   React.useEffect(()=>{
     if(dbLoading||!supabase||_histInvoicesLoadStarted.current)return;
     _histInvoicesLoadStarted.current=true;let cancelled=false;let idleId=null;let timerId=null;
-    const load=async()=>{const rows=await _dbLoadHistInvoices();if(!cancelled&&rows)setHistInvs(rows)};
+    const load=async()=>{const{rows,status}=await _dbLoadHistInvoices();if(cancelled)return;if(rows)setHistInvs(rows);setHistInvsStatus(status)};
     if(typeof window.requestIdleCallback==='function')idleId=window.requestIdleCallback(load,{timeout:2000});
     else timerId=setTimeout(load,0);
     return()=>{cancelled=true;if(idleId!=null&&typeof window.cancelIdleCallback==='function')window.cancelIdleCallback(idleId);if(timerId!=null)clearTimeout(timerId)};
   },[dbLoading]);
+  // On-demand retry behind the customer page's "history didn't load" banner. The poll's self-heal
+  // above only fires on a FULL sync (_FULL_SYNC_MS = 30 min), which is far too long to leave a rep
+  // looking at an invoice list that renders as empty — this is the same recovery, on a button.
+  // Deliberately does NOT flip status back to 'loading' first: that's the banner's own hide
+  // condition, so doing it would unmount the banner (and its "Retrying…" button) for the length of
+  // the request and pop it back on failure — reading as "fixed, then broken again". The banner
+  // stays put and reports the outcome; CustDetail tracks the in-flight state for the button.
+  const _retryHistInvoices=React.useCallback(async()=>{
+    const{rows,status}=await _dbLoadHistInvoices();
+    if(rows)setHistInvs(rows);
+    setHistInvsStatus(status);
+    return status;
+  },[]);
 
   // Match the unload warning: a preserved conflict is still unsaved work even
   // after it has left the failed-save retry set. Only an explicit user reload
@@ -3290,7 +3320,8 @@ export default function App(){
         // Retry on full syncs while state has none; for anon/coach tabs the refetch is one cheap
         // page-0 query that stays empty, so this never hammers the DB.
         if(!d._coreOnly&&_histInvsCount.current===0){
-          const _hh=await _dbLoadHistInvoices();
+          const{rows:_hh,status:_hs}=await _dbLoadHistInvoices();
+          setHistInvsStatus(_hs);
           if(_hh&&_hh.length){setHistInvs(prev=>prev.length?prev:_hh);console.log('[DB] NetSuite invoice history recovered on poll ('+_hh.length+' invoices)')}
         }
         // Preserve local versions of entities whose saves failed — don't let DB data overwrite them
@@ -3306,6 +3337,11 @@ export default function App(){
         const pollCust=_pollMerge(d.customers,'cust');
         const pollMsgs=_pollMerge(d.messages,'msgs');
         const pollProd=_pollMerge(d.products,'prod');
+        // omg_stores is server-written every night (netlify/functions/omg-order-sync-background.js
+        // updates orders/unique_buyers/_last_synced). The poll MUST advance the omg state whenever it
+        // advances the omg snapshot — see the setOmgStores call below for why.
+        const pollOmg=_pollMerge(d.omg_stores||[],'omg');
+        const pollOmgStr=(()=>{try{return JSON.stringify(pollOmg)}catch(_){return null}})();
         // Update snapshot before state — auto-save effects will diff against this
         // CRITICAL: When coreOnly, preserve previous snapshot for cold tables (team, vendors, omg, issues)
         // to prevent auto-save effects from seeing a false diff and re-saving all entities
@@ -3313,7 +3349,7 @@ export default function App(){
         _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:pollInvs,msgs:pollMsgs,cust:d._coreOnly?_prevSnap.cust:pollCust,prod:d._coreOnly?_prevSnap.prod:pollProd,
           vend:d._coreOnly?_prevSnap.vend:d.vendors,
           team:d._coreOnly?_prevSnap.team:d.team,
-          omg:d._coreOnly?_prevSnap.omg:d.omg_stores,
+          omg:d._coreOnly?_prevSnap.omg:pollOmg,
           issues:d._coreOnly?_prevSnap.issues:d.issues,
           assignedTodos:d._coreOnly?(_prevSnap.assignedTodos||[]):_mergeAssignedTodos(d.assignedTodos||[],_prevSnap.assignedTodos||[])};
         setEsts(prev=>{const localById=indexFirstById(prev);const mergeEst=e=>{const local=localById.get(e.id);if(local&&_localRowIsNewer(local.updated_at,e.updated_at))return _keepLocalAdoptVersion(local,e);/* Approval-status protection: if this client just changed the status (approve/unapprove), keep the local status fields against rows that PREDATE the change (row _version <= the version the change was based on) — a poll that read before the write landed would otherwise snap it back (EST-1227). Rows whose _version advanced past the base are a legitimate later write (another user, convertSO) and always win. */if(local){const _rsc=_recentEstStatusChange(e.id);if(_rsc&&e.status!==_rsc.status&&_rsc.baseVersion!=null&&e._version!=null&&Number(e._version)<=_rsc.baseVersion){e={...e,status:_rsc.status,approved_by:_rsc.approved_by,approved_at:_rsc.approved_at}}}if(local?.items?.length&&(!e.items||!e.items.length)){e={...e,items:local.items,art_files:local.art_files||e.art_files}}/* Do NOT revert to the local copy when the DB legitimately has FEWER items: the poll already bails above on any timed-out child load (_decoTimedOut), so a lower DB item count here is a real deletion, not a hollowed/partial load. The removed "else if(...) keep local.items" clause silently resurrected deliberately-deleted estimate lines (the SO poll-merge below never had it). DB-empty is still protected by the clause just above. */if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}};if(local?.print_history?.length&&!e.print_history?.length)e={...e,print_history:local.print_history};if(local?.sent_history?.length&&!e.sent_history?.length)e={...e,sent_history:local.sent_history};if(local?.email_status&&!e.email_status)e={...e,email_status:local.email_status};if(local?.email_sent_at&&!e.email_sent_at)e={...e,email_sent_at:local.email_sent_at};if(local?.email_opened_at&&!e.email_opened_at)e={...e,email_opened_at:local.email_opened_at};if(local?.email_viewed_at&&!e.email_viewed_at)e={...e,email_viewed_at:local.email_viewed_at};if(local?.follow_up_at&&!e.follow_up_at)e={...e,follow_up_at:local.follow_up_at};/* Art files: DB-empty keeps local; otherwise superset-merge only within this client's own post-save window (_recentlySavedByMe) so a stale read can't drop a just-added file while another user's deletion still reconciles after the window. */if(local?.art_files?.length){if(!e.art_files||!e.art_files.length)e={...e,art_files:local.art_files};else if(_recentlySavedByMe(e.id))e={...e,art_files:mergeArtFileSuperset(e.art_files,local.art_files)}}return e};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.estimates.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(localById.get(e.id)||e):mergeEst(e));const r1=changed(prev,merged)?merged:prev;_dbSnap.current.ests=r1;return r1}const merged2=d.estimates.map(mergeEst);const r2=changed(prev,merged2)?merged2:prev;_dbSnap.current.ests=r2;return r2});
@@ -3389,6 +3425,15 @@ export default function App(){
         }
         if(d.messages.length)setMsgs(prev=>{const localById=indexFirstById(prev);if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.messages.map(m=>(_dbSaveFailedIds.has(m.id)||_dbSavePendingIds.has(m.id))?(localById.get(m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
+        // Advancing _dbSnap.current.omg WITHOUT advancing this state is a data-loss bug: the
+        // omgStores auto-save effect writes every row where state !== snapshot, treating state as
+        // truth. A tab left open across a nightly sync then had stale rows vs a freshened snapshot,
+        // so the next unrelated edit (assigning a CSR, say) blind-wrote the WHOLE stale store list
+        // back over the sync's orders/unique_buyers/_last_synced. Keep the two in lockstep.
+        // `changed()` keys off updated_at, which omg_stores has no column for, so compare by value.
+        if(!d._coreOnly&&d.omg_stores?.length)setOmgStores(prev=>{
+          try{return pollOmgStr!==null&&JSON.stringify(prev)===pollOmgStr?prev:pollOmg}catch(_){return pollOmg}
+        });
         if(!d._coreOnly)setAssignedTodos(prev=>{const v=_mergeAssignedTodos(d.assignedTodos||[],prev);return changed(prev,v)?v:prev});
         if(d.products.length)setProd(prev=>{const localById=indexFirstById(prev);const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(localById.get(dp.id)||dp):dp):d.products;if(!changed(prev,base))return prev;const merged=base.map(dp=>{const lp=localById.get(dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dbIds)});
         // Refresh app_state keys (batch POs, inventory POs, etc.)
@@ -4642,30 +4687,35 @@ export default function App(){
   };
   React.useEffect(()=>{
     const realmId=String(qbConfig.realm_id||'');
-    if(dbLoading||!_dbLoadSuccess.current||!storedUserCanManageQuickBooks()||!realmId||!cust.length)return;
+    if(dbLoading||!_dbLoadSuccess.current||!storedUserCanManageQuickBooks()||!realmId)return;
     if(_qbDurableHydrationRef.current===realmId||_qbDurableHydrationRef.current===realmId+':loading')return;
     let cancelled=false;_qbDurableHydrationRef.current=realmId+':loading';
-    loadDurableQBLinkReceipts(supabase,realmId,{sourceIds:cust.map(customer=>customer.id)}).then(rows=>{
+    setQBConfig(prev=>String(prev.realm_id||'')===realmId?{...prev,_durableLinksLoaded:false}:prev);
+    // Load the complete realm ledger, not only customer receipts. Restricting
+    // this to customer IDs made thousands of already-verified PO links vanish
+    // after a reload and repopulated the PO queue with migration history.
+    loadDurableQBLinkReceipts(supabase,realmId).then(rows=>{
       if(cancelled)return;
       Object.assign(_qbDurableRowsRef.current,rows);
-      setQBConfig(prev=>String(prev.realm_id||'')===realmId?mergeDurableQBLinks(prev,rows):prev);
+      setQBConfig(prev=>String(prev.realm_id||'')===realmId?mergeDurableQBLinks({...prev,_durableLinksLoaded:true},rows):prev);
       _qbDurableHydrationRef.current=realmId;
     }).catch(error=>{
       if(cancelled)return;
       _qbDurableHydrationRef.current='';
+      setQBConfig(prev=>String(prev.realm_id||'')===realmId?{...prev,_durableLinksLoaded:false}:prev);
       console.error('[QB] Durable link hydration failed:',error);
       nf('Could not load durable QuickBooks links — '+error.message+'; sync remains locked','error');
     });
-    return()=>{cancelled=true};
-  },[dbLoading,qbConfig.realm_id,cust.length]);
-  React.useEffect(()=>{if(storedUserCanManageQuickBooks())_saveAppState('qb_config',qbConfig)},[qbConfig]);
+    return()=>{cancelled=true;if(_qbDurableHydrationRef.current===realmId+':loading')_qbDurableHydrationRef.current=''};
+  },[dbLoading,qbConfig.realm_id]);
+  React.useEffect(()=>{if(storedUserCanManageQuickBooks()){const{_durableLinksLoaded,...persisted}=qbConfig;_saveAppState('qb_config',persisted)}},[qbConfig]);
   // QB background auto-sync — self-contained: builds the sync engine from CURRENT
   // state at fire time. The old wiring called a ref only a mounted QBPage assigned,
   // so hourly/daily auto-sync silently did nothing until someone opened the QB page
   // that session — and afterwards synced the stale snapshot from the last render.
   React.useEffect(()=>{_qbSyncCtxRef.current=storedUserCanManageQuickBooks()?{cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,persistQbLink,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend}:null});
   React.useEffect(()=>{
-    if(!storedUserCanManageQuickBooks()||!qbConfig.connected||qbConfig.autoSync==='manual'||qbConfig.initialMigrationApproved!==true)return;
+    if(!storedUserCanManageQuickBooks()||!qbConfig.connected||qbConfig.autoSync==='manual'||qbConfig.initialMigrationApproved!==true||qbConfig._durableLinksLoaded!==true)return;
     const intervals={hourly:3600000,daily:86400000,realtime:300000};
     const ms=intervals[qbConfig.autoSync];
     if(!ms)return;
@@ -4675,7 +4725,7 @@ export default function App(){
       if(Date.now()-last>=ms)createQBSyncEngine(_qbSyncCtxRef.current).syncAll();
     },60000);// check every 60s
     return()=>clearInterval(id);
-  },[qbConfig.connected,qbConfig.autoSync,qbConfig.initialMigrationApproved,qbSyncing]);
+  },[qbConfig.connected,qbConfig.autoSync,qbConfig.initialMigrationApproved,qbConfig._durableLinksLoaded,qbSyncing]);
   // Ref for emergency flush — holds latest state for beforeunload and visibilitychange handlers
   const _visFlushRefs=useRef({});
   // Batch groups with an orderVendorBatch submission in flight — blocks double-submits per group.
@@ -6858,6 +6908,20 @@ export default function App(){
       }
       console.error('[Webstore] atomic batch finalization failed:',finalizeErr||finalized);
       return null;
+    }
+    // The server derives the checkout money (processing fee, sales tax, shipping charged,
+    // Stripe card fees) from the locked orders and writes it onto the SO row; carry it into
+    // local state so the editor opens with the same numbers without a refetch.
+    const _sm=finalized.store_money;
+    if(_sm&&typeof _sm==='object'){
+      const _patch={_omg_processing:Number(_sm.processing)||0,_omg_tax:Number(_sm.tax)||0,_omg_shipping:Number(_sm.shipping)||0,_omg_cc_fees:Number(_sm.cc_fees)||0};
+      // The server's SO update bumped _version; adopt it or the rep's first edit of the
+      // brand-new SO trips the version-conflict guard against our own write.
+      if(Number(finalized.so_version)>0)_patch._version=Number(finalized.so_version);
+      Object.assign(newSO,_patch);
+      setSOs(prev=>prev.map(s=>s.id===id?{...s,..._patch}:s));
+      const _gap=Number(_sm.rounding_gap)||0;
+      if(Math.abs(_gap)>=0.005)nf('Check '+id+': its product lines differ from the product money the store collected by $'+Math.abs(_gap).toFixed(2)+' (a partial refund or price edit?) — the batch invoice bills the lines as they are.','error');
     }
     // Jump the user straight into the new SO in the Sales Orders editor.
     setESO(newSO);setESOC(cust.find(c=>c.id===customer_id)||null);setPg('orders');
@@ -11604,7 +11668,7 @@ export default function App(){
   };
   // CUSTOMERS
   function rCust(){
-    if(selC)return<ComponentErrorBoundary name="CustDetail"><React.Suspense fallback={<LazyFallback/>}><CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={(c,product,seed)=>newE(c,product,seed)} sos={sos} msgs={msgs} onMsg={setMsgs} onInv={setInvs} companyInfo={companyInfo} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} onOpenInv={inv=>{setViewInvoice(inv);setPg('invoices')}} ests={ests} invs={invs} onSaveSO={savSO} onSaveEst={savE} onSaveArtFiles={savArtFiles} REPS={REPS} prod={prod}
+    if(selC)return<ComponentErrorBoundary name="CustDetail"><React.Suspense fallback={<LazyFallback/>}><CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={(c,product,seed)=>newE(c,product,seed)} sos={sos} msgs={msgs} onMsg={setMsgs} onInv={setInvs} companyInfo={companyInfo} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} onOpenInv={inv=>{setViewInvoice(inv);setPg('invoices')}} ests={ests} invs={invs} onSaveSO={savSO} onSaveEst={savE} onSaveArtFiles={savArtFiles} REPS={REPS} prod={prod} histStatus={histInvsStatus} onRetryHist={_retryHistInvoices}
       onMarkRead={ids=>{const s=new Set(ids);setMsgs(msgs.map(m=>s.has(m.id)?{...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]}:m))}}
       onSavePromoProgram={async(prog)=>{await _dbSavePromoProgram(prog);const isFamily=c=>c.id===prog.customer_id||c.parent_id===prog.customer_id;const upd=c=>({...c,promo_programs:[...(c.promo_programs||[]).filter(p=>p.id!==prog.id),prog]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s);nf('Promo program saved')}}
       onDeletePromoProgram={async(id)=>{await _dbDeletePromoProgram(id);const upd=c=>({...c,promo_programs:(c.promo_programs||[]).filter(p=>p.id!==id)});setCust(prev=>prev.map(c=>(c.promo_programs||[]).some(p=>p.id===id)?upd(c):c));setSelC(s=>s&&(s.promo_programs||[]).some(p=>p.id===id)?upd(s):s);nf('Promo program removed')}}
@@ -15650,7 +15714,10 @@ export default function App(){
     // charge is returned as shipRev and applied to margin/pct only.
     const shipCost=safeNum(so._shipping_cost||so._shipstation_cost||0)||(so._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
     cost+=shipCost+safeNum(so._inbound_freight||0)+manualPoCostTotal(so);
-    const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
+    // Webstore batch checkout money — mirrors calcGP / calcOrderMargin: processing fee
+    // revenue, Stripe card fees as cost, shipping charged at checkout as shipping revenue.
+    const _wm=webstoreCheckoutMoney(so);rev+=_wm.processing;cost+=_wm.ccFees;
+    const shipRev=(so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value))+_wm.shipping;
     const mBase=rev+shipRev;
     return{rev,cost,shipRev,margin:mBase-cost,pct:mBase>0?Math.round((mBase-cost)/mBase*100):0,units}};
 
@@ -23421,7 +23488,22 @@ export default function App(){
     };
     // Embroidery/DTF jobs that have been approved are owned by the rep/CSR (upload DST+PDF or order films),
     // not the artist — drop them off the artist board once they reach the production-files step.
-    const _repOwnsProdStep=(j)=>j.art_status==='order_dtf_transfers'||j.art_status==='upload_emb_files'||(j.art_status==='production_files_needed'&&['embroidery','dtf','heat_press'].includes(j.artFile?.deco_type||j.deco_type));
+    // A job can carry SEVERAL designs whose production-file steps differ — a merge puts them on one
+    // row (SO-2145/JOB-2145-02 merged a DTF sleeve print with the screen-print front, keeping the DTF
+    // design as art_file_id). Judged by that primary design alone the whole job read as rep-owned and
+    // left the artist board while its screen-print SEPARATIONS were still outstanding: gathered above,
+    // then rendered in no column at all — not Approved / Needs Files, not In Production, not Hidden.
+    // So ask every design still awaiting files first; one pending screen print keeps the job here.
+    const _repOwnsProdStep=(j)=>{
+      if(!PROD_FILES_STATUSES.includes(j.art_status))return false;
+      const pendingDecos=jobLiveArtIds(j,j.so).map(id=>safeArt(j.so).find(f=>f.id===id)).filter(Boolean)
+        .filter(a=>!artProdFilesConfirmed(a)).map(a=>a.deco_type||'');
+      if(artistOwesProdFiles(pendingDecos))return false;
+      // Unchanged below: the original rule, so names/numbers jobs and every single-design job keep
+      // the exact behaviour they had.
+      return j.art_status==='order_dtf_transfers'||j.art_status==='upload_emb_files'
+        ||REP_PROD_FILE_DECOS.includes(j.artFile?.deco_type||j.deco_type);
+    };
     // ─── Split families are ONE piece of art ───
     // A split partitions one decoration's units across a parent and its slices; every slice keeps
     // the parent's artwork, so the artist draws one design, sends one mockup and needs one

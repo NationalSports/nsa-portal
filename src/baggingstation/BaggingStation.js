@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useStaffSession } from '../lib/useStaffSession';
-import { orderProgress, sortLinesForBag, lineOnOrder, lineSatisfied, shortSummary, playerHeader, batchItemTotals, sortOrders, ORDER_SORTS, orderInDeco } from './bagLogic';
+import { orderProgress, sortLinesForBag, lineOnOrder, lineSatisfied, shortSummary, playerHeader, batchItemTotals, sortOrders, ORDER_SORTS, orderInDeco, itemDisplay } from './bagLogic';
 import { buildBagLabelHtml } from './bagLabel';
 import { printPdfLabels } from '../utils';
 
@@ -219,6 +219,9 @@ function LineRow({ item, onTap, onShort }) {
   const shorted = (Number(item.short_qty) || 0) > 0 && ['open', 'backordered', 'refunded'].includes(item.short_status || '');
   const border = shorted ? '#d97706' : done ? '#166534' : '#334155';
   const child = item.bundle_ref && !item.is_bundle_parent;
+  // Style number on top, the garment's real name underneath — same shape as the
+  // printed bag label, so the screen and the label read alike.
+  const d = itemDisplay(item);
   return (
     <div className="bs-row" style={{
       display: 'flex', alignItems: 'center', gap: 14, background: onOrder ? '#131c2e' : '#1e293b',
@@ -236,21 +239,53 @@ function LineRow({ item, onTap, onShort }) {
         {shorted ? '!' : done ? '✓' : ''}
       </div>
       {item.image_url && (
-        // Mockup thumbnail: same SKU/color can carry different logos — the
-        // picture is the fastest way to grab the right pile off the table.
-        <img src={item.image_url} alt="" loading="lazy"
-          style={{ width: 56, height: 56, objectFit: 'contain', borderRadius: 6, background: '#fff', flexShrink: 0, opacity: done && !shorted ? 0.5 : 1 }}
-          onError={(e) => { e.target.style.display = 'none'; }} />
+        // Thumbnail: the same sku and color can carry different logos, so the
+        // picture is the fastest way to grab the right pile off the table — but
+        // only when it IS this line's garment. A stock catalog photo is shared
+        // by every logo, so it gets said out loud rather than passed off as the
+        // mockup.
+        <div style={{ flexShrink: 0, width: 64, opacity: done && !shorted ? 0.5 : 1 }}>
+          <img src={item.image_url} alt="" loading="lazy"
+            style={{
+              width: 64, height: 64, objectFit: 'contain', borderRadius: 6, background: '#fff',
+              display: 'block', opacity: item._image_kind === 'stock' ? 0.45 : 1,
+            }}
+            onError={(e) => { e.target.style.display = 'none'; }} />
+          {item._image_kind === 'stock' && (
+            <div style={{ fontSize: 9, fontWeight: 800, color: '#94a3b8', textAlign: 'center', marginTop: 2, letterSpacing: 0.3 }}>
+              STOCK PHOTO
+            </div>
+          )}
+          {item._image_kind === 'logo' && (
+            <div style={{ fontSize: 9, fontWeight: 800, color: '#60a5fa', textAlign: 'center', marginTop: 2, letterSpacing: 0.3 }}>
+              LOGO ART
+            </div>
+          )}
+        </div>
       )}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 19, fontWeight: 700, textDecoration: done && !shorted ? 'line-through' : 'none', color: done && !shorted ? '#64748b' : '#f1f5f9' }}>
-          {item.name || item.sku}
+          {d.head}
         </div>
+        {d.garment && d.garment !== d.head && (
+          // The description Eliza used to have to find on the printed player
+          // order report before she could tell what the line was.
+          <div style={{ fontSize: 16, fontWeight: 700, color: done && !shorted ? '#64748b' : '#cbd5e1', marginTop: 2 }}>
+            {d.garment}
+          </div>
+        )}
         <div style={{ fontSize: 14, color: '#94a3b8', fontWeight: 700, marginTop: 2 }}>
           {item.color ? item.color + ' · ' : ''}{item.variant_label ? item.variant_label + ' · ' : ''}
           {(item.player_name || '').trim() ? (item.player_name || '').trim() + ' · ' : ''}
           {onOrder ? 'ON ORDER — not arrived' : shorted ? `SHORT ${item.short_qty}` + (item.short_status !== 'open' ? ' (' + item.short_status + ')' : '') : ''}
         </div>
+        {d.logo && (
+          // Which logo, and where it goes. The one thing that separates two
+          // identical black hoods bound for different bags.
+          <div style={{ fontSize: 14, fontWeight: 800, color: done && !shorted ? '#64748b' : '#7dd3fc', marginTop: 3 }}>
+            ◆ {d.logo}
+          </div>
+        )}
       </div>
       {String(item.player_number || '').trim() && (
         // Jersey number: verify against the shirt in hand before it goes in.
@@ -594,8 +629,20 @@ function StagingTable({ orders }) {
               return (
                 <tr key={r.sku + r.name + r.color}>
                   <td style={{ ...td, textAlign: 'left', minWidth: 200 }}>
-                    <div style={{ fontSize: 17, fontWeight: 800 }}>{r.name}</div>
-                    <div style={{ fontSize: 13, color: '#94a3b8', fontWeight: 700 }}>{[r.sku, r.color].filter(Boolean).join(' · ')}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      {r.image && (
+                        <img src={r.image} alt="" loading="lazy"
+                          style={{
+                            width: 40, height: 40, objectFit: 'contain', borderRadius: 5, background: '#fff',
+                            flexShrink: 0, opacity: r.imageKind === 'stock' ? 0.45 : 1,
+                          }}
+                          onError={(e) => { e.target.style.display = 'none'; }} />
+                      )}
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 17, fontWeight: 800 }}>{r.head}</div>
+                        <div style={{ fontSize: 13, color: '#94a3b8', fontWeight: 700 }}>{r.desc}</div>
+                      </div>
+                    </div>
                   </td>
                   {cells}
                   <td style={td}>
@@ -624,7 +671,7 @@ function stagingSheetHtml(storeName, orders) {
       rowTotal += c.total;
       return `<td><b>${c.total}</b>${c.short ? `<div class="s">${c.short} short</div>` : ''}</td>`;
     }).join('');
-    return `<tr><td class="l"><b>${esc(r.name)}</b><div class="m">${esc([r.sku, r.color].filter(Boolean).join(' · '))}</div></td>${cells}<td><b>${rowTotal}</b></td></tr>`;
+    return `<tr><td class="l"><b>${esc(r.head)}</b><div class="m">${esc(r.desc)}</div></td>${cells}<td><b>${rowTotal}</b></td></tr>`;
   }).join('');
   return `<!doctype html><html><head><title>Staging — ${esc(storeName)}</title><style>
     body{font-family:Arial,sans-serif;margin:24px;color:#111}
@@ -662,7 +709,7 @@ function ResolvePanel({ orders, staffMode, onResolve, onBackorder }) {
       {rows.map(({ o, i, hdr }) => (
         <div key={i.id} style={{ ...S.card, cursor: 'default' }}>
           <div style={{ fontSize: 17, fontWeight: 800 }}>
-            {i.short_qty}× {i.name || i.sku}{i.size ? ' · ' + i.size : ''}
+            {i.short_qty}× {itemDisplay(i).text}{i.size ? ' · ' + i.size : ''}
             <span style={{ color: '#94a3b8', fontWeight: 700 }}> — {hdr.number ? '#' + hdr.number + ' ' : ''}{hdr.name}</span>
           </div>
           {i.short_note && <div style={{ color: '#94a3b8', fontSize: 14, marginTop: 4 }}>“{i.short_note}”</div>}

@@ -11,6 +11,8 @@ import { _dbSaveSO } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { QB_MAX_REVIEWED_BATCH, QB_STATE_TAX_ACCOUNT_KEYS, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, parseQBDateValue, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
 import {buildQBInventoryValuation, buildQBInventoryValuationEntry, findQBInventoryValuationEntries, loadQBInventoryAssetBalance, loadQBJournalEntry, qbInventoryValuationDocNumber, verifyQBInventoryValuationReadback} from './qbInventoryValuation';
+import { isPrePortalNetsuitePo } from './netsuiteOldPos';
+import { parseSiPoString, siPoOrigin } from './sportsLink';
 
 // Return a circular batch and the cursor for the next run. Permanent blockers
 // in the first N records must not starve every later customer/invoice/item/PO.
@@ -282,11 +284,47 @@ export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms
   return rows;
 }
 
+// The Portal/QBO migration was reconciled through 2026-09-08. Purchase orders
+// dated before the first forward-sync day belong to migration history even when
+// their old normalized rows lost the original `preexisting` marker.
+export const QB_PO_FORWARD_SYNC_START_DATE = '2026-09-09';
+
 // One portal PO can span several SO item rows. Group those rows before both UI
 // preview and QBO posting so the operator sees the same one-PO payload the API
 // will receive. Mixed vendors or mixed merchandise/decoration categories under
 // one document number are unsafe and must block instead of inheriting the first
 // line's routing.
+export function isHistoricalPortalPurchaseOrder(pl = {}, so = {}) {
+  const source = String(pl?._import_source || '').trim().toLowerCase();
+  const memo = String(pl?.memo || '').trim();
+  if (pl?.preexisting === true || source === 'netsuite' || so?._doc_type === 'po'
+    || /preexisting\s+po.*netsuite/i.test(memo)) return true;
+
+  // Portal-issued numbers always have a space after PO/DPO. Legacy NetSuite
+  // numbers do not. This is the same audited discriminator used by bill triage.
+  // For non-standard prefixes, require confirmation from the bundled NetSuite
+  // PO export rather than guessing from a bare number alone.
+  const origin = siPoOrigin(pl?.po_id);
+  if (origin === 'old') return true;
+  const createdDate = parseQBDateValue(pl?.created_at);
+  if (createdDate && createdDate < QB_PO_FORWARD_SYNC_START_DATE) return true;
+  if (origin === 'portal') return false;
+  const rawId = String(pl?.po_id || '').trim();
+  if (!/^(?:NSA\s+)?\d/i.test(rawId)) return false;
+  return isPrePortalNetsuitePo(parseSiPoString(pl?.po_id).core);
+}
+
+export function historicalPortalPurchaseOrderIds(sos = [], poMap = {}, parkedPOIds = []) {
+  const parked = new Set((parkedPOIds || []).map(id => String(id).trim()).filter(Boolean));
+  const ids = new Set();
+  (sos || []).forEach(so => safeItems(so).forEach(it => (it.po_lines || []).forEach(pl => {
+    const poId = String(pl?.po_id || '').trim();
+    if (!poId || poMap[pl.po_id] || parked.has(poId)) return;
+    if (isHistoricalPortalPurchaseOrder(pl, so)) ids.add(poId);
+  })));
+  return [...ids];
+}
+
 export function groupPortalPurchaseOrders(sos = [], poMap = {}, portalVendors = [], parkedPOIds = []) {
   const vendorRecords = [...(portalVendors || []), ...D_V];
   const parked = new Set((parkedPOIds || []).map(id => String(id).trim()).filter(Boolean));
@@ -297,7 +335,7 @@ export function groupPortalPurchaseOrders(sos = [], poMap = {}, portalVendors = 
   };
   const groups = new Map();
   (sos || []).forEach(so => safeItems(so).forEach(it => (it.po_lines || []).forEach(pl => {
-    if (!pl?.po_id || poMap[pl.po_id] || parked.has(String(pl.po_id).trim())) return;
+    if (!pl?.po_id || poMap[pl.po_id] || parked.has(String(pl.po_id).trim()) || isHistoricalPortalPurchaseOrder(pl, so)) return;
     // The saved PO line is the accounting source of truth for who received the
     // order. A product's catalog vendor or brand can change later and must not
     // silently reroute an existing PO in QBO.
@@ -865,8 +903,16 @@ export function createQBSyncEngine(ctx){
     // at most a couple of minutes of work — the loop is resumable either way.
     const QB_SYNC_BATCH_SIZE=100;
     const requireDurableLinks=()=>{
-      if(typeof persistQbLink==='function')return true;
-      nf('Durable QBO link storage is unavailable; no migration record was sent','error');return false;
+      if(typeof persistQbLink!=='function'){
+        nf('Durable QBO link storage is unavailable; no migration record was sent','error');return false;
+      }
+      // App stamps this false while the realm's receipt ledger is loading. A
+      // missing flag is accepted for isolated tests and legacy callers; the
+      // production App always supplies an explicit value.
+      if(qbConfig._durableLinksLoaded===false){
+        nf('Verified QBO links are still loading; no record was sent','error');return false;
+      }
+      return true;
     };
     const migrationBatchLocked=()=>{
       nf('Migration batches remain locked until durable links survive reload and fresh login, and this entity rollout is reviewed','error');

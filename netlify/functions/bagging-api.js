@@ -18,6 +18,123 @@ const { createBagShipLabel } = require('./_baggingShip');
 
 const LIVE = ['pending_payment', 'cancelled', 'refunded']; // excluded statuses
 
+// ── What the packer sees on a line ───────────────────────────────────────────
+// Store lines carry only what the cart had, and two sources feed them:
+//
+//   * OMG imports land with name and image_url NULL and sku = style+color
+//     mashed together ("NEA200-TrueNavy"), so the station could only show that
+//     mash-up — the packer had to cross-reference a printed player order report.
+//   * Native team stores never composite a mockup photo at all. What they DO
+//     store, per product, is the store's artwork and where it goes
+//     (webstore_products.decorations: art_url, color_label, placement, plus a
+//     cw_by_color map when the artwork differs per garment color).
+//
+// So the picture is resolved in order of how much it actually tells the packer:
+//   1. the line's own mockup (image_url) — the garment WITH its logo on it;
+//   2. the store's logo artwork for this line's color — the logo alone, which
+//      is what separates two otherwise identical garments;
+//   3. the blank catalog photo, flagged as stock so the screen can say so.
+//
+// Step 3 is deliberately last and deliberately labelled: the same garment in
+// two logos shares one catalog photo, so an unlabelled stock photo would tell
+// the packer two different bags hold the same thing.
+//
+// READ-ONLY: only underscore-prefixed derived fields are added; nothing is
+// written back to the order line, so a later catalog or art correction shows up
+// on the next refresh and a wrong guess here can never corrupt an order.
+const CATALOG_COLS = 'id, sku, name, color, image_front_url';
+const canonColor = (v) => String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9]/g, '');
+
+// The decoration this line actually carries, reduced to what fits on a row.
+// Front artwork wins (it's what she checks first); cw_by_color is keyed by the
+// storefront's own lowercased color name.
+function pickDecoration(decorations, color) {
+  const all = Array.isArray(decorations) ? decorations.filter(Boolean) : [];
+  if (!all.length) return null;
+  const d = all.find((x) => (x.side || 'front') === 'front') || all[0];
+  const key = String(color == null ? '' : color).trim().toLowerCase();
+  const cw = (key && d.cw_by_color && d.cw_by_color[key]) || null;
+  const art = (cw && cw.url) || d.art_url || d.source_url || d.orig_url || '';
+  const label = String(d.color_label == null ? '' : d.color_label).replace(/\s+/g, ' ').trim();
+  if (!art && !label) return null;
+  return { art, label, placement: d.placement || '', count: all.length };
+}
+
+async function enrichItems(sb, orders) {
+  const list = Array.isArray(orders) ? orders : [orders];
+  const need = []; // { i, storeId } — the store id stays out of the item itself
+  for (const o of list) {
+    for (const i of (o && o.webstore_order_items) || []) {
+      // A line that already carries its own picture IS the mockup, logo and all.
+      if (i.image_url) i._image_kind = 'mockup';
+      if (!i.name || !i.color || !i.image_url) need.push({ i, storeId: (o && o.store_id) || null });
+    }
+  }
+  if (!need.length) return orders;
+
+  const uniq = (vals) => [...new Set(vals.filter((v) => typeof v === 'string' && v.trim()))];
+  const byId = new Map();          // product_id -> catalog row  (exact, one product)
+  const bySku = new Map();         // sku        -> catalog row[] (can span colorways)
+  const byStoreProduct = new Map(); // store_id|product_id -> store product row
+  const load = async (table, cols, col, values, add) => {
+    for (let n = 0; n < values.length; n += 200) {
+      const { data } = await sb.from(table).select(cols).in(col, values.slice(n, n + 200));
+      for (const row of data || []) add(row);
+    }
+  };
+  await Promise.all([
+    load('products', CATALOG_COLS, 'id', uniq(need.map((n) => n.i.product_id)),
+      (p) => { if (!byId.has(p.id)) byId.set(p.id, p); }),
+    load('products', CATALOG_COLS, 'sku', uniq(need.map((n) => n.i.sku)),
+      (p) => { const at = bySku.get(p.sku) || []; at.push(p); bySku.set(p.sku, at); }),
+    // Store products are keyed by (store_id, product_id); fetching by store and
+    // indexing locally keeps this to one round trip however many lines there are.
+    load('webstore_products', 'store_id, product_id, display_name, image_url, decorations',
+      'store_id', uniq(need.map((n) => n.storeId)),
+      (wp) => { byStoreProduct.set(wp.store_id + '|' + wp.product_id, wp); }),
+  ]);
+
+  for (const { i, storeId } of need) {
+    const wp = byStoreProduct.get(storeId + '|' + i.product_id) || null;
+    const exact = byId.get(i.product_id) || null;
+    const cands = (!exact && bySku.get(i.sku)) || [];
+    // A bare sku ("ST485") can carry a dozen colorways. Take the one whose color
+    // matches the line — and when nothing pins the color down, fill only the
+    // name (which every colorway shares) so the packer never sees the wrong
+    // garment photo or a color that was guessed.
+    const byColorMatch = i.color ? cands.find((p) => canonColor(p.color) === canonColor(i.color)) : null;
+    const p = exact || byColorMatch || cands[0] || null;
+    const colorIsCertain = !!(exact || byColorMatch || cands.length === 1);
+
+    if (!i.name) i.name = (wp && wp.display_name) || (p && p.name) || null;
+    if (!i.color && colorIsCertain && p) i.color = p.color || null;
+
+    // The logo rides the line whether or not a picture does — its name is what
+    // separates "Cougar Head" from "Cougars Football" on the same black hood.
+    const deco = pickDecoration(wp && wp.decorations, i.color);
+    if (deco) i._logo = deco;
+
+    if (i.image_url) i._image_kind = 'mockup';
+    else if (wp && wp.image_url) { i.image_url = wp.image_url; i._image_kind = 'mockup'; }
+    else if (deco && deco.art) { i.image_url = deco.art; i._image_kind = 'logo'; }
+    else if (colorIsCertain && p && p.image_front_url) { i.image_url = p.image_front_url; i._image_kind = 'stock'; }
+  }
+  return orders;
+}
+
+// Exported for src/__tests__/baggingCatalogEnrich.test.js — these precedence
+// rules are the difference between the right logo on screen and a wrong one.
+exports.enrichItems = enrichItems;
+exports.pickDecoration = pickDecoration;
+
+// Never let a catalog hiccup take the bagging floor down — an un-enriched line
+// still bags exactly as it did before.
+async function enrichSafe(sb, orders) {
+  try { await enrichItems(sb, orders); }
+  catch (e) { console.warn('[bagging] catalog enrich failed:', e.message || e); }
+  return orders;
+}
+
 // Learned pack-rate MODEL from the last 30 days: time = secPerBag × bags +
 // secPerItem × items. Two parameters, because order mix varies — a bag has
 // fixed overhead (claim, label, handling) plus per-item time, so stores with
@@ -112,6 +229,7 @@ exports.handler = async (event) => {
       .select('*, webstore_order_items(*), webstores(id,name,slug)')
       .eq('id', orderId).maybeSingle();
     if (error) throw new Error(error.message);
+    if (data) await enrichSafe(sb, [data]);
     return data;
   };
 
@@ -161,6 +279,7 @@ exports.handler = async (event) => {
         // them off the board (the RPCs ignore them too via bagging_order_live).
         const orders = (data || []).filter((o) =>
           (o.webstore_order_items || []).some((i) => !i.is_bundle_parent && (i.line_status || '') !== 'cancelled'));
+        await enrichSafe(sb, orders);
         return ok({ orders, progress: (prog && prog[0]) || null, no_deco: noDeco });
       }
 

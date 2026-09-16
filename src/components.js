@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, poLineFulfilledQty } from './safeHelpers';
 import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC, isServiceLine } from './constants';
+import { TAX_EXEMPT_REASONS, TAX_EXEMPT_OTHER, composeTaxExemptReason, canSaveTaxExempt, taxExemptInfo } from './lib/taxExempt';
 // html2pdf is loaded on demand (see buildPdfAttachment below) to keep it out of the eager bundle.
 import { sendBrevoEmail, _brevoKey, _smsUiEnabled, sendBrevoSms, cloudUpload, buildBrandedEmailHtml, _cloudinaryPdfThumb, _isImgUrl, _urlExt, createGmailDraft, buildHtmlPdfAttachment, greetLine, withGreeting, emailMoney } from './utils';
 
@@ -745,4 +746,76 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
     <button onClick={()=>onChange([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
   </div>}
 
-export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };
+
+// ── Tax-exempt dialog — exempts THIS estimate / sales order only ──────────────
+// Deliberately separate from the customer's own tax_exempt flag: marking the customer
+// exempt to get one order right silently un-taxes every later order for them. A reason
+// is required, because an untaxed document has to be able to answer "why?" to an auditor
+// on its own. `scope` tells the rep what is already zeroing the tax when it isn't this
+// document (the customer record, or an OMG store that remits its own).
+function TaxExemptModal({ order, customer, docLabel = 'order', promoApplied = false, onApply, onClear, onClose }) {
+  const info = taxExemptInfo(order, customer);
+  const onThisDoc = info.scope === 'order';
+  const [preset, setPreset] = useState('');
+  const [note, setNote] = useState('');
+  const ready = canSaveTaxExempt(preset, note);
+  const box = { background: '#fff', borderRadius: 10, width: '100%', maxWidth: 520, boxShadow: '0 20px 50px rgba(0,0,0,.3)', overflow: 'hidden' };
+  const row = { padding: '14px 18px' };
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1200, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '60px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={box}>
+        <div style={{ ...row, borderBottom: '1px solid #eef0f3', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 15 }}>Tax exemption</div>
+            <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 2 }}>Applies to this {docLabel} only — the customer record is not changed.</div>
+          </div>
+          <button onClick={onClose} aria-label="Close" style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#6A7180', lineHeight: 1 }}>×</button>
+        </div>
+
+        {info.scope === 'customer' && (
+          <div style={{ ...row, background: '#fef2f2', color: '#991b1b', fontSize: 12 }}>
+            <b>{customer?.name || 'This customer'}</b> is marked tax exempt on their customer record, so every one of their
+            orders is already untaxed. Exempting this {docLabel} on its own changes nothing until that is turned off.
+          </div>
+        )}
+        {info.scope === 'omg' && (
+          <div style={{ ...row, background: '#f0fdf4', color: '#166534', fontSize: 12 }}>
+            This is an OMG store order — OMG collects and remits the sales tax, so no tax is charged here.
+          </div>
+        )}
+
+        {onThisDoc ? (
+          <div style={row}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#166534', marginBottom: 6 }}>This {docLabel} is tax exempt.</div>
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: 10, fontSize: 12.5 }}>
+              <div><b>Reason:</b> {info.reason || <span style={{ color: '#b91c1c' }}>none recorded — set one below</span>}</div>
+              {(info.by || info.at) && <div style={{ color: '#64748b', fontSize: 11, marginTop: 3 }}>Marked{info.by ? ' by ' + info.by : ''}{info.at ? ' · ' + new Date(info.at).toLocaleString() : ''}</div>}
+            </div>
+            {promoApplied && <div style={{ fontSize: 11.5, color: '#92400e', background: '#fffbeb', borderRadius: 6, padding: 8, marginTop: 8 }}>Promo mode is on for this {docLabel}, which keeps it tax exempt on its own. Removing the exemption here won't stick until the promo is removed.</div>}
+          </div>
+        ) : null}
+
+        <div style={{ ...row, borderTop: onThisDoc ? '1px solid #eef0f3' : 'none' }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 6 }}>{onThisDoc ? 'Change the reason' : 'Why is this ' + docLabel + ' exempt?'}</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {TAX_EXEMPT_REASONS.map((r) => (
+              <button key={r} type="button" onClick={() => setPreset(r)} style={{ border: '1.5px solid ' + (preset === r ? '#2563eb' : '#d1d5db'), background: preset === r ? '#eff6ff' : '#fff', color: preset === r ? '#1d4ed8' : '#374151', borderRadius: 999, padding: '5px 11px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>{r}</button>
+            ))}
+          </div>
+          <input className="form-input" value={note} onChange={(e) => setNote(e.target.value)} style={{ marginTop: 8 }}
+            placeholder={preset === TAX_EXEMPT_OTHER ? 'Required — explain the exemption' : 'Optional detail (certificate #, PO #, district name…)'} />
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Printed on the {docLabel} and kept with it for audit.</div>
+        </div>
+
+        <div style={{ ...row, borderTop: '1px solid #eef0f3', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {onThisDoc && <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c' }} onClick={() => { onClear(); onClose(); }}>Remove exemption</button>}
+          <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={onClose}>Cancel</button>
+          <button className="btn btn-sm btn-primary" disabled={!ready} style={{ opacity: ready ? 1 : 0.5 }}
+            onClick={() => { if (!ready) return; onApply(composeTaxExemptReason(preset, note)); onClose(); }}>{onThisDoc ? 'Update reason' : 'Mark tax exempt'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor, TaxExemptModal };

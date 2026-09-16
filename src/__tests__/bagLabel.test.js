@@ -60,3 +60,43 @@ test('9+ item orders switch to the compact item list so everything fits', () => 
   expect(buildBagLabelHtml({ order, items: many, store, origin: '' })).toContain('class="items compact"');
   expect(buildBagLabelHtml({ order, items: many.slice(0, 3), store, origin: '' })).toContain('class="items"');
 });
+
+test('line reads style number, then the garment name and color — not the raw sku', () => {
+  const html = buildBagLabelHtml({
+    order,
+    items: [{ id: 'i3', sku: 'PC55-JetBlack', color: 'Jet Black', size: 'L', qty: 1,
+      name: 'Port & Co Port & Co Core Blend Tee. PC55' }],
+    store, origin: '',
+  });
+  expect(html).toContain('1× PC55');
+  expect(html).toContain('<div class="desc">Port &amp; Co Core Blend Tee · Jet Black</div>');
+  expect(html).not.toContain('PC55-JetBlack');
+});
+
+test('an OMG line with no catalog name still prints the style and color', () => {
+  const html = buildBagLabelHtml({
+    order,
+    items: [{ id: 'i4', sku: 'NEA200-TrueNavy', color: 'True Navy', size: 'M', qty: 1 }],
+    store, origin: '',
+  });
+  expect(html).toContain('1× NEA200');
+  expect(html).toContain('<div class="desc">True Navy</div>');
+});
+
+test('no trailing blank page — breaks go BETWEEN pages, not after the last one', () => {
+  const html = buildBagLabelHtml({ order, items, store, origin: '' });
+  expect(html).not.toContain('page-break-after: always');
+  expect(html).toContain('.page + .page { break-before: page; page-break-before: always; }');
+});
+
+test('the printed label names the logo — two black hoods are not one bag', () => {
+  const html = buildBagLabelHtml({
+    order,
+    items: [{ id: 'l1', sku: 'HR8473', color: 'Black', size: 'M', qty: 1,
+      name: 'Adidas Fleece Hood',
+      _logo: { label: 'Cougars Football', placement: 'full_front' } }],
+    store, origin: '',
+  });
+  expect(html).toContain('1× HR8473');
+  expect(html).toContain('Adidas Fleece Hood · Black · Cougars Football · full front');
+});

@@ -4,7 +4,7 @@
 // The QR deep-links back to the station (?scan=WO-<order id>) so any tablet
 // can reopen the bag — same api.qrserver.com pattern as utils.js's QR labels.
 
-import { sortLinesForBag, shortSummary, playerHeader } from './bagLogic';
+import { sortLinesForBag, shortSummary, playerHeader, itemDisplay } from './bagLogic';
 
 const esc = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -12,9 +12,13 @@ const esc = (s) => String(s == null ? '' : s)
 const LABEL_CSS = `
 @page { size: 4in 6in; margin: 0; }
 * { box-sizing: border-box; }
-html, body { width: 4in; height: 6in; margin: 0; }
+html, body { width: 4in; height: 6in; margin: 0; overflow: hidden; }
 body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif; }
-.page { width: 4in; height: 6in; padding: 0.18in; page-break-after: always; display: flex; flex-direction: column; overflow: hidden; }
+/* Break BETWEEN pages, never after the last one — a break forced after every
+   .page emitted a trailing blank sheet the packer had to de-select in the
+   print dialog on every single label. */
+.page { width: 4in; height: 6in; padding: 0.18in; display: flex; flex-direction: column; overflow: hidden; break-inside: avoid; page-break-inside: avoid; }
+.page + .page { break-before: page; page-break-before: always; }
 .name { font-size: 24pt; font-weight: 800; line-height: 1.05; text-transform: uppercase; }
 .store { font-size: 11pt; font-weight: 700; margin-top: 4pt; }
 .ord { font-size: 9.5pt; font-weight: 700; color: #333; margin-top: 2pt; }
@@ -24,10 +28,15 @@ hr { border: none; border-top: 1.5pt solid #000; margin: 6pt 0; }
 .item { font-size: 10.5pt; line-height: 1.35; }
 .item .sz { font-weight: 800; border: 1pt solid #000; padding: 0 3pt; margin-left: 3pt; }
 .item .pnum { font-weight: 800; border: 1.5pt solid #000; padding: 0 3pt; margin-left: 3pt; background: #000; color: #fff; }
-.item .clr { color: #444; }
+.item + .item { margin-top: 3pt; }
+/* What the garment actually IS — style number is the cross-check, this line is
+   what the packer matches to the pile on the table. */
+.item .desc { font-size: 8.5pt; font-weight: 600; color: #222; line-height: 1.2; }
 .item.short { font-weight: 800; }
 /* Long orders: shrink so every item still fits on the 4x6 */
 .items.compact .item { font-size: 8.5pt; line-height: 1.25; }
+.items.compact .item + .item { margin-top: 2pt; }
+.items.compact .item .desc { font-size: 7.5pt; }
 .items.compact .item .sz, .items.compact .item .pnum { padding: 0 2pt; }
 .shorts { border: 2pt solid #000; padding: 4pt 6pt; margin-top: 6pt; font-size: 10pt; font-weight: 800; }
 .foot { margin-top: auto; display: flex; align-items: flex-end; justify-content: space-between; gap: 8pt; }
@@ -52,13 +61,17 @@ export function buildBagLabelHtml({ order, items, store, seqTotal, origin }) {
   const lines = liveLines
     .map((i) => {
       const short = (Number(i.short_qty) || 0) > 0 && ['open', 'backordered'].includes(i.short_status || '');
+      // Style number + size + number up top (the pick), the garment's name and
+      // color underneath (the identification) — the raw "PC55-JetBlack" sku on
+      // its own never told the packer what she was holding.
+      const d = itemDisplay(i);
       return `<div class="item${short ? ' short' : ''}">${i.bundle_ref && !i.is_bundle_parent ? '&nbsp;&nbsp;' : ''}`
-        + `${Number(i.qty) || 0}× ${esc(i.name || i.sku)}`
-        + (i.color ? `<span class="clr"> · ${esc(i.color)}</span>` : '')
+        + `${Number(i.qty) || 0}× ${esc(d.head)}`
         + (i.size ? `<span class="sz">${esc(i.size)}</span>` : '')
         // jerseys: the number to verify is on THIS line (players differ per line)
         + (String(i.player_number || '').trim() ? `<span class="pnum">#${esc(String(i.player_number).trim())}</span>` : '')
         + (short ? ' ⚠ SHORT' : '')
+        + (d.desc ? `<div class="desc">${esc(d.desc)}</div>` : '')
         + '</div>';
     }).join('');
 
@@ -76,7 +89,7 @@ export function buildBagLabelHtml({ order, items, store, seqTotal, origin }) {
     + (seq ? `<div class="bagseq">${esc(seq)}</div>` : '')
     + (isBackorder ? '<div class="bo">BACKORDER — completes an earlier bag</div>' : '')
     + '<hr/>'
-    + `<div class="items${liveLines.length > 8 ? ' compact' : ''}">${lines}</div>`
+    + `<div class="items${liveLines.length > 6 ? ' compact' : ''}">${lines}</div>`
     + (shorts.length
       ? `<div class="shorts">⚠ PROBLEM SHELF — short, resolve before shipping:<br/>${shorts.map((s) => esc(s.text)).join('<br/>')}</div>`
       : '')

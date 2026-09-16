@@ -1,4 +1,4 @@
-const { verifyPayment } = require('./stripe-verification');
+const { verifyPayment, INVOICE_SETTLEMENT_COLS } = require('./stripe-verification');
 const { selectAllRows } = require('./_stripeReconciliation');
 
 // Keep open findings until their actual payment has been rechecked. A partial
@@ -20,7 +20,7 @@ async function monitorInvoicePayments(admin, client, { deadlineAt, now = Date.no
     const ids = [...new Set(candidates.flatMap(pi => String(pi.metadata?.invoice_id || '').split(/[\s,]+/).filter(Boolean)))];
     const [payments, invoices] = await Promise.all([
       selectAllRows(() => admin.from('invoice_payments').select('id,invoice_id,amount,ref', {count:'exact'}).in('ref',refs).order('id'), {label:'Stripe invoice payments'}),
-      ids.length ? selectAllRows(() => admin.from('invoices').select('id', {count:'exact'}).in('id',ids).order('id'), {label:'Stripe invoices'}) : [],
+      ids.length ? selectAllRows(() => admin.from('invoices').select(INVOICE_SETTLEMENT_COLS, {count:'exact'}).in('id',ids).order('id'), {label:'Stripe invoices'}) : [],
     ]);
     for (const pi of candidates) {
       checked.add(pi.id);

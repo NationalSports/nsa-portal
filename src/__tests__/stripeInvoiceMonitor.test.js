@@ -8,7 +8,7 @@ const payments=[{id:1,invoice_id:'INV1',ref:'Stripe pi_one',amount:10}];
 const client=pages=>({balance:{retrieve:jest.fn().mockResolvedValue({livemode:true})},paymentIntents:{list:jest.fn().mockImplementation(async()=>pages.shift()),retrieve:jest.fn()}});
 beforeEach(()=>jest.clearAllMocks());
 test('healthy recent payments stay quiet and use one-hour grace',async()=>{
- selectAllRows.mockResolvedValueOnce([]).mockResolvedValueOnce(payments).mockResolvedValueOnce([{id:'INV1'}]);
+ selectAllRows.mockResolvedValueOnce([]).mockResolvedValueOnce(payments).mockResolvedValueOnce([{id:'INV1',paid:10}]);
  const api=client([{data:[pi],has_more:false}]);
  const result=await monitorInvoicePayments({},api,{now:()=>2000000000000});
  expect(result).toEqual({findings:[],checked:1,complete:true});
@@ -39,7 +39,7 @@ test('expired work budget is not a healthy scan',async()=>{
  expect(result.complete).toBe(false);expect(result.findings).toContainEqual(old);expect(api.paymentIntents.list).not.toHaveBeenCalled();
 });
 test('resolved older incident is rechecked and cleared',async()=>{
- selectAllRows.mockResolvedValueOnce([old]).mockResolvedValueOnce([{...payments[0],ref:'Stripe pi_old'}]).mockResolvedValueOnce([{id:'INV1'}]);
+ selectAllRows.mockResolvedValueOnce([old]).mockResolvedValueOnce([{...payments[0],ref:'Stripe pi_old'}]).mockResolvedValueOnce([{id:'INV1',paid:10}]);
  const api=client([{data:[],has_more:false}]);api.paymentIntents.retrieve.mockResolvedValue({...pi,id:'pi_old'});
  const result=await monitorInvoicePayments({},api);
  expect(api.paymentIntents.retrieve).toHaveBeenCalledWith('pi_old',{expand:['latest_charge']});expect(result.findings).toEqual([]);
@@ -52,4 +52,13 @@ test('failed incident database read stops sync rather than erasing unknown findi
 test('test-mode connection alerts rather than claiming there are no problems',async()=>{
  selectAllRows.mockResolvedValueOnce([]);const api=client([]);api.balance.retrieve.mockResolvedValue({livemode:false});
  const result=await monitorInvoicePayments({},api);expect(result.complete).toBe(false);expect(result.findings[0].summary).toMatch(/test mode/);expect(api.paymentIntents.list).not.toHaveBeenCalled();
+});
+
+// End-to-end through the nightly monitor: the INV-63359 state (a correct payment row on an
+// invoice whose summary was saved back to paid=0) must become an incident, not a clean scan.
+test('a captured payment that is no longer applied becomes an incident',async()=>{
+ selectAllRows.mockResolvedValueOnce([]).mockResolvedValueOnce(payments).mockResolvedValueOnce([{id:'INV1',paid:0}]);
+ const result=await monitorInvoicePayments({},client([{data:[pi],has_more:false}]),{now:()=>2000000000000});
+ expect(result.findings).toHaveLength(1);
+ expect(result.findings[0].details.reasons.join(' ')).toContain('INV1: captured payment is not applied');
 });

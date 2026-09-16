@@ -8,7 +8,10 @@ const {selectAllRows} = require('../../netlify/functions/_stripeReconciliation')
 const {handler,verifyPayment} = require('../../netlify/functions/stripe-verification');
 const pi = {id:'pi_123',metadata:{invoice_id:'INV1 INV2'},livemode:true,status:'succeeded',currency:'usd',amount_received:3000,latest_charge:{amount_refunded:0,disputed:false}};
 const records = [{invoice_id:'INV1',ref:'Stripe pi_123',amount:10},{invoice_id:'INV2',ref:'Stripe pi_123',amount:20}];
-const invoices = [{id:'INV1'},{id:'INV2'}];
+// Settled summaries: the payment rows above (10 + 20) are actually applied to these invoices.
+// Selecting id alone here is what let an unapplied payment read as verified — see the
+// "not applied" cases below.
+const invoices = [{id:'INV1',paid:10},{id:'INV2',paid:20}];
 const event = body => ({httpMethod:'POST',headers:{},body:JSON.stringify(body)});
 beforeEach(()=>{jest.clearAllMocks();process.env.STRIPE_SECRET_KEY='test';verifyQBOUser.mockResolvedValue({ok:true});});
 afterAll(()=>{delete process.env.STRIPE_SECRET_KEY;});
@@ -55,4 +58,58 @@ test('database failure never yields a verified result',async()=>{
 });
 test.each(['2024-02-30','garbage'])('rejects invalid date %s',async from=>{
  expect((await handler(event({action:'payments',from,to:'2024-03-01'}))).statusCode).toBe(400);
+});
+
+// ── Captured but unapplied: the INV-63359 / INV-63664 failure ──────────────────────────────
+// A staff tab that loaded before the portal card payment saves the invoice summary back to
+// paid=0/status=open. The immutable invoice_payments row survives (dbEngine restores it), so a
+// check that looks only at the payment row calls this healthy, and nothing raised an incident
+// while both invoices sat in AR reading "open" to the rep and to accounting.
+describe('captured payment that is no longer applied to the invoice', () => {
+  const settledInv2 = {id:'INV2',paid:20};
+  test('is not verified, and names the invoice with the shortfall', () => {
+    const result = verifyPayment(pi, records, [{id:'INV1',paid:0},settledInv2]);
+    expect(result.verified).toBe(false);
+    expect(result.reasons).toContain('INV1: captured payment is not applied — invoice shows $0.00 paid against $10.00 recorded');
+    // The settled half of the split payment must not be reported.
+    expect(result.reasons.join(' ')).not.toContain('INV2:');
+  });
+  test('a partially applied summary is still a shortfall', () => {
+    expect(verifyPayment(pi, records, [{id:'INV1',paid:4},settledInv2]).verified).toBe(false);
+  });
+  test('sub-cent float drift never reads as a shortfall', () => {
+    expect(verifyPayment(pi, records, [{id:'INV1',paid:9.999999},settledInv2]).verified).toBe(true);
+  });
+
+  // Regression guards for the balance-based check this replaced.
+  test('raising total on an already-paid invoice is NOT an unapplied payment', () => {
+    // Edit Invoice rewrites `total` and leaves paid/status alone, so an added rush fee or freight
+    // line leaves a real open balance on a correctly-applied payment. A balance test flagged this
+    // forever: findings only clear when verifyPayment passes.
+    expect(verifyPayment(pi, records, [{id:'INV1',paid:10,total:999,status:'open'},settledInv2]).verified).toBe(true);
+  });
+  test('a void invoice at paid=0 is still reported — voiding keeps payments and refunds nothing', () => {
+    const result = verifyPayment(pi, records, [{id:'INV1',paid:0,status:'void'},settledInv2]);
+    expect(result.verified).toBe(false);
+    expect(result.reasons.join(' ')).toContain('INV1: captured payment is not applied');
+  });
+  test('a void invoice that kept its applied payment is not reported', () => {
+    expect(verifyPayment(pi, records, [{id:'INV1',paid:10,status:'void'},settledInv2]).verified).toBe(true);
+  });
+});
+
+// The check above inverts into a false alarm on every invoice if a caller selects `id` alone:
+// Number(undefined)||0 makes paid read as $0 against a real recorded amount. Every invoice read
+// in both files must request the settlement columns — matchAll, so a second read added later
+// cannot slip through behind the first.
+test('every invoice select in both call sites requests the settlement columns', () => {
+  const { INVOICE_SETTLEMENT_COLS } = require('../../netlify/functions/stripe-verification');
+  expect(INVOICE_SETTLEMENT_COLS.split(',')).toEqual(expect.arrayContaining(['id','paid']));
+  const fs = require('fs'), path = require('path');
+  ['stripe-verification.js','_stripeInvoiceMonitor.js'].forEach(file => {
+    const src = fs.readFileSync(path.join(__dirname,'../../netlify/functions',file),'utf8');
+    const selects = [...src.matchAll(/from\('invoices'\)\s*\.select\(([^,)]+)/g)].map(m => m[1].trim());
+    expect(selects.length).toBeGreaterThan(0);
+    selects.forEach(arg => expect(arg).toBe('INVOICE_SETTLEMENT_COLS'));
+  });
 });
