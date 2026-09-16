@@ -71,8 +71,8 @@ describe('QuickBooks one-record canaries', () => {
     expect(summarizeQBInvoicePreflight(safeRows,aliases)).toEqual(expect.objectContaining({
       counts:{excluded_zero:1,held_future:2},proposedCount:0,reviewCount:0,aliasFailures:[],passed:true,
     }));
-    expect(summarizeQBInvoicePreflight([...safeRows,{action:'ready'}],aliases)).toEqual(expect.objectContaining({passed:false,proposedCount:1}));
-    expect(summarizeQBInvoicePreflight(safeRows,[...aliases,{documentNumber:'INV9',action:'manual_review'}])).toEqual(expect.objectContaining({passed:false}));
+    expect(summarizeQBInvoicePreflight([...safeRows,{action:'ready'}],aliases)).toEqual(expect.objectContaining({passed:false,safeToReview:true,proposedCount:1}));
+    expect(summarizeQBInvoicePreflight(safeRows,[...aliases,{documentNumber:'INV9',action:'manual_review'}])).toEqual(expect.objectContaining({passed:false,safeToReview:false}));
   });
 
   test('bulk invoice writes require an explicitly approved exact review', async() => {

@@ -79,7 +79,9 @@ export function summarizeQBInvoicePreflight(rows = [], aliases = []) {
   const proposedCount = Number(counts.ready || 0);
   const reviewCount = Number(counts.manual_review || 0) + Number(counts.blocked || 0);
   const aliasFailures = (aliases || []).filter(row => row.action !== 'link_existing' && row.action !== 'already_synced');
-  return {counts, proposedCount, reviewCount, aliasFailures, passed:proposedCount === 0 && reviewCount === 0 && aliasFailures.length === 0};
+  const safeToReview = reviewCount === 0 && aliasFailures.length === 0;
+  return {counts, proposedCount, reviewCount, aliasFailures, safeToReview,
+    passed:proposedCount === 0 && safeToReview};
 }
 
 const escapeQBO = value => clean(value).replace(/'/g, "\\'");
