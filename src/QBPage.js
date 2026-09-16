@@ -249,7 +249,7 @@ export default function QBPage(){
         log.details.push('READ ONLY — no QuickBooks records were created or changed');
         log.details.push('Company: '+(ci?.CompanyName||qbConfig.companyName||'Unknown')+' · Realm: '+(qbConfig.realm_id||'unknown'));
         Object.entries(refs).forEach(([key,ref])=>log.details.push(key+' → '+ref.accountNumber+' '+ref.name+' (QB #'+ref.value+')'));
-        const entities=['Customer','Vendor','Item','Invoice','Bill','PurchaseOrder','Payment'];
+        const entities=['Customer','Vendor','Item','Invoice','Bill','BillCredit','BillPayment','PurchaseOrder','Payment'];
         for(const entity of entities){
           try{
             const res=await queryQBReadOnly(qbApi,'SELECT count(*) FROM '+entity,entity+' count query');
@@ -764,20 +764,21 @@ export default function QBPage(){
         const ledger=[];
         for(let from=0;from<20000;from+=1000){
           const{data,error}=await supabase.from('applied_bills').select('*')
-            .eq('status','pushed').eq('portal_status','success').eq('is_credit',false)
+            .eq('status','pushed').eq('portal_status','success')
             .order('applied_at',{ascending:false}).order('id',{ascending:false}).range(from,from+999);
           if(error)throw error;
           ledger.push(...(data||[]));
           if(!data||data.length<1000)break;
         }
         const sourceRows=buildQboBillReadinessRows(ledger);
-        const [qboVendors,qboBills,qboAccounts]=await Promise.all([
+        const [qboVendors,qboBills,qboBillCredits,qboAccounts]=await Promise.all([
           loadAllQBEntities(qbApi,'Vendor','Id, DisplayName, CompanyName, Active',500),
           loadAllQBEntities(qbApi,'Bill','Id, DocNumber, VendorRef, TotalAmt, TxnDate, Balance',500),
+          loadAllQBEntities(qbApi,'BillCredit','Id, DocNumber, VendorRef, TotalAmt, TxnDate, Balance',500),
           loadQBAccounts(qbApi),
         ]);
         const accountRefs=resolveQBAccountRefs(qboAccounts,qbConfig.mapping,['purchases_account','freight_account','sports_inc_fee_account','deco_account']);
-        const rows=applyQboBillLiveReadiness({rows:sourceRows,qboVendors,qboBills,portalVendors:vend,vendorLinks:qbConfig.vendorQBMap||{},accountRefs});
+        const rows=applyQboBillLiveReadiness({rows:sourceRows,qboVendors,qboBills,qboBillCredits,portalVendors:vend,vendorLinks:qbConfig.vendorQBMap||{},accountRefs});
         const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,counts:summarizeQboBillReadiness(rows)};
         setBillAutomationReview(review);setQBConfig(prev=>({...prev,lastBillAutomationReview:{realm:review.realm,reviewedAt:review.reviewedAt,counts:review.counts}}));
         nf('Bill automation readiness review complete — live QBO checked; no records changed');
@@ -1158,7 +1159,7 @@ export default function QBPage(){
             <button className="btn btn-sm" disabled={qbSyncing||billAutomationBusy||!livePreflightReady} onClick={reviewBillAutomation}>{billAutomationBusy?'Reviewing bills...':'Review Bills — No QBO Changes'}</button>
             {billAutomationReview&&<>
               <p>Readiness: {JSON.stringify(billAutomationReview.counts)}. Automation remains locked until every conflict is resolved and a one-record canary passes.</p>
-              <table><thead><tr><th>Vendor doc</th><th>Vendor</th><th>Date</th><th>Total</th><th>Result</th><th>Reason</th></tr></thead><tbody>{billAutomationReview.rows.slice(0,200).map(row=><tr key={row.ledgerId}><td>{row.documentNumber}</td><td>{row.vendor}</td><td>{row.date||'—'}</td><td>${Number(row.total||0).toFixed(2)}</td><td>{row.action}</td><td>{row.reason||''}</td></tr>)}</tbody></table>
+              <table><thead><tr><th>Type</th><th>Vendor doc</th><th>Vendor</th><th>Date</th><th>Total</th><th>Result</th><th>Reason</th></tr></thead><tbody>{billAutomationReview.rows.slice(0,200).map(row=><tr key={row.ledgerId}><td>{row.transactionType}</td><td>{row.documentNumber}</td><td>{row.vendor}</td><td>{row.date||'—'}</td><td>${Number(row.total||0).toFixed(2)}</td><td>{row.action}</td><td>{row.reason||''}</td></tr>)}</tbody></table>
             </>}
             {!billAutomationReview&&qbConfig.lastBillAutomationReview&&<p style={{fontSize:11,color:'#64748b'}}>Last saved review: {qbConfig.lastBillAutomationReview.reviewedAt} · {JSON.stringify(qbConfig.lastBillAutomationReview.counts||{})}</p>}
             <p style={{fontSize:10,color:'#92400e'}}>Bill automation is intentionally off. A reviewed manifest, source lease, stop-on-first-failure execution, API read-back, and durable receipt are required before it can be enabled.</p>
