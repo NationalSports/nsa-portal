@@ -10,6 +10,7 @@ import {
 
 const clean = value => String(value == null ? '' : value).trim();
 const money = value => Math.round((Number(value) || 0) * 100) / 100;
+const normalizedDocument = value => clean(value).toLowerCase();
 
 export const isPendingQboBillLedgerRow = row => !!row
   && row.status === 'pushed'
@@ -91,7 +92,14 @@ export const applyQboBillLiveReadiness = ({
       txnDate: row.date,
     });
     if (existing) return { ...row, action: 'already_exists', reason: `Exact QBO Bill #${existing.Id}`, qboBillId: clean(existing.Id), qboVendorId: clean(qboVendor.Id), linePlan };
-  } catch (error) { return { ...row, action: 'conflict', reason: error.message, qboVendorId: clean(qboVendor.Id), linePlan }; }
+  } catch (error) {
+    const candidates = (qboBills || []).filter(bill => normalizedDocument(bill?.DocNumber) === normalizedDocument(row.documentNumber)
+      && clean(bill?.VendorRef?.value) === clean(qboVendor.Id)).map(bill => ({
+        id: clean(bill.Id), date: clean(bill.TxnDate).slice(0, 10), total: money(bill.TotalAmt), balance: money(bill.Balance),
+      }));
+    const evidence = candidates.length ? ' QBO: '+candidates.map(candidate => `#${candidate.id} ${candidate.date || 'no date'} $${candidate.total.toFixed(2)}`).join('; ')+'.' : '';
+    return { ...row, action: 'conflict', reason: error.message+evidence, qboVendorId: clean(qboVendor.Id), qboCandidates: candidates, linePlan };
+  }
 
   return { ...row, action: 'ready', reason: '', qboVendorId: clean(qboVendor.Id), linePlan };
 });
