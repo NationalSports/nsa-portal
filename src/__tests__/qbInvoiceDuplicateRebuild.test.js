@@ -1,10 +1,8 @@
 import {createQBSyncEngine} from '../qbSyncEngine';
 
-// INV-63433 / QBO #1084: a batch was cut off (page reload) after QuickBooks
-// created the invoice but before the link was saved. The next batch hit the
-// duplicate document number, matched the invoice exactly by customer, date
-// and total, and then refused it forever because its lines carried no tax
-// line. The duplicate path now reads the full record and rebuilds the lines.
+// INV-63433 / QBO #1084: a batch was cut off after QuickBooks created the
+// invoice but before the link was saved. A retry must link the exact existing
+// record and must never rebuild or otherwise update it.
 const mapping={income_account:'40000',discount_account:'40200',ar_account:'11000',tax_ca_account:'25200'};
 const accounts=[
   {Id:'10',AcctNum:'40000',Name:'Sales',AccountType:'Income',Active:true},
@@ -30,7 +28,7 @@ function setup({existingLines,rebuildResponse,existingTermRef={value:'T30',name:
       if(q.includes('FROM Item')&&q.includes('Sales Tax'))return{QueryResponse:{Item:[{Id:'8',Name:'NSA Portal Sales Tax — CA',Type:'Service',Active:true,IncomeAccountRef:{value:'90'}}]}};
       if(q.includes('FROM Item'))return{QueryResponse:{Item:[{Id:'7',Name:'NSA Portal Sales',Type:'Service',Active:true,IncomeAccountRef:{value:'10'}}]}};
       if(q.includes("FROM Customer WHERE Id = '55'"))return{QueryResponse:{Customer:[{Id:'55',SalesTermRef:{value:'T30',name:'Net 30'}}]}};
-      if(q.includes('FROM Invoice')&&q.includes('DocNumber'))return{QueryResponse:{Invoice:[{Id:'1084',CustomerRef:{value:'55'},TotalAmt:3232.4,TxnDate:'2026-08-31'}]}};
+      if(q.includes('FROM Invoice')&&q.includes('DocNumber'))return{QueryResponse:{Invoice:[{Id:'1084',DocNumber:'NS-INV-63433',CustomerRef:{value:'55'},TotalAmt:3232.4,TxnDate:'2026-08-31'}]}};
       if(q.includes('FROM Invoice')&&q.includes("Id = '1084'"))return{QueryResponse:{Invoice:[{Id:'1084',DocNumber:'INV-63433',SyncToken:'2',CustomerRef:{value:'55'},TotalAmt:3232.4,TxnDate:'2026-08-31',...(existingTermRef?{SalesTermRef:existingTermRef}:{}),...(existingDueDate?{DueDate:existingDueDate}:{}),TxnTaxDetail:{TotalTax:0},Line:storedLines}]}};
       return{QueryResponse:{}};
     }
@@ -45,46 +43,42 @@ function setup({existingLines,rebuildResponse,existingTermRef={value:'T30',name:
   });
   const setInvs=jest.fn();
   const engine=createQBSyncEngine({cust:[{id:'C1',name:'Cantwell-Sacred Heart Football',shipping_state:'CA'}],sos:[],invs:[inv],prod:[],vend:[],qbApi,qbConfig:config,
+    acquireInvoiceSyncClaim:jest.fn(async()=>true),releaseInvoiceSyncClaim:jest.fn(async()=>true),
     persistQbLink:jest.fn(async()=>{}),nf:jest.fn(),setQbSyncing:jest.fn(),setInvs,setQBConfig:fn=>{config=fn(config);}});
   return{engine,upserts,setInvs,log:()=>(config.syncLog||[]).find(l=>l.type==='invoices')||{details:[]}};
 }
 
 const reviewedOptions={approved:true,approvedInvoiceIds:['INV-63433'],expectedRows:[{invoiceId:'INV-63433',documentNumber:'INV-63433',customerId:'C1',qboCustomerId:'55',date:'2026-08-31',total:3232.4,paid:0,tax:302.4}]};
 
-test('an existing exact match without the tax line is rebuilt with the portal lines and then linked',async()=>{
+test('an existing exact NS-prefixed match is linked without rebuilding its lines',async()=>{
   const run=setup({existingLines:[lumpLine]});
   await run.engine.syncInvoices({}, {}, reviewedOptions);
-  expect(run.upserts).toHaveLength(2);
-  const rebuilt=run.upserts[1];
-  expect(rebuilt).toMatchObject({Id:'1084',SyncToken:'2',sparse:true});
-  expect(rebuilt.TxnTaxDetail).toBeUndefined();
-  expect(rebuilt.Line.map(l=>l.Amount)).toEqual([2880,50,302.4]);
-  expect(rebuilt.Line[2].SalesItemLineDetail.ItemRef.value).toBe('8');
+  expect(run.upserts).toHaveLength(0);
   const details=run.log().details.join(' | ');
-  expect(details).toMatch(/existing QBO Invoice #1084 had no \$302\.40 sales-tax line; rebuilt with the portal lines/);
-  expect(details).toMatch(/INV-63433 → QB Invoice #1084 \(\$3232\.40\)/);
+  expect(details).toMatch(/exact existing invoice verified \(QB #1084\); QBO unchanged/);
+  expect(details).toMatch(/INV-63433 linked to existing QB Invoice #1084/);
   expect(run.setInvs).toHaveBeenCalledTimes(1);
 });
 
 test('an existing exact match that already carries the tax line is linked without a write',async()=>{
   const run=setup({existingLines:[{DetailType:'SalesItemLineDetail',Amount:2880,SalesItemLineDetail:{ItemRef:{value:'7'}}},{DetailType:'SalesItemLineDetail',Amount:50,SalesItemLineDetail:{ItemRef:{value:'7'}}},taxLine]});
   await run.engine.syncInvoices({}, {}, reviewedOptions);
-  expect(run.upserts).toHaveLength(1);
-  expect(run.log().details.join(' | ')).toMatch(/exact existing invoice verified \(QB #1084\)/);
+  expect(run.upserts).toHaveLength(0);
+  expect(run.log().details.join(' | ')).toMatch(/QBO unchanged/);
   expect(run.setInvs).toHaveBeenCalledTimes(1);
 });
 
-test('an exact retry is linked when QBO omits the term id but its due date proves Net 30',async()=>{
+test('an exact four-field match does not require QBO terms to be changed',async()=>{
   const run=setup({existingLines:[{DetailType:'SalesItemLineDetail',Amount:2880,SalesItemLineDetail:{ItemRef:{value:'7'}}},{DetailType:'SalesItemLineDetail',Amount:50,SalesItemLineDetail:{ItemRef:{value:'7'}}},taxLine],existingTermRef:null,existingDueDate:'2026-09-30'});
   await run.engine.syncInvoices({}, {}, reviewedOptions);
-  expect(run.upserts).toHaveLength(1);
-  expect(run.log().details.join(' | ')).toMatch(/due date 2026-09-30 proves Net 30/);
+  expect(run.upserts).toHaveLength(0);
+  expect(run.log().details.join(' | ')).toMatch(/QBO unchanged/);
   expect(run.setInvs).toHaveBeenCalledTimes(1);
 });
 
-test('a rebuild that comes back without the tax line is not linked',async()=>{
+test('an exact match is never automatically rebuilt even when its line shape differs',async()=>{
   const run=setup({existingLines:[lumpLine],rebuildResponse:{Invoice:{Id:'1084',TotalAmt:3232.4,TxnTaxDetail:{TotalTax:0},Line:[lumpLine]}}});
   await run.engine.syncInvoices({}, {}, reviewedOptions);
-  expect(run.setInvs).not.toHaveBeenCalled();
-  expect(run.log().details.join(' | ')).toMatch(/VERIFY FAILED: QBO Invoice #1084 came back without a \$302\.40 sales-tax line/);
+  expect(run.upserts).toHaveLength(0);
+  expect(run.setInvs).toHaveBeenCalledTimes(1);
 });

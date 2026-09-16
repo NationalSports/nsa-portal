@@ -14,9 +14,10 @@ import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
 import { authFetch } from './utils';
-import { applyQBInvoiceLiveReadiness, applyQBPurchaseOrderLiveReadiness, applyQBSalesOrderLiveReadiness, buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, historicalPortalPurchaseOrderIds, isVoidInvoice, portalCustomerDisplayName, qbCustomerBatchReady, qbPurchaseOrderSourceFingerprint, qbResponseErrorDetail, qbSalesOrderSourceFingerprint } from './qbSyncEngine';
+import { applyQBPurchaseOrderLiveReadiness, applyQBSalesOrderLiveReadiness, buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, historicalPortalPurchaseOrderIds, isVoidInvoice, portalCustomerDisplayName, qbCustomerBatchReady, qbPurchaseOrderSourceFingerprint, qbResponseErrorDetail, qbSalesOrderSourceFingerprint } from './qbSyncEngine';
 import { QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_POSTING_MATRIX, QB_ACCOUNT_SPECS, QB_STATE_TAX_ACCOUNT_KEYS, buildVendorBillLines, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, manualBillAccountKey, normalizeVendorName, qbWriteAccountRef, queryQBReadOnly, readQBWithRetry, resolveQBAccountRefs } from './qbAccountMappings';
 import { mergeDurableQBLinks, persistVerifiedQBCustomerLinkRecovery } from './qbLinkLedger';
+import { applyQBInvoiceLiveReadiness, loadQBInvoicesForDuplicateCheck, qbInvoiceSourceKey } from './qbInvoiceSyncGuard';
 
 const stripeBackfillErrorSummary=(errors=[])=>{
   const counts={};
@@ -453,7 +454,7 @@ export default function QBPage(){
     const unsyncedPOGroups=groupPortalPurchaseOrders(sos,poMap,vend,parkedPurchaseOrderIds);
     // Zero-dollar source records remain in portal history but are not QBO
     // accounting documents and must not keep the migration queue open.
-    const unsyncedInvs=invs.filter(i=>!i.qb_invoice_id&&!isVoidInvoice(i)&&safeNum(i.total)>0);
+    const unsyncedInvs=invs.filter(i=>!i.qb_invoice_id&&!(qbConfig.qbInvoiceMap||{})[qbInvoiceSourceKey(i)]&&!isVoidInvoice(i)&&safeNum(i.total)>0);
     const _custQBMap=qbConfig.custQBMap||{};
     const _prodQBMap=qbConfig.prodQBMap||{};
     const custWithQB=cust.filter(c=>_custQBMap[c.id]).length;
@@ -490,7 +491,6 @@ export default function QBPage(){
     const poPreviewById=new Map(poPreviewRows.map(row=>[String(row.poId),row]));
     const poAccountSkus=poId=>poPreviewById.get(String(poId))?.accountSkus||[];
     const selectedInvoiceCustomer=selectedCanaryInvoice&&cust.find(c=>c.id===selectedCanaryInvoice.customer_id);
-    const invoiceCanaryTaxState=selectedCanaryInvoice?String(selectedInvoiceCustomer?.shipping_state||selectedInvoiceCustomer?.billing_state||'').trim().toUpperCase():'';
     // A taxable invoice needs a mechanism to carry the portal's own tax amount,
     // but which mechanism depends on the company file. Under manual sales tax
     // that is the state's verified TaxRate; under Automated Sales Tax no manual
@@ -511,10 +511,10 @@ export default function QBPage(){
     const invoiceTaxState=inv=>{const c=cust.find(cc=>cc.id===inv.customer_id);
       return String(c?.shipping_state||c?.billing_state||'').trim().toUpperCase()};
     const invoiceTaxBlocked=inv=>safeNum(inv.tax)>0&&!!taxableInvoiceBlock(invoiceTaxState(inv));
-    const invoicePreviewRows=buildQBInvoicePreviewRows(invs,cust,_custQBMap,{taxBlockReason:inv=>taxableInvoiceBlock(invoiceTaxState(inv))});
+    const invoicePreviewRows=buildQBInvoicePreviewRows(invs,cust,_custQBMap,{invoiceMap:qbConfig.qbInvoiceMap||{},taxBlockReason:inv=>taxableInvoiceBlock(invoiceTaxState(inv))});
     const invoiceBatchRows=(invoiceBatchReview?.rows||[]).filter(row=>row.action==='ready').slice(0,invoiceBatchLimit);
-    const invoiceCanaryBlock=selectedCanaryInvoice&&!_custQBMap[selectedCanaryInvoice.customer_id]?'Sync this invoice customer first'
-      :selectedCanaryInvoice&&safeNum(selectedCanaryInvoice.tax)>0?taxableInvoiceBlock(invoiceCanaryTaxState):'';
+    const selectedCanaryPreview=selectedCanaryInvoice&&invoicePreviewRows.find(row=>row.invoiceId===String(selectedCanaryInvoice.id));
+    const invoiceCanaryBlock=selectedCanaryPreview&&selectedCanaryPreview.action!=='ready'?selectedCanaryPreview.reason:'';
     const selectedSalesOrderPreview=selectedCanarySO&&salesOrderPreviewRows.find(row=>row.salesOrderId===String(selectedCanarySO.id));
     const soCanaryBlock=selectedSalesOrderPreview?.action==='blocked'?selectedSalesOrderPreview.reason:'';
     const poCanaryBlock=selectedCanaryPO?.invalidReason||'';
@@ -752,17 +752,26 @@ export default function QBPage(){
     const reviewInvoiceBatch=async()=>{
       setQbSyncing(true);setInvoiceBatchApproved(false);
       try{
-        const qboInvoices=await loadAllQBEntities(qbApi,'Invoice','Id, DocNumber, CustomerRef, TotalAmt, TxnDate',500);
-        const rows=applyQBInvoiceLiveReadiness(invoicePreviewRows,qboInvoices);
+        const qboInvoices=await loadQBInvoicesForDuplicateCheck(qbApi,invoicePreviewRows.filter(row=>row.duplicateCheckEligible));
+        let rows=applyQBInvoiceLiveReadiness(invoicePreviewRows,qboInvoices);
+        // Exact matches are safe Portal-side cleanup: QBO remains read-only, while
+        // the immutable source ID and existing QBO ID receive a durable receipt.
+        for(const row of rows.filter(item=>item.action==='link_existing')){
+          await persistQbLink({mapKey:'qbInvoiceMap',sourceIds:[row.sourceId],qboId:row.qboId,
+            log:{ts:new Date().toLocaleString(),type:'invoice_duplicate_cleanup',status:'success',details:[row.documentNumber+' linked to existing QBO Invoice #'+row.qboId+'; QBO unchanged']},
+            evidence:{result:'linked',api_readback:true,duplicate_preflight:'normalized_number_customer_date_cents',source_internal_id:row.sourceInternalId,doc_number:row.documentNumber,customer_id:row.qboCustomerId,date:row.date,total:row.total}});
+          setInvs(prev=>prev.map(invoice=>String(invoice.id)===row.invoiceId?{...invoice,qb_invoice_id:row.qboId}:invoice));
+        }
+        rows=rows.map(row=>row.action==='link_existing'?{...row,action:'already_synced'}:row);
         const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,
           counts:rows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{})};
         setInvoiceBatchReview(review);setQBConfig(prev=>({...prev,lastInvoiceReview:review}));
-        nf('Invoice readiness review complete — live QBO checked; no records changed');
+        nf('Invoice readiness review complete — live QBO checked; exact existing invoices linked without changing QBO');
       }catch(e){setInvoiceBatchReview(null);nf('Invoice readiness review failed — '+e.message,'error')}
       finally{setQbSyncing(false)}
     };
     const runInvoiceBatch=async()=>{
-      const current=buildQBInvoicePreviewRows(invs,cust,qbConfig.custQBMap||{},{taxBlockReason:inv=>taxableInvoiceBlock(invoiceTaxState(inv))});
+      const current=buildQBInvoicePreviewRows(invs,cust,qbConfig.custQBMap||{},{invoiceMap:qbConfig.qbInvoiceMap||{},taxBlockReason:inv=>taxableInvoiceBlock(invoiceTaxState(inv))});
       const currentById=new Map(current.map(row=>[row.invoiceId,row]));
       if(invoiceBatchRows.some(row=>JSON.stringify(currentById.get(row.invoiceId))!==JSON.stringify(row))){nf('Invoice batch changed since review — review it again','error');setInvoiceBatchApproved(false);return}
       await syncInvoices({}, {}, {approved:invoiceBatchApproved,approvedInvoiceIds:invoiceBatchRows.map(row=>row.invoiceId),expectedRows:invoiceBatchRows});
@@ -1324,7 +1333,7 @@ export default function QBPage(){
           </div>
           <div style={{padding:'12px 14px',background:'#f0fdf4',borderBottom:'1px solid #bbf7d0'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:4}}>Reviewed invoice batch</div>
-            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Builds a read-only manifest first. A run is locked to the exact listed invoices, rejects source drift, requires the existing verified sales item, reads every invoice back from QBO, and stops after the first failure. Payments remain a separate gate.</div>
+            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Reads live QBO under both invoice-number forms before proposing any creation. Exact matches are linked in the Portal without changing QBO; conflicts go to manual review. Zero-dollar invoices are excluded, future-dated invoices are held, and the reviewed write batch stops after its first failure. Payments remain a separate gate.</div>
             <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
               <button className="btn btn-sm" disabled={qbSyncing||!livePreflightReady} onClick={reviewInvoiceBatch}>Review Invoices — No QBO Changes</button>
               <label>Batch size <select aria-label="Invoice batch size" value={invoiceBatchLimit} disabled={qbSyncing} onChange={e=>{setInvoiceBatchLimit(Number(e.target.value));setInvoiceBatchApproved(false)}}>
@@ -1336,6 +1345,8 @@ export default function QBPage(){
               <label><input type="checkbox" checked={invoiceBatchApproved} disabled={qbSyncing||!invoiceBatchRows.length} onChange={e=>setInvoiceBatchApproved(e.target.checked)}/> I approve only the exact invoices listed in this batch.</label>
               <button className="btn btn-primary btn-sm" style={{marginLeft:8}} disabled={qbSyncing||!invoiceBatchApproved||!invoiceBatchRows.length} onClick={runInvoiceBatch}>Run Reviewed Invoice Batch</button>
               <table style={{fontSize:10,marginTop:8}}><thead><tr><th>Invoice</th><th>Customer</th><th>Date</th><th>Total</th><th>Paid</th><th>Tax</th></tr></thead><tbody>{invoiceBatchRows.map(row=><tr key={row.invoiceId}><td>{row.documentNumber}</td><td>{row.customer}</td><td>{row.date}</td><td>${row.total.toFixed(2)}</td><td>${row.paid.toFixed(2)}</td><td>${row.tax.toFixed(2)}</td></tr>)}</tbody></table>
+              {invoiceBatchReview.rows.some(row=>row.action==='manual_review')&&<><h3>Manual review — no QBO changes</h3><table style={{fontSize:10}}><thead><tr><th>Invoice</th><th>Portal</th><th>QBO record(s) and differences</th></tr></thead><tbody>{invoiceBatchReview.rows.filter(row=>row.action==='manual_review').map(row=><tr key={row.invoiceId}><td>{row.documentNumber}</td><td>{row.customer} · {row.date} · ${row.total.toFixed(2)}</td><td>{(row.conflicts||[]).map(conflict=>'#'+conflict.qboId+' '+conflict.documentNumber+' — '+conflict.differences.map(diff=>diff.field+': Portal '+diff.source+' / QBO '+diff.qbo).join(', ')).join(' | ')}</td></tr>)}</tbody></table></>}
+              {invoiceBatchReview.rows.some(row=>row.action==='excluded_zero'||row.action==='held_future')&&<><h3>Excluded / held</h3><table style={{fontSize:10}}><thead><tr><th>Invoice</th><th>Disposition</th><th>Reason</th></tr></thead><tbody>{invoiceBatchReview.rows.filter(row=>row.action==='excluded_zero'||row.action==='held_future').map(row=><tr key={row.invoiceId}><td>{row.documentNumber}</td><td>{row.action}</td><td>{row.reason}</td></tr>)}</tbody></table></>}
               {invoiceBatchReview.rows.some(row=>row.action==='blocked')&&<><h3>Blocked by readiness review</h3><table style={{fontSize:10}}><thead><tr><th>Invoice</th><th>Customer</th><th>Reason</th></tr></thead><tbody>{invoiceBatchReview.rows.filter(row=>row.action==='blocked').slice(0,50).map(row=><tr key={row.invoiceId}><td>{row.documentNumber}</td><td>{row.customer}</td><td>{row.reason}</td></tr>)}</tbody></table></>}
             </>}
             {qbConfig.lastInvoiceBatch&&<><h3>Latest invoice batch: {qbConfig.lastInvoiceBatch.status}</h3><table style={{fontSize:10}}><thead><tr><th>Invoice</th><th>Result</th><th>QBO ID</th><th>Error</th></tr></thead><tbody>{(qbConfig.lastInvoiceBatch.results||[]).map(row=><tr key={row.invoiceId}><td>{row.documentNumber||row.invoiceId}</td><td>{row.result}</td><td>{row.qboId||''}</td><td>{row.error||''}</td></tr>)}</tbody></table><p>{JSON.stringify(qbConfig.lastInvoiceBatch.counts)}</p></>}

@@ -7,12 +7,13 @@ import {runQBProductMigration} from './qbProductMigration';
 // builds this same engine for its buttons: one copy of the logic, two callers.
 import { mergeQBSyncLogs } from './qbLinkLedger';
 import { D_V } from './constants';
-import { _dbSaveSO } from './lib/dbEngine';
+import { _dbSaveSO, supabase } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { QB_MAX_REVIEWED_BATCH, QB_STATE_TAX_ACCOUNT_KEYS, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, parseQBDateValue, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
 import {buildQBInventoryValuation, buildQBInventoryValuationEntry, findQBInventoryValuationEntries, loadQBInventoryAssetBalance, loadQBJournalEntry, qbInventoryValuationDocNumber, verifyQBInventoryValuationReadback} from './qbInventoryValuation';
 import { isPrePortalNetsuitePo } from './netsuiteOldPos';
 import { parseSiPoString, siPoOrigin } from './sportsLink';
+import { acquireQBInvoiceSyncClaim, classifyQBInvoiceDuplicate, loadQBInvoicesForDuplicateCheck, normalizeQBInvoiceDocumentNumber, qbInvoiceSourceKey, releaseQBInvoiceSyncClaim } from './qbInvoiceSyncGuard';
 
 // Return a circular batch and the cursor for the next run. Permanent blockers
 // in the first N records must not starve every later customer/invoice/item/PO.
@@ -506,7 +507,9 @@ export function qbPurchaseOrderSourceFingerprint(row = {}) {
 export function buildQBInvoicePreviewRows(invoices = [], customers = [], customerMap = {}, options = {}) {
   const customerById = new Map(customers.map(customer => [String(customer.id), customer]));
   const taxBlockReason = typeof options.taxBlockReason === 'function' ? options.taxBlockReason : () => '';
-  return invoices.filter(invoice => !invoice.qb_invoice_id && !isVoidInvoice(invoice) && qbCurrency(invoice.total) > 0).map(invoice => {
+  const invoiceMap = options.invoiceMap || {};
+  const today = String(options.today || new Date().toLocaleDateString('en-CA',{timeZone:'America/Los_Angeles'})).slice(0,10);
+  return invoices.filter(invoice => !invoice.qb_invoice_id && !invoiceMap[qbInvoiceSourceKey(invoice)] && !isVoidInvoice(invoice)).map(invoice => {
     const customer = customerById.get(String(invoice.customer_id));
     const qboCustomerId = customerMap[invoice.customer_id] || invoice.qb_customer_id || '';
     const date = parseQBDateValue(invoice.invoice_date || invoice.date || invoice.created_at) || '';
@@ -514,56 +517,24 @@ export function buildQBInvoicePreviewRows(invoices = [], customers = [], custome
     const paid = qbCurrency(invoice.paid);
     const tax = qbCurrency(invoice.tax);
     const reasons = [];
+    let action = 'ready';
     if (!qboCustomerId) reasons.push('customer is not linked to QBO');
     if (!date) reasons.push('invalid or missing invoice date');
-    if (date && date > (options.today || new Date().toISOString().slice(0, 10))) reasons.push('future-dated invoice is held until '+date);
-    if (!(total > 0)) reasons.push('invoice total must be positive');
+    if (!(total > 0)) { action = 'excluded_zero'; reasons.push('zero-dollar invoices are excluded from automatic posting'); }
+    else if (date > today) { action = 'held_future'; reasons.push('future-dated invoice is held until '+date); }
     const taxReason = tax > 0 ? String(taxBlockReason(invoice) || '') : '';
     if (taxReason) reasons.push(taxReason);
+    if (reasons.length && action === 'ready') action = 'blocked';
     return {
-      invoiceId:String(invoice.id),documentNumber:String(invoice.display_id || invoice.id),
+      invoiceId:String(invoice.id),sourceId:qbInvoiceSourceKey(invoice),
+      sourceInternalId:String(invoice.netsuite_internal_id || invoice._hist_id || invoice.id),
+      documentNumber:String(invoice.display_id || invoice.document_number || invoice.id),
       customerId:String(invoice.customer_id || ''),customer:portalCustomerDisplayName(customer || {}),
       qboCustomerId:String(qboCustomerId),date,total,paid,tax,
-      action:reasons.length ? 'blocked' : 'ready',reason:reasons.join('; '),
+      duplicateCheckEligible:!!qboCustomerId&&!!date&&total>0&&date<=today,
+      action,reason:reasons.join('; '),
     };
   }).sort((a,b)=>a.documentNumber.localeCompare(b.documentNumber,undefined,{numeric:true}));
-}
-
-// NetSuite/Portal and historical migration runs used three spellings for the
-// same invoice number (INV-123, INV123 and NS-INV123).  Comparing their
-// normalized identity prevents a retry from creating a second receivable,
-// while the customer/date/amount checks below prevent an unrelated reused
-// document number from being silently linked.
-export function normalizeQBInvoiceNumber(value = '') {
-  return String(value).trim().toUpperCase().replace(/^NS-?/, '').replace(/^INV-?/, 'INV');
-}
-
-export function qbInvoiceNumberAliases(value = '') {
-  const normalized = normalizeQBInvoiceNumber(value);
-  const digits = normalized.replace(/^INV/, '');
-  return [...new Set([normalized, 'INV-'+digits, 'NS-'+normalized, 'NS-INV'+digits].filter(Boolean))];
-}
-
-export function applyQBInvoiceLiveReadiness(rows = [], qboInvoices = []) {
-  return rows.map(row => {
-    if (row.action !== 'ready') return row;
-    const normalized = normalizeQBInvoiceNumber(row.documentNumber);
-    const sameNumber = qboInvoices.filter(invoice => normalizeQBInvoiceNumber(invoice?.DocNumber) === normalized);
-    const exact = sameNumber.filter(invoice =>
-      String(invoice?.CustomerRef?.value || '') === String(row.qboCustomerId)
-      && String(invoice?.TxnDate || '').slice(0, 10) === String(row.date || '').slice(0, 10)
-      && Math.abs(qbCurrency(invoice?.TotalAmt) - qbCurrency(row.total)) < 0.005);
-    if (exact.length === 1 && sameNumber.length === 1) {
-      return {...row, action:'existing', reason:'exact invoice already exists in QBO', qboId:String(exact[0].Id)};
-    }
-    if (exact.length === 1 && sameNumber.length > 1) {
-      return {...row, action:'blocked', reason:'multiple QBO invoices share this normalized number; manual review required'};
-    }
-    if (sameNumber.length) {
-      return {...row, action:'blocked', reason:'QBO invoice number exists with a different customer, date, or total'};
-    }
-    return row;
-  });
 }
 
 export function buildPortalSalesOrderTax(salesOrder = {}, customer = {}, salesSubtotal = 0, shipping = 0) {
@@ -894,6 +865,8 @@ export function buildQBInvoicePostingLines({ invoice, salesItemId, discountAccou
 // passed fresh by the caller (QBPage per render; App per interval fire).
 export function createQBSyncEngine(ctx){
   const {cust,sos,invs,prod,vend,invAdjLog=[],invPOs,submittedBatches,qbApi,qbConfig,persistQbLink,nf,dP,
+    acquireInvoiceSyncClaim=record=>acquireQBInvoiceSyncClaim(supabase,record),
+    releaseInvoiceSyncClaim=record=>releaseQBInvoiceSyncClaim(supabase,record),
     setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend}=ctx;
     // Raised from 20 after the tax-line design was verified on two canaries and
     // two clean 20-record production batches (QB #455–#494, 0 verify failures).
@@ -998,7 +971,9 @@ export function createQBSyncEngine(ctx){
       const res=await queryQBReadOnly(qbApi,"SELECT * FROM "+entity+" WHERE Id = '"+String(id).replace(/'/g,"\\'")+"' MAXRESULTS 1",entity+' API read-back');
       const row=res?.QueryResponse?.[entity]?.[0];
       if(!row||String(row.Id)!==String(id))throw new Error(entity+' was not returned by API read-back.');
-      if(expected.docNumber!=null&&String(row.DocNumber||'')!==String(expected.docNumber))throw new Error(entity+' document number did not match on API read-back.');
+      if(expected.docNumber!=null&&(expected.normalizedDocNumber
+        ?normalizeQBInvoiceDocumentNumber(row.DocNumber)!==normalizeQBInvoiceDocumentNumber(expected.docNumber)
+        :String(row.DocNumber||'')!==String(expected.docNumber)))throw new Error(entity+' document number did not match on API read-back.');
       if(expected.refValue!=null&&String(row[expected.refField]?.value||'')!==String(expected.refValue))throw new Error(entity+' customer/vendor did not match on API read-back.');
       if(expected.total!=null&&Math.abs(safeNum(row.TotalAmt)-safeNum(expected.total))>=0.005)throw new Error(entity+' total did not match on API read-back.');
       if(expected.txnDate!=null&&String(row.TxnDate||'').slice(0,10)!==String(expected.txnDate))throw new Error(entity+' date did not match on API read-back.');
@@ -1340,14 +1315,15 @@ export function createQBSyncEngine(ctx){
       const log={ts:new Date().toLocaleString(),type:canary?'invoice_canary':'invoices',status:'success',details:[]};
       let synced=0;
       // A voided invoice is not a receivable; it never posts, whatever its total.
-      const allUnsyncedInvs=invs.filter(i=>!i.qb_invoice_id&&!isVoidInvoice(i));
+      const invoiceMap=qbConfig.qbInvoiceMap||{};
+      const allUnsyncedInvs=invs.filter(i=>!i.qb_invoice_id&&!invoiceMap[qbInvoiceSourceKey(i)]&&!isVoidInvoice(i));
       const unsyncedById=new Map(allUnsyncedInvs.map(invoice=>[String(invoice.id),invoice]));
       const unsyncedInvs2=canary?allUnsyncedInvs.filter(i=>String(i.id)===canaryInvoiceId):approvedInvoiceIds.map(id=>unsyncedById.get(id)).filter(Boolean);
       if(canary&&unsyncedInvs2.length!==1){nf('Choose exactly one pending portal invoice','error');setQbSyncing(false);return}
       if(!canary&&unsyncedInvs2.length!==approvedInvoiceIds.length){nf('Invoice batch changed since review — review it again','error');setQbSyncing(false);return{status:'blocked',synced:0}}
       if(!canary){
         const expectedById=new Map(expectedRows.map(row=>[String(row.invoiceId),row]));
-        const sourceRows=buildQBInvoicePreviewRows(unsyncedInvs2,cust,{...(qbConfig.custQBMap||{}),...custQBMap});
+        const sourceRows=buildQBInvoicePreviewRows(unsyncedInvs2,cust,{...(qbConfig.custQBMap||{}),...custQBMap},{invoiceMap});
         const stable=row=>row&&({invoiceId:row.invoiceId,documentNumber:row.documentNumber,customerId:row.customerId,qboCustomerId:row.qboCustomerId,date:row.date,total:row.total,paid:row.paid,tax:row.tax});
         if(sourceRows.some(row=>JSON.stringify(stable(row))!==JSON.stringify(stable(expectedById.get(row.invoiceId))))){nf('Invoice batch changed since review — review it again','error');setQbSyncing(false);return{status:'blocked',synced:0}}
       }
@@ -1363,6 +1339,11 @@ export function createQBSyncEngine(ctx){
       }
       const taxCtx=createInvoiceTaxContext();
       for(const inv of unsyncedInvs2){
+        const sourceId=qbInvoiceSourceKey(inv);
+        const claimToken=globalThis.crypto?.randomUUID?.()||('invoice-'+Date.now()+'-'+Math.random().toString(36).slice(2));
+        try{await acquireInvoiceSyncClaim({realmId:qbConfig.realm_id,sourceId,claimToken,leaseSeconds:300})}
+        catch(e){const error=e.message;log.details.push((inv.display_id||inv.id)+' — BLOCKED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'blocked',error});log.status='partial';if(!canary)break;continue}
+        try{
         const c=cust.find(cc=>cc.id===inv.customer_id);
         const cQBId=custQBMap[inv.customer_id]||(qbConfig.custQBMap||{})[inv.customer_id];
         if(!cQBId){const error='customer "'+c?.name+'" not synced to QB';log.details.push((inv.display_id||inv.id)+' — BLOCKED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'blocked',error});log.status='partial';if(!canary)break;continue}
@@ -1377,32 +1358,10 @@ export function createQBSyncEngine(ctx){
         if(taxPlan?.reconciled===false)log.details.push(taxCtx.warning(inv,taxPlan));
         const invoiceDate=parseQBDateValue(inv.invoice_date||inv.date||inv.created_at);
         if(!invoiceDate){const error='invoice date could not be converted to a QBO date';log.details.push((inv.display_id||inv.id)+' — BLOCKED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'blocked',error});log.status='partial';if(!canary)break;continue}
+        const today=new Date().toLocaleDateString('en-CA',{timeZone:'America/Los_Angeles'});
+        if(invoiceDate>today){const error='future-dated invoice is held until '+invoiceDate;log.details.push((inv.display_id||inv.id)+' — HELD: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'held_future',error});log.status='partial';if(!canary)break;continue}
         const invoiceTotal=safeNum(inv.total);
         if(invoiceTotal<=0){const error='invoice total must be positive; refunds require the separate 40000 credit/refund workflow.';log.details.push((inv.display_id||inv.id)+' — BLOCKED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'blocked',error});log.status='partial';if(!canary)break;continue}
-        // Repeat the normalized identity check immediately before the write.
-        // The reviewed manifest can be minutes old, and another run may have
-        // created the invoice since then.  Exact existing records are linked;
-        // number collisions with different accounting identity stop the batch.
-        try{
-          const aliases=qbInvoiceNumberAliases(inv.display_id||inv.id);
-          const seen=new Map();
-          for(const alias of aliases){
-            const lookup=await queryQBReadOnly(qbApi,"SELECT Id, DocNumber, CustomerRef, TotalAmt, TxnDate FROM Invoice WHERE DocNumber = '"+alias.replace(/'/g,"\\'")+"'",'invoice pre-write duplicate query');
-            const fault=lookup?.Fault?.Error?.[0];
-            if(fault)throw new Error(fault.Detail||fault.Message||'QBO query error');
-            (lookup?.QueryResponse?.Invoice||[]).forEach(row=>seen.set(String(row.Id),row));
-          }
-          const checked=applyQBInvoiceLiveReadiness([{invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),qboCustomerId:String(cQBId),date:invoiceDate,total:invoiceTotal,action:'ready'}],[...seen.values()])[0];
-          if(checked.action==='existing'){
-            setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,qb_invoice_id:checked.qboId}:ii));
-            results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'existing',qboId:checked.qboId,total:invoiceTotal});
-            log.details.push((inv.display_id||inv.id)+' → exact existing QBO Invoice #'+checked.qboId+' linked; no invoice written');synced++;
-            continue;
-          }
-          if(checked.action==='blocked'){
-            const error=checked.reason;log.details.push((inv.display_id||inv.id)+' — BLOCKED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'blocked',error});log.status='partial';if(!canary)break;continue;
-          }
-        }catch(e){const error='pre-write duplicate check failed: '+e.message;log.details.push((inv.display_id||inv.id)+' — BLOCKED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'blocked',error});log.status='partial';if(!canary)break;continue}
         const invoiceDescription='Invoice '+(inv.display_id||inv.id)+(so?' for '+so.id:'')+(so?.memo?' — '+so.memo:'');
         let customerTermRef=null,customerDueDate=null;
         {
@@ -1430,46 +1389,43 @@ export function createQBSyncEngine(ctx){
           ...(taxPlan&&buildQBInvoiceTxnTaxDetail(taxPlan)?{TxnTaxDetail:buildQBInvoiceTxnTaxDetail(taxPlan)}:{}),
           ...(inv.qb_invoice_id?{Id:inv.qb_invoice_id,sparse:true}:{}),
         };
-        let res;
-        try{res=await qbApi('upsert_invoice',{invoice:qbInvoice})}
-        catch(e){const error=e.message;log.details.push((inv.display_id||inv.id)+' — FAILED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'failed',error});log.status='partial';if(!canary)break;continue}
-        // A retry after a successful create may encounter a duplicate DocNumber.
-        // Reuse only an exact customer/date/total match; never overwrite a
-        // same-number invoice that could belong to a different transaction.
-        if(!res?.Invoice?.Id&&(res?.Fault?.Error?.[0]?.code==='6140'||/duplicate/i.test(res?.Fault?.Error?.[0]?.Detail||''))){
-          const docNum=inv.display_id||inv.id;
-          let lookup;
-          try{lookup=await queryQBReadOnly(qbApi,"SELECT Id, CustomerRef, TotalAmt, TxnDate FROM Invoice WHERE DocNumber = '"+String(docNum).replace(/'/g,"\\'")+"'",'invoice duplicate query')}
-          catch(e){const error='duplicate lookup failed: '+e.message;log.details.push(docNum+' — BLOCKED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(docNum),result:'blocked',error});log.status='partial';if(!canary)break;continue}
-          const lookupFault=lookup?.Fault?.Error?.[0];
-          if(lookupFault){const error='duplicate lookup failed: '+(lookupFault.Detail||lookupFault.Message||'QBO query error');log.details.push(docNum+' — BLOCKED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(docNum),result:'blocked',error});log.status='partial';if(!canary)break;continue}
-          const matches=(lookup?.QueryResponse?.Invoice||[]).filter(existing=>
-            String(existing.CustomerRef?.value||'')===String(cQBId)
-            &&Math.abs(safeNum(existing.TotalAmt)-invoiceTotal)<0.005
-            &&String(existing.TxnDate||'').slice(0,10)===String(qbInvoice.TxnDate||'').slice(0,10));
-          if(matches.length!==1){const error='duplicate QBO document number is not one exact customer/date/total match';log.details.push(docNum+' — BLOCKED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(docNum),result:'blocked',error});log.status='partial';if(!canary)break;continue}
-          // The match is this invoice, created by a run that was cut off before
-          // it could save the link (a reload mid-batch). Its lines may not carry
-          // the tax line — a total can match with the tax buried in sales — so
-          // the full record is read and, when the tax line is missing, rebuilt
-          // from the same posting lines. Either way it is proven below exactly
-          // like a fresh create before the link is saved.
-          const matchId=String(matches[0].Id);
-          let existingRow;
-          try{
-            const full=await queryQBReadOnly(qbApi,"SELECT * FROM Invoice WHERE Id = '"+matchId.replace(/'/g,"\\'")+"' MAXRESULTS 1",'invoice duplicate read');
-            existingRow=full?.QueryResponse?.Invoice?.[0];
-            if(!existingRow||String(existingRow.Id)!==matchId)throw new Error('QBO Invoice #'+matchId+' was not returned by API read');
-          }catch(e){const error='duplicate read failed: '+e.message;log.details.push(docNum+' — BLOCKED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(docNum),result:'blocked',error});log.status='partial';if(!canary)break;continue}
-          if(taxLineOk(existingRow)){res={Invoice:existingRow};log.details.push(docNum+' — exact existing invoice verified (QB #'+matchId+')')}
-          else{
-            const rebuilt={Id:matchId,SyncToken:existingRow.SyncToken,sparse:true,Line:invoiceLines,
-              ...(taxPlan&&buildQBInvoiceTxnTaxDetail(taxPlan)?{TxnTaxDetail:buildQBInvoiceTxnTaxDetail(taxPlan)}:{})};
-            let upd;
-            try{upd=await qbApi('upsert_invoice',{invoice:rebuilt})}
-            catch(e){const error='rebuild of QBO Invoice #'+matchId+': '+e.message;log.details.push(docNum+' — FAILED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(docNum),result:'failed',error});log.status='partial';if(!canary)break;continue}
-            if(!upd?.Invoice?.Id){const error='rebuild of QBO Invoice #'+matchId+': '+qbResponseErrorDetail(upd);log.details.push(docNum+' — FAILED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(docNum),result:'failed',error});log.status='partial';if(!canary)break;continue}
-            res=upd;log.details.push(docNum+' — existing QBO Invoice #'+matchId+' had no $'+taxPlan.tax.toFixed(2)+' sales-tax line; rebuilt with the portal lines');
+        const duplicateSource={documentNumber:qbInvoice.DocNumber,qboCustomerId:String(cQBId),date:invoiceDate,total:invoiceTotal};
+        const readDuplicate=async()=>{
+          const live=await loadQBInvoicesForDuplicateCheck(qbApi,[duplicateSource]);
+          return classifyQBInvoiceDuplicate(duplicateSource,live);
+        };
+        const readExisting=async matchId=>{
+          const full=await queryQBReadOnly(qbApi,"SELECT * FROM Invoice WHERE Id = '"+String(matchId).replace(/'/g,"\\'")+"' MAXRESULTS 1",'invoice duplicate read');
+          const row=full?.QueryResponse?.Invoice?.[0];
+          if(!row||String(row.Id)!==String(matchId))throw new Error('QBO Invoice #'+matchId+' was not returned by API read');
+          return row;
+        };
+        let res,linkedExisting=false;
+        let duplicate;
+        try{duplicate=await readDuplicate()}
+        catch(e){const error='duplicate preflight failed: '+e.message;log.details.push(qbInvoice.DocNumber+' — BLOCKED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(qbInvoice.DocNumber),result:'blocked',error});log.status='partial';if(!canary)break;continue}
+        if(duplicate.disposition==='manual_review'){
+          const error='QBO invoice number exists but customer, date, amount, or uniqueness differs';
+          log.details.push(qbInvoice.DocNumber+' — MANUAL REVIEW: '+error+' · '+JSON.stringify(duplicate.conflicts));
+          results.push({invoiceId:String(inv.id),documentNumber:String(qbInvoice.DocNumber),result:'manual_review',error,conflicts:duplicate.conflicts});log.status='partial';if(!canary)break;continue;
+        }
+        if(duplicate.disposition==='link_existing'){
+          try{res={Invoice:await readExisting(duplicate.qboId)};linkedExisting=true;log.details.push(qbInvoice.DocNumber+' — exact existing invoice verified (QB #'+duplicate.qboId+'); QBO unchanged')}
+          catch(e){const error='duplicate read failed: '+e.message;log.details.push(qbInvoice.DocNumber+' — BLOCKED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(qbInvoice.DocNumber),result:'blocked',error});log.status='partial';if(!canary)break;continue}
+        }else{
+          try{res=await qbApi('upsert_invoice',{invoice:qbInvoice})}
+          catch(e){const error=e.message;log.details.push(qbInvoice.DocNumber+' — FAILED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(qbInvoice.DocNumber),result:'failed',error});log.status='partial';if(!canary)break;continue}
+          // QBO can still win a race outside the Portal lease. Re-run the same
+          // two-form, four-field check; never infer identity from error 6140.
+          if(!res?.Invoice?.Id&&(res?.Fault?.Error?.[0]?.code==='6140'||/duplicate/i.test(res?.Fault?.Error?.[0]?.Detail||''))){
+            try{duplicate=await readDuplicate()}
+            catch(e){const error='post-write duplicate lookup failed: '+e.message;log.details.push(qbInvoice.DocNumber+' — BLOCKED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(qbInvoice.DocNumber),result:'blocked',error});log.status='partial';if(!canary)break;continue}
+            if(duplicate.disposition!=='link_existing'){
+              const error='QBO duplicate response did not resolve to one exact customer/date/amount match';
+              results.push({invoiceId:String(inv.id),documentNumber:String(qbInvoice.DocNumber),result:'manual_review',error,conflicts:duplicate.conflicts||[]});log.details.push(qbInvoice.DocNumber+' — MANUAL REVIEW: '+error);log.status='partial';if(!canary)break;continue;
+            }
+            try{res={Invoice:await readExisting(duplicate.qboId)};linkedExisting=true}
+            catch(e){const error='post-write duplicate read failed: '+e.message;results.push({invoiceId:String(inv.id),documentNumber:String(qbInvoice.DocNumber),result:'blocked',error});log.details.push(qbInvoice.DocNumber+' — BLOCKED: '+error);log.status='partial';if(!canary)break;continue}
           }
         }
         if(res?.Invoice?.Id){
@@ -1479,38 +1435,49 @@ export function createQBSyncEngine(ctx){
           // In line mode QBO's own TotalTax must be 0 — AST added nothing — and
           // the portal's tax is proven by the line that carries it instead.
           const storedTax=Math.round(safeNum(res.Invoice.TxnTaxDetail?.TotalTax)*100)/100, expectedTax=taxPlan&&!taxPlan.taxLine?taxPlan.tax:0;
-          if(res.Invoice.Line&&!taxLineOk(res.Invoice)){
+          if(!linkedExisting&&res.Invoice.Line&&!taxLineOk(res.Invoice)){
             log.details.push((inv.display_id||inv.id)+' — VERIFY FAILED: QBO Invoice #'+res.Invoice.Id+' came back without a $'+taxPlan.tax.toFixed(2)+' sales-tax line on the '+taxPlan.state+' item; link not saved, correct it in QuickBooks');
             results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'failed',qboId:String(res.Invoice.Id),error:'stored invoice is missing the reviewed sales-tax line'});log.status='error';if(!canary)break;continue;
           }
-          if(res.Invoice.TotalAmt!==undefined&&(Math.abs(safeNum(res.Invoice.TotalAmt)-invoiceTotal)>=0.005||Math.abs(storedTax-expectedTax)>=0.005)){
+          if(!linkedExisting&&res.Invoice.TotalAmt!==undefined&&(Math.abs(safeNum(res.Invoice.TotalAmt)-invoiceTotal)>=0.005||Math.abs(storedTax-expectedTax)>=0.005)){
             log.details.push((inv.display_id||inv.id)+' — VERIFY FAILED: QBO Invoice #'+res.Invoice.Id+' stored total $'+safeNum(res.Invoice.TotalAmt).toFixed(2)+' / tax $'+storedTax.toFixed(2)+', expected $'+invoiceTotal.toFixed(2)+' / $'+expectedTax.toFixed(2)+'; link not saved, correct it in QuickBooks');
             results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'failed',qboId:String(res.Invoice.Id),error:'stored invoice total or tax differs from the reviewed values'});log.status='error';if(!canary)break;continue;
           }
           {
             try{
-              const verified=await verifyCanaryReadback('Invoice',res.Invoice.Id,{docNumber:inv.display_id||inv.id,refField:'CustomerRef',refValue:cQBId,total:invoiceTotal});
-              if(verified.Active===false)throw new Error('QBO customer was inactive on read-back; the portal link was not saved.');
-              if(Math.abs(safeNum(verified.TxnTaxDetail?.TotalTax)-expectedTax)>=0.005)throw new Error('Invoice sales tax did not match on API read-back ($'+safeNum(verified.TxnTaxDetail?.TotalTax).toFixed(2)+' vs $'+expectedTax.toFixed(2)+').');
-              if(!taxLineOk(verified))throw new Error('Invoice read back without the $'+taxPlan.tax.toFixed(2)+' '+taxPlan.state+' sales-tax line.');
-              if(taxPlan?.taxLine)log.details.push('TAX LINE VERIFIED: $'+taxPlan.tax.toFixed(2)+' → '+portalSalesTaxItemName(taxPlan.state)+' · QBO TotalTax $'+safeNum(verified.TxnTaxDetail?.TotalTax).toFixed(2));
-              const verifiedTermId=String(verified.SalesTermRef?.value||'');
-              const expectedTermId=String(customerTermRef?.value||'');
-              if(verifiedTermId){
-                if(verifiedTermId!==expectedTermId)throw new Error('Invoice customer terms did not match on API read-back (QBO '+verifiedTermId+' vs customer '+expectedTermId+').');
-                log.details.push('READ-BACK VERIFIED: Invoice #'+verified.Id+' · '+(verified.SalesTermRef?.name||'QBO terms ID '+verifiedTermId));
-              }else{
-                const verifiedDueDate=String(verified.DueDate||'').slice(0,10);
-                if(!customerDueDate||verifiedDueDate!==customerDueDate)throw new Error('Invoice customer terms were omitted on API read-back and the due date did not prove them ('+(verifiedDueDate||'missing')+' vs '+(customerDueDate||'not derivable')+').');
-                log.details.push('READ-BACK VERIFIED: Invoice #'+verified.Id+' · QBO omitted the term id; due date '+verifiedDueDate+' proves '+(customerTermRef?.name||'customer terms'));
+              const verified=await verifyCanaryReadback('Invoice',res.Invoice.Id,{docNumber:qbInvoice.DocNumber,normalizedDocNumber:true,refField:'CustomerRef',refValue:cQBId,total:invoiceTotal,txnDate:invoiceDate});
+              if(!linkedExisting){
+                if(verified.Active===false)throw new Error('QBO customer was inactive on read-back; the portal link was not saved.');
+                if(Math.abs(safeNum(verified.TxnTaxDetail?.TotalTax)-expectedTax)>=0.005)throw new Error('Invoice sales tax did not match on API read-back ($'+safeNum(verified.TxnTaxDetail?.TotalTax).toFixed(2)+' vs $'+expectedTax.toFixed(2)+').');
+                if(!taxLineOk(verified))throw new Error('Invoice read back without the $'+taxPlan.tax.toFixed(2)+' '+taxPlan.state+' sales-tax line.');
+                if(taxPlan?.taxLine)log.details.push('TAX LINE VERIFIED: $'+taxPlan.tax.toFixed(2)+' → '+portalSalesTaxItemName(taxPlan.state)+' · QBO TotalTax $'+safeNum(verified.TxnTaxDetail?.TotalTax).toFixed(2));
+                const verifiedTermId=String(verified.SalesTermRef?.value||'');
+                const expectedTermId=String(customerTermRef?.value||'');
+                if(verifiedTermId){
+                  if(verifiedTermId!==expectedTermId)throw new Error('Invoice customer terms did not match on API read-back (QBO '+verifiedTermId+' vs customer '+expectedTermId+').');
+                  log.details.push('READ-BACK VERIFIED: Invoice #'+verified.Id+' · '+(verified.SalesTermRef?.name||'QBO terms ID '+verifiedTermId));
+                }else{
+                  const verifiedDueDate=String(verified.DueDate||'').slice(0,10);
+                  if(!customerDueDate||verifiedDueDate!==customerDueDate)throw new Error('Invoice customer terms were omitted on API read-back and the due date did not prove them ('+(verifiedDueDate||'missing')+' vs '+(customerDueDate||'not derivable')+').');
+                  log.details.push('READ-BACK VERIFIED: Invoice #'+verified.Id+' · QBO omitted the term id; due date '+verifiedDueDate+' proves '+(customerTermRef?.name||'customer terms'));
+                }
               }
             }catch(e){const error=e.message;log.details.push((inv.display_id||inv.id)+' — VERIFY FAILED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'failed',qboId:String(res.Invoice.Id),error});log.status='error';if(!canary)break;continue}
           }
+          try{
+            await persistQbLink({mapKey:'qbInvoiceMap',sourceIds:[sourceId],qboId:String(res.Invoice.Id),log,
+              evidence:{result:linkedExisting?'linked':'created',api_readback:true,duplicate_preflight:'normalized_number_customer_date_cents',source_internal_id:String(inv.netsuite_internal_id||inv._hist_id||inv.id),doc_number:qbInvoice.DocNumber,customer_id:String(cQBId),date:invoiceDate,total:qbCurrency(invoiceTotal)}});
+          }catch(e){const error='durable invoice mapping failed after QBO verification: '+e.message;log.details.push(qbInvoice.DocNumber+' — FAILED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(qbInvoice.DocNumber),result:'failed',qboId:String(res.Invoice.Id),error});log.status='error';if(!canary)break;continue}
           setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,qb_invoice_id:res.Invoice.Id}:ii));
-          results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'created',qboId:String(res.Invoice.Id),total:invoiceTotal});
-          log.details.push((inv.display_id||inv.id)+' → QB Invoice #'+res.Invoice.Id+' ($'+invoiceTotal.toFixed(2)+')');synced++;
+          const result=linkedExisting?'already_synced':'created';
+          results.push({invoiceId:String(inv.id),documentNumber:String(qbInvoice.DocNumber),result,qboId:String(res.Invoice.Id),total:invoiceTotal});
+          log.details.push(qbInvoice.DocNumber+(linkedExisting?' linked to existing ':' → ')+'QB Invoice #'+res.Invoice.Id+' ($'+invoiceTotal.toFixed(2)+')');synced++;
           if(safeNum(inv.paid)>0)log.details.push((inv.display_id||inv.id)+' — payment queued for the paid-status pass after the QBO invoice link is persisted');
         }else{const error=qbResponseErrorDetail(res);log.details.push((inv.display_id||inv.id)+' — FAILED: '+error);results.push({invoiceId:String(inv.id),documentNumber:String(inv.display_id||inv.id),result:'failed',error});log.status='partial';if(!canary)break}
+        }finally{
+          try{await releaseInvoiceSyncClaim({realmId:qbConfig.realm_id,sourceId,claimToken})}
+          catch(e){log.details.push((inv.display_id||inv.id)+' — WARNING: source lock release failed: '+e.message)}
+        }
       }
       if(synced===0&&unsyncedInvs2.length>0)log.status='error';
       if(!canary&&results.length<unsyncedInvs2.length){
