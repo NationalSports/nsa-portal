@@ -26,6 +26,18 @@ test('a durable mapping disambiguates intentional same-name QBO customers',()=>{
   const second={...existing,Id:'13'};
   expect(buildQBCustomerManifest([customer],[existing,second],terms,{C1:'13'})[0]).toMatchObject({action:'link',qboId:'13'});
 });
+test('an explicitly reviewed alias may consolidate into one existing QBO customer',()=>{
+  const primary={...customer,id:'PRIMARY',name:'Lake SC',alpha_tag:'LAKE SC'};
+  const alias={...customer,id:'ALIAS',name:'Lake SC Online',alpha_tag:'LAKS'};
+  const qbo={...existing,Id:'1112',DisplayName:'Lake SC (LAKE SC)'};
+  expect(buildQBCustomerManifest([primary,alias],[qbo],terms,{PRIMARY:'1112',ALIAS:'1112'})[1])
+    .toMatchObject({action:'blocked',reason:'Saved QBO customer name does not match portal identity'});
+  const rows=buildQBCustomerManifest([primary,alias],[qbo],terms,{PRIMARY:'1112',ALIAS:'1112'},
+    {reviewedAliases:{ALIAS:'1112'}});
+  expect(rows[0]).toMatchObject({action:'link',qboId:'1112'});
+  expect(rows[1]).toMatchObject({action:'link',qboId:'1112',reviewedAlias:true,
+    reason:expect.stringMatching(/Reviewed alias consolidated/)});
+});
 test('deleted sources are intentionally excluded',()=>{
   expect(buildQBCustomerManifest([{...customer,deleted_at:'2026-01-01'}],[],terms)[0].action).toBe('excluded');
 });
