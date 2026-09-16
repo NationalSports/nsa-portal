@@ -18,6 +18,7 @@ import { applyQBPurchaseOrderLiveReadiness, applyQBSalesOrderLiveReadiness, buil
 import { QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_POSTING_MATRIX, QB_ACCOUNT_SPECS, QB_STATE_TAX_ACCOUNT_KEYS, buildVendorBillLines, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, manualBillAccountKey, normalizeVendorName, qbWriteAccountRef, queryQBReadOnly, readQBWithRetry, resolveQBAccountRefs } from './qbAccountMappings';
 import { mergeDurableQBLinks, persistVerifiedQBCustomerLinkRecovery } from './qbLinkLedger';
 import { applyQBInvoiceLiveReadiness, loadQBInvoicesForDuplicateCheck, normalizeQBInvoiceDocumentNumber, qbInvoiceSourceKey, summarizeQBInvoicePreflight } from './qbInvoiceSyncGuard';
+import { applyQboBillLiveReadiness, buildQboBillReadinessRows, summarizeQboBillReadiness } from './qbBillAutomationReadiness';
 
 const stripeBackfillErrorSummary=(errors=[])=>{
   const counts={};
@@ -112,6 +113,8 @@ export default function QBPage(){
   const [matchDiagnostic,setMatchDiagnostic]=useState(null);
   const [matchDiagnosticBusy,setMatchDiagnosticBusy]=useState(false);
   const [poBatchReview,setPoBatchReview]=useState(null);
+  const [billAutomationReview,setBillAutomationReview]=useState(null);
+  const [billAutomationBusy,setBillAutomationBusy]=useState(false);
   const [invoiceBatchReview,setInvoiceBatchReview]=useState(null);
   const [invoiceBatchLimit,setInvoiceBatchLimit]=useState(20);
   const [invoiceBatchApproved,setInvoiceBatchApproved]=useState(false);
@@ -755,6 +758,32 @@ export default function QBPage(){
       }catch(e){setPoBatchReview(null);nf('Purchase-order readiness review failed — '+e.message,'error')}
       finally{setQbSyncing(false)}
     };
+    const reviewBillAutomation=async()=>{
+      setBillAutomationBusy(true);setBillAutomationReview(null);
+      try{
+        const ledger=[];
+        for(let from=0;from<20000;from+=1000){
+          const{data,error}=await supabase.from('applied_bills').select('*')
+            .eq('status','pushed').eq('portal_status','success').eq('is_credit',false)
+            .order('applied_at',{ascending:false}).order('id',{ascending:false}).range(from,from+999);
+          if(error)throw error;
+          ledger.push(...(data||[]));
+          if(!data||data.length<1000)break;
+        }
+        const sourceRows=buildQboBillReadinessRows(ledger);
+        const [qboVendors,qboBills,qboAccounts]=await Promise.all([
+          loadAllQBEntities(qbApi,'Vendor','Id, DisplayName, CompanyName, Active',500),
+          loadAllQBEntities(qbApi,'Bill','Id, DocNumber, VendorRef, TotalAmt, TxnDate, Balance',500),
+          loadQBAccounts(qbApi),
+        ]);
+        const accountRefs=resolveQBAccountRefs(qboAccounts,qbConfig.mapping,['purchases_account','freight_account','sports_inc_fee_account','deco_account']);
+        const rows=applyQboBillLiveReadiness({rows:sourceRows,qboVendors,qboBills,portalVendors:vend,vendorLinks:qbConfig.vendorQBMap||{},accountRefs});
+        const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,counts:summarizeQboBillReadiness(rows)};
+        setBillAutomationReview(review);setQBConfig(prev=>({...prev,lastBillAutomationReview:{realm:review.realm,reviewedAt:review.reviewedAt,counts:review.counts}}));
+        nf('Bill automation readiness review complete — live QBO checked; no records changed');
+      }catch(e){setBillAutomationReview(null);nf('Bill readiness review failed — '+e.message,'error')}
+      finally{setBillAutomationBusy(false)}
+    };
     const runPurchaseOrderBatch=async()=>{
       const current=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{},vend,qbConfig.parkedPurchaseOrderIds||[]);
       const currentById=new Map(current.map(row=>[row.poId,row]));
@@ -1119,6 +1148,20 @@ export default function QBPage(){
             </>}
             {qbConfig.lastPurchaseOrderBatch&&<><h3>Latest PO batch: {qbConfig.lastPurchaseOrderBatch.status}</h3><table><thead><tr><th>Portal PO</th><th>Result</th><th>QBO ID</th><th>Error</th></tr></thead><tbody>{(qbConfig.lastPurchaseOrderBatch.results||[]).map(row=><tr key={row.poId}><td>{row.poId}</td><td>{row.result}</td><td>{row.qboId||''}</td><td>{row.error||''}</td></tr>)}</tbody></table><p>{JSON.stringify(qbConfig.lastPurchaseOrderBatch.counts)}</p></>}
             <p style={{fontSize:10,color:'#92400e'}}>This batch creates or links only the listed purchase orders. Existing bills are handled separately through the one-record review above and are never recreated by this batch.</p>
+          </div>
+        </div>
+
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h2>Vendor-Bill Automation Readiness</h2></div>
+          <div className="card-body">
+            <p style={{fontSize:11,color:'#475569'}}>Read-only gate over the authoritative Portal bill ledger and live QBO. It validates the immutable ledger row, exact vendor identity, document number, date, total, approved account routing, and duplicate status. It does not create, edit, or delete a bill.</p>
+            <button className="btn btn-sm" disabled={qbSyncing||billAutomationBusy||!livePreflightReady} onClick={reviewBillAutomation}>{billAutomationBusy?'Reviewing bills...':'Review Bills — No QBO Changes'}</button>
+            {billAutomationReview&&<>
+              <p>Readiness: {JSON.stringify(billAutomationReview.counts)}. Automation remains locked until every conflict is resolved and a one-record canary passes.</p>
+              <table><thead><tr><th>Vendor doc</th><th>Vendor</th><th>Date</th><th>Total</th><th>Result</th><th>Reason</th></tr></thead><tbody>{billAutomationReview.rows.slice(0,200).map(row=><tr key={row.ledgerId}><td>{row.documentNumber}</td><td>{row.vendor}</td><td>{row.date||'—'}</td><td>${Number(row.total||0).toFixed(2)}</td><td>{row.action}</td><td>{row.reason||''}</td></tr>)}</tbody></table>
+            </>}
+            {!billAutomationReview&&qbConfig.lastBillAutomationReview&&<p style={{fontSize:11,color:'#64748b'}}>Last saved review: {qbConfig.lastBillAutomationReview.reviewedAt} · {JSON.stringify(qbConfig.lastBillAutomationReview.counts||{})}</p>}
+            <p style={{fontSize:10,color:'#92400e'}}>Bill automation is intentionally off. A reviewed manifest, source lease, stop-on-first-failure execution, API read-back, and durable receipt are required before it can be enabled.</p>
           </div>
         </div>
 
