@@ -584,7 +584,7 @@ export default function QBPage(){
       try{
         const terms=await loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000);
         const customers=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SalesTermRef',1000);
-        const rows=buildQBCustomerManifest(cust,customers,terms,qbConfig.custQBMap||{},{blankTermsDefault:customerBlankTermsDefault});
+        const rows=buildQBCustomerManifest(cust,customers,terms,qbConfig.custQBMap||{},{blankTermsDefault:customerBlankTermsDefault,reviewedAliases:qbConfig.custQBAliasApprovals||{}});
         const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,blankTermsDefault:customerBlankTermsDefault,
           counts:rows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{}),
           termSources:rows.reduce((counts,row)=>({...counts,[row.termSource||'portal']:(counts[row.termSource||'portal']||0)+1}),{})};
@@ -603,7 +603,7 @@ export default function QBPage(){
           loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000),
           loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SalesTermRef',1000),
         ]);
-        const current=buildQBCustomerManifest(cust,customers,terms,qbConfig.custQBMap||{},{blankTermsDefault:customerBlankTermsDefault})
+        const current=buildQBCustomerManifest(cust,customers,terms,qbConfig.custQBMap||{},{blankTermsDefault:customerBlankTermsDefault,reviewedAliases:qbConfig.custQBAliasApprovals||{}})
           .filter(row=>row.action==='link'&&!qbConfig.custQBMap?.[row.sourceId]);
         const reviewed=new Map(customerRecoveryRows.map(row=>[String(row.sourceId),String(row.qboId)]));
         if(current.length!==customerRecoveryRows.length||current.some(row=>reviewed.get(String(row.sourceId))!==String(row.qboId))){

@@ -198,6 +198,7 @@ export function normalizeBlankTermsDefault(value) {
 // Read-only plan: every source is classified before any customer batch writes.
 export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms = [], savedMap = {}, options = {}) {
   const blankTermsDefault = normalizeBlankTermsDefault(options.blankTermsDefault);
+  const reviewedAliases = options.reviewedAliases || {};
   const activeTermById = new Map((terms || []).filter(term => term && term.Active !== false && term.Id)
     .map(term => [String(term.Id), term]));
   const rows = customers.map(customer => {
@@ -210,6 +211,7 @@ export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms
       const embedded = String(customer.qb_customer_id || '');
       if(mapped && embedded && mapped !== embedded)throw new Error('Conflicting saved customer IDs');
       const savedId = mapped || embedded;
+      const reviewedAlias = !!savedId && String(reviewedAliases[row.sourceId] || '') === savedId;
       const matches = findExactQBCustomerMatches(customer,qboCustomers);
       // A durable source-to-QBO mapping disambiguates intentionally separate
       // customers that happen to share a display name. Only an unmapped source
@@ -220,7 +222,8 @@ export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms
       if(savedId && !existing)throw new Error('Saved QBO customer was not returned; audit its ID before relinking');
       if(existing?.Active === false)throw new Error('Saved QBO customer is inactive');
       if(existing && matches.length === 1 && String(matches[0].Id) !== String(existing.Id))throw new Error('Saved ID conflicts with exact name match');
-      if(existing && !matches.some(q=>String(q.Id) === String(existing.Id)))throw new Error('Saved QBO customer name does not match portal identity');
+      if(existing && !matches.some(q=>String(q.Id) === String(existing.Id)) && !reviewedAlias)throw new Error('Saved QBO customer name does not match portal identity');
+      if(reviewedAlias)row.reviewedAlias = true;
       // Record the match BEFORE resolving terms. A terms problem must never make a
       // matched customer look unmatched: reporting the identity we found is what tells
       // the reviewer whether a blocked row is a naming failure or only a terms gap.
@@ -253,7 +256,9 @@ export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms
         return {...row,action:'create',reason:'Requires explicit creation approval' + termNote};
       }
       row.action = String(existing.SalesTermRef?.value || '') === term.value ? 'link' : 'update_terms';
-      row.reason = (row.action === 'link' ? 'Existing active customer; terms match' : 'Requires explicit term-change approval') + termNote;
+      row.reason = (reviewedAlias
+        ? 'Reviewed alias consolidated into existing QBO customer'
+        : row.action === 'link' ? 'Existing active customer; terms match' : 'Requires explicit term-change approval') + termNote;
       return row;
     }catch(error){return {...row,action:'blocked',reason:error.message};}
   });
@@ -263,9 +268,15 @@ export function buildQBCustomerManifest(customers = [], qboCustomers = [], terms
     names.set(name,[...(names.get(name)||[]),row]);
     if(row.qboId)ids.set(row.qboId,[...(ids.get(row.qboId)||[]),row]);
   });
-  [...names.values(),...ids.values()].filter(group=>group.length>1).forEach(group=>group.forEach(row=>{
-    row.action='blocked';row.reason='Multiple portal customers claim the same display name or QBO customer';
-  }));
+  [...names.values(),...ids.values()].filter(group=>group.length>1).forEach(group=>{
+    const reviewedAliasGroup = group.some(row=>row.reviewedAlias)
+      && group.some(row=>!row.reviewedAlias)
+      && group.filter(row=>!row.reviewedAlias).length === 1;
+    if(reviewedAliasGroup)return;
+    group.forEach(row=>{
+      row.action='blocked';row.reason='Multiple portal customers claim the same display name or QBO customer';
+    });
+  });
   // Two portal customers can name the same real-world account while their display
   // names differ only by tag ("Populous (POP)" vs "Populous (Populous)"), so the
   // exact-display-name pass above misses them. The QBO-side duplicate guard cannot
@@ -1159,7 +1170,7 @@ export function createQBSyncEngine(ctx){
           || await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SyncToken, SalesTermRef',1000);
         const currentPlan=context?.planBySource
           ? context.planBySource.get(String(c.id))
-          : buildQBCustomerManifest(cust,qboCustomers,qboTerms,qbConfig.custQBMap||{},{blankTermsDefault}).find(row=>row.sourceId===String(c.id));
+          : buildQBCustomerManifest(cust,qboCustomers,qboTerms,qbConfig.custQBMap||{},{blankTermsDefault,reviewedAliases:qbConfig.custQBAliasApprovals||{}}).find(row=>row.sourceId===String(c.id));
         if(!currentPlan||['blocked','excluded'].includes(currentPlan.action))throw new Error(currentPlan?.reason||'Customer could not be reviewed');
         if(expectedPlan && ['sourceId','displayName','portalTerms','qboId','action','termSource'].some(key=>currentPlan[key]!==expectedPlan[key]))throw new Error('Customer plan changed since review; refresh the manifest before continuing');
         if(expectedPlan && (String(currentPlan.desiredTerm?.value)!==String(expectedPlan.desiredTerm?.value)||String(currentPlan.currentTerm?.value)!==String(expectedPlan.currentTerm?.value)))throw new Error('QBO term mapping changed since review');
@@ -1245,7 +1256,7 @@ export function createQBSyncEngine(ctx){
         // One read of terms and customers, one plan build, for the whole run.
         const terms=await loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000);
         const customers=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SyncToken, SalesTermRef',1000);
-        const planBySource=new Map(buildQBCustomerManifest(cust,customers,terms,qbConfig.custQBMap||{},{blankTermsDefault})
+        const planBySource=new Map(buildQBCustomerManifest(cust,customers,terms,qbConfig.custQBMap||{},{blankTermsDefault,reviewedAliases:qbConfig.custQBAliasApprovals||{}})
           .map(row=>[String(row.sourceId),row]));
         const context={terms,customers,planBySource};
         let stopped=false;
