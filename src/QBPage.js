@@ -262,7 +262,10 @@ export default function QBPage(){
         const invoiceRows=applyQBInvoiceLiveReadiness(invoicePreviewRows,qboInvoices);
         invoiceRows.forEach(row=>log.details.push(row.documentNumber+' — '+row.action+(row.reason?' — '+row.reason:'')));
 
-        const aliasNumbers=['INV63133','INV63199','INV63255'];
+        // These are the actual immutable Portal document numbers. The accepted
+        // QBO aliases differ only by the optional NS- prefix; the guard must not
+        // silently remove any other punctuation from the accounting identifier.
+        const aliasNumbers=['INV-63133','INV-63199','INV-63255'];
         const aliasRows=[];
         for(const number of aliasNumbers){
           const source=invs.find(invoice=>normalizeQBInvoiceDocumentNumber(invoice.display_id||invoice.document_number||invoice.id)===number);
