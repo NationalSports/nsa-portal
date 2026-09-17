@@ -1924,6 +1924,9 @@ export { dP, rQ, parseDate, _decoUnitCostComb };
 // InvoicesPage additionally shares these (RowLink/_buildTabHref are the deep-link row
 // helpers; the brevo pair and the invoice-PDF builder move with a later comms/pdf pass).
 export { RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms };
+// Exported so extracted pages can read a dropped PDF without re-implementing the
+// pdf.js load + row/column grouping (TUO remittances on the Invoices page).
+export { extractPdfText };
 // Exported for its unit test — the dashboard's inline art preview resolves what a rep sees
 // before opening the order, so its scoping (mock vs. raw design art) is worth pinning down.
 export { dashArtShots };

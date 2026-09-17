@@ -12,7 +12,8 @@ import { applyHistoricalInvoicePayment, historicalInvoiceAr } from './lib/histor
 import { calculateCreditMemo, creditableBalance, creditedTotal, seedCreditMemoLines, setCreditMemoLineQty, validateCreditMemo } from './invoiceCreditMemo';
 import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub, resolveOrderShipTo, billToIdFor } from './components';
 import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled, greetLine, withGreeting, emailMoney } from './utils';
-import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms } from './App';
+import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms, extractPdfText } from './App';
+import TuoRemittanceImport from './TuoRemittanceImport';
 import { stripePaymentRepairCandidate } from './lib/invoicePaymentReconciliation';
 import { invoiceDetailBalance, invoicePaymentStatus, normalizeInvoiceForDetail } from './lib/invoiceDetail';
 
@@ -1718,6 +1719,10 @@ export default function InvoicesPage(){
     };
 
     return(<>
+      {/* TUO settles a batch of orders and wires one amount; this splits that
+          report back onto the customers whose stores contributed. */}
+      <TuoRemittanceImport customers={cust} currentUser={cu} notify={nf} extractPdfText={extractPdfText}/>
+
       {/* Stats */}
       <div className="stats-row">
         <div className="stat-card" style={{cursor:'pointer',outline:invF.status==='all'&&invF.aging==='all'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:'all',aging:'all'}))}>
