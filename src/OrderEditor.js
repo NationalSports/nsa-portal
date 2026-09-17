@@ -16,7 +16,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, pendingProdFileGroups, prodFileMethodOf, artStatusAfterProdConfirm, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, orderLineSizes, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
-import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, skusMissingRevColorWays, missingRevColorWaysMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, replaceMockLinkGroup, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemArtSlots, jobItemDecosOfKind, jobRosterBlocks, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
+import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, skusMissingRevColorWays, missingRevColorWaysMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, replaceMockLinkGroup, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemArtSlots, jobItemDecosOfKind, jobRosterBlocks, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, placeRosterEntries, rosterDropSummary, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor, TaxExemptModal } from './components';
 import { unfinishedProdSummary } from './lib/orderCloseGuard';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
@@ -6013,9 +6013,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       const a=document.createElement('a');a.href=url;a.download='roster_template_'+(item.sku||'item')+'.csv';a.click();URL.revokeObjectURL(url)}}>📥 Template</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{
                       const csv=prompt('Paste (Size,Number per line):\nM,12\nL,34');
-                      if(csv){const nr={...roster};csv.split('\n').forEach(line=>{const[sz,num]=line.split(',').map(s=>s.trim());
-                        if(sz&&num){if(!nr[sz])nr[sz]=Array(_iSz[sz]||0).fill('');const ei=nr[sz].findIndex(v=>!v);if(ei>=0)nr[sz][ei]=num}});
-                        uD(idx,di,'roster',nr);nf('Imported')}}}>📋 Paste</button>
+                      // placeRosterEntries reports what wouldn't fit. The old inline loop dropped any
+                      // number that found no empty slot and still said "Imported" — a corrected roster
+                      // pasted over a full (or stale-short) size row vanished without a word.
+                      if(csv){const _res=placeRosterEntries(roster,_iSz,csv.split('\n').map(line=>line.split(',').map(s=>s.trim())));
+                        uD(idx,di,'roster',_res.roster);
+                        nf(_res.dropped.length>0
+                          ?_res.placed+' imported — '+_res.dropped.length+' NOT placed: '+rosterDropSummary(_res.dropped)
+                          :_res.placed+' imported',_res.dropped.length>0?'error':undefined)}}}>📋 Paste</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9,color:'#dc2626'}} onClick={()=>{uD(idx,di,'roster',{});nf('Cleared')}}>Clear</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>uD(idx,di,'_showRoster',false)}>▲ Close</button>
                   </div></div>
@@ -8180,14 +8185,24 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const hdr=lines[0].toLowerCase();const hasHeader=hdr.includes('size');const dataLines=hasHeader?lines.slice(1):lines;
         const cols=lines[0].split(',');const numColIdx=cols.findIndex(c=>c.trim().toLowerCase()==='number'||c.trim().toLowerCase()==='#'||c.trim().toLowerCase()==='num');
         const nameColIdx=cols.findIndex(c=>c.trim().toLowerCase()==='name'||c.trim().toLowerCase()==='player');
-        const nr={...(rum.roster||{})};let numCt=0;const namesDeco=safeDecos(rum.item).find((dd,ddi)=>dd.kind==='names'&&ddi!==rum.di);const nn=namesDeco?{...(namesDeco.names||{})}:null;let nameCt=0;
-        dataLines.forEach(line=>{const parts=line.split(',').map(s=>s.trim());const sz=parts[0];if(!sz||!rum.item.sizes[sz]||rum.item.sizes[sz]<=0)return;
+        const namesDeco=safeDecos(rum.item).find((dd,ddi)=>dd.kind==='names'&&ddi!==rum.di);
+        // Collect first, place second. Rows for a size the garment doesn't carry are NOT skipped
+        // here any more — placeRosterEntries counts them so the rep is told the file used "Medium"
+        // where the line has "M", instead of the numbers quietly going nowhere.
+        const numEntries=[],nameEntries=[];
+        dataLines.forEach(line=>{const parts=line.split(',').map(s=>s.trim());const sz=parts[0];if(!sz)return;
           const num=numColIdx>=1?parts[numColIdx]:parts[1]||'';
           const name=nameColIdx>=1?parts[nameColIdx]:(parts.length>=3?parts[2]:'');
-          if(num){if(!nr[sz])nr[sz]=Array(rum.item.sizes[sz]||0).fill('');const ei=nr[sz].findIndex(v=>!v);if(ei>=0){nr[sz][ei]=num;numCt++}}
-          if(name&&nn!==null){if(!nn[sz])nn[sz]=Array(rum.item.sizes[sz]||0).fill('');const ei=nn[sz].findIndex(v=>!v);if(ei>=0){nn[sz][ei]=name;nameCt++}}});
-        uD(rum.idx,rum.di,'roster',nr);if(nn!==null&&nameCt>0){const ndi=safeDecos(rum.item).findIndex(dd=>dd.kind==='names');if(ndi>=0)uD(rum.idx,ndi,'names',nn)}
-        nf(numCt+' numbers'+(nameCt>0?' + '+nameCt+' names':'')+' imported');setRosterUploadModal(null);setRosterUploadDragOver(false)};reader.readAsText(f)};
+          if(num)numEntries.push([sz,num]);
+          if(name&&namesDeco)nameEntries.push([sz,name])});
+        const numRes=placeRosterEntries(rum.roster,rum.item.sizes,numEntries);
+        const nameRes=namesDeco?placeRosterEntries(namesDeco.names,rum.item.sizes,nameEntries):null;
+        uD(rum.idx,rum.di,'roster',numRes.roster);
+        if(nameRes&&nameRes.placed>0){const ndi=safeDecos(rum.item).findIndex(dd=>dd.kind==='names');if(ndi>=0)uD(rum.idx,ndi,'names',nameRes.roster)}
+        const _dropped=[...numRes.dropped,...(nameRes?nameRes.dropped:[])];
+        const _okMsg=numRes.placed+' numbers'+(nameRes&&nameRes.placed>0?' + '+nameRes.placed+' names':'')+' imported';
+        nf(_dropped.length>0?_okMsg+' — '+_dropped.length+' NOT placed: '+rosterDropSummary(_dropped):_okMsg,_dropped.length>0?'error':undefined);
+        setRosterUploadModal(null);setRosterUploadDragOver(false)};reader.readAsText(f)};
       return<div className="modal-overlay" onClick={()=>{setRosterUploadModal(null);setRosterUploadDragOver(false)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
         <div className="modal-header"><h2>📤 Upload Roster</h2><button className="modal-close" onClick={()=>{setRosterUploadModal(null);setRosterUploadDragOver(false)}}>x</button></div>
         <div className="modal-body">

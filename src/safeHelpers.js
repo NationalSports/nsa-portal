@@ -78,6 +78,47 @@ export const scopeRosterToSizes = (roster, sizes) => {
   return out;
 };
 
+// ── Roster import placement ──
+// Drop a list of [size, value] entries into a roster, one per open slot, WITHOUT losing any
+// silently. The inline importers (📋 Paste / 📤 Upload Roster, both editors) used to
+// shallow-copy the roster, write into the live nested arrays, and discard any entry that
+// found no empty slot — findIndex returned -1 and the value just vanished under an
+// "Imported" toast. Two ways that bites a real order:
+//   • a size row left SHORTER than the garment's qty (typed while the qty was lower) reads
+//     as full, so a corrected roster pasted over it lands nowhere at all;
+//   • a size the garment doesn't carry ("Medium" instead of "M") planted an empty junk key.
+// Returns a NEW roster (no mutation of the caller's state) plus everything that could not be
+// placed, so the caller can say so out loud instead of reporting a clean import.
+// Works for names maps too — same per-size-array shape.
+export const placeRosterEntries = (roster, sizes, entries) => {
+  const out = {};
+  Object.entries(safeObj(roster)).forEach(([sz, arr]) => { out[sz] = safeArr(arr).slice(); });
+  const caps = safeObj(sizes);
+  let placed = 0; const dropped = [];
+  safeArr(entries).forEach((e) => {
+    const sz = safeArr(e)[0]; const v = String(safeArr(e)[1] == null ? '' : safeArr(e)[1]).trim();
+    if (!sz || !v) return;
+    const cap = safeNum(caps[sz]);
+    if (cap <= 0) { dropped.push({ size: String(sz), value: v, reason: 'unknown-size' }); return; }
+    const arr = out[sz] || (out[sz] = []);
+    while (arr.length < cap) arr.push('');
+    // Only the garment's real slots count — anything past cap never renders or prints.
+    const ei = arr.slice(0, cap).findIndex((x) => !x || !String(x).trim());
+    if (ei < 0) { dropped.push({ size: String(sz), value: v, reason: 'full' }); return; }
+    arr[ei] = v; placed++;
+  });
+  return { roster: out, placed, dropped };
+};
+// One-line "what didn't fit" summary for the import toasts.
+export const rosterDropSummary = (dropped) => {
+  const byKey = new Map();
+  safeArr(dropped).forEach((d) => { const k = d?.size + '|' + d?.reason; byKey.set(k, (byKey.get(k) || 0) + 1); });
+  return [...byKey.entries()].map(([k, n]) => {
+    const [sz, reason] = k.split('|');
+    return sz + ' \u00d7' + n + (reason === 'unknown-size' ? ' (not a size on this garment)' : ' (no open slots)');
+  }).join(', ');
+};
+
 // ── Job-item decoration ownership ──
 // A job item records which decoration indexes of its SO line the job produces (deco_idxs).
 // Returns null for legacy items without the array — the legacy single deco_idx was written as
