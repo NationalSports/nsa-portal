@@ -15673,7 +15673,9 @@ export default function App(){
   const[rptChartMode,setRptChartMode]=useState('bars');// bars | trend
   const[rptBreakdown,setRptBreakdown]=useState('customer');// customer | product
   const[rptRadar,setRptRadar]=useState('due');// due | atrisk
-  const[rptPeriod,setRptPeriod]=useState('month');// scorecard window: month | last_month | last90 | ytd | next_month
+  const[rptPeriod,setRptPeriod]=useState('month');// scorecard window: month | last_month | last90 | ytd | next_month | custom
+  const[rptCustFrom,setRptCustFrom]=useState('');// custom scorecard range start (YYYY-MM-DD)
+  const[rptCustTo,setRptCustTo]=useState('');// custom scorecard range end (YYYY-MM-DD, inclusive)
   const[rptHoverMonth,setRptHoverMonth]=useState(null);
   const[rptToast,setRptToast]=useState(null);
   // Inject NSA brand webfonts + scoped theme tokens once (mirrors QuickMockBuilder)
@@ -15912,7 +15914,15 @@ export default function App(){
     const _billRepId=(row)=>{const so=row&&row.so_id?_soByIdRpt[row.so_id]:null;return so?commissionRepId(_custById[so.customer_id],so,row):((row&&row.rep_id)||((_custById[row.customer_id]||{}).primary_rep_id)||null)};
     const _matchRep=(hi)=>rptRep==='all'?true:(_billRepId(hi)===rptRep);
     const _mThis=Array(12).fill(0),_mLast=Array(12).fill(0);
-    let _ytdThis=0,_ytdLast=0,_mtdThis=0,_mtdLast=0,_lastMonthFull=0,_lastMonthLast=0,_last90=0,_last90Ly=0;
+    let _ytdThis=0,_ytdLast=0,_mtdThis=0,_mtdLast=0,_lastMonthFull=0,_lastMonthLast=0,_last90=0,_last90Ly=0,_custThis=0,_custLast=0;
+    // Custom date range (inclusive, local dates) + the same span shifted back one year for the YoY bar.
+    const _ymd=(v)=>{const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v||''));return m?new Date(+m[1],+m[2]-1,+m[3]):null};
+    let _cFrom=_ymd(rptCustFrom),_cTo=_ymd(rptCustTo);
+    if(_cFrom&&_cTo&&_cFrom>_cTo){const _sw=_cFrom;_cFrom=_cTo;_cTo=_sw}// tolerate a backwards range instead of showing $0
+    const _custOk=!!(_cFrom&&_cTo);
+    const _cFromLy=_custOk?new Date(_cFrom.getFullYear()-1,_cFrom.getMonth(),_cFrom.getDate()):null;
+    const _cToLy=_custOk?new Date(_cTo.getFullYear()-1,_cTo.getMonth(),_cTo.getDate()):null;
+    const _custDays=_custOk?Math.round((_cTo-_cFrom)/86400000)+1:0;
     const _pmo=_cmo===0?11:_cmo-1,_pmoYear=_cmo===0?_ly:_cy;
     const _t0=new Date(_cy,_cmo,_cday),_t0Ly=new Date(_ly,_cmo,_cday),_lo90=new Date(_cy,_cmo,_cday-90),_lo90Ly=new Date(_ly,_cmo,_cday-90);
     // Billed = NetSuite history + portal-created invoices. Invoicing moved into the portal in
@@ -15925,7 +15935,7 @@ export default function App(){
     const _histDocIds=new Set((histInvs||[]).map(hi=>hi.id));
     const _billedRows=[...(histInvs||[]).filter(hi=>hi&&hi.status!=='void'),
       ...(invs||[]).filter(iv=>iv&&iv.status!=='void'&&!iv.deleted_at&&!_histDocIds.has(iv.id))];
-    _billedRows.forEach(hi=>{if(!hi.date||!_matchRep(hi))return;const s=String(hi.date);let y,mo,d;let m=s.match(/^(\d{4})-(\d{2})-(\d{2})/);if(m){y=+m[1];mo=+m[2]-1;d=+m[3]}else{m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m)return;y=+m[3];if(y<100)y+=2000;mo=+m[1]-1;d=+m[2]}const t=safeNum(hi.total);const isYtd=mo<_cmo||(mo===_cmo&&d<=_cday);const isMtd=mo===_cmo&&d<=_cday;if(y===_cy){_mThis[mo]+=t;if(isYtd)_ytdThis+=t;if(isMtd)_mtdThis+=t}else if(y===_ly){_mLast[mo]+=t;if(isYtd)_ytdLast+=t;if(isMtd)_mtdLast+=t}if(y===_pmoYear&&mo===_pmo)_lastMonthFull+=t;if(y===_pmoYear-1&&mo===_pmo)_lastMonthLast+=t;const idt=new Date(y,mo,d);if(idt>_lo90&&idt<=_t0)_last90+=t;else if(idt>_lo90Ly&&idt<=_t0Ly)_last90Ly+=t});
+    _billedRows.forEach(hi=>{if(!hi.date||!_matchRep(hi))return;const s=String(hi.date);let y,mo,d;let m=s.match(/^(\d{4})-(\d{2})-(\d{2})/);if(m){y=+m[1];mo=+m[2]-1;d=+m[3]}else{m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m)return;y=+m[3];if(y<100)y+=2000;mo=+m[1]-1;d=+m[2]}const t=safeNum(hi.total);const isYtd=mo<_cmo||(mo===_cmo&&d<=_cday);const isMtd=mo===_cmo&&d<=_cday;if(y===_cy){_mThis[mo]+=t;if(isYtd)_ytdThis+=t;if(isMtd)_mtdThis+=t}else if(y===_ly){_mLast[mo]+=t;if(isYtd)_ytdLast+=t;if(isMtd)_mtdLast+=t}if(y===_pmoYear&&mo===_pmo)_lastMonthFull+=t;if(y===_pmoYear-1&&mo===_pmo)_lastMonthLast+=t;const idt=new Date(y,mo,d);if(idt>_lo90&&idt<=_t0)_last90+=t;else if(idt>_lo90Ly&&idt<=_t0Ly)_last90Ly+=t;if(_custOk){if(idt>=_cFrom&&idt<=_cTo)_custThis+=t;else if(idt>=_cFromLy&&idt<=_cToLy)_custLast+=t}});
     const _pctChg=(c,p)=>p>0?Math.round((c-p)/p*100):(c>0?100:0);
     const _ytdDelta=_pctChg(_ytdThis,_ytdLast);
     const _daysInMonth=new Date(_cy,_cmo+1,0).getDate();
@@ -15941,12 +15951,26 @@ export default function App(){
     const _pdt=(v)=>{if(!v)return null;const s=String(v);let mm=s.match(/^(\d{4})-(\d{2})-(\d{2})/);if(mm)return{y:+mm[1],mo:+mm[2]-1};mm=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(mm){let yy=+mm[3];if(yy<100)yy+=2000;return{y:yy,mo:+mm[1]-1}}return null};
     let _nextExp=0,_nextN=0;
     pipeline.forEach(s=>{if(s._status==='complete')return;const ed=_pdt(s.expected_ship_date||s.expected_date||s.ship_on_date||s.deliver_on_date);if(ed&&ed.y===_nyr&&ed.mo===_nmo){_nextExp+=s._rev;_nextN++}});
-    const _periods=[{key:'month',label:'This Month'},{key:'last_month',label:'Last Month'},{key:'last90',label:'Last 90d'},{key:'ytd',label:'YTD'},{key:'next_month',label:'Next Month'}];
+    // Custom-range helpers: one-click spans + the dark-hero input styling
+    const _iso=(dt)=>dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
+    const _rptQuickRanges=[
+      {label:'Last 7d',from:_iso(new Date(_cy,_cmo,_cday-6)),to:_iso(_t0)},
+      {label:'Last 30d',from:_iso(new Date(_cy,_cmo,_cday-29)),to:_iso(_t0)},
+      {label:'This Qtr',from:_iso(new Date(_cy,Math.floor(_cmo/3)*3,1)),to:_iso(_t0)},
+      {label:'Last Yr',from:_iso(new Date(_ly,0,1)),to:_iso(new Date(_ly,11,31))},
+    ];
+    const _rptDateInput={fontFamily:'inherit',fontSize:12.5,padding:'5px 8px',borderRadius:5,border:'1px solid rgba(255,255,255,.22)',background:'rgba(255,255,255,.10)',color:'#fff',colorScheme:'dark'};
+    const _periods=[{key:'month',label:'This Month'},{key:'last_month',label:'Last Month'},{key:'last90',label:'Last 90d'},{key:'ytd',label:'YTD'},{key:'next_month',label:'Next Month'},{key:'custom',label:'Custom'}];
     let _perEyebrow,_perValue,_perCaption,_perCmpPct=0,_perLy=0,_perMode='yoy',_perTag='';
     if(rptPeriod==='month'){_perEyebrow=_monFull[_cmo]+' '+_cy;_perValue=_mtdThis;_perCaption='billed so far · day '+_cday+' of '+_daysInMonth;_perCmpPct=_pctChg(_mtdThis,_mtdLast);_perLy=_mtdLast;_perMode='pace';}
     else if(rptPeriod==='last_month'){_perEyebrow=_monFull[_pmo]+' '+_pmoYear;_perValue=_lastMonthFull;_perCaption='billed · full month';_perCmpPct=_pctChg(_lastMonthFull,_lastMonthLast);_perLy=_lastMonthLast;}
     else if(rptPeriod==='last90'){_perEyebrow='Last 90 Days';_perValue=_last90;_perCaption='billed · rolling 90 days';_perCmpPct=_pctChg(_last90,_last90Ly);_perLy=_last90Ly;}
     else if(rptPeriod==='ytd'){_perEyebrow='YTD '+_cy;_perValue=_ytdThis;_perCaption='billed · year to date';_perCmpPct=_ytdDelta;_perLy=_ytdLast;}
+    else if(rptPeriod==='custom'){const _fmtD=(dt)=>_monShort[dt.getMonth()]+' '+dt.getDate()+', '+dt.getFullYear();
+      _perEyebrow=_custOk?(_fmtD(_cFrom)+' – '+_fmtD(_cTo)):'Custom Range';
+      _perValue=_custOk?_custThis:0;
+      _perCaption=_custOk?('billed · '+_custDays+' day'+(_custDays===1?'':'s')):'Pick a start and end date';
+      _perCmpPct=_pctChg(_custThis,_custLast);_perLy=_custOk?_custLast:0;}
     else{_perEyebrow=_monFull[_nmo]+' '+_nyr;_perValue=_nextExp;_perCaption=_nextN+' open order'+(_nextN===1?'':'s')+' scheduled to ship';_perMode='next';_perTag='Expected';}
     const _perMax=Math.max(_perValue,_perLy,1);
     const _perW=Math.min(100,_perValue/_perMax*100),_perLyW=Math.min(100,_perLy/_perMax*100);
@@ -16085,13 +16109,21 @@ export default function App(){
             {_periods.map(p=><span key={p.key} className="nsa-rpt-hit" onClick={()=>setRptPeriod(p.key)} style={{fontFamily:FD,fontWeight:700,fontSize:11.5,textTransform:'uppercase',letterSpacing:.4,padding:'5px 10px',borderRadius:5,whiteSpace:'nowrap',background:rptPeriod===p.key?'var(--red)':'transparent',color:rptPeriod===p.key?'#fff':'rgba(255,255,255,.62)'}}>{p.label}</span>)}
           </div>
         </div>
+        {rptPeriod==='custom'&&<div style={{position:'relative',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',padding:'12px 26px 0'}}>
+          <span style={{fontFamily:FD,fontWeight:700,fontSize:11,letterSpacing:1.4,textTransform:'uppercase',color:'rgba(255,255,255,.55)'}}>Date range</span>
+          <input type="date" value={rptCustFrom} max={rptCustTo||undefined} onChange={e=>setRptCustFrom(e.target.value)} style={_rptDateInput}/>
+          <span style={{color:'rgba(255,255,255,.5)',fontSize:12}}>to</span>
+          <input type="date" value={rptCustTo} min={rptCustFrom||undefined} onChange={e=>setRptCustTo(e.target.value)} style={_rptDateInput}/>
+          {_rptQuickRanges.map(q=><span key={q.label} className="nsa-rpt-hit" onClick={()=>{setRptCustFrom(q.from);setRptCustTo(q.to)}} style={{fontFamily:FD,fontWeight:700,fontSize:10.5,textTransform:'uppercase',letterSpacing:.4,padding:'4px 9px',borderRadius:5,border:'1px solid rgba(255,255,255,.18)',color:'rgba(255,255,255,.7)',whiteSpace:'nowrap'}}>{q.label}</span>)}
+          {(rptCustFrom||rptCustTo)&&<span className="nsa-rpt-hit" onClick={()=>{setRptCustFrom('');setRptCustTo('')}} style={{fontSize:11.5,color:'rgba(255,255,255,.5)',textDecoration:'underline',whiteSpace:'nowrap'}}>Clear</span>}
+        </div>}
         <div className="nsa-scorecard" style={{position:'relative',padding:'14px 26px 24px',display:'grid',gridTemplateColumns:'1.35fr 1fr',gap:26}}>
           <div>
             <div style={{display:'flex',alignItems:'flex-end',gap:14}}>
               <div style={{fontFamily:FD,fontWeight:800,fontSize:60,lineHeight:.82,color:'#fff'}}>{_fmtK1(_perValue)}</div>
               <div style={{paddingBottom:6}}><div style={{fontSize:12.5,color:'rgba(255,255,255,.62)',lineHeight:1.35}}>{_perCaption}</div></div>
             </div>
-            {_perMode!=='next'&&<div style={{marginTop:22,maxWidth:460}}>
+            {_perMode!=='next'&&!(rptPeriod==='custom'&&!_custOk)&&<div style={{marginTop:22,maxWidth:460}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:9,gap:10}}>
                 <span style={{fontFamily:FD,fontWeight:700,fontSize:13,letterSpacing:.8,textTransform:'uppercase',color:'#fff',whiteSpace:'nowrap'}}>{rptPeriod==='month'?('On pace for '+_fmtK1(_projected)):(_perCmpPct>=0?'Ahead of last year':'Behind last year')}</span>
                 <span style={{fontFamily:FD,fontWeight:800,fontSize:13.5,color:_perCmpPct>=0?'#6FCF97':'var(--red-light)',whiteSpace:'nowrap'}}>{(_perCmpPct>=0?'▲ +':'▼ ')+Math.abs(_perCmpPct)+'% vs last yr'}</span>
