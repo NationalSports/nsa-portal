@@ -109,6 +109,28 @@ export const placeRosterEntries = (roster, sizes, entries) => {
   });
   return { roster: out, placed, dropped };
 };
+// ── Custom-line auto pricing ──
+// A custom line's sell price is derived from cost x the order's markup as a CONVENIENCE while
+// the line is still unpriced. It has to stop being derived the moment a rep types their own
+// sell: re-running the formula on a later cost edit — or on a no-op blur of the Cost box, which
+// re-fired onChange with an unchanged value — silently threw the hand-set price away and
+// snapped it back to cost x markup (SO-2539: a $40 jersey reverting to $34.75 at 1.65x).
+// Returns the sell to apply, or null to leave the rep's price alone.
+// rQuarter is the caller's quarter-rounder (pricing.rQ) so this file stays dependency-free.
+export const autoSellFromCost = (item, newCost, markup, rQuarter) => {
+  // Tolerant read: a revived DB row can hand back a numeric column as a string, and treating
+  // that as 0 would read a priced line as unpriced — the exact stomp this guard prevents.
+  const n = (v) => { const x = typeof v === 'string' ? parseFloat(v) : v; return typeof x === 'number' && !isNaN(x) ? x : 0; };
+  const r = typeof rQuarter === 'function' ? rQuarter : ((v) => Math.round(v * 4) / 4);
+  const mk = n(markup) > 0 ? n(markup) : 1.65;
+  const cost = n(newCost);
+  if (!(cost > 0)) return null;
+  const sell = n(item?.unit_sell);
+  // Still auto while the line carries no price, or carries exactly what the formula produced
+  // for the cost it has right now.
+  if (sell > 0 && Math.abs(sell - r(n(item?.nsa_cost) * mk)) >= 0.005) return null;
+  return r(cost * mk);
+};
 // One-line "what didn't fit" summary for the import toasts.
 export const rosterDropSummary = (dropped) => {
   const byKey = new Map();
