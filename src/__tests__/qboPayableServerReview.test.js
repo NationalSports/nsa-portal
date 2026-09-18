@@ -1,4 +1,4 @@
-const {analyzePayables,runPayableReview}=require('../../netlify/functions/_qboPayableServerReview');
+const {analyzeBillPayments,analyzeNativePOLinks,analyzePayables,analyzePurchaseOrders,runPayableReview}=require('../../netlify/functions/_qboPayableServerReview');
 
 const ledger={id:'L1',status:'pushed',portal_status:'success',doc_number:'B-1',vendor:'Acme LLC',doc_total:100,is_credit:false,raw_meta:{doc_date:'2026-09-01',freight:10,si_upcharge:5}};
 const portal={id:'V1',name:'Acme LLC',is_active:true};
@@ -21,12 +21,55 @@ test('uses the correct QBO VendorCredit entity and never proposes credit creatio
   expect(analyzePayables({...base,ledgerRows:[credit],qboVendorCredits:[found]}).rows[0].action).toBe('already_exists');
 });
 test('durable runner persists source hash and needs-review exceptions',async()=>{
-  const snapshot={ledger:[ledger],portalVendors:[portal],vendorLinks:{V1:'9'}};
+  const snapshot={ledger:[ledger],portalVendors:[portal],links:{vendorQBMap:{V1:'9'},prodQBMap:{},qbPOMap:{},qbPOBillMap:{}},salesOrders:[],soItems:[],poLines:[],products:[],qbConfig:{}};
   const store={claim:jest.fn(async()=>true),snapshot:jest.fn(async()=>snapshot),finish:jest.fn(async()=>{})};
-  const queryAll=jest.fn(async entity=>entity==='Vendor'?[qboVendor]:entity==='Account'?Object.entries({purchases_account:'51300',freight_account:'51000',sports_inc_fee_account:'58000',deco_account:'52000'}).map(([key,AcctNum],i)=>({Id:String(i+1),AcctNum,Active:true})):[]);
+  const accountNumbers=[['40000','Income'],['51300','Cost of Goods Sold'],['51000','Cost of Goods Sold'],['67000','Expense'],['58000','Cost of Goods Sold'],['52000','Cost of Goods Sold'],['55200','Cost of Goods Sold'],['55400','Cost of Goods Sold'],['12000','Other Current Asset'],['50000','Cost of Goods Sold'],['21100','Accounts Payable'],['10100','Bank']];
+  const queryAll=jest.fn(async entity=>entity==='Vendor'?[qboVendor]:entity==='Account'?accountNumbers.map(([AcctNum,AccountType],i)=>({Id:String(i+1),AcctNum,AccountType,Active:true})):[]);
   const result=await runPayableReview({store,queryAll,realm:'123',requestedBy:'staff'});
-  expect(result.status).toBe('complete');expect(result.report).toMatchObject({mode:'read_only',population:1,sourceChanged:false,counts:{ready:1}});
+  expect(result.status).toBe('complete');expect(result.report).toMatchObject({mode:'read_only',population:1,sourceChanged:false,counts:{billsAndCreditsAwaitingAction:1,missingAccountMappings:0},billCounts:{ready:1},safeguards:{qboWrites:0,inventoryQuantitiesPosted:false}});
   expect(store.finish).toHaveBeenCalledTimes(1);
+});
+test('durable runner reports a configured account that resolves away from the approved number',async()=>{
+  const snapshot={ledger:[],portalVendors:[],links:{vendorQBMap:{},prodQBMap:{},qbPOMap:{},qbPOBillMap:{}},salesOrders:[],soItems:[],poLines:[],products:[],qbConfig:{mapping:{purchases_account:'99999'}}};
+  const store={claim:jest.fn(async()=>true),snapshot:jest.fn(async()=>snapshot),finish:jest.fn(async()=>{})};
+  const accountNumbers=[['40000','Income'],['51300','Cost of Goods Sold'],['51000','Cost of Goods Sold'],['67000','Expense'],['58000','Cost of Goods Sold'],['52000','Cost of Goods Sold'],['55200','Cost of Goods Sold'],['55400','Cost of Goods Sold'],['12000','Other Current Asset'],['50000','Cost of Goods Sold'],['21100','Accounts Payable'],['10100','Bank'],['99999','Cost of Goods Sold']];
+  const queryAll=jest.fn(async entity=>entity==='Account'?accountNumbers.map(([AcctNum,AccountType],i)=>({Id:String(i+1),AcctNum,AccountType,Active:true})):[]);
+  const result=await runPayableReview({store,queryAll,realm:'123',requestedBy:'staff'});
+  expect(result.status).toBe('needs_review');expect(result.report.missingAccounts).toContainEqual(expect.objectContaining({key:'purchases_account',configured:'99999',reason:'Configured mapping resolves to a different account'}));
+});
+test('purchase-order review reports backlog, historical exclusions, durable links and unlinked SKUs',()=>{
+  const snapshot={portalVendors:[portal],salesOrders:[{id:'SO-1',created_at:'2026-09-10'}],soItems:[{id:1,so_id:'SO-1',product_id:'P1',sku:'SKU-1',name:'Shirt',nsa_cost:10}],poLines:[
+    {id:11,so_item_id:1,po_id:'PO 60001 TEST',vendor:'Acme LLC',created_at:'2026-09-10',sizes:{M:2,unit_cost:10}},
+    {id:12,so_item_id:1,po_id:'PO5999 OLD',vendor:'Acme LLC',created_at:'2026-08-01',sizes:{M:1,unit_cost:10}},
+  ],links:{vendorQBMap:{V1:'9'},prodQBMap:{},qbPOMap:{},qbPOBillMap:{}},qbConfig:{parkedPurchaseOrderIds:[]}};
+  const result=analyzePurchaseOrders({snapshot,qboVendors:[qboVendor],qboPurchaseOrders:[],qboItems:[],accountIds:accounts});
+  expect(result.awaiting).toHaveLength(1);expect(result.awaiting[0]).toMatchObject({poId:'PO 60001 TEST',total:20,action:'ready_create'});
+  expect(result.excluded).toHaveLength(1);expect(result.unlinkedItems).toEqual([{sourceId:'P1',sku:'SKU-1',poIds:['PO 60001 TEST'],disposition:'reviewed_item_creation',qboCandidates:[]}]);
+});
+test('purchase-order review resolves stored vendor ids and classifies exact NonInventory item candidates',()=>{
+  const snapshot={portalVendors:[portal],products:[{id:'P1',sku:'SKU-1'}],salesOrders:[{id:'SO-1',created_at:'2026-09-10'}],soItems:[{id:1,so_id:'SO-1',sku:'SKU-1',name:'Shirt',nsa_cost:10}],poLines:[
+    {id:11,so_item_id:1,po_id:'PO 60002 TEST',vendor:'V1',created_at:'2026-09-10',sizes:{M:2,unit_cost:10}},
+  ],links:{vendorQBMap:{V1:'9'},prodQBMap:{},qbPOMap:{},qbPOBillMap:{}},qbConfig:{parkedPurchaseOrderIds:[]}};
+  const result=analyzePurchaseOrders({snapshot,qboVendors:[qboVendor],qboPurchaseOrders:[],qboItems:[{Id:'I1',Name:'SKU-1',Sku:'SKU-1',Type:'NonInventory',Active:true,IncomeAccountRef:{value:'5'},ExpenseAccountRef:{value:'1'}}],accountIds:{...accounts,income_account:'5'}});
+  expect(result.awaiting[0]).toMatchObject({vendor:'Acme LLC',qboVendorId:'9',vendorMatchSource:'durable_link'});
+  expect(result.unlinkedItems).toEqual([{sourceId:'P1',sku:'SKU-1',poIds:['PO 60002 TEST'],disposition:'link_verified_existing',qboCandidates:[expect.objectContaining({id:'I1',type:'NonInventory'})]}]);
+});
+test('purchase-order review flags mapped items that are inactive or use the wrong accounts',()=>{
+  const snapshot={portalVendors:[portal],salesOrders:[{id:'SO-1'}],soItems:[{id:1,so_id:'SO-1',product_id:'P1',sku:'SKU-1',nsa_cost:10}],poLines:[{id:11,so_item_id:1,po_id:'PO 60003 TEST',vendor:'Acme LLC',created_at:'2026-09-10',sizes:{M:1}}],links:{vendorQBMap:{V1:'9'},prodQBMap:{P1:'I1'},qbPOMap:{},qbPOBillMap:{}},qbConfig:{parkedPurchaseOrderIds:[]}};
+  const result=analyzePurchaseOrders({snapshot,qboVendors:[qboVendor],qboPurchaseOrders:[],qboItems:[{Id:'I1',Type:'Inventory',Active:false,IncomeAccountRef:{value:'bad'},ExpenseAccountRef:{value:'bad'}}],accountIds:{...accounts,income_account:'5'}});
+  expect(result.invalidItemLinks).toEqual([{sourceId:'P1',qboId:'I1',reason:expect.stringContaining('inactive QBO item')}]);
+});
+test('payment review detects missing applications and historical print queue',()=>{
+  const payments=[{Id:'P1',TxnDate:'2026-08-01',TotalAmt:55,CheckPayment:{PrintStatus:'NeedToPrint'},Line:[{LinkedTxn:[{TxnId:'B404',TxnType:'Bill'}]}]}];
+  const result=analyzeBillPayments(payments,[],[]);
+  expect(result.missingApplications).toHaveLength(1);expect(result.historicalPrintQueue).toHaveLength(1);expect(result.historicalPrintTotal).toBe(55);
+});
+test('native PO-to-bill review requires same vendor, reciprocal links, freight reconciliation and durable ids',()=>{
+  const snapshot={links:{qbPOMap:{'PO 1':'10'},qbPOBillMap:{'PO 1':'20'}}};
+  const po={Id:'10',DocNumber:'PO 1',VendorRef:{value:'9'},TotalAmt:100,LinkedTxn:[{TxnId:'20',TxnType:'Bill'}]};
+  const bill={Id:'20',DocNumber:'B1',VendorRef:{value:'9'},TotalAmt:110,Line:[{Amount:100,LinkedTxn:[{TxnId:'10',TxnType:'PurchaseOrder'}]},{Amount:10,AccountBasedExpenseLineDetail:{AccountRef:{value:'2'}}}]};
+  const result=analyzeNativePOLinks({snapshot,qboPurchaseOrders:[po],qboBills:[bill],accountIds:{freight_account:'2'}});
+  expect(result.verified).toHaveLength(1);expect(result.verified[0]).toMatchObject({portalPOId:'PO 1',qboPOId:'10',billId:'20',freight:10,reconciles:true,reciprocalLink:true});
 });
 test('overlapping run performs no source or QBO reads',async()=>{
   const store={claim:jest.fn(async()=>false),snapshot:jest.fn()};const queryAll=jest.fn();
