@@ -1,4 +1,4 @@
-const {analyzeBillPayments,analyzeNativePOLinks,analyzePayables,analyzePurchaseOrders,runPayableReview}=require('../../netlify/functions/_qboPayableServerReview');
+const {analyzeBillPayments,analyzeNativePOLinks,analyzePayables,analyzePurchaseOrders,failureCode,runPayableReview}=require('../../netlify/functions/_qboPayableServerReview');
 const {SNAPSHOT_LIMITS}=require('../../netlify/functions/_qboPayableReviewStore');
 
 const ledger={id:'L1',status:'pushed',portal_status:'success',doc_number:'B-1',vendor:'Acme LLC',doc_total:100,is_credit:false,raw_meta:{doc_date:'2026-09-01',freight:10,si_upcharge:5}};
@@ -10,6 +10,10 @@ const base={ledgerRows:[ledger],portalVendors:[portal],vendorLinks:{V1:'9'},qboV
 test('product snapshot ceiling covers the current catalog without removing the safety cap',()=>{
   expect(SNAPSHOT_LIMITS.products).toBe(100000);
   expect(SNAPSHOT_LIMITS.portalRows).toBe(50000);
+});
+test('failure diagnostics expose only fixed internal stage and error labels',()=>{
+  expect(failureCode('qbo_primary_reads',new Error('qbo_read_failed'))).toBe('payable_review_qbo_primary_reads_qbo_read_failed');
+  expect(failureCode('analysis',new Error('vendor secret 123'))).toBe('payable_review_analysis_unexpected');
 });
 
 test('classifies a fully routed unmatched bill as ready without writes',()=>{
