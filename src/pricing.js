@@ -106,7 +106,8 @@ export function spRunBlend(runs,c,u=1){return DECO.spRunBlend(_tables(),runs,c,u
 // condition as `_unpriced` on its result so the deco row can flag it instead of showing $0.
 export function spUnpriced(q,c){return DECO.spUnpriced(_tables(),q,c)}
 export const decoSplitRuns=DECO.decoSplitRuns;
-// EM.pr stores cost; sell = max(rT(cost × EM.mk), EM.fl) so embroidery never sells below the EM.fl floor.
+// EM.pr stores cost; sell = max(rT(cost × EM.mk), floor) — the floor is EM.sf[bracket] when set,
+// else the global EM.fl, so the ≤5k bracket can sell under the $8 minimum the others keep.
 export function emP(st,q,s=true){return DECO.emP(_tables(),st,q,s)}
 export function npP(q,tw=false,s=true){return DECO.npP(_tables(),q,tw,s)}
 // Tackle twill: chest/logo by TWA index; jersey number by TWN size × color. Wrap the pure calcs.
