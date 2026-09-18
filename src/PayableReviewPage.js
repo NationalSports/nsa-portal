@@ -2,6 +2,7 @@ import React from 'react';
 import QBPayableServerReviewCard from './QBPayableServerReviewCard';
 import QBPayableCanaryCard from './QBPayableCanaryCard';
 import QBPayablePOCanaryCard from './QBPayablePOCanaryCard';
+import QBPayablePOBillCanaryCard from './QBPayablePOBillCanaryCard';
 
 // MainApp retains its existing LoginGate. Each card request also passes the
 // existing server-side QBO staff/realm authorization; this adds no API surface.
@@ -12,6 +13,7 @@ export default function PayableReviewPage(){
     <p>Review purchase orders, bills, credits, and payment exceptions. The single-bill canary requires a separate preparation step and confirmation.</p>
     <QBPayableServerReviewCard />
     <QBPayablePOCanaryCard />
+    <QBPayablePOBillCanaryCard />
     <QBPayableCanaryCard />
   </main>;
 }
