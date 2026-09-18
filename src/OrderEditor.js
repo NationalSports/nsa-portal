@@ -68,6 +68,79 @@ import './orderEditor.redesign.css';
 // instead of sitting on flat grey. Same treatment as the coach proof viewer in CoachPortal.
 const OE_MOCK_CANVAS={backgroundColor:'#F7F8FB',backgroundImage:'linear-gradient(45deg,#EEF1F6 25%,transparent 25%,transparent 75%,#EEF1F6 75%),linear-gradient(45deg,#EEF1F6 25%,transparent 25%,transparent 75%,#EEF1F6 75%)',backgroundSize:'22px 22px',backgroundPosition:'0 0,11px 11px'};
 
+// ── Receiving state for one garment, as the sales order already shows it ──────────────
+// The job detail answers "what gets printed" but never answered "are the blanks here?",
+// so a rep had to bounce back to the order to find out. These render the SAME picture the
+// SO item line does: the PO number, a per-size box coloured by where those units are, and
+// the PO's overall status. Colours are the SO's, deliberately — two screens describing one
+// fact must not describe it differently.
+// szMeta is the component's _PO_SZ_META (which PO keys are metadata rather than sizes),
+// passed in rather than duplicated here so there is one copy of that list per file.
+const OE_PO_SC={
+  received:{bg:'#EAF6EE',fg:'#1E7A46',bd:'#C9E7D4',label:'✓ Received'},
+  shipped:{bg:'#EAF6EE',fg:'#1E7A46',bd:'#C9E7D4',label:'✓ Shipped'},
+  in_transit:{bg:'#EDE9FE',fg:'#6D28D9',bd:'#DDD6FE',label:'In Transit'},
+  partial:{bg:'#FEF3C7',fg:'#B45309',bd:'#FDE68A',label:'Partial'},
+  waiting:{bg:'#FEF3C7',fg:'#92400E',bd:'#FDE68A',label:'Waiting'},
+  cancelled:{bg:'#FDECEC',fg:'#962C32',bd:'#F6D4D4',label:'Cancelled'},
+};
+// One PO's totals → its overall status. Mirrors the SO item line's `st`.
+function oePoStat(po,szMeta){
+  const rcvd=po.received||{},cncl=po.cancelled||{},blld=po.billed||{},isDS=!!po.drop_ship;
+  const szK=Object.keys(po).filter(k=>!k.startsWith('_')&&!szMeta.has(k)&&typeof po[k]==='number');
+  const ord=szK.reduce((a,sz)=>a+(po[sz]||0),0);
+  const rec=szK.reduce((a,sz)=>a+(rcvd[sz]||0),0);
+  const bl=szK.reduce((a,sz)=>a+(blld[sz]||0),0);
+  const can=szK.reduce((a,sz)=>a+(cncl[sz]||0),0);
+  const open=Math.max(0,ord-rec-can);
+  const st=isDS?(bl>=ord&&ord>0?'shipped':bl>0?'partial':'waiting')
+               :(open<=0&&rec>0?'received':rec>0?'partial':bl>0?'in_transit':'waiting');
+  return{szK,ord,rec,bl,can,open,isDS,st,rcvd,cncl,blld};
+}
+// Worst-case status across every PO on the garment — the header chip. "Waiting" wins over
+// "received" on purpose: if any part of this garment is still out, the garment is not ready.
+function oeGarmentStat(item,szMeta){
+  const pos=safePOs(item);if(!pos.length)return null;
+  const rank={waiting:0,in_transit:1,partial:2,received:3,shipped:3,cancelled:4};
+  let worst=null;
+  pos.forEach(po=>{const{st}=oePoStat(po,szMeta);if(worst===null||rank[st]<rank[worst])worst=st});
+  return worst;
+}
+function OeGarmentPoChip({item,szMeta}){
+  const st=oeGarmentStat(item,szMeta);if(!st)return null;
+  const sc=OE_PO_SC[st]||OE_PO_SC.waiting;
+  return<span style={{fontSize:10,padding:'3px 9px',borderRadius:20,fontWeight:700,whiteSpace:'nowrap',background:sc.bg,color:sc.fg,border:'1px solid '+sc.bd}}>{sc.label}</span>;
+}
+function OeGarmentPoLines({item,szMeta,onOpenPo}){
+  const pos=safePOs(item);if(!pos.length)return null;
+  return<div style={{padding:'8px 14px',borderBottom:'1px solid #EEF1F6',background:'#F7F8FB',display:'flex',flexDirection:'column',gap:6}}>
+    {pos.map((po,pi)=>{
+      const d=oePoStat(po,szMeta);
+      const szs=[...d.szK].sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b))).filter(sz=>(po[sz]||0)>0);
+      if(szs.length===0)return null;
+      const sc=OE_PO_SC[d.st]||OE_PO_SC.waiting;
+      return<div key={pi} style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+        <span onClick={onOpenPo?()=>onOpenPo(po):undefined}
+          style={{fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:700,fontSize:13,letterSpacing:'0.6px',textTransform:'uppercase',color:'#192853',flexShrink:0,cursor:onOpenPo?'pointer':'default',textDecoration:onOpenPo?'underline':'none'}}
+          title={po.vendor?('PO '+(po.po_id||'')+' · '+po.vendor):undefined}>{po.po_id||'PO'}</span>
+        {po.vendor&&<span style={{fontSize:11,color:'#5A6075',flexShrink:0}}>{po.vendor}</span>}
+        <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+          {szs.map(sz=>{
+            const v=po[sz]||0,cn=d.cncl[sz]||0,r=d.isDS?(d.blld[sz]||0):(d.rcvd[sz]||0);
+            const szSt=cn>=v?'cancelled':r>=(v-cn)?(d.isDS?'shipped':'received'):r>0?'partial':(!d.isDS&&(d.blld[sz]||0)>0)?'in_transit':'waiting';
+            const c=OE_PO_SC[szSt];
+            return<div key={sz} style={{minWidth:42,textAlign:'center',borderRadius:4,overflow:'hidden',border:'1px solid '+c.bd}}>
+              <div style={{fontSize:9,fontWeight:700,letterSpacing:'0.5px',color:'#5A6075',background:'#fff',padding:'1px 0'}}>{sz}</div>
+              <div style={{fontSize:12,fontWeight:800,padding:'2px 0',background:c.bg,color:c.fg}}>{szSt==='cancelled'?'✕':szSt==='partial'?r+'/'+(v-cn):(v-cn)}</div>
+            </div>})}
+        </div>
+        <span style={{fontSize:10,padding:'3px 9px',borderRadius:20,fontWeight:700,whiteSpace:'nowrap',marginLeft:'auto',background:sc.bg,color:sc.fg,border:'1px solid '+sc.bd}}>
+          {d.st==='partial'?(d.isDS?d.bl+'/'+(d.ord-d.can)+' Billed':d.rec+'/'+(d.ord-d.can)+' Rcvd'):sc.label}</span>
+      </div>;
+    })}
+  </div>;
+}
+
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
 // No-ops when brand is empty or the name already leads with the brand, so vendors that
 // already embed the brand (SanMar, S&S) don't get it duplicated.
@@ -12094,11 +12167,15 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                             {gi.brand&&<span style={{fontSize:10,padding:'1px 6px',background:'#f1f5f9',borderRadius:4,color:'#64748b',border:'1px solid #e2e8f0'}}>{gi.brand}</span>}
                           </div>
                         </div>
-                        <div style={{textAlign:'right',flexShrink:0}}>
+                        <div style={{textAlign:'right',flexShrink:0,display:'flex',alignItems:'center',gap:8}}>
+                          <OeGarmentPoChip item={it} szMeta={_PO_SZ_META}/>
+                        <div>
                           <div style={{fontSize:18,fontWeight:800,color:'#92400e'}}>{totalUnits}</div>
                           <div style={{fontSize:9,color:'#78350f',fontWeight:600,textTransform:'uppercase'}}>units</div>
                         </div>
+                        </div>
                       </div>
+                        <OeGarmentPoLines item={it} szMeta={_PO_SZ_META} onOpenPo={po=>{const lines=[];safeItems(o).forEach((it2,i2)=>{safePOs(it2).forEach((po2,pi2)=>{if(po2.po_id&&po2.po_id===po.po_id)lines.push({lineIdx:i2,poIdx:pi2})})});if(lines.length)setEditPO({lineIdx:lines[0].lineIdx,poIdx:lines[0].poIdx,po,allLines:lines})}}/>
                       {/* Mockup — linked garments show a compact reference to their source garment */}
                       {_myLinkSrc?(()=>{const srcFiles=_filterDisplayable(mockLinkSourceFiles(_jobArts,_myLinkSrc));const sf=srcFiles[0]||null;const sUrl=sf?(typeof sf==='string'?sf:(sf?.url||'')):'';
                         return<div style={{margin:10,padding:'10px 12px',background:'#eef2ff',border:'1px solid #c7d2fe',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
@@ -12434,11 +12511,15 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                             {gi.brand&&<span style={{fontSize:10,padding:'1px 6px',background:'#f1f5f9',borderRadius:4,color:'#64748b',border:'1px solid #e2e8f0'}}>{gi.brand}</span>}
                           </div>
                         </div>
-                        <div style={{textAlign:'right',flexShrink:0}}>
+                        <div style={{textAlign:'right',flexShrink:0,display:'flex',alignItems:'center',gap:8}}>
+                          <OeGarmentPoChip item={it} szMeta={_PO_SZ_META}/>
+                        <div>
                           <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{totalUnits}</div>
                           <div style={{fontSize:9,color:'#15803d',fontWeight:600,textTransform:'uppercase'}}>units</div>
                         </div>
+                        </div>
                       </div>
+                        <OeGarmentPoLines item={it} szMeta={_PO_SZ_META} onOpenPo={po=>{const lines=[];safeItems(o).forEach((it2,i2)=>{safePOs(it2).forEach((po2,pi2)=>{if(po2.po_id&&po2.po_id===po.po_id)lines.push({lineIdx:i2,poIdx:pi2})})});if(lines.length)setEditPO({lineIdx:lines[0].lineIdx,poIdx:lines[0].poIdx,po,allLines:lines})}}/>
                       {/* Mockup — linked garments reference their source garment's mock (read-only) */}
                       {_myLinkSrc?(()=>{const srcFiles=_filterDisplayable(mockLinkSourceFiles(_jArts2,_myLinkSrc));const sf=srcFiles[0]||null;const sUrl=sf?(typeof sf==='string'?sf:(sf?.url||'')):'';
                         return<div style={{margin:10,padding:'10px 12px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
