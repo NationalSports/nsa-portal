@@ -16,6 +16,7 @@ async function readQuery(token,realm,sql){
   return response.data.QueryResponse;
 }
 const parse=value=>{try{return typeof value==='string'?JSON.parse(value):value}catch{return null}};
+const detailedError=(message,details)=>Object.assign(new Error(message),{details});
 
 async function loadSources(admin,realm){
   const{data:runs,error:runError}=await admin.from('qbo_payable_review_runs').select('id,snapshot_id,status,report,finished_at').eq('company_key','national').in('status',['complete','needs_review']).not('snapshot_id','is',null).order('started_at',{ascending:false}).limit(10);
@@ -27,12 +28,13 @@ async function loadSources(admin,realm){
   for(const row of rows||[]){const poNumber=clean(row?.raw_meta?.po_number);if(poNumber)linkIds.push(linkKey(realm,'qbPOMap',poNumber))}
   const{data:links,error:linkError}=linkIds.length?await admin.from('app_state').select('id,value').in('id',[...new Set(linkIds)]):{data:[],error:null};if(linkError)throw new Error('po_link_read_failed');
   const poMap=new Map();for(const item of links||[]){const value=parse(item.value);if(value?.active!==false&&value?.map_key==='qbPOMap'&&clean(value.source_id)&&clean(value.qbo_id))poMap.set(clean(value.source_id),clean(value.qbo_id))}
-  const out=[];for(const candidate of candidates){const row=rowById.get(clean(candidate.ledgerId)),poNumber=clean(row?.raw_meta?.po_number),qboPurchaseOrderId=poMap.get(poNumber);if(!row||!qboPurchaseOrderId)continue;try{out.push(buildSource({run,row,candidate,realm,qboPurchaseOrderId}))}catch(error){if(error?.message!=='po_bill_candidate_changed')throw error}}
-  if(!out.length)throw new Error('no_po_bill_canary_candidate');return out;
+  const out=[],diagnostics={reviewedCandidates:candidates.length,sourceRows:(rows||[]).length,rowsWithPONumber:0,rowsWithDurablePOLink:0,sourceEligible:0,liveRejected:{}};
+  for(const candidate of candidates){const row=rowById.get(clean(candidate.ledgerId)),poNumber=clean(row?.raw_meta?.po_number),qboPurchaseOrderId=poMap.get(poNumber);if(poNumber)diagnostics.rowsWithPONumber++;if(qboPurchaseOrderId)diagnostics.rowsWithDurablePOLink++;if(!row||!qboPurchaseOrderId)continue;try{out.push(buildSource({run,row,candidate,realm,qboPurchaseOrderId}))}catch(error){if(error?.message!=='po_bill_candidate_changed')throw error}}
+  diagnostics.sourceEligible=out.length;if(!out.length)throw detailedError('no_po_bill_canary_candidate',diagnostics);return{sources:out,diagnostics};
 }
 
 async function loadContext(admin,token,realm){
-  const sources=await loadSources(admin,realm),accountsResult=await readQuery(token,realm,'SELECT * FROM Account MAXRESULTS 1000');
+  const{sources,diagnostics}=await loadSources(admin,realm),accountsResult=await readQuery(token,realm,'SELECT * FROM Account MAXRESULTS 1000');
   for(const source of sources.slice(0,25)){
     const doc=qboLiteral(source.documentNumber),vendorId=qboLiteral(source.candidate.qboVendorId),poId=qboLiteral(source.qboPurchaseOrderId);
     const[poResult,vendorResult,billResult,creditResult]=await Promise.all([
@@ -44,9 +46,9 @@ async function loadContext(admin,token,realm){
     try{
       verifyPrerequisites({source,vendor:vendorResult.Vendor?.[0],accounts:accountsResult.Account||[],bills:billResult.Bill||[],credits:creditResult.VendorCredit||[]});
       return buildPlan(source,poResult.PurchaseOrder?.[0]);
-    }catch(error){if(!publicErrors.has(error?.message))throw error}
+    }catch(error){if(!publicErrors.has(error?.message))throw error;diagnostics.liveRejected[error.message]=(diagnostics.liveRejected[error.message]||0)+1}
   }
-  throw new Error('no_po_bill_canary_candidate');
+  throw detailedError('no_po_bill_canary_candidate',diagnostics);
 }
 
 async function readback(token,realm,plan,billId){
@@ -100,5 +102,5 @@ exports.handler=async event=>{
     const evidence={...verified,verified_at:new Date().toISOString(),review_run_id:plan.summary.reviewRunId,snapshot_id:plan.summary.snapshotId,source_hash:plan.summary.sourceHash,items_created:0,inventory_quantity_posted:false};
     await updateAttempt(admin,key,{...attempt,status:'qbo_verified',qbo_bill_id:billId,evidence,finished_at:evidence.verified_at});await saveReceipts(admin,realm,plan,billId,evidence);await updateAttempt(admin,key,{...attempt,status:'complete',qbo_bill_id:billId,evidence:{...evidence,ledger_receipt:true,po_bill_receipt:true},finished_at:evidence.verified_at});
     return{statusCode:200,headers,body:JSON.stringify({status:'complete',qboBillId:billId,qboPurchaseOrderId:plan.summary.qboPurchaseOrderId,candidate:plan.summary})};
-  }catch(error){return{statusCode:409,headers,body:JSON.stringify({error:safeError(error)})}}
+  }catch(error){return{statusCode:409,headers,body:JSON.stringify({error:safeError(error),...(error.details?{details:error.details}:{})})}}
 };

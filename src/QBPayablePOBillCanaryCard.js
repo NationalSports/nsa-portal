@@ -9,7 +9,7 @@ export default function QBPayablePOBillCanaryCard(){
     try{
       if(action==='execute'&&!window.confirm(`Create exactly one QBO bill linked to an existing purchase order?\n\n${preview.candidate.vendor}\nDocument ${preview.candidate.documentNumber}\n${preview.candidate.poNumber} → QBO PO #${preview.candidate.qboPurchaseOrderId}\n${money(preview.candidate.total)} on ${preview.candidate.date}\n\nThis will create account-based lines linked to the existing PO and verify both records.`))return;
       const response=await authFetch('/.netlify/functions/qbo-payable-po-bill-canary',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(action==='execute'?{action,approved:true,previewHash:preview.previewHash}:{action:'preview'})});
-      const data=await response.json();if(!response.ok)throw new Error(data.error||'PO-to-bill canary unavailable');if(action==='execute'||data.status==='complete')setResult(data);else setPreview(data);
+      const data=await response.json();if(!response.ok)throw new Error((data.error||'PO-to-bill canary unavailable')+(data.details?' · '+JSON.stringify(data.details):''));if(action==='execute'||data.status==='complete')setResult(data);else setPreview(data);
     }catch(e){setError(e.message||'PO-to-bill canary unavailable')}finally{setBusy(false)}
   }
   return <section aria-label="PO-linked bill canary" style={{marginTop:18}}>
