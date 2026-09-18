@@ -17,7 +17,7 @@ function fakeAdmin(){
     const query={table,op:'select',filters:{},values:null,
       select(){if(this.op==='update')return Promise.resolve(this.finishUpdate());this.op='select';return this},
       update(values){this.op='update';this.values=values;return this},
-      eq(field,value){this.filters[field]=value;return this},in(){return this},not(){return this},order(){return this},is(){return this},
+      eq(field,value){this.filters[field]=value;return this},in(){return table==='applied_bills'?Promise.resolve({data:[{...sourceRow}],error:null}):this},not(){return this},order(){return this},is(){return this},
       limit(){return Promise.resolve({data:table==='qbo_payable_review_runs'?[run]:[],error:null})},
       maybeSingle(){
         if(table==='applied_bills')return Promise.resolve({data:{...sourceRow},error:null});

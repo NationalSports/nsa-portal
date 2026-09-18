@@ -1,4 +1,4 @@
-const {buildCanaryPlan,payableCanaryAttemptKey,selectCanaryCandidate,verifyCanaryReadback,verifyQboPrerequisites}=require('../netlify/functions/_qboPayableCanary');
+const {buildCanaryPlan,payableCanaryAttemptKey,selectCanaryCandidate,selectCanarySource,verifyCanaryReadback,verifyQboPrerequisites}=require('../netlify/functions/_qboPayableCanary');
 const test=require('node:test');
 const assert=require('node:assert/strict');
 
@@ -8,6 +8,13 @@ const run={id:'run',snapshot_id:'snap',report};
 const row={id:3910,status:'pushed',portal_status:'success',qb_status:null,qb_bill_id:null,doc_number:'102609587',vendor:'S&S Activewear',doc_total:50,is_credit:false,raw_meta:{doc_date:'09/09/2026',freight:0,si_upcharge:0,po_origin:'portal',po_number:'PO 57840 MISSW',items:[{sku:'AT106'}],matchedPO:{po:{_payment_method:''}}}};
 
 test('selects the smallest ready bill from a deterministic zero-write review',()=>assert.equal(selectCanaryCandidate(report).ledgerId,'3910'));
+test('skips lower-value ready bills that fail the stricter canary source gates',()=>{
+  const chargedCandidate={...candidate,ledgerId:'3987',documentNumber:'6166286847',vendor:'ADIDAS US TEAM SERVICES',qboVendorId:'2379',date:'2026-09-11',total:31.33};
+  const chargedRow={...row,id:3987,doc_number:'6166286847',vendor:'ADIDAS US TEAM SERVICES',doc_total:31.33,raw_meta:{...row.raw_meta,doc_date:'09/11/2026',freight:8.58,si_upcharge:.25}};
+  const chargedRun={...run,report:{...report,results:[chargedCandidate,candidate]}};
+  const selected=selectCanarySource({run:chargedRun,rows:[chargedRow,row],realm:'934'});
+  assert.equal(selected.candidate.ledgerId,'3910');assert.equal(selected.plan.summary.total,50);
+});
 test('builds one account-based bill with document number and no item or inventory payload',()=>{
   const plan=buildCanaryPlan({run,row,candidate,realm:'934'});
   assert.deepEqual({...plan.summary,purchaseAccount:undefined,apAccount:undefined},{realm:'934',reviewRunId:'run',snapshotId:'snap',sourceHash:'source',ledgerId:'3910',documentNumber:'102609587',vendor:'S&S Activewear',qboVendorId:'2382',date:'2026-09-09',total:50,poNumber:'PO 57840 MISSW',purchaseAccount:undefined,apAccount:undefined,posting:'one account-based merchandise line',itemsCreated:0,inventoryQuantityPosted:false});
