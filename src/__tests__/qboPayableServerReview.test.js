@@ -37,6 +37,7 @@ test('durable runner persists source hash and needs-review exceptions',async()=>
   const queryAll=jest.fn(async entity=>entity==='Vendor'?[qboVendor]:entity==='Account'?accountNumbers.map(([AcctNum,AccountType],i)=>({Id:String(i+1),AcctNum,AccountType,Active:true})):[]);
   const result=await runPayableReview({store,queryAll,realm:'123',requestedBy:'staff'});
   expect(result.status).toBe('complete');expect(result.report).toMatchObject({mode:'read_only',population:1,sourceChanged:false,counts:{billsAndCreditsAwaitingAction:1,missingAccountMappings:0},billCounts:{ready:1},safeguards:{qboWrites:0,inventoryQuantitiesPosted:false}});
+  expect(queryAll.mock.calls.filter(([entity])=>entity==='Bill'||entity==='VendorCredit').every(([,fields])=>fields==='*')).toBe(true);
   expect(store.finish).toHaveBeenCalledTimes(1);
 });
 test('durable runner reports a configured account that resolves away from the approved number',async()=>{

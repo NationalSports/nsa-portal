@@ -216,7 +216,7 @@ async function runPayableReview({store,queryAll,realm,requestedBy,now=Date.now})
     stage='source_snapshot_after';
     const after=await store.snapshot();
     stage='qbo_final_ap_reads';
-    const [qboBillsAfter,qboVendorCreditsAfter]=await Promise.all([queryAll('Bill','Id, Balance'),queryAll('VendorCredit','Id, Balance')]);
+    const [qboBillsAfter,qboVendorCreditsAfter]=await Promise.all([queryAll('Bill','*'),queryAll('VendorCredit','*')]);
     const apAfter=apSnapshot(qboBillsAfter,qboVendorCreditsAfter),sourceHash=fingerprint(sourceProjection(before)),sourceChanged=sourceHash!==fingerprint(sourceProjection(after));
     const compact=bills.rows.map(({ledgerId,documentNumber,vendor,date,total,transactionType,action,code,reason,qboBillId,qboVendorId,portalVendorId,vendorMatchSource,qboCandidates})=>({ledgerId,documentNumber,vendor,date,total,transactionType,action,code,reason,qboBillId,qboVendorId,portalVendorId,vendorMatchSource,qboCandidates}));
     const vendorRows=[...bills.rows,...purchaseOrders.awaiting],unlinkedVendorRows=vendorRows.filter(row=>['unlinked_vendor','ambiguous_portal_vendor','invalid_vendor_link'].includes(row.code));
