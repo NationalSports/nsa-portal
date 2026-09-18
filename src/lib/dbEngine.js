@@ -1108,12 +1108,12 @@ const _dbSaveEstimateInner = async (est) => {
     if(oldItemIds.length>0&&_clientEstItemCount===0){
       console.error('[DB] SAFETY: Blocking estimate zero-wipe for',est.id,'— client has 0 items but DB has',oldItemIds.length);
       if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:est.id,prevCount:oldItemIds.length,newCount:0,reason:'client has 0 items but DB has items (zero-wipe guard — likely stale/raced state)'});
-      _dbSaveFailedIds.delete(est.id);_persistFailedIds();return false;
+      return _preserveBlockedDocument('estimates',est);
     }
     if(_bgSync&&oldItemIds.length>0&&_clientEstItemCount<oldItemIds.length&&!(est._itemsHydrated||_everHydratedItems.has(est.id))){
       console.warn('[DB] SAFETY: background sync would shrink',est.id,'items ('+_clientEstItemCount+'<'+oldItemIds.length+') — items not hydrated, preserving DB items, skipping child writes');
       if(_dataLossAlert)_dataLossAlert({kind:'bg_shrink_blocked',soId:est.id,prevCount:oldItemIds.length,newCount:_clientEstItemCount,reason:'background estimate save would shrink items'});
-      _dbSaveFailedIds.delete(est.id);_persistFailedIds();return false;
+      return _preserveBlockedDocument('estimates',est);
     }
     // Client-authored estimate (new/imported): first save inserts the editor's items while the DB has none —
     // they're authoritative, so trust this estimate for the rest of the session (see SO save for rationale).
@@ -1527,7 +1527,7 @@ const _dbSaveSOInner = async (so) => {
     if(oldItemIds.length>0&&_clientSoItemCount===0){
       console.error('[DB] SAFETY: Blocking SO zero-wipe for',so.id,'— client has 0 items but DB has',oldItemIds.length);
       if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:oldItemIds.length,newCount:0,reason:'client has 0 items but DB has items (zero-wipe guard — likely stale/raced state)'});
-      _dbSaveFailedIds.delete(so.id);_persistFailedIds();return false;
+      return _preserveBlockedDocument('sales_orders',so);
     }
     // Stale-content guard: another session saved this SO after our copy loaded (_versionConflict), and
     // the DB holds item rows this client's list doesn't cover (compared as a sku+color multiset). Those
@@ -1596,7 +1596,7 @@ const _dbSaveSOInner = async (so) => {
       console.warn('[DB] SAFETY: background sync would shrink',so.id,'items ('+_clientSoItemCount+'<'+_oldDistinctItemIndexCount+(oldItemIds.length!==_oldDistinctItemIndexCount?' raw='+oldItemIds.length:'')+') — items not hydrated, preserving DB items, skipping item writes; art files already synced');
       if(_dataLossAlert)_dataLossAlert({kind:'bg_shrink_blocked',soId:so.id,prevCount:_oldDistinctItemIndexCount,newCount:_clientSoItemCount,reason:'background SO save would shrink items'});
       if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id,{message:_failMsg});_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'so_art_files save error');_persistFailedIds();if(_dbNotify)_dbNotify('Art file save incomplete: '+(_failMsg||'see console'),'error');return false}
-      _dbSaveFailedIds.delete(so.id);_persistFailedIds();return false;
+      return _preserveBlockedDocument('sales_orders',so);
     }
     // Pure-deletion guard (SO-1468, 2026-07-13/14): refuse to delete DB item rows this session cannot
     // account for. Two holes let real garment lines vanish here with nothing but a console.warn:
@@ -3772,6 +3772,15 @@ const _emitOutboxConflict=(table,entity)=>{try{
   const en=_outboxRead()[table+':'+entity.id];
   if(en&&_onOutboxConflict)_onOutboxConflict(en);
 }catch(e){console.error('[Outbox] conflict emit failed:',e)}};
+// Deterministic item-count rejections cannot heal by retrying the same payload.
+// Preserve the attempted draft for review and let the existing diff-save cooldown
+// prevent snapshot rollback/requeue. No server version or deletion intent is changed.
+export const _preserveBlockedDocument=(table,entity)=>{
+  _emitOutboxConflict(table,entity);
+  _dbStaleCooldown.set(entity.id,Date.now()+_STALE_COOLDOWN_MS);
+  _dbSaveFailedIds.delete(entity.id);_clearSaveError(entity.id);_persistFailedIds();
+  return false;
+};
 // Retry snapshots are tab-local and immutable. A missing record in loaded state
 // cannot prove deletion and must never delete a recovery copy.
 const _saveRetryCoordinator=createSaveRetryCoordinator();
