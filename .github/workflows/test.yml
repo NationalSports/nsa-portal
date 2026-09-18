@@ -31,7 +31,7 @@ jobs:
           CI: true
 
       - name: Payable snapshot reliability tests
-        run: node --test tests/qbo-payable-snapshot.test.cjs
+        run: node --test tests/qbo-payable-snapshot.test.cjs tests/qbo-payable-canary.test.cjs
 
       - name: Email report
         if: always() && (github.event_name == 'schedule' || failure())
