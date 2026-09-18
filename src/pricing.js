@@ -260,6 +260,22 @@ export const calcOrderTotals=(o,custTaxRate=0)=>{
   return{rev,ship,tax,grand:rev+ship+tax+wm.tax};
 };
 
+// ── isPromoOnlyOrder — is this order a giveaway rather than a sale? ──
+// True when promo dollars were applied to the order, or when every line carrying quantity
+// is a promo line (free-promo garments / promo-priced items). These orders are intentionally
+// sold at or below cost — a free $15 garment we only bill deco on can never hit a margin
+// target — so the low-margin reports skip them instead of flagging them as pricing mistakes.
+// They still count in the pipeline totals and exports: the cost is real, it just isn't a miss.
+export const isPromoOnlyOrder=(o)=>{
+  if(!o)return false;
+  if(o.promo_applied)return true;
+  const live=_sItems(o).filter(it=>{
+    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+Math.max(0,_sNum(v)),0);
+    return (sq>0?sq:Math.max(0,_sNum(it.est_qty)))>0;
+  });
+  return live.length>0&&live.every(it=>it.is_free_promo||it.is_promo);
+};
+
 // ── calcOrderMargin — quick rev/cost/margin for dashboard KPIs ──
 // Mirrors calcOrderTotals' revenue walk and adds a parallel cost walk (catalog/size
 // cost + deco cost). Lighter than the Reports page (which prefers actual PO costs) — a
