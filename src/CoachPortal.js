@@ -1940,16 +1940,16 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             {/* A garment mockup sits on WHITE — it's a photo of a shirt, and a checkerboard
                 behind it just reads as noise. The checkerboard is kept for the Art Only view,
                 where it's doing real work: showing which parts of the art are transparent. */}
-            <div style={{position:'relative',background:'#fff',height:440,overflow:'hidden',display:'flex',alignItems:'center',justifyContent:'center',padding:26,
+            <div style={{position:'relative',background:'#fff',height:440,overflow:'hidden',display:'flex',alignItems:'center',justifyContent:'center',padding:12,
               ...(_mode==='art'?{backgroundImage:'linear-gradient(45deg,'+_HAIR+' 25%,transparent 25%,transparent 75%,'+_HAIR+' 75%),linear-gradient(45deg,'+_HAIR+' 25%,transparent 25%,transparent 75%,'+_HAIR+' 75%)',backgroundSize:'22px 22px',backgroundPosition:'0 0,11px 11px'}:{})}}>
               {_d&&_d._mySrc
                 ?<div onClick={()=>{if(_showUrl&&isUrl(_showUrl))setLightbox(_showUrl)}} style={{textAlign:'center',cursor:_showUrl?'pointer':'default'}}>
                   {_showUrl&&_isImgUrl(_showUrl)&&isUrl(_showUrl)
-                    ?<img src={_showUrl} alt="" style={{maxWidth:'100%',maxHeight:388,objectFit:'contain',transform:'scale('+proofZoom+')',transition:'transform .25s cubic-bezier(0.4,0,0.2,1)'}}/>
+                    ?<img src={_showUrl} alt="" style={{maxWidth:'100%',maxHeight:416,objectFit:'contain',transform:'scale('+proofZoom+')',transition:'transform .25s cubic-bezier(0.4,0,0.2,1)'}}/>
                     :<div style={{fontSize:13,color:_TXL}}>Shares a mockup with {_d._mySrc.split('|')[0]}</div>}
                 </div>
                 :_showUrl&&_isImgUrl(_showUrl)&&isUrl(_showUrl)
-                  ?<img src={_showUrl} alt="" onClick={()=>setLightbox(_showUrl)} style={{maxWidth:'100%',maxHeight:388,objectFit:'contain',cursor:'pointer',transform:'scale('+proofZoom+')',transition:'transform .25s cubic-bezier(0.4,0,0.2,1)'}}/>
+                  ?<img src={_showUrl} alt="" onClick={()=>setLightbox(_showUrl)} style={{maxWidth:'100%',maxHeight:416,objectFit:'contain',cursor:'pointer',transform:'scale('+proofZoom+')',transition:'transform .25s cubic-bezier(0.4,0,0.2,1)'}}/>
                 :_showUrl&&isUrl(_showUrl)
                   ?<div onClick={()=>setLightbox(_showUrl)} style={{textAlign:'center',cursor:'pointer'}}><div style={{fontSize:40}}>📄</div><div style={{fontSize:13,color:_TXL,marginTop:6}}>{fileDisplayName(_showCur)} — tap to open</div></div>
                 :<div style={{textAlign:'center'}}>
