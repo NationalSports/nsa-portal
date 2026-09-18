@@ -1,0 +1,13 @@
+import React from 'react';
+import QBPayableServerReviewCard from './QBPayableServerReviewCard';
+
+// MainApp retains its existing LoginGate. Each card request also passes the
+// existing server-side QBO staff/realm authorization; this adds no API surface.
+export default function PayableReviewPage(){
+  return <main style={{maxWidth:1100,margin:'32px auto',padding:'0 24px',fontFamily:'system-ui,sans-serif',color:'#172033',lineHeight:1.5}}>
+    <a href="/?pg=qb">Back to QuickBooks Sync</a>
+    <h1>Payable review</h1>
+    <p>Review purchase orders, bills, credits, and payment exceptions. This page does not create accounting transactions.</p>
+    <QBPayableServerReviewCard />
+  </main>;
+}
