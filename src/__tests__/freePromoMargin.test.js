@@ -1,4 +1,5 @@
 import { calcOrderMargin, isPromoOnlyOrder } from '../pricing';
+import { recoverGarmentCost } from '../lib/promoPricing';
 
 // EST-2619: a "free promo" garment was zeroing nsa_cost as well as unit_sell, so 55 tees that
 // cost us $15 each read as a costless $0 line. Margin showed only the deco cost as the loss.
@@ -51,5 +52,51 @@ describe('isPromoOnlyOrder', () => {
   test('an empty order is not exempt', () => {
     expect(isPromoOnlyOrder({ items: [] })).toBe(false);
     expect(isPromoOnlyOrder(null)).toBe(false);
+  });
+});
+
+// The lines already saved by the old bug have nsa_cost 0 in the database with nothing left to
+// restore, so toggling promo off/on did nothing. Re-derive the cost from what we still know.
+describe('recoverGarmentCost', () => {
+  const catalog = [{ id: 'p1', sku: 'JP4675', color: 'White', nsa_cost: 15, retail_price: 40 }];
+
+  test('EST-2619: an adidas line with no catalog match falls back to retail x the tier cost multiplier', () => {
+    const line = { sku: 'JP4675', brand: 'Adidas', retail_price: 40, nsa_cost: 0, is_free_promo: true };
+    expect(recoverGarmentCost(line, [])).toEqual({ nsa_cost: 15 });
+  });
+
+  test('prefers the catalog product when there is one', () => {
+    const line = { product_id: 'p1', sku: 'JP4675', color: 'White', brand: 'Adidas', retail_price: 40, nsa_cost: 0 };
+    expect(recoverGarmentCost(line, catalog)).toEqual({ nsa_cost: 15 });
+  });
+
+  test('carries per-size costs across when the catalog product has them', () => {
+    const sized = [{ ...catalog[0], _sizeCosts: { M: 15, '2XL': 17 } }];
+    expect(recoverGarmentCost({ product_id: 'p1', nsa_cost: 0 }, sized))
+      .toEqual({ nsa_cost: 15, _sizeCosts: { M: 15, '2XL': 17 } });
+  });
+
+  test('never overwrites a cost the line already has', () => {
+    expect(recoverGarmentCost({ product_id: 'p1', nsa_cost: 12 }, catalog)).toBeNull();
+    expect(recoverGarmentCost({ product_id: 'p1', nsa_cost: 0, _sizeCosts: { M: 12 } }, catalog)).toBeNull();
+  });
+
+  test('customer-supplied goods really are $0 to us', () => {
+    const line = { sku: 'JP4675', brand: 'Adidas', retail_price: 40, nsa_cost: 0, customer_supplied: true };
+    expect(recoverGarmentCost(line, catalog)).toBeNull();
+  });
+
+  test('nothing to go on — no guess', () => {
+    expect(recoverGarmentCost({ sku: 'X', name: 'Setup charge', nsa_cost: 0 }, [])).toBeNull();
+    expect(recoverGarmentCost(null, [])).toBeNull();
+  });
+
+  test('a recovered cost turns the promo line negative for real', () => {
+    const o = promoTeeOrder();
+    o.items[0].nsa_cost = 0;             // the line as the old bug saved it
+    expect(calcOrderMargin(o).cost).toBeLessThan(200);
+    const fix = recoverGarmentCost({ ...o.items[0], brand: 'Adidas' }, catalog);
+    o.items[0] = { ...o.items[0], ...fix };
+    expect(calcOrderMargin(o).margin).toBeLessThanOrEqual(-825);
   });
 });
