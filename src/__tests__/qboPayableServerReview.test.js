@@ -1,10 +1,16 @@
 const {analyzeBillPayments,analyzeNativePOLinks,analyzePayables,analyzePurchaseOrders,runPayableReview}=require('../../netlify/functions/_qboPayableServerReview');
+const {SNAPSHOT_LIMITS}=require('../../netlify/functions/_qboPayableReviewStore');
 
 const ledger={id:'L1',status:'pushed',portal_status:'success',doc_number:'B-1',vendor:'Acme LLC',doc_total:100,is_credit:false,raw_meta:{doc_date:'2026-09-01',freight:10,si_upcharge:5}};
 const portal={id:'V1',name:'Acme LLC',is_active:true};
 const qboVendor={Id:'9',DisplayName:'Acme',Active:true};
 const accounts={purchases_account:'1',freight_account:'2',sports_inc_fee_account:'3',deco_account:'4'};
 const base={ledgerRows:[ledger],portalVendors:[portal],vendorLinks:{V1:'9'},qboVendors:[qboVendor],qboBills:[],qboVendorCredits:[],accountIds:accounts};
+
+test('product snapshot ceiling covers the current catalog without removing the safety cap',()=>{
+  expect(SNAPSHOT_LIMITS.products).toBe(100000);
+  expect(SNAPSHOT_LIMITS.portalRows).toBe(50000);
+});
 
 test('classifies a fully routed unmatched bill as ready without writes',()=>{
   expect(analyzePayables(base).rows[0]).toMatchObject({action:'ready',qboVendorId:'9',transactionType:'Bill'});
