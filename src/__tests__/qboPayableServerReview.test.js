@@ -19,6 +19,10 @@ test('failure diagnostics expose only fixed internal stage and error labels',()=
 test('classifies a fully routed unmatched bill as ready without writes',()=>{
   expect(analyzePayables(base).rows[0]).toMatchObject({action:'ready',qboVendorId:'9',transactionType:'Bill'});
 });
+test('parses four-digit years in slash-formatted payable dates without truncating the year',()=>{
+  const fourDigitYear={...ledger,id:'L2',raw_meta:{...ledger.raw_meta,doc_date:'09/15/2026'}};
+  expect(analyzePayables({...base,ledgerRows:[fourDigitYear]}).rows[0]).toMatchObject({date:'2026-09-15',action:'ready'});
+});
 test('excludes unmatched pre-cutover payables without proposing a historical write',()=>{
   const old={...ledger,id:'OLD1',raw_meta:{...ledger.raw_meta,doc_date:'2026-09-08'}};
   expect(PAYABLE_CUTOVER_DATE).toBe('2026-09-09');
