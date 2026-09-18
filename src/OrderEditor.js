@@ -14370,6 +14370,35 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       const poWideStatus=isManualCostPO?'recorded':isDropShip?(_poWide.bld>=_poWide.ord&&_poWide.ord>0?'shipped':_poWide.bld>0?'partial':'waiting'):(_poWide.open<=0&&_poWide.rcvd>0?'received':_poWide.rcvd>0?'partial':'waiting');
       const hasOpenAnywhere=_poWide.open>0;
       const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(po.po_id);
+      // Ship-to for this PO, resolved ONCE here and shared by the Ship To block below and the
+      // printed label/PDF further down, so the address a rep copies is the address that prints.
+      // Precedence (same as the batch flow's resolveBatchDestination): the PO line's write-in
+      // address, then the decorator these blanks belong to, then the SO's ship-to customer.
+      // A stock (non-drop-ship) PO delivers to NSA, so it shows NSA's own address.
+      const _splitAddr=v=>String(v||'').split(/<br\s*\/?>|\n/).map(s=>s.trim()).filter(Boolean);
+      const _poShipTo=(()=>{
+        if(!isDropShip)return{name:_ci.name,lines:_splitAddr(_ci.fullAddr)};
+        const wi=po.ship_to||allLines.map(ln=>o.items[ln.lineIdx]?.po_lines?.[ln.poIdx]?.ship_to).find(st=>st&&(st.line1||st.city))||null;
+        if(wi&&(wi.line1||wi.city)){
+          const cityLine=[(wi.city||'').trim(),[(wi.state||'').trim(),(wi.zip||'').trim()].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+          return{name:(wi.name||cust?.name||'Customer')+' (Drop Ship)',lines:[wi.line1,wi.line2,cityLine].filter(Boolean)};
+        }
+        const dd=decoShipForItems(allLines.map(ln=>ln.lineIdx));
+        if(dd)return{name:dd.name+' (Decorator)',lines:_splitAddr(dd.addr)};
+        let addr='';
+        if(o.ship_to_id==='custom'&&o.ship_to_custom){addr=o.ship_to_custom}
+        else{
+          const sel=addrs.find(a=>a.id===o.ship_to_id);
+          if(sel&&sel.addr){addr=sel.addr}
+          else if(cust?.shipping_address_line1){addr=[cust.shipping_address_line1,cust.shipping_address_line2,(cust.shipping_city||'')+', '+(cust.shipping_state||'')+' '+(cust.shipping_zip||'')].filter(Boolean).join('\n')}
+          else if(cust?.billing_address_line1){addr=[cust.billing_address_line1,cust.billing_address_line2,(cust.billing_city||'')+', '+(cust.billing_state||'')+' '+(cust.billing_zip||'')].filter(Boolean).join('\n')}
+        }
+        return{name:(cust?.name||'Customer')+' (Drop Ship)',lines:_splitAddr(addr)};
+      })();
+      const _poShipToText=[_poShipTo.name,..._poShipTo.lines].join('\n');
+      // Every SKU on this PO — a PO can span several lines, so the active tab's SKU alone
+      // isn't what a rep needs to paste into the vendor's cart. Deduped, in line order.
+      const _poSkus=[...new Set(allLines.map(ln=>o.items[ln.lineIdx]?.sku).filter(Boolean))];
 
       return<div className="modal-overlay" onClick={()=>setEditPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:880,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2>PO — {po.po_id||'PO'}<button className="btn btn-sm btn-secondary" title="Copy PO number" style={{fontSize:10,padding:'2px 8px',marginLeft:8,verticalAlign:'middle'}} onClick={()=>{(navigator.clipboard?navigator.clipboard.writeText(po.po_id||''):Promise.reject()).then(()=>nf('Copied '+(po.po_id||'PO number'))).catch(()=>nf('Copy failed','error'))}}>📋 Copy</button>{po.batch_po_number&&<span style={{fontSize:12,fontWeight:600,color:'#7c3aed',marginLeft:10}}>· part of {po.batch_po_number}</span>}</h2>
@@ -14402,6 +14431,23 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               {_vEmail&&<span style={{fontSize:11,color:'#64748b'}}>✉ {_vEmail}</span>}
             </div>;
           })()}
+          {/* Ship To — where this PO actually delivers, plus the two things a rep copies into a
+              vendor's cart when placing it: the delivery address and every SKU on the PO. */}
+          <div style={{padding:'8px 12px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,marginBottom:12,display:'flex',gap:10,alignItems:'flex-start',flexWrap:'wrap'}}>
+            <span style={{fontSize:10,fontWeight:700,color:'#475569',textTransform:'uppercase',letterSpacing:0.5,paddingTop:2}}>Ship to</span>
+            <div style={{flex:1,minWidth:180}}>
+              <div style={{fontSize:13,fontWeight:800,color:'#0f172a'}}>{_poShipTo.name||'—'}</div>
+              {_poShipTo.lines.length>0
+                ?<div style={{fontSize:11,color:'#475569',lineHeight:1.45}}>{_poShipTo.lines.map((l,li)=><div key={li}>{l}</div>)}</div>
+                :<div style={{fontSize:11,color:'#b45309',fontWeight:600}}>No delivery address on file{isDropShip?' — this drop ship falls back to the NSA warehouse':''}</div>}
+            </div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+              <button className="btn btn-sm btn-secondary" title="Copy the ship-to address" style={{fontSize:10,padding:'2px 8px'}} disabled={_poShipTo.lines.length===0}
+                onClick={()=>{(navigator.clipboard?navigator.clipboard.writeText(_poShipToText):Promise.reject()).then(()=>nf('📋 Address copied')).catch(()=>{window.prompt('Copy address:',_poShipToText)})}}>📋 Copy address</button>
+              {_poSkus.length>0&&<button className="btn btn-sm btn-secondary" title={'Copy every SKU on this PO — '+_poSkus.join(' ')} style={{fontSize:10,padding:'2px 8px'}}
+                onClick={()=>{const v=_poSkus.join(' ');(navigator.clipboard?navigator.clipboard.writeText(v):Promise.reject()).then(()=>nf('📋 Copied '+_poSkus.length+' SKU'+(_poSkus.length>1?'s':'')+': '+v)).catch(()=>{window.prompt('Copy SKUs:',v)})}}>📋 Copy all SKUs</button>}
+            </div>
+          </div>
           {/* Fulfillment method — flip an existing PO between In-House (received/checked in at the
               warehouse) and Drop Ship (ships direct to the customer, never received). This is the
               "edit" that lets staff correct a PO that was created the wrong way — e.g. a drop-ship
@@ -15007,30 +15053,9 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               // A write-in address stamped on the PO line at creation (Ship To → "✏️ New address")
               // is the rep's explicit choice — it beats the decorator/customer fallbacks below.
               const _plWriteIn=isDropShip?(po.ship_to||allLines.map(ln=>o.items[ln.lineIdx]?.po_lines?.[ln.poIdx]?.ship_to).find(st=>st&&(st.line1||st.city))||null):null;
-              const _shipTo=(()=>{
-                if(!isDropShip)return{name:_ci.name,sub:_ci.fullAddr};
-                if(_plWriteIn&&(_plWriteIn.line1||_plWriteIn.city)){
-                  const cityLine=[(_plWriteIn.city||'').trim(),[(_plWriteIn.state||'').trim(),(_plWriteIn.zip||'').trim()].filter(Boolean).join(' ')].filter(Boolean).join(', ');
-                  return{name:(_plWriteIn.name||cust?.name||'Customer')+' (Drop Ship)',sub:[_plWriteIn.line1,cityLine].filter(Boolean).join('<br/>')};
-                }
-                if(_decoDest)return{name:_decoDest.name+' (Decorator)',sub:String(_decoDest.addr).replace(/\n/g,'<br/>')};
-                let addr='';
-                if(o.ship_to_id==='custom'&&o.ship_to_custom){addr=o.ship_to_custom}
-                else{
-                  const sel=addrs.find(a=>a.id===o.ship_to_id);
-                  if(sel&&sel.addr){addr=sel.addr}
-                  else if(cust?.shipping_address_line1){
-                    addr=cust.shipping_address_line1;
-                    if(cust.shipping_address_line2)addr+='<br/>'+cust.shipping_address_line2;
-                    addr+='<br/>'+(cust.shipping_city||'')+', '+(cust.shipping_state||'')+' '+(cust.shipping_zip||'');
-                  }else if(cust?.billing_address_line1){
-                    addr=cust.billing_address_line1;
-                    if(cust.billing_address_line2)addr+='<br/>'+cust.billing_address_line2;
-                    addr+='<br/>'+(cust.billing_city||'')+', '+(cust.billing_state||'')+' '+(cust.billing_zip||'');
-                  }
-                }
-                return{name:(cust?.name||'Customer')+' (Drop Ship)',sub:addr};
-              })();
+              // Same address the Ship To block shows (resolved once, up in the modal prologue) —
+              // the label/PDF just needs it as HTML rather than lines.
+              const _shipTo={name:_poShipTo.name,sub:_poShipTo.lines.join('<br/>')};
               // Per-line data for every item on this PO (not just the active one) so the PDF
               // captures the full purchase order. Re-derive size keys / totals from the live
               // po line for each item, since the user may have different sizes per line.
