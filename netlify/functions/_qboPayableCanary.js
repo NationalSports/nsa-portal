@@ -11,15 +11,16 @@ const dateValue=value=>{
 const payableCanaryAttemptKey=(realm,ledgerId)=>'_qb_payable_canary_attempt_'+clean(realm).replace(/[^A-Za-z0-9_-]/g,'_')+'_'+clean(ledgerId).replace(/[^A-Za-z0-9_-]/g,'_');
 const payableCanaryReceiptKey=(realm,billId)=>'_qb_canary_bill_'+clean(realm).replace(/[^A-Za-z0-9_-]/g,'_')+'_'+clean(billId).replace(/[^A-Za-z0-9_-]/g,'_');
 
-function selectCanaryCandidate(report){
+function listCanaryCandidates(report){
   if(!report||report.reviewerVersion!==2||report.replay?.identical!==true||report.replay?.runs!==2)throw new Error('verified_review_required');
   const guards=report.safeguards||{};
   if(guards.qboWrites!==0||guards.portalWrites!==0||guards.historicalPayablesProposed!==0||guards.historicalPurchaseOrdersProposed!==0)throw new Error('verified_review_required');
   const rows=(report.results||[]).filter(row=>row.action==='ready'&&row.transactionType==='Bill'&&clean(row.ledgerId)&&clean(row.qboVendorId)&&money(row.total)>0);
   rows.sort((a,b)=>money(a.total)-money(b.total)||Number(a.ledgerId)-Number(b.ledgerId));
   if(!rows.length)throw new Error('no_canary_candidate');
-  return rows[0];
+  return rows;
 }
+function selectCanaryCandidate(report){return listCanaryCandidates(report)[0]}
 
 function buildCanaryPlan({run,row,candidate,realm}){
   const raw=row?.raw_meta||{},date=dateValue(raw.doc_date),docNumber=clean(row?.doc_number||candidate?.documentNumber);
@@ -34,6 +35,17 @@ function buildCanaryPlan({run,row,candidate,realm}){
   const payload={VendorRef:{value:clean(candidate.qboVendorId)},APAccountRef:{value:clean(ap.id)},TxnDate:date,DocNumber:docNumber,PrivateNote:`NSA-QB-CANARY:ledger-${clean(row.id)} | PO: ${clean(raw.po_number)||'unmatched'} | Doc #${docNumber}`,Line:[{Amount:total,DetailType:'AccountBasedExpenseLineDetail',Description:description,AccountBasedExpenseLineDetail:{AccountRef:{value:clean(purchase.id)},BillableStatus:'NotBillable',TaxCodeRef:{value:'NON'}}}]};
   const summary={realm:clean(realm),reviewRunId:clean(run.id),snapshotId:clean(run.snapshot_id),sourceHash:clean(run.report?.sourceHash),ledgerId:clean(row.id),documentNumber:docNumber,vendor:clean(row.vendor),qboVendorId:clean(candidate.qboVendorId),date,total,poNumber:clean(raw.po_number),purchaseAccount:{id:clean(purchase.id),number:'51300'},apAccount:{id:clean(ap.id),number:'21100'},posting:'one account-based merchandise line',itemsCreated:0,inventoryQuantityPosted:false};
   return{summary,payload,previewHash:hash({summary,payload})};
+}
+
+function selectCanarySource({run,rows,realm}){
+  const byId=new Map((rows||[]).map(row=>[clean(row.id),row]));
+  for(const candidate of listCanaryCandidates(run?.report)){
+    const row=byId.get(clean(candidate.ledgerId));
+    if(!row)continue;
+    try{return{candidate,row,plan:buildCanaryPlan({run,row,candidate,realm})}}
+    catch(error){if(!['candidate_changed','candidate_already_synced'].includes(error?.message))throw error}
+  }
+  throw new Error('no_canary_candidate');
 }
 
 function verifyQboPrerequisites({plan,vendor,accounts,bills=[],credits=[]}){
@@ -54,4 +66,4 @@ function verifyCanaryReadback(plan,bill,documentBills=[],documentCredits=[]){
   return{id:clean(bill.Id),docNumber:clean(bill.DocNumber),vendorId:clean(bill.VendorRef?.value),date:clean(bill.TxnDate).slice(0,10),total:money(bill.TotalAmt),apAccountId:clean(bill.APAccountRef?.value),lines:actual};
 }
 
-module.exports={buildCanaryPlan,dateValue,payableCanaryAttemptKey,payableCanaryReceiptKey,selectCanaryCandidate,verifyCanaryReadback,verifyQboPrerequisites};
+module.exports={buildCanaryPlan,dateValue,listCanaryCandidates,payableCanaryAttemptKey,payableCanaryReceiptKey,selectCanaryCandidate,selectCanarySource,verifyCanaryReadback,verifyQboPrerequisites};

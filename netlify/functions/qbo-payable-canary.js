@@ -2,7 +2,7 @@ const {randomUUID}=require('crypto');
 const {verifyQBOUser,getSupabaseAdmin}=require('./_shared');
 const {getValidAccessToken,qbRequest}=require('./_qb');
 const {reviewEnabled}=require('./_qboReviewConfig');
-const {buildCanaryPlan,payableCanaryAttemptKey,payableCanaryReceiptKey,selectCanaryCandidate,verifyCanaryReadback,verifyQboPrerequisites}=require('./_qboPayableCanary');
+const {buildCanaryPlan,listCanaryCandidates,payableCanaryAttemptKey,payableCanaryReceiptKey,selectCanarySource,verifyCanaryReadback,verifyQboPrerequisites}=require('./_qboPayableCanary');
 
 const headers={'Content-Type':'application/json','Cache-Control':'no-store'};
 const clean=value=>String(value==null?'':value).trim();
@@ -19,9 +19,10 @@ async function loadReviewSource(admin,realm){
   if(runError)throw new Error('review_unavailable');
   const run=(runs||[]).find(item=>item.report?.reviewerVersion===2&&item.report?.replay?.identical===true);
   if(!run)throw new Error('verified_review_required');
-  const candidate=selectCanaryCandidate(run.report);
-  const{data:row,error:rowError}=await admin.from('applied_bills').select('id,status,portal_status,qb_status,qb_bill_id,doc_number,vendor,doc_total,is_credit,raw_meta').eq('id',candidate.ledgerId).maybeSingle();
-  if(rowError||!row)throw new Error('candidate_changed');
+  const candidates=listCanaryCandidates(run.report),ids=candidates.map(candidate=>candidate.ledgerId);
+  const{data:rows,error:rowError}=await admin.from('applied_bills').select('id,status,portal_status,qb_status,qb_bill_id,doc_number,vendor,doc_total,is_credit,raw_meta').in('id',ids);
+  if(rowError)throw new Error('candidate_changed');
+  const{row,candidate}=selectCanarySource({run,rows,realm});
   return{run,row,candidate};
 }
 async function loadContext(admin,token,realm,source){
