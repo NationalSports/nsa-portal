@@ -14,7 +14,11 @@ async function readAudit(action, payload) {
     signal: timeout.signal,
     body: JSON.stringify({ ...payload, action, company: 'national', sandbox: false }),
   });
-  if (!response.ok) throw new Error(`QBO read failed (HTTP ${response.status}). No complete export was produced.`);
+  if (!response.ok) {
+    const error = new Error(`QBO read failed (HTTP ${response.status}). No complete export was produced.`);
+    error.status = response.status;
+    throw error;
+  }
   return await response.json();
   } finally { clearTimeout(timer); }
 }

@@ -36,21 +36,33 @@ export async function collectQBAudit({ read, cutoff, captureThrough, onProgress 
   };
   for (const entity of AUDIT_ENTITIES) {
     const records = [], seen = new Set();
-    let done = false;
-    for (let start = 1; start <= 100000; start += 500) {
+    let done = false, pageSize = 500;
+    for (let start = 1; start <= 100000;) {
       const where = LISTS.has(entity) ? 'Active IN (true, false)' : `TxnDate <= '${captureThrough}'`;
-      const query = `SELECT * FROM ${entity} WHERE ${where} ORDERBY Id STARTPOSITION ${start} MAXRESULTS 500`;
-      const result = await call('query', { query });
+      let result;
+      for (;;) {
+        const query = `SELECT * FROM ${entity} WHERE ${where} ORDERBY Id STARTPOSITION ${start} MAXRESULTS ${pageSize}`;
+        try { result = await call('query', { query }); break; }
+        catch (error) {
+          if (!signal?.aborted && [500, 502, 503, 504].includes(error.status) && pageSize > 20) {
+            pageSize = pageSize === 500 ? 100 : 20;
+            onProgress({ entity, count: records.length });
+            continue;
+          }
+          throw new Error(`${entity}, record ${start}: ${error.message}`);
+        }
+      }
       const response = result.QueryResponse;
       if (!response || typeof response !== 'object' || Array.isArray(response)) throw new Error(`${entity}: invalid query response.`);
       const page = response[entity] === undefined ? [] : response[entity];
-      if (!Array.isArray(page) || page.length > 500) throw new Error(`${entity}: invalid page.`);
+      if (!Array.isArray(page) || page.length > pageSize) throw new Error(`${entity}: invalid page.`);
       for (const row of page) {
         if (!row?.Id || seen.has(String(row.Id))) throw new Error(`${entity}: missing or repeated ID; restart capture.`);
         seen.add(String(row.Id)); records.push(row);
       }
       onProgress({ entity, count: records.length });
-      if (page.length < 500) { done = true; break; }
+      if (page.length < pageSize) { done = true; break; }
+      start += page.length;
     }
     if (!done) throw new Error(`${entity}: safety limit reached; export is incomplete.`);
     report.entities[entity] = records;

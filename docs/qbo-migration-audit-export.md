@@ -6,7 +6,7 @@ This change adds **QuickBooks Sync → Audit export** using the existing staff/a
 
 After deployment, choose a capture-through date (default today) and click **Read audit data — no changes**. Download the complete JSON. Do not close or leave the tab during capture. The reader includes all records through that date, including records before 2026, and includes inactive account/vendor/customer/item mappings. Full lines and `LinkedTxn` fields are preserved. Later transactions are needed to trace post-May applications; they must not be included in January–May activity totals.
 
-The collector verifies the live realm is `9341456492604246` and company name is National Sports Apparel LLC before querying, and rechecks connection identity at completion. It uses a fixed entity list, sequential 500-record pages and a 100,000-record per-entity safety limit. HTTP failures, QBO faults, wrong identity, malformed pages and repeated IDs fail the capture. An incomplete capture has no download button. Each HTTP request has a 45-second timeout. A retry starts a fresh capture.
+The collector verifies the live realm is `9341456492604246` and company name is National Sports Apparel LLC before querying, and rechecks connection identity at completion. It uses a fixed entity list, sequential pages starting at 500 records and a 100,000-record per-entity safety limit. HTTP 500/502/503/504 failures retry the same offset at 100 and then 20 records; the smaller size remains in use for that entity. Persistent errors, authorization failures, QBO faults, wrong identity, malformed pages and repeated IDs fail the capture. Errors identify the entity and offset. An incomplete capture has no download button. Each HTTP request has a 45-second timeout. A retry starts a fresh capture.
 
 ## Accounting limits
 
@@ -18,4 +18,4 @@ Deployment does not authorize any correction. Journal reversals, new credits, bi
 
 Run `CI=true npm test -- --runInBand --runTestsByPath src/__tests__/QBAuditExportCard.test.js src/__tests__/qbAuditExport.test.js`.
 
-Eight tests cover explicit user initiation, read-only actions, correct company routing, full line/link preservation, inactive mappings, pagination, failure handling, duplicate pages, invalid dates, cancellation and a changed connection. Live queries still need verification after deployment; unit fixtures are not evidence of successful production retrieval.
+Ten tests cover explicit user initiation, read-only actions, correct company routing, full line/link preservation, inactive mappings, pagination, bounded smaller-page recovery without omissions or duplicates, failure handling, duplicate pages, invalid dates, cancellation and a changed connection. Live queries still need verification after deployment; unit fixtures are not evidence of successful production retrieval.
