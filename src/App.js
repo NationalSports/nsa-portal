@@ -1851,7 +1851,8 @@ const _decoVendorPrice=(pricingList,vendorId,decoType,params={})=>{
 // _v bumps when default values change so cached localStorage from older versions is ignored.
 let SP={_v:4,bk:[{min:1,max:11},{min:12,max:23},{min:24,max:35},{min:36,max:47},{min:48,max:71},{min:72,max:107},{min:108,max:143},{min:144,max:215},{min:216,max:499},{min:500,max:99999}],pr:{0:[50,60,80,100,null],1:[3.33,4.33,5.33,6,null],2:[2.33,3,4,4.67,5.33],3:[2.13,2.83,3.17,4,5],4:[1.97,2.57,2.83,3.33,4],5:[1.83,2.33,2.63,3,3.5],6:[1.67,2.13,2.47,2.67,3.17],7:[1.5,2,2.33,2.5,2.83],8:[1.4,1.9,2.07,2.2,2.67],9:[1.27,1.83,1.93,2.07,2.5]},mk:1.5,ub:0.15};
 // fl = minimum per-piece sell price (floor). Sell never drops below it; tiers already above it keep their higher price.
-let EM={_v:4,sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[4.8,5.1,4.8,4.5],[5.4,5.1,4.8,4.8],[6,5.7,5.4,5.4],[7.2,7.5,7.2,6]],mk:1.6,fl:8};
+// sf = per-stitch-bracket floor override, aligned to sb (null = use fl) — lets ≤5k sell at $6.
+let EM={_v:5,sb:[5000,10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[3.5,3.5,3.5,3.5],[4.8,5.1,4.8,4.5],[5.4,5.1,4.8,4.8],[6,5.7,5.4,5.4],[7.2,7.5,7.2,6]],mk:1.6,fl:8,sf:[6,null,null,null,null]};
 let NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};let DTF=[{label:'4" Sq & Under',cost:2.5,sell:4.5},{label:'Front Chest (12"x4")',cost:4.5,sell:7.5}];
 // Tackle twill (kept in sync with src/lib/decoPricing.js). TWA = chest/logo menu, TWN = jersey
 // numbers by height × color. Flat per-application; sell defaults to 2× cost, editable in Settings.
@@ -1868,10 +1869,13 @@ function spFlatShare(q,c,u=1){const b0=SP.bk[0];if(!(q>=b0.min&&q<=b0.max))retur
 // per-piece shares (mirrors src/lib/decoPricing.js spRunBlend/decoSplitRuns — keep in sync).
 function spRunBlend(runs,c,u=1){let Q=0,sT=0,cT=0;for(const r0 of runs||[]){const r=safeNum(r0);if(!(r>0))continue;Q+=r;const f=spFlatShare(r,c,u);if(f){sT+=f.sell*r;cT+=f.cost*r;continue}const cc=rQ(spP(r,c,false)*u);sT+=rT(cc*SP.mk)*r;cT+=cc*r}if(!(Q>0)||(runs||[]).filter(r=>safeNum(r)>0).length<2)return null;return{sell:sT/Q,cost:cT/Q}}
 function decoSplitRuns(d,pq){if(!d||!Array.isArray(d.split_runs))return null;const runs=d.split_runs.map(safeNum).filter(r=>r>0);if(runs.length<2)return null;const tot=runs.reduce((a,b)=>a+b,0);const rm=d.reversible?2:1;if(tot*rm===pq)return runs.map(r=>r*rm);if(tot===pq)return runs;return null}
-// EM.pr stores cost; sell = max(rT(cost × EM.mk), EM.fl) so embroidery never sells below the EM.fl floor.
+// EM.pr stores cost; sell = max(rT(cost × EM.mk), floor), the floor being EM.sf[si] when set and
+// the global EM.fl otherwise. emFlSt resolves the same floor from a raw stitch count for dP.
 // Non-positive stitch counts / quantities are invalid input, not the smallest tier —
 // return 0 like spP does. Synced with businessLogic.js / decoPricing.js copies.
-function emP(st,q,s=true){if(!(st>0)||!(q>0))return 0;const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?Math.max(rT(v*EM.mk),EM.fl||0):v}
+const emFl=si=>{const f=(EM.sf&&si>=0&&EM.sf[si]!=null)?EM.sf[si]:EM.fl;return f>0?f:0};
+const emFlSt=st=>emFl(EM.sb.findIndex(b=>st<=b));
+function emP(st,q,s=true){if(!(st>0)||!(q>0))return 0;const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?Math.max(rT(v*EM.mk),emFl(si)):v}
 function npP(q,tw=false,s=true){if(!(q>0))return 0;const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return 0;return s?(NP.se[bi]+(tw?rQ(NP.tc*1.65):0)):(NP.co[bi]+(tw?NP.tc:0))}
 // Tackle twill (mirror of src/lib/decoPricing.js twaP/twnP). twaP: chest/logo by TWA index (d.dtf_size).
 // twnP: jersey number by TWN size (d.num_size) × color (d.two_color). sell (s=true) or cost.
@@ -1887,13 +1891,13 @@ function dP(d,q,artFiles,cq){
   if(d.kind==='art'&&d.art_file_id&&artFiles){// Art TBD
     if(d.art_file_id==='__tbd'){const tType=d.art_tbd_type||'screen_print';
       if(tType==='screen_print'){const nc=d.tbd_colors||1;const u=d.underbase?1+SP.ub:1;const _sr=decoSplitRuns(d,pq);if(_sr){const b=spRunBlend(_sr,nc,u);if(b)return{sell:d.sell_override!=null?d.sell_override:b.sell,cost:b.cost}}const f=spFlatShare(pq,nc,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
-      if(tType==='embroidery'){const c=emP(d.tbd_stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
+      if(tType==='embroidery'){const st=d.tbd_stitches||8000;const c=emP(st,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),emFlSt(st)),cost:c}}
       if(tType==='heat_press'||tType==='dtf'){const t=DTF[d.tbd_dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}};
       return{sell:d.sell_override||0,cost:0}}
     const art=artFiles.find(a=>a.id===d.art_file_id);if(art){
     const _cwInkCount=(()=>{if(d.color_way_id&&art.color_ways){const cw=art.color_ways.find(c=>c.id===d.color_way_id);if(cw)return cw.inks.length}return null})();
     if(art.deco_type==='screen_print'){const nc=_cwInkCount||(art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1);const u=d.underbase?1+SP.ub:1;const _sr=decoSplitRuns(d,pq);if(_sr){const b=spRunBlend(_sr,nc,u);if(b)return{sell:d.sell_override!=null?d.sell_override:b.sell,cost:b.cost}}const f=spFlatShare(pq,nc,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
-    if(art.deco_type==='embroidery'){const c=emP(art.stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
+    if(art.deco_type==='embroidery'){const st=art.stitches||8000;const c=emP(st,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),emFlSt(st)),cost:c}}
     // Transfer-code decos carry real cost on cost_each — keep in sync with decoPricing.js.
     if(art.deco_type==='dtf'||art.deco_type==='heat_press'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:(d.transfer_code&&d.cost_each!=null)?safeNum(d.cost_each):t.cost}}}}
   // Team Shop conversion decos (00199): cost_each is the rate-card cost-of-record; sell
@@ -1901,7 +1905,7 @@ function dP(d,q,artFiles,cq){
   if(d.kind==='art'&&!d.art_file_id&&d.cost_each!=null)return{sell:safeNum(d.sell_override)||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   // Legacy/fallback type-based
   if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;const f=spFlatShare(q,d.colors||1,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(q,d.colors||1,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
-  if(d.type==='embroidery'){const c=emP(d.stitches||8000,q,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
+  if(d.type==='embroidery'){const st=d.stitches||8000;const c=emP(st,q,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),emFlSt(st)),cost:c}}
   // Numbers
   if(d.kind==='numbers'||d.type==='number_press'){
     // Tackle twill numbers: flat price from TWN (num_size × two_color), not the qty-tiered npP.
@@ -34927,14 +34931,17 @@ export default function App(){
             <div><label className="form-label">Minimum Sell Price ($)</label><input className="form-input" type="number" step="0.25" style={{width:80}} value={EM.fl??0} onChange={e=>{savSettings('EM',{...EM,fl:parseFloat(e.target.value)||0})}}/></div>
           </div>
           <div style={{overflowX:'auto'}}><table style={{fontSize:12}}>
-            <thead><tr><th style={{fontSize:10}}>Stitches</th>{EM.qb.map((q,i)=><th key={i} style={{fontSize:10,textAlign:'center'}}>{i===0?'1':EM.qb[i-1]+1}-{q>=99999?'+':q}</th>)}</tr></thead>
+            <thead><tr><th style={{fontSize:10}}>Stitches</th>{EM.qb.map((q,i)=><th key={i} style={{fontSize:10,textAlign:'center'}}>{i===0?'1':EM.qb[i-1]+1}-{q>=99999?'+':q}</th>)}<th style={{fontSize:10,textAlign:'center'}}>Min Sell</th></tr></thead>
             <tbody>{EM.sb.map((s,si)=><tr key={si}>
               <td style={{fontWeight:700,fontSize:11,whiteSpace:'nowrap'}}>{si===0?'0':(EM.sb[si-1]+1).toLocaleString()}-{s>=99999?'+':s.toLocaleString()}</td>
               {EM.qb.map((_,qi)=><td key={qi} style={{padding:2}}><input className="form-input" type="number" step="0.25" style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}}
                 value={EM.pr[si]?.[qi]??0} onChange={e=>{const v=parseFloat(e.target.value)||0;const pr=EM.pr.map(r=>[...r]);pr[si][qi]=v;savSettings('EM',{...EM,pr})}}/></td>)}
+              {/* Per-tier minimum sell. Blank = fall back to the global Minimum Sell Price above. */}
+              <td style={{padding:2}}><input className="form-input" type="number" step="0.25" placeholder={String(EM.fl??0)} style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}}
+                value={EM.sf?.[si]??''} onChange={e=>{const v=e.target.value===''?null:(parseFloat(e.target.value)||0);const sf=EM.sb.map((_,i)=>EM.sf?.[i]??null);sf[si]=v;savSettings('EM',{...EM,sf})}}/></td>
             </tr>)}</tbody>
           </table></div>
-          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>Costs shown. Sell = Cost × Markup ({EM.mk}x){EM.fl>0?`, floored at $${EM.fl.toFixed(2)} per piece`:''}. Tiers already above the minimum keep their higher price.</div>
+          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>Costs shown. Sell = Cost × Markup ({EM.mk}x){EM.fl>0?`, floored at $${EM.fl.toFixed(2)} per piece`:''}. A tier's own Min Sell overrides that floor (blank = use it). Tiers already above their minimum keep their higher price.</div>
         </div></div>
 
         {/* Number Press Pricing */}

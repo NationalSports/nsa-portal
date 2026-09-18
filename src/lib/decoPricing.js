@@ -48,7 +48,11 @@ const auCostMult=(brand,isFootwear)=>{const adi=isAdidasPriced(brand);return isF
 // src/App.js — the pricingDrift test compares the source text, so edit both together.
 const SP={_v:4,bk:[{min:1,max:11},{min:12,max:23},{min:24,max:35},{min:36,max:47},{min:48,max:71},{min:72,max:107},{min:108,max:143},{min:144,max:215},{min:216,max:499},{min:500,max:99999}],pr:{0:[50,60,80,100,null],1:[3.33,4.33,5.33,6,null],2:[2.33,3,4,4.67,5.33],3:[2.13,2.83,3.17,4,5],4:[1.97,2.57,2.83,3.33,4],5:[1.83,2.33,2.63,3,3.5],6:[1.67,2.13,2.47,2.67,3.17],7:[1.5,2,2.33,2.5,2.83],8:[1.4,1.9,2.07,2.2,2.67],9:[1.27,1.83,1.93,2.07,2.5]},mk:1.5,ub:0.15};
 // fl = minimum per-piece sell price (floor). Sell never drops below it; tiers already above it keep their higher price.
-const EM={_v:4,sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[4.8,5.1,4.8,4.5],[5.4,5.1,4.8,4.8],[6,5.7,5.4,5.4],[7.2,7.5,7.2,6]],mk:1.6,fl:8};
+// sf = per-stitch-bracket floor override, aligned to sb (null = use fl). The ≤5k bracket sells at
+// $6 (cost $3.50); without its own floor the global $8 fl would swallow the cheaper tier entirely.
+// _v 5: added the ≤5k stitch bracket. Small left-chest logos (a 3.5k-stitch shield) used to price
+//       identically to a 9.9k one — every ≤10k job billed $8 because the $8 floor caught it.
+const EM={_v:5,sb:[5000,10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[3.5,3.5,3.5,3.5],[4.8,5.1,4.8,4.5],[5.4,5.1,4.8,4.8],[6,5.7,5.4,5.4],[7.2,7.5,7.2,6]],mk:1.6,fl:8,sf:[6,null,null,null,null]};
 const NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};
 const DTF=[{label:'4" Sq & Under',cost:2.5,sell:4.5},{label:'Front Chest (12"x4")',cost:4.5,sell:7.5}];
 // ── Tackle twill ── (sewn-on fabric letters/numbers/logos). Two flat menus, priced per
@@ -81,10 +85,14 @@ function spP(T,q,c,s=true){const SP=T.SP;const bi=SP.bk.findIndex(b=>q>=b.min&&q
 // caller's `eq × value` reconstructs the exact flat total (multi-line art runs prorate it across
 // lines); null outside bracket 0. Underbase scales the flat charge like it scales the tiers.
 function spFlatShare(T,q,c,u=1){const SP=T.SP;const b0=SP.bk[0];if(!(q>=b0.min&&q<=b0.max))return null;const v=SP.pr[0]?.[c-1];if(v==null||!(q>0))return null;const fs=v*u;return{sell:fs/q,cost:rQ(fs/SP.mk)/q}}
-// EM.pr stores cost; sell = max(rT(cost × EM.mk), EM.fl) so embroidery never sells below the EM.fl floor.
+// EM.pr stores cost; sell = max(rT(cost × EM.mk), floor) so embroidery never sells below its floor.
+// The floor is per stitch bracket: EM.sf[si] when set, else the global EM.fl. emFlSt resolves it from
+// a raw stitch count for dP, which prices from cost and would otherwise lose the bracket.
+const emFl=(EM,si)=>{const f=(EM.sf&&si>=0&&EM.sf[si]!=null)?EM.sf[si]:EM.fl;return f>0?f:0};
+const emFlSt=(EM,st)=>emFl(EM,EM.sb.findIndex(b=>st<=b));
 // Non-positive stitch counts / quantities are invalid input, not the smallest tier —
 // return 0 like spP does. Synced with businessLogic.js and App.js copies.
-function emP(T,st,q,s=true){if(!(st>0)||!(q>0))return 0;const EM=T.EM;const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?Math.max(rT(v*EM.mk),EM.fl||0):v}
+function emP(T,st,q,s=true){if(!(st>0)||!(q>0))return 0;const EM=T.EM;const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?Math.max(rT(v*EM.mk),emFl(EM,si)):v}
 function npP(T,q,tw=false,s=true){if(!(q>0))return 0;const NP=T.NP;const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return 0;return s?(NP.se[bi]+(tw?rQ(NP.tc*1.65):0)):(NP.co[bi]+(tw?NP.tc:0))}
 // Tackle-twill chest/logo: flat per-application price from the TWA menu by index (stored on the
 // deco's dtf_size field — reused as the twill menu index; kind:'twill' disambiguates, so no new
@@ -169,13 +177,13 @@ function _dPInner(T,d,q,artFiles,cq){
   if(d.kind==='art'&&d.art_file_id&&artFiles){
     if(d.art_file_id==='__tbd'){const tType=d.art_tbd_type||'screen_print';
       if(tType==='screen_print')return spDecoPrice(T,d,pq,d.tbd_colors||1,true);
-      if(tType==='embroidery'){const c=emP(T,d.tbd_stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
+      if(tType==='embroidery'){const st=d.tbd_stitches||8000;const c=emP(T,st,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),emFlSt(EM,st)),cost:c}}
       if(tType==='heat_press'||tType==='dtf'){const t=DTF[d.tbd_dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}};
       return{sell:d.sell_override||0,cost:0}}
     const art=artFiles.find(a=>a.id===d.art_file_id);if(art){
     const _cwInkCount=(()=>{if(d.color_way_id&&art.color_ways){const cw=art.color_ways.find(c=>c.id===d.color_way_id);if(cw)return cw.inks.length}return null})();
     if(art.deco_type==='screen_print'){const nc=_cwInkCount||(art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1);return spDecoPrice(T,d,pq,nc,true)}
-    if(art.deco_type==='embroidery'){const c=emP(T,art.stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
+    if(art.deco_type==='embroidery'){const st=art.stitches||8000;const c=emP(T,st,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),emFlSt(EM,st)),cost:c}}
     // Heat-transfer designs (transfer_code decos, batched club/team stores) carry their
     // real cost-of-record on cost_each (webstore_transfers.unit_cost, 00204) — prefer it
     // over the generic DTF matrix cost, which was never the actual transfer price.
@@ -189,7 +197,7 @@ function _dPInner(T,d,q,artFiles,cq){
   // totals — keep byte-identical to the App.js and businessLogic.js dP copies.
   if(d.kind==='art'&&!d.art_file_id&&d.cost_each!=null)return{sell:safeNum(d.sell_override)||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   if(d.type==='screen_print')return spDecoPrice(T,d,q,d.colors||1,false);
-  if(d.type==='embroidery'){const c=emP(T,d.stitches||8000,q,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
+  if(d.type==='embroidery'){const st=d.stitches||8000;const c=emP(T,st,q,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),emFlSt(EM,st)),cost:c}}
   if(d.kind==='numbers'||d.type==='number_press'){if(d.num_method==='sublimated'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||Math.max(0,safeNum(d.num_qty))||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);return{sell:safeNum(d.sell_override)||0,cost:0,_nq:useQty*mult}}
     // Tackle twill numbers: flat per-application price from TWN (by num_size × two_color), NOT the
     // qty-tiered npP table. _nq (application count) still doubles for front+back and reversible.

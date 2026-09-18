@@ -185,6 +185,13 @@ describe('Pricing Functions', () => {
       const cost = emP(10000, 24, false);
       expect(sell).toBe(rT(cost * EM.mk));
     });
+
+    test('≤5k stitches: $3.50 cost → $6 sell at every qty break', () => {
+      [1, 6, 24, 48, 100, 500].forEach(q => {
+        expect(emP(3658, q, false)).toBe(3.5);
+        expect(emP(3658, q, true)).toBe(6);
+      });
+    });
   });
 
   describe('Number Press Pricing (npP)', () => {

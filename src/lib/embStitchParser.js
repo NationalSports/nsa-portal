@@ -56,7 +56,8 @@ function parseStitchCount(text) {
 function embStitchTierLabel(stitches) {
   const s = Number(stitches);
   if (!(s > 0)) return null;
-  if (s <= 10000) return '≤10k';   // ≤10k
+  if (s <= 5000) return '≤5k';     // ≤5k
+  if (s <= 10000) return '5k–10k'; // 5k–10k
   if (s <= 15000) return '10k–15k'; // 10k–15k
   if (s <= 20000) return '15k–20k'; // 15k–20k
   return '20k+';
