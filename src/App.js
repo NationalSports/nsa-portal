@@ -34,6 +34,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, REP_PROD_FILE_DECOS, artistOwesProdFiles, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { isApiCatalogVendor, styleSkuOrFilter, buildStyleColorwayMap, lookupStyleColorway } from './lib/vendorColorwayImages';
 import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { stampEstimateDraftLineIds } from './lib/orderLineIdentity';
@@ -13349,6 +13350,42 @@ export default function App(){
     return()=>{off=true;};
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[artJobDetailModal,artMockupModal]);
+  // Same hole, same shape, for SanMar (v3) / S&S (v4) / Richardson (v5): also excluded from
+  // the in-memory `prod`, also saved at style level ('ST850' + 'True Navy') while the photo
+  // lives on the per-color row ('ST850-TrueNavy'). Their sku separator is '-' rather than
+  // Momentec's '.', and the filter must be ANCHORED on it — a bare 'DT630*' prefix returns
+  // DT6300/DT6302/DT6303YG too, which are different garments. Prefers the garment-only flat.
+  const[styleColorwayImg,setStyleColorwayImg]=useState({});// {styleSku: {colorKey:{front,back}}}
+  useEffect(()=>{
+    const j=artJobDetailModal||artMockupModal;
+    if(!j||!supabase)return;
+    const so=sos.find(s=>s.id===(j.soId||j.so?.id))||j.so;
+    if(!so)return;
+    const items=safeArr(j.items).map(gi=>safeItems(so)[gi&&gi.item_idx]).filter(Boolean);
+    // v8 (Momentec) is deliberately left to the effect above, which already caches it.
+    const styles=[...new Set(items
+      .filter(it=>it.sku&&it.vendor_id!=='v8'&&isApiCatalogVendor(it.vendor_id)&&styleSkuOrFilter(it.sku))
+      .map(it=>String(it.sku).trim()))]
+      .filter(sk=>styleColorwayImg[sk]===undefined);
+    if(!styles.length)return;
+    let off=false;
+    (async()=>{
+      const add={};
+      for(const sk of styles){
+        try{
+          const{data,error}=await supabase.from('products')
+            .select('id,sku,color,image_front_url,image_back_url,image_flat_front_url,image_flat_back_url')
+            .or(styleSkuOrFilter(sk)).limit(200);
+          if(error)throw new Error(error.message);
+          add[sk]=buildStyleColorwayMap(data||[]);
+        }catch(e){console.warn('[colorway-img] art fetch failed for',sk,e&&e.message);}
+      }
+      if(off||!Object.keys(add).length)return;
+      setStyleColorwayImg(prev=>({...prev,...add}));
+    })();
+    return()=>{off=true;};
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[artJobDetailModal,artMockupModal]);
   const[artProdAssignModal,setArtProdAssignModal]=useState(null);// {files:File[], assignments:{[idx]:artId}} — per-file art picker for multi-art jobs
   const[mockupArtPicker,setMockupArtPicker]=useState(null);// {files:File[], sku, arts} — art picker for per-item mockup uploads when SKU has multiple arts
   React.useEffect(()=>{if(!artJobDetailModal){setArtProdAssignModal(null);setMockupArtPicker(null)}},[artJobDetailModal]);
@@ -23955,7 +23992,7 @@ export default function App(){
           const it=safeItems(so)[gi.item_idx];if(!it)return null;
           const sizes={};
           Object.entries(gi.sizes||safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
-          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,item_idx:gi.item_idx,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||lookupColorwayImage(mtColorwayImg,it)?.front||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||lookupColorwayImage(mtColorwayImg,it)?.back||'',images:prd?.images||[]};
+          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,item_idx:gi.item_idx,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||lookupColorwayImage(mtColorwayImg,it)?.front||lookupStyleColorway(styleColorwayImg[it.sku],it)?.front||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||lookupColorwayImage(mtColorwayImg,it)?.back||lookupStyleColorway(styleColorwayImg[it.sku],it)?.back||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=orderedSizeKeys(itemDetails.flatMap(it=>Object.keys(it.sizes||{})));
 
@@ -24414,7 +24451,7 @@ export default function App(){
           const it=safeItems(so)[gi.item_idx];if(!it)return null;
           const sizes={};
           Object.entries(gi.sizes||safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
-          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,item_idx:gi.item_idx,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||lookupColorwayImage(mtColorwayImg,it)?.front||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||lookupColorwayImage(mtColorwayImg,it)?.back||'',images:prd?.images||[]};
+          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,item_idx:gi.item_idx,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||lookupColorwayImage(mtColorwayImg,it)?.front||lookupStyleColorway(styleColorwayImg[it.sku],it)?.front||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||lookupColorwayImage(mtColorwayImg,it)?.back||lookupStyleColorway(styleColorwayImg[it.sku],it)?.back||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=orderedSizeKeys(itemDetails.flatMap(it=>Object.keys(it.sizes||{})));
 
