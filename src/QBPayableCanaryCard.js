@@ -10,7 +10,7 @@ export default function QBPayableCanaryCard(){
       if(action==='execute'&&!window.confirm(`Create exactly one QBO bill?\n\n${preview.candidate.vendor}\nDocument ${preview.candidate.documentNumber}\n${money(preview.candidate.total)} on ${preview.candidate.date}\n\nThis will post one line to 51300 and verify the QBO record.`))return;
       const response=await authFetch('/.netlify/functions/qbo-payable-canary',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(action==='execute'?{action,approved:true,previewHash:preview.previewHash}:{action:'preview'})});
       const data=await response.json();if(!response.ok)throw new Error(data.error||'Canary unavailable');
-      if(action==='execute')setResult(data);else setPreview(data);
+      if(action==='execute'||data.status==='complete')setResult(data);else setPreview(data);
     }catch(e){setError(e.message||'Canary unavailable')}finally{setBusy(false)}
   }
   return <section aria-label="Payable canary" style={{marginTop:18}}>

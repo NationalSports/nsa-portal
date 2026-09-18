@@ -14,6 +14,21 @@ async function readQuery(token,realm,sql){
   if(response.status!==200||response.data?.Fault||!response.data?.QueryResponse)throw new Error('qbo_read_failed');
   return response.data.QueryResponse;
 }
+async function completedCanary(admin,realm){
+  const prefix='_qb_canary_bill_'+clean(realm).replace(/[^A-Za-z0-9_-]/g,'_')+'_';
+  const{data,error}=await admin.from('app_state').select('value').gte('id',prefix).lt('id',prefix+'\uffff').order('id',{ascending:true}).limit(1);if(error)throw new Error('attempt_read_failed');
+  if(!data?.length)return null;let receipt;try{receipt=typeof data[0].value==='string'?JSON.parse(data[0].value):data[0].value}catch{throw new Error('attempt_corrupt')}
+  return clean(receipt?.realm_id)===clean(realm)&&clean(receipt?.qbo_bill_id)?receipt:null;
+}
+async function auditCompletedCanary(admin,token,realm,receipt){
+  const key=payableCanaryAttemptKey(realm,receipt.source_id),{data,error}=await admin.from('app_state').select('value').eq('id',key).maybeSingle();if(error||!data)throw new Error('attempt_read_failed');
+  let attempt;try{attempt=typeof data.value==='string'?JSON.parse(data.value):data.value}catch{throw new Error('attempt_corrupt')}
+  const evidence=attempt?.evidence||{},lines=(evidence.lines||[]).map(value=>{const[type,accountId,amount]=String(value).split('|');if(type!=='A'||!accountId)return null;return{Amount:Number(amount),DetailType:'AccountBasedExpenseLineDetail',AccountBasedExpenseLineDetail:{AccountRef:{value:accountId}}}}).filter(Boolean);
+  const plan={summary:{documentNumber:clean(evidence.docNumber),qboVendorId:clean(evidence.vendorId),date:clean(evidence.date),total:Number(evidence.total),apAccount:{id:clean(evidence.apAccountId)}},payload:{Line:lines}};
+  if(!plan.summary.documentNumber||!plan.summary.qboVendorId||!plan.summary.date||!plan.summary.apAccount.id||!lines.length)throw new Error('attempt_corrupt');
+  const billId=clean(receipt.qbo_bill_id),doc=qboLiteral(plan.summary.documentNumber),[idRead,docRead,creditRead]=await Promise.all([readQuery(token,realm,`SELECT * FROM Bill WHERE Id = '${qboLiteral(billId)}' MAXRESULTS 1`),readQuery(token,realm,`SELECT * FROM Bill WHERE DocNumber = '${doc}' MAXRESULTS 100`),readQuery(token,realm,`SELECT * FROM VendorCredit WHERE DocNumber = '${doc}' MAXRESULTS 100`)]);
+  return verifyCanaryReadback(plan,idRead.Bill?.[0],docRead.Bill||[],creditRead.VendorCredit||[]);
+}
 async function loadReviewSource(admin,realm){
   const{data:runs,error:runError}=await admin.from('qbo_payable_review_runs').select('id,snapshot_id,status,report,finished_at').eq('company_key','national').in('status',['complete','needs_review']).not('snapshot_id','is',null).order('started_at',{ascending:false}).limit(10);
   if(runError)throw new Error('review_unavailable');
@@ -60,6 +75,7 @@ exports.handler=async event=>{
   try{
     const token=await getValidAccessToken(admin,'national');if(clean(token.realm_id)!==realm)throw new Error('realm_changed');
     if(action==='execute'&&body.approved!==true)return{statusCode:400,headers,body:JSON.stringify({error:'Explicit approval is required'})};
+    const completed=await completedCanary(admin,realm);if(completed){const evidence=await auditCompletedCanary(admin,token,realm,completed);return{statusCode:200,headers,body:JSON.stringify({status:'complete',qboBillId:completed.qbo_bill_id,recovered:true,audited:true,evidence})}}
     const source=await loadReviewSource(admin,realm),attemptKey=payableCanaryAttemptKey(realm,source.candidate.ledgerId);
     const{data:prior,error:priorError}=await admin.from('app_state').select('value').eq('id',attemptKey).maybeSingle();if(priorError)throw new Error('attempt_read_failed');
     if(prior){let saved;try{saved=typeof prior.value==='string'?JSON.parse(prior.value):prior.value}catch{throw new Error('attempt_corrupt')}

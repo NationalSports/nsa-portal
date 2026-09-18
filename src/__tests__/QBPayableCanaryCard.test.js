@@ -16,3 +16,6 @@ test('prepares without writes and executes only the reviewed hash after confirma
   await waitFor(()=>expect(authFetch).toHaveBeenNthCalledWith(2,'/.netlify/functions/qbo-payable-canary',expect.objectContaining({body:JSON.stringify({action:'execute',approved:true,previewHash:'hash'})})));
   expect(await screen.findByText(/Verified QBO Bill #99/)).toBeTruthy();expect(window.confirm).toHaveBeenCalledTimes(1);
 });
+test('shows a completed durable canary without preparing a second bill',async()=>{
+  authFetch.mockReturnValueOnce(ok({status:'complete',qboBillId:'18714',recovered:true}));render(<QBPayableCanaryCard/>);fireEvent.click(screen.getByText(/Prepare smallest bill canary/));expect(await screen.findByText(/Verified QBO Bill #18714/)).toBeTruthy();
+});

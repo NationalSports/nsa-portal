@@ -61,9 +61,10 @@ function verifyCanaryReadback(plan,bill,documentBills=[],documentCredits=[]){
   const expected=plan.payload.Line.map(line=>'A|'+clean(line.AccountBasedExpenseLineDetail?.AccountRef?.value)+'|'+money(line.Amount).toFixed(2)).sort();
   const actual=(bill?.Line||[]).filter(line=>line.DetailType==='AccountBasedExpenseLineDetail').map(line=>'A|'+clean(line.AccountBasedExpenseLineDetail?.AccountRef?.value)+'|'+money(line.Amount).toFixed(2)).sort();
   const unexpected=(bill?.Line||[]).some(line=>line.DetailType==='ItemBasedExpenseLineDetail'||(line.DetailType!=='AccountBasedExpenseLineDetail'&&line.DetailType!=='SubTotalLineDetail'&&Math.abs(money(line.Amount))>=.005));
-  const valid=clean(bill?.Id)&&clean(bill.DocNumber)===plan.summary.documentNumber&&clean(bill.VendorRef?.value)===plan.summary.qboVendorId&&clean(bill.APAccountRef?.value)===plan.summary.apAccount.id&&clean(bill.TxnDate).slice(0,10)===plan.summary.date&&Math.abs(money(bill.TotalAmt)-plan.summary.total)<.005&&!unexpected&&JSON.stringify(expected)===JSON.stringify(actual);
+  const poLinks=(bill?.Line||[]).flatMap(line=>Array.isArray(line?.LinkedTxn)?line.LinkedTxn:[]).filter(link=>clean(link?.TxnType)==='PurchaseOrder');
+  const valid=clean(bill?.Id)&&clean(bill.DocNumber)===plan.summary.documentNumber&&clean(bill.VendorRef?.value)===plan.summary.qboVendorId&&clean(bill.APAccountRef?.value)===plan.summary.apAccount.id&&clean(bill.TxnDate).slice(0,10)===plan.summary.date&&Math.abs(money(bill.TotalAmt)-plan.summary.total)<.005&&Math.abs(money(bill.Balance)-plan.summary.total)<.005&&!unexpected&&!poLinks.length&&JSON.stringify(expected)===JSON.stringify(actual);
   if(!valid||documentCredits.length!==0||documentBills.length!==1||clean(documentBills[0]?.Id)!==clean(bill?.Id))throw new Error('readback_mismatch');
-  return{id:clean(bill.Id),docNumber:clean(bill.DocNumber),vendorId:clean(bill.VendorRef?.value),date:clean(bill.TxnDate).slice(0,10),total:money(bill.TotalAmt),apAccountId:clean(bill.APAccountRef?.value),lines:actual};
+  return{id:clean(bill.Id),docNumber:clean(bill.DocNumber),vendorId:clean(bill.VendorRef?.value),date:clean(bill.TxnDate).slice(0,10),total:money(bill.TotalAmt),balance:money(bill.Balance),apAccountId:clean(bill.APAccountRef?.value),lines:actual,poLinks:[]};
 }
 
 module.exports={buildCanaryPlan,dateValue,listCanaryCandidates,payableCanaryAttemptKey,payableCanaryReceiptKey,selectCanaryCandidate,selectCanarySource,verifyCanaryReadback,verifyQboPrerequisites};
