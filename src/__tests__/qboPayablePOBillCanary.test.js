@@ -37,3 +37,17 @@ test('requires exact bill identity, open balance, account lines and reciprocal P
   expect(()=>verifyReadback(built,{...bill,Balance:0},linkedPO,[bill],[])).toThrow('po_bill_readback_mismatch');
   expect(()=>verifyReadback(built,bill,po,[bill],[])).toThrow('po_bill_readback_mismatch');
 });
+
+test('links only merchandise to the PO and preserves reviewed freight on 51000',()=>{
+  const freightRun={...run,report:{...report,accounts:{...report.accounts,freight_account:{id:'55',number:'51000'}}}};
+  const freightRow={...row,doc_total:30,raw_meta:{...row.raw_meta,freight:5}};
+  const freightCandidate={...candidate,total:30};
+  const source=buildSource({run:freightRun,row:freightRow,candidate:freightCandidate,realm:'9341456492604246',qboPurchaseOrderId:'70'});
+  const built=buildPlan(source,po);
+  expect(built.summary).toEqual(expect.objectContaining({total:30,merchandise:25,freight:5,freightAccount:{id:'55',number:'51000'}}));
+  expect(built.payload.Line).toHaveLength(2);expect(built.payload.Line[0].LinkedTxn).toHaveLength(1);expect(built.payload.Line[1]).toEqual(expect.objectContaining({Amount:5,AccountBasedExpenseLineDetail:expect.objectContaining({AccountRef:{value:'55'}})}));expect(built.payload.Line[1].LinkedTxn).toBeUndefined();
+  const accounts=[{Id:'50',AcctNum:'51300',AccountType:'Cost of Goods Sold',Active:true},{Id:'55',AcctNum:'51000',AccountType:'Cost of Goods Sold',Active:true},{Id:'60',AcctNum:'21100',AccountType:'Accounts Payable',Active:true}];
+  expect(verifyPrerequisites({source,vendor:{Id:'10',Active:true},accounts})).toBe(true);
+  const bill={Id:'81',DocNumber:'INV-4000',VendorRef:{value:'10'},APAccountRef:{value:'60'},TxnDate:'2026-09-10',TotalAmt:30,Balance:30,Line:[built.payload.Line[0],built.payload.Line[1]]};
+  expect(verifyReadback(built,bill,{...po,LinkedTxn:[{TxnId:'81',TxnType:'Bill'}]},[bill],[])).toEqual(expect.objectContaining({id:'81',total:30,reciprocalLink:true}));
+});
