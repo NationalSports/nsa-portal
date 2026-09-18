@@ -33,10 +33,12 @@ test('requires exact active vendor/accounts and a clean document number',()=>{
   assert.throws(()=>verifyQboPrerequisites({plan,vendor,accounts:accounts.map(a=>a.Id==='p'?{...a,AcctNum:'999'}:a)}),/accounts_changed/);
 });
 test('read-back requires the only matching document and identical identity, total, A/P and lines',()=>{
-  const plan=buildCanaryPlan({run,row,candidate,realm:'934'}),bill={Id:'99',DocNumber:'102609587',VendorRef:{value:'2382'},APAccountRef:{value:'a'},TxnDate:'2026-09-09',TotalAmt:50,Line:plan.payload.Line};
-  assert.deepEqual(verifyCanaryReadback(plan,bill,[bill],[]),{id:'99',docNumber:'102609587',vendorId:'2382',date:'2026-09-09',total:50,apAccountId:'a',lines:['A|p|50.00']});
+  const plan=buildCanaryPlan({run,row,candidate,realm:'934'}),bill={Id:'99',DocNumber:'102609587',VendorRef:{value:'2382'},APAccountRef:{value:'a'},TxnDate:'2026-09-09',TotalAmt:50,Balance:50,Line:plan.payload.Line};
+  assert.deepEqual(verifyCanaryReadback(plan,bill,[bill],[]),{id:'99',docNumber:'102609587',vendorId:'2382',date:'2026-09-09',total:50,balance:50,apAccountId:'a',lines:['A|p|50.00'],poLinks:[]});
   assert.throws(()=>verifyCanaryReadback(plan,{...bill,TotalAmt:49},[bill],[]),/readback_mismatch/);
   assert.throws(()=>verifyCanaryReadback(plan,bill,[bill,{...bill,Id:'100'}],[]),/readback_mismatch/);
   assert.throws(()=>verifyCanaryReadback(plan,{...bill,Line:[...bill.Line,{Amount:1,DetailType:'ItemBasedExpenseLineDetail',ItemBasedExpenseLineDetail:{ItemRef:{value:'unsafe'}}}]},[bill],[]),/readback_mismatch/);
+  assert.throws(()=>verifyCanaryReadback(plan,{...bill,Balance:0},[bill],[]),/readback_mismatch/);
+  assert.throws(()=>verifyCanaryReadback(plan,{...bill,Line:[{...bill.Line[0],LinkedTxn:[{TxnId:'1',TxnType:'PurchaseOrder'}]}]},[bill],[]),/readback_mismatch/);
 });
 test('attempt key is stable and scoped by realm and ledger',()=>assert.equal(payableCanaryAttemptKey('934','3910'),'_qb_payable_canary_attempt_934_3910'));

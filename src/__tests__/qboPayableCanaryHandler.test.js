@@ -17,8 +17,8 @@ function fakeAdmin(){
     const query={table,op:'select',filters:{},values:null,
       select(){if(this.op==='update')return Promise.resolve(this.finishUpdate());this.op='select';return this},
       update(values){this.op='update';this.values=values;return this},
-      eq(field,value){this.filters[field]=value;return this},in(){return table==='applied_bills'?Promise.resolve({data:[{...sourceRow}],error:null}):this},not(){return this},order(){return this},is(){return this},
-      limit(){return Promise.resolve({data:table==='qbo_payable_review_runs'?[run]:[],error:null})},
+      eq(field,value){this.filters[field]=value;return this},gte(field,value){this.filters[field+'Gte']=value;return this},lt(field,value){this.filters[field+'Lt']=value;return this},in(){return table==='applied_bills'?Promise.resolve({data:[{...sourceRow}],error:null}):this},not(){return this},order(){return this},is(){return this},
+      limit(){if(table==='qbo_payable_review_runs')return Promise.resolve({data:[run],error:null});if(table==='app_state'){const rows=[...state.entries()].filter(([id])=>id>=this.filters.idGte&&id<this.filters.idLt).map(([,value])=>({value:value.value}));return Promise.resolve({data:rows.slice(0,1),error:null})}return Promise.resolve({data:[],error:null})},
       maybeSingle(){
         if(table==='applied_bills')return Promise.resolve({data:{...sourceRow},error:null});
         if(table==='app_state')return Promise.resolve({data:state.has(this.filters.id)?{value:state.get(this.filters.id).value}:null,error:null});
@@ -41,7 +41,7 @@ function fakeAdmin(){
 
 const vendor={Id:'2382',Active:true};
 const accounts=[{Id:'1150040071',AcctNum:'51300',AccountType:'Cost of Goods Sold',Active:true},{Id:'146',AcctNum:'21100',AccountType:'Accounts Payable',Active:true}];
-const bill={Id:'999',DocNumber:'102609587',VendorRef:{value:'2382'},APAccountRef:{value:'146'},TxnDate:'2026-09-09',TotalAmt:50,Line:[{Amount:50,DetailType:'AccountBasedExpenseLineDetail',AccountBasedExpenseLineDetail:{AccountRef:{value:'1150040071'}}}]};
+const bill={Id:'999',DocNumber:'102609587',VendorRef:{value:'2382'},APAccountRef:{value:'146'},TxnDate:'2026-09-09',TotalAmt:50,Balance:50,Line:[{Amount:50,DetailType:'AccountBasedExpenseLineDetail',AccountBasedExpenseLineDetail:{AccountRef:{value:'1150040071'}}}]};
 
 function mockQbo(){
   let created=false;
