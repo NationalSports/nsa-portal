@@ -24,6 +24,8 @@ const dateValue = value => {
 };
 const fingerprint = rows => createHash('sha256').update(JSON.stringify(rows)).digest('hex');
 const accountTypeMatches=(actual,expected)=>{const value=norm(actual).replace(/\s*\(.*\)$/,'');return expected.some(type=>{const target=norm(type);return value===target||value===target+'s'||value+'s'===target})};
+const safeFailureCodes=new Set(['snapshot_failed','snapshot_limit','qbo_read_failed','qbo_population_limit','realm_changed','invalid_realm','run_finish_failed']);
+const failureCode=(stage,error)=>`payable_review_${stage}_${safeFailureCodes.has(clean(error?.message))?clean(error.message):'unexpected'}`;
 const actionSummary = rows => (rows || []).reduce((out,row)=>{
   const key=clean(row.action)||'unknown';
   out.counts[key]=(out.counts[key]||0)+1;
@@ -194,12 +196,15 @@ const sourceProjection=snapshot=>({ledger:snapshot.ledger||[],products:snapshot.
 async function runPayableReview({store,queryAll,realm,requestedBy,now=Date.now}) {
   if(!/^\d+$/.test(clean(realm)))throw new Error('invalid_realm');
   const id=randomUUID(); if(!await store.claim({id,realm_id:realm,company_key:'national',status:'running',requested_by:requestedBy}))return {status:'busy'};
+  let stage='source_snapshot_before';
   try{
     const before=await store.snapshot(); if(!Array.isArray(before.ledger)||before.ledger.length>20000)throw new Error('snapshot_limit');
+    stage='qbo_primary_reads';
     const [qboVendors,qboBills,qboVendorCredits,qboAccounts,qboPurchaseOrders,qboBillPayments,qboItems]=await Promise.all([
       queryAll('Vendor','Id, DisplayName, CompanyName, Active'),queryAll('Bill','*'),queryAll('VendorCredit','*'),
       queryAll('Account','Id, AcctNum, Name, FullyQualifiedName, AccountType, Active'),queryAll('PurchaseOrder','*'),queryAll('BillPayment','*'),queryAll('Item','*'),
     ]);
+    stage='analysis';
     const specs={income_account:{number:'40000',types:['Income']},purchases_account:{number:'51300',types:['Cost of Goods Sold']},freight_account:{number:'51000',types:['Cost of Goods Sold']},outbound_freight_account:{number:'67000',types:['Expense']},sports_inc_fee_account:{number:'58000',types:['Cost of Goods Sold']},deco_account:{number:'52000',types:['Cost of Goods Sold']},decoration_account:{number:'55200',types:['Cost of Goods Sold']},in_house_art_account:{number:'55400',types:['Cost of Goods Sold']},inventory_asset_account:{number:'12000',types:['Other Current Asset']},cogs_account:{number:'50000',types:['Cost of Goods Sold']},ap_account:{number:'21100',types:['Accounts Payable']},operating_bank_account:{number:'10100',types:['Bank']}};
     const accountRows=Object.entries(specs).map(([key,spec])=>{const active=qboAccounts.filter(account=>account.Active!==false),expected=active.filter(account=>clean(account.AcctNum)===spec.number),configuredValue=clean(before.qbConfig?.mapping?.[key]||spec.number),configured=active.filter(account=>clean(account.AcctNum)===configuredValue||norm(account.Name)===norm(configuredValue)||norm(account.FullyQualifiedName)===norm(configuredValue));let reason='';if(expected.length!==1)reason=expected.length?'Expected account number is duplicated':'Expected account number is missing';else if(configured.length!==1)reason=configured.length?'Configured mapping is ambiguous':'Configured mapping does not resolve';else if(clean(configured[0].Id)!==clean(expected[0].Id))reason='Configured mapping resolves to a different account';else if(!accountTypeMatches(expected[0].AccountType,spec.types))reason=`Account type ${clean(expected[0].AccountType)||'(blank)'} is not ${spec.types.join(' or ')}`;return {key,number:spec.number,configured:configuredValue,id:reason?null:clean(expected[0].Id),reason}});
     const accountIds=Object.fromEntries(accountRows.map(row=>[row.key,row.id||''])),missingAccounts=accountRows.filter(row=>row.reason);
@@ -208,7 +213,9 @@ async function runPayableReview({store,queryAll,realm,requestedBy,now=Date.now})
     const payments=analyzeBillPayments(qboBillPayments,qboBills,qboVendorCredits);
     const nativeLinks=analyzeNativePOLinks({snapshot:before,qboPurchaseOrders,qboBills,accountIds});
     const apBefore=apSnapshot(qboBills,qboVendorCredits);
+    stage='source_snapshot_after';
     const after=await store.snapshot();
+    stage='qbo_final_ap_reads';
     const [qboBillsAfter,qboVendorCreditsAfter]=await Promise.all([queryAll('Bill','Id, Balance'),queryAll('VendorCredit','Id, Balance')]);
     const apAfter=apSnapshot(qboBillsAfter,qboVendorCreditsAfter),sourceHash=fingerprint(sourceProjection(before)),sourceChanged=sourceHash!==fingerprint(sourceProjection(after));
     const compact=bills.rows.map(({ledgerId,documentNumber,vendor,date,total,transactionType,action,code,reason,qboBillId,qboVendorId,portalVendorId,vendorMatchSource,qboCandidates})=>({ledgerId,documentNumber,vendor,date,total,transactionType,action,code,reason,qboBillId,qboVendorId,portalVendorId,vendorMatchSource,qboCandidates}));
@@ -240,8 +247,8 @@ async function runPayableReview({store,queryAll,realm,requestedBy,now=Date.now})
     };
     const hasBlockedPO=purchaseOrders.awaiting.some(row=>['blocked','conflict'].includes(row.action));
     const cleanRun=!sourceChanged&&!bills.counts.blocked&&!bills.counts.conflict&&!hasBlockedPO&&!counts.unlinkedItems&&!counts.invalidDurableItemLinks&&!counts.missingAccountMappings&&!counts.paymentsMissingUnderlyingBills&&!counts.historicalPaymentsQueuedForPrinting&&!counts.nativePOLinkExceptions&&!report.ap.changedDuringReview;
-    const status=cleanRun?'complete':'needs_review'; await store.finish(id,{status,report,finished_at:new Date(now()).toISOString()}); return {id,status,report};
-  }catch(error){await store.finish(id,{status:'failed',finished_at:new Date(now()).toISOString(),error_code:'payable_review_failed'});throw new Error('QBO payable review failed; inspect run '+id)}
+    const status=cleanRun?'complete':'needs_review';stage='persist_report';await store.finish(id,{status,report,finished_at:new Date(now()).toISOString()}); return {id,status,report};
+  }catch(error){await store.finish(id,{status:'failed',finished_at:new Date(now()).toISOString(),error_code:failureCode(stage,error)});throw new Error('QBO payable review failed; inspect run '+id)}
 }
 
-module.exports={analyzeBillPayments,analyzeNativePOLinks,analyzePayables,analyzePurchaseOrders,apSnapshot,buildPortalPOGroups,buildRows,fingerprint,runPayableReview};
+module.exports={analyzeBillPayments,analyzeNativePOLinks,analyzePayables,analyzePurchaseOrders,apSnapshot,buildPortalPOGroups,buildRows,failureCode,fingerprint,runPayableReview};
