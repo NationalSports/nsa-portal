@@ -19,7 +19,7 @@ const normalizeVendor = value => {
 };
 const dateValue = value => {
   const raw=clean(value); let match=raw.match(/^(\d{4})-(\d{2})-(\d{2})/), y,m,d;
-  if(match){[,y,m,d]=match}else{match=raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})/);if(!match)return null;[,m,d,y]=match;if(y.length===2)y='20'+y}
+  if(match){[,y,m,d]=match}else{match=raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4}|\d{2})(?!\d)/);if(!match)return null;[,m,d,y]=match;if(y.length===2)y='20'+y}
   const dt=new Date(Date.UTC(+y,+m-1,+d));
   return dt.getUTCFullYear()===+y&&dt.getUTCMonth()===+m-1&&dt.getUTCDate()===+d?`${String(y).padStart(4,'0')}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`:null;
 };
