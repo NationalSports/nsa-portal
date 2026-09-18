@@ -47,7 +47,7 @@ import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
 import { buildJobs, billOverageQty, billLineNeed, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost, assistantNormSize, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, schoolPOBoxes, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, mailProxyFetch, _withTimeout, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages, dedupeMockDupes } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
-import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
+import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty, isPromoOnlyOrder } from './pricing';
 import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd, quoteAgeDays as opsQuoteAgeDays, quoteColdBucket as opsQuoteColdBucket, numericSizeKeys as opsNumericSizeKeys } from './lib/opsRecap';
 import { parseNetSuitePdf, parseNetSuitePdfMulti } from './lib/netsuitePdfParser';
 import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/recordRoute';
@@ -15709,7 +15709,9 @@ export default function App(){
     // at unit_cost/catalog), and deco_pos uses _bill_cost when billed.
     // Keep outsourced-deco cost gate in sync with OrderEditor totals / calcGP / calcOrderMargin (SO-1397).
     const soCalc=(so)=>{let rev=0,cost=0,units=0;const _aq={};safeItems(so).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}})});const _comb=linkedArtCostQty(so,_aq,sos);const af=safeArt(so);const outByItem=outsourcedDecoTypes(so);safeItems(so).forEach((it,ii)=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;units+=q;
-    if(it._sizeSells&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)rev+=n*(it._sizeSells[sz]||safeNum(it.unit_sell))})}else{rev+=q*safeNum(it.unit_sell)}
+    // Free-promo garments bill $0 no matter what per-size sells the line still carries
+    // (mirrors the editors' totals and calcOrderMargin) — their cost is still counted below.
+    if(!it.is_free_promo){if(it._sizeSells&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)rev+=n*(it._sizeSells[sz]||safeNum(it.unit_sell))})}else{rev+=q*safeNum(it.unit_sell)}}
     cost+=garmentCost(it).cost;
     safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;if(!isDecoOutsourced(so,ii,d,outByItem))cost+=eq*_decoUnitCostComb(d,q,af,cq,_comb)})});
     (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
@@ -16028,8 +16030,13 @@ export default function App(){
     const _funnelRows=[['Open',fDraft,'Estimates open'],['Sent',fSent,'Out to customer'],['Approved',fApproved,'Customer approved'],['Converted',fConverted,'Became a sales order']];
     const _funnelMax=Math.max(1,fDraft,fSent,fApproved,fConverted);
     const _funnelRate=funnelEsts.length>0?Math.round(fConverted/funnelEsts.length*100):0;
-    const _lowMargin=pipeline.filter(s=>s._rev>0).sort((a,b)=>a._pct-b._pct).slice(0,7);
-    const _lowMarginCount=pipeline.filter(s=>s._rev>0&&s._pct<25).length;
+    // Promo-only orders (promo dollars applied, or every line a free/promo garment) are
+    // giveaways priced at or below cost on purpose — they'd sit at the top of every
+    // low-margin list forever and bury the real pricing misses. They still count in the
+    // pipeline totals and the CSV export below; they're just not flagged as mistakes.
+    const _marginRankable=pipeline.filter(s=>!isPromoOnlyOrder(s));
+    const _lowMargin=_marginRankable.filter(s=>s._rev>0).sort((a,b)=>a._pct-b._pct).slice(0,7);
+    const _lowMarginCount=_marginRankable.filter(s=>s._rev>0&&s._pct<25).length;
     const _mColor=(m)=>m<20?'#962C32':m<25?'#C2410C':m<30?'#B26B12':'#1F7A54';
 
     // Monthly chart geometry (840x300 viewBox)
@@ -17376,7 +17383,7 @@ export default function App(){
         <WH id="margins" title="Margin Analysis — Where to Improve" icon="📈"/>
         {rptWidgets.margins&&<div className="card-body">
           <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Orders sorted by margin % — lowest first. Focus on improving pricing on low-margin orders.</div>
-          {pipeline.filter(s=>s._rev>0).sort((a,b)=>a._pct-b._pct).slice(0,8).map(s=>
+          {pipeline.filter(s=>s._rev>0&&!isPromoOnlyOrder(s)).sort((a,b)=>a._pct-b._pct).slice(0,8).map(s=>
             <div key={s.id} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderBottom:'1px solid #f1f5f9'}}>
               <span style={{fontWeight:700,color:'#1e40af',fontSize:11,minWidth:56}}>{s.id}</span>
               <span style={{fontSize:11,flex:1}}>{s._cname} — {s.memo}</span>
@@ -17390,7 +17397,7 @@ export default function App(){
       {rptTab==='pipeline'&&<div className="card" style={{marginBottom:12}}>
         <WH id="lowMargin" title="⚠️ Low Margin Alert — Under 25%" icon="🔴"/>
         {rptWidgets.lowMargin&&(()=>{
-          const lowMarginSOs=pipeline.filter(s=>s._rev>0&&s._pct<25).sort((a,b)=>a._pct-b._pct);
+          const lowMarginSOs=pipeline.filter(s=>s._rev>0&&s._pct<25&&!isPromoOnlyOrder(s)).sort((a,b)=>a._pct-b._pct);
           return<div className="card-body" style={{padding:lowMarginSOs.length?0:undefined}}>
             {lowMarginSOs.length===0?<div style={{textAlign:'center',color:'#22c55e',fontWeight:600,padding:16}}>✅ No orders under 25% margin — nice work!</div>:
             <table style={{fontSize:12}}><thead><tr>
