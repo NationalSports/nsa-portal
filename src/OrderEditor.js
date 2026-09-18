@@ -64,6 +64,83 @@ import { apiVerificationForPoLine, removeApiLineFromBatchPOs, removeApiLineFromP
 import { markTopstarEmailFailed, markTopstarEmailSent, topstarAttachmentName, topstarPoMatches } from './lib/topstarEmail';
 import './orderEditor.redesign.css';
 
+// Checkerboard canvas behind a garment mockup, so transparent PNG art reads as transparent
+// instead of sitting on flat grey. Same treatment as the coach proof viewer in CoachPortal.
+const OE_MOCK_CANVAS={backgroundColor:'#F7F8FB',backgroundImage:'linear-gradient(45deg,#EEF1F6 25%,transparent 25%,transparent 75%,#EEF1F6 75%),linear-gradient(45deg,#EEF1F6 25%,transparent 25%,transparent 75%,#EEF1F6 75%)',backgroundSize:'22px 22px',backgroundPosition:'0 0,11px 11px'};
+
+// ── Receiving state for one garment, as the sales order already shows it ──────────────
+// The job detail answers "what gets printed" but never answered "are the blanks here?",
+// so a rep had to bounce back to the order to find out. These render the SAME picture the
+// SO item line does: the PO number, a per-size box coloured by where those units are, and
+// the PO's overall status. Colours are the SO's, deliberately — two screens describing one
+// fact must not describe it differently.
+// szMeta is the component's _PO_SZ_META (which PO keys are metadata rather than sizes),
+// passed in rather than duplicated here so there is one copy of that list per file.
+const OE_PO_SC={
+  received:{bg:'#EAF6EE',fg:'#1E7A46',bd:'#C9E7D4',label:'✓ Received'},
+  shipped:{bg:'#EAF6EE',fg:'#1E7A46',bd:'#C9E7D4',label:'✓ Shipped'},
+  in_transit:{bg:'#EDE9FE',fg:'#6D28D9',bd:'#DDD6FE',label:'In Transit'},
+  partial:{bg:'#FEF3C7',fg:'#B45309',bd:'#FDE68A',label:'Partial'},
+  waiting:{bg:'#FEF3C7',fg:'#92400E',bd:'#FDE68A',label:'Waiting'},
+  cancelled:{bg:'#FDECEC',fg:'#962C32',bd:'#F6D4D4',label:'Cancelled'},
+};
+// One PO's totals → its overall status. Mirrors the SO item line's `st`.
+function oePoStat(po,szMeta){
+  const rcvd=po.received||{},cncl=po.cancelled||{},blld=po.billed||{},isDS=!!po.drop_ship;
+  const szK=Object.keys(po).filter(k=>!k.startsWith('_')&&!szMeta.has(k)&&typeof po[k]==='number');
+  const ord=szK.reduce((a,sz)=>a+(po[sz]||0),0);
+  const rec=szK.reduce((a,sz)=>a+(rcvd[sz]||0),0);
+  const bl=szK.reduce((a,sz)=>a+(blld[sz]||0),0);
+  const can=szK.reduce((a,sz)=>a+(cncl[sz]||0),0);
+  const open=Math.max(0,ord-rec-can);
+  const st=isDS?(bl>=ord&&ord>0?'shipped':bl>0?'partial':'waiting')
+               :(open<=0&&rec>0?'received':rec>0?'partial':bl>0?'in_transit':'waiting');
+  return{szK,ord,rec,bl,can,open,isDS,st,rcvd,cncl,blld};
+}
+// Worst-case status across every PO on the garment — the header chip. "Waiting" wins over
+// "received" on purpose: if any part of this garment is still out, the garment is not ready.
+function oeGarmentStat(item,szMeta){
+  const pos=safePOs(item);if(!pos.length)return null;
+  const rank={waiting:0,in_transit:1,partial:2,received:3,shipped:3,cancelled:4};
+  let worst=null;
+  pos.forEach(po=>{const{st}=oePoStat(po,szMeta);if(worst===null||rank[st]<rank[worst])worst=st});
+  return worst;
+}
+function OeGarmentPoChip({item,szMeta}){
+  const st=oeGarmentStat(item,szMeta);if(!st)return null;
+  const sc=OE_PO_SC[st]||OE_PO_SC.waiting;
+  return<span style={{fontSize:10,padding:'3px 9px',borderRadius:20,fontWeight:700,whiteSpace:'nowrap',background:sc.bg,color:sc.fg,border:'1px solid '+sc.bd}}>{sc.label}</span>;
+}
+function OeGarmentPoLines({item,szMeta,onOpenPo}){
+  const pos=safePOs(item);if(!pos.length)return null;
+  return<div style={{padding:'8px 14px',borderBottom:'1px solid #EEF1F6',background:'#F7F8FB',display:'flex',flexDirection:'column',gap:6}}>
+    {pos.map((po,pi)=>{
+      const d=oePoStat(po,szMeta);
+      const szs=[...d.szK].sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b))).filter(sz=>(po[sz]||0)>0);
+      if(szs.length===0)return null;
+      const sc=OE_PO_SC[d.st]||OE_PO_SC.waiting;
+      return<div key={pi} style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+        <span onClick={onOpenPo?()=>onOpenPo(po):undefined}
+          style={{fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:700,fontSize:13,letterSpacing:'0.6px',textTransform:'uppercase',color:'#192853',flexShrink:0,cursor:onOpenPo?'pointer':'default',textDecoration:onOpenPo?'underline':'none'}}
+          title={po.vendor?('PO '+(po.po_id||'')+' · '+po.vendor):undefined}>{po.po_id||'PO'}</span>
+        {po.vendor&&<span style={{fontSize:11,color:'#5A6075',flexShrink:0}}>{po.vendor}</span>}
+        <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+          {szs.map(sz=>{
+            const v=po[sz]||0,cn=d.cncl[sz]||0,r=d.isDS?(d.blld[sz]||0):(d.rcvd[sz]||0);
+            const szSt=cn>=v?'cancelled':r>=(v-cn)?(d.isDS?'shipped':'received'):r>0?'partial':(!d.isDS&&(d.blld[sz]||0)>0)?'in_transit':'waiting';
+            const c=OE_PO_SC[szSt];
+            return<div key={sz} style={{minWidth:42,textAlign:'center',borderRadius:4,overflow:'hidden',border:'1px solid '+c.bd}}>
+              <div style={{fontSize:9,fontWeight:700,letterSpacing:'0.5px',color:'#5A6075',background:'#fff',padding:'1px 0'}}>{sz}</div>
+              <div style={{fontSize:12,fontWeight:800,padding:'2px 0',background:c.bg,color:c.fg}}>{szSt==='cancelled'?'✕':szSt==='partial'?r+'/'+(v-cn):(v-cn)}</div>
+            </div>})}
+        </div>
+        <span style={{fontSize:10,padding:'3px 9px',borderRadius:20,fontWeight:700,whiteSpace:'nowrap',marginLeft:'auto',background:sc.bg,color:sc.fg,border:'1px solid '+sc.bd}}>
+          {d.st==='partial'?(d.isDS?d.bl+'/'+(d.ord-d.can)+' Billed':d.rec+'/'+(d.ord-d.can)+' Rcvd'):sc.label}</span>
+      </div>;
+    })}
+  </div>;
+}
+
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
 // No-ops when brand is empty or the name already leads with the brand, so vendors that
 // already embed the brand (SanMar, S&S) don't get it duplicated.
@@ -2545,7 +2622,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // AU footwear gets 5% less discount than apparel (school pays more for shoes).
   // pricingGroup ('lockerroom') selects a reduced tier schedule.
   const auDisc=(isFw,pricingGroup)=>{const base=auTierDisc(cust?.adidas_ua_tier||'B',pricingGroup);return isFw?Math.max(0,base-0.05):base};
-  const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
+  // `cust` is the editor's local copy of the customer record; `o.customer_id` is what actually
+  // persists. The two could drift: the editor seeds `cust` from the customer object the page hands
+  // it at mount, which is null when the customers list hadn't finished loading (cold open / deep
+  // link / reopen right after create), while the order itself already carries a customer_id. A null
+  // `cust` on an order that HAS a customer then re-showed the "Select Customer *" picker and blocked
+  // Save with "Select a customer first" until the rep picked the very same customer a second time.
+  // selC sets both together; the effect below heals any drift from the mount race.
+  const[custChanging,setCustChanging]=useState(false);
+  const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);setCustChanging(false);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
+  React.useEffect(()=>{
+    const _cid=o.customer_id;
+    if(!_cid){if(cust)setCust(null);return}
+    if(cust&&cust.id===_cid)return;// already in step — keep local edits (promo periods etc.)
+    const _c=(allCustomers||[]).find(x=>x.id===_cid);
+    if(_c)setCust(_c);
+  },[o.customer_id,allCustomers,cust]);
   const addP=p=>{const au=isAU(p.brand);const isFw=(p.category||'').toLowerCase()==='footwear';const clr=p.is_clearance&&p.clearance_cost!=null;const cost=catalogRepCost(p);const sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(cost*(o.default_markup||1.65));
     // Footwear: vendor catalogs often list whole sizes only (e.g. 5–17), which makes a
     // sparse, hard-to-fill grid. Default shoe runs to the standard 7–12 half-size set so the
@@ -4767,7 +4859,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <button className="oe2-cta" onClick={async()=>{
         if(!_flushActiveSizingDraft()){nf('Finish editing this field before saving','error');return}
         const current=oRef.current||o;
-        if(!cust){nf('Select a customer first','error');return}
+        if(!o.customer_id){nf('Select a customer first','error');return}
         const curMemo=(memoInputRef.current?.value??current.memo??'').trim();
         if(!curMemo){nf('Memo is required','error');return}
         const curPO=isSO?(poInputRef.current?.value??current.po_number??''):current.po_number;
@@ -4854,11 +4946,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {o.email_opened_at&&<div style={{fontSize:11,color:'#1e40af',marginTop:4,fontWeight:600}}>👁️ Opened: {o.email_opened_at}</div>}
             {o.follow_up_at&&<div style={{fontSize:11,color:'#92400e',marginTop:2}}>⏰ Follow-up: {new Date(o.follow_up_at).toLocaleDateString()}{new Date(o.follow_up_at)<new Date()?' (overdue)':''}</div>}
           </div>}
-          {!cust?<div style={{marginBottom:8}}><label className="form-label">Select Customer *</label><SearchSelect options={allCustomers.map(c=>{const par=c.parent_id?allCustomers.find(p=>p.id===c.parent_id):null;const tags=[...(c.search_tags||[]),...(par?.search_tags||[])].filter(Boolean).join(' ');return{value:c.id,label:`${c.name} (${c.alpha_tag})`,searchText:tags}})} value={o.customer_id} onChange={selC} placeholder="Search customer..."/>
-            <button className="btn btn-sm btn-secondary" style={{marginTop:6,fontSize:11}} onClick={()=>setShowCustNew(true)}>+ New Customer</button></div>
+          {(!cust||custChanging)?<div style={{marginBottom:8}}><label className="form-label">Select Customer *</label><SearchSelect options={allCustomers.map(c=>{const par=c.parent_id?allCustomers.find(p=>p.id===c.parent_id):null;const tags=[...(c.search_tags||[]),...(par?.search_tags||[])].filter(Boolean).join(' ');return{value:c.id,label:`${c.name} (${c.alpha_tag})`,searchText:tags}})} value={o.customer_id} onChange={selC} placeholder="Search customer..."/>
+            <button className="btn btn-sm btn-secondary" style={{marginTop:6,fontSize:11}} onClick={()=>setShowCustNew(true)}>+ New Customer</button>{custChanging&&cust&&<button className="btn btn-sm btn-secondary" style={{marginTop:6,marginLeft:6,fontSize:11}} onClick={()=>setCustChanging(false)}>Cancel</button>}</div>
           :<div style={{display:'flex',alignItems:'center',gap:'2px 12px',flexWrap:'wrap',fontSize:12,color:'#5A6075'}}>
             <span>Tier {cust.adidas_ua_tier} · {o.default_markup||1.65}x · Tax {(isSO&&o.tax_rate!=null?o.tax_rate:cust.tax_rate)?(((isSO&&o.tax_rate!=null?o.tax_rate:cust.tax_rate))*100).toFixed(3)+'%':'N/A'}</span>
-            <button style={{background:'none',border:'none',cursor:'pointer',color:'#9aa0ad',fontSize:11,textDecoration:'underline',padding:0}} onClick={()=>{if(window.confirm('Change customer for '+o.id+'? This will update pricing tier.'))selC(null);setCust(null)}}>change</button>
+            <button style={{background:'none',border:'none',cursor:'pointer',color:'#9aa0ad',fontSize:11,textDecoration:'underline',padding:0}} onClick={()=>{if(window.confirm('Change customer for '+o.id+'? This will update pricing tier.'))setCustChanging(true)}}>change</button>
             {isSO&&o.estimate_id&&onViewEstimate&&<span style={{color:'#6D28D9'}}>From: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewEstimate(o.estimate_id)} title="Open source estimate">{o.estimate_id}</span></span>}
             {/* Linked invoice(s) for this SO — number, click-through, and paid/partial/open status. */}
             {isSO&&(()=>{const _soInvs=(allInvoices||[]).filter(iv=>iv.so_id===o.id);if(_soInvs.length===0)return null;
@@ -4962,7 +5054,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <div style={{display:'flex',gap:8,marginTop:12,alignItems:'end',flexWrap:'wrap'}}>
         {isE&&saved&&(o.status==='sent'||o.status==='draft'||o.status==='open')&&<button className="btn btn-primary" style={{background:'#22c55e'}} onClick={()=>{sv('status','approved');onSave({...o,status:'approved'});nf('Estimate approved')}}><Icon name="check" size={14}/> Approve</button>}
         {isE&&o.status==='approved'&&!linkedSO&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>{
-          if(!cust){nf('Select a customer first','error');return}
+          if(!o.customer_id){nf('Select a customer first','error');return}
           if(!o.memo?.trim()){nf('Memo is required','error');return}
           const validItems=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
           if(validItems.length===0){nf('Cannot convert — add at least one item with quantities','error');return}
@@ -12075,11 +12167,15 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                             {gi.brand&&<span style={{fontSize:10,padding:'1px 6px',background:'#f1f5f9',borderRadius:4,color:'#64748b',border:'1px solid #e2e8f0'}}>{gi.brand}</span>}
                           </div>
                         </div>
-                        <div style={{textAlign:'right',flexShrink:0}}>
+                        <div style={{textAlign:'right',flexShrink:0,display:'flex',alignItems:'center',gap:8}}>
+                          <OeGarmentPoChip item={it} szMeta={_PO_SZ_META}/>
+                        <div>
                           <div style={{fontSize:18,fontWeight:800,color:'#92400e'}}>{totalUnits}</div>
                           <div style={{fontSize:9,color:'#78350f',fontWeight:600,textTransform:'uppercase'}}>units</div>
                         </div>
+                        </div>
                       </div>
+                        <OeGarmentPoLines item={it} szMeta={_PO_SZ_META} onOpenPo={po=>{const lines=[];safeItems(o).forEach((it2,i2)=>{safePOs(it2).forEach((po2,pi2)=>{if(po2.po_id&&po2.po_id===po.po_id)lines.push({lineIdx:i2,poIdx:pi2})})});if(lines.length)setEditPO({lineIdx:lines[0].lineIdx,poIdx:lines[0].poIdx,po,allLines:lines})}}/>
                       {/* Mockup — linked garments show a compact reference to their source garment */}
                       {_myLinkSrc?(()=>{const srcFiles=_filterDisplayable(mockLinkSourceFiles(_jobArts,_myLinkSrc));const sf=srcFiles[0]||null;const sUrl=sf?(typeof sf==='string'?sf:(sf?.url||'')):'';
                         return<div style={{margin:10,padding:'10px 12px',background:'#eef2ff',border:'1px solid #c7d2fe',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
@@ -12111,11 +12207,11 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                         {_proofOnly&&<div style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde047',borderRadius:6,padding:'6px 10px',marginBottom:8}}>♻️ This is the digitizer's sew-out proof from the production files — <u>not a garment mockup</u>. It can't be approved or sent to the coach. Pick an option below: reuse an approved mockup, or send to the artist for a new one.</div>}
                         <div style={{display:'grid',gridTemplateColumns:_proofOnly?'repeat(auto-fill,minmax(150px,1fr))':(_ordered.length>1?'1fr 1fr':'1fr'),gap:8}}>
                           {_ordered.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const _sd=_mockSide(f);const _lbl=(typeof f!=='string'&&f?.art_label)||'';const _cap=_proofOnly?('Production reference — '+([_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name)):([_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name);
-                            return<div key={fi} style={{position:'relative',borderRadius:8,border:'2px '+(_proofOnly?'dashed':'solid')+' '+_mkBd,overflow:'hidden',background:'white',opacity:_proofOnly?0.92:1}}>
+                            return<div key={fi} style={{position:'relative',borderRadius:4,border:'1px '+(_proofOnly?'dashed':'solid')+' #EEF1F6',borderTop:'3px solid '+_mkBd,overflow:'hidden',background:'#fff',boxShadow:'0 2px 12px rgba(0,0,0,0.06)',opacity:_proofOnly?0.92:1}}>
                               {_proofOnly&&<span style={{position:'absolute',top:6,left:6,zIndex:2,fontSize:9,fontWeight:800,textTransform:'uppercase',letterSpacing:0.4,color:'#475569',background:'rgba(241,245,249,0.95)',border:'1px solid #cbd5e1',borderRadius:4,padding:'1px 6px'}}>Proof · not a mockup</span>}
                               {!_proofOnly&&<button title="Remove this mockup" onClick={e=>{e.stopPropagation();if(window.confirm('Remove this mockup from the job?\n\n'+_cap))removeMockupUrl(url,{item:_line,artFileIds:itemArtFiles.map(a=>a.id)})}} style={{position:'absolute',top:6,right:6,zIndex:2,width:24,height:24,borderRadius:'50%',border:'none',background:'rgba(220,38,38,0.92)',color:'#fff',fontSize:14,lineHeight:'24px',cursor:'pointer',padding:0,boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}>×</button>}
                               <div style={{cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
-                              {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:_mkH,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                              {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:_mkH,objectFit:'contain',display:'block',...OE_MOCK_CANVAS}}/>
                               :_isPdfUrl(url,f)?<div style={{position:'relative',height:_mkH,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
                                 {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:_mkH,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
                                 <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',gap:4}}>
@@ -12123,15 +12219,15 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                               :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:_mkH,background:'#fafafa'}}>
                                 <span style={{fontSize:20}}>📄</span><span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
                               </div>
-                              <div style={{padding:'4px 10px',borderTop:'1px solid '+(_proofOnly?'#e2e8f0':'#fde68a'),fontSize:11,color:_proofOnly?'#64748b':'#92400e',fontWeight:600,display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}}>
+                              <div style={{padding:'4px 10px',borderTop:'1px solid #EEF1F6',fontSize:11,color:_proofOnly?'#5A6075':'#192853',fontWeight:700,display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}}>
                                 <span style={{display:'flex',alignItems:'center',gap:4,minWidth:0}}>
                                   {_ordered.length>1&&<>
                                     <button title="Move earlier" disabled={fi===0} onClick={e=>{e.stopPropagation();moveMock(_ou,fi,-1)}} style={{border:'1px solid #fcd34d',background:'#fffbeb',borderRadius:4,fontSize:11,lineHeight:1,padding:'2px 5px',cursor:fi===0?'default':'pointer',opacity:fi===0?0.4:1}}>◀</button>
                                     <button title="Move later" disabled={fi===_ordered.length-1} onClick={e=>{e.stopPropagation();moveMock(_ou,fi,1)}} style={{border:'1px solid #fcd34d',background:'#fffbeb',borderRadius:4,fontSize:11,lineHeight:1,padding:'2px 5px',cursor:fi===_ordered.length-1?'default':'pointer',opacity:fi===_ordered.length-1?0.4:1}}>▶</button>
                                   </>}
-                                  <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{_cap}</span>
+                                  <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:700,fontSize:13,letterSpacing:'0.7px',textTransform:'uppercase'}}>{_cap}</span>
                                 </span>
-                                <span style={{color:'#2563eb',cursor:'pointer',flexShrink:0}} onClick={()=>setMockupLightbox(url)}>Click to enlarge</span>
+                                <span style={{color:'#962C32',cursor:'pointer',flexShrink:0,fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:700,fontSize:12.5,letterSpacing:'0.7px',textTransform:'uppercase'}} onClick={()=>setMockupLightbox(url)}>Enlarge</span>
                               </div>
                             </div>})}
                         </div>
@@ -12415,11 +12511,15 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                             {gi.brand&&<span style={{fontSize:10,padding:'1px 6px',background:'#f1f5f9',borderRadius:4,color:'#64748b',border:'1px solid #e2e8f0'}}>{gi.brand}</span>}
                           </div>
                         </div>
-                        <div style={{textAlign:'right',flexShrink:0}}>
+                        <div style={{textAlign:'right',flexShrink:0,display:'flex',alignItems:'center',gap:8}}>
+                          <OeGarmentPoChip item={it} szMeta={_PO_SZ_META}/>
+                        <div>
                           <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{totalUnits}</div>
                           <div style={{fontSize:9,color:'#15803d',fontWeight:600,textTransform:'uppercase'}}>units</div>
                         </div>
+                        </div>
                       </div>
+                        <OeGarmentPoLines item={it} szMeta={_PO_SZ_META} onOpenPo={po=>{const lines=[];safeItems(o).forEach((it2,i2)=>{safePOs(it2).forEach((po2,pi2)=>{if(po2.po_id&&po2.po_id===po.po_id)lines.push({lineIdx:i2,poIdx:pi2})})});if(lines.length)setEditPO({lineIdx:lines[0].lineIdx,poIdx:lines[0].poIdx,po,allLines:lines})}}/>
                       {/* Mockup — linked garments reference their source garment's mock (read-only) */}
                       {_myLinkSrc?(()=>{const srcFiles=_filterDisplayable(mockLinkSourceFiles(_jArts2,_myLinkSrc));const sf=srcFiles[0]||null;const sUrl=sf?(typeof sf==='string'?sf:(sf?.url||'')):'';
                         return<div style={{margin:10,padding:'10px 12px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
@@ -12436,11 +12536,11 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                         {_proofOnly&&<div style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde047',borderRadius:6,padding:'6px 10px',marginBottom:8}}>♻️ This is the digitizer's sew-out proof from the production files — <u>not a garment mockup</u>. Use the Check Mock panel above to confirm the real approved mockup or send it to the artist.</div>}
                         <div style={{display:'grid',gridTemplateColumns:_proofOnly?'repeat(auto-fill,minmax(150px,1fr))':(_ordered.length>1?'1fr 1fr':'1fr'),gap:8}}>
                           {_ordered.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const _sd=_mockSide(f);const _lbl=(typeof f!=='string'&&f?.art_label)||'';const _cap=_proofOnly?('Production reference — '+([_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name)):([_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name);
-                            return<div key={fi} style={{position:'relative',borderRadius:8,border:'2px '+(_proofOnly?'dashed':'solid')+' '+_mkBd,overflow:'hidden',background:'white',opacity:_proofOnly?0.92:1}}>
+                            return<div key={fi} style={{position:'relative',borderRadius:4,border:'1px '+(_proofOnly?'dashed':'solid')+' #EEF1F6',borderTop:'3px solid '+_mkBd,overflow:'hidden',background:'#fff',boxShadow:'0 2px 12px rgba(0,0,0,0.06)',opacity:_proofOnly?0.92:1}}>
                               {_proofOnly&&<span style={{position:'absolute',top:6,left:6,zIndex:2,fontSize:9,fontWeight:800,textTransform:'uppercase',letterSpacing:0.4,color:'#475569',background:'rgba(241,245,249,0.95)',border:'1px solid #cbd5e1',borderRadius:4,padding:'1px 6px'}}>Proof · not a mockup</span>}
                               {!_proofOnly&&<button title="Remove this mockup" onClick={e=>{e.stopPropagation();if(window.confirm('Remove this mockup from the job?\n\n'+_cap))removeMockupUrl(url,{item:_line,artFileIds:itemArtFiles.map(a=>a.id)})}} style={{position:'absolute',top:6,right:6,zIndex:2,width:24,height:24,borderRadius:'50%',border:'none',background:'rgba(220,38,38,0.92)',color:'#fff',fontSize:14,lineHeight:'24px',cursor:'pointer',padding:0,boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}>×</button>}
                               <div style={{cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
-                              {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:_mkH,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                              {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:_mkH,objectFit:'contain',display:'block',...OE_MOCK_CANVAS}}/>
                               :_isPdfUrl(url,f)?<div style={{position:'relative',height:_mkH,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
                                 {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:_mkH,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
                                 <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',gap:4}}>
@@ -12448,15 +12548,15 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                               :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:_mkH,background:'#fafafa'}}>
                                 <span style={{fontSize:20}}>📄</span><span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
                               </div>
-                              <div style={{padding:'4px 10px',borderTop:'1px solid '+(_proofOnly?'#e2e8f0':'#bbf7d0'),fontSize:11,color:_proofOnly?'#64748b':'#166534',fontWeight:600,display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}}>
+                              <div style={{padding:'4px 10px',borderTop:'1px solid #EEF1F6',fontSize:11,color:_proofOnly?'#5A6075':'#192853',fontWeight:700,display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}}>
                                 <span style={{display:'flex',alignItems:'center',gap:4,minWidth:0}}>
                                   {_ordered.length>1&&<>
                                     <button title="Move earlier" disabled={fi===0} onClick={e=>{e.stopPropagation();moveMock(_ou,fi,-1)}} style={{border:'1px solid #bbf7d0',background:'#f0fdf4',borderRadius:4,fontSize:11,lineHeight:1,padding:'2px 5px',cursor:fi===0?'default':'pointer',opacity:fi===0?0.4:1}}>◀</button>
                                     <button title="Move later" disabled={fi===_ordered.length-1} onClick={e=>{e.stopPropagation();moveMock(_ou,fi,1)}} style={{border:'1px solid #bbf7d0',background:'#f0fdf4',borderRadius:4,fontSize:11,lineHeight:1,padding:'2px 5px',cursor:fi===_ordered.length-1?'default':'pointer',opacity:fi===_ordered.length-1?0.4:1}}>▶</button>
                                   </>}
-                                  <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{_cap}</span>
+                                  <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:700,fontSize:13,letterSpacing:'0.7px',textTransform:'uppercase'}}>{_cap}</span>
                                 </span>
-                                <span style={{color:'#2563eb',cursor:'pointer',flexShrink:0}} onClick={()=>setMockupLightbox(url)}>Click to enlarge</span>
+                                <span style={{color:'#962C32',cursor:'pointer',flexShrink:0,fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:700,fontSize:12.5,letterSpacing:'0.7px',textTransform:'uppercase'}} onClick={()=>setMockupLightbox(url)}>Enlarge</span>
                               </div>
                             </div>})}
                         </div>
@@ -16483,7 +16583,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       {/* Change Color Modal — for vendor-live items where the SKU stays the same but color varies */}
     <CustModal isOpen={showCustEdit} onClose={()=>setShowCustEdit(false)} onSave={(updated)=>{if(onSaveCustomer)onSaveCustomer(updated);setCust(updated);setShowCustEdit(false)}} customer={cust} parents={allCustomers.filter(c=>!c.parent_id)} reps={REPS}/>
     {/* Create a customer inline from the order/estimate, then select it — selC can't be used because the new record isn't in allCustomers yet. */}
-    <CustModal isOpen={showCustNew} onClose={()=>setShowCustNew(false)} onSave={(nc)=>{if(onSaveCustomer)onSaveCustomer(nc);setCust(nc);sv('customer_id',nc.id);sv('default_markup',nc.catalog_markup||1.65);setShowCustNew(false)}} customer={null} parents={allCustomers.filter(c=>!c.parent_id)} reps={REPS} supabase={supabase} allCustomers={allCustomers}/>
+    <CustModal isOpen={showCustNew} onClose={()=>setShowCustNew(false)} onSave={(nc)=>{if(onSaveCustomer)onSaveCustomer(nc);setCust(nc);setCustChanging(false);sv('customer_id',nc.id);sv('default_markup',nc.catalog_markup||1.65);setShowCustNew(false)}} customer={null} parents={allCustomers.filter(c=>!c.parent_id)} reps={REPS} supabase={supabase} allCustomers={allCustomers}/>
   </div>);
 }
 

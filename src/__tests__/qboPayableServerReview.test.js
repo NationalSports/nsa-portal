@@ -90,6 +90,15 @@ test('purchase-order review flags mapped items that are inactive or use the wron
   const result=analyzePurchaseOrders({snapshot,qboVendors:[qboVendor],qboPurchaseOrders:[],qboItems:[{Id:'I1',Type:'Inventory',Active:false,IncomeAccountRef:{value:'bad'},ExpenseAccountRef:{value:'bad'}}],accountIds:{...accounts,income_account:'5'}});
   expect(result.invalidItemLinks).toEqual([{sourceId:'P1',qboId:'I1',reason:expect.stringContaining('inactive QBO item')}]);
 });
+test('an exact QBO item cannot be offered as a link without a Portal product id',()=>{
+  const snapshot={portalVendors:[portal],soItems:[{id:1,sku:'SKU-1',nsa_cost:10}],poLines:[{id:11,so_item_id:1,po_id:'PO 60003 TEST',vendor:'Acme LLC',created_at:'2026-09-10',sizes:{M:1}}],links:{vendorQBMap:{V1:'9'}}};
+  const item={Id:'I1',Sku:'SKU-1',Type:'NonInventory',IncomeAccountRef:{value:'5'},ExpenseAccountRef:{value:'1'}};
+  const result=analyzePurchaseOrders({snapshot,qboVendors:[qboVendor],qboItems:[item],accountIds:{...accounts,income_account:'5'}});
+  expect(result.unlinkedItems[0]).toMatchObject({sourceId:'',disposition:'missing_portal_product',qboCandidates:[{id:'I1'}]});
+  snapshot.soItems[0].product_id='P1';
+  const duplicate=analyzePurchaseOrders({snapshot,qboVendors:[qboVendor],qboItems:[item,{...item,Id:'I2',ExpenseAccountRef:{value:'wrong'}}],accountIds:{...accounts,income_account:'5'}});
+  expect(duplicate.unlinkedItems[0].disposition).toBe('manual_review');
+});
 test('payment review detects missing applications and historical print queue',()=>{
   const payments=[{Id:'P1',TxnDate:'2026-08-01',TotalAmt:55,CheckPayment:{PrintStatus:'NeedToPrint'},Line:[{LinkedTxn:[{TxnId:'B404',TxnType:'Bill'}]}]}];
   const result=analyzeBillPayments(payments,[],[]);
@@ -106,4 +115,16 @@ test('overlapping run performs no source or QBO reads',async()=>{
   const store={claim:jest.fn(async()=>false),snapshot:jest.fn()};const queryAll=jest.fn();
   expect(await runPayableReview({store,queryAll,realm:'123',requestedBy:'staff'})).toEqual({status:'busy'});
   expect(store.snapshot).not.toHaveBeenCalled();expect(queryAll).not.toHaveBeenCalled();
+});
+test('native bill diagnostics separate freight and fees but keep residual differences blocked',()=>{
+  const snapshot={links:{qbPOMap:{'PO 1':'10'}}};
+  const po={Id:'10',VendorRef:{value:'9'},TotalAmt:69.74,LinkedTxn:[{TxnId:'20',TxnType:'Bill'}]};
+  const bill={Id:'20',VendorRef:{value:'9'},TotalAmt:85.69,Line:[
+    {Amount:69.75,LinkedTxn:[{TxnId:'10',TxnType:'PurchaseOrder'}]},
+    {Amount:15.26,AccountBasedExpenseLineDetail:{AccountRef:{value:'out'}}},
+    {Amount:.68,AccountBasedExpenseLineDetail:{AccountRef:{value:'fee'}}},
+  ]};
+  const result=analyzeNativePOLinks({snapshot,qboPurchaseOrders:[po],qboBills:[bill],accountIds:{outbound_freight_account:'out',sports_inc_fee_account:'fee'}});
+  expect(result.verified).toHaveLength(0);
+  expect(result.exceptions[0]).toMatchObject({freight:0,reconciles:false,chargeEvidence:{inboundFreight:0,outboundFreight:15.26,sportsFee:.68,amountDifference:15.95,residualAfterCharges:.01}});
 });
