@@ -17,3 +17,9 @@ test('renders persisted exceptions without exposing a write control',async()=>{
   authFetch.mockResolvedValue(ok({...ready,runs:[{id:'r1',status:'needs_review',started_at:'now',finished_at:'later',report:{population:1,counts:{blocked:1},sourceHash:'abc',sourceChanged:false,results:[{ledgerId:'L1',transactionType:'Bill',documentNumber:'B1',vendor:'Acme',date:'2026-01-01',total:10,action:'blocked',reason:'No vendor'}]}}]}));
   render(<QBPayableServerReviewCard/>);fireEvent.click(screen.getByText(/Refresh payable review history/));await screen.findByText(/Needs review/);fireEvent.click(screen.getByText(/Needs review/));expect(await screen.findByText('No vendor')).toBeTruthy();expect(screen.queryByText(/Create bill/i)).toBeNull();
 });
+test('resumes the saved snapshot ID rather than starting another full scan',async()=>{
+  authFetch.mockResolvedValue(ok({...ready,runs:[{id:'r1',snapshot_id:'snapshot-1',status:'failed',started_at:'now',finished_at:'later'}]}));
+  render(<QBPayableServerReviewCard/>);fireEvent.click(screen.getByText(/Refresh payable review history/));
+  fireEvent.click(await screen.findByText(/Resume or replay saved snapshot/));
+  await waitFor(()=>expect(authFetch).toHaveBeenCalledWith('/.netlify/functions/qbo-payable-review-background',expect.objectContaining({body:JSON.stringify({snapshotId:'snapshot-1'})})));
+});

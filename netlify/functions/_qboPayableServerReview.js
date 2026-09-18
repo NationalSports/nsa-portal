@@ -1,4 +1,5 @@
 const { createHash, randomUUID } = require('crypto');
+const {validate:validateSnapshot}=require('./_qboPayableSnapshot');
 
 const clean = value => String(value == null ? '' : value).trim();
 const money = value => Math.round((Number(value) || 0) * 100) / 100;
@@ -25,8 +26,8 @@ const dateValue = value => {
 };
 const fingerprint = rows => createHash('sha256').update(JSON.stringify(rows)).digest('hex');
 const accountTypeMatches=(actual,expected)=>{const value=norm(actual).replace(/\s*\(.*\)$/,'');return expected.some(type=>{const target=norm(type);return value===target||value===target+'s'||value+'s'===target})};
-const safeFailureCodes=new Set(['snapshot_failed','snapshot_limit','qbo_read_failed','qbo_population_limit','realm_changed','invalid_realm','run_finish_failed']);
-const failureCode=(stage,error)=>`payable_review_${stage}_${safeFailureCodes.has(clean(error?.message))?clean(error.message):'unexpected'}`;
+const safeFailureCodes=new Set(['snapshot_failed','snapshot_limit','qbo_read_failed','qbo_population_limit','realm_changed','invalid_realm','run_finish_failed','snapshot_incomplete','snapshot_corrupt','snapshot_not_found','snapshot_time_budget','snapshot_count_invalid','snapshot_count_changed','snapshot_store_failed','qbo_rate_limited','qbo_upstream_failed','qbo_timeout','replay_mismatch']);
+const failureCode=(stage,error)=>`payable_review_${stage}_${error?.message==='QBO upstream request timed out'?'qbo_timeout':safeFailureCodes.has(clean(error?.message))?clean(error.message):'unexpected'}`;
 const actionSummary = rows => (rows || []).reduce((out,row)=>{
   const key=clean(row.action)||'unknown';
   out.counts[key]=(out.counts[key]||0)+1;
@@ -200,12 +201,14 @@ const apSnapshot=(bills,credits)=>({
 });
 const sourceProjection=snapshot=>({ledger:snapshot.ledger||[],products:snapshot.products||[],salesOrders:(snapshot.salesOrders||[]).map(row=>({id:row.id,created_at:row.created_at,_doc_type:row._doc_type})),soItems:snapshot.soItems||[],poLines:snapshot.poLines||[],links:snapshot.links||{},parkedPurchaseOrderIds:snapshot.qbConfig?.parkedPurchaseOrderIds||[]});
 
-async function runPayableReview({store,queryAll,realm,requestedBy,now=Date.now}) {
+async function runPayableReview({store,queryAll,realm,requestedBy,now=Date.now,prepareSnapshot}) {
   if(!/^\d+$/.test(clean(realm)))throw new Error('invalid_realm');
   const id=randomUUID(); if(!await store.claim({id,realm_id:realm,company_key:'national',status:'running',requested_by:requestedBy}))return {status:'busy'};
-  let stage='source_snapshot_before';
+  let stage=prepareSnapshot?'checkpoint_snapshot':'source_snapshot_before';
   try{
-    const before=await store.snapshot(); if(!Array.isArray(before.ledger)||before.ledger.length>20000)throw new Error('snapshot_limit');
+    const frozen=prepareSnapshot?validateSnapshot(await prepareSnapshot(),realm):null;
+    if(frozen){queryAll=async entity=>frozen.entities[entity].rows}
+    const before=frozen?frozen.portal:await store.snapshot(); if(!Array.isArray(before.ledger)||before.ledger.length>20000)throw new Error('snapshot_limit');
     stage='qbo_primary_reads';
     const [qboVendors,qboBills,qboVendorCredits,qboAccounts,qboPurchaseOrders,qboBillPayments,qboItems]=await Promise.all([
       queryAll('Vendor','Id, DisplayName, CompanyName, Active'),queryAll('Bill','*'),queryAll('VendorCredit','*'),
@@ -221,10 +224,10 @@ async function runPayableReview({store,queryAll,realm,requestedBy,now=Date.now})
     const nativeLinks=analyzeNativePOLinks({snapshot:before,qboPurchaseOrders,qboBills,accountIds});
     const apBefore=apSnapshot(qboBills,qboVendorCredits);
     stage='source_snapshot_after';
-    const after=await store.snapshot();
+    const after=frozen?frozen.portal:await store.snapshot();
     stage='qbo_final_ap_reads';
     const [qboBillsAfter,qboVendorCreditsAfter]=await Promise.all([queryAll('Bill','*'),queryAll('VendorCredit','*')]);
-    const apAfter=apSnapshot(qboBillsAfter,qboVendorCreditsAfter),sourceHash=fingerprint(sourceProjection(before)),sourceChanged=sourceHash!==fingerprint(sourceProjection(after));
+    const apAfter=apSnapshot(qboBillsAfter,qboVendorCreditsAfter),sourceHash=frozen?frozen.contentHash:fingerprint(sourceProjection(before)),sourceChanged=frozen?false:sourceHash!==fingerprint(sourceProjection(after));
     const compact=bills.rows.map(({ledgerId,documentNumber,vendor,date,total,transactionType,paymentMethod,poOrigin,action,code,reason,qboBillId,qboVendorId,portalVendorId,vendorMatchSource,qboCandidates})=>({ledgerId,documentNumber,vendor,date,total,transactionType,paymentMethod,poOrigin,action,code,reason,qboBillId,qboVendorId,portalVendorId,vendorMatchSource,qboCandidates}));
     const vendorRows=[...bills.rows,...purchaseOrders.awaiting],unlinkedVendorRows=vendorRows.filter(row=>['unlinked_vendor','ambiguous_portal_vendor','invalid_vendor_link'].includes(row.code));
     const unlinkedVendorGroups=new Map();for(const row of unlinkedVendorRows){const key=normalizeVendor(row.vendor)||'(blank)';const group=unlinkedVendorGroups.get(key)||{vendor:row.vendor,sourceIds:[],documents:[],transactionTypes:new Set(),reasons:new Set()};group.sourceIds.push(row.ledgerId||row.poId);group.documents.push(row.documentNumber||row.poId);group.transactionTypes.add(row.transactionType||'PurchaseOrder');group.reasons.add(row.reason);unlinkedVendorGroups.set(key,group)}
@@ -244,7 +247,7 @@ async function runPayableReview({store,queryAll,realm,requestedBy,now=Date.now})
       nativePOLinksVerified:nativeLinks.verified.length,nativePOLinkExceptions:nativeLinks.exceptions.length,
     };
     const totals={portalPOsAwaitingAction:sumMoney(purchaseOrders.awaiting),existingLinkedQboPOs:purchaseOrders.linkedTotal,billsAndCreditsAwaitingAction:sumMoney(billAwaiting),historicalPayablesExcluded:sumMoney(historicalPayables),exactExistingMatches:sumMoney(exactMatches),purchaseOrderExactExistingMatches:sumMoney(poExact),ambiguousDuplicates:money(sumMoney(conflicts)+sumMoney(poConflicts)),ambiguousPayableDuplicates:sumMoney(conflicts),ambiguousPurchaseOrderDuplicates:sumMoney(poConflicts),paymentsMissingUnderlyingBills:payments.missingTotal,historicalPaymentsQueuedForPrinting:payments.historicalPrintTotal};
-    const report={mode:'read_only',source:'portal_payables_and_live_qbo',reviewedAt:new Date(now()).toISOString(),sourceHash,sourceChanged,population:before.ledger.length,
+    const report={mode:'read_only',source:frozen?'completed_payable_snapshot':'portal_payables_and_live_qbo',snapshotId:frozen?.id||null,apBasis:frozen?'frozen_snapshot_not_live_change_measurement':'live_before_and_after',reviewedAt:frozen?frozen.createdAt:new Date(now()).toISOString(),sourceHash,sourceChanged,population:before.ledger.length,
       populations:{billLedger:before.ledger.length,portalPurchaseOrders:purchaseOrders.groups.length,qboVendors:qboVendors.length,qboBills:qboBills.length,qboVendorCredits:qboVendorCredits.length,qboBillPayments:qboBillPayments.length,qboPurchaseOrders:qboPurchaseOrders.length,qboItems:qboItems.length},
       counts,totals,billCounts:bills.counts,billTotals:bills.totals,results:compact,
       purchaseOrders:{counts:purchaseOrders.awaitingSummary.counts,totals:purchaseOrders.awaitingSummary.totals,excludedCounts:purchaseOrders.excludedSummary.counts,excludedTotals:purchaseOrders.excludedSummary.totals,awaiting:purchaseOrders.awaiting.map(({poId,vendor,date,total,action,code,reason,qboId,qboVendorId,portalVendorId,vendorMatchSource,qboCandidates,lines})=>({poId,vendor,date,total,action,code,reason,qboId,qboVendorId,portalVendorId,vendorMatchSource,qboCandidates,sourceLineIds:(lines||[]).map(line=>line.sourceLineId)})),excluded:purchaseOrders.excluded.map(({poId,total,action,reason})=>({poId,total,action,reason})),linked:purchaseOrders.linked,unlinkedItems:purchaseOrders.unlinkedItems,invalidItemLinks:purchaseOrders.invalidItemLinks},
