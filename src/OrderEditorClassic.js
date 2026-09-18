@@ -14527,12 +14527,17 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               const lines=allLines.map(ln=>{
                 const it=o.items[ln.lineIdx];const pl=it?.po_lines?.[ln.poIdx];
                 if(!it||!pl)return null;
-                const sizes={};Object.keys(pl).filter(k=>!k.startsWith('_')&&!NON_SZ_PO_KEYS.includes(k)&&typeof pl[k]==='number').forEach(sz=>{sizes[sz]=pl[sz]||0});
-                return{lineIdx:ln.lineIdx,poIdx:ln.poIdx,sku:it.sku||'',name:it.name||'',color:it.color||'',queued:pl.status==='queued',received:{...(pl.received||{})},cancelled:{...(pl.cancelled||{})},sizes,removed:false};
+                // The box shows what this PO is actually on the hook for. Older POs may carry a
+                // `cancelled` map from the retired cancel editor; those units are already released,
+                // so seed ordered-minus-cancelled (never below received) and let the save below drop
+                // the map. Without this, opening and saving an old PO would silently re-add them.
+                const _cn=pl.cancelled||{};const _rc=pl.received||{};
+                const sizes={};Object.keys(pl).filter(k=>!k.startsWith('_')&&!NON_SZ_PO_KEYS.includes(k)&&typeof pl[k]==='number').forEach(sz=>{sizes[sz]=Math.max(safeNum(_rc[sz]),Math.max(0,(pl[sz]||0)-safeNum(_cn[sz])))});
+                return{lineIdx:ln.lineIdx,poIdx:ln.poIdx,sku:it.sku||'',name:it.name||'',color:it.color||'',queued:pl.status==='queued',received:{...(pl.received||{})},sizes,removed:false};
               }).filter(Boolean);
               setEditPO(p=>({...p,_draft:{lines,adds:[]}}));
             }}>
-              ✏️ <span style={{textDecoration:'underline',fontWeight:700}}>Edit PO</span> <span style={{fontSize:9}}>(add items, change quantities, add sizes, cancel sizes, remove lines)</span>
+              ✏️ <span style={{textDecoration:'underline',fontWeight:700}}>Edit PO</span> <span style={{fontSize:9}}>(add items, change quantities, add sizes, remove lines)</span>
             </div>
             {editPO._draft&&(()=>{
               const draft=editPO._draft;
@@ -14543,7 +14548,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               const addedIdxs=new Set(draft.adds.map(a=>a.itemIdx));
               const addable=safeItems(o).map((it2,i2)=>({it2,i2})).filter(({it2,i2})=>!onPoIdxs.has(i2)&&!addedIdxs.has(i2)&&(it2.sku||it2.name));
               return<div style={{marginTop:8,padding:10,border:'1px dashed #7c3aed',borderRadius:6,background:'#faf5ff'}}>
-                <div style={{fontSize:11,color:'#6d28d9',marginBottom:8}}>Change ordered quantities directly (sizes can't go below what's already received), add new sizes, remove lines, or pull more of this order's items onto the PO — including SKUs assigned to other vendors.</div>
+                <div style={{fontSize:11,color:'#6d28d9',marginBottom:8}}>Whatever you type is the PO's new total for that size (it can't go below what's already received). Lower a number and the difference goes back to the order as available to re-pick or put on another PO. You can also add sizes, remove lines, or pull more of this order's items onto the PO — including SKUs assigned to other vendors.</div>
                 {draft.lines.map((ln,li)=>{
                   if(ln.queued)return<div key={'q'+li} style={{padding:8,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:4,marginBottom:6,fontSize:11,color:'#b45309'}}><strong>{ln.sku}</strong> — queued in a batch; edit it from the Batch POs page.</div>;
                   const rcvT=Object.values(ln.received).reduce((a,v)=>a+safeNum(v),0);
@@ -14564,16 +14569,6 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                         <input id={'po-editq-'+li+'-'+sz} style={{width:46,textAlign:'center',border:'1px solid '+(below?'#dc2626':'#c4b5fd'),borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:below?'#fef2f2':'white'}} value={ln.sizes[sz]??''} placeholder="0"
                           onChange={e=>{const v=Math.max(0,parseInt(e.target.value)||0);setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,sizes:{...l.sizes,[sz]:v}}:l)}))}}/>
                         {rcv>0&&<div style={{fontSize:9,fontWeight:700,color:below?'#dc2626':'#166534'}} title={below?'Below received — will be kept at '+rcv+' on save':'Already received'}>rcvd {rcv}</div>}
-                        {/* Cancelling is not the same as lowering the qty: the PO keeps its original
-                            ordered number as the record of what was placed, and the cancelled units
-                            go back to the order as available to re-pick or put on another PO. */}
-                        {(()=>{const q=Math.max(0,parseInt(ln.sizes[sz])||0);const maxC=Math.max(0,q-rcv);const c=safeNum((ln.cancelled||{})[sz]);
-                          if(maxC<=0&&c<=0)return null;
-                          return<div style={{marginTop:3}} title={'Cancelled — the vendor is not supplying these. Up to '+maxC+' can be cancelled; they return to the order as available to re-pick or put on another PO. Set it back to 0 to add them back.'}>
-                            <input style={{width:46,textAlign:'center',border:'1px solid #f59e0b',borderRadius:4,padding:'2px',fontSize:11,fontWeight:700,background:c>0?'#fffbeb':'white'}} value={c||''} placeholder="0"
-                              onChange={e=>{const v=Math.max(0,Math.min(parseInt(e.target.value)||0,maxC));setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,cancelled:{...(l.cancelled||{}),[sz]:v}}:l)}))}}/>
-                            <div style={{fontSize:9,fontWeight:700,color:c>0?'#b45309':'#94a3b8'}}>cancel</div>
-                          </div>})()}
                       </div>})}
                       <div style={{textAlign:'center'}}>
                         <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',marginBottom:2}}>+ Size</div>
@@ -14660,19 +14655,20 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                       }
                       const next={...pl};
                       Object.keys(next).filter(k=>!k.startsWith('_')&&!NON_SZ_PO_KEYS.includes(k)&&typeof next[k]==='number').forEach(k=>{delete next[k]});
-                      // Cancellations come from the draft now (the panel owns them), clamped to what
-                      // is actually cancellable and dropped at 0 so clearing a box adds the size back.
-                      const dcncl=ln.cancelled||{};const cncl={};
+                      // What the rep typed IS the PO's quantity for that size — there is no separate
+                      // cancellation to reconcile. Anything released this way drops straight out of
+                      // poCommitted (ordered - cancelled), so it returns to the order as available to
+                      // re-pick or put on another PO, exactly as cancelling used to do. Drop any legacy
+                      // cancelled map: the seeded quantity above already accounts for it, and leaving it
+                      // would subtract those units a second time.
+                      delete next.cancelled;
                       const union=[...new Set([...Object.keys(ln.sizes),...Object.keys(rcvMap).filter(sz=>safeNum(rcvMap[sz])>0)])];
                       union.forEach(sz=>{
                         let q=Math.max(0,parseInt(ln.sizes[sz])||0);
                         const r=safeNum(rcvMap[sz]);
                         if(q<r){q=r;clampedAny=true}
-                        const cv=Math.max(0,Math.min(safeNum(dcncl[sz]),q-r));
-                        if(cv>0)cncl[sz]=cv;
                         if(q>0)next[sz]=q;
                       });
-                      if(Object.keys(cncl).length>0)next.cancelled=cncl;
                       const szK=Object.keys(next).filter(k=>!k.startsWith('_')&&!NON_SZ_PO_KEYS.includes(k)&&typeof next[k]==='number');
                       if(szK.length===0){willRemove.push(ln);return}
                       const totR=szK.reduce((a,sz)=>a+safeNum((next.received||{})[sz]),0);
