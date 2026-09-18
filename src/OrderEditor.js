@@ -10,6 +10,7 @@ import { lineIntentKey, newOrderLineId } from './lib/orderLineIdentity';
 import { liveSoInvoices, soInvoiceBalance, invoiceBalanceSnapshot } from './lib/soInvoiceBalance';
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { buildProductIndex } from './lib/productIndex';
+import { isApiCatalogVendor, styleSkuOrFilter, buildStyleColorwayMap, lookupStyleColorway, colorKey as colorKeyOf } from './lib/vendorColorwayImages';
 import { createPortal, flushSync } from 'react-dom';
 import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
@@ -1252,6 +1253,52 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }finally{delete adidasInvFetching.current[sku]}
   },[]);
 
+  // ── Catalog photos for the API-catalog vendors (SanMar, S&S, Richardson, Momentec) ──
+  // Those four are excluded from the in-memory `prod` catalog (API_CATALOG_VENDOR_IDS in
+  // lib/dbEngine.js — ~50k rows that blew the client load cap), and their lines are saved at
+  // STYLE level ('ST850' + 'True Navy') while the photo lives on the per-color row
+  // ('ST850-TrueNavy'). findProd matches by exact sku/product_id, so it missed twice over and
+  // every SanMar/S&S garment reached the Quick Mock Builder as "Not in system" — reps hand-
+  // uploaded photos the catalog already had. Fetch just the line's own style (~15 rows) on
+  // demand and cache it for the session. Prefers the garment-only flat over model photography.
+  const styleImgCache=useRef({});// {styleSku: {colorKey:{front,back,id,sku}}}
+  const styleImgFetching=useRef({});
+  const[styleImgs,setStyleImgs]=useState({});
+  const fetchStyleColorways=useCallback(async(sku)=>{
+    const or=styleSkuOrFilter(sku);
+    if(!or||!supabase)return;
+    if(styleImgCache.current[sku]){setStyleImgs(prev=>prev[sku]?prev:{...prev,[sku]:styleImgCache.current[sku]});return}
+    if(styleImgFetching.current[sku])return;
+    styleImgFetching.current[sku]=true;
+    try{
+      const{data,error}=await supabase.from('products')
+        .select('id,sku,color,image_front_url,image_back_url,image_flat_front_url,image_flat_back_url')
+        .or(or).limit(200);
+      if(error)throw new Error(error.message);
+      const map=buildStyleColorwayMap(data||[]);
+      // Cache the empty result too: a style with no imaged colorway must not be re-queried on
+      // every render. A genuine failure below stays uncached so it can retry.
+      styleImgCache.current[sku]=map;
+      setStyleImgs(prev=>({...prev,[sku]:map}));
+    }catch(e){
+      // Mark it looked-at (null, not the undefined "not tried yet") so the builder stops
+      // showing a spinner and offers the upload prompt instead. The cache stays unset, so a
+      // later render can retry rather than the rep being stuck with a dead style all session.
+      console.warn('[colorway-img] fetch failed for',sku,e&&e.message);
+      setStyleImgs(prev=>({...prev,[sku]:null}));
+    }
+    finally{delete styleImgFetching.current[sku]}
+  },[supabase]);
+  // Resolve a line's catalog colorway photo, or null. Only bridges lines whose vendor is one
+  // of the excluded catalogs AND which found no local catalog row — an item that already
+  // resolves locally keeps resolving exactly as before.
+  const _styleImg=(it,prd)=>{
+    if(!it||(prd===undefined?findProd(it):prd))return null;
+    const vId=it.vendor_id||dbVendorBySku[it.sku];
+    if(!isApiCatalogVendor(vId))return null;
+    return lookupStyleColorway(styleImgs[it.sku],it);
+  };
+
   // Vendor product image cache — {sku+color: {front:url, back:url}}
   const vendorImgCache=useRef({});
   const vendorImgFetching=useRef({});
@@ -1316,8 +1363,45 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   },[products,vendorList]);
   // Helper to get vendor image for an item (used in itemDetails builders)
   const _vImg=(it,field)=>{const k=(it?.sku||'')+'|'+(it?.color||'').toLowerCase();const c=vendorImgs[k];return field==='front'?c?.front||'':c?.back||''};
-  // Resolve the best front-image URL for a line item (same priority as itemDetails)
-  const _itemImg=(it)=>{const prd=findProd(it);return prd?.image_front_url||prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||_vImg(it,'front')||''};
+  // Resolve the best front-image URL for a line item (same priority as itemDetails), with the
+  // excluded-catalog colorway row slotted in ahead of the session-only _colorImage (which is
+  // dropped on save — it isn't in _itemCols) and ahead of the live vendor API call.
+  const _itemImg=(it)=>{const prd=findProd(it);return prd?.image_front_url||prd?.image_url||(prd?.images&&prd.images[0])||_styleImg(it,prd)?.front||it._colorImage||_vImg(it,'front')||''};
+  // Back-image twin of _itemImg. Defined once here because the mock builders used to declare
+  // their own identical `_back` — two copies to keep in sync, in two editors, was four.
+  const _itemBackImg=(it)=>{const prd=findProd(it);return prd?.image_back_url||prd?.back_image_url||(prd?.images&&prd.images[1])||_styleImg(it,prd)?.back||it?._colorBackImage||_vImg(it,'back')||''};
+  // True while a garment's photo is still being looked up, so the builder shows a spinner
+  // rather than the red "Not in system — upload one" (which told reps to hand-upload a photo
+  // that was seconds from arriving). Covers BOTH lookups: the catalog colorway query and the
+  // live vendor API call.
+  const _garmentImgPending=(full,sku,color,front)=>{
+    if(!full||front)return false;
+    const vId=full.vendor_id||dbVendorBySku[full.sku];
+    if(supabase&&isApiCatalogVendor(vId)&&styleImgs[full.sku]===undefined&&styleSkuOrFilter(full.sku))return true;
+    if(!(isSSItem(full)||isSanMarItem(full)||isMomentecItem(full)))return false;
+    return vendorImgs[(sku||'')+'|'+(color||'').toLowerCase()]===undefined;
+  };
+  // Persist a product photo a rep uploaded in the mock builder so it is reused next time.
+  // Local catalog row first; otherwise the excluded-catalog colorway row this line resolved
+  // to, written straight to the DB (it isn't in the in-memory catalog to hand to onSaveProduct).
+  // The flat column carries it because that is what the rep uploaded — a garment-only photo —
+  // and because migration 075's trigger would otherwise repoint image_front_url back at the
+  // stored flat on the next write, silently discarding the upload.
+  const _saveGarmentProductImage=async(g,url,side)=>{
+    const prd=products.find(p=>p.sku===g.sku&&(!g.color||p.color===g.color))||products.find(p=>p.sku===g.sku);
+    if(prd&&onSaveProduct){onSaveProduct(side==='back'?{...prd,back_image_url:url}:{...prd,image_url:url});return true}
+    const row=lookupStyleColorway(styleImgs[g.sku],g);
+    if(!row||!row.id||!supabase)return false;
+    try{
+      const col=side==='back'?'image_flat_back_url':'image_flat_front_url';
+      const{error}=await supabase.from('products').update({[col]:url}).eq('id',row.id);
+      if(error)throw new Error(error.message);
+      const next={...row,[side==='back'?'back':'front']:url};
+      styleImgCache.current[g.sku]={...(styleImgCache.current[g.sku]||{}),[colorKeyOf(g.color)]:next};
+      setStyleImgs(prev=>({...prev,[g.sku]:styleImgCache.current[g.sku]}));
+      return true;
+    }catch(e){console.warn('[colorway-img] save failed for',g.sku,e&&e.message);return false}
+  };
   // Resolve a swatch hex from a color name — local common-color map first, then the shared pantone map.
   const _swatchHex=(name)=>{const M={navy:'#001f3f',white:'#ffffff',black:'#111827',red:'#dc2626',royal:'#4169e1',blue:'#3b82f6',grey:'#9aa1ac',gray:'#9aa1ac',green:'#166534',forest:'#14532d',kelly:'#16a34a',orange:'#ea580c',gold:'#c9a227',yellow:'#eab308',maroon:'#800000',cardinal:'#8c1515',silver:'#c0c0c0',purple:'#6d28d9',pink:'#ec4899',brown:'#7c4a21',tan:'#d2b48c',cream:'#f5f5dc',teal:'#0d9488',charcoal:'#374151',heather:'#9aa1ac'};const s=String(name||'').trim().toLowerCase();if(!s)return null;if(M[s])return M[s];const hit=Object.keys(M).find(k=>s.includes(k));return hit?M[hit]:(pantoneHex(name)||null)};
   // Small color thumbnail for a line item: a colored swatch (two-tone split for "Navy,White"),
@@ -1759,19 +1843,38 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     });
   },[o.items?.length]);// only re-run when items are added/removed
 
-  // Auto-fetch vendor product images for API items missing images (for artist dashboard)
+  // Pull the catalog colorway photos for any excluded-catalog line (SanMar/S&S/Richardson/
+  // Momentec) that can't resolve a local product row. This is the cheap path — one small
+  // query per STYLE against rows the nightly syncs already keep current — and it runs before
+  // the live vendor-API fallback below so the common case never needs a SOAP round-trip.
+  // dbVendorBySku is a dependency on purpose: it arrives asynchronously, and a line that
+  // carries no vendor_id of its own is only recognizable as SanMar/S&S once it lands.
+  React.useEffect(()=>{
+    const seen=new Set();
+    safeItems(o).forEach(item=>{
+      if(!item||!item.sku||seen.has(item.sku))return;
+      const vId=item.vendor_id||dbVendorBySku[item.sku];
+      if(!isApiCatalogVendor(vId)||findProd(item))return;
+      seen.add(item.sku);
+      if(styleImgCache.current[item.sku]||styleImgFetching.current[item.sku])return;
+      fetchStyleColorways(item.sku);
+    });
+  },[o.items?.length,products,dbVendorBySku,fetchStyleColorways]);// eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-fetch vendor product images for API items missing images (for artist dashboard).
+  // Live vendor SOAP/REST call — the LAST resort, for a colorway the catalog has no photo for.
   React.useEffect(()=>{
     const items=safeItems(o);
     items.forEach(item=>{
       if(!(isSSItem(item)||isSanMarItem(item)||isMomentecItem(item)))return;
       const prd=findProd(item);
-      const hasImg=prd?.image_front_url||prd?.image_url||(prd?.images&&prd.images[0])||item._colorImage;
+      const hasImg=prd?.image_front_url||prd?.image_url||(prd?.images&&prd.images[0])||item._colorImage||_styleImg(item)?.front;
       if(hasImg)return;
       const cacheKey=item.sku+'|'+(item.color||'').toLowerCase();
       if(vendorImgCache.current[cacheKey]||vendorImgFetching.current[cacheKey])return;
       fetchVendorImage(item.sku,item.color,item.vendor_id,item);
     });
-  },[o.items?.length,products]);
+  },[o.items?.length,products,styleImgs]);// eslint-disable-line react-hooks/exhaustive-deps
 
   // A memo receipt confirms one field, never the revision of the old item snapshot.
   React.useEffect(()=>{
@@ -4598,9 +4701,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       (j2.items||[]).forEach(it0=>{const full=safeItems(o)[it0.item_idx];if(!full)return;safeDecos(full).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_artIdSet.add(d.art_file_id)})});
       const artIds=[..._artIdSet];
       const primaryId=_declaredArtIds[0]||artIds[0];
-      const _back=full=>{const prd=findProd(full);return prd?.image_back_url||prd?.back_image_url||(prd?.images&&prd.images[1])||full?._colorBackImage||_vImg(full,'back')||''};
       const garments=[];const seenG=new Set();
-      (j2.items||[]).forEach(it0=>{const full=safeItems(o)[it0.item_idx];const sku=it0.sku||full?.sku||'';const color=it0.color||full?.color||'';const key=garmentMockKey(full||it0);if(seenG.has(key))return;seenG.add(key);garments.push({key,sku,color,name:it0.name||full?.name||'',frontUrl:full?_itemImg(full):'',backUrl:full?_back(full):''})});
+      (j2.items||[]).forEach(it0=>{const full=safeItems(o)[it0.item_idx];const sku=it0.sku||full?.sku||'';const color=it0.color||full?.color||'';const key=garmentMockKey(full||it0);if(seenG.has(key))return;seenG.add(key);const front=full?_itemImg(full):'';const back=full?_itemBackImg(full):'';garments.push({key,sku,color,name:it0.name||full?.name||'',frontUrl:front,backUrl:back,pending:_garmentImgPending(full,sku,color,front)})});
       // Map each art file in the job to the garment keys (sku|color) it actually decorates, read
       // from each item's own decorations. Without this the builder would show/save every art for
       // every garment, so a job mixing different art per item (e.g. a crest on one tee, a flag on
@@ -4629,14 +4731,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       artIds.forEach(aid=>{const art=safeArt(o).find(a=>a.id===aid);if(!art)return;Object.entries(art.item_mockups||{}).forEach(([k,arr])=>{if(arr&&arr.length)initialMocks[k]=[...(initialMocks[k]||[]),...arr]});Object.entries(art.qm_scenes||{}).forEach(([k,objs])=>{if(objs&&objs.length&&!initialScene[k])initialScene[k]=objs})});
       return<QuickMockBuilder garments={garments} locations={locations} initialMocks={initialMocks} initialScene={initialScene} nf={nf}
         onClose={()=>setEditMockJob(null)}
-        onSaveProductImage={(g,url,side)=>{
-          // Persist a product photo uploaded in the mock builder back to the catalog so it's
-          // reused next time. Match the catalog product by SKU (preferring the exact color).
-          const prd=products.find(p=>p.sku===g.sku&&(!g.color||p.color===g.color))||products.find(p=>p.sku===g.sku);
-          if(!prd||!onSaveProduct)return false;
-          onSaveProduct(side==='back'?{...prd,back_image_url:url}:{...prd,image_url:url});
-          return true;
-        }}
+        onSaveProductImage={_saveGarmentProductImage}
         onSave={({mocksByGarment,filesByLocation,sceneByGarment})=>{
           const _fUrl=f=>typeof f==='string'?f:(f?.url||'');
           const updArt=safeArt(o).map(a=>{
@@ -13528,9 +13623,8 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
         {mockBuilder&&(()=>{
           const g=jobWizard.groups[mockBuilder.gi];if(!g)return null;
           const rel=g.items.filter(it=>!it._excluded);
-          const _back=full=>{const prd=findProd(full);return prd?.image_back_url||prd?.back_image_url||(prd?.images&&prd.images[1])||full?._colorBackImage||_vImg(full,'back')||''};
           const garments=[];const seenG=new Set();
-          rel.forEach(it=>{const full=safeItems(o)[it.item_idx];const line=full||it;const key=garmentMockKey(line);if(seenG.has(key))return;seenG.add(key);const sku=line.sku||it.sku||'';const color=line.color||it.color||'';const front=_itemImg(full),back=_back(full);const vendorItem=!!(full&&(isSSItem(full)||isSanMarItem(full)||isMomentecItem(full)));const vKey=sku+'|'+color.toLowerCase();const pending=vendorItem&&!front&&vendorImgs[vKey]===undefined;garments.push({key,sku,color,name:line.name||it.name||'',frontUrl:front,backUrl:back,pending})});
+          rel.forEach(it=>{const full=safeItems(o)[it.item_idx];const line=full||it;const key=garmentMockKey(line);if(seenG.has(key))return;seenG.add(key);const sku=line.sku||it.sku||'';const color=line.color||it.color||'';const front=_itemImg(full),back=_itemBackImg(full);garments.push({key,sku,color,name:line.name||it.name||'',frontUrl:front,backUrl:back,pending:_garmentImgPending(full,sku,color,front)})});
           const locations=[];const seenL=new Set();
           const _renderable=f=>{const u=typeof f==='string'?f:(f?.url||'');return !!u&&(_isImgUrl(u)||/\.svg(\?|$)/i.test(u))};
           // One location per distinct artwork on the included items. An item can carry several
@@ -13556,6 +13650,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
             });});
           return<QuickMockBuilder garments={garments} locations={locations} initialMocks={g.qmMocks} initialScene={g.qmScene} initialFiles={g.qmFiles} nf={nf}
             onClose={()=>setMockBuilder(null)}
+            onSaveProductImage={_saveGarmentProductImage}
             onSave={({mocksByGarment,filesByLocation,sceneByGarment})=>{const gs=[...jobWizard.groups];gs[mockBuilder.gi]={...gs[mockBuilder.gi],qmMocks:mocksByGarment,qmFiles:filesByLocation,qmScene:sceneByGarment};setJobWizard({...jobWizard,groups:gs});setMockBuilder(null);nf('Mockups attached — release the job to send to the coach')}}/>;
         })()}
       </div></div>;

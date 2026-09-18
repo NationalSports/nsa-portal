@@ -965,6 +965,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
                 style={{borderRadius: 7, padding: dragOver === 'product' ? 8 : 0, background: dragOver === 'product' ? '#FBE9EA' : 'transparent', boxShadow: dragOver === 'product' ? '0 0 0 1.5px ' + NSA.red : 'none', transition: 'background .12s'}}>
                 <div style={{...railLabel, marginBottom: 6}}>Product Image</div>
                 {garmentUrl ? <div style={{fontSize: 11.5, color: NSA.green, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4}}><Icon name="check" size={12} /> Using catalog image</div>
+                  : garment.pending ? <div style={{fontSize: 11.5, color: NSA.textMuted, marginBottom: 6}}>Looking up the catalog photo…</div>
                   : <div style={{fontSize: 11.5, color: NSA.redBright, marginBottom: 6}}>Not in system — drag an image here or upload</div>}
                 <button style={{...smallBtn, opacity: busy ? .6 : 1}} disabled={busy}
                   onClick={() => { const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*'; inp.onchange = () => { if (inp.files[0]) uploadGarmentImg(inp.files[0]); }; inp.click(); }}>
