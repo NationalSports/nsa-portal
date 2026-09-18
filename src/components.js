@@ -103,7 +103,12 @@ function $In({value,onChange,w=70}){const[raw,setRaw]=React.useState(String(valu
   // For size-priced items the parent recomputes a rounded "avg" on every keystroke,
   // and syncing mid-edit would clobber what you're typing (e.g. typing 60 -> 6.50)
   // and snap a cleared field back to "0".
-  React.useEffect(()=>{if(!focused&&parseFloat(raw)!==value)setRaw(String(value))},[value,focused]);return<span style={{display:'inline-flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'2px 6px',background:'white'}}><span style={{fontSize:14,fontWeight:700,color:'#166534'}}>$</span><input value={raw} onFocus={()=>setFocused(true)} onChange={e=>{const v=e.target.value;if(!/^-?\d*\.?\d*$/.test(v))return;setRaw(v);if(v===''||v==='.'||v==='-')return;const n=parseFloat(v);if(!isNaN(n))onChange(n)}} onBlur={()=>{setFocused(false);const n=parseFloat(raw)||0;setRaw(String(n));onChange(n)}} style={{width:w,border:'none',outline:'none',fontSize:15,fontWeight:800,color:'#166534',textAlign:'center',background:'transparent'}}/></span>}
+  React.useEffect(()=>{if(!focused&&parseFloat(raw)!==value)setRaw(String(value))},[value,focused]);return<span style={{display:'inline-flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'2px 6px',background:'white'}}><span style={{fontSize:14,fontWeight:700,color:'#166534'}}>$</span><input value={raw} onFocus={()=>setFocused(true)} onChange={e=>{const v=e.target.value;if(!/^-?\d*\.?\d*$/.test(v))return;setRaw(v);if(v===''||v==='.'||v==='-')return;const n=parseFloat(v);if(!isNaN(n))onChange(n)}} onBlur={()=>{setFocused(false);const n=parseFloat(raw)||0;setRaw(String(n));
+  // Commit only when the number actually moved. A blur that re-fires onChange with the SAME
+  // value replays the parent's side effects: on a custom line, tabbing through the Cost box
+  // without touching it re-ran "sell = cost x markup" and discarded the sell price the rep
+  // had just typed (SO-2539). The text box is still normalized above, so "40." -> 40.
+  if(n!==parseFloat(value))onChange(n)}} style={{width:w,border:'none',outline:'none',fontSize:15,fontWeight:800,color:'#166534',textAlign:'center',background:'transparent'}}/></span>}
 
 // Buffered text input — keystrokes stay in local `raw` state and commit to the
 // parent onBlur / Enter, so typing a long note or ink color no longer fires a
