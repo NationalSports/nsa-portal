@@ -819,6 +819,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // Keying by garment rather than by mock URL means a mid-review artist re-upload doesn't
   // wipe what the coach has already marked.
   const[itemMarks,setItemMarks]=useState({});
+  // Proof viewer state: which garment the right rail follows, which of that garment's
+  // images is blown up, its zoom, and whether the viewer shows the art alone or on the
+  // garment. Cleared with itemMarks whenever a different proof opens.
+  const[proofSel,setProofSel]=useState(0);
+  const[proofView,setProofView]=useState(0);
+  const[proofZoom,setProofZoom]=useState(1);
+  const[proofMode,setProofMode]=useState('garment');
   const[contactEdit,setContactEdit]=useState(null);
   const[contactMsg,setContactMsg]=useState('');
   const[updateRequestText,setUpdateRequestText]=useState('');
@@ -861,7 +868,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // ‹ › queue walk, which swaps jobView without unmounting this component). Keyed on the
   // job identity rather than the object so a live-state re-render doesn't wipe them.
   const _openJobKey=jobView?(String(jobView.so?.id||'')+'|'+String(jobView.job?.id||'')):'';
-  useEffect(()=>{setItemMarks({})},[_openJobKey]);
+  useEffect(()=>{setItemMarks({});setProofSel(0);setProofView(0);setProofZoom(1);setProofMode('garment')},[_openJobKey]);
   // Deep-link: emails/texts can point straight at one estimate (?est=<id>), art
   // proof (?so=<id>&job=<id>), or invoice (?inv=<id>) instead of the portal home. The params ride on the
   // portal's own URL when it's opened directly; embedded in the marketing /coach
@@ -1704,7 +1711,126 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       approved:_approvedItems.map(gi=>({label:_gLabel(gi)})),
       flagged:_flaggedItems.map(gi=>({label:_gLabel(gi),note:itemMarks[_gKey(gi)]?.note||''})),
     });
-    return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
+
+    // ── NSA brand surface ──
+    // Navy dominant, red as an accent only (never a large fill), Barlow Condensed for every
+    // label, modest 4/6px radii. Same faces the dashboard and Order Editor redesign already
+    // load in public/index.html, so nothing new is fetched.
+    const _NV='#192853',_NVD='#0F1A38',_RD='#962C32',_OFF='#F7F8FB',_HAIR='#EEF1F6',_BRD='#D1D5DE',_TX='#2A2F3E',_TXL='#5A6075';
+    const _DISP="'Barlow Condensed','Arial Narrow',sans-serif";
+    const _card={background:'#fff',border:'1px solid '+_HAIR,borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,0.06)'};
+    const _eyebrow={fontSize:11,letterSpacing:'1.1px',textTransform:'uppercase',color:_TXL,fontWeight:700};
+    // The signature skewed red accent line that follows every section title.
+    const _rule=(w=34)=><span style={{height:3,width:w,background:_RD,transform:'skewX(-12deg)',display:'inline-block',flexShrink:0}}/>;
+    const _head=(txt,size=17)=><span style={{fontFamily:_DISP,fontWeight:800,fontSize:size,letterSpacing:'0.8px',textTransform:'uppercase',color:_NV}}>{txt}</span>;
+    const _cm3={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
+
+    // ── Per-garment derivation ──
+    // Hoisted out of the old render loop so the item strip, the big viewer, the spec panel
+    // and the size card all read ONE derivation for whichever garment is selected, instead of
+    // each recomputing its own. Body is the previous per-item block, unchanged.
+    const _detail=(gi)=>{
+      const srcItem=safeItems(so)[gi.item_idx];
+      const _mySrc=_linkOfC(gi);
+      const _myDeps=_depsOfC(gi).filter(k=>items.some(g=>garmentMockKey(_lineOf(g))===k));
+      const _itemArtIds=srcItem?[...new Set(safeDecos(srcItem).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map(d=>d.art_file_id))]:[];
+      const _itemArtFiles=(_itemArtIds.length>0?_itemArtIds:[...new Set([artFile?.id,...(j._art_ids||[])].filter(Boolean))]).map(aid=>safeArt(so).find(a=>a.id===aid)).filter(Boolean);
+      // Customer-supplied garments all carry the SKU 'CUST-SUPPLIED', so key on the LINE
+      // (garmentMockKey) or every one of a colour shows the same mockup (SO-2063). _mkL is
+      // the pre-fix shared bucket, still read as a fallback.
+      const _line=srcItem||gi;const _mk=garmentMockKey(_line);const _mkL=legacyMockKeyOf(_line);
+      const _mkPfx=k=>k.startsWith(_mk+'|')||(!!_mkL&&k.startsWith(_mkL+'|'));
+      const _cpDecosSorted=srcItem?safeDecos(srcItem).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];const _seenIm=new Set();const _cpFirst=(_af)=>{const im=_af?.item_mockups||{};const v=itemMockFiles(im,_line);if(v.length>0)return v[0];const de=Object.entries(im).find(([k])=>_mkPfx(k));return de&&de[1]&&de[1].length>0?de[1][0]:null;};
+      // Linked garment → no images of its own (a note references the source); else per-item.
+      const itemMockups=_mySrc?[]:_filterDisplayable(_cpDecosSorted.length>1?_cpDecosSorted.flatMap((d,i)=>{const af3=safeArt(so).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=i===0?'':(d.color_way_id||('d'+i));const im=af3?.item_mockups||{};const v=itemMockFiles(im,_line,disc?('|'+disc):'');if(v.length>0)return[v[0]];const f=_cpFirst(af3);return f?[f]:[];}):_itemArtFiles.length>1?_itemArtFiles.flatMap(_af=>{const f=_cpFirst(_af);return f?[f]:[]}):_itemArtFiles.flatMap(_af=>itemMockFiles(_af?.item_mockups,_line))).concat(/* suffixed slots: reversible Side B, numbers, names */_filterDisplayable(_itemArtFiles.flatMap(_af=>Object.entries(_af?.item_mockups||{}).filter(([k,arr])=>_mkPfx(k)&&Array.isArray(arr)&&arr.length>0).flatMap(([,arr])=>arr)))).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seenIm.has(u))return false;_seenIm.add(u);return true});
+      // No per-item mock and no link: fall back to the art's proof files (reused library
+      // art with no per-garment mocks anywhere). Only on multi-item jobs — a single-item
+      // job already shows the identical files via the job-level `mockups` ladder above,
+      // so adding them here too would just duplicate the same images on screen.
+      const itemProofFiles=(!_mySrc&&itemMockups.length===0&&items.length>1)?_filterDisplayable(_itemArtFiles.flatMap(_af=>artProofFallback(_af))).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seenIm.has(u))return false;_seenIm.add(u);return true}):[];
+      const artDecos=srcItem?safeDecos(srcItem).filter(d=>d.kind==='art'):[];
+      const artPos=artDecos.map(d=>d.position||'Front Center').filter((v,idx,arr)=>arr.indexOf(v)===idx);
+      // Numbers/names shown only when THIS job produces them — the coach approving a logo
+      // job shouldn't see the sibling numbers job's roster on it.
+      const numDecos=srcItem?jobItemDecosOfKind(gi,srcItem,'numbers'):[];
+      const nameDecos=srcItem?jobItemDecosOfKind(gi,srcItem,'names'):[];
+      const nd=numDecos[0];const _isEmb=artFile?.deco_type==='embroidery';
+      const sizesSrc=gi.sizes?Object.entries(gi.sizes).filter(([,v])=>v>0):(srcItem?Object.entries(safeSizes(srcItem)).filter(([,v])=>v>0):[]);
+      const sizes=sizesSrc.sort((a,b)=>{const o2=SZ_ORD;return(o2.indexOf(a[0])<0?99:o2.indexOf(a[0]))-(o2.indexOf(b[0])<0?99:o2.indexOf(b[0]))});
+      const roster=gi.roster||(numDecos.length>0?numDecos[0].roster:null);
+      const names=nameDecos.length>0?nameDecos[0].names:null;
+      const sortedSizes=sizes.map(([sz])=>sz);
+      // "Art only" view: the art's own proof files, independent of any garment mockup. The
+      // viewer's Art / On Garment toggle only appears when BOTH sides actually have files.
+      const artOnly=_filterDisplayable(_itemArtFiles.flatMap(_af=>artProofFallback(_af)));
+      const linkedFiles=_mySrc?_filterDisplayable(mockLinkSourceFiles(_jobArtFiles,_mySrc)):[];
+      return{srcItem,_mySrc,_myDeps,_itemArtFiles,itemMockups,itemProofFiles,artDecos,artPos,numDecos,nameDecos,nd,_isEmb,sizes,roster,names,sortedSizes,artOnly,linkedFiles,
+        units:gi.units||sizes.reduce((a,[,q])=>a+q,0)};
+    };
+
+    // Selected garment drives the right rail and the spec panels. Clamped rather than reset
+    // so a live re-render (or an artist upload) can't knock the coach off the item they're on.
+    const _selIdx=items.length?Math.min(proofSel,items.length-1):0;
+    const _sel=items[_selIdx]||null;
+    const _d=_sel?_detail(_sel):null;
+    const _totalUnits=items.reduce((a,gi)=>a+(gi.units||0),0);
+
+    // Viewer sources for the selected garment. `garment` = the mockups the coach is approving;
+    // `art` = the art file on its own, blown up. Whichever side has files decides the toggle.
+    const _vGarment=_d?(_d._mySrc?_d.linkedFiles:(_d.itemMockups.length>0?_d.itemMockups:_d.itemProofFiles)):[];
+    const _vArt=_d?_d.artOnly:[];
+    const _bothViews=_vGarment.length>0&&_vArt.length>0;
+    const _mode=_bothViews?proofMode:(_vGarment.length>0?'garment':'art');
+    const _views=_mode==='art'?_vArt:(_vGarment.length>0?_vGarment:_vArt);
+    const _vIdx=_views.length?Math.min(proofView,_views.length-1):0;
+    const _vCur=_views[_vIdx]||null;
+    const _vUrl=_vCur?(typeof _vCur==='string'?_vCur:(_vCur?.url||'')):'';
+    // Job-level mockups are the last resort: a proof whose garments carry no per-item images
+    // at all still has something to show rather than an empty frame.
+    const _noItemImages=items.length>0&&items.every(gi=>!_hasAnyItemMockup(gi));
+    const _fallbackViews=_views.length===0&&mockups.length>0?mockups:[];
+    const _showViews=_views.length>0?_views:_fallbackViews;
+    const _showCur=_views.length>0?_vCur:(_fallbackViews[Math.min(proofView,_fallbackViews.length-1)]||null);
+    const _showUrl=_views.length>0?_vUrl:(_showCur?(typeof _showCur==='string'?_showCur:(_showCur?.url||'')):'');
+
+    // One decoration row: method / location / art size, then that decoration's inks. The
+    // colour ladder (garment-specific → colour-way → free-text → union of all CW inks) is
+    // the existing one; a decoration with no colours on file simply renders no swatch row.
+    const _renderDeco=(d,di,_aF,gi,artPos)=>{
+      const _gk2=gi.sku+'|'+(gi.color||'');
+      const _gc2=_aF?.garment_colors?.[_gk2]||{};
+      const _gcCols=Object.values(_gc2).flat().filter((v,idx,arr)=>v&&v.trim()&&arr.indexOf(v)===idx);
+      const cwObj=d?.color_way_id&&_aF?.color_ways?_aF.color_ways.find(c=>c.id===d.color_way_id):null;
+      const _cwCols=cwObj?(cwObj.inks||[]).filter(c=>c&&c.trim()):[];
+      const _fbCols=realInkLines(_aF?.ink_colors||_aF?.thread_colors);// 'Color N' count placeholders skipped — fall through to real CW inks (SO-1496)
+      const _allCwInks=[...new Set((_aF?.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
+      const dColors=_gcCols.length>0?_gcCols:_cwCols.length>0?_cwCols:_fbCols.length>0?_fbCols:_allCwInks;
+      const method=((d?.type||_aF?.deco_type||j.deco_type||'')+'').replace(/_/g,' ');
+      const position=d?.position||(artPos.length>0?artPos.join(', '):'');
+      const size=(d?.position&&_aF?.art_sizes?.[d.position])||_aF?.art_size||'';
+      const _isEmb2=(_aF?.deco_type||d?.type)==='embroidery';
+      const _spec=(lbl,val)=>val?<div><div style={_eyebrow}>{lbl}</div><div style={{fontFamily:_DISP,fontWeight:700,fontSize:17,color:_NV,textTransform:'uppercase',lineHeight:1.2}}>{val}</div></div>:null;
+      return<div key={di} style={{paddingTop:di>0?12:0,borderTop:di>0?'1px solid '+_HAIR:'none',marginTop:di>0?12:0}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(90px,1fr))',gap:12,marginBottom:dColors.length>0?12:0}}>
+          {_spec('Method',method)}{_spec('Location',position)}{_spec('Art size',size)}
+        </div>
+        {dColors.length>0&&<div>
+          <div style={{display:'flex',alignItems:'center',gap:9,marginBottom:8}}>
+            <span style={_eyebrow}>{_isEmb2?'Thread Colors':'Ink Colors'}</span>{_rule(26)}
+            <span style={{fontSize:12,color:_TXL,marginLeft:'auto'}}>{dColors.length} {_isEmb2?'thread':'ink'}{dColors.length===1?'':'s'}</span>
+          </div>
+          <div style={{display:'flex',flexDirection:'column',gap:7}}>
+            {dColors.map((cl,ci)=>{const clL=cl.toLowerCase();const sw=_cm3[cl]||Object.entries(_cm3).find(([k])=>clL.includes(k.toLowerCase()))?.[1]||pantoneHex(cl)||null;
+              return<div key={ci} style={{display:'flex',alignItems:'center',gap:10,border:'1px solid '+_HAIR,borderRadius:4,padding:'6px 10px'}}>
+                <span style={{width:24,height:24,borderRadius:3,border:'1px solid '+_BRD,flex:'0 0 auto',background:sw||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
+                <span style={{fontFamily:_DISP,fontWeight:700,fontSize:15,letterSpacing:'0.5px',textTransform:'uppercase',color:_NV}}>{cl}</span>
+              </div>})}
+          </div>
+        </div>}
+      </div>;
+    };
+
+    return<div style={{minHeight:'100vh',background:_OFF,fontFamily:"'Source Sans 3',system-ui,sans-serif",color:_TX}}>
       {/* ── Lightbox overlay ── */}
       {lightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setLightbox(null)}>
         <button style={{position:'absolute',top:16,right:20,background:'rgba(255,255,255,0.15)',border:'none',color:'white',fontSize:28,borderRadius:'50%',width:44,height:44,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setLightbox(null)}>×</button>
@@ -1712,248 +1838,251 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         :_isPdfUrl(lightbox)?<iframe title="PDF Preview" src={'https://docs.google.com/gview?url='+encodeURIComponent(lightbox)+'&embedded=true'} style={{width:'90vw',height:'90vh',border:'none',borderRadius:8,background:'white'}} onClick={e=>e.stopPropagation()}/>
         :<div style={{color:'white',fontSize:16}} onClick={e=>e.stopPropagation()}>Cannot preview this file type</div>}
       </div>}
-      <div style={{width:'100%',maxWidth:640,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
-        <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'20px 24px',position:'relative'}}>
-          <button style={{position:'absolute',top:8,left:12,background:'rgba(255,255,255,0.15)',border:'none',color:'white',borderRadius:6,padding:'4px 10px',fontSize:12,cursor:'pointer'}} onClick={()=>{const _backSO=soView?sos.find(s=>s.id===jobView.so.id):null;setJobView(null);if(_backSO)setSoView(_backSO)}}>← Back</button>
-          <div style={{textAlign:'center',paddingTop:16}}>
-            <div style={{fontSize:10,opacity:0.6}}>ARTWORK PROOF</div>
-            <div style={{fontSize:18,fontWeight:800}}>{j.art_name}</div>
-            <div style={{fontSize:12,opacity:0.7}}>{so.memo} · {j.deco_type?.replace(/_/g,' ')} · {j.positions}</div>
+
+      {/* ── Proof header band ──
+          Full-bleed navy with the diagonal hash texture and red wedge from the brand system.
+          Carries the job identity, the decision state, and the queue walk. */}
+      <div style={{background:'linear-gradient(100deg,'+_NV+','+'#1c2d4f 55%,#2a3d5e)',color:'#fff',position:'relative',overflow:'hidden'}}>
+        <div style={{position:'absolute',inset:0,background:'repeating-linear-gradient(-55deg,rgba(255,255,255,0.035) 0 2px,transparent 2px 9px)',pointerEvents:'none'}}/>
+        <div style={{position:'absolute',top:0,right:0,width:280,height:'100%',background:_RD,opacity:0.16,clipPath:'polygon(38% 0,100% 0,100% 100%,0 100%)',pointerEvents:'none'}}/>
+        <div style={{position:'relative',maxWidth:1440,margin:'0 auto',padding:'18px 24px',display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:24,flexWrap:'wrap'}}>
+          <div style={{minWidth:0}}>
+            <div style={{display:'flex',alignItems:'center',gap:14,marginBottom:8,flexWrap:'wrap'}}>
+              <span onClick={()=>{const _backSO=soView?sos.find(s=>s.id===jobView.so.id):null;setJobView(null);if(_backSO)setSoView(_backSO)}}
+                style={{fontFamily:_DISP,fontWeight:700,fontSize:13,letterSpacing:'1.4px',textTransform:'uppercase',color:'rgba(255,255,255,0.7)',cursor:'pointer'}}>← Back</span>
+              {_canDecide&&<span style={{background:_RD,transform:'skewX(-6deg)',padding:'4px 12px',fontFamily:_DISP,fontWeight:700,fontSize:12,letterSpacing:'1.2px',textTransform:'uppercase'}}>Needs your approval</span>}
+              {(j.art_status==='art_complete'||j.art_status==='production_files_needed')&&<span style={{background:'rgba(255,255,255,0.16)',transform:'skewX(-6deg)',padding:'4px 12px',fontFamily:_DISP,fontWeight:700,fontSize:12,letterSpacing:'1.2px',textTransform:'uppercase'}}>Approved</span>}
+              {(j.art_status==='art_requested'&&j.coach_rejected)&&<span style={{background:'rgba(255,255,255,0.16)',transform:'skewX(-6deg)',padding:'4px 12px',fontFamily:_DISP,fontWeight:700,fontSize:12,letterSpacing:'1.2px',textTransform:'uppercase'}}>Changes requested</span>}
+            </div>
+            <h1 style={{margin:0,fontFamily:_DISP,fontWeight:800,fontSize:40,lineHeight:0.98,letterSpacing:'0.5px',textTransform:'uppercase'}}>
+              {j.art_name}{j.deco_type&&<> — <em style={{color:'#D94A52',fontStyle:'italic'}}>{(j.deco_type+'').replace(/_/g,' ')}</em></>}
+            </h1>
+            <div style={{marginTop:8,fontSize:15,color:'rgba(255,255,255,0.78)'}}>
+              {[so.memo,j.positions,items.length?items.length+' garment'+(items.length===1?'':'s'):'',_totalUnits?_totalUnits+' units':''].filter(Boolean).join(' · ')}
+              {!!ptDateLabel(j.sent_to_coach_at)&&<> · Proof sent {ptDateLabel(j.sent_to_coach_at)}</>}
+            </div>
           </div>
+          {/* Queue walk — art is sent one job at a time, so a coach with several designs open
+              can page straight through instead of returning to the portal home between each.
+              Reads off live state: an approved job leaves waitingArtJobs and this disappears. */}
+          {_canDecide&&(()=>{
+            const _q=waitingArtJobs;const _qi=_q.findIndex(w=>w.so&&w.so.id===so.id&&w.id===j.id);
+            if(_qi<0||_q.length<2)return null;
+            const _go=t=>{setSoView(t.so);setJobView({job:t,so:t.so});setComment('');setItemMarks({})};
+            const _prev=_q[_qi-1],_next=_q[_qi+1];
+            return<div style={{display:'flex',alignItems:'center',gap:10}}>
+              <div style={{textAlign:'right',marginRight:6}}>
+                <div style={{fontFamily:_DISP,fontWeight:700,fontSize:12,letterSpacing:'1.3px',textTransform:'uppercase',color:'rgba(255,255,255,0.65)'}}>Design</div>
+                <div style={{fontFamily:_DISP,fontWeight:800,fontSize:24,letterSpacing:'0.5px'}}>{_qi+1} of {_q.length}</div>
+              </div>
+              <button disabled={!_prev} onClick={()=>_prev&&_go(_prev)} style={{width:44,height:44,border:'2px solid rgba(255,255,255,0.45)',background:'rgba(255,255,255,0.08)',color:'#fff',fontSize:18,cursor:_prev?'pointer':'default',opacity:_prev?1:0.35,transform:'skewX(-3deg)'}}>←</button>
+              {/* One button, not a Skip AND a Next doing the same thing: on a proof still
+                  awaiting a decision, moving on IS skipping it. It stays in the queue. */}
+              <button disabled={!_next} onClick={()=>_next&&_go(_next)} style={{padding:'0 22px',height:44,border:'2px solid #fff',background:'#fff',color:_NV,fontFamily:_DISP,fontWeight:700,fontSize:15,letterSpacing:'1px',textTransform:'uppercase',cursor:_next?'pointer':'default',opacity:_next?1:0.35,transform:'skewX(-3deg)'}}>
+                <span style={{display:'inline-block',transform:'skewX(3deg)'}}>Skip for now →</span></button>
+            </div>;
+          })()}
         </div>
-        {/* ── Queue walk ──
-            Art is sent one job at a time, so a coach with several designs open used to have to
-            return to the portal home between each. This bar rides on EVERY proof still awaiting
-            them (not just after a decision, which is when the old "Review next" button appeared),
-            so they can page straight through. It reads off live state: an approved job leaves
-            waitingArtJobs and the bar disappears with it, handing off to the post-decision
-            "Review next artwork" button below. */}
-        {_canDecide&&(()=>{
-          const _q=waitingArtJobs;const _qi=_q.findIndex(w=>w.so&&w.so.id===so.id&&w.id===j.id);
-          if(_qi<0||_q.length<2)return null;
-          const _go=t=>{setSoView(t.so);setJobView({job:t,so:t.so});setComment('');setItemMarks({})};
-          const _prev=_q[_qi-1],_next=_q[_qi+1];
-          const _btn=on=>({background:on?'rgba(255,255,255,0.18)':'transparent',border:'none',color:'#fff',borderRadius:8,padding:'7px 12px',fontSize:13,fontWeight:700,cursor:on?'pointer':'default',opacity:on?1:0.3});
-          return<div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,padding:'8px 14px',background:'#1e3a5f',color:'#fff'}}>
-            <button style={_btn(!!_prev)} disabled={!_prev} onClick={()=>_prev&&_go(_prev)}>‹ Prev</button>
-            <div style={{fontSize:12,fontWeight:700,opacity:0.9,whiteSpace:'nowrap'}}>Design {_qi+1} of {_q.length}</div>
-            {/* One button, not a Skip AND a Next doing the same thing: on a proof still
-                awaiting a decision, moving on IS skipping it. It stays in the queue. */}
-            <button style={_btn(!!_next)} disabled={!_next} onClick={()=>_next&&_go(_next)}>Skip for now ›</button>
-          </div>;
-        })()}
-        <div style={{padding:'20px 24px'}}>
-          {/* ── Per-item mockups + art details (linked garments reference their source's mock) ── */}
-          {items.map((gi,i)=>{const srcItem=safeItems(so)[gi.item_idx];
-            const _mySrc=_linkOfC(gi);
-            const _myDeps=_depsOfC(gi).filter(k=>items.some(g=>garmentMockKey(_lineOf(g))===k));
-            const _itemArtIds=srcItem?[...new Set(safeDecos(srcItem).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map(d=>d.art_file_id))]:[];
-            const _itemArtFiles=(_itemArtIds.length>0?_itemArtIds:[...new Set([artFile?.id,...(j._art_ids||[])].filter(Boolean))]).map(aid=>safeArt(so).find(a=>a.id===aid)).filter(Boolean);
-            // Customer-supplied garments all carry the SKU 'CUST-SUPPLIED', so key on the LINE
-            // (garmentMockKey) or every one of a colour shows the same mockup (SO-2063). _mkL is
-            // the pre-fix shared bucket, still read as a fallback.
-            const _line=srcItem||gi;const _mk=garmentMockKey(_line);const _mkL=legacyMockKeyOf(_line);
-            const _mkPfx=k=>k.startsWith(_mk+'|')||(!!_mkL&&k.startsWith(_mkL+'|'));
-            const _cpDecosSorted=srcItem?safeDecos(srcItem).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];const _seenIm=new Set();const _cpFirst=(_af)=>{const im=_af?.item_mockups||{};const v=itemMockFiles(im,_line);if(v.length>0)return v[0];const de=Object.entries(im).find(([k])=>_mkPfx(k));return de&&de[1]&&de[1].length>0?de[1][0]:null;};
-            // Linked garment → no images of its own (a note references the source); else per-item.
-            const itemMockups=_mySrc?[]:_filterDisplayable(_cpDecosSorted.length>1?_cpDecosSorted.flatMap((d,i)=>{const af3=safeArt(so).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=i===0?'':(d.color_way_id||('d'+i));const im=af3?.item_mockups||{};const v=itemMockFiles(im,_line,disc?('|'+disc):'');if(v.length>0)return[v[0]];const f=_cpFirst(af3);return f?[f]:[];}):_itemArtFiles.length>1?_itemArtFiles.flatMap(_af=>{const f=_cpFirst(_af);return f?[f]:[]}):_itemArtFiles.flatMap(_af=>itemMockFiles(_af?.item_mockups,_line))).concat(/* suffixed slots: reversible Side B, numbers, names */_filterDisplayable(_itemArtFiles.flatMap(_af=>Object.entries(_af?.item_mockups||{}).filter(([k,arr])=>_mkPfx(k)&&Array.isArray(arr)&&arr.length>0).flatMap(([,arr])=>arr)))).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seenIm.has(u))return false;_seenIm.add(u);return true});
-            // No per-item mock and no link: fall back to the art's proof files (reused library
-            // art with no per-garment mocks anywhere). Only on multi-item jobs — a single-item
-            // job already shows the identical files via the job-level `mockups` ladder above,
-            // so adding them here too would just duplicate the same images on screen.
-            const itemProofFiles=(!_mySrc&&itemMockups.length===0&&items.length>1)?_filterDisplayable(_itemArtFiles.flatMap(_af=>artProofFallback(_af))).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seenIm.has(u))return false;_seenIm.add(u);return true}):[];
-            const artDecos=srcItem?safeDecos(srcItem).filter(d=>d.kind==='art'):[];
-            const artPos=artDecos.map(d=>d.position||'Front Center').filter((v,idx,arr)=>arr.indexOf(v)===idx);
-            // Numbers/names shown only when THIS job produces them — the coach approving a logo
-            // job shouldn't see the sibling numbers job's roster on it.
-            const numDecos=srcItem?jobItemDecosOfKind(gi,srcItem,'numbers'):[];
-            const nameDecos=srcItem?jobItemDecosOfKind(gi,srcItem,'names'):[];
-            const nd=numDecos[0];const _isEmb=artFile?.deco_type==='embroidery';
-            const gk=gi.sku+'|'+(gi.color||'');const gc=artFile?.garment_colors?.[gk]||{};
-            const gcColors=Object.values(gc).flat().filter((v,idx,arr)=>v&&arr.indexOf(v)===idx);
-            const cwColors2=[];artDecos.forEach(d=>{if(d.color_way_id&&artFile?.color_ways){const cw=artFile.color_ways.find(c=>c.id===d.color_way_id);if(cw)cw.inks?.forEach(c=>{if(c&&c.trim()&&!cwColors2.includes(c.trim()))cwColors2.push(c.trim())})}});
-            const fallbackColors=(artFile?.ink_colors||artFile?.thread_colors||'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
-            // Final fallback: union of all CW inks on the art file. Covers SOs where CWs are defined but
-            // decorations don't carry an explicit color_way_id link — without this, colors render as empty.
-            const allCwInks=[...new Set((artFile?.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
-            const itemColors=gcColors.length>0?gcColors:cwColors2.length>0?cwColors2:fallbackColors.length>0?fallbackColors:allCwInks;
-            const _cm3={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
-            const sizesSrc=gi.sizes?Object.entries(gi.sizes).filter(([,v])=>v>0):(srcItem?Object.entries(safeSizes(srcItem)).filter(([,v])=>v>0):[]);
-            const sizes=sizesSrc.sort((a,b)=>{const o2=SZ_ORD;return(o2.indexOf(a[0])<0?99:o2.indexOf(a[0]))-(o2.indexOf(b[0])<0?99:o2.indexOf(b[0]))});
-            const roster=gi.roster||(numDecos.length>0?numDecos[0].roster:null);
-            const names=nameDecos.length>0?nameDecos[0].names:null;
-            const sortedSizes=sizes.map(([sz])=>sz);
-            return<div key={i} style={{border:'1px solid #e2e8f0',borderRadius:12,marginBottom:14,overflow:'hidden'}}>
-            {/* Item mockup images */}
-            {_mySrc?<div style={{padding:'8px 14px',background:'#eef2ff',fontSize:11,fontWeight:700,color:'#3730a3',textAlign:'center',cursor:'pointer'}} onClick={()=>{const sf=_filterDisplayable(mockLinkSourceFiles(_jobArtFiles,_mySrc))[0];const u=sf?(typeof sf==='string'?sf:(sf?.url||'')):'';if(u&&isUrl(u))setLightbox(u)}}>🔗 Same mockup as {_mySrc.split('|')[0]} — tap to view</div>
-            :itemMockups.length>0&&<><div style={{display:'grid',gridTemplateColumns:itemMockups.length>1?'1fr 1fr':'1fr',gap:2,background:'#f1f5f9'}}>
-              {itemMockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(url,f);
-                return<div key={fi} style={{background:'white',cursor:isUrl(url)?'pointer':'default'}} onClick={()=>{if(isUrl(url))setLightbox(url)}}>
-                  {isImg&&isUrl(url)?<img src={url} alt="" style={{width:'100%',height:itemMockups.length>1?180:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
-                  :<div style={{height:180,display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}><span style={{fontSize:32}}>📄</span></div>}
+      </div>
+
+      <div style={{maxWidth:1440,margin:'0 auto',padding:'24px 24px 56px',display:'grid',gridTemplateColumns:'minmax(0,1.85fr) minmax(320px,1fr)',gap:24,alignItems:'start'}}>
+
+        {/* ══ LEFT: the artwork itself ══ */}
+        <div style={{minWidth:0,display:'flex',flexDirection:'column',gap:16}}>
+
+          {/* Detail viewer — the blown-up proof, not just a thumbnail on a garment. */}
+          <div style={{..._card,overflow:'hidden'}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:16,padding:'12px 16px',borderBottom:'1px solid '+_HAIR,flexWrap:'wrap'}}>
+              <div style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
+                {_head(_sel?(_sel.fullName||_sel.sku||'Proof'):'Proof',19)}
+                {_sel&&<span style={{fontSize:13,color:_TXL}}>{[_sel.sku,_sel.color,_sel.brand].filter(Boolean).join(' · ')}</span>}
+              </div>
+              <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                {_bothViews&&['art','garment'].map(m=><button key={m} onClick={()=>{setProofMode(m);setProofView(0);setProofZoom(1)}}
+                  style={{fontFamily:_DISP,fontWeight:700,fontSize:13,letterSpacing:'1.1px',textTransform:'uppercase',padding:'8px 16px',cursor:'pointer',transform:'skewX(-3deg)',border:'2px solid '+_NV,background:_mode===m?_NV:'#fff',color:_mode===m?'#fff':_NV}}>
+                  <span style={{display:'inline-block',transform:'skewX(3deg)'}}>{m==='art'?'Art Only':'On Garment'}</span></button>)}
+                {_showUrl&&<>
+                  <div style={{width:1,height:26,background:_HAIR,margin:'0 4px'}}/>
+                  <button title="Zoom out" onClick={()=>setProofZoom(z=>Math.max(0.5,+(z-0.25).toFixed(2)))} style={{width:34,height:34,border:'1px solid '+_BRD,background:'#fff',color:_NV,fontSize:16,cursor:'pointer',borderRadius:4}}>−</button>
+                  <span style={{fontFamily:_DISP,fontWeight:700,fontSize:14,color:_TXL,minWidth:48,textAlign:'center'}}>{Math.round(proofZoom*100)}%</span>
+                  <button title="Zoom in" onClick={()=>setProofZoom(z=>Math.min(2.5,+(z+0.25).toFixed(2)))} style={{width:34,height:34,border:'1px solid '+_BRD,background:'#fff',color:_NV,fontSize:16,cursor:'pointer',borderRadius:4}}>+</button>
+                </>}
+              </div>
+            </div>
+
+            {/* Checkerboard behind the art so a transparent PNG reads as transparent. */}
+            <div style={{position:'relative',background:_OFF,height:440,overflow:'hidden',display:'flex',alignItems:'center',justifyContent:'center',padding:26,
+              backgroundImage:'linear-gradient(45deg,'+_HAIR+' 25%,transparent 25%,transparent 75%,'+_HAIR+' 75%),linear-gradient(45deg,'+_HAIR+' 25%,transparent 25%,transparent 75%,'+_HAIR+' 75%)',backgroundSize:'22px 22px',backgroundPosition:'0 0,11px 11px'}}>
+              {_d&&_d._mySrc
+                ?<div onClick={()=>{if(_showUrl&&isUrl(_showUrl))setLightbox(_showUrl)}} style={{textAlign:'center',cursor:_showUrl?'pointer':'default'}}>
+                  {_showUrl&&_isImgUrl(_showUrl)&&isUrl(_showUrl)
+                    ?<img src={_showUrl} alt="" style={{maxWidth:'100%',maxHeight:388,objectFit:'contain',transform:'scale('+proofZoom+')',transition:'transform .25s cubic-bezier(0.4,0,0.2,1)'}}/>
+                    :<div style={{fontSize:13,color:_TXL}}>Shares a mockup with {_d._mySrc.split('|')[0]}</div>}
+                </div>
+                :_showUrl&&_isImgUrl(_showUrl)&&isUrl(_showUrl)
+                  ?<img src={_showUrl} alt="" onClick={()=>setLightbox(_showUrl)} style={{maxWidth:'100%',maxHeight:388,objectFit:'contain',cursor:'pointer',transform:'scale('+proofZoom+')',transition:'transform .25s cubic-bezier(0.4,0,0.2,1)'}}/>
+                :_showUrl&&isUrl(_showUrl)
+                  ?<div onClick={()=>setLightbox(_showUrl)} style={{textAlign:'center',cursor:'pointer'}}><div style={{fontSize:40}}>📄</div><div style={{fontSize:13,color:_TXL,marginTop:6}}>{fileDisplayName(_showCur)} — tap to open</div></div>
+                :<div style={{textAlign:'center'}}>
+                  <div style={{fontFamily:_DISP,fontWeight:800,fontSize:22,letterSpacing:'0.5px',textTransform:'uppercase',color:_NV}}>Mockup not uploaded yet</div>
+                  <div style={{fontSize:13.5,color:_TXL,marginTop:6,lineHeight:1.6,maxWidth:380}}>Your rep is still building this proof. You'll get an email the moment it's ready to review.</div>
+                </div>}
+              {_showUrl&&<div style={{position:'absolute',left:18,bottom:16,background:'rgba(15,26,56,0.88)',color:'#fff',padding:'6px 12px',fontFamily:_DISP,fontWeight:700,fontSize:12,letterSpacing:'1.2px',textTransform:'uppercase'}}>
+                {_mode==='art'?'Art file':'Mockup'}{_d&&_d.itemProofFiles.length>0&&_views===_d.itemProofFiles?' · from production files':''}{_showViews.length>1?' · '+(Math.min(proofView,_showViews.length-1)+1)+' of '+_showViews.length:''}
+              </div>}
+            </div>
+
+            {/* Thumbnail rail — every view of this garment, wrapping so nothing hides offscreen. */}
+            {_showViews.length>1&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))',gap:12,padding:'14px 16px',borderTop:'1px solid '+_HAIR}}>
+              {_showViews.map((f,fi)=>{const u=typeof f==='string'?f:(f?.url||'');const on=fi===Math.min(proofView,_showViews.length-1);
+                return<div key={fi} onClick={()=>{setProofView(fi);setProofZoom(1)}} style={{minWidth:0,cursor:'pointer'}}>
+                  <div style={{height:86,border:'2px solid '+(on?_RD:_HAIR),background:_OFF,borderRadius:4,overflow:'hidden',display:'flex',alignItems:'center',justifyContent:'center',transition:'border-color .2s ease'}}>
+                    {_isImgUrl(u,f)&&isUrl(u)?<img src={u} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:<span style={{fontSize:24}}>📄</span>}
+                  </div>
+                  <div style={{marginTop:6,fontFamily:_DISP,fontWeight:700,fontSize:12,letterSpacing:'0.9px',textTransform:'uppercase',color:on?_RD:_TXL,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{fileDisplayName(f)||'View '+(fi+1)}</div>
                 </div>})}
-            </div>{_myDeps.length>0&&<div style={{padding:'6px 14px',background:'#eef2ff',fontSize:11,fontWeight:700,color:'#3730a3',textAlign:'center'}}>One mockup — also applies to {_myDeps.map(k=>k.split('|')[0]).join(', ')}</div>}</>}
-            {!_mySrc&&itemMockups.length===0&&itemProofFiles.length>0&&<>
-              <div style={{padding:'8px 14px',background:'#fffbeb',border:'1px solid #fde047',borderTop:'none',borderBottom:'none',fontSize:11,fontWeight:700,color:'#92400e',textAlign:'center'}}>{_isEmb?'♻️ Sew-out proof from production files — not a garment mockup':'♻️ Screen-print proof from production files'}</div>
-              <div style={{display:'grid',gridTemplateColumns:itemProofFiles.length>1?'1fr 1fr':'1fr',gap:2,background:'#f1f5f9'}}>
-                {itemProofFiles.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(url,f);
-                  return<div key={fi} style={{background:'white',cursor:isUrl(url)?'pointer':'default'}} onClick={()=>{if(isUrl(url))setLightbox(url)}}>
-                    {isImg&&isUrl(url)?<img src={url} alt="" style={{width:'100%',height:itemProofFiles.length>1?180:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
-                    :<div style={{height:180,display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}><span style={{fontSize:32}}>📄</span></div>}
-                  </div>})}
+            </div>}
+
+            {/* Provenance notes the old screen carried — kept, restyled. */}
+            {_d&&_d._mySrc&&<div style={{padding:'10px 16px',borderTop:'1px solid '+_HAIR,background:_OFF,fontSize:12.5,color:_TXL}}>Shares one mockup with <strong style={{color:_NV}}>{_d._mySrc.split('|')[0]}</strong> — same art, same placement.</div>}
+            {_d&&_d._myDeps.length>0&&<div style={{padding:'10px 16px',borderTop:'1px solid '+_HAIR,background:_OFF,fontSize:12.5,color:_TXL}}>This one mockup also covers <strong style={{color:_NV}}>{_d._myDeps.map(k=>k.split('|')[0]).join(', ')}</strong>.</div>}
+            {_d&&_d.itemMockups.length===0&&_d.itemProofFiles.length>0&&<div style={{padding:'10px 16px',borderTop:'1px solid '+_HAIR,background:'#FDF6F6',fontSize:12.5,color:_RD,fontWeight:600}}>{_d._isEmb?'Sew-out proof from production files — not a garment mockup.':'Screen-print proof from production files — not a garment mockup.'}</div>}
+          </div>
+
+          {/* Spec panel — method, location, art size and the inks for the selected garment.
+              Renders one row per decoration; a field with nothing on file is left out. */}
+          {_d&&(_d.artDecos.length>0||artFile)&&<div style={{..._card,padding:'16px 18px'}}>
+            {_d.artDecos.length===0?_renderDeco(null,0,artFile,_sel,_d.artPos)
+              :_d.artDecos.map((dd,di)=>{const _dAf=dd.art_file_id?safeArt(so).find(a=>a.id===dd.art_file_id):null;return _renderDeco(dd,di,_dAf||artFile,_sel,_d.artPos)})}
+            {_d.nd&&<div style={{borderTop:'1px solid '+_HAIR,marginTop:12,paddingTop:12,fontSize:13.5,color:_TX}}>
+              Numbers: <strong style={{color:_NV}}>{(_d.nd.num_method||'heat_transfer').replace(/_/g,' ')}</strong>
+              {_d.nd.num_size&&<> · {_d.nd.num_size}</>}
+              {_d.nd.front_and_back&&<> · back {_d.nd.num_size_back||_d.nd.num_size}</>}
+              {_d.nd.print_color&&<> · {_d.nd.print_color}</>}
+              {_d.nd.front_and_back&&<span style={{marginLeft:8,padding:'2px 8px',background:_NV,color:'#fff',fontFamily:_DISP,fontWeight:700,fontSize:11,letterSpacing:'0.8px',textTransform:'uppercase'}}>Front + Back</span>}
+            </div>}
+            {!_d.nd&&_d.artDecos.length>0&&<div style={{borderTop:'1px solid '+_HAIR,marginTop:12,paddingTop:12,fontSize:13.5,color:_TXL}}>No personalization on this item — logo only.</div>}
+          </div>}
+
+          {/* Roster & numbers / names — follows the selected garment, hidden when it has none. */}
+          {_d&&((_d.roster&&Object.keys(_d.roster).length>0)||(_d.names&&Object.keys(_d.names).length>0))&&<div style={{..._card,padding:'18px 20px'}}>
+            <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:14,flexWrap:'wrap'}}>
+              {_head(_d.roster&&Object.keys(_d.roster).length>0?'Roster & Numbers':'Names',20)}{_rule(60)}
+              <span style={{fontSize:13,color:_TXL,marginLeft:'auto'}}>{_sel.fullName||_sel.sku} · {_d.units} units</span>
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:12}}>
+              {_d.sortedSizes.map(sz=>{
+                const nums=((_d.roster&&_d.roster[sz])||[]).filter(n=>n!=='');
+                const nms=((_d.names&&_d.names[sz])||[]).filter(n=>n!=='');
+                if(nums.length===0&&nms.length===0)return null;
+                const qty=(_d.sizes.find(([s])=>s===sz)||[,0])[1];
+                return<div key={sz} style={{border:'1px solid '+_HAIR,borderRadius:4,padding:'12px 14px',background:_OFF}}>
+                  <div style={{display:'flex',alignItems:'baseline',gap:8,marginBottom:8}}>
+                    <span style={{fontFamily:_DISP,fontWeight:800,fontSize:22,color:_NV}}>{sz}</span>
+                    <span style={{fontSize:12,color:_TXL,letterSpacing:'0.6px',textTransform:'uppercase'}}>{qty} units</span>
+                  </div>
+                  <div style={{display:'flex',flexWrap:'wrap',gap:5}}>
+                    {nums.slice().sort((a,b)=>Number(a)-Number(b)).map((n,ni)=><span key={'n'+ni} style={{background:'#fff',border:'1px solid '+_BRD,borderRadius:3,padding:'2px 7px',fontFamily:_DISP,fontWeight:700,fontSize:13,color:_NV}}>{n}</span>)}
+                    {nms.map((n,ni)=><span key={'m'+ni} style={{background:'#fff',border:'1px solid '+_BRD,borderRadius:3,padding:'2px 7px',fontSize:12,fontWeight:600,color:_NV}}>{n}</span>)}
+                  </div>
+                </div>})}
+            </div>
+          </div>}
+        </div>
+
+        {/* ══ RIGHT: what they're signing off on ══ */}
+        <div style={{position:'sticky',top:16,display:'flex',flexDirection:'column',gap:16,minWidth:0}}>
+
+          {/* Items using this art — the art is the subject, garments are variants of it. */}
+          {items.length>1&&<div style={{..._card,padding:'14px 16px'}}>
+            <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}>
+              {_head('Items Using This Art')}{_rule()}
+              <span style={{fontSize:12,color:_TXL,marginLeft:'auto'}}>{items.length} garments · {_totalUnits} units</span>
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(74px,1fr))',gap:8}}>
+              {items.map((gi,i)=>{const on=i===_selIdx;const _fl=!!itemMarks[_gKey(gi)];const _mm=_isMissingMock(gi);
+                return<div key={i} onClick={()=>{setProofSel(i);setProofView(0);setProofZoom(1)}}
+                  style={{cursor:'pointer',minWidth:0,border:'2px solid '+(_fl?_RD:on?_NV:_HAIR),borderRadius:4,padding:5,background:on?'#FDF6F6':'#fff',transition:'border-color .2s ease'}}>
+                  <div style={{height:58,background:'#fff',borderRadius:3,overflow:'hidden',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                    {gi.image_url?<img src={gi.image_url} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:<span style={{fontSize:22}}>👕</span>}
+                  </div>
+                  <div style={{marginTop:5,fontFamily:_DISP,fontWeight:700,fontSize:11.5,letterSpacing:'0.7px',textTransform:'uppercase',color:on?_RD:_NV,lineHeight:1.15,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{gi.fullName||gi.sku}</div>
+                  <div style={{fontSize:11,color:_TXL}}>{gi.units} u</div>
+                  {_mm?<div style={{marginTop:4,fontSize:10,fontWeight:700,color:_RD,letterSpacing:'0.5px',textTransform:'uppercase'}}>Mockup coming</div>
+                  :_marking&&<div style={{marginTop:5,display:'flex',gap:4}}>
+                    {/* Nothing is pre-selected: an untouched garment counts as approved, so a
+                        coach who agrees with the whole proof never taps a tile. */}
+                    <button aria-label={'Approve '+_gLabel(gi)} onClick={e=>{e.stopPropagation();_setMark(gi,false)}} style={{flex:1,cursor:'pointer',fontSize:12,lineHeight:1,padding:'5px 0',borderRadius:3,border:_fl?'1px solid '+_HAIR:'2px solid '+_NV,background:_fl?'#fff':_OFF,opacity:_fl?0.45:1}}>✓</button>
+                    <button aria-label={'Request changes to '+_gLabel(gi)} onClick={e=>{e.stopPropagation();_setMark(gi,true);setProofSel(i)}} style={{flex:1,cursor:'pointer',fontSize:12,lineHeight:1,padding:'5px 0',borderRadius:3,border:_fl?'2px solid '+_RD:'1px solid '+_HAIR,background:_fl?'#FDF6F6':'#fff',opacity:_fl?1:0.45}}>✎</button>
+                  </div>}
+                </div>})}
+            </div>
+            {/* The note rides with the garment it belongs to, so the artist reads "which one"
+                and "what's wrong" together instead of matching prose back to a mockup. */}
+            {_flaggedItems.map((gi,fi)=><div key={fi} style={{marginTop:10,padding:'10px 12px',background:'#FDF6F6',border:'1px solid '+_HAIR,borderLeft:'3px solid '+_RD,borderRadius:4}}>
+              <div style={{fontFamily:_DISP,fontWeight:700,fontSize:13,letterSpacing:'0.6px',textTransform:'uppercase',color:_RD,marginBottom:6}}>{_gLabel(gi)} — what needs to change?</div>
+              <textarea className="form-input" rows={2} value={itemMarks[_gKey(gi)]?.note||''} onChange={e=>_setMarkNote(gi,e.target.value)} placeholder="e.g. logo sits too high, make the mascot bigger…" style={{fontSize:12.5,resize:'vertical',borderRadius:4}}/>
+            </div>)}
+          </div>}
+
+          {/* Item identity + size breakdown, high on the page where sizes are obvious. */}
+          {_d&&<div style={{..._card,padding:16}}>
+            <div style={{paddingBottom:13,marginBottom:14,borderBottom:'1px solid '+_HAIR}}>
+              <div style={{fontFamily:_DISP,fontWeight:800,fontSize:22,letterSpacing:'0.4px',textTransform:'uppercase',color:_NV,lineHeight:1.05}}>{_sel.fullName||_sel.sku}</div>
+              {[_sel.sku,_sel.color,_sel.brand].filter(Boolean).length>0&&<div style={{fontSize:13,color:_TXL,marginTop:2}}>{[_sel.sku,_sel.color,_sel.brand].filter(Boolean).join(' · ')}</div>}
+              {(_d.artPos.length>0||j.positions)&&<div style={{fontSize:13,color:_TX,marginTop:2}}>{_d.artPos.length>0?_d.artPos.join(', '):j.positions} · <strong>{_d.units} units</strong></div>}
+            </div>
+            {_d.sizes.length>0&&<>
+              <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12}}>
+                {_head('Size Breakdown')}{_rule()}
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'repeat('+Math.min(6,_d.sizes.length)+',minmax(0,1fr))',gap:6}}>
+                {_d.sizes.map(([sz,qty])=><div key={sz} style={{textAlign:'center',border:'1px solid '+_HAIR,borderRadius:4,overflow:'hidden',background:'#fff'}}>
+                  <div style={{background:_NV,color:'#fff',fontFamily:_DISP,fontWeight:700,fontSize:13,letterSpacing:'0.8px',padding:'4px 0'}}>{sz}</div>
+                  <div style={{fontFamily:_DISP,fontWeight:800,fontSize:24,color:qty?_NV:'#C3C8D4',padding:'6px 0 7px',lineHeight:1}}>{qty}</div>
+                </div>)}
+              </div>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginTop:12,paddingTop:11,borderTop:'1px solid '+_HAIR}}>
+                <span style={_eyebrow}>Total this item</span>
+                <span style={{fontFamily:_DISP,fontWeight:800,fontSize:26,color:_NV,lineHeight:1}}>{_d.units}</span>
               </div>
             </>}
-            {/* Item header */}
-            <div style={{padding:'12px 14px'}}>
-              <div style={{display:'flex',gap:12,alignItems:'center',marginBottom:10}}>
-                {gi.image_url?<img src={gi.image_url} alt="" style={{width:44,height:44,objectFit:'cover',borderRadius:8,border:'1px solid #e2e8f0',flexShrink:0}}/>
-                :<div style={{width:44,height:44,background:'#f8fafc',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><div style={{fontSize:18}}>👕</div></div>}
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontWeight:700,fontSize:13}}>{gi.fullName}</div>
-                  <div style={{fontSize:11,color:'#64748b'}}>{gi.sku} · {gi.color||'—'} {gi.brand&&'· '+gi.brand}</div>
-                  <div style={{fontSize:11,color:'#64748b',marginTop:2}}>📍 {artPos.length>0?artPos.join(', '):(j.positions||'—')} · {gi.units} units</div>
-                </div>
-                {/* Per-garment decision. Nothing is pre-selected: an untouched garment counts as
-                    approved, so a coach who agrees with the whole proof never taps a card. */}
-                {_marking&&(_isMissingMock(gi)
-                  ?<span style={{flexShrink:0,fontSize:10,fontWeight:700,color:'#92400e',background:'#fef3c7',border:'1px solid #fde047',borderRadius:999,padding:'5px 10px',whiteSpace:'nowrap'}}>Mockup coming</span>
-                  :(()=>{const _fl=!!itemMarks[_gKey(gi)];
-                    return<div style={{flexShrink:0,display:'flex',gap:6}}>
-                      <button aria-label={'Approve '+_gLabel(gi)} onClick={()=>_setMark(gi,false)} style={{cursor:'pointer',fontSize:15,lineHeight:1,padding:'7px 10px',borderRadius:9,border:_fl?'1px solid #e2e8f0':'2px solid #22c55e',background:_fl?'#fff':'#f0fdf4',opacity:_fl?0.45:1}}>✅</button>
-                      <button aria-label={'Request changes to '+_gLabel(gi)} onClick={()=>_setMark(gi,true)} style={{cursor:'pointer',fontSize:15,lineHeight:1,padding:'7px 10px',borderRadius:9,border:_fl?'2px solid #dc2626':'1px solid #e2e8f0',background:_fl?'#fef2f2':'#fff',opacity:_fl?1:0.45}}>✏️</button>
-                    </div>})())}
-              </div>
-              {/* The note rides with the garment it belongs to, so the artist reads "which one"
-                  and "what's wrong" together instead of matching prose back to a mockup. */}
-              {_marking&&!!itemMarks[_gKey(gi)]&&<div style={{marginBottom:10,padding:'10px 12px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8}}>
-                <div style={{fontSize:11,fontWeight:700,color:'#991b1b',marginBottom:6}}>What needs to change on this one?</div>
-                <textarea className="form-input" rows={2} value={itemMarks[_gKey(gi)]?.note||''} onChange={e=>_setMarkNote(gi,e.target.value)} placeholder="e.g. logo sits too high, make the mascot bigger…" style={{fontSize:12,resize:'vertical',borderRadius:8}}/>
-              </div>}
-              {/* Per-item art details */}
-              {artFile&&<div style={{padding:'10px 12px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:10}}>
-                {(()=>{
-                  // Render one row per decoration so coaches see each location's method, size, and inks separately.
-                  // Falls back to a single row built from the job's primary art file when no per-item art decorations exist.
-                  const _gk2=gi.sku+'|'+(gi.color||'');
-                  const _renderDeco=(d,di,_aF)=>{
-                    const _gc2=_aF?.garment_colors?.[_gk2]||{};
-                    const _gcCols=Object.values(_gc2).flat().filter((v,idx,arr)=>v&&v.trim()&&arr.indexOf(v)===idx);
-                    const cwObj=d?.color_way_id&&_aF?.color_ways?_aF.color_ways.find(c=>c.id===d.color_way_id):null;
-                    const _cwCols=cwObj?(cwObj.inks||[]).filter(c=>c&&c.trim()):[];
-                    const _fbCols=realInkLines(_aF?.ink_colors||_aF?.thread_colors);// 'Color N' count placeholders skipped — fall through to real CW inks (SO-1496)
-                    const _allCwInks=[...new Set((_aF?.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
-                    const dColors=_gcCols.length>0?_gcCols:_cwCols.length>0?_cwCols:_fbCols.length>0?_fbCols:_allCwInks;
-                    const method=((d?.type||_aF?.deco_type||j.deco_type||'')+'').replace(/_/g,' ')||'—';
-                    const position=d?.position||(artPos.length>0?artPos.join(', '):'—');
-                    const size=(d?.position&&_aF?.art_sizes?.[d.position])||_aF?.art_size||'—';
-                    const _isEmb2=(_aF?.deco_type||d?.type)==='embroidery';
-                    return<div key={di} style={{paddingTop:di>0?10:0,borderTop:di>0?'1px solid #e2e8f0':'none',marginTop:di>0?10:0}}>
-                      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:dColors.length>0?8:0}}>
-                        <div><div style={{fontSize:9,fontWeight:600,color:'#94a3b8'}}>Method</div><div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{method}</div></div>
-                        <div><div style={{fontSize:9,fontWeight:600,color:'#94a3b8'}}>Location</div><div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{position}</div></div>
-                        <div><div style={{fontSize:9,fontWeight:600,color:'#94a3b8'}}>Art Size</div><div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{size}</div></div>
-                      </div>
-                      {dColors.length>0&&<div>
-                        <div style={{fontSize:9,fontWeight:600,color:'#94a3b8',marginBottom:3}}>{_isEmb2?'Thread Colors':'Ink Colors / Pantones'} ({dColors.length})</div>
-                        <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-                          {dColors.map((cl,ci)=>{const clL=cl.toLowerCase();const sw=_cm3[cl]||Object.entries(_cm3).find(([k])=>clL.includes(k.toLowerCase()))?.[1]||pantoneHex(cl)||null;
-                            return<div key={ci} style={{display:'flex',alignItems:'center',gap:4,padding:'2px 8px',background:'white',border:'1px solid #e2e8f0',borderRadius:5,fontSize:10,fontWeight:600}}>
-                              <div style={{width:12,height:12,borderRadius:2,border:'1px solid #d1d5db',background:sw||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
-                              {cl}</div>})}
-                        </div>
-                      </div>}
-                    </div>;
-                  };
-                  if(artDecos.length===0)return _renderDeco(null,0,artFile);
-                  return artDecos.map((d,di)=>{const _dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;return _renderDeco(d,di,_dAf||artFile)});
-                })()}
-                {nd&&<div style={{marginTop:10,paddingTop:10,borderTop:'1px solid #e2e8f0'}}>
-                  <div style={{fontSize:9,fontWeight:600,color:'#94a3b8',marginBottom:3}}>Numbers</div>
-                  <div style={{display:'flex',gap:10,flexWrap:'wrap',fontSize:11}}>
-                    <span><strong>{(nd.num_method||'heat_transfer').replace(/_/g,' ')}</strong></span>
-                    <span>Size: <strong>{nd.num_size||'—'}</strong></span>
-                    {nd.front_and_back&&<span>Back: <strong>{nd.num_size_back||nd.num_size||'—'}</strong></span>}
-                    {nd.print_color&&<span>Color: <strong>{nd.print_color}</strong></span>}
-                    {nd.front_and_back&&<span style={{padding:'1px 5px',borderRadius:3,background:'#7c3aed',color:'white',fontSize:9,fontWeight:700}}>Front + Back</span>}
-                  </div>
-                </div>}
-              </div>}
-              {/* Size breakdown */}
-              {sizes.length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:roster?10:0}}>
-                {sizes.map(([sz,qty])=><div key={sz} style={{textAlign:'center',padding:'4px 8px',background:'#f8fafc',borderRadius:6,minWidth:36}}>
-                  <div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>{sz}</div>
-                  <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f'}}>{qty}</div>
-                </div>)}
-              </div>}
-              {/* Numbers roster — grouped by size */}
-              {roster&&Object.keys(roster).length>0&&<div style={{paddingTop:8,borderTop:'1px solid #f1f5f9'}}>
-                <div style={{fontSize:11,fontWeight:700,color:'#6d28d9',marginBottom:6}}>#️⃣ Numbers</div>
-                {sortedSizes.map(sz=>{const nums=(roster[sz]||[]).filter(n=>n!=='');
-                  if(nums.length===0)return null;
-                  return<div key={sz} style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
-                    <div style={{fontSize:10,fontWeight:700,color:'#64748b',minWidth:56,flexShrink:0}}>{sz} ({nums.length})</div>
-                    <div style={{display:'flex',flexWrap:'wrap',gap:3}}>
-                      {nums.sort((a,b)=>Number(a)-Number(b)).map((n,ni)=>
-                        <span key={ni} style={{display:'inline-block',minWidth:32,textAlign:'center',padding:'3px 6px',background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:4,fontSize:12,fontWeight:700,color:'#6d28d9'}}>{n}</span>)}
-                    </div>
-                  </div>})}
-              </div>}
-              {/* Names */}
-              {names&&Object.keys(names).length>0&&<div style={{paddingTop:8,borderTop:'1px solid #f1f5f9'}}>
-                <div style={{fontSize:11,fontWeight:700,color:'#0369a1',marginBottom:6}}>🏷️ Names</div>
-                {sortedSizes.map(sz=>{const nms=(names[sz]||[]).filter(n=>n!=='');
-                  if(nms.length===0)return null;
-                  return<div key={sz} style={{marginBottom:6}}>
-                    <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:3}}>{sz}</div>
-                    <div style={{display:'flex',flexWrap:'wrap',gap:3}}>
-                      {nms.map((n,ni)=>
-                        <span key={ni} style={{padding:'3px 8px',background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:4,fontSize:11,fontWeight:600,color:'#0369a1'}}>{n}</span>)}
-                    </div>
-                  </div>})}
-              </div>}
-            </div>
-          </div>})}
-          {/* General mockups (not per-item) */}
-          {mockups.length>0&&items.every(gi=>!_hasAnyItemMockup(gi))&&<div style={{marginBottom:16}}>
-            <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Artwork Mockups</div>
-            {mockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const isImg=_isImgUrl(url);
-              return<div key={fi} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:10,marginBottom:8,cursor:isUrl(url)?'pointer':'default'}} onClick={()=>{if(isUrl(url))setLightbox(url)}}>
-                {isImg&&isUrl(url)&&<img src={url} alt={name} style={{width:'100%',borderRadius:8,marginBottom:6,maxHeight:400,objectFit:'contain',background:'#f8fafc'}}/>}
-                <div style={{display:'flex',alignItems:'center',gap:6}}>
-                  <span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span>
-                  {isUrl(url)&&<span style={{fontSize:10,color:'#64748b'}}>— tap to enlarge</span>}
-                </div>
-              </div>})}
           </div>}
-          {mockups.length===0&&items.every(gi=>!_hasAnyItemMockup(gi))&&<div style={{padding:16,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:10,marginBottom:16,textAlign:'center'}}>
-            <div style={{fontSize:24,marginBottom:4}}>🎨</div>
-            <div style={{fontSize:12,color:'#9a3412',fontWeight:600}}>Mockup files haven't been uploaded yet</div>
-          </div>}
-          {j.art_status==='waiting_approval'&&!j.sent_to_coach_at&&<div style={{background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:10,padding:14,marginBottom:16,fontSize:12,color:'#0369a1',fontWeight:600}}>🎨 Proof in progress — your rep is reviewing this design and will send it to you for approval when it's ready.</div>}
-          {j.art_status==='waiting_approval'&&j.sent_to_coach_at&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:16,padding:18,marginBottom:16}}>
 
-            <div style={{fontWeight:700,color:'#92400e',marginBottom:10}}>⏳ This artwork needs your approval</div>
-            {_portalDisclaimer&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:12,marginBottom:12,fontSize:12,color:'#991b1b',lineHeight:1.5}}><strong>⚠️ Important:</strong> {_portalDisclaimer}</div>}
-            {_marking&&<div style={{marginBottom:10,fontSize:12,color:'#92400e',lineHeight:1.5}}>
-              {_flaggedItems.length===0
-                ?<>Approving all {items.length} garments above. Tap <strong>✏️</strong> on any one you'd like changed.</>
-                :<><strong>{_approvedItems.length} approved · {_flaggedItems.length} need{_flaggedItems.length===1?'s':''} changes.</strong> We'll send your rep the whole list.</>}
-            </div>}
-            <div style={{marginBottom:10}}>
-              <textarea className="form-input" rows={3} placeholder={_flaggedItems.length>0?'Anything else to add? (optional)':'Add a note (optional for approval, required for rejection)...'} value={comment} onChange={e=>setComment(e.target.value)} style={{fontSize:12,resize:'vertical',borderRadius:10}}/>
+          {/* ── Decision block ── red top rule, the one place red carries weight. */}
+          {j.art_status==='waiting_approval'&&!j.sent_to_coach_at&&<div style={{..._card,borderTop:'5px solid '+_NV,padding:18}}>
+            <div style={{fontFamily:_DISP,fontWeight:800,fontSize:20,letterSpacing:'0.5px',textTransform:'uppercase',color:_NV,lineHeight:1.05}}>Proof in progress</div>
+            <div style={{fontSize:13.5,color:_TXL,lineHeight:1.6,marginTop:8}}>Your rep is reviewing this design and will send it to you for approval when it's ready.</div>
+          </div>}
+
+          {_canDecide&&<div style={{..._card,borderTop:'5px solid '+_RD,boxShadow:'0 8px 28px rgba(25,40,83,0.10)',padding:18}}>
+            <div style={{fontFamily:_DISP,fontWeight:800,fontSize:22,letterSpacing:'0.5px',textTransform:'uppercase',color:_NV,lineHeight:1.05}}>This artwork needs your approval</div>
+            <div style={{fontSize:13.5,color:_TXL,lineHeight:1.6,margin:'8px 0 12px'}}>
+              {items.length>1?<>One decision covers all <strong style={{color:_NV}}>{items.length} items</strong> printed with this art. </>:null}
+              Check artwork, quantities and personalization closely — this is exactly what gets printed.
             </div>
+            {_portalDisclaimer&&<div style={{padding:'10px 14px',background:'#FDF6F6',border:'1px solid '+_HAIR,borderLeft:'3px solid '+_RD,borderRadius:4,marginBottom:12,fontSize:12.5,color:_RD,lineHeight:1.5}}><strong>Important:</strong> {_portalDisclaimer}</div>}
+            {_marking&&<div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:12}}>
+              {items.map((gi,i)=><span key={i} style={{background:itemMarks[_gKey(gi)]?'#FDF6F6':_OFF,border:'1px solid '+(itemMarks[_gKey(gi)]?_RD:_HAIR),borderRadius:3,padding:'3px 9px',fontSize:12,color:_TX}}>{gi.fullName||gi.sku} <strong style={{color:itemMarks[_gKey(gi)]?_RD:_NV}}>{gi.units}</strong></span>)}
+            </div>}
+            {_marking&&<div style={{marginBottom:10,fontSize:12.5,color:_TXL,lineHeight:1.5}}>
+              {_flaggedItems.length===0
+                ?<>Approving all {items.length} garments. Tap <strong style={{color:_NV}}>✎</strong> on any one you'd like changed.</>
+                :<><strong style={{color:_NV}}>{_approvedItems.length} approved · {_flaggedItems.length} need{_flaggedItems.length===1?'s':''} changes.</strong> We'll send your rep the whole list.</>}
+            </div>}
+            <textarea className="form-input" rows={3} placeholder={_flaggedItems.length>0?'Anything else to add? (optional)':'Add a note — optional to approve, required to request changes'} value={comment} onChange={e=>setComment(e.target.value)} style={{fontSize:13.5,resize:'vertical',borderRadius:4}}/>
             {/* A garment with no mockup blocks approval outright — the job can't reach production
                 until every garment is mocked. Say so HERE, before the tap, instead of firing an
                 alert() after it. Request Changes stays available so the coach isn't dead-ended. */}
-            {_missingMockSkus.size>0&&<div style={{padding:'12px 16px',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:10,marginBottom:10}}>
-              <div style={{fontSize:13,fontWeight:800,color:'#9a3412'}}>⏳ Waiting on {_missingMockSkus.size} more mockup{_missingMockSkus.size===1?'':'s'}</div>
-              <div style={{fontSize:11,color:'#9a3412',marginTop:4,lineHeight:1.5}}>We can't take your approval until every garment has one — your rep is on it. You can still send them a note below.</div>
+            {_missingMockSkus.size>0&&<div style={{padding:'12px 14px',background:_OFF,border:'1px dashed '+_BRD,borderRadius:4,marginTop:12}}>
+              <div style={{fontFamily:_DISP,fontWeight:800,fontSize:16,letterSpacing:'0.5px',textTransform:'uppercase',color:_NV}}>Waiting on {_missingMockSkus.size} more mockup{_missingMockSkus.size===1?'':'s'}</div>
+              <div style={{fontSize:12.5,color:_TXL,marginTop:4,lineHeight:1.5}}>We can't take your approval until every garment has one — your rep is on it. You can still send them a note.</div>
             </div>}
-            <div style={{display:'flex',gap:8}}>
+            <div style={{display:'grid',gridTemplateColumns:'minmax(0,1fr)',gap:10,marginTop:14}}>
               {/* Hidden once a garment is flagged: approving and requesting changes in the same
                   submission is the one combination that can't exist, so don't offer it. The
                   live re-check below stays regardless — this is a UI gate, not the safety gate. */}
-              {_flaggedItems.length===0&&_missingMockSkus.size===0&&<button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'12px 16px',borderRadius:10}} onClick={async()=>{
+              {_flaggedItems.length===0&&_missingMockSkus.size===0&&<button style={{width:'100%',padding:'16px 20px',background:_NV,color:'#fff',border:'2px solid '+_NV,fontFamily:_DISP,fontWeight:700,fontSize:18,letterSpacing:'1px',textTransform:'uppercase',cursor:'pointer',transform:'skewX(-3deg)'}} onClick={async()=>{
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
                 // A coach must never approve a proof with unmocked garments — they'd be
                 // approving art they can't see. Same per-garment gate the rep side enforces
@@ -1998,8 +2127,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_approval_comment:coachComment||undefined,coach_rejected:false}:jj),art_files:safeArt(liveSO).map(a=>jArtIds.includes(a.id)?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()};
                 if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 setComment('');// stay on the job view — it re-renders from live state to show the "approved" banner
-              }}>{items.length>1?'✅ Approve All '+items.length+' Garments':'✅ Approve Artwork'}</button>}
-              <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'12px 16px',borderRadius:10}} onClick={async()=>{
+              }}><span style={{display:'inline-block',transform:'skewX(3deg)'}}>✓ {items.length>1?'Approve All '+items.length+' Garments':'Approve This Proof'}</span></button>}
+              <button style={{width:'100%',padding:'14px 20px',background:_RD,color:'#fff',border:'2px solid '+_RD,fontFamily:_DISP,fontWeight:700,fontSize:16,letterSpacing:'1px',textTransform:'uppercase',cursor:'pointer',transform:'skewX(-3deg)'}} onClick={async()=>{
                 // A note is required, but it can come from EITHER box — a coach who flags three
                 // garments and explains all three in one place shouldn't be blocked for leaving
                 // the per-garment fields empty.
@@ -2038,21 +2167,43 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,rejections:_newRejections,sent_to_coach_at:null,coach_approved_at:null}:jj),art_files:safeArt(liveSO).map(a=>rArtIds.includes(a.id)?{...a,status:'waiting_for_art',notes:(a.notes?a.notes+'\n':'')+'Coach feedback: '+_fb,prod_files_attached:false}:a),updated_at:new Date().toLocaleString()};
                 if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 setComment('');setItemMarks({});// stay on the job view — it re-renders from live state to show the "changes requested" banner
-              }}>{_flaggedItems.length>0?'📩 Send Feedback ('+_approvedItems.length+' approved · '+_flaggedItems.length+' to change)':'❌ Request Changes'}</button>
+              }}><span style={{display:'inline-block',transform:'skewX(3deg)'}}>{_flaggedItems.length>0?'Send Feedback ('+_approvedItems.length+' approved · '+_flaggedItems.length+' to change)':'Request Changes'}</span></button>
             </div>
           </div>}
-          {(j.art_status==='art_complete'||j.art_status==='production_files_needed')&&<div style={{background:'#f0fdf4',borderRadius:12,padding:12,marginBottom:16,fontSize:12,color:'#166534',fontWeight:600}}>✅ You approved this artwork{j.coach_approval_comment&&<div style={{fontWeight:400,marginTop:6,color:'#15803d'}}>Your note: "{j.coach_approval_comment}"</div>}</div>}
-          {(j.art_status==='art_requested'&&j.coach_rejected)&&<div style={{background:'#fef2f2',borderRadius:12,padding:12,marginBottom:16,fontSize:12,color:'#dc2626',fontWeight:600}}>🔄 Changes requested — your artist is working on revisions</div>}
+
+          {/* Post-decision states */}
+          {(j.art_status==='art_complete'||j.art_status==='production_files_needed')&&<div style={{..._card,borderTop:'5px solid '+_NV,padding:18}}>
+            <div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
+              <span style={{width:42,height:42,flex:'0 0 auto',borderRadius:'50%',background:_NV,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20}}>✓</span>
+              <div style={{minWidth:0}}>
+                <div style={{fontFamily:_DISP,fontWeight:800,fontSize:22,letterSpacing:'0.5px',textTransform:'uppercase',color:_NV,lineHeight:1.05}}>Proof approved</div>
+                <div style={{fontSize:13.5,color:_TXL,lineHeight:1.6,marginTop:6}}>Your rep has been notified and this design moves to production file prep.</div>
+                {j.coach_approval_comment&&<div style={{fontSize:13,color:_TX,marginTop:8,padding:'8px 12px',background:_OFF,borderRadius:4}}>Your note: “{j.coach_approval_comment}”</div>}
+              </div>
+            </div>
+          </div>}
+          {(j.art_status==='art_requested'&&j.coach_rejected)&&<div style={{..._card,borderTop:'5px solid '+_RD,padding:18}}>
+            <div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
+              <span style={{width:42,height:42,flex:'0 0 auto',borderRadius:'50%',background:_RD,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20}}>!</span>
+              <div style={{minWidth:0}}>
+                <div style={{fontFamily:_DISP,fontWeight:800,fontSize:22,letterSpacing:'0.5px',textTransform:'uppercase',color:_NV,lineHeight:1.05}}>Changes requested</div>
+                <div style={{fontSize:13.5,color:_TXL,lineHeight:1.6,marginTop:6}}>Your note went to your rep with this proof. A revised set usually lands within 24 hours.</div>
+              </div>
+            </div>
+          </div>}
           {(j.art_status==='art_complete'||j.art_status==='production_files_needed'||(j.art_status==='art_requested'&&j.coach_rejected))&&(()=>{
             const _next=waitingArtJobs.find(w=>!(w.so&&w.so.id===so.id&&w.id===j.id));
-            return<div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:16}}>
-              {_next&&<button style={{width:'100%',padding:'12px 16px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:14,fontWeight:800,cursor:'pointer'}} onClick={()=>{setSoView(_next.so);setJobView({job:_next,so:_next.so});setComment('')}}>Review next artwork ({waitingArtJobs.length} still need{waitingArtJobs.length===1?'s':''} approval) →</button>}
-              <button style={{width:'100%',padding:'12px 16px',background:'#1e3a5f',color:'white',border:'none',borderRadius:10,fontSize:14,fontWeight:700,cursor:'pointer'}} onClick={()=>{setJobView(null);setSoView(null);setComment('')}}>← Back to all artwork</button>
+            return<div style={{display:'flex',flexDirection:'column',gap:10}}>
+              {_next&&<button style={{width:'100%',padding:'14px 20px',background:_NV,color:'#fff',border:'2px solid '+_NV,fontFamily:_DISP,fontWeight:700,fontSize:16,letterSpacing:'1px',textTransform:'uppercase',cursor:'pointer',transform:'skewX(-3deg)'}} onClick={()=>{setSoView(_next.so);setJobView({job:_next,so:_next.so});setComment('')}}>
+                <span style={{display:'inline-block',transform:'skewX(3deg)'}}>Review next artwork ({waitingArtJobs.length}) →</span></button>}
+              <button style={{width:'100%',padding:'14px 20px',background:'transparent',color:_NV,border:'2px solid '+_NV,fontFamily:_DISP,fontWeight:700,fontSize:16,letterSpacing:'1px',textTransform:'uppercase',cursor:'pointer',transform:'skewX(-3deg)'}} onClick={()=>{setJobView(null);setSoView(null);setComment('')}}>
+                <span style={{display:'inline-block',transform:'skewX(3deg)'}}>← Back to all artwork</span></button>
             </div>;
           })()}
-          {j.prod_status!=='hold'&&<div style={{padding:10,background:'#f8fafc',borderRadius:8,marginBottom:16}}>
-            <div style={{fontSize:10,color:'#64748b',fontWeight:600}}>PRODUCTION STATUS</div>
-            <div style={{fontSize:14,fontWeight:700,color:'#1e40af',marginTop:2}}>{prodLabelsP[j.prod_status]||j.prod_status}</div>
+
+          {j.prod_status!=='hold'&&<div style={{..._card,padding:'14px 16px',display:'flex',alignItems:'center',gap:10}}>
+            <span style={_eyebrow}>Production</span>{_rule(26)}
+            <span style={{fontFamily:_DISP,fontWeight:700,fontSize:16,letterSpacing:'0.6px',textTransform:'uppercase',color:_NV,marginLeft:'auto'}}>{prodLabelsP[j.prod_status]||j.prod_status}</span>
           </div>}
         </div>
       </div>
