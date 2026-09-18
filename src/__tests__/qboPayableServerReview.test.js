@@ -1,7 +1,7 @@
 const {analyzeBillPayments,analyzeNativePOLinks,analyzePayables,analyzePurchaseOrders,failureCode,PAYABLE_CUTOVER_DATE,runPayableReview}=require('../../netlify/functions/_qboPayableServerReview');
 const {SNAPSHOT_LIMITS}=require('../../netlify/functions/_qboPayableReviewStore');
 
-const ledger={id:'L1',status:'pushed',portal_status:'success',doc_number:'B-1',vendor:'Acme LLC',doc_total:100,is_credit:false,raw_meta:{doc_date:'2026-09-10',freight:10,si_upcharge:5}};
+const ledger={id:'L1',status:'pushed',portal_status:'success',doc_number:'B-1',vendor:'Acme LLC',doc_total:100,is_credit:false,raw_meta:{doc_date:'2026-09-10',freight:10,si_upcharge:5,po_origin:'portal'}};
 const portal={id:'V1',name:'Acme LLC',is_active:true};
 const qboVendor={Id:'9',DisplayName:'Acme',Active:true};
 const accounts={purchases_account:'1',freight_account:'2',sports_inc_fee_account:'3',deco_account:'4'};
@@ -22,6 +22,17 @@ test('classifies a fully routed unmatched bill as ready without writes',()=>{
 test('parses four-digit years in slash-formatted payable dates without truncating the year',()=>{
   const fourDigitYear={...ledger,id:'L2',raw_meta:{...ledger.raw_meta,doc_date:'09/15/2026'}};
   expect(analyzePayables({...base,ledgerRows:[fourDigitYear]}).rows[0]).toMatchObject({date:'2026-09-15',action:'ready'});
+});
+test('blocks paid and source-unverified bills from becoming open QBO payables',()=>{
+  const prepaid={...ledger,id:'P1',raw_meta:{...ledger.raw_meta,matchedPO:{po:{_payment_method:'credit_card'}}}};
+  expect(analyzePayables({...base,ledgerRows:[prepaid]}).rows[0]).toMatchObject({action:'blocked',code:'prepaid_purchase',paymentMethod:'credit_card'});
+  const unverified={...ledger,id:'U1',raw_meta:{...ledger.raw_meta,po_origin:'unknown'}};
+  expect(analyzePayables({...base,ledgerRows:[unverified]}).rows[0]).toMatchObject({action:'blocked',code:'payment_status_unverified',poOrigin:'unknown'});
+});
+test('duplicate review still recognizes a paid purchase that already exists in QBO',()=>{
+  const prepaid={...ledger,id:'P2',raw_meta:{...ledger.raw_meta,matchedPO:{po:{_payment_method:'credit_card'}}}};
+  const exact={Id:'80',DocNumber:'B-1',VendorRef:{value:'9'},TotalAmt:100,TxnDate:'2026-09-10'};
+  expect(analyzePayables({...base,ledgerRows:[prepaid],qboBills:[exact]}).rows[0]).toMatchObject({action:'already_exists',qboBillId:'80'});
 });
 test('excludes unmatched pre-cutover payables without proposing a historical write',()=>{
   const old={...ledger,id:'OLD1',raw_meta:{...ledger.raw_meta,doc_date:'2026-09-08'}};
