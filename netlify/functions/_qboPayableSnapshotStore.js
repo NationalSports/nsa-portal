@@ -1,7 +1,7 @@
 // No browser grants: snapshot payloads and pages are service-role-only.
 function snapshotStore(admin,realm,onId=()=>{}){
   const known=new Set();
-  const checked=async query=>{const {data,error}=await query;if(error)throw new Error('snapshot_store_failed');return data};
+  const checked=async query=>{const {data,error}=await query.abortSignal(AbortSignal.timeout(30000));if(error)throw new Error('snapshot_store_failed');return data};
   return {
     async load(id){const row=await checked(admin.from('qbo_payable_snapshots').select('manifest,portal_snapshot').eq('id',id).eq('realm_id',realm).maybeSingle());if(row){known.add(id);onId(id)}return row?{...row.manifest,portal:row.portal_snapshot}:null},
     async save(manifest){const {portal,...metadata}=manifest;

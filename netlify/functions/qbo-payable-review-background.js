@@ -39,6 +39,8 @@ exports.handler=async event=>{
     return{statusCode:200,body:JSON.stringify({id:first.id,status:first.status,snapshotId})};
   }catch(error){
     if(finished&&finished.row.status!=='failed')await finish(finished.id,{status:'failed',finished_at:new Date().toISOString(),snapshot_id:snapshotId||null,error_code:'payable_review_replay_failed'});
-    throw error;
+    // The durable failed run is the outcome. Throwing here makes Netlify retry
+    // the original empty request, creating a new snapshot instead of resuming.
+    return{statusCode:200,body:JSON.stringify({status:'failed',snapshotId:snapshotId||null})};
   }
 };
