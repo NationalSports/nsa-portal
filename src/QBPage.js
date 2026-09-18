@@ -3,6 +3,7 @@ import QBCustomerLinkRepair from './QBCustomerLinkRepairCard';
 import QBServerReviewCard from './QBServerReviewCard';
 import QBBackgroundSalesCard from './QBBackgroundSalesCard';
 import QBPayableServerReviewCard from './QBPayableServerReviewCard';
+import QBAuditExportCard from './QBAuditExportCard';
 import {supabase} from './lib/dbEngine';
 import {loadQBVendorReview,applyQBVendorReview} from './qbVendorSync';
 import {buildQBProductManifest,loadQBProductItems,qbProductBatchReadiness} from './qbProductMigration';
@@ -959,10 +960,11 @@ export default function QBPage(){
 
       {/* Tabs */}
       <div className="tab-bar" style={{marginBottom:16}}>
-        {[['overview','Overview'],['customers','Customers'],['vendors','Vendors'],['invoices','Invoices'],['stripe','Stripe Payouts'],['bills','Bill Upload'],['inventory','QBO Items'],['settings','Settings'],['log','Sync Log']].map(([k,l])=>
+        {[['overview','Overview'],['customers','Customers'],['vendors','Vendors'],['invoices','Invoices'],['stripe','Stripe Payouts'],['bills','Bill Upload'],['inventory','QBO Items'],['audit','Audit export'],['settings','Settings'],['log','Sync Log']].map(([k,l])=>
           <button key={k} className={`tab ${qbTab===k?'active':''}`} onClick={()=>setQbTab(k)}>{l}</button>)}
       </div>
 
+      {qbTab==='audit'&&<QBAuditExportCard />}
       {qbTab==='vendors'&&<div className="card"><div className="card-header"><h2>QBO Vendors → Portal</h2></div><div className="card-body">
         <p>Match existing vendors or import missing vendors from QuickBooks. Portal names, purchasing settings and existing contacts are preserved; missing email and phone fields are filled from QBO. Possible decoration-vendor matches, ambiguous matches and inactive Portal vendors require review.</p>
         <p>Vendor imports do not change QuickBooks. During migration, run this review when QBO vendors change.</p>
