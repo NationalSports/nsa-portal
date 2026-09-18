@@ -79,3 +79,18 @@ test('a failed page records bounded diagnostic details without upstream data',as
   assert.equal(f.manifest.lastFailure.entity,'Vendor');assert.equal(f.manifest.lastFailure.status,429);
   assert.equal(JSON.stringify(f.manifest).includes('private upstream data'),false);
 });
+test('compact Portal projection preserves unpaid, prepaid, credit and fallback review evidence',()=>{
+  const {restoreLedgerReviewRow,LEDGER_REVIEW_SELECT}=require('../netlify/functions/_qboPayableReviewStore');
+  const {buildRows}=require('../netlify/functions/_qboPayableServerReview');
+  for(const payment of ['', 'credit_card'])for(const is_credit of [false,true]){
+    const row={id:'8',status:'pushed',portal_status:'success',is_credit,doc_norm:'normalized',raw_meta:{doc_total:50,doc_number:'B1',vendor:'Acme',supplier:'Fallback',doc_date:'09/09/2026',freight:2,si_upcharge:1,kind:'apparel',source:'import',po_origin:'portal',matchedPO:{po:{_payment_method:payment},deco_po:{_payment_method:''},so:{unrelated:'large order contents'}},unrelated:'art payload'}};
+    const {raw_meta,...flat}=row;
+    for(const key of ['doc_total','doc_number','vendor','supplier','doc_date','freight','si_upcharge','kind','source','po_origin'])flat['review_'+key]=raw_meta[key];
+    flat.review_po_payment=payment;flat.review_deco_payment='';
+    const compact=restoreLedgerReviewRow(flat);
+    assert.deepEqual(buildRows([compact]),buildRows([row]));
+    assert.equal(JSON.stringify(compact).includes('unrelated'),false);
+  }
+  assert.equal(LEDGER_REVIEW_SELECT.includes('raw_meta->matchedPO->deco_po->_payment_method'),true);
+  assert.equal(LEDGER_REVIEW_SELECT.split(',').includes('*'),false);
+});
