@@ -1,5 +1,8 @@
 import {buildPortalPaymentPushRows,createQBSyncEngine} from '../qbSyncEngine';
 import {QB_LINK_MAPS} from '../qbLinkLedger';
+import {supabase} from '../lib/dbEngine';
+
+jest.mock('../lib/dbEngine',()=>({supabase:{from:jest.fn()},_dbSaveSO:jest.fn()}));
 
 const mapping={income_account:'40000',discount_account:'40200',ar_account:'11000',payment_deposit_account:'11010'};
 const accounts=[
@@ -109,7 +112,10 @@ test('when QBO is ahead of the Portal nothing is pushed',async()=>{
 // rather than 30% once days-to-pay passes 90, and freezes it on first render.
 describe('pulling QBO payments into the Portal',()=>{
   const {qbPaymentsAppliedToInvoice}=require('../qbSyncEngine');
-  function pullSetup({qboPayments,existingRows=[]}={}){
+  function pullSetup({qboPayments,existingRows=[],savedRows=existingRows,receipts=[],dbError=null,currentRows}={}){
+    supabase.from.mockImplementation(table=>({select:()=> table==='invoice_payments'
+      ?{eq:()=>({order:()=>({limit:async()=>({data:savedRows,count:savedRows.length,error:dbError})})})}
+      :{in:async()=>({data:receipts,error:dbError})}}));
     const invs=[{id:'INV1',display_id:'INV-1',customer_id:'C1',total:100,paid:0,qb_invoice_id:'900',
       date:'2026-05-01',payments:existingRows}];
     let config={realm_id:'r1',preflight:{status:'success',realm_id:'r1'},mapping,initialMigrationApproved:true,
@@ -129,7 +135,7 @@ describe('pulling QBO payments into the Portal',()=>{
     });
     const engine=createQBSyncEngine({cust:[{id:'C1',name:'Club'}],sos:[],invs,prod:[],vend:[],qbApi,qbConfig:config,
       persistQbLink:jest.fn(async()=>{}),nf:jest.fn(),setQbSyncing:jest.fn(),
-      setInvs:fn=>{saved=fn(invs)[0]},setQBConfig:fn=>{config=fn(config);}});
+      setInvs:fn=>{saved=fn(currentRows?[{...invs[0],payments:currentRows}]:invs)[0]},setQBConfig:fn=>{config=fn(config);}});
     return {engine,saved:()=>saved,log:()=>(config.syncLog||[]).find(l=>l.type==='paid_sync')||{details:[]}};
   }
   const check=(id,date,amount)=>({Id:id,TxnDate:date,Line:[{Amount:amount,LinkedTxn:[{TxnType:'Invoice',TxnId:'900'}]}]});
@@ -149,6 +155,42 @@ describe('pulling QBO payments into the Portal',()=>{
       existingRows:[{amount:100,method:'qb_sync',ref:'QBO Payment #70',date:'2026-05-20'}]});
     await run.engine.syncPaidFromQB();
     expect(run.saved().payments).toHaveLength(1);
+  });
+
+  test('a stale tab restores the original EFT instead of pulling its QBO echo',async()=>{
+    const {qbLinkKey}=require('../qbLinkLedger');
+    const original={id:966,invoice_id:'INV1',amount:100,method:'check',ref:'EFT',date:'05/20/2026'};
+    const receipt={realm_id:'r1',map_key:'qbPaymentMap',source_id:'payment:966',qbo_id:'70',active:true,
+      verified_at:'2026-05-20T12:00:00Z',evidence:{api_readback:true,invoice_id:'INV1',qbo_invoice_id:'900',amount:100,date:'2026-05-20'}};
+    const run=pullSetup({qboPayments:[check('70','2026-05-20',100)],savedRows:[original],
+      receipts:[{id:qbLinkKey('r1','qbPaymentMap','payment:966'),value:JSON.stringify(receipt)}]});
+    await run.engine.syncPaidFromQB();
+    expect(run.saved().payments).toEqual([original]);
+    expect(run.saved()).toMatchObject({paid:100,status:'paid'});
+    expect(run.log().details.join(' ')).toContain('no new QBO payment rows');
+  });
+
+  test('unlinked existing EFT blocks instead of guessing from equal amounts',async()=>{
+    const run=pullSetup({qboPayments:[check('70','2026-05-20',100)],
+      savedRows:[{id:966,amount:100,method:'check',ref:'EFT',date:'2026-05-20'}]});
+    await run.engine.syncPaidFromQB();
+    expect(run.saved()).toBeNull();
+    expect(run.log().details.join(' ')).toContain('pull BLOCKED: Portal payment rows would not match');
+  });
+
+  test('database read failure blocks the pull without altering the invoice',async()=>{
+    const run=pullSetup({qboPayments:[check('70','2026-05-20',100)],dbError:{message:'timeout'}});
+    await run.engine.syncPaidFromQB();
+    expect(run.saved()).toBeNull();
+    expect(run.log().details.join(' ')).toContain('Could not completely read saved portal payments');
+  });
+
+  test('payment edits made during the reads are preserved',async()=>{
+    const currentRows=[{amount:100,ref:'EFT just entered',method:'check',date:'2026-05-20'}];
+    const run=pullSetup({qboPayments:[check('70','2026-05-20',100)],currentRows});
+    await run.engine.syncPaidFromQB();
+    expect(run.saved().payments).toEqual(currentRows);
+    expect(run.saved().paid).toBe(0);
   });
 
   test('a payment with no usable date blocks rather than guessing one',async()=>{

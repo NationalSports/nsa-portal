@@ -6,6 +6,7 @@ import {runQBProductMigration} from './qbProductMigration';
 // leaving the page it synced the stale snapshot captured at the last render. QBPage
 // builds this same engine for its buttons: one copy of the logic, two callers.
 import { mergeQBSyncLogs } from './qbLinkLedger';
+import { loadQBPaymentPullSources, planQBPaymentPull } from './qbPaymentPull';
 import { D_V } from './constants';
 import { _dbSaveSO, supabase } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
@@ -1635,13 +1636,21 @@ export function createQBSyncEngine(ctx){
             if(!applied.length){log.details.push(docId+' — pull BLOCKED: QBO shows $'+qbPaid.toFixed(2)+' paid but no payment record references this invoice');log.status='partial';continue}
             const undated=applied.filter(row=>!/^\d{4}-\d{2}-\d{2}/.test(row.date));
             if(undated.length){log.details.push(docId+' — pull BLOCKED: QBO Payment #'+undated[0].id+' has no usable date, and a guessed date would change the rep commission rate');log.status='partial';continue}
-            const known=new Set((inv.payments||[]).map(existing=>String(existing.ref||'')));
-            const fresh=applied.filter(row=>!known.has('QBO Payment #'+row.id));
+            let plan;
+            try{
+              const sources=await loadQBPaymentPullSources(supabase,inv.id,qbConfig.realm_id);
+              plan=planQBPaymentPull({invoice:inv,savedPayments:sources.payments,links:sources.links,applied,qbPaid});
+            }catch(pe){log.details.push(docId+' — pull BLOCKED: '+pe.message);log.status='partial';continue}
+            const {fresh}=plan;
             const newStatus=qbBalance<=0?'paid':qbPaid>0?'partial':'open';
-            setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,paid:Math.round(qbPaid*100)/100,status:newStatus,
-              payments:[...(ii.payments||[]),...fresh.map(row=>({amount:row.amount,method:'qb_sync',ref:'QBO Payment #'+row.id,date:row.date}))]}:ii));
-            log.details.push(docId+' — marked '+newStatus+' (QB paid $'+qbPaid.toFixed(2)+')'
-              +(fresh.length?' · recorded '+fresh.map(row=>'QBO Payment #'+row.id+' $'+row.amount.toFixed(2)+' dated '+row.date).join(', '):' · no new QBO payment rows'));
+            // Do not replace payment edits made while the live reads were running.
+            const unchanged=ii=>ii.paid===inv.paid&&ii.total===inv.total&&ii.status===inv.status
+              &&ii.qb_invoice_id===inv.qb_invoice_id&&ii.customer_id===inv.customer_id
+              &&JSON.stringify(ii.payments||[])===JSON.stringify(inv.payments||[]);
+            setInvs(prev=>prev.map(ii=>ii.id===inv.id&&unchanged(ii)?{...ii,paid:Math.round(qbPaid*100)/100,status:newStatus,
+              payments:plan.payments}:ii));
+            log.details.push(docId+' — prepared '+newStatus+' reconciliation (QB paid $'+qbPaid.toFixed(2)+'); applied only if local payment state is unchanged'
+              +(fresh.length?' · import '+fresh.map(row=>row.ref+' $'+row.amount.toFixed(2)+' dated '+row.date).join(', '):' · no new QBO payment rows'));
             updated++;
           }else if(portalPaid>qbPaid&&qbBalance>0){
             // Portal has more paid — push payment to QB. This is the only place the
