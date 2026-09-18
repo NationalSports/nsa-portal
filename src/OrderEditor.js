@@ -3644,6 +3644,32 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }
     return null;
   },[o,decoVendors,vendorList]);
+  // Ship-to for a PO — shared by the PO modal, the PO full page and the printed label/PDF, so
+  // the address a rep copies is by construction the address that prints. Precedence matches the
+  // batch flow's resolveBatchDestination: the PO line's write-in address, then the decorator
+  // these blanks belong to, then the SO's ship-to customer. A stock (non-drop-ship) PO delivers
+  // to NSA, so it shows NSA's own address. Returns {name, lines:[...]} — callers join as they need.
+  const poShipToFor=useCallback((po,lines,items)=>{
+    const split=v=>String(v||'').split(/<br\s*\/?>|\n/).map(s=>s.trim()).filter(Boolean);
+    const its=items||safeItems(o);const lns=lines||[];
+    if(!po||!po.drop_ship)return{name:_ci.name,lines:split(_ci.fullAddr)};
+    const wi=po.ship_to||lns.map(ln=>its[ln.lineIdx]?.po_lines?.[ln.poIdx]?.ship_to).find(st=>st&&(st.line1||st.city))||null;
+    if(wi&&(wi.line1||wi.city)){
+      const cityLine=[(wi.city||'').trim(),[(wi.state||'').trim(),(wi.zip||'').trim()].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+      return{name:(wi.name||cust?.name||'Customer')+' (Drop Ship)',lines:[wi.line1,wi.line2,cityLine].filter(Boolean)};
+    }
+    const dd=decoShipForItems(lns.map(ln=>ln.lineIdx));
+    if(dd)return{name:dd.name+' (Decorator)',lines:split(dd.addr)};
+    let addr='';
+    if(o.ship_to_id==='custom'&&o.ship_to_custom){addr=o.ship_to_custom}
+    else{
+      const sel=addrs.find(a=>a.id===o.ship_to_id);
+      if(sel&&sel.addr){addr=sel.addr}
+      else if(cust?.shipping_address_line1){addr=[cust.shipping_address_line1,cust.shipping_address_line2,(cust.shipping_city||'')+', '+(cust.shipping_state||'')+' '+(cust.shipping_zip||'')].filter(Boolean).join('\n')}
+      else if(cust?.billing_address_line1){addr=[cust.billing_address_line1,cust.billing_address_line2,(cust.billing_city||'')+', '+(cust.billing_state||'')+' '+(cust.billing_zip||'')].filter(Boolean).join('\n')}
+    }
+    return{name:(cust?.name||'Customer')+' (Drop Ship)',lines:split(addr)};
+  },[o,_ci,cust,addrs,decoShipForItems]);
   const artQty=useMemo(()=>{const m={};safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){m[d.art_file_id]=(m[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}})});return m},[o]);
   // Combined deco COST tier qty for manually-linked jobs that share a screen across orders
   // (so_jobs.link_group). Lowers the rep's cost/margin so one shared setup isn't paid twice;
@@ -14370,31 +14396,9 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       const poWideStatus=isManualCostPO?'recorded':isDropShip?(_poWide.bld>=_poWide.ord&&_poWide.ord>0?'shipped':_poWide.bld>0?'partial':'waiting'):(_poWide.open<=0&&_poWide.rcvd>0?'received':_poWide.rcvd>0?'partial':'waiting');
       const hasOpenAnywhere=_poWide.open>0;
       const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(po.po_id);
-      // Ship-to for this PO, resolved ONCE here and shared by the Ship To block below and the
-      // printed label/PDF further down, so the address a rep copies is the address that prints.
-      // Precedence (same as the batch flow's resolveBatchDestination): the PO line's write-in
-      // address, then the decorator these blanks belong to, then the SO's ship-to customer.
-      // A stock (non-drop-ship) PO delivers to NSA, so it shows NSA's own address.
-      const _splitAddr=v=>String(v||'').split(/<br\s*\/?>|\n/).map(s=>s.trim()).filter(Boolean);
-      const _poShipTo=(()=>{
-        if(!isDropShip)return{name:_ci.name,lines:_splitAddr(_ci.fullAddr)};
-        const wi=po.ship_to||allLines.map(ln=>o.items[ln.lineIdx]?.po_lines?.[ln.poIdx]?.ship_to).find(st=>st&&(st.line1||st.city))||null;
-        if(wi&&(wi.line1||wi.city)){
-          const cityLine=[(wi.city||'').trim(),[(wi.state||'').trim(),(wi.zip||'').trim()].filter(Boolean).join(' ')].filter(Boolean).join(', ');
-          return{name:(wi.name||cust?.name||'Customer')+' (Drop Ship)',lines:[wi.line1,wi.line2,cityLine].filter(Boolean)};
-        }
-        const dd=decoShipForItems(allLines.map(ln=>ln.lineIdx));
-        if(dd)return{name:dd.name+' (Decorator)',lines:_splitAddr(dd.addr)};
-        let addr='';
-        if(o.ship_to_id==='custom'&&o.ship_to_custom){addr=o.ship_to_custom}
-        else{
-          const sel=addrs.find(a=>a.id===o.ship_to_id);
-          if(sel&&sel.addr){addr=sel.addr}
-          else if(cust?.shipping_address_line1){addr=[cust.shipping_address_line1,cust.shipping_address_line2,(cust.shipping_city||'')+', '+(cust.shipping_state||'')+' '+(cust.shipping_zip||'')].filter(Boolean).join('\n')}
-          else if(cust?.billing_address_line1){addr=[cust.billing_address_line1,cust.billing_address_line2,(cust.billing_city||'')+', '+(cust.billing_state||'')+' '+(cust.billing_zip||'')].filter(Boolean).join('\n')}
-        }
-        return{name:(cust?.name||'Customer')+' (Drop Ship)',lines:_splitAddr(addr)};
-      })();
+      // Where this PO delivers — resolved by the shared poShipToFor so the Ship To card, the
+      // PO full page and the printed label/PDF below can never disagree about the address.
+      const _poShipTo=poShipToFor(po,allLines,o.items);
       const _poShipToText=[_poShipTo.name,..._poShipTo.lines].join('\n');
       // Every SKU on this PO — a PO can span several lines, so the active tab's SKU alone
       // isn't what a rep needs to paste into the vendor's cart. Deduped, in line order.
@@ -14591,42 +14595,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             </div>
           </div></>})()}
 
-          {/* Edit PO — cancel sizes or add back previously cancelled */}
-          {(hasOpen||totalCancelled>0)&&<div style={{marginBottom:12}}>
-            <div style={{fontSize:11,color:'#64748b',cursor:'pointer',display:'flex',alignItems:'center',gap:4}} onClick={e=>{const el=e.currentTarget.nextSibling;if(el)el.style.display=el.style.display==='none'?'block':'none'}}>
-              ✏️ <span style={{textDecoration:'underline'}}>Edit PO</span> <span style={{fontSize:9}}>(cancel sizes or add back previously cancelled)</span>
-            </div>
-            <div style={{display:'none',marginTop:8,padding:10,border:'1px dashed #f59e0b',borderRadius:6,background:'#fffbeb'}}>
-              <div style={{fontSize:11,color:'#92400e',marginBottom:6}}>Set the cancelled quantity for each size. Lower a number to add sizes back; raise it to cancel (cancelled sizes become available for new picks/POs):</div>
-              <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
-                {szKeys.filter(sz=>getOpen(sz)>0||getCncl(sz)>0).map(sz=>{const maxCancel=Math.max(0,(po[sz]||0)-getRcvd(sz));return<div key={sz} style={{textAlign:'center'}}>
-                  <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-                  <input id={'po-cancel-'+sz} style={{width:42,textAlign:'center',border:'1px solid #f59e0b',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={getCncl(sz)}/>
-                  <div style={{fontSize:9,color:'#64748b'}}>{getOpen(sz)} open · max {maxCancel}</div>
-                </div>})}
-              </div>
-              <button className="btn btn-sm" style={{background:'#f59e0b',color:'white',fontSize:11}} onClick={()=>{
-                const newCancelled={...cancelled};
-                let anyChange=false;
-                szKeys.filter(sz=>getOpen(sz)>0||getCncl(sz)>0).forEach(sz=>{
-                  const el=document.getElementById('po-cancel-'+sz);
-                  const maxCancel=Math.max(0,(po[sz]||0)-getRcvd(sz));
-                  const qty=el?Math.max(0,Math.min(parseInt(el.value)||0,maxCancel)):getCncl(sz);
-                  if(qty!==getCncl(sz))anyChange=true;
-                  newCancelled[sz]=qty;
-                });
-                if(!anyChange){nf('No changes to apply','error');return}
-                const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(received[sz]||0)-(newCancelled[sz]||0)),0);
-                const newStatus=newTotalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting';
-                const updatedPO={...po,cancelled:newCancelled,status:newStatus};
-                const updatedItems=o.items.map((it,i)=>i===activeLine.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===activeLine.poIdx?updatedPO:p)}:it);
-                const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
-                setO(updated);onSave(updated);setEditPO({...editPO,po:updatedPO});nf('PO '+po.po_id+' updated');
-              }}>✏️ Update PO</button>
-            </div>
-          </div>}
-
-          {/* Full PO editor — change ordered quantities, add sizes, remove lines, and pull more
+          {/* The ONE PO editor — quantities, sizes, cancellations, removing lines and pulling
+              more of this order's items onto the PO all live in this single panel. There used to be
+              a second "cancel sizes" editor above it; two buttons for one job meant reps had to know
+              which half of the edit lived where. — change ordered quantities, add sizes, remove lines, and pull more
               items from this order onto the PO (any SKU on the order, regardless of which vendor
               it's assigned to in the catalog). Batch-queued POs are edited from the Batch POs page
               instead so the queue entry stays in sync. */}
@@ -14638,11 +14610,11 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                 const it=o.items[ln.lineIdx];const pl=it?.po_lines?.[ln.poIdx];
                 if(!it||!pl)return null;
                 const sizes={};Object.keys(pl).filter(k=>!k.startsWith('_')&&!NON_SZ_PO_KEYS.includes(k)&&typeof pl[k]==='number').forEach(sz=>{sizes[sz]=pl[sz]||0});
-                return{lineIdx:ln.lineIdx,poIdx:ln.poIdx,sku:it.sku||'',name:it.name||'',color:it.color||'',queued:pl.status==='queued',received:{...(pl.received||{})},sizes,removed:false};
+                return{lineIdx:ln.lineIdx,poIdx:ln.poIdx,sku:it.sku||'',name:it.name||'',color:it.color||'',queued:pl.status==='queued',received:{...(pl.received||{})},cancelled:{...(pl.cancelled||{})},sizes,removed:false};
               }).filter(Boolean);
               setEditPO(p=>({...p,_draft:{lines,adds:[]}}));
             }}>
-              ➕ <span style={{textDecoration:'underline'}}>Edit Items & Quantities</span> <span style={{fontSize:9}}>(add items, change quantities, add sizes, remove lines)</span>
+              ✏️ <span style={{textDecoration:'underline',fontWeight:700}}>Edit PO</span> <span style={{fontSize:9}}>(add items, change quantities, add sizes, cancel sizes, remove lines)</span>
             </div>
             {editPO._draft&&(()=>{
               const draft=editPO._draft;
@@ -14674,6 +14646,16 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                         <input id={'po-editq-'+li+'-'+sz} style={{width:46,textAlign:'center',border:'1px solid '+(below?'#dc2626':'#c4b5fd'),borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:below?'#fef2f2':'white'}} value={ln.sizes[sz]??''} placeholder="0"
                           onChange={e=>{const v=Math.max(0,parseInt(e.target.value)||0);setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,sizes:{...l.sizes,[sz]:v}}:l)}))}}/>
                         {rcv>0&&<div style={{fontSize:9,fontWeight:700,color:below?'#dc2626':'#166534'}} title={below?'Below received — will be kept at '+rcv+' on save':'Already received'}>rcvd {rcv}</div>}
+                        {/* Cancelling is not the same as lowering the qty: the PO keeps its original
+                            ordered number as the record of what was placed, and the cancelled units
+                            go back to the order as available to re-pick or put on another PO. */}
+                        {(()=>{const q=Math.max(0,parseInt(ln.sizes[sz])||0);const maxC=Math.max(0,q-rcv);const c=safeNum((ln.cancelled||{})[sz]);
+                          if(maxC<=0&&c<=0)return null;
+                          return<div style={{marginTop:3}} title={'Cancelled — the vendor is not supplying these. Up to '+maxC+' can be cancelled; they return to the order as available to re-pick or put on another PO. Set it back to 0 to add them back.'}>
+                            <input style={{width:46,textAlign:'center',border:'1px solid #f59e0b',borderRadius:4,padding:'2px',fontSize:11,fontWeight:700,background:c>0?'#fffbeb':'white'}} value={c||''} placeholder="0"
+                              onChange={e=>{const v=Math.max(0,Math.min(parseInt(e.target.value)||0,maxC));setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,cancelled:{...(l.cancelled||{}),[sz]:v}}:l)}))}}/>
+                            <div style={{fontSize:9,fontWeight:700,color:c>0?'#b45309':'#94a3b8'}}>cancel</div>
+                          </div>})()}
                       </div>})}
                       <div style={{textAlign:'center'}}>
                         <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',marginBottom:2}}>+ Size</div>
@@ -14726,6 +14708,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                         const open={};
                         Object.entries(safeSizes(it2)).forEach(([sz,v])=>{if(safeNum(v)<=0)return;const picked=safePicks(it2).reduce((a,pk)=>a+(pk[sz]||0),0);const cm=poCommitted(it2.po_lines,sz);open[sz]=Math.max(0,safeNum(v)-picked-cm)});
                         if(Object.keys(open).length===0&&safeNum(it2.est_qty)>0){const picked=safePicks(it2).reduce((a,pk)=>a+(pk['QTY']||0),0);const cm=poCommitted(it2.po_lines,'QTY');open['QTY']=Math.max(0,safeNum(it2.est_qty)-picked-cm)}
+                        // Every size fully picked / already on another PO (or the item carries no sized
+                        // qty yet) left the added row with NO boxes at all — nothing to type into, so the
+                        // item could never actually be added. Always seed something editable.
+                        if(Object.keys(open).length===0){const seed=Object.keys(safeSizes(it2));(seed.length?seed:['QTY']).forEach(sz=>{open[sz]=0})}
                         setDraft(d=>({...d,adds:[...d.adds,{itemIdx:i2,sku:it2.sku||'',name:it2.name||'',color:it2.color||'',sizes:open,unit_cost:safeNum(cat?.nsa_cost??it2.nsa_cost)}]}));
                       }}>
                         <span style={{color:'#16a34a',fontWeight:800,fontSize:13}}>+</span>
@@ -14739,6 +14725,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                 </div>}
                 <div style={{display:'flex',gap:6,marginTop:8}}>
                   <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',fontSize:11,fontWeight:700}} onClick={()=>{
+                    // An added item with every size left at 0 used to be dropped here without a word:
+                    // the PO saved "successfully" and the item simply wasn't on it. Say so instead.
+                    const _emptyAdds=draft.adds.filter(ad=>!Object.values(ad.sizes||{}).some(v=>Math.max(0,parseInt(v)||0)>0));
+                    if(_emptyAdds.length){nf('Enter a quantity for '+_emptyAdds.map(a=>a.sku||a.name||'the added item').join(', ')+' — an item with no quantity cannot be added to the PO','error');return}
                     const items2=o.items.map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
                     let clampedAny=false;const willRemove=[];
                     draft.lines.forEach(ln=>{
@@ -14752,13 +14742,16 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                       }
                       const next={...pl};
                       Object.keys(next).filter(k=>!k.startsWith('_')&&!NON_SZ_PO_KEYS.includes(k)&&typeof next[k]==='number').forEach(k=>{delete next[k]});
-                      const cncl={...(pl.cancelled||{})};
+                      // Cancellations come from the draft now (the panel owns them), clamped to what
+                      // is actually cancellable and dropped at 0 so clearing a box adds the size back.
+                      const dcncl=ln.cancelled||{};const cncl={};
                       const union=[...new Set([...Object.keys(ln.sizes),...Object.keys(rcvMap).filter(sz=>safeNum(rcvMap[sz])>0)])];
                       union.forEach(sz=>{
                         let q=Math.max(0,parseInt(ln.sizes[sz])||0);
                         const r=safeNum(rcvMap[sz]);
                         if(q<r){q=r;clampedAny=true}
-                        if(cncl[sz]!=null)cncl[sz]=Math.max(0,Math.min(safeNum(cncl[sz]),q-r));
+                        const cv=Math.max(0,Math.min(safeNum(dcncl[sz]),q-r));
+                        if(cv>0)cncl[sz]=cv;
                         if(q>0)next[sz]=q;
                       });
                       if(Object.keys(cncl).length>0)next.cancelled=cncl;
@@ -15721,6 +15714,11 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       const vendorName=po.deco_vendor||vendorList.find(v=>v.id===po.vendor)?.name||D_V.find(v=>v.id===po.vendor)?.name||po.vendor||vendorList.find(v=>v.id===(item?.vendor_id||item?.brand))?.name||D_V.find(v=>v.id===(item?.vendor_id||item?.brand))?.name||item?.brand||'';
       // Gather all items on this PO from the SO
       const poItems=(allLines||[{lineIdx:0}]).map(ln=>({item:soItems?.[ln.lineIdx],po:soItems?.[ln.lineIdx]?.po_lines?.find(p=>p.po_id===po.po_id)||po})).filter(x=>x.item);
+      // Ship-to + every SKU on this PO, for the Ship To card below. Same shared resolver the
+      // PO modal and the printed label use, so all three agree on the delivery address.
+      const _poShipTo=poShipToFor(po,allLines,(o.items||soItems));
+      const _poShipToText=[_poShipTo.name,..._poShipTo.lines].join('\n');
+      const _poSkus=[...new Set(poItems.map(x=>x.item?.sku).filter(Boolean))];
       const poVendorMismatch=poItems.map(x=>{const source=vendorList.find(v=>v.id===x.item?.vendor_id)||D_V.find(v=>v.id===x.item?.vendor_id);if(!source||!x.po?.vendor)return null;const norm=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');const recorded=vendorList.find(v=>v.id===x.po.vendor)?.name||D_V.find(v=>v.id===x.po.vendor)?.name||x.po.vendor;return norm(recorded)!==norm(source.name)?{sku:x.item.sku,recorded,source:source.name}:null}).find(Boolean);
       // API placement — any line on this PO carrying api_order_id means it was submitted
       // electronically to the vendor (SanMar / S&S / Momentec). Surface it on the PO page.
@@ -15824,6 +15822,25 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                 {manualCost>0&&<div title={manualCostNote||'One-off internal cost applied to the sales order'}><div style={{fontSize:11,opacity:0.7}}>Manual Cost</div><div style={{fontSize:24,fontWeight:800,color:'#fbbf24'}}>${manualCost.toFixed(2)}</div></div>}
                 <div><div style={{fontSize:11,opacity:0.7}}>PO Total</div><div style={{fontSize:24,fontWeight:800,color:'#38bdf8'}}>${grandTotal.toFixed(2)}</div></div>
               </>}
+            </div>
+          </div>
+
+          {/* Ship To — where this PO delivers, plus the two things a rep copies into a vendor's
+              cart when placing it: the delivery address and every SKU on the PO. */}
+          <div className="card" style={{marginBottom:16}}>
+            <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,flexWrap:'wrap'}}><h2>Ship To</h2>
+              <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                <button className="btn btn-sm btn-secondary" title="Copy the ship-to address" style={{fontSize:11}} disabled={_poShipTo.lines.length===0}
+                  onClick={()=>{(navigator.clipboard?navigator.clipboard.writeText(_poShipToText):Promise.reject()).then(()=>nf('📋 Address copied')).catch(()=>{window.prompt('Copy address:',_poShipToText)})}}>📋 Copy address</button>
+                {_poSkus.length>0&&<button className="btn btn-sm btn-secondary" title={'Copy every SKU on this PO — '+_poSkus.join(' ')} style={{fontSize:11}}
+                  onClick={()=>{const v=_poSkus.join(' ');(navigator.clipboard?navigator.clipboard.writeText(v):Promise.reject()).then(()=>nf('📋 Copied '+_poSkus.length+' SKU'+(_poSkus.length>1?'s':'')+': '+v)).catch(()=>{window.prompt('Copy SKUs:',v)})}}>📋 Copy all SKUs</button>}
+              </div>
+            </div>
+            <div className="card-body">
+              <div style={{fontSize:14,fontWeight:800,color:'#0f172a'}}>{_poShipTo.name||'—'}</div>
+              {_poShipTo.lines.length>0
+                ?<div style={{fontSize:12,color:'#475569',lineHeight:1.5}}>{_poShipTo.lines.map((l,li)=><div key={li}>{l}</div>)}</div>
+                :<div style={{fontSize:12,color:'#b45309',fontWeight:600}}>No delivery address on file{isDropShipFP?' — this drop ship falls back to the NSA warehouse':''}</div>}
             </div>
           </div>
 
@@ -16130,40 +16147,9 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             </div>
           </div>})()}
 
-          {/* Edit PO — cancel sizes or add back previously cancelled */}
-          {(totalOpen>0||totalCancelled>0)&&!isDropShipFP&&<div className="card" style={{marginBottom:16,borderLeft:'3px solid #f59e0b'}}>
-            <div className="card-header" style={{background:'#fffbeb',cursor:'pointer'}} onClick={e=>{const el=e.currentTarget.nextSibling;if(el)el.style.display=el.style.display==='none'?'block':'none'}}><h2 style={{color:'#92400e',fontSize:14}}>Edit PO — Cancel / Add Back Sizes</h2></div>
-            <div className="card-body" style={{display:'none'}}>
-              <div style={{fontSize:12,color:'#92400e',marginBottom:8}}>Set the cancelled quantity for each size. Lower a number to add sizes back; raise it to cancel (cancelled sizes become available for new picks/POs):</div>
-              <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:12}}>
-                {szKeys.filter(sz=>getOpen(sz)>0||getCncl(sz)>0).map(sz=>{const maxCancel=Math.max(0,(po[sz]||0)-getRcvd(sz));return<div key={sz} style={{textAlign:'center'}}>
-                  <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-                  <input id={'po-fp-cancel-'+sz} style={{width:48,textAlign:'center',border:'1px solid #f59e0b',borderRadius:4,padding:'5px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={getCncl(sz)}/>
-                  <div style={{fontSize:9,color:'#64748b'}}>{getOpen(sz)} open · max {maxCancel}</div>
-                </div>})}
-              </div>
-              <button className="btn btn-sm" style={{background:'#f59e0b',color:'white',fontSize:12}} onClick={()=>{
-                const newCancelled={...cancelled};let anyChange=false;
-                szKeys.filter(sz=>getOpen(sz)>0||getCncl(sz)>0).forEach(sz=>{
-                  const el=document.getElementById('po-fp-cancel-'+sz);
-                  const maxCancel=Math.max(0,(po[sz]||0)-getRcvd(sz));
-                  const qty=el?Math.max(0,Math.min(parseInt(el.value)||0,maxCancel)):getCncl(sz);
-                  if(qty!==getCncl(sz))anyChange=true;
-                  newCancelled[sz]=qty;
-                });
-                if(!anyChange){nf('No changes to apply','error');return}
-                const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(received[sz]||0)-(newCancelled[sz]||0)),0);
-                const newStatus=newTotalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting';
-                const updatedPO={...po,cancelled:newCancelled,status:newStatus};
-                // Update all items on this PO
-                const affectedIdxs=new Set((allLines||[{lineIdx:0}]).map(ln=>ln.lineIdx));
-                let updatedItems=[...o.items];
-                affectedIdxs.forEach(idx=>{updatedItems=updatedItems.map((it,i)=>i===idx?{...it,po_lines:it.po_lines.map(p=>p.po_id===po.po_id?{...p,cancelled:newCancelled,status:newStatus}:p)}:it)});
-                const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
-                setO(updated);onSave(updated);setPoFullPage({...poFullPage,po:updatedPO});nf('PO '+po.po_id+' updated');
-              }}>✏️ Update PO</button>
-            </div>
-          </div>}
+          {/* Cancelling / adding back sizes used to live here as a second, separate editor. It now
+              lives in the one Edit PO panel alongside quantities, sizes, adds and removals — the
+              "Edit PO" button in the header above opens it. */}
 
           {/* Delete PO */}
           <div style={{display:'flex',justifyContent:'flex-end',marginBottom:24}}>
