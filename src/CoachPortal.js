@@ -1772,8 +1772,26 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     // so a live re-render (or an artist upload) can't knock the coach off the item they're on.
     const _selIdx=items.length?Math.min(proofSel,items.length-1):0;
     const _sel=items[_selIdx]||null;
-    const _d=_sel?_detail(_sel):null;
+    // Derived once per garment, then shared by the tile strip and the selected-item panels.
+    // Deriving it twice would let the tiles and the viewer drift apart on the linked-mockup
+    // and production-file fallbacks, which is exactly where they must agree.
+    const _details=items.map(gi=>_detail(gi));
+    const _d=_details[_selIdx]||null;
+    // A tile shows what the coach is APPROVING — the art ON the garment — not the blank
+    // catalog photo, which tells them nothing about the proof. Same ladder the viewer uses
+    // (linked source → per-item mockup → production-file proof); the catalog image is only
+    // the fallback for a garment with no mockup yet, and the glyph the fallback for neither.
+    const _tileImg=(gi,dd)=>{
+      const f=((dd&&(dd._mySrc?dd.linkedFiles:(dd.itemMockups.length>0?dd.itemMockups:dd.itemProofFiles)))||[])[0];
+      const u=f?(typeof f==='string'?f:(f?.url||'')):'';
+      return (u&&isUrl(u)&&_isImgUrl(u,f))?u:(gi.image_url||'');
+    };
     const _totalUnits=items.reduce((a,gi)=>a+(gi.units||0),0);
+    // A view is labelled by WHERE the art sits, never by the file name — "QL0QIRWI40BLYAVYC11G.JPG"
+    // tells a coach nothing about the proof. Side comes off the mock entry (or a -front/-back
+    // filename, the same derivation the editors use); otherwise fall back to the decoration's
+    // own placement, numbered when several views share it.
+    const _mockSide=f=>{const s=typeof f!=='string'&&f&&f.side;if(s==='front'||s==='back')return s;const n=(typeof f!=='string'&&(f?.name||f?.url))||(typeof f==='string'?f:'');if(/-front\.(png|jpe?g)/i.test(n))return'front';if(/-back\.(png|jpe?g)/i.test(n))return'back';return''};
 
     // Viewer sources for the selected garment. `garment` = the mockups the coach is approving;
     // `art` = the art file on its own, blown up. Whichever side has files decides the toggle.
@@ -1792,6 +1810,15 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const _showViews=_views.length>0?_views:_fallbackViews;
     const _showCur=_views.length>0?_vCur:(_fallbackViews[Math.min(proofView,_fallbackViews.length-1)]||null);
     const _showUrl=_views.length>0?_vUrl:(_showCur?(typeof _showCur==='string'?_showCur:(_showCur?.url||'')):'');
+    const _viewLabel=(f,fi)=>{
+      const lbl=(typeof f!=='string'&&f?.art_label)||'';
+      const sd=_mockSide(f);
+      const named=[lbl,sd==='front'?'Front':sd==='back'?'Back':''].filter(Boolean).join(' — ');
+      if(named)return named;
+      const pos=_d&&_d.artPos.length>0?_d.artPos.join(', '):'';
+      if(!pos)return'View '+(fi+1);
+      return _showViews.length>1?pos+' · '+(fi+1):pos;
+    };
 
     // One decoration row: method / location / art size, then that decoration's inks. The
     // colour ladder (garment-specific → colour-way → free-text → union of all CW inks) is
@@ -1910,9 +1937,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               </div>
             </div>
 
-            {/* Checkerboard behind the art so a transparent PNG reads as transparent. */}
-            <div style={{position:'relative',background:_OFF,height:440,overflow:'hidden',display:'flex',alignItems:'center',justifyContent:'center',padding:26,
-              backgroundImage:'linear-gradient(45deg,'+_HAIR+' 25%,transparent 25%,transparent 75%,'+_HAIR+' 75%),linear-gradient(45deg,'+_HAIR+' 25%,transparent 25%,transparent 75%,'+_HAIR+' 75%)',backgroundSize:'22px 22px',backgroundPosition:'0 0,11px 11px'}}>
+            {/* A garment mockup sits on WHITE — it's a photo of a shirt, and a checkerboard
+                behind it just reads as noise. The checkerboard is kept for the Art Only view,
+                where it's doing real work: showing which parts of the art are transparent. */}
+            <div style={{position:'relative',background:'#fff',height:440,overflow:'hidden',display:'flex',alignItems:'center',justifyContent:'center',padding:26,
+              ...(_mode==='art'?{backgroundImage:'linear-gradient(45deg,'+_HAIR+' 25%,transparent 25%,transparent 75%,'+_HAIR+' 75%),linear-gradient(45deg,'+_HAIR+' 25%,transparent 25%,transparent 75%,'+_HAIR+' 75%)',backgroundSize:'22px 22px',backgroundPosition:'0 0,11px 11px'}:{})}}>
               {_d&&_d._mySrc
                 ?<div onClick={()=>{if(_showUrl&&isUrl(_showUrl))setLightbox(_showUrl)}} style={{textAlign:'center',cursor:_showUrl?'pointer':'default'}}>
                   {_showUrl&&_isImgUrl(_showUrl)&&isUrl(_showUrl)
@@ -1939,7 +1968,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   <div style={{height:86,border:'2px solid '+(on?_RD:_HAIR),background:_OFF,borderRadius:4,overflow:'hidden',display:'flex',alignItems:'center',justifyContent:'center',transition:'border-color .2s ease'}}>
                     {_isImgUrl(u,f)&&isUrl(u)?<img src={u} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:<span style={{fontSize:24}}>📄</span>}
                   </div>
-                  <div style={{marginTop:6,fontFamily:_DISP,fontWeight:700,fontSize:12,letterSpacing:'0.9px',textTransform:'uppercase',color:on?_RD:_TXL,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{fileDisplayName(f)||'View '+(fi+1)}</div>
+                  <div style={{marginTop:6,fontFamily:_DISP,fontWeight:700,fontSize:12,letterSpacing:'0.9px',textTransform:'uppercase',color:on?_RD:_TXL,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{_viewLabel(f,fi)}</div>
                 </div>})}
             </div>}
 
@@ -1949,20 +1978,6 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             {_d&&_d.itemMockups.length===0&&_d.itemProofFiles.length>0&&<div style={{padding:'10px 16px',borderTop:'1px solid '+_HAIR,background:'#FDF6F6',fontSize:12.5,color:_RD,fontWeight:600}}>{_d._isEmb?'Sew-out proof from production files — not a garment mockup.':'Screen-print proof from production files — not a garment mockup.'}</div>}
           </div>
 
-          {/* Spec panel — method, location, art size and the inks for the selected garment.
-              Renders one row per decoration; a field with nothing on file is left out. */}
-          {_d&&(_d.artDecos.length>0||artFile)&&<div style={{..._card,padding:'16px 18px'}}>
-            {_d.artDecos.length===0?_renderDeco(null,0,artFile,_sel,_d.artPos)
-              :_d.artDecos.map((dd,di)=>{const _dAf=dd.art_file_id?safeArt(so).find(a=>a.id===dd.art_file_id):null;return _renderDeco(dd,di,_dAf||artFile,_sel,_d.artPos)})}
-            {_d.nd&&<div style={{borderTop:'1px solid '+_HAIR,marginTop:12,paddingTop:12,fontSize:13.5,color:_TX}}>
-              Numbers: <strong style={{color:_NV}}>{(_d.nd.num_method||'heat_transfer').replace(/_/g,' ')}</strong>
-              {_d.nd.num_size&&<> · {_d.nd.num_size}</>}
-              {_d.nd.front_and_back&&<> · back {_d.nd.num_size_back||_d.nd.num_size}</>}
-              {_d.nd.print_color&&<> · {_d.nd.print_color}</>}
-              {_d.nd.front_and_back&&<span style={{marginLeft:8,padding:'2px 8px',background:_NV,color:'#fff',fontFamily:_DISP,fontWeight:700,fontSize:11,letterSpacing:'0.8px',textTransform:'uppercase'}}>Front + Back</span>}
-            </div>}
-            {!_d.nd&&_d.artDecos.length>0&&<div style={{borderTop:'1px solid '+_HAIR,marginTop:12,paddingTop:12,fontSize:13.5,color:_TXL}}>No personalization on this item — logo only.</div>}
-          </div>}
 
           {/* Roster & numbers / names — follows the selected garment, hidden when it has none. */}
           {_d&&((_d.roster&&Object.keys(_d.roster).length>0)||(_d.names&&Object.keys(_d.names).length>0))&&<div style={{..._card,padding:'18px 20px'}}>
@@ -2004,7 +2019,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 return<div key={i} onClick={()=>{setProofSel(i);setProofView(0);setProofZoom(1)}}
                   style={{cursor:'pointer',minWidth:0,border:'2px solid '+(_fl?_RD:on?_NV:_HAIR),borderRadius:4,padding:5,background:on?'#FDF6F6':'#fff',transition:'border-color .2s ease'}}>
                   <div style={{height:58,background:'#fff',borderRadius:3,overflow:'hidden',display:'flex',alignItems:'center',justifyContent:'center'}}>
-                    {gi.image_url?<img src={gi.image_url} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:<span style={{fontSize:22}}>👕</span>}
+                    {(()=>{const _ti=_tileImg(gi,_details[i]);return _ti?<img src={_ti} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:<span style={{fontSize:22}}>👕</span>})()}
                   </div>
                   <div style={{marginTop:5,fontFamily:_DISP,fontWeight:700,fontSize:11.5,letterSpacing:'0.7px',textTransform:'uppercase',color:on?_RD:_NV,lineHeight:1.15,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{gi.fullName||gi.sku}</div>
                   <div style={{fontSize:11,color:_TXL}}>{gi.units} u</div>
@@ -2047,6 +2062,22 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 <span style={{fontFamily:_DISP,fontWeight:800,fontSize:26,color:_NV,lineHeight:1}}>{_d.units}</span>
               </div>
             </>}
+          </div>}
+
+          {/* Decoration spec — sits under the size breakdown so the right rail reads top-down as
+              what it is, how many, then how it's made. One row per decoration; a field with
+              nothing on file is left out entirely. */}
+          {_d&&(_d.artDecos.length>0||artFile)&&<div style={{..._card,padding:'16px 18px'}}>
+            {_d.artDecos.length===0?_renderDeco(null,0,artFile,_sel,_d.artPos)
+              :_d.artDecos.map((dd,di)=>{const _dAf=dd.art_file_id?safeArt(so).find(a=>a.id===dd.art_file_id):null;return _renderDeco(dd,di,_dAf||artFile,_sel,_d.artPos)})}
+            {_d.nd&&<div style={{borderTop:'1px solid '+_HAIR,marginTop:12,paddingTop:12,fontSize:13.5,color:_TX}}>
+              Numbers: <strong style={{color:_NV}}>{(_d.nd.num_method||'heat_transfer').replace(/_/g,' ')}</strong>
+              {_d.nd.num_size&&<> · {_d.nd.num_size}</>}
+              {_d.nd.front_and_back&&<> · back {_d.nd.num_size_back||_d.nd.num_size}</>}
+              {_d.nd.print_color&&<> · {_d.nd.print_color}</>}
+              {_d.nd.front_and_back&&<span style={{marginLeft:8,padding:'2px 8px',background:_NV,color:'#fff',fontFamily:_DISP,fontWeight:700,fontSize:11,letterSpacing:'0.8px',textTransform:'uppercase'}}>Front + Back</span>}
+            </div>}
+            {!_d.nd&&_d.artDecos.length>0&&<div style={{borderTop:'1px solid '+_HAIR,marginTop:12,paddingTop:12,fontSize:13.5,color:_TXL}}>No personalization on this item — logo only.</div>}
           </div>}
 
           {/* ── Decision block ── red top rule, the one place red carries weight. */}
