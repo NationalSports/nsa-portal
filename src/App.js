@@ -3833,11 +3833,11 @@ export default function App(){
           +'</div>',senderName:'NSA Portal',senderEmail:companyInfo?.email||'team@nsa-teamwear.com'}).catch(e=>console.warn('[alert] verify_fail email failed:',e));
         return;
       }
-      const {isBlocked,entity:alertEntity,action:alertAction,unit:alertUnit,countLabel}=classifySaveAlert(kind,soId);
+      const {entity:alertEntity,action:alertAction,unit:alertUnit,countLabel,auditOnly,title:alertTitle,notice:alertNotice}=classifySaveAlert(kind,soId);
       const lostText=(prevCount!=null&&newCount!=null)?(prevCount-newCount)+' of '+prevCount+' '+alertUnit:(prevCount!=null?prevCount+' '+alertUnit:alertUnit);
-      const detail=(isBlocked?'Save blocked: ':'Items removed: ')+lostText+(reason?' — '+reason:'');
+      const detail=alertTitle+': '+(auditOnly?(reason||kind):lostText+(reason?' — '+reason:''));
       logChange(alertAction,alertEntity,soId,detail);
-      if(kind==='blocked')return; // plain blocked saves are logged but not emailed — no data is lost, so they're informational only
+      if(auditOnly||kind==='blocked')return; // successful recoveries and plain blocked saves are logged but not emailed — no data is lost, so they're informational only
       // bg_shrink_blocked falls through so admin gets a heads-up that stale state nearly wiped an estimate
       const dedupeKey=kind+':'+soId;const last=_alertDedupeRef.current[dedupeKey]||0;const now=Date.now();
       if(now-last<5*60*1000)return; // already emailed within 5 min
@@ -3857,16 +3857,16 @@ export default function App(){
       _alertDedupeRef.current[dedupeKey]=now;
       const adminEmail='steve@nationalsportsapparel.com';
       const ccEmail=companyInfo?.email&&companyInfo.email!==adminEmail?companyInfo.email:null;
-      const subject=(isBlocked?'⚠️ NSA Portal — Save blocked on ':'🚨 NSA Portal — Items lost on ')+soId;
+      const subject='⚠️ NSA Portal — '+alertTitle+' on '+soId;
       const html='<div style="font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#0f172a">'
-        +'<h2 style="color:'+(isBlocked?'#d97706':'#dc2626')+';margin:0 0 8px">'+(isBlocked?'Save blocked':'Items lost')+': '+soId+'</h2>'
+        +'<h2 style="color:#d97706;margin:0 0 8px">'+alertTitle+': '+soId+'</h2>'
         +'<p><strong>'+alertEntity+':</strong> '+soId+'<br/>'
         +'<strong>User:</strong> '+(cu?.name||cu?.id||'unknown')+'<br/>'
         +'<strong>When:</strong> '+new Date().toLocaleString()+'<br/>'
         +(prevCount!=null?'<strong>'+countLabel+' before:</strong> '+prevCount+'<br/>':'')
         +(newCount!=null?'<strong>'+countLabel+' in attempted save:</strong> '+newCount+'<br/>':'')
         +'<strong>Reason:</strong> '+(reason||'(none)')+'</p>'
-        +(isBlocked?'<p>The save was blocked. This event does not confirm data loss. Review the preserved draft against the current cloud copy before retrying.</p>':'<p style="color:#dc2626"><strong>Action needed:</strong> verify the SO and restore from <code>app_state.so_history</code> if items are missing.</p>')
+        +'<p>'+alertNotice+'</p>'
         +'<p style="margin-top:16px;color:#64748b;font-size:12px">This alert is throttled to once per SO+type per 5 min. The full audit trail is in System Health → Change Log.</p>'
         +'</div>';
       sendBrevoEmail({to:[{email:adminEmail,name:'Steve Peterson'}],cc:ccEmail?[{email:ccEmail}]:undefined,subject,htmlContent:html,senderName:'NSA Portal',senderEmail:companyInfo?.email||'team@nsa-teamwear.com'}).catch(e=>console.warn('[alert] email failed:',e));
