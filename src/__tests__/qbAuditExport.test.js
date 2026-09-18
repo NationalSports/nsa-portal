@@ -30,6 +30,28 @@ test('paginates without discarding a full first page', async () => {
   const result = await collectQBAudit({ ...dates, read: f.read });
   assert.equal(result.entities.Bill.length, 501);
 });
+test('server failure shrinks the same page without losing or duplicating records', async () => {
+  const attempts = [];
+  const f = fixture(q => {
+    if (!q.includes('FROM Invoice ')) return { QueryResponse: {} };
+    const [, offset, limit] = q.match(/STARTPOSITION (\d+) MAXRESULTS (\d+)/);
+    const start = Number(offset), size = Number(limit); attempts.push([start, size]);
+    if (start === 501 && size > 20) throw Object.assign(new Error('server failure'), { status: 500 });
+    return { QueryResponse: { Invoice: Array.from({ length: Math.min(size, 525 - start + 1) }, (_, i) => ({ Id: String(start + i) })) } };
+  });
+  const result = await collectQBAudit({ ...dates, read: f.read });
+  assert.equal(result.entities.Invoice.length, 525);
+  assert.equal(new Set(result.entities.Invoice.map(r => r.Id)).size, 525);
+  assert.deepEqual(attempts, [[1, 500], [501, 500], [501, 100], [501, 20], [521, 20]]);
+});
+test('retries are bounded and authorization failures never retry', async () => {
+  for (const status of [500, 403]) {
+    let attempts = 0;
+    const f = fixture(() => { attempts++; throw Object.assign(new Error('failed'), { status }); });
+    await assert.rejects(collectQBAudit({ ...dates, read: f.read }), /Account, record 1: failed/);
+    assert.equal(attempts, status === 500 ? 3 : 1);
+  }
+});
 test('wrong realm stops before querying financial records', async () => {
   let calls = 0;
   await assert.rejects(collectQBAudit({ ...dates, read: async () => { calls++; return { connected: true, realm_id: 'wrong' }; } }), /Wrong/);
