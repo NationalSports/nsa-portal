@@ -38,9 +38,12 @@ function buildRows(ledgerRows) {
   return (ledgerRows||[]).filter(row=>row?.status==='pushed'&&row?.portal_status==='success'&&!(row?.qb_status==='success'&&clean(row.qb_bill_id))).map(row=>{
     const raw=row.raw_meta&&typeof row.raw_meta==='object'?row.raw_meta:{};
     const total=money(row.doc_total==null?raw.doc_total:row.doc_total);
+    const matchedPO=raw.matchedPO&&typeof raw.matchedPO==='object'?raw.matchedPO:{};
+    const paymentMethod=clean(matchedPO?.po?._payment_method||matchedPO?.deco_po?._payment_method);
     return {ledgerId:clean(row.id),documentNumber:clean(row.doc_number||raw.doc_number||row.doc_norm),vendor:clean(row.vendor||raw.vendor||raw.supplier),
       date:dateValue(raw.doc_date),total,isCredit:!!row.is_credit,transactionType:row.is_credit?'VendorCredit':'Bill',
-      freight:money(raw.freight),sportsFee:money(raw.si_upcharge),kind:clean(raw.kind),source:clean(row.source||raw.source)};
+      freight:money(raw.freight),sportsFee:money(raw.si_upcharge),kind:clean(raw.kind),source:clean(row.source||raw.source),
+      paymentMethod,poOrigin:norm(raw.po_origin)};
   });
 }
 
@@ -73,6 +76,8 @@ function analyzePayables({ledgerRows=[],portalVendors=[],vendorLinks={},qboVendo
     if(exact.length===1)return {...row,qboVendorId,...vendorEvidence,action:'already_exists',code:'exact_existing_match',reason:`Exact QBO ${row.transactionType} #${exact[0].Id}`,qboBillId:clean(exact[0].Id)};
     if(row.date<PAYABLE_CUTOVER_DATE)return {...row,qboVendorId,...vendorEvidence,action:'excluded_historical',code:'historical_cutover',reason:'Historical/cutover payable intentionally excluded'};
     if(row.isCredit)return blocked('Vendor credit creation is not enabled; no exact QBO VendorCredit was found','credit_creation_disabled');
+    if(row.paymentMethod)return blocked(`Portal PO is marked paid by ${row.paymentMethod}; an open QBO bill would duplicate a paid purchase`,'prepaid_purchase');
+    if(row.poOrigin!=='portal')return blocked('Portal/NetSuite source provenance does not prove this bill is an unpaid Portal-origin purchase','payment_status_unverified');
     const merchandise=money(row.total-row.freight-row.sportsFee);
     if(row.freight<0||row.sportsFee<0||row.total<=0||merchandise<=0)return blocked('Approved account lines do not produce a positive, fully categorized bill total','invalid_account_lines');
     return {...row,qboVendorId,...vendorEvidence,action:'ready',code:'ready'};
@@ -220,7 +225,7 @@ async function runPayableReview({store,queryAll,realm,requestedBy,now=Date.now})
     stage='qbo_final_ap_reads';
     const [qboBillsAfter,qboVendorCreditsAfter]=await Promise.all([queryAll('Bill','*'),queryAll('VendorCredit','*')]);
     const apAfter=apSnapshot(qboBillsAfter,qboVendorCreditsAfter),sourceHash=fingerprint(sourceProjection(before)),sourceChanged=sourceHash!==fingerprint(sourceProjection(after));
-    const compact=bills.rows.map(({ledgerId,documentNumber,vendor,date,total,transactionType,action,code,reason,qboBillId,qboVendorId,portalVendorId,vendorMatchSource,qboCandidates})=>({ledgerId,documentNumber,vendor,date,total,transactionType,action,code,reason,qboBillId,qboVendorId,portalVendorId,vendorMatchSource,qboCandidates}));
+    const compact=bills.rows.map(({ledgerId,documentNumber,vendor,date,total,transactionType,paymentMethod,poOrigin,action,code,reason,qboBillId,qboVendorId,portalVendorId,vendorMatchSource,qboCandidates})=>({ledgerId,documentNumber,vendor,date,total,transactionType,paymentMethod,poOrigin,action,code,reason,qboBillId,qboVendorId,portalVendorId,vendorMatchSource,qboCandidates}));
     const vendorRows=[...bills.rows,...purchaseOrders.awaiting],unlinkedVendorRows=vendorRows.filter(row=>['unlinked_vendor','ambiguous_portal_vendor','invalid_vendor_link'].includes(row.code));
     const unlinkedVendorGroups=new Map();for(const row of unlinkedVendorRows){const key=normalizeVendor(row.vendor)||'(blank)';const group=unlinkedVendorGroups.get(key)||{vendor:row.vendor,sourceIds:[],documents:[],transactionTypes:new Set(),reasons:new Set()};group.sourceIds.push(row.ledgerId||row.poId);group.documents.push(row.documentNumber||row.poId);group.transactionTypes.add(row.transactionType||'PurchaseOrder');group.reasons.add(row.reason);unlinkedVendorGroups.set(key,group)}
     const unlinkedVendors=[...unlinkedVendorGroups.values()].map(row=>({...row,transactionTypes:[...row.transactionTypes],reasons:[...row.reasons]}));
