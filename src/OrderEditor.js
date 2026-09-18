@@ -2545,7 +2545,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // AU footwear gets 5% less discount than apparel (school pays more for shoes).
   // pricingGroup ('lockerroom') selects a reduced tier schedule.
   const auDisc=(isFw,pricingGroup)=>{const base=auTierDisc(cust?.adidas_ua_tier||'B',pricingGroup);return isFw?Math.max(0,base-0.05):base};
-  const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
+  // `cust` is the editor's local copy of the customer record; `o.customer_id` is what actually
+  // persists. The two could drift: the editor seeds `cust` from the customer object the page hands
+  // it at mount, which is null when the customers list hadn't finished loading (cold open / deep
+  // link / reopen right after create), while the order itself already carries a customer_id. A null
+  // `cust` on an order that HAS a customer then re-showed the "Select Customer *" picker and blocked
+  // Save with "Select a customer first" until the rep picked the very same customer a second time.
+  // selC sets both together; the effect below heals any drift from the mount race.
+  const[custChanging,setCustChanging]=useState(false);
+  const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);setCustChanging(false);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
+  React.useEffect(()=>{
+    const _cid=o.customer_id;
+    if(!_cid){if(cust)setCust(null);return}
+    if(cust&&cust.id===_cid)return;// already in step — keep local edits (promo periods etc.)
+    const _c=(allCustomers||[]).find(x=>x.id===_cid);
+    if(_c)setCust(_c);
+  },[o.customer_id,allCustomers,cust]);
   const addP=p=>{const au=isAU(p.brand);const isFw=(p.category||'').toLowerCase()==='footwear';const clr=p.is_clearance&&p.clearance_cost!=null;const cost=catalogRepCost(p);const sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(cost*(o.default_markup||1.65));
     // Footwear: vendor catalogs often list whole sizes only (e.g. 5–17), which makes a
     // sparse, hard-to-fill grid. Default shoe runs to the standard 7–12 half-size set so the
@@ -4767,7 +4782,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <button className="oe2-cta" onClick={async()=>{
         if(!_flushActiveSizingDraft()){nf('Finish editing this field before saving','error');return}
         const current=oRef.current||o;
-        if(!cust){nf('Select a customer first','error');return}
+        if(!o.customer_id){nf('Select a customer first','error');return}
         const curMemo=(memoInputRef.current?.value??current.memo??'').trim();
         if(!curMemo){nf('Memo is required','error');return}
         const curPO=isSO?(poInputRef.current?.value??current.po_number??''):current.po_number;
@@ -4854,11 +4869,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {o.email_opened_at&&<div style={{fontSize:11,color:'#1e40af',marginTop:4,fontWeight:600}}>👁️ Opened: {o.email_opened_at}</div>}
             {o.follow_up_at&&<div style={{fontSize:11,color:'#92400e',marginTop:2}}>⏰ Follow-up: {new Date(o.follow_up_at).toLocaleDateString()}{new Date(o.follow_up_at)<new Date()?' (overdue)':''}</div>}
           </div>}
-          {!cust?<div style={{marginBottom:8}}><label className="form-label">Select Customer *</label><SearchSelect options={allCustomers.map(c=>{const par=c.parent_id?allCustomers.find(p=>p.id===c.parent_id):null;const tags=[...(c.search_tags||[]),...(par?.search_tags||[])].filter(Boolean).join(' ');return{value:c.id,label:`${c.name} (${c.alpha_tag})`,searchText:tags}})} value={o.customer_id} onChange={selC} placeholder="Search customer..."/>
-            <button className="btn btn-sm btn-secondary" style={{marginTop:6,fontSize:11}} onClick={()=>setShowCustNew(true)}>+ New Customer</button></div>
+          {(!cust||custChanging)?<div style={{marginBottom:8}}><label className="form-label">Select Customer *</label><SearchSelect options={allCustomers.map(c=>{const par=c.parent_id?allCustomers.find(p=>p.id===c.parent_id):null;const tags=[...(c.search_tags||[]),...(par?.search_tags||[])].filter(Boolean).join(' ');return{value:c.id,label:`${c.name} (${c.alpha_tag})`,searchText:tags}})} value={o.customer_id} onChange={selC} placeholder="Search customer..."/>
+            <button className="btn btn-sm btn-secondary" style={{marginTop:6,fontSize:11}} onClick={()=>setShowCustNew(true)}>+ New Customer</button>{custChanging&&cust&&<button className="btn btn-sm btn-secondary" style={{marginTop:6,marginLeft:6,fontSize:11}} onClick={()=>setCustChanging(false)}>Cancel</button>}</div>
           :<div style={{display:'flex',alignItems:'center',gap:'2px 12px',flexWrap:'wrap',fontSize:12,color:'#5A6075'}}>
             <span>Tier {cust.adidas_ua_tier} · {o.default_markup||1.65}x · Tax {(isSO&&o.tax_rate!=null?o.tax_rate:cust.tax_rate)?(((isSO&&o.tax_rate!=null?o.tax_rate:cust.tax_rate))*100).toFixed(3)+'%':'N/A'}</span>
-            <button style={{background:'none',border:'none',cursor:'pointer',color:'#9aa0ad',fontSize:11,textDecoration:'underline',padding:0}} onClick={()=>{if(window.confirm('Change customer for '+o.id+'? This will update pricing tier.'))selC(null);setCust(null)}}>change</button>
+            <button style={{background:'none',border:'none',cursor:'pointer',color:'#9aa0ad',fontSize:11,textDecoration:'underline',padding:0}} onClick={()=>{if(window.confirm('Change customer for '+o.id+'? This will update pricing tier.'))setCustChanging(true)}}>change</button>
             {isSO&&o.estimate_id&&onViewEstimate&&<span style={{color:'#6D28D9'}}>From: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewEstimate(o.estimate_id)} title="Open source estimate">{o.estimate_id}</span></span>}
             {/* Linked invoice(s) for this SO — number, click-through, and paid/partial/open status. */}
             {isSO&&(()=>{const _soInvs=(allInvoices||[]).filter(iv=>iv.so_id===o.id);if(_soInvs.length===0)return null;
@@ -4962,7 +4977,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <div style={{display:'flex',gap:8,marginTop:12,alignItems:'end',flexWrap:'wrap'}}>
         {isE&&saved&&(o.status==='sent'||o.status==='draft'||o.status==='open')&&<button className="btn btn-primary" style={{background:'#22c55e'}} onClick={()=>{sv('status','approved');onSave({...o,status:'approved'});nf('Estimate approved')}}><Icon name="check" size={14}/> Approve</button>}
         {isE&&o.status==='approved'&&!linkedSO&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>{
-          if(!cust){nf('Select a customer first','error');return}
+          if(!o.customer_id){nf('Select a customer first','error');return}
           if(!o.memo?.trim()){nf('Memo is required','error');return}
           const validItems=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
           if(validItems.length===0){nf('Cannot convert — add at least one item with quantities','error');return}
@@ -16483,7 +16498,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       {/* Change Color Modal — for vendor-live items where the SKU stays the same but color varies */}
     <CustModal isOpen={showCustEdit} onClose={()=>setShowCustEdit(false)} onSave={(updated)=>{if(onSaveCustomer)onSaveCustomer(updated);setCust(updated);setShowCustEdit(false)}} customer={cust} parents={allCustomers.filter(c=>!c.parent_id)} reps={REPS}/>
     {/* Create a customer inline from the order/estimate, then select it — selC can't be used because the new record isn't in allCustomers yet. */}
-    <CustModal isOpen={showCustNew} onClose={()=>setShowCustNew(false)} onSave={(nc)=>{if(onSaveCustomer)onSaveCustomer(nc);setCust(nc);sv('customer_id',nc.id);sv('default_markup',nc.catalog_markup||1.65);setShowCustNew(false)}} customer={null} parents={allCustomers.filter(c=>!c.parent_id)} reps={REPS} supabase={supabase} allCustomers={allCustomers}/>
+    <CustModal isOpen={showCustNew} onClose={()=>setShowCustNew(false)} onSave={(nc)=>{if(onSaveCustomer)onSaveCustomer(nc);setCust(nc);setCustChanging(false);sv('customer_id',nc.id);sv('default_markup',nc.catalog_markup||1.65);setShowCustNew(false)}} customer={null} parents={allCustomers.filter(c=>!c.parent_id)} reps={REPS} supabase={supabase} allCustomers={allCustomers}/>
   </div>);
 }
 
