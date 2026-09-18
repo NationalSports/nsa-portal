@@ -7996,7 +7996,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>
           <table><thead><tr><th>Category</th><th>Item / Service</th><th>Vendor</th><th style={{textAlign:'right'}}>Qty</th><th style={{textAlign:'right'}}>Expected</th><th style={{textAlign:'right'}}>Actual</th><th style={{textAlign:'right'}}>Variance</th><th>PO(s)</th></tr></thead>
             <tbody>{costLines.map((l,i)=>{const diff=l.actual-l.expected;
-              if(l.isShippingSubtotal){return<tr key={i} style={{background:'#f0fdf4',borderTop:'1px solid #bbf7d0'}}>
+              if(l.isShippingSubtotal){return<tr key={i} style={{background:'#f0fdf4',borderTop:'1px solid #EEF1F6'}}>
                 <td></td><td style={{fontWeight:700,fontSize:12,color:'#166534'}}>{l.name}</td><td></td><td></td>
                 <td style={{textAlign:'right',fontWeight:700,color:'#166534'}}>${l.expected.toFixed(2)}</td>
                 <td style={{textAlign:'right',fontWeight:700,color:'#166534'}}>${l.actual.toFixed(2)}</td>
@@ -11956,7 +11956,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:160,height:160,objectFit:'contain',display:'block',background:'#fafafa'}}/>
                       :_isPdfUrl(url,f)&&_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:160,height:160,objectFit:'contain',display:'block',background:'#fafafa'}}/>
                       :<div style={{width:160,height:160,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:4,background:'#fafafa'}}><span style={{fontSize:26}}>📄</span><span style={{fontSize:10,color:'#1e40af',padding:'0 6px',textAlign:'center',wordBreak:'break-all'}}>{name}</span></div>}
-                      <div style={{padding:'3px 8px',borderTop:'1px solid #fde68a',fontSize:10,color:'#92400e',fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}</div>
+                      <div style={{padding:'3px 8px',borderTop:'1px solid #EEF1F6',fontSize:10,color:'#92400e',fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}</div>
                     </div>})}
                   </div>
                   :<div style={{padding:12,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,fontSize:12,color:'#9a3412'}}>No mockup or production files on this art yet — check the Art Library tab.</div>}
@@ -12075,26 +12075,26 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                     const nameDecos=it?jobItemDecosOfKind(gi,it,'names'):[];
                     const totalUnits=Object.values(gi.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
                     const _itemPFs=itemArtFiles.flatMap(_af=>(_af?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_afName:itemArtFiles.length>1?(_af?.name||''):''})));
-                    return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?14:0,border:'1px solid #fcd34d',borderRadius:10,overflow:'visible',background:'white'}}>
+                    return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?14:0,border:'1px solid #EEF1F6',borderTop:'3px solid #962C32',borderRadius:6,overflow:'visible',background:'#fff',boxShadow:'0 2px 12px rgba(0,0,0,0.06)'}}>
                       {/* Item header */}
-                      <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'#fffbeb',borderBottom:'1px solid #fde68a'}}>
+                      <div style={{display:'flex',alignItems:'center',gap:10,padding:'12px 14px',background:'#fff',borderBottom:'1px solid #EEF1F6'}}>
                         <div style={{display:'flex',gap:4,flexShrink:0}}>
-                          {gi.image_url&&<img src={gi.image_url} alt="Front" style={{width:44,height:44,objectFit:'contain',borderRadius:6,border:'1px solid #fde68a',background:'white'}}/>}
-                          {gi.back_image_url&&<img src={gi.back_image_url} alt="Back" style={{width:44,height:44,objectFit:'contain',borderRadius:6,border:'1px solid #fde68a',background:'white'}}/>}
+                          {gi.image_url&&<img src={gi.image_url} alt="Front" style={{width:44,height:44,objectFit:'contain',borderRadius:4,border:'1px solid #EEF1F6',background:'#fff'}}/>}
+                          {gi.back_image_url&&<img src={gi.back_image_url} alt="Back" style={{width:44,height:44,objectFit:'contain',borderRadius:4,border:'1px solid #EEF1F6',background:'#fff'}}/>}
                         </div>
                         <div style={{flex:1,minWidth:0}}>
                           <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
-                            <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'1px 6px',borderRadius:4,fontSize:11}}>{gi.sku}</span>
-                            <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{gi.name}</span>
-                            {gi.color&&<span style={{color:'#6d28d9',fontWeight:700,fontSize:12}}>— {gi.color}</span>}
-                            {gi.brand&&<span style={{fontSize:10,padding:'1px 6px',background:'#f1f5f9',borderRadius:4,color:'#64748b',border:'1px solid #e2e8f0'}}>{gi.brand}</span>}
+                            <span style={{fontFamily:'monospace',fontWeight:700,color:'#192853',background:'#F7F8FB',border:'1px solid #EEF1F6',padding:'1px 6px',borderRadius:3,fontSize:11}}>{gi.sku}</span>
+                            <span style={{fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:800,fontSize:18,letterSpacing:'0.4px',textTransform:'uppercase',color:'#192853',lineHeight:1.1}}>{gi.name}</span>
+                            {gi.color&&<span style={{color:'#5A6075',fontWeight:600,fontSize:13}}>— {gi.color}</span>}
+                            {gi.brand&&<span style={{fontSize:10,padding:'1px 6px',background:'#F7F8FB',borderRadius:3,color:'#5A6075',border:'1px solid #EEF1F6'}}>{gi.brand}</span>}
                           </div>
                         </div>
                         <div style={{textAlign:'right',flexShrink:0,display:'flex',alignItems:'center',gap:8}}>
                           <OeGarmentPoChip item={it} szMeta={_PO_SZ_META}/>
                         <div>
-                          <div style={{fontSize:18,fontWeight:800,color:'#92400e'}}>{totalUnits}</div>
-                          <div style={{fontSize:9,color:'#78350f',fontWeight:600,textTransform:'uppercase'}}>units</div>
+                          <div style={{fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:800,fontSize:26,color:'#192853',lineHeight:1}}>{totalUnits}</div>
+                          <div style={{fontSize:10,color:'#5A6075',fontWeight:700,letterSpacing:'1.1px',textTransform:'uppercase'}}>units</div>
                         </div>
                         </div>
                       </div>
@@ -12114,7 +12114,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                         // A sew-out proof is NOT a garment mockup — render it small, grey-bordered and
                         // labeled "production reference" so it never reads as the approved mockup. Real
                         // mockups keep the prominent 280px orange frame.
-                        const _mkH=_proofOnly?132:280;const _mkBd=_proofOnly?'#cbd5e1':'#f59e0b';
+                        const _mkH=_proofOnly?132:280;const _mkBd=_proofOnly?'#D1D5DE':'#962C32';
                         return<><div style={{padding:10}}>
                         {_myDeps.length>0&&<div style={{fontSize:10,fontWeight:700,color:'#3730a3',marginBottom:6}}>🔗 Mockup also used by {_myDeps.map(k=>k.split('|')[0]).join(', ')}</div>}
                         {/* Squash: two near-identical garments (same print, near-identical blanks) don't
@@ -12127,7 +12127,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                             style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:12,border:'1px solid #c7d2fe',background:squashPickFor===_mk?'#e0e7ff':'#eef2ff',color:'#3730a3',fontSize:10,fontWeight:700,cursor:'pointer'}}>🔗 {squashPickFor===_mk?'Cancel':'Squash into another garment\u2019s mockup'}</button>
                           {squashPickFor===_mk&&_linkChipsR(gi,'Use the mockup for:',true)}
                         </div>}
-                        {_proofOnly&&<div style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde047',borderRadius:6,padding:'6px 10px',marginBottom:8}}>♻️ This is the digitizer's sew-out proof from the production files — <u>not a garment mockup</u>. It can't be approved or sent to the coach. Pick an option below: reuse an approved mockup, or send to the artist for a new one.</div>}
+                        {_proofOnly&&<div style={{fontSize:12,fontWeight:600,color:'#962C32',background:'#FDF6F6',border:'1px solid #EEF1F6',borderLeft:'3px solid #962C32',borderRadius:4,padding:'8px 12px',marginBottom:8}}>This is the digitizer's sew-out proof from the production files — <u>not a garment mockup</u>. It can't be approved or sent to the coach. Pick an option below: reuse an approved mockup, or send to the artist for a new one.</div>}
                         <div style={{display:'grid',gridTemplateColumns:_proofOnly?'repeat(auto-fill,minmax(150px,1fr))':(_ordered.length>1?'1fr 1fr':'1fr'),gap:8}}>
                           {_ordered.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const _sd=_mockSide(f);const _lbl=(typeof f!=='string'&&f?.art_label)||'';/* A mockup is labelled by WHERE the art sits, never by the upload's file name — a hashed name tells nobody anything. Art label + side first, then the decoration's own placement, numbered when several views share it. */const _named=[_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ');const _posCap=[...new Set((artDecos||[]).map(d=>d&&d.position).filter(Boolean))].join(', ');const _base=_named||(_posCap?(_ordered.length>1?_posCap+' · '+(fi+1):_posCap):('Mockup '+(fi+1)));const _cap=_proofOnly?('Production reference — '+_base):_base;
                             return<div key={fi} style={{position:'relative',borderRadius:4,border:'1px '+(_proofOnly?'dashed':'solid')+' #EEF1F6',borderTop:'3px solid '+_mkBd,overflow:'hidden',background:'#fff',boxShadow:'0 2px 12px rgba(0,0,0,0.06)',opacity:_proofOnly?0.92:1}}>
@@ -12145,8 +12145,8 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                               <div style={{padding:'4px 10px',borderTop:'1px solid #EEF1F6',fontSize:11,color:_proofOnly?'#5A6075':'#192853',fontWeight:700,display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}}>
                                 <span style={{display:'flex',alignItems:'center',gap:4,minWidth:0}}>
                                   {_ordered.length>1&&<>
-                                    <button title="Move earlier" disabled={fi===0} onClick={e=>{e.stopPropagation();moveMock(_ou,fi,-1)}} style={{border:'1px solid #fcd34d',background:'#fffbeb',borderRadius:4,fontSize:11,lineHeight:1,padding:'2px 5px',cursor:fi===0?'default':'pointer',opacity:fi===0?0.4:1}}>◀</button>
-                                    <button title="Move later" disabled={fi===_ordered.length-1} onClick={e=>{e.stopPropagation();moveMock(_ou,fi,1)}} style={{border:'1px solid #fcd34d',background:'#fffbeb',borderRadius:4,fontSize:11,lineHeight:1,padding:'2px 5px',cursor:fi===_ordered.length-1?'default':'pointer',opacity:fi===_ordered.length-1?0.4:1}}>▶</button>
+                                    <button title="Move earlier" disabled={fi===0} onClick={e=>{e.stopPropagation();moveMock(_ou,fi,-1)}} style={{border:'1px solid #D1D5DE',background:'#fff',color:'#192853',borderRadius:3,fontSize:11,lineHeight:1,padding:'2px 5px',cursor:fi===0?'default':'pointer',opacity:fi===0?0.4:1}}>◀</button>
+                                    <button title="Move later" disabled={fi===_ordered.length-1} onClick={e=>{e.stopPropagation();moveMock(_ou,fi,1)}} style={{border:'1px solid #D1D5DE',background:'#fff',color:'#192853',borderRadius:3,fontSize:11,lineHeight:1,padding:'2px 5px',cursor:fi===_ordered.length-1?'default':'pointer',opacity:fi===_ordered.length-1?0.4:1}}>▶</button>
                                   </>}
                                   <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:700,fontSize:13,letterSpacing:'0.7px',textTransform:'uppercase'}}>{_cap}</span>
                                 </span>
@@ -12182,8 +12182,8 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                           </div>
                         </div>})()}
                       {/* Decoration spec */}
-                      {(artDecos.length>0||numDecos.length>0||nameDecos.length>0||_jobOutsideDecos(j).length>0)&&<div style={{padding:'10px 14px',borderTop:'1px solid #fde68a',background:'#f8fafc'}}>
-                        <div style={{fontSize:10,fontWeight:700,color:'#1e3a5f',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Decoration Spec</div>
+                      {(artDecos.length>0||numDecos.length>0||nameDecos.length>0||_jobOutsideDecos(j).length>0)&&<div style={{padding:'10px 14px',borderTop:'1px solid #EEF1F6',background:'#f8fafc'}}>
+                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}><span style={{fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:800,fontSize:15,letterSpacing:'0.8px',textTransform:'uppercase',color:'#192853'}}>Decoration Spec</span><span style={{height:3,width:28,background:'#962C32',transform:'skewX(-12deg)',display:'inline-block'}}/></div>
                         {artDecos.map((d,di)=>{
                           const dAf=d.art_file_id?safeArt(o).find(a=>a.id===d.art_file_id):null;
                           const cwObj=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;
@@ -12229,8 +12229,8 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                         </div>)}
                       </div>}
                       {/* Size grid */}
-                      {totalUnits>0&&<div style={{padding:'8px 14px',borderTop:'1px solid #fde68a'}}>
-                        <div style={{overflowX:'auto'}}><table style={{fontSize:11,minWidth:240,width:'100%'}}><thead><tr style={{background:'#f0f2f5'}}>
+                      {totalUnits>0&&<div style={{padding:'8px 14px',borderTop:'1px solid #EEF1F6'}}>
+                        <div style={{overflowX:'auto'}}><table style={{fontSize:11,minWidth:240,width:'100%'}}><thead><tr style={{background:'#192853',color:'#fff'}}>
                           <th style={{textAlign:'left',padding:'3px 6px',fontSize:9,fontWeight:700}}>SIZE</th>
                           {allSizes.map(sz=><th key={sz} style={{textAlign:'center',padding:'3px 6px',fontSize:9,fontWeight:700,minWidth:28}}>{sz}</th>)}
                           <th style={{textAlign:'center',padding:'3px 6px',fontSize:9,fontWeight:800}}>TOTAL</th>
@@ -12238,13 +12238,13 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                           <tr>
                             <td style={{textAlign:'left',padding:'3px 6px',fontWeight:700,color:'#475569'}}>QTY</td>
                             {allSizes.map(sz=>{const v=safeNum(gi.sizes?.[sz]);return<td key={sz} style={{textAlign:'center',padding:'3px 6px',fontWeight:v>0?800:400,color:v>0?'#1e40af':'#cbd5e1',background:v>0?'#eef2ff':''}}>{v>0?v:'—'}</td>})}
-                            <td style={{textAlign:'center',padding:'3px 6px',fontWeight:800,color:'#1e40af',background:'#f0f2f5'}}>{totalUnits}</td>
+                            <td style={{textAlign:'center',padding:'3px 6px',fontWeight:800,color:'#192853',background:'#F7F8FB'}}>{totalUnits}</td>
                           </tr>
                         </tbody></table></div>
                       </div>}
                       {/* Production files (when present) */}
-                      {_itemPFs.length>0&&<div style={{padding:'8px 14px',borderTop:'1px solid #fde68a'}}>
-                        <div style={{fontSize:10,fontWeight:700,color:'#92400e',marginBottom:4}}>Production Files ({_itemPFs.length})</div>
+                      {_itemPFs.length>0&&<div style={{padding:'8px 14px',borderTop:'1px solid #EEF1F6'}}>
+                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}><span style={{fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:800,fontSize:15,letterSpacing:'0.8px',textTransform:'uppercase',color:'#192853'}}>Production Files ({_itemPFs.length})</span><span style={{height:3,width:28,background:'#962C32',transform:'skewX(-12deg)',display:'inline-block'}}/></div>
                         <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{_itemPFs.map((f,fi)=>{const url=f?.url||'';const name=f?.name||fileDisplayName(f);return<div key={fi} style={{padding:'4px 8px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:4,cursor:'pointer',fontSize:10,fontWeight:600,color:'#92400e',display:'flex',alignItems:'center',gap:3}} onClick={()=>openFile(url)}>📁 {name}{f._afName&&<span style={{fontSize:9,fontStyle:'italic',marginLeft:2}}>({f._afName})</span>}</div>;})}
                         </div>
                         {(()=>{
@@ -12255,7 +12255,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                           const _blocks=jobRosterBlocks(j,safeItems(o),SZ_ORD);
                           if(_blocks.length===0)return null;
                           const _total=_blocks.reduce((a,b)=>a+b.total,0);
-                          return<div style={{marginTop:8,paddingTop:8,borderTop:'1px solid #bbf7d0'}}>
+                          return<div style={{marginTop:8,paddingTop:8,borderTop:'1px solid #EEF1F6'}}>
                             <div style={{fontSize:10,fontWeight:700,color:'#166534',marginBottom:5}}>Numbers to print ({_total})</div>
                             {_blocks.map((_b,_bi)=><div key={_bi} style={{marginBottom:_bi<_blocks.length-1?8:0}}>
                               {_blocks.length>1&&_b.labels.length>0&&<div style={{fontSize:10,fontWeight:700,color:'#475569',marginBottom:3}}>{_b.labels.join(' + ')} — {_b.total}</div>}
@@ -12297,7 +12297,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                 if(_mmS.length>0){nf(missingMockupsMsg('send to coach',_mmS),'error');return}
                 const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const _billEmails=new Set(getBillingContacts(c2,allCustomers).filter(a=>a.email).map(a=>a.email.toLowerCase()));/* Billing/AP contacts stay selectable but are NOT pre-checked for art proofs — estimates/invoices default-check billing on purpose, art must not. */const pUrl=c2?.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(c2.alpha_tag)+'&so='+o.id+'&job='+j.id):'';const _label=(o.memo&&o.memo.trim())||j.art_name;const _checked=Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,!_billEmails.has(ct2.email.toLowerCase())]));const defMsg=greetLine(Object.keys(_checked).filter(em=>_checked[em]),c2?.contacts)+'\n\nYour artwork mockup for "'+_label+'" is ready for you to review.\n\nYou can review and approve it right in your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nPlease let us know if you\'d like any changes, and thank you for your business!\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:_smsUiEnabled&&!!ct.phone,checkedEmails:_checked,customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7,followUp:seedFollowUp(j)})}}>📤 Send to Coach</button>
               </div>
-              <div style={{borderTop:'1px solid #fde68a',paddingTop:10}}>
+              <div style={{borderTop:'1px solid #EEF1F6',paddingTop:10}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>Something wrong? Send it back to the artist:</div>
                 <textarea className="form-input" rows={2} placeholder="Describe what needs to change — colors, sizing, placement, etc." value={artRevisionNote} onChange={e=>setArtRevisionNote(e.target.value)} style={{fontSize:12,resize:'vertical',marginBottom:6,borderColor:'#fbbf24'}}/>
                 <button className="btn btn-sm" style={{fontSize:12,padding:'5px 14px',background:artRevisionNote.trim()?'linear-gradient(135deg,#dc2626,#b91c1c)':'#e5e7eb',color:artRevisionNote.trim()?'white':'#9ca3af',border:'none',borderRadius:6,fontWeight:700,cursor:artRevisionNote.trim()?'pointer':'not-allowed'}} disabled={!artRevisionNote.trim()} onClick={()=>{
@@ -12415,44 +12415,44 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                     const nameDecos=it?jobItemDecosOfKind(gi,it,'names'):[];
                     const totalUnits=Object.values(gi.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
                     const _itemPFs=itemArtFiles.flatMap(_af=>(_af?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_afName:itemArtFiles.length>1?(_af?.name||''):''})));
-                    return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?14:0,border:'1px solid #86efac',borderRadius:10,overflow:'hidden',background:'white'}}>
+                    return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?14:0,border:'1px solid #EEF1F6',borderTop:'3px solid #1E7A46',borderRadius:6,overflow:'hidden',background:'#fff',boxShadow:'0 2px 12px rgba(0,0,0,0.06)'}}>
                       {/* Item header */}
-                      <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'#f0fdf4',borderBottom:'1px solid #bbf7d0'}}>
+                      <div style={{display:'flex',alignItems:'center',gap:10,padding:'12px 14px',background:'#fff',borderBottom:'1px solid #EEF1F6'}}>
                         <div style={{display:'flex',gap:4,flexShrink:0}}>
-                          {gi.image_url&&<img src={gi.image_url} alt="Front" style={{width:44,height:44,objectFit:'contain',borderRadius:6,border:'1px solid #bbf7d0',background:'white'}}/>}
-                          {gi.back_image_url&&<img src={gi.back_image_url} alt="Back" style={{width:44,height:44,objectFit:'contain',borderRadius:6,border:'1px solid #bbf7d0',background:'white'}}/>}
+                          {gi.image_url&&<img src={gi.image_url} alt="Front" style={{width:44,height:44,objectFit:'contain',borderRadius:4,border:'1px solid #EEF1F6',background:'#fff'}}/>}
+                          {gi.back_image_url&&<img src={gi.back_image_url} alt="Back" style={{width:44,height:44,objectFit:'contain',borderRadius:4,border:'1px solid #EEF1F6',background:'#fff'}}/>}
                         </div>
                         <div style={{flex:1,minWidth:0}}>
                           <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
-                            <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'1px 6px',borderRadius:4,fontSize:11}}>{gi.sku}</span>
-                            <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{gi.name}</span>
-                            {gi.color&&<span style={{color:'#6d28d9',fontWeight:700,fontSize:12}}>— {gi.color}</span>}
-                            {gi.brand&&<span style={{fontSize:10,padding:'1px 6px',background:'#f1f5f9',borderRadius:4,color:'#64748b',border:'1px solid #e2e8f0'}}>{gi.brand}</span>}
+                            <span style={{fontFamily:'monospace',fontWeight:700,color:'#192853',background:'#F7F8FB',border:'1px solid #EEF1F6',padding:'1px 6px',borderRadius:3,fontSize:11}}>{gi.sku}</span>
+                            <span style={{fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:800,fontSize:18,letterSpacing:'0.4px',textTransform:'uppercase',color:'#192853',lineHeight:1.1}}>{gi.name}</span>
+                            {gi.color&&<span style={{color:'#5A6075',fontWeight:600,fontSize:13}}>— {gi.color}</span>}
+                            {gi.brand&&<span style={{fontSize:10,padding:'1px 6px',background:'#F7F8FB',borderRadius:3,color:'#5A6075',border:'1px solid #EEF1F6'}}>{gi.brand}</span>}
                           </div>
                         </div>
                         <div style={{textAlign:'right',flexShrink:0,display:'flex',alignItems:'center',gap:8}}>
                           <OeGarmentPoChip item={it} szMeta={_PO_SZ_META}/>
                         <div>
-                          <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{totalUnits}</div>
-                          <div style={{fontSize:9,color:'#15803d',fontWeight:600,textTransform:'uppercase'}}>units</div>
+                          <div style={{fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:800,fontSize:26,color:'#192853',lineHeight:1}}>{totalUnits}</div>
+                          <div style={{fontSize:10,color:'#5A6075',fontWeight:700,letterSpacing:'1.1px',textTransform:'uppercase'}}>units</div>
                         </div>
                         </div>
                       </div>
                         <OeGarmentPoLines item={it} szMeta={_PO_SZ_META} onOpenPo={po=>{const lines=[];safeItems(o).forEach((it2,i2)=>{safePOs(it2).forEach((po2,pi2)=>{if(po2.po_id&&po2.po_id===po.po_id)lines.push({lineIdx:i2,poIdx:pi2})})});if(lines.length)setEditPO({lineIdx:lines[0].lineIdx,poIdx:lines[0].poIdx,po,allLines:lines})}}/>
                       {/* Mockup — linked garments reference their source garment's mock (read-only) */}
                       {_myLinkSrc?(()=>{const srcFiles=_filterDisplayable(mockLinkSourceFiles(_jArts2,_myLinkSrc));const sf=srcFiles[0]||null;const sUrl=sf?(typeof sf==='string'?sf:(sf?.url||'')):'';
-                        return<div style={{margin:10,padding:'10px 12px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
-                          {sUrl&&_isImgUrl(sUrl,sf)?<img src={sUrl} alt="" style={{width:54,height:54,objectFit:'contain',borderRadius:6,border:'1px solid #bbf7d0',background:'white',cursor:'pointer',flexShrink:0}} onClick={()=>setMockupLightbox(sUrl)}/>
-                           :<div style={{width:54,height:54,borderRadius:6,border:'1px dashed #86efac',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>🖼️</div>}
-                          <div style={{fontSize:12,fontWeight:700,color:'#166534'}}>🔗 Same mockup as {_myLinkSrc.split('|')[0]}</div>
+                        return<div style={{margin:10,padding:'10px 12px',background:'#F7F8FB',border:'1px solid #EEF1F6',borderLeft:'3px solid #192853',borderRadius:4,display:'flex',alignItems:'center',gap:10}}>
+                          {sUrl&&_isImgUrl(sUrl,sf)?<img src={sUrl} alt="" style={{width:54,height:54,objectFit:'contain',borderRadius:4,border:'1px solid #EEF1F6',background:'#fff',cursor:'pointer',flexShrink:0}} onClick={()=>setMockupLightbox(sUrl)}/>
+                           :<div style={{width:54,height:54,borderRadius:4,border:'1px dashed #D1D5DE',background:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>🖼️</div>}
+                          <div style={{fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:700,fontSize:15,letterSpacing:'0.5px',textTransform:'uppercase',color:'#192853'}}>Same mockup as {_myLinkSrc.split('|')[0]}</div>
                         </div>;})()
                       :itemMockups.length>0?(()=>{const _ordered=[...itemMockups].sort((a,b)=>_mockOrd(a)-_mockOrd(b));const _ou=_ordered.map(f=>typeof f==='string'?f:(f?.url||''));
                         // Parity with the editable panel: a sew-out proof is NOT a garment mockup, so
                         // render it small, grey, dashed and badged — never as the approved green mockup.
-                        const _mkH=_proofOnly?132:280;const _mkBd=_proofOnly?'#cbd5e1':'#86efac';
+                        const _mkH=_proofOnly?132:280;const _mkBd=_proofOnly?'#D1D5DE':'#1E7A46';
                         return<div style={{padding:10}}>
-                        {_myDeps.length>0&&<div style={{fontSize:10,fontWeight:700,color:'#166534',marginBottom:6}}>🔗 Mockup also used by {_myDeps.map(k=>k.split('|')[0]).join(', ')}</div>}
-                        {_proofOnly&&<div style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde047',borderRadius:6,padding:'6px 10px',marginBottom:8}}>♻️ This is the digitizer's sew-out proof from the production files — <u>not a garment mockup</u>. Use the Check Mock panel above to confirm the real approved mockup or send it to the artist.</div>}
+                        {_myDeps.length>0&&<div style={{fontSize:11,fontWeight:600,color:'#5A6075',marginBottom:6}}>One mockup — also covers {_myDeps.map(k=>k.split('|')[0]).join(', ')}</div>}
+                        {_proofOnly&&<div style={{fontSize:12,fontWeight:600,color:'#962C32',background:'#FDF6F6',border:'1px solid #EEF1F6',borderLeft:'3px solid #962C32',borderRadius:4,padding:'8px 12px',marginBottom:8}}>This is the digitizer's sew-out proof from the production files — <u>not a garment mockup</u>. Use the Check Mock panel above to confirm the real approved mockup or send it to the artist.</div>}
                         <div style={{display:'grid',gridTemplateColumns:_proofOnly?'repeat(auto-fill,minmax(150px,1fr))':(_ordered.length>1?'1fr 1fr':'1fr'),gap:8}}>
                           {_ordered.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const _sd=_mockSide(f);const _lbl=(typeof f!=='string'&&f?.art_label)||'';/* A mockup is labelled by WHERE the art sits, never by the upload's file name — a hashed name tells nobody anything. Art label + side first, then the decoration's own placement, numbered when several views share it. */const _named=[_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ');const _posCap=[...new Set((artDecos||[]).map(d=>d&&d.position).filter(Boolean))].join(', ');const _base=_named||(_posCap?(_ordered.length>1?_posCap+' · '+(fi+1):_posCap):('Mockup '+(fi+1)));const _cap=_proofOnly?('Production reference — '+_base):_base;
                             return<div key={fi} style={{position:'relative',borderRadius:4,border:'1px '+(_proofOnly?'dashed':'solid')+' #EEF1F6',borderTop:'3px solid '+_mkBd,overflow:'hidden',background:'#fff',boxShadow:'0 2px 12px rgba(0,0,0,0.06)',opacity:_proofOnly?0.92:1}}>
@@ -12470,8 +12470,8 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                               <div style={{padding:'4px 10px',borderTop:'1px solid #EEF1F6',fontSize:11,color:_proofOnly?'#5A6075':'#192853',fontWeight:700,display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}}>
                                 <span style={{display:'flex',alignItems:'center',gap:4,minWidth:0}}>
                                   {_ordered.length>1&&<>
-                                    <button title="Move earlier" disabled={fi===0} onClick={e=>{e.stopPropagation();moveMock(_ou,fi,-1)}} style={{border:'1px solid #bbf7d0',background:'#f0fdf4',borderRadius:4,fontSize:11,lineHeight:1,padding:'2px 5px',cursor:fi===0?'default':'pointer',opacity:fi===0?0.4:1}}>◀</button>
-                                    <button title="Move later" disabled={fi===_ordered.length-1} onClick={e=>{e.stopPropagation();moveMock(_ou,fi,1)}} style={{border:'1px solid #bbf7d0',background:'#f0fdf4',borderRadius:4,fontSize:11,lineHeight:1,padding:'2px 5px',cursor:fi===_ordered.length-1?'default':'pointer',opacity:fi===_ordered.length-1?0.4:1}}>▶</button>
+                                    <button title="Move earlier" disabled={fi===0} onClick={e=>{e.stopPropagation();moveMock(_ou,fi,-1)}} style={{border:'1px solid #D1D5DE',background:'#fff',color:'#192853',borderRadius:3,fontSize:11,lineHeight:1,padding:'2px 5px',cursor:fi===0?'default':'pointer',opacity:fi===0?0.4:1}}>◀</button>
+                                    <button title="Move later" disabled={fi===_ordered.length-1} onClick={e=>{e.stopPropagation();moveMock(_ou,fi,1)}} style={{border:'1px solid #D1D5DE',background:'#fff',color:'#192853',borderRadius:3,fontSize:11,lineHeight:1,padding:'2px 5px',cursor:fi===_ordered.length-1?'default':'pointer',opacity:fi===_ordered.length-1?0.4:1}}>▶</button>
                                   </>}
                                   <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:700,fontSize:13,letterSpacing:'0.7px',textTransform:'uppercase'}}>{_cap}</span>
                                 </span>
@@ -12494,8 +12494,8 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                           ⚠ No back mockup on file — this garment runs {_miss.join(' and ')}, but no {_miss.join(' / ')} mockup has been uploaded. Add one from the Art Dashboard so the floor can see the placement.
                         </div>;})()}
                       {/* Decoration spec */}
-                      {(artDecos.length>0||numDecos.length>0||nameDecos.length>0)&&<div style={{padding:'10px 14px',borderTop:'1px solid #bbf7d0',background:'#f8fafc'}}>
-                        <div style={{fontSize:10,fontWeight:700,color:'#1e3a5f',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Decoration Spec</div>
+                      {(artDecos.length>0||numDecos.length>0||nameDecos.length>0)&&<div style={{padding:'10px 14px',borderTop:'1px solid #EEF1F6',background:'#f8fafc'}}>
+                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}><span style={{fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:800,fontSize:15,letterSpacing:'0.8px',textTransform:'uppercase',color:'#192853'}}>Decoration Spec</span><span style={{height:3,width:28,background:'#962C32',transform:'skewX(-12deg)',display:'inline-block'}}/></div>
                         {artDecos.map((d,di)=>{
                           const dAf=d.art_file_id?safeArt(o).find(a=>a.id===d.art_file_id):null;
                           const cwObj=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;
@@ -12557,8 +12557,8 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                         </div>)}
                       </div>}
                       {/* Size grid */}
-                      {totalUnits>0&&<div style={{padding:'8px 14px',borderTop:'1px solid #bbf7d0'}}>
-                        <div style={{overflowX:'auto'}}><table style={{fontSize:11,minWidth:240,width:'100%'}}><thead><tr style={{background:'#f0f2f5'}}>
+                      {totalUnits>0&&<div style={{padding:'8px 14px',borderTop:'1px solid #EEF1F6'}}>
+                        <div style={{overflowX:'auto'}}><table style={{fontSize:11,minWidth:240,width:'100%'}}><thead><tr style={{background:'#192853',color:'#fff'}}>
                           <th style={{textAlign:'left',padding:'3px 6px',fontSize:9,fontWeight:700}}>SIZE</th>
                           {allSizes.map(sz=><th key={sz} style={{textAlign:'center',padding:'3px 6px',fontSize:9,fontWeight:700,minWidth:28}}>{sz}</th>)}
                           <th style={{textAlign:'center',padding:'3px 6px',fontSize:9,fontWeight:800}}>TOTAL</th>
@@ -12566,13 +12566,13 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                           <tr>
                             <td style={{textAlign:'left',padding:'3px 6px',fontWeight:700,color:'#475569'}}>QTY</td>
                             {allSizes.map(sz=>{const v=safeNum(gi.sizes?.[sz]);return<td key={sz} style={{textAlign:'center',padding:'3px 6px',fontWeight:v>0?800:400,color:v>0?'#1e40af':'#cbd5e1',background:v>0?'#eef2ff':''}}>{v>0?v:'—'}</td>})}
-                            <td style={{textAlign:'center',padding:'3px 6px',fontWeight:800,color:'#1e40af',background:'#f0f2f5'}}>{totalUnits}</td>
+                            <td style={{textAlign:'center',padding:'3px 6px',fontWeight:800,color:'#192853',background:'#F7F8FB'}}>{totalUnits}</td>
                           </tr>
                         </tbody></table></div>
                       </div>}
                       {/* Production files */}
-                      {_itemPFs.length>0&&<div style={{padding:'8px 14px',borderTop:'1px solid #bbf7d0'}}>
-                        <div style={{fontSize:10,fontWeight:700,color:'#92400e',marginBottom:4}}>Production Files ({_itemPFs.length})</div>
+                      {_itemPFs.length>0&&<div style={{padding:'8px 14px',borderTop:'1px solid #EEF1F6'}}>
+                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}><span style={{fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:800,fontSize:15,letterSpacing:'0.8px',textTransform:'uppercase',color:'#192853'}}>Production Files ({_itemPFs.length})</span><span style={{height:3,width:28,background:'#962C32',transform:'skewX(-12deg)',display:'inline-block'}}/></div>
                         <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{_itemPFs.map((f,fi)=>{const url=f?.url||'';const name=f?.name||fileDisplayName(f);return<div key={fi} style={{padding:'4px 8px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:4,cursor:'pointer',fontSize:10,fontWeight:600,color:'#92400e',display:'flex',alignItems:'center',gap:3}} onClick={()=>openFile(url)}>📁 {name}{f._afName&&<span style={{fontSize:9,fontStyle:'italic',marginLeft:2}}>({f._afName})</span>}</div>;})}
                         </div>
                       </div>}
@@ -15977,7 +15977,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                       <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600}}>${uc.toFixed(2)}</td>
                       <td style={{padding:'6px 8px',textAlign:'right',fontWeight:800,fontSize:14}}>${(qty*uc).toFixed(2)}</td>
                     </tr>})}
-                  {manualCost>0&&<tr style={{background:'#fffbeb',borderTop:'1px solid #fde68a'}}><td colSpan={3} style={{padding:'6px 8px',fontWeight:700,color:'#92400e'}}>Manual added cost{manualCostNote?' — '+manualCostNote:''}</td><td style={{padding:'6px 8px',textAlign:'center',color:'#92400e'}}>1</td><td></td><td style={{padding:'6px 8px',textAlign:'right',fontWeight:800,color:'#92400e'}}>${manualCost.toFixed(2)}</td></tr>}
+                  {manualCost>0&&<tr style={{background:'#fffbeb',borderTop:'1px solid #EEF1F6'}}><td colSpan={3} style={{padding:'6px 8px',fontWeight:700,color:'#92400e'}}>Manual added cost{manualCostNote?' — '+manualCostNote:''}</td><td style={{padding:'6px 8px',textAlign:'center',color:'#92400e'}}>1</td><td></td><td style={{padding:'6px 8px',textAlign:'right',fontWeight:800,color:'#92400e'}}>${manualCost.toFixed(2)}</td></tr>}
                   <tr style={{borderTop:'2px solid #0f172a',fontWeight:800}}>
                     <td colSpan={3} style={{padding:'6px 8px',textAlign:'right'}}>Grand Total</td>
                     <td style={{padding:'6px 8px',textAlign:'center'}}>{grandOrdered}</td>
