@@ -447,7 +447,283 @@ export default function QBPage(){
         try{
           const readback=await queryQBReadOnly(qbApi,"SELECT * FROM Bill WHERE Id = '"+String(billId).replace(/'/g,"\\'")+"' MAXRESULTS 1",'bill API read-back');
           const verified=readback?.QueryResponse?.Bill?.[0];
-          if(!verified||String(verified.Id)!==String(billId)||String(verified.VendorRef?.value||'')!==String(qbVendorId)||Math.abs(safeNum(verified.TotalAmt)-amt)>=0.005||String(verified.TxnDate||'').slice(0,10)!==String(qbBillDate||'').slice(0,10))…27589 tokens truncated… btn-primary btn-sm" disabled={!stripePayoutDetail.qbo_entries?.length} onClick={exportStripePayoutCsv}>Export CSV</button></div>
+          if(!verified||String(verified.Id)!==String(billId)||String(verified.VendorRef?.value||'')!==String(qbVendorId)||Math.abs(safeNum(verified.TotalAmt)-amt)>=0.005||String(verified.TxnDate||'').slice(0,10)!==String(qbBillDate||'').slice(0,10))throw new Error('vendor, date, or total did not match');
+          log.details.push('READ-BACK VERIFIED: QBO Bill #'+verified.Id+' · '+vendor.name+' · $'+safeNum(verified.TotalAmt).toFixed(2));
+        }catch(e){log.details.push('VERIFY FAILED: '+e.message);log.status='error';setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Bill was created but QBO read-back verification failed — stop testing','error');setQbBillUploading(false);return}
+      }
+      log.details.push((isCanary?'CANARY — ':'')+'Bill created: '+vendor.name+' $'+amt.toFixed(2)+' → QB Bill #'+billId);
+
+      // Upload attachment if file selected
+      if(qbBillFile){
+        try{
+          const reader=new FileReader();
+          const fileBase64=await new Promise((resolve,reject)=>{
+            reader.onload=()=>resolve(reader.result.split(',')[1]);
+            reader.onerror=reject;
+            reader.readAsDataURL(qbBillFile);
+          });
+          const attachRes=await qbApi('upload_attachment',{
+            entity_type:'Bill',entity_id:billId,
+            file_name:qbBillFile.name,file_base64:fileBase64,content_type:qbBillFile.type||'application/pdf',
+          });
+          if(attachRes?.attachableId){
+            log.details.push('Attachment uploaded: '+qbBillFile.name);
+          }else{
+            log.details.push('Attachment upload failed — bill was created without attachment');log.status='partial';
+          }
+        }catch(e){log.details.push('File read error: '+e.message);log.status='partial'}
+      }
+
+      setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      nf((isCanary?'Created and verified exactly one ':'Uploaded ')+'QBO bill $'+amt.toFixed(2)+' for '+vendor.name);
+      setQbBillFile(null);setQbBillVendor('');setQbBillAmount('');setQbBillMemo('');setQbBillFreight('');setQbBillSportsFee('');
+      setQbBillUploading(false);
+    };
+
+
+    // Build counts for overview
+    const soMap=qbConfig.qbSOMap||{};
+    const poMap=qbConfig.qbPOMap||{};
+    const unsyncedSOs=sos.filter(so=>{
+      const hasItems=safeItems(so).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+      return hasItems&&!soMap[so.id];
+    });
+    const parkedPurchaseOrderIds=qbConfig.parkedPurchaseOrderIds||[];
+    const autoExcludedHistoricalPOIds=historicalPortalPurchaseOrderIds(sos,poMap,parkedPurchaseOrderIds);
+    const unsyncedPOGroups=groupPortalPurchaseOrders(sos,poMap,vend,parkedPurchaseOrderIds);
+    // Zero-dollar source records remain in portal history but are not QBO
+    // accounting documents and must not keep the migration queue open.
+    const unsyncedInvs=invs.filter(i=>!i.qb_invoice_id&&!(qbConfig.qbInvoiceMap||{})[qbInvoiceSourceKey(i)]&&!isVoidInvoice(i)&&safeNum(i.total)>0);
+    const _custQBMap=qbConfig.custQBMap||{};
+    const _prodQBMap=qbConfig.prodQBMap||{};
+    const custWithQB=cust.filter(c=>_custQBMap[c.id]).length;
+    const prodWithQB=prod.filter(p=>_prodQBMap[p.id]).length;
+    const totalInvQty=prod.reduce((a,p)=>a+Object.values(p._inv||{}).reduce((a2,v)=>a2+safeNum(v),0),0);
+    const totalInvValue=prod.reduce((a,p)=>{const qty=Object.values(p._inv||{}).reduce((a2,v)=>a2+safeNum(v),0);return a+qty*safeNum(p.nsa_cost)},0);
+    const unsyncedInvPOs=invPOs.filter(p=>!p._qb_synced);
+    const durableLinksReady=qbConfig._durableLinksLoaded===true;
+    const migrationUnlocked=qbConfig.initialMigrationApproved===true&&durableLinksReady;
+    const verifiedCanaryBills=new Set((qbConfig._qbCanaryBillIds||[]).map(String)).size;
+    const livePreflightReady=durableLinksReady&&qbConfig.preflight?.status==='success'&&String(qbConfig.preflight?.realm_id||'')===String(qbConfig.realm_id||'');
+    const activeCanaryCustomers=cust.filter(c=>c.is_active!==false&&!c.deleted_at).sort((a,b)=>portalCustomerDisplayName(a).localeCompare(portalCustomerDisplayName(b)));
+    const canaryInvoices=[...unsyncedInvs].sort((a,b)=>String(a.display_id||a.id).localeCompare(String(b.display_id||b.id),undefined,{numeric:true}));
+    const canaryProducts=[...new Map(prod.filter(p=>p.is_active!==false&&String(p.sku||'').trim()).sort((a,b)=>String(a.sku).localeCompare(String(b.sku),undefined,{numeric:true})).map(p=>[String(p.sku).trim().toUpperCase(),p])).values()];
+    const canarySOs=[...unsyncedSOs].sort((a,b)=>String(a.id).localeCompare(String(b.id),undefined,{numeric:true}));
+    const canaryPOs=[...unsyncedPOGroups].sort((a,b)=>String(a.poId).localeCompare(String(b.poId),undefined,{numeric:true}));
+    const selectedCanaryInvoice=canaryInvoices.find(inv=>String(inv.id)===String(qbCanaryInvoiceId));
+    const selectedCanaryProduct=canaryProducts.find(p=>String(p.id)===String(qbCanaryProductId));
+    const selectedCanarySO=canarySOs.find(so=>String(so.id)===String(qbCanarySOId));
+    const selectedCanaryPO=canaryPOs.find(group=>String(group.poId)===String(qbCanaryPOId));
+    const poPreviewRows=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{},vend,parkedPurchaseOrderIds);
+    const poBatchRows=(poBatchReview?.rows||[]).filter(row=>row.action==='ready').slice(0,poBatchLimit);
+    const poBlockedRows=(poBatchReview?.rows||[]).filter(row=>row.action==='blocked');
+    const taxPreflight=qbConfig.taxPreflight&&String(qbConfig.taxPreflight.realm_id||'')===String(qbConfig.realm_id||'')?qbConfig.taxPreflight:null;
+    const astTaxOn=!!taxPreflight?.partnerTaxEnabled;
+    const taxableEstimateBlock=state=>{
+      if(!taxPreflight)return'Taxable Estimate: read the sales-tax setup first (Settings tab) so the QBO tax mechanism is known';
+      if(astTaxOn)return QB_STATE_TAX_ACCOUNT_KEYS[state]?'':'Taxable Estimate: customer state "'+(state||'blank')+'" has no approved sales-tax account';
+      return(qbConfig.qbTaxRateMap||{})[state]?'':'Taxable Estimate: run the tax-rate canary for '+(state||'the customer state')+' first (Settings tab)';
+    };
+    const salesOrderPreviewRows=buildQBSalesOrderPreviewRows(sos,cust,_custQBMap,qbConfig.qbSOMap||{},dP,
+      {partnerTaxEnabled:astTaxOn,taxBlockReason:({taxState})=>taxableEstimateBlock(taxState)});
+    const salesOrderBatchRows=(salesOrderBatchReview?.rows||[]).filter(row=>row.action==='ready').slice(0,salesOrderBatchLimit);
+    const poPreviewById=new Map(poPreviewRows.map(row=>[String(row.poId),row]));
+    const poAccountSkus=poId=>poPreviewById.get(String(poId))?.accountSkus||[];
+    const selectedInvoiceCustomer=selectedCanaryInvoice&&cust.find(c=>c.id===selectedCanaryInvoice.customer_id);
+    // A taxable invoice needs a mechanism to carry the portal's own tax amount,
+    // but which mechanism depends on the company file. Under manual sales tax
+    // that is the state's verified TaxRate; under Automated Sales Tax no manual
+    // rate can exist, so it is the CustomSalesTax override code instead. Gate on
+    // whichever one actually applies, read from the stored tax preflight.
+    const taxableInvoiceBlock=state=>{
+      if(!taxPreflight)return'Taxable invoice: read the sales-tax setup first (Settings tab) so the right tax mechanism is known';
+      // Under AST the tax posts as its own line against the state's approved
+      // liability account; no QBO tax code is needed. The only precondition is
+      // that the state has one, so the label says so instead of inviting a run
+      // that the engine will block for the same reason.
+      if(astTaxOn)return QB_STATE_TAX_ACCOUNT_KEYS[state]?'':'Taxable invoice: customer state "'+(state||'blank')+'" has no approved sales-tax account';
+      return(qbConfig.qbTaxRateMap||{})[state]?'':'Taxable invoice: run the tax-rate canary for '+(state||'the customer state')+' first (Settings tab)';
+    };
+    // The dropdown label has to answer the same question the button does. A flat
+    // "TAX BLOCKED" on every taxable invoice said nothing about whether this one
+    // can post, and kept reading as blocked after the mechanism to post it existed.
+    const invoiceTaxState=inv=>{const c=cust.find(cc=>cc.id===inv.customer_id);
+      return String(c?.shipping_state||c?.billing_state||'').trim().toUpperCase()};
+    const invoiceTaxBlocked=inv=>safeNum(inv.tax)>0&&!!taxableInvoiceBlock(invoiceTaxState(inv));
+    const invoicePreviewRows=buildQBInvoicePreviewRows(invs,cust,_custQBMap,{invoiceMap:qbConfig.qbInvoiceMap||{},taxBlockReason:inv=>taxableInvoiceBlock(invoiceTaxState(inv))});
+    const invoiceBatchRows=(invoiceBatchReview?.rows||[]).filter(row=>row.action==='ready').slice(0,invoiceBatchLimit);
+    const selectedCanaryPreview=selectedCanaryInvoice&&invoicePreviewRows.find(row=>row.invoiceId===String(selectedCanaryInvoice.id));
+    const invoiceCanaryBlock=selectedCanaryPreview&&selectedCanaryPreview.action!=='ready'?selectedCanaryPreview.reason:'';
+    const selectedSalesOrderPreview=selectedCanarySO&&salesOrderPreviewRows.find(row=>row.salesOrderId===String(selectedCanarySO.id));
+    const soCanaryBlock=selectedSalesOrderPreview?.action==='blocked'?selectedSalesOrderPreview.reason:'';
+    const poCanaryBlock=selectedCanaryPO?.invalidReason||'';
+    const runCustomerCanary=async()=>{
+      if(!qbCanaryCustomerId)return;
+      const result=await syncCustomerCanary(qbCanaryCustomerId,{blankTermsDefault:customerBlankTermsDefault});
+      if(result?.status==='needs_confirmation'){
+        const approved=window.confirm('No exact active QBO customer matches "'+result.customerName+'".\n\nCreate exactly ONE new QBO customer with its mapped QBO payment terms and verify it by API read-back?');
+        if(!approved){nf('Customer test cancelled — no QBO customer was created');return}
+        await syncCustomerCanary(qbCanaryCustomerId,{allowCreate:true,blankTermsDefault:customerBlankTermsDefault});
+      }else if(result?.status==='needs_term_confirmation'){
+        const approved=window.confirm('QBO customer #'+result.qbId+' ("'+result.customerName+'") currently has terms "'+result.currentTerm+'".\n\nUpdate exactly this ONE customer to "'+result.desiredTerm+'" and verify it by API read-back?');
+        if(!approved){nf('Customer terms update cancelled — no QBO customer was changed');return}
+        await syncCustomerCanary(qbCanaryCustomerId,{allowTermUpdate:true,blankTermsDefault:customerBlankTermsDefault});
+      }
+    };
+    const runInvoiceCanary=async()=>{
+      if(!selectedCanaryInvoice||invoiceCanaryBlock)return;
+      const doc=selectedCanaryInvoice.display_id||selectedCanaryInvoice.id;
+      if(!window.confirm('Create exactly ONE QBO invoice?\n\nInvoice: '+doc+'\nCustomer: '+(selectedInvoiceCustomer?.name||'Unknown')+'\nTotal: $'+safeNum(selectedCanaryInvoice.total).toFixed(2)+'\nPaid in portal: $'+safeNum(selectedCanaryInvoice.paid).toFixed(2)+'\n\nThis test creates no payment. QBO customer terms and the invoice will be verified by API read-back.')){nf('Invoice canary cancelled — nothing was sent');return}
+      await syncInvoices({}, {}, {canaryInvoiceId:selectedCanaryInvoice.id});
+    };
+    const auditQBOItem=async()=>{
+      const id=String(qbAuditItemId).trim();
+      if(!/^\d+$/.test(id)||!livePreflightReady)return;
+      setQbSyncing(true);setQbItemAudit(null);
+      try{
+        const response=await queryQBReadOnly(qbApi,"SELECT * FROM Item WHERE Id = '"+id+"' AND Active IN (true, false) MAXRESULTS 1",'item recovery audit');
+        const item=response?.QueryResponse?.Item?.[0];
+        const result=item?{realm:qbConfig.realm_id,id:item.Id,name:item.Name,sku:item.Sku,active:item.Active,type:item.Type,income:item.IncomeAccountRef,purchases:item.ExpenseAccountRef}:{realm:qbConfig.realm_id,id,not_found:true};
+        setQbItemAudit(result);
+        setQBConfig(prev=>({...prev,syncLog:[{ts:new Date().toLocaleString(),type:'item_recovery_audit',status:item?'success':'error',details:['READ ONLY — no QBO records changed',JSON.stringify(result)]},...(prev.syncLog||[])].slice(0,100)}));
+      }catch(e){setQbItemAudit({error:e.message})}finally{setQbSyncing(false)}
+    };
+    const reviewCustomerMigration=async()=>{
+      if(!livePreflightReady)return;
+      setCustomerReviewBusy(true);setCustomerManifest(null);setCustomerBatchApproved(false);
+      try{
+        const terms=await loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000);
+        const customers=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SalesTermRef',1000);
+        const rows=buildQBCustomerManifest(cust,customers,terms,qbConfig.custQBMap||{},{blankTermsDefault:customerBlankTermsDefault,reviewedAliases:qbConfig.custQBAliasApprovals||{}});
+        const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,blankTermsDefault:customerBlankTermsDefault,
+          counts:rows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{}),
+          termSources:rows.reduce((counts,row)=>({...counts,[row.termSource||'portal']:(counts[row.termSource||'portal']||0)+1}),{})};
+        setCustomerManifest(review);
+        setQBConfig(prev=>({...prev,lastCustomerReview:review}));
+        nf('Customer review complete — no QBO records changed');
+      }catch(e){nf('Customer review failed — '+e.message,'error')}finally{setCustomerReviewBusy(false)}
+    };
+    const customerRecoveryRows=(customerManifest?.rows||[]).filter(row=>row.action==='link'&&!qbConfig.custQBMap?.[row.sourceId]);
+    const recoverExactCustomerLinks=async()=>{
+      if(!customerRecoveryApproved||!livePreflightReady||!customerRecoveryRows.length)return;
+      setCustomerReviewBusy(true);setQbSyncing(true);
+      try{
+        const reviewedAt=new Date().toISOString();
+        const [terms,customers]=await Promise.all([
+          loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000),
+          loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SalesTermRef',1000),
+        ]);
+        const current=buildQBCustomerManifest(cust,customers,terms,qbConfig.custQBMap||{},{blankTermsDefault:customerBlankTermsDefault,reviewedAliases:qbConfig.custQBAliasApprovals||{}})
+          .filter(row=>row.action==='link'&&!qbConfig.custQBMap?.[row.sourceId]);
+        const reviewed=new Map(customerRecoveryRows.map(row=>[String(row.sourceId),String(row.qboId)]));
+        if(current.length!==customerRecoveryRows.length||current.some(row=>reviewed.get(String(row.sourceId))!==String(row.qboId))){
+          throw new Error('Exact customer matches changed since review; review customers again.');
+        }
+        const recovered=await persistVerifiedQBCustomerLinkRecovery(supabase,{realmId:qbConfig.realm_id,reviewedAt,
+          records:current.map(row=>({sourceId:row.sourceId,qboId:row.qboId,displayName:row.displayName,termId:row.desiredTerm?.value||row.currentTerm?.value||''}))});
+        const report={status:'success',at:reviewedAt,count:curren…19420 tokens truncated…flight.codeCount} tax codes · {qbConfig.taxPreflight.rateCount} tax rates</div>
+              <table style={{fontSize:10,marginTop:6}}><thead><tr><th>Tax code</th><th>Type</th><th>Rates</th></tr></thead><tbody>
+                {(qbConfig.taxPreflight.codes||[]).filter(code=>code.active).map(code=><tr key={code.id}><td>#{code.id} {code.name}</td><td>{code.taxable?'taxable':'non-taxable'}</td><td>{code.rates.map(r=>r.name+(r.rate!=null?' '+r.rate+'%':'')+(r.agency?' ('+r.agency+')':'')).join(', ')||'—'}</td></tr>)}
+              </tbody></table>
+            </div>}
+          </div>
+          <div style={{padding:'12px 14px',background:'#f0fdf4',borderBottom:'1px solid #bbf7d0'}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:4}}>Reviewed invoice batch</div>
+            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Reads live QBO under both invoice-number forms before proposing any creation. Exact matches are linked in the Portal without changing QBO; conflicts go to manual review. Zero-dollar invoices are excluded, future-dated invoices are held, and the reviewed write batch stops after its first failure. Payments remain a separate gate.</div>
+            <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+              <button className="btn btn-sm" disabled={qbSyncing||!livePreflightReady} onClick={reviewInvoiceBatch}>Review Invoices — No QBO Changes</button>
+              <label>Batch size <select aria-label="Invoice batch size" value={invoiceBatchLimit} disabled={qbSyncing} onChange={e=>{setInvoiceBatchLimit(Number(e.target.value));setInvoiceBatchApproved(false)}}>
+                {QB_BATCH_SIZES.filter(size=>size<=100).map(size=><option key={size} value={size}>{size}</option>)}
+              </select></label>
+            </div>
+            {invoiceBatchReview&&<>
+              <p>Readiness: {JSON.stringify(invoiceBatchReview.counts)}. Proposed batch: {invoiceBatchRows.length} ready invoices.</p>
+              <label><input type="checkbox" checked={invoiceBatchApproved} disabled={qbSyncing||!invoiceBatchRows.length} onChange={e=>setInvoiceBatchApproved(e.target.checked)}/> I approve only the exact invoices listed in this batch.</label>
+              <button className="btn btn-primary btn-sm" style={{marginLeft:8}} disabled={qbSyncing||!invoiceBatchApproved||!invoiceBatchRows.length} onClick={runInvoiceBatch}>Run Reviewed Invoice Batch</button>
+              <table style={{fontSize:10,marginTop:8}}><thead><tr><th>Invoice</th><th>Customer</th><th>Date</th><th>Total</th><th>Paid</th><th>Tax</th></tr></thead><tbody>{invoiceBatchRows.map(row=><tr key={row.invoiceId}><td>{row.documentNumber}</td><td>{row.customer}</td><td>{row.date}</td><td>${row.total.toFixed(2)}</td><td>${row.paid.toFixed(2)}</td><td>${row.tax.toFixed(2)}</td></tr>)}</tbody></table>
+              {invoiceBatchReview.rows.some(row=>row.action==='manual_review')&&<><h3>Manual review — no QBO changes</h3><table style={{fontSize:10}}><thead><tr><th>Invoice</th><th>Portal</th><th>QBO record(s) and differences</th></tr></thead><tbody>{invoiceBatchReview.rows.filter(row=>row.action==='manual_review').map(row=><tr key={row.invoiceId}><td>{row.documentNumber}</td><td>{row.customer} · {row.date} · ${row.total.toFixed(2)}</td><td>{(row.conflicts||[]).map(conflict=>'#'+conflict.qboId+' '+conflict.documentNumber+' — '+conflict.differences.map(diff=>diff.field+': Portal '+diff.source+' / QBO '+diff.qbo).join(', ')).join(' | ')}</td></tr>)}</tbody></table></>}
+              {invoiceBatchReview.rows.some(row=>row.action==='excluded_zero'||row.action==='held_future')&&<><h3>Excluded / held</h3><table style={{fontSize:10}}><thead><tr><th>Invoice</th><th>Disposition</th><th>Reason</th></tr></thead><tbody>{invoiceBatchReview.rows.filter(row=>row.action==='excluded_zero'||row.action==='held_future').map(row=><tr key={row.invoiceId}><td>{row.documentNumber}</td><td>{row.action}</td><td>{row.reason}</td></tr>)}</tbody></table></>}
+              {invoiceBatchReview.rows.some(row=>row.action==='blocked')&&<><h3>Blocked by readiness review</h3><table style={{fontSize:10}}><thead><tr><th>Invoice</th><th>Customer</th><th>Reason</th></tr></thead><tbody>{invoiceBatchReview.rows.filter(row=>row.action==='blocked').slice(0,50).map(row=><tr key={row.invoiceId}><td>{row.documentNumber}</td><td>{row.customer}</td><td>{row.reason}</td></tr>)}</tbody></table></>}
+            </>}
+            {qbConfig.lastInvoiceBatch&&<><h3>Latest invoice batch: {qbConfig.lastInvoiceBatch.status}</h3><table style={{fontSize:10}}><thead><tr><th>Invoice</th><th>Result</th><th>QBO ID</th><th>Error</th></tr></thead><tbody>{(qbConfig.lastInvoiceBatch.results||[]).map(row=><tr key={row.invoiceId}><td>{row.documentNumber||row.invoiceId}</td><td>{row.result}</td><td>{row.qboId||''}</td><td>{row.error||''}</td></tr>)}</tbody></table><p>{JSON.stringify(qbConfig.lastInvoiceBatch.counts)}</p></>}
+          </div>
+          <div style={{padding:'12px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe'}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:4}}>Test exactly one invoice</div>
+            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Creates one invoice only—never a payment—using the linked QBO customer&apos;s actual terms. Account, tax, duplicate, total, customer, and API read-back checks run before the portal link is saved.</div>
+            <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+              <select className="form-input" aria-label="Invoice to test in QuickBooks" style={{minWidth:420,maxWidth:700}} value={qbCanaryInvoiceId} onChange={e=>setQbCanaryInvoiceId(e.target.value)}>
+                <option value="">Select one pending invoice...</option>
+                {canaryInvoices.map(inv=>{const c=cust.find(cc=>cc.id===inv.customer_id);return<option key={inv.id} value={inv.id}>{inv.display_id||inv.id} — {c?.name||'Unknown'} — ${safeNum(inv.total).toFixed(2)}{safeNum(inv.tax)>0?(invoiceTaxBlocked(inv)?' — TAX BLOCKED':' — tax $'+safeNum(inv.tax).toFixed(2)):''}{!_custQBMap[inv.customer_id]?' — CUSTOMER NOT SYNCED':''}</option>})}
+              </select>
+              <label><input type="checkbox" checked={productCreateApproved} disabled={qbSyncing} onChange={e=>setProductCreateApproved(e.target.checked)}/> Approve creation of this one SKU if no existing item matches.</label>
+              <button className="btn btn-primary btn-sm" style={{background:'#0369a1'}} disabled={qbSyncing||!livePreflightReady||!selectedCanaryInvoice||!!invoiceCanaryBlock} onClick={runInvoiceCanary}>{qbSyncing?'Testing...':'Test 1 Invoice'}</button>
+            </div>
+            {invoiceCanaryBlock&&<div style={{fontSize:10,color:'#b91c1c',marginTop:6,fontWeight:600}}>{invoiceCanaryBlock}</div>}
+            {!livePreflightReady&&<div style={{fontSize:11,color:'#92400e',marginTop:7,fontWeight:600}}>Button disabled: open Overview and run Read-Only Live Preflight.</div>}
+          </div>
+          <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
+            <table style={{fontSize:11}}>
+              <thead><tr style={{background:'#f8fafc'}}><th>Invoice</th><th>Customer</th><th>SO</th><th style={{textAlign:'right'}}>Total</th><th style={{textAlign:'right'}}>Paid</th><th>QB Status</th></tr></thead>
+              <tbody>
+                {invs.map(inv=>{
+                  const c=cust.find(cc=>cc.id===inv.customer_id);
+                  return<tr key={inv.id} style={{borderBottom:'1px solid #f1f5f9'}}>
+                    <td style={{fontWeight:700,color:'#166534'}}>{inv.id}</td>
+                    <td>{c?.name||'—'}</td>
+                    <td style={{color:'#64748b'}}>{inv.so_id||'—'}</td>
+                    <td style={{textAlign:'right',fontWeight:600}}>${safeNum(inv.total).toFixed(2)}</td>
+                    <td style={{textAlign:'right',color:inv.paid>=inv.total?'#16a34a':'#d97706'}}>${safeNum(inv.paid).toFixed(2)}</td>
+                    <td>{inv.qb_invoice_id?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>QB #{inv.qb_invoice_id}</span>:
+                      <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Pending</span>}</td>
+                  </tr>})}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </>}
+
+      {/* ── STRIPE PAYOUT RECONCILIATION TAB ── */}
+      {qbTab==='stripe'&&<>
+        <StripePaymentVerification />
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
+            <h2>Stripe Payout Reconciliation</h2>
+            <button className="btn btn-secondary btn-sm" disabled={stripePayoutLoading} onClick={loadStripePayouts}>{stripePayoutLoading?'Loading...':'Refresh'}</button>
+          </div>
+          <div className="card-body">
+            <div style={{fontSize:11,color:'#475569',marginBottom:10}}>Each automatic payout is reconciled against every Stripe balance transaction in the batch. Exact payouts can be exported as cent-based semantic posting rows; this screen never posts a bank deposit to QuickBooks automatically.</div>
+            <div style={{display:'flex',gap:8,alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',padding:10,marginBottom:10,background:stripeWebhookStatus?.healthy?'#f0fdf4':'#fffbeb',border:'1px solid '+(stripeWebhookStatus?.healthy?'#bbf7d0':'#fde68a'),borderRadius:7,fontSize:11}}>
+              <div><strong>Live webhook:</strong> {stripeWebhookStatus?.healthy?'all payment, refund, dispute, and payout events covered':stripeWebhookStatus?.error?'could not verify — '+stripeWebhookStatus.error:stripeWebhookStatus?'missing '+(stripeWebhookStatus.missing_events||[]).join(', '):'checking Stripe configuration...'}</div>
+              <div style={{display:'flex',gap:6}}>{stripeWebhookStatus&&!stripeWebhookStatus.healthy&&!stripeWebhookStatus.error&&<button className="btn btn-secondary btn-sm" disabled={stripePayoutLoading} onClick={repairStripeWebhookEvents}>Add missing events</button>}<button className="btn btn-primary btn-sm" disabled={stripePayoutLoading} onClick={runStripeHistoricalBackfill}>{stripePayoutLoading&&stripeBackfill?.phase&&stripeBackfill.phase!=='done'?'Backfill running...':'Run full historical backfill'}</button></div>
+            </div>
+            {stripeBackfill&&<div style={{padding:9,marginBottom:10,background:stripeBackfill.phase==='done'&&Number(stripeBackfill.unlinked_card_orders||0)+Number(stripeBackfill.portal_payment_review_count||0)+Number(stripeBackfill.charge_amount_mismatch_count||0)+Number(stripeBackfill.actionable_automatic_payouts||0)===0?'#f0fdf4':'#eff6ff',border:'1px solid #bfdbfe',borderRadius:7,fontSize:11,color:'#1e3a8a'}}>
+              <strong>{stripeBackfill.phase==='done'?'Backfill complete':stripeBackfill.phase==='error'?'Backfill stopped':'Backfill '+stripeBackfill.phase+' in progress'}:</strong> {stripeBackfill.orders_linked||0} of {stripeBackfill.orders_processed||0} unlinked order records linked · {stripeBackfill.orders_skipped||0} non-succeeded PaymentIntents skipped · {stripeBackfill.payouts_processed||0} payouts reconciled · {(stripeBackfill.errors||[]).length} errors
+              {stripeBackfill.phase==='done'&&<span> · {stripeBackfill.unlinked_card_orders||0} settled charge links missing · {stripeBackfill.portal_payment_review_count||0} portal payment-status reviews · {stripeBackfill.charge_amount_mismatch_count||0} Stripe activity-vs-order amount reviews · {stripeBackfill.actionable_automatic_payouts||0} actionable payouts · {stripeBackfill.unavailable_payouts||0} Instant/manual payouts not batch-reconcilable</span>}
+              {stripeBackfill.phase==='done'&&stripeBackfill.card_orders&&<div style={{marginTop:6}}>Stripe-settled card charges: {stripeBackfill.settled_card_orders?.linked_count||0}/{stripeBackfill.settled_card_orders?.order_count||0} linked (${(Number(stripeBackfill.settled_card_orders?.total_cents||0)/100).toFixed(2)} actually charged) · incomplete checkout attempts: {stripeBackfill.incomplete_card_attempts?.order_count||0} (${(Number(stripeBackfill.incomplete_card_attempts?.total_cents||0)/100).toFixed(2)} intended) · SO-2313: {stripeBackfill.so_2313?.linked_count||0}/{stripeBackfill.so_2313?.order_count||0} linked (${(Number(stripeBackfill.so_2313?.linked_cents||0)/100).toFixed(2)} of ${(Number(stripeBackfill.so_2313?.total_cents||0)/100).toFixed(2)})</div>}
+              {stripeBackfill.phase==='done'&&(stripeBackfill.charge_amount_mismatches||[]).length>0&&<div style={{marginTop:6,color:'#92400e'}}>Amount review: {stripeBackfill.charge_amount_mismatches.map(row=><span key={row.order_id} style={{display:'inline-block',marginRight:12}}><strong>{row.so_id||row.order_id}</strong> Stripe net activity ${(Number(row.stripe_activity_cents||0)/100).toFixed(2)} vs order ${(Number(row.portal_total_cents||0)/100).toFixed(2)} (original charge ${(Number(row.stripe_charge_cents||0)/100).toFixed(2)})</span>)}</div>}
+              {stripeBackfill.phase==='done'&&(stripeBackfill.portal_payment_review||[]).length>0&&<div style={{marginTop:6,color:'#92400e'}}>Payment-status review: {stripeBackfill.portal_payment_review.map(row=><span key={row.order_id} style={{display:'inline-block',marginRight:12}}><strong>{row.so_id||row.order_id}</strong> is {row.portal_status||'non-pending'} in the portal but has no succeeded Stripe charge</span>)}</div>}
+              {stripeBackfill.phase==='done'&&(stripeBackfill.errors||[]).length>0&&<div style={{marginTop:6,color:'#92400e'}}>{stripeBackfillErrorSummary(stripeBackfill.errors).map(([label,count])=><span key={label} style={{display:'inline-block',marginRight:12}}>{label}: <strong>{count}</strong></span>)}</div>}
+            </div>}
+            <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',padding:10,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:7}}>
+              <input className="form-input" style={{minWidth:300,flex:'1 1 300px'}} placeholder="Historical payout ID (po_...)" value={stripePayoutId} onChange={e=>setStripePayoutId(e.target.value)}/>
+              <button className="btn btn-primary btn-sm" disabled={stripePayoutLoading||!stripePayoutId.trim()} onClick={()=>reconcileStripePayout(stripePayoutId)}>Fetch &amp; reconcile</button>
+            </div>
+            {stripePayoutError&&<div style={{marginTop:9,padding:8,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,color:'#b91c1c',fontSize:11,fontWeight:600}}>{stripePayoutError}</div>}
+          </div>
+          <div style={{padding:0,maxHeight:390,overflow:'auto'}}>
+            <table style={{fontSize:11}}><thead><tr style={{background:'#f8fafc'}}><th>Payout</th><th>Arrival</th><th>Status</th><th>Reconciliation</th><th style={{textAlign:'right'}}>Activity amount</th><th style={{textAlign:'right'}}>Stripe fees</th><th style={{textAlign:'right'}}>Bank net</th><th></th></tr></thead><tbody>
+              {!stripePayouts.length&&!stripePayoutLoading?<tr><td colSpan="8" style={{padding:20,textAlign:'center',color:'#94a3b8'}}>No payout ledger rows yet. Paste a historical payout ID above or wait for Stripe&apos;s next payout webhook.</td></tr>:
+              stripePayouts.map(p=>{const exact=p.reconciliation_status==='exact';return<tr key={p.stripe_payout_id} style={{borderBottom:'1px solid #f1f5f9'}}>
+                <td style={{fontFamily:'monospace',fontWeight:700}}>{p.stripe_payout_id}</td><td>{p.arrival_date||'—'}</td><td>{p.status}{p.method?' · '+p.method:''}</td>
+                <td><span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:700,background:exact?'#dcfce7':p.reconciliation_status==='mismatch'?'#fee2e2':'#fef3c7',color:exact?'#166534':p.reconciliation_status==='mismatch'?'#b91c1c':'#92400e'}}>{p.reconciliation_status}</span>{p.reconciliation_difference_cents?<span style={{marginLeft:5,color:'#b91c1c'}}>{p.reconciliation_difference_cents}¢ diff</span>:null}</td>
+                <td style={{textAlign:'right'}}>${(Number(p.activity_amount_cents||0)/100).toFixed(2)}</td><td style={{textAlign:'right',color:'#b45309'}}>${(Number(p.fee_cents||0)/100).toFixed(2)}</td><td style={{textAlign:'right',fontWeight:700}}>${(Number(p.amount_cents||0)/100).toFixed(2)}</td>
+                <td style={{whiteSpace:'nowrap'}}><button className="btn btn-secondary btn-sm" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>loadStripePayoutDetail(p.stripe_payout_id)}>Detail</button>{!exact&&<button className="btn btn-secondary btn-sm" style={{fontSize:9,padding:'2px 6px',marginLeft:4}} onClick={()=>reconcileStripePayout(p.stripe_payout_id)}>Retry</button>}</td>
+              </tr>})}
+            </tbody></table>
+          </div>
+        </div>
+        {stripePayoutDetail&&<div className="card" style={{marginBottom:16}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}><h2>QBO-ready entries — {stripePayoutDetail.payout?.stripe_payout_id}</h2><button className="btn btn-primary btn-sm" disabled={!stripePayoutDetail.qbo_entries?.length} onClick={exportStripePayoutCsv}>Export CSV</button></div>
           <div style={{padding:'9px 14px',fontSize:11,background:stripePayoutDetail.qbo_ready?'#f0fdf4':'#fffbeb',color:stripePayoutDetail.qbo_ready?'#166534':'#92400e',borderBottom:'1px solid #e2e8f0'}}>{stripePayoutDetail.qbo_ready?'All entries have deterministic semantic account routing. Resolve live QBO account IDs before posting.':'Contains review_required activity (such as an unlinked charge, refund, dispute, or amount mismatch). Resolve it before creating a QBO deposit.'}</div>
           <div style={{padding:0,maxHeight:360,overflow:'auto'}}><table style={{fontSize:10}}><thead><tr style={{background:'#f8fafc'}}><th>Balance transaction</th><th>Order</th><th>Entry</th><th>Account key</th><th>State</th><th style={{textAlign:'right'}}>Amount</th></tr></thead><tbody>
             {(stripePayoutDetail.qbo_entries||[]).map((e,i)=><tr key={e.stripe_balance_transaction_id+':'+e.entry_type+':'+i} style={{borderBottom:'1px solid #f1f5f9',background:e.qbo_ready?'#fff':'#fffbeb'}}><td style={{fontFamily:'monospace'}}>{e.stripe_balance_transaction_id}</td><td>{e.webstore_order_id||'—'}</td><td>{e.entry_type}</td><td style={{fontFamily:'monospace',color:e.qbo_ready?'#475569':'#b91c1c'}}>{e.posting_account_key}</td><td>{e.tax_state||'—'}</td><td style={{textAlign:'right',fontWeight:700}}>${(Number(e.amount_cents||0)/100).toFixed(2)}</td></tr>)}
