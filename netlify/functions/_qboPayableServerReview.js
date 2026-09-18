@@ -3,6 +3,7 @@ const { createHash, randomUUID } = require('crypto');
 const clean = value => String(value == null ? '' : value).trim();
 const money = value => Math.round((Number(value) || 0) * 100) / 100;
 const norm = value => clean(value).toLowerCase();
+const PAYABLE_CUTOVER_DATE='2026-09-09';
 const sumMoney = rows => money((rows || []).reduce((sum, row) => sum + Math.abs(Number(row?.total) || 0), 0));
 const suffixes = new Set(['co','company','corp','corporation','inc','incorporated','llc','llp','lp','ltd','limited']);
 const aliases = new Map([
@@ -70,6 +71,7 @@ function analyzePayables({ledgerRows=[],portalVendors=[],vendorLinks={},qboVendo
     const exact=numbered.filter(x=>x._type===row.transactionType&&clean(x.VendorRef?.value)===qboVendorId&&Math.abs(money(x.TotalAmt)-Math.abs(row.total))<.005&&clean(x.TxnDate).slice(0,10)===row.date);
     if(numbered.length>1||(numbered.length===1&&exact.length!==1))return {...row,qboVendorId,...vendorEvidence,action:'conflict',code:'ambiguous_duplicate',reason:`QBO document ${row.documentNumber} exists with a different vendor, date, total, or type`,qboCandidates:numbered.map(x=>({id:clean(x.Id),type:x._type,vendorId:clean(x.VendorRef?.value),date:clean(x.TxnDate).slice(0,10),total:money(x.TotalAmt)}))};
     if(exact.length===1)return {...row,qboVendorId,...vendorEvidence,action:'already_exists',code:'exact_existing_match',reason:`Exact QBO ${row.transactionType} #${exact[0].Id}`,qboBillId:clean(exact[0].Id)};
+    if(row.date<PAYABLE_CUTOVER_DATE)return {...row,qboVendorId,...vendorEvidence,action:'excluded_historical',code:'historical_cutover',reason:'Historical/cutover payable intentionally excluded'};
     if(row.isCredit)return blocked('Vendor credit creation is not enabled; no exact QBO VendorCredit was found','credit_creation_disabled');
     const merchandise=money(row.total-row.freight-row.sportsFee);
     if(row.freight<0||row.sportsFee<0||row.total<=0||merchandise<=0)return blocked('Approved account lines do not produce a positive, fully categorized bill total','invalid_account_lines');
@@ -225,17 +227,18 @@ async function runPayableReview({store,queryAll,realm,requestedBy,now=Date.now})
     const vendorSuggestionGroups=new Map();for(const row of vendorRows.filter(item=>item.vendorMatchSource==='unique_normalized_name'&&item.portalVendorId&&item.qboVendorId)){const key=row.portalVendorId+'|'+row.qboVendorId,prior=vendorSuggestionGroups.get(key)||{portalVendorId:row.portalVendorId,portalVendorName:row.vendor,qboVendorId:row.qboVendorId,documents:new Set()};prior.documents.add(row.documentNumber||row.poId);vendorSuggestionGroups.set(key,prior)}
     const vendorLinkSuggestions=[...vendorSuggestionGroups.values()].map(row=>({...row,documents:[...row.documents].filter(Boolean).sort()}));
     const billAwaiting=bills.rows.filter(row=>row.action==='ready'||row.action==='blocked'||row.action==='conflict');
+    const historicalPayables=bills.rows.filter(row=>row.action==='excluded_historical');
     const exactMatches=bills.rows.filter(row=>row.action==='already_exists');
     const conflicts=bills.rows.filter(row=>row.action==='conflict'),poConflicts=purchaseOrders.awaiting.filter(row=>row.action==='conflict'),poExact=purchaseOrders.awaiting.filter(row=>row.action==='ready_link_existing');
     const linkedQboPOs=purchaseOrders.linked.filter(row=>row.status==='linked');
     const counts={
       portalPOsAwaitingAction:purchaseOrders.awaiting.length,existingLinkedQboPOs:linkedQboPOs.length,historicalOrParkedPOsExcluded:purchaseOrders.excluded.length,
-      billsAndCreditsAwaitingAction:billAwaiting.length,exactExistingMatches:exactMatches.length,purchaseOrderExactExistingMatches:poExact.length,ambiguousDuplicates:conflicts.length+poConflicts.length,ambiguousPayableDuplicates:conflicts.length,ambiguousPurchaseOrderDuplicates:poConflicts.length,
+      billsAndCreditsAwaitingAction:billAwaiting.length,historicalPayablesExcluded:historicalPayables.length,exactExistingMatches:exactMatches.length,purchaseOrderExactExistingMatches:poExact.length,ambiguousDuplicates:conflicts.length+poConflicts.length,ambiguousPayableDuplicates:conflicts.length,ambiguousPurchaseOrderDuplicates:poConflicts.length,
       unlinkedVendors:unlinkedVendors.length+vendorLinkSuggestions.length,unresolvedVendors:unlinkedVendors.length,vendorLinkSuggestions:vendorLinkSuggestions.length,unlinkedItems:purchaseOrders.unlinkedItems.length,invalidDurableItemLinks:purchaseOrders.invalidItemLinks.length,
       missingAccountMappings:missingAccounts.length,paymentsMissingUnderlyingBills:payments.missingApplications.length,historicalPaymentsQueuedForPrinting:payments.historicalPrintQueue.length,
       nativePOLinksVerified:nativeLinks.verified.length,nativePOLinkExceptions:nativeLinks.exceptions.length,
     };
-    const totals={portalPOsAwaitingAction:sumMoney(purchaseOrders.awaiting),existingLinkedQboPOs:purchaseOrders.linkedTotal,billsAndCreditsAwaitingAction:sumMoney(billAwaiting),exactExistingMatches:sumMoney(exactMatches),purchaseOrderExactExistingMatches:sumMoney(poExact),ambiguousDuplicates:money(sumMoney(conflicts)+sumMoney(poConflicts)),ambiguousPayableDuplicates:sumMoney(conflicts),ambiguousPurchaseOrderDuplicates:sumMoney(poConflicts),paymentsMissingUnderlyingBills:payments.missingTotal,historicalPaymentsQueuedForPrinting:payments.historicalPrintTotal};
+    const totals={portalPOsAwaitingAction:sumMoney(purchaseOrders.awaiting),existingLinkedQboPOs:purchaseOrders.linkedTotal,billsAndCreditsAwaitingAction:sumMoney(billAwaiting),historicalPayablesExcluded:sumMoney(historicalPayables),exactExistingMatches:sumMoney(exactMatches),purchaseOrderExactExistingMatches:sumMoney(poExact),ambiguousDuplicates:money(sumMoney(conflicts)+sumMoney(poConflicts)),ambiguousPayableDuplicates:sumMoney(conflicts),ambiguousPurchaseOrderDuplicates:sumMoney(poConflicts),paymentsMissingUnderlyingBills:payments.missingTotal,historicalPaymentsQueuedForPrinting:payments.historicalPrintTotal};
     const report={mode:'read_only',source:'portal_payables_and_live_qbo',reviewedAt:new Date(now()).toISOString(),sourceHash,sourceChanged,population:before.ledger.length,
       populations:{billLedger:before.ledger.length,portalPurchaseOrders:purchaseOrders.groups.length,qboVendors:qboVendors.length,qboBills:qboBills.length,qboVendorCredits:qboVendorCredits.length,qboBillPayments:qboBillPayments.length,qboPurchaseOrders:qboPurchaseOrders.length,qboItems:qboItems.length},
       counts,totals,billCounts:bills.counts,billTotals:bills.totals,results:compact,
@@ -243,7 +246,7 @@ async function runPayableReview({store,queryAll,realm,requestedBy,now=Date.now})
       unlinkedVendors,vendorLinkSuggestions,missingAccounts,
       payments:{missingApplications:payments.missingApplications,historicalPrintQueue:payments.historicalPrintQueue},nativePOLinks:{verified:nativeLinks.verified,exceptions:nativeLinks.exceptions},
       accounts:Object.fromEntries(accountRows.map(row=>[row.key,{number:row.number,configured:row.configured,id:row.id,reason:row.reason||null}])),ap:{before:apBefore,after:apAfter,delta:money(apAfter.net-apBefore.net),changedDuringReview:Math.abs(apAfter.net-apBefore.net)>=.005},
-      safeguards:{qboWrites:0,portalWrites:0,inventoryQuantitiesPosted:false,vendorCreation:false,itemCreation:false,billCreditCreation:false,recurringAutomationEnabled:false,historicalPurchaseOrdersProposed:0},
+      safeguards:{qboWrites:0,portalWrites:0,inventoryQuantitiesPosted:false,vendorCreation:false,itemCreation:false,billCreditCreation:false,recurringAutomationEnabled:false,historicalPurchaseOrdersProposed:0,historicalPayablesProposed:0},
     };
     const hasBlockedPO=purchaseOrders.awaiting.some(row=>['blocked','conflict'].includes(row.action));
     const cleanRun=!sourceChanged&&!bills.counts.blocked&&!bills.counts.conflict&&!hasBlockedPO&&!counts.unlinkedItems&&!counts.invalidDurableItemLinks&&!counts.missingAccountMappings&&!counts.paymentsMissingUnderlyingBills&&!counts.historicalPaymentsQueuedForPrinting&&!counts.nativePOLinkExceptions&&!report.ap.changedDuringReview;
@@ -251,4 +254,4 @@ async function runPayableReview({store,queryAll,realm,requestedBy,now=Date.now})
   }catch(error){await store.finish(id,{status:'failed',finished_at:new Date(now()).toISOString(),error_code:failureCode(stage,error)});throw new Error('QBO payable review failed; inspect run '+id)}
 }
 
-module.exports={analyzeBillPayments,analyzeNativePOLinks,analyzePayables,analyzePurchaseOrders,apSnapshot,buildPortalPOGroups,buildRows,failureCode,fingerprint,runPayableReview};
+module.exports={analyzeBillPayments,analyzeNativePOLinks,analyzePayables,analyzePurchaseOrders,apSnapshot,buildPortalPOGroups,buildRows,failureCode,fingerprint,PAYABLE_CUTOVER_DATE,runPayableReview};

@@ -1,7 +1,7 @@
-const {analyzeBillPayments,analyzeNativePOLinks,analyzePayables,analyzePurchaseOrders,failureCode,runPayableReview}=require('../../netlify/functions/_qboPayableServerReview');
+const {analyzeBillPayments,analyzeNativePOLinks,analyzePayables,analyzePurchaseOrders,failureCode,PAYABLE_CUTOVER_DATE,runPayableReview}=require('../../netlify/functions/_qboPayableServerReview');
 const {SNAPSHOT_LIMITS}=require('../../netlify/functions/_qboPayableReviewStore');
 
-const ledger={id:'L1',status:'pushed',portal_status:'success',doc_number:'B-1',vendor:'Acme LLC',doc_total:100,is_credit:false,raw_meta:{doc_date:'2026-09-01',freight:10,si_upcharge:5}};
+const ledger={id:'L1',status:'pushed',portal_status:'success',doc_number:'B-1',vendor:'Acme LLC',doc_total:100,is_credit:false,raw_meta:{doc_date:'2026-09-10',freight:10,si_upcharge:5}};
 const portal={id:'V1',name:'Acme LLC',is_active:true};
 const qboVendor={Id:'9',DisplayName:'Acme',Active:true};
 const accounts={purchases_account:'1',freight_account:'2',sports_inc_fee_account:'3',deco_account:'4'};
@@ -19,15 +19,20 @@ test('failure diagnostics expose only fixed internal stage and error labels',()=
 test('classifies a fully routed unmatched bill as ready without writes',()=>{
   expect(analyzePayables(base).rows[0]).toMatchObject({action:'ready',qboVendorId:'9',transactionType:'Bill'});
 });
+test('excludes unmatched pre-cutover payables without proposing a historical write',()=>{
+  const old={...ledger,id:'OLD1',raw_meta:{...ledger.raw_meta,doc_date:'2026-09-08'}};
+  expect(PAYABLE_CUTOVER_DATE).toBe('2026-09-09');
+  expect(analyzePayables({...base,ledgerRows:[old]}).rows[0]).toMatchObject({action:'excluded_historical',code:'historical_cutover'});
+});
 test('recognizes exact existing bill and holds changed collisions',()=>{
-  const exact={Id:'80',DocNumber:'B-1',VendorRef:{value:'9'},TotalAmt:100,TxnDate:'2026-09-01'};
+  const exact={Id:'80',DocNumber:'B-1',VendorRef:{value:'9'},TotalAmt:100,TxnDate:'2026-09-10'};
   expect(analyzePayables({...base,qboBills:[exact]}).rows[0]).toMatchObject({action:'already_exists',qboBillId:'80'});
   expect(analyzePayables({...base,qboBills:[{...exact,TotalAmt:101}]}).rows[0].action).toBe('conflict');
 });
 test('uses the correct QBO VendorCredit entity and never proposes credit creation',()=>{
   const credit={...ledger,id:'C1',is_credit:true,doc_total:-20,doc_number:'VC-1'};
   expect(analyzePayables({...base,ledgerRows:[credit]}).rows[0]).toMatchObject({action:'blocked',transactionType:'VendorCredit'});
-  const found={Id:'81',DocNumber:'VC-1',VendorRef:{value:'9'},TotalAmt:20,TxnDate:'2026-09-01'};
+  const found={Id:'81',DocNumber:'VC-1',VendorRef:{value:'9'},TotalAmt:20,TxnDate:'2026-09-10'};
   expect(analyzePayables({...base,ledgerRows:[credit],qboVendorCredits:[found]}).rows[0].action).toBe('already_exists');
 });
 test('durable runner persists source hash and needs-review exceptions',async()=>{
