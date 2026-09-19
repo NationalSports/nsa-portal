@@ -16,7 +16,9 @@ test('selects only reviewed bills with durable vendor identity',()=>{
 test('builds account-only bill lines linked to exact existing PO lines',()=>{
   const built=plan();
   expect(built.summary).toEqual(expect.objectContaining({ledgerId:'4000',poNumber:'PO 4000',qboPurchaseOrderId:'70',itemsCreated:0,inventoryQuantityPosted:false}));
-  expect(built.payload.Line).toEqual([expect.objectContaining({DetailType:'AccountBasedExpenseLineDetail',LinkedTxn:[{TxnId:'70',TxnType:'PurchaseOrder',TxnLineId:'1'}]})]);
+  expect(built.payload.LinkedTxn).toEqual([{TxnId:'70',TxnType:'PurchaseOrder'}]);
+  expect(built.payload.Line).toBeUndefined();
+  expect(built.expectedLines).toEqual([{Amount:25,accountId:'50'}]);
   expect(built.previewHash).toHaveLength(64);
 });
 
@@ -32,7 +34,7 @@ test('requires exact bill identity, open balance, account lines and reciprocal P
   const built=plan();
   const line={Amount:25,DetailType:'AccountBasedExpenseLineDetail',LinkedTxn:[{TxnId:'70',TxnType:'PurchaseOrder',TxnLineId:'1'}],AccountBasedExpenseLineDetail:{AccountRef:{value:'50'}}};
   const bill={Id:'80',DocNumber:'INV-4000',VendorRef:{value:'10'},APAccountRef:{value:'60'},TxnDate:'2026-09-10',TotalAmt:25,Balance:25,Line:[line]};
-  const linkedPO={...po,LinkedTxn:[{TxnId:'80',TxnType:'Bill'}]};
+  const linkedPO={...po,POStatus:'Closed',LinkedTxn:[{TxnId:'80',TxnType:'Bill'}]};
   expect(verifyReadback(built,bill,linkedPO,[bill],[])).toEqual(expect.objectContaining({id:'80',purchaseOrderId:'70',reciprocalLink:true}));
   expect(()=>verifyReadback(built,{...bill,Balance:0},linkedPO,[bill],[])).toThrow('po_bill_readback_mismatch');
   expect(()=>verifyReadback(built,bill,po,[bill],[])).toThrow('po_bill_readback_mismatch');
@@ -45,9 +47,9 @@ test('links only merchandise to the PO and preserves reviewed freight and fees o
   const source=buildSource({run:freightRun,row:freightRow,candidate:freightCandidate,realm:'9341456492604246',qboPurchaseOrderId:'70'});
   const built=buildPlan(source,po);
   expect(built.summary).toEqual(expect.objectContaining({total:32,merchandise:25,freight:5,sportsFee:2,freightAccount:{id:'55',number:'51000'},sportsFeeAccount:{id:'56',number:'58000'}}));
-  expect(built.payload.Line).toHaveLength(3);expect(built.payload.Line[0].LinkedTxn).toHaveLength(1);expect(built.payload.Line[1]).toEqual(expect.objectContaining({Amount:5,AccountBasedExpenseLineDetail:expect.objectContaining({AccountRef:{value:'55'}})}));expect(built.payload.Line[1].LinkedTxn).toBeUndefined();expect(built.payload.Line[2]).toEqual(expect.objectContaining({Amount:2,AccountBasedExpenseLineDetail:expect.objectContaining({AccountRef:{value:'56'}})}));expect(built.payload.Line[2].LinkedTxn).toBeUndefined();
+  expect(built.payload.LinkedTxn).toEqual([{TxnId:'70',TxnType:'PurchaseOrder'}]);expect(built.payload.Line).toHaveLength(2);expect(built.payload.Line[0]).toEqual(expect.objectContaining({Amount:5,AccountBasedExpenseLineDetail:expect.objectContaining({AccountRef:{value:'55'}})}));expect(built.payload.Line[1]).toEqual(expect.objectContaining({Amount:2,AccountBasedExpenseLineDetail:expect.objectContaining({AccountRef:{value:'56'}})}));expect(built.expectedLines).toEqual([{Amount:25,accountId:'50'},{Amount:5,accountId:'55'},{Amount:2,accountId:'56'}]);
   const accounts=[{Id:'50',AcctNum:'51300',AccountType:'Cost of Goods Sold',Active:true},{Id:'55',AcctNum:'51000',AccountType:'Cost of Goods Sold',Active:true},{Id:'56',AcctNum:'58000',AccountType:'Cost of Goods Sold',Active:true},{Id:'60',AcctNum:'21100',AccountType:'Accounts Payable',Active:true}];
   expect(verifyPrerequisites({source,vendor:{Id:'10',Active:true},accounts})).toBe(true);
-  const bill={Id:'81',DocNumber:'INV-4000',VendorRef:{value:'10'},APAccountRef:{value:'60'},TxnDate:'2026-09-10',TotalAmt:32,Balance:32,Line:[built.payload.Line[0],built.payload.Line[1],built.payload.Line[2]]};
-  expect(verifyReadback(built,bill,{...po,LinkedTxn:[{TxnId:'81',TxnType:'Bill'}]},[bill],[])).toEqual(expect.objectContaining({id:'81',total:32,reciprocalLink:true}));
+  const bill={Id:'81',DocNumber:'INV-4000',VendorRef:{value:'10'},APAccountRef:{value:'60'},TxnDate:'2026-09-10',TotalAmt:32,Balance:32,LinkedTxn:[{TxnId:'70',TxnType:'PurchaseOrder'}],Line:[{Amount:25,DetailType:'AccountBasedExpenseLineDetail',AccountBasedExpenseLineDetail:{AccountRef:{value:'50'}}},built.payload.Line[0],built.payload.Line[1]]};
+  expect(verifyReadback(built,bill,{...po,POStatus:'Closed',LinkedTxn:[{TxnId:'81',TxnType:'Bill'}]},[bill],[])).toEqual(expect.objectContaining({id:'81',total:32,reciprocalLink:true}));
 });
