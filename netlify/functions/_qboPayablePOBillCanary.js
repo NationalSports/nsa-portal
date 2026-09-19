@@ -70,14 +70,33 @@ function linkedTransactions(entity,type){
   return [...(entity?.LinkedTxn||[]),...(entity?.Line||[]).flatMap(line=>line.LinkedTxn||[])].filter(link=>clean(link?.TxnType)===type);
 }
 
-function verifyReadback(plan,bill,purchaseOrder,documentBills=[],documentCredits=[]){
+function repairPlan(plan){
+  if(!plan?.summary||!plan?.payload)throw new Error('repair_source_changed');
+  const sourceLines=plan.payload.Line||[],extraLines=sourceLines.filter(line=>!linkedTransactions(line,'PurchaseOrder').length);
+  const expectedLines=(plan.expectedLines?.length?plan.expectedLines:sourceLines.map(line=>({Amount:money(line.Amount),accountId:clean(line.AccountBasedExpenseLineDetail?.AccountRef?.value)}))).map(line=>({Amount:money(line.Amount),accountId:clean(line.accountId)}));
+  const payload={...plan.payload,LinkedTxn:[{TxnId:plan.summary.qboPurchaseOrderId,TxnType:'PurchaseOrder'}],...(extraLines.length?{Line:extraLines}:{})};
+  if(!extraLines.length)delete payload.Line;
+  return{...plan,payload,expectedLines,previewHash:hash({summary:plan.summary,payload,expectedLines})};
+}
+
+function verifyRepairSource(plan,bill,purchaseOrder,documentBills=[],documentCredits=[]){
+  const expected=plan.payload.Line||[],signature=line=>`A|${clean(line.AccountBasedExpenseLineDetail?.AccountRef?.value)}|${money(line.Amount).toFixed(2)}`;
+  const actual=(bill?.Line||[]).filter(line=>line.DetailType==='AccountBasedExpenseLineDetail').map(signature).sort(),extras=expected.map(signature).sort();
+  const expectedPartial=money(plan.summary.freight)+money(plan.summary.sportsFee),hasLinks=linkedTransactions(bill,'PurchaseOrder').length||linkedTransactions(purchaseOrder,'Bill').length;
+  const valid=clean(bill?.Id)&&clean(bill.SyncToken)!==''&&clean(bill.DocNumber)===plan.summary.documentNumber&&clean(bill.VendorRef?.value)===plan.summary.qboVendorId&&clean(bill.APAccountRef?.value)===plan.summary.apAccount.id&&clean(bill.TxnDate).slice(0,10)===plan.summary.date&&Math.abs(money(bill.TotalAmt)-expectedPartial)<.005&&Math.abs(money(bill.Balance)-expectedPartial)<.005&&JSON.stringify(actual)===JSON.stringify(extras)&&!hasLinks&&clean(purchaseOrder?.Id)===plan.summary.qboPurchaseOrderId&&clean(purchaseOrder.VendorRef?.value)===plan.summary.qboVendorId&&clean(purchaseOrder.POStatus).toLowerCase()==='open'&&Math.abs(money(purchaseOrder.TotalAmt)-money(plan.summary.merchandise))<.005;
+  if(!valid||documentCredits.length||documentBills.length!==1||clean(documentBills[0]?.Id)!==clean(bill?.Id))throw new Error('repair_source_changed');
+  return true;
+}
+
+function verifyReadback(plan,bill,purchaseOrder,documentBills=[],documentCredits=[],ignoredDocumentBillIds=[]){
   const expected=(plan.expectedLines||[]).map(line=>`A|${clean(line.accountId)}|${money(line.Amount).toFixed(2)}`).sort();
   const actual=(bill?.Line||[]).filter(line=>line.DetailType==='AccountBasedExpenseLineDetail').map(line=>`A|${clean(line.AccountBasedExpenseLineDetail?.AccountRef?.value)}|${money(line.Amount).toFixed(2)}`).sort();
   const unexpected=(bill?.Line||[]).some(line=>line.DetailType==='ItemBasedExpenseLineDetail'||(line.DetailType!=='AccountBasedExpenseLineDetail'&&line.DetailType!=='SubTotalLineDetail'&&Math.abs(money(line.Amount))>=.005));
   const billLinks=linkedTransactions(bill,'PurchaseOrder'),poLinks=linkedTransactions(purchaseOrder,'Bill');
   const valid=clean(bill?.Id)&&clean(bill.DocNumber)===plan.summary.documentNumber&&clean(bill.VendorRef?.value)===plan.summary.qboVendorId&&clean(bill.APAccountRef?.value)===plan.summary.apAccount.id&&clean(bill.TxnDate).slice(0,10)===plan.summary.date&&Math.abs(money(bill.TotalAmt)-plan.summary.total)<.005&&Math.abs(money(bill.Balance)-plan.summary.total)<.005&&!unexpected&&JSON.stringify(expected)===JSON.stringify(actual)&&billLinks.some(link=>clean(link.TxnId)===plan.summary.qboPurchaseOrderId)&&billLinks.every(link=>clean(link.TxnId)===plan.summary.qboPurchaseOrderId)&&clean(purchaseOrder?.Id)===plan.summary.qboPurchaseOrderId&&clean(purchaseOrder.VendorRef?.value)===plan.summary.qboVendorId&&clean(purchaseOrder.POStatus).toLowerCase()==='closed'&&poLinks.some(link=>clean(link.TxnId)===clean(bill.Id));
-  if(!valid||documentCredits.length!==0||documentBills.length!==1||clean(documentBills[0]?.Id)!==clean(bill?.Id))throw new Error('po_bill_readback_mismatch');
+  const ignored=new Set(ignoredDocumentBillIds.map(clean)),relevantBills=documentBills.filter(item=>!ignored.has(clean(item?.Id)));
+  if(!valid||documentCredits.length!==0||relevantBills.length!==1||clean(relevantBills[0]?.Id)!==clean(bill?.Id))throw new Error('po_bill_readback_mismatch');
   return{id:clean(bill.Id),docNumber:clean(bill.DocNumber),vendorId:clean(bill.VendorRef?.value),date:clean(bill.TxnDate).slice(0,10),total:money(bill.TotalAmt),balance:money(bill.Balance),apAccountId:clean(bill.APAccountRef?.value),purchaseOrderId:plan.summary.qboPurchaseOrderId,lines:actual,reciprocalLink:true};
 }
 
-module.exports={attemptKey,buildPlan,buildSource,dateValue,linkKey,listCandidates,receiptKey,verifyPrerequisites,verifyReadback};
+module.exports={attemptKey,buildPlan,buildSource,dateValue,linkKey,listCandidates,receiptKey,repairPlan,verifyPrerequisites,verifyReadback,verifyRepairSource};

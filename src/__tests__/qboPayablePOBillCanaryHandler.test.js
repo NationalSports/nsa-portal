@@ -57,3 +57,32 @@ test('previews without writes, then creates one linked bill and stores durable r
   expect(executeResponse.statusCode).toBe(200);expect(JSON.parse(executeResponse.body)).toEqual(expect.objectContaining({status:'complete',qboBillId:'80',qboPurchaseOrderId:'70'}));expect(qbRequest.mock.calls.filter(([method])=>method==='POST')).toHaveLength(1);
   expect(sourceRow).toEqual(expect.objectContaining({qb_status:'success',qb_bill_id:'80'}));expect([...admin.state.values()].some(value=>String(value.value).includes('qbPOBillMap'))).toBe(true);
 });
+
+
+test('creates and verifies the replacement before deleting the exact partial bill',async()=>{
+  candidate.total=32;sourceRow.doc_total=32;sourceRow.raw_meta.freight=5;sourceRow.raw_meta.si_upcharge=2;
+  report.accounts.freight_account={id:'55',number:'51000'};report.accounts.sports_inc_fee_account={id:'56',number:'58000'};
+  const repairAccounts=[...accounts,{Id:'55',AcctNum:'51000',AccountType:'Cost of Goods Sold',Active:true},{Id:'56',AcctNum:'58000',AccountType:'Cost of Goods Sold',Active:true}];
+  const partial={Id:'80',SyncToken:'0',DocNumber:'INV-4000',VendorRef:{value:'10'},APAccountRef:{value:'60'},TxnDate:'2026-09-10',TotalAmt:7,Balance:7,Line:[{Amount:5,DetailType:'AccountBasedExpenseLineDetail',AccountBasedExpenseLineDetail:{AccountRef:{value:'55'}}},{Amount:2,DetailType:'AccountBasedExpenseLineDetail',AccountBasedExpenseLineDetail:{AccountRef:{value:'56'}}}]};
+  const replacement={Id:'81',SyncToken:'0',DocNumber:'INV-4000',VendorRef:{value:'10'},APAccountRef:{value:'60'},TxnDate:'2026-09-10',TotalAmt:32,Balance:32,LinkedTxn:[{TxnId:'70',TxnType:'PurchaseOrder'}],Line:[{Amount:25,DetailType:'AccountBasedExpenseLineDetail',AccountBasedExpenseLineDetail:{AccountRef:{value:'50'}}},...partial.Line]};
+  let createCount=0,replacementCreated=false,partialDeleted=false;
+  qbRequest.mockImplementation(async(method,url,_token,payload)=>{
+    if(method==='POST'&&url.includes('operation=delete')){expect(replacementCreated).toBe(true);expect(payload).toEqual({Id:'80',SyncToken:'0'});partialDeleted=true;return{status:200,data:{Bill:{Id:'80',status:'Deleted'}}}}
+    if(method==='POST'){createCount++;if(createCount===1)return{status:200,data:{Bill:partial}};expect(payload.LinkedTxn).toEqual([{TxnId:'70',TxnType:'PurchaseOrder'}]);replacementCreated=true;return{status:200,data:{Bill:replacement}}}
+    const sql=decodeURIComponent(url.split('query=')[1]||'');
+    if(sql.includes('FROM PurchaseOrder'))return{status:200,data:{QueryResponse:{PurchaseOrder:[{Id:'70',DocNumber:'PO 4000',VendorRef:{value:'10'},POStatus:replacementCreated?'Closed':'Open',TotalAmt:25,Line:[{Id:'1',Amount:25,DetailType:'AccountBasedExpenseLineDetail',AccountBasedExpenseLineDetail:{AccountRef:{value:'50'}}}],...(replacementCreated?{LinkedTxn:[{TxnId:'81',TxnType:'Bill'}]}:{})}]}}};
+    if(sql.includes('FROM Vendor WHERE'))return{status:200,data:{QueryResponse:{Vendor:[vendor]}}};
+    if(sql.includes('FROM Account'))return{status:200,data:{QueryResponse:{Account:repairAccounts}}};
+    if(sql.includes("FROM Bill WHERE Id = '81'"))return{status:200,data:{QueryResponse:{Bill:[replacement]}}};
+    if(sql.includes("FROM Bill WHERE Id = '80'"))return{status:200,data:{QueryResponse:{Bill:partialDeleted?[]:[partial]}}};
+    if(sql.includes('FROM Bill WHERE DocNumber'))return{status:200,data:{QueryResponse:{Bill:replacementCreated?(partialDeleted?[replacement]:[partial,replacement]):(createCount?[partial]:[])}}};
+    if(sql.includes('FROM VendorCredit'))return{status:200,data:{QueryResponse:{VendorCredit:[]}}};
+    throw new Error('unexpected query: '+sql);
+  });
+  const admin=fakeAdmin();getSupabaseAdmin.mockReturnValue(admin);
+  const preview=JSON.parse((await handler({httpMethod:'POST',body:JSON.stringify({action:'preview'})})).body);
+  const failed=await handler({httpMethod:'POST',body:JSON.stringify({action:'execute',approved:true,previewHash:preview.previewHash})});expect(failed.statusCode).toBe(503);
+  const blocked=await handler({httpMethod:'POST',body:JSON.stringify({action:'preview'})}),blockedBody=JSON.parse(blocked.body);expect(blockedBody).toEqual(expect.objectContaining({repairable:true,qboBillId:'80'}));
+  const repaired=await handler({httpMethod:'POST',body:JSON.stringify({action:'repair',approved:true,qboBillId:'80'})}),body=JSON.parse(repaired.body);
+  expect(repaired.statusCode).toBe(200);expect(body).toEqual(expect.objectContaining({status:'complete',qboBillId:'81',replacedQboBillId:'80',repaired:true}));expect(partialDeleted).toBe(true);expect(sourceRow).toEqual(expect.objectContaining({qb_status:'success',qb_bill_id:'81'}));
+});
