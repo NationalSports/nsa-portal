@@ -32,9 +32,9 @@ const bill={Id:'80',DocNumber:'INV-4000',VendorRef:{value:'10'},APAccountRef:{va
 function mockQbo(){
   let created=false;
   qbRequest.mockImplementation(async(method,url,_token,payload)=>{
-    if(method==='POST'){created=true;expect(payload.Line[0].LinkedTxn).toEqual([{TxnId:'70',TxnType:'PurchaseOrder',TxnLineId:'1'}]);return{status:200,data:{Bill:bill}}}
+    if(method==='POST'){created=true;expect(payload.LinkedTxn).toEqual([{TxnId:'70',TxnType:'PurchaseOrder'}]);expect(payload.Line).toBeUndefined();return{status:200,data:{Bill:bill}}}
     const sql=decodeURIComponent(url.split('query=')[1]||'');
-    if(sql.includes('FROM PurchaseOrder'))return{status:200,data:{QueryResponse:{PurchaseOrder:[{Id:'70',DocNumber:'PO 4000',VendorRef:{value:'10'},POStatus:'Open',TotalAmt:25,Line:[{Id:'1',Amount:25,DetailType:'AccountBasedExpenseLineDetail',AccountBasedExpenseLineDetail:{AccountRef:{value:'50'}}}],...(created?{LinkedTxn:[{TxnId:'80',TxnType:'Bill'}]}:{})}]}}};
+    if(sql.includes('FROM PurchaseOrder'))return{status:200,data:{QueryResponse:{PurchaseOrder:[{Id:'70',DocNumber:'PO 4000',VendorRef:{value:'10'},POStatus:created?'Closed':'Open',TotalAmt:25,Line:[{Id:'1',Amount:25,DetailType:'AccountBasedExpenseLineDetail',AccountBasedExpenseLineDetail:{AccountRef:{value:'50'}}}],...(created?{LinkedTxn:[{TxnId:'80',TxnType:'Bill'}]}:{})}]}}};
     if(sql.includes('FROM Vendor WHERE'))return{status:200,data:{QueryResponse:{Vendor:[vendor]}}};
     if(sql.includes('FROM Account'))return{status:200,data:{QueryResponse:{Account:accounts}}};
     if(sql.includes('FROM Bill WHERE Id'))return{status:200,data:{QueryResponse:{Bill:created?[bill]:[]}}};
