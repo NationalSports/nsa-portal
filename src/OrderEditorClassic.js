@@ -6965,7 +6965,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <Bg options={[{value:'screen_print',label:'Screen Print'},{value:'embroidery',label:'Embroidery'},{value:'dtf',label:'DTF'}]} value={art.deco_type} onChange={v=>uArt(i,'deco_type',v)}/></div>
                   {/* Size + default location */}
                   <div style={{display:'flex',gap:8,marginBottom:6,alignItems:'flex-end',flexWrap:'wrap'}}>
-                    <div style={{width:140}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size (optional)</label><$Txt className="form-input" value={art.art_size||''} onChange={v=>uArt(i,'art_size',v)} placeholder='e.g. 12" x 4"' style={{fontSize:12}}/></div>
+                    <div style={{width:140}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size *</label><$Txt className="form-input" value={art.art_size||''} onChange={v=>uArt(i,'art_size',v)} placeholder='e.g. 12" x 4"' style={{fontSize:12}}/></div>
                     {/* Default location — when this folder is placed on a garment, the deco's position
                         seeds from here instead of the generic front default. Blank = no default. */}
                     <div style={{width:150}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Default location</label><select className="form-select" value={art.location||''} onChange={e=>uArt(i,'location',e.target.value)} style={{fontSize:12}} title="Where this art usually goes — decorations default here when the folder is added to a garment"><option value="">— No default —</option>{POSITIONS.map(p=><option key={p} value={p}>{p==='Front'?'Center Chest':p}</option>)}</select></div>
@@ -13435,6 +13435,9 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
           const _mockArtId=artIds.find(aid=>aid&&aid!=='__tbd');
           if(_mockArtId&&Array.isArray(g.mockGroup))updArtFiles=replaceMockLinkGroup(updArtFiles,_mockArtId,_mockCandidates,_mockSelected);
         });
+        // Sizes the rep entered in the wizard land in the SAME save as the released jobs.
+        const _wizSizes=(jobWizard&&jobWizard.artSizes)||{};
+        updArtFiles=updArtFiles.map(a=>{const v=_wizSizes[a.id];return (v!=null&&String(v).trim()&&String(v)!==String(a.art_size||''))?{...a,art_size:String(v).trim()}:a});
         const updated={...o,jobs:[...preservedJobs,...newJobs],art_files:updArtFiles,updated_at:new Date().toLocaleString()};
         saveSONow(updated,'Released jobs',null);setJobWizard(null);
         // After releasing a quick mock, jump straight to that job's detail (where "Send to
@@ -13448,7 +13451,20 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
         nf(activateAll?(msgs.length>0?'Jobs released! '+msgs.join(', '):'Jobs released for art!'):'Draft jobs saved — activate when ready');
       };
 
-      // Job Setup Wizard Modal
+      // ── Art size is required before a job goes to the artist ──────────────────────────
+      // Nearly half the art on file has no size recorded, which is a production risk: the
+      // printer needs it and nobody downstream can supply it later. The size is collected
+      // HERE, at the moment the rep hands the job over, and the release button stays shut
+      // until every artwork on the job has one. Sizes are held in wizard state and written
+      // into art_files in the same save as the released jobs, so a half-filled wizard that
+      // gets cancelled changes nothing.
+      // Placeholder decorations ('__tbd') have no art row to write to, so they're excluded —
+      // they gain a size when their real artwork is chosen.
+      const _wizArtIds=g=>[...new Set(((g&&g.items)||[]).filter(it=>!it._excluded).map(it=>it.art_file_id).filter(id=>id&&id!=='__tbd'))];
+      const _wizArtOf=aid=>safeArr(o?.art_files).find(f=>f.id===aid)||null;
+      const _wizSize=aid=>{const st=(jobWizard&&jobWizard.artSizes)||{};return st[aid]!=null?st[aid]:((_wizArtOf(aid)||{}).art_size||'')};
+      const _wizSetSize=(aid,v)=>setJobWizard(w=>({...w,artSizes:{...((w&&w.artSizes)||{}),[aid]:v}}));
+      const _wizSizeMissing=g=>_wizArtIds(g).filter(aid=>!String(_wizSize(aid)||'').trim());
       const wizArtists=REPS.filter(r=>r.role==='art'||r.role==='artist').filter(r=>r.is_active!==false);
       if(jobWizard)return<div className="card"><div className="card-header" style={{background:'linear-gradient(135deg,#7c3aed,#a78bfa)',color:'white'}}>
         <h2 style={{color:'white',margin:0}}>Job Setup Wizard</h2>
@@ -13571,6 +13587,18 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                 })}
               </div>
             </div>
+            {(()=>{const _sids=_wizArtIds(g);if(_sids.length===0)return null;
+              return<div style={{marginBottom:8,padding:10,background:'#F7F8FB',borderRadius:4,border:'1px solid #EEF1F6',borderLeft:'3px solid #962C32'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#192853',marginBottom:6}}>Art Size * <span style={{fontWeight:400,color:'#5A6075'}}>— how big this prints. The artist and the printer both work from it.</span></div>
+                {_sids.map(aid=>{const af=_wizArtOf(aid);const val=_wizSize(aid);const miss=!String(val||'').trim();
+                  return<div key={aid} style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                    <span style={{fontSize:11,fontWeight:600,color:'#192853',minWidth:150,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{(af&&af.name)||'Untitled art'}</span>
+                    <input className="form-input" style={{fontSize:11,maxWidth:180,borderColor:miss?'#962C32':undefined}} value={val} placeholder='e.g. 11" wide'
+                      onChange={e=>_wizSetSize(aid,e.target.value)}/>
+                    {miss&&<span style={{fontSize:10,color:'#962C32',fontWeight:700}}>Required</span>}
+                  </div>})}
+              </div>;
+            })()}
             {g.skipArtist&&<div style={{marginBottom:8,padding:10,background:'#f0fdf4',borderRadius:6,border:'1px solid #bbf7d0'}}>
               <div style={{fontSize:10,color:'#166534',marginBottom:6}}>Art status will be set to complete. Upload sample art below if you have files to attach.</div>
               {/* Every released job carries an artist — a skip-artist job that later needs production
@@ -13630,14 +13658,14 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
         {(()=>{const activeGroups=jobWizard.groups.filter(g=>g.items.some(it=>!it._excluded));const qmReady=g=>Object.values(g.qmMocks||{}).filter(a=>(a||[]).length>0).length>0;
           // Artist assignment is REQUIRED on every path — including Skip Artist. An unassigned
           // job is invisible on the per-artist boards, so releasing one strands its later work.
-          const allReady=activeGroups.length>0&&activeGroups.every(g=>g.artist&&(g.quickMock?qmReady(g):true));const notReady=!allReady;const qmPending=activeGroups.some(g=>g.quickMock&&!qmReady(g));const qmNoArtist=activeGroups.some(g=>g.quickMock&&!g.artist);
+          const allReady=activeGroups.length>0&&activeGroups.every(g=>g.artist&&(g.quickMock?qmReady(g):true)&&_wizSizeMissing(g).length===0);const notReady=!allReady;const sizeMissing=activeGroups.some(g=>_wizSizeMissing(g).length>0);const qmPending=activeGroups.some(g=>g.quickMock&&!qmReady(g));const qmNoArtist=activeGroups.some(g=>g.quickMock&&!g.artist);
           return<div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12,alignItems:'center'}}>
           <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534',fontWeight:800,opacity:notReady?0.5:1}} disabled={notReady}
             onClick={()=>wizActivate(jobWizard.groups,true)}>Release Jobs for Art</button>
           <button className="btn btn-secondary" style={{fontWeight:700}}
             onClick={()=>wizActivate(jobWizard.groups,false)}>Save as Drafts</button>
           <button className="btn btn-secondary" onClick={()=>setJobWizard(null)}>Cancel</button>
-          {notReady&&<span style={{fontSize:11,color:'#dc2626',fontWeight:600}}>{qmPending?'Build at least one mockup for each Quick Mock job':qmNoArtist?'Assign the separations artist for each Quick Mock job':'Assign an artist to each job — every job needs an owner'}</span>}
+          {notReady&&<span style={{fontSize:11,color:'#dc2626',fontWeight:600}}>{sizeMissing?'Enter an art size for every artwork — the artist and printer both need it':qmPending?'Build at least one mockup for each Quick Mock job':qmNoArtist?'Assign the separations artist for each Quick Mock job':'Assign an artist to each job — every job needs an owner'}</span>}
         </div>})()}
         {mockBuilder&&(()=>{
           const g=jobWizard.groups[mockBuilder.gi];if(!g)return null;
