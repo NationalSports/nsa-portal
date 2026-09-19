@@ -2,12 +2,12 @@ const {randomUUID}=require('crypto');
 const {verifyQBOUser,getSupabaseAdmin}=require('./_shared');
 const {getValidAccessToken,qbRequest}=require('./_qb');
 const {reviewEnabled}=require('./_qboReviewConfig');
-const {attemptKey,buildPlan,buildSource,linkKey,listCandidates,receiptKey,verifyPrerequisites,verifyReadback}=require('./_qboPayablePOBillCanary');
+const {attemptKey,buildPlan,buildSource,linkKey,listCandidates,receiptKey,repairPlan,verifyPrerequisites,verifyReadback,verifyRepairSource}=require('./_qboPayablePOBillCanary');
 
 const headers={'Content-Type':'application/json','Cache-Control':'no-store'};
 const clean=value=>String(value==null?'':value).trim();
 const qboLiteral=value=>clean(value).replace(/'/g,"\\'");
-const publicErrors=new Set(['verified_review_required','no_po_bill_canary_candidate','approved_accounts_required','vendor_changed','accounts_changed','duplicate_document','purchase_order_not_linkable','po_bill_candidate_changed','po_bill_readback_mismatch']);
+const publicErrors=new Set(['verified_review_required','no_po_bill_canary_candidate','approved_accounts_required','vendor_changed','accounts_changed','duplicate_document','purchase_order_not_linkable','po_bill_candidate_changed','po_bill_readback_mismatch','repair_source_changed']);
 const safeError=error=>publicErrors.has(error?.message)?error.message:'po_bill_canary_unavailable';
 
 async function readQuery(token,realm,sql){
@@ -51,7 +51,7 @@ async function loadContext(admin,token,realm){
   throw detailedError('no_po_bill_canary_candidate',diagnostics);
 }
 
-async function readback(token,realm,plan,billId){
+async function readback(token,realm,plan,billId,ignoredDocumentBillIds=[]){
   const doc=qboLiteral(plan.summary.documentNumber),id=qboLiteral(billId),poId=qboLiteral(plan.summary.qboPurchaseOrderId);
   const[idRead,docRead,creditRead,poRead]=await Promise.all([
     readQuery(token,realm,`SELECT * FROM Bill WHERE Id = '${id}' MAXRESULTS 1`),
@@ -59,7 +59,7 @@ async function readback(token,realm,plan,billId){
     readQuery(token,realm,`SELECT * FROM VendorCredit WHERE DocNumber = '${doc}' MAXRESULTS 100`),
     readQuery(token,realm,`SELECT * FROM PurchaseOrder WHERE Id = '${poId}' MAXRESULTS 1`),
   ]);
-  return verifyReadback(plan,idRead.Bill?.[0],poRead.PurchaseOrder?.[0],docRead.Bill||[],creditRead.VendorCredit||[]);
+  return verifyReadback(plan,idRead.Bill?.[0],poRead.PurchaseOrder?.[0],docRead.Bill||[],creditRead.VendorCredit||[],ignoredDocumentBillIds);
 }
 
 async function updateAttempt(admin,key,value){const{data,error}=await admin.from('app_state').update({value:JSON.stringify(value),updated_at:new Date().toISOString()}).eq('id',key).select('id');if(error||data?.length!==1)throw new Error('receipt_save_failed')}
@@ -81,16 +81,33 @@ exports.handler=async event=>{
   if(event.httpMethod==='OPTIONS')return{statusCode:204,headers};if(event.httpMethod!=='POST')return{statusCode:405,headers,body:'{}'};
   const auth=await verifyQBOUser(event);if(!auth.ok)return{statusCode:auth.status,headers,body:'{}'};if(!reviewEnabled())return{statusCode:409,headers,body:JSON.stringify({error:'Payable review is disabled'})};
   let body;try{body=JSON.parse(event.body||'{}')}catch{return{statusCode:400,headers,body:JSON.stringify({error:'Invalid JSON'})}}
-  if(!['preview','execute'].includes(body.action))return{statusCode:400,headers,body:JSON.stringify({error:'Action must be preview or execute'})};
+  if(!['preview','execute','repair'].includes(body.action))return{statusCode:400,headers,body:JSON.stringify({error:'Action must be preview, execute or repair'})};
   const admin=getSupabaseAdmin(),realm=process.env.QBO_REVIEW_REALM_ID,key=attemptKey(realm);
   try{
     const token=await getValidAccessToken(admin,'national');if(clean(token.realm_id)!==clean(realm))throw new Error('realm_changed');
-    if(body.action==='execute'&&body.approved!==true)return{statusCode:400,headers,body:JSON.stringify({error:'Explicit approval is required'})};
+    if(['execute','repair'].includes(body.action)&&body.approved!==true)return{statusCode:400,headers,body:JSON.stringify({error:'Explicit approval is required'})};
     const{data:prior,error:priorError}=await admin.from('app_state').select('value').eq('id',key).maybeSingle();if(priorError)throw new Error('attempt_read_failed');
     if(prior){const saved=parse(prior.value);if(!saved)throw new Error('attempt_corrupt');const expected=saved.expected;
+      if(body.action==='repair'){
+        if(saved.status!=='unknown'||saved.error!=='readback_failed'||!saved.qbo_bill_id||clean(body.qboBillId)!==clean(saved.qbo_bill_id)||!expected)throw new Error('repair_source_changed');
+        const plan=repairPlan(expected),badId=qboLiteral(saved.qbo_bill_id),doc=qboLiteral(plan.summary.documentNumber),poId=qboLiteral(plan.summary.qboPurchaseOrderId);
+        const[badRead,docRead,creditRead,poRead]=await Promise.all([readQuery(token,realm,`SELECT * FROM Bill WHERE Id = '${badId}' MAXRESULTS 1`),readQuery(token,realm,`SELECT * FROM Bill WHERE DocNumber = '${doc}' MAXRESULTS 100`),readQuery(token,realm,`SELECT * FROM VendorCredit WHERE DocNumber = '${doc}' MAXRESULTS 100`),readQuery(token,realm,`SELECT * FROM PurchaseOrder WHERE Id = '${poId}' MAXRESULTS 1`)]);
+        const badBill=badRead.Bill?.[0];verifyRepairSource(plan,badBill,poRead.PurchaseOrder?.[0],docRead.Bill||[],creditRead.VendorCredit||[]);
+        const repairing={...saved,status:'repair_executing',repair_started_at:new Date().toISOString()};await updateAttempt(admin,key,repairing);
+        let response;try{response=await qbRequest('POST',`/v3/company/${realm}/bill`,token.access_token,plan.payload,false)}catch{await updateAttempt(admin,key,{...repairing,status:'unknown',error:'repair_write_outcome_unknown',finished_at:new Date().toISOString()});return{statusCode:503,headers,body:JSON.stringify({error:'Replacement bill write outcome is unknown; the partial bill was not deleted'})}}
+        const replacement=response.data?.Bill;if(response.status!==200||!replacement?.Id){await updateAttempt(admin,key,{...repairing,status:'blocked',error:'repair_write_rejected',finished_at:new Date().toISOString()});return{statusCode:409,headers,body:JSON.stringify({error:'QBO rejected the replacement bill; the partial bill was not deleted'})}}
+        const replacementId=clean(replacement.Id);let verified;try{verified=await readback(token,realm,plan,replacementId,[clean(badBill.Id)])}catch{await updateAttempt(admin,key,{...repairing,status:'unknown',error:'repair_readback_failed',repair_qbo_bill_id:replacementId,finished_at:new Date().toISOString()});return{statusCode:503,headers,body:JSON.stringify({error:`Replacement QBO Bill #${replacementId} exists but verification failed; partial Bill #${clean(badBill.Id)} was not deleted`})}}
+        const cleanup={...repairing,status:'repair_qbo_verified',repair_qbo_bill_id:replacementId,evidence:verified};await updateAttempt(admin,key,cleanup);
+        let deleted;try{deleted=await qbRequest('POST',`/v3/company/${realm}/bill?operation=delete`,token.access_token,{Id:clean(badBill.Id),SyncToken:clean(badBill.SyncToken)},false)}catch{await updateAttempt(admin,key,{...cleanup,status:'unknown',error:'repair_cleanup_outcome_unknown',finished_at:new Date().toISOString()});return{statusCode:503,headers,body:JSON.stringify({error:`Replacement Bill #${replacementId} verified, but deletion of partial Bill #${clean(badBill.Id)} is uncertain`})}}
+        if(deleted.status!==200||clean(deleted.data?.Bill?.Id)!==clean(badBill.Id)){await updateAttempt(admin,key,{...cleanup,status:'blocked',error:'repair_cleanup_rejected',finished_at:new Date().toISOString()});return{statusCode:409,headers,body:JSON.stringify({error:`Replacement Bill #${replacementId} verified, but QBO did not delete partial Bill #${clean(badBill.Id)}`})}}
+        const evidence={...(await readback(token,realm,plan,replacementId)),verified_at:new Date().toISOString(),review_run_id:plan.summary.reviewRunId,snapshot_id:plan.summary.snapshotId,source_hash:plan.summary.sourceHash,items_created:0,inventory_quantity_posted:false,replaced_bill_id:clean(badBill.Id)};
+        await saveReceipts(admin,realm,plan,replacementId,evidence);await updateAttempt(admin,key,{...saved,expected:plan,expected_hash:plan.previewHash,status:'complete',qbo_bill_id:replacementId,replaced_qbo_bill_id:clean(badBill.Id),evidence:{...evidence,ledger_receipt:true,po_bill_receipt:true},finished_at:evidence.verified_at});
+        return{statusCode:200,headers,body:JSON.stringify({status:'complete',qboBillId:replacementId,qboPurchaseOrderId:plan.summary.qboPurchaseOrderId,replacedQboBillId:clean(badBill.Id),repaired:true})};
+      }
       if(saved.status==='complete'&&saved.qbo_bill_id&&expected){const evidence=await readback(token,realm,expected,saved.qbo_bill_id);return{statusCode:200,headers,body:JSON.stringify({status:'complete',qboBillId:saved.qbo_bill_id,qboPurchaseOrderId:expected.summary.qboPurchaseOrderId,recovered:true,audited:true,evidence})}}
       if(body.action==='execute'&&saved.status==='qbo_verified'&&saved.qbo_bill_id&&expected&&saved.expected_hash===clean(body.previewHash)){const evidence={...(await readback(token,realm,expected,saved.qbo_bill_id)),verified_at:saved.evidence?.verified_at||new Date().toISOString()};await saveReceipts(admin,realm,expected,saved.qbo_bill_id,evidence);await updateAttempt(admin,key,{...saved,status:'complete',evidence:{...evidence,ledger_receipt:true,po_bill_receipt:true},finished_at:new Date().toISOString()});return{statusCode:200,headers,body:JSON.stringify({status:'complete',qboBillId:saved.qbo_bill_id,qboPurchaseOrderId:expected.summary.qboPurchaseOrderId,recovered:true})}}
-      return{statusCode:409,headers,body:JSON.stringify({error:'A prior PO-to-bill canary attempt requires review',status:saved.status||'unknown',qboBillId:saved.qbo_bill_id||null})};
+      const repairable=saved.status==='unknown'&&saved.error==='readback_failed'&&saved.qbo_bill_id&&expected;
+      return{statusCode:409,headers,body:JSON.stringify({error:'A prior PO-to-bill canary attempt requires review',status:saved.status||'unknown',qboBillId:saved.qbo_bill_id||null,...(repairable?{repairable:true,candidate:expected.summary}:{})})};
     }
     const plan=await loadContext(admin,token,realm);if(body.action==='preview')return{statusCode:200,headers,body:JSON.stringify({mode:'preview',candidate:plan.summary,previewHash:plan.previewHash,writes:0})};
     if(clean(body.previewHash)!==plan.previewHash)return{statusCode:409,headers,body:JSON.stringify({error:'The PO-to-bill candidate changed; prepare it again'})};

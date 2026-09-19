@@ -1,4 +1,4 @@
-const {buildPlan,buildSource,listCandidates,verifyPrerequisites,verifyReadback}=require('../../netlify/functions/_qboPayablePOBillCanary');
+const {buildPlan,buildSource,listCandidates,repairPlan,verifyPrerequisites,verifyReadback,verifyRepairSource}=require('../../netlify/functions/_qboPayablePOBillCanary');
 
 const candidate={ledgerId:'4000',documentNumber:'INV-4000',vendor:'SanMar',date:'2026-09-10',total:25,transactionType:'Bill',action:'ready',qboVendorId:'10',vendorMatchSource:'durable_link'};
 const report={reviewerVersion:2,replay:{identical:true,runs:2},safeguards:{qboWrites:0,portalWrites:0,historicalPayablesProposed:0,historicalPurchaseOrdersProposed:0},results:[candidate],accounts:{purchases_account:{id:'50',number:'51300'},ap_account:{id:'60',number:'21100'}},sourceHash:'source'};
@@ -52,4 +52,18 @@ test('links only merchandise to the PO and preserves reviewed freight and fees o
   expect(verifyPrerequisites({source,vendor:{Id:'10',Active:true},accounts})).toBe(true);
   const bill={Id:'81',DocNumber:'INV-4000',VendorRef:{value:'10'},APAccountRef:{value:'60'},TxnDate:'2026-09-10',TotalAmt:32,Balance:32,LinkedTxn:[{TxnId:'70',TxnType:'PurchaseOrder'}],Line:[{Amount:25,DetailType:'AccountBasedExpenseLineDetail',AccountBasedExpenseLineDetail:{AccountRef:{value:'50'}}},built.payload.Line[0],built.payload.Line[1]]};
   expect(verifyReadback(built,bill,{...po,POStatus:'Closed',LinkedTxn:[{TxnId:'81',TxnType:'Bill'}]},[bill],[])).toEqual(expect.objectContaining({id:'81',total:32,reciprocalLink:true}));
+});
+
+
+test('repairs the observed partial bill only when its exact unlinked fees and open PO remain unchanged',()=>{
+  const freightRun={...run,report:{...report,accounts:{...report.accounts,freight_account:{id:'55',number:'51000'},sports_inc_fee_account:{id:'56',number:'58000'}}}};
+  const freightRow={...row,doc_total:32,raw_meta:{...row.raw_meta,freight:5,si_upcharge:2}},freightCandidate={...candidate,total:32};
+  const original=buildPlan(buildSource({run:freightRun,row:freightRow,candidate:freightCandidate,realm:'9341456492604246',qboPurchaseOrderId:'70'}),po);
+  const legacy={...original,payload:{...original.payload,LinkedTxn:undefined,Line:[{Amount:25,DetailType:'AccountBasedExpenseLineDetail',LinkedTxn:[{TxnId:'70',TxnType:'PurchaseOrder',TxnLineId:'1'}],AccountBasedExpenseLineDetail:{AccountRef:{value:'50'}}},...original.payload.Line]},expectedLines:undefined};
+  const repaired=repairPlan(legacy);
+  expect(repaired.payload.LinkedTxn).toEqual([{TxnId:'70',TxnType:'PurchaseOrder'}]);expect(repaired.payload.Line).toHaveLength(2);
+  const partial={Id:'80',SyncToken:'0',DocNumber:'INV-4000',VendorRef:{value:'10'},APAccountRef:{value:'60'},TxnDate:'2026-09-10',TotalAmt:7,Balance:7,Line:repaired.payload.Line};
+  expect(verifyRepairSource(repaired,partial,po,[partial],[])).toBe(true);
+  expect(()=>verifyRepairSource(repaired,{...partial,TotalAmt:32},po,[partial],[])).toThrow('repair_source_changed');
+  expect(()=>verifyRepairSource(repaired,partial,{...po,POStatus:'Closed'},[partial],[])).toThrow('repair_source_changed');
 });
