@@ -86,3 +86,36 @@ test('creates and verifies the replacement before deleting the exact partial bil
   const repaired=await handler({httpMethod:'POST',body:JSON.stringify({action:'repair',approved:true,qboBillId:'80'})}),body=JSON.parse(repaired.body);
   expect(repaired.statusCode).toBe(200);expect(body).toEqual(expect.objectContaining({status:'complete',qboBillId:'81',replacedQboBillId:'80',repaired:true}));expect(partialDeleted).toBe(true);expect(sourceRow).toEqual(expect.objectContaining({qb_status:'success',qb_bill_id:'81'}));
 });
+
+test('reconciles one externally corrected bill after failed replacements are removed',async()=>{
+  candidate.total=32;sourceRow.doc_total=32;sourceRow.raw_meta.freight=5;sourceRow.raw_meta.si_upcharge=2;
+  report.accounts.freight_account={id:'55',number:'51000'};report.accounts.sports_inc_fee_account={id:'56',number:'58000'};
+  const repairAccounts=[...accounts,{Id:'55',AcctNum:'51000',AccountType:'Cost of Goods Sold',Active:true},{Id:'56',AcctNum:'58000',AccountType:'Cost of Goods Sold',Active:true}];
+  const extraLines=[{Amount:5,DetailType:'AccountBasedExpenseLineDetail',AccountBasedExpenseLineDetail:{AccountRef:{value:'55'}}},{Amount:2,DetailType:'AccountBasedExpenseLineDetail',AccountBasedExpenseLineDetail:{AccountRef:{value:'56'}}}];
+  const partial=id=>({Id:id,SyncToken:'0',DocNumber:'INV-4000',VendorRef:{value:'10'},APAccountRef:{value:'60'},TxnDate:'2026-09-10',TotalAmt:7,Balance:7,Line:extraLines});
+  const corrected={Id:'82',SyncToken:'0',DocNumber:'INV-4000',VendorRef:{value:'10'},APAccountRef:{value:'60'},TxnDate:'2026-09-10',TotalAmt:32,Balance:32,LinkedTxn:[{TxnId:'70',TxnType:'PurchaseOrder'}],Line:[{Amount:25,DetailType:'AccountBasedExpenseLineDetail',LinkedTxn:[{TxnId:'70',TxnType:'PurchaseOrder',TxnLineId:'1'}],AccountBasedExpenseLineDetail:{AccountRef:{value:'50'}}},...extraLines]};
+  let createCount=0,manualCorrection=false;
+  qbRequest.mockImplementation(async(method,url)=>{
+    if(method==='POST'){createCount++;return{status:200,data:{Bill:partial(createCount===1?'80':'81')}}}
+    const sql=decodeURIComponent(url.split('query=')[1]||'');
+    if(sql.includes('FROM PurchaseOrder'))return{status:200,data:{QueryResponse:{PurchaseOrder:[{Id:'70',DocNumber:'PO 4000',VendorRef:{value:'10'},POStatus:manualCorrection?'Closed':'Open',TotalAmt:25,Line:[{Id:'1',Amount:25,DetailType:'AccountBasedExpenseLineDetail',AccountBasedExpenseLineDetail:{AccountRef:{value:'50'}}}],...(manualCorrection?{LinkedTxn:[{TxnId:'82',TxnType:'Bill'}]}:{})}]}}};
+    if(sql.includes('FROM Vendor WHERE'))return{status:200,data:{QueryResponse:{Vendor:[vendor]}}};
+    if(sql.includes('FROM Account'))return{status:200,data:{QueryResponse:{Account:repairAccounts}}};
+    if(sql.includes("FROM Bill WHERE Id = '80'"))return{status:200,data:{QueryResponse:{Bill:manualCorrection?[]:[partial('80')]}}};
+    if(sql.includes("FROM Bill WHERE Id = '81'"))return{status:200,data:{QueryResponse:{Bill:manualCorrection?[]:[partial('81')]}}};
+    if(sql.includes('FROM Bill WHERE Id'))return{status:200,data:{QueryResponse:{Bill:[]}}};
+    if(sql.includes('FROM Bill WHERE DocNumber'))return{status:200,data:{QueryResponse:{Bill:manualCorrection?[corrected]:createCount===0?[]:createCount===1?[partial('80')]:[partial('80'),partial('81')]}}};
+    if(sql.includes('FROM VendorCredit'))return{status:200,data:{QueryResponse:{VendorCredit:[]}}};
+    throw new Error('unexpected query: '+sql);
+  });
+  const admin=fakeAdmin();getSupabaseAdmin.mockReturnValue(admin);
+  const preview=JSON.parse((await handler({httpMethod:'POST',body:JSON.stringify({action:'preview'})})).body);
+  expect((await handler({httpMethod:'POST',body:JSON.stringify({action:'execute',approved:true,previewHash:preview.previewHash})})).statusCode).toBe(503);
+  expect((await handler({httpMethod:'POST',body:JSON.stringify({action:'repair',approved:true,qboBillId:'80'})})).statusCode).toBe(503);
+  const blocked=JSON.parse((await handler({httpMethod:'POST',body:JSON.stringify({action:'preview'})})).body);
+  expect(blocked).toEqual(expect.objectContaining({reconcilable:true,partialQboBillIds:['80','81']}));
+  manualCorrection=true;const postsBefore=qbRequest.mock.calls.filter(([method])=>method==='POST').length;
+  const response=await handler({httpMethod:'POST',body:JSON.stringify({action:'reconcile',approved:true})}),body=JSON.parse(response.body);
+  expect(response.statusCode).toBe(200);expect(body).toEqual(expect.objectContaining({status:'complete',qboBillId:'82',qboPurchaseOrderId:'70',reconciled:true,removedQboBillIds:['80','81']}));
+  expect(qbRequest.mock.calls.filter(([method])=>method==='POST')).toHaveLength(postsBefore);expect(sourceRow).toEqual(expect.objectContaining({qb_status:'success',qb_bill_id:'82'}));
+});
