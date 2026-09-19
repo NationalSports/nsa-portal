@@ -27,3 +27,12 @@ test('offers and submits the narrowly scoped repair for a verified partial bill'
   await waitFor(()=>expect(authFetch).toHaveBeenNthCalledWith(2,'/.netlify/functions/qbo-payable-po-bill-canary',expect.objectContaining({body:JSON.stringify({action:'repair',approved:true,qboBillId:'18724'})})));
   expect(await screen.findByText(/Partial Bill #18724 deleted/)).toBeTruthy();expect(window.confirm).toHaveBeenCalledTimes(1);
 });
+
+test('reconciles an externally corrected bill without QBO changes',async()=>{
+  const candidate={vendor:'Adidas',documentNumber:'6166270074',date:'2026-09-09',total:32.59,freight:6.08,sportsFee:.26,poNumber:'PO 57960 SANBA',qboPurchaseOrderId:'5106'};
+  authFetch.mockReturnValueOnce(Promise.resolve({ok:false,json:()=>Promise.resolve({error:'A prior PO-to-bill canary attempt requires review',reconcilable:true,qboBillId:'18724',partialQboBillIds:['18724','18728'],candidate})})).mockReturnValueOnce(ok({status:'complete',qboBillId:'18729',qboPurchaseOrderId:'5106',reconciled:true,removedQboBillIds:['18724','18728']}));
+  render(<QBPayablePOBillCanaryCard/>);fireEvent.click(screen.getByText(/Prepare PO-linked bill canary/));
+  expect(await screen.findByText(/partial Bills #18724 and #18728 are absent/i)).toBeTruthy();fireEvent.click(screen.getByText(/Reconcile verified QBO correction/));
+  await waitFor(()=>expect(authFetch).toHaveBeenNthCalledWith(2,'/.netlify/functions/qbo-payable-po-bill-canary',expect.objectContaining({body:JSON.stringify({action:'reconcile',approved:true})})));
+  expect(await screen.findByText(/Partial Bills #18724 and #18728 confirmed absent/)).toBeTruthy();expect(window.confirm).toHaveBeenCalledTimes(1);
+});
