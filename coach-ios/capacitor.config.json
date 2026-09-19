@@ -1,0 +1,34 @@
+{
+  "appId": "com.nationalsportsapparel.teamportal",
+  "appName": "NSA Team Portal",
+  "webDir": "www",
+  "backgroundColor": "#192853",
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#192853",
+    "limitsNavigationsToAppBoundDomains": false,
+    "preferredContentMode": "mobile"
+  },
+  "server": {
+    "iosScheme": "capacitor",
+    "allowNavigation": [
+      "nsa-portal.netlify.app",
+      "connect.nationalsportsapparel.com",
+      "nationalsportsapparel.com",
+      "*.nationalsportsapparel.com"
+    ]
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 900,
+      "launchAutoHide": true,
+      "backgroundColor": "#192853",
+      "showSpinner": false,
+      "iosSpinnerStyle": "large",
+      "spinnerColor": "#ffffff"
+    },
+    "PushNotifications": {
+      "presentationOptions": ["badge", "sound", "alert"]
+    }
+  }
+}

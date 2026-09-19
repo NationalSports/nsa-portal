@@ -1,0 +1,16 @@
+# Capacitor iOS wrapper — ignore generated/native build artifacts.
+node_modules/
+
+# The native iOS project is generated on a Mac with `npx cap add ios`.
+# Most teams DO commit ios/ so signing/config is versioned; if you prefer to
+# keep it out of git, uncomment the next line.
+# ios/
+
+# CocoaPods / Xcode build output (safe to ignore even if ios/ is committed)
+ios/App/Pods/
+ios/App/App/public/
+ios/App/build/
+ios/App/output/
+DerivedData/
+*.xcuserstate
+.DS_Store
