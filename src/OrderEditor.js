@@ -7323,6 +7323,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const DEPTS=[{id:'all',label:'All',color:'#64748b'},{id:'art',label:'Art',color:'#7c3aed'},{id:'production',label:'Production',color:'#2563eb'},{id:'warehouse',label:'Warehouse',color:'#d97706'},{id:'sales',label:'Sales',color:'#166534'},{id:'accounting',label:'Accounting',color:'#dc2626'}];
       const activeMembers=(REPS||[]).filter(r=>r.is_active!==false);
       const mentionMembers=mentionQuery!=null?activeMembers.filter(r=>r.name.toLowerCase().includes(mentionQuery.toLowerCase())).slice(0,6):[];
+      // Everyone already in this conversation (minus me) — one-click quick-tag chips above the input.
+      const msgParticipants=[...new Set(soMsgs.map(m=>m.author_id).filter(id=>id&&id!==cu.id))].map(id=>activeMembers.find(r=>r.id===id)).filter(Boolean);
       const renderMsgText=(text,tagged)=>{
         if(!text)return text;
         const parts=[];let last=0;
@@ -7356,6 +7358,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const atIdx=before.lastIndexOf('@');
         if(atIdx>=0){const firstName=(member.name||'').split(' ')[0];inp.value=before.slice(0,atIdx)+'@'+firstName+' '+after;
           const newPos=atIdx+firstName.length+2;inp.setSelectionRange(newPos,newPos)}
+        setMentionQuery(null);setMentionIdx(0);inp.focus();
+      };
+      // Quick-tag: drop "@First " at the cursor (or the end) unless that person is already in the draft.
+      const tagMember=(member)=>{
+        const inp=msgInputRef.current;if(!inp||!member)return;
+        const firstName=(member.name||'').split(' ')[0];if(!firstName)return;
+        const val=inp.value||'';
+        if(!new RegExp('@'+firstName.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'(?![\\w])','i').test(val)){
+          const pos=inp.selectionStart??val.length;const before=val.slice(0,pos);const after=val.slice(pos);
+          const lead=before&&!/\s$/.test(before)?' ':'';const tag='@'+firstName+' ';
+          inp.value=before+lead+tag+after;const np=(before+lead+tag).length;inp.setSelectionRange(np,np);
+        }
         setMentionQuery(null);setMentionIdx(0);inp.focus();
       };
       const handleMsgInput=(e)=>{
@@ -7398,7 +7412,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
               <div style={{display:'flex',gap:6,alignItems:'center'}}>
                 <span style={{fontSize:10,color:'#94a3b8'}}>{m.ts}</span>
-                {!indent&&<button style={{fontSize:9,padding:'1px 6px',borderRadius:6,border:'1px solid #e2e8f0',background:replyTo===m.id?'#3b82f6':'white',color:replyTo===m.id?'white':'#64748b',cursor:'pointer'}} onClick={(e)=>{e.stopPropagation();setReplyTo(replyTo===m.id?null:m.id)}}>Reply{replies.length>0?` (${replies.length})`:''}</button>}
+                {!indent&&<button style={{fontSize:9,padding:'1px 6px',borderRadius:6,border:'1px solid #e2e8f0',background:replyTo===m.id?'#3b82f6':'white',color:replyTo===m.id?'white':'#64748b',cursor:'pointer'}} onClick={(e)=>{e.stopPropagation();const on=replyTo!==m.id;setReplyTo(on?m.id:null);/* Replying auto-tags the author so they get the ping without retyping the name. */if(on&&author&&!isMe)tagMember(author)}}>Reply{replies.length>0?` (${replies.length})`:''}</button>}
               </div>
             </div>
             <div style={{fontSize:13,color:'#0f172a'}}>{renderMsgText(m.text,m.tagged_members)}</div>
@@ -7418,6 +7432,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {replyTo&&<div style={{display:'flex',alignItems:'center',gap:8,padding:'6px 12px',background:'#eff6ff',borderRadius:8,marginBottom:8}}>
             <span style={{fontSize:11,color:'#1e40af',fontWeight:600}}>Replying to {(()=>{const rm=soMsgs.find(mm=>mm.id===replyTo);const ra=REPS.find(r=>r.id===rm?.author_id);return ra?.name||'message'})()}</span>
             <button style={{fontSize:10,padding:'1px 6px',borderRadius:4,border:'1px solid #bfdbfe',background:'white',color:'#64748b',cursor:'pointer',marginLeft:'auto'}} onClick={()=>setReplyTo(null)}>Cancel</button>
+          </div>}
+          {/* Quick-tag chips: everyone already in this conversation */}
+          {msgParticipants.length>0&&<div style={{display:'flex',gap:6,marginBottom:6,flexWrap:'wrap',alignItems:'center'}}>
+            <span style={{fontSize:10,color:'#94a3b8',fontWeight:600}}>Tag:</span>
+            {msgParticipants.map(p=><button key={p.id} title={'Tag '+p.name} style={{fontSize:10,padding:'2px 8px',borderRadius:10,border:'1px solid #bfdbfe',background:'#eff6ff',color:'#1e40af',cursor:'pointer',fontWeight:600}} onClick={()=>tagMember(p)}>@{p.name.split(' ')[0]}</button>)}
           </div>}
           {/* Message input with department tag and @mention */}
           <div style={{display:'flex',gap:6,marginBottom:6,flexWrap:'wrap'}}>

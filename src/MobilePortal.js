@@ -2328,6 +2328,12 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     else{setComposeTxt(composeTxt+'@'+firstName+' ')}
     setComposeMentionQ(null);
   };
+  // Quick-tag: append "@First " to the draft unless that person is already in it (controlled textarea).
+  const tagMember=(member)=>{
+    const firstName=(member?.name||'').split(' ')[0];if(!firstName)return;
+    setComposeTxt(prev=>{const v=prev||'';if(new RegExp('@'+firstName.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'(?![\\w])','i').test(v))return v;return(v&&!/\s$/.test(v)?v+' ':v)+'@'+firstName+' '});
+    setComposeMentionQ(null);
+  };
 
   const renderComposeSheet=()=>{
     if(!composeMsg)return null;
@@ -2335,6 +2341,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     const mentionResults=composeMentionQ!=null?activeMembers.filter(r=>{const q2=composeMentionQ.toLowerCase();return r.name.toLowerCase().includes(q2)||r.name.split(' ')[0].toLowerCase().startsWith(q2)}).slice(0,6):[];
     // Show existing messages for this entity as thread context
     const threadMsgs=composeMsg.entity_id?msgs.filter(m=>(m.entity_id===composeMsg.entity_id||m.so_id===composeMsg.entity_id)).sort((a,b)=>(a.created_at||a.ts||'').localeCompare(b.created_at||b.ts||'')):[];
+    // Everyone already in this conversation (minus me) — quick-tag chips above the compose box.
+    const participants=[...new Set(threadMsgs.map(m=>m.author_id).filter(id=>id&&id!==cu.id))].map(id=>activeMembers.find(r=>r.id===id)).filter(Boolean);
 
     return<MsgDropZone style={{position:'fixed',inset:0,zIndex:100,background:'white',display:'flex',flexDirection:'column'}} setItems={setComposeAtt} setBusy={setComposeAttBusy} nf={nf} label="Drop to attach to this message">
       {/* Header */}
@@ -2353,7 +2361,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
             return<div key={m.id} style={{display:'flex',gap:8,marginBottom:10,flexDirection:isMe?'row-reverse':'row',alignItems:'flex-start'}}>
               <div style={{width:28,height:28,borderRadius:'50%',background:isMe?'#1e40af':'#e2e8f0',color:isMe?'white':'#475569',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,fontSize:10,flexShrink:0}}>{initials}</div>
               <div style={{maxWidth:'80%'}}>
-                <div style={{fontSize:10,color:'#94a3b8',marginBottom:2}}>{a?.name||'Unknown'} · {timeAgo(m.created_at||m.ts)}{m.dept&&m.dept!=='all'?' · '+m.dept:''}</div>
+                <div style={{fontSize:10,color:'#94a3b8',marginBottom:2,display:'flex',gap:6,alignItems:'center',flexDirection:isMe?'row-reverse':'row'}}><span>{a?.name||'Unknown'} · {timeAgo(m.created_at||m.ts)}{m.dept&&m.dept!=='all'?' · '+m.dept:''}</span>{!isMe&&a&&<button onClick={()=>tagMember(a)} style={{fontSize:10,padding:'1px 8px',borderRadius:8,border:'1px solid #e2e8f0',background:'white',color:'#1e40af',fontWeight:600,cursor:'pointer',minHeight:22}}>Reply</button>}</div>
                 <div style={{padding:'8px 12px',borderRadius:isMe?'12px 12px 2px 12px':'12px 12px 12px 2px',background:isMe?'#1e40af':'#f1f5f9',color:isMe?'white':'#1e293b',fontSize:13,lineHeight:1.5,whiteSpace:'pre-wrap'}}>{m.body||m.text||''}<MsgAttachments items={msgAttachments(m)} size={80}/></div>
               </div>
             </div>})}
@@ -2362,6 +2370,11 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       </div>
       {/* Compose area — sticky bottom */}
       <div style={{borderTop:'1px solid #e2e8f0',background:'white',padding:'8px 12px',paddingBottom:'max(8px, env(safe-area-inset-bottom))',flexShrink:0}}>
+        {/* Quick-tag chips: everyone already in this conversation */}
+        {participants.length>0&&<div style={{display:'flex',gap:4,marginBottom:6,overflowX:'auto',WebkitOverflowScrolling:'touch',alignItems:'center'}}>
+          <span style={{fontSize:10,color:'#94a3b8',fontWeight:600,whiteSpace:'nowrap'}}>Tag:</span>
+          {participants.map(p=><button key={p.id} onClick={()=>tagMember(p)} style={{padding:'4px 10px',borderRadius:12,border:'1px solid #bfdbfe',background:'#eff6ff',color:'#1e40af',fontSize:11,fontWeight:600,cursor:'pointer',whiteSpace:'nowrap',minHeight:32}}>@{p.name.split(' ')[0]}</button>)}
+        </div>}
         {/* Department chips */}
         <div style={{display:'flex',gap:4,marginBottom:8,overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
           {DEPTS.map(d=><button key={d.id} onClick={()=>setComposeDept(d.id)} style={{padding:'4px 10px',borderRadius:12,border:'1px solid '+(composeDept===d.id?d.color:'#e2e8f0'),background:composeDept===d.id?d.color+'15':'white',color:composeDept===d.id?d.color:'#94a3b8',fontSize:11,fontWeight:600,cursor:'pointer',whiteSpace:'nowrap',minHeight:32}}>{d.label}</button>)}
