@@ -7554,7 +7554,9 @@ export default function App(){
     if(_convCust){const _pb=pendingShipBalance(_convCust);if(_pb.amount>0){so.pending_ship_applied=true;so.pending_ship_amount=_pb.amount;
       const _nc=Math.round((safeNum(so._shipping_cost||0)+_pb.cost)*100)/100;if(_nc>0){so._shipping_cost=_nc;so._shipstation_cost=_nc;}}}
     const convertedEst={...est,status:'converted',updated_at:new Date().toLocaleString()};
-    setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?convertedEst:e));setEEst(null);
+    // Open the new SO in the same render that closes the estimate — the DB saves below are
+    // awaited, and switching pages only after them flashed the estimates list in between.
+    setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?convertedEst:e));setEEst(null);setESO(so);setESOC(_convCust);setPg('orders');
     // Explicitly save to DB immediately — don't rely solely on useEffect chain.
     // Methodic work is relinked only after both source/target documents exist, so
     // the same request follows the line instead of creating an SO-side duplicate.
@@ -7618,7 +7620,7 @@ export default function App(){
       });
       setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,credits:updatedCredits}:cc));
     }
-    setESO(so);setESOC(c);setPg('orders');nf(`${so.id} created from ${est.id}`)};
+    nf(`${so.id} created from ${est.id}`)};
   const copyEstimate=async est=>{
     // Auto-heal a partially-loaded estimate before copying — same failure mode the convert
     // path guards against: when estimate_item_decorations/estimate_items timed out on the
