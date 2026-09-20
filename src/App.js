@@ -7554,7 +7554,9 @@ export default function App(){
     if(_convCust){const _pb=pendingShipBalance(_convCust);if(_pb.amount>0){so.pending_ship_applied=true;so.pending_ship_amount=_pb.amount;
       const _nc=Math.round((safeNum(so._shipping_cost||0)+_pb.cost)*100)/100;if(_nc>0){so._shipping_cost=_nc;so._shipstation_cost=_nc;}}}
     const convertedEst={...est,status:'converted',updated_at:new Date().toLocaleString()};
-    setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?convertedEst:e));setEEst(null);
+    // Open the new SO in the same render that closes the estimate — the DB saves below are
+    // awaited, and switching pages only after them flashed the estimates list in between.
+    setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?convertedEst:e));setEEst(null);setESO(so);setESOC(_convCust);setPg('orders');
     // Explicitly save to DB immediately — don't rely solely on useEffect chain.
     // Methodic work is relinked only after both source/target documents exist, so
     // the same request follows the line instead of creating an SO-side duplicate.
@@ -7618,7 +7620,7 @@ export default function App(){
       });
       setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,credits:updatedCredits}:cc));
     }
-    setESO(so);setESOC(c);setPg('orders');nf(`${so.id} created from ${est.id}`)};
+    nf(`${so.id} created from ${est.id}`)};
   const copyEstimate=async est=>{
     // Auto-heal a partially-loaded estimate before copying — same failure mode the convert
     // path guards against: when estimate_item_decorations/estimate_items timed out on the
@@ -34185,6 +34187,20 @@ export default function App(){
       if(atIdx>=0){const firstName=(member.name||'').split(' ')[0];inp.value=before.slice(0,atIdx)+'@'+firstName+' '+after;const newPos=atIdx+firstName.length+2;inp.setSelectionRange(newPos,newPos)}
       setMThreadMentionQuery(null);setMThreadMentionIdx(0);inp.focus();
     };
+    // Quick-tag: drop "@First " at the cursor (or the end) unless that person is already in the draft.
+    const threadTagMember=(member)=>{
+      const inp=mThreadInputRef.current;if(!inp||!member)return;
+      const firstName=(member.name||'').split(' ')[0];if(!firstName)return;
+      const val=inp.value||'';
+      if(!new RegExp('@'+firstName.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'(?![\\w])','i').test(val)){
+        const pos=inp.selectionStart??val.length;const before=val.slice(0,pos);const after=val.slice(pos);
+        const lead=before&&!/\s$/.test(before)?' ':'';const tag='@'+firstName+' ';
+        inp.value=before+lead+tag+after;const np=(before+lead+tag).length;inp.setSelectionRange(np,np);
+      }
+      setMThreadMentionQuery(null);setMThreadMentionIdx(0);inp.focus();
+    };
+    // Everyone already in the open conversation (minus me) — quick-tag chips above the reply box.
+    const threadParticipants=[...new Set(openMsgs.map(m=>m.author_id).filter(id=>id&&id!==cu.id))].map(id=>activeMembers.find(r=>r.id===id)).filter(Boolean);
     const threadHandleInput=(e)=>{
       const val=e.target.value;const pos=e.target.selectionStart;const before=val.slice(0,pos);const atIdx=before.lastIndexOf('@');
       if(atIdx>=0){const afterAt=before.slice(atIdx+1);if(!afterAt.includes('\n')&&afterAt.length<=30&&!/\s{2}/.test(afterAt)){setMThreadMentionQuery(afterAt);setMThreadMentionIdx(0)}else{setMThreadMentionQuery(null)}}
@@ -34279,7 +34295,11 @@ export default function App(){
                 {dept&&dept.id!=='all'&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:dept.color+'20',color:dept.color}}>@{dept.label}</span>}
                 {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:'#fef3c7',color:'#92400e'}}>Tagged you</span>}
               </div>
-              <span style={{fontSize:10,color:'#94a3b8'}}>{r.ts}</span>
+              <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                <span style={{fontSize:10,color:'#94a3b8'}}>{r.ts}</span>
+                {/* Reply to this person: pre-tags them in the reply box so they get the ping */}
+                {!isMe&&author&&<button style={{fontSize:9,padding:'1px 6px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#64748b',cursor:'pointer'}} title={'Reply to '+author.name} onClick={()=>threadTagMember(author)}>Reply</button>}
+              </div>
             </div>
             <div style={{fontSize:13,color:'#0f172a'}}>{renderMsgPageText(r.text)}</div>
             <MsgAttachments items={msgAttachments(r)}/>
@@ -34288,6 +34308,10 @@ export default function App(){
       </div>
       {/* Reply input */}
       <div style={{borderTop:'1px solid #e2e8f0',padding:12,flexShrink:0}}>
+        {threadParticipants.length>0&&<div style={{display:'flex',gap:4,marginBottom:6,flexWrap:'wrap',alignItems:'center'}}>
+          <span style={{fontSize:9,color:'#94a3b8',fontWeight:600}}>Tag:</span>
+          {threadParticipants.map(p=><button key={p.id} title={'Tag '+p.name} style={{fontSize:9,padding:'2px 6px',borderRadius:10,border:'1px solid #bfdbfe',background:'#eff6ff',color:'#1e40af',cursor:'pointer',fontWeight:600}} onClick={()=>threadTagMember(p)}>@{p.name.split(' ')[0]}</button>)}
+        </div>}
         <div style={{display:'flex',gap:4,marginBottom:6,flexWrap:'wrap'}}>
           {DEPTS.map(d=><button key={d.id} style={{fontSize:9,padding:'2px 6px',borderRadius:10,border:'1px solid '+(mThreadDept===d.id?d.color:'#e2e8f0'),background:mThreadDept===d.id?d.color+'15':'white',color:mThreadDept===d.id?d.color:'#94a3b8',cursor:'pointer',fontWeight:600}} onClick={()=>setMThreadDept(d.id)}>@{d.label}</button>)}
         </div>
