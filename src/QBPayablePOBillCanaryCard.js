@@ -13,6 +13,7 @@ export default function QBPayablePOBillCanaryCard(){
       const body=action==='execute'?{action,approved:true,previewHash:preview.previewHash}:action==='repair'?{action,approved:true,qboBillId:repair.qboBillId}:action==='reconcile'?{action,approved:true}:{action:'preview'};
       const response=await authFetch('/.netlify/functions/qbo-payable-po-bill-canary',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
       const data=await response.json();
+      if(response.status===401)throw new Error('Portal sign-in expired. Return to QuickBooks Sync, sign in again, then reopen Payable review.');
       if(!response.ok){if((data.repairable||data.reconcilable)&&data.candidate)setRepair(data);throw new Error((data.error||'PO-to-bill canary unavailable')+(data.details?' · '+JSON.stringify(data.details):''))}
       if(action==='execute'||action==='repair'||action==='reconcile'||data.status==='complete')setResult(data);else setPreview(data);
     }catch(e){setError(e.message||'PO-to-bill canary unavailable')}finally{setBusy(false)}

@@ -36,3 +36,9 @@ test('reconciles an externally corrected bill without QBO changes',async()=>{
   await waitFor(()=>expect(authFetch).toHaveBeenNthCalledWith(2,'/.netlify/functions/qbo-payable-po-bill-canary',expect.objectContaining({body:JSON.stringify({action:'reconcile',approved:true})})));
   expect(await screen.findByText(/Partial Bills #18724 and #18728 confirmed absent/)).toBeTruthy();expect(window.confirm).toHaveBeenCalledTimes(1);
 });
+
+test('explains when the Portal session has expired',async()=>{
+  authFetch.mockResolvedValueOnce({ok:false,status:401,json:async()=>({})});
+  render(<QBPayablePOBillCanaryCard/>);fireEvent.click(screen.getByText(/Prepare PO-linked bill canary/));
+  expect((await screen.findByRole('alert')).textContent).toBe('Portal sign-in expired. Return to QuickBooks Sync, sign in again, then reopen Payable review.');
+});
