@@ -49,6 +49,15 @@ const omgProxyError = async (resp) => {
 
 const { SHIP_FROM_LOCATIONS, DEFAULT_SHIP_FROM_CODE, shipFromCode, shipFromLocation, shipStationShipFrom, shipFromAddressLine } = SHIPFROM;
 
+// ship_from_code (the label origin) lands with migration
+// 20260921160000_ship_from_location.sql. The store form always carries it, so on
+// a database that hasn't had that migration yet — a deploy preview pointed at
+// production, or the code deploying first — PostgREST rejects the whole store
+// save over one unknown column. saveStore retries once without it rather than
+// blocking every store edit until the migration catches up.
+const shipFromColumnMissing = (error) => !!error && /ship_from_code/.test(error.message || '');
+const withoutShipFrom = (row) => { const { ship_from_code, ...rest } = row; return rest; };
+
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 
 // Create a ShipStation label (base64 PDF) for one ship-to-home webstore order.
@@ -1958,7 +1967,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const prevStore = stores.find((s) => s.id === existingId);
       const reopenPatch = reopenPatchForCloseDate(prevStore, form.close_at);
       const reopenedByDate = reopenPatch.status === 'open';
-      const { data, error } = await supabase.from('webstores').update({ ...form, ...reopenPatch, updated_at: new Date().toISOString() }).eq('id', existingId).select().single();
+      const patch = { ...form, ...reopenPatch, updated_at: new Date().toISOString() };
+      let { data, error } = await supabase.from('webstores').update(patch).eq('id', existingId).select().single();
+      if (shipFromColumnMissing(error)) ({ data, error } = await supabase.from('webstores').update(withoutShipFrom(patch)).eq('id', existingId).select().single());
       if (error) return { error };
       setStores((prev) => prev.map((s) => (s.id === existingId ? data : s)));
       if (sel?.id === existingId) setSel(data);
@@ -1978,6 +1989,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (slug !== form.slug) form2 = { ...form, slug };
     } catch (_) { /* fall through — the retry below still guards the constraint */ }
     let { data, error } = await supabase.from('webstores').insert(form2).select().single();
+    if (shipFromColumnMissing(error)) { form2 = withoutShipFrom(form2); ({ data, error } = await supabase.from('webstores').insert(form2).select().single()); }
     // Race fallback: another create claimed the slug between the check and the insert.
     if (error && /slug/i.test(error.message || '') && /duplicate|unique/i.test(error.message || '')) {
       form2 = { ...form2, slug: `${baseSlug}-${Date.now().toString(36).slice(-4)}` };
