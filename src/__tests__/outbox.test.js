@@ -149,6 +149,13 @@ describe('_outboxGate (the load-bearing boot decision)', () => {
     expect(_outboxGate({table:'estimates',id:'EST-1',payload:changed,baseVersion:7,ts:1},row)).toBe('conflict');
     expect(_outboxGate({table:'estimates',id:'EST-1',payload:partial,baseVersion:7,ts:1},row)).toBe('conflict');
   });
+  test('the same missing-decoration recovery clears stale sales-order cards', () => {
+    const payload = { id:'SO-1', status:'open', items:[{line_id:'line-1',sku:'A',quantity:12,decorations:[]}], _version:7 };
+    const row = { id:'SO-1', status:'open', items:[{line_id:'line-1',sku:'A',quantity:12,decorations:[{method:'Print'}]}],
+      _version:8, _recoveryHydrated:true, _itemsHydrated:true, _decosHydrated:true, _artHydrated:true,
+      _jobsHydrated:true, _posHydrated:true, _picksHydrated:true };
+    expect(_outboxGate({table:'sales_orders',id:'SO-1',payload,baseVersion:7,ts:1},row)).toBe('drop');
+  });
 });
 
 describe('outbox store (localStorage round-trip)', () => {
