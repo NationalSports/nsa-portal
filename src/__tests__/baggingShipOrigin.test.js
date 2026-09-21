@@ -23,11 +23,12 @@ const items = [{ id: 'i1', product_id: 'p1', sku: 'NEA200', size: 'L', qty: 2, s
 // `legacyDb` simulates the window where this code is live but the ship_from_code
 // migration has not been applied yet: selecting that column yields no rows, and
 // writing it errors the way PostgREST does for an unknown column.
-function fakeSb(storeRow, writes, legacyDb = false) {
+function fakeSb(storeRow, writes, legacyDb = false, extra = {}) {
   return {
     from(table) {
       const state = { cols: '', patch: null };
       const settle = () => {
+        if (extra[table]) return { data: extra[table], error: null };
         if (table === 'webstores') {
           const askedForNewColumn = legacyDb && state.cols.includes('ship_from_code');
           return { data: askedForNewColumn ? [] : [storeRow], error: null };
@@ -83,25 +84,60 @@ test("a warehouse store's label prints the warehouse as its origin", async () =>
   expect(writes.some((w) => w.ship_from_code === 'warehouse')).toBe(true);
 });
 
-test('a store that never chose one keeps the old company-address origin', async () => {
+test('a store that never chose one ships from the warehouse (the default)', async () => {
   const calls = []; const writes = [];
   stubShipStation(calls);
   const res = await createBagShipLabel(
     fakeSb({ id: 's1', name: 'Test Store' }, writes),
     baseOrder, items,
   );
+  expect(labelCall(calls).shipFrom.street1).toBe('210 E Emerson Ave');
+  expect(res.shipFromCode).toBe('warehouse');
+});
+
+test('the office is still selectable', async () => {
+  const calls = []; const writes = [];
+  stubShipStation(calls);
+  const res = await createBagShipLabel(
+    fakeSb({ id: 's1', name: 'Test Store', ship_from_code: 'office' }, writes),
+    baseOrder, items,
+  );
   expect(labelCall(calls).shipFrom.street1).toBe('2238 N Glassell St Ste E');
   expect(res.shipFromCode).toBe('office');
 });
 
-test('a junk code on the store falls back rather than shipping a bad origin', async () => {
+test('a junk code on the store falls back to the warehouse rather than shipping a bad origin', async () => {
   const calls = []; const writes = [];
   stubShipStation(calls);
   await createBagShipLabel(
     fakeSb({ id: 's1', name: 'Test Store', ship_from_code: 'dock-42' }, writes),
     baseOrder, items,
   );
-  expect(labelCall(calls).shipFrom.street1).toBe('2238 N Glassell St Ste E');
+  expect(labelCall(calls).shipFrom.street1).toBe('210 E Emerson Ave');
+});
+
+test("a decorator-ships-direct store prints the decorator as origin, looked up live", async () => {
+  const calls = []; const writes = [];
+  stubShipStation(calls);
+  const sb = fakeSb({ id: 's1', name: 'Test Store', ship_from_code: 'deco:dv_silver_screen' }, writes, false, {
+    deco_vendors: [{ id: 'dv_silver_screen', name: 'Silver Screen', is_active: true, address_line1: '1135 S Rock Blvd Suite #340', city: 'Reno', state: 'NV', zip: '89502', vendor_id: null }],
+  });
+  const res = await createBagShipLabel(sb, baseOrder, items);
+  expect(labelCall(calls).shipFrom).toMatchObject({ name: 'Silver Screen', street1: '1135 S Rock Blvd Suite #340', city: 'Reno', postalCode: '89502' });
+  expect(res.shipFromCode).toBe('deco:dv_silver_screen');
+  expect(writes.some((w) => w.ship_from_code === 'deco:dv_silver_screen')).toBe(true);
+});
+
+test('a decorator with no address on file skips the auto label instead of shipping from the warehouse', async () => {
+  const calls = []; const writes = [];
+  stubShipStation(calls);
+  const sb = fakeSb({ id: 's1', name: 'Test Store', ship_from_code: 'deco:dv_no_addr' }, writes, false, {
+    deco_vendors: [{ id: 'dv_no_addr', name: 'No Address', is_active: true, vendor_id: null }],
+  });
+  const res = await createBagShipLabel(sb, baseOrder, items);
+  expect(res.skipped).toBe(true);
+  expect(res.reason).toMatch(/no address on file/);
+  expect(calls.length).toBe(0); // nothing sent to ShipStation, no orphan order there
 });
 
 test('a database without the migration still saves the label instead of failing', async () => {
@@ -113,7 +149,7 @@ test('a database without the migration still saves the label instead of failing'
   );
   // The label still buys and records — it just falls back to the default origin.
   expect(res.trackingNumber).toBe('1Z999');
-  expect(labelCall(calls).shipFrom.street1).toBe('2238 N Glassell St Ste E');
+  expect(labelCall(calls).shipFrom.street1).toBe('210 E Emerson Ave');
   const saved = writes.find((w) => 'label_data' in w);
   expect(saved).toBeTruthy();
   expect('ship_from_code' in saved).toBe(false);

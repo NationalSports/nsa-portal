@@ -83,8 +83,8 @@ exports.handler = async (event) => {
     const patch = {
       ...(shipment.shipmentId ? { shipstation_shipment_id: shipment.shipmentId } : {}),
       ...(labelData ? { label_data: labelData } : {}),
-      // Where this parcel left from. Only a known location code is stored — a
-      // stale client must not write free text into the column.
+      // Where this parcel left from. Only a well-formed location code is stored
+      // (an NSA site or "deco:<id>") — a stale client must not write free text.
       ...(isShipFromCode(body.ship_from_code) ? { ship_from_code: shipFromCode(body.ship_from_code) } : {}),
     };
     let { error: patchError } = await sb.from('webstore_orders').update(patch).eq('id', order.id);

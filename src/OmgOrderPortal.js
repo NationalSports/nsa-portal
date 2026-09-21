@@ -16,9 +16,9 @@ import { shipStationCall } from './vendorApis';
 import { authFetch, printPdfLabels, labelWeightLbs, validateShipAddress, computeOrderTracking } from './utils';
 // Namespace import — shipFrom.js is CommonJS (shared with the Netlify functions).
 import * as SHIPFROM from './lib/shipFrom';
-import ShipFromPicker from './ui/ShipFromPicker';
+import ShipFromPicker, { useDecoShipFromLocations } from './ui/ShipFromPicker';
 
-const { shipFromCode, shipStationShipFrom, shipFromAddressLine } = SHIPFROM;
+const { shipFromCode, shipStationShipFrom, shipFromLabel } = SHIPFROM;
 
 // Per-line incoming-stock status pill (computed from billed/received/need).
 const TRACK_PILL = {
@@ -267,6 +267,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
   // Label origin for this run. null = follow the store's saved default (the store
   // loads async, so it is resolved at use time rather than frozen at mount).
   const [shipFrom, setShipFrom] = useState(null);
+  const decoLocs = useDecoShipFromLocations();
   const [selIds, setSelIds] = useState(new Set()); // orders selected for bulk label / packing-list
   const [editOrder, setEditOrder] = useState(null); // order whose line items are being edited
   const [msgDraft, setMsgDraft] = useState({}); // orderId -> compose text for the customer thread
@@ -602,11 +603,12 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     return { item: i, qty: Math.max(0, remaining - (Number(i.missing_qty) || 0)) };
   }).filter((x) => x.qty > 0);
 
-  const activeShipFrom = shipFromCode(shipFrom || (store && store.ship_from_code));
+  const activeShipFrom = shipFromCode(shipFrom || (store && store.ship_from_code), decoLocs);
 
   const createOmgLabel = async (o, plan, fromCode) => {
     const a = o.ship_address || {};
-    const originCode = shipFromCode(fromCode || (store && store.ship_from_code));
+    const originCode = shipFromCode(fromCode || (store && store.ship_from_code), decoLocs);
+    const shipFrom = shipStationShipFrom(originCode, decoLocs); // throws for a decorator with no address — before any ShipStation call
     const shipItems = plan.map((x) => ({ ...x.item, qty: x.qty }));
     const ss = await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(ssPayload({ ...o, items: shipItems })) });
     const orderId = ss && ss.orderId;
@@ -618,7 +620,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
       orderId, carrierCode: cm.carrierCode, serviceCode: (store && store.shipstation_service) || cm.serviceCode,
       packageCode: 'package', confirmation: 'none', shipDate,
       weight: { value: labelWeightLbs(shipItems, store), units: 'pounds' },
-      shipFrom: shipStationShipFrom(originCode),
+      shipFrom,
       shipTo: { name: a.name || o.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: o.buyer_phone || '' },
       testLabel: false,
     };
@@ -681,7 +683,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     await loadOrders(store);
     setShipErrors(errors);
     setBusy('');
-    flash(`Printed ${printed || labels.length} of ${selected} selected label${selected === 1 ? '' : 's'} from ${shipFromAddressLine(activeShipFrom)}${errors.length ? ` · ${errors.length} skipped (below)` : ''}${runCost > 0 ? ` · ${money(runCost)} shipping` : ''}.`, errors.length ? 'err' : 'ok');
+    flash(`Printed ${printed || labels.length} of ${selected} selected label${selected === 1 ? '' : 's'} from ${shipFromLabel(activeShipFrom, decoLocs)}${errors.length ? ` · ${errors.length} skipped (below)` : ''}${runCost > 0 ? ` · ${money(runCost)} shipping` : ''}.`, errors.length ? 'err' : 'ok');
   };
 
   // Reprint the last saved label for one order — no re-buy.
@@ -905,7 +907,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
                 ? <span style={{ fontSize: 11.5, color: '#1e40af', fontWeight: 700 }}>🏫 Deliver to school — bulk delivery, no per-player shipping labels</span>
                 : <>
                     <button onClick={() => printOmgLabels(selectedPool())} disabled={busy === 'labels' || !selIds.size} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: '#166534', color: '#fff', fontWeight: 700, fontSize: 13, cursor: selIds.size ? 'pointer' : 'not-allowed', opacity: selIds.size ? 1 : 0.5 }}>{busy === 'labels' ? 'Creating…' : `🏷️ Create & print ${selIds.size} label${selIds.size === 1 ? '' : 's'}`}</button>
-                    <ShipFromPicker value={activeShipFrom} onChange={setShipFrom} compact />
+                    <ShipFromPicker value={activeShipFrom} onChange={setShipFrom} decoLocations={decoLocs} compact />
                   </>}
             </div>}
 

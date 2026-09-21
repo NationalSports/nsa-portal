@@ -8,7 +8,7 @@
 // completes; the caller surfaces "print from Webstores" instead.
 
 const { processDirectShipment } = require('./shipstation-webhook');
-const { shipFromCode, shipStationShipFrom } = require('../../src/lib/shipFrom');
+const { shipFromCode, shipStationShipFrom, decoIdFromCode, decoShipFromLocation } = require('../../src/lib/shipFrom');
 
 // Per-line ounces fallback — mirror of src/utils.js estimateWeightOz (functions
 // are CommonJS and can't import the CRA src module; keep the two in sync).
@@ -134,6 +134,28 @@ async function createBagShipLabel(sb, order, items) {
     (cat || []).forEach((c) => { if (c.weight_oz != null) weightByPid[c.product_id] = Number(c.weight_oz); });
   }
 
+  // Origin address: whatever this store says it ships from (src/lib/shipFrom.js).
+  // A decorator origin is looked up live so a decorator's address change in
+  // Settings → Deco Vendors is what prints. If the decorator has no address, do
+  // NOT quietly ship from the warehouse (the goods aren't there): skip, and the
+  // station tells the packer to print from Webstores where an origin can be picked.
+  const originCode = shipFromCode(store.ship_from_code);
+  const decoLocations = [];
+  const decoId = decoIdFromCode(originCode);
+  if (decoId) {
+    const { data: dvs } = await sb.from('deco_vendors').select('id,name,is_active,phone,address_line1,address_line2,city,state,zip,vendor_id').eq('id', decoId).limit(1);
+    const dv = dvs && dvs[0];
+    let lv = null;
+    if (dv && dv.vendor_id) {
+      const { data: vs } = await sb.from('vendors').select('id,name,contact_phone,address_line1,address_line2,city,state,zip').eq('id', dv.vendor_id).limit(1);
+      lv = (vs && vs[0]) || null;
+    }
+    const loc = decoShipFromLocation(dv, lv);
+    if (!loc) return { skipped: true, reason: 'ship-from decorator has no address on file — pick an origin and print from Webstores' };
+    decoLocations.push(loc);
+  }
+  const shipFrom = shipStationShipFrom(originCode, decoLocations);
+
   const a = order.ship_address;
   const ss = await ssCall('/orders/createorder', {
     orderNumber: 'WS-' + order.id, orderKey: 'ws-' + order.id,
@@ -161,14 +183,12 @@ async function createBagShipLabel(sb, order, items) {
   }
 
   const cm = SS_CARRIERS[(store.shipstation_carrier || 'fedex').toLowerCase()] || SS_CARRIERS.fedex;
-  // Origin address: whatever this store says it ships from (src/lib/shipFrom.js).
-  const originCode = shipFromCode(store.ship_from_code);
   const shipDate = new Date().toISOString().split('T')[0];
   const res = await ssCall('/orders/createlabelfororder', {
     orderId: ss.orderId, carrierCode: cm.carrierCode, serviceCode: store.shipstation_service || cm.serviceCode,
     packageCode: 'package', confirmation: 'none', shipDate,
     weight: { value: labelWeightLbs(plan, store, weightByPid), units: 'pounds' },
-    shipFrom: shipStationShipFrom(originCode),
+    shipFrom,
     shipTo: { name: a.name || order.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: order.buyer_phone || '' },
     testLabel: false,
   });
