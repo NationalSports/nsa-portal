@@ -203,3 +203,68 @@ export const notHereSummary = (so, ifId) => {
   });
   return out;
 };
+
+// ── What a rejection leaves behind ───────────────────────────────────────────
+// Zeroing house stock for a size doesn't only affect the IF being rejected. Any OTHER
+// open pick line asking for that same product/size was counting on stock that is now
+// known not to exist, and nobody finds out until that pull also comes up empty. The
+// order editors already warn on this when a pull draws stock down (`adjustInvForPick`);
+// a "Not Here" is the same event with a bigger drop, so it owes the same warning.
+//
+// `declared` is buildNotHere's output: the product/size pairs just set to 0. Lines
+// belonging to `excludeIFs` are skipped — those are the ones that just closed.
+// Matches on product_id where the line has one, falling back to SKU.
+export const findOverPromised = ({ sos, declared, excludeIFs = [] } = {}) => {
+  const skip = new Set(safeArr(excludeIFs).map(normalizeIFId).filter(Boolean));
+  const byProduct = new Set(); const bySku = new Set();
+  safeArr(declared).forEach(d => {
+    if (!d || !d.size) return;
+    if (d.productId) byProduct.add(d.productId + '|' + d.size);
+    if (d.sku) bySku.add(String(d.sku).toUpperCase() + '|' + d.size);
+  });
+  if (byProduct.size === 0 && bySku.size === 0) return [];
+  const out = [];
+  safeArr(sos).forEach(so => {
+    safeItems(so).forEach(item => {
+      safePicks(item).forEach(pick => {
+        if ((pick.status || 'pick') === 'pulled') return;// closed lines aren't waiting on stock
+        if (skip.has(normalizeIFId(pick.pick_id))) return;
+        const hits = [];
+        pickSizeKeys(pick).forEach(sz => {
+          const qty = pick[sz] || 0;
+          if (qty <= 0) return;
+          const pk = item.product_id ? item.product_id + '|' + sz : null;
+          const sk = item.sku ? String(item.sku).toUpperCase() + '|' + sz : null;
+          if ((pk && byProduct.has(pk)) || (sk && bySku.has(sk))) hits.push({ size: sz, need: qty });
+        });
+        if (hits.length) out.push({ soId: so.id, ifId: pick.pick_id || '', sku: item.sku || '', sizes: hits });
+      });
+    });
+  });
+  return out;
+};
+
+// ── Does the shelf actually cover what this IF still needs? ──────────────────
+// The warehouse queue used to sum a product's stock across EVERY size and compare that
+// total to the total needed — so a row needing 5 M with 0 M and 40 XL on hand read as a
+// green 40, and somebody walked to the bin for nothing. Coverage is per size, and a row
+// can span several SKUs (`_subTasks`), each with its own product.
+// `findProduct` resolves a sub-task to its catalog row; the module stays out of that.
+export const ifStockCoverage = (task, findProduct) => {
+  const subs = (task && task._subTasks && task._subTasks.length) ? task._subTasks : [task].filter(Boolean);
+  let need = 0; let have = 0; const short = [];
+  subs.forEach(sub => {
+    if (!sub) return;
+    const inv = (findProduct ? findProduct(sub) : null)?._inv || {};
+    const sizes = sub.sizes || {}; const pulled = sub.pulled || {};
+    (sub.szKeys || Object.keys(sizes)).forEach(sz => {
+      const n = Math.max(0, (sizes[sz] || 0) - (pulled[sz] || 0));
+      if (n <= 0) return;
+      const h = Number(inv[sz]) || 0;
+      need += n;
+      have += Math.min(n, h);
+      if (h < n) short.push({ sku: sub.sku || '', size: sz, need: n, have: h });
+    });
+  });
+  return { need, have, short, covered: need > 0 && have >= need, none: have === 0 };
+};

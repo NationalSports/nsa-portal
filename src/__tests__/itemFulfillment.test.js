@@ -1,4 +1,4 @@
-import { findIF, buildIFTask, buildNotHere, zeroInventoryFor, notHereSummary, pickSizeKeys, pickUnits } from '../itemFulfillment';
+import { findIF, buildIFTask, buildNotHere, zeroInventoryFor, notHereSummary, pickSizeKeys, pickUnits, findOverPromised, ifStockCoverage } from '../itemFulfillment';
 
 const so = () => ({
   id: 'SO-2492', customer_id: 'c1', created_by: 'r1', expected_date: '2099-01-01',
@@ -156,5 +156,88 @@ describe('what Not Here hands the rep', () => {
   test('a partial Not Here leaves the IF open, so the alert waits for the real pull', () => {
     const r = buildNotHere({ so: so(), ifId: 'IF-1192', itemIdx: 0, sizes: ['S'] });
     expect(closedFor(r.items[0], 'IF-1192').some(pk => (pk.status || 'pick') !== 'pulled')).toBe(true);
+  });
+});
+
+describe('findOverPromised', () => {
+  // Two orders want the same hood. Rejecting one zeroes the shelf; the other is now
+  // promised stock that does not exist, and its pull will also come up empty.
+  const twoOrders = () => ([
+    { id: 'SO-1', items: [{ sku: 'JW6602', product_id: 'p1', sizes: { M: 6 },
+      pick_lines: [{ pick_id: 'IF-1192', status: 'pick', M: 6 }] }] },
+    { id: 'SO-2', items: [{ sku: 'JW6602', product_id: 'p1', sizes: { M: 4, L: 2 },
+      pick_lines: [{ pick_id: 'IF-2000', status: 'pick', M: 4, L: 2 }] }] },
+  ]);
+
+  test('names the other open IFs that can no longer be filled', () => {
+    const declared = [{ itemIdx: 0, sku: 'JW6602', productId: 'p1', size: 'M', qty: 6 }];
+    expect(findOverPromised({ sos: twoOrders(), declared, excludeIFs: ['IF-1192'] }))
+      .toEqual([{ soId: 'SO-2', ifId: 'IF-2000', sku: 'JW6602', sizes: [{ size: 'M', need: 4 }] }]);
+  });
+
+  test('does not report the IF that was just rejected', () => {
+    const declared = [{ sku: 'JW6602', productId: 'p1', size: 'M', qty: 6 }];
+    const hits = findOverPromised({ sos: twoOrders(), declared, excludeIFs: ['if-1192'] });
+    expect(hits.some(h => h.ifId === 'IF-1192')).toBe(false);
+  });
+
+  test('ignores sizes that were not zeroed, and lines already closed', () => {
+    const sos = twoOrders();
+    // L was never declared, so SO-2's L is unaffected.
+    const declared = [{ sku: 'JW6602', productId: 'p1', size: 'M', qty: 6 }];
+    expect(findOverPromised({ sos, declared, excludeIFs: ['IF-1192'] })[0].sizes)
+      .toEqual([{ size: 'M', need: 4 }]);
+    sos[1].items[0].pick_lines[0].status = 'pulled';
+    expect(findOverPromised({ sos, declared, excludeIFs: ['IF-1192'] })).toEqual([]);
+  });
+
+  test('matches by SKU when the line carries no product_id', () => {
+    const sos = twoOrders();
+    delete sos[1].items[0].product_id;
+    const declared = [{ sku: 'jw6602', productId: 'p1', size: 'M', qty: 6 }];
+    expect(findOverPromised({ sos, declared, excludeIFs: ['IF-1192'] })).toHaveLength(1);
+  });
+
+  test('nothing declared, nothing reported', () => {
+    expect(findOverPromised({ sos: twoOrders(), declared: [], excludeIFs: [] })).toEqual([]);
+    expect(findOverPromised({})).toEqual([]);
+  });
+});
+
+describe('ifStockCoverage', () => {
+  const inv = { p1: { _inv: { S: 2, M: 0, XL: 40 } }, p2: { _inv: { M: 10 } } };
+  const find = sub => inv[sub.productId];
+
+  test('counts only the sizes the IF needs — 40 XL does not cover a missing M', () => {
+    const task = { _subTasks: [{ productId: 'p1', sku: 'JW6602', szKeys: ['S', 'M'], sizes: { S: 2, M: 5 }, pulled: {} }] };
+    const r = ifStockCoverage(task, find);
+    expect(r.need).toBe(7);
+    expect(r.have).toBe(2);         // the 40 XL are irrelevant
+    expect(r.covered).toBe(false);
+    expect(r.short).toEqual([{ sku: 'JW6602', size: 'M', need: 5, have: 0 }]);
+  });
+
+  test('adds up across the SKUs of a multi-item IF', () => {
+    const task = { _subTasks: [
+      { productId: 'p1', sku: 'A', szKeys: ['S'], sizes: { S: 2 }, pulled: {} },
+      { productId: 'p2', sku: 'B', szKeys: ['M'], sizes: { M: 3 }, pulled: {} },
+    ] };
+    expect(ifStockCoverage(task, find)).toMatchObject({ need: 5, have: 5, covered: true, short: [] });
+  });
+
+  test('already-pulled units are not still needed', () => {
+    const task = { _subTasks: [{ productId: 'p1', sku: 'A', szKeys: ['S'], sizes: { S: 2 }, pulled: { S: 2 } }] };
+    expect(ifStockCoverage(task, find)).toMatchObject({ need: 0, have: 0, covered: false });
+  });
+
+  test('an unknown product reads as nothing on hand rather than throwing', () => {
+    const task = { _subTasks: [{ productId: 'nope', sku: 'X', szKeys: ['S'], sizes: { S: 3 }, pulled: {} }] };
+    expect(ifStockCoverage(task, find)).toMatchObject({ need: 3, have: 0, none: true });
+    expect(ifStockCoverage(task, () => null).have).toBe(0);
+  });
+
+  test('falls back to the row itself when it has no sub-tasks', () => {
+    expect(ifStockCoverage({ productId: 'p2', sku: 'B', szKeys: ['M'], sizes: { M: 4 }, pulled: {} }, find))
+      .toMatchObject({ need: 4, have: 4, covered: true });
   });
 });

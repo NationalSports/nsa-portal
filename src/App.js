@@ -14,7 +14,7 @@ import { classifySaveAlert } from './lib/saveAlertClassification';
 import MobilePortal from './MobilePortal';
 import DashboardOverview from './DashboardOverview';
 import BarcodeScanner from './BarcodeScanner';
-import { buildIFTask, buildNotHere, zeroInventoryFor, notHereSummary, pickSizeKeys, pickPersistMeta } from './itemFulfillment';
+import { buildIFTask, buildNotHere, zeroInventoryFor, notHereSummary, pickSizeKeys, pickPersistMeta, findOverPromised, ifStockCoverage } from './itemFulfillment';
 import BotStatus from './BotStatus';
 import AiInbox from './AiInbox';
 import AiTasks from './AiTasks';
@@ -7371,7 +7371,7 @@ export default function App(){
     });
     if(toAdd.length)setAssignedTodos(prev=>[...toAdd,...prev]);
   },[sos,invs,assignedTodos,REPS,dbLoading]);// eslint-disable-line react-hooks/exhaustive-deps
-  const savI=(pid,inv,deltas,reason,adjType,availSizes)=>{
+  const savI=(pid,inv,deltas,reason,adjType,availSizes,opts)=>{
     const p=prod.find(x=>x.id===pid);
     if(deltas&&p){
       const entries=Object.entries(deltas).filter(([,v])=>v!==0);
@@ -7384,7 +7384,7 @@ export default function App(){
     setProd(pp=>pp.map(x=>x.id===pid?{...x,_inv:inv,...(Array.isArray(availSizes)?{available_sizes:availSizes}:{})}:x));
     const addedSizes=Array.isArray(availSizes)&&p?availSizes.filter(s=>!(p.available_sizes||[]).includes(s)):[];
     if(addedSizes.length){logChange('inventory_sizes','Product',pid,'Added size'+(addedSizes.length===1?'':'s')+': '+addedSizes.join(', '))}
-    nf('Inventory updated');
+    if(!opts||!opts.quiet)nf('Inventory updated');
   };
   // Allocate EST ids against the saved estimates PLUS whatever draft is open in the editor.
   // A brand-new draft isn't in `ests` until it's saved, so building a second estimate on top
@@ -19650,7 +19650,13 @@ export default function App(){
   };
 
   // WAREHOUSE DASHBOARD
-  const[whTab,setWhTab]=useState('pull');const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');const[scanModalOpen,setScanModalOpen]=useState(false);const[whRecvPO,setWhRecvPO]=useState(null);const[whReceiving,setWhReceiving]=useState(false);const[whPulling,setWhPulling]=useState(false);
+  // Rows ticked in the Item Fulfillment queue, for the bulk reject. Held as pick_ids so a
+  // poll that rebuilds the task objects doesn't drop the selection.
+  const[whSelIFs,setWhSelIFs]=useState(()=>new Set());
+  const[whTab,setWhTab]=useState('pull');
+  // Drop the selection whenever the queue leaves the screen, so a bulk reject can never act
+  // on rows that were ticked in some earlier context the user has since navigated away from.
+  React.useEffect(()=>{if(pg!=='warehouse'||whTab!=='pull')setWhSelIFs(prev=>prev.size?new Set():prev)},[pg,whTab]);const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');const[scanModalOpen,setScanModalOpen]=useState(false);const[whRecvPO,setWhRecvPO]=useState(null);const[whReceiving,setWhReceiving]=useState(false);const[whPulling,setWhPulling]=useState(false);
   const[shippedCustF,setShippedCustF]=useState('all');const[shippedDateF,setShippedDateF]=useState('all');
   // ── Item Fulfillment as an addressable record ────────────────────────────────
   // Every entry point (global search, a scanned pick ticket, a warehouse row, an order
@@ -19749,44 +19755,79 @@ export default function App(){
   //   • what was asked for is recorded on the line (`not_here`), because closing a pick line
   //     overwrites its size fields with what was actually found.
   // The ordered quantity on the SO is deliberately untouched — the customer still wants the
-  // goods. Returns true when something was declared.
-  const markNotHere=({soId,ifId,itemIdx=null,sizes=null})=>{
-    const so=sos.find(x=>x.id===soId);
-    if(!so){nf('Order '+soId+' not found','error');return false}
-    const res=buildNotHere({so,ifId,itemIdx,sizes,by:cu?.id||'warehouse'});
-    if(!res){nf('Nothing left to mark — those sizes are already closed','warn');return false}
-    const updatedItems=res.items;
-    const updatedSO={...so,items:updatedItems,jobs:recalcJobFulfillment(so,updatedItems),updated_at:new Date().toLocaleString()};
-    savSO(updatedSO,{skipMerge:true});
-    // Cross-tab sync for every line this closed (same atomic per-line write the pull uses).
-    [...new Set(res.declared.map(d=>d.itemIdx))].forEach(ii=>{
-      const line=(updatedItems[ii].pick_lines||[]).find(pl=>String(pl.pick_id||'').toUpperCase()===String(ifId||'').toUpperCase());
-      if(line&&line.status==='pulled'){
-        const pq={};pickSizeKeys(line).forEach(sz=>{pq[sz]=line[sz]||0});
-        _dbUpdatePickLineStatus(soId,ii,line.pick_id,'pulled',pq,pickPersistMeta(line));
-      }
+  // goods.
+  //
+  // Takes a LIST because the warehouse can reject several IFs at once. Two IFs on the same
+  // order must not each read `sos` and save independently: React state has not updated
+  // between them, so the second save would be built on the pre-first-reject items and drop
+  // the first rejection. Targets are grouped by order and applied to one accumulating items
+  // array, then saved once. Inventory is likewise aggregated per product across the whole
+  // batch — sequential savI calls in one tick all read the same pre-batch `prod`, so zeroing
+  // per IF would log the same drop twice. Returns the number of IFs actually rejected.
+  const markNotHereBatch=(targets)=>{
+    const list=(targets||[]).filter(t=>t&&t.soId&&t.ifId);
+    if(!list.length)return 0;
+    const bySo=new Map();
+    list.forEach(t=>{if(!bySo.has(t.soId))bySo.set(t.soId,[]);bySo.get(t.soId).push(t)});
+    const declaredAll=[];const done=[];const skipped=[];const zeroByProduct=new Map();
+    let units=0;
+    bySo.forEach((group,soId)=>{
+      const so=sos.find(x=>x.id===soId);
+      if(!so){group.forEach(t=>skipped.push(t.ifId));return}
+      const cName=(cust.find(c=>c.id===so.customer_id)||{}).name||'';
+      let acc=safeItems(so);let touched=false;const closed=[];
+      group.forEach(t=>{
+        const res=buildNotHere({so:{...so,items:acc},ifId:t.ifId,itemIdx:t.itemIdx==null?null:t.itemIdx,sizes:t.sizes||null,by:cu?.id||'warehouse'});
+        if(!res){skipped.push(t.ifId);return}
+        acc=res.items;touched=true;units+=res.units;done.push(t.ifId);
+        declaredAll.push(...res.declared);
+        res.declared.forEach(d=>{
+          const prd=prod.find(x=>x.id===d.productId)||prod.find(x=>x.sku===d.sku);
+          if(!prd)return;
+          if(!zeroByProduct.has(prd.id))zeroByProduct.set(prd.id,{prd,sizes:new Set()});
+          zeroByProduct.get(prd.id).sizes.add(d.size);
+        });
+        [...new Set(res.declared.map(d=>d.itemIdx))].forEach(ii=>closed.push({ii,ifId:t.ifId}));
+        addWhAction({type:'not_here',pickId:t.ifId,soId,customer:cName,
+          sku:[...new Set(res.declared.map(d=>d.sku))].join(', '),
+          sizes:res.declared.map(d=>d.size+':'+d.qty).join(' '),
+          qty:res.units,by:cu?.id||'warehouse'});
+      });
+      if(!touched)return;
+      const updatedSO={...so,items:acc,jobs:recalcJobFulfillment(so,acc),updated_at:new Date().toLocaleString()};
+      savSO(updatedSO,{skipMerge:true});
+      // Cross-tab sync for every line this closed (same atomic per-line write the pull uses).
+      closed.forEach(({ii,ifId})=>{
+        const line=(acc[ii].pick_lines||[]).find(pl=>String(pl.pick_id||'').toUpperCase()===String(ifId).toUpperCase());
+        if(line&&line.status==='pulled'){
+          const pq={};pickSizeKeys(line).forEach(sz=>{pq[sz]=line[sz]||0});
+          _dbUpdatePickLineStatus(soId,ii,line.pick_id,'pulled',pq,pickPersistMeta(line));
+        }
+      });
     });
-    // House stock for every product/size just declared empty.
-    const bySku=new Map();
-    res.declared.forEach(d=>{
-      const prd=prod.find(x=>x.id===d.productId)||prod.find(x=>x.sku===d.sku);
-      if(!prd)return;
-      if(!bySku.has(prd.id))bySku.set(prd.id,{prd,sizes:new Set()});
-      bySku.get(prd.id).sizes.add(d.size);
-    });
+    if(done.length===0){nf('Nothing left to mark — those sizes are already closed','warn');return 0}
+    const label=done.length<=3?done.join(', '):done.length+' IFs';
     let zeroed=0;
-    bySku.forEach(({prd,sizes:szs})=>{
+    zeroByProduct.forEach(({prd,sizes:szs})=>{
       const z=zeroInventoryFor(prd,[...szs]);
       if(!z)return;
       zeroed+=Object.keys(z.deltas).length;
-      savI(prd.id,z.next,z.deltas,'Not here on '+ifId+' ('+soId+')','not_here');
+      savI(prd.id,z.next,z.deltas,'Not here on '+label,'not_here',undefined,{quiet:true});
     });
-    addWhAction({type:'not_here',pickId:ifId,soId,customer:(cust.find(c=>c.id===so.customer_id)||{}).name||'',
-      sku:[...new Set(res.declared.map(d=>d.sku))].join(', '),sizes:res.declared.map(d=>d.size+':'+d.qty).join(' '),
-      qty:res.units,by:cu?.id||'warehouse'});
-    nf('🚫 '+ifId+' — '+res.units+' unit'+(res.units===1?'':'s')+' marked not here'+(zeroed?' · stock zeroed for '+zeroed+' size'+(zeroed===1?'':'s'):'')+'. The rep now sees a short-pull to order.');
-    return true;
+    nf('🚫 '+label+' — '+units+' unit'+(units===1?'':'s')+' marked not here'+(zeroed?' · stock zeroed for '+zeroed+' size'+(zeroed===1?'':'s'):'')+'. The rep now sees a short-pull to order.'
+      +(skipped.length?' ('+skipped.length+' already closed)':''));
+    // Zeroing stock does not only affect the IF that was rejected: every OTHER open IF
+    // asking for the same product/size was counting on stock now known not to exist. Say so
+    // rather than letting the next pull discover it. Delayed so it doesn't race the toast above.
+    const over=findOverPromised({sos,declared:declaredAll,excludeIFs:done});
+    if(over.length){
+      const lines=over.slice(0,6).map(o=>o.soId+' '+(o.ifId||'IF')+' '+o.sku+' ('+o.sizes.map(x=>x.size+': needs '+x.need).join(', ')+')');
+      if(over.length>6)lines.push('…and '+(over.length-6)+' more');
+      setTimeout(()=>nf('⚠️ These open IFs were counting on that stock and can no longer be filled:\n'+lines.join('\n'),'error'),600);
+    }
+    return done.length;
   };
+  const markNotHere=(target)=>markNotHereBatch([target])>0;
 
   // ─── Mobile "Ready for decoration" pop-up ──────────────────────────────────────────────
   // Desktop shows a persistent green banner listing the ready job(s) and every garment line
@@ -21271,14 +21312,40 @@ export default function App(){
       {/* ── PULL & STAGE ── */}
       {whTab==='pull'&&<>
         {fPull.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>No open item fulfillment requests</div>:
+        (()=>{
+        // Bulk reject. Selection is intersected with the VISIBLE rows, so changing the search
+        // or rep filter can never leave a ticked-but-hidden IF in the batch.
+        const selectable=fPull.filter(t=>t.pickId);
+        const selected=selectable.filter(t=>whSelIFs.has(t.pickId));
+        const allOn=selectable.length>0&&selected.length===selectable.length;
+        const toggle=(pickId,on)=>setWhSelIFs(prev=>{const n=new Set(prev);if(on)n.add(pickId);else n.delete(pickId);return n});
+        return<>
+        {selected.length>0&&<div className="card" style={{marginBottom:8,borderLeft:'4px solid #b91c1c'}}>
+          <div style={{padding:'10px 14px',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+            <strong style={{fontSize:13}}>{selected.length} IF{selected.length===1?'':'s'} selected</strong>
+            <span style={{fontSize:11,color:'#64748b'}}>{selected.reduce((a,t)=>a+(t.needsPull||0),0)} open units</span>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setWhSelIFs(new Set())}>Clear</button>
+            <button className="btn btn-sm" style={{marginLeft:'auto',fontSize:11,background:'#fee2e2',color:'#b91c1c',border:'1px solid #fecaca',fontWeight:800,padding:'6px 14px'}}
+              onClick={()=>{
+                const units=selected.reduce((a,t)=>a+(t.needsPull||0),0);
+                const lines=selected.slice(0,10).map(t=>'• '+t.pickId+' — '+(t.cName||t.soId)+' · '+(t.needsPull||0)+'u');
+                if(selected.length>10)lines.push('…and '+(selected.length-10)+' more');
+                if(!window.confirm('Mark '+selected.length+' IF'+(selected.length===1?'':'s')+' NOT HERE? ('+units+' open unit'+(units===1?'':'s')+')\n\n'+lines.join('\n')+'\n\n• Every open line on these IFs closes short at 0\n• House stock drops to 0 for each of these sizes (QuickBooks follows on the next inventory post)\n• Each rep gets a short-pull item to raise a PO\n\nThe orders still ask for them — nothing is cancelled.'))return;
+                markNotHereBatch(selected.map(t=>({soId:t.soId,ifId:t.pickId})));
+                setWhSelIFs(new Set());
+              }}>🚫 Mark {selected.length} Not Here</button>
+          </div>
+        </div>}
         <div className="card"><div className="card-body" style={{padding:0}}>
           <table style={{fontSize:11}}><thead><tr>
+            <th style={{width:26,textAlign:'center'}}><input type="checkbox" title="Select every IF shown" checked={allOn} onChange={e=>{const on=e.target.checked;setWhSelIFs(prev=>{const n=new Set(prev);selectable.forEach(t=>{if(on)n.add(t.pickId);else n.delete(t.pickId)});return n})}}/></th>
             <th style={{width:20}}></th><th>SO#</th><th>IF#</th><th>Customer</th><th>SKU</th><th>Item</th>
             <th style={{textAlign:'center'}}>Bin</th><th style={{textAlign:'center'}}>Need</th><th style={{textAlign:'center'}}>On Hand</th><th>Sizes to Pull</th><th>Dest</th><th>Rep</th><th style={{textAlign:'center'}}>Days Open</th><th style={{width:60}}></th>
           </tr></thead><tbody>
           {fPull.map((t,ti)=>{const subs=t._subTasks||[t];const extraSkus=subs.length-1;
             return<tr key={ti} style={{cursor:'pointer',background:(t.urgent||t.openDays>7)?'#fef2f2':'',borderLeft:t.urgent?'3px solid #dc2626':''}}
             onClick={t.pickId?_rowNav({pg:'item_fulfillment',if:t.pickId},()=>openIF(t.pickId)):()=>setWhViewIF(t)}>
+            <td style={{textAlign:'center'}} onClick={e=>e.stopPropagation()}>{t.pickId?<input type="checkbox" checked={whSelIFs.has(t.pickId)} onChange={e=>toggle(t.pickId,e.target.checked)}/>:null}</td>
             <td>{t.urgent&&<span title={'Due in '+t.daysOut+'d'}>🔥</span>}{t.noDeco&&<span title="No decoration">📦</span>}</td>
             <td style={{fontWeight:700,color:'#1e40af',whiteSpace:'nowrap'}}>{t.soId}</td>
             <td style={{fontFamily:'monospace',fontWeight:700,fontSize:10,color:'#1e40af',whiteSpace:'nowrap'}}>{t.pickId||'—'}{extraSkus>0?<span title={subs.length+' items in this IF'} style={{marginLeft:4,fontSize:9,padding:'1px 5px',borderRadius:10,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>×{subs.length}</span>:null}</td>
@@ -21287,9 +21354,18 @@ export default function App(){
             <td style={{fontSize:10,color:'#64748b',maxWidth:120,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t._extraCount>0?(t.name+' & '+t._extraCount+' more'):(t.name+(t.color?' · '+t.color:''))}</td>
             <td style={{textAlign:'center'}}>{(()=>{if(subs.length>1)return<span style={{fontSize:9,color:'#94a3b8'}}>multi</span>;const bin=(prod.find(pp=>pp.sku===subs[0].sku)||{}).bin;return bin?<span style={{fontSize:10,fontWeight:800,padding:'1px 6px',borderRadius:4,background:'#cffafe',color:'#0e7490',whiteSpace:'nowrap'}}>{bin}</span>:<span style={{color:'#cbd5e1'}}>—</span>})()}</td>
             <td style={{textAlign:'center',fontWeight:800,color:'#d97706'}}>{t.needsPull}</td>
-            <td style={{textAlign:'center'}}>{(()=>{if(subs.length>1)return<span style={{fontSize:9,color:'#94a3b8'}}>multi</span>;const p=prod.find(pp=>pp.sku===subs[0].sku);if(!p||!p._inv)return<span style={{color:'#cbd5e1'}}>—</span>;
-              const total=Object.values(p._inv).reduce((a,v)=>a+(typeof v==='number'?v:0),0);
-              return<span style={{fontWeight:700,color:total>=t.needsPull?'#166534':total>0?'#d97706':'#dc2626'}}>{total}</span>})()}</td>
+            {/* On Hand, for the sizes this IF actually needs. This used to sum the product's
+                stock across EVERY size and compare that to the total needed, so a row needing
+                5 M with 0 M and 40 XL on the shelf read as a green 40 and somebody walked to
+                the bin for nothing. Multi-SKU rows are covered too (they read "multi" before). */}
+            <td style={{textAlign:'center'}}>{(()=>{
+              const cov=ifStockCoverage(t,sub=>prod.find(pp=>pp.id===sub.item?.product_id)||prod.find(pp=>pp.sku===sub.sku));
+              if(cov.need===0)return<span style={{color:'#cbd5e1'}}>—</span>;
+              const title=cov.short.length?('Short: '+cov.short.map(x=>(subs.length>1?x.sku+' ':'')+x.size+' need '+x.need+', have '+x.have).join(' · ')):'Every size needed is on the shelf';
+              return<span title={title} style={{fontWeight:700,color:cov.covered?'#166534':cov.have>0?'#d97706':'#dc2626'}}>
+                {cov.have}<span style={{color:'#94a3b8',fontWeight:600}}>/{cov.need}</span>
+                {cov.none&&<span style={{marginLeft:4,fontSize:9,fontWeight:800}}>none</span>}
+              </span>})()}</td>
             <td><div style={{display:'flex',gap:2,flexWrap:'wrap'}}>
               {t.szKeys.filter(s=>(t.sizes[s]||0)-(t.pulled[s]||0)>0).map(s=>{const need=(t.sizes[s]||0)-(t.pulled[s]||0);
                 return<span key={s} style={{padding:'1px 4px',borderRadius:3,fontSize:9,fontWeight:700,
@@ -21318,7 +21394,7 @@ export default function App(){
             </div></td>
           </tr>})}
           </tbody></table>
-        </div></div>}
+        </div></div></>})()}
       </>}
 
       {/* ── READY FOR DECO ── */}
