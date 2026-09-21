@@ -93,6 +93,27 @@ describe('brevo-proxy (SAFE-allowlisted, GATED)', () => {
     expect(res.body).not.toContain('brevo-secret-key');
   });
 
+  test('legacy save-guard alert is acknowledged but suppressed before Brevo', async () => {
+    process.env.BREVO_API_KEY = 'brevo-secret-key';
+    const { handler } = load('brevo-proxy.js');
+    global.fetch = jest.fn();
+    const body={sender:{name:'NSA Portal'},subject:'⚠️ NSA Portal — Save blocked on EST-2583'};
+    const res=await handler({httpMethod:'POST',queryStringParameters:null,body:JSON.stringify(body)});
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.body)).toMatchObject({suppressed:true,reason:'stale-portal-alert-client'});
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test('current save-guard alert is forwarded without the private protocol marker', async () => {
+    process.env.BREVO_API_KEY = 'brevo-secret-key';
+    const { handler } = load('brevo-proxy.js');
+    global.fetch = jest.fn(async () => ({status:201,text:async()=>JSON.stringify({messageId:'m2'})}));
+    const body={sender:{name:'NSA Portal'},subject:'⚠️ NSA Portal — Save blocked on EST-2583',portalAlertVersion:2};
+    const res=await handler({httpMethod:'POST',queryStringParameters:null,body:JSON.stringify(body)});
+    expect(res.statusCode).toBe(201);
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body)).not.toHaveProperty('portalAlertVersion');
+  });
+
   test('stats lookup is also pinned to api.brevo.com regardless of query params', async () => {
     process.env.BREVO_API_KEY = 'brevo-secret-key';
     const { handler } = load('brevo-proxy.js');

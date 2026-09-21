@@ -160,6 +160,11 @@ export const reviewTextBlock=()=>'Happy with how we did? A quick Google review m
 export const _smsUiEnabled = false;
 export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,senderName,senderEmail,replyTo,attachment})=>{
   try{const payload={sender:{name:senderName||'National Sports Apparel',email:senderEmail||'noreply@nationalsportsapparel.com'},to:Array.isArray(to)?to:[{email:to}],subject,htmlContent:htmlContent||undefined,textContent:textContent||undefined};
+    // Version save-guard mail at the transport boundary. The server strips this private field
+    // before forwarding to Brevo and suppresses unversioned save alerts from stale browser
+    // bundles. That gives a new deploy an immediate server-side kill switch for an old tab that
+    // is stuck behind preserved recovery entries and cannot safely reload itself yet.
+    if(senderName==='NSA Portal'&&/^⚠️ NSA Portal — (?:Save blocked|Save protection triggered|Save not persisting|data-loss alerts throttled)/.test(subject||''))payload.portalAlertVersion=2;
     if(replyTo)payload.replyTo={email:replyTo.email,name:replyTo.name||senderName||'National Sports Apparel'};
     if(cc){const ccArr=Array.isArray(cc)?cc:[cc];const _toEmails=new Set(payload.to.map(t=>(t.email||'').toLowerCase()));const _filtered=ccArr.filter(c=>c&&c.email&&!_toEmails.has(c.email.toLowerCase()));if(_filtered.length>0)payload.cc=_filtered}
     if(bcc){const bccArr=Array.isArray(bcc)?bcc:[bcc];if(bccArr.length>0)payload.bcc=bccArr}

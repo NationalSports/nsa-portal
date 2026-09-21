@@ -3937,7 +3937,7 @@ const _outboxGate=(entry,dbRow)=>{
   // deliberate delete, so that's a conflict card.
   if(!dbRow)return entry.baseVersion==null?'apply':'conflict';
   if(_outboxMatchesRow(entry.payload,dbRow,entry.table))return 'drop';
-  if(entry.table==='estimates'&&_outboxMissingOnlyDecorations(entry.payload,dbRow))return 'drop';
+  if((entry.table==='estimates'||entry.table==='sales_orders')&&_outboxMissingOnlyDecorations(entry.payload,dbRow))return 'drop';
   // The payload already contains the local append-only receipt(s); applying it is safe because
   // `_messageOutboxSameRecord` proves every immutable message field still matches the cloud row.
   if(entry.table==='messages'&&_messageOutboxSameRecord(entry.payload,dbRow))return 'apply';
