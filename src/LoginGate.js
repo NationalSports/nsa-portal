@@ -2,8 +2,9 @@
 import React, { useState, useEffect } from 'react';
 import { withStartupDeadline } from './lib/startupDeadline';
 import { NSA } from './constants';
-import { authStorageDegraded } from './lib/authStorage';
+import { authStorageDegraded, _isQuotaError } from './lib/authStorage';
 
+const STORAGE_FULL_NOTICE="Your browser's storage is full. You can still sign in, but you'll be signed out on every refresh until it's cleared. On iPhone/iPad: Settings \u2192 Safari \u2192 Advanced \u2192 Website Data \u2192 remove this site.";
 const STORAGE_FULL_MSG="Your browser's storage is full, so your sign-in could not be saved. On iPhone/iPad: Settings → Safari → Advanced → Website Data → remove this site, then sign in again.";
 const ADMIN_PW_HASH=(process.env.REACT_APP_ADMIN_PW_HASH||'').trim();
 const hashPassword=async(pw)=>{const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(pw));return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('')};
@@ -24,6 +25,9 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
   // held Enter key can both enter a handler before the button re-renders disabled, firing duplicate
   // auth requests that trip Supabase's rate limit and lock the user out. A ref flips synchronously.
   const submitting=React.useRef(false);
+  // Storage probe, once per mount. A full/blocked store no longer blocks sign-in (the auth adapter
+  // keeps the session in memory), but that session will not survive a refresh — say so up front.
+  const[storageFull]=useState(()=>{try{return authStorageDegraded()}catch{return false}});
 
   // Check for expired-link hash or existing Supabase session on mount
   useEffect(()=>{
@@ -103,10 +107,12 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
     }catch(err){
       // A THROWN/rejected auth promise (offline, DNS/CORS, unexpected error shape) used to escape the
       // handler, so setLoading(false) never ran — a permanent "Signing in..." spinner with no message.
-      // A full/blocked browser store throws a DOMException ("The quota has been exceeded.") from
-      // gotrue-js's session write — the server sign-in already SUCCEEDED. Say what to do about it
-      // instead of showing the raw message, which reads like the password was wrong.
-      setError(authStorageDegraded()
+      // A full/blocked browser store used to throw a DOMException ("The quota has been exceeded.")
+      // from gotrue-js's session write while the server sign-in had already SUCCEEDED. The storage
+      // adapter now absorbs that (session kept in memory), so this branch is a backstop: explain
+      // storage only for an actual quota error, and never blame storage for a network failure that
+      // merely happened on a full device.
+      setError(_isQuotaError(err)
         ?STORAGE_FULL_MSG
         :((err&&err.message)||'Sign-in failed. Please check your connection and try again.'));
     }finally{setLoading(false);submitting.current=false}
@@ -304,6 +310,7 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
                 onFocus={e=>e.target.style.borderColor='#3b82f6'} onBlur={e=>e.target.style.borderColor='#d1d5db'}/>
             </>}
 
+            {storageFull&&!error&&<div style={{color:'#92400e',fontSize:12,marginTop:8,marginBottom:4,padding:'8px 12px',background:'#fffbeb',borderRadius:8,lineHeight:1.45}}>{STORAGE_FULL_NOTICE}</div>}
             {error&&<div style={{color:'#dc2626',fontSize:13,marginTop:8,marginBottom:4,padding:'8px 12px',background:'#fef2f2',borderRadius:8,animation:'shake 0.3s'}}>{error}</div>}
 
             <button type="submit" disabled={loading}
