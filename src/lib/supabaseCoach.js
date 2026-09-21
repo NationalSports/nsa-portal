@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './requestBreaker';
+import { resilientAuthStorage } from './authStorage';
 
 const supabaseUrl = process.env.REACT_APP_SUPABASE_URL || 'https://your-project.supabase.co';
 const supabaseAnonKey = process.env.REACT_APP_SUPABASE_ANON_KEY || 'your-anon-key';
@@ -22,7 +23,7 @@ const _coachAuthLock = (() => {
 // portal's session in localStorage, which would break staff-only API calls.
 export const supabaseCoach = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    storage: typeof window !== 'undefined' ? window.localStorage : undefined,
+    storage: resilientAuthStorage,
     storageKey: 'sb-nsa-coach-auth-token',
     autoRefreshToken: true,
     persistSession: true,
