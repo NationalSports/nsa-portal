@@ -3386,14 +3386,17 @@ const _appStateDirty=(key)=>Date.now()<(_appStateDirtyUntil[key]||0);
 // compare-and-swap save path for the money keys (labor_rates, comm_overrides) — migration 00181.
 const _appStateVersions={};
 // Direct pick_line status update — atomic, bypasses SO delete-and-reinsert for fast cross-tab sync
-const _dbUpdatePickLineStatus=async(soId,itemIdx,pickId,status,pulledQtys)=>{
+const _dbUpdatePickLineStatus=async(soId,itemIdx,pickId,status,pulledQtys,meta)=>{
   if(!supabase)return;
   try{
     // Find the so_item_id for this item index
     const{data:items}=await supabase.from('so_items').select('id').eq('so_id',soId).order('item_index');
     const itemRow=items?.[itemIdx];if(!itemRow)return;
-    // Update the pick_line status and sizes — pulled_at goes into sizes JSONB (not a top-level column)
-    const sizes={...pulledQtys,pulled_at:status==='pulled'?new Date().toLocaleString():undefined};
+    // Update the pick_line status and sizes — pulled_at goes into sizes JSONB (not a top-level column).
+    // This REPLACES the sizes JSONB, and the full save puts every non-column pick field in there too
+    // (`not_here`, which records what the shelf did not have). Anything the caller wants kept has to
+    // be handed back in `meta`, or this write erases it until the next full save happens to rewrite it.
+    const sizes={...pulledQtys,...(meta||{}),pulled_at:status==='pulled'?new Date().toLocaleString():undefined};
     const{error}=await supabase.from('so_item_pick_lines').update({status,sizes}).eq('so_item_id',itemRow.id).eq('pick_id',pickId);
     if(error)console.error('[DB] Direct pick_line update failed:',error.message);
     else{console.log('[DB] Direct pick_line update:',pickId,'→',status);

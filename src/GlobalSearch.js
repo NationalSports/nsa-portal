@@ -82,7 +82,7 @@ export default React.memo(function GlobalSearch({
   const seeAll=()=>{const q=query.trim();if(q.length<2)return;setOpen(false);onSeeAll(q)};
   const kinds=['customer','order','estimate','webstore','product','txn','pick','po','job','invoice','vendor'];
   const total=kinds.reduce((n,k)=>n+(grouped[k]?.length||0),0);
-  const hrefFor=(kind,v)=>kind==='customer'?newTabHref({cust:v.id}):kind==='estimate'?newTabHref({est:v.id}):kind==='order'?newTabHref({so:v.id}):kind==='product'?newTabHref({prod:v.id}):kind==='invoice'?newTabHref({inv:v.id}):kind==='vendor'?newTabHref({vend:v.id}):(kind==='pick'||kind==='po'||kind==='job')&&v.so_id?newTabHref({so:v.so_id}):null;
+  const hrefFor=(kind,v)=>kind==='customer'?newTabHref({cust:v.id}):kind==='estimate'?newTabHref({est:v.id}):kind==='order'?newTabHref({so:v.id}):kind==='product'?newTabHref({prod:v.id}):kind==='invoice'?newTabHref({inv:v.id}):kind==='vendor'?newTabHref({vend:v.id}):kind==='pick'&&v.pick_id?newTabHref({pg:'item_fulfillment',if:v.pick_id}):(kind==='po'||kind==='job')&&v.so_id?newTabHref({so:v.so_id}):null;
   const row=(kind,v)=>{
     if(kind==='customer')return <><strong>{v.name}</strong>{v.alpha_tag&&<span className="badge badge-gray">{v.alpha_tag}</span>}</>;
     if(kind==='order'||kind==='estimate')return <><strong style={{color:'#1e40af'}}>{v.id}</strong><span>{v.memo}</span>{index.customerById.get(v.customer_id)&&<small>{index.customerById.get(v.customer_id).alpha_tag||index.customerById.get(v.customer_id).name}</small>}</>;
