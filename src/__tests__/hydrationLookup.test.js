@@ -14,8 +14,8 @@ const source=fs.readFileSync(path.join(__dirname,'..','lib','dbEngine.js'),'utf8
 const body=source.slice(source.indexOf('    // Index child collections once per load;'),source.indexOf('    // Invoices: attach payments'));
 const names=['estRaw','estItems','estDecos','estArt','soRaw','soItems','soDecos','soPicks','soPOs','soJobs','soArt','soFirm'];
 function hydrate(data,lookup=rowsByKey){
-  return Function(...names,'rowsByKey','_loadArtRow','_decoPosGuard','_lastLoadTimedOut','_unconfirmedLoadTables','_truncatedTables','_everHydratedItems',body+'return {estimates,sales_orders};')(
-    ...names.map(n=>data[n]||[]),lookup,r=>r,()=>({}),new Set(),new Set(),new Set(),new Set());
+  return Function(...names,'rowsByKey','_loadArtRow','_decoPosGuard','_lastLoadTimedOut','_unconfirmedLoadTables','_truncatedTables','_everHydratedItems','_loadTableUntrusted',body+'return {estimates,sales_orders};')(
+    ...names.map(n=>data[n]||[]),lookup,r=>r,()=>({}),new Set(),new Set(),new Set(),new Set(),()=>false);
 }
 // Compare actual reconstruction against filter semantics, not just helper calls:
 // duplicate-item recovery, sorting, child attachment, and carry-over guards must agree.

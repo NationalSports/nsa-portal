@@ -20,7 +20,7 @@ import { createSaveRetryCoordinator } from './saveRetryCoordinator';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './requestBreaker';
 import { _sbAuthLock } from './supabase';
-import { resolveOutgoingLineIds } from './orderLineIdentity';
+import { matchingClientLine, resolveOutgoingLineIds } from './orderLineIdentity';
 import { rowsByKey } from './rowLookup';
 import { _pick, _pickSoItem, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, _vendCols, _firmDateCols, _omgStoreCols } from '../constants';
 import { itemEditReconciles, itemsWithWipedQty, decorationShrinkConflicts, unaccountedDroppedItems, jobAllRoutedOutside } from '../businessLogic';
@@ -85,6 +85,7 @@ const _unconfirmedLoadTables=new Set();
 // Anything aggregating over these arrays (Reports especially) is silently missing rows and
 // must warn the user. Set/cleared per table on each fetch so partial reloads self-correct.
 const _truncatedTables=new Set();
+const _loadTableUntrusted=table=>_lastLoadTimedOut.has(table)||_unconfirmedLoadTables.has(table)||_truncatedTables.has(table);
 // Sticky per-entity hydration: ids of SOs/estimates whose items loaded cleanly at least once this
 // session. A later flaky/timed-out refresh keeps the in-memory items but can flip the per-load
 // _itemsHydrated flag to false; the save guards also honor this set so a legitimate edit/addition on a
@@ -606,8 +607,8 @@ const _dbLoad = async (opts={}) => {
         const{id:_,estimate_id:__,item_index:___,...rest}=item;return{...rest,decorations}});
       // _itemsHydrated: true only when estimate_items loaded cleanly this session. Lets save guards tell a
       // deliberate rep deletion (hydrated→empty) apart from items vanishing on a timed-out load (never hydrated).
-      const _estItemsHydrated=!_lastLoadTimedOut.has('estimate_items');if(_estItemsHydrated)_everHydratedItems.add(est.id);
-      return{...est,items,art_files,..._decoPosGuard(est),_recoveryHydrated:!['estimates','estimate_items','estimate_item_decorations','estimate_art_files'].some(t=>_lastLoadTimedOut.has(t)||_unconfirmedLoadTables.has(t)||_truncatedTables.has(t)),_itemsHydrated:_estItemsHydrated,_decosHydrated:!_lastLoadTimedOut.has('estimate_item_decorations')&&!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files'),_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
+      const _estItemsHydrated=!_loadTableUntrusted('estimate_items');if(_estItemsHydrated)_everHydratedItems.add(est.id);
+      return{...est,items,art_files,..._decoPosGuard(est),_recoveryHydrated:!['estimates','estimate_items','estimate_item_decorations','estimate_art_files'].some(_loadTableUntrusted),_itemsHydrated:_estItemsHydrated,_decosHydrated:!_loadTableUntrusted('estimate_item_decorations')&&!_loadTableUntrusted('estimate_items'),_artHydrated:!_loadTableUntrusted('estimate_art_files'),_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
     // Sales Orders: attach items (with decorations, pick_lines, po_lines), art_files, firm_dates, jobs
     const sales_orders=soRaw.map(so=>{
       // Recycled-number carry-over guard: a reused SO id can inherit jobs/art from the order that
@@ -675,9 +676,9 @@ const _dbLoad = async (opts={}) => {
       const _hydratedPoIds=[...new Set(items.flatMap(it=>(it.po_lines||[]).map(p=>p.po_id).filter(Boolean)))];
       // _hydratedPickIds: same idea for pick lines, keyed by pick_id.
       const _hydratedPickIds=[...new Set(items.flatMap(it=>(it.pick_lines||[]).map(p=>p.pick_id).filter(Boolean)))];
-      const _soItemsHydrated=!_lastLoadTimedOut.has('so_items');if(_soItemsHydrated)_everHydratedItems.add(so.id);
-      const _decosHydrated=!_lastLoadTimedOut.has('so_item_decorations')&&!_lastLoadTimedOut.has('so_items');
-      return{...so,items,art_files,firm_dates,jobs,..._decoPosGuard(so),_recoveryHydrated:!['sales_orders','so_items','so_item_decorations','so_item_po_lines','so_item_pick_lines','so_jobs','so_art_files','so_firm_dates'].some(t=>_lastLoadTimedOut.has(t)||_unconfirmedLoadTables.has(t)||_truncatedTables.has(t)),_itemsHydrated:_soItemsHydrated,_decosHydrated,_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:_rawSoArt.map(a=>a.id).filter(Boolean)}});
+      const _soItemsHydrated=!_loadTableUntrusted('so_items');if(_soItemsHydrated)_everHydratedItems.add(so.id);
+      const _decosHydrated=!_loadTableUntrusted('so_item_decorations')&&!_loadTableUntrusted('so_items');
+      return{...so,items,art_files,firm_dates,jobs,..._decoPosGuard(so),_recoveryHydrated:!['sales_orders','so_items','so_item_decorations','so_item_po_lines','so_item_pick_lines','so_jobs','so_art_files','so_firm_dates'].some(_loadTableUntrusted),_itemsHydrated:_soItemsHydrated,_decosHydrated,_artHydrated:!_loadTableUntrusted('so_art_files'),_jobsHydrated:!_loadTableUntrusted('so_jobs'),_posHydrated:!_loadTableUntrusted('so_item_po_lines')&&!_loadTableUntrusted('so_items'),_hydratedPoIds,_picksHydrated:!_loadTableUntrusted('so_item_pick_lines')&&!_loadTableUntrusted('so_items'),_hydratedPickIds,_hydratedArtIds:_rawSoArt.map(a=>a.id).filter(Boolean)}});
     // Invoices: attach payments and items
     const invoices=invRaw.map(inv=>{
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
@@ -702,21 +703,22 @@ const _dbLoad = async (opts={}) => {
     // po_lines, and if the poll/realtime reload doesn't bail here it overwrites the snapshot with un-hydrated SOs,
     // diffing every SO as "changed" → a mass background re-save whose stale (childless) payloads trip the per-SO
     // restore guard and fire one data-loss alert per SO (the 2026-06-30 ~340-email storm).
-    const _decoTimedOut=_lastLoadTimedOut.has('estimate_item_decorations')||_lastLoadTimedOut.has('so_item_decorations')||_lastLoadTimedOut.has('so_items')||_lastLoadTimedOut.has('estimate_items')||_lastLoadTimedOut.has('so_jobs')||_lastLoadTimedOut.has('so_art_files')||_lastLoadTimedOut.has('estimate_art_files')||_lastLoadTimedOut.has('so_item_pick_lines')||_lastLoadTimedOut.has('so_item_po_lines');
+    const _loadsEstimates=!only||only.has('estimates');const _loadsSOs=!only||only.has('sales_orders');
+    const _decoTimedOut=(_loadsEstimates&&['estimate_item_decorations','estimate_items','estimate_art_files'].some(_loadTableUntrusted))||(_loadsSOs&&['so_item_decorations','so_items','so_jobs','so_art_files','so_item_pick_lines','so_item_po_lines'].some(_loadTableUntrusted));
     // Parent-table timeout flag (parallel to _decoTimedOut, which only covers order/estimate CHILDREN).
     // The `customers` parent can itself time out under load and come back EMPTY with error:null (408) —
     // hasData stays true off sales_orders, so the load looks successful and the empty list would blank
     // every customer to "Unknown". The initial-load apply reads this to keep the cached list instead.
-    const _custTimedOut=_lastLoadTimedOut.has('customers');
+    const _custTimedOut=(!only||only.has('customers'))&&_loadTableUntrusted('customers');
     // Same gap for the other order-book PARENT tables (2026-08-18, the "rep's portal shows zero SOs /
     // zero counts on every customer" report): a timed-out sales_orders/estimates/invoices/messages
     // query returns EMPTY with error:null (408), hasData stays true off customers, and the apply paths
     // would replace both state and the _diffSave snapshot with an empty order book. Callers use these
     // flags to keep cached data (initial load) or skip the apply entirely (poll / realtime reload).
-    const _soTimedOut=_lastLoadTimedOut.has('sales_orders');
-    const _estTimedOut=_lastLoadTimedOut.has('estimates');
-    const _invTimedOut=_lastLoadTimedOut.has('invoices');
-    const _msgTimedOut=_lastLoadTimedOut.has('messages');
+    const _soTimedOut=_loadsSOs&&_loadTableUntrusted('sales_orders');
+    const _estTimedOut=_loadsEstimates&&_loadTableUntrusted('estimates');
+    const _invTimedOut=(!only||only.has('invoices'))&&_loadTableUntrusted('invoices');
+    const _msgTimedOut=(!only||only.has('messages'))&&_loadTableUntrusted('messages');
     // Aggregate for the "don't trust this load" call sites (poll skip, realtime skip, the seed
     // branch's is-the-DB-really-empty check) so the table list lives HERE, next to where the flags
     // are set, instead of being hand-synced across App.js call sites.
@@ -1143,7 +1145,7 @@ const _dbSaveEstimateInner = async (est) => {
     // live DB counts with the client and require the exact before/after intent stamped by the editor's Remove
     // action. A read error fails closed; proceeding with unknown DB counts would make this guard illusory.
     if(oldItemIds.length&&items?.length){
-      const _oldDecoResp=await _retryNet(()=>supabase.from('estimate_item_decorations').select('estimate_item_id').in('estimate_item_id',oldItemIds));
+      const _oldDecoResp=await _retryNet(()=>supabase.from('estimate_item_decorations').select('*').in('estimate_item_id',oldItemIds));
       if(_oldDecoResp.error){
         console.error('[DB] SAFETY: Blocking estimate save — failed to verify decorations for',est.id,':',_oldDecoResp.error.message);
         if(_dbNotify)_dbNotify('Save blocked — could not verify decoration data. Please reload the page.','error');
@@ -1151,7 +1153,21 @@ const _dbSaveEstimateInner = async (est) => {
         return false;
       }
       const _oldDecoByItem=new Map();(_oldDecoResp.data||[]).forEach(d=>_oldDecoByItem.set(d.estimate_item_id,(_oldDecoByItem.get(d.estimate_item_id)||0)+1));
-      const _decoConflicts=decorationShrinkConflicts(items,_oldEstItems,_oldDecoByItem,est._decoDeleteIntents);
+      let _decoConflicts=decorationShrinkConflicts(items,_oldEstItems,_oldDecoByItem,est._decoDeleteIntents);
+      // A background/poll copy with ZERO decorations is not a deletion intent. This exact stale
+      // shape repeatedly hit the same Mo estimates (Sep 17 + Sep 21), correctly blocked every
+      // write, then flooded the conflict banner and admin email. We already hold an authoritative
+      // per-estimate DB read here: restore only completely-missing decoration arrays, preserve every
+      // other client field, and continue through the atomic save. Partial/ambiguous shrinkage and
+      // foreground saves remain blocked below.
+      if(_bgSync&&_decoConflicts.length&&_decoConflicts.every(c=>c.newCount===0)){
+        const restored=_restoreMissingBackgroundDecorations(items,_oldEstItems,_oldDecoResp.data||[],_decoConflicts);
+        if(restored){
+          est._decosHydrated=true;
+          _decoConflicts=decorationShrinkConflicts(items,_oldEstItems,_oldDecoByItem,est._decoDeleteIntents);
+          if(!_decoConflicts.length)console.warn('[DB] healed missing background decorations for',est.id,'('+restored+' item'+(restored===1?'':'s')+')');
+        }
+      }
       if(_decoConflicts.length){
         const c=_decoConflicts[0];const label=c.sku||c.name||('item '+c.item_index);
         console.error('[DB] SAFETY: Blocking estimate save — '+label+' decorations would shrink without matching delete intent ('+c.oldCount+' → '+c.newCount+') for',est.id);
@@ -3304,7 +3320,16 @@ const _dbSaveMessageInner = async (m) => {
     if(hasExtra){await supabase.from('messages').upsert(extraRow,{onConflict:'id'}).then(r=>{if(r.error)console.warn('[DB] message extras skipped:',r.error.message)})}
     if(m.read_by?.length){
       const reads=m.read_by.map(uid=>({message_id:m.id,user_id:uid}));
-      await supabase.from('message_reads').upsert(reads,{onConflict:'message_id,user_id'});
+      const{error:readErr}=await supabase.from('message_reads').upsert(reads,{onConflict:'message_id,user_id'});
+      // A message's body and its read receipts live in separate tables. Treating a failed
+      // receipt write as success clears the durable outbox even though "mark read" never
+      // reached the cloud. Keep it retryable instead; boot reconciliation below can safely
+      // union these append-only receipts without overwriting the message itself.
+      if(readErr){
+        if(_isAuthError(readErr))return _handleAuthSaveFailure(m.id,readErr);
+        console.error('[DB] save message reads:',readErr.message);
+        _dbSaveFailedIds.add(m.id);_recordSaveError(m.id,'message_reads: '+readErr.message);_persistFailedIds();return false;
+      }
     }
     _dbSaveFailedIds.delete(m.id);_clearSaveError(m.id);_persistFailedIds();return true;
   }catch(e){console.error('[DB] save message:',e);_dbSaveFailedIds.add(m.id);_recordSaveError(m.id,e.message||String(e));_persistFailedIds();return false}
@@ -3867,12 +3892,47 @@ const _outboxMatchesRow=(payload,row,table)=>{if(!payload||!row)return false;
   if(table==='sales_orders'||table==='estimates')return savedDocumentMatchesDraft(payload,row);
   for(const k of Object.keys(payload)){if(k.startsWith('_'))continue;if(_OUTBOX_IGNORE_KEYS.has(k))continue;if(table==='customers'&&_CUST_CHILD_KEYS.includes(k))continue;if(!_outboxValEq(payload[k],row[k]))return false}
   return true};
+// Messages are immutable after posting; the only normal update is the append-only `read_by`
+// projection from message_reads. Unlike documents, messages intentionally have no `_version`.
+// If the persisted message fields still identify the same cloud row, a differing read list is
+// therefore safe to reconcile by union instead of manufacturing one conflict card per receipt.
+const _messageOutboxSameRecord=(payload,row)=>{if(!payload||!row)return false;
+  return _msgCols.every(k=>!(k in payload)||_outboxValEq(payload[k],row[k]));
+};
+const _mergeMessageOutboxPayload=(payload,row)=>({...payload,...row,read_by:[...new Set([...(row?.read_by||[]),...(payload?.read_by||[])])]});
+// Recognize the exact stale-snapshot shape behind the Sep 17/Sep 21 alert storms. This is
+// deliberately narrower than a general merge: every non-decoration field must already match the
+// authoritative row, and only wholly-empty decoration arrays may be repaired. That lets boot drop
+// existing false recovery cards without hiding a real field edit or a partial decoration deletion.
+const _outboxMissingOnlyDecorations=(payload,row)=>{if(!payload?.items||!row?.items)return false;
+  const healed={...payload,items:payload.items.map(item=>({...item,decorations:[...(item.decorations||[])]}))};let restored=0;
+  for(const dbItem of row.items){const clientItem=matchingClientLine(dbItem,healed.items);if(!clientItem)continue;
+    if((dbItem.decorations||[]).length&&(clientItem.decorations||[]).length===0){clientItem.decorations=dbItem.decorations;restored++}}
+  return restored>0&&savedDocumentMatchesDraft(healed,row);
+};
+// Restore only the all-missing decoration shape proven safe by an authoritative per-estimate read.
+// Used by the background save guard above and exported for a regression test.
+const _restoreMissingBackgroundDecorations=(items,dbItems,dbDecoRows,conflicts)=>{let restored=0;
+  (conflicts||[]).forEach(c=>{
+    if(c.newCount!==0)return;
+    const dbItem=(dbItems||[]).find(it=>it.item_index===c.item_index);const clientItem=dbItem&&matchingClientLine(dbItem,items||[]);
+    if(!dbItem||!clientItem||(clientItem.decorations||[]).length)return;
+    const serverDecos=(dbDecoRows||[]).filter(d=>d.estimate_item_id===dbItem.id).sort((a,b)=>(a.deco_index||0)-(b.deco_index||0)).map(d=>{const{id:_,estimate_item_id:__,deco_index:___,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
+    if(serverDecos.length!==c.oldCount)return;
+    clientItem.decorations=serverDecos;restored++;
+  });
+  return restored;
+};
 const _outboxGate=(entry,dbRow)=>{
   // Row absent: a never-saved new entity (no base version) is safe to apply; a row that HAD a
   // version existed on the server and was deleted there — silently resurrecting it would undo a
   // deliberate delete, so that's a conflict card.
   if(!dbRow)return entry.baseVersion==null?'apply':'conflict';
   if(_outboxMatchesRow(entry.payload,dbRow,entry.table))return 'drop';
+  if(entry.table==='estimates'&&_outboxMissingOnlyDecorations(entry.payload,dbRow))return 'drop';
+  // The payload already contains the local append-only receipt(s); applying it is safe because
+  // `_messageOutboxSameRecord` proves every immutable message field still matches the cloud row.
+  if(entry.table==='messages'&&_messageOutboxSameRecord(entry.payload,dbRow))return 'apply';
   const v=dbRow._version;const dbV=(v!=null&&isFinite(Number(v)))?Number(v):null;
   if(entry.baseVersion==null||dbV==null)return 'conflict';// no version info on either side → card, never silent overwrite
   return dbV<=entry.baseVersion?'apply':'conflict';
@@ -4053,6 +4113,9 @@ export {
   _rememberSaveRetry,
   _outboxGate,
   _outboxMatchesRow,
+  _mergeMessageOutboxPayload,
+  _outboxMissingOnlyDecorations,
+  _restoreMissingBackgroundDecorations,
   _emitOutboxConflict,
   _onFailedIdsChange,
   _persistFailedIds,

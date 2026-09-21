@@ -7,7 +7,7 @@
  * must resolve to 'conflict' (surface a card), never to a silent apply.
  */
 import {
-  _outboxGate, _outboxMatchesRow,
+  _outboxGate, _outboxMatchesRow, _mergeMessageOutboxPayload, _outboxMissingOnlyDecorations, _restoreMissingBackgroundDecorations,
   _outboxAdd, _outboxRemove, _outboxRemoveById, _outboxList,
   _outboxWrap, _dbSaveFailedIds,
   _emitOutboxConflict, _setOnOutboxConflict,
@@ -66,6 +66,29 @@ describe('_custDiffCmp (customer autosave phantom-change guard)', () => {
   });
 });
 
+describe('background decoration snapshot healing', () => {
+  test('restores authoritative rows only when the client decoration array is completely empty', () => {
+    const items=[{line_id:'line-1',sku:'TEE',decorations:[]}];
+    const dbItems=[{id:'db-item-1',item_index:0,line_id:'line-1',sku:'TEE'}];
+    const rows=[
+      {id:'d1',estimate_item_id:'db-item-1',deco_index:1,type:'embroidery',art_tbd_type:'new'},
+      {id:'d0',estimate_item_id:'db-item-1',deco_index:0,type:'screen_print',art_file_id:'art-1'},
+    ];
+    expect(_restoreMissingBackgroundDecorations(items,dbItems,rows,[{item_index:0,oldCount:2,newCount:0}])).toBe(1);
+    expect(items[0].decorations).toEqual([
+      expect.objectContaining({type:'screen_print',art_file_id:'art-1'}),
+      expect.objectContaining({type:'embroidery',art_file_id:'__tbd'}),
+    ]);
+    expect(items[0].decorations[0]).not.toHaveProperty('estimate_item_id');
+  });
+  test('does not touch a partial shrink or an incomplete server read', () => {
+    const items=[{sku:'TEE',decorations:[{type:'screen_print'}]}];
+    const dbItems=[{id:'db-item-1',item_index:0,sku:'TEE'}];
+    expect(_restoreMissingBackgroundDecorations(items,dbItems,[],[{item_index:0,oldCount:2,newCount:1}])).toBe(0);
+    expect(items[0].decorations).toEqual([{type:'screen_print'}]);
+  });
+});
+
 describe('_outboxGate (the load-bearing boot decision)', () => {
   const entry = (baseVersion, payload = { id: 'SO-1', memo: 'edit' }) =>
     ({ table: 'sales_orders', id: 'SO-1', payload, baseVersion, ts: 1 });
@@ -95,6 +118,36 @@ describe('_outboxGate (the load-bearing boot decision)', () => {
       payload: { id: 'c-1', name: 'Helix HS', _version: 3, promo_programs: [{ id: 'pp1', fixed_amount: 6001 }] } };
     const dbRow = { id: 'c-1', name: 'Helix HS', _version: 5, promo_programs: [{ id: 'pp1', fixed_amount: '6001' }] };
     expect(_outboxGate(en, dbRow)).toBe('drop');
+  });
+  test('message read receipts reconcile without an impossible version check', () => {
+    const payload = { id:'m1', author_id:'rep-1', text:'Hello', ts:'2026-09-21T08:59:49Z', read_by:['rep-1','mike'] };
+    const row = { id:'m1', author_id:'rep-1', text:'Hello', ts:'2026-09-21T08:59:49Z', read_by:['rep-1'], created_at:'2026-09-21T08:59:49Z' };
+    expect(_outboxGate({ table:'messages', id:'m1', payload, baseVersion:null, ts:1 },row)).toBe('apply');
+    expect(_mergeMessageOutboxPayload(payload,row)).toMatchObject({
+      id:'m1', text:'Hello', created_at:'2026-09-21T08:59:49Z', read_by:['rep-1','mike'],
+    });
+  });
+  test('message body mismatch still requires review', () => {
+    const payload = { id:'m1', author_id:'rep-1', text:'Local body', read_by:['mike'] };
+    const row = { id:'m1', author_id:'rep-1', text:'Different cloud body', read_by:[] };
+    expect(_outboxGate({ table:'messages', id:'m1', payload, baseVersion:null, ts:1 },row)).toBe('conflict');
+  });
+  test('stale estimate snapshot missing every decoration drops when all other content matches', () => {
+    const payload = { id:'EST-1', status:'open', items:[{line_id:'line-1',sku:'A',quantity:12,decorations:[]}], _version:7 };
+    const row = { id:'EST-1', status:'open', items:[{line_id:'line-1',sku:'A',quantity:12,decorations:[{method:'Screen Print',location:'Front'}]}],
+      _version:8, _recoveryHydrated:true, _itemsHydrated:true, _decosHydrated:true, _artHydrated:true };
+    expect(_outboxMissingOnlyDecorations(payload,row)).toBe(true);
+    expect(_outboxGate({table:'estimates',id:'EST-1',payload,baseVersion:7,ts:1},row)).toBe('drop');
+  });
+  test('missing decorations do not hide another estimate edit or a partial shrink', () => {
+    const row = { id:'EST-1', status:'open', items:[{line_id:'line-1',sku:'A',quantity:12,decorations:[{method:'Print'},{method:'Embroidery'}]}],
+      _version:8, _recoveryHydrated:true, _itemsHydrated:true, _decosHydrated:true, _artHydrated:true };
+    const changed = { id:'EST-1', status:'approved', items:[{line_id:'line-1',sku:'A',quantity:12,decorations:[]}], _version:7 };
+    const partial = { id:'EST-1', status:'open', items:[{line_id:'line-1',sku:'A',quantity:12,decorations:[{method:'Print'}]}], _version:7 };
+    expect(_outboxMissingOnlyDecorations(changed,row)).toBe(false);
+    expect(_outboxMissingOnlyDecorations(partial,row)).toBe(false);
+    expect(_outboxGate({table:'estimates',id:'EST-1',payload:changed,baseVersion:7,ts:1},row)).toBe('conflict');
+    expect(_outboxGate({table:'estimates',id:'EST-1',payload:partial,baseVersion:7,ts:1},row)).toBe('conflict');
   });
 });
 
