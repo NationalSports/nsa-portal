@@ -28,6 +28,7 @@ import { soItemKey } from '../safeHelpers';
 import { authFetch } from '../utils';
 import { consolidateOmgProductRows } from './storeSkuGrouping';
 import { preserveAppliedInvoiceSummary } from './invoicePaymentReconciliation';
+import { resilientAuthStorage } from './authStorage';
 
 // ─── Supabase Setup ───
 const _sbUrl = process.env.REACT_APP_SUPABASE_URL || '';
@@ -46,7 +47,7 @@ try {
   if (_sbUrl && _sbKey && _sbUrl.startsWith('https://') && !_sbUrl.includes('your-project')) {
     supabase = createClient(_sbUrl, _sbKey, {
       auth: {
-        storage: typeof window !== 'undefined' ? window.localStorage : undefined,
+        storage: resilientAuthStorage,
         autoRefreshToken: true,
         persistSession: true,
         detectSessionInUrl: true,

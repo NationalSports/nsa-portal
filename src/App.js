@@ -22,6 +22,7 @@ import { normalizeOmgSize } from './lib/omgReport';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './lib/requestBreaker';
 import { _sbAuthLock } from './lib/supabase';
+import { authStorageDegraded } from './lib/authStorage';
 import { fetchPublicInventory } from './lib/webstorePublicData';
 import { startDeployReloadWatcher } from './deployReload';
 import { loadStripe } from '@stripe/stripe-js';
@@ -2233,7 +2234,11 @@ function AuthSetupPage({mode}){
         if(data?.session){setUser(data.session.user);setChecking(false);return}
         await new Promise(r=>setTimeout(r,200));
       }
-      if(!cancelled){setError(isReset?'Invalid or expired reset link. Request a new one.':'Invalid or expired invite link. Ask an admin to resend.');setChecking(false)}
+      // A full/blocked browser store makes detectSessionInUrl's save throw, so getSession() reads
+      // back null and a perfectly good link looks expired. Check before blaming the link.
+      if(!cancelled){setError(authStorageDegraded()
+        ?"Your browser's storage is full, so this link could not sign you in. On iPhone/iPad: Settings \u2192 Safari \u2192 Advanced \u2192 Website Data \u2192 remove this site, then open the link again."
+        :(isReset?'Invalid or expired reset link. Request a new one.':'Invalid or expired invite link. Ask an admin to resend.'));setChecking(false)}
     };
     tryGet();
     return()=>{cancelled=true};

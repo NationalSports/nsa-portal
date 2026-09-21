@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './requestBreaker';
+import { resilientAuthStorage } from './authStorage';
 
 // These come from your Supabase project settings
 // Set them in Netlify Environment Variables or .env.local for dev
@@ -28,7 +29,7 @@ export const _sbAuthLock = (() => {
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    storage: typeof window !== 'undefined' ? window.localStorage : undefined,
+    storage: resilientAuthStorage,
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: true,

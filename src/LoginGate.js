@@ -2,7 +2,9 @@
 import React, { useState, useEffect } from 'react';
 import { withStartupDeadline } from './lib/startupDeadline';
 import { NSA } from './constants';
+import { authStorageDegraded } from './lib/authStorage';
 
+const STORAGE_FULL_MSG="Your browser's storage is full, so your sign-in could not be saved. On iPhone/iPad: Settings → Safari → Advanced → Website Data → remove this site, then sign in again.";
 const ADMIN_PW_HASH=(process.env.REACT_APP_ADMIN_PW_HASH||'').trim();
 const hashPassword=async(pw)=>{const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(pw));return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('')};
 
@@ -101,7 +103,12 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
     }catch(err){
       // A THROWN/rejected auth promise (offline, DNS/CORS, unexpected error shape) used to escape the
       // handler, so setLoading(false) never ran — a permanent "Signing in..." spinner with no message.
-      setError((err&&err.message)||'Sign-in failed. Please check your connection and try again.');
+      // A full/blocked browser store throws a DOMException ("The quota has been exceeded.") from
+      // gotrue-js's session write — the server sign-in already SUCCEEDED. Say what to do about it
+      // instead of showing the raw message, which reads like the password was wrong.
+      setError(authStorageDegraded()
+        ?STORAGE_FULL_MSG
+        :((err&&err.message)||'Sign-in failed. Please check your connection and try again.'));
     }finally{setLoading(false);submitting.current=false}
   };
 
