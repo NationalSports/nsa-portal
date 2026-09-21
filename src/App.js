@@ -15998,6 +15998,17 @@ export default function App(){
     // The per-month arrays hold the full calendar month (future-dated invoices included), matching the
     // dashboard KPI and the Reps tab audit. Only the hero's month-to-date/YTD figures apply the
     // as-of-today cutoff, because those carry a same-period-last-year comparison.
+    // Billed totals are only trustworthy once the NetSuite history has actually landed.
+    // customer_invoices loads on an idle callback AFTER the main sync, so for the first few
+    // seconds histInvs is [] and every billed figure here silently renders portal-only — which
+    // read as a real $2.82M YTD next to "vs $0 last year / +100%", not as a half-loaded page.
+    // Same empty array on a staff-gated read that was denied or errored. Gate the numbers on the
+    // load status instead of showing a confident wrong one (2026-09-21).
+    const _histPending=histInvsStatus==='loading';
+    const _histFailed=histInvsStatus==='error'||histInvsStatus==='denied';
+    const _histIncomplete=_histPending||_histFailed;
+    // Billed money renders as an em-dash until the history is in; each YoY delta is hidden at its own site.
+    const _bill$=(v)=>_histIncomplete?'—':_fmtK1(v);
     const _histDocIds=new Set((histInvs||[]).map(hi=>hi.id));
     const _billedRows=[...(histInvs||[]).filter(hi=>hi&&hi.status!=='void'),
       ...(invs||[]).filter(iv=>iv&&iv.status!=='void'&&!iv.deleted_at&&!_histDocIds.has(iv.id))];
@@ -16066,7 +16077,7 @@ export default function App(){
     // KPI set (Sales group) — YTD billed carries the real YoY delta; the rest are live pipeline snapshots
     const _activeSOs=pipeline.filter(s=>s._status!=='complete').length;
     const _kpis=[
-      {label:'YTD Billed',value:_fmtK1(_ytdThis),topbar:RED,spark:_mThis.slice(0,Math.max(1,_cmo+1)),delta:_ytdDelta,sub:'vs '+_fmtK1(_ytdLast)+' last year'},
+      {label:'YTD Billed',value:_bill$(_ytdThis),topbar:RED,spark:_histIncomplete?null:_mThis.slice(0,Math.max(1,_cmo+1)),delta:_histIncomplete?null:_ytdDelta,sub:_histPending?'loading invoice history…':(_histFailed?'invoice history unavailable':'vs '+_fmtK1(_ytdLast)+' last year')},
       {label:'Pipeline Rev',value:_fmtK1(totalRev),topbar:NAVY,sub:_activeSOs+' active sales orders'},
       {label:'Total Units',value:(totalUnits||0).toLocaleString(),topbar:NAVY,sub:'across the pipeline'},
       {label:'Avg Order',value:'$'+(avgOrderSize||0).toLocaleString(),topbar:NAVY,sub:pipeline.length+' orders'},
@@ -16121,6 +16132,13 @@ export default function App(){
     const _card={background:'#fff',border:'1px solid #E5EAF2',borderRadius:9,boxShadow:'0 1px 2px rgba(16,26,64,.04)'};
     const _h17={fontFamily:FD,fontWeight:800,fontSize:17,letterSpacing:.4,textTransform:'uppercase',color:'var(--navy)',whiteSpace:'nowrap'};
     const _redLink={fontFamily:FD,fontWeight:700,fontSize:12,textTransform:'uppercase',letterSpacing:.5,color:'var(--red)',whiteSpace:'nowrap'};
+    // Inline twin of the page-level banner, for the legacy widgets whose numbers come straight
+    // out of histInvs (Reps → Billings by Month, Customers → Same-Season Retention).
+    const RHistGuard=()=>_histIncomplete?<div style={{margin:'10px 16px',padding:'9px 12px',borderRadius:6,border:'1px solid '+(_histPending?'#C3CBDA':'#fde68a'),background:_histPending?'#F7F9FC':'#fffbeb',color:_histPending?'#5A6075':'#92400e',fontSize:11.5,fontWeight:600,display:'flex',alignItems:'center',gap:9,flexWrap:'wrap'}}>
+      {_histPending&&<span style={{width:12,height:12,borderRadius:'50%',border:'2px solid #C3CBDA',borderTopColor:'var(--navy)',display:'inline-block',animation:'spin .8s linear infinite'}}/>}
+      <span style={{flex:1,minWidth:240}}>{_histPending?'Loading NetSuite invoice history — the totals below are portal invoices only until it finishes.':'NetSuite invoice history unavailable — the totals below are portal invoices only.'}</span>
+      {_histFailed&&<button className="nsa-rpt-hit" onClick={()=>_retryHistInvoices()} style={{fontFamily:FD,fontWeight:700,fontSize:11,letterSpacing:.5,textTransform:'uppercase',padding:'4px 11px',borderRadius:5,border:'1px solid #92400E',background:'transparent',color:'#92400E',cursor:'pointer'}}>Retry</button>}
+    </div>:null;
     const RKpi=(k,i)=><div key={i} className="num" style={{background:'#fff',border:'1px solid #E5EAF2',borderRadius:8,padding:18,position:'relative',overflow:'hidden',boxShadow:'0 1px 2px rgba(16,26,64,.04)'}}>
       <span style={{position:'absolute',top:0,left:0,width:'100%',height:3,background:k.topbar}}/>
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
@@ -16191,10 +16209,10 @@ export default function App(){
         <div className="nsa-scorecard" style={{position:'relative',padding:'14px 26px 24px',display:'grid',gridTemplateColumns:'1.35fr 1fr',gap:26}}>
           <div>
             <div style={{display:'flex',alignItems:'flex-end',gap:14}}>
-              <div style={{fontFamily:FD,fontWeight:800,fontSize:60,lineHeight:.82,color:'#fff'}}>{_fmtK1(_perValue)}</div>
-              <div style={{paddingBottom:6}}><div style={{fontSize:12.5,color:'rgba(255,255,255,.62)',lineHeight:1.35}}>{_perCaption}</div></div>
+              <div style={{fontFamily:FD,fontWeight:800,fontSize:60,lineHeight:.82,color:'#fff'}}>{_perMode==='next'?_fmtK1(_perValue):_bill$(_perValue)}</div>
+              <div style={{paddingBottom:6}}><div style={{fontSize:12.5,color:'rgba(255,255,255,.62)',lineHeight:1.35}}>{(_histIncomplete&&_perMode!=='next')?(_histPending?'waiting on NetSuite invoice history…':'NetSuite invoice history unavailable'):_perCaption}</div></div>
             </div>
-            {_perMode!=='next'&&!(rptPeriod==='custom'&&!_custOk)&&<div style={{marginTop:22,maxWidth:460}}>
+            {_perMode!=='next'&&!_histIncomplete&&!(rptPeriod==='custom'&&!_custOk)&&<div style={{marginTop:22,maxWidth:460}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:9,gap:10}}>
                 <span style={{fontFamily:FD,fontWeight:700,fontSize:13,letterSpacing:.8,textTransform:'uppercase',color:'#fff',whiteSpace:'nowrap'}}>{rptPeriod==='month'?('On pace for '+_fmtK1(_projected)):(_perCmpPct>=0?'Ahead of last year':'Behind last year')}</span>
                 <span style={{fontFamily:FD,fontWeight:800,fontSize:13.5,color:_perCmpPct>=0?'#6FCF97':'var(--red-light)',whiteSpace:'nowrap'}}>{(_perCmpPct>=0?'▲ +':'▼ ')+Math.abs(_perCmpPct)+'% vs last yr'}</span>
@@ -16214,10 +16232,10 @@ export default function App(){
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
               <div>
                 <div style={{fontFamily:FD,fontWeight:700,fontSize:11,letterSpacing:1.4,textTransform:'uppercase',color:'rgba(255,255,255,.55)'}}>YTD Sales</div>
-                <div style={{display:'flex',alignItems:'baseline',gap:8}}><span style={{fontFamily:FD,fontWeight:800,fontSize:30,color:'#fff',lineHeight:1}}>{_fmtK1(_ytdThis)}</span><span style={{fontFamily:FD,fontWeight:700,fontSize:13,color:_ytdDelta>=0?'#6FCF97':'var(--red-light)'}}>{(_ytdDelta>=0?'▲ ':'▼ ')+Math.abs(_ytdDelta)+'%'}</span></div>
-                <div style={{fontSize:11,color:'rgba(255,255,255,.5)'}}>{_fmtK1(Math.abs(_ytdThis-_ytdLast))+(_ytdThis>=_ytdLast?' ahead of':' behind')+' last year'}</div>
+                <div style={{display:'flex',alignItems:'baseline',gap:8}}><span style={{fontFamily:FD,fontWeight:800,fontSize:30,color:'#fff',lineHeight:1}}>{_bill$(_ytdThis)}</span>{!_histIncomplete&&<span style={{fontFamily:FD,fontWeight:700,fontSize:13,color:_ytdDelta>=0?'#6FCF97':'var(--red-light)'}}>{(_ytdDelta>=0?'▲ ':'▼ ')+Math.abs(_ytdDelta)+'%'}</span>}</div>
+                <div style={{fontSize:11,color:'rgba(255,255,255,.5)'}}>{_histIncomplete?(_histPending?'loading invoice history…':'invoice history unavailable'):(_fmtK1(Math.abs(_ytdThis-_ytdLast))+(_ytdThis>=_ytdLast?' ahead of':' behind')+' last year')}</div>
               </div>
-              {(()=>{const hs=_miniSpark(_mThis.slice(0,Math.max(1,_cmo+1)),160,46,3);return<svg viewBox="0 0 160 46" preserveAspectRatio="none" style={{width:150,height:44}}><path d={hs.area} fill="rgba(217,74,82,.16)"/><path d={hs.line} fill="none" stroke="var(--red-light)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"/></svg>})()}
+              {_histIncomplete?<div style={{width:150,height:44}}/>:(()=>{const hs=_miniSpark(_mThis.slice(0,Math.max(1,_cmo+1)),160,46,3);return<svg viewBox="0 0 160 46" preserveAspectRatio="none" style={{width:150,height:44}}><path d={hs.area} fill="rgba(217,74,82,.16)"/><path d={hs.line} fill="none" stroke="var(--red-light)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"/></svg>})()}
             </div>
             <div style={{height:1,background:'rgba(255,255,255,.1)'}}/>
             <div style={{display:'flex',gap:10}}>
@@ -16228,8 +16246,8 @@ export default function App(){
               </div>
               <div style={{flex:1,background:'rgba(255,255,255,.06)',borderRadius:7,padding:'11px 13px'}}>
                 <div style={{fontFamily:FD,fontWeight:700,fontSize:10.5,letterSpacing:1.2,textTransform:'uppercase',color:'rgba(255,255,255,.55)'}}>Streak</div>
-                <div style={{fontFamily:FD,fontWeight:800,fontSize:24,color:'#fff',lineHeight:1.1}}>{_streak} mo</div>
-                <div style={{fontSize:10.5,color:'rgba(255,255,255,.5)'}}>{_streak>0?'beating last year':'vs last year'}</div>
+                <div style={{fontFamily:FD,fontWeight:800,fontSize:24,color:'#fff',lineHeight:1.1}}>{_histIncomplete?'—':(_streak+' mo')}</div>
+                <div style={{fontSize:10.5,color:'rgba(255,255,255,.5)'}}>{_histIncomplete?'pending history':(_streak>0?'beating last year':'vs last year')}</div>
               </div>
             </div>
           </div>
@@ -16240,7 +16258,7 @@ export default function App(){
       <div style={{..._card,marginBottom:16}}>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'16px 18px 6px',flexWrap:'wrap',gap:10}}>
           <div>
-            <div style={{display:'flex',alignItems:'center',gap:9}}><span style={_h17}>Monthly Sales</span>{RSkew(_ytdDelta>=0?'#1F7A54':RED,_ytdDelta>=0?'#E4F1EA':'#F6E3E4','YTD '+(_ytdDelta>=0?'▲ ':'▼ ')+Math.abs(_ytdDelta)+'%')}</div>
+            <div style={{display:'flex',alignItems:'center',gap:9}}><span style={_h17}>Monthly Sales</span>{_histIncomplete?RSkew('#3A4B72','#EAEEF5',_histPending?'Loading history':'History unavailable'):RSkew(_ytdDelta>=0?'#1F7A54':RED,_ytdDelta>=0?'#E4F1EA':'#F6E3E4','YTD '+(_ytdDelta>=0?'▲ ':'▼ ')+Math.abs(_ytdDelta)+'%')}</div>
             {RAccent()}
           </div>
           <div style={{display:'flex',background:'#F1F3F8',borderRadius:7,padding:3}}>
@@ -16254,13 +16272,16 @@ export default function App(){
         </div>
         <div className="nsa-monthly" style={{display:'grid',gridTemplateColumns:'1.55fr 1fr',gap:18,padding:'6px 18px 16px'}}>
           <div style={{position:'relative'}} onMouseLeave={()=>setRptHoverMonth(null)}>
-            <svg viewBox="0 0 840 300" preserveAspectRatio="xMidYMid meet" style={{width:'100%',height:'auto',display:'block'}}>
+            {_histIncomplete?<div style={{height:230,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:10,background:'#F7F9FC',border:'1px dashed #D6DCE8',borderRadius:8,color:'#7A8299',fontSize:12.5,textAlign:'center',padding:'0 20px'}}>
+              {_histPending&&<span style={{width:18,height:18,borderRadius:'50%',border:'2.5px solid #C3CBDA',borderTopColor:'var(--navy)',display:'inline-block',animation:'spin .8s linear infinite'}}/>}
+              <span>{_histPending?'Loading NetSuite invoice history…':'NetSuite invoice history unavailable — monthly billed totals can’t be charted.'}</span>
+            </div>:<svg viewBox="0 0 840 300" preserveAspectRatio="xMidYMid meet" style={{width:'100%',height:'auto',display:'block'}}>
               {_chGrid.map((gl,i)=><g key={'g'+i}><line x1="46" y1={gl.y} x2="826" y2={gl.y} stroke="#EEF1F6" strokeWidth="1"/><text x="40" y={gl.ty} textAnchor="end" fontSize="10.5" fill="#A7AFC0">{gl.label}</text></g>)}
               {rptChartMode==='bars'&&_chGroups.map(b=><g key={'b'+b.i}><rect x={b.lyX} y={b.lyY} width={_bw} height={b.lyH} rx="2" fill="#C3CBDA"/><rect x={b.tyX} y={b.tyY} width={_bw} height={b.tyH} rx="2" fill={b.future?'#F1F3F8':'var(--navy)'} stroke={b.future?'#D6DCE8':'none'} strokeWidth={b.future?1:0} strokeDasharray={b.future?'3 3':'0'}/></g>)}
               {rptChartMode==='trend'&&<g><path d={_tyArea} fill="rgba(25,40,83,.06)"/><path d={_lyPath} fill="none" stroke="#C3CBDA" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"/><path d={_tyPath} fill="none" stroke="var(--navy)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>{_tyPts.map((p,i)=><circle key={'p'+i} cx={p.x} cy={p.y} r="3.5" fill="#fff" stroke="var(--navy)" strokeWidth="2"/>)}</g>}
               {_chGroups.map(b=><g key={'x'+b.i}><text x={b.center} y="292" textAnchor="middle" fontFamily={FD} fontWeight="600" fontSize="11" fill={b.labelColor} letterSpacing="0.4">{b.label}</text><rect x={b.hitX} y="16" width={b.hitW} height="250" fill="transparent" onMouseEnter={()=>setRptHoverMonth(b.i)} style={{cursor:'pointer'}}/></g>)}
               {rptHoverMonth!=null&&(()=>{const g=_chGroups[rptHoverMonth];const cx=Math.max(78,Math.min(_VBW-78,g.center));const d=(g.tyV>0&&g.lyV>0)?Math.round((g.tyV-g.lyV)/g.lyV*100):null;return<g><line x1={cx} y1="16" x2={cx} y2="266" stroke="var(--red)" strokeWidth="1" strokeDasharray="3 3" opacity="0.5"/><g transform={'translate('+(cx-75)+',10)'}><rect width="150" height={d!=null?66:52} rx="6" fill="var(--navy)"/><text x="12" y="19" fontFamily={FD} fontWeight="700" fontSize="12.5" fill="#fff" letterSpacing="0.5">{_monFull[rptHoverMonth]}</text><text x="12" y="37" fontSize="11" fill="rgba(255,255,255,.72)">{_cy}</text><text x="138" y="37" textAnchor="end" fontWeight="700" fontSize="11.5" fill="#fff">{g.tyV>0?_fmtK1(g.tyV):'—'}</text><text x="12" y="53" fontSize="11" fill="rgba(255,255,255,.72)">{_ly}</text><text x="138" y="53" textAnchor="end" fontWeight="700" fontSize="11.5" fill="#C3CBDA">{_fmtK1(g.lyV)}</text>{d!=null&&<text x="12" y="63" fontFamily={FD} fontWeight="700" fontSize="11" fill={d>=0?'#6FCF97':'var(--red-light)'}>{(d>=0?'▲ +':'▼ ')+Math.abs(d)+'% vs '+_ly}</text>}</g></g>})()}
-            </svg>
+            </svg>}
           </div>
           <div className="nsa-monthly-bd" style={{borderLeft:'1px solid #EEF1F6',paddingLeft:18}}>
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
@@ -16329,6 +16350,17 @@ export default function App(){
             arrays. If a source table hit the row cap in dbEngine, totals silently understate —
             say so instead of showing confident wrong numbers. */}
         {(()=>{const _rptSrc={sales_orders:'sales orders',invoices:'invoices',customer_invoices:'invoice history',estimates:'quotes',customers:'customers'};const _trunc=Object.keys(_rptSrc).filter(t=>_truncatedTables.has(t));return _trunc.length?<div style={{background:'#FEF3C7',borderBottom:'2px solid #F59E0B',color:'#92400E',padding:'10px 20px',fontSize:13,fontWeight:600}}>⚠️ Report totals are incomplete: {_trunc.map(t=>_rptSrc[t]).join(', ')} exceeded the row-load cap, so the oldest rows are missing from every number on this page.</div>:null})()}
+        {/* NetSuite history load guard: customer_invoices lands on an idle callback after the main
+            sync, so billed figures are portal-only for the first seconds. Say so rather than let a
+            half-loaded page read as a real (much smaller) number. */}
+        {_histPending&&<div style={{background:'#EAEEF5',borderBottom:'2px solid #3A4B72',color:'#243356',padding:'10px 20px',fontSize:13,fontWeight:600,display:'flex',alignItems:'center',gap:9}}>
+          <span style={{width:13,height:13,borderRadius:'50%',border:'2px solid #3A4B72',borderTopColor:'transparent',display:'inline-block',animation:'spin .8s linear infinite'}}/>
+          Loading NetSuite invoice history — billed totals are hidden until it finishes.
+        </div>}
+        {_histFailed&&<div style={{background:'#FEF3C7',borderBottom:'2px solid #F59E0B',color:'#92400E',padding:'10px 20px',fontSize:13,fontWeight:600,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+          <span style={{flex:1,minWidth:260}}>⚠️ {histInvsStatus==='denied'?'Your session expired before the NetSuite invoice history could load.':'The NetSuite invoice history failed to load.'} Billed totals are hidden — they would show portal invoices only.</span>
+          <button className="nsa-rpt-hit" onClick={()=>_retryHistInvoices()} style={{fontFamily:FD,fontWeight:700,fontSize:12.5,letterSpacing:.5,textTransform:'uppercase',padding:'5px 13px',borderRadius:5,border:'1px solid #92400E',background:'transparent',color:'#92400E',cursor:'pointer'}}>Retry</button>
+        </div>}
         {/* app bar */}
         {/* No overflow:hidden here — it would clip the scope/export dropdowns. Decorative
             backgrounds are clipped by their own inset wrapper instead. */}
@@ -16752,6 +16784,7 @@ export default function App(){
       {/* BILLINGS BY MONTH — invoice-level audit (expand a month → invoices; All Reps → per-rep breakdown). */}
       {rptTab==='reps'&&<div className="card" style={{marginBottom:12}}>
         <WH id="billAudit" title="Billings by Month — Invoice Audit" icon="🧾"/>
+        {rptWidgets.billAudit&&<RHistGuard/>}
         {rptWidgets.billAudit&&(()=>{
           const _mon=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
           const _f$=(n)=>(n<0?'-$':'$')+Math.round(Math.abs(n)).toLocaleString();
@@ -16924,6 +16957,7 @@ export default function App(){
 
       {rptTab==='customers'&&<div className="card" style={{marginBottom:12}}>
         <WH id="sameSeason" title="Same-Season Customers — Retention Tracker" icon="🎯"/>
+        {rptWidgets.sameSeason&&<RHistGuard/>}
         {rptWidgets.sameSeason&&(()=>{
           const repObj=rptRep==='all'?null:REPS.find(r=>r.id===rptRep);
           const repNameLc=repObj?.name?.toLowerCase()||null;
