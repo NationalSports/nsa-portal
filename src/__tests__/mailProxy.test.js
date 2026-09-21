@@ -77,6 +77,13 @@ describe('sendBrevoEmail — transport failures are actionable', () => {
     expect(global.fetch.mock.calls[0][0]).toBe('/api/mail-send');
   });
 
+  test('current save-guard alerts carry the server suppression protocol marker', async () => {
+    global.fetch = jest.fn(async () => jsonRes(201, { messageId: 'm1' }));
+    await sendBrevoEmail({ ...MAIL, senderName:'NSA Portal', subject:'⚠️ NSA Portal — Save blocked on EST-2583' });
+    const sent=JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(sent.portalAlertVersion).toBe(2);
+  });
+
   test('a blocked vendor URL still sends — the neutral path is tried first', async () => {
     global.fetch = jest.fn(async (url) => (/brevo/.test(url) ? blocked() : jsonRes(201, { messageId: 'm1' })));
     await expect(sendBrevoEmail(MAIL)).resolves.toEqual({ ok: true, messageId: 'm1' });
