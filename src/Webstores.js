@@ -7,6 +7,8 @@ import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, e
 import { shipStationCall, sanmarGetPricing, sanmarResolveSku, ssResolveSku, richardsonResolveSku, momentecResolveSku, resolveSkuAcrossVendors } from './vendorApis';
 import { searchVendorCatalogs, vendorColorToProductRow, pickVendorStyle, missingVendorColorRows, canTopUpFromVendor } from './vendorCatalogSearch';
 import { NSA, pantoneHex } from './constants';
+// Namespace import — shipFrom.js is CommonJS (shared with the Netlify functions).
+import * as SHIPFROM from './lib/shipFrom';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank, scaleOf } from './lib/storeInventory';
 import { haveSameDecorations, variantGroupFields, sharedCardFields, webstoreDecorationCost } from './lib/webstoreGrouping';
@@ -19,6 +21,7 @@ import { autoColorChoice, resolveItemPlacement, garmentTypeOf, garmentHex, hydra
 import { buildTeamArtLibrary } from './lib/artIdentity';
 import { ptToIso, ptDateInput, ptTimeInput, ptDateLabel, ptTimeLabel, isCustomCloseTime, DEFAULT_CLOSE_TIME, DEFAULT_OPEN_TIME } from './lib/storeClock';
 import { ColorWaysEditor } from './components';
+import ShipFromPicker from './ui/ShipFromPicker';
 import { knockoutWhiteBackground } from './lib/imageKnockout';
 import { normalizeSizeSkuOverride, resolveSizeSkuSource, sizeSkuCode } from './lib/sizeSkuOverrides';
 import { normalizeOmgSize } from './lib/omgReport';
@@ -44,10 +47,15 @@ const omgProxyError = async (resp) => {
   return `Report fetch failed: ${resp.status}`;
 };
 
+const { SHIP_FROM_LOCATIONS, DEFAULT_SHIP_FROM_CODE, shipFromCode, shipFromLocation, shipStationShipFrom, shipFromAddressLine } = SHIPFROM;
+
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 
 // Create a ShipStation label (base64 PDF) for one ship-to-home webstore order.
-async function createWebstoreLabel(order, items, store, weightByPid = {}, imageByPid = {}) {
+// fromCode picks the origin (src/lib/shipFrom.js); omitted falls back to the
+// store's saved default, then the app default — today's address either way.
+async function createWebstoreLabel(order, items, store, weightByPid = {}, imageByPid = {}, fromCode) {
+  const originCode = shipFromCode(fromCode || store.ship_from_code);
   const a = order.ship_address || {};
   const ss = await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(webstoreToShipStation(order, items, store, imageByPid)) });
   const orderId = ss && ss.orderId;
@@ -59,12 +67,13 @@ async function createWebstoreLabel(order, items, store, weightByPid = {}, imageB
     orderId, carrierCode: cm.carrierCode, serviceCode: store.shipstation_service || cm.serviceCode,
     packageCode: 'package', confirmation: 'none', shipDate,
     weight: { value: labelWeightLbs(items, store, weightByPid), units: 'pounds' },
-    shipFrom: { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone },
+    shipFrom: shipStationShipFrom(originCode),
     shipTo: { name: a.name || order.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: order.buyer_phone || '' },
     testLabel: false,
   };
   const res = await shipStationCall('/orders/createlabelfororder', { method: 'POST', body: JSON.stringify(payload) });
   return {
+    shipFromCode: originCode,
     labelData: res.labelData,
     trackingNumber: res.trackingNumber,
     carrier: cm.carrierCode,
@@ -101,7 +110,7 @@ async function recordCreatedWebstoreLabel(order, items, label) {
     try {
       const res = await authFetch('/.netlify/functions/webstore-shipment-record', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ order_id: order.id, shipment, label_data: label.labelData || null }),
+        body: JSON.stringify({ order_id: order.id, shipment, label_data: label.labelData || null, ship_from_code: label.shipFromCode || null }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.ok) return data;
@@ -5616,6 +5625,7 @@ const BLANK = {
   delivery_window_weeks: '4-5',
   shipstation_store_id: '', shipstation_tag_id: '', shipstation_carrier: 'ups', shipstation_service: '', label_weight_lbs: 1, flat_shipping: 0,
   bagged_email_enabled: true, bagging_auto_label: true,
+  ship_from_code: DEFAULT_SHIP_FROM_CODE,
   director_name: '', director_email: '', director_phone: '',
   number_enabled: false, number_unique: true, number_min: 0, number_max: 99,
   so_creation: 'manual',
@@ -5801,6 +5811,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
     payload.open_at = ptToIso(payload.open_at, DEFAULT_OPEN_TIME);
     payload.close_at = ptToIso(payload.close_at, closeTime);
     payload.label_weight_lbs = Number(payload.label_weight_lbs) || 1;
+    payload.ship_from_code = shipFromCode(payload.ship_from_code); // always a known location code
     payload.flat_shipping = Number(payload.flat_shipping) || 0;
     payload.processing_pct = Math.max(0, Number(payload.processing_pct) || 0);
     payload.delivery_window_weeks = normalizeDeliveryWindow(payload.delivery_window_weeks);
@@ -5979,7 +5990,9 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
           <Row label="Label carrier"><select className="form-select" value={f.shipstation_carrier || 'ups'} onChange={(e) => set('shipstation_carrier', e.target.value)}>{['ups', 'fedex', 'usps'].map((c) => <option key={c} value={c}>{c.toUpperCase()}</option>)}</select></Row>
           <Row label="Service code (optional)"><input className="form-input" value={f.shipstation_service || ''} onChange={(e) => set('shipstation_service', e.target.value)} placeholder="fedex_ground" /></Row>
           <Row label="Weight per order (lbs)"><input className="form-input" type="number" step="0.1" value={f.label_weight_lbs} onChange={(e) => set('label_weight_lbs', e.target.value)} /></Row>
+          <Row label="Ships from"><select className="form-select" value={shipFromCode(f.ship_from_code)} onChange={(e) => set('ship_from_code', e.target.value)}>{SHIP_FROM_LOCATIONS.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}</select></Row>
         </div>
+        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: -4 }}>Ships from is the return/origin address printed on this store&apos;s labels — pick where the parcels physically leave from. It is the default for the Bagging Station auto-label and for the label buttons, and can still be changed per run.</div>
         <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #e2e8f0' }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Bagging Station</div>
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 6, cursor: 'pointer' }}>
@@ -13317,6 +13330,9 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
   const [err, setErr] = useState('');
   const [ssMsg, setSsMsg] = useState({}); // soId -> status message
   const [ssErr, setSsErr] = useState({}); // soId -> [{order, msg}] from the last run
+  // Origin for this label run. Starts at the store's saved default and can be
+  // changed per run — e.g. a batch that goes out of the office instead of Emerson.
+  const [shipFrom, setShipFrom] = useState(shipFromCode(store.ship_from_code));
   const shipHome = store.delivery_mode !== 'deliver_club';
   const [trackMode, setTrackMode] = useState('batch'); // 'batch' (per-SO) | 'all' (overall store) | 'backorders'
   // In-house on-hand by product → {size: qty}, for the "In Inv" column.
@@ -13447,25 +13463,19 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     if (!bagShortGate(soId)) return;
     const groups = homeGroups(soId);
     if (!groups.length) { setSsMsg((m) => ({ ...m, [soId]: 'No ship-to-home orders with addresses.' })); return; }
-    setSsMsg((m) => ({ ...m, [soId]: `Creating ${groups.length} labels…` }));
+    setSsMsg((m) => ({ ...m, [soId]: `Creating ${groups.length} labels from ${shipFromAddressLine(shipFrom)}…` }));
     const weightByPid = {}; (catalog || []).forEach((c) => { if (c.product_id && c.weight_oz != null) weightByPid[c.product_id] = Number(c.weight_oz) || 0; });
     const labels = []; const errs = []; let held = 0;
     for (const g of groups) {
       const o = g.order;
       const who = o.buyer_name || o.buyer_email || o.id;
-      const lines = g.items.filter((i) => !i.is_bundle_parent);
-      // Units still to ship per line = ordered − already shipped − short-now.
-      const plan = lines.map((i) => {
-        const remaining = (Number(i.qty) || 0) - (Number(i.shipped_qty) || 0);
-        const alreadyMoved = /^(backordered|refunded)$/i.test(i.short_status || '');
-        return { item: i, qty: Math.max(0, remaining - (alreadyMoved ? 0 : (Number(i.missing_qty) || 0))) };
-      }).filter((x) => x.qty > 0);
+      const plan = webstoreShipPlan(g.items);
       if (!plan.length) { held++; continue; }
       const addrErr = validateShipAddress(o.ship_address);
       if (addrErr) { errs.push({ order: who, msg: addrErr }); continue; }
       const shipItems = plan.map((x) => ({ ...x.item, qty: x.qty }));
       try {
-        const label = await createWebstoreLabel(o, shipItems, store, weightByPid, imageByPid);
+        const label = await createWebstoreLabel(o, shipItems, store, weightByPid, imageByPid, shipFrom);
         // Keep the purchased PDF printable even if the ledger handoff needs
         // attention; retries are idempotent and the error explicitly warns the
         // operator not to buy a second label.
@@ -13596,6 +13606,7 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
                 <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                   <button className="btn btn-sm btn-secondary" onClick={() => printPacking(o.id, o.id)}>🖨️ Packing lists</button>
                   {shipHome && <button className="btn btn-sm btn-secondary" onClick={() => printShipLabels(o.id)}>🏷️ Create & print labels</button>}
+                  {shipHome && <ShipFromPicker value={shipFrom} onChange={setShipFrom} compact />}
                 </div>
                 {ssMsg[o.id] && <div style={{ fontSize: 11, color: '#1e40af', marginTop: 4 }}>{ssMsg[o.id]}</div>}
                 {ssErr[o.id] && ssErr[o.id].length > 0 && <div style={{ marginTop: 4, padding: '6px 8px', background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 6 }}>
@@ -13837,6 +13848,34 @@ const WS_LINE_STAGE = {
 const wsLineFullyShipped = (i) => (Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0) || i.line_status === 'shipped';
 const wsLineStage = (i) => WS_LINE_STAGE[wsLineFullyShipped(i) ? 'shipped' : (i.line_status || 'pending')] || WS_LINE_STAGE.pending;
 
+// Units still to ship on a line = ordered − already shipped − held short.
+// A short resolved to backordered/refunded has already left this order, so its
+// missing_qty must not be subtracted a second time. One copy for every
+// "create a label" surface in this file (batch run and single order alike);
+// netlify/functions/_baggingShip.js runs the same rule server-side.
+function webstoreShipPlan(items) {
+  return (items || [])
+    .filter((i) => !i.is_bundle_parent && (i.line_status || '') !== 'cancelled')
+    .map((i) => {
+      const remaining = (Number(i.qty) || 0) - (Number(i.shipped_qty) || 0);
+      const alreadyMoved = /^(backordered|refunded)$/i.test(i.short_status || '');
+      return { item: i, qty: Math.max(0, remaining - (alreadyMoved ? 0 : (Number(i.missing_qty) || 0))) };
+    })
+    .filter((x) => x.qty > 0);
+}
+
+// An OPEN short means the packer flagged a missing piece and nobody has decided
+// yet whether it will be found, backordered, or refunded — buying a label now
+// would mark units shipped that aren't in the box. Override needs a typed reason.
+function webstoreShortGate(items, what) {
+  const n = (items || []).filter((i) => i.short_status === 'open').length;
+  if (!n) return true;
+  const reason = window.prompt(`${n} open bagging short${n === 1 ? '' : 's'} on ${what} — resolve ${n === 1 ? 'it' : 'them'} at the Bagging Station (found / pulled / backorder / refund) before shipping.\n\nTo ship anyway, type a reason:`, '');
+  if (!reason || !reason.trim()) return false;
+  console.warn('[bagging] ship gate overridden for', what, '—', reason.trim());
+  return true;
+}
+
 function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onPlayerReportPdf, onPlayerReportCondensed, onStockReport, onProductReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, soBatch = {}, onOpenSO, focusOrderId = null, msgTagIds = [] }) {
   const [q, setQ] = useState('');
   // Per-order customer message threads (same shared `messages` table the OMG
@@ -13844,6 +13883,11 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
   const [msgsByOrder, setMsgsByOrder] = useState({});
   const [msgDraft, setMsgDraft] = useState({});
   const [msgBusy, setMsgBusy] = useState(null);
+  // Per-order shipping label (no Bagging Station, no batch needed).
+  const [labelBusy, setLabelBusy] = useState(null);   // order id being labeled
+  const [labelMsg, setLabelMsg] = useState({});       // order id -> status line
+  const [shipFrom, setShipFrom] = useState(shipFromCode(store && store.ship_from_code));
+  const [labelCat, setLabelCat] = useState({ weightByPid: {}, imageByPid: {} });
   const orderIdsKey = orders.map((o) => o.id).join(',');
   useEffect(() => {
     const ids = orders.map((o) => String(o.id));
@@ -13854,6 +13898,22 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
       setMsgsByOrder(by);
     })();
   }, [orderIdsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Per-product parcel weight and photo for labels bought from this tab. Without
+  // it every label falls back to the store's flat weight, which is what the
+  // carrier bills against — so it's worth one small query.
+  useEffect(() => {
+    if (!store || !store.id) return;
+    (async () => {
+      const { data } = await supabase.from('webstore_products').select('product_id,weight_oz,image_url').eq('store_id', store.id);
+      const weightByPid = {}; const imageByPid = {};
+      (data || []).forEach((c) => {
+        if (!c.product_id) return;
+        if (c.weight_oz != null) weightByPid[c.product_id] = Number(c.weight_oz) || 0;
+        if (c.image_url) imageByPid[c.product_id] = c.image_url;
+      });
+      setLabelCat({ weightByPid, imageByPid });
+    })();
+  }, [store && store.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const sendMsg = async (o) => {
     const text = (msgDraft[o.id] || '').trim(); if (!text) return;
     setMsgBusy(o.id);
@@ -13899,6 +13959,51 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
     item.backorder_eta = d;
     setTick((t) => t + 1);
     try { await supabase.from('webstore_order_items').update({ backorder_eta: d }).eq('id', item.id); } catch {}
+  };
+  // Ship-to-home and still live — the only orders a label makes sense for.
+  const canLabel = (o) => o.ship_method === 'ship_home' && isLiveWebstoreOrder(o);
+  // Buy and print a label for ONE order, straight from this tab — no bag scan and
+  // no batch. Ships only what's in hand: already-shipped and held-short units stay
+  // behind and the order stays open so the rest can go later.
+  const createOrderLabel = async (o, items) => {
+    if (labelBusy || !store) return;
+    if (o.ship_method !== 'ship_home') { setLabelMsg((m) => ({ ...m, [o.id]: 'This order is not ship-to-home — nothing to label.' })); return; }
+    // A cancelled, refunded, or unpaid order must never buy a label.
+    if (!isLiveWebstoreOrder(o)) { setLabelMsg((m) => ({ ...m, [o.id]: `This order is ${String(o.status || '').replace(/_/g, ' ')} — no label.` })); return; }
+    const addrErr = validateShipAddress(o.ship_address);
+    if (addrErr) { setLabelMsg((m) => ({ ...m, [o.id]: addrErr })); return; }
+    const plan = webstoreShipPlan(items);
+    if (!plan.length) {
+      const allShipped = (items || []).filter((i) => !i.is_bundle_parent).every((i) => wsLineFullyShipped(i));
+      setLabelMsg((m) => ({ ...m, [o.id]: allShipped ? 'Already fully shipped — use Reprint for another copy.' : 'Nothing to ship — every line is held short.' }));
+      return;
+    }
+    if (!webstoreShortGate(items, `order ${o.buyer_name || o.id}`)) return;
+    const units = plan.reduce((a, x) => a + x.qty, 0);
+    if (!window.confirm(`Buy a ${String(store.shipstation_carrier || 'fedex').toUpperCase()} label for ${units} item${units === 1 ? '' : 's'} to ${o.buyer_name || 'this buyer'}?\n\nShips from: ${shipFromAddressLine(shipFrom)}\n\nThis charges the ShipStation account.`)) return;
+    setLabelBusy(o.id);
+    setLabelMsg((m) => ({ ...m, [o.id]: 'Creating label…' }));
+    const shipItems = plan.map((x) => ({ ...x.item, qty: x.qty }));
+    try {
+      const label = await createWebstoreLabel(o, shipItems, store, labelCat.weightByPid, labelCat.imageByPid, shipFrom);
+      // Print first: the label is already bought and paid for at this point, so
+      // a recording hiccup must never cost the operator the PDF.
+      if (label.labelData) { try { await printPdfLabels([label.labelData]); } catch {} }
+      await recordCreatedWebstoreLabel(o, shipItems, label);
+      // Mark what just shipped on the LIVE line objects. Without this the plan is
+      // recomputed from stale quantities and a second click buys a second label
+      // for a parcel that already left — real money, silently.
+      plan.forEach((x) => { x.item.shipped_qty = (Number(x.item.shipped_qty) || 0) + x.qty; });
+      o.label_data = label.labelData || o.label_data;
+      o.shipstation_shipment_id = label.shipmentId || o.shipstation_shipment_id;
+      o.tracking_number = label.trackingNumber || o.tracking_number;
+      o.carrier = label.carrier || o.carrier;
+      o.label_cost = label.cost != null ? label.cost : o.label_cost;
+      o.ship_from_code = label.shipFromCode;
+      setLabelMsg((m) => ({ ...m, [o.id]: `Label created${label.trackingNumber ? ' · ' + label.trackingNumber : ''}. Refresh to update the order's status.` }));
+    } catch (e) {
+      setLabelMsg((m) => ({ ...m, [o.id]: 'Label failed: ' + ((e && e.message) || 'unknown error') }));
+    } finally { setLabelBusy(null); }
   };
   // Reprint the order's last saved label (no re-buy).
   const reprintLabel = async (o) => { if (!o.label_data) return; try { await printPdfLabels([o.label_data]); } catch {} };
@@ -14085,11 +14190,14 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
                       </tbody>
                     </table>
                     <div style={{ marginTop: 8, fontSize: 11.5, color: '#94a3b8' }}>Lines marked short are held back when you create shipping labels — the order stays open so you can ship the rest later.</div>
-                    {(o.label_cost != null || o.tracking_number) && <div style={{ marginTop: 8, fontSize: 11.5, color: '#475569' }}><span style={{ color: '#94a3b8' }}>Label </span><b>{o.label_cost != null ? money(o.label_cost) : '—'}</b>{o.carrier ? ' · ' + String(o.carrier).toUpperCase().replace('STAMPS_COM', 'USPS') : ''}{o.tracking_number ? ' · ' + o.tracking_number : ''}</div>}
-                    {(o.label_data || o.shipstation_shipment_id) && <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
+                    {(o.label_cost != null || o.tracking_number) && <div style={{ marginTop: 8, fontSize: 11.5, color: '#475569' }}><span style={{ color: '#94a3b8' }}>Label </span><b>{o.label_cost != null ? money(o.label_cost) : '—'}</b>{o.carrier ? ' · ' + String(o.carrier).toUpperCase().replace('STAMPS_COM', 'USPS') : ''}{o.tracking_number ? ' · ' + o.tracking_number : ''}{o.ship_from_code ? ' · from ' + shipFromLocation(o.ship_from_code).label : ''}</div>}
+                    {(canLabel(o) || o.label_data || o.shipstation_shipment_id) && <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                      {canLabel(o) && <button className="btn btn-sm btn-secondary" disabled={labelBusy === o.id} onClick={() => createOrderLabel(o, items)}>{labelBusy === o.id ? 'Creating…' : '🏷️ Create & print label'}</button>}
+                      {canLabel(o) && <ShipFromPicker value={shipFrom} onChange={setShipFrom} compact />}
                       {o.label_data && <button className="btn btn-sm btn-secondary" onClick={() => reprintLabel(o)}>🔁 Reprint label</button>}
                       {o.shipstation_shipment_id && <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c', borderColor: '#fecaca' }} onClick={() => voidLabel(o)}>✖ Void label</button>}
                     </div>}
+                    {labelMsg[o.id] && <div style={{ marginTop: 6, fontSize: 11.5, color: /^(Label created|Creating)/.test(labelMsg[o.id]) ? '#166534' : '#b91c1c' }}>{labelMsg[o.id]}</div>}
                     {/* Customer message thread — emails the buyer a link to read & reply. */}
                     <div style={{ marginTop: 14, border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden' }}>
                       <div style={{ padding: '8px 12px', background: '#f1f5f9', fontWeight: 700, fontSize: 12, color: '#334155' }}>💬 Messages with {o.buyer_name || 'the customer'}</div>
