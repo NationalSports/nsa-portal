@@ -2234,11 +2234,12 @@ function AuthSetupPage({mode}){
         if(data?.session){setUser(data.session.user);setChecking(false);return}
         await new Promise(r=>setTimeout(r,200));
       }
-      // A full/blocked browser store makes detectSessionInUrl's save throw, so getSession() reads
-      // back null and a perfectly good link looks expired. Check before blaming the link.
-      if(!cancelled){setError(authStorageDegraded()
-        ?"Your browser's storage is full, so this link could not sign you in. On iPhone/iPad: Settings \u2192 Safari \u2192 Advanced \u2192 Website Data \u2192 remove this site, then open the link again."
-        :(isReset?'Invalid or expired reset link. Request a new one.':'Invalid or expired invite link. Ask an admin to resend.'));setChecking(false)}
+      // A full/blocked browser store used to make detectSessionInUrl's save throw, so getSession()
+      // read back null and a perfectly good link looked expired. The auth storage adapter now keeps
+      // that session in memory, so a null session here really is a bad link — but a full store is
+      // still worth naming, because the password saved on the next screen will not stay signed in.
+      if(!cancelled){setError((isReset?'Invalid or expired reset link. Request a new one.':'Invalid or expired invite link. Ask an admin to resend.')
+        +(authStorageDegraded()?" Also: your browser's storage is full — on iPhone/iPad, Settings \u2192 Safari \u2192 Advanced \u2192 Website Data \u2192 remove this site.":''));setChecking(false)}
     };
     tryGet();
     return()=>{cancelled=true};

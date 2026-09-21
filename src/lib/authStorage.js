@@ -11,15 +11,31 @@
 // A quota error is NOT an AuthError, so gotrue-js rethrows it instead of returning
 // { error }, which is why it escaped every normal auth error path.
 //
-// The auth token is a few KB. If it cannot be written, the cure is to drop a
-// regenerable cache — never someone's unsaved work. Eviction is therefore opt-out:
-// anything that looks like a draft, outbox, cart, or another auth token is protected,
-// and if no evictable cache exists we keep the session in memory so the user can still
-// work this tab rather than being locked out entirely.
-
-// Keys eviction must never touch: other Supabase auth tokens (`sb-…`, including the
-// coach client's) and anything holding work that exists only in this browser.
-const NEVER_EVICT = /^sb-|outbox|draft|autosave|saved|cart|resume|pending|failed|nsa_user|nsa_settings/i;
+// The auth token is a few KB. If it cannot be written, the cure is to drop a cache that
+// is provably worthless — never anything that might be the only copy of someone's work.
+// Eviction is therefore an ALLOW-list, not a deny-list. A deny-list shipped first and
+// leaked: it would have deleted an in-progress bill review snapshot
+// (nsa_bill_review_session), a roster a customer typed into the team shop (nts_roster),
+// a storefront player's access token (nsa_player_<slug>) and a rep's local-only favorites
+// (nsa_fav_skus) to make room, because none of those names looked like "draft" or "cart".
+//
+// What IS evictable: the legacy whole-table caches that dbEngine deletes on every load
+// anyway (see its "One-time cleanup" block) — nsa_sos / nsa_prod / nsa_change_log and
+// friends. They are multi-MB, obsolete, and the most likely reason an older device is
+// full at sign-in, since the login screen runs BEFORE dbEngine's purge gets a chance.
+// The list is duplicated here rather than imported because the login gate must not pull
+// in dbEngine (see lib/auth.js) — keep it in sync with dbEngine's purge list.
+//
+// Everything else is left alone. If freeing the legacy caches isn't enough, the session
+// is kept in memory: the user still signs in and can work this tab, and the login/reset
+// screens tell them their storage is full so they know why a refresh will sign them out.
+const EVICTABLE_EXACT = new Set([
+  'nsa_auto_backup', 'nsa_auto_backup_ts', 'nsa_change_log', 'nsa_so_history', 'nsa_est_history',
+  'nsa_inv_adj_log', 'nsa_cust', 'nsa_ests', 'nsa_sos', 'nsa_invs', 'nsa_msgs', 'nsa_prod', 'nsa_vend',
+  'nsa_storage_probe',
+]);
+const EVICTABLE_PREFIX = ['nsa_snap_'];
+const isEvictable = (k) => EVICTABLE_EXACT.has(k) || EVICTABLE_PREFIX.some((p) => k.startsWith(p));
 const MAX_EVICTION_ROUNDS = 8;
 const EVICT_PER_ROUND = 5;
 
@@ -46,7 +62,7 @@ const evictSome = (store) => {
   try {
     for (let i = 0; i < store.length; i++) {
       const k = store.key(i);
-      if (k && !NEVER_EVICT.test(k)) candidates.push([k, (store.getItem(k) || '').length]);
+      if (k && isEvictable(k)) candidates.push([k, (store.getItem(k) || '').length]);
     }
   } catch { return false; }
   if (!candidates.length) return false;
@@ -110,4 +126,5 @@ export const authStorageDegraded = () => {
   catch { return true; }
 };
 
-export const _isQuotaError = isQuotaError;// exported for tests
+export const _isQuotaError = isQuotaError;
+export const _isEvictable = isEvictable;// exported for tests
