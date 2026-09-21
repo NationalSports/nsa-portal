@@ -1,3 +1,4 @@
+import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jobMockReadiness';
 import {createHistoryStore} from './lib/documentHistory';
 import {createCoalescedReload} from './lib/coalescedReload';
 import { indexFirstById } from './lib/rowLookup';
@@ -46,7 +47,7 @@ import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError
 import { createBillApplySession, billAttemptJournal, billingAttemptKey, sameBillingSnapshot } from './billApplySession';
 import { canViewAiInbox, resolveAccessUser } from './lib/pageAccess';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
-import { buildJobs, billOverageQty, billLineNeed, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost, assistantNormSize, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
+import { buildJobs, billOverageQty, billLineNeed, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost, assistantNormSize, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, schoolPOBoxes, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, mailProxyFetch, _withTimeout, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages, dedupeMockDupes } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty, isPromoOnlyOrder } from './pricing';
@@ -8881,6 +8882,9 @@ export default function App(){
     sos.forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
+        if((j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&['hold','ready',''].includes(j.prod_status||'')&&missingJobMocks(j,so).length){
+          todos.push({type:'art',priority:1,msg:'🎨 Previous art — set up the mockup: '+j.art_name,detail:tag+' · '+so.id+' · No garment mockup yet — reuse an approved mock or send to the artist',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Set up art',role:'sales',date:j.updated_at||so.updated_at});
+        }
         if(j.art_status==='waiting_approval'){
           if(shouldShowMockupReviewNotice(j,so)){
             // Reused / previously-approved art is parked at waiting_approval so the rep confirms it
@@ -9506,7 +9510,7 @@ export default function App(){
 
     // Shared data builders
     const{pullTasks,shipTasks,decoTasks}=buildWarehouseData();
-    const activeJobs=[];sos.forEach(so=>{safeJobs(so).forEach(j=>{if(!['completed','shipped'].includes(j.prod_status))activeJobs.push({...j,so,cName:cust.find(x=>x.id===so.customer_id)?.name})})});
+    const activeJobs=[];sos.forEach(so=>{safeJobs(so).forEach(j=>{if(!['completed','shipped'].includes(j.prod_status))activeJobs.push({...j,prod_status:mockAwareProductionStatus(j,so),so,cName:cust.find(x=>x.id===so.customer_id)?.name})})});
 
     // Notification timestamps — friendly "when the action happened" (e.g. items received, invoice paid).
     const _fmtNotifDT=(d)=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const now=new Date();
@@ -10436,7 +10440,7 @@ export default function App(){
       const byStatus={hold:0,staging:0,in_process:0,completed:0,shipped:0};
       activeJobs.forEach(j=>{byStatus[j.prod_status]=(byStatus[j.prod_status]||0)+1});
       const readyForBoard=activeJobs.filter(j=>j.prod_status==='hold'&&isJobReady(j,j.so));
-      const artReady=activeJobs.filter(j=>j.art_status==='art_complete'||j.art_status==='waiting_approval');
+      const artReady=activeJobs.filter(j=>(j.art_status==='art_complete'||j.art_status==='waiting_approval')&&!missingJobMocks(j,j.so).length);
       const decorators=REPS.filter(r=>r.role==='production');
       const decoWorkload=decorators.map(d=>{const jobs=activeJobs.filter(j=>(j.prod_status==='in_process'||j.prod_status==='staging')&&j.assigned_to===d.name);return{...d,jobs,count:jobs.length}});
       return<>
@@ -10468,7 +10472,7 @@ export default function App(){
               <div style={{display:'flex',alignItems:'center',gap:4,marginTop:3}}>
                 <span style={{fontSize:10,color:'#64748b'}}>{j.cName} · {j.soId} · {j.rep}{j.expected?' · Due '+j.expected:''}</span>
                 <div style={{marginLeft:'auto',display:'flex',gap:4}}>
-                  {prodDashFilter==='hold'&&j.item_status==='items_received'&&j.art_status==='art_complete'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#f59e0b',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'staging')}>→ In Line</button>}
+                  {prodDashFilter==='hold'&&isJobReady(j,j.so)&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#f59e0b',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'staging')}>→ In Line</button>}
                   {prodDashFilter==='staging'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'in_process')}>→ In Process</button>}
                   {prodDashFilter==='in_process'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'completed')}>✓ Done</button>}
                   {prodDashFilter==='completed'&&<span style={{fontSize:9,padding:'2px 6px',color:'#166534',fontWeight:600}}>✓ Done — ships from warehouse</span>}
@@ -10514,7 +10518,7 @@ export default function App(){
             {artReady.length===0?<div className="empty" style={{padding:20}}>No art ready</div>:
             artReady.map(j=><div key={j.id+j.so?.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9'}}>
               <div style={{display:'flex',alignItems:'center',gap:6}}>
-                <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,fontWeight:700,background:j.art_status==='art_complete'?'#dcfce7':'#fef3c7',color:j.art_status==='art_complete'?'#166534':'#92400e'}}>{j.art_status==='art_complete'?'Done':'Waiting Approval'}</span>
+                <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,fontWeight:700,background:j.art_status==='art_complete'?'#dcfce7':'#fef3c7',color:j.art_status==='art_complete'?'#166534':'#92400e'}}>{missingJobMocks(j,j.so).length?'Check Mock':j.art_status==='art_complete'?'Done':'Waiting Approval'}</span>
                 <span style={{fontWeight:700,fontSize:11}}>{j.art_name}</span>
                 <span style={{fontSize:10,color:'#64748b',marginLeft:'auto'}}>{j.cName}</span>
               </div></div>)}
@@ -11051,7 +11055,7 @@ export default function App(){
       const byStatus={hold:0,staging:0,in_process:0,completed:0,shipped:0};
       activeJobs.forEach(j=>{byStatus[j.prod_status]=(byStatus[j.prod_status]||0)+1});
       const readyForBoard=activeJobs.filter(j=>j.prod_status==='hold'&&isJobReady(j,j.so));
-      const artReady=activeJobs.filter(j=>j.art_status==='art_complete'||j.art_status==='waiting_approval');
+      const artReady=activeJobs.filter(j=>(j.art_status==='art_complete'||j.art_status==='waiting_approval')&&!missingJobMocks(j,j.so).length);
       const decorators=REPS.filter(r=>r.role==='production');
       const decoWorkload=decorators.map(d=>{const jobs=activeJobs.filter(j=>(j.prod_status==='in_process'||j.prod_status==='staging')&&j.assigned_to===d.name);return{...d,jobs,count:jobs.length}});
       return<>
@@ -11083,7 +11087,7 @@ export default function App(){
               <div style={{display:'flex',alignItems:'center',gap:4,marginTop:3}}>
                 <span style={{fontSize:10,color:'#64748b'}}>{j.cName} · {j.soId} · {j.rep}{j.expected?' · Due '+j.expected:''}</span>
                 <div style={{marginLeft:'auto',display:'flex',gap:4}}>
-                  {prodDashFilter==='hold'&&j.item_status==='items_received'&&j.art_status==='art_complete'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#f59e0b',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'staging')}>→ In Line</button>}
+                  {prodDashFilter==='hold'&&isJobReady(j,j.so)&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#f59e0b',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'staging')}>→ In Line</button>}
                   {prodDashFilter==='staging'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'in_process')}>→ In Process</button>}
                   {prodDashFilter==='in_process'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'completed')}>✓ Done</button>}
                   {prodDashFilter==='completed'&&<span style={{fontSize:9,padding:'2px 6px',color:'#166534',fontWeight:600}}>✓ Done — ships from warehouse</span>}
@@ -11129,7 +11133,7 @@ export default function App(){
             {artReady.length===0?<div className="empty" style={{padding:20}}>No art ready</div>:
             artReady.map(j=><div key={j.id+j.so?.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9'}}>
               <div style={{display:'flex',alignItems:'center',gap:6}}>
-                <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,fontWeight:700,background:j.art_status==='art_complete'?'#dcfce7':'#fef3c7',color:j.art_status==='art_complete'?'#166534':'#92400e'}}>{j.art_status==='art_complete'?'Done':'Waiting Approval'}</span>
+                <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,fontWeight:700,background:j.art_status==='art_complete'?'#dcfce7':'#fef3c7',color:j.art_status==='art_complete'?'#166534':'#92400e'}}>{missingJobMocks(j,j.so).length?'Check Mock':j.art_status==='art_complete'?'Done':'Waiting Approval'}</span>
                 <span style={{fontWeight:700,fontSize:11}}>{j.art_name}</span>
                 <span style={{fontSize:10,color:'#64748b',marginLeft:'auto'}}>{j.cName}</span>
               </div></div>)}
@@ -13006,7 +13010,7 @@ export default function App(){
     // Skip cancelled and soft-deleted orders — their jobs aren't real production work. Same guard the
     // rest of the app uses (sales reports, orders list) so the Jobs page doesn't surface dead orders.
     sos.forEach(so=>{if(so.status==='cancelled'||so.status==='deleted'||so.deleted_at)return;const c=cust.find(x=>x.id===so.customer_id);const _pid=c?.parent_id||c?.id||null;
-      buildJobs(so).filter(j=>j.prod_status!=='draft').forEach(j=>{allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
+      buildJobs(so).filter(j=>j.prod_status!=='draft').forEach(j=>{allJobs.push({...j,prod_status:mockAwareProductionStatus(j,so),so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
         parentId:_pid,grpKey:jobGroupKey(j,_pid),orderState:deriveJobItemStatus(j,so),..._jobInbound(j,so),
         repId:c?.primary_rep_id||so.created_by,rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',
         expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null})})});
@@ -13190,7 +13194,7 @@ export default function App(){
             <td title={j.billed+' of '+j.total_units+' units billed by vendor'+(j.pulledStock>0?' · '+j.pulledStock+' pulled from stock':'')}>
               <span style={{fontWeight:700,color:j.total_units>0&&j.billed>=j.total_units?'#166534':j.billed>0?'#1e40af':'#94a3b8'}}>{j.billed}/{j.total_units}</span>
               <div style={{width:40,background:'#e2e8f0',borderRadius:3,height:4,marginTop:2}}><div style={{height:4,borderRadius:3,background:bpct>=100?'#22c55e':bpct>0?'#3b82f6':'#e2e8f0',width:bpct+'%'}}/></div></td>
-            <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{j.art_status==='art_complete'?'Done':j.art_status==='waiting_approval'?'Waiting':'Need'}</span></td>
+            <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{missingJobMocks(j,j.so).length?'Check Mock':j.art_status==='art_complete'?'Done':j.art_status==='waiting_approval'?'Waiting':'Need'}</span></td>
             <td style={{fontSize:11}}>{(j.items||[]).length} <span style={{color:'#94a3b8'}}>garment{(j.items||[]).length!==1?'s':''}</span></td>
             <td>{ready?<span title="Artwork, production files, and garments are all in — production can start" style={{fontSize:10,fontWeight:700,color:'#166534',whiteSpace:'nowrap'}}>✅ Ready</span>
               :(()=>{
@@ -13454,6 +13458,9 @@ export default function App(){
     sos.forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
+        if((j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&['hold','ready',''].includes(j.prod_status||'')&&missingJobMocks(j,so).length){
+          todos.push({type:'art',priority:1,msg:'🎨 Previous art — set up the mockup: '+j.art_name,detail:tag+' · '+so.id+' · No garment mockup yet — reuse an approved mock or send to the artist',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Set up art',role:'sales',date:j.updated_at||so.updated_at});
+        }
         if(j.art_status==='waiting_approval'){
           if(j.sent_to_coach_at&&!j.coach_approved_at&&!DECO_OR_LATER_STATUSES.includes(j.prod_status)){const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(!j.follow_up_auto&&isDue)todos.push({type:'coach_followup',priority:1,msg:'Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
         if(j.coach_approved_at&&!DECO_OR_LATER_STATUSES.includes(j.prod_status)&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'Coach approved art: '+j.art_name,detail:tag+' · '+so.id+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
@@ -13670,6 +13677,8 @@ export default function App(){
   const applyJobMove=(j,newStatus,machine,person)=>{
     const so=sos.find(s=>s.id===j.soId);
     if(!so)return;
+    const liveJob=safeJobs(so).find(x=>x.id===j.id)||j;
+    if(['ready','staging','in_process'].includes(newStatus)&&missingJobMocks(liveJob,so).length){nf(missingMockupsMsg(missingJobMocks(liveJob,so)),'error');return}
     // ── Move the run-together group as one ──
     // Resolve this job's group (only when it's ready), then advance the job PLUS every READY
     // linked sibling — including jobs on other sales orders — so a linked set moves through
@@ -13791,7 +13800,7 @@ export default function App(){
       const c=cust.find(x=>x.id===so.customer_id);
       const parentId=c?.parent_id||c?.id||null;
       safeJobs(so).forEach(j=>{
-        allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
+        allJobs.push({...j,prod_status:mockAwareProductionStatus(j,so),so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
           parentId,grpKey:(j.link_group||isJobReady(j,so))?jobGroupKey(j,parentId):null,
           rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—',
           expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
@@ -13833,7 +13842,7 @@ export default function App(){
       .filter(j=>!(j.prod_status==='completed'&&_isSOComplete(j.so)&&!jobRecentlyCompleted(j)));
     // Decorator filtering: decorators see all Ready for Prod plus the shared In Line queue (jobs sit
     // unassigned until pulled into In Process), but only their assigned jobs in In Process/Completed
-    const roleFiltered=isDecorator?readyOnly.filter(j=>(j.prod_status==='hold'&&isJobReady(j,j.so))||j.prod_status==='ready'||(j.prod_status==='staging'&&!j.assigned_to)||j.assigned_to===cu?.name):readyOnly;
+    const roleFiltered=isDecorator?readyOnly.filter(j=>(['hold','ready'].includes(j.prod_status)&&isJobReady(j,j.so))||(j.prod_status==='staging'&&!j.assigned_to)||j.assigned_to===cu?.name):readyOnly;
     const byStatus=prodStatF==='active'?roleFiltered.filter(j=>j.prod_status!=='completed'):prodStatF==='all'?roleFiltered:prodStatF==='hold'?roleFiltered.filter(j=>j.prod_status==='hold'||j.prod_status==='ready'):roleFiltered.filter(j=>j.prod_status===prodStatF);
     const totalUnits=byStatus.reduce((a,j)=>a+j.total_units,0);
     const fulfilledUnits=byStatus.reduce((a,j)=>a+j.fulfilled_units,0);
@@ -13841,7 +13850,7 @@ export default function App(){
     const inProcess=byStatus.filter(j=>j.prod_status==='in_process').length;
     const allDecoTypes=[...new Set(allJobs.map(j=>j.deco_type).filter(Boolean))];
     const kanbanCols=[
-      {id:'hold',label:'Ready for Prod',color:'#6366f1',bg:'#eef2ff',filter:j=>(j.prod_status==='hold'&&isJobReady(j,j.so))||j.prod_status==='ready'},
+      {id:'hold',label:'Ready for Prod',color:'#6366f1',bg:'#eef2ff',filter:j=>(['hold','ready'].includes(j.prod_status)&&isJobReady(j,j.so))},
       {id:'staging',label:'In Line',color:'#d97706',bg:'#fffbeb'},
       {id:'in_process',label:'In Process',color:'#2563eb',bg:'#eff6ff'},
       {id:'completed',label:'Completed',color:'#166534',bg:'#f0fdf4'},
@@ -15058,7 +15067,7 @@ export default function App(){
                     // Recalculate job item_status/fulfilled_units after receiving — mirrors the warehouse
                     // stock-pull flow so the Production dashboard and "Ready for Deco" tab reflect received stock.
                     const _newJobs=recalcJobFulfillment(so,updItems);
-                    _decoReady.push(...jobsNowReadyForDeco(so.jobs,_newJobs));
+                    _decoReady.push(...jobsNowReadyForDeco(so.jobs,_newJobs).filter(j=>!missingJobMocks(j,so).length));
                     // Persist through the result-checked save (savSONow), not fire-and-forget savSO: it
                     // registers the pending id synchronously, writes directly, marks the SO recently-pulled
                     // on success (so a background poll/realtime reload can't revert the local receipt for 30s),
@@ -19826,7 +19835,7 @@ export default function App(){
     const cc=cust.find(c=>c.id===so.customer_id);let grand=0;
     Object.entries(pullMap).forEach(([ii,qtys])=>{const it=items[ii];if(!it)return;const szStr=Object.entries(qtys).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ');const qty=Object.values(qtys).reduce((a,v)=>a+(v||0),0);grand+=qty;if(qty>0)addWhAction({type:'pulled',pickId,soId,customer:cc?.name||'',sku:it.sku,name:it.name,color:it.color,productId:it.product_id,sizes:szStr,qty,by:cu?.id||'warehouse'})});
     nf('✅ '+pickId+' pulled — '+grand+' units');
-    const _deco=jobsNowReadyForDeco(so.jobs,_newJobs);
+    const _deco=jobsNowReadyForDeco(so.jobs,_newJobs).filter(j=>!missingJobMocks(j,so).length);
     notifyDecoReady(_deco);
     // PULLED pull-sheet label — same 4×6 format as a receiving label, printed from the
     // confirmation screen on tap (not auto), so it never fires before the save is applied.
@@ -19881,7 +19890,7 @@ export default function App(){
     _fastP.then(fast=>{_fullP.then(ok=>{if(ok===false&&fast!==true)nf('⚠️ '+soId+': receipt did not save — please retry','error')})});
     const saveP=_fastP.then(fast=>fast===true?true:_fullP);
     acts.forEach(a=>addWhAction(a));
-    const decoJobs=jobsNowReadyForDeco(so.jobs,_newJobs);
+    const decoJobs=jobsNowReadyForDeco(so.jobs,_newJobs).filter(j=>!missingJobMocks(j,so).length);
     // Aggregate what was received per item (across POs) for the confirmation summary.
     const itemQtyMap={};
     lines.forEach(({itemIdx,rcv})=>{const m=itemQtyMap[itemIdx]||(itemQtyMap[itemIdx]={});Object.entries(rcv||{}).forEach(([sz,q])=>{if(q>0)m[sz]=(m[sz]||0)+q})});
@@ -20427,7 +20436,7 @@ export default function App(){
                           }).catch(()=>printQrLabel(legacyLabel));
                         }
                       }catch(e){/* label print is best-effort */}
-                      nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totPulling2+' units');notifyDecoReady(jobsNowReadyForDeco(so.jobs,_newJobs));setWhPulling(false);setWhViewIF(null);
+                      nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totPulling2+' units');notifyDecoReady(jobsNowReadyForDeco(so.jobs,_newJobs).filter(j=>!missingJobMocks(j,so).length));setWhPulling(false);setWhViewIF(null);
                     }}>{whPulling?'Saving...':(isFull?'✓ Mark as Pulled ('+totPulling2+' units)':isPartial?'✓ Mark Partial Pull ('+totPulling2+' of '+grandNeed+')':'✓ Mark as Pulled')}</button>
                     {!isFull&&<button className="btn btn-sm" style={{fontSize:11,background:'#d97706',color:'white',border:'none',padding:'6px 14px',fontWeight:700}} onClick={()=>{
                       const filled={};pickItems.forEach(pi=>{filled[pi.itemIdx]=Object.fromEntries(pi.szKeys.map(sz=>[sz,Math.max(0,(pi.sizes[sz]||0)-(pi.pulled[sz]||0))]))});setPullQtys(filled);
@@ -21064,7 +21073,7 @@ export default function App(){
                       });
                       // Recalculate job item_status after receiving items
                       const _newJobs=recalcJobFulfillment(grpSO,updItems);
-                      _decoReady.push(...jobsNowReadyForDeco(grpSO.jobs,_newJobs));
+                      _decoReady.push(...jobsNowReadyForDeco(grpSO.jobs,_newJobs).filter(j=>!missingJobMocks(j,grpSO).length));
                       // Result-checked save (see the Confirm-Received path): synchronous pending-id + direct
                       // write + recently-pulled-on-success so a reload can't revert the receipt, plus a truthful
                       // result so a hard save failure surfaces instead of failing silently.
