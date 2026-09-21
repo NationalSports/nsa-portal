@@ -486,10 +486,18 @@ const _dbLoad = async (opts={}) => {
       // (re)built this load (they feed product image fallbacks and nothing else).
       ()=>{
         if(only&&!only.has('products')&&!only.has('app_state'))return _skip();
-        if(fullState&&!essential)return _safeQuery('app_state',{not:[['id','in','(so_history,est_history)']]});// full incl _pimg_ (non-essential initial load)
+        // QBO batch/audit scratch rows (`qbo_*`): 731 rows / 13 MB of the 14 MB this query
+        // returned, written by one-off accounting tooling and read by NOTHING at boot — no
+        // reader exists for them in the app at all. They blocked first paint for every user,
+        // including a warehouse tablet scanning barcodes and a coach opening one team's order.
+        // Excluding them takes the boot payload from ~14 MB to ~0.5 MB. Same disease, and the
+        // same cure, as the `_qb_link_v1_*` exclusion below. `qb_config` is NOT matched by this
+        // pattern (`qbo_` vs `qb_`) and still loads, so the QuickBooks page is unaffected.
+        const _SCRATCH=['id','like','qbo_*'];
+        if(fullState&&!essential)return _safeQuery('app_state',{not:[['id','in','(so_history,est_history)'],_SCRATCH]});// full incl _pimg_ (non-essential initial load)
         // essential tier-1 load keeps the init-only config blobs but drops the ~10k _pimg_ image rows
         // (those ride with products in tier 2); routine reloads drop the init-only blobs too.
-        const not=[['id','in','(so_history,est_history)']];
+        const not=[['id','in','(so_history,est_history)'],_SCRATCH];
         if(!fullState)not.push(['id','in','('+_APPSTATE_INIT_ONLY_KEYS.map(k=>'"'+k+'"').join(',')+')']);
         // Durable QBO receipts are loaded by realm through qbLinkLedger after the
         // essential data load. Keeping thousands of them in this generic app_state
