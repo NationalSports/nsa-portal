@@ -33,6 +33,17 @@ import { buildCondensedPlayerRows, orderNetCollected, originalOrderTotal } from 
 import { sanmarPricingSnapshot, sanmarStyleFromSku } from './lib/sanmarPricing';
 import { WEBSTORE_DELIVERY_WINDOWS, deliveryWindowLabel, normalizeDeliveryWindow, salesOrderDueDate } from './lib/webstoreDeliveryWindow';
 
+// The proxy already explains an OMG outage in words ("their report service did not
+// respond"); a bare status code tells staff nothing they can act on. Fall back to the
+// status only when there's no JSON body to read.
+const omgProxyError = async (resp) => {
+  try {
+    const j = await resp.json();
+    if (j && j.error) return j.error;
+  } catch { /* non-JSON body — fall through to the status */ }
+  return `Report fetch failed: ${resp.status}`;
+};
+
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 
 // Create a ShipStation label (base64 PDF) for one ship-to-home webstore order.
@@ -2158,7 +2169,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     setOmgFetching(true);
     try {
       const resp = await fetch(`/.netlify/functions/omg-report-proxy?id=${uuidMatch[1]}`);
-      if (!resp.ok) throw new Error('Report fetch failed: ' + resp.status);
+      if (!resp.ok) throw new Error(await omgProxyError(resp));
       const report = await resp.json();
       if (!report?.reports?.length) throw new Error('Report JSON has no data');
       const saleCode = report.options?.filter?.find((f) => f.key === 'sale_code')?.value || '';
