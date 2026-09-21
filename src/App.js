@@ -21304,6 +21304,17 @@ export default function App(){
                 onClick={e=>{e.stopPropagation();if(e.ctrlKey||e.metaKey||e.shiftKey||e.button===1)return;e.preventDefault();if(t.pickId)openIF(t.pickId);else setWhViewIF(t)}}>Pick →</a>
               <button title="Assign this pull to a warehouse worker" className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#0891b2',color:'white',border:'none'}}
                 onClick={e=>{e.stopPropagation();const multi=subs.length>1||t._extraCount>0;_whOpenAssign({title:'Pull '+(t.pickId||t.soId)+' — '+(t.cName||t.soId),description:(multi?t.needsPull+' units · multiple SKUs':t.sku+(t.color?' · '+t.color:'')+' · '+t.needsPull+' units'),so:t.so,soId:t.soId,docLabel:t.pickId||t.soId})}}>👤 Assign</button>
+              {/* Reject the whole IF straight from the queue. The warehouse works this list, not the
+                  orders behind it, so a walk down the aisle that turns up nothing shouldn't cost a
+                  round trip into each IF. Same action as the IF page's "Nothing here" — per-size
+                  rejection stays there, since it needs the size grid to be meaningful.
+                  Only offered for a real IF number: rejection addresses lines BY pick_id. */}
+              {t.pickId&&<button title="Nothing on this IF is on the shelf — close it short and zero the stock" className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#fee2e2',color:'#b91c1c',border:'1px solid #fecaca',fontWeight:700}}
+                onClick={e=>{e.stopPropagation();
+                  const skuLbl=(t._skus||[t.sku]).filter(Boolean).join(', ');
+                  if(!window.confirm('Mark '+t.pickId+' NOT HERE?\n\n'+(t.cName||'')+' · '+t.soId+'\n'+skuLbl+' — '+t.needsPull+' open unit'+(t.needsPull===1?'':'s')+'\n\n• Every open line on this IF closes short at 0\n• House stock drops to 0 for each of these sizes (QuickBooks follows on the next inventory post)\n• '+(t.rep&&t.rep!=='—'?t.rep:'The rep')+' gets a short-pull item to raise a PO\n\nThe order still asks for them — nothing is cancelled.'))return;
+                  markNotHere({soId:t.soId,ifId:t.pickId});
+                }}>🚫 Not Here</button>}
             </div></td>
           </tr>})}
           </tbody></table>
