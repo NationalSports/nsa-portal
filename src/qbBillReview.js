@@ -9,6 +9,17 @@ export function normalizeBillForReview(value) {
   };
 }
 
+// Historical applied-bill rows may carry a perfectly good PO number but no
+// matchedPO wrapper. That wrapper was browser-local before the server ledger
+// existed, so treating the row as permanently "not sendable" makes operators
+// re-select an order the live matcher can already find. Re-run the same matcher
+// used by the PO edit field when the backfill row has no saved target.
+export function prepareQboBackfillBill(value, rematch) {
+  const bill = normalizeBillForReview(value);
+  if (bill.matchedPOSource || !bill.po_number || typeof rematch !== 'function') return bill;
+  return rematch(bill);
+}
+
 // Match wrappers use different field names by source: inventory/batch POs use
 // po_number, while Sales Order and decoration POs use po_id.
 export function matchedBillPoNumber(value) {

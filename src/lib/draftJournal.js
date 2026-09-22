@@ -3,6 +3,7 @@
 // The legacy outbox remains available during rollout and is never purged here.
 const DB_NAME = 'nsa-document-drafts';
 const STORE = 'drafts';
+export const DRAFT_CHANGE_KEY = 'nsa-draft-journal-changed';
 const clone = value => JSON.parse(JSON.stringify(value));
 const unique = () => typeof crypto !== 'undefined' && crypto.randomUUID
   ? crypto.randomUUID() : Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
@@ -15,8 +16,12 @@ export function createDraftJournal({factory, name = DB_NAME, session = unique()}
   let opening;
   let sequence = 0;
   const transient = new Map();
+  const saving = new Set(); // Memory-only: a reloaded/crashed tab must expose its backups.
   const changed = () => {
     if (typeof window !== 'undefined') window.dispatchEvent(new Event('nsa:drafts-changed'));
+    // IndexedDB changes do not emit storage events. Send a content-free signal
+    // so another open tab can remove a copy whose exact save was acknowledged.
+    try { localStorage.setItem(DRAFT_CHANGE_KEY,unique()); } catch {}
   };
   const open = () => {
     if (opening) return opening;
@@ -68,9 +73,12 @@ export function createDraftJournal({factory, name = DB_NAME, session = unique()}
     };
   });
   return {
-    async stage(owner,table,payload) {
+    isSaving(entry) { return saving.has(entry.revision); },
+    finishSaving(entry) { if(entry && saving.delete(entry.revision))changed(); },
+    async stage(owner,table,payload,{saving:inFlight=false}={}) {
       if (!owner || !payload?.id) throw new Error('A signed-in owner and document ID are required');
       const entry=make(owner,table,payload);
+      if(inFlight)saving.add(entry.revision);
       // Keep the new content in this tab even if the browser denies disk space.
       transient.set(entry.key,entry);
       try {
@@ -88,10 +96,11 @@ export function createDraftJournal({factory, name = DB_NAME, session = unique()}
     },
     async acknowledge(receipt) {
       // Remove the exact revision only, including across independent connections.
-      const pending=transient.get(receipt.key);
-      if(pending?.revision===receipt.revision)transient.delete(receipt.key);
       const removed=await compare(receipt,(store)=>store.delete(receipt.key));
-      changed();return removed;
+      const pending=transient.get(receipt.key);
+      const removedTransient=pending?.revision===receipt.revision;
+      if(removedTransient)transient.delete(receipt.key);
+      changed();return removed||removedTransient;
     },
     async list(owner) {
       if(!owner)return [];
@@ -114,7 +123,7 @@ export async function protectDocumentDraft(table,payload,run,onStorageError=()=>
   const owner=currentDraftOwner();
   if(!owner)return run(); // Public/unauthenticated flows do not borrow another staff member's journal.
   let receipt;
-  try { receipt=await journal.stage(owner,table,payload); }
+  try { receipt=await journal.stage(owner,table,payload,{saving:true}); }
   catch(error) { receipt=error.draftReceipt;onStorageError(error); }
   try {
     const result=await run();
@@ -132,5 +141,7 @@ export async function protectDocumentDraft(table,payload,run,onStorageError=()=>
   }catch(error){
     if(receipt)try{await journal.update(receipt,payload);}catch(storageError){onStorageError(storageError);}
     throw error;
+  }finally{
+    journal.finishSaving?.(receipt);
   }
 }

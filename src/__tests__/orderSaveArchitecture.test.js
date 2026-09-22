@@ -65,7 +65,7 @@ test('EST-2434: a newly added line never adopts the line_id of the existing line
  const out=resolveOutgoingLineIds(client,db);
  const ids=out.map(it=>it.line_id);
  expect(ids.slice(0,4)).toEqual(['lx-russell','lx-default','shorts','zm-russell']);
- expect(ids[4]).toBeUndefined();                 // no DB twin at all → server mints, as before
+ expect(ids[4]).toBeTruthy();                   // new garment gets a client ID before the request
  expect(ids[5]).toBeTruthy();                    // sole twin is claimed by line 1 → fresh id, never 'lx-default'
  expect(ids[5]).not.toBe('lx-default');
  expect(new Set(ids.filter(Boolean)).size).toBe(ids.filter(Boolean).length);

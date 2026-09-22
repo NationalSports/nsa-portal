@@ -89,8 +89,11 @@ describe('parseStitchCount', () => {
 
 describe('embStitchTierLabel', () => {
   test('maps stitch counts to EM.sb price tiers', () => {
-    expect(embStitchTierLabel(6295)).toBe('≤10k');
-    expect(embStitchTierLabel(10000)).toBe('≤10k');
+    expect(embStitchTierLabel(3658)).toBe('≤5k');
+    expect(embStitchTierLabel(5000)).toBe('≤5k');
+    expect(embStitchTierLabel(5001)).toBe('5k–10k');
+    expect(embStitchTierLabel(6295)).toBe('5k–10k');
+    expect(embStitchTierLabel(10000)).toBe('5k–10k');
     expect(embStitchTierLabel(12000)).toBe('10k–15k');
     expect(embStitchTierLabel(18000)).toBe('15k–20k');
     expect(embStitchTierLabel(25000)).toBe('20k+');

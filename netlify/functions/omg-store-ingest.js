@@ -10,6 +10,22 @@
 
 const { verifyUser } = require('./_shared');
 
+// The OMG report API normally takes 6-7s and can blip a transient 5xx, so go through
+// the shared bounded-retry fetch (netlify/functions/omg-report-proxy.js) instead of a
+// bare fetch(). A plain fetch here had no timeout at all and surfaced any upstream
+// hiccup as a raw "Report fetch failed: 504". Budget is lower than the proxy's because
+// this function still has the Supabase writes to do inside the same 26s.
+const { fetchOmgReport } = require('./omg-report-proxy');
+const OMG_FETCH_OPTS = { totalBudgetMs: 16000 };
+
+// Staff-facing wording: a gateway status from OMG is OMG being slow or down, not a
+// bad link, and the difference decides whether retrying is worth their time.
+const omgFetchError = (status) => (
+  status === 504 || status === 502 || status === 503
+    ? `OrderMyGear's report service did not respond (${status}). This is on their end — wait a minute and try the import again.`
+    : `Report fetch failed: ${status}`
+);
+
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json' };
 
@@ -47,8 +63,8 @@ exports.handler = async (event) => {
 
   try {
     // Fetch the report JSON
-    const reportResp = await fetch(`https://report.ordermygear.com/reports/${reportId}`);
-    if (!reportResp.ok) throw new Error(`Report fetch failed: ${reportResp.status}`);
+    const { response: reportResp } = await fetchOmgReport(`https://report.ordermygear.com/reports/${reportId}`, OMG_FETCH_OPTS);
+    if (!reportResp.ok) throw new Error(omgFetchError(reportResp.status));
     const report = await reportResp.json();
 
     if (!report?.reports?.length) throw new Error('Report has no data');

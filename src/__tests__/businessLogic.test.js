@@ -217,7 +217,7 @@ describe('Screen Print Pricing — spP()', () => {
 describe('Embroidery Pricing — emP()', () => {
   test('returns sell price for valid stitch/qty combos', () => {
     // EM.pr stores cost; sell = max(rT(cost * markup), EM.fl)
-    // ≤10000 stitches, ≤6 qty: cost 4.8 → rT(4.8 * 1.6) = 7.7 floors up to EM.fl ($8)
+    // 5k–10k stitches, ≤6 qty: cost 4.8 → rT(4.8 * 1.6) = 7.7 floors up to EM.fl ($8)
     expect(BL.emP(8000, 6)).toBe(Math.max(BL.rT(4.8 * BL.EM.mk), BL.EM.fl));
     expect(BL.emP(8000, 6)).toBe(8);
     // ≤15000 stitches, ≤24 qty: cost 5.1 → sell = rT(5.1 * 1.6) = 8.2
@@ -225,8 +225,9 @@ describe('Embroidery Pricing — emP()', () => {
   });
 
   test('returns cost price when sell=false', () => {
-    // Stored value IS the cost
-    expect(BL.emP(8000, 6, false)).toBe(BL.EM.pr[0][0]);
+    // Stored value IS the cost. Row 0 is the ≤5k bracket, row 1 the 5k–10k one.
+    expect(BL.emP(3658, 6, false)).toBe(BL.EM.pr[0][0]);
+    expect(BL.emP(8000, 6, false)).toBe(BL.EM.pr[1][0]);
   });
 
   test('higher stitches cost more', () => {

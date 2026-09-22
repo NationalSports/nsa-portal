@@ -1,5 +1,5 @@
 import {IDBFactory} from 'fake-indexeddb';
-import {createDraftJournal,protectDocumentDraft} from '../lib/draftJournal';
+import {createDraftJournal,protectDocumentDraft,DRAFT_CHANGE_KEY} from '../lib/draftJournal';
 
 // CRA's jsdom predates structuredClone. The test data is JSON document data.
 beforeAll(()=>{if(!global.structuredClone)global.structuredClone=value=>JSON.parse(JSON.stringify(value));});
@@ -10,6 +10,26 @@ beforeEach(()=>{
 });
 afterEach(async()=>{await a.close();await b.close();localStorage.removeItem('nsa_user');});
 const payload=memo=>({id:'SO-1',memo,items:[{sku:'A',sizes:{M:2}}],_version:3});
+
+test('pending save remains durable but becomes recovery only after failure or in another session',async()=>{
+ let finish,started;
+ const dispatched=new Promise(resolve=>{started=resolve});
+ const operation=protectDocumentDraft('sales_orders',payload('revision request'),()=>{started();return new Promise(resolve=>{finish=resolve})},jest.fn(),a);
+ await dispatched;
+ const [backup]=await a.list('staff-a');
+ expect(backup.payload.memo).toBe('revision request');
+ expect(a.isSaving(backup)).toBe(true);
+ expect(b.isSaving((await b.list('staff-a'))[0])).toBe(false);
+ finish(false);await operation;
+ expect(a.isSaving(backup)).toBe(false);
+ expect(await a.list('staff-a')).toHaveLength(1);
+});
+
+test('confirmed action clears its backup without exposing it as failed recovery',async()=>{
+ const run=async()=>{const [entry]=await a.list('staff-a');expect(a.isSaving(entry)).toBe(true);return true};
+ await protectDocumentDraft('sales_orders',payload('reject mock'),run,jest.fn(),a);
+ expect(await a.list('staff-a')).toEqual([]);
+});
 
 test('independent tabs preserve separate drafts of the same document',async()=>{
  const [x,y]=await Promise.all([a.stage('staff-a','sales_orders',payload('first')),b.stage('staff-a','sales_orders',payload('second'))]);
@@ -62,4 +82,21 @@ test('recovering an older tab draft clears only that selected revision after suc
  const source={...x.payload,_draftRecovery:{key:x.key,owner:x.owner,revision:x.revision}};
  await protectDocumentDraft('sales_orders',source,async()=>true,jest.fn(),a);
  expect(await a.list('staff-a')).toHaveLength(0);
+});
+
+test('journal changes signal other tabs without publishing draft content',async()=>{
+ const x=await a.stage('staff-a','sales_orders',payload('private draft text'));
+ const stagedSignal=localStorage.getItem(DRAFT_CHANGE_KEY);
+ expect(stagedSignal).toBeTruthy();
+ expect(stagedSignal).not.toContain('private draft text');
+ await a.acknowledge(x);
+ expect(localStorage.getItem(DRAFT_CHANGE_KEY)).not.toBe(stagedSignal);
+});
+
+test('a failed discard keeps a memory-only recovery copy available',async()=>{
+ const denied=createDraftJournal({factory:{open(){throw new Error('Storage denied');}},session:'denied'});
+ let receipt;
+ try{await denied.stage('staff-a','sales_orders',payload('keep me'));}catch(error){receipt=error.draftReceipt;}
+ await expect(denied.acknowledge(receipt)).rejects.toThrow('Storage denied');
+ expect((await denied.list('staff-a'))[0].payload.memo).toBe('keep me');
 });

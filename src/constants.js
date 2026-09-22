@@ -1,9 +1,14 @@
 /* eslint-disable */
 // Pure data constants extracted from App.js
 
+// Namespace import: src/lib/shipFrom.js is CommonJS (shared with the Netlify
+// functions), and webpack cannot resolve named imports out of one.
+import * as SHIPFROM from './lib/shipFrom';
+const { shipFromLocation } = SHIPFROM;
+
 export const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
-export const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','bill_to_id','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','deleted_at','promo_applied','promo_amount','update_requests','approved_by','approved_at','credit_applied','credit_amount','deco_pos','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
-export const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','bill_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','_webstore_fundraise','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','deliver_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','credit_applied','credit_amount','pending_ship_applied','pending_ship_amount','deco_pos','source','webstore_id','webstore_batch_no','webstore_batch_label','webstore_batch_cutoff','delivered','_omg_processing','_omg_shipping','_omg_tax','_omg_fundraise','_omg_grand_total','_omg_omg_fees','_omg_cc_fees','_omg_acct_collected'];
+export const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','bill_to_id','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','deleted_at','promo_applied','promo_amount','update_requests','approved_by','approved_at','credit_applied','credit_amount','deco_pos','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at','tax_exempt','tax_exempt_reason','tax_exempt_by','tax_exempt_at'];
+export const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','bill_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','_webstore_fundraise','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','deliver_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','credit_applied','credit_amount','pending_ship_applied','pending_ship_amount','deco_pos','source','webstore_id','webstore_batch_no','webstore_batch_label','webstore_batch_cutoff','delivered','_omg_processing','_omg_shipping','_omg_tax','_omg_fundraise','_omg_grand_total','_omg_omg_fees','_omg_cc_fees','_omg_acct_collected','tax_exempt_reason','tax_exempt_by','tax_exempt_at'];
 // Session-only underscore fields (_ss_live, _colorImage, _sizeCosts, etc.) are
 // intentionally excluded — they're set by vendor inventory hooks and live in
 // React state only. Including them here would cause batch inserts to fail on
@@ -42,10 +47,10 @@ export const isServiceLine=(it)=>isTopstarLine(it)||isArtworkLine(it);
 export const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty','name_method','color_way_id','color_way_id_b','split_group','split_sizes','split_runs','fulfillment','deco_po_id','web_url','placement','side','color_label','transfer_code','_cost_locked'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
 export const _itemExtraCols=new Set(['is_promo','_pre_promo_sell','_promo_credit','_promo_partial_qty','is_free_promo','_pre_free_promo_sell','est_qty','qty_only','size_availability','notes','is_footwear','customer_supplied']);
-export const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','approved_by','approved_at','credit_applied','credit_amount','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at']);
+export const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','approved_by','approved_at','credit_applied','credit_amount','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at','tax_exempt','tax_exempt_reason','tax_exempt_by','tax_exempt_at']);
 // deco_pos is intentionally NOT in this strip-on-retry set: the column exists in the DB, so dropping it
 // on an upsert retry silently loses decorator/Topstar POs (the SO row saves, but its POs vanish).
-export const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','_webstore_fundraise','promo_applied','promo_amount','ship_preference','ship_on_date','deliver_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','credit_applied','credit_amount','pending_ship_applied','pending_ship_amount','webstore_batch_no','webstore_batch_label','webstore_batch_cutoff','delivered','_omg_omg_fees','_omg_cc_fees','_omg_acct_collected']);
+export const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','_webstore_fundraise','promo_applied','promo_amount','ship_preference','ship_on_date','deliver_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','credit_applied','credit_amount','pending_ship_applied','pending_ship_amount','webstore_batch_no','webstore_batch_label','webstore_batch_cutoff','delivered','_omg_omg_fees','_omg_cc_fees','_omg_acct_collected','tax_exempt_reason','tax_exempt_by','tax_exempt_at']);
 // _cost_locked and names_list are intentionally NOT in this strip-on-retry set (same rule as deco_pos
 // above): both columns exist in the live DB, and decorations persist via DELETE+INSERT — stripping them
 // on a retry caused by an unrelated column would silently wipe locked pricing / name lists on every save.
@@ -370,7 +375,8 @@ export const NSA_DEFAULTS={name:'National Sports Apparel',legal:'National Sports
 export const NSA={...NSA_DEFAULTS};
 // Physical warehouse / receiving address (where goods ship back to). Distinct from the
 // company billing address in NSA above. Used by Manual Ship's "Our Warehouse" destination.
-export const NSA_WAREHOUSE={street1:'210 E Emerson Ave',street2:'Suite E',city:'Orange',state:'CA',zip:'92865'};
+const _NSA_WH=shipFromLocation('warehouse');
+export const NSA_WAREHOUSE={street1:_NSA_WH.street1,street2:_NSA_WH.street2,city:_NSA_WH.city,state:_NSA_WH.state,zip:_NSA_WH.zip};
 
 export const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art_in_progress:'In Progress',waiting_approval:'Waiting Approval',production_files_needed:'Art Approved — Waiting',order_dtf_transfers:'Order DTF Transfers',upload_emb_files:'Upload EMB Files',art_complete:'Art Complete'};
 // Post-approval production-file stage. Screen print etc. stay 'production_files_needed' (artist uploads seps);
@@ -393,8 +399,25 @@ export const artNeedsAttention=(artStatus,sinceDate)=>{
   return Math.floor((Date.now()-t)/86400000)>ART_ATTENTION_STALE_DAYS;
 };
 export const prodFilesStatusFor=(deco)=>(deco==='dtf'||deco==='heat_press')?'order_dtf_transfers':deco==='embroidery'?'upload_emb_files':'production_files_needed';
+// Decoration methods whose production files are the REP/CSR's step, not the artist's: DTF and heat
+// press mean ORDERING transfers, embroidery means uploading the digitized .dst. Screen print is the
+// exception — its production file is SEPARATIONS, which the artist draws.
+export const REP_PROD_FILE_DECOS=['embroidery','dtf','heat_press'];
+// True when some design on a job still owes ARTIST-produced production files. One job can span
+// designs with DIFFERENT production-file steps — a merge puts them on the same row (SO-2145 merged a
+// DTF sleeve print with a screen-print front) — and a job judged by its PRIMARY design alone then
+// reads as entirely rep-owned and leaves the artist board with its separations still outstanding.
+// Takes the deco types of the designs still awaiting files, so one pending screen print holds the job.
+export const artistOwesProdFiles=(pendingDecoTypes)=>(pendingDecoTypes||[]).some(d=>!REP_PROD_FILE_DECOS.includes(d||''));
 // A .dst IS the embroidery production file — if one is attached anywhere on the art, prod files are effectively done.
 export const isDstFile=(f)=>{const n=(typeof f==='string'?f:(f&&(f.name||f.url))||'').toLowerCase();return n.endsWith('.dst')};
+// Extensions that are ONLY ever production art — vector separations and stitch files. A drag-and-drop
+// ignores an <input accept> entirely, so a rep dropping seps on the Mockup zone used to file a .ai/.dst
+// as a mockup: it then satisfied no production gate and never reached a job sheet. Route by extension
+// instead of by which zone caught the drop. PDF/PNG/JPG are deliberately absent — those are legitimately
+// either a proof or a sep, so the zone the rep chose stays authoritative for them.
+const _PROD_ONLY_EXT=/\.(ai|eps|dst|emb|exp|dsb|pxf|cnd|ofm)$/i;
+export const isProdArtFile=(f)=>{const n=(typeof f==='string'?f:(f&&(f.name||f.url))||'');return _PROD_ONLY_EXT.test(n)};
 // Recall/update-request paths tag the old DSTs {stale:true} instead of deleting them (history stays
 // downloadable) — a stale stitch file belongs to the superseded design and must never satisfy any gate.
 export const isStaleFile=(f)=>!!(f&&typeof f==='object'&&f.stale);

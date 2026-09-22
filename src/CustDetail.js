@@ -1,7 +1,8 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { _pick, ART_FILE_SC, SZ_ORD, sizeBreakdownStr, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale } from './constants';
+import { _pick, ART_FILE_SC, SZ_ORD, sizeBreakdownStr, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale, isProdArtFile } from './constants';
 import { mockSkuOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback, poLineFulfilledQty, scopeSoItemsToInvoice } from './safeHelpers';
+import { invoiceTotalsRows } from './lib/invoiceDocTotals';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
 import { pickCwAsset, normalizeWebLogos, deriveJobItemStatus, buildJobs } from './businessLogic';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
@@ -44,7 +45,10 @@ const _bulkInvoicePdfOptions=(inv,invoiceCustomer,companyInfo)=>{
   const fmt=n=>'$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
   const lineItems=safeArr(inv?.line_items);
   const shipping=safeNum(inv?.shipping);const tax=safeNum(inv?.tax);const credit=safeNum(inv?.credit_amount);
-  const fallbackSubtotal=Math.max(0,safeNum(inv?.total)-shipping-tax+credit);
+  // Back the one summary line out of the total by removing every OTHER component of it —
+  // the card surcharge included, or the derived line overstates by the fee and the totals
+  // block (which prints the fee separately) no longer adds up to the total.
+  const fallbackSubtotal=Math.max(0,safeNum(inv?.total)-shipping-tax-safeNum(inv?.cc_fee)+credit+safeNum(inv?.deposit_applied));
   const sourceLines=lineItems.length?lineItems:[{qty:1,desc:inv?.memo||'Invoice',rate:fallbackSubtotal,amount:fallbackSubtotal}];
   const rows=sourceLines.map(li=>({cells:[
     {value:safeNum(li.qty)||1,style:'text-align:center'},
@@ -75,13 +79,7 @@ const _bulkInvoicePdfOptions=(inv,invoiceCustomer,companyInfo)=>{
     ],
     tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],rows:[
       ...rows,
-      {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc'},{value:'<strong>'+fmt(subtotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc'}]},
-      ...(shipping>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Shipping',style:'text-align:right;border:none'},{value:fmt(shipping),style:'text-align:right;border:none'}]}]:[]),
-      ...(tax>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Tax',style:'text-align:right;border:none'},{value:fmt(tax),style:'text-align:right;border:none'}]}]:[]),
-      ...(credit>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Credit',style:'text-align:right;border:none;color:#166534'},{value:'-'+fmt(credit),style:'text-align:right;border:none;color:#166534'}]}]:[]),
-      {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong>'+fmt(inv?.total)+'</strong>',style:'text-align:right'}]},
-      ...(safeNum(inv?.paid)>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Paid',style:'text-align:right;border:none;color:#166534'},{value:fmt(inv.paid),style:'text-align:right;border:none;color:#166534'}]}]:[]),
-      ...(balance>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626">'+fmt(balance)+'</strong>',style:'text-align:right'}]}]:[]),
+      ...invoiceTotalsRows({subtotal:subtotal,shipping:shipping,tax:tax,ccFee:safeNum(inv?.cc_fee),credit:safeNum(inv?.credit_amount),depositApplied:safeNum(inv?.deposit_applied),total:inv?.total,paid:inv?.paid,balance:balance},fmt),
     ]}],
   };
 };
@@ -136,8 +134,9 @@ function CwMultiPrompt({title,cws=[],initialNames=[],initialDefault=false,onAppl
 
 // CUSTOMER DETAIL
 
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,onMsg,onInv,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,onOmgStoreSaved,companyInfo,nf}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,onMsg,onInv,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,onOmgStoreSaved,companyInfo,nf,histStatus,onRetryHist}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[yF,setYF]=useState('all');const[rR,setRR]=useState('thisyear');
+  const[histRetrying,setHistRetrying]=useState(false);// NetSuite-history retry in flight (banner below)
   const[jSF,setJSF]=useState('open');// Jobs tab status filter: open | done | all
   const[jFil,setJFil]=useState({search:'',deco:'all',art:'all',prod:'all'});// Jobs tab: search + deco/art/product filters
   const[expSOs,setExpSOs]=useState(()=>new Set());
@@ -195,6 +194,15 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   React.useEffect(()=>setCustLocal(initCust),[initCust]);
   React.useEffect(()=>{if(!showActions)return;const close=()=>setShowActions(false);document.addEventListener('click',close);return()=>document.removeEventListener('click',close)},[showActions]);
   const customer=custLocal;
+  // An artwork upload awaits Cloudinary for as long as the file takes — a 50MB .ai or a .dst is
+  // seconds to minutes, a mockup PNG is instant. The upload handlers then rebuilt the WHOLE customer
+  // (and SO) from the snapshot captured BEFORE that await, so anything written meanwhile — a second
+  // upload, a poll/realtime merge — was silently overwritten by whichever upload happened to finish
+  // last. The slow production files were always the loser, which is why .ai/.dst "didn't persist".
+  // Read the live copy at completion time instead, exactly as the order editors do with oRef.current
+  // (same commit-time useEffect form, so nothing is mutated during render).
+  const custRef=useRef(custLocal);React.useEffect(()=>{custRef.current=custLocal},[custLocal]);
+  const sosRef=useRef(sos);React.useEffect(()=>{sosRef.current=sos},[sos]);
   const[promoLineHistory,setPromoLineHistory]=useState([]);
   // customer_invoice_lines is the actively refreshed NetSuite archive used by
   // Sales History. customer_invoices (the old header-only promo source) can lag
@@ -636,7 +644,22 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {[['all','All'],['open','Open'],['closed','Closed']].map(([v,l])=><button key={v} className={`btn btn-sm ${sF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setSF(v)}>{l}</button>)}
         <span style={{width:1,background:'#e2e8f0',margin:'0 4px'}}/>
         {[['all','All Years'],['thisyear','This Year'],['lastyear','Last Year']].map(([v,l])=><button key={v} className={`btn btn-sm ${yF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setYF(v)}>{l}</button>)}
-      </div></div><div className="card-body" style={{padding:0}}><table style={{fontSize:12}}><thead><tr><th>ID</th><th>Type</th><th>Date</th><th>SO</th><th>Memo</th>{isP&&<th>Sub</th>}<th>Amount</th><th>Status</th></tr></thead><tbody>
+      </div></div>
+      {/* The pre-portal (NetSuite) invoice history lives in customer_invoices — the ONLY staff-gated
+          read in the load. When a tab's session isn't live, or that one request fails, those rows are
+          simply absent and this table renders "No records" on an account with years of paid invoices.
+          Reps read that as "this customer has never ordered from us" and told customers so. Say what
+          actually happened instead, and give them the retry the 30-minute poll otherwise makes them
+          wait for. Only shown on a real failure — never during the normal deferred first load. */}
+      {(histStatus==='error'||histStatus==='denied')&&<div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',padding:'9px 16px',borderBottom:'1px solid #fde68a',background:'#fffbeb',fontSize:11,color:'#92400e'}}>
+        <span style={{fontWeight:700}}>⚠ Past invoice history didn't load</span>
+        <span style={{flex:1,minWidth:220}}>{histStatus==='denied'
+          ?'Your login needs refreshing. Sign out and back in, then reopen this customer.'
+          :'Invoices from before the portal are missing from this list below. Nothing has been deleted — they just did not download.'}</span>
+        {onRetryHist&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}} disabled={histRetrying}
+          onClick={async()=>{setHistRetrying(true);try{await onRetryHist()}finally{setHistRetrying(false)}}}>{histRetrying?'Retrying…':'Retry'}</button>}
+      </div>}
+      <div className="card-body" style={{padding:0}}><table style={{fontSize:12}}><thead><tr><th>ID</th><th>Type</th><th>Date</th><th>SO</th><th>Memo</th>{isP&&<th>Sub</th>}<th>Amount</th><th>Status</th></tr></thead><tbody>
         {filt.length===0?<tr><td colSpan={8} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No records</td></tr>:
         filt.map((t,i)=><tr key={t.id+'-'+i} style={{cursor:(t._src==='order'||t.type==='estimate'||t.type==='invoice'||t.so_id)?'pointer':undefined}} onClick={()=>{if(t.type==='estimate'){const est2=(ests||[]).find(e=>e.id===t.id);if(est2&&onOpenEst)onOpenEst(est2)}else if(t.type==='invoice'){if(onOpenInv){
             // Rows here are rebuilt field-by-field (see the txns push above), which DROPS _hist —
@@ -1413,8 +1436,39 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const _srcCustId=art._srcCustId;
     const _rowMatch=(a,soCustId)=>artWriteMatches(a,{artId:art.id,name:art.name,decoType:art.deco_type,soCustomerId:soCustId,srcCustId:_srcCustId});
     const _libMatch=a=>artWriteMatches(a,{artId:art.id,name:art.name,decoType:art.deco_type,soCustomerId:customer.id,srcCustId:_srcCustId||customer.id});
-    const libHasLogo=()=>(customer.art_files||[]).some(_libMatch);
-    const updateLibArt=(updater)=>{const lib=customer.art_files||[];if(!lib.some(_libMatch))return false;const newCust={...customer,art_files:lib.map(a=>_libMatch(a)?updater(a):a)};setCustLocal(newCust);onRefreshCustomer(newCust);return true};
+    // The live customer — but only while it is still THIS customer. A long upload can outlast the rep
+    // clicking through to another account, and custRef would then hold the new one; writing this art
+    // into a different customer's library (or writing back the pre-upload snapshot of the old one,
+    // which is what the stale-snapshot code did) are both wrong. Returns null instead, and the caller
+    // says so rather than reporting a save that didn't happen.
+    const _liveCust=()=>{const live=custRef.current;return live&&live.id===customer.id?live:null};
+    const _custGone=()=>{nf&&nf('Switched customers while that file was uploading — reopen '+(customer.name||'the customer')+' and add it again','error')};
+    const libHasLogo=()=>((_liveCust()||{}).art_files||[]).some(_libMatch);
+    // Always rebuild from the live copy, never from the render's `customer` snapshot: these run after
+    // an await, and basing the write on a pre-upload copy drops whatever landed in between.
+    // Returns false both when the art simply isn't in the library and when the rep navigated away —
+    // callers follow up with addLibArt, which reports the navigated-away case once, not twice.
+    const updateLibArt=(updater)=>{const live=_liveCust();if(!live)return false;const lib=live.art_files||[];if(!lib.some(_libMatch))return false;const newCust={...live,art_files:lib.map(a=>_libMatch(a)?updater(a):a)};setCustLocal(newCust);onRefreshCustomer&&onRefreshCustomer(newCust);return true};
+    // Add a brand-new library record (the art was only on an order until now). Same live-copy rule.
+    const addLibArt=(rec)=>{const live=_liveCust();if(!live){_custGone();return false}const newCust={...live,art_files:[...(live.art_files||[]),rec]};setCustLocal(newCust);onRefreshCustomer&&onRefreshCustomer(newCust);return true};
+    // The library copy this art gets when a web logo is added to art that wasn't in the library yet.
+    // It used to carry only files/mockup_files, so adding a web logo on the customer page created a
+    // library record with the design's production art (.ai seps, .dst stitch files) stripped out —
+    // the promoted logo then looked complete but had nothing for production to run. Copy the whole
+    // identity, the same set promoteArtToLibrary copies. Files come from the merged bag the modal is
+    // actually showing, filtered to THIS art's source team so a sibling sport's seps can't ride along
+    // (the same guard promoteArtToLibrary applies), falling back to the record's own array.
+    const _seedFiles=(bagKey,ownKey)=>{
+      const src=art._srcCustId;
+      const bag=(art[bagKey]||[]).filter(m=>!src||!m.srcCustId||m.srcCustId===src).map(m=>m.file||m.url).filter(Boolean);
+      return bag.length?bag:(art[ownKey]||[]);
+    };
+    const _libSeed=(extra)=>({id:art.id,name:art.name||'Logo',deco_type:art.deco_type||'screen_print',
+      ink_colors:art.ink_colors||'',thread_colors:art.thread_colors||'',stitches:art.stitches??null,
+      art_size:art.art_size||'',art_sizes:art.art_sizes||null,garment_colors:art.garment_colors||null,
+      color_ways:art.color_ways||[],files:art.files||[],mockup_files:_seedFiles('_allMockups','mockup_files'),
+      item_mockups:art.item_mockups||{},prod_files:_seedFiles('_allProd','prod_files'),notes:art.notes||'',
+      kind:art.kind||'art',status:art.status||'approved',uploaded:new Date().toLocaleDateString(),...extra});
     const removeMockFromArt=(url)=>{
       if(!url)return;
       if(!window.confirm('Remove this file from "'+(art.name||'this artwork')+'" everywhere it\'s used (orders + program library)? This cannot be undone.'))return;
@@ -1433,49 +1487,67 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       setCustArtDetail(d=>d?{...d,_allMockups:(d._allMockups||[]).filter(x=>x.url!==url),_allProd:(d._allProd||[]).filter(x=>x.url!==url),mockup_files:(d.mockup_files||[]).filter(f=>urlOf(f)!==url),files:(d.files||[]).filter(f=>urlOf(f)!==url),prod_files:(d.prod_files||[]).filter(f=>urlOf(f)!==url)}:d);
       nf&&nf('File removed from '+(art.name||'artwork'));
     };
+    // Is there anywhere to attach a file — this art's source order, or a program-library copy?
+    // Checked up front so a rep isn't made to wait through an upload that has nowhere to land.
+    const _canAttach=()=>{
+      const soId=art._so_id||(usedOnSOs[0]&&usedOnSOs[0].so_id);
+      return !!(sosRef.current||[]).find(s=>s.id===soId)||libHasLogo();
+    };
+    // Upload a batch, splitting it by what each file actually IS rather than by which zone caught
+    // it. Drag-and-drop ignores an <input accept> completely, so seps dropped on the Mockup zone
+    // were filed as mockups (and parked in nsa-mockups), where no production gate and no job sheet
+    // ever looked for them. The Production zone still treats everything as production art.
+    const _uploadArtBatch=async(fileList,defaultBucket)=>{
+      const list=Array.from(fileList||[]);
+      const mocks=[],prods=[],failed=[];
+      if(!list.length)return{mocks,prods,failed};
+      nf&&nf('Uploading '+list.length+' file'+(list.length>1?'s':'')+'...');
+      const bucket=list.map(f=>(defaultBucket==='prod'||isProdArtFile(f.name))?'prod':'mock');
+      const results=await Promise.allSettled(list.map((f,i)=>fileUpload(f,bucket[i]==='prod'?'nsa-production':'nsa-mockups').then(url=>({url,name:f.name}))));
+      results.forEach((r,i)=>{if(r.status!=='fulfilled'){failed.push(list[i].name);return}(bucket[i]==='prod'?prods:mocks).push(r.value)});
+      if(failed.length)nf&&nf('Upload failed: '+failed.join(', '),'error');
+      return{mocks,prods,failed};
+    };
+    // Attach an uploaded batch to this artwork on its source order and/or the program library.
+    // Every read here happens AFTER the upload (sosRef/custRef, never the pre-await snapshot), so a
+    // slow .ai/.dst finishing second can no longer overwrite whatever landed while it was uploading.
+    const _attachArtBatch=({mocks,prods})=>{
+      if(!mocks.length&&!prods.length)return false;
+      const soId=art._so_id||(usedOnSOs[0]&&usedOnSOs[0].so_id);
+      const so=(sosRef.current||[]).find(s=>s.id===soId);
+      const hasLib=libHasLogo();
+      if(!so&&!hasLib){if(!_liveCust())_custGone();else nf&&nf('No order or program-library record found to attach the file to','error');return false}
+      const _add=a=>({...a,
+        ...(mocks.length?{mockup_files:[...(a.mockup_files||[]),...mocks]}:{}),
+        ...(prods.length?{prod_files:[...(a.prod_files||[]),...prods]}:{})});
+      let srcLabel='';
+      if(so&&saveArt){const updArt=(so.art_files||[]).map(a=>_rowMatch(a,so.customer_id)?_add(a):a);saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});srcLabel=so.id+(so.memo?' — '+so.memo:'')}
+      if(hasLib){updateLibArt(_add);if(!srcLabel)srcLabel='Program Library'}
+      const srcCustId=so?.customer_id||custRef.current.id;
+      setCustArtDetail(d=>d?{...d,
+        _allMockups:[...(d._allMockups||[]),...mocks.map(m=>({file:m,url:m.url,src:srcLabel,srcCustId}))],
+        _allProd:[...(d._allProd||[]),...prods.map(m=>({file:m,url:m.url,src:srcLabel,srcCustId}))]}:d);
+      return true;
+    };
+    const _addedMsg=(mocks,prods)=>[mocks.length?mocks.length+' mockup'+(mocks.length>1?'s':''):'',prods.length?prods.length+' production file'+(prods.length>1?'s':''):''].filter(Boolean).join(' + ')+' added';
     // Upload a new mockup and attach it to this artwork — on its source order and/or the program library.
     const addMockToArt=async(fileList)=>{
-      const soId=art._so_id||(usedOnSOs[0]&&usedOnSOs[0].so_id);
-      const so=custSOs.find(s=>s.id===soId);
-      const hasLib=libHasLogo();
-      if(!so&&!hasLib){nf&&nf('No order or program-library record found to attach the mockup to','error');return}
-      const added=[];
-      const list=Array.from(fileList||[]);
-      nf&&nf('Uploading '+list.length+' file(s)...');
-      const results=await Promise.allSettled(list.map(f=>fileUpload(f,'nsa-mockups').then(url=>({url,name:f.name}))));
-      const failed=[];
-      results.forEach((r,i)=>{if(r.status==='fulfilled')added.push(r.value);else failed.push(list[i].name)});
-      if(failed.length)nf&&nf('Upload failed: '+failed.join(', '),'error');
-      if(!added.length)return;
-      let srcLabel='';
-      if(so&&saveArt){const updArt=(so.art_files||[]).map(a=>_rowMatch(a,so.customer_id)?{...a,mockup_files:[...(a.mockup_files||[]),...added]}:a);saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});srcLabel=so.id+(so.memo?' — '+so.memo:'')}
-      if(hasLib){updateLibArt(a=>({...a,mockup_files:[...(a.mockup_files||[]),...added]}));if(!srcLabel)srcLabel='Program Library'}
-      setCustArtDetail(d=>d?{...d,_allMockups:[...(d._allMockups||[]),...added.map(m=>({file:m,url:m.url,src:srcLabel,srcCustId:so?.customer_id||customer.id}))]}:d);
-      nf&&nf(added.length+' mockup'+(added.length>1?'s':'')+' added');
+      if(!_canAttach()){nf&&nf('No order or program-library record found to attach the file to','error');return}
+      const{mocks,prods}=await _uploadArtBatch(fileList,'mock');
+      if(!_attachArtBatch({mocks,prods}))return;
+      nf&&nf(_addedMsg(mocks,prods)+(prods.length?' — seps filed under Production Files':''));
+      if(!mocks.length)return;
       // Prompt for the color way these mockups are for (or create a new one), then tag them.
-      const _tag=(cwName)=>{if(cwName)added.forEach(m=>applyMockToCW(m,cwName));setCwPrompt(null)};
-      setCwPrompt({title:'Which color way '+(added.length>1?'are these mockups':'is this mockup')+' for?',onPick:_tag,onPickNew:(name)=>{persistColorWays([...(art.color_ways||[]),{id:'cw'+Date.now(),garment_color:name,inks:['']}]);_tag(name)}});
+      const _tag=(cwName)=>{if(cwName)mocks.forEach(m=>applyMockToCW(m,cwName));setCwPrompt(null)};
+      setCwPrompt({title:'Which color way '+(mocks.length>1?'are these mockups':'is this mockup')+' for?',onPick:_tag,onPickNew:(name)=>{persistColorWays([...(art.color_ways||[]),{id:'cw'+Date.now(),garment_color:name,inks:['']}]);_tag(name)}});
     };
     const pickMock=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='image/*,.pdf';inp.multiple=true;inp.onchange=()=>addMockToArt(inp.files);inp.click()};
     // Upload a new production file and attach it to this artwork — on its source order and/or the program library.
     const addProdToArt=async(fileList)=>{
-      const soId=art._so_id||(usedOnSOs[0]&&usedOnSOs[0].so_id);
-      const so=custSOs.find(s=>s.id===soId);
-      const hasLib=libHasLogo();
-      if(!so&&!hasLib){nf&&nf('No order or program-library record found to attach the file to','error');return}
-      const added=[];
-      const list=Array.from(fileList||[]);
-      nf&&nf('Uploading '+list.length+' file(s)...');
-      const results=await Promise.allSettled(list.map(f=>fileUpload(f,'nsa-production').then(url=>({url,name:f.name}))));
-      const failed=[];
-      results.forEach((r,i)=>{if(r.status==='fulfilled')added.push(r.value);else failed.push(list[i].name)});
-      if(failed.length)nf&&nf('Upload failed: '+failed.join(', '),'error');
-      if(!added.length)return;
-      let srcLabel='';
-      if(so&&saveArt){const updArt=(so.art_files||[]).map(a=>_rowMatch(a,so.customer_id)?{...a,prod_files:[...(a.prod_files||[]),...added]}:a);saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});srcLabel=so.id+(so.memo?' — '+so.memo:'')}
-      if(hasLib){updateLibArt(a=>({...a,prod_files:[...(a.prod_files||[]),...added]}));if(!srcLabel)srcLabel='Program Library'}
-      setCustArtDetail(d=>d?{...d,_allProd:[...(d._allProd||[]),...added.map(m=>({file:m,url:m.url,src:srcLabel,srcCustId:so?.customer_id||customer.id}))]}:d);
-      nf&&nf(added.length+' production file'+(added.length>1?'s':'')+' added');
+      if(!_canAttach()){nf&&nf('No order or program-library record found to attach the file to','error');return}
+      const{mocks,prods}=await _uploadArtBatch(fileList,'prod');
+      if(!_attachArtBatch({mocks,prods}))return;
+      nf&&nf(_addedMsg(mocks,prods));
     };
     const pickProd=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=()=>addProdToArt(inp.files);inp.click()};
     // Attach a clean web-ready logo (transparent PNG/SVG) — a cutout used to place this art
@@ -1489,7 +1561,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       let url;try{url=await fileUpload(file,'nsa-store-art')}catch(e){nf&&nf('Upload failed: '+e.message,'error');return}
       if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if(_rowMatch(a,so.customer_id)){changed=true;return{...a,web_logo_url:url}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
       const hadLib=updateLibArt(a=>({...a,web_logo_url:url}));
-      if(!hadLib){const lib=customer.art_files||[];const newCust={...customer,art_files:[...lib,{id:art.id,name:art.name||'Logo',deco_type:art.deco_type||'screen_print',color_ways:art.color_ways||[],files:art.files||[],mockup_files:art.mockup_files||[],web_logo_url:url,kind:art.kind||'art',status:art.status||'approved',uploaded:new Date().toLocaleDateString()}]};setCustLocal(newCust);onRefreshCustomer(newCust)}
+      if(!hadLib)addLibArt(_libSeed({web_logo_url:url}));
       setCustArtDetail(d=>d?{...d,web_logo_url:url}:d);
       nf&&nf('Web logo added');
     };
@@ -1534,8 +1606,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         const updArt=(so.art_files||[]).map(a=>{if(!_rowMatch(a,so.customer_id))return a;changed=true;return{...a,color_ways:newCws}});
         if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
       });
-      const lib=customer.art_files||[];
-      if(onRefreshCustomer&&lib.some(_libMatch))onRefreshCustomer({...customer,art_files:lib.map(a=>_libMatch(a)?{...a,color_ways:newCws}:a)});
+      // Via updateLibArt so the library write goes through the same live-copy path as every other
+      // art write here (it also keeps custLocal in step, which the old inline write skipped).
+      updateLibArt(a=>({...a,color_ways:newCws}));
       setCustArtDetail(d=>d?{...d,color_ways:newCws}:d);
     };
     // For text fields: update only the modal's local state while typing (snappy, no focus loss), then
@@ -1556,7 +1629,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const def=(clean.find(w=>w.is_default||!((w.color_way||'').trim()))||clean[0]||{}).url||'';
       if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if(_rowMatch(a,so.customer_id)){changed=true;return{...a,web_logos:clean,web_logo_url:def}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
       const hadLib=updateLibArt(a=>({...a,web_logos:clean,web_logo_url:def}));
-      if(!hadLib){const lib=customer.art_files||[];const newCust={...customer,art_files:[...lib,{id:art.id,name:art.name||'Logo',deco_type:art.deco_type||'screen_print',color_ways:art.color_ways||[],files:art.files||[],mockup_files:art.mockup_files||[],web_logos:clean,web_logo_url:def,kind:art.kind||'art',status:art.status||'approved',uploaded:new Date().toLocaleDateString()}]};setCustLocal(newCust);onRefreshCustomer(newCust)}
+      if(!hadLib)addLibArt(_libSeed({web_logos:clean,web_logo_url:def}));
       setCustArtDetail(d=>d?{...d,web_logos:clean,web_logo_url:def}:d);
     };
     // Tie one cutout URL to a set of color ways (reuse — no re-uploading the same file per
@@ -2303,15 +2376,21 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         _scoped.forEach(it=>{
           const qty=it._invQty;const pq=it._soQty;
           const szStr=it._invSizes?sizeBreakdownStr(it._invSizes,it.is_footwear):'';
-          const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
+          // Price off the invoice's own line when it has one (see scopeSoItemsToInvoice): its
+          // rate already blends per-size upcharges, a $0 comped garment and any rep price edit,
+          // and already carries the decoration — so decorations below print as detail, not as a
+          // second charge.
+          const invPriced=it._invAmount!=null;
+          const unitPrice=it._invRate!=null?it._invRate:safeNum(it.unit_sell);
+          const lineAmt=invPriced?it._invAmount:Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
           let itemName=(safeStr(it.name)||'Item')+(it.color?' - '+it.color:'');
           if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
           rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
           safeDecos(it).forEach(d=>{
             const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:pq;const dp2=dP(d,pq,soArt,cq);
-            const eq=dp2._nq!=null?(pq>0&&qty!==pq?Math.round(dp2._nq*qty/pq):dp2._nq):(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;subTotal+=decoAmt;
+            const eq=dp2._nq!=null?(pq>0&&qty!==pq?Math.round(dp2._nq*qty/pq):dp2._nq):(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;if(!invPriced)subTotal+=decoAmt;
             const artF=soArt.find(a2=>a2.id===d.art_file_id);const posLabel=d.position?' — '+d.position:'';
-            rows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+pdfDecoLabel(d,artF)+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
+            rows.push({_class:'deco-row',cells:[{value:invPriced?'':eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+pdfDecoLabel(d,artF)+posLabel+'</span>'},{value:invPriced?'+'+_$(dp2.sell)+'/ea':_$(dp2.sell),style:'text-align:right'+(invPriced?';color:#64748b':'')},{value:invPriced?'':_$(decoAmt),style:'text-align:right'}]});
           });
         });
         // Lines with no SO match (hand-added, NetSuite import) still have to print, or the
@@ -2334,12 +2413,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           ],
           tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
             rows:[...rows,
-              {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$(subTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
-              ...(_ship>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$(_ship),style:'text-align:right;border:none'}]}]:[]),
-              ...(_tax>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax</strong>',style:'text-align:right;border:none'},{value:_$(_tax),style:'text-align:right;border:none'}]}]:[]),
-              {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(inv.total||0)+'</strong>',style:'text-align:right'}]},
-              ...(inv.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$(inv.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
-              ...(bal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$(bal)+'</strong>',style:'text-align:right'}]}]:[]),
+              ...invoiceTotalsRows({subtotal:subTotal,shipping:_ship,tax:_tax,ccFee:safeNum(inv.cc_fee),credit:safeNum(inv.credit_amount),depositApplied:safeNum(inv.deposit_applied),total:inv.total||0,paid:inv.paid,balance:bal},_$),
             ]}],
           footer:inv.inv_type==='deposit'?NSA.depositTerms:NSA.terms
         });

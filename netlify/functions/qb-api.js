@@ -40,6 +40,21 @@ exports.handler = async (event) => {
 
   const admin = getSupabaseAdmin();
 
+  // Once the server-side sales runner is installed, browser callers may read
+  // QBO but must not compete with it for customer/invoice/payment writes. This
+  // also protects against an old tab that has not yet reloaded the new React
+  // bundle. The Edge Function talks to Intuit directly and is unaffected.
+  if (['upsert_customer', 'upsert_invoice', 'upsert_payment'].includes(action)) {
+    const { data: salesControl, error: salesControlError } = await admin.from('qbo_sales_settings')
+      .select('background_enabled,browser_runner_disabled').eq('company_key', 'national').maybeSingle();
+    if (salesControlError && !/does not exist|schema cache/i.test(salesControlError.message || '')) {
+      return { statusCode: 503, headers: corsHeaders(origin), body: JSON.stringify({ error: 'QBO sales write control is unavailable; no record was sent.' }) };
+    }
+    if (salesControl?.background_enabled && salesControl?.browser_runner_disabled) {
+      return { statusCode: 409, headers: corsHeaders(origin), body: JSON.stringify({ error: 'Background server sales automation owns customer, invoice, and payment writes.' }) };
+    }
+  }
+
   // ── CONNECTION STATUS ── validate/refresh the stored grant before claiming
   // the company is connected. Merely finding a stale row produced a false green
   // status until the first live read failed.

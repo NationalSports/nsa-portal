@@ -9,6 +9,8 @@
 //
 // shippingMethod codes: 1 = UPS Ground, 2 = UPS Next Day, 3 = UPS 2nd Day, 14 = FedEx Ground.
 
+import { collapseVendorLines } from './lib/vendorOrderGuards';
+
 export const SS_SHIP_METHODS = { ground: '1', next_day: '2', second_day: '3', fedex_ground: '14' };
 
 // Flatten batch PO entries into S&S order lines (one per size). Each item carries
@@ -60,6 +62,10 @@ export function buildSSOrderPayload({
   let lines = lineItems, warnings = [];
   if (!lines) { const built = buildSSOrderLines(batchPOs); lines = built.lines; warnings = built.warnings; }
   const ship = shipTo || {};
+  // One payload line per S&S Sku. S&S ADDS lines that repeat an identifier, so sending the
+  // same Sku twice silently doubles that item (NSA 4632). Collapsing here makes the request
+  // say exactly what we mean, and `duplicates` drives the modal's confirm-the-merge gate.
+  const { merged, duplicates } = collapseVendorLines(lines, l => l.sku);
   const order = {
     shippingAddress: {
       customer: ship.companyName || ship.customer || '',
@@ -77,12 +83,12 @@ export function buildSSOrderPayload({
     testOrder: !!testOrder,
     autoselectWarehouse: !!autoselectWarehouse,
     rejectLineErrors: false,
-    lines: lines.map(l => ({ identifier: l.sku, qty: l.quantity })),
+    lines: merged.map(l => ({ identifier: l.sku, qty: l.quantity })),
   };
   const summary = {
     lineCount: lines.length,
     totalQty: lines.reduce((s, l) => s + l.quantity, 0),
     totalCost: lines.reduce((s, l) => s + l.quantity * (l.unitPrice || 0), 0),
   };
-  return { order, lines, summary, warnings };
+  return { order, lines, merged, duplicates, summary, warnings };
 }

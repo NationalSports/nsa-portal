@@ -106,7 +106,8 @@ export function spRunBlend(runs,c,u=1){return DECO.spRunBlend(_tables(),runs,c,u
 // condition as `_unpriced` on its result so the deco row can flag it instead of showing $0.
 export function spUnpriced(q,c){return DECO.spUnpriced(_tables(),q,c)}
 export const decoSplitRuns=DECO.decoSplitRuns;
-// EM.pr stores cost; sell = max(rT(cost × EM.mk), EM.fl) so embroidery never sells below the EM.fl floor.
+// EM.pr stores cost; sell = max(rT(cost × EM.mk), floor) — the floor is EM.sf[bracket] when set,
+// else the global EM.fl, so the ≤5k bracket can sell under the $8 minimum the others keep.
 export function emP(st,q,s=true){return DECO.emP(_tables(),st,q,s)}
 export function npP(q,tw=false,s=true){return DECO.npP(_tables(),q,tw,s)}
 // Tackle twill: chest/logo by TWA index; jersey number by TWN size × color. Wrap the pure calcs.
@@ -215,6 +216,7 @@ export const outsideDecoSell=(perCost,margin=OUTSIDE_DECO_MARGIN)=>{const c=safe
 // Mirrors the calculation in OrderEditor's `totals` memo so list views and the
 // editor agree. Returns { rev, ship, tax, grand }.
 import { safeNum as _sNum, safeItems as _sItems, safeSizes as _sSizes, safeDecos as _sDecos, safeArt as _sArt } from './safeHelpers';
+import { webstoreCheckoutMoney } from './lib/webstoreSoMoney';
 export const calcOrderTotals=(o,custTaxRate=0)=>{
   if(!o)return{rev:0,ship:0,tax:0,grand:0};
   const items=_sItems(o);const af=_sArt(o);
@@ -245,13 +247,34 @@ export const calcOrderTotals=(o,custTaxRate=0)=>{
       rev+=eq*_sNum(dp.sell);
     });
   });
-  const ship=o.shipping_type==='pct'?rev*_sNum(o.shipping_value)/100:_sNum(o.shipping_value);
+  // Webstore batch checkout money (lib/webstoreSoMoney, same as the editors' totals):
+  // the processing fee charged to buyers is revenue, shipping charged at checkout is
+  // shipping, and the sales tax collected rides on the grand total only.
+  const wm=webstoreCheckoutMoney(o);
+  rev+=wm.processing;
+  const ship=(o.shipping_type==='pct'?rev*_sNum(o.shipping_value)/100:_sNum(o.shipping_value))+wm.shipping;
   // Webstore SOs collect/remit tax at checkout, so their stored tax_rate (0) is
   // authoritative — never fall back to the customer's default, or we'd double-tax.
   // (0 || custTaxRate picked up the customer rate; webstore SOs must honor the explicit 0.)
   const taxRate=o.tax_exempt?0:(o.source==='webstore'?_sNum(o.tax_rate):_sNum(o.tax_rate||custTaxRate));
   const tax=rev*taxRate;
-  return{rev,ship,tax,grand:rev+ship+tax};
+  return{rev,ship,tax,grand:rev+ship+tax+wm.tax};
+};
+
+// ── isPromoOnlyOrder — is this order a giveaway rather than a sale? ──
+// True when promo dollars were applied to the order, or when every line carrying quantity
+// is a promo line (free-promo garments / promo-priced items). These orders are intentionally
+// sold at or below cost — a free $15 garment we only bill deco on can never hit a margin
+// target — so the low-margin reports skip them instead of flagging them as pricing mistakes.
+// They still count in the pipeline totals and exports: the cost is real, it just isn't a miss.
+export const isPromoOnlyOrder=(o)=>{
+  if(!o)return false;
+  if(o.promo_applied)return true;
+  const live=_sItems(o).filter(it=>{
+    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+Math.max(0,_sNum(v)),0);
+    return (sq>0?sq:Math.max(0,_sNum(it.est_qty)))>0;
+  });
+  return live.length>0&&live.every(it=>it.is_free_promo||it.is_promo);
 };
 
 // ── calcOrderMargin — quick rev/cost/margin for dashboard KPIs ──
@@ -293,7 +316,12 @@ export const calcOrderMargin=(o,allOrders,decoVendors,decoVendorPricing)=>{
   // CommissionsPage so margin treats shipping as a wash (only an over/under-quote moves it), not
   // pure cost drag. `rev` stays product+deco (dashboards sum it as sales), so the shipping charge
   // is applied to margin/pct here and returned separately as shipRev — never folded into rev.
-  const shipRev=o.shipping_type==='pct'?rev*(_sNum(o.shipping_value)/100):_sNum(o.shipping_value);
+  // Webstore batch checkout money — mirrors calcGP / soCalc: processing fee revenue,
+  // Stripe card fees as cost, shipping charged at checkout as shipping revenue. Sales
+  // tax collected is a pass-through and stays out of margin.
+  const wm=webstoreCheckoutMoney(o);
+  rev+=wm.processing;cost+=wm.ccFees;
+  const shipRev=(o.shipping_type==='pct'?rev*(_sNum(o.shipping_value)/100):_sNum(o.shipping_value))+wm.shipping;
   const totalRev=rev+shipRev;const margin=totalRev-cost;
   return{rev,cost,shipRev,margin,pct:totalRev>0?Math.round(margin/totalRev*100):0};
 };

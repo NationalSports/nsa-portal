@@ -1,0 +1,13 @@
+# Per-document recovery history
+
+The shared `app_state.so_history` and `est_history` blobs contained 14,399,061 text bytes. Each existing-document save serialized and uploaded the entire corresponding blob under the global save guard, deferring refreshes. This was a confirmed inefficiency, not proof that it explained all reported slowness.
+
+The new append-only snapshot table receives one prior-document snapshot per save. Snapshot capture time preserves rollback ordering across delayed retries. A separate IndexedDB journal stages snapshots before requests, retries failures by signed-in owner, and uses server content deduplication. History writes do not hold the document refresh guard; pending history still protects automatic reload/unload.
+
+Operational loads exclude both legacy blobs. Initial recovery checks flush queued history, then read compact per-document summaries. The Backup page and both export actions fetch every history page; failed reads abort export. Import adds snapshots oldest-first after validating the complete history input, preserving existing recovery history. Existing document save/identity/conflict protection remains in place.
+
+Migration `20260911042557_per_document_history_snapshots.sql` was applied before client rollout. It keeps the old blobs and ingests older tabs' writes additively. A bounded app_state lock closes the backfill/trigger installation gap. All 725 legacy entries were matched exactly after migration; the new table contains 723 unique entries because two were exact duplicates. The summary for 120 documents measured 16,137 JSON text bytes. These are uncompressed database text sizes, not measured end-to-end browser speedups.
+
+Validation: full Jest run 368 suites / 5,551 tests passed; production build passed with existing third-party sourcemap warnings. Permanent scratch PostgreSQL scenarios exercise old-tab overwrite preservation, duplicate retries, delayed capture ordering, malformed input and real staff/nonstaff/anonymous/service-role access. Existing transactional order-save scenarios also passed. Live staff reads and identical retry writes were tested inside a rolled-back transaction; nonstaff reads returned no rows. Supabase security advisors reported no findings for the new objects.
+
+Rollout limitation: already-open older builds retain the old bulky upload behavior until they update safely. Their history is preserved by the compatibility trigger. New snapshots are read by the new history interface; legacy blobs remain a compatibility source, not the new authoritative history. No legacy blobs or business records were deleted.

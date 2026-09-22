@@ -14,7 +14,9 @@ const extract=name=>{
 
 const lookupFor=({sos=[],submittedBatches=[],savedBills=[],ledger=[],session}={})=>{
   const c={sos,submittedBatches,savedBills,billingAttemptKey,_billApplySession:{current:session||createBillApplySession()},_appliedLedger:{current:new Set(ledger)},
-    _appliedLedgerKey:(space,value,isCredit)=>space+'|'+(isCredit?'1':'0')+'|'+String(value==null?'':value).trim().toLowerCase()};
+    _appliedLedgerKey:(space,value,isCredit)=>space+'|'+(isCredit?'1':'0')+'|'+String(value==null?'':value).trim().toLowerCase(),
+    // Shared by the dedup helpers in App.js; document numbers can arrive as numbers.
+    _docNorm:v=>String(v==null?'':v).trim().toLowerCase()};
   vm.createContext(c);
   vm.runInContext(extract('_docAlreadyApplied')+'\nthis.lookup=_docAlreadyApplied;',c);
   return c.lookup;
@@ -49,4 +51,15 @@ test('an interrupted attempt fails closed until its target is reconciled',()=>{
   const journal={has:key=>key==='invoice|INTERRUPTED'};
   const lookup=lookupFor({session:createBillApplySession(journal)});
   expect(lookup('INTERRUPTED',undefined,false)).toBe(false);
+});
+
+test('a document number that arrives as a number is compared, not trimmed',()=>{
+  // A Sports Inc / S&S order number round-trips from jsonb as a NUMBER; trimming
+  // one crashed the app mid-backfill.
+  const savedBills=[{portalStatus:'success',parsed:{si_doc_number:75565794,doc_number:'INV-1'}}];
+  const lookup=lookupFor({savedBills});
+  expect(()=>lookup(75565794,'si',false)).not.toThrow();
+  expect(lookup(75565794,'si',false)).toBe(true);
+  expect(lookup('75565794','si',false)).toBe(true);
+  expect(lookup(99999999,'si',false)).toBe(false);
 });

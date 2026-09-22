@@ -41,7 +41,7 @@
   "scripts": {
     "start": "craco start",
     "build": "craco build",
-    "postbuild": "node scripts/write-build-meta.js",
+    "postbuild": "node scripts/write-build-meta.js && node scripts/write-qbo-deploy-context.js",
     "test": "react-scripts test --watchAll=false --verbose",
     "test:report": "node scripts/run-tests.js",
     "test:email": "node scripts/run-tests.js --email",

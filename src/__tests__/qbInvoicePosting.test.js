@@ -128,7 +128,12 @@ describe('Automated Sales Tax — tax as a liability line', () => {
   });
 
   test('still refuses a state with no approved sales-tax account', () => {
-    expect(()=>buildQBInvoiceTaxPlan({invoice:inv,state:'SD',partnerTaxEnabled:true})).toThrow(/no approved sales-tax account/);
+    expect(()=>buildQBInvoiceTaxPlan({invoice:inv,state:'OR',partnerTaxEnabled:true})).toThrow(/no approved sales-tax account/);
+  });
+
+  test('routes approved WI and SD tax lines to the sales-tax payable parent', () => {
+    expect(buildQBInvoiceTaxPlan({invoice:inv,state:'WI',partnerTaxEnabled:true}).taxAccountKey).toBe('tax_parent_account');
+    expect(buildQBInvoiceTaxPlan({invoice:inv,state:'SD',partnerTaxEnabled:true}).taxAccountKey).toBe('tax_parent_account');
   });
 
   test('leaves the manual-rate path untouched when AST is off', () => {

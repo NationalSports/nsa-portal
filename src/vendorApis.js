@@ -1358,19 +1358,31 @@ const sanmarGetWarehouseStock = async (descriptors) => {
 // pickable rows [{ sku, style, brand, color, size, price, qty }] — the `sku` is the S&S order
 // `identifier`. Best-effort: a lookup miss/failure returns [] (or throws to surface a real
 // network error to the caller's catch).
-const ssSearchProducts = async (query, { limit = 80 } = {}) => {
+//
+// `color`/`size` are the order line being matched, and they only RANK the rows (never filter):
+// the wanted colorway is floated to the top so the rep isn't scrolling a 500-row catalog, but
+// every row S&S returned is still pickable in case our color naming differs from theirs.
+const ssSearchProducts = async (query, { limit = 1200, color = '', size = '' } = {}) => {
   const q = String(query || '').trim();
   if (q.length < 2) return [];
   const styleList = await ssApiCall('/Styles?search=' + encodeURIComponent(q));
   const sa = Array.isArray(styleList) ? styleList : (styleList ? [styleList] : []);
-  const styleIDs = [...new Set(sa.map(s => s.styleID || s.StyleID).filter(Boolean))].slice(0, 5);
+  // A query that names a style EXACTLY is the style the rep meant. S&S's /Styles?search= is
+  // fuzzy and also returns every style whose name/description merely contains the number, and
+  // those styles used to spend the row budget below before the real one got its turn.
+  const qn = _smNorm(q);
+  const exact = sa.filter(s => _smNorm(s.partNumber) === qn || _smNorm(s.styleName) === qn);
+  const pool = exact.length ? exact : sa;
+  const styleIDs = [...new Set(pool.map(s => s.styleID || s.StyleID).filter(Boolean))].slice(0, 5);
   if (!styleIDs.length) return [];
   const data = await ssApiCall('/Products/?style=' + encodeURIComponent(styleIDs.join(',')));
   const items = Array.isArray(data) ? data : (data ? [data] : []);
+  const seen = new Set();
   const rows = [];
   for (const r of items) {
     const sku = String(r.sku || r.Sku || r.gtin || '');
-    if (!sku) continue;
+    if (!sku || seen.has(sku)) continue;
+    seen.add(sku);
     rows.push({
       sku,
       style: String(r.styleName || r.StyleName || '').trim(),
@@ -1380,9 +1392,25 @@ const ssSearchProducts = async (query, { limit = 80 } = {}) => {
       price: parseFloat(r.customerPrice || r.piecePrice || 0) || 0,
       qty: typeof r.qty === 'number' ? r.qty : (parseInt(r.qty, 10) || 0),
     });
-    if (rows.length >= limit) break;
   }
-  return rows;
+  // Rank the line's own color/size to the top BEFORE capping. A wide style overflows any cap
+  // S&S's own order can't be trusted to respect (owner 2026-09-08: the picker for Rabbit Skins
+  // 3321 — 105 colors × 5 sizes = 525 rows — listed colors A–B only under the old 80-row cut
+  // and never reached the ordered Rouge), so the cap must never be what decides whether the
+  // wanted row made the list.
+  const cn = _smNorm(color), szn = _smSizeNorm(size);
+  if (!cn && !szn) return rows.slice(0, limit);
+  const score = (r) => {
+    const colorHit = cn && (_smNorm(r.color) === cn || smColorSubset(r.color, color));
+    const sizeHit = szn && smSizeMatch(szn, _smSizeNorm(r.size));
+    return (colorHit ? 2 : 0) + (sizeHit ? 1 : 0);
+  };
+  // Index-keyed tie-break keeps S&S's catalog order inside each score band (a stable sort).
+  return rows
+    .map((r, i) => ({ r, i, s: score(r) }))
+    .sort((a, b) => (b.s - a.s) || (a.i - b.i))
+    .slice(0, limit)
+    .map((x) => x.r);
 };
 
 // Submit a built S&S order (the `order` object from buildSSOrderPayload) via
@@ -1402,7 +1430,18 @@ const ssSubmitOrder = async (order) => {
     throw new Error(msg);
   }
   console.log(`[S&S] order ok (${order.testOrder ? 'TEST' : 'LIVE'}):`, orderNumber);
-  return { orderNumber, invoiceNumber: first.invoiceNumber || first.InvoiceNumber, poNumber: first.poNumber, lineErrors, raw: data };
+  // S&S returns the order's money on the same response (subtotal/shipping/tax/total) —
+  // `shipping` is the freight charge, which is what a rep under the free-ship threshold
+  // needs to see. Read both casings like the rest of this path does.
+  const money = (...keys) => { for (const k of keys) { const v = Number(first[k]); if (first[k] != null && first[k] !== '' && !Number.isNaN(v)) return v; } return null; };
+  return {
+    orderNumber, invoiceNumber: first.invoiceNumber || first.InvoiceNumber, poNumber: first.poNumber, lineErrors, raw: data,
+    subtotal: money('subtotal', 'Subtotal', 'subTotal', 'SubTotal'),
+    shipping: money('shipping', 'Shipping'),
+    tax: money('tax', 'Tax'),
+    total: money('total', 'Total'),
+    shippingMethod: first.shippingMethod || first.ShippingMethod || '',
+  };
 };
 
 const testSSConnection = async () => {
@@ -1532,6 +1571,23 @@ const momentecSubmitOrder = async (order, env = 'stage') => {
   }
   console.log(`[Momentec] order ok (${env}):`, data.orderId);
   return data;
+};
+
+// Get Momentec's real freight quote (POST /v2/ShippingCost via the proxy, which injects
+// credentials server-side). `body` is the request from buildMomentecShippingCostRequest.
+// env: 'stage' | 'prod'. Resolves to the numeric shippingCost; throws Error(<message>) on failure.
+const momentecShippingCost = async (body, env = 'stage') => {
+  const response = await authFetch(`/.netlify/functions/momentec-proxy?service=shipping-cost&env=${encodeURIComponent(env)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error || typeof data.shippingCost !== 'number') {
+    console.error('[Momentec] shipping-cost failed:', data.error || response.status, data.raw || '');
+    throw new Error((data.error || `Momentec shipping-cost failed (HTTP ${response.status})`) + (data.raw ? `\n\nMomentec said: ${data.raw}` : ''));
+  }
+  return data.shippingCost;
 };
 
 // Read back what Momentec actually registered for an order (GET /v2/Order + /v2/OrderLines
@@ -1891,4 +1947,4 @@ const testSportsLinkConnection = async () => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, sanmarStyleVariants, ssApiCall, ssGetProducts, ssGetProductStyles, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock, sanmarGetWarehouseStock, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecOrderDetails, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, sanmarStyleVariants, ssApiCall, ssGetProducts, ssGetProductStyles, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock, sanmarGetWarehouseStock, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecShippingCost, momentecOrderDetails, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };

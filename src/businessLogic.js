@@ -39,10 +39,11 @@ const _hasMockupContent = (af) => Math.max((af.mockup_files || af.files || []).l
 const rQ = v => Math.round(v * 4) / 4;
 const rT = v => Math.round(v * 10) / 10;
 const SP = { bk: [{ min: 1, max: 11 }, { min: 12, max: 23 }, { min: 24, max: 35 }, { min: 36, max: 47 }, { min: 48, max: 71 }, { min: 72, max: 107 }, { min: 108, max: 143 }, { min: 144, max: 215 }, { min: 216, max: 499 }, { min: 500, max: 99999 }], pr: { 0: [50, 60, 80, 100, null], 1: [3.33, 4.33, 5.33, 6, null], 2: [2.33, 3, 4, 4.67, 5.33], 3: [2.13, 2.83, 3.17, 4, 5], 4: [1.97, 2.57, 2.83, 3.33, 4], 5: [1.83, 2.33, 2.63, 3, 3.5], 6: [1.67, 2.13, 2.47, 2.67, 3.17], 7: [1.5, 2, 2.33, 2.5, 2.83], 8: [1.4, 1.9, 2.07, 2.2, 2.67], 9: [1.27, 1.83, 1.93, 2.07, 2.5] }, mk: 1.5, ub: 0.15 };
-// Mirrors EM in pricing.js / App.js (schema _v:4 defaults). This copy had drifted — it still
+// Mirrors EM in pricing.js / App.js (schema _v:5 defaults). This copy had drifted — it still
 // carried the pre-_v:4 cost table, so tests validated embroidery prices production doesn't use.
 // Guarded against re-drift by src/__tests__/pricingDrift.test.js.
-const EM = { sb: [10000, 15000, 20000, 999999], qb: [6, 24, 48, 99999], pr: [[4.8, 5.1, 4.8, 4.5], [5.4, 5.1, 4.8, 4.8], [6, 5.7, 5.4, 5.4], [7.2, 7.5, 7.2, 6]], mk: 1.6, fl: 8 };
+// sf = per-stitch-bracket floor override, aligned to sb (null = use fl) — lets ≤5k sell at $6.
+const EM = { sb: [5000, 10000, 15000, 20000, 999999], qb: [6, 24, 48, 99999], pr: [[3.5, 3.5, 3.5, 3.5], [4.8, 5.1, 4.8, 4.5], [5.4, 5.1, 4.8, 4.8], [6, 5.7, 5.4, 5.4], [7.2, 7.5, 7.2, 6]], mk: 1.6, fl: 8, sf: [6, null, null, null, null] };
 const NP = { bk: [10, 50, 99999], co: [4, 3, 3], se: [7, 6, 5], tc: 3 };
 const DTF = [{ label: '4" Sq & Under', cost: 2.5, sell: 4.5 }, { label: 'Front Chest (12"x4")', cost: 4.5, sell: 7.5 }];
 // Tackle twill (mirror of src/lib/decoPricing.js). TWA = chest/logo menu, TWN = jersey numbers
@@ -59,10 +60,13 @@ function spFlatShare(q, c, u = 1) { const b0 = SP.bk[0]; if (!(q >= b0.min && q 
 // unrounded per-piece shares (mirrors src/lib/decoPricing.js spRunBlend/decoSplitRuns — keep in sync).
 function spRunBlend(runs, c, u = 1) { let Q = 0, sT = 0, cT = 0; for (const r0 of runs || []) { const r = safeNum(r0); if (!(r > 0)) continue; Q += r; const f = spFlatShare(r, c, u); if (f) { sT += f.sell * r; cT += f.cost * r; continue } const cc = rQ(spP(r, c, false) * u); sT += rT(cc * SP.mk) * r; cT += cc * r } if (!(Q > 0) || (runs || []).filter(r => safeNum(r) > 0).length < 2) return null; return { sell: sT / Q, cost: cT / Q } }
 function decoSplitRuns(d, pq) { if (!d || !Array.isArray(d.split_runs)) return null; const runs = d.split_runs.map(safeNum).filter(r => r > 0); if (runs.length < 2) return null; const tot = runs.reduce((a, b) => a + b, 0); const rm = d.reversible ? 2 : 1; if (tot * rm === pq) return runs.map(r => r * rm); if (tot === pq) return runs; return null }
-// EM.pr stores cost; sell = rT(cost × EM.mk).
+// EM.pr stores cost; sell = max(rT(cost × EM.mk), floor), the floor being EM.sf[si] when set and
+// the global EM.fl otherwise. emFlSt resolves the same floor from a raw stitch count for dP.
 // Non-positive stitch counts / quantities are invalid input, not the smallest tier —
 // return 0 like spP does. Synced with pricing.js/decoPricing.js and App.js copies.
-function emP(st, q, s = true) { if (!(st > 0) || !(q > 0)) return 0; const si = EM.sb.findIndex(b => st <= b); const qi = EM.qb.findIndex(b => q <= b); if (si < 0 || qi < 0) return 0; const v = EM.pr[si][qi]; return s ? Math.max(rT(v * EM.mk), EM.fl || 0) : v }
+const emFl = si => { const f = (EM.sf && si >= 0 && EM.sf[si] != null) ? EM.sf[si] : EM.fl; return f > 0 ? f : 0 };
+const emFlSt = st => emFl(EM.sb.findIndex(b => st <= b));
+function emP(st, q, s = true) { if (!(st > 0) || !(q > 0)) return 0; const si = EM.sb.findIndex(b => st <= b); const qi = EM.qb.findIndex(b => q <= b); if (si < 0 || qi < 0) return 0; const v = EM.pr[si][qi]; return s ? Math.max(rT(v * EM.mk), emFl(si)) : v }
 function npP(q, tw = false, s = true) { if (!(q > 0)) return 0; const bi = NP.bk.findIndex(b => q <= b); if (bi < 0) return 0; return s ? (NP.se[bi] + (tw ? rQ(NP.tc * 1.65) : 0)) : (NP.co[bi] + (tw ? NP.tc : 0)) }
 // Tackle twill (mirror of src/lib/decoPricing.js). twaP: chest/logo by TWA index. twnP: number by TWN size × color.
 function twaP(idx, s = true) { const t = TWA[idx || 0] || TWA[0]; if (!t) return 0; return s ? safeNum(t.sell) : safeNum(t.cost) }
@@ -78,19 +82,19 @@ function dP(d, q, artFiles, cq) {
   if (d.kind === 'art' && d.art_file_id && artFiles) {
     if (d.art_file_id === '__tbd') { const tType = d.art_tbd_type || 'screen_print';
       if (tType === 'screen_print') { const nc = d.tbd_colors || 1; const u = d.underbase ? 1 + SP.ub : 1; const _sr = decoSplitRuns(d, pq); if (_sr) { const b = spRunBlend(_sr, nc, u); if (b) return { sell: d.sell_override != null ? d.sell_override : b.sell, cost: b.cost } } const f = spFlatShare(pq, nc, u); if (f) return { sell: d.sell_override != null ? d.sell_override : f.sell, cost: f.cost }; const c = rQ(spP(pq, nc, false) * u); return { sell: d.sell_override != null ? d.sell_override : rT(c * SP.mk), cost: c } }
-      if (tType === 'embroidery') { const c = emP(d.tbd_stitches || 8000, pq, false); return { sell: d.sell_override != null ? d.sell_override : Math.max(rT(c * EM.mk), EM.fl || 0), cost: c } }
+      if (tType === 'embroidery') { const st = d.tbd_stitches || 8000; const c = emP(st, pq, false); return { sell: d.sell_override != null ? d.sell_override : Math.max(rT(c * EM.mk), emFlSt(st)), cost: c } }
       if (tType === 'heat_press' || tType === 'dtf') { const t = DTF[d.tbd_dtf_size || 0]; return { sell: d.sell_override != null ? d.sell_override : t.sell, cost: t.cost } };
       return { sell: d.sell_override || 0, cost: 0 } }
     const art = artFiles.find(a => a.id === d.art_file_id); if (art) {
       if (art.deco_type === 'screen_print') { const nc = art.ink_colors ? art.ink_colors.split('\n').filter(l => l.trim()).length : 1; const u = d.underbase ? 1 + SP.ub : 1; const _sr = decoSplitRuns(d, pq); if (_sr) { const b = spRunBlend(_sr, nc, u); if (b) return { sell: d.sell_override != null ? d.sell_override : b.sell, cost: b.cost } } const f = spFlatShare(pq, nc, u); if (f) return { sell: d.sell_override != null ? d.sell_override : f.sell, cost: f.cost }; const c = rQ(spP(pq, nc, false) * u); return { sell: d.sell_override != null ? d.sell_override : rT(c * SP.mk), cost: c } }
-      if (art.deco_type === 'embroidery') { const c = emP(art.stitches || 8000, pq, false); return { sell: d.sell_override != null ? d.sell_override : Math.max(rT(c * EM.mk), EM.fl || 0), cost: c } }
+      if (art.deco_type === 'embroidery') { const st = art.stitches || 8000; const c = emP(st, pq, false); return { sell: d.sell_override != null ? d.sell_override : Math.max(rT(c * EM.mk), emFlSt(st)), cost: c } }
       // Transfer-code decos carry real cost on cost_each — keep in sync with decoPricing.js.
       if (art.deco_type === 'dtf' || art.deco_type === 'heat_press') { const t = DTF[art.dtf_size || 0]; return { sell: d.sell_override != null ? d.sell_override : t.sell, cost: (d.transfer_code && d.cost_each != null) ? safeNum(d.cost_each) : t.cost } } } }
   // Team Shop conversion decos (00199): cost_each is the rate-card cost-of-record; sell
   // stays 0 (already folded into unit_sell). Keep in sync with src/lib/decoPricing.js.
   if (d.kind === 'art' && !d.art_file_id && d.cost_each != null) return { sell: safeNum(d.sell_override) || safeNum(d.sell_each), cost: safeNum(d.cost_each) };
   if (d.type === 'screen_print') { const u = d.underbase ? 1 + SP.ub : 1; const f = spFlatShare(q, d.colors || 1, u); if (f) return { sell: d.sell_override != null ? d.sell_override : f.sell, cost: f.cost }; const c = rQ(spP(q, d.colors || 1, false) * u); return { sell: d.sell_override != null ? d.sell_override : rT(c * SP.mk), cost: c } }
-  if (d.type === 'embroidery') { const c = emP(d.stitches || 8000, q, false); return { sell: d.sell_override != null ? d.sell_override : Math.max(rT(c * EM.mk), EM.fl || 0), cost: c } }
+  if (d.type === 'embroidery') { const st = d.stitches || 8000; const c = emP(st, q, false); return { sell: d.sell_override != null ? d.sell_override : Math.max(rT(c * EM.mk), emFlSt(st)), cost: c } }
   if (d.kind === 'numbers' || d.type === 'number_press') {
     // Mirror src/pricing.js dP() exactly so the editor and QB billing agree.
     if (d.num_method === 'sublimated') { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const useQty = nq || Math.max(0, safeNum(d.num_qty)) || 0; const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); return { sell: safeNum(d.sell_override) || 0, cost: 0, _nq: useQty * mult } }

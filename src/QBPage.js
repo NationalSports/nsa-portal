@@ -1,3 +1,9 @@
+import StripePaymentVerification from './StripePaymentVerification';
+import QBCustomerLinkRepair from './QBCustomerLinkRepairCard';
+import QBServerReviewCard from './QBServerReviewCard';
+import QBBackgroundSalesCard from './QBBackgroundSalesCard';
+import QBPayableServerReviewCard from './QBPayableServerReviewCard';
+import QBAuditExportCard from './QBAuditExportCard';
 import {supabase} from './lib/dbEngine';
 import {loadQBVendorReview,applyQBVendorReview} from './qbVendorSync';
 import {buildQBProductManifest,loadQBProductItems,qbProductBatchReadiness} from './qbProductMigration';
@@ -11,8 +17,10 @@ import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
 import { authFetch } from './utils';
-import { buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, isVoidInvoice, portalCustomerDisplayName, qbCustomerBatchReady, qbResponseErrorDetail } from './qbSyncEngine';
+import { applyQBPurchaseOrderLiveReadiness, applyQBSalesOrderLiveReadiness, buildQBCustomerManifest, buildQBCustomerMatchDiagnostic, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, groupPortalPurchaseOrders, historicalPortalPurchaseOrderIds, isVoidInvoice, portalCustomerDisplayName, qbCustomerBatchReady, qbPurchaseOrderSourceFingerprint, qbResponseErrorDetail, qbSalesOrderSourceFingerprint } from './qbSyncEngine';
 import { QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_POSTING_MATRIX, QB_ACCOUNT_SPECS, QB_STATE_TAX_ACCOUNT_KEYS, buildVendorBillLines, calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, manualBillAccountKey, normalizeVendorName, qbWriteAccountRef, queryQBReadOnly, readQBWithRetry, resolveQBAccountRefs } from './qbAccountMappings';
+import { mergeDurableQBLinks, persistVerifiedQBCustomerLinkRecovery } from './qbLinkLedger';
+import { applyQBInvoiceLiveReadiness, loadQBInvoicesForDuplicateCheck, normalizeQBInvoiceDocumentNumber, qbInvoiceSourceKey, summarizeQBInvoicePreflight } from './qbInvoiceSyncGuard';
 
 const stripeBackfillErrorSummary=(errors=[])=>{
   const counts={};
@@ -81,6 +89,7 @@ export default function QBPage(){
   const [qbItemAudit,setQbItemAudit]=useState(null);
   const [customerManifest,setCustomerManifest]=useState(null);
   const [customerReviewBusy,setCustomerReviewBusy]=useState(false);
+  const [customerRecoveryApproved,setCustomerRecoveryApproved]=useState(false);
   const [productReview,setProductReview]=useState(null);
   const [productApproved,setProductApproved]=useState(false);
   const [productCreateApproved,setProductCreateApproved]=useState(false);
@@ -90,6 +99,7 @@ export default function QBPage(){
   const [customerBatchLimit,setCustomerBatchLimit]=useState(20);
   const [productBatchLimit,setProductBatchLimit]=useState(20);
   const [poBatchLimit,setPoBatchLimit]=useState(20);
+  const [poParkingApproved,setPoParkingApproved]=useState(false);
   const [productPoOnly,setProductPoOnly]=useState(true);
   const [customerReviewFilter,setCustomerReviewFilter]=useState('all');
   // Steve Peterson approved Net 30 (the portal's own due-date default) for blank
@@ -105,6 +115,12 @@ export default function QBPage(){
   const [matchDiagnostic,setMatchDiagnostic]=useState(null);
   const [matchDiagnosticBusy,setMatchDiagnosticBusy]=useState(false);
   const [poBatchReview,setPoBatchReview]=useState(null);
+  const [invoiceBatchReview,setInvoiceBatchReview]=useState(null);
+  const [invoiceBatchLimit,setInvoiceBatchLimit]=useState(20);
+  const [invoiceBatchApproved,setInvoiceBatchApproved]=useState(false);
+  const [salesOrderBatchReview,setSalesOrderBatchReview]=useState(null);
+  const [salesOrderBatchLimit,setSalesOrderBatchLimit]=useState(20);
+  const [salesOrderBatchApproved,setSalesOrderBatchApproved]=useState(false);
   const [invValuationReview,setInvValuationReview]=useState(null);
   const [invValuationApproved,setInvValuationApproved]=useState(false);
   const [poBatchApproved,setPoBatchApproved]=useState(false);
@@ -233,7 +249,9 @@ export default function QBPage(){
         log.details.push('READ ONLY — no QuickBooks records were created or changed');
         log.details.push('Company: '+(ci?.CompanyName||qbConfig.companyName||'Unknown')+' · Realm: '+(qbConfig.realm_id||'unknown'));
         Object.entries(refs).forEach(([key,ref])=>log.details.push(key+' → '+ref.accountNumber+' '+ref.name+' (QB #'+ref.value+')'));
-        const entities=['Customer','Vendor','Item','Invoice','Bill','PurchaseOrder','Payment'];
+        // QuickBooks calls an A/P credit a VendorCredit. "BillCredit" is a
+        // NetSuite-style label and is not a queryable QBO entity.
+        const entities=['Customer','Vendor','Item','Invoice','Bill','VendorCredit','BillPayment','PurchaseOrder','Payment'];
         for(const entity of entities){
           try{
             const res=await queryQBReadOnly(qbApi,'SELECT count(*) FROM '+entity,entity+' count query');
@@ -241,7 +259,41 @@ export default function QBPage(){
             log.details.push(entity+' records currently in QBO: '+(count==null?'count unavailable':count));
           }catch(e){log.details.push(entity+' count unavailable: '+e.message);log.status='partial'}
         }
-        setQBConfig(prev=>({...prev,preflight:{status:log.status,at:new Date().toISOString(),company:ci?.CompanyName||prev.companyName,realm_id:prev.realm_id,accounts:Object.fromEntries(Object.entries(refs).map(([key,ref])=>[key,{id:ref.value,number:ref.accountNumber,name:ref.name}]))},syncLog:[log,...prev.syncLog].slice(0,100)}));
+        // The connection/account check alone is not enough to unlock invoice work.
+        // Include the same live duplicate guard used by reviewed invoice batches so
+        // the operator can see every create, exact match, exclusion, hold, and
+        // conflict before any QBO write control becomes available.
+        const qboInvoices=await loadQBInvoicesForDuplicateCheck(qbApi,invoicePreviewRows.filter(row=>row.duplicateCheckEligible));
+        const invoiceRows=applyQBInvoiceLiveReadiness(invoicePreviewRows,qboInvoices);
+        invoiceRows.forEach(row=>log.details.push(row.documentNumber+' — '+row.action+(row.reason?' — '+row.reason:'')));
+
+        // These are the actual immutable Portal document numbers. The accepted
+        // QBO aliases differ only by the optional NS- prefix; the guard must not
+        // silently remove any other punctuation from the accounting identifier.
+        const aliasNumbers=['INV-63133','INV-63199','INV-63255'];
+        const aliasRows=[];
+        for(const number of aliasNumbers){
+          const source=invs.find(invoice=>normalizeQBInvoiceDocumentNumber(invoice.display_id||invoice.document_number||invoice.id)===number);
+          if(!source){
+            aliasRows.push({documentNumber:number,action:'source_not_found',reason:'No Portal source invoice has this exact normalized number'});
+            continue;
+          }
+          const [row]=buildQBInvoicePreviewRows([{...source,qb_invoice_id:''}],cust,_custQBMap,{invoiceMap:{},taxBlockReason:()=>''});
+          if(!row){aliasRows.push({documentNumber:number,action:'source_not_reviewable',reason:'Portal source invoice is void or otherwise not reviewable'});continue}
+          const matches=await loadQBInvoicesForDuplicateCheck(qbApi,[{...row,duplicateCheckEligible:true}]);
+          aliasRows.push(applyQBInvoiceLiveReadiness([{...row,duplicateCheckEligible:true}],matches)[0]);
+        }
+        aliasRows.forEach(row=>log.details.push('Alias '+row.documentNumber+' / NS-'+row.documentNumber+' — '+row.action+(row.qboId?' — QBO #'+row.qboId:'')+(row.reason?' — '+row.reason:'')));
+        const summary=summarizeQBInvoicePreflight(invoiceRows,aliasRows);
+        log.details.push('Invoice guard — '+JSON.stringify(summary.counts)+' · proposed for creation: '+summary.proposedCount+' · acceptance: '+(summary.passed?'PASS':'FAIL'));
+        // Ready invoices are the expected input to the explicitly approved
+        // reviewed-batch flow. Only conflicts, blocked rows, or alias failures
+        // should keep those review controls locked. The stricter `passed` flag
+        // remains false while any creation is proposed, so unattended posting
+        // still fails closed.
+        if(!summary.safeToReview)log.status='partial';
+        const invoiceAudit={reviewedAt:new Date().toISOString(),...summary,rows:invoiceRows,aliases:aliasRows};
+        setQBConfig(prev=>({...prev,preflight:{status:log.status,at:new Date().toISOString(),company:ci?.CompanyName||prev.companyName,realm_id:prev.realm_id,accounts:Object.fromEntries(Object.entries(refs).map(([key,ref])=>[key,{id:ref.value,number:ref.accountNumber,name:ref.name}])),invoiceAudit},syncLog:[log,...prev.syncLog].slice(0,100)}));
         nf('Live QBO preflight complete — no records changed');
       }catch(e){
         log.status='error';log.details.push(e.message||'Preflight failed');
@@ -436,8 +488,12 @@ export default function QBPage(){
       const hasItems=safeItems(so).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
       return hasItems&&!soMap[so.id];
     });
-    const unsyncedPOGroups=groupPortalPurchaseOrders(sos,poMap);
-    const unsyncedInvs=invs.filter(i=>!i.qb_invoice_id&&!isVoidInvoice(i));
+    const parkedPurchaseOrderIds=qbConfig.parkedPurchaseOrderIds||[];
+    const autoExcludedHistoricalPOIds=historicalPortalPurchaseOrderIds(sos,poMap,parkedPurchaseOrderIds);
+    const unsyncedPOGroups=groupPortalPurchaseOrders(sos,poMap,vend,parkedPurchaseOrderIds);
+    // Zero-dollar source records remain in portal history but are not QBO
+    // accounting documents and must not keep the migration queue open.
+    const unsyncedInvs=invs.filter(i=>!i.qb_invoice_id&&!(qbConfig.qbInvoiceMap||{})[qbInvoiceSourceKey(i)]&&!isVoidInvoice(i)&&safeNum(i.total)>0);
     const _custQBMap=qbConfig.custQBMap||{};
     const _prodQBMap=qbConfig.prodQBMap||{};
     const custWithQB=cust.filter(c=>_custQBMap[c.id]).length;
@@ -445,9 +501,10 @@ export default function QBPage(){
     const totalInvQty=prod.reduce((a,p)=>a+Object.values(p._inv||{}).reduce((a2,v)=>a2+safeNum(v),0),0);
     const totalInvValue=prod.reduce((a,p)=>{const qty=Object.values(p._inv||{}).reduce((a2,v)=>a2+safeNum(v),0);return a+qty*safeNum(p.nsa_cost)},0);
     const unsyncedInvPOs=invPOs.filter(p=>!p._qb_synced);
-    const migrationUnlocked=qbConfig.initialMigrationApproved===true;
+    const durableLinksReady=qbConfig._durableLinksLoaded===true;
+    const migrationUnlocked=qbConfig.initialMigrationApproved===true&&durableLinksReady;
     const verifiedCanaryBills=new Set((qbConfig._qbCanaryBillIds||[]).map(String)).size;
-    const livePreflightReady=qbConfig.preflight?.status==='success'&&String(qbConfig.preflight?.realm_id||'')===String(qbConfig.realm_id||'');
+    const livePreflightReady=durableLinksReady&&qbConfig.preflight?.status==='success'&&String(qbConfig.preflight?.realm_id||'')===String(qbConfig.realm_id||'');
     const activeCanaryCustomers=cust.filter(c=>c.is_active!==false&&!c.deleted_at).sort((a,b)=>portalCustomerDisplayName(a).localeCompare(portalCustomerDisplayName(b)));
     const canaryInvoices=[...unsyncedInvs].sort((a,b)=>String(a.display_id||a.id).localeCompare(String(b.display_id||b.id),undefined,{numeric:true}));
     const canaryProducts=[...new Map(prod.filter(p=>p.is_active!==false&&String(p.sku||'').trim()).sort((a,b)=>String(a.sku).localeCompare(String(b.sku),undefined,{numeric:true})).map(p=>[String(p.sku).trim().toUpperCase(),p])).values()];
@@ -457,19 +514,27 @@ export default function QBPage(){
     const selectedCanaryProduct=canaryProducts.find(p=>String(p.id)===String(qbCanaryProductId));
     const selectedCanarySO=canarySOs.find(so=>String(so.id)===String(qbCanarySOId));
     const selectedCanaryPO=canaryPOs.find(group=>String(group.poId)===String(qbCanaryPOId));
-    const poPreviewRows=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{});
+    const poPreviewRows=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{},vend,parkedPurchaseOrderIds);
     const poBatchRows=(poBatchReview?.rows||[]).filter(row=>row.action==='ready').slice(0,poBatchLimit);
+    const poBlockedRows=(poBatchReview?.rows||[]).filter(row=>row.action==='blocked');
+    const taxPreflight=qbConfig.taxPreflight&&String(qbConfig.taxPreflight.realm_id||'')===String(qbConfig.realm_id||'')?qbConfig.taxPreflight:null;
+    const astTaxOn=!!taxPreflight?.partnerTaxEnabled;
+    const taxableEstimateBlock=state=>{
+      if(!taxPreflight)return'Taxable Estimate: read the sales-tax setup first (Settings tab) so the QBO tax mechanism is known';
+      if(astTaxOn)return QB_STATE_TAX_ACCOUNT_KEYS[state]?'':'Taxable Estimate: customer state "'+(state||'blank')+'" has no approved sales-tax account';
+      return(qbConfig.qbTaxRateMap||{})[state]?'':'Taxable Estimate: run the tax-rate canary for '+(state||'the customer state')+' first (Settings tab)';
+    };
+    const salesOrderPreviewRows=buildQBSalesOrderPreviewRows(sos,cust,_custQBMap,qbConfig.qbSOMap||{},dP,
+      {partnerTaxEnabled:astTaxOn,taxBlockReason:({taxState})=>taxableEstimateBlock(taxState)});
+    const salesOrderBatchRows=(salesOrderBatchReview?.rows||[]).filter(row=>row.action==='ready').slice(0,salesOrderBatchLimit);
     const poPreviewById=new Map(poPreviewRows.map(row=>[String(row.poId),row]));
     const poAccountSkus=poId=>poPreviewById.get(String(poId))?.accountSkus||[];
     const selectedInvoiceCustomer=selectedCanaryInvoice&&cust.find(c=>c.id===selectedCanaryInvoice.customer_id);
-    const invoiceCanaryTaxState=selectedCanaryInvoice?String(selectedInvoiceCustomer?.shipping_state||selectedInvoiceCustomer?.billing_state||'').trim().toUpperCase():'';
     // A taxable invoice needs a mechanism to carry the portal's own tax amount,
     // but which mechanism depends on the company file. Under manual sales tax
     // that is the state's verified TaxRate; under Automated Sales Tax no manual
     // rate can exist, so it is the CustomSalesTax override code instead. Gate on
     // whichever one actually applies, read from the stored tax preflight.
-    const taxPreflight=qbConfig.taxPreflight||null;
-    const astTaxOn=!!taxPreflight?.partnerTaxEnabled;
     const taxableInvoiceBlock=state=>{
       if(!taxPreflight)return'Taxable invoice: read the sales-tax setup first (Settings tab) so the right tax mechanism is known';
       // Under AST the tax posts as its own line against the state's approved
@@ -485,9 +550,12 @@ export default function QBPage(){
     const invoiceTaxState=inv=>{const c=cust.find(cc=>cc.id===inv.customer_id);
       return String(c?.shipping_state||c?.billing_state||'').trim().toUpperCase()};
     const invoiceTaxBlocked=inv=>safeNum(inv.tax)>0&&!!taxableInvoiceBlock(invoiceTaxState(inv));
-    const invoiceCanaryBlock=selectedCanaryInvoice&&!_custQBMap[selectedCanaryInvoice.customer_id]?'Sync this invoice customer first'
-      :selectedCanaryInvoice&&safeNum(selectedCanaryInvoice.tax)>0?taxableInvoiceBlock(invoiceCanaryTaxState):'';
-    const soCanaryBlock=selectedCanarySO&&!_custQBMap[selectedCanarySO.customer_id]?'Sync this sales-order customer first':'';
+    const invoicePreviewRows=buildQBInvoicePreviewRows(invs,cust,_custQBMap,{invoiceMap:qbConfig.qbInvoiceMap||{},taxBlockReason:inv=>taxableInvoiceBlock(invoiceTaxState(inv))});
+    const invoiceBatchRows=(invoiceBatchReview?.rows||[]).filter(row=>row.action==='ready').slice(0,invoiceBatchLimit);
+    const selectedCanaryPreview=selectedCanaryInvoice&&invoicePreviewRows.find(row=>row.invoiceId===String(selectedCanaryInvoice.id));
+    const invoiceCanaryBlock=selectedCanaryPreview&&selectedCanaryPreview.action!=='ready'?selectedCanaryPreview.reason:'';
+    const selectedSalesOrderPreview=selectedCanarySO&&salesOrderPreviewRows.find(row=>row.salesOrderId===String(selectedCanarySO.id));
+    const soCanaryBlock=selectedSalesOrderPreview?.action==='blocked'?selectedSalesOrderPreview.reason:'';
     const poCanaryBlock=selectedCanaryPO?.invalidReason||'';
     const runCustomerCanary=async()=>{
       if(!qbCanaryCustomerId)return;
@@ -526,7 +594,7 @@ export default function QBPage(){
       try{
         const terms=await loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000);
         const customers=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SalesTermRef',1000);
-        const rows=buildQBCustomerManifest(cust,customers,terms,qbConfig.custQBMap||{},{blankTermsDefault:customerBlankTermsDefault});
+        const rows=buildQBCustomerManifest(cust,customers,terms,qbConfig.custQBMap||{},{blankTermsDefault:customerBlankTermsDefault,reviewedAliases:qbConfig.custQBAliasApprovals||{}});
         const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,blankTermsDefault:customerBlankTermsDefault,
           counts:rows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{}),
           termSources:rows.reduce((counts,row)=>({...counts,[row.termSource||'portal']:(counts[row.termSource||'portal']||0)+1}),{})};
@@ -534,6 +602,31 @@ export default function QBPage(){
         setQBConfig(prev=>({...prev,lastCustomerReview:review}));
         nf('Customer review complete — no QBO records changed');
       }catch(e){nf('Customer review failed — '+e.message,'error')}finally{setCustomerReviewBusy(false)}
+    };
+    const customerRecoveryRows=(customerManifest?.rows||[]).filter(row=>row.action==='link'&&!qbConfig.custQBMap?.[row.sourceId]);
+    const recoverExactCustomerLinks=async()=>{
+      if(!customerRecoveryApproved||!livePreflightReady||!customerRecoveryRows.length)return;
+      setCustomerReviewBusy(true);setQbSyncing(true);
+      try{
+        const reviewedAt=new Date().toISOString();
+        const [terms,customers]=await Promise.all([
+          loadAllQBEntities(qbApi,'Term','Id, Name, Active, Type, DueDays',1000),
+          loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SalesTermRef',1000),
+        ]);
+        const current=buildQBCustomerManifest(cust,customers,terms,qbConfig.custQBMap||{},{blankTermsDefault:customerBlankTermsDefault,reviewedAliases:qbConfig.custQBAliasApprovals||{}})
+          .filter(row=>row.action==='link'&&!qbConfig.custQBMap?.[row.sourceId]);
+        const reviewed=new Map(customerRecoveryRows.map(row=>[String(row.sourceId),String(row.qboId)]));
+        if(current.length!==customerRecoveryRows.length||current.some(row=>reviewed.get(String(row.sourceId))!==String(row.qboId))){
+          throw new Error('Exact customer matches changed since review; review customers again.');
+        }
+        const recovered=await persistVerifiedQBCustomerLinkRecovery(supabase,{realmId:qbConfig.realm_id,reviewedAt,
+          records:current.map(row=>({sourceId:row.sourceId,qboId:row.qboId,displayName:row.displayName,termId:row.desiredTerm?.value||row.currentTerm?.value||''}))});
+        const report={status:'success',at:reviewedAt,count:current.length,details:['PORTAL LINK RECOVERY ONLY — no QBO customer was created or changed']};
+        setQBConfig(prev=>mergeDurableQBLinks({...prev,lastCustomerLinkRecovery:report,lastSync:new Date().toLocaleString()},recovered));
+        setCustomerManifest(null);setCustomerRecoveryApproved(false);
+        nf('Recovered and verified '+current.length+' existing QBO customer links — no QBO records changed');
+      }catch(e){nf('Customer-link recovery stopped — '+e.message,'error')}
+      finally{setCustomerReviewBusy(false);setQbSyncing(false)}
     };
     // Read-only. The review counters say how many customers matched; they cannot say
     // whether the QBO records we failed to match are the same accounts under other
@@ -592,8 +685,12 @@ export default function QBPage(){
     };
     // Only SKUs that actually appear on a purchase order awaiting sync need a QBO item.
     // The full catalogue is about 48,000 SKUs and QBO never needs most of them.
-    const poPendingSkus=React.useMemo(()=>new Set((poBatchReview?.rows||qbConfig.lastPurchaseOrderReview?.rows||[])
-      .flatMap(row=>row.skus||[]).map(sku=>String(sku).trim().toUpperCase()).filter(Boolean)),[poBatchReview,qbConfig.lastPurchaseOrderReview]);
+    const poPendingSkus=React.useMemo(()=>{
+      const parked=new Set((qbConfig.parkedPurchaseOrderIds||[]).map(String));
+      return new Set((poBatchReview?.rows||qbConfig.lastPurchaseOrderReview?.rows||[])
+        .filter(row=>!parked.has(String(row.poId)))
+        .flatMap(row=>row.skus||[]).map(sku=>String(sku).trim().toUpperCase()).filter(Boolean));
+    },[poBatchReview,qbConfig.lastPurchaseOrderReview,qbConfig.parkedPurchaseOrderIds]);
     const productBatchRows=(productReview?.rows||[]).filter(r=>['link','create'].includes(r.action)&&!r.complete)
       .filter(r=>!productPoOnly||!poPendingSkus.size||poPendingSkus.has(String(r.sku).trim().toUpperCase()))
       .slice(0,productBatchLimit);
@@ -620,8 +717,8 @@ export default function QBPage(){
     };
     const runSalesOrderCanary=async()=>{
       if(!selectedCanarySO||soCanaryBlock)return;
-      const preview=buildQBSalesOrder(selectedCanarySO);
-      if(!window.confirm('Create or link exactly ONE QBO Estimate?\n\nPortal sales order: '+selectedCanarySO.id+'\nCustomer: '+preview.customerRef+'\nTotal: $'+safeNum(preview.total).toFixed(2)+'\n\nThis is non-posting and will be verified by API read-back.')){nf('Sales-order canary cancelled — nothing was sent');return}
+      const preview=selectedSalesOrderPreview||buildQBSalesOrder(selectedCanarySO);
+      if(!window.confirm('Create or link exactly ONE QBO Estimate?\n\nPortal sales order: '+selectedCanarySO.id+'\nCustomer: '+(preview.customer||preview.customerRef)+'\nTax: $'+safeNum(preview.tax).toFixed(2)+'\nTotal: $'+safeNum(preview.total).toFixed(2)+'\n\nThis is non-posting and will be verified by API read-back.')){nf('Sales-order canary cancelled — nothing was sent');return}
       await syncSalesOrders({}, {}, {canarySOId:selectedCanarySO.id});
     };
     const reviewPurchaseOrderCanary=()=>{
@@ -649,17 +746,95 @@ export default function QBPage(){
       setInvValuationReview(null);setInvValuationApproved(false);
       await syncInventoryValuation({approved:true,asOf:review.asOf,expectedDelta:review.delta});
     };
-    const reviewPurchaseOrderBatch=()=>{
-      const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows:poPreviewRows,
-        counts:poPreviewRows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{})};
-      setPoBatchReview(review);setPoBatchApproved(false);setQBConfig(prev=>({...prev,lastPurchaseOrderReview:review}));
-      nf('Purchase-order readiness review complete — no QBO records changed');
+    const reviewPurchaseOrderBatch=async()=>{
+      setQbSyncing(true);setPoBatchApproved(false);setPoParkingApproved(false);
+      try{
+        const [qboVendors,qboPurchaseOrders,qboAccounts]=await Promise.all([
+          loadAllQBEntities(qbApi,'Vendor','Id, DisplayName, CompanyName, Active',500),
+          // Full lines are required here: a header-only match can still fail the
+          // execution read-back and otherwise returns at the front of every batch.
+          loadAllQBEntities(qbApi,'PurchaseOrder','*',500),
+          loadQBAccounts(qbApi),
+        ]);
+        const poAccountRefs=resolveQBAccountRefs(qboAccounts,qbConfig.mapping,['purchases_account','deco_account']);
+        const rows=applyQBPurchaseOrderLiveReadiness(poPreviewRows,qboVendors,qboPurchaseOrders,vend,qbConfig.vendorQBMap||{},poAccountRefs);
+        const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,
+          counts:rows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{})};
+        setPoBatchReview(review);setQBConfig(prev=>({...prev,lastPurchaseOrderReview:review}));
+        nf('Purchase-order readiness review complete — live QBO checked; no records changed');
+      }catch(e){setPoBatchReview(null);nf('Purchase-order readiness review failed — '+e.message,'error')}
+      finally{setQbSyncing(false)}
     };
     const runPurchaseOrderBatch=async()=>{
-      const current=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{});
+      const current=buildQBPurchaseOrderPreviewRows(sos,prod,qbConfig.prodQBMap||{},qbConfig.qbPOMap||{},vend,qbConfig.parkedPurchaseOrderIds||[]);
       const currentById=new Map(current.map(row=>[row.poId,row]));
-      if(poBatchRows.some(row=>JSON.stringify(currentById.get(row.poId))!==JSON.stringify(row))){nf('Purchase-order batch changed since review — review it again','error');setPoBatchApproved(false);return}
+      if(poBatchRows.some(row=>JSON.stringify(qbPurchaseOrderSourceFingerprint(currentById.get(row.poId)))!==JSON.stringify(qbPurchaseOrderSourceFingerprint(row)))){nf('Purchase-order batch changed since review — review it again','error');setPoBatchApproved(false);return}
       await syncPurchaseOrders({}, {approved:poBatchApproved,approvedPOIds:poBatchRows.map(row=>row.poId)});setPoBatchApproved(false);setPoBatchReview(null);
+    };
+    const parkPurchaseOrderExceptions=()=>{
+      const ids=poBlockedRows.map(row=>String(row.poId)).filter(Boolean);
+      if(!poParkingApproved||!ids.length)return;
+      const parkedAt=new Date().toISOString();
+      setQBConfig(prev=>({...prev,
+        parkedPurchaseOrderIds:[...new Set([...(prev.parkedPurchaseOrderIds||[]).map(String),...ids])],
+        lastPurchaseOrderParking:{parkedAt,count:ids.length,reason:'Historical QBO PO collision — likely legacy NetSuite duplicate; review later'},
+      }));
+      setPoBatchApproved(false);setPoParkingApproved(false);setPoBatchReview(null);
+      nf(ids.length+' historical purchase orders parked for later; no QBO records changed','success');
+    };
+    const restoreParkedPurchaseOrders=()=>{
+      const count=(qbConfig.parkedPurchaseOrderIds||[]).length;
+      if(!count||!window.confirm('Return '+count+' parked historical purchase orders to the active QBO review queue?'))return;
+      setQBConfig(prev=>({...prev,parkedPurchaseOrderIds:[],lastPurchaseOrderParking:null}));
+      nf(count+' parked purchase orders restored to the review queue','success');
+    };
+    const reviewInvoiceBatch=async()=>{
+      setQbSyncing(true);setInvoiceBatchApproved(false);
+      try{
+        const qboInvoices=await loadQBInvoicesForDuplicateCheck(qbApi,invoicePreviewRows.filter(row=>row.duplicateCheckEligible));
+        let rows=applyQBInvoiceLiveReadiness(invoicePreviewRows,qboInvoices);
+        // Exact matches are safe Portal-side cleanup: QBO remains read-only, while
+        // the immutable source ID and existing QBO ID receive a durable receipt.
+        for(const row of rows.filter(item=>item.action==='link_existing')){
+          await persistQbLink({mapKey:'qbInvoiceMap',sourceIds:[row.sourceId],qboId:row.qboId,
+            log:{ts:new Date().toLocaleString(),type:'invoice_duplicate_cleanup',status:'success',details:[row.documentNumber+' linked to existing QBO Invoice #'+row.qboId+'; QBO unchanged']},
+            evidence:{result:'linked',api_readback:true,duplicate_preflight:'normalized_number_customer_date_cents',source_internal_id:row.sourceInternalId,doc_number:row.documentNumber,customer_id:row.qboCustomerId,date:row.date,total:row.total}});
+          setInvs(prev=>prev.map(invoice=>String(invoice.id)===row.invoiceId?{...invoice,qb_invoice_id:row.qboId}:invoice));
+        }
+        rows=rows.map(row=>row.action==='link_existing'?{...row,action:'already_synced'}:row);
+        const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,
+          counts:rows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{})};
+        setInvoiceBatchReview(review);setQBConfig(prev=>({...prev,lastInvoiceReview:review}));
+        nf('Invoice readiness review complete — live QBO checked; exact existing invoices linked without changing QBO');
+      }catch(e){setInvoiceBatchReview(null);nf('Invoice readiness review failed — '+e.message,'error')}
+      finally{setQbSyncing(false)}
+    };
+    const runInvoiceBatch=async()=>{
+      const current=buildQBInvoicePreviewRows(invs,cust,qbConfig.custQBMap||{},{invoiceMap:qbConfig.qbInvoiceMap||{},taxBlockReason:inv=>taxableInvoiceBlock(invoiceTaxState(inv))});
+      const currentById=new Map(current.map(row=>[row.invoiceId,row]));
+      if(invoiceBatchRows.some(row=>JSON.stringify(currentById.get(row.invoiceId))!==JSON.stringify(row))){nf('Invoice batch changed since review — review it again','error');setInvoiceBatchApproved(false);return}
+      await syncInvoices({}, {}, {approved:invoiceBatchApproved,approvedInvoiceIds:invoiceBatchRows.map(row=>row.invoiceId),expectedRows:invoiceBatchRows});
+      setInvoiceBatchApproved(false);setInvoiceBatchReview(null);
+    };
+    const reviewSalesOrderBatch=async()=>{
+      setQbSyncing(true);setSalesOrderBatchApproved(false);
+      try{
+        const qboEstimates=await loadAllQBEntities(qbApi,'Estimate','Id, DocNumber, CustomerRef, TotalAmt, TxnDate',500);
+        const rows=applyQBSalesOrderLiveReadiness(salesOrderPreviewRows,qboEstimates);
+        const review={realm:qbConfig.realm_id,reviewedAt:new Date().toISOString(),rows,
+          counts:rows.reduce((counts,row)=>({...counts,[row.action]:(counts[row.action]||0)+1}),{})};
+        setSalesOrderBatchReview(review);setQBConfig(prev=>({...prev,lastSalesOrderReview:review}));
+        nf('Sales-order readiness review complete — live QBO checked; no records changed');
+      }catch(e){setSalesOrderBatchReview(null);nf('Sales-order readiness review failed — '+e.message,'error')}
+      finally{setQbSyncing(false)}
+    };
+    const runSalesOrderBatch=async()=>{
+      const current=buildQBSalesOrderPreviewRows(sos,cust,qbConfig.custQBMap||{},qbConfig.qbSOMap||{},dP,
+        {partnerTaxEnabled:astTaxOn,taxBlockReason:({taxState})=>taxableEstimateBlock(taxState)});
+      const currentById=new Map(current.map(row=>[row.salesOrderId,row]));
+      if(salesOrderBatchRows.some(row=>JSON.stringify(qbSalesOrderSourceFingerprint(currentById.get(row.salesOrderId)))!==JSON.stringify(qbSalesOrderSourceFingerprint(row)))){nf('Sales-order batch changed since review — review it again','error');setSalesOrderBatchApproved(false);return}
+      await syncSalesOrders({}, {}, {approved:salesOrderBatchApproved,approvedSOIds:salesOrderBatchRows.map(row=>row.salesOrderId),expectedRows:salesOrderBatchRows});
+      setSalesOrderBatchApproved(false);setSalesOrderBatchReview(null);
     };
 
     // Build what a QB sync would push
@@ -779,16 +954,17 @@ export default function QBPage(){
         <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label" title="Customers the Portal has a saved, verified QuickBooks link for. QuickBooks may already hold customers the Portal has not linked yet.">Customers linked</div><div className="stat-value" style={{color:'#2563eb'}}>{custWithQB}/{cust.length}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}><div className="stat-label">Invoices to Sync</div><div className="stat-value" style={{color:'#d97706'}}>{unsyncedInvs.length}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #16a34a'}}><div className="stat-label">SOs to Sync</div><div className="stat-value" style={{color:'#16a34a'}}>{unsyncedSOs.length}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">POs to Sync</div><div className="stat-value" style={{color:'#7c3aed'}}>{unsyncedPOGroups.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">POs to Sync</div><div className="stat-value" style={{color:'#7c3aed'}}>{durableLinksReady?unsyncedPOGroups.length:'…'}</div>{!durableLinksReady?<div style={{fontSize:9,color:'#64748b',marginTop:2}}>loading verified QBO links</div>:!!autoExcludedHistoricalPOIds.length&&<div style={{fontSize:9,color:'#64748b',marginTop:2}}>{autoExcludedHistoricalPOIds.length} historical/cutover excluded</div>}</div>
         <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label" title="SKUs the Portal has a saved, verified QuickBooks item link for. QuickBooks may already hold items the Portal has not linked yet.">Products linked</div><div className="stat-value" style={{color:'#166534'}}>{prodWithQB}/{prod.length}</div></div>
       </div>
 
       {/* Tabs */}
       <div className="tab-bar" style={{marginBottom:16}}>
-        {[['overview','Overview'],['customers','Customers'],['vendors','Vendors'],['invoices','Invoices'],['stripe','Stripe Payouts'],['bills','Bill Upload'],['inventory','QBO Items'],['settings','Settings'],['log','Sync Log']].map(([k,l])=>
+        {[['overview','Overview'],['customers','Customers'],['vendors','Vendors'],['invoices','Invoices'],['stripe','Stripe Payouts'],['bills','Bill Upload'],['inventory','QBO Items'],['audit','Audit export'],['settings','Settings'],['log','Sync Log']].map(([k,l])=>
           <button key={k} className={`tab ${qbTab===k?'active':''}`} onClick={()=>setQbTab(k)}>{l}</button>)}
       </div>
 
+      {qbTab==='audit'&&<QBAuditExportCard />}
       {qbTab==='vendors'&&<div className="card"><div className="card-header"><h2>QBO Vendors → Portal</h2></div><div className="card-body">
         <p>Match existing vendors or import missing vendors from QuickBooks. Portal names, purchasing settings and existing contacts are preserved; missing email and phone fields are filled from QBO. Possible decoration-vendor matches, ambiguous matches and inactive Portal vendors require review.</p>
         <p>Vendor imports do not change QuickBooks. During migration, run this review when QBO vendors change.</p>
@@ -811,10 +987,16 @@ export default function QBPage(){
               <div style={{marginBottom:12}}>
                 <label className="form-label">Sync Mode</label>
                 <div style={{display:'flex',gap:4}}>
-                  {[['manual','Manual'],['hourly','Hourly'],['daily','Daily'],['realtime','Real-time']].map(([v,l])=>
-                    <button key={v} disabled={v!=='manual'} title={v!=='manual'?'Controlled migration uses manual, reconciled batches':''} className={`btn btn-sm ${qbConfig.autoSync===v?'btn-primary':'btn-secondary'}`}
-                      onClick={()=>setQBConfig(prev=>({...prev,autoSync:v}))}>{l}</button>)}
+                  {[['manual','Manual'],['hourly','Hourly'],['daily','Daily'],['realtime','Real-time']].map(([v,l])=>{
+                    const serverManaged=qbConfig.backgroundSalesAutomation===true||qbConfig.browserSalesRunnerDisabled===true;
+                    const disabled=serverManaged||v==='realtime'||(v!=='manual'&&!migrationUnlocked);
+                    const title=serverManaged?'Browser scheduling is disabled because the server now owns hourly sales automation':v==='realtime'?'Real-time remains locked; use the reviewed hourly or daily sales sync':v!=='manual'&&!migrationUnlocked?'Complete the reviewed migration gates first':'Customers, invoices and verified payments only';
+                    return <button key={v} disabled={disabled} title={title} className={`btn btn-sm ${qbConfig.autoSync===v?'btn-primary':'btn-secondary'}`}
+                      onClick={()=>setQBConfig(prev=>({...prev,autoSync:v}))}>{l}</button>})}
                 </div>
+                {(qbConfig.backgroundSalesAutomation===true||qbConfig.browserSalesRunnerDisabled===true)
+                  ?<div style={{fontSize:10,color:'#166534',marginTop:6}}>The server owns hourly customer, invoice and verified-payment automation. This browser is status-only; purchasing, bills, products and inventory remain locked.</div>
+                  :qbConfig.autoSync!=='manual'&&<div style={{fontSize:10,color:'#475569',marginTop:6}}>Automatic scope: customers, invoices and verified customer payments only. Purchasing, bills, products and inventory remain locked.</div>}
               </div>
               {!migrationUnlocked&&<div style={{padding:10,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e',marginBottom:10}}>
                 <div>Initial-migration safety lock is active. Run the read-only live preflight, then use the one-record test on each data tab. Production batches remain locked; verified parsed supplier-bill canaries: <strong>{verifiedCanaryBills}/3 minimum</strong>.</div>
@@ -828,9 +1010,10 @@ export default function QBPage(){
                 <button className="btn btn-primary" style={{flex:1,background:'#0369a1'}} disabled={qbPreflighting||qbSyncing} onClick={runQBPreflight}>{qbPreflighting?'Reading live QBO...':'Read-Only Live Preflight'}</button>
                 <button className="btn btn-primary" disabled title="Controlled migration: run and reconcile one entity at a time" onClick={syncAll}>{qbSyncing?'Syncing...':'Sync Everything'}</button>
                 <button className="btn btn-secondary" disabled title="Use the reviewed customer batch below">Customers</button>
-                <button className="btn btn-secondary" disabled title="Locked pending customer links and Estimate rollout review" onClick={()=>syncSalesOrders()}>Sales Orders</button>
-                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={()=>syncInvoices()}>Invoices</button>
-                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncPaidFromQB}>Sync Paid</button>
+                <button className="btn btn-secondary" disabled title="Use the reviewed sales-order batch below">Sales Orders</button>
+                <button className="btn btn-secondary" disabled title="Use the reviewed invoice batch on the Invoices tab">Invoices</button>
+                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={()=>syncPaidFromQB()}>Sync Payments Both Ways</button>
+                <button className="btn btn-secondary" disabled={qbSyncing||!livePreflightReady} onClick={()=>syncPaidFromQB({reviewOnly:true})}>Review Payments — No Changes</button>
                 <button className="btn btn-secondary" disabled title="Locked pending native PO-to-existing-bill reconciliation" onClick={()=>syncPurchaseOrders()}>POs</button>
                 <button className="btn btn-secondary" disabled title="Locked until the product-item canaries are approved">QBO Product Items Locked</button>
               </div>
@@ -905,21 +1088,58 @@ export default function QBPage(){
         </div>
 
         <div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h2>Controlled Sales-Order Batch</h2></div>
+          <div className="card-body">
+            <p style={{fontSize:11,color:'#475569'}}>Reviews portal readiness first, then creates or links only the exact listed non-posting QBO Estimates. Portal-calculated tax is carried through the approved state mechanism; Automated Sales Tax batches require an existing verified state liability item and never create one as a side effect. Every Estimate must match its reviewed customer, date, tax and total by API read-back before the durable link is saved. The batch stops after the first failure.</p>
+            <button className="btn btn-sm" disabled={qbSyncing||!livePreflightReady} onClick={reviewSalesOrderBatch}>Review Sales Orders — No QBO Changes</button>
+            {salesOrderBatchReview&&<>
+              <p>Readiness: {JSON.stringify(salesOrderBatchReview.counts)}. Proposed batch: {salesOrderBatchRows.length} ready sales orders.</p>
+              <table><thead><tr><th>Portal SO</th><th>Customer</th><th>Date</th><th>Lines</th><th>Tax</th><th>Total</th></tr></thead><tbody>{salesOrderBatchRows.map(row=><tr key={row.salesOrderId}><td>{row.salesOrderId}</td><td>{row.customer}</td><td>{row.date}</td><td>{row.lineCount}</td><td>${row.tax.toFixed(2)}{row.taxState?' '+row.taxState:''}</td><td>${row.total.toFixed(2)}</td></tr>)}</tbody></table>
+              <label style={{marginRight:12}}>Batch size <select aria-label="Sales order batch size" value={salesOrderBatchLimit} disabled={qbSyncing} onChange={e=>{setSalesOrderBatchLimit(Number(e.target.value));setSalesOrderBatchApproved(false)}}>{QB_BATCH_SIZES.filter(size=>size<=100).map(size=><option key={size} value={size}>{size}</option>)}</select></label>
+              <label><input type="checkbox" checked={salesOrderBatchApproved} disabled={qbSyncing||!salesOrderBatchRows.length} onChange={e=>setSalesOrderBatchApproved(e.target.checked)}/> I approve only the listed sales orders in this batch.</label>
+              <button className="btn btn-primary btn-sm" disabled={qbSyncing||!salesOrderBatchApproved||!salesOrderBatchRows.length} onClick={runSalesOrderBatch}>Run Reviewed Sales-Order Batch</button>
+              <h3>First readiness exceptions</h3>
+              <table><thead><tr><th>Portal SO</th><th>Customer</th><th>Reason</th></tr></thead><tbody>{salesOrderBatchReview.rows.filter(row=>row.action==='blocked').slice(0,50).map(row=><tr key={row.salesOrderId}><td>{row.salesOrderId}</td><td>{row.customer}</td><td>{row.reason}</td></tr>)}</tbody></table>
+            </>}
+            {qbConfig.lastSalesOrderBatch&&<><h3>Latest sales-order batch: {qbConfig.lastSalesOrderBatch.status}</h3><table><thead><tr><th>Portal SO</th><th>Result</th><th>QBO ID</th><th>Error</th></tr></thead><tbody>{(qbConfig.lastSalesOrderBatch.results||[]).map(row=><tr key={row.salesOrderId}><td>{row.salesOrderId}</td><td>{row.result}</td><td>{row.qboId||''}</td><td>{row.error||''}</td></tr>)}</tbody></table><p>{JSON.stringify(qbConfig.lastSalesOrderBatch.counts)}</p></>}
+          </div>
+        </div>
+
+        <div className="card" style={{marginBottom:16}}>
           <div className="card-header"><h2>Controlled Purchase-Order Batch</h2></div>
           <div className="card-body">
-            <p style={{fontSize:11,color:'#475569'}}>Reviews portal readiness first, then processes at most 20 exact PO IDs. Every created or matched PO must pass API header and line read-back before its durable link is saved. Missing vendors block without being created as side effects. Lines whose SKU has no linked QBO item post to the Purchases account as one line instead of blocking the PO.</p>
+            <p style={{fontSize:11,color:'#475569'}}>Reviews portal readiness first, then processes at most 100 exact PO IDs. Every created or matched PO must pass API header and line read-back before its durable link is saved. Missing vendors block without being created as side effects. Lines whose SKU has no linked QBO item post to the Purchases account as one line instead of blocking the PO.</p>
+            {!!parkedPurchaseOrderIds.length&&<div style={{padding:10,marginBottom:10,background:'#f8fafc',border:'1px solid #cbd5e1',borderRadius:6,fontSize:11}}>
+              <strong>{parkedPurchaseOrderIds.length} historical POs parked</strong> — excluded from active sync; no QBO record was changed.
+              <button className="btn btn-secondary btn-sm" style={{marginLeft:8}} disabled={qbSyncing} onClick={restoreParkedPurchaseOrders}>Restore for review</button>
+            </div>}
+            {!!autoExcludedHistoricalPOIds.length&&<div style={{padding:10,marginBottom:10,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,fontSize:11,color:'#166534'}}>
+              <strong>{autoExcludedHistoricalPOIds.length} historical POs automatically excluded</strong> — NetSuite/preexisting records and POs through the September 8 migration cutover stay in Portal history but are never eligible for QBO PO creation.
+            </div>}
             <button className="btn btn-sm" disabled={qbSyncing||!livePreflightReady} onClick={reviewPurchaseOrderBatch}>Review POs — No QBO Changes</button>
             {poBatchReview&&<>
               <p>Readiness: {JSON.stringify(poBatchReview.counts)}. Proposed batch: {poBatchRows.length} ready POs.</p>
               <table><thead><tr><th>Portal PO</th><th>Vendor</th><th>Date</th><th>Lines</th><th>To Purchases acct</th><th>Total</th></tr></thead><tbody>{poBatchRows.map(row=><tr key={row.poId}><td>{row.poId}</td><td>{row.vendor}</td><td>{row.date}</td><td>{row.lineCount}</td><td title={(row.accountSkus||[]).join(', ')}>{(row.accountSkus||[]).length?(row.accountSkus||[]).length+' SKU'+((row.accountSkus||[]).length===1?'':'s'):'—'}</td><td>${row.total.toFixed(2)}</td></tr>)}</tbody></table>
-              <label style={{marginRight:12}}>Batch size <select aria-label="Purchase order batch size" value={poBatchLimit} disabled={qbSyncing} onChange={e=>{setPoBatchLimit(Number(e.target.value));setPoBatchApproved(false)}}>{QB_BATCH_SIZES.map(size=><option key={size} value={size}>{size}</option>)}</select></label>
+              <label style={{marginRight:12}}>Batch size <select aria-label="Purchase order batch size" value={poBatchLimit} disabled={qbSyncing} onChange={e=>{setPoBatchLimit(Number(e.target.value));setPoBatchApproved(false)}}>{QB_BATCH_SIZES.filter(size=>size<=100).map(size=><option key={size} value={size}>{size}</option>)}</select></label>
               <label><input type="checkbox" checked={poBatchApproved} disabled={qbSyncing} onChange={e=>setPoBatchApproved(e.target.checked)}/> I approve only the listed POs in this batch.</label>
-              <button className="btn btn-primary btn-sm" disabled={qbSyncing||!poBatchApproved||!poBatchRows.length||!qbConfig.qbPOBillMap?.['PO 58971 SHHGS']} onClick={runPurchaseOrderBatch}>Run Reviewed PO Batch</button>
+              <button className="btn btn-primary btn-sm" disabled={qbSyncing||!poBatchApproved||!poBatchRows.length} onClick={runPurchaseOrderBatch}>Run Reviewed PO Batch</button>
+              {!!poBlockedRows.length&&<div style={{padding:10,marginTop:10,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11}}>
+                <label><input type="checkbox" checked={poParkingApproved} disabled={qbSyncing} onChange={e=>setPoParkingApproved(e.target.checked)}/> I approve parking these {poBlockedRows.length} blocked historical POs for later review.</label>
+                <button className="btn btn-secondary btn-sm" style={{marginLeft:8}} disabled={qbSyncing||!poParkingApproved} onClick={parkPurchaseOrderExceptions}>Park {poBlockedRows.length} Historical POs</button>
+                <div style={{marginTop:4,color:'#92400e'}}>This changes only the Portal queue. It does not create, edit, or delete any QBO transaction.</div>
+              </div>}
               <h3>First readiness exceptions</h3>
               <table><thead><tr><th>Portal PO</th><th>Vendor</th><th>Reason</th></tr></thead><tbody>{poBatchReview.rows.filter(row=>row.action==='blocked').slice(0,20).map(row=><tr key={row.poId}><td>{row.poId}</td><td>{row.vendor}</td><td>{row.reason}</td></tr>)}</tbody></table>
             </>}
             {qbConfig.lastPurchaseOrderBatch&&<><h3>Latest PO batch: {qbConfig.lastPurchaseOrderBatch.status}</h3><table><thead><tr><th>Portal PO</th><th>Result</th><th>QBO ID</th><th>Error</th></tr></thead><tbody>{(qbConfig.lastPurchaseOrderBatch.results||[]).map(row=><tr key={row.poId}><td>{row.poId}</td><td>{row.result}</td><td>{row.qboId||''}</td><td>{row.error||''}</td></tr>)}</tbody></table><p>{JSON.stringify(qbConfig.lastPurchaseOrderBatch.counts)}</p></>}
             <p style={{fontSize:10,color:'#92400e'}}>This batch creates or links only the listed purchase orders. Existing bills are handled separately through the one-record review above and are never recreated by this batch.</p>
+          </div>
+        </div>
+
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h2>Vendor-Bill Automation Readiness</h2></div>
+          <div className="card-body">
+            <QBPayableServerReviewCard/>
           </div>
         </div>
 
@@ -1057,6 +1277,12 @@ export default function QBPage(){
             {!customerManifest&&<div style={{fontSize:11,color:'#475569',marginTop:6}}>The batch size, approval box and <strong>Run Reviewed Customer Batch</strong> button appear here once this review finishes. There is no separate sync button.</div>}
             {customerManifest&&<>
               <p>Reviewed {customerManifest.rows.length} customers in company realm {customerManifest.realm}. Existing matches: {customerManifest.counts.link||0}; proposed creations: {customerManifest.counts.create||0}; term changes: {customerManifest.counts.update_terms||0}; blocked: {customerManifest.counts.blocked||0}; excluded: {customerManifest.counts.excluded||0}. Terms from QBO: {customerManifest.termSources?.qbo||0}; reviewer default applied: {customerManifest.termSources?.default||0}.</p>
+              {customerRecoveryRows.length>0&&<div style={{padding:'10px 12px',margin:'10px 0',background:'#ecfdf5',border:'1px solid #a7f3d0',borderRadius:6,fontSize:11,color:'#166534'}}>
+                <div style={{fontWeight:700}}>Recover {customerRecoveryRows.length} exact existing customer links</div>
+                <div>This re-reads QBO, requires the exact reviewed one-to-one matches, and saves durable Portal link receipts. It never creates or changes a QBO customer.</div>
+                <label><input type="checkbox" checked={customerRecoveryApproved} disabled={qbSyncing||customerReviewBusy} onChange={e=>setCustomerRecoveryApproved(e.target.checked)}/> I approve recovering only these exact existing links.</label>
+                <button className="btn btn-primary btn-sm" style={{marginLeft:8}} disabled={qbSyncing||customerReviewBusy||!customerRecoveryApproved} onClick={recoverExactCustomerLinks}>Recover Exact Existing Links</button>
+              </div>}
               <button className="btn btn-sm" onClick={downloadCustomerManifest}>Download Full Customer Review</button>
               <h3>Proposed customer batch ({customerBatchRows.length} of {(customerManifest?.rows||[]).filter(row=>['link','create','update_terms'].includes(row.action)&&(!qbConfig.custQBMap?.[row.sourceId]||row.action==='update_terms')).length} eligible)</h3>
               <label>Batch size <select aria-label="Customer batch size" value={customerBatchLimit} disabled={qbSyncing} onChange={e=>{setCustomerBatchLimit(Number(e.target.value));setCustomerBatchApproved(false)}}>{QB_BATCH_SIZES.map(size=><option key={size} value={size}>{size}</option>)}</select></label>
@@ -1095,6 +1321,7 @@ export default function QBPage(){
               </button>
             </div>
             {!livePreflightReady&&<div style={{fontSize:11,color:'#92400e',marginTop:7,fontWeight:600}}>Button disabled: open Overview and run Read-Only Live Preflight, then return here.</div>}
+            <QBCustomerLinkRepair key={qbCanaryCustomerId+':'+qbConfig.realm_id} customerId={qbCanaryCustomerId} qbApi={qbApi} qbConfig={qbConfig} customers={cust} invoices={invs} salesOrders={sos} persistQbLink={persistQbLink} qbSyncing={qbSyncing} setQbSyncing={setQbSyncing}/>
           </div>
           <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
             <table style={{fontSize:11}}>
@@ -1126,8 +1353,8 @@ export default function QBPage(){
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2>Invoice Sync ({unsyncedInvs.length} pending)</h2>
             <div style={{display:'flex',gap:6}}>
-              <button className="btn btn-primary btn-sm" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={syncPaidFromQB}>{qbSyncing?'Syncing...':'Sync Paid from QB'}</button>
-              <button className="btn btn-secondary btn-sm" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={()=>syncInvoices()}>{qbSyncing?'Syncing...':'Push Invoices to QB'}</button>
+              <button className="btn btn-primary btn-sm" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={()=>syncPaidFromQB()}>{qbSyncing?'Syncing...':'Sync Payments Both Ways'}</button>
+              <button className="btn btn-secondary btn-sm" disabled title="Use the reviewed batch below">Review Required Below</button>
             </div>
           </div>
           <div style={{padding:'12px 14px',background:'#fffbeb',borderBottom:'1px solid #fde68a'}}>
@@ -1156,6 +1383,26 @@ export default function QBPage(){
                 {(qbConfig.taxPreflight.codes||[]).filter(code=>code.active).map(code=><tr key={code.id}><td>#{code.id} {code.name}</td><td>{code.taxable?'taxable':'non-taxable'}</td><td>{code.rates.map(r=>r.name+(r.rate!=null?' '+r.rate+'%':'')+(r.agency?' ('+r.agency+')':'')).join(', ')||'—'}</td></tr>)}
               </tbody></table>
             </div>}
+          </div>
+          <div style={{padding:'12px 14px',background:'#f0fdf4',borderBottom:'1px solid #bbf7d0'}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:4}}>Reviewed invoice batch</div>
+            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Reads live QBO under both invoice-number forms before proposing any creation. Exact matches are linked in the Portal without changing QBO; conflicts go to manual review. Zero-dollar invoices are excluded, future-dated invoices are held, and the reviewed write batch stops after its first failure. Payments remain a separate gate.</div>
+            <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+              <button className="btn btn-sm" disabled={qbSyncing||!livePreflightReady} onClick={reviewInvoiceBatch}>Review Invoices — No QBO Changes</button>
+              <label>Batch size <select aria-label="Invoice batch size" value={invoiceBatchLimit} disabled={qbSyncing} onChange={e=>{setInvoiceBatchLimit(Number(e.target.value));setInvoiceBatchApproved(false)}}>
+                {QB_BATCH_SIZES.filter(size=>size<=100).map(size=><option key={size} value={size}>{size}</option>)}
+              </select></label>
+            </div>
+            {invoiceBatchReview&&<>
+              <p>Readiness: {JSON.stringify(invoiceBatchReview.counts)}. Proposed batch: {invoiceBatchRows.length} ready invoices.</p>
+              <label><input type="checkbox" checked={invoiceBatchApproved} disabled={qbSyncing||!invoiceBatchRows.length} onChange={e=>setInvoiceBatchApproved(e.target.checked)}/> I approve only the exact invoices listed in this batch.</label>
+              <button className="btn btn-primary btn-sm" style={{marginLeft:8}} disabled={qbSyncing||!invoiceBatchApproved||!invoiceBatchRows.length} onClick={runInvoiceBatch}>Run Reviewed Invoice Batch</button>
+              <table style={{fontSize:10,marginTop:8}}><thead><tr><th>Invoice</th><th>Customer</th><th>Date</th><th>Total</th><th>Paid</th><th>Tax</th></tr></thead><tbody>{invoiceBatchRows.map(row=><tr key={row.invoiceId}><td>{row.documentNumber}</td><td>{row.customer}</td><td>{row.date}</td><td>${row.total.toFixed(2)}</td><td>${row.paid.toFixed(2)}</td><td>${row.tax.toFixed(2)}</td></tr>)}</tbody></table>
+              {invoiceBatchReview.rows.some(row=>row.action==='manual_review')&&<><h3>Manual review — no QBO changes</h3><table style={{fontSize:10}}><thead><tr><th>Invoice</th><th>Portal</th><th>QBO record(s) and differences</th></tr></thead><tbody>{invoiceBatchReview.rows.filter(row=>row.action==='manual_review').map(row=><tr key={row.invoiceId}><td>{row.documentNumber}</td><td>{row.customer} · {row.date} · ${row.total.toFixed(2)}</td><td>{(row.conflicts||[]).map(conflict=>'#'+conflict.qboId+' '+conflict.documentNumber+' — '+conflict.differences.map(diff=>diff.field+': Portal '+diff.source+' / QBO '+diff.qbo).join(', ')).join(' | ')}</td></tr>)}</tbody></table></>}
+              {invoiceBatchReview.rows.some(row=>row.action==='excluded_zero'||row.action==='held_future')&&<><h3>Excluded / held</h3><table style={{fontSize:10}}><thead><tr><th>Invoice</th><th>Disposition</th><th>Reason</th></tr></thead><tbody>{invoiceBatchReview.rows.filter(row=>row.action==='excluded_zero'||row.action==='held_future').map(row=><tr key={row.invoiceId}><td>{row.documentNumber}</td><td>{row.action}</td><td>{row.reason}</td></tr>)}</tbody></table></>}
+              {invoiceBatchReview.rows.some(row=>row.action==='blocked')&&<><h3>Blocked by readiness review</h3><table style={{fontSize:10}}><thead><tr><th>Invoice</th><th>Customer</th><th>Reason</th></tr></thead><tbody>{invoiceBatchReview.rows.filter(row=>row.action==='blocked').slice(0,50).map(row=><tr key={row.invoiceId}><td>{row.documentNumber}</td><td>{row.customer}</td><td>{row.reason}</td></tr>)}</tbody></table></>}
+            </>}
+            {qbConfig.lastInvoiceBatch&&<><h3>Latest invoice batch: {qbConfig.lastInvoiceBatch.status}</h3><table style={{fontSize:10}}><thead><tr><th>Invoice</th><th>Result</th><th>QBO ID</th><th>Error</th></tr></thead><tbody>{(qbConfig.lastInvoiceBatch.results||[]).map(row=><tr key={row.invoiceId}><td>{row.documentNumber||row.invoiceId}</td><td>{row.result}</td><td>{row.qboId||''}</td><td>{row.error||''}</td></tr>)}</tbody></table><p>{JSON.stringify(qbConfig.lastInvoiceBatch.counts)}</p></>}
           </div>
           <div style={{padding:'12px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:4}}>Test exactly one invoice</div>
@@ -1194,6 +1441,7 @@ export default function QBPage(){
 
       {/* ── STRIPE PAYOUT RECONCILIATION TAB ── */}
       {qbTab==='stripe'&&<>
+        <StripePaymentVerification />
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
             <h2>Stripe Payout Reconciliation</h2>
@@ -1436,6 +1684,16 @@ export default function QBPage(){
         </div>
       </>}
 
+      <QBBackgroundSalesCard/>
+      <QBServerReviewCard/>
+      {qbConfig.lastPaymentReview&&<div className="card" style={{padding:16,marginBottom:16}}>
+        <h2>Payment review</h2>
+        <p>{qbConfig.lastPaymentReview.at} · {qbConfig.lastPaymentReview.status} · {(qbConfig.lastPaymentReview.rows||[]).filter(r=>r.action==='aligned').length} aligned</p>
+        {(qbConfig.lastPaymentReview.details||[]).map((d,i)=><p key={i}>{d}</p>)}
+        <table><thead><tr><th>Invoice</th><th>Portal total</th><th>QBO total</th><th>Portal paid</th><th>QBO paid</th><th>Next action</th></tr></thead><tbody>
+          {(qbConfig.lastPaymentReview.rows||[]).filter(r=>r.action!=='aligned').map(r=><tr key={r.invoice}><td>{r.invoice}</td><td>{r.portalTotal}</td><td>{r.qboTotal??'Unavailable'}</td><td>{r.portalPaid}</td><td>{r.qboPaid??'Unavailable'}</td><td>{r.action}</td></tr>)}
+        </tbody></table>
+      </div>}
       {/* ── SETTINGS TAB ── */}
       {qbTab==='settings'&&<>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>

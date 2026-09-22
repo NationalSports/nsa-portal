@@ -1,0 +1,22 @@
+{
+  "description": "Synthetic unchanged-record diff-save, median of 3 on local Node; not live browser latency",
+  "baseline": "caf8f317",
+  "node": "v24.13.1",
+  "results": [
+    {
+      "rows": 5000,
+      "beforeMs": 84.16,
+      "afterMs": 0.54
+    },
+    {
+      "rows": 10000,
+      "beforeMs": 340.42,
+      "afterMs": 1.21
+    },
+    {
+      "rows": 20000,
+      "beforeMs": 479.66,
+      "afterMs": 2.76
+    }
+  ]
+}

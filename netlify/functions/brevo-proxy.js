@@ -61,6 +61,24 @@ exports.handler = async (event) => {
       return { statusCode: 405, headers: JSON_HEADERS,
         body: JSON.stringify({ error: 'Method not allowed. Use POST.' }) };
     }
+    let sendBody = event.body;
+    try {
+      const payload = JSON.parse(event.body || '{}');
+      const isSaveGuardAlert = payload.sender && payload.sender.name === 'NSA Portal'
+        && /^⚠️ NSA Portal — (?:Save blocked|Save protection triggered|Save not persisting|data-loss alerts throttled)/.test(payload.subject || '');
+      // Old browser bundles can remain open with durable recovery entries that correctly block
+      // their auto-reload. Their writes are fail-closed, but before protocol v2 they could still
+      // repeat the same admin alert storm after every background cycle. Suppress only those legacy
+      // save-guard emails; their audit rows remain in System Health. Current clients carry v2.
+      if (isSaveGuardAlert && payload.portalAlertVersion !== 2) {
+        return { statusCode: 202, headers: JSON_HEADERS,
+          body: JSON.stringify({ messageId: null, suppressed: true, reason: 'stale-portal-alert-client' }) };
+      }
+      delete payload.portalAlertVersion;
+      sendBody = JSON.stringify(payload);
+    } catch (_) {
+      // Preserve Brevo's existing validation response for malformed/non-JSON requests.
+    }
     const response = await fetch('https://api.brevo.com/v3/smtp/email', {
       method: 'POST',
       headers: {
@@ -68,7 +86,7 @@ exports.handler = async (event) => {
         'content-type': 'application/json',
         'api-key': apiKey,
       },
-      body: event.body,
+      body: sendBody,
     });
     const data = await response.text();
     return { statusCode: response.status, headers: JSON_HEADERS, body: data };

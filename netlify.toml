@@ -61,7 +61,9 @@
   # make sure these files ship inside the function bundles.
   # bill-anomaly-digest shares its flag rules with the client's push-time stamping and
   # the ⚠ Review pill (src/lib/billAnomalies.js).
-  included_files = ["src/lib/opsRecap.js", "src/lib/decoPricing.js", "src/lib/teamshopFaq.js", "src/lib/teamshopOrderStatus.js", "src/lib/billAnomalies.js"]
+  # _baggingShip + webstore-shipment-record share the shipping-label origin addresses
+  # with the portal's label buttons (src/lib/shipFrom.js).
+  included_files = ["src/lib/opsRecap.js", "src/lib/decoPricing.js", "src/lib/teamshopFaq.js", "src/lib/teamshopOrderStatus.js", "src/lib/billAnomalies.js", "src/lib/shipFrom.js"]
 
 # New-hire onboarding reminders — daily at 16:07 UTC (~8-9 AM PT). Nudges hires
 # who were invited but haven't finished (capped at 3 reminders, 3 days apart).
@@ -69,6 +71,20 @@
   schedule = "7 16 * * *"
 
 [functions."vectorizer-proxy"]
+  timeout = 26
+
+# OMG's report API can take several seconds and occasionally returns a transient
+# gateway error. Leave enough room for the proxy's bounded retry policy.
+[functions."omg-report-proxy"]
+  timeout = 26
+
+# Both OMG ingest functions fetch the same slow report API (6-7s typical) and THEN do
+# their Supabase writes. On the default 10s budget a normal-size report left no room for
+# the writes, so staff saw the import fail. Same 26s as the proxy.
+[functions."omg-store-ingest"]
+  timeout = 26
+
+[functions."omg-player-report-ingest"]
   timeout = 26
 
 # Silver Screen portal job creation — logs into portal.silverscreenprinting.com and

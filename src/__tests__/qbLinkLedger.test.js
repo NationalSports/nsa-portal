@@ -1,4 +1,4 @@
-import {mergeQBSyncLogs, mergeDurableQBLinks, persistVerifiedQBLink, qbLinkKey, QB_LINK_MAPS} from '../qbLinkLedger';
+import {loadDurableQBLinkReceipts, mergeQBSyncLogs, mergeDurableQBLinks, persistVerifiedQBLink, persistVerifiedQBCustomerLinkRecovery, qbLinkKey, QB_LINK_MAPS} from '../qbLinkLedger';
 
 function database() {
   const rows = new Map();
@@ -41,6 +41,22 @@ test('conflicting IDs cannot overwrite a verified link',async()=>{
   expect(JSON.parse([...rows.values()][0].value).qbo_id).toBe('2380');
 });
 
+const repair=()=>record('custQBMap',{qboId:'650',expectedPreviousQboId:'2380',evidence:{result:'customer_link_repaired',api_readback:true,reviewer_approved:true,previous_qbo_id:'2380'}});
+test('reviewed repair preserves previous receipt and survives reload',async()=>{
+  const {client,rows}=database();await persistVerifiedQBLink(client,record());
+  const saved=await persistVerifiedQBLink(client,repair());
+  const row=JSON.parse([...rows.values()][0].value);
+  expect(row.qbo_id).toBe('650');expect(row.previous_link.qbo_id).toBe('2380');
+  expect(mergeDurableQBLinks({realm_id:record().realmId},saved).custQBMap['source-1']).toBe('650');
+  await expect(persistVerifiedQBLink(client,record())).rejects.toThrow('Conflicting');
+  await expect(persistVerifiedQBLink(client,repair())).rejects.toThrow('changed');
+});
+test('repair requires explicit evidence and does not apply to other maps',async()=>{
+  const {client}=database();
+  await expect(persistVerifiedQBLink(client,{...repair(),evidence:{}})).rejects.toThrow('Invalid');
+  await expect(persistVerifiedQBLink(client,{...repair(),mapKey:'prodQBMap'})).rejects.toThrow('Invalid');
+});
+
 test('database failure cannot produce a successful receipt',async()=>{
   const client={from:()=>({select:()=>({eq:()=>({maybeSingle:async()=>({error:{message:'offline'}})})})})};
   await expect(persistVerifiedQBLink(client,record())).rejects.toThrow('offline');
@@ -67,6 +83,77 @@ test('variant links share an item, and cleanup tombstones survive stale configur
 
 test('source key encoding does not collapse punctuation into a collision',()=>{
   expect(qbLinkKey('realm','qbPOMap','PO/A')).not.toBe(qbLinkKey('realm','qbPOMap','PO_A'));
+});
+
+function recoveryDatabase(seed=[]) {
+  const rows=new Map(seed.map(row=>[row.id,{...row}]));
+  const client={from:jest.fn(()=>{
+    let ids=[];
+    const query={
+      select:()=>query,
+      in:(_key,values)=>{ids=values;return Promise.resolve({data:ids.map(id=>rows.get(id)).filter(Boolean),error:null})},
+      upsert:async input=>{input.forEach(row=>rows.set(row.id,{...row}));return{error:null}},
+    };
+    return query;
+  })};
+  return{client,rows};
+}
+
+test('fresh exact customer review recovers durable links in bulk without a QBO write path',async()=>{
+  const{client,rows}=recoveryDatabase();
+  const reviewedAt=new Date().toISOString();
+  const saved=await persistVerifiedQBCustomerLinkRecovery(client,{realmId:'r1',reviewedAt,records:[
+    {sourceId:'C1',qboId:'101',displayName:'Customer One',termId:'3'},
+    {sourceId:'C2',qboId:'102',displayName:'Customer Two',termId:'3'},
+  ]});
+  expect(rows).toHaveProperty('size',2);
+  expect(mergeDurableQBLinks({realm_id:'r1'},saved).custQBMap).toEqual({C1:'101',C2:'102'});
+  expect([...rows.values()].every(row=>JSON.parse(row.value).evidence.duplicate_preflight==='unique_exact_active_customer_match')).toBe(true);
+});
+
+test('customer recovery rejects stale, non-numeric, duplicate, and conflicting matches before writing',async()=>{
+  const reviewedAt=new Date().toISOString();
+  const duplicate=[{sourceId:'C1',qboId:'101',displayName:'One'},{sourceId:'C2',qboId:'101',displayName:'Two'}];
+  await expect(persistVerifiedQBCustomerLinkRecovery(recoveryDatabase().client,{realmId:'r1',reviewedAt,records:duplicate})).rejects.toThrow('one-to-one');
+  await expect(persistVerifiedQBCustomerLinkRecovery(recoveryDatabase().client,{realmId:'r1',reviewedAt,records:[{sourceId:'C1',qboId:'bad',displayName:'One'}]})).rejects.toThrow('invalid');
+  await expect(persistVerifiedQBCustomerLinkRecovery(recoveryDatabase().client,{realmId:'r1',reviewedAt:'2020-01-01T00:00:00Z',records:[{sourceId:'C1',qboId:'101',displayName:'One'}]})).rejects.toThrow('fresh');
+  const id=qbLinkKey('r1','custQBMap','C1');
+  const conflict={id,value:JSON.stringify({realm_id:'r1',map_key:'custQBMap',source_id:'C1',qbo_id:'999',active:true,verified_at:reviewedAt})};
+  const db=recoveryDatabase([conflict]);
+  await expect(persistVerifiedQBCustomerLinkRecovery(db.client,{realmId:'r1',reviewedAt,records:[{sourceId:'C1',qboId:'101',displayName:'One'}]})).rejects.toThrow('Conflicting');
+  expect(db.rows.get(id).value).toBe(conflict.value);
+});
+
+test('durable receipt hydration reads only the requested realm in deterministic pages',async()=>{
+  const r1a={id:qbLinkKey('r1','custQBMap','C1'),value:'one'};
+  const r1b={id:qbLinkKey('r1','qbSOMap','SO-1'),value:'two'};
+  const other={id:qbLinkKey('r2','custQBMap','C2'),value:'other'};
+  const all=[r1a,r1b,other].sort((a,b)=>a.id.localeCompare(b.id));
+  const calls=[];
+  const client={from:()=>{
+    let lower='',upper='';
+    const query={select:()=>query,gte:(_key,value)=>{lower=value;return query},lt:(_key,value)=>{upper=value;return query},order:()=>query,
+      range:(start,end)=>{calls.push([start,end]);const filtered=all.filter(row=>row.id>=lower&&row.id<upper);return Promise.resolve({data:filtered.slice(start,end+1),error:null})}};
+    return query;
+  }};
+  await expect(loadDurableQBLinkReceipts(client,'r1',{pageSize:1,hardLimit:10})).resolves.toEqual({[r1a.id]:'one',[r1b.id]:'two'});
+  expect(calls).toEqual([[0,0],[1,1],[2,2]]);
+});
+
+test('customer receipt hydration uses exact IDs in bounded chunks',async()=>{
+  const first={id:qbLinkKey('r1','custQBMap','C1'),value:'one'};
+  const second={id:qbLinkKey('r1','custQBMap','C2'),value:'two'};
+  const rows=new Map([[first.id,first],[second.id,second]]);
+  const calls=[];
+  const client={from:()=>{const query={select:()=>query,in:(_key,ids)=>{calls.push(ids);return Promise.resolve({data:ids.map(id=>rows.get(id)).filter(Boolean),error:null})}};return query}};
+  const result=await loadDurableQBLinkReceipts(client,'r1',{sourceIds:['C1','C2','missing'],pageSize:2});
+  expect(result).toEqual({[first.id]:'one',[second.id]:'two'});
+  expect(calls.map(chunk=>chunk.length)).toEqual([2,1]);
+});
+
+test('durable receipt hydration fails closed on a page error',async()=>{
+  const client={from:()=>{const query={select:()=>query,gte:()=>query,lt:()=>query,order:()=>query,range:()=>Promise.resolve({data:null,error:{message:'offline'}})};return query}};
+  await expect(loadDurableQBLinkReceipts(client,'r1')).rejects.toThrow('offline');
 });
 
 

@@ -166,6 +166,25 @@ describe('mergeServerBills (Bill History union)', () => {
     expect(merged[0].uploadedTs).toBe(Date.parse('2026-07-01T10:00:00Z'));
   });
 
+  it('hydrates a server-only QuickBooks receipt into Bill History', () => {
+    const merged = mergeServerBills([], [srv({
+      qb_status: 'success', qb_bill_id: '1631',
+      qb_message: 'QB Bill #1631 (existing verified)', qb_synced_at: '2026-09-08T02:00:00Z',
+    })]);
+    expect(merged[0]).toMatchObject({
+      qbStatus: 'success', qbBillId: '1631',
+      qbMsg: 'QB Bill #1631 (existing verified)', qbSyncedAt: '2026-09-08T02:00:00Z',
+    });
+  });
+
+  it('lets a server receipt upgrade a stale local row from another browser origin', () => {
+    const local = [{ id: 'preview-copy', qbStatus: null, parsed: { doc_number: 'INV-9' }, uploadedTs: 5 }];
+    const merged = mergeServerBills(local, [srv({ qb_status: 'success', qb_bill_id: '1631' })]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ id: 'preview-copy', qbStatus: 'success', qbBillId: '1631' });
+    expect(merged[0].qbMsg).toContain('server verified');
+  });
+
   it('prefers raw_meta as the parsed payload when present', () => {
     const merged = mergeServerBills([], [srv({ raw_meta: { doc_number: 'INV-9', items: [{ sku: 'A', qty: 2 }], freight: 3 } })]);
     expect(merged[0].parsed.items).toHaveLength(1);
@@ -268,6 +287,24 @@ describe('buildQboBackfillRows', () => {
   });
 });
 
+describe('buildQboCanaryRecoveryRow', () => {
+  const { buildQboCanaryRecoveryRow } = require('../appliedBillsLedger');
+  const synced = { id: 'srv-1', qbStatus: 'success', portalStatus: 'success', qbBillId: '3404', parsed: { doc_number: '203290', vendor: 'Silver Screen', doc_total: 1740.18 } };
+
+  it('loads an already-synced bill as verification-only and preserves its expected QBO ID', () => {
+    const row = buildQboCanaryRecoveryRow(synced, (p) => ({ ...p, normalized: true }));
+    expect(row).toMatchObject({ selected: true, qbStatus: null, portalStatus: 'success', _qbBackfill: true, _qbCanaryRecoveryOnly: true, _expectedQbBillId: '3404' });
+    expect(row.parsed).toMatchObject({ doc_number: '203290', normalized: true, _qbBackfill: true, _qbCanaryRecoveryOnly: true, _expectedQbBillId: '3404' });
+  });
+
+  it('rejects incomplete, unsynced, and credit-note history rows', () => {
+    expect(buildQboCanaryRecoveryRow({ ...synced, qbStatus: null })).toBeNull();
+    expect(buildQboCanaryRecoveryRow({ ...synced, portalStatus: null })).toBeNull();
+    expect(buildQboCanaryRecoveryRow({ ...synced, qbBillId: '' })).toBeNull();
+    expect(buildQboCanaryRecoveryRow({ ...synced, parsed: { ...synced.parsed, is_credit: true } })).toBeNull();
+  });
+});
+
 describe('qboBackfillHistory', () => {
   const { qboBackfillHistory, buildQboBackfillRows } = require('../appliedBillsLedger');
   const server = [
@@ -290,4 +327,24 @@ describe('qboBackfillHistory', () => {
     const { mergeServerBills } = require('../appliedBillsLedger');
     return mergeServerBills([local], server);
   }
+});
+
+// A Sports Inc / S&S order number round-trips from Postgres jsonb as a NUMBER.
+// Trimming one threw "trim is not a function" and crashed the app mid-backfill.
+describe('numeric document numbers', () => {
+  const { portalBillAlreadyApplied } = require('../appliedBillsLedger');
+  const docNorm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+
+  it('normalizes a numeric doc number instead of trimming it', () => {
+    expect(() => docNorm(75565794)).not.toThrow();
+    expect(docNorm(75565794)).toBe('75565794');
+    expect(docNorm(null)).toBe('');
+    expect(docNorm(' AB-12 ')).toBe('ab-12');
+  });
+
+  it('portalBillAlreadyApplied matches a bill whose SI number is numeric', () => {
+    const seen = new Set(['75565794']);
+    const applied = (doc) => seen.has(String(doc == null ? '' : doc).trim().toLowerCase());
+    expect(portalBillAlreadyApplied({ doc_number: 'X', si_doc_number: 75565794 }, applied)).toBe(true);
+  });
 });

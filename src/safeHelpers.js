@@ -78,6 +78,69 @@ export const scopeRosterToSizes = (roster, sizes) => {
   return out;
 };
 
+// ── Roster import placement ──
+// Drop a list of [size, value] entries into a roster, one per open slot, WITHOUT losing any
+// silently. The inline importers (📋 Paste / 📤 Upload Roster, both editors) used to
+// shallow-copy the roster, write into the live nested arrays, and discard any entry that
+// found no empty slot — findIndex returned -1 and the value just vanished under an
+// "Imported" toast. Two ways that bites a real order:
+//   • a size row left SHORTER than the garment's qty (typed while the qty was lower) reads
+//     as full, so a corrected roster pasted over it lands nowhere at all;
+//   • a size the garment doesn't carry ("Medium" instead of "M") planted an empty junk key.
+// Returns a NEW roster (no mutation of the caller's state) plus everything that could not be
+// placed, so the caller can say so out loud instead of reporting a clean import.
+// Works for names maps too — same per-size-array shape.
+export const placeRosterEntries = (roster, sizes, entries) => {
+  const out = {};
+  Object.entries(safeObj(roster)).forEach(([sz, arr]) => { out[sz] = safeArr(arr).slice(); });
+  const caps = safeObj(sizes);
+  let placed = 0; const dropped = [];
+  safeArr(entries).forEach((e) => {
+    const sz = safeArr(e)[0]; const v = String(safeArr(e)[1] == null ? '' : safeArr(e)[1]).trim();
+    if (!sz || !v) return;
+    const cap = safeNum(caps[sz]);
+    if (cap <= 0) { dropped.push({ size: String(sz), value: v, reason: 'unknown-size' }); return; }
+    const arr = out[sz] || (out[sz] = []);
+    while (arr.length < cap) arr.push('');
+    // Only the garment's real slots count — anything past cap never renders or prints.
+    const ei = arr.slice(0, cap).findIndex((x) => !x || !String(x).trim());
+    if (ei < 0) { dropped.push({ size: String(sz), value: v, reason: 'full' }); return; }
+    arr[ei] = v; placed++;
+  });
+  return { roster: out, placed, dropped };
+};
+// ── Custom-line auto pricing ──
+// A custom line's sell price is derived from cost x the order's markup as a CONVENIENCE while
+// the line is still unpriced. It has to stop being derived the moment a rep types their own
+// sell: re-running the formula on a later cost edit — or on a no-op blur of the Cost box, which
+// re-fired onChange with an unchanged value — silently threw the hand-set price away and
+// snapped it back to cost x markup (SO-2539: a $40 jersey reverting to $34.75 at 1.65x).
+// Returns the sell to apply, or null to leave the rep's price alone.
+// rQuarter is the caller's quarter-rounder (pricing.rQ) so this file stays dependency-free.
+export const autoSellFromCost = (item, newCost, markup, rQuarter) => {
+  // Tolerant read: a revived DB row can hand back a numeric column as a string, and treating
+  // that as 0 would read a priced line as unpriced — the exact stomp this guard prevents.
+  const n = (v) => { const x = typeof v === 'string' ? parseFloat(v) : v; return typeof x === 'number' && !isNaN(x) ? x : 0; };
+  const r = typeof rQuarter === 'function' ? rQuarter : ((v) => Math.round(v * 4) / 4);
+  const mk = n(markup) > 0 ? n(markup) : 1.65;
+  const cost = n(newCost);
+  if (!(cost > 0)) return null;
+  const sell = n(item?.unit_sell);
+  // Still auto while the line carries no price, or carries exactly what the formula produced
+  // for the cost it has right now.
+  if (sell > 0 && Math.abs(sell - r(n(item?.nsa_cost) * mk)) >= 0.005) return null;
+  return r(cost * mk);
+};
+// One-line "what didn't fit" summary for the import toasts.
+export const rosterDropSummary = (dropped) => {
+  const byKey = new Map();
+  safeArr(dropped).forEach((d) => { const k = d?.size + '|' + d?.reason; byKey.set(k, (byKey.get(k) || 0) + 1); });
+  return [...byKey.entries()].map(([k, n]) => {
+    const [sz, reason] = k.split('|');
+    return sz + ' \u00d7' + n + (reason === 'unknown-size' ? ' (not a size on this garment)' : ' (no open slots)');
+  }).join(', ');
+};
+
 // ── Job-item decoration ownership ──
 // A job item records which decoration indexes of its SO line the job produces (deco_idxs).
 // Returns null for legacy items without the array — the legacy single deco_idx was written as
@@ -90,6 +153,63 @@ export const jobItemDecoIdxs = (gi) => Array.isArray(gi?.deco_idxs) && gi.deco_i
 export const jobItemDecosOfKind = (gi, it, kind) => {
   const dis = jobItemDecoIdxs(gi);
   return safeDecos(it).filter((d, di) => d?.kind === kind && (!dis || dis.includes(di)));
+};
+
+/**
+ * The RESOLVED art decorations of a SO line that THIS job runs, each tagged with the
+ * positional slot index (`ai`) its mockup was keyed under. Mockup slot keys are positional
+ * (mockSlotKeys), so `ai` is assigned across the line's art decorations BEFORE the job
+ * filter — a job running only the line's SECOND design must still read that design's slot
+ * (`|<color_way_id>` / `|d1`) and not the first design's bare key.
+ *
+ * Decorations with no art file yet (`__tbd`) are dropped before numbering, matching how the
+ * order editor's job card reads these slots. Returns [{ d, di, ai }] in line order.
+ */
+export const jobItemArtSlots = (gi, it) => {
+  const dis = jobItemDecoIdxs(gi);
+  return safeDecos(it)
+    .map((d, di) => ({ d, di }))
+    .filter(({ d }) => d?.kind === 'art' && d.art_file_id && d.art_file_id !== '__tbd')
+    .map((x, ai) => ({ ...x, ai }))
+    .filter(({ di }) => !dis || dis.includes(di));
+};
+
+// ── Job roster blocks ──
+// The "numbers to print" roll-up for a job. A job can carry several garment lines, and
+// their rosters are NOT interchangeable. Garments holding the SAME list are one team
+// roster copied onto each piece, so it must be counted once (SO-1588: five garments
+// listed every number 5×). Garments holding DIFFERENT lists are different rosters, and
+// each one must be shown in full. The old rule merged every garment into one list by
+// (size, number), which silently dropped any number that legitimately appeared on two
+// different garments — SO-2361/JOB-2361-01 carried two jersey lines with 38 numbers
+// between them and the job showed 36 (an S 23 and an M 3 collapsed).
+// Returns [{ labels:[garment…], rows:[[size, numbers[]]…], total }], sizes in szOrder.
+export const jobRosterBlocks = (job, items, szOrder = []) => {
+  const rank = (s) => (szOrder.indexOf(s) < 0 ? 99 : szOrder.indexOf(s));
+  const clean = (v) => String(v == null ? '' : v).trim();
+  const blocks = [];
+  safeArr(job?.items).forEach((gi) => {
+    const it = safeArr(items)[gi?.item_idx];
+    if (!it) return;
+    // Split jobs carry their own roster/size slice on the job item — prefer it so a split
+    // only ever lists the numbers it actually runs.
+    const nd = jobItemDecosOfKind(gi, it, 'numbers')[0];
+    const raw = gi?.roster || nd?.roster || null;
+    if (!raw) return;
+    const rows = Object.entries(safeObj(scopeRosterToSizes(raw, gi?.sizes || safeSizes(it))))
+      .map(([sz, arr]) => [sz, safeArr(arr).map(clean).filter(Boolean)])
+      .filter(([, nums]) => nums.length > 0)
+      .sort((a, b) => rank(a[0]) - rank(b[0]));
+    if (!rows.length) return;
+    const color = clean(it.color || gi.color);
+    const label = clean(it.sku || gi.sku) + (color ? ' · ' + color : '');
+    // Same numbers in the same sizes = the same list, however the slots were ordered.
+    const sig = JSON.stringify(rows.map(([sz, nums]) => [sz, [...nums].sort()]));
+    const hit = blocks.find((b) => b.sig === sig);
+    if (hit) { if (label && !hit.labels.includes(label)) hit.labels.push(label); return; }
+    blocks.push({ sig, labels: label ? [label] : [], rows, total: rows.reduce((a, [, n]) => a + n.length, 0) });
+  });
+  return blocks.map(({ sig, ...b }) => b);
 };
 // Promote an unresolved art slot owned by a job to a real art-file id. Art Dashboard uploads
 // can begin on the reserved `__tbd` placeholder; once the first proof exists, both the job and
@@ -594,10 +714,40 @@ export const soLineQty = (it) => {
 export const scopeSoItemsToInvoice = (inv, soItems) => {
   const items = safeArr(soItems);
   const lines = safeArr(inv?.line_items);
-  const all = () => items.map((it, idx) => ({ ...it, _soIdx: idx, _invQty: soLineQty(it), _soQty: soLineQty(it), _invSizes: safeSizes(it) })).filter(it => it._invQty > 0);
-  if (!items.length) return { items: [], extraLines: lines };
-  if (inv?.inv_type === 'deposit' || !lines.length) return { items: all(), extraLines: [] };
+  // Which invoice lines each SO line is billed by, so the document can price the line off
+  // the invoice instead of off the order. See `_invRate` / `_invAmount` below.
   const idxByLine = matchInvoiceLinesToSo(lines, items);
+  const linesByIdx = new Map();
+  idxByLine.forEach((idx, i) => { if (idx >= 0) linesByIdx.set(idx, (linesByIdx.get(idx) || []).concat(i)) });
+  // ── The printed price comes from the invoice, not from the sales order ──
+  // `unit_sell` is the ORDER's list price for the line. What the invoice actually charges
+  // is its stored `rate`, which differs whenever the line carries a per-size upcharge
+  // (2XL+ blended into a per-each rate), is a FREE PROMO garment billed at $0, or was
+  // price-edited by the rep. Documents that re-derived the price from `unit_sell` printed
+  // a number the invoice never charged — INV-63187 printed 24 comped jackets at $58.50
+  // each, $1,404 of phantom charges under a Total that correctly excluded them.
+  // `_invAmount` is the line's stored extended amount (already scaled on a deposit), so a
+  // caller adds it to the document subtotal AS IS rather than re-applying a deposit
+  // percentage; decorations are then informational detail, their price already inside the
+  // rate. Both are absent when no stored line matched (legacy invoices that never stored
+  // line_items), and callers fall back to the order's own pricing there.
+  const priced = (it, idx, extra) => {
+    const o = { ...it, _soIdx: idx, ...extra };
+    const mine = linesByIdx.get(idx);
+    if (mine && mine.length) {
+      o._invAmount = mine.reduce((a, i) => a + safeNum(lines[i]?.amount), 0);
+      o._invRate = mine.length === 1 ? safeNum(lines[mine[0]]?.rate)
+        : (o._invQty > 0 ? Math.round((o._invAmount / o._invQty) * 100) / 100 : 0);
+    }
+    return o;
+  };
+  const all = () => items.map((it, idx) => priced(it, idx, { _invQty: soLineQty(it), _soQty: soLineQty(it), _invSizes: safeSizes(it) })).filter(it => it._invQty > 0);
+  // Lines that match no SO item (hand-added, NetSuite import) are the caller's to print as
+  // plain rows; dropping them would leave the document's subtotal short of its own total.
+  const unmatched = () => lines.filter((li, i) => idxByLine[i] < 0);
+  if (!items.length) return { items: [], extraLines: lines };
+  if (inv?.inv_type === 'deposit') return { items: all(), extraLines: unmatched() };
+  if (!lines.length) return { items: all(), extraLines: [] };
   const qtyByIdx = new Map(); const extraLines = [];
   lines.forEach((li, i) => {
     const idx = idxByLine[i];
@@ -608,7 +758,7 @@ export const scopeSoItemsToInvoice = (inv, soItems) => {
     const q = qtyByIdx.get(idx);
     if (!(q > 0)) return null;
     const soQty = soLineQty(it);
-    return { ...it, _soIdx: idx, _invQty: q, _soQty: soQty, _invSizes: q === soQty ? safeSizes(it) : null };
+    return priced(it, idx, { _invQty: q, _soQty: soQty, _invSizes: q === soQty ? safeSizes(it) : null });
   }).filter(Boolean);
   // Every line matched to a zero-qty / missing SO item: fall back to the full order rather
   // than printing an invoice with no items at all.
@@ -721,6 +871,40 @@ export const itemMockFiles = (mocks, it, sub) => {
   if (!sub && it?.sku != null && Object.prototype.hasOwnProperty.call(m, it.sku)) return safeArr(m[it.sku]);
   return own;
 };
+// Numbers / names slot keys (`|numbers`, `|names_1`, `|numbers_b`). They are the BACK proof and
+// must never stand in for a garment's art mockup — see artSlotMocks below and nnMockCounts.
+const NN_SLOT_RE = /\|(?:numbers|names)(?:_\d+)?(?:_b)?$/;
+// Every mockup this garment has in a NON-PRIMARY art slot, across `artFiles`.
+//
+// Slot keys are positional (mockSlotKeys): the FIRST art decoration on a garment owns the bare
+// `sku|color` key and every later one gets a discriminated key (`|<colorWayId>` / `|d1`). The
+// approval gate used to read only the bare key, so a garment whose mockup happened to sit on its
+// SECOND design read as "no mockup" — while every display surface (slotMockFiles) showed that
+// mockup on screen. Which design is "first" is an accident of decoration order, and the gate
+// passed the very same garment with the very same unmocked design when the mock was filed under
+// the bare key instead: it was never enforcing "each design is mocked", only "the first slot's
+// key exists". SO-1998 hit the dead end — IA9145 / IA9155's Left Chest decoration was repointed
+// from the patch art to a new DTF art file, leaving the bare-key mock stranded on the old file
+// while the live mock sat under `IA9145||d1` on the front-center art.
+//
+// Numbers/names slots are excluded: a back-proof must not satisfy the garment's art mockup.
+// Legacy fallback mirrors itemMockFiles — the garment's own base first, the shared placeholder
+// base only when it has written nothing of its own.
+export const artSlotMocks = (artFiles, it) => {
+  const base = garmentMockKey(it);
+  const legacy = legacyMockKeyOf(it);
+  const readUnder = (m, pfx) => Object.keys(m)
+    .filter((k) => k.startsWith(pfx + '|') && !NN_SLOT_RE.test(k))
+    .flatMap((k) => safeArr(m[k]).filter(Boolean));
+  const out = [];
+  safeArr(artFiles).forEach((a) => {
+    const m = safeObj(a?.item_mockups);
+    const own = readUnder(m, base);
+    if (own.length > 0 || !legacy) { out.push(...own); return; }
+    out.push(...readUnder(m, legacy));
+  });
+  return out;
+};
 // Resolve the root source key this garment is linked to, or null when unlinked.
 export const resolveMockLink = (anchorArts, sku, color) => {
   const links = {};
@@ -748,6 +932,15 @@ export const mockLinkSourceFiles = (anchorArts, sourceKey) => {
     const im = a?.item_mockups || {};
     if (safeArr(im[sourceKey]).length > 0) return safeArr(im[sourceKey]);
     if (safeArr(im[srcSku]).length > 0) return safeArr(im[srcSku]);
+  }
+  // The source garment's mock may sit in a NON-PRIMARY art slot (`|<colorWayId>` / `|d1`) — the
+  // same positional accident artSlotMocks documents. A link must not dead-end on it: on SO-1998
+  // IA9155 was linked to IA9145, whose only live mock was under `IA9145||d1`. Checked after the
+  // exact-key reads above so a real primary mock still wins wherever one exists.
+  for (const a of safeArr(anchorArts)) {
+    const m = safeObj(a?.item_mockups);
+    const k = Object.keys(m).find((x) => x.startsWith(sourceKey + '|') && !NN_SLOT_RE.test(x) && safeArr(m[x]).length > 0);
+    if (k) return safeArr(m[k]);
   }
   return [];
 };
@@ -1270,7 +1463,12 @@ export const skusMissingMockups = (job, so) => {
     const perSku = artFiles.flatMap(a => {
       return itemMockFiles(a?.item_mockups, mLine);
     });
-    if (perSku.length > 0) {
+    // The primary (bare-key) slot is only the FIRST art decoration's slot. A garment mocked on a
+    // later design keys its mock `|<colorWayId>` / `|d1` and used to read as unmocked here even
+    // though the rep was looking at that mockup on screen (SO-1998). Accept any art slot — the
+    // gate never enforced per-design mockups, only that the garment has one (see artSlotMocks).
+    const slotMocks = perSku.length > 0 ? perSku : artSlotMocks(artFiles, mLine);
+    if (slotMocks.length > 0) {
       // Primary mock present — additionally require every slot a REVERSIBLE decoration
       // creates (Side B art, both numbers/names sides). A reversible garment approved
       // with only one color way mocked is exactly the SO-1116 rejection. Scoped to

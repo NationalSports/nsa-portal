@@ -8,6 +8,7 @@
 // completes; the caller surfaces "print from Webstores" instead.
 
 const { processDirectShipment } = require('./shipstation-webhook');
+const { shipFromCode, shipStationShipFrom, decoIdFromCode, decoShipFromLocation } = require('../../src/lib/shipFrom');
 
 // Per-line ounces fallback — mirror of src/utils.js estimateWeightOz (functions
 // are CommonJS and can't import the CRA src module; keep the two in sync).
@@ -49,8 +50,9 @@ const SS_CARRIERS = {
   usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' },
 };
 
-// Ship-from — mirror of src/constants.js NSA_DEFAULTS (same CommonJS caveat).
-const NSA = { name: 'National Sports Apparel', addr: '2238 N Glassell St Ste E', city: 'Orange', state: 'CA', zip: '92865', phone: '(619) 555-0127' };
+// Ship-from locations — shared with the browser (src/lib/shipFrom.js is
+// dependency-free CommonJS, bundled here via netlify.toml included_files), so a
+// label bought by the station and one bought in Webstores print the same origin.
 
 async function ssCall(path, body) {
   const key = process.env.SHIPSTATION_API_KEY;
@@ -79,9 +81,16 @@ async function createBagShipLabel(sb, order, items) {
   if (order.ship_method !== 'ship_home') return { skipped: true, reason: 'not ship-home' };
   if (!validAddress(order.ship_address)) return { skipped: true, reason: 'no valid ship address' };
 
-  const { data: stores } = await sb.from('webstores')
-    .select('id,name,source,omg_sale_code,bagging_auto_label,shipstation_tag_id,shipstation_carrier,shipstation_service,shipstation_store_id,label_weight_lbs')
-    .eq('id', order.store_id).limit(1);
+  // ship_from_code arrives with supabase/migrations/20260921160000_ship_from_location.sql.
+  // If this code is ever live before that migration is applied, selecting the
+  // column errors and returns nothing — which would read as "store not found"
+  // and silently switch OFF auto-labeling for every store. Retry without it.
+  const STORE_COLS = 'id,name,source,omg_sale_code,bagging_auto_label,shipstation_tag_id,shipstation_carrier,shipstation_service,shipstation_store_id,label_weight_lbs';
+  let { data: stores } = await sb.from('webstores')
+    .select(`${STORE_COLS},ship_from_code`).eq('id', order.store_id).limit(1);
+  if (!stores || !stores.length) {
+    ({ data: stores } = await sb.from('webstores').select(STORE_COLS).eq('id', order.store_id).limit(1));
+  }
   const store = stores && stores[0];
   if (!store) return { skipped: true, reason: 'store not found' };
   if (store.bagging_auto_label === false) return { skipped: true, reason: 'auto-label off for this store' };
@@ -125,6 +134,28 @@ async function createBagShipLabel(sb, order, items) {
     (cat || []).forEach((c) => { if (c.weight_oz != null) weightByPid[c.product_id] = Number(c.weight_oz); });
   }
 
+  // Origin address: whatever this store says it ships from (src/lib/shipFrom.js).
+  // A decorator origin is looked up live so a decorator's address change in
+  // Settings → Deco Vendors is what prints. If the decorator has no address, do
+  // NOT quietly ship from the warehouse (the goods aren't there): skip, and the
+  // station tells the packer to print from Webstores where an origin can be picked.
+  const originCode = shipFromCode(store.ship_from_code);
+  const decoLocations = [];
+  const decoId = decoIdFromCode(originCode);
+  if (decoId) {
+    const { data: dvs } = await sb.from('deco_vendors').select('id,name,is_active,phone,address_line1,address_line2,city,state,zip,vendor_id').eq('id', decoId).limit(1);
+    const dv = dvs && dvs[0];
+    let lv = null;
+    if (dv && dv.vendor_id) {
+      const { data: vs } = await sb.from('vendors').select('id,name,contact_phone,address_line1,address_line2,city,state,zip').eq('id', dv.vendor_id).limit(1);
+      lv = (vs && vs[0]) || null;
+    }
+    const loc = decoShipFromLocation(dv, lv);
+    if (!loc) return { skipped: true, reason: 'ship-from decorator has no address on file — pick an origin and print from Webstores' };
+    decoLocations.push(loc);
+  }
+  const shipFrom = shipStationShipFrom(originCode, decoLocations);
+
   const a = order.ship_address;
   const ss = await ssCall('/orders/createorder', {
     orderNumber: 'WS-' + order.id, orderKey: 'ws-' + order.id,
@@ -157,7 +188,7 @@ async function createBagShipLabel(sb, order, items) {
     orderId: ss.orderId, carrierCode: cm.carrierCode, serviceCode: store.shipstation_service || cm.serviceCode,
     packageCode: 'package', confirmation: 'none', shipDate,
     weight: { value: labelWeightLbs(plan, store, weightByPid), units: 'pounds' },
-    shipFrom: { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone },
+    shipFrom,
     shipTo: { name: a.name || order.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: order.buyer_phone || '' },
     testLabel: false,
   });
@@ -186,13 +217,21 @@ async function createBagShipLabel(sb, order, items) {
       ].filter(Boolean),
     })),
   });
-  const { error: labelError } = await sb.from('webstore_orders').update({
+  // The label is bought and paid for by now, so the origin column must never be
+  // the thing that fails the save (same pre-migration window as the select above).
+  const labelPatch = {
     label_data: res.labelData || null,
     shipstation_shipment_id: res.shipmentId || null,
-  }).eq('id', order.id);
+    ship_from_code: originCode,
+  };
+  let { error: labelError } = await sb.from('webstore_orders').update(labelPatch).eq('id', order.id);
+  if (labelError && /ship_from_code/.test(labelError.message || '')) {
+    delete labelPatch.ship_from_code;
+    ({ error: labelError } = await sb.from('webstore_orders').update(labelPatch).eq('id', order.id));
+  }
   if (labelError) throw new Error(`Could not save label metadata: ${labelError.message}`);
 
-  return { labelData: res.labelData || null, trackingNumber: res.trackingNumber || null, carrier: cm.carrierCode, cost };
+  return { labelData: res.labelData || null, trackingNumber: res.trackingNumber || null, carrier: cm.carrierCode, cost, shipFromCode: originCode };
 }
 
 module.exports = { createBagShipLabel, estimateWeightOz, labelWeightLbs };

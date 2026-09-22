@@ -1,5 +1,6 @@
-import { QB_PO_ACCOUNT_LINE_DESCRIPTION_MAX, billReferencesPortalPO, buildQBBillPOReplacement, buildQBPurchaseOrderPreviewRows, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions, qbPOAccountLineDescription } from '../qbSyncEngine';
+import { QB_PO_ACCOUNT_LINE_DESCRIPTION_MAX, applyQBPurchaseOrderLiveReadiness, applyQBSalesOrderLiveReadiness, billReferencesPortalPO, buildQBBillPOReplacement, buildQBInvoicePreviewRows, buildQBPurchaseOrderPreviewRows, buildQBSalesOrderPreviewRows, createQBSyncEngine, findQbPOBillCandidates, qbLinkedTransactions, qbPOAccountLineDescription, qbPurchaseOrderSourceFingerprint, qbSalesOrderSourceFingerprint, qboStandardTermDueDate } from '../qbSyncEngine';
 import { indexQBNonInventoryItems, QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_SPECS } from '../qbAccountMappings';
+import { summarizeQBInvoicePreflight } from '../qbInvoiceSyncGuard';
 
 const accountRows = Object.values(QB_ACCOUNT_SPECS).map((spec,index)=>({
   Id:String(index+1),Name:spec.name,FullyQualifiedName:spec.name,AcctNum:spec.number,
@@ -7,7 +8,7 @@ const accountRows = Object.values(QB_ACCOUNT_SPECS).map((spec,index)=>({
 }));
 const accountId = number => String(Object.values(QB_ACCOUNT_SPECS).findIndex(spec=>spec.number===number)+1);
 
-const makeEngine = ({qbApi,cust=[],sos=[],invs=[],prod=[],vend=[]}) => {
+const makeEngine = ({qbApi,cust=[],sos=[],invs=[],prod=[],vend=[],dP=jest.fn(()=>({sell:0}))}) => {
   let config={
     realm_id:'9341',preflight:{status:'success',realm_id:'9341'},initialMigrationApproved:false,
     mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},custQBMap:{C1:'C-QB'},prodQBMap:{},qbSOMap:{},qbPOMap:{},syncLog:[],
@@ -18,10 +19,18 @@ const makeEngine = ({qbApi,cust=[],sos=[],invs=[],prod=[],vend=[]}) => {
     setSubmittedBatches:jest.fn(),setVend:jest.fn(),
   };
   const persistQbLink=jest.fn(async()=>({}));
+  const guardedQBApi=async(action,args={})=>{
+    try{return await qbApi(action,args)}
+    catch(error){
+      if(action==='query'&&String(args.query||'').includes('FROM Invoice WHERE DocNumber IN')&&/Unexpected QBO call/.test(error.message))return{QueryResponse:{Invoice:[]}};
+      throw error;
+    }
+  };
   const engine=createQBSyncEngine({
       persistQbLink,
-    cust,sos,invs,prod,vend,invPOs:[],submittedBatches:[],qbApi,qbConfig:config,nf:jest.fn(),
-    dP:jest.fn(()=>({sell:0})),...setters,
+    acquireInvoiceSyncClaim:jest.fn(async()=>true),releaseInvoiceSyncClaim:jest.fn(async()=>true),
+    cust,sos,invs,prod,vend,invPOs:[],submittedBatches:[],qbApi:guardedQBApi,qbConfig:config,nf:jest.fn(),
+    dP,...setters,
   });
   return{engine,setters,persistQbLink,getConfig:()=>config};
 };
@@ -30,6 +39,70 @@ const accountResponse = {QueryResponse:{Account:accountRows}};
 const portalSalesItem = {Id:'SALES-ITEM',Name:'NSA Portal Sales',Type:'Service',Active:true,IncomeAccountRef:{value:accountId('40000')}};
 
 describe('QuickBooks one-record canaries', () => {
+  test('derives due dates only for standard QBO terms', () => {
+    expect(qboStandardTermDueDate('2026-09-01','Net 30')).toBe('2026-10-01');
+    expect(qboStandardTermDueDate('2026-09-01','Due on receipt')).toBe('2026-09-01');
+    expect(qboStandardTermDueDate('2026-09-01','Date driven')).toBeNull();
+  });
+
+  test('invoice review lists exact ready rows and explicitly excludes zero totals without writing', () => {
+    const rows=buildQBInvoicePreviewRows([
+      {id:'INV-10',customer_id:'C1',invoice_date:'2026-09-08',total:100,paid:25,tax:8},
+      {id:'INV-11',customer_id:'C1',invoice_date:'2026-09-08',total:0,paid:0,tax:0},
+      {id:'INV-12',customer_id:'C1',invoice_date:'2026-09-08',total:50,status:'void'},
+    ],[{id:'C1',name:'Exact Customer'}],{C1:'Q1'});
+    expect(rows).toEqual([
+      expect.objectContaining({invoiceId:'INV-10',documentNumber:'INV-10',customer:'Exact Customer',qboCustomerId:'Q1',date:'2026-09-08',total:100,paid:25,tax:8,action:'ready'}),
+      expect.objectContaining({invoiceId:'INV-11',action:'excluded_zero',reason:expect.stringMatching(/zero-dollar/)}),
+    ]);
+  });
+
+  test('live preflight passes only with zero proposed or conflicted invoices and verified aliases', () => {
+    const safeRows=[
+      {action:'excluded_zero'},
+      {action:'held_future'},
+      {action:'held_future'},
+    ];
+    const aliases=[
+      {documentNumber:'INV-63133',action:'link_existing'},
+      {documentNumber:'INV-63199',action:'already_synced'},
+      {documentNumber:'INV-63255',action:'link_existing'},
+    ];
+    expect(summarizeQBInvoicePreflight(safeRows,aliases)).toEqual(expect.objectContaining({
+      counts:{excluded_zero:1,held_future:2},proposedCount:0,reviewCount:0,aliasFailures:[],passed:true,
+    }));
+    expect(summarizeQBInvoicePreflight([...safeRows,{action:'ready'}],aliases)).toEqual(expect.objectContaining({passed:false,safeToReview:true,proposedCount:1}));
+    expect(summarizeQBInvoicePreflight(safeRows,[...aliases,{documentNumber:'INV9',action:'manual_review'}])).toEqual(expect.objectContaining({passed:false,safeToReview:false}));
+  });
+
+  test('bulk invoice writes require an explicitly approved exact review', async() => {
+    const qbApi=jest.fn();
+    const {engine,getConfig}=makeEngine({qbApi,cust:[{id:'C1',name:'Test Customer'}],invs:[{id:'INV-1',customer_id:'C1',invoice_date:'2026-09-08',total:100}]});
+    getConfig().initialMigrationApproved=true;
+    await expect(engine.syncInvoices()).resolves.toEqual({status:'blocked',synced:0});
+    expect(qbApi).not.toHaveBeenCalled();
+  });
+
+  test('a reviewed invoice batch stops after the first write failure', async() => {
+    const invoices=[
+      {id:'INV-1',customer_id:'C1',invoice_date:'2026-09-08',total:100,paid:0,tax:0},
+      {id:'INV-2',customer_id:'C1',invoice_date:'2026-09-08',total:200,paid:0,tax:0},
+    ];
+    const qbApi=jest.fn(async(action,{query}={})=>{
+      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
+      if(action==='query'&&query.includes("FROM Item WHERE Name = 'NSA Portal Sales'"))return{QueryResponse:{Item:[portalSalesItem]}};
+      if(action==='query'&&query.includes("FROM Customer WHERE Id = 'C-QB'"))return{QueryResponse:{Customer:[{Id:'C-QB',SalesTermRef:{value:'T30',name:'Net 30'}}]}};
+      if(action==='upsert_invoice')throw new Error('transport stopped');
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const {engine,getConfig}=makeEngine({qbApi,cust:[{id:'C1',name:'Test Customer'}],invs:invoices});
+    getConfig().initialMigrationApproved=true;
+    const expectedRows=buildQBInvoicePreviewRows(invoices,[{id:'C1',name:'Test Customer'}],{C1:'C-QB'});
+    await expect(engine.syncInvoices({}, {}, {approved:true,approvedInvoiceIds:['INV-1','INV-2'],expectedRows})).resolves.toEqual({status:'blocked',synced:0});
+    expect(qbApi.mock.calls.filter(([action])=>action==='upsert_invoice')).toHaveLength(1);
+    expect(getConfig().lastInvoiceBatch.counts).toEqual({failed:1,not_attempted:1});
+  });
+
   test('creates and reads back exactly one invoice with the QBO customer terms', async() => {
     const invoice={id:'INV-1',display_id:'INV-1',customer_id:'C1',so_id:'SO-1',invoice_date:'2026-09-01',total:100,paid:0,tax:0};
     const readback={Id:'900',DocNumber:'INV-1',CustomerRef:{value:'C-QB'},TotalAmt:100,TxnDate:'2026-09-01',SalesTermRef:{value:'T30',name:'Net 30'}};
@@ -46,8 +119,40 @@ describe('QuickBooks one-record canaries', () => {
     expect(qbApi).toHaveBeenCalledWith('upsert_invoice',{invoice:expect.objectContaining({DocNumber:'INV-1',CustomerRef:{value:'C-QB'},SalesTermRef:{value:'T30',name:'Net 30'}})});
     const invoicePayload=qbApi.mock.calls.find(([action])=>action==='upsert_invoice')[1].invoice;
     expect(invoicePayload.ARAccountRef).toEqual({value:accountId('11000')});
+    expect(invoicePayload.DueDate).toBe('2026-10-01');
     expect(qbApi.mock.calls.filter(([action])=>action==='upsert_invoice')).toHaveLength(1);
     expect(setters.setInvs).toHaveBeenCalledTimes(1);
+  });
+
+  test('accepts a QBO invoice that omits SalesTermRef only when its due date proves the customer terms', async() => {
+    const invoice={id:'INV-1',display_id:'INV-1',customer_id:'C1',invoice_date:'2026-09-01',total:100,paid:0,tax:0};
+    const qbApi=jest.fn(async(action,{query,invoice:payload}={})=>{
+      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
+      if(action==='query'&&query.includes("FROM Item WHERE Name = 'NSA Portal Sales'"))return{QueryResponse:{Item:[portalSalesItem]}};
+      if(action==='query'&&query.includes("FROM Customer WHERE Id = 'C-QB'"))return{QueryResponse:{Customer:[{Id:'C-QB',SalesTermRef:{value:'T30',name:'Net 30'}}]}};
+      if(action==='upsert_invoice')return{Invoice:{Id:'900',...payload}};
+      if(action==='query'&&query.includes("FROM Invoice WHERE Id = '900'"))return{QueryResponse:{Invoice:[{Id:'900',DocNumber:'INV-1',CustomerRef:{value:'C-QB'},TotalAmt:100,TxnDate:'2026-09-01',DueDate:'2026-10-01'}]}};
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const{engine,setters}=makeEngine({qbApi,cust:[{id:'C1',name:'Test Customer'}],invs:[invoice]});
+    await expect(engine.syncInvoices({}, {}, {canaryInvoiceId:'INV-1'})).resolves.toEqual({status:'success',synced:1});
+    expect(setters.setInvs).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not link an invoice when QBO omits the term and stores the wrong due date', async() => {
+    const invoice={id:'INV-1',display_id:'INV-1',customer_id:'C1',invoice_date:'2026-09-01',total:100,paid:0,tax:0};
+    const qbApi=jest.fn(async(action,{query,invoice:payload}={})=>{
+      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
+      if(action==='query'&&query.includes("FROM Item WHERE Name = 'NSA Portal Sales'"))return{QueryResponse:{Item:[portalSalesItem]}};
+      if(action==='query'&&query.includes("FROM Customer WHERE Id = 'C-QB'"))return{QueryResponse:{Customer:[{Id:'C-QB',SalesTermRef:{value:'T30',name:'Net 30'}}]}};
+      if(action==='upsert_invoice')return{Invoice:{Id:'900',...payload}};
+      if(action==='query'&&query.includes("FROM Invoice WHERE Id = '900'"))return{QueryResponse:{Invoice:[{Id:'900',DocNumber:'INV-1',CustomerRef:{value:'C-QB'},TotalAmt:100,TxnDate:'2026-09-01',DueDate:'2026-09-02'}]}};
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const{engine,setters,getConfig}=makeEngine({qbApi,cust:[{id:'C1',name:'Test Customer'}],invs:[invoice]});
+    await expect(engine.syncInvoices({}, {}, {canaryInvoiceId:'INV-1'})).resolves.toEqual({status:'blocked',synced:0});
+    expect(setters.setInvs).not.toHaveBeenCalled();
+    expect(getConfig().syncLog[0].details.join(' ')).toMatch(/due date did not prove/);
   });
 
   const taxableInvoice={id:'INV-63848',display_id:'INV-63848',customer_id:'C1',invoice_date:'2026-09-05',total:3083.2,tax:237.17,tax_rate:0.0875,shipping:135.53,paid:0};
@@ -254,8 +359,121 @@ describe('QuickBooks one-record canaries', () => {
     expect(getConfig().qbSOMap['SO-1']).toBe('E-1');
   });
 
+  test('sales-order review exposes ready and taxable-blocked Estimates without writing', () => {
+    const base={customer_id:'C1',created_at:'2026-09-01',items:[{sku:'SKU-1',name:'Jersey',unit_sell:25,sizes:{S:2},decorations:[]}]};
+    const rows=buildQBSalesOrderPreviewRows([{...base,id:'SO-1',tax_exempt:true},{...base,id:'SO-2',tax_rate:0.08}],
+      [{id:'C1',name:'Test Customer',shipping_state:'CA'}],{C1:'C-QB'},{},jest.fn(()=>({sell:0})));
+    expect(rows).toEqual([
+      expect.objectContaining({salesOrderId:'SO-1',customer:'Test Customer',qboCustomerId:'C-QB',date:'2026-09-01',lineCount:1,tax:0,total:50,action:'ready'}),
+      expect.objectContaining({salesOrderId:'SO-2',tax:4,taxState:'CA',total:54,action:'blocked',reason:'taxable Estimates await approved QBO tax-code mapping'}),
+    ]);
+  });
+
+  test('sales-order review admits supported AST tax as an explicit state line', () => {
+    const so={id:'SO-2',customer_id:'C1',created_at:'2026-09-01',tax_rate:0.08,items:[{sku:'SKU-1',name:'Jersey',unit_sell:25,sizes:{S:2},decorations:[]}]};
+    const rows=buildQBSalesOrderPreviewRows([so],[{id:'C1',name:'Test Customer',shipping_state:'CA'}],{C1:'C-QB'},{},jest.fn(()=>({sell:0})),
+      {partnerTaxEnabled:true,taxBlockReason:({taxState})=>taxState==='CA'?'':'unsupported'});
+    expect(rows).toEqual([expect.objectContaining({salesOrderId:'SO-2',lineCount:2,salesSubtotal:50,taxRate:0.08,tax:4,taxState:'CA',total:54,action:'ready'})]);
+  });
+
+  test('bulk Estimate writes require an approved exact review and read back the approved row', async() => {
+    const so={id:'SO-1',customer_id:'C1',created_at:'2026-09-01',tax_exempt:true,items:[{sku:'SKU-1',name:'Jersey',unit_sell:25,sizes:{S:2},decorations:[]}]};
+    let sent;
+    const qbApi=jest.fn(async(action,{query,estimate}={})=>{
+      if(action==='query'&&query.includes('FROM Estimate STARTPOSITION'))return{QueryResponse:{Estimate:[]}};
+      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
+      if(action==='query'&&query.includes("FROM Item WHERE Name = 'NSA Portal Sales'"))return{QueryResponse:{Item:[portalSalesItem]}};
+      if(action==='upsert_estimate'){sent=estimate;return{Estimate:{Id:'E-1',...estimate}}}
+      if(action==='query'&&query.includes("FROM Estimate WHERE Id = 'E-1'"))return{QueryResponse:{Estimate:[{Id:'E-1',...sent,TotalAmt:50}]}};
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const {engine,getConfig,persistQbLink}=makeEngine({qbApi,cust:[{id:'C1',name:'Test Customer'}],sos:[so]});
+    getConfig().initialMigrationApproved=true;
+    await expect(engine.syncSalesOrders()).resolves.toEqual({status:'blocked',synced:0});
+    expect(qbApi).not.toHaveBeenCalled();
+    const expectedRows=buildQBSalesOrderPreviewRows([so],[{id:'C1',name:'Test Customer'}],{C1:'C-QB'},{},jest.fn(()=>({sell:0})));
+    await expect(engine.syncSalesOrders({}, {}, {approved:true,approvedSOIds:['SO-1'],expectedRows})).resolves.toEqual({status:'success',synced:1});
+    expect(qbApi.mock.calls.filter(([action])=>action==='upsert_estimate')).toHaveLength(1);
+    expect(persistQbLink).toHaveBeenCalledWith(expect.objectContaining({mapKey:'qbSOMap',sourceIds:['SO-1'],qboId:'E-1',evidence:expect.objectContaining({api_readback:true})}));
+  });
+
+  test('live sales-order review removes conflicting QBO Estimate numbers before approval', () => {
+    const rows=[
+      {salesOrderId:'SO-NEW',customerId:'C1',customer:'Acme',qboCustomerId:'Q-C1',date:'2026-09-01',lineCount:1,salesSubtotal:10,shipping:0,taxRate:0,tax:0,taxState:'CA',total:10,action:'ready',reason:''},
+      {salesOrderId:'SO-EXACT',customerId:'C1',customer:'Acme',qboCustomerId:'Q-C1',date:'2026-09-01',lineCount:1,salesSubtotal:20,shipping:0,taxRate:0,tax:0,taxState:'CA',total:20,action:'ready',reason:''},
+      {salesOrderId:'SO-CONFLICT',customerId:'C1',customer:'Acme',qboCustomerId:'Q-C1',date:'2026-09-01',lineCount:1,salesSubtotal:30,shipping:0,taxRate:0,tax:0,taxState:'CA',total:30,action:'ready',reason:''},
+    ];
+    const reviewed=applyQBSalesOrderLiveReadiness(rows,[
+      {Id:'E1',DocNumber:'SO-EXACT',CustomerRef:{value:'Q-C1'},TxnDate:'2026-09-01',TotalAmt:20},
+      {Id:'E2',DocNumber:'SO-CONFLICT',CustomerRef:{value:'Q-C1'},TxnDate:'2026-09-01',TotalAmt:31},
+    ]);
+    expect(reviewed.map(row=>[row.salesOrderId,row.action,row.qboDisposition])).toEqual([
+      ['SO-NEW','ready','create'],['SO-EXACT','ready','link_existing'],['SO-CONFLICT','blocked','blocked'],
+    ]);
+    expect(reviewed[2].reason).toMatch(/different customer, date, or total/);
+    expect(qbSalesOrderSourceFingerprint(reviewed[1])).toEqual(qbSalesOrderSourceFingerprint(rows[1]));
+  });
+
+  test('reviewed AST Estimate carries Portal tax on the existing CA liability item and verifies it', async() => {
+    const so={id:'SO-2',customer_id:'C1',created_at:'2026-09-01',tax_rate:0.08,items:[{sku:'SKU-1',name:'Jersey',unit_sell:25,sizes:{S:2},decorations:[]}]};
+    const customer={id:'C1',name:'Test Customer',shipping_state:'CA'};
+    const taxItem={Id:'TAX-CA',Name:'NSA Portal Sales Tax — CA',Type:'Service',Active:true,IncomeAccountRef:{value:accountId('25200')}};
+    let sent;
+    const qbApi=jest.fn(async(action,{query,estimate}={})=>{
+      if(action==='query'&&query.includes('FROM Estimate STARTPOSITION'))return{QueryResponse:{Estimate:[]}};
+      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
+      if(action==='query'&&query.includes("FROM Item WHERE Name = 'NSA Portal Sales'"))return{QueryResponse:{Item:[portalSalesItem]}};
+      if(action==='query'&&query.includes('NSA Portal Sales Tax — CA'))return{QueryResponse:{Item:[taxItem]}};
+      if(action==='query'&&query.includes('FROM Preferences'))return{QueryResponse:{Preferences:[{TaxPrefs:{UsingSalesTax:true,PartnerTaxEnabled:true}}]}};
+      if(action==='query'&&query.includes('FROM TaxCode STARTPOSITION'))return{QueryResponse:{TaxCode:[]}};
+      if(action==='upsert_estimate'){sent=estimate;return{Estimate:{Id:'E-2',...estimate}}}
+      if(action==='query'&&query.includes("FROM Estimate WHERE Id = 'E-2'"))return{QueryResponse:{Estimate:[{Id:'E-2',...sent,TotalAmt:54,TxnTaxDetail:{TotalTax:0}}]}};
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const {engine,getConfig,persistQbLink}=makeEngine({qbApi,cust:[customer],sos:[so]});
+    getConfig().initialMigrationApproved=true;
+    getConfig().taxPreflight={realm_id:'9341',partnerTaxEnabled:true};
+    const reviewOptions={partnerTaxEnabled:true,taxBlockReason:()=>''};
+    const expectedRows=buildQBSalesOrderPreviewRows([so],[customer],{C1:'C-QB'},{},jest.fn(()=>({sell:0})),reviewOptions);
+    await expect(engine.syncSalesOrders({}, {}, {approved:true,approvedSOIds:['SO-2'],expectedRows})).resolves.toEqual({status:'success',synced:1});
+    expect(sent.Line).toEqual([
+      expect.objectContaining({Amount:50,SalesItemLineDetail:expect.objectContaining({TaxCodeRef:{value:'NON'}})}),
+      expect.objectContaining({Amount:4,SalesItemLineDetail:expect.objectContaining({ItemRef:{value:'TAX-CA',name:'NSA Portal Sales Tax — CA'},TaxCodeRef:{value:'NON'}})}),
+    ]);
+    expect(sent.TxnTaxDetail).toBeUndefined();
+    expect(persistQbLink).toHaveBeenCalledWith(expect.objectContaining({mapKey:'qbSOMap',sourceIds:['SO-2'],evidence:expect.objectContaining({total:54,api_readback:true})}));
+    expect(qbApi.mock.calls.filter(([action])=>action==='upsert_item')).toHaveLength(0);
+  });
+
+  test('adds an explicit rounding line so QBO preserves the exact Portal Estimate total', async() => {
+    const so={id:'SO-ROUND',customer_id:'C1',created_at:'2026-09-01',tax_exempt:true,items:[
+      {sku:'SKU-1',name:'Jersey',unit_sell:10,sizes:{S:3},decorations:[{kind:'art',position:'Front'}]},
+      {sku:'SKU-2',name:'Short',unit_sell:10,sizes:{M:3},decorations:[{kind:'art',position:'Front'}]},
+    ]};
+    const customer={id:'C1',name:'Test Customer'};
+    const dP=jest.fn(()=>({sell:0.335}));
+    let sent;
+    const qbApi=jest.fn(async(action,{query,estimate}={})=>{
+      if(action==='query'&&query.includes('FROM Estimate STARTPOSITION'))return{QueryResponse:{Estimate:[]}};
+      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
+      if(action==='query'&&query.includes("FROM Item WHERE Name = 'NSA Portal Sales'"))return{QueryResponse:{Item:[portalSalesItem]}};
+      if(action==='upsert_estimate'){sent=estimate;return{Estimate:{Id:'E-ROUND',...estimate}}}
+      if(action==='query'&&query.includes("FROM Estimate WHERE Id = 'E-ROUND'"))return{QueryResponse:{Estimate:[{Id:'E-ROUND',...sent,TotalAmt:62.01}]}};
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const expectedRows=buildQBSalesOrderPreviewRows([so],[customer],{C1:'C-QB'},{},dP);
+    expect(expectedRows[0]).toEqual(expect.objectContaining({salesSubtotal:62.01,total:62.01,lineCount:3}));
+    const {engine,getConfig}=makeEngine({qbApi,cust:[customer],sos:[so],dP});
+    getConfig().initialMigrationApproved=true;
+    await expect(engine.syncSalesOrders({}, {}, {approved:true,approvedSOIds:['SO-ROUND'],expectedRows})).resolves.toEqual({status:'success',synced:1});
+    expect(sent.Line).toEqual(expect.arrayContaining([
+      expect.objectContaining({Amount:-0.01,Description:'Portal line-rounding adjustment'}),
+    ]));
+    expect(sent.Line.reduce((sum,line)=>sum+line.Amount,0)).toBeCloseTo(62.01,8);
+  });
+
   test('creates one PO without creating a vendor or item and verifies read-back', async() => {
-    const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:5,sizes:{S:2},po_lines:[{po_id:'PO-1',created_at:'2026-09-01',S:2,unit_cost:5}]}]};
+    const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:5,sizes:{S:2},po_lines:[{po_id:'PO-1',created_at:'2026-09-15',S:2,unit_cost:5}]}]};
     let sentPO;
     const qbApi=jest.fn(async(action,{query,purchase_order}={})=>{
       if(action==='query'&&query.includes('FROM Vendor STARTPOSITION'))return{QueryResponse:{Vendor:[{Id:'V-QB',DisplayName:'Acme',CompanyName:'Acme'}]}};
@@ -273,11 +491,20 @@ describe('QuickBooks one-record canaries', () => {
     expect(getConfig().qbPOMap['PO-1']).toBe('PO-QB');
   });
 
+  test('blocks PO activity until the complete durable QBO receipt ledger is loaded', async() => {
+    const so={id:'SO-1',items:[{sku:'SKU-1',brand:'Acme',po_lines:[{po_id:'PO-1',created_at:'2026-09-15',S:2,unit_cost:5}]}]};
+    const qbApi=jest.fn();
+    const{engine,getConfig}=makeEngine({qbApi,sos:[so]});
+    getConfig()._durableLinksLoaded=false;
+    await expect(engine.syncPurchaseOrders({}, {canaryPOId:'PO-1'})).resolves.toEqual({status:'blocked'});
+    expect(qbApi).not.toHaveBeenCalled();
+  });
+
   test('posts lines without a linked QBO item as one purchases-account line and verifies the read-back', async() => {
     const so={id:'SO-1',items:[
-      {product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:5,sizes:{S:2},po_lines:[{po_id:'PO-1',created_at:'2026-09-01',S:2,unit_cost:5}]},
-      {product_id:null,sku:'CUSTOM',name:'Sublimated uniforms',brand:'Acme',nsa_cost:30,is_custom:true,po_lines:[{po_id:'PO-1',created_at:'2026-09-01',L:2,unit_cost:30}]},
-      {product_id:null,sku:'PC54',name:'Core Cotton Tee',brand:'Acme',nsa_cost:3.1,po_lines:[{po_id:'PO-1',created_at:'2026-09-01',M:3,unit_cost:3.1}]},
+      {product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:5,sizes:{S:2},po_lines:[{po_id:'PO-1',created_at:'2026-09-15',S:2,unit_cost:5}]},
+      {product_id:null,sku:'CUSTOM',name:'Sublimated uniforms',brand:'Acme',nsa_cost:30,is_custom:true,po_lines:[{po_id:'PO-1',created_at:'2026-09-15',L:2,unit_cost:30}]},
+      {product_id:null,sku:'PC54',name:'Core Cotton Tee',brand:'Acme',nsa_cost:3.1,po_lines:[{po_id:'PO-1',created_at:'2026-09-15',M:3,unit_cost:3.1}]},
     ]};
     let sentPO;
     const qbApi=jest.fn(async(action,{query,purchase_order}={})=>{
@@ -303,7 +530,7 @@ describe('QuickBooks one-record canaries', () => {
   });
 
   test('uses the saved PO line cost rounded to cents instead of a changed catalog cost', async() => {
-    const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:99.999,sizes:{S:1},po_lines:[{po_id:'PO-1',created_at:'2026-09-01',S:1,unit_cost:37.115}]}]};
+    const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:99.999,sizes:{S:1},po_lines:[{po_id:'PO-1',created_at:'2026-09-15',S:1,unit_cost:37.115}]}]};
     let sentPO;
     const qbApi=jest.fn(async(action,{query,purchase_order}={})=>{
       if(action==='query'&&query.includes('FROM Vendor STARTPOSITION'))return{QueryResponse:{Vendor:[{Id:'V-QB',DisplayName:'Acme',CompanyName:'Acme'}]}};
@@ -324,7 +551,7 @@ describe('QuickBooks one-record canaries', () => {
   });
 
   test('records the QBO transport error instead of unknown when a PO write is rejected', async() => {
-    const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:5,sizes:{S:2},po_lines:[{po_id:'PO-1',created_at:'2026-08-31',S:2,unit_cost:5}]}]};
+    const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:5,sizes:{S:2},po_lines:[{po_id:'PO-1',created_at:'2026-09-15',S:2,unit_cost:5}]}]};
     const qbApi=jest.fn(async(action,{query}={})=>{
       if(action==='query'&&query.includes('FROM Vendor STARTPOSITION'))return{QueryResponse:{Vendor:[{Id:'V-QB',DisplayName:'Acme',CompanyName:'Acme'}]}};
       if(action==='query'&&query.includes('FROM PurchaseOrder STARTPOSITION'))return{QueryResponse:{PurchaseOrder:[]}};
@@ -339,7 +566,7 @@ describe('QuickBooks one-record canaries', () => {
   });
 
   test('requires an exact approved PO list and verifies every batch line before saving a durable link', async() => {
-    const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:5,sizes:{S:2},po_lines:[{po_id:'PO-1',created_at:'2026-09-01',S:2,unit_cost:5}]}]};
+    const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:5,sizes:{S:2},po_lines:[{po_id:'PO-1',created_at:'2026-09-15',S:2,unit_cost:5}]}]};
     let sentPO;
     const qbApi=jest.fn(async(action,{query,purchase_order}={})=>{
       if(query?.includes('FROM Vendor STARTPOSITION'))return{QueryResponse:{Vendor:[{Id:'V-QB',DisplayName:'Acme'}]}};
@@ -357,6 +584,42 @@ describe('QuickBooks one-record canaries', () => {
     expect(result).toEqual(expect.objectContaining({status:'success',synced:1,report:expect.objectContaining({counts:{created:1}})}));
     expect(persistQbLink).toHaveBeenCalledWith(expect.objectContaining({mapKey:'qbPOMap',sourceIds:['PO-1'],evidence:expect.objectContaining({api_readback:true,line_count:1})}));
     expect(getConfig().lastPurchaseOrderBatch.results[0]).toEqual(expect.objectContaining({poId:'PO-1',qboId:'PO-QB',result:'created'}));
+  });
+
+  test('live PO review removes QBO vendor and document conflicts before approval', () => {
+    const rows=[
+      {poId:'PO-NEW',vendor:'Acme',date:'2026-09-01',lineCount:1,skus:['SKU-1'],accountSkus:[],total:10,action:'ready',reason:''},
+      {poId:'PO-EXACT',vendor:'Acme',date:'2026-09-01',lineCount:1,skus:['SKU-2'],accountSkus:[],total:20,action:'ready',reason:''},
+      {poId:'PO-CONFLICT',vendor:'Acme',date:'2026-09-01',lineCount:1,skus:['SKU-3'],accountSkus:[],total:30,action:'ready',reason:''},
+      {poId:'PO-NOVENDOR',vendor:'Missing',date:'2026-09-01',lineCount:1,skus:['SKU-4'],accountSkus:[],total:40,action:'ready',reason:''},
+    ];
+    const reviewed=applyQBPurchaseOrderLiveReadiness(rows,[{Id:'V1',DisplayName:'Acme',Active:true}],[
+      {Id:'Q1',DocNumber:'PO-EXACT',VendorRef:{value:'V1'},TxnDate:'2026-09-01',TotalAmt:20},
+      {Id:'Q2',DocNumber:'PO-CONFLICT',VendorRef:{value:'V1'},TxnDate:'2026-09-01',TotalAmt:31},
+    ]);
+    expect(reviewed.map(row=>[row.poId,row.action,row.qboDisposition])).toEqual([
+      ['PO-NEW','ready','create'],['PO-EXACT','ready','link_existing'],['PO-CONFLICT','blocked','blocked'],['PO-NOVENDOR','blocked','blocked'],
+    ]);
+    expect(reviewed[2].reason).toMatch(/different vendor, date, or total/);
+    expect(reviewed[3].reason).toMatch(/not linked or uniquely present/);
+    expect(qbPurchaseOrderSourceFingerprint(reviewed[1])).toEqual(qbPurchaseOrderSourceFingerprint(rows[1]));
+  });
+
+  test('live PO review blocks an exact header whose QBO lines differ from the approved line plan', () => {
+    const expectedLines=[{type:'AccountBasedExpenseLineDetail',amount:20,item:'',qty:0,unitPrice:0,accountKey:'purchases_account'}];
+    const rows=[
+      {poId:'PO-MATCH',vendor:'Acme',date:'2026-09-01',lineCount:1,skus:['SKU-1'],accountSkus:['SKU-1'],total:20,expectedLines,action:'ready',reason:''},
+      {poId:'PO-LINE-DRIFT',vendor:'Acme',date:'2026-09-01',lineCount:1,skus:['SKU-2'],accountSkus:['SKU-2'],total:20,expectedLines,action:'ready',reason:''},
+    ];
+    const accountLine=(account,amount=20)=>({DetailType:'AccountBasedExpenseLineDetail',Amount:amount,AccountBasedExpenseLineDetail:{AccountRef:{value:account}}});
+    const reviewed=applyQBPurchaseOrderLiveReadiness(rows,[{Id:'V1',DisplayName:'Acme',Active:true}],[
+      {Id:'Q1',DocNumber:'PO-MATCH',VendorRef:{value:'V1'},TxnDate:'2026-09-01',TotalAmt:20,Line:[accountLine('A1')]},
+      {Id:'Q2',DocNumber:'PO-LINE-DRIFT',VendorRef:{value:'V1'},TxnDate:'2026-09-01',TotalAmt:20,Line:[accountLine('A2')]},
+    ],[],{},{purchases_account:{value:'A1'},deco_account:{value:'A3'}});
+    expect(reviewed.map(row=>[row.poId,row.action,row.qboDisposition])).toEqual([
+      ['PO-MATCH','ready','link_existing'],['PO-LINE-DRIFT','blocked','blocked'],
+    ]);
+    expect(reviewed[1].reason).toMatch(/line items, quantities, rates, amounts, or accounts differ/);
   });
 
   test('verifies reciprocal PO-to-existing-bill links and persists one durable receipt', async() => {
@@ -470,13 +733,21 @@ test('PO-to-bill matching uses exact memo references and line links',()=>{
 
 test('purchase-order preview keeps POs with unlinked SKUs ready and lists the SKUs headed to the purchases account',()=>{
   const sos=[{id:'SO-1',items:[
-    {product_id:'P1',sku:'READY',name:'Ready',brand:'Acme',nsa_cost:5,po_lines:[{po_id:'PO-1',created_at:'2026-09-01',S:2,unit_cost:5}]},
-    {product_id:'P2',sku:'MISSING',name:'Missing',brand:'Acme',nsa_cost:4,po_lines:[{po_id:'PO-2',created_at:'2026-09-01',M:1,unit_cost:4}]},
-    {product_id:null,sku:'CUSTOM',name:'Sublimated uniforms',brand:'Acme',nsa_cost:30,is_custom:true,po_lines:[{po_id:'PO-2',created_at:'2026-09-01',L:2,unit_cost:30}]},
+    {product_id:'P1',sku:'READY',name:'Ready',brand:'Acme',nsa_cost:5,po_lines:[{po_id:'PO-1',created_at:'2026-09-15',S:2,unit_cost:5}]},
+    {product_id:'P2',sku:'MISSING',name:'Missing',brand:'Acme',nsa_cost:4,po_lines:[{po_id:'PO-2',created_at:'2026-09-15',M:1,unit_cost:4}]},
+    {product_id:null,sku:'CUSTOM',name:'Sublimated uniforms',brand:'Acme',nsa_cost:30,is_custom:true,po_lines:[{po_id:'PO-2',created_at:'2026-09-15',L:2,unit_cost:30}]},
   ]}];
   const rows=buildQBPurchaseOrderPreviewRows(sos,[{id:'P1',sku:'READY'},{id:'P2',sku:'MISSING'}],{P1:'I-1'},{});
   expect(rows.find(row=>row.poId==='PO-1')).toEqual(expect.objectContaining({action:'ready',total:10,accountSkus:[]}));
   expect(rows.find(row=>row.poId==='PO-2')).toEqual(expect.objectContaining({action:'ready',total:64,reason:'',accountSkus:['MISSING','CUSTOM']}));
+});
+
+test('purchase-order preview parks document numbers longer than QBO accepts',()=>{
+  const poId='re_1305_162213557_fzqpgy';
+  const rows=buildQBPurchaseOrderPreviewRows([{id:'SO-1',items:[
+    {product_id:'P1',sku:'READY',name:'Ready',brand:'Acme',nsa_cost:5,po_lines:[{po_id:poId,created_at:'2026-09-15',S:2,unit_cost:5}]},
+  ]}],[{id:'P1',sku:'READY'}],{P1:'I-1'},{});
+  expect(rows).toEqual([expect.objectContaining({poId,action:'blocked',reason:'QBO purchase-order number exceeds the 21-character limit'})]);
 });
 
 test('purchase-order account line description names every unlinked line until the QBO cap, then counts the rest',()=>{

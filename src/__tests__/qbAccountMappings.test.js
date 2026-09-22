@@ -102,12 +102,13 @@ describe('QuickBooks account resolution', () => {
       ar_account: '11000', ap_account: '21100', tax_parent_account: '25201',
     });
     expect(QB_ACCOUNT_MAPPING_DEFAULTS.decoration_account).toBe('55200');
-    expect(QB_ACCOUNT_MAPPING_DEFAULTS.outbound_freight_account).toBe('40100');
+    expect(QB_ACCOUNT_MAPPING_DEFAULTS.outbound_freight_account).toBe('67000');
     expect(migrateQBAccountMapping({decoration_account:'55100'}).decoration_account).toBe('55200');
-    expect(migrateQBAccountMapping({outbound_freight_account:'67000'}).outbound_freight_account).toBe('40100');
+    expect(migrateQBAccountMapping({outbound_freight_account:'67000'}).outbound_freight_account).toBe('67000');
     expect(QB_STATE_TAX_ACCOUNT_KEYS).toEqual({
       CA: 'tax_ca_account', AZ: 'tax_az_account', CO: 'tax_co_account',
       NV: 'tax_nv_account', TX: 'tax_tx_account', WA: 'tax_wa_account',
+      WI: 'tax_parent_account', SD: 'tax_parent_account',
     });
   });
 
@@ -145,17 +146,17 @@ describe('QuickBooks account resolution', () => {
 });
 
 describe('vendor bill adversarial routing', () => {
-  test('scopes duplicate supplier document numbers to the QBO vendor', () => {
+  test('blocks duplicate supplier document numbers under any QBO vendor', () => {
     const existing = [
       { Id: 'other', DocNumber: '202964', VendorRef: { value: 'vendor-elsewhere' }, TotalAmt: 500, TxnDate: '2026-01-01' },
       { Id: 'ours', DocNumber: '202964', VendorRef: { value: 'silver-screen' }, TotalAmt: 34.52, TxnDate: '2026-08-31' },
     ];
-    expect(findExistingVendorBill(existing, {
+    expect(() => findExistingVendorBill(existing, {
       docNumber: '202964', vendorId: 'silver-screen', total: 34.52, txnDate: '2026-08-31',
-    })?.Id).toBe('ours');
-    expect(findExistingVendorBill(existing.slice(0, 1), {
+    })).toThrow(/different vendor, date, or total/i);
+    expect(() => findExistingVendorBill(existing.slice(0, 1), {
       docNumber: '202964', vendorId: 'silver-screen', total: 34.52, txnDate: '2026-08-31',
-    })).toBeNull();
+    })).toThrow(/manual review/i);
   });
 
   test('blocks a conflicting duplicate for the same QBO vendor', () => {
@@ -163,7 +164,7 @@ describe('vendor bill adversarial routing', () => {
       { Id: 'conflict', DocNumber: '202964', VendorRef: { value: 'silver-screen' }, TotalAmt: 40, TxnDate: '2026-08-31' },
     ], {
       docNumber: '202964', vendorId: 'silver-screen', total: 34.52, txnDate: '2026-08-31',
-    })).toThrow(/this vendor with a different date or total/i);
+    })).toThrow(/different vendor, date, or total/i);
   });
 
   test('uses the reviewed portal vendor identity before the PDF supplier label', () => {

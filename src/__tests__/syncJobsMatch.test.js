@@ -49,6 +49,12 @@ describe('remapFrozenJobItemIndexes', () => {
     expect(remapFrozenJobItemIndexes(job, live)).toBe(job);
   });
 
+  test('stable line ids distinguish duplicate SKU/color lines after a reorder', () => {
+    const job = { items: [{ item_idx: 0, sku: 'TEE', color: 'Navy', line_id: 'second' }] };
+    const live = [{ sku: 'TEE', color: 'Navy', line_id: 'first' }, { sku: 'TEE', color: 'Navy', line_id: 'second' }];
+    expect(remapFrozenJobItemIndexes(job, live).items[0].item_idx).toBe(1);
+  });
+
   test('does not guess between duplicate sku/color lines', () => {
     const duplicated = [...live, { sku: 'LK864-White', color: 'White' }];
     const job = { items: [{ item_idx: 9, sku: 'LK864-White', color: 'White' }] };

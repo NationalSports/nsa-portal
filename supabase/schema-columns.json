@@ -1,6 +1,6 @@
 {
  "_comment": "Column snapshot of the live public schema for the tables the client writes to. Regenerate with: node scripts/check-column-parity.js --dump (requires SUPABASE_DB_URL). Used by scripts/check-column-parity.js and src/__tests__/columnParity.test.js so the guard works without DB credentials in CI.",
- "_captured": "2026-07-27",
+ "_captured": "2026-09-15",
  "tables": {
   "estimate_art_files": [
    "_version",
@@ -335,6 +335,10 @@
    "shipping_value",
    "source_inbox_message_id",
    "status",
+   "tax_exempt",
+   "tax_exempt_at",
+   "tax_exempt_by",
+   "tax_exempt_reason",
    "update_requests",
    "updated_at"
   ],
@@ -403,6 +407,9 @@
    "source",
    "status",
    "tax_exempt",
+   "tax_exempt_at",
+   "tax_exempt_by",
+   "tax_exempt_reason",
    "tax_rate",
    "uniform_order_id",
    "updated_at",

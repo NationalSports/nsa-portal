@@ -175,3 +175,47 @@ describe('pairRoster — numbers↔names paired by index, NOT sorted', () => {
     expect(h.indexOf('Andre Boone')).toBeLessThan(h.indexOf('Dominic Alvarez'));
   });
 });
+
+/**
+ * SO-2361 / JOB-2361-01 — a job can carry more than one garment roster.
+ * The sheet used to build only the FIRST garment's roster, so a job with two
+ * numbered jersey lines printed 30 of the 38 numbers entered on the SO.
+ */
+describe('buildWorkOrderDoc — one roster page per garment', () => {
+  const SZ = ['XS', 'S', 'M', 'L', 'XL', '2XL'];
+  const sheetCount = (h) => (h.match(/class="wo-sheet"/g) || []).length;
+  const blockFor = (garment, rosterMap) => {
+    const { groups, total } = pairRoster(rosterMap, {}, SZ);
+    return { title: 'Names & numbers · ' + total + ' pcs', garment, personalization: [], summary: groups.map((g) => ({ s: g.size, q: g.count })), total, groups };
+  };
+  // The real JOB-2361-01 rosters, scoped to each line's ordered sizes.
+  const jersey = blockFor('JM5134 · Black/White', { S: ['23'], M: ['5', '55', '5', '3', '12', '23', '6'], L: ['1', '2', '4', '7', '10', '10', '30', '2', '20', '37', '0', '1', '18'], XL: ['3', '3', '24', '24', '9', '32', '3', '8', '9'] });
+  const second = blockFor('JM5094 · Black', { S: ['23', '29', '2', '25'], M: ['4', '4', '3', '7'] });
+
+  test('every garment roster reaches the sheet, none dropped', () => {
+    const h = buildWorkOrderDoc(baseData({ includePickList: true, rosters: [jersey, second] }));
+    expect(jersey.total + second.total).toBe(38);
+    expect(sheetCount(h)).toBe(4); // work order + pick list + 2 roster pages
+    expect(h).toContain('JM5134 · Black/White');
+    expect(h).toContain('JM5094 · Black');
+    expect(h).toContain('Names &amp; numbers · 30 pcs');
+    expect(h).toContain('Names &amp; numbers · 8 pcs');
+    expect(h).toContain('Page 4 of 4');
+  });
+
+  test('a single-garment job is unchanged (one roster page)', () => {
+    const h = buildWorkOrderDoc(baseData({ includePickList: false, rosters: [jersey] }));
+    expect(sheetCount(h)).toBe(2);
+  });
+
+  test('legacy callers passing a single `roster` still render it', () => {
+    const h = buildWorkOrderDoc(baseData({ includePickList: false, roster: jersey }));
+    expect(sheetCount(h)).toBe(2);
+    expect(h).toContain('JM5134 · Black/White');
+  });
+
+  test('empty roster blocks are ignored, not paginated', () => {
+    const h = buildWorkOrderDoc(baseData({ includePickList: false, rosters: [jersey, { title: 'x', garment: 'y', personalization: [], summary: [], total: 0, groups: [] }] }));
+    expect(sheetCount(h)).toBe(2);
+  });
+});

@@ -24,6 +24,8 @@
 // This module is dry-run-safe: it never makes network calls. It builds the JS
 // payload + the exact SOAP envelope string (password redacted) for previewing.
 
+import { collapseVendorLines } from './lib/vendorOrderGuards';
+
 export const SANMAR_PO_ENDPOINTS = {
   test: 'https://test-ws.sanmar.com:8080/promostandards/POServiceBinding',
   prod: 'https://ws.sanmar.com:8080/promostandards/POServiceBinding',
@@ -126,6 +128,12 @@ export function buildSanMarPOPayload({
   const totalQty = lines.reduce((s, l) => s + l.quantity, 0);
   const totalAmount = lines.reduce((s, l) => s + l.quantity * (l.unitPrice || 0), 0);
   const ship = shipTo || null;
+  // One LineItem per SanMar partId — see collapseVendorLines. Two SOs in a batch wanting the
+  // same part is normal and merging is correct; sending it as two LineItems leaves how they
+  // combine up to SanMar (S&S adds them, which is how NSA 4632 double-ordered). lineNumber is
+  // positional in the SOAP, so renumber after the merge or the envelope skips numbers.
+  const { merged, duplicates } = collapseVendorLines(lines, l => l.partId);
+  const mergedItems = merged.map((l, i) => ({ ...l, lineNumber: i + 1 }));
   return {
     wsVersion: '1.0.0',
     // id/password are injected by the proxy from env; never in the client payload.
@@ -149,11 +157,12 @@ export function buildSanMarPOPayload({
         shipTo: ship,
       },
       lineType,
-      lineItems: lines,
+      lineItems: mergedItems,
       termsAndConditions,
     },
     _summary: { totalQty, totalCost: totalAmount, lineCount: lines.length },
     _warnings: warnings,
+    _duplicates: duplicates,
   };
 }
 

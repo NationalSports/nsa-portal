@@ -35,6 +35,16 @@ const th={padding:'8px 10px',borderBottom:'1px solid '+LINE,fontSize:10,textTran
 const td={padding:'9px 10px',borderBottom:'1px solid #eef2f7',fontSize:12,textAlign:'right',verticalAlign:'top',fontVariantNumeric:'tabular-nums'};
 const btn=(active=false)=>({border:'1px solid '+(active?NAVY:LINE),borderRadius:7,background:active?NAVY:'#fff',color:active?'#fff':NAVY,padding:'6px 10px',fontWeight:700,fontSize:11,cursor:'pointer'});
 
+function downloadCsv(filename, header, rows) {
+  const cell=v=>{const s=v==null?'':String(v);return /[",\n\r]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};
+  const csv=[header,...rows].map(r=>r.map(cell).join(',')).join('\r\n');
+  const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8;'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1500);
+}
+
 function scopedAr(ar, repId) {
   if(!repId)return ar;
   const openInvoices=ar.openInvoices.filter(i=>i.repId===repId);
@@ -238,6 +248,16 @@ export default function ARWorkspace({ mode='admin', scopeRepId=null, initialCust
     {label:'61–90 days',amount:ar.aging.buckets.d61_90,count:ar.openInvoices.filter(i=>i.daysPastDue>60&&i.daysPastDue<=90).length,color:'#b91c1c'},
     {label:'90+ days',amount:ar.aging.buckets.d90plus,count:ar.openInvoices.filter(i=>i.daysPastDue>90).length,color:'#7f1d1d'},
   ];
+  const agingBucketLabel=i=>i.daysPastDue<=0?'Current':i.daysPastDue<=30?'1–30 days':i.daysPastDue<=60?'31–60 days':i.daysPastDue<=90?'61–90 days':'90+ days';
+  const exportAgingCsv=()=>{
+    const header=['Invoice / order','Source','Account','Rep','Invoice date','Due date','Days past due','Aging bucket','Invoice total','Paid','Balance'];
+    const rows=[...ar.openInvoices].sort((a,b)=>b.daysPastDue-a.daysPastDue||b.balance-a.balance).map(i=>[
+      i.id,i.source||'',i.customerName||'',REPS.find(r=>r.id===i.repId)?.name||'Unassigned',
+      i.invoiceDate?ymd(i.invoiceDate):'',i.dueDate?ymd(i.dueDate):'',i.daysPastDue,agingBucketLabel(i),
+      (i.total||0).toFixed(2),(i.paid||0).toFixed(2),(i.balance||0).toFixed(2),
+    ]);
+    downloadCsv('ar-aging-'+ymd(today)+'.csv',header,rows);
+  };
   const visibleCompletedOrders=completedOrders.filter(r=>{const q=orderSearch.trim().toLowerCase();return !q||((r.id||'')+' '+r.customerName+' '+(REPS.find(x=>x.id===r.repId)?.name||'')).toLowerCase().includes(q)});
   const completedTodoSources=new Set(assignedTodos.filter(t=>t.status==='open').map(t=>t.source));
   const openOrder=r=>{setESO?.(r.order);setESOC?.(cust.find(c=>c.id===r.customerId)||null);setPg?.('orders')};
@@ -260,7 +280,7 @@ export default function ARWorkspace({ mode='admin', scopeRepId=null, initialCust
       <Metric label="60-day cash forecast" value={money(forecast.forecast60)} sub={money(forecast.beyond60)+' remains at risk'} color={forecast.beyond60?AMBER:GOOD}/>
     </div>
     <div data-testid="past-due-aging" style={{...card,marginBottom:12,padding:14,borderTop:'3px solid '+(ar.kpis.pastDue?RED:GOOD)}}>
-      <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}><div><h3 style={{margin:0,fontFamily:FD,fontSize:18,color:NAVY,textTransform:'uppercase'}}>Past-due aging</h3><div style={{fontSize:10.5,color:MUTED}}>Every overdue invoice is assigned to exactly one bucket; together they reconcile to {money(ar.kpis.pastDue)} past due.</div></div><b style={{fontFamily:FD,fontSize:22,color:ar.kpis.pastDue?RED:GOOD}}>{money(ar.kpis.pastDue)} total</b></div>
+      <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}><div><h3 style={{margin:0,fontFamily:FD,fontSize:18,color:NAVY,textTransform:'uppercase'}}>Past-due aging</h3><div style={{fontSize:10.5,color:MUTED}}>Every overdue invoice is assigned to exactly one bucket; together they reconcile to {money(ar.kpis.pastDue)} past due.</div></div><div style={{display:'flex',alignItems:'center',gap:10}}><b style={{fontFamily:FD,fontSize:22,color:ar.kpis.pastDue?RED:GOOD}}>{money(ar.kpis.pastDue)} total</b><button title="Export every open receivable with its aging bucket to CSV" disabled={!ar.openInvoices.length} style={btn()} onClick={exportAgingCsv}>⬇ Export CSV</button></div></div>
       <div style={{display:'grid',gridTemplateColumns:'repeat(4,minmax(135px,1fr))',gap:8,marginTop:10}}>{pastDueAging.map(b=><div key={b.label} style={{padding:'10px 12px',borderRadius:8,background:b.color+'0d',border:'1px solid '+b.color+'35'}}><div style={{fontSize:10,fontWeight:900,textTransform:'uppercase',letterSpacing:.4,color:b.color}}>{b.label}</div><div style={{fontFamily:FD,fontSize:24,fontWeight:800,color:b.color,marginTop:2}}>{money(b.amount)}</div><div style={{fontSize:10,color:MUTED}}>{b.count.toLocaleString()} invoice{b.count===1?'':'s'} · {ar.kpis.pastDue?pct(b.amount/ar.kpis.pastDue):'0%'} of past due</div></div>)}</div>
     </div>
     <div id="completed-uninvoiced-orders" style={{...card,padding:0,overflow:'hidden',marginBottom:12,borderTop:'4px solid '+(totalCompleted?AMBER:GOOD)}}>

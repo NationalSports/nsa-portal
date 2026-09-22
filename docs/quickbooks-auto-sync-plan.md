@@ -382,7 +382,12 @@ duplicate preflight → write → API read-back → receipt → only then counte
 - **Guards:** discount and A/R account mappings must resolve.
 - **Writes:** QBO Invoice; `invoices.qb_invoice_id`; **a new ledger map
   `qbInvoiceMap`** so invoices get the same receipt every other entity has
-  (closes the gap in §1.1).
+  keyed by the immutable source ID (closes the gap in §1.1). Before a create,
+  normalize an optional `NS-` prefix and query both document-number forms. Link
+  only when normalized number, verified customer, transaction date, and total
+  cents all match; every partial collision is manual review. Zero-dollar rows
+  are excluded, future-dated rows wait for their date, and the duplicate query
+  repeats under a per-source database lease immediately before the QBO write.
 
 ### 5.7 Payments pull (QuickBooks → portal)
 - **Select:** invoices with `qb_invoice_id`; QBO Payments linked to them

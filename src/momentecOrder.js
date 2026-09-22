@@ -14,6 +14,8 @@
 // plus firstName-or-lastName. Their Sample Blank Order omits packageType/isKitOrder entirely;
 // we send explicit spec-legal values. shipMode 103 = FedEx Ground per the spec's mode table.
 
+import { collapseVendorLines } from './lib/vendorOrderGuards';
+
 export const MT_SHIP_MODES = { ground: '103' }; // 103 = FedEx Ground per the spec's shipping-mode table
 
 // Flatten batch PO entries into Momentec order lines (one per size).
@@ -64,6 +66,10 @@ export function buildMomentecOrderPayload({
   let lines = lineItems, warnings = [];
   if (!lines) { const built = buildMomentecOrderLines(batchPOs); lines = built.lines; warnings = built.warnings; }
   const ship = shipTo || {};
+  // One payload item per Momentec SKU — see collapseVendorLines. Momentec's spec doesn't say
+  // how it treats a repeated SKU (S&S adds them, which is how NSA 4632 double-ordered), so
+  // don't find out on a live order: send one line per SKU and make the rep confirm the merge.
+  const { merged, duplicates } = collapseVendorLines(lines, l => l.sku);
   // Momentec keys the recipient name on the address off firstName/lastName — their spec
   // says "Either firstName or lastName is required", and orders sent with both blank
   // land nameless in their system even when shipTo/attention are filled. Derive a name
@@ -84,7 +90,7 @@ export function buildMomentecOrderPayload({
     isKitOrder,
     poNum: poNumber || '',
     ...(storeId ? { properties: [{ key: 'storeId', value: storeId }] } : {}),
-    items: lines.map(l => ({
+    items: merged.map(l => ({
       poNum: poNumber || '',
       addressId,
       sku: l.sku,
@@ -115,5 +121,30 @@ export function buildMomentecOrderPayload({
     totalQty: lines.reduce((s, l) => s + l.quantity, 0),
     totalCost: lines.reduce((s, l) => s + l.quantity * (l.unitPrice || 0), 0),
   };
-  return { order, lines, summary, warnings };
+  return { order, lines, merged, duplicates, summary, warnings };
+}
+
+// Build the body for POST /v2/ShippingCost (minus credentials, which the proxy injects
+// server-side). Same `lines` shape as buildMomentecOrderPayload's lineItems, and the same
+// shipTo shape/mapping as its `addresses[0]` block. Pure — no network calls here.
+export function buildMomentecShippingCostRequest({ lines, shipTo, shipMode = '103' } = {}) {
+  const ship = shipTo || {};
+  // One request line per Momentec SKU, same rationale as the order payload.
+  const { merged } = collapseVendorLines((lines || []).filter(l => l.sku), l => l.sku);
+  return {
+    shipTo: ship.companyName || ship.customer || '',
+    shipMode: String(shipMode),
+    shipAddress1: ship.address1 || '',
+    shipAddress2: ship.address2 || '',
+    shipCity: ship.city || '',
+    shipState: ship.region || ship.state || '',
+    shipZip: ship.postalCode || ship.zip || '',
+    telePhone: ship.phone || '',
+    residence: 'N',
+    attention: ship.attentionTo || ship.attn || '',
+    asgOrderSubmitProducts: merged.map(l => ({
+      sku: l.sku,
+      quantity: String(l.quantity),
+    })),
+  };
 }

@@ -1,4 +1,4 @@
-import { matchedBillPoNumber, normalizeBillForReview } from '../qbBillReview';
+import { matchedBillPoNumber, normalizeBillForReview, prepareQboBackfillBill } from '../qbBillReview';
 
 describe('QuickBooks bill review compatibility', () => {
   test('supplies empty arrays for older server-ledger rows', () => {
@@ -32,5 +32,42 @@ describe('QuickBooks bill review compatibility', () => {
     expect(matchedBillPoNumber({
       matchedPOSource: 'batch', matchedPO: { po_number: 'BATCH 5' },
     })).toBe('BATCH 5');
+  });
+
+  test('rematches a historical QBO backfill row whose PO target was never persisted', () => {
+    const rematch = jest.fn((bill) => ({
+      ...bill,
+      matchedPOSource: 'so_deco_po',
+      matchedPO: { so_id: 'SO-1462', po_id: 'DPO 8003 FPUS' },
+    }));
+
+    const bill = prepareQboBackfillBill({
+      doc_number: '201342',
+      po_number: 'DPO 8003 FPUS',
+    }, rematch);
+
+    expect(rematch).toHaveBeenCalledWith(expect.objectContaining({
+      doc_number: '201342',
+      po_number: 'DPO 8003 FPUS',
+      items: [],
+      warnings: [],
+    }));
+    expect(bill).toMatchObject({
+      matchedPOSource: 'so_deco_po',
+      matchedPO: { so_id: 'SO-1462', po_id: 'DPO 8003 FPUS' },
+    });
+  });
+
+  test('keeps an already-matched row and does not run the matcher again', () => {
+    const rematch = jest.fn();
+    const matched = {
+      doc_number: '201342',
+      po_number: 'DPO 8003 FPUS',
+      matchedPOSource: 'so_deco_po',
+      matchedPO: { so_id: 'SO-1462' },
+    };
+
+    expect(prepareQboBackfillBill(matched, rematch)).toMatchObject(matched);
+    expect(rematch).not.toHaveBeenCalled();
   });
 });

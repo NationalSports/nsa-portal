@@ -7,6 +7,7 @@ import { calcSOStatus } from './components';
 import { commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, garmentCost, calcRepPayout } from './businessLogic';
 import { decoSplitQty, linkedArtCostQty } from './pricing';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes, manualPoCostRows, manualPoCostTotal } from './safeHelpers';
+import { webstoreCheckoutMoney } from './lib/webstoreSoMoney';
 import { dP, rQ, parseDate, _decoUnitCostComb } from './App';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { supabase } from './lib/dbEngine';
@@ -16,6 +17,22 @@ import { canSnapshotLine, lineDataReady, staleZeroCostSnapshot, zeroCostRepairPa
 // The Admin Dashboard tab is visible to this user only (Steve Peterson's seeded
 // team_members id — same single-user gate as the App.js to-do list).
 const ADMIN_DASH_USER_ID='00000000-0000-0000-0000-000000000001';
+
+// Generic CSV export for report tabs that don't already build their own (the
+// Monthly Reports tab below has its own downloadCsv/csvString for its richer,
+// multi-section export — this one is for a single flat table of rows).
+function downloadCsvRows(filename,header,rows){
+  const cell=v=>{const s=v==null?'':String(v);return /[",\n\r]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};
+  const csv=[header,...rows].map(r=>r.map(cell).join(',')).join('\r\n');
+  const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8;'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1500);
+}
+function ExportCsvButton({onClick,label='⬇ Export CSV'}){
+  return <button className="btn btn-sm btn-secondary" onClick={onClick}>{label}</button>;
+}
 
 // `adminReports` renders ONLY the admin-only report tabs (Monthly Reports, Admin
 // Dashboard) — the Financials page mounts the component this way so those reports live
@@ -212,12 +229,23 @@ export default function CommissionsPage({adminReports=false}={}){
       // never bills the fundraise, so it's added on top of invRev.
       // (Pre-2026-07 webstore fundraise was booked as a cost here.)
       const fundraiseRev=safeNum(so._omg_fundraise||0);
+      // WEBSTORE batch checkout money (finalize_webstore_batch writes it onto the SO and
+      // bills it on the batch invoice): the processing fee charged to buyers is revenue,
+      // shipping charged at checkout is shipping revenue, Stripe's card fees are a real
+      // cost. Sales tax stays out — invRev already drops inv.tax. Both sides must move
+      // together or `scale` (invRev ÷ SO revenue) drifts: the invoice now carries the fee,
+      // so the SO revenue it is compared against must too. Webstore only: an OMG store's
+      // auto-invoice bills product only, so its fee columns would skew the scale instead.
+      const _wm=webstoreCheckoutMoney(so);
+      const storeProcRev=_wm.processing,storeShipRev=_wm.shipping,storeCardCost=_wm.ccFees;
       if(dtl){
         if(shipRev||shipCost)dtl.push({kind:'bucket',label:'Shipping (charged to customer vs cost)',rev:shipRev,cost:shipCost});
         if(inboundFreight)dtl.push({kind:'bucket',label:'Inbound freight (supplier bills)',rev:0,cost:inboundFreight});
         if(fundraiseRev)dtl.push({kind:'bucket',label:'OMG fundraise revenue',rev:fundraiseRev,cost:0});
+        if(storeProcRev||storeCardCost)dtl.push({kind:'bucket',label:'Webstore processing fee (charged to buyers vs Stripe card fees)',rev:storeProcRev,cost:storeCardCost});
+        if(storeShipRev)dtl.push({kind:'bucket',label:'Webstore shipping charged at checkout',rev:storeShipRev,cost:0});
       }
-      const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight;
+      const totalRev=rev+shipRev+storeProcRev+storeShipRev;const totalCost=cost+shipCost+inboundFreight+storeCardCost;
       // Scale to invoice proportion (invoice may be partial payment of SO)
       const soTotal=totalRev||1;const scale=invRev/soTotal;
       return{rev:invRev+fundraiseRev,cost:Math.round(totalCost*scale*100)/100,gp:Math.round((invRev+fundraiseRev-totalCost*scale)*100)/100,shipRev:Math.round(shipRev*scale*100)/100,shipCost:Math.round(shipCost*scale*100)/100,inboundFreight:Math.round(inboundFreight*scale*100)/100};
@@ -593,6 +621,12 @@ export default function CommissionsPage({adminReports=false}={}){
             <button className="btn btn-sm btn-secondary" onClick={()=>{const[y,m]=commMonth.split('-').map(Number);const d=new Date(y,m-2,1);setCommMonth(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))}}>&#9664;</button>
             <input type="month" className="form-input" style={{width:160}} value={commMonth} onChange={e=>setCommMonth(e.target.value)}/>
             <button className="btn btn-sm btn-secondary" onClick={()=>{const[y,m]=commMonth.split('-').map(Number);const d=new Date(y,m,1);setCommMonth(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))}}>&#9654;</button>
+            <ExportCsvButton onClick={()=>downloadCsvRows('commission-statement-'+commMonth+'.csv',
+              ['Section','Invoice','Customer','Rep','Revenue','Cost','Gross profit','GP%','Days to pay / open','Rate','Commission'],
+              [
+                ...monthLines.map(l=>['Paid this month',l.inv.id,l.customer?.name||'',l.rep?.name||'',l.gp.rev.toFixed(2),l.gp.cost.toFixed(2),l.gp.gp.toFixed(2),(l.gp.rev>0?Math.round(l.gp.gp/l.gp.rev*100):0)+'%',l.daysToPay??'',Math.round(l.commRate*100)+'%',l.commAmt.toFixed(2)]),
+                ...monthPipeline.map(l=>['Pipeline — awaiting payment',l.inv.id,l.customer?.name||'',l.rep?.name||'',l.balance.toFixed(2),l.gp.cost.toFixed(2),l.gp.gp.toFixed(2),(l.gp.rev>0?Math.round(l.gp.gp/l.gp.rev*100):0)+'%',l.daysOpen,Math.round(l.expRate*100)+'%',l.expComm.toFixed(2)]),
+              ])}/>
           </div>
         </div>
         <div className="card-body" style={{padding:0}}>
@@ -686,7 +720,9 @@ export default function CommissionsPage({adminReports=false}={}){
 
       {/* PIPELINE TAB */}
       {commTab==='pipeline'&&<div className="card">
-        <div className="card-header"><h2>Expected Commissions — Pipeline</h2><span style={{fontSize:12,color:'#64748b'}}>Outstanding: ${pipeBalance.toLocaleString()}</span></div>
+        <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>Expected Commissions — Pipeline</h2><div style={{display:'flex',gap:10,alignItems:'center'}}><span style={{fontSize:12,color:'#64748b'}}>Outstanding: ${pipeBalance.toLocaleString()}</span><ExportCsvButton onClick={()=>downloadCsvRows('commission-pipeline.csv',
+          ['Order / invoice','Customer','Rep','Status','Revenue','Cost','Est. GP','GP%','Days open','Est. rate','Expected commission'],
+          allPipeline.map(l=>{const isSOLine=l.type==='so';return[isSOLine?l.so.id:l.inv.id,l.customer?.name||'',l.rep?.name||'',isSOLine?l.soStatus:'invoiced',l.balance.toFixed(2),l.gp.cost.toFixed(2),l.gp.gp.toFixed(2),(l.gp.rev>0?Math.round(l.gp.gp/l.gp.rev*100):0)+'%',l.daysOpen??'',Math.round(l.expRate*100)+'%',l.expComm.toFixed(2)]}))}/></div></div>
         <div className="card-body" style={{padding:0}}>
           {allPipeline.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No open orders or invoices</div>:
           <table style={{fontSize:12}}><thead><tr>
@@ -729,6 +765,9 @@ export default function CommissionsPage({adminReports=false}={}){
             <button className="btn btn-sm btn-secondary" onClick={()=>{const[y,m]=commMonth.split('-').map(Number);const d=new Date(y,m-2,1);setCommMonth(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))}}>&#9664;</button>
             <input type="month" className="form-input" style={{width:160}} value={commMonth} onChange={e=>setCommMonth(e.target.value)}/>
             <button className="btn btn-sm btn-secondary" onClick={()=>{const[y,m]=commMonth.split('-').map(Number);const d=new Date(y,m,1);setCommMonth(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))}}>&#9654;</button>
+            <ExportCsvButton onClick={()=>downloadCsvRows('promo-costs-'+commMonth+'.csv',
+              ['SO','Customer','Rep','Date','Product cost','Deco cost','Shipping','Manual PO','Total cost'],
+              monthPromoLines.map(l=>[l.so.id,l.customer?.name||'',l.rep?.name||'',l.soDate,l.productCost.toFixed(2),l.decoCost.toFixed(2),l.shipCost.toFixed(2),(l.manualCost||0).toFixed(2),l.totalCost.toFixed(2)]))}/>
           </div>
         </div>
         <div className="card-body" style={{padding:0}}>
@@ -789,7 +828,15 @@ export default function CommissionsPage({adminReports=false}={}){
         </div>
         {/* YTD detail table */}
         {isAdmin&&<div className="card">
-          <div className="card-header"><h2>Rep Leaderboard — YTD</h2></div>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>Rep Leaderboard — YTD</h2><ExportCsvButton onClick={()=>downloadCsvRows('commission-ytd-'+yr+'.csv',
+            ['Rep','Revenue','Gross profit','GP%','Commission','Invoices'],
+            salesReps.filter(isCommissionRep).map(r=>{
+              const rLines=ytdLines.filter(l=>l.repId===r.id);
+              const rRev=rLines.reduce((a,l)=>a+safeNum(l.inv.total),0);
+              const rGP=rLines.reduce((a,l)=>a+l.gp.gp,0);
+              const rComm=rLines.reduce((a,l)=>a+l.commAmt,0);
+              return[r.name,rRev.toFixed(2),rGP.toFixed(2),(rRev>0?Math.round(rGP/rRev*100):0)+'%',rComm.toFixed(2),rLines.length];
+            }))}/></div>
           <div className="card-body" style={{padding:0}}>
             <table style={{fontSize:12}}><thead><tr><th>Rep</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>GP</th><th style={{textAlign:'center'}}>GP%</th><th style={{textAlign:'right'}}>Commission</th><th style={{textAlign:'center'}}>Invoices</th></tr></thead><tbody>
               {salesReps.filter(isCommissionRep).map(r=>{
@@ -810,7 +857,9 @@ export default function CommissionsPage({adminReports=false}={}){
 
       {/* BY CUSTOMER TAB */}
       {commTab==='byCustomer'&&<div className="card">
-        <div className="card-header"><h2>Commission by Customer</h2></div>
+        <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>Commission by Customer</h2><ExportCsvButton onClick={()=>downloadCsvRows('commission-by-customer.csv',
+          ['Customer','Invoices','Revenue','Gross profit','GP%','Earned','Pipeline count','Pipeline revenue','Pipeline commission','Total'],
+          custList.map(c=>[c.name,c.invCount,c.rev.toFixed(2),c.gp.toFixed(2),(c.rev>0?Math.round(c.gp/c.rev*100):0)+'%',c.comm.toFixed(2),c.pipeCount||0,(c.pipeRev||0).toFixed(2),(c.pipeComm||0).toFixed(2),(c.comm+c.pipeComm).toFixed(2)]))}/></div>
         <div className="card-body" style={{padding:0}}>
           {custList.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No commission data</div>:
           <table style={{fontSize:12}}><thead><tr>

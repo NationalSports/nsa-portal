@@ -12,10 +12,13 @@ exports.handler = async (event) => {
     return { statusCode: 400, headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ error: 'Invalid UPS tracking number' }) };
   }
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
   try {
     // UPS public tracking endpoint (no API key required)
     const response = await fetch('https://webapis.ups.com/track/api/Track/GetStatus?loc=en_US', {
       method: 'POST',
+      signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
         'User-Agent': 'Mozilla/5.0',
@@ -27,8 +30,8 @@ exports.handler = async (event) => {
 
     if (!response.ok) {
       return {
-        statusCode: 200,
-        headers: { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' },
+        statusCode: 502,
+        headers: { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
         body: JSON.stringify({ tracking, status: 'unknown', pickedUp: false, delivered: false, error: 'UPS returned ' + response.status }),
       };
     }
@@ -72,9 +75,11 @@ exports.handler = async (event) => {
     };
   } catch (error) {
     return {
-      statusCode: 200,
-      headers: { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tracking, status: 'error', pickedUp: false, delivered: false, error: error.message }),
+      statusCode: controller.signal.aborted ? 504 : 502,
+      headers: { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      body: JSON.stringify({ tracking, status: 'error', pickedUp: false, delivered: false, error: controller.signal.aborted ? 'UPS request timed out' : error.message }),
     };
+  } finally {
+    clearTimeout(timeout);
   }
 };

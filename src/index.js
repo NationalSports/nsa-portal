@@ -46,6 +46,7 @@ const _isChunkErr = (err) => {
     || /Loading chunk [\w-]+ failed/i.test(msg)
     || /failed to fetch dynamically imported module/i.test(msg);
 };
+const PayableReviewPage = React.lazy(() => import('./PayableReviewPage'));
 const App = React.lazy(() =>
   import('./App').catch((err) => {
     const last = Number(sessionStorage.getItem(_appChunkReloadKey) || 0);
@@ -270,7 +271,7 @@ function MainApp() {
       />
     );
   }
-  return <React.Suspense fallback={<AppFallback />}><App /></React.Suspense>;
+  return <React.Suspense fallback={<AppFallback />}>{_path === '/qbo-payable-review' || _path === '/qbo-payable-review/' ? <PayableReviewPage /> : <App />}</React.Suspense>;
 }
 
 const root = ReactDOM.createRoot(document.getElementById('root'));

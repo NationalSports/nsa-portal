@@ -1,9 +1,11 @@
 // Verified links must outlive replacement of the shared qb_config blob.
 // One row per realm/map/source, with compare-and-set updates and tombstones.
-export const QB_LINK_MAPS = ['vendorQBMap', 'custQBMap', 'prodQBMap', 'qbSOMap', 'qbPOMap', 'qbPOBillMap', 'qbTaxRateMap', 'qbPaymentMap', 'qbInventoryValuationMap'];
+export const QB_LINK_MAPS = ['vendorQBMap', 'custQBMap', 'prodQBMap', 'qbSOMap', 'qbInvoiceMap', 'qbPOMap', 'qbPOBillMap', 'qbTaxRateMap', 'qbPaymentMap', 'qbInventoryValuationMap'];
 const PREFIX = '_qb_link_v1_';
 const clean = value => String(value == null ? '' : value).trim();
 const parse = value => typeof value === 'string' ? JSON.parse(value) : value;
+
+const realmKeyPrefix = realmId => PREFIX + encodeURIComponent(JSON.stringify([clean(realmId)]).slice(0, -1) + ',');
 
 export function qbLinkKey(realmId, mapKey, sourceId) {
   if (!clean(realmId) || !QB_LINK_MAPS.includes(mapKey) || !clean(sourceId)) {
@@ -75,11 +77,57 @@ export function mergeDurableQBLinks(config = {}, appState = {}) {
   return result;
 }
 
+// app_state also contains large operational blobs and thousands of product-image
+// fallbacks. Loading every row in one request made the durable QBO receipts miss
+// the generic query's deadline once the customer migration passed ~2,500 links.
+// Read just this company's receipts in deterministic pages instead.
+export async function loadDurableQBLinkReceipts(client, realmId, {sourceIds=[],pageSize=200, hardLimit=20000}={}) {
+  const realm=clean(realmId);
+  if(!client||!realm)throw new Error('Durable QuickBooks link load requires a database and realm.');
+  const exactIds=[...new Set((sourceIds||[]).map(clean).filter(Boolean))]
+    .map(sourceId=>qbLinkKey(realm,'custQBMap',sourceId));
+  if(exactIds.length){
+    if(exactIds.length>hardLimit)throw new Error('Durable QBO link load exceeded the safety limit.');
+    const output={};
+    for(let start=0;start<exactIds.length;start+=pageSize){
+      const ids=exactIds.slice(start,start+pageSize);
+      const page=await Promise.race([
+        client.from('app_state').select('id,value').in('id',ids),
+        new Promise(resolve=>setTimeout(()=>resolve({data:null,error:{message:'receipt page timed out'}}),20000)),
+      ]);
+      if(page.error)throw new Error('Durable QBO link load failed: '+page.error.message);
+      (page.data||[]).forEach(row=>{if(ids.includes(row?.id)&&row.value!=null)output[row.id]=row.value});
+    }
+    return output;
+  }
+  const prefix=realmKeyPrefix(realm);
+  const rows=[];
+  for(let start=0;start<hardLimit;start+=pageSize){
+    // The keys are URL-encoded and therefore contain literal "%" characters.
+    // A LIKE filter interprets those as wildcards; a lexical prefix range does
+    // not, and remains indexable on app_state.id.
+    const query=client.from('app_state').select('id,value').gte('id',prefix).lt('id',prefix+'\uffff').order('id',{ascending:true}).range(start,start+pageSize-1);
+    const page=await Promise.race([
+      query,
+      new Promise(resolve=>setTimeout(()=>resolve({data:null,error:{message:'receipt page timed out'}}),20000)),
+    ]);
+    if(page.error)throw new Error('Durable QBO link load failed: '+page.error.message);
+    const batch=page.data||[];rows.push(...batch);
+    if(batch.length<pageSize)break;
+    if(start+pageSize>=hardLimit)throw new Error('Durable QBO link load exceeded the safety limit.');
+  }
+  const output={};
+  rows.forEach(row=>{if(row?.id?.startsWith(prefix)&&row.value!=null)output[row.id]=row.value});
+  return output;
+}
+
 // Call only after QBO read-back. A rejected/uncertain save never earns success.
 // The final SELECT also detects RLS writes that silently affected zero rows.
-export async function persistVerifiedQBLink(client, {realmId, mapKey, sourceIds, qboId, log, evidence = {}, active = true}) {
+export async function persistVerifiedQBLink(client, {realmId, mapKey, sourceIds, qboId, log, evidence = {}, active = true, expectedPreviousQboId = ''}) {
   if (!client) throw new Error('Durable QuickBooks link storage is unavailable.');
   if (!clean(qboId) || !Array.isArray(sourceIds) || !sourceIds.length) throw new Error('Verified QuickBooks and source IDs are required.');
+  const repairing=!!clean(expectedPreviousQboId);
+  if(repairing&&(mapKey!=='custQBMap'||sourceIds.length!==1||!active||clean(qboId)===clean(expectedPreviousQboId)||evidence.result!=='customer_link_repaired'||evidence.api_readback!==true||evidence.reviewer_approved!==true||clean(evidence.previous_qbo_id)!==clean(expectedPreviousQboId)))throw new Error('Invalid reviewed customer link repair.');
   const verifiedAt = new Date().toISOString();
   const savedLog = {...log, id: log?.id || 'qb-link-' + mapKey + '-' + clean(qboId) + '-' + verifiedAt,
     verified_at: verifiedAt};
@@ -95,7 +143,11 @@ export async function persistVerifiedQBLink(client, {realmId, mapKey, sourceIds,
     if (before.error) throw new Error('Cannot read durable QBO link: ' + before.error.message);
     if (before.data) {
       const existing = parse(before.data.value);
-      if (existing.active !== false && clean(existing.qbo_id) !== clean(qboId)) throw new Error('Conflicting durable QBO link; review the existing ID before changing it.');
+      if(repairing){
+        if(existing.active===false||clean(existing.qbo_id)!==clean(expectedPreviousQboId))throw new Error('Reviewed customer link changed; reload and review again.');
+        row.value=JSON.stringify({...parse(row.value),previous_link:existing});
+      }
+      if (!repairing && existing.active !== false && clean(existing.qbo_id) !== clean(qboId)) throw new Error('Conflicting durable QBO link; review the existing ID before changing it.');
       if (existing.active === false && active && clean(existing.qbo_id) === clean(qboId)) throw new Error('This QBO link was explicitly removed; it cannot be restored by a stale retry.');
       const update = await client.from('app_state').update(row).eq('id',row.id).eq('value',before.data.value);
       if (update.error) throw new Error('Durable QBO link save failed: ' + update.error.message);
@@ -113,6 +165,113 @@ export async function persistVerifiedQBLink(client, {realmId, mapKey, sourceIds,
       throw new Error('Durable QBO link changed concurrently; reload and review before continuing.');
     }
     output[row.id] = verified;
+  }
+  return output;
+}
+
+// Recover a legacy customer map after the shared qb_config blob was replaced.
+// This is deliberately narrower than persistVerifiedQBLink: callers must have
+// just read every active QBO customer and proved a one-to-one exact match. The
+// recovery writes Portal link receipts only; it never calls the QBO write API.
+export async function persistVerifiedQBCustomerLinkRecovery(client, {realmId, reviewedAt, records}) {
+  const realm = clean(realmId);
+  const age = Date.now() - Date.parse(reviewedAt || '');
+  if (!client) throw new Error('Durable QuickBooks link storage is unavailable.');
+  if (!realm || !Number.isFinite(age) || age < 0 || age > 15 * 60 * 1000) {
+    throw new Error('Customer-link recovery requires a fresh QBO review.');
+  }
+  if (!Array.isArray(records) || !records.length || records.length > 5000) {
+    throw new Error('Customer-link recovery requires 1–5000 reviewed matches.');
+  }
+  const normalized = records.map(record => ({
+    sourceId: clean(record?.sourceId),
+    qboId: clean(record?.qboId),
+    displayName: clean(record?.displayName),
+    termId: clean(record?.termId),
+  }));
+  if (normalized.some(record => !record.sourceId || !/^\d+$/.test(record.qboId) || !record.displayName)) {
+    throw new Error('Customer-link recovery contains an invalid reviewed match.');
+  }
+  if (new Set(normalized.map(record => record.sourceId)).size !== normalized.length
+    || new Set(normalized.map(record => record.qboId)).size !== normalized.length) {
+    throw new Error('Customer-link recovery is not one-to-one.');
+  }
+
+  const verifiedAt = new Date().toISOString();
+  const rows = normalized.map(record => {
+    const log = {
+      id: 'qb-link-recovery-cust-' + encodeURIComponent(record.sourceId) + '-' + verifiedAt,
+      verified_at: verifiedAt,
+      ts: verifiedAt,
+      type: 'customer_link_recovery',
+      status: 'success',
+      details: ['LINK RECOVERY ONLY — no QBO customer was changed', record.displayName + ' → QB #' + record.qboId],
+    };
+    return {
+      id: qbLinkKey(realm, 'custQBMap', record.sourceId),
+      value: JSON.stringify({
+        realm_id: realm,
+        map_key: 'custQBMap',
+        source_id: record.sourceId,
+        qbo_id: record.qboId,
+        active: true,
+        verified_at: verifiedAt,
+        evidence: {
+          result: 'linked',
+          api_readback: true,
+          duplicate_preflight: 'unique_exact_active_customer_match',
+          reviewed_at: reviewedAt,
+          display_name: record.displayName,
+          term_id: record.termId || null,
+        },
+        log,
+      }),
+      updated_at: verifiedAt,
+    };
+  });
+  const chunks = [];
+  for (let index = 0; index < rows.length; index += 200) chunks.push(rows.slice(index, index + 200));
+
+  // Inspect every existing receipt before writing any chunk, so one conflict
+  // cannot leave a half-recovered map.
+  for (const chunk of chunks) {
+    const before = await client.from('app_state').select('id,value').in('id', chunk.map(row => row.id));
+    if (before.error) throw new Error('Cannot read durable QBO links: ' + before.error.message);
+    const byId = new Map((before.data || []).map(row => [row.id, row]));
+    for (const row of chunk) {
+      const existingRow = byId.get(row.id);
+      if (!existingRow) continue;
+      const existing = parse(existingRow.value);
+      const proposed = parse(row.value);
+      if (existing.active === false || clean(existing.qbo_id) !== clean(proposed.qbo_id)) {
+        throw new Error('Conflicting durable QBO customer link; review ' + proposed.source_id + ' before recovery.');
+      }
+      // Preserve the earlier verified receipt when it already proves the same
+      // active link; there is no reason to rewrite its evidence or timestamp.
+      row.value = existingRow.value;
+      row.updated_at = existingRow.updated_at || row.updated_at;
+    }
+  }
+
+  for (const chunk of chunks) {
+    const saved = await client.from('app_state').upsert(chunk, {onConflict:'id'});
+    if (saved.error) throw new Error('Durable QBO link recovery failed: ' + saved.error.message);
+  }
+
+  const output = {};
+  for (const chunk of chunks) {
+    const after = await client.from('app_state').select('id,value').in('id', chunk.map(row => row.id));
+    if (after.error) throw new Error('Cannot verify durable QBO link recovery: ' + after.error.message);
+    const byId = new Map((after.data || []).map(row => [row.id, row]));
+    for (const row of chunk) {
+      const actual = byId.get(row.id);
+      if (!actual || actual.value !== row.value) throw new Error('Durable QBO link recovery failed database read-back.');
+      const verified = parse(actual.value);
+      if (verified.active !== true || verified.realm_id !== realm || verified.map_key !== 'custQBMap') {
+        throw new Error('Durable QBO customer link changed during recovery.');
+      }
+      output[row.id] = verified;
+    }
   }
   return output;
 }

@@ -15,8 +15,10 @@ import WarehouseChips, {
   shipToCoords, warehouseCoords, milesBetween, SANMAR_WAREHOUSE_INFO,
 } from './WarehouseChips';
 import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
-import { NSA, NSA_WAREHOUSE } from './constants';
+import { NSA, NSA_WAREHOUSE, BATCH_VENDORS } from './constants';
 import { apiLineSourceKey } from './lib/apiOrderLines';
+import { collapseVendorLines, freeShipGap } from './lib/vendorOrderGuards';
+import { DuplicateMergeWarning, FreeShipNotice } from './VendorOrderGuardPanels';
 
 // SanMar Option 3, "Warehouse Selection": the rep names the warehouse and it rides
 // on each line as <shar:fobId>. It only takes effect once SanMar reconfigures our
@@ -191,6 +193,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   // order", and it was checked against the previous set of parts.
   const manualKey = useMemo(() => JSON.stringify(manualParts), [manualParts]);
   useEffect(() => { setConfirmed(false); }, [manualKey]);
+  const [dupAck, setDupAck] = useState(false); // rep confirmed the merged duplicate quantities
   const warnings = useMemo(
     () => lines.filter(l => !l.partId).map(l => `Line ${l.lineNumber} (${[l.style, l.color, l.size].filter(Boolean).join(' ')}) is missing a SanMar partId / Unique_Key`),
     [lines]
@@ -202,10 +205,23 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     () => lines.map((l, index) => ({ ...l, lineNumber: index + 1, ...(forcedWhse ? { fobId: String(forcedWhse) } : {}) })),
     [lines, forcedWhse]
   );
+  // One LineItem per partId. Two SOs in a batch wanting the same part is normal and merging
+  // is correct; sending it as two LineItems leaves how they combine up to SanMar — and S&S,
+  // which adds them, is how NSA 4632 double-ordered 53 units. lineNumber is positional in the
+  // SOAP envelope, so renumber after the merge. `submitLines` stays uncollapsed: it is what
+  // gets recorded as vendor_keys, where one row per source line is what the PO verification
+  // (apiVerificationForPoLine) needs to spot a duplicated queue after the fact.
+  const { merged: mergedLines, duplicates } = useMemo(() => collapseVendorLines(submitLines, l => l.partId), [submitLines]);
+  const payloadLines = useMemo(() => mergedLines.map((l, index) => ({ ...l, lineNumber: index + 1 })), [mergedLines]);
+  // Re-tick required whenever WHAT is merged changes — hand-picking a part can retarget a
+  // merge onto different quantities, and a stale tick would stand in for a confirmation the
+  // rep never gave.
+  const dupSig = duplicates.map(d => `${d.key}:${d.quantity}`).join(',');
+  useEffect(() => { setDupAck(false); }, [dupSig]);
   const payload = useMemo(() => {
     const totalAmount = submitLines.reduce((sum, line) => sum + line.quantity * (line.unitPrice || 0), 0);
-    return { ...base.payload, PO: { ...base.payload.PO, lineItems: submitLines, totalAmount: Number(totalAmount.toFixed(2)) } };
-  }, [base.payload, submitLines]);
+    return { ...base.payload, PO: { ...base.payload.PO, lineItems: payloadLines, totalAmount: Number(totalAmount.toFixed(2)) } };
+  }, [base.payload, submitLines, payloadLines]);
   const soap = useMemo(() => buildSanMarPOSoap(payload, { id: '<from env>' }), [payload]);
   const totals = useMemo(() => ({
     totalQty: submitLines.reduce((sum, line) => sum + line.quantity, 0),
@@ -334,7 +350,8 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   // Whatever the source, the address that actually goes to SanMar has to be complete.
   const shipIncomplete = shipToIncomplete(ship);
 
-  const blocked = lines.length === 0 || warnings.length > 0 || resolving || decoAddrIncomplete || decoNoVendor || shipIncomplete || !!removalErr;
+  const needsDupAck = duplicates.length > 0 && !dupAck;
+  const blocked = lines.length === 0 || warnings.length > 0 || resolving || decoAddrIncomplete || decoNoVendor || shipIncomplete || !!removalErr || needsDupAck;
   const done = submitState === 'success';
   const submitting = submitState === 'submitting';
   const canSubmit = !blocked && confirmed && !submitting && !done;
@@ -392,7 +409,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
           {done ? (
             <div style={{ padding: 14, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, marginBottom: 12, fontSize: 13, color: '#166534' }}>
               <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 6 }}>✓ Order placed with SanMar{isLive ? '' : ' (TEST)'}</div>
-              <div>SanMar accepted the order and returned a transaction ID. A confirmation email will follow to your shipping-notification address.</div>
+              <div>SanMar accepted the order and returned a transaction ID. A confirmation email will follow to your shipping-notification address.{freeShipGap(BATCH_VENDORS.sanmar?.threshold, totals.totalCost)?.under ? ' This order is under SanMar\u2019s free-shipping threshold, so expect a freight charge on the confirmation and the invoice \u2014 SanMar\u2019s API does not quote it.' : ''}</div>
               <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 <Stat label="PO Number" value={result?.orderNumber || poNumber} mono />
                 <Stat label="Transaction ID" value={result?.transactionId || '—'} mono />
@@ -447,6 +464,10 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                 </div>
               )}
             </div>
+          )}
+
+          {!done && !resolving && (
+            <DuplicateMergeWarning duplicates={duplicates} acknowledged={dupAck} onAcknowledge={setDupAck} vendorName="SanMar" disabled={submitting} />
           )}
 
           {!done && removalErr && (
@@ -611,6 +632,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
             <Stat label="Total Units" value={totals.totalQty} />
             <Stat label="Total Cost" value={'$' + totals.totalCost.toFixed(2)} />
           </div>
+          {!done && <FreeShipNotice vendorName="SanMar" gap={freeShipGap(BATCH_VENDORS.sanmar?.threshold, totals.totalCost)} />}
           {!done && shipWarning && (
             <div style={{ padding: 10, background: '#fffbeb', border: '2px solid #f59e0b', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#92400e', fontWeight: 600 }}>
               <strong>⚠ Mixed destinations in this batch.</strong> {shipWarning}
@@ -799,6 +821,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                   resolving ? 'Looking up Part IDs…'
                   : decoAddrIncomplete ? 'Enter the decorator\'s full address first'
                   : decoNoVendor ? 'Select a decorator first'
+                  : needsDupAck ? 'Confirm the combined quantities for the repeated Part IDs first'
                   : shipIncomplete ? 'The ship-to address is incomplete — company, street, city, state and zip are all required'
                   : blocked ? 'Every line needs a matched SanMar Part ID first'
                   : !confirmed ? 'Check the confirmation box first'

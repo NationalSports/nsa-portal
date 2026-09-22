@@ -33,13 +33,34 @@ console.log('=' .repeat(50));
 let rawOutput = '';
 let exitCode = 0;
 
+// Jest reports through --outputFile; its human-readable log goes to STDERR. Buffering that
+// stderr is what used to break this runner: execSync's default maxBuffer is 1 MiB and the
+// suite already emits ~840 KB, so a handful of added tests pushed CI over the limit. Node
+// then SIGTERMs the child mid-run (ENOBUFS) — jest never writes JSON_REPORT, this script
+// parses nothing, and the job fails with a baffling "Total: 0 | Passed: 0 | Failed: 0"
+// while jest's workers linger as orphans. Inherit stderr so it streams to the console
+// (which also means a real failure is finally readable in the CI log) and leave headroom
+// on the buffered stdout. The old 120 s timeout was just as tight — CI runs already took
+// ~97 s — so give the suite room to grow.
+let killed = null;
 try {
   rawOutput = execSync(
     'npx react-scripts test --watchAll=false --verbose --json --outputFile=' + JSON_REPORT,
-    { cwd: ROOT, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 120000 }
+    {
+      cwd: ROOT,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'inherit'],
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: 15 * 60 * 1000,
+    }
   );
 } catch (err) {
   rawOutput = (err.stdout || '') + '\n' + (err.stderr || '');
+  // A signal means the child was killed rather than having reported failing tests — the
+  // results file is missing or truncated, so an empty parse below is NOT "0 tests failed".
+  if (err.signal || err.code === 'ENOBUFS' || err.code === 'ETIMEDOUT') {
+    killed = err.code || err.signal;
+  }
   // react-scripts test --json can exit non-zero even when all tests pass (known issue).
   // Store the raw exit code; we'll override it below if the JSON report shows all tests passed.
   exitCode = err.status || 1;
@@ -92,6 +113,17 @@ if (results && results.testResults) {
 // the process exit code (react-scripts test --json may exit non-zero spuriously in CI).
 if (results && results.testResults && failed === 0 && totalTests > 0) {
   exitCode = 0;
+}
+
+// Never let "we couldn't read any results" masquerade as a clean run of zero tests. Say
+// plainly that the run itself failed, so the next person reads a cause instead of a riddle.
+if (totalTests === 0) {
+  exitCode = exitCode || 1;
+  console.error(
+    '\n❌ No test results were produced — the test run did not complete.' +
+    (killed ? ` The jest process was killed (${killed}).` : '') +
+    `\n   Expected results at ${JSON_REPORT}.`
+  );
 }
 
 // Console summary
