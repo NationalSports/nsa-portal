@@ -1,6 +1,11 @@
 /* eslint-disable */
 // Pure data constants extracted from App.js
 
+// Namespace import: src/lib/shipFrom.js is CommonJS (shared with the Netlify
+// functions), and webpack cannot resolve named imports out of one.
+import * as SHIPFROM from './lib/shipFrom';
+const { shipFromLocation } = SHIPFROM;
+
 export const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
 export const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','bill_to_id','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','deleted_at','promo_applied','promo_amount','update_requests','approved_by','approved_at','credit_applied','credit_amount','deco_pos','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at','tax_exempt','tax_exempt_reason','tax_exempt_by','tax_exempt_at'];
 export const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','bill_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','_webstore_fundraise','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','deliver_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','credit_applied','credit_amount','pending_ship_applied','pending_ship_amount','deco_pos','source','webstore_id','webstore_batch_no','webstore_batch_label','webstore_batch_cutoff','delivered','_omg_processing','_omg_shipping','_omg_tax','_omg_fundraise','_omg_grand_total','_omg_omg_fees','_omg_cc_fees','_omg_acct_collected','tax_exempt_reason','tax_exempt_by','tax_exempt_at'];
@@ -370,7 +375,8 @@ export const NSA_DEFAULTS={name:'National Sports Apparel',legal:'National Sports
 export const NSA={...NSA_DEFAULTS};
 // Physical warehouse / receiving address (where goods ship back to). Distinct from the
 // company billing address in NSA above. Used by Manual Ship's "Our Warehouse" destination.
-export const NSA_WAREHOUSE={street1:'210 E Emerson Ave',street2:'Suite E',city:'Orange',state:'CA',zip:'92865'};
+const _NSA_WH=shipFromLocation('warehouse');
+export const NSA_WAREHOUSE={street1:_NSA_WH.street1,street2:_NSA_WH.street2,city:_NSA_WH.city,state:_NSA_WH.state,zip:_NSA_WH.zip};
 
 export const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art_in_progress:'In Progress',waiting_approval:'Waiting Approval',production_files_needed:'Art Approved — Waiting',order_dtf_transfers:'Order DTF Transfers',upload_emb_files:'Upload EMB Files',art_complete:'Art Complete'};
 // Post-approval production-file stage. Screen print etc. stay 'production_files_needed' (artist uploads seps);
