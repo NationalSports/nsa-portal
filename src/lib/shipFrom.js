@@ -170,17 +170,22 @@ function resolveShipFrom(code, decoLocations) {
 // The ShipStation `shipFrom` object for a location (see resolveShipFrom).
 function shipStationShipFrom(code, decoLocations) {
   const l = resolveShipFrom(code, decoLocations);
-  return {
+  // Keep this file dependency-free CommonJS. Object spread here makes Babel
+  // inject an ESM helper into the production bundle, which turns the module
+  // into an ESM/CommonJS hybrid and crashes at startup when module.exports is
+  // assigned. Build this small optional field imperatively instead.
+  const result = {
     name: l.name,
     company: l.company,
     street1: l.street1,
-    ...(l.street2 ? { street2: l.street2 } : {}),
     city: l.city,
     state: l.state,
     postalCode: l.zip,
     country: 'US',
     phone: l.phone,
   };
+  if (l.street2) result.street2 = l.street2;
+  return result;
 }
 
 // One-line address for UI ("210 E Emerson Ave Suite E, Orange, CA 92865").
