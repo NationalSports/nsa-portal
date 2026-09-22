@@ -14086,9 +14086,22 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
       const { o, plan } = ready[n];
       const who = o.buyer_name || o.buyer_email || o.id;
       setBulkMsg(`Creating label ${n + 1} of ${ready.length} (${who})…`);
-      let bought;
-      try { bought = await buyOrderLabel(o, plan, cat); }
-      catch (e) { failed.push(who); setLabelMsg((m) => ({ ...m, [o.id]: 'Label failed: ' + ((e && e.message) || 'unknown error') })); continue; }
+      // ShipStation allows ~40 API calls a minute and each label takes 2–3, so a
+      // big run hits the limit partway through. A 429 is refused at the door —
+      // no label is bought — and the order upsert is keyed, so waiting and
+      // retrying is safe. Any other error (a timeout above all) is NOT retried:
+      // the label may have been bought and only the reply lost.
+      let bought; let lastErr = null;
+      for (let attempt = 0; attempt < 3 && !bought; attempt++) {
+        try { bought = await buyOrderLabel(o, plan, cat); lastErr = null; }
+        catch (e) {
+          lastErr = e;
+          if (!/\(429\)/.test((e && e.message) || '') || attempt === 2) break;
+          setBulkMsg(`ShipStation rate limit — pausing a minute, then continuing with label ${n + 1} of ${ready.length} (${who})…`);
+          await new Promise((r) => setTimeout(r, 62000));
+        }
+      }
+      if (!bought) { failed.push(who); setLabelMsg((m) => ({ ...m, [o.id]: 'Label failed: ' + ((lastErr && lastErr.message) || 'unknown error') })); continue; }
       const { label, shipItems } = bought;
       if (label.labelData) pdfs.push(label.labelData);
       try {
@@ -14099,9 +14112,15 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
         setLabelMsg((m) => ({ ...m, [o.id]: `Label BOUGHT and printed${label.trackingNumber ? ' (' + label.trackingNumber + ')' : ''}, but recording it failed: ${(e && e.message) || 'unknown error'}. Do not create another label — the ShipStation webhook will catch it up, or reload and use Reprint.` }));
       }
     }
-    if (pdfs.length) { try { await printPdfLabels(pdfs); } catch {} }
+    // printPdfLabels quietly drops a PDF it can't read, so compare what went to
+    // the printer with what was bought and say so — those labels are paid for.
+    let printed = 0;
+    if (pdfs.length) { try { printed = await printPdfLabels(pdfs); } catch {} }
     const made = ready.length - failed.length;
-    setBulkMsg(`${made} label${made === 1 ? '' : 's'} created and sent to print.`
+    const printNote = made > 0 && printed < made
+      ? ` Only ${printed} of ${made} made it into the print file — open the missing orders and use Reprint.`
+      : '';
+    setBulkMsg(`${made} label${made === 1 ? '' : 's'} created and sent to print.${printNote}`
       + (failed.length ? ` ${failed.length} failed (${failed.join(', ')}) — open the order to see why.` : '')
       + (unrecorded.length ? ` ${unrecorded.length} BOUGHT but not recorded (${unrecorded.join(', ')}) — do not re-create them.` : '')
       + skipNote + ' Refresh to update order statuses.');
