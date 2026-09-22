@@ -828,16 +828,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // copy of so.jobs may be stale or have duplicate ids; here we match on art_file_id
     // first (unique per art), then key, then id. Deferred so auto-sync has committed.
     React.useEffect(()=>{if(!scrollToJobRef)return;setTab('jobs');const _go=()=>{const _j=safeJobs(_navJobsRef.current);const a=scrollToJobRef;let idx=a.artId?_j.findIndex(x=>x.art_file_id===a.artId||(x._art_ids||[]).includes(a.artId)):-1;if(idx<0&&a.key)idx=_j.findIndex(x=>x.key===a.key);if(idx<0&&a.id)idx=_j.findIndex(x=>x.id===a.id);if(idx>=0){setSelJob(idx);const el=document.getElementById('so-job-'+idx);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}}onScrollJobConsumed&&onScrollJobConsumed()};setTimeout(_go,250)},[scrollToJobRef]);// eslint-disable-line
-    // ── Decoration row → in-house job chip ──
-    // Every in-house decoration on a SO line is produced by exactly one so_jobs row (job.items[].item_idx
-    // + deco_idxs; legacy rows carry a single deco_idx). The item's decoration row shows that job's
-    // number + where it stands, and clicking it jumps to the job on the Jobs tab — so the rep moves
-    // SO → job without hunting through the list. Read-only: it never touches job or item state.
-    const _jobForDeco=(idx,di)=>{const _j=safeJobs(o);const ji=_j.findIndex(j=>(j.items||[]).some(gi=>gi.item_idx===idx&&(jobItemDecoIdxs(gi)?jobItemDecoIdxs(gi).includes(di):gi.deco_idx===di)));return ji>=0?{ji,job:_j[ji]}:null};
+    // ── SO line ⇄ in-house job links ──
+    // A line's in-house jobs are the so_jobs rows whose items[] reference it (item_idx). Each shows as a
+    // chip (job number + where it stands) at the end of the line's first pick/PO row and on the collapsed
+    // summary; clicking jumps to the job on the Jobs tab. The Jobs tab garment cell links back the other
+    // way (_jumpToItem). Read-only: none of this touches job or item state.
+    const _lineJobs=(idx)=>safeJobs(o).map((job,ji)=>({ji,job})).filter(({job})=>(job.items||[]).some(gi=>gi.item_idx===idx));
+    const _jumpToItem=(idx)=>{setCollapsedItems(c=>c[idx]?{...c,[idx]:false}:c);setTab('items');setTimeout(()=>{const el=document.getElementById('so-item-'+idx);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #3b82f6';setTimeout(()=>{el.style.boxShadow=''},2000)}},200)};
     const _jumpToJob=(ji)=>{setTab('jobs');setSelJob(ji);setTimeout(()=>{const el=document.getElementById('so-job-'+ji);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}},200)};
     // Status shown on the chip: production status once the job is moving (In Line / In Process /
     // Completed / Shipped); before that "On Hold" says nothing, so the art stage that gates it shows.
     const _jobChipStatus=(j)=>{const _ps=j.prod_status||'hold';const _pl=({draft:'Draft',hold:'On Hold',ready:'Ready',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped'})[_ps]||_ps;const _live=['staging','in_process','completed','shipped','ready'].includes(_ps);const _al=ART_LABELS[j.art_status]||'';return{key:_live?_ps:(j.art_status||_ps),label:_live||!_al?_pl:_al,title:'Job '+j.id+' · Art: '+(_al||'—')+' · Items: '+((j.item_status||'').replace(/_/g,' ')||'—')+' · Production: '+_pl+' — click to open on the Jobs tab'}};
+    const _jobChips=(idx,extraStyle)=>_lineJobs(idx).map(({ji,job})=>{const _st=_jobChipStatus(job);return <button key={'job'+ji} type="button" onClick={e=>{e.stopPropagation();_jumpToJob(ji)}} title={_st.title} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'1px 7px',borderRadius:20,border:'1px solid #C7D2FE',background:'#EEF2FF',cursor:'pointer',fontSize:10,fontWeight:700,color:'#192853',whiteSpace:'nowrap',lineHeight:'16px',...(extraStyle||{})}}>🏭 {job.id}<span style={{padding:'0 5px',borderRadius:8,fontSize:9,fontWeight:600,background:(SC[_st.key]||ART_FILE_SC[_st.key])?.bg||'#f1f5f9',color:(SC[_st.key]||ART_FILE_SC[_st.key])?.c||'#475569'}}>{_st.label}</span></button>});
     React.useEffect(()=>{if(openPOId){
       // Check SO-level deco_pos first — decoration POs are cost buckets, not per-item line items.
       const decoPO=(o.deco_pos||[]).find(dp=>dp.po_id===openPOId);
@@ -5658,6 +5660,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 })()}
                 {(()=>{const seen=new Set();return safePOs(item).filter(po=>{const k=po.po_id||'';if(!k||seen.has(k))return false;seen.add(k);return true}).map((po,pi)=>{const lines=[];safeItems(o).forEach((it2,i2)=>{safePOs(it2).forEach((po2,pi2)=>{if(po2.po_id===po.po_id)lines.push({lineIdx:i2,poIdx:pi2})})});return<span key={'po'+pi} style={{fontSize:10,padding:'2px 8px',borderRadius:6,background:'#eff6ff',color:'#1e40af',fontWeight:700,cursor:'pointer',border:'1px solid #bfdbfe',whiteSpace:'nowrap'}} title={'Ordered on supplier PO '+(po.po_id||'')+(po.vendor?' · '+po.vendor:'')+' — click to edit'} onClick={()=>setEditPO({lineIdx:idx,poIdx:(item.po_lines||[]).findIndex(p=>p.po_id===po.po_id),po,allLines:lines.length>0?lines:[{lineIdx:idx,poIdx:0}]})}>🧾 {po.po_id}</span>})})()}
                 {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:10,padding:'2px 8px',borderRadius:6,background:'#ede9fe',color:'#6d28d9',fontWeight:700,cursor:'pointer',border:'1px solid #ddd6fe',whiteSpace:'nowrap'}} title={'On Deco PO '+(dp.po_id||'')+(dp.vendor?' · '+dp.vendor:'')+' — click to edit items / per-item costing'} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>▣ {dp.po_id}{dp.vendor?' · '+dp.vendor:''}</span>)}
+                {isSO&&_jobChips(idx)}
               </div>
             </div>
             <div style={{display:'flex',alignItems:'stretch',border:'1px solid #E2E6EF',borderRadius:8,background:'#FAFBFD',overflow:'hidden',whiteSpace:'nowrap'}}>
@@ -5927,6 +5930,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {pk.ship_dest&&pk.ship_dest!=='in_house'&&<span style={{fontSize:8,padding:'2px 5px',borderRadius:4,fontWeight:700,
                 background:pk.ship_dest==='ship_customer'?'#dbeafe':'#ede9fe',color:pk.ship_dest==='ship_customer'?'#1e40af':'#6d28d9'}}>
                 {pk.ship_dest==='ship_customer'?'📦 → Customer':'🚚 → '+(pk.deco_vendor||'Deco')}</span>}
+              {pi===0&&_jobChips(idx,{marginLeft:4})}
             </div>})}
         </div>}
         {isSO&&(item.po_lines||[]).length>0&&<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
@@ -5970,8 +5974,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {_batchNo&&<span className="oe-num" style={{fontSize:9,padding:'3px 8px',borderRadius:4,fontWeight:700,marginLeft:2,background:'#EDE9FE',color:'#6D28D9',border:'1px solid #DDD6FE'}} title={'Ordered on batch PO '+_batchNo+(po.vendor?' · '+po.vendor:'')}>📦 {_batchNo}</span>}
               <ApiOrderBadge po={po} style={{marginLeft:4}}/>
               {isDS&&<span className="oe-eb" style={{fontSize:9,padding:'3px 8px',borderRadius:4,marginLeft:2,background:'#EDE9FE',color:'#6D28D9',border:'1px solid #DDD6FE'}}>Drop Ship</span>}
+              {pi===0&&!(item.pick_lines||[]).length&&_jobChips(idx,{marginLeft:4})}
             </div>})}
         </div>}
+        {/* No pick/PO rows yet — the line's jobs still get a slim row where the PO row will land. */}
+        {isSO&&!(item.pick_lines||[]).length&&!(item.po_lines||[]).length&&_lineJobs(idx).length>0&&<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>{_jobChips(idx)}</div>}
         {/* WRITTEN-OFF UNITS — a PO received/billed more than the line still sells (an absorbed
             wrong-size order, or a vendor over-ship). Their cost is still on this SO, so say so
             here rather than leaving an unexplained margin hole on the Costs tab. */}
@@ -6103,7 +6110,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {/* Per-design status badge on the design's own row; Underbase is a garment-level toggle in the item bar */}
                   {artF&&!(artF.name&&artF.name.startsWith('ART TBD'))&&(()=>{const st=artF.status==='uploaded'?'needs_approval':artF.status;return (st&&st!=='waiting_for_art')?<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:st==='approved'?'#dcfce7':'#fef3c7',color:st==='approved'?'#166534':'#92400e',fontWeight:600}}>{st==='approved'?'Approved':st==='needs_approval'?'Needs Approval':st.replace(/_/g,' ')}</span>:null})()}
                   <div style={{...(_soloDi<0?{marginLeft:'auto'}:{marginLeft:4}),display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-                    {isSO&&(()=>{const _jf=_jobForDeco(idx,di);if(!_jf)return null;const _st=_jobChipStatus(_jf.job);return <button type="button" className="oe-eb" onClick={()=>_jumpToJob(_jf.ji)} title={_st.title} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'1px 7px',borderRadius:20,border:'1px solid #C7D2FE',background:'#EEF2FF',cursor:'pointer',fontSize:10,fontWeight:700,color:'#192853',whiteSpace:'nowrap',lineHeight:'16px'}}>🏭 {_jf.job.id}<span style={{padding:'0 5px',borderRadius:8,fontSize:9,fontWeight:600,background:(SC[_st.key]||ART_FILE_SC[_st.key])?.bg||'#f1f5f9',color:(SC[_st.key]||ART_FILE_SC[_st.key])?.c||'#475569'}}>{_st.label}</span></button>})()}
                     <span style={{fontSize:11}}>Cost: <strong style={{color:'#dc2626'}}>${decoUnitCost.toFixed(2)}</strong>{dp._unpriced&&decoCostTotal<=0&&<span title={"The screen print matrix has no price for this run (qty x ink colors), so it is costing $0. Fill the cell in Settings > Pricing > Screen Print Pricing, then re-save this order."} style={{marginLeft:4,fontSize:9,fontWeight:700,padding:'1px 5px',borderRadius:4,background:'#fee2e2',color:'#991b1b'}}>UNPRICED</span>}{costArtQty[deco.art_file_id]>0&&<span title={"Combined run of "+costArtQty[deco.art_file_id]+" units across manually-linked jobs that share this screen — cost only; the sale price is unaffected."} style={{marginLeft:4,fontSize:9,fontWeight:700,color:'#166534'}}>🔗</span>}{_outsideEst&&<span title={"Cost from "+_outsideEst+"'s price list (outside decoration). A Deco PO / actual bill supersedes this estimate."} style={{marginLeft:4,fontSize:9,fontWeight:700,color:'#7c3aed'}}>🎨 {_outsideEst}</span>}</span>
                     {_soloDi<0&&<span style={{fontSize:11}}>Sell: <$In value={promoDecoSell} onChange={v=>uD(idx,di,'sell_override',item.is_promo&&o.promo_applied?rQ(v/1.25):v)} w={50}/></span>}
                     {item.is_promo&&o.promo_applied&&<span style={{fontSize:9,color:'#92400e',fontWeight:600}}>+25%</span>}
@@ -13942,7 +13948,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                     {(_labels.length?_labels:[(j.deco_type?.replace(/_/g,' ')||'')+' · '+(j.positions||'')]).map((lbl,i)=><div key={i}>{lbl}</div>)}
                     {_outLines.map((ol,i)=><div key={'out'+i} style={{color:'#7c3aed'}}>{_outsideDecoText(ol)}</div>)}
                   </div>})()}</td>
-              <td style={{fontSize:11}}>{(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</td>
+              <td style={{fontSize:11}}>{(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}{(j.items||[]).slice(0,4).map((gi,gk)=><div key={gk}><button type="button" onClick={e=>{e.stopPropagation();_jumpToItem(gi.item_idx)}} title={'Go to this line on the Items tab: '+(gi.sku||'')+(gi.color?' · '+gi.color:'')} style={{background:'none',border:'none',padding:0,cursor:'pointer',fontSize:10,fontWeight:600,color:'#2563eb',textDecoration:'underline',whiteSpace:'nowrap'}}>↩ {gi.sku||'Line '+(gi.item_idx+1)}{gi.color?' · '+gi.color:''}</button></div>)}{(j.items||[]).length>4&&<div style={{fontSize:9,color:'#94a3b8'}}>+{(j.items||[]).length-4} more</div>}</td>
               <td style={{fontWeight:700}}>{jFul}/{jTot}
                 <div style={{width:50,background:'#e2e8f0',borderRadius:3,height:4,marginTop:2}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>0?'#f59e0b':'#e2e8f0',width:pct+'%'}}/></div></td>
               <td>{(()=>{const _is=jItemStatus(j);return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[_is]?.bg,color:SC[_is]?.c}}>{itemLabels[_is]}</span>})()}</td>
