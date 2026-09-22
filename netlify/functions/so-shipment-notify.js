@@ -10,6 +10,13 @@
 //
 // Staff-only on top of that (verifyUser), because it sends customer-facing mail.
 //
+// Every send is recorded in so_shipment_notices (20260922210000) — a ledger the
+// browser never writes. It is deliberately NOT a column on sales_orders: any
+// server-side UPDATE there bumps _version and the next save from a rep with the
+// order open is rejected as STALE_SO_WRITE, and the browser rewrites
+// sent_history wholesale on every save, so a marker kept there could be
+// clobbered by a stale tab and the coach emailed twice.
+//
 // Layout lives in _soShipmentEmail.js (pure, unit-tested); this file is the IO.
 
 const { verifyUser } = require('./_shared');
@@ -20,6 +27,16 @@ const PORTAL_BASE = 'https://nationalsportsapparel.com/coach';
 const NSA_LOGO = process.env.NSA_LOGO_URL || 'https://nationalsportsapparel.com/NEW%20NSA%20Logo%20on%20white.png';
 
 const j = (statusCode, obj) => ({ statusCode, headers: HEADERS, body: JSON.stringify(obj) });
+
+// The ledger table may not be deployed yet (migration 20260922210000). Mirror of
+// backorder-ready-sweep's check so a missing relation reads as "not applied",
+// not as a crash.
+const isMissingRelation = (e) => {
+  if (!e) return false;
+  const code = e.code || '';
+  const msg = (e.message || '') + ' ' + (e.details || '') + ' ' + (e.hint || '');
+  return code === '42P01' || code === '42703' || code === 'PGRST205' || /does not exist|could not find|schema cache/i.test(msg);
+};
 
 // A box that went to a decorator is an internal transfer, not something the
 // coach is waiting on. Only customer fulfillment reaches the email.
@@ -65,7 +82,12 @@ async function sendShipmentNotice(admin, opts = {}) {
   const preview = opts.preview === true;
   const resend = opts.resend === true;
   const requireTracking = opts.requireTracking === true;
+  // The sweep can't send without the ledger: with no record of what went out,
+  // it would announce the same boxes every 15 minutes. The button may (a human
+  // confirmed it) and reports historyRecorded:false so the rep knows.
+  const requireLedger = opts.requireLedger === true;
   const sentBy = opts.sentBy || 'portal';
+  const source = opts.source === 'sweep' ? 'sweep' : 'button';
   const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
   // Free text the REP typed, never a merge field from elsewhere: a carrier ETA
   // isn't stored on the order. Bounded and HTML-escaped by the builder.
@@ -78,7 +100,7 @@ async function sendShipmentNotice(admin, opts = {}) {
   const j = jj;
   try {
     const { data: so, error: soErr } = await admin.from('sales_orders')
-      .select('id,customer_id,ship_to_id,_shipments,_carrier,_ship_date,_tracking_number,_tracking_url,deliver_on_date,sent_history,deleted_at')
+      .select('id,customer_id,ship_to_id,_shipments,_carrier,_ship_date,_tracking_number,_tracking_url,deliver_on_date,deleted_at')
       .eq('id', soId).maybeSingle();
     if (soErr) return j(500, { error: soErr.message });
     if (!so || so.deleted_at) return j(404, { error: 'Sales order not found' });
@@ -126,9 +148,22 @@ async function sendShipmentNotice(admin, opts = {}) {
     }
 
     // ── Already-sent guard: the same boxes don't get announced twice ──
-    const sentHistory = Array.isArray(so.sent_history) ? so.sent_history : [];
     const signature = selected.map((s) => String(s.id)).sort().join(',');
-    const already = sentHistory.find((h) => h && h.type === 'shipment' && h.shipment_sig === signature);
+    let ledgerAvailable = true;
+    let already = null;
+    {
+      const { data: rows, error: ledgerErr } = await admin.from('so_shipment_notices')
+        .select('shipment_sig,sent_at,sent_to,sent_by,source').eq('so_id', so.id).eq('shipment_sig', signature).limit(1);
+      if (ledgerErr && isMissingRelation(ledgerErr)) {
+        ledgerAvailable = false;
+        if (requireLedger) return j(503, { error: 'so_shipment_notices is not deployed (migration 20260922210000) — cannot send safely without a record' });
+      } else if (ledgerErr) {
+        return j(500, { error: ledgerErr.message });
+      } else if (rows && rows[0] && rows[0].sent_at) {
+        // Shape kept for the button's confirm dialog: { to, sent_at }.
+        already = { to: rows[0].sent_to || '', sent_at: new Date(rows[0].sent_at).toLocaleString(), by: rows[0].sent_by || '', source: rows[0].source || '' };
+      }
+    }
     if (already && !resend && !preview) {
       return j(409, { error: `These boxes were already emailed to ${already.to || 'the customer'} on ${already.sent_at}`, alreadySent: already });
     }
@@ -249,21 +284,29 @@ async function sendShipmentNotice(admin, opts = {}) {
       return j(502, { error: `Email send failed (HTTP ${res.status})${detail}` });
     }
 
-    // Audit trail + the guard above. Append only: email_status/email_sent_at on a
-    // sales order mean "the ORDER document was emailed" and must not be rewritten
-    // by a shipping notice.
-    const histEntry = {
-      sent_at: new Date().toLocaleString(),
-      sent_by: sentBy,
-      type: 'shipment',
-      to: recipient.email,
-      messageId: (result && (result.messageId || result.message_id)) || null,
-      shipment_sig: signature,
-      boxes: packages.length,
-    };
-    const { error: histErr } = await admin.from('sales_orders')
-      .update({ sent_history: [...sentHistory, histEntry] }).eq('id', so.id);
-    if (histErr) console.warn('[so-shipment-notify] sent_history not persisted:', histErr.message);
+    // Record the send in the ledger (the guard above reads it). Upsert on
+    // (so_id, shipment_sig): a resend updates the row, and a sweep row that was
+    // waiting out its grace window becomes the sent row. Never sales_orders —
+    // see the header comment.
+    let ledgerRecorded = false;
+    if (ledgerAvailable) {
+      const nowIso = new Date().toISOString();
+      const { error: ledgerWriteErr } = await admin.from('so_shipment_notices').upsert({
+        so_id: so.id,
+        shipment_sig: signature,
+        box_count: packages.length,
+        sent_at: nowIso,
+        sent_to: recipient.email,
+        sent_by: sentBy,
+        source,
+        message_id: (result && (result.messageId || result.message_id)) || null,
+        updated_at: nowIso,
+      }, { onConflict: 'so_id,shipment_sig' });
+      if (ledgerWriteErr) console.error('[so-shipment-notify] ledger write failed for', so.id, ledgerWriteErr.message);
+      ledgerRecorded = !ledgerWriteErr;
+    } else {
+      console.warn('[so-shipment-notify] sent without a ledger record — migration 20260922210000 not applied');
+    }
 
     return j(200, {
       ok: true,
@@ -272,7 +315,7 @@ async function sendShipmentNotice(admin, opts = {}) {
       boxes: packages.length,
       pieces: lines.reduce((a, l) => a + l.totalQty, 0),
       carrier: carrierLabel(selected[0].carrier || so._carrier || ''),
-      historyRecorded: !histErr,
+      historyRecorded: ledgerRecorded,
     });
   } catch (e) {
     console.error('[so-shipment-notify] failed:', e);
@@ -306,3 +349,4 @@ exports.handler = async (event) => {
 
 module.exports.sendShipmentNotice = sendShipmentNotice;
 module.exports.isCustomerShipment = isCustomerShipment;
+module.exports.isMissingRelation = isMissingRelation;
