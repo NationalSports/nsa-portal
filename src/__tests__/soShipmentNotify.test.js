@@ -166,6 +166,19 @@ test('a complete shipment carries no "still to come" note', async () => {
   expect(res.body.html).not.toContain('Still to come');
 });
 
+test('the logo comes from the portal site, where the file actually is — never the marketing site', async () => {
+  const prev = { URL: process.env.URL, PORTAL_PUBLIC_URL: process.env.PORTAL_PUBLIC_URL, NSA_LOGO_URL: process.env.NSA_LOGO_URL };
+  delete process.env.NSA_LOGO_URL; delete process.env.PORTAL_PUBLIC_URL;
+  process.env.URL = 'https://nsa-portal.netlify.app/';
+  try {
+    await call({ soId: 'NSA-18402' });
+    expect(sentHtml()).toContain('src="https://nsa-portal.netlify.app/NEW%20NSA%20Logo%20on%20white.png"');
+    expect(sentHtml()).not.toContain('nationalsportsapparel.com/NEW%20NSA');
+  } finally {
+    Object.entries(prev).forEach(([k, v]) => { if (v === undefined) delete process.env[k]; else process.env[k] = v; });
+  }
+});
+
 test('the email is built from the order: mockup, brand, decoration, ship-to, portal link', async () => {
   await call({ soId: 'NSA-18402' });
   const html = sentHtml();

@@ -24,7 +24,14 @@ const { buildSoShipmentEmail, buildShipmentLines, boxContents, remainingUnits, c
 
 const HEADERS = { 'Content-Type': 'application/json' };
 const PORTAL_BASE = 'https://nationalsportsapparel.com/coach';
-const NSA_LOGO = process.env.NSA_LOGO_URL || 'https://nationalsportsapparel.com/NEW%20NSA%20Logo%20on%20white.png';
+// The logo file lives in the PORTAL's public/ (served at the Netlify site URL),
+// not on the marketing site — same source the webstore emails use. Resolved at
+// send time, not module load, so a test or a preview can point it elsewhere.
+const logoUrl = () => {
+  if (process.env.NSA_LOGO_URL) return process.env.NSA_LOGO_URL;
+  const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || 'https://nsa-portal.netlify.app').replace(/\/+$/, '');
+  return `${portal}/NEW%20NSA%20Logo%20on%20white.png`;
+};
 
 const j = (statusCode, obj) => ({ statusCode, headers: HEADERS, body: JSON.stringify(obj) });
 
@@ -234,7 +241,7 @@ async function sendShipmentNotice(admin, opts = {}) {
       carrier: selected[0].carrier || so._carrier || '',
       portalUrl,
       reorderUrl,
-      logoUrl: NSA_LOGO,
+      logoUrl: logoUrl(),
     });
 
     if (preview) {
