@@ -2,7 +2,7 @@ import { QboClient, createAdmin, type QboFailure } from './qbo.ts';
 import {
   REALM_ID, allocateUnreflectedPayments, buildInvoiceLines, classifyInvoiceDuplicate,
   classifySourceInvoice, clean, customerDisplayName, customerIdentityRisks, exactCustomerMatches, invoiceNumberForms,
-  looseCustomerMatches, money, normalizeName, parseDate, paymentIdentity, paymentReference,
+  linkedInvoiceTotalDrift, looseCustomerMatches, money, normalizeName, parseDate, paymentIdentity, paymentReference,
   qboPaymentApplications, sha256, standardDueDate, taxPlan, writeAllowed,
 } from './logic.js';
 
@@ -12,6 +12,12 @@ const CORS={
 };
 const json=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:CORS});
 const errorCode=(error:unknown)=>clean((error as QboFailure)?.code)||'sales_run_failed';
+// Write failures previously stored a bare reason code, so a held record named no
+// amounts and could not be diagnosed from the alert alone.
+const errorDetails=(error:unknown)=>{
+  const details=(error as {details?:unknown})?.details;
+  return details&&typeof details==='object'&&!Array.isArray(details)?details as Record<string,unknown>:{};
+};
 const safeError=(error:unknown)=>clean((error as Error)?.message||'QBO sales run failed.').replace(/Bearer\s+\S+/gi,'Bearer [redacted]').slice(0,500);
 const escapeQbo=(value:unknown)=>clean(value).replaceAll("'","\\'");
 const serviceToken=()=>Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')||'';
@@ -247,6 +253,9 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
     // Invoices: direct QBO IDs and durable receipts are both accepted mappings.
     // Every unlinked source still receives the two-form/four-field duplicate check.
     const qboInvoiceById=new Map(qboInvoices.map((row:any)=>[String(row.Id),row])),effectiveInvoiceMap=new Map<string,string>(),invoiceCandidates:any[]=[];
+    // Invoices whose QBO total no longer matches the Portal. Their payments are held
+    // too, so one invoice-level review explains the cause instead of two alerts.
+    const invoiceTotalDrifted=new Set<string>();
     const customerById=new Map((snapshot.customers||[]).map((row:any)=>[String(row.id),row]));
     const today=new Date().toLocaleDateString('en-CA',{timeZone:'America/Los_Angeles'});
     for(const invoice of snapshot.invoices||[]){
@@ -260,6 +269,12 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
         let existing=qboInvoiceById.get(mappedId);
         if(!existing){try{existing=slimInvoice((await qbo.request(`/invoice/${mappedId}`)).Invoice);if(existing?.Id)qboInvoiceById.set(mappedId,existing);}catch{/* classified below */}}
         if(!existing){counters.invoices.manual_review++;review('invoice',sourceId,'mapped_invoice_missing',{qbo_id:mappedId});add('invoice',sourceId,'revalidate','manual_review',mappedId,{reason:'mapped_invoice_missing'});continue;}
+        const drift=linkedInvoiceTotalDrift(invoice,existing);
+        if(drift){
+          counters.invoices.manual_review++;invoiceTotalDrifted.add(String(invoice.id));
+          review('invoice',sourceId,'mapped_invoice_total_changed',{qbo_id:mappedId,...drift});
+          add('invoice',sourceId,'revalidate','manual_review',mappedId,{reason:'mapped_invoice_total_changed',...drift});continue;
+        }
         effectiveInvoiceMap.set(String(invoice.id),mappedId);counters.invoices.already_linked++;continue;
       }
       const base=classifySourceInvoice(invoice,today);
@@ -323,6 +338,9 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
     const paymentCandidates:any[]=[];
     for(const invoice of snapshot.invoices||[]){
       if(invoice.deleted_at||clean(invoice.status).toLowerCase()==='void'||String(invoice.id)==='INV-63831')continue;
+      // The invoice-level drift review already names the cause; posting here would
+      // only overpay the stale QBO balance and raise a second, vaguer alert.
+      if(invoiceTotalDrifted.has(String(invoice.id)))continue;
       const sourceRows=sourcePaymentsByInvoice.get(String(invoice.id))||[];if(!sourceRows.length&&money(invoice.paid)<=0)continue;
       const qboInvoiceId=effectiveInvoiceMap.get(String(invoice.id))||clean(invoice.qb_invoice_id);if(!qboInvoiceId){if(money(invoice.paid)>0){counters.payments.manual_review++;review('payment',`invoice:${invoice.id}`,'verified_invoice_missing');}continue;}
       const qboInvoice=qboInvoiceById.get(String(qboInvoiceId));if(!qboInvoice)continue;
@@ -355,7 +373,7 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
           else{
             const already=money(qboPaymentApplications(currentPayments,candidate.qboInvoiceId).reduce((sum:number,row:any)=>sum+row.amount,0));
             const needed=money(money(candidate.invoice.paid)-already),balance=money(currentInvoice.Balance);
-            if(candidate.amount>needed+.005||candidate.amount>balance+.005)throw Object.assign(new Error('Source payment exceeds the verified unapplied amount or current invoice balance.'),{code:'payment_amount_conflict'});
+            if(candidate.amount>needed+.005||candidate.amount>balance+.005)throw Object.assign(new Error('Source payment exceeds the verified unapplied amount or current invoice balance.'),{code:'payment_amount_conflict',details:{payment_amount:candidate.amount,qbo_invoice_balance:balance,unapplied_needed:needed,qbo_already_applied:already}});
             const send=candidate.amount;
             if(!(send>0)){counters.payments.already_reflected++;continue;}
             const payload={CustomerRef:{value:candidate.qboCustomerId},DepositToAccountRef:{value:String(deposit.Id)},TotalAmt:send,TxnDate:parseDate(candidate.row.date),PaymentRefNum:candidate.ref,PrivateNote:`Portal payment ${candidate.row.id} for ${candidate.invoice.id}`,Line:[{Amount:send,LinkedTxn:[{TxnId:String(candidate.qboInvoiceId),TxnType:'Invoice'}]}]};
@@ -365,7 +383,12 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
           if(!verified||String(verified.CustomerRef?.value)!==candidate.qboCustomerId||money(verified.TotalAmt)!==candidate.amount||parseDate(verified.TxnDate)!==parseDate(candidate.row.date)||String(verified.DepositToAccountRef?.value)!==String(deposit.Id)||!qboPaymentApplications([verified],candidate.qboInvoiceId).length)throw new Error('QBO payment failed read-back.');
           await persistLink(admin,{realm:REALM_ID,mapKey:'qbPaymentMap',sourceId:candidate.sourceId,qboId:String(verified.Id),evidence:{result,api_readback:true,run_id:runId,invoice_id:String(candidate.invoice.id),qbo_invoice_id:String(candidate.qboInvoiceId),amount:money(verified.TotalAmt),date:parseDate(verified.TxnDate),deposit_account:String(deposit.Id)}});
           qboIds.payments.push(String(verified.Id));counters.payments[result==='created'?'created':'already_reflected']++;add('payment',candidate.sourceId,result==='linked'?'link_existing':'create',result,String(verified.Id),{api_readback:true,amount:money(verified.TotalAmt),date:parseDate(verified.TxnDate),deposit_account:String(deposit.Id)});
-        }catch(error){counters.payments.failed++;terminal='needs_review';review('payment',candidate.sourceId,errorCode(error));add('payment',candidate.sourceId,'write','failed',null,{error_code:errorCode(error)});}
+        }catch(error){
+          counters.payments.failed++;terminal='needs_review';
+          const evidence={invoice_id:String(candidate.invoice.id),qbo_invoice_id:String(candidate.qboInvoiceId),amount:candidate.amount,...errorDetails(error)};
+          review('payment',candidate.sourceId,errorCode(error),evidence);
+          add('payment',candidate.sourceId,'write','failed',null,{error_code:errorCode(error),...evidence});
+        }
         finally{if(locked)await ignore(admin.rpc('release_qbo_sales_source_claim',{p_realm_id:REALM_ID,p_source_type:'payment',p_source_id:candidate.sourceId,p_claim_token:token}));}
       }
     }

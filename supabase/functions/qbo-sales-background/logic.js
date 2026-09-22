@@ -108,6 +108,17 @@ export function classifySourceInvoice(invoice, today) {
   return { action:'eligible', date, total };
 }
 
+// A linked invoice is never re-costed, so a Portal total that moves after the QBO
+// invoice was written (a card surcharge added at payment time is the common case)
+// leaves QBO permanently short. Payments for the new total are then refused for as
+// long as the mapping lives, so the drift is reported instead of silently skipped.
+export function linkedInvoiceTotalDrift(invoice, qboInvoice) {
+  const portalTotal=money(invoice?.total), qboTotal=money(qboInvoice?.TotalAmt);
+  const difference=money(portalTotal-qboTotal);
+  if(Math.abs(difference)<=0.005)return null;
+  return {portal_total:portalTotal, qbo_total:qboTotal, difference, cc_fee:money(invoice?.cc_fee)};
+}
+
 export function taxPlan(invoice, customer, partnerTaxEnabled=true) {
   const tax=money(invoice?.tax); if(!(tax>0))return null;
   const state=clean(customer?.shipping_state||customer?.billing_state).toUpperCase();

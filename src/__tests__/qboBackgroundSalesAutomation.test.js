@@ -2,8 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import {
   allocateUnreflectedPayments, classifyInvoiceDuplicate, classifySourceInvoice,
-  customerIdentityRisks, invoiceNumberForms, normalizeInvoiceNumber, paymentIdentity, paymentReference,
-  writeAllowed,
+  customerIdentityRisks, invoiceNumberForms, linkedInvoiceTotalDrift, normalizeInvoiceNumber,
+  paymentIdentity, paymentReference, writeAllowed,
 } from '../../supabase/functions/qbo-sales-background/logic';
 
 const root=path.join(__dirname,'..','..');
@@ -69,6 +69,43 @@ describe('payment idempotency',()=>{
   });
   test('partial source payment remains bounded to the unapplied amount',()=>{
     expect(allocateUnreflectedPayments([{id:1,date:'2026-09-01',amount:100}],35)[0]).toMatchObject({coveredAmount:35,remainingAmount:65});
+  });
+});
+
+describe('linked invoice total drift',()=>{
+  // INV-63804: invoiced to QBO at $456.00, then a 2.9% card surcharge raised the
+  // Portal total to $469.22 at payment time, so the $469.22 payment was refused.
+  const invoice={id:'INV-63804',total:469.22,cc_fee:13.22};
+  test('a surcharge added after linking is reported with both totals',()=>{
+    expect(linkedInvoiceTotalDrift(invoice,{TotalAmt:456})).toEqual({
+      portal_total:469.22,qbo_total:456,difference:13.22,cc_fee:13.22,
+    });
+  });
+  test('a matching total is not drift',()=>{
+    expect(linkedInvoiceTotalDrift(invoice,{TotalAmt:469.22})).toBeNull();
+  });
+  test('sub-cent float noise is not drift',()=>{
+    expect(linkedInvoiceTotalDrift({total:100},{TotalAmt:100.004})).toBeNull();
+  });
+  test('a Portal total below QBO is reported too',()=>{
+    expect(linkedInvoiceTotalDrift({total:400},{TotalAmt:456})).toMatchObject({difference:-56});
+  });
+  test('a missing QBO total is drift, not a silent zero match',()=>{
+    expect(linkedInvoiceTotalDrift({total:456},{})).toMatchObject({qbo_total:0,difference:456});
+  });
+});
+
+describe('held records carry diagnosable evidence',()=>{
+  const edge=read('supabase/functions/qbo-sales-background/index.ts');
+  test('a drifted invoice is reviewed instead of silently staying linked',()=>{
+    expect(edge).toContain("review('invoice',sourceId,'mapped_invoice_total_changed',{qbo_id:mappedId,...drift})");
+  });
+  test('payments for a drifted invoice are suppressed so one alert explains the cause',()=>{
+    expect(edge).toContain('if(invoiceTotalDrifted.has(String(invoice.id)))continue;');
+  });
+  test('a refused payment records the amounts that refused it',()=>{
+    expect(edge).toContain("code:'payment_amount_conflict',details:{payment_amount:candidate.amount,qbo_invoice_balance:balance");
+    expect(edge).toContain('review(\'payment\',candidate.sourceId,errorCode(error),evidence)');
   });
 });
 
