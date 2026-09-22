@@ -864,6 +864,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Completed / Shipped); before that "On Hold" says nothing, so the art stage that gates it shows.
     const _jobChipStatus=(j)=>{const _ps=j.prod_status||'hold';const _pl=({draft:'Draft',hold:'On Hold',ready:'Ready',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped'})[_ps]||_ps;const _live=['staging','in_process','completed','shipped','ready'].includes(_ps);const _al=ART_LABELS[j.art_status]||'';return{key:_live?_ps:(j.art_status||_ps),label:_live||!_al?_pl:_al,title:'Job '+j.id+' · Art: '+(_al||'—')+' · Items: '+((j.item_status||'').replace(/_/g,' ')||'—')+' · Production: '+_pl+' — click to open on the Jobs tab'}};
     const _jobChips=(idx,extraStyle)=>_lineJobs(idx).map(({ji,job})=>{const _st=_jobChipStatus(job);return <button key={'job'+ji} type="button" onClick={e=>{e.stopPropagation();_jumpToJob(ji)}} title={_st.title} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'1px 6px',borderRadius:4,border:'1px solid #bfdbfe',background:'#eff6ff',cursor:'pointer',fontSize:10,fontWeight:700,color:'#1e40af',whiteSpace:'nowrap',lineHeight:'16px',...(extraStyle||{})}}>🏭 {job.id}<span style={{padding:'0 5px',borderRadius:8,fontSize:9,fontWeight:600,background:(SC[_st.key]||ART_FILE_SC[_st.key])?.bg||'#f1f5f9',color:(SC[_st.key]||ART_FILE_SC[_st.key])?.c||'#475569'}}>{_st.label}</span></button>});
+    // Outbound tracking for one job, shown on its detail page: customer shipments that carried one of
+    // this job's garments (sku+color, the same key shippedSizesByLine uses); item-less shipments (manual adds, the legacy single tracking #) can't be attributed to a line, so
+    // they show as whole-order. Warehouse→decorator transfers are skipped. Read-only.
+    const _trackHref=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
+    const _jobTracking=(j)=>{const keys=new Set((j.items||[]).map(gi=>(gi.sku||'')+'|'+(gi.color||'')));
+      const out=[];const seenOut=new Set();
+      const _ships=[...(o._shipments||[])];if(o._tracking_number&&!_ships.some(s=>s.tracking_number===o._tracking_number))_ships.push({tracking_number:o._tracking_number,tracking_url:o._tracking_url,carrier:o._carrier,ship_date:o._ship_date,items:[]});
+      _ships.forEach(s=>{if(!s||s.fulfillment===false||s.shipment_scope==='deco_transfer')return;const t=String(s.tracking_number||'').trim();if(!t||seenOut.has(t))return;const its=s.items||[];const whole=its.length===0;
+        if(!whole&&!its.some(x=>x&&keys.has((x.sku||'')+'|'+(x.color||''))))return;seenOut.add(t);
+        out.push({tn:t,href:s.tracking_url||_trackHref(t),note:[(s.carrier||'').toUpperCase(),s.ship_date,whole?'whole order':''].filter(Boolean).join(' · ')})});
+      return out};
     React.useEffect(()=>{if(openPOId){
       // Check SO-level deco_pos first — decoration POs are cost buckets, not per-item line items.
       const decoPO=(o.deco_pos||[]).find(dp=>dp.po_id===openPOId);
@@ -11687,6 +11698,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </>}
                 </div>
                 <div style={{fontSize:12,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
+                {(()=>{const _tk=_jobTracking(j);if(!_tk.length)return null;const _a=(x,i)=><a key={i} href={x.href} target="_blank" rel="noreferrer" title={x.note} style={{fontFamily:'monospace',fontSize:10,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'1px 6px',borderRadius:4,textDecoration:'none',whiteSpace:'nowrap'}}>{x.tn}</a>;
+                  return<div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginTop:4,fontSize:11}}>
+                    <span style={{fontWeight:700,color:'#64748b'}} title="Our warehouse → customer (shipments carrying this job's garments)">📤 Shipped:</span>{_tk.map(_a)}
+                  </div>})()}
                 {(()=>{const _outLines=_jobOutsideDecos(j);if(!_outLines.length)return null;
                   return<div style={{fontSize:11,color:'#7c3aed',marginTop:2}} title="These decorations are on the same garments but are produced by an outside vendor — not part of this in-house job">🏭 Also on these garments: {_outLines.map(_outsideDecoText).join(' · ')}</div>})()}
                 {(()=>{// Art-split slices of the same line are disjoint garment batches, not a multi-job item — jobsShareGarments filters them.
