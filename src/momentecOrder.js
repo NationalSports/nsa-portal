@@ -123,3 +123,28 @@ export function buildMomentecOrderPayload({
   };
   return { order, lines, merged, duplicates, summary, warnings };
 }
+
+// Build the body for POST /v2/ShippingCost (minus credentials, which the proxy injects
+// server-side). Same `lines` shape as buildMomentecOrderPayload's lineItems, and the same
+// shipTo shape/mapping as its `addresses[0]` block. Pure — no network calls here.
+export function buildMomentecShippingCostRequest({ lines, shipTo, shipMode = '103' } = {}) {
+  const ship = shipTo || {};
+  // One request line per Momentec SKU, same rationale as the order payload.
+  const { merged } = collapseVendorLines((lines || []).filter(l => l.sku), l => l.sku);
+  return {
+    shipTo: ship.companyName || ship.customer || '',
+    shipMode: String(shipMode),
+    shipAddress1: ship.address1 || '',
+    shipAddress2: ship.address2 || '',
+    shipCity: ship.city || '',
+    shipState: ship.region || ship.state || '',
+    shipZip: ship.postalCode || ship.zip || '',
+    telePhone: ship.phone || '',
+    residence: 'N',
+    attention: ship.attentionTo || ship.attn || '',
+    asgOrderSubmitProducts: merged.map(l => ({
+      sku: l.sku,
+      quantity: String(l.quantity),
+    })),
+  };
+}

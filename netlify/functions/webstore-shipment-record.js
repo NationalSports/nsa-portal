@@ -4,6 +4,7 @@
 
 const { corsHeaders, getSupabaseAdmin, verifyUser } = require('./_shared');
 const { processDirectShipment } = require('./shipstation-webhook');
+const { isShipFromCode, shipFromCode } = require('../../src/lib/shipFrom');
 
 const MAX_LABEL_BYTES = 8 * 1024 * 1024;
 
@@ -82,8 +83,18 @@ exports.handler = async (event) => {
     const patch = {
       ...(shipment.shipmentId ? { shipstation_shipment_id: shipment.shipmentId } : {}),
       ...(labelData ? { label_data: labelData } : {}),
+      // Where this parcel left from. Only a well-formed location code is stored
+      // (an NSA site or "deco:<id>") — a stale client must not write free text.
+      ...(isShipFromCode(body.ship_from_code) ? { ship_from_code: shipFromCode(body.ship_from_code) } : {}),
     };
-    const { error: patchError } = await sb.from('webstore_orders').update(patch).eq('id', order.id);
+    let { error: patchError } = await sb.from('webstore_orders').update(patch).eq('id', order.id);
+    // The caller has already bought the label. If ship_from_code's migration
+    // (20260921160000_ship_from_location.sql) has not been applied yet, drop that
+    // one field and save the rest rather than failing the whole recording.
+    if (patchError && /ship_from_code/.test(patchError.message || '')) {
+      delete patch.ship_from_code;
+      ({ error: patchError } = await sb.from('webstore_orders').update(patch).eq('id', order.id));
+    }
     if (patchError) throw new Error(`Could not save label metadata: ${patchError.message}`);
     return response(200, {
       ok: true,

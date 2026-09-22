@@ -11,8 +11,11 @@
 // record param is live at a time — the one belonging to the current section. These helpers
 // are pure (no window / React) so the tricky serialization can be unit-tested on its own.
 
-// The six record params, one per record-bearing section.
-const REC_PARAMS = ['so', 'est', 'cust', 'vend', 'prod', 'inv'];
+// The record params, one per record-bearing section. 'if' addresses a single Item
+// Fulfillment, which is a record of its own rather than a view of its parent order:
+// the global search, a scanned pick ticket and the warehouse list all open the same
+// ?pg=item_fulfillment&if=IF-#### page.
+const REC_PARAMS = ['so', 'est', 'cust', 'vend', 'prod', 'inv', 'if'];
 
 // Which record param a given section uses. Sections not listed have no record view.
 const REC_PARAM_FOR_PG = {
@@ -22,6 +25,7 @@ const REC_PARAM_FOR_PG = {
   vendors: 'vend',
   products: 'prod',
   invoices: 'inv',
+  item_fulfillment: 'if',
 };
 
 // Build the canonical "?pg=…&<rec>=…" search string for a (pg, recParam, recId) route,

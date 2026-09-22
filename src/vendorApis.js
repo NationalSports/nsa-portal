@@ -1430,7 +1430,18 @@ const ssSubmitOrder = async (order) => {
     throw new Error(msg);
   }
   console.log(`[S&S] order ok (${order.testOrder ? 'TEST' : 'LIVE'}):`, orderNumber);
-  return { orderNumber, invoiceNumber: first.invoiceNumber || first.InvoiceNumber, poNumber: first.poNumber, lineErrors, raw: data };
+  // S&S returns the order's money on the same response (subtotal/shipping/tax/total) —
+  // `shipping` is the freight charge, which is what a rep under the free-ship threshold
+  // needs to see. Read both casings like the rest of this path does.
+  const money = (...keys) => { for (const k of keys) { const v = Number(first[k]); if (first[k] != null && first[k] !== '' && !Number.isNaN(v)) return v; } return null; };
+  return {
+    orderNumber, invoiceNumber: first.invoiceNumber || first.InvoiceNumber, poNumber: first.poNumber, lineErrors, raw: data,
+    subtotal: money('subtotal', 'Subtotal', 'subTotal', 'SubTotal'),
+    shipping: money('shipping', 'Shipping'),
+    tax: money('tax', 'Tax'),
+    total: money('total', 'Total'),
+    shippingMethod: first.shippingMethod || first.ShippingMethod || '',
+  };
 };
 
 const testSSConnection = async () => {
@@ -1560,6 +1571,23 @@ const momentecSubmitOrder = async (order, env = 'stage') => {
   }
   console.log(`[Momentec] order ok (${env}):`, data.orderId);
   return data;
+};
+
+// Get Momentec's real freight quote (POST /v2/ShippingCost via the proxy, which injects
+// credentials server-side). `body` is the request from buildMomentecShippingCostRequest.
+// env: 'stage' | 'prod'. Resolves to the numeric shippingCost; throws Error(<message>) on failure.
+const momentecShippingCost = async (body, env = 'stage') => {
+  const response = await authFetch(`/.netlify/functions/momentec-proxy?service=shipping-cost&env=${encodeURIComponent(env)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error || typeof data.shippingCost !== 'number') {
+    console.error('[Momentec] shipping-cost failed:', data.error || response.status, data.raw || '');
+    throw new Error((data.error || `Momentec shipping-cost failed (HTTP ${response.status})`) + (data.raw ? `\n\nMomentec said: ${data.raw}` : ''));
+  }
+  return data.shippingCost;
 };
 
 // Read back what Momentec actually registered for an order (GET /v2/Order + /v2/OrderLines
@@ -1919,4 +1947,4 @@ const testSportsLinkConnection = async () => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, sanmarStyleVariants, ssApiCall, ssGetProducts, ssGetProductStyles, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock, sanmarGetWarehouseStock, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecOrderDetails, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, sanmarStyleVariants, ssApiCall, ssGetProducts, ssGetProductStyles, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock, sanmarGetWarehouseStock, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecShippingCost, momentecOrderDetails, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };

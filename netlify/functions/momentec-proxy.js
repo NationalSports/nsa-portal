@@ -64,6 +64,49 @@ exports.handler = async (event) => {
     }
   }
 
+  // ─── Momentec /v2/ShippingCost (real freight quote) ───
+  // service=shipping-cost&env=stage|prod — body is the shipping-cost request (built by
+  // buildMomentecShippingCostRequest in src/momentecOrder.js). Mirrors the service=order
+  // block: credentials injected server-side, never sent by the client.
+  if (event.queryStringParameters?.service === 'shipping-cost') {
+    const v = await verifyUser(event);
+    if (!v.ok) return { statusCode: v.status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: v.error }) };
+    const env = (event.queryStringParameters?.env || 'stage').toLowerCase();
+    const host = V2_HOSTS[env];
+    if (!host) return { statusCode: 400, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: `Unknown Momentec env "${env}". Use stage or prod.` }) };
+    const logonId = process.env.MOMENTEC_LOGON_ID;
+    const password = process.env.MOMENTEC_PASSWORD;
+    if (!logonId || !password) return { statusCode: 500, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'MOMENTEC_LOGON_ID and MOMENTEC_PASSWORD not configured in environment variables' }) };
+    let payload;
+    try { payload = JSON.parse(event.body || '{}'); }
+    catch { return { statusCode: 400, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Momentec shipping-cost requires a JSON body.' }) }; }
+    if (!Array.isArray(payload.asgOrderSubmitProducts) || payload.asgOrderSubmitProducts.length === 0) {
+      return { statusCode: 400, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Momentec shipping-cost payload missing asgOrderSubmitProducts.' }) };
+    }
+    // Inject credentials server-side — never trust client-supplied creds.
+    payload.logonId = logonId;
+    payload.password = password;
+    try {
+      console.log(`[Momentec] shipping-cost → ${host}/v2/ShippingCost (env: ${env}, items: ${payload.asgOrderSubmitProducts.length})`);
+      const resp = await fetch(`${host}/v2/ShippingCost`, {
+        method: 'POST',
+        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const text = await resp.text();
+      let json; try { json = JSON.parse(text); } catch { json = null; }
+      const shippingCost = json ? Number(json.shippingCost) : NaN;
+      if (resp.ok && json && Number.isFinite(shippingCost)) {
+        return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ok: true, env, shippingCost }) };
+      }
+      console.error('[Momentec] shipping-cost failed:', resp.status, text.slice(0, 800));
+      return { statusCode: resp.ok ? 400 : resp.status, headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ error: (json && (json.message || json.error)) || `Momentec shipping-cost failed (${resp.status})`, raw: text.slice(0, 800) }) };
+    } catch (error) {
+      return { statusCode: 500, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: `Momentec shipping-cost call failed: ${error.message}` }) };
+    }
+  }
+
   // ─── Momentec order verification (GET /v2/Order + /v2/OrderLines) ───
   // service=order-details&env=stage|prod&ecomOrderId=… (or invoiceOrderId=…) — reads back
   // what Momentec actually registered for an order: header status/CO#/tracking plus every
