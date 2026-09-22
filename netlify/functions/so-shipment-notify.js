@@ -20,7 +20,7 @@
 // Layout lives in _soShipmentEmail.js (pure, unit-tested); this file is the IO.
 
 const { verifyUser } = require('./_shared');
-const { buildSoShipmentEmail, buildShipmentLines, carrierLabel } = require('./_soShipmentEmail');
+const { buildSoShipmentEmail, buildShipmentLines, carrierLabel, garmentMockKey } = require('./_soShipmentEmail');
 
 const HEADERS = { 'Content-Type': 'application/json' };
 const PORTAL_BASE = 'https://nationalsportsapparel.com/coach';
@@ -46,23 +46,14 @@ const unitsIn = (items) => (items || []).reduce((a, it) => a
   + Object.values((it && it.sizes) || {}).reduce((b, q) => b + (Number(q) || 0), 0), 0);
 
 // "Hoodies · 46 pcs" — what's in the box, in the coach's words. One style names
-// itself; several are counted.
-function contentsSummary(items) {
-  const names = [...new Set((items || []).map((it) => String((it && it.name) || (it && it.sku) || '').trim()).filter(Boolean))];
+// itself; several are counted. `nameFor` maps a box item to the same cleaned
+// product name the item card shows, so the two never disagree.
+function contentsSummary(items, nameFor) {
+  const names = [...new Set((items || []).map((it) => String((nameFor && nameFor(it)) || (it && it.name) || (it && it.sku) || '').trim()).filter(Boolean))];
   const units = unitsIn(items);
   const label = names.length === 1 ? names[0] : `${names.length} styles`;
   if (!names.length) return units ? `${units} pcs` : '';
   return `${label} · ${units} pcs`;
-}
-
-// The coach greeting. A contact filed as the coach is addressed the way the
-// school does it ("Coach Ramirez"); anyone else gets their first name.
-function greetingName(contact) {
-  const name = String((contact && contact.name) || '').trim();
-  if (!name) return '';
-  const role = String((contact && contact.role) || '');
-  if (/coach/i.test(role)) return 'Coach ' + name.split(/\s+/).pop();
-  return name.split(/\s+/)[0];
 }
 
 /**
@@ -198,11 +189,17 @@ async function sendShipmentNotice(admin, opts = {}) {
       trackingNumber: s.tracking_number || '',
       trackingUrl: s.tracking_url || '',
       carrier: s.carrier || so._carrier || '',
-      contents: contentsSummary(s.items),
+      contents: '',
       items: s.items || [],
     }));
 
     const lines = buildShipmentLines({ packages, soItems, decorationsByItemId, artFiles });
+    // Per-box contents use the cards' cleaned names (keyed the same way the
+    // cards are), so "Box 1/3 · PosiCharge Competitor Tee · 60 pcs" matches the
+    // card above it instead of repeating the raw catalog string.
+    const nameByKey = new Map(lines.map((l) => [garmentMockKey({ sku: l.sku, name: l.name, color: l.color }), l.name]));
+    const nameFor = (it) => nameByKey.get(garmentMockKey(it)) || '';
+    packages.forEach((p) => { p.contents = contentsSummary(p.items, nameFor); });
     if (!lines.length) {
       // Boxes with no recorded contents (a manually added shipment) still carry
       // real tracking — the coach gets the tracking, just no item list.
@@ -237,7 +234,6 @@ async function sendShipmentNotice(admin, opts = {}) {
     const { subject, html } = buildSoShipmentEmail({
       order: { id: so.id },
       teamName: customer.name || '',
-      coachName: greetingName(recipient),
       shipTo,
       rep,
       lines,

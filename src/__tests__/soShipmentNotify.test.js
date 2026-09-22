@@ -160,7 +160,15 @@ test('the email is built from the order: mockup, brand, decoration, ship-to, por
   expect(html).toContain('2-color screen print, Left Chest');
   expect(html).toContain('9401 Westminster Ave');
   expect(html).toContain('coach?portal=BOLSA&amp;so=NSA-18402');
-  expect(html).toContain('Coach Ramirez');
+});
+
+test('the email is not personalized — most accounts have no first name on file', async () => {
+  rows.customer_contacts = [{ name: 'Tonya AVHS Baseball', email: 'coach@bolsa.org', role: 'Head Coach', sort_order: 0 }];
+  await call({ soId: 'NSA-18402' });
+  const html = sentHtml();
+  expect(html).toContain('2 styles for Bolsa Grande Football left our shop');
+  expect(html).not.toContain('Tonya');
+  expect(html).not.toContain('Coach Baseball');
 });
 
 test('a rep-supplied ETA is shown; otherwise the order’s delivery date is', async () => {

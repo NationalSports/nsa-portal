@@ -144,6 +144,25 @@ function decorationSummary(decorations) {
   }).slice(0, 3).join(DOT);
 }
 
+// ── Product names ──
+// Catalog names arrive as "Sport-Tek Sport-Tek PosiCharge Competitor Tee. ST350":
+// the vendor import doubles the brand and appends the style number. The brand
+// and SKU each get their own line in the email, so the coach's copy drops a
+// leading brand (once or twice) and a trailing SKU. Anything else is left alone.
+function cleanProductName(name, brand, sku) {
+  const original = String(name || '').trim();
+  const escape = (v) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let out = original;
+  const b = String(brand || '').trim();
+  if (b) out = out.replace(new RegExp('^(?:' + escape(b) + '\\s+)+', 'i'), '');
+  const s = String(sku || '').trim();
+  if (s) out = out.replace(new RegExp('[\\s.,\\-–—]*' + escape(s) + '\\s*$', 'i'), '');
+  out = out.replace(/[.\s]+$/, '').trim();
+  // A name that was ONLY brand + style number ("Richardson PTS20") has nothing
+  // descriptive left — show it as it was rather than an empty line or a bare SKU.
+  return out || original;
+}
+
 // ── Line assembly ──
 // What actually went in the boxes, rolled up per garment. The shipment records
 // (so._shipments[].items) are the authority on quantities — an order line can be
@@ -170,11 +189,13 @@ function buildShipmentLines({ packages, soItems, decorationsByItemId, artFiles }
   return [...byKey.entries()].map(([key, line]) => {
     const soItem = soByKey.get(key) || null;
     const sizes = orderedSizes(line.sizes);
+    const brand = (soItem && soItem.brand) || '';
+    const sku = line.sku || (soItem && soItem.sku) || '';
     return {
-      brand: (soItem && soItem.brand) || '',
-      name: (soItem && soItem.name) || line.name || line.sku || 'Item',
+      brand,
+      name: cleanProductName((soItem && soItem.name) || line.name || line.sku || 'Item', brand, sku),
       color: line.color || (soItem && soItem.color) || '',
-      sku: line.sku || (soItem && soItem.sku) || '',
+      sku,
       decoration: soItem ? decorationSummary((decorationsByItemId || {})[soItem.id]) : '',
       mockupUrl: pickMockupUrl(artFiles, soItem || line),
       sizes,
@@ -289,7 +310,6 @@ function boxRowHtml(pkg, boxCount) {
 function buildSoShipmentEmail({
   order = {},
   teamName = '',
-  coachName = '',
   shipTo = null,
   rep = null,
   lines = [],
@@ -371,7 +391,7 @@ function buildSoShipmentEmail({
 ${wrap(NAVY, `<div style="font-family:${DISPLAY};font-size:12px;line-height:14px;mso-line-height-rule:exactly;letter-spacing:3px;color:${RED_LIGHT};text-transform:uppercase;font-weight:bold;">Order ${esc(order.id || '')}${shipDate ? DOT + 'Shipped ' + esc(shipDate) : ''}</div>
       ${rule(60, 4, RED)}
       <div class="h1" style="font-family:${DISPLAY};font-weight:bold;font-size:38px;line-height:40px;mso-line-height-rule:exactly;color:#ffffff;text-transform:uppercase;letter-spacing:0.5px;padding-top:14px;">Your Gear Is<br><em style="color:${RED_LIGHT};font-style:italic;">On The Way</em></div>
-      <div style="font-family:${BODY_FONT};font-size:15px;line-height:24px;mso-line-height-rule:exactly;color:#D8DDE9;padding-top:14px;">${coachName ? esc(coachName) + ' — ' : ''}${styleCount} style${styleCount === 1 ? '' : 's'} for ${esc(team)} left our shop in Orange, CA. Everything below matches your approved mockups.</div>`, '34px 40px')}
+      <div style="font-family:${BODY_FONT};font-size:15px;line-height:24px;mso-line-height-rule:exactly;color:#D8DDE9;padding-top:14px;">${styleCount} style${styleCount === 1 ? '' : 's'} for ${esc(team)} left our shop in Orange, CA. Everything below matches your approved mockups.</div>`, '34px 40px')}
 
 <!-- carrier / ETA card -->
 ${wrap('#ffffff', `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;background-color:${PANEL};border:1px solid ${HAIRLINE};">
@@ -451,6 +471,7 @@ ${wrap(FOOTER_NAVY, `<div style="font-family:${DISPLAY};font-weight:bold;font-si
 module.exports = {
   buildSoShipmentEmail,
   buildShipmentLines,
+  cleanProductName,
   pickMockupUrl,
   emailImageUrl,
   garmentMockKey,

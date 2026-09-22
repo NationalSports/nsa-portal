@@ -44,7 +44,6 @@ const lines = () => buildShipmentLines({
 const fullEmail = () => buildSoShipmentEmail({
   order: { id: 'NSA-18402' },
   teamName: 'Bolsa Grande Football',
-  coachName: 'Coach Ramirez',
   shipTo: { name: 'Bolsa Grande HS Athletics', line1: '9401 Westminster Ave', city: 'Garden Grove', state: 'CA', zip: '92844' },
   rep: { name: 'Danny Ortiz', phone: '(714) 279-8777', email: 'danny@nationalsportsapparel.com' },
   lines: lines(),
@@ -92,6 +91,32 @@ describe('shipment line assembly', () => {
   test('drops a box line that shipped zero units', () => {
     const empty = [{ index: 1, items: [{ sku: 'X', name: 'X', color: '', sizes: { M: 0 } }] }];
     expect(buildShipmentLines({ packages: empty, soItems: [], decorationsByItemId: {}, artFiles: [] })).toHaveLength(0);
+  });
+});
+
+describe('product names', () => {
+  const { cleanProductName } = require('../../netlify/functions/_soShipmentEmail');
+
+  test('drops the vendor import’s doubled brand and trailing style number', () => {
+    expect(cleanProductName('Sport-Tek Sport-Tek PosiCharge Competitor Tee. ST350', 'Sport-Tek', 'ST350'))
+      .toBe('PosiCharge Competitor Tee');
+    expect(cleanProductName('Richardson PTS20', 'Richardson', 'PTS20')).toBe('Richardson PTS20'); // nothing left → keep the name
+  });
+
+  test('leaves a clean name alone', () => {
+    expect(cleanProductName('Team Issue Pullover Hoodie', 'Adidas', 'AD-TI4287')).toBe('Team Issue Pullover Hoodie');
+    expect(cleanProductName('112 Trucker Cap', '', '')).toBe('112 Trucker Cap');
+  });
+
+  test('is applied when lines are built', () => {
+    const out = buildShipmentLines({
+      packages: [{ index: 1, items: [{ sku: 'ST350', name: 'Sport-Tek Sport-Tek PosiCharge Competitor Tee. ST350', color: 'Black', sizes: { M: 2 } }] }],
+      soItems: [{ id: 'x', sku: 'ST350', name: 'Sport-Tek Sport-Tek PosiCharge Competitor Tee. ST350', brand: 'Sport-Tek', color: 'Black' }],
+      decorationsByItemId: {}, artFiles: [],
+    });
+    expect(out[0].name).toBe('PosiCharge Competitor Tee');
+    expect(out[0].brand).toBe('Sport-Tek');
+    expect(out[0].sku).toBe('ST350');
   });
 });
 
@@ -175,7 +200,7 @@ describe('the email itself', () => {
     expect(subject).toBe('Your Bolsa Grande Football order has shipped — NSA-18402');
     expect(html).toContain('Order NSA-18402');
     expect(html).toContain('Shipped Sep 21, 2026');
-    expect(html).toContain('Coach Ramirez — 3 styles for Bolsa Grande Football');
+    expect(html).toContain('3 styles for Bolsa Grande Football left our shop');
     expect(html).toContain('Estimated delivery');
     expect(html).toContain('Wed, Sep 24');
     expect(html).toContain('Team Issue Pullover Hoodie');
