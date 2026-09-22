@@ -14891,19 +14891,38 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               // supplier, and an item with no vendor on file can't be told apart, so those stay open.
               const _itVendor=it2=>vendorList.find(v=>v.id===(it2.vendor_id||findProd(it2)?.vendor_id))?.name||'';
               const _sameVendor=it2=>{if(po.po_type==='outside_deco'||!poVendorName)return true;const iv=_itVendor(it2);return!iv||iv.trim().toLowerCase()===poVendorName.trim().toLowerCase()};
-              const addable=safeItems(o).map((it2,i2)=>({it2,i2})).filter(({it2,i2})=>!onPoIdxs.has(i2)&&!addedIdxs.has(i2)&&(it2.sku||it2.name)&&_sameVendor(it2));
-              // Units of a size still open on the order line (not picked, not on any PO).
-              const _openOf=(it2,sz)=>{const picked=safePicks(it2).reduce((a,pk)=>a+(pk[sz]||0),0);return Math.max(0,safeNum(safeSizes(it2)[sz])-picked-poCommitted(it2.po_lines,sz))};
-              // +Size picker: sizes the order line already carries come first (with their open count),
+              // What the order still needs of a size, for this PO to cover: ordered − picked − what OTHER
+              // POs (and this PO's batch-queued lines) already cover. The lines being edited here are left
+              // out, so their draft quantities can be measured against it.
+              const _editIdx=new Set(draft.lines.filter(l=>!l.queued).map(l=>l.lineIdx+':'+l.poIdx));
+              const _ordOf=(i2,sz)=>{const it2=o.items[i2]||{};const szs=safeSizes(it2);return sz==='QTY'&&!Object.keys(szs).some(k=>safeNum(szs[k])>0)?safeNum(it2.est_qty):safeNum(szs[sz])};
+              const _needOf=(i2,sz)=>{const it2=o.items[i2]||{};const picked=safePicks(it2).reduce((a,pk)=>a+(pk[sz]||0),0);const other=poCommitted((it2.po_lines||[]).filter((pl,pi)=>!_editIdx.has(i2+':'+pi)),sz);return Math.max(0,_ordOf(i2,sz)-picked-other)};
+              // What this PO had for the size before the edit — an over-order that was already there isn't re-flagged.
+              const _origOf=(i2,sz)=>poCommitted((o.items[i2]?.po_lines||[]).filter((pl,pi)=>_editIdx.has(i2+':'+pi)),sz);
+              const _draftOf=(i2,sz)=>draft.lines.filter(l=>l.lineIdx===i2&&!l.queued&&!l.removed).reduce((a,l)=>a+Math.max(0,parseInt(l.sizes[sz])||0),0)+draft.adds.filter(a=>a.itemIdx===i2).reduce((a,ad)=>a+Math.max(0,parseInt(ad.sizes[sz])||0),0);
+              const _remain=(i2,sz)=>Math.max(0,_needOf(i2,sz)-_draftOf(i2,sz));
+              const _overBy=(i2,sz)=>{const q=_draftOf(i2,sz);return q>Math.max(_needOf(i2,sz),_origOf(i2,sz))?q-_needOf(i2,sz):0};
+              const _excess=(i2,sz)=>Math.max(0,_draftOf(i2,sz)-_needOf(i2,sz));// shown on the box, including an over-order already on the PO
+              const _itSizes=i2=>{const szs=safeSizes(o.items[i2]||{});const k=Object.keys(szs).filter(sz=>safeNum(szs[sz])>0);return k.length?k.sort(_szSort):(safeNum(o.items[i2]?.est_qty)>0?['QTY']:[])};
+              // Only items the order still needs something of — a fully pulled / fully PO'd item used to be
+              // offered anyway, which is how a second size 11 got ordered on top of two already pulled.
+              const addable=safeItems(o).map((it2,i2)=>({it2,i2})).filter(({it2,i2})=>!onPoIdxs.has(i2)&&!addedIdxs.has(i2)&&(it2.sku||it2.name)&&_sameVendor(it2)&&_itSizes(i2).some(sz=>_remain(i2,sz)>0));
+              // +Size picker: sizes the order line already carries come first (with what's still needed),
               // then the rest of the item's own size run — shoes get shoe sizes, balls get ball sizes.
-              // It used to offer the apparel run to every item, burying a shoe's 13 under XXS…OSFA.
-              const _szOpts=(it2,have)=>{
+              const _szOpts=(i2,have)=>{
+                const it2=o.items[i2]||{};
                 const pool=it2.is_footwear?FOOTWEAR_SIZES:((it2.available_sizes||[]).length>0&&(it2.available_sizes||[]).every(s=>BALL_SIZES.includes(s))?BALL_SIZES:APPAREL_SIZES);
                 const onOrder=Object.keys(safeSizes(it2)).filter(sz=>safeNum(safeSizes(it2)[sz])>0&&!have.includes(sz)).sort(_szSort);
                 const rest=[...new Set([...(it2.available_sizes||[]),...pool])].filter(sz=>!have.includes(sz)&&!onOrder.includes(sz)).sort(_szSort);
-                return<>{onOrder.length>0&&<optgroup label="On this order">{onOrder.map(sz=>{const op=_openOf(it2,sz);return<option key={sz} value={sz}>{sz}{op>0?' ('+op+' open)':''}</option>})}</optgroup>}
+                return<>{onOrder.length>0&&<optgroup label="On this order">{onOrder.map(sz=>{const op=_remain(i2,sz);return<option key={sz} value={sz}>{sz}{op>0?' ('+op+' needed)':''}</option>})}</optgroup>}
                   <optgroup label="Other sizes">{rest.map(sz=><option key={sz} value={sz}>{sz}</option>)}</optgroup></>;
               };
+              // One-click buttons for sizes the order still needs and this PO doesn't cover yet.
+              const _needRow=(i2,onAdd)=>{const nd=_itSizes(i2).map(sz=>[sz,_remain(i2,sz)]).filter(([,n])=>n>0);if(!nd.length)return null;
+                return<div style={{display:'flex',gap:4,alignItems:'center',flexWrap:'wrap',marginTop:6,fontSize:10}}>
+                  <span style={{fontWeight:700,color:'#b45309'}}>Still needed on the order:</span>
+                  {nd.map(([sz,n])=><button key={sz} className="btn btn-sm" style={{fontSize:10,fontWeight:700,padding:'1px 7px',color:'#b45309',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:4}} title={'Put '+n+' × '+sz+' on this PO'} onClick={()=>onAdd(sz,n)}>+ {sz} ×{n}</button>)}
+                </div>};
               return<div style={{marginTop:8,padding:10,border:'1px dashed #7c3aed',borderRadius:6,background:'#faf5ff'}}>
                 <div style={{fontSize:11,color:'#6d28d9',marginBottom:8}}>Whatever you type is the PO's new total for that size (it can't go below what's already received). Lower a number and the difference goes back to the order as available to re-pick or put on another PO. You can also add sizes, remove lines, or pull more of this order's items onto the PO{po.po_type!=='outside_deco'&&poVendorName?' from '+poVendorName:''}.</div>
                 {draft.lines.map((ln,li)=>{
@@ -14925,16 +14944,18 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                         <input id={'po-editq-'+li+'-'+sz} style={{width:46,textAlign:'center',border:'1px solid '+(below?'#dc2626':'#c4b5fd'),borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:below?'#fef2f2':'white'}} value={ln.sizes[sz]??''} placeholder="0"
                           onChange={e=>{const v=Math.max(0,parseInt(e.target.value)||0);setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,sizes:{...l.sizes,[sz]:v}}:l)}))}}/>
                         {rcv>0&&<div style={{fontSize:9,fontWeight:700,color:below?'#dc2626':'#166534'}} title={below?'Below received — will be kept at '+rcv+' on save':'Already received'}>rcvd {rcv}</div>}
+                        {_excess(ln.lineIdx,sz)>0&&<div style={{fontSize:9,fontWeight:700,color:'#dc2626'}} title="More than the order still needs of this size (after what's been pulled and what's on other POs)">+{_excess(ln.lineIdx,sz)} over</div>}
                       </div>})}
                       <div style={{textAlign:'center'}}>
                         <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',marginBottom:2}}>+ Size</div>
                         <select value="" style={{width:84,fontSize:11,padding:'4px 2px',border:'1px dashed #c4b5fd',borderRadius:4,background:'#faf5ff',color:'#7c3aed',cursor:'pointer'}}
-                          onChange={e=>{const sz=e.target.value;if(!sz)return;setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,sizes:{...l.sizes,[sz]:l.sizes[sz]||_openOf(o.items[l.lineIdx]||{},sz)}}:l)}))}}>
+                          onChange={e=>{const sz=e.target.value;if(!sz)return;setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,sizes:{...l.sizes,[sz]:l.sizes[sz]||_remain(l.lineIdx,sz)}}:l)}))}}>
                           <option value="">add…</option>
-                          {_szOpts(o.items[ln.lineIdx]||{},lnSzKeys)}
+                          {_szOpts(ln.lineIdx,lnSzKeys)}
                         </select>
                       </div>
                     </div>
+                    {_needRow(ln.lineIdx,(sz,n)=>setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,sizes:{...l.sizes,[sz]:(Math.max(0,parseInt(l.sizes[sz])||0))+n}}:l)})))}
                   </div>})}
                 {draft.adds.map((ad,ai)=>{
                   const it2=o.items[ad.itemIdx]||{};
@@ -14954,16 +14975,18 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                         <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
                         <input style={{width:46,textAlign:'center',border:'1px solid #86efac',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:'white'}} value={ad.sizes[sz]??''} placeholder="0"
                           onChange={e=>{const v=Math.max(0,parseInt(e.target.value)||0);setDraft(d=>({...d,adds:d.adds.map((a,i)=>i===ai?{...a,sizes:{...a.sizes,[sz]:v}}:a)}))}}/>
+                        {_excess(ad.itemIdx,sz)>0&&<div style={{fontSize:9,fontWeight:700,color:'#dc2626'}} title="More than the order still needs of this size (after what's been pulled and what's on other POs)">+{_excess(ad.itemIdx,sz)} over</div>}
                       </div>)}
                       <div style={{textAlign:'center'}}>
                         <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',marginBottom:2}}>+ Size</div>
                         <select value="" style={{width:84,fontSize:11,padding:'4px 2px',border:'1px dashed #86efac',borderRadius:4,background:'#f0fdf4',color:'#166534',cursor:'pointer'}}
-                          onChange={e=>{const sz=e.target.value;if(!sz)return;setDraft(d=>({...d,adds:d.adds.map((a,i)=>i===ai?{...a,sizes:{...a.sizes,[sz]:a.sizes[sz]||_openOf(o.items[a.itemIdx]||{},sz)}}:a)}))}}>
+                          onChange={e=>{const sz=e.target.value;if(!sz)return;setDraft(d=>({...d,adds:d.adds.map((a,i)=>i===ai?{...a,sizes:{...a.sizes,[sz]:a.sizes[sz]||_remain(a.itemIdx,sz)}}:a)}))}}>
                           <option value="">add…</option>
-                          {_szOpts(it2,adSzKeys)}
+                          {_szOpts(ad.itemIdx,adSzKeys)}
                         </select>
                       </div>
                     </div>
+                    {_needRow(ad.itemIdx,(sz,n)=>setDraft(d=>({...d,adds:d.adds.map((a,i)=>i===ai?{...a,sizes:{...a.sizes,[sz]:(Math.max(0,parseInt(a.sizes[sz])||0))+n}}:a)})))}
                   </div>})}
                 {addable.length>0&&<div style={{marginTop:4,marginBottom:8}}>
                   <div style={{fontSize:10,fontWeight:700,color:'#6d28d9',textTransform:'uppercase',marginBottom:4}}>Add another item from this order</div>
@@ -14971,13 +14994,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                     {addable.map(({it2,i2})=>{
                       const cat=findProd(it2);
                       return<div key={i2} style={{padding:'4px 8px',borderRadius:5,cursor:'pointer',border:'1px dashed #94a3b8',background:'white',fontSize:11,display:'flex',gap:4,alignItems:'center'}} onClick={()=>{
-                        const open={};
-                        Object.entries(safeSizes(it2)).forEach(([sz,v])=>{if(safeNum(v)<=0)return;const picked=safePicks(it2).reduce((a,pk)=>a+(pk[sz]||0),0);const cm=poCommitted(it2.po_lines,sz);open[sz]=Math.max(0,safeNum(v)-picked-cm)});
-                        if(Object.keys(open).length===0&&safeNum(it2.est_qty)>0){const picked=safePicks(it2).reduce((a,pk)=>a+(pk['QTY']||0),0);const cm=poCommitted(it2.po_lines,'QTY');open['QTY']=Math.max(0,safeNum(it2.est_qty)-picked-cm)}
-                        // Every size fully picked / already on another PO (or the item carries no sized
-                        // qty yet) left the added row with NO boxes at all — nothing to type into, so the
-                        // item could never actually be added. Always seed something editable.
-                        if(Object.keys(open).length===0){const seed=Object.keys(safeSizes(it2));(seed.length?seed:['QTY']).forEach(sz=>{open[sz]=0})}
+                        const open={};_itSizes(i2).forEach(sz=>{const n=_remain(i2,sz);if(n>0)open[sz]=n});
                         setDraft(d=>({...d,adds:[...d.adds,{itemIdx:i2,sku:it2.sku||'',name:it2.name||'',color:it2.color||'',sizes:open,unit_cost:safeNum(cat?.nsa_cost??it2.nsa_cost)}]}));
                       }}>
                         <span style={{color:'#16a34a',fontWeight:800,fontSize:13}}>+</span>
@@ -14986,7 +15003,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                         {it2.color&&<span style={{color:'#64748b'}}>{it2.color}</span>}
                       </div>})}
                   </div>
-                  <div style={{fontSize:9,color:'#94a3b8',marginTop:4}}>Quantities default to each size's open (not yet picked or on a PO) amount — adjust them above after adding.{po.po_type!=='outside_deco'&&poVendorName?' Only '+poVendorName+' items are listed.':''} Need a SKU that isn't on this order yet? Add it on the Items tab first, then pull it onto the PO here.</div>
+                  <div style={{fontSize:9,color:'#94a3b8',marginTop:4}}>Quantities default to what the order still needs of each size (not yet pulled or on a PO) — adjust them above after adding.{po.po_type!=='outside_deco'&&poVendorName?' Only '+poVendorName+' items are listed.':''} Need a SKU that isn't on this order yet? Add it on the Items tab first, then pull it onto the PO here.</div>
                 </div>}
                 <div style={{display:'flex',gap:6,marginTop:8}}>
                   <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',fontSize:11,fontWeight:700}} onClick={()=>{
@@ -14994,6 +15011,13 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                     // the PO saved "successfully" and the item simply wasn't on it. Say so instead.
                     const _emptyAdds=draft.adds.filter(ad=>!Object.values(ad.sizes||{}).some(v=>Math.max(0,parseInt(v)||0)>0));
                     if(_emptyAdds.length){nf('Enter a quantity for '+_emptyAdds.map(a=>a.sku||a.name||'the added item').join(', ')+' — an item with no quantity cannot be added to the PO','error');return}
+                    // Ordering more than the order needs (already pulled from inventory or on another PO) is
+                    // almost always a mistake — make the rep say so before it goes to the vendor.
+                    const _overs=[];[...new Set([...draft.lines.filter(l=>!l.queued&&!l.removed).map(l=>l.lineIdx),...draft.adds.map(a=>a.itemIdx)])].forEach(i2=>{
+                      const szs=new Set();draft.lines.filter(l=>l.lineIdx===i2&&!l.queued&&!l.removed).forEach(l=>Object.keys(l.sizes).forEach(k=>szs.add(k)));draft.adds.filter(a=>a.itemIdx===i2).forEach(a=>Object.keys(a.sizes).forEach(k=>szs.add(k)));
+                      szs.forEach(sz=>{const ob=_overBy(i2,sz);if(ob>0)_overs.push((o.items[i2]?.sku||'item')+' '+(sz==='QTY'?'':sz+' ')+'(+'+ob+')')});
+                    });
+                    if(_overs.length&&!window.confirm('This orders more than the order needs — already pulled from inventory or on another PO:\n\n'+_overs.join('\n')+'\n\nOrder the extra anyway?'))return;
                     const items2=o.items.map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
                     let clampedAny=false;const willRemove=[];
                     draft.lines.forEach(ln=>{
