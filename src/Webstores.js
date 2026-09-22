@@ -6565,6 +6565,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
         : (Number(String(a.id).replace(/\D/g, '')) || 0) - (Number(String(b.id).replace(/\D/g, '')) || 0));
   })();
 
+  const [labelAllRequested, setLabelAllRequested] = useState(false); // More ▾ → Create all labels
   // Primary tabs stay visible; the rest tuck into a "More ▾" menu. Store settings
   // live behind the header ⚙ Settings button (the rich editor), not a tab.
   const PRIMARY_TABS = [
@@ -6586,7 +6587,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
   const tabsButtons = (
     <>
       {PRIMARY_TABS.map((t) => <button key={t.id} className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab(t.id)}>{t.label}</button>)}
-      <MenuButton label="More" primary={MORE_TABS.some((t) => t.id === tab)} items={MORE_TABS.map((t) => ({ label: t.label, onClick: () => setTab(t.id) }))} />
+      <MenuButton label="More" primary={MORE_TABS.some((t) => t.id === tab)} items={[...MORE_TABS.map((t) => ({ label: t.label, onClick: () => setTab(t.id) })), { divider: true }, { label: '🏷️ Create all labels', title: 'Buy and print a shipping label for every ship-to-home order that has items ready', onClick: () => { setTab('orders'); setLabelAllRequested(true); } }]} />
     </>
   );
   // product_id -> stock (warehouse + Adidas) for the batch health check.
@@ -6727,7 +6728,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
           {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} teamHexes={[...new Set([...(detail?.storeColors || []).map((pc) => pc && pc.hex), s.primary_color, s.accent_color].filter(Boolean))]} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddGrouped={onAddGrouped} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onBulkRemove={onBulkRemove} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onRemoveColor={onRemoveColor} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
           {tab === 'appearance' && <ShowcaseAppearanceTab store={s} onFlash={onFlash} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onSaveArtFolder={onAddStoreArtFolder} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
-          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} nameByPid={nameByPid} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onPlayerReportPdf={onPlayerReportPdf} onPlayerReportCondensed={onPlayerReportCondensed} onStockReport={onStockReport} onProductReport={onProductReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
+          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} nameByPid={nameByPid} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onPlayerReportPdf={onPlayerReportPdf} onPlayerReportCondensed={onPlayerReportCondensed} onStockReport={onStockReport} onProductReport={onProductReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} labelAllRequested={labelAllRequested} onLabelAllHandled={() => setLabelAllRequested(false)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
@@ -13894,7 +13895,7 @@ function webstoreShortGate(items, what) {
   return true;
 }
 
-function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onPlayerReportPdf, onPlayerReportCondensed, onStockReport, onProductReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, soBatch = {}, onOpenSO, focusOrderId = null, msgTagIds = [] }) {
+function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onPlayerReportPdf, onPlayerReportCondensed, onStockReport, onProductReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, soBatch = {}, onOpenSO, focusOrderId = null, msgTagIds = [], labelAllRequested = false, onLabelAllHandled }) {
   const [q, setQ] = useState('');
   // Per-order customer message threads (same shared `messages` table the OMG
   // portal and the public order page use).
@@ -13904,6 +13905,7 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
   // Per-order shipping label (no Bagging Station, no batch needed).
   const [labelBusy, setLabelBusy] = useState(null);   // order id being labeled
   const [labelMsg, setLabelMsg] = useState({});       // order id -> status line
+  const [bulkMsg, setBulkMsg] = useState('');         // "Create all labels" progress / result
   const [shipFrom, setShipFrom] = useState(shipFromCode(store && store.ship_from_code));
   const decoLocs = useDecoShipFromLocations();
   const [labelCat, setLabelCat] = useState({ weightByPid: {}, imageByPid: {} });
@@ -13981,6 +13983,23 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
   };
   // Ship-to-home and still live — the only orders a label makes sense for.
   const canLabel = (o) => o.ship_method === 'ship_home' && isLiveWebstoreOrder(o);
+  // Buy one order's label and lock it in. The label is bought and paid for once
+  // createWebstoreLabel returns, so mark it on the LIVE line objects and the order
+  // BEFORE printing or recording: if either of those fails, the plan must
+  // recompute to "nothing left" so a retry cannot buy a second label for a parcel
+  // that already has one. Shared by the single-order button and "Create all labels".
+  const buyOrderLabel = async (o, plan, cat) => {
+    const shipItems = plan.map((x) => ({ ...x.item, qty: x.qty }));
+    const label = await createWebstoreLabel(o, shipItems, store, cat.weightByPid, cat.imageByPid, shipFrom, decoLocs);
+    plan.forEach((x) => { x.item.shipped_qty = (Number(x.item.shipped_qty) || 0) + x.qty; });
+    o.label_data = label.labelData || o.label_data;
+    o.shipstation_shipment_id = label.shipmentId || o.shipstation_shipment_id;
+    o.tracking_number = label.trackingNumber || o.tracking_number;
+    o.carrier = label.carrier || o.carrier;
+    o.label_cost = label.cost != null ? label.cost : o.label_cost;
+    o.ship_from_code = label.shipFromCode;
+    return { label, shipItems };
+  };
   // Buy and print a label for ONE order, straight from this tab — no bag scan and
   // no batch. Ships only what's in hand: already-shipped and held-short units stay
   // behind and the order stays open so the rest can go later.
@@ -14006,20 +14025,8 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
     if (!window.confirm(`Buy a ${String(store.shipstation_carrier || 'fedex').toUpperCase()} label for ${units} item${units === 1 ? '' : 's'} to ${o.buyer_name || 'this buyer'}?\n\nShips from: ${shipFromLabel(shipFrom, decoLocs)} — ${shipFromAddressLine(shipFrom, decoLocs)}\n\nThis charges the ShipStation account.`)) return;
     setLabelBusy(o.id);
     setLabelMsg((m) => ({ ...m, [o.id]: 'Creating label…' }));
-    const shipItems = plan.map((x) => ({ ...x.item, qty: x.qty }));
     try {
-      const label = await createWebstoreLabel(o, shipItems, store, labelCat.weightByPid, labelCat.imageByPid, shipFrom, decoLocs);
-      // The label is bought and paid for from here on. Lock that in on the LIVE
-      // line objects and the order BEFORE printing or recording: if either of
-      // those fails, the plan must recompute to "nothing left" so a retry click
-      // cannot buy a second label for a parcel that already has one.
-      plan.forEach((x) => { x.item.shipped_qty = (Number(x.item.shipped_qty) || 0) + x.qty; });
-      o.label_data = label.labelData || o.label_data;
-      o.shipstation_shipment_id = label.shipmentId || o.shipstation_shipment_id;
-      o.tracking_number = label.trackingNumber || o.tracking_number;
-      o.carrier = label.carrier || o.carrier;
-      o.label_cost = label.cost != null ? label.cost : o.label_cost;
-      o.ship_from_code = label.shipFromCode;
+      const { label, shipItems } = await buyOrderLabel(o, plan, labelCat);
       // Print before recording: a recording hiccup must never cost the operator the PDF.
       if (label.labelData) { try { await printPdfLabels([label.labelData]); } catch {} }
       try {
@@ -14034,6 +14041,79 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
       setLabelMsg((m) => ({ ...m, [o.id]: 'Label failed: ' + ((e && e.message) || 'unknown error') }));
     } finally { setLabelBusy(null); }
   };
+  // "Create all labels" (store More ▾ menu): one label per ship-to-home order that
+  // has something in hand to ship, same guards as the single-order button — live
+  // orders only, validated address, held-short and already-shipped units stay
+  // behind, one open-short gate for the whole run. All PDFs print as one file.
+  const createAllLabels = async () => {
+    if (labelBusy || !store) return;
+    const byOrder = {};
+    orderItems.forEach((i) => { (byOrder[i.order_id] = byOrder[i.order_id] || []).push(i); });
+    const ready = []; const badAddr = [];
+    orders.filter(canLabel).forEach((o) => {
+      const plan = webstoreShipPlan(byOrder[o.id]);
+      if (!plan.length) return;
+      const addrErr = validateShipAddress(o.ship_address);
+      if (addrErr) { badAddr.push(o); setLabelMsg((m) => ({ ...m, [o.id]: addrErr })); return; }
+      ready.push({ o, plan, items: byOrder[o.id] || [] });
+    });
+    const skipNote = badAddr.length ? ` ${badAddr.length} skipped for a bad address (${badAddr.map((o) => o.buyer_name || o.id).join(', ')}).` : '';
+    if (!ready.length) {
+      setBulkMsg(orders.some((o) => o.ship_method === 'ship_home')
+        ? 'No ship-to-home orders are ready for a label — everything is already shipped, held short, or not paid.' + skipNote
+        : 'This store has no ship-to-home orders — its orders are delivered to the team, so there is nothing to label.');
+      return;
+    }
+    if (!webstoreShortGate(ready.flatMap((r) => r.items), `${ready.length} order${ready.length === 1 ? '' : 's'}`)) return;
+    const units = ready.reduce((a, r) => a + r.plan.reduce((b, x) => b + x.qty, 0), 0);
+    if (!window.confirm(`Buy ${ready.length} ${String(store.shipstation_carrier || 'fedex').toUpperCase()} label${ready.length === 1 ? '' : 's'} (${units} item${units === 1 ? '' : 's'} total)?\n\nShips from: ${shipFromLabel(shipFrom, decoLocs)} — ${shipFromAddressLine(shipFrom, decoLocs)}${badAddr.length ? `\n\n${badAddr.length} order${badAddr.length === 1 ? '' : 's'} will be skipped for a bad address.` : ''}\n\nThis charges the ShipStation account.`)) return;
+    setLabelBusy('all');
+    // Fresh weights/photos: the tab's own copy may still be loading when the run
+    // is started straight from the menu, and weight is what the carrier bills.
+    let cat = labelCat;
+    try {
+      const { data } = await supabase.from('webstore_products').select('product_id,weight_oz,image_url').eq('store_id', store.id);
+      const weightByPid = {}; const imageByPid = {};
+      (data || []).forEach((c) => {
+        if (!c.product_id) return;
+        if (c.weight_oz != null) weightByPid[c.product_id] = Number(c.weight_oz) || 0;
+        if (c.image_url) imageByPid[c.product_id] = c.image_url;
+      });
+      cat = { weightByPid, imageByPid };
+    } catch {}
+    const pdfs = []; const failed = []; const unrecorded = [];
+    for (let n = 0; n < ready.length; n++) {
+      const { o, plan } = ready[n];
+      const who = o.buyer_name || o.buyer_email || o.id;
+      setBulkMsg(`Creating label ${n + 1} of ${ready.length} (${who})…`);
+      let bought;
+      try { bought = await buyOrderLabel(o, plan, cat); }
+      catch (e) { failed.push(who); setLabelMsg((m) => ({ ...m, [o.id]: 'Label failed: ' + ((e && e.message) || 'unknown error') })); continue; }
+      const { label, shipItems } = bought;
+      if (label.labelData) pdfs.push(label.labelData);
+      try {
+        await recordCreatedWebstoreLabel(o, shipItems, label);
+        setLabelMsg((m) => ({ ...m, [o.id]: `Label created${label.trackingNumber ? ' · ' + label.trackingNumber : ''}.` }));
+      } catch (e) {
+        unrecorded.push(who);
+        setLabelMsg((m) => ({ ...m, [o.id]: `Label BOUGHT and printed${label.trackingNumber ? ' (' + label.trackingNumber + ')' : ''}, but recording it failed: ${(e && e.message) || 'unknown error'}. Do not create another label — the ShipStation webhook will catch it up, or reload and use Reprint.` }));
+      }
+    }
+    if (pdfs.length) { try { await printPdfLabels(pdfs); } catch {} }
+    const made = ready.length - failed.length;
+    setBulkMsg(`${made} label${made === 1 ? '' : 's'} created and sent to print.`
+      + (failed.length ? ` ${failed.length} failed (${failed.join(', ')}) — open the order to see why.` : '')
+      + (unrecorded.length ? ` ${unrecorded.length} BOUGHT but not recorded (${unrecorded.join(', ')}) — do not re-create them.` : '')
+      + skipNote + ' Refresh to update order statuses.');
+    setLabelBusy(null);
+  };
+  // The menu's request arrives as a flag, so it runs exactly once even when this
+  // tab mounts because of the same click.
+  useEffect(() => {
+    if (!labelAllRequested) return;
+    if (onLabelAllHandled) onLabelAllHandled();
+    createAllLabels();
+  }, [labelAllRequested]); // eslint-disable-line react-hooks/exhaustive-deps
   // Reprint the order's last saved label (no re-buy).
   const reprintLabel = async (o) => { if (!o.label_data) return; try { await printPdfLabels([o.label_data]); } catch {} };
   // Void the order's last label in ShipStation and reopen the shipped lines.
@@ -14157,6 +14237,10 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
               Create Batch ({unbatchedCount})
             </button>}
       </div>
+      {bulkMsg && <div style={{ marginBottom: 10, padding: '8px 12px', borderRadius: 8, border: '1px solid #bbf7d0', background: '#f0fdf4', color: '#166534', fontSize: 12.5, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span style={{ flex: 1 }}>🏷️ {bulkMsg}</span>
+        {labelBusy !== 'all' && <button className="btn btn-sm btn-secondary" onClick={() => setBulkMsg('')}>Dismiss</button>}
+      </div>}
       <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>Showing {filtered.length} of {listable.length} orders.</div>
       <div className="card"><div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -14221,7 +14305,7 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
                     <div style={{ marginTop: 8, fontSize: 11.5, color: '#94a3b8' }}>Lines marked short are held back when you create shipping labels — the order stays open so you can ship the rest later.</div>
                     {(o.label_cost != null || o.tracking_number) && <div style={{ marginTop: 8, fontSize: 11.5, color: '#475569' }}><span style={{ color: '#94a3b8' }}>Label </span><b>{o.label_cost != null ? money(o.label_cost) : '—'}</b>{o.carrier ? ' · ' + String(o.carrier).toUpperCase().replace('STAMPS_COM', 'USPS') : ''}{o.tracking_number ? ' · ' + o.tracking_number : ''}{o.ship_from_code ? ' · from ' + shipFromLabel(o.ship_from_code, decoLocs) : ''}</div>}
                     {(canLabel(o) || o.label_data || o.shipstation_shipment_id) && <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-                      {canLabel(o) && <button className="btn btn-sm btn-secondary" disabled={labelBusy === o.id} onClick={() => createOrderLabel(o, items)}>{labelBusy === o.id ? 'Creating…' : '🏷️ Create & print label'}</button>}
+                      {canLabel(o) && <button className="btn btn-sm btn-secondary" disabled={!!labelBusy} onClick={() => createOrderLabel(o, items)}>{labelBusy === o.id ? 'Creating…' : '🏷️ Create & print label'}</button>}
                       {canLabel(o) && <ShipFromPicker value={shipFrom} onChange={setShipFrom} decoLocations={decoLocs} compact />}
                       {o.label_data && <button className="btn btn-sm btn-secondary" onClick={() => reprintLabel(o)}>🔁 Reprint label</button>}
                       {o.shipstation_shipment_id && <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c', borderColor: '#fecaca' }} onClick={() => voidLabel(o)}>✖ Void label</button>}
