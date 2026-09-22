@@ -1,0 +1,57 @@
+name: Claude Issue Triage
+
+# Runs automatically whenever a new issue is opened — no @claude tag needed.
+# Claude reads the issue, looks at the relevant code, and posts its assessment
+# as a comment on the issue. It does NOT change code or open PRs yet — this is
+# "observe mode" so the team can judge the quality of the triage first.
+
+on:
+  issues:
+    types: [opened]
+  # Lets you re-run triage on an existing issue from the Actions tab if needed.
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to triage'
+        required: true
+
+permissions:
+  contents: read      # read the repo to investigate the issue
+  issues: write       # post the triage comment
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Triage the issue
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            A new issue (#${{ github.event.issue.number }}) was opened in this
+            repository. Triage it and post ONE comment with your assessment.
+
+            Do this:
+            1. Read the issue title and body with `gh issue view ${{ github.event.issue.number }}`.
+            2. Search the codebase to understand whether the report is real and
+               where the relevant code lives.
+            3. Post a single comment using
+               `gh issue comment ${{ github.event.issue.number }} --body "..."`
+               structured as:
+               - **Verdict**: Real bug / Feature request / Question / Not reproducible / Duplicate / Not actionable
+               - **Priority**: High / Medium / Low (skip if not a bug)
+               - **What's going on**: 1-3 sentences, referencing specific files/lines where you can.
+               - **Suggested fix**: a short, concrete approach (do NOT change any code).
+               - **Confidence**: High / Medium / Low, and what would raise it.
+
+            Rules:
+            - If the issue is vague, spam, a duplicate, or not a real problem,
+              say so plainly and keep it brief — don't invent work.
+            - Do NOT edit files, push branches, or open pull requests. Comment only.
+            - Be concise. This is a triage note, not an essay.
+          claude_args: |
+            --allowed-tools "Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh search:*),Read,Grep,Glob"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
