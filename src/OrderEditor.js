@@ -14888,6 +14888,18 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               const onPoIdxs=new Set(draft.lines.map(l=>l.lineIdx));
               const addedIdxs=new Set(draft.adds.map(a=>a.itemIdx));
               const addable=safeItems(o).map((it2,i2)=>({it2,i2})).filter(({it2,i2})=>!onPoIdxs.has(i2)&&!addedIdxs.has(i2)&&(it2.sku||it2.name));
+              // Units of a size still open on the order line (not picked, not on any PO).
+              const _openOf=(it2,sz)=>{const picked=safePicks(it2).reduce((a,pk)=>a+(pk[sz]||0),0);return Math.max(0,safeNum(safeSizes(it2)[sz])-picked-poCommitted(it2.po_lines,sz))};
+              // +Size picker: sizes the order line already carries come first (with their open count),
+              // then the rest of the item's own size run — shoes get shoe sizes, balls get ball sizes.
+              // It used to offer the apparel run to every item, burying a shoe's 13 under XXS…OSFA.
+              const _szOpts=(it2,have)=>{
+                const pool=it2.is_footwear?FOOTWEAR_SIZES:((it2.available_sizes||[]).length>0&&(it2.available_sizes||[]).every(s=>BALL_SIZES.includes(s))?BALL_SIZES:APPAREL_SIZES);
+                const onOrder=Object.keys(safeSizes(it2)).filter(sz=>safeNum(safeSizes(it2)[sz])>0&&!have.includes(sz)).sort(_szSort);
+                const rest=[...new Set([...(it2.available_sizes||[]),...pool])].filter(sz=>!have.includes(sz)&&!onOrder.includes(sz)).sort(_szSort);
+                return<>{onOrder.length>0&&<optgroup label="On this order">{onOrder.map(sz=>{const op=_openOf(it2,sz);return<option key={sz} value={sz}>{sz}{op>0?' ('+op+' open)':''}</option>})}</optgroup>}
+                  <optgroup label="Other sizes">{rest.map(sz=><option key={sz} value={sz}>{sz}</option>)}</optgroup></>;
+              };
               return<div style={{marginTop:8,padding:10,border:'1px dashed #7c3aed',borderRadius:6,background:'#faf5ff'}}>
                 <div style={{fontSize:11,color:'#6d28d9',marginBottom:8}}>Whatever you type is the PO's new total for that size (it can't go below what's already received). Lower a number and the difference goes back to the order as available to re-pick or put on another PO. You can also add sizes, remove lines, or pull more of this order's items onto the PO — including SKUs assigned to other vendors.</div>
                 {draft.lines.map((ln,li)=>{
@@ -14898,7 +14910,6 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                     <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,removed:false}:l)}))}>Undo remove</button>
                   </div>;
                   const lnSzKeys=[...new Set([...Object.keys(ln.sizes),...Object.keys(ln.received).filter(sz=>safeNum(ln.received[sz])>0)])].sort(_szSort);
-                  const addableSz=[...new Set([...Object.keys(safeSizes(o.items[ln.lineIdx]||{})),...APPAREL_SIZES])].filter(sz=>!lnSzKeys.includes(sz)).sort(_szSort);
                   return<div key={li} style={{padding:8,background:'white',border:'1px solid #e2e8f0',borderRadius:4,marginBottom:6}}>
                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6,gap:8,flexWrap:'wrap'}}>
                       <div style={{fontSize:12,fontWeight:700}}><span style={{fontFamily:'monospace',color:'#1e40af'}}>{ln.sku}</span> {ln.name}{ln.color?' — '+ln.color:''}</div>
@@ -14913,10 +14924,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                       </div>})}
                       <div style={{textAlign:'center'}}>
                         <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',marginBottom:2}}>+ Size</div>
-                        <select value="" style={{width:62,fontSize:11,padding:'4px 2px',border:'1px dashed #c4b5fd',borderRadius:4,background:'#faf5ff',color:'#7c3aed',cursor:'pointer'}}
-                          onChange={e=>{const sz=e.target.value;if(!sz)return;setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,sizes:{...l.sizes,[sz]:l.sizes[sz]||0}}:l)}))}}>
+                        <select value="" style={{width:84,fontSize:11,padding:'4px 2px',border:'1px dashed #c4b5fd',borderRadius:4,background:'#faf5ff',color:'#7c3aed',cursor:'pointer'}}
+                          onChange={e=>{const sz=e.target.value;if(!sz)return;setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,sizes:{...l.sizes,[sz]:l.sizes[sz]||_openOf(o.items[l.lineIdx]||{},sz)}}:l)}))}}>
                           <option value="">add…</option>
-                          {addableSz.map(sz=><option key={sz} value={sz}>{sz}</option>)}
+                          {_szOpts(o.items[ln.lineIdx]||{},lnSzKeys)}
                         </select>
                       </div>
                     </div>
@@ -14924,7 +14935,6 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                 {draft.adds.map((ad,ai)=>{
                   const it2=o.items[ad.itemIdx]||{};
                   const adSzKeys=Object.keys(ad.sizes).sort(_szSort);
-                  const addableSz=[...new Set([...Object.keys(safeSizes(it2)),...APPAREL_SIZES])].filter(sz=>!adSzKeys.includes(sz)).sort(_szSort);
                   return<div key={'a'+ai} style={{padding:8,background:'#f0fdf4',border:'1px solid #86efac',borderRadius:4,marginBottom:6}}>
                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6,gap:8,flexWrap:'wrap'}}>
                       <div style={{fontSize:12,fontWeight:700}}><span style={{fontSize:9,fontWeight:800,color:'#166534',background:'#dcfce7',padding:'1px 5px',borderRadius:3,marginRight:4,verticalAlign:'middle'}}>NEW</span><span style={{fontFamily:'monospace',color:'#1e40af'}}>{ad.sku}</span> {ad.name}{ad.color?' — '+ad.color:''}</div>
@@ -14943,10 +14953,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                       </div>)}
                       <div style={{textAlign:'center'}}>
                         <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',marginBottom:2}}>+ Size</div>
-                        <select value="" style={{width:62,fontSize:11,padding:'4px 2px',border:'1px dashed #86efac',borderRadius:4,background:'#f0fdf4',color:'#166534',cursor:'pointer'}}
-                          onChange={e=>{const sz=e.target.value;if(!sz)return;setDraft(d=>({...d,adds:d.adds.map((a,i)=>i===ai?{...a,sizes:{...a.sizes,[sz]:a.sizes[sz]||0}}:a)}))}}>
+                        <select value="" style={{width:84,fontSize:11,padding:'4px 2px',border:'1px dashed #86efac',borderRadius:4,background:'#f0fdf4',color:'#166534',cursor:'pointer'}}
+                          onChange={e=>{const sz=e.target.value;if(!sz)return;setDraft(d=>({...d,adds:d.adds.map((a,i)=>i===ai?{...a,sizes:{...a.sizes,[sz]:a.sizes[sz]||_openOf(o.items[a.itemIdx]||{},sz)}}:a)}))}}>
                           <option value="">add…</option>
-                          {addableSz.map(sz=><option key={sz} value={sz}>{sz}</option>)}
+                          {_szOpts(it2,adSzKeys)}
                         </select>
                       </div>
                     </div>
