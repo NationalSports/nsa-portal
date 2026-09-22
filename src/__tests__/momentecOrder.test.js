@@ -1,7 +1,7 @@
 // Momentec order payload — recipient name on the ship-to address.
 // Momentec's spec requires firstName or lastName on every order address; orders sent
 // with both blank land nameless in their system (July 2026 support inquiry #MC0CEA).
-import { buildMomentecOrderPayload, buildMomentecOrderLines } from '../momentecOrder';
+import { buildMomentecOrderPayload, buildMomentecOrderLines, buildMomentecShippingCostRequest } from '../momentecOrder';
 
 const LINE = { key: '790|080|S', style: '790', color: '080', size: 'S', sku: '790.080.S', quantity: 2, unitPrice: 5 };
 
@@ -74,5 +74,40 @@ describe('buildMomentecOrderLines SKU stamping', () => {
     const bad = lines.find(l => l.size === '2XL');
     expect(bad.sku).toBe('');
     expect(warnings).toHaveLength(1);
+  });
+});
+
+describe('buildMomentecShippingCostRequest', () => {
+  const shipTo = { companyName: 'National Sports Apparel', attentionTo: 'Receiving', address1: '210 E Emerson Ave', address2: 'Dock 3', city: 'Orange', region: 'CA', postalCode: '92865', phone: '7145551212' };
+
+  test('maps the ship-to address the same way as the order payload', () => {
+    const req = buildMomentecShippingCostRequest({ lines: [LINE], shipTo });
+    expect(req).toMatchObject({
+      shipTo: 'National Sports Apparel',
+      shipMode: '103',
+      shipAddress1: '210 E Emerson Ave',
+      shipAddress2: 'Dock 3',
+      shipCity: 'Orange',
+      shipState: 'CA',
+      shipZip: '92865',
+      telePhone: '7145551212',
+      residence: 'N',
+      attention: 'Receiving',
+    });
+  });
+
+  test('collapses lines by SKU with quantity as a string', () => {
+    const req = buildMomentecShippingCostRequest({ lines: [LINE, { ...LINE, key: '790|080|M', size: 'M', quantity: 1 }], shipTo });
+    expect(req.asgOrderSubmitProducts).toEqual([{ sku: '790.080.S', quantity: '3' }]);
+  });
+
+  test('skips lines with no sku', () => {
+    const req = buildMomentecShippingCostRequest({ lines: [LINE, { ...LINE, key: '790|080|M', size: 'M', sku: '', quantity: 1 }], shipTo });
+    expect(req.asgOrderSubmitProducts).toEqual([{ sku: '790.080.S', quantity: '2' }]);
+  });
+
+  test('honors a custom shipMode', () => {
+    const req = buildMomentecShippingCostRequest({ lines: [LINE], shipTo, shipMode: '107' });
+    expect(req.shipMode).toBe('107');
   });
 });

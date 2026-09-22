@@ -15,10 +15,10 @@ import WarehouseChips, {
   shipToCoords, warehouseCoords, milesBetween, SANMAR_WAREHOUSE_INFO,
 } from './WarehouseChips';
 import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
-import { NSA, NSA_WAREHOUSE } from './constants';
+import { NSA, NSA_WAREHOUSE, BATCH_VENDORS } from './constants';
 import { apiLineSourceKey } from './lib/apiOrderLines';
-import { collapseVendorLines } from './lib/vendorOrderGuards';
-import { DuplicateMergeWarning } from './VendorOrderGuardPanels';
+import { collapseVendorLines, freeShipGap } from './lib/vendorOrderGuards';
+import { DuplicateMergeWarning, FreeShipNotice } from './VendorOrderGuardPanels';
 
 // SanMar Option 3, "Warehouse Selection": the rep names the warehouse and it rides
 // on each line as <shar:fobId>. It only takes effect once SanMar reconfigures our
@@ -409,7 +409,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
           {done ? (
             <div style={{ padding: 14, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, marginBottom: 12, fontSize: 13, color: '#166534' }}>
               <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 6 }}>✓ Order placed with SanMar{isLive ? '' : ' (TEST)'}</div>
-              <div>SanMar accepted the order and returned a transaction ID. A confirmation email will follow to your shipping-notification address.</div>
+              <div>SanMar accepted the order and returned a transaction ID. A confirmation email will follow to your shipping-notification address.{freeShipGap(BATCH_VENDORS.sanmar?.threshold, totals.totalCost)?.under ? ' This order is under SanMar\u2019s free-shipping threshold, so expect a freight charge on the confirmation and the invoice \u2014 SanMar\u2019s API does not quote it.' : ''}</div>
               <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 <Stat label="PO Number" value={result?.orderNumber || poNumber} mono />
                 <Stat label="Transaction ID" value={result?.transactionId || '—'} mono />
@@ -632,6 +632,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
             <Stat label="Total Units" value={totals.totalQty} />
             <Stat label="Total Cost" value={'$' + totals.totalCost.toFixed(2)} />
           </div>
+          {!done && <FreeShipNotice vendorName="SanMar" gap={freeShipGap(BATCH_VENDORS.sanmar?.threshold, totals.totalCost)} />}
           {!done && shipWarning && (
             <div style={{ padding: 10, background: '#fffbeb', border: '2px solid #f59e0b', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#92400e', fontWeight: 600 }}>
               <strong>⚠ Mixed destinations in this batch.</strong> {shipWarning}

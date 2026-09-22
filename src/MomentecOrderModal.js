@@ -7,11 +7,12 @@
 // items added any way. Credentials (logonId/password) are injected server-side by
 // momentec-proxy and never appear in this payload.
 import React, { useEffect, useMemo, useState } from 'react';
-import { buildMomentecOrderPayload, buildMomentecOrderLines } from './momentecOrder';
-import { momentecSubmitOrder, momentecResolveSkus, momentecOrderDetails } from './vendorApis';
+import { buildMomentecOrderPayload, buildMomentecOrderLines, buildMomentecShippingCostRequest } from './momentecOrder';
+import { momentecSubmitOrder, momentecResolveSkus, momentecOrderDetails, momentecShippingCost } from './vendorApis';
 import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
-import { DuplicateMergeWarning } from './VendorOrderGuardPanels';
-import { NSA, NSA_WAREHOUSE } from './constants';
+import { DuplicateMergeWarning, FreeShipNotice } from './VendorOrderGuardPanels';
+import { freeShipGap } from './lib/vendorOrderGuards';
+import { NSA, NSA_WAREHOUSE, BATCH_VENDORS } from './constants';
 
 // Momentec ships integrated orders to NSA's receiving dock (caller can override via shipTo).
 const NSA_SHIP_TO = {
@@ -43,6 +44,7 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
   const [candidates, setCandidates] = useState({});     // STYLE -> [{color,colorCode,size,sku}]
   const [resolveErr, setResolveErr] = useState('');
   const [verify, setVerify] = useState({ state: 'idle', data: null, error: '' }); // post-submit read-back: idle|checking|found|missing|error
+  const [quote, setQuote] = useState(null); // pre-submit freight quote: { state:'loading'|'ok'|'error', amount?, note? } | null
 
   // Auto-selected destination plus the rep's optional hand-edited override.
   const autoShip = shipTo || NSA_SHIP_TO;
@@ -93,6 +95,25 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
   useEffect(() => { setDupAck(false); }, [dupSig]);
 
   const shipIncomplete = shipToIncomplete(ship);
+
+  // Live freight quote (POST /v2/ShippingCost) — debounced, only fetched once every line
+  // has a resolved SKU and the ship-to is complete. Never blocks submit; a failed quote
+  // just shows an error note in the free-ship panel.
+  const canQuote = !resolving && lines.length > 0 && lines.every(l => l.sku) && !shipIncomplete;
+  const quoteLinesSig = lines.map(l => `${l.sku}:${l.quantity}`).join(',');
+  useEffect(() => {
+    if (!canQuote) { setQuote(null); return; }
+    let cancelled = false;
+    setQuote({ state: 'loading' });
+    const t = setTimeout(() => {
+      const req = buildMomentecShippingCostRequest({ lines, shipTo: ship });
+      momentecShippingCost(req, env)
+        .then(amount => { if (!cancelled) setQuote({ state: 'ok', amount }); })
+        .catch(e => { if (!cancelled) setQuote({ state: 'error', note: e.message || 'lookup failed' }); });
+    }, 400);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [canQuote, quoteLinesSig, lines, ship, env]);
+
   const blocked = lines.length === 0 || warnings.length > 0 || resolving || shipIncomplete || needsDupAck;
   const done = submitState === 'success';
   const submitting = submitState === 'submitting';
@@ -188,6 +209,13 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
               <div style={{ marginTop: 10, padding: 10, borderRadius: 6, fontSize: 12, background: verify.state === 'found' ? (verifyDiff?.match ? '#f0fdf4' : verifyDiff?.problems?.length ? '#fef2f2' : '#fffbeb') : '#f8fafc', border: '1px solid ' + (verify.state === 'found' ? (verifyDiff?.match ? '#bbf7d0' : verifyDiff?.problems?.length ? '#fecaca' : '#fde68a') : '#e2e8f0') }}>
                 {verify.state === 'checking' && <span>🔄 Verifying with Momentec that the order is registered…</span>}
                 {verify.state === 'found' && verifyDiff?.match && <span style={{ color: '#166534', fontWeight: 700 }}>✓ Verified in Momentec's system{verify.data?.order?.invoiceOrderId ? <> — CO <span style={{ fontFamily: 'monospace' }}>{verify.data.order.invoiceOrderId}</span></> : ''}{verify.data?.order?.orderStatus ? ` · ${verify.data.order.orderStatus}` : ''} · every line SKU and quantity matches what we sent.</span>}
+                {verify.state === 'found' && verify.data?.order?.shippingTotal != null && (
+                  <div style={{ marginTop: 4, color: '#334155', fontWeight: 600 }}>
+                    Freight: ${Number(verify.data.order.shippingTotal).toFixed(2)}
+                    {verify.data.order.merchandisingTotal != null && <> · Merchandise: ${Number(verify.data.order.merchandisingTotal).toFixed(2)}</>}
+                    {verify.data.order.invoiceTotal != null && <> · Invoice Total: ${Number(verify.data.order.invoiceTotal).toFixed(2)}</>}
+                  </div>
+                )}
                 {verify.state === 'found' && !verifyDiff?.match && verifyDiff?.problems?.length > 0 && (
                   <div style={{ color: '#991b1b' }}>
                     <strong>⚠ Momentec registered this order DIFFERENTLY than we sent it — contact them before it ships:</strong>
@@ -260,6 +288,7 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
             <Stat label="Total Units" value={totals.totalQty} />
             <Stat label="Total Cost" value={'$' + totals.totalCost.toFixed(2)} />
           </div>
+          {!done && <FreeShipNotice vendorName="Momentec" gap={freeShipGap(BATCH_VENDORS.momentec.threshold, totals.totalCost)} quote={quote} />}
           {!done && shipWarning && (
             <div style={{ padding: 10, background: '#fffbeb', border: '2px solid #f59e0b', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#92400e', fontWeight: 600 }}>
               <strong>⚠ Mixed destinations in this batch.</strong> {shipWarning}

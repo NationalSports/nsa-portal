@@ -5,11 +5,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { buildSSOrderPayload, buildSSOrderLines } from './ssOrder';
 import { ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock } from './vendorApis';
-import { reconcileVendorLines } from './lib/vendorOrderGuards';
-import { DuplicateMergeWarning, UnacceptedLinesPanel } from './VendorOrderGuardPanels';
+import { reconcileVendorLines, freeShipGap } from './lib/vendorOrderGuards';
+import { DuplicateMergeWarning, UnacceptedLinesPanel, FreeShipNotice } from './VendorOrderGuardPanels';
 import WarehouseChips, { rankWarehouses, SS_WAREHOUSES } from './WarehouseChips';
 import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
-import { NSA, NSA_WAREHOUSE } from './constants';
+import { NSA, NSA_WAREHOUSE, BATCH_VENDORS } from './constants';
 
 // S&S ships integrated orders to NSA's receiving dock (caller can override via shipTo).
 const NSA_SHIP_TO = {
@@ -222,6 +222,8 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
               <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 <Stat label="PO Number" value={poNumber} mono />
                 <Stat label={live ? 'S&S Order #' : 'Test Order #'} value={result?.orderNumber || '—'} mono />
+                {result?.shipping != null && <Stat label={'Freight' + (result.shippingMethod ? ` (${result.shippingMethod})` : '')} value={result.shipping > 0 ? '$' + result.shipping.toFixed(2) : 'Free'} />}
+                {result?.total != null && <Stat label="S&S Order Total" value={'$' + result.total.toFixed(2)} />}
               </div>
               {bookErr && <div style={{ marginTop: 10, padding: 10, background: '#fffbeb', border: '2px solid #f59e0b', borderRadius: 8, color: '#92400e', fontWeight: 700 }}>
                 ⚠ S&S HAS this order, but the portal did NOT record it ({bookErr}).
@@ -385,6 +387,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
             <Stat label="Total Units" value={totals.totalQty} />
             <Stat label="Total Cost" value={'$' + totals.totalCost.toFixed(2)} />
           </div>
+          {!done && <FreeShipNotice vendorName="S&S" gap={freeShipGap(BATCH_VENDORS.sss?.threshold, totals.totalCost)} />}
           {!done && shipWarning && (
             <div style={{ padding: 10, background: '#fffbeb', border: '2px solid #f59e0b', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#92400e', fontWeight: 600 }}>
               <strong>⚠ Mixed destinations in this batch.</strong> {shipWarning}

@@ -135,5 +135,44 @@ export function UnacceptedLinesPanel({ reconcile, vendorName = 'the vendor', poN
   );
 }
 
+
+/**
+ * Freight line for the review screen: where the order stands against the vendor's
+ * free-shipping threshold, and — when the vendor's API can tell us — the actual freight.
+ *
+ * `gap` comes from freeShipGap (null hides the panel). `quote` is optional and vendor-
+ * specific: { state: 'loading' | 'ok' | 'error', amount?: number, note?: string }.
+ * Momentec quotes before the order (POST /v2/ShippingCost); S&S returns the charge on the
+ * order response, so it is shown after submit; SanMar's PO service returns no freight at
+ * all, so that modal only ever shows the threshold line.
+ */
+export function FreeShipNotice({ vendorName = 'the vendor', gap, quote }) {
+  if (!gap) return null;
+  const money = (n) => '$' + (Number(n) || 0).toFixed(2);
+  const quoteLine = !quote ? null
+    : quote.state === 'loading' ? <span style={{ color: '#6b7280' }}>Getting {vendorName}'s freight quote…</span>
+    : quote.state === 'error' ? <span style={{ color: '#991b1b' }}>Freight quote failed{quote.note ? ` — ${quote.note}` : ''}. The charge will still show on the bill.</span>
+    : quote.state === 'ok' ? <span><strong>{vendorName} freight: {money(quote.amount)}</strong>{quote.note ? ` — ${quote.note}` : ''}</span>
+    : null;
+  if (!gap.under) {
+    return (
+      <div data-testid="free-ship-notice" style={{ padding: '8px 10px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#166534' }}>
+        ✓ {money(gap.total)} in goods — over {vendorName}'s {money(gap.threshold)} free-shipping threshold.
+        {quoteLine && <div style={{ marginTop: 4 }}>{quoteLine}</div>}
+      </div>
+    );
+  }
+  return (
+    <div data-testid="free-ship-notice" style={{ padding: 10, background: '#fffbeb', border: '2px solid #f59e0b', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#92400e' }}>
+      <div style={{ fontWeight: 800 }}>
+        ⚠ {money(gap.total)} in goods is {money(gap.gap)} under {vendorName}'s {money(gap.threshold)} free-shipping threshold — freight will be charged.
+      </div>
+      <div style={{ marginTop: 4 }}>
+        {quoteLine || <span>Add more to this batch to reach free shipping, or accept the freight charge.</span>}
+      </div>
+    </div>
+  );
+}
+
 const dth = { padding: '5px 8px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: '#92400e', textTransform: 'uppercase', background: '#fffbeb' };
 const dtd = { padding: '5px 8px', fontSize: 12, color: '#78350f' };

@@ -76,3 +76,43 @@ describe('UnacceptedLinesPanel', () => {
     expect(screen.queryByText(/did NOT accept every line/i)).not.toBeInTheDocument();
   });
 });
+
+// ─── Free-shipping threshold line (all three modals) ───
+import { FreeShipNotice } from '../VendorOrderGuardPanels';
+import { freeShipGap } from '../lib/vendorOrderGuards';
+
+describe('freeShipGap', () => {
+  test('null when the vendor has no threshold', () => {
+    expect(freeShipGap(0, 500)).toBeNull();
+    expect(freeShipGap(undefined, 500)).toBeNull();
+  });
+  test('reports the gap to the threshold', () => {
+    expect(freeShipGap(200, 140.5)).toEqual({ threshold: 200, total: 140.5, gap: 59.5, under: true });
+    expect(freeShipGap(200, 200)).toEqual({ threshold: 200, total: 200, gap: 0, under: false });
+    expect(freeShipGap(150, 900)).toEqual({ threshold: 150, total: 900, gap: 0, under: false });
+  });
+});
+
+describe('FreeShipNotice', () => {
+  test('renders nothing without a threshold', () => {
+    const { container } = render(<FreeShipNotice vendorName="SanMar" gap={null} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+  test('warns when under the threshold', () => {
+    render(<FreeShipNotice vendorName="SanMar" gap={freeShipGap(200, 140)} />);
+    expect(screen.getByText(/\$60\.00 under SanMar's \$200\.00 free-shipping threshold/)).toBeInTheDocument();
+  });
+  test('shows the vendor quote when one is supplied', () => {
+    render(<FreeShipNotice vendorName="Momentec" gap={freeShipGap(150, 90)} quote={{ state: 'ok', amount: 14.2 }} />);
+    expect(screen.getByText(/Momentec freight: \$14\.20/)).toBeInTheDocument();
+  });
+  test('quote failure never hides the threshold warning', () => {
+    render(<FreeShipNotice vendorName="Momentec" gap={freeShipGap(150, 90)} quote={{ state: 'error', note: 'HTTP 500' }} />);
+    expect(screen.getByText(/freight will be charged/)).toBeInTheDocument();
+    expect(screen.getByText(/Freight quote failed — HTTP 500/)).toBeInTheDocument();
+  });
+  test('green line once over the threshold', () => {
+    render(<FreeShipNotice vendorName="S&S" gap={freeShipGap(200, 260)} />);
+    expect(screen.getByText(/over S&S's \$200\.00 free-shipping threshold/)).toBeInTheDocument();
+  });
+});
