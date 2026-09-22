@@ -12212,6 +12212,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                           </div>
                         </div>
                         <div style={{textAlign:'right',flexShrink:0,display:'flex',alignItems:'center',gap:8}}>
+                          {gi.item_idx!=null&&<button type="button" className="btn btn-sm btn-secondary" onClick={()=>_jumpToItem(gi.item_idx)} title="Go to this garment's line on the sales order" style={{fontSize:11,padding:'3px 8px',whiteSpace:'nowrap'}}>SO →</button>}
                           <OeGarmentPoChip item={it} szMeta={_PO_SZ_META}/>
                         <div>
                           <div style={{fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:800,fontSize:26,color:'#192853',lineHeight:1}}>{totalUnits}</div>
@@ -12556,6 +12557,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                           </div>
                         </div>
                         <div style={{textAlign:'right',flexShrink:0,display:'flex',alignItems:'center',gap:8}}>
+                          {gi.item_idx!=null&&<button type="button" className="btn btn-sm btn-secondary" onClick={()=>_jumpToItem(gi.item_idx)} title="Go to this garment's line on the sales order" style={{fontSize:11,padding:'3px 8px',whiteSpace:'nowrap'}}>SO →</button>}
                           <OeGarmentPoChip item={it} szMeta={_PO_SZ_META}/>
                         <div>
                           <div style={{fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:800,fontSize:26,color:'#192853',lineHeight:1}}>{totalUnits}</div>
@@ -12844,6 +12846,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                       <span style={{color:'#94a3b8',marginLeft:6}}>({gi.color||'—'})</span>
                       {gi.brand&&<span className="badge badge-gray" style={{marginLeft:6}}>{gi.brand}</span>}</div>
                     </div>
+                    {gi.item_idx!=null&&<button type="button" className="btn btn-sm btn-secondary" onClick={()=>_jumpToItem(gi.item_idx)} title="Go to this garment's line on the sales order" style={{fontSize:11,padding:'3px 8px',whiteSpace:'nowrap'}}>SO →</button>}
                     <div style={{fontWeight:700,color:fulTotal>=rowTotal&&rowTotal>0?'#166534':'#64748b',flexShrink:0}}>{fulTotal}/{rowTotal} units</div>
                   </div>
                   {/* Per-SKU art details */}
@@ -13948,7 +13951,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                     {(_labels.length?_labels:[(j.deco_type?.replace(/_/g,' ')||'')+' · '+(j.positions||'')]).map((lbl,i)=><div key={i}>{lbl}</div>)}
                     {_outLines.map((ol,i)=><div key={'out'+i} style={{color:'#7c3aed'}}>{_outsideDecoText(ol)}</div>)}
                   </div>})()}</td>
-              <td style={{fontSize:11}}>{(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}{(j.items||[]).slice(0,4).map((gi,gk)=><div key={gk}><button type="button" onClick={e=>{e.stopPropagation();_jumpToItem(gi.item_idx)}} title={'Go to this line on the Items tab: '+(gi.sku||'')+(gi.color?' · '+gi.color:'')} style={{background:'none',border:'none',padding:0,cursor:'pointer',fontSize:10,fontWeight:600,color:'#2563eb',textDecoration:'underline',whiteSpace:'nowrap'}}>↩ {gi.sku||'Line '+(gi.item_idx+1)}{gi.color?' · '+gi.color:''}</button></div>)}{(j.items||[]).length>4&&<div style={{fontSize:9,color:'#94a3b8'}}>+{(j.items||[]).length-4} more</div>}</td>
+              <td style={{fontSize:11}}>{(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</td>
               <td style={{fontWeight:700}}>{jFul}/{jTot}
                 <div style={{width:50,background:'#e2e8f0',borderRadius:3,height:4,marginTop:2}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>0?'#f59e0b':'#e2e8f0',width:pct+'%'}}/></div></td>
               <td>{(()=>{const _is=jItemStatus(j);return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[_is]?.bg,color:SC[_is]?.c}}>{itemLabels[_is]}</span>})()}</td>
@@ -14003,9 +14006,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               <td style={{paddingLeft:24,color:'#94a3b8',fontSize:10}}>↳</td>
               <td colSpan={2} style={{fontSize:11,color:'#475569'}}><span style={{fontWeight:600}}>{gi.sku}</span> {gi.name} <span style={{color:'#94a3b8'}}>({gi.color||'—'})</span></td>
               <td style={{fontSize:11}}>{giDone}/{giUnits}</td>
-              <td colSpan={4} style={{fontSize:11}}>
+              <td colSpan={3} style={{fontSize:11}}>
                 {giSzEntries.length>0&&<div style={{display:'flex',gap:10,flexWrap:'wrap'}}>{giSzEntries.map(([sz,qty])=>{const f=safeNum(giFul[sz]);const done=f>=qty&&qty>0;return<span key={sz} style={{display:'inline-flex',gap:3,alignItems:'baseline'}}><span style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase'}}>{sz}</span><span style={{fontWeight:700,color:done?'#166534':f>0?'#d97706':'#475569'}}>{f}/{qty}</span></span>})}</div>}
               </td>
+              <td style={{textAlign:'right'}}>{gi.item_idx!=null&&<button type="button" className="btn btn-sm btn-secondary" onClick={e=>{e.stopPropagation();_jumpToItem(gi.item_idx)}} title={'Go to this line on the sales order: '+(gi.sku||'')+(gi.color?' · '+gi.color:'')} style={{fontSize:10,padding:'2px 8px',whiteSpace:'nowrap',fontWeight:700}}>SO →</button>}</td>
             </tr>})}
             </React.Fragment>})}
         </tbody></table>}
