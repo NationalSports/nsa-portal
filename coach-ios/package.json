@@ -1,0 +1,26 @@
+{
+  "name": "nsa-coach-ios",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Native iOS wrapper (Capacitor) around the National Sports Apparel coach/team portal. This project is fully isolated from the web app build — it has its own dependencies and does not touch the CRA/Netlify pipeline.",
+  "scripts": {
+    "add:ios": "cap add ios",
+    "sync": "cap sync ios",
+    "copy": "cap copy ios",
+    "open": "cap open ios",
+    "assets": "npx --yes @capacitor/assets generate --ios --iconBackgroundColor '#192853' --splashBackgroundColor '#192853'"
+  },
+  "dependencies": {
+    "@capacitor/app": "^6.0.2",
+    "@capacitor/browser": "^6.0.5",
+    "@capacitor/core": "^6.2.0",
+    "@capacitor/ios": "^6.2.0",
+    "@capacitor/preferences": "^6.0.3",
+    "@capacitor/push-notifications": "^6.0.4",
+    "@capacitor/splash-screen": "^6.0.3",
+    "@capacitor/status-bar": "^6.0.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.0"
+  }
+}
