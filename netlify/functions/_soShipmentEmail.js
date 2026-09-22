@@ -65,6 +65,9 @@ function orderedSizes(sizes) {
 //   • a PDF proof can't render in an inbox — swap in Cloudinary's first-page PNG
 //     (mirror of _cloudinaryPdfThumb);
 //   • resize to ~300px so a 12-item email isn't 20MB of full-res artwork.
+// No f_auto: content-negotiated formats (webp/avif) are fine in a browser but
+// an email client's image proxy may not send an Accept header Cloudinary can
+// act on. The stored format (PNG/JPG) is what every inbox renders.
 const isPdfUrl = (u) => /\.pdf(?:$|\?)/i.test(String(u || ''));
 
 function emailImageUrl(rawUrl, width = 300) {
@@ -72,7 +75,7 @@ function emailImageUrl(rawUrl, width = 300) {
   if (!url) return '';
   if (!url.includes('cloudinary.com')) return isPdfUrl(url) ? '' : url;
   const asImage = url.replace('/raw/upload/', '/image/upload/').replace('/video/upload/', '/image/upload/');
-  const transform = isPdfUrl(url) ? `pg_1,f_png,w_${width},c_limit` : `f_auto,q_auto,w_${width},c_limit`;
+  const transform = isPdfUrl(url) ? `pg_1,f_png,w_${width},c_limit` : `q_auto,w_${width},c_limit`;
   return asImage.replace('/image/upload/', `/image/upload/${transform}/`);
 }
 
@@ -204,6 +207,31 @@ function buildShipmentLines({ packages, soItems, decorationsByItemId, artFiles }
   }).filter((line) => line.totalQty > 0);
 }
 
+// ── What hasn't shipped yet ──
+// Ordered units minus everything in ANY customer box on the order (not only the
+// boxes this email covers), per garment. Only lines with a size run count — a
+// service line (digitizing, a logo) has no sizes and is not a "piece" the coach
+// is waiting on. Lets the email say plainly when it is a partial shipment.
+function remainingUnits({ soItems, allPackages }) {
+  const shipped = new Map();
+  (allPackages || []).forEach((pkg) => (pkg.items || []).forEach((it) => {
+    if (!it) return;
+    const key = garmentMockKey(it);
+    shipped.set(key, (shipped.get(key) || 0) + orderedSizes(it.sizes).reduce((a, s) => a + s.qty, 0));
+  }));
+  const ordered = new Map();
+  (soItems || []).forEach((it) => {
+    if (!it) return;
+    const units = orderedSizes(it.sizes).reduce((a, s) => a + s.qty, 0);
+    if (!units) return;
+    const key = garmentMockKey(it);
+    ordered.set(key, (ordered.get(key) || 0) + units);
+  });
+  let remaining = 0;
+  ordered.forEach((units, key) => { remaining += Math.max(0, units - (shipped.get(key) || 0)); });
+  return remaining;
+}
+
 // ── Carrier / tracking ──
 const CARRIER_LABELS = { ups: 'UPS', fedex: 'FedEx', usps: 'USPS', stamps_com: 'USPS', rep_delivery: 'Rep Delivery', courier: 'Courier' };
 const carrierLabel = (c) => CARRIER_LABELS[String(c || '').toLowerCase()] || String(c || '').toUpperCase();
@@ -288,13 +316,40 @@ function itemRowHtml(line) {
 </table>`;
 }
 
+// What's physically in one box, for the per-box tracking row: each garment with
+// its color, count and size run, so a coach can match a box to what came out of
+// it. `nameFor` maps a box item to the cleaned name its card uses.
+function boxContents(items, nameFor) {
+  return (items || []).map((it) => {
+    if (!it) return null;
+    const sizes = orderedSizes(it.sizes);
+    const totalQty = sizes.reduce((a, s) => a + s.qty, 0);
+    if (!totalQty) return null;
+    return {
+      name: String((nameFor && nameFor(it)) || it.name || it.sku || 'Item').trim(),
+      color: String(it.color || '').trim(),
+      sizes,
+      totalQty,
+    };
+  }).filter(Boolean);
+}
+
+function boxContentsHtml(pkg) {
+  const items = Array.isArray(pkg.contentsItems) ? pkg.contentsItems : [];
+  if (!items.length) {
+    return pkg.contents ? `<div style="font-size:12px;line-height:17px;font-weight:normal;color:${BODY_TEXT};">${esc(pkg.contents)}</div>` : '';
+  }
+  return items.map((it) => `<div style="font-size:12px;line-height:17px;font-weight:normal;color:${BODY_TEXT};padding-top:3px;">${esc(it.name)}${it.color ? ' &#8212; ' + esc(it.color) : ''} &#183; ${it.totalQty} pcs</div>
+      <div style="font-size:11px;line-height:16px;font-weight:normal;color:${NAVY};letter-spacing:.3px;">${it.sizes.map((s) => `${esc(s.label)}&nbsp;<strong>${s.qty}</strong>`).join(' &nbsp; ')}</div>`).join('');
+}
+
 function boxRowHtml(pkg, boxCount) {
   const link = safeUrl(pkg.trackingUrl || trackingUrlFor(pkg.trackingNumber, pkg.carrier));
   const label = pkg.trackingNumber ? esc(pkg.trackingNumber) : 'No tracking number';
   return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;background-color:#ffffff;border:1px solid ${HAIRLINE};border-bottom:0;">
   <tr>
     <td width="74" valign="top" style="width:74px;padding:12px 0 12px 14px;font-family:${DISPLAY};font-weight:bold;font-size:12px;line-height:18px;mso-line-height-rule:exactly;letter-spacing:1.5px;color:${RED};text-transform:uppercase;">Box ${pkg.index}/${boxCount}</td>
-    <td valign="top" style="padding:12px 10px;font-family:${BODY_FONT};font-size:14px;line-height:20px;mso-line-height-rule:exactly;font-weight:bold;color:${NAVY};">${label}${pkg.contents ? `<div style="font-size:12px;line-height:17px;font-weight:normal;color:${BODY_TEXT};">${esc(pkg.contents)}</div>` : ''}</td>
+    <td valign="top" style="padding:12px 10px;font-family:${BODY_FONT};font-size:14px;line-height:20px;mso-line-height-rule:exactly;font-weight:bold;color:${NAVY};">${label}${boxContentsHtml(pkg)}</td>
     <td width="70" valign="top" align="right" style="width:70px;padding:12px 14px 12px 0;">${link ? `<a href="${esc(link)}" style="font-family:${DISPLAY};font-weight:bold;font-size:12px;line-height:20px;letter-spacing:1.5px;color:${RED};text-decoration:none;text-transform:uppercase;">Track &#8594;</a>` : ''}</td>
   </tr>
 </table>`;
@@ -314,6 +369,7 @@ function buildSoShipmentEmail({
   rep = null,
   lines = [],
   packages = [],
+  remainingUnits = 0,
   shipDate = '',
   eta = '',
   carrier = '',
@@ -391,7 +447,7 @@ function buildSoShipmentEmail({
 ${wrap(NAVY, `<div style="font-family:${DISPLAY};font-size:12px;line-height:14px;mso-line-height-rule:exactly;letter-spacing:3px;color:${RED_LIGHT};text-transform:uppercase;font-weight:bold;">Order ${esc(order.id || '')}${shipDate ? DOT + 'Shipped ' + esc(shipDate) : ''}</div>
       ${rule(60, 4, RED)}
       <div class="h1" style="font-family:${DISPLAY};font-weight:bold;font-size:38px;line-height:40px;mso-line-height-rule:exactly;color:#ffffff;text-transform:uppercase;letter-spacing:0.5px;padding-top:14px;">Your Gear Is<br><em style="color:${RED_LIGHT};font-style:italic;">On The Way</em></div>
-      <div style="font-family:${BODY_FONT};font-size:15px;line-height:24px;mso-line-height-rule:exactly;color:#D8DDE9;padding-top:14px;">${styleCount} style${styleCount === 1 ? '' : 's'} for ${esc(team)} left our shop in Orange, CA. Everything below matches your approved mockups.</div>`, '34px 40px')}
+      <div style="font-family:${BODY_FONT};font-size:15px;line-height:24px;mso-line-height-rule:exactly;color:#D8DDE9;padding-top:14px;">${styleCount} style${styleCount === 1 ? '' : 's'} for ${esc(team)} left our shop in Orange, CA.${remainingUnits > 0 ? ' This is part of your order — the rest follows separately.' : ''} Everything below matches your approved mockups.</div>`, '34px 40px')}
 
 <!-- carrier / ETA card -->
 ${wrap('#ffffff', `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;background-color:${PANEL};border:1px solid ${HAIRLINE};">
@@ -427,6 +483,7 @@ ${lines.map(itemRowHtml).join('\n')}
           ${styleCount} style${styleCount === 1 ? '' : 's'}${DOT}${totalPieces} piece${totalPieces === 1 ? '' : 's'}${DOT}${boxCount} box${boxCount === 1 ? '' : 'es'}
         </td></tr>
       </table>
+      ${remainingUnits > 0 ? `<div style="font-family:${BODY_FONT};font-size:13px;line-height:20px;mso-line-height-rule:exactly;color:${BODY_TEXT};padding-top:12px;"><strong style="color:${NAVY};">Still to come:</strong> ${remainingUnits} more piece${remainingUnits === 1 ? '' : 's'} from this order will ship separately — we'll email tracking when they do.</div>` : ''}
       ${boxCount ? `<div style="font-family:${DISPLAY};font-weight:bold;font-size:13px;line-height:16px;mso-line-height-rule:exactly;letter-spacing:2px;color:${MUTED};text-transform:uppercase;padding-top:22px;padding-bottom:8px;">Tracking By Box</div>
       ${packages.map((p) => boxRowHtml(p, boxCount)).join('\n')}
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;"><tr><td height="1" style="height:1px;background-color:${HAIRLINE};font-size:0;line-height:0;">&nbsp;</td></tr></table>` : ''}
@@ -471,6 +528,8 @@ ${wrap(FOOTER_NAVY, `<div style="font-family:${DISPLAY};font-weight:bold;font-si
 module.exports = {
   buildSoShipmentEmail,
   buildShipmentLines,
+  boxContents,
+  remainingUnits,
   cleanProductName,
   pickMockupUrl,
   emailImageUrl,

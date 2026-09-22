@@ -45,9 +45,9 @@ const ROWS = () => ({
   ],
   // The order carries a THIRD line that never shipped — it must not appear.
   so_items: [
-    { id: 'i1', sku: 'AD-TI4287', name: 'Team Issue Pullover Hoodie', brand: 'Adidas', color: 'Navy / White' },
-    { id: 'i2', sku: 'RCH-112', name: '112 Trucker Cap', brand: 'Richardson', color: 'Navy' },
-    { id: 'i3', sku: 'UA-1376842', name: 'Team Tech Short Sleeve Tee', brand: 'Under Armour', color: 'Midnight Navy' },
+    { id: 'i1', sku: 'AD-TI4287', name: 'Team Issue Pullover Hoodie', brand: 'Adidas', color: 'Navy / White', sizes: { S: 6, M: 12 } },
+    { id: 'i2', sku: 'RCH-112', name: '112 Trucker Cap', brand: 'Richardson', color: 'Navy', sizes: { OSFA: 24 } },
+    { id: 'i3', sku: 'UA-1376842', name: 'Team Tech Short Sleeve Tee', brand: 'Under Armour', color: 'Midnight Navy', sizes: { S: 8, M: 14 } },
   ],
   so_art_files: [{ id: 'af1', item_mockups: { 'AD-TI4287|Navy / White': [{ url: 'https://res.cloudinary.com/nsa/image/upload/v1/hoodie.png' }] }, archived: false }],
   so_item_decorations: [{ so_item_id: 'i1', kind: 'art', deco_type: 'screen_print', colors: 2, position: 'Left Chest', deco_index: 0 }],
@@ -150,6 +150,20 @@ test('the email lists what is IN THE BOXES — not the rest of the order, not th
   expect(html).not.toMatch(/>\s*99\s*</);
   expect(html).toContain('1Z999AA10123456784');
   expect(html).toContain('1Z999AA10123456793');
+  // Each box's row carries its own garment, color and size run.
+  expect(html).toContain('Team Issue Pullover Hoodie &#8212; Navy / White &#183; 18 pcs');
+  expect(html).toContain('S&nbsp;<strong>6</strong> &nbsp; M&nbsp;<strong>12</strong>');
+  expect(html).toContain('112 Trucker Cap &#8212; Navy &#183; 24 pcs');
+  // The 22 unshipped tees are counted, not listed.
+  expect(html).toContain('22 more pieces from this order will ship separately');
+  expect(res.body.remaining).toBeUndefined(); // send response keeps its shape; preview carries `remaining`
+});
+
+test('a complete shipment carries no "still to come" note', async () => {
+  rows.so_items = rows.so_items.slice(0, 2);
+  const res = await call({ soId: 'NSA-18402', preview: true });
+  expect(res.body.remaining).toBe(0);
+  expect(res.body.html).not.toContain('Still to come');
 });
 
 test('the email is built from the order: mockup, brand, decoration, ship-to, portal link', async () => {

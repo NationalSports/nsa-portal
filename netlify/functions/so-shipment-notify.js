@@ -20,7 +20,7 @@
 // Layout lives in _soShipmentEmail.js (pure, unit-tested); this file is the IO.
 
 const { verifyUser } = require('./_shared');
-const { buildSoShipmentEmail, buildShipmentLines, carrierLabel, garmentMockKey } = require('./_soShipmentEmail');
+const { buildSoShipmentEmail, buildShipmentLines, boxContents, remainingUnits, carrierLabel, garmentMockKey } = require('./_soShipmentEmail');
 
 const HEADERS = { 'Content-Type': 'application/json' };
 const PORTAL_BASE = 'https://nationalsportsapparel.com/coach';
@@ -41,20 +41,6 @@ const isMissingRelation = (e) => {
 // A box that went to a decorator is an internal transfer, not something the
 // coach is waiting on. Only customer fulfillment reaches the email.
 const isCustomerShipment = (s) => !!s && s.shipment_scope !== 'deco_transfer' && s.fulfillment !== false;
-
-const unitsIn = (items) => (items || []).reduce((a, it) => a
-  + Object.values((it && it.sizes) || {}).reduce((b, q) => b + (Number(q) || 0), 0), 0);
-
-// "Hoodies · 46 pcs" — what's in the box, in the coach's words. One style names
-// itself; several are counted. `nameFor` maps a box item to the same cleaned
-// product name the item card shows, so the two never disagree.
-function contentsSummary(items, nameFor) {
-  const names = [...new Set((items || []).map((it) => String((nameFor && nameFor(it)) || (it && it.name) || (it && it.sku) || '').trim()).filter(Boolean))];
-  const units = unitsIn(items);
-  const label = names.length === 1 ? names[0] : `${names.length} styles`;
-  if (!names.length) return units ? `${units} pcs` : '';
-  return `${label} · ${units} pcs`;
-}
 
 /**
  * Build and send one order's shipping notice. The single implementation behind
@@ -160,7 +146,7 @@ async function sendShipmentNotice(admin, opts = {}) {
     }
 
     const [itemsRes, artRes, repRes] = await Promise.all([
-      admin.from('so_items').select('id,sku,name,brand,color,item_index').eq('so_id', so.id).order('item_index'),
+      admin.from('so_items').select('id,sku,name,brand,color,sizes,item_index').eq('so_id', so.id).order('item_index'),
       admin.from('so_art_files').select('id,item_mockups,mockup_files,files,archived').eq('so_id', so.id),
       customer.primary_rep_id
         ? admin.from('team_members').select('id,name,email,phone').eq('id', customer.primary_rep_id).maybeSingle()
@@ -189,17 +175,21 @@ async function sendShipmentNotice(admin, opts = {}) {
       trackingNumber: s.tracking_number || '',
       trackingUrl: s.tracking_url || '',
       carrier: s.carrier || so._carrier || '',
-      contents: '',
+      contentsItems: [],
       items: s.items || [],
     }));
 
     const lines = buildShipmentLines({ packages, soItems, decorationsByItemId, artFiles });
-    // Per-box contents use the cards' cleaned names (keyed the same way the
-    // cards are), so "Box 1/3 · PosiCharge Competitor Tee · 60 pcs" matches the
-    // card above it instead of repeating the raw catalog string.
+    // Each box's tracking row lists exactly what's in that box — garment, color,
+    // count and size run — using the cards' cleaned names (keyed the same way the
+    // cards are) so the two never disagree. Three boxes of the same tee in three
+    // colors read as three different boxes, not three identical rows.
     const nameByKey = new Map(lines.map((l) => [garmentMockKey({ sku: l.sku, name: l.name, color: l.color }), l.name]));
     const nameFor = (it) => nameByKey.get(garmentMockKey(it)) || '';
-    packages.forEach((p) => { p.contents = contentsSummary(p.items, nameFor); });
+    packages.forEach((p) => { p.contentsItems = boxContents(p.items, nameFor); });
+    // Partial shipment? Count against EVERY customer box on the order, not just
+    // the ones this notice covers, so a second notice doesn't re-count the first.
+    const stillToCome = remainingUnits({ soItems, allPackages: pool.map((s) => ({ items: s.items || [] })) });
     if (!lines.length) {
       // Boxes with no recorded contents (a manually added shipment) still carry
       // real tracking — the coach gets the tracking, just no item list.
@@ -238,6 +228,7 @@ async function sendShipmentNotice(admin, opts = {}) {
       rep,
       lines,
       packages,
+      remainingUnits: stillToCome,
       shipDate: selected[0].ship_date || so._ship_date || '',
       eta: etaInput || so.deliver_on_date || '',
       carrier: selected[0].carrier || so._carrier || '',
@@ -256,6 +247,7 @@ async function sendShipmentNotice(admin, opts = {}) {
         contacts: withEmail.map((c) => ({ email: c.email, name: c.name || '', role: c.role || '' })),
         boxes: packages.length,
         pieces: lines.reduce((a, l) => a + l.totalQty, 0),
+        remaining: stillToCome,
         alreadySent: already || null,
       });
     }

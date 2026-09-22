@@ -134,7 +134,8 @@ describe('size display', () => {
 describe('mockup images', () => {
   test('finds the garment bucket and resizes for email', () => {
     const url = pickMockupUrl(artFiles, soItems[0]);
-    expect(url).toContain('/image/upload/f_auto,q_auto,w_300,c_limit/');
+    expect(url).toContain('/image/upload/q_auto,w_300,c_limit/');
+    expect(url).not.toContain('f_auto');
     expect(url).toContain('hoodie.png');
   });
 
@@ -265,6 +266,46 @@ describe('the email itself', () => {
     });
     expect(html).toContain('Mockup<br>Image');
     expect(html).not.toContain('<img class="mock"');
+  });
+
+  test('each box row lists its garments with color, count and size run', () => {
+    const { boxContents } = require('../../netlify/functions/_soShipmentEmail');
+    const items = [
+      { sku: 'ST350', name: 'Sport-Tek Sport-Tek PosiCharge Competitor Tee. ST350', color: 'Deep Orange', sizes: { L: 25, M: 20, S: 5, XL: 5, '2XL': 5 } },
+      { sku: 'RCH-112', name: '112 Trucker Cap', color: '', sizes: { OSFA: 24 } },
+      { sku: 'GHOST', name: 'Nothing in the box', color: 'Red', sizes: { M: 0 } },
+    ];
+    const contentsItems = boxContents(items, (it) => (it.sku === 'ST350' ? 'PosiCharge Competitor Tee' : ''));
+    expect(contentsItems).toHaveLength(2);
+    expect(contentsItems[0]).toMatchObject({ name: 'PosiCharge Competitor Tee', color: 'Deep Orange', totalQty: 60 });
+    expect(contentsItems[0].sizes.map((s) => s.label)).toEqual(['S', 'M', 'L', 'XL', '2XL']);
+    const { html } = buildSoShipmentEmail({
+      order: { id: 'NSA-5' }, lines: [],
+      packages: [{ index: 1, trackingNumber: '1Z999AA10123456784', carrier: 'ups', contentsItems }],
+    });
+    expect(html).toContain('PosiCharge Competitor Tee &#8212; Deep Orange &#183; 60 pcs');
+    expect(html).toContain('S&nbsp;<strong>5</strong> &nbsp; M&nbsp;<strong>20</strong> &nbsp; L&nbsp;<strong>25</strong>');
+    expect(html).toContain('112 Trucker Cap &#183; 24 pcs');
+    expect(html).not.toContain('Nothing in the box');
+  });
+
+  test('says plainly when this is part of the order, and stays quiet when it is all of it', () => {
+    const { remainingUnits } = require('../../netlify/functions/_soShipmentEmail');
+    const so = [
+      { sku: 'AD-TI4287', color: 'Navy / White', sizes: { S: 6, M: 12 } },
+      { sku: 'RCH-112', color: 'Navy', sizes: { OSFA: 24 } },
+      { sku: 'DIGITIZING', color: '', sizes: null },                       // a service line, never a "piece"
+      { sku: 'UA-1376842', color: 'Midnight Navy', sizes: { S: 8, M: 14 } }, // not in any box yet
+    ];
+    const boxes = [{ items: [{ sku: 'AD-TI4287', color: 'Navy / White', sizes: { S: 6, M: 12 } }, { sku: 'RCH-112', color: 'Navy', sizes: { OSFA: 24 } }] }];
+    expect(remainingUnits({ soItems: so, allPackages: boxes })).toBe(22);
+    expect(remainingUnits({ soItems: so.slice(0, 3), allPackages: boxes })).toBe(0);
+    const partial = buildSoShipmentEmail({ order: { id: 'NSA-6' }, teamName: 'Orange HS', lines: [], packages: [], remainingUnits: 22 }).html;
+    expect(partial).toContain('Still to come:</strong> 22 more pieces from this order will ship separately');
+    expect(partial).toContain('This is part of your order');
+    const whole = buildSoShipmentEmail({ order: { id: 'NSA-7' }, teamName: 'Orange HS', lines: [], packages: [], remainingUnits: 0 }).html;
+    expect(whole).not.toContain('Still to come');
+    expect(whole).not.toContain('part of your order');
   });
 
   test('a single box says "Track Your Box", not "All Boxes"', () => {
