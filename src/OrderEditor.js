@@ -132,9 +132,10 @@ function OeGarmentPoLines({item,szMeta,onOpenPo}){
             const v=po[sz]||0,cn=d.cncl[sz]||0,r=d.isDS?(d.blld[sz]||0):(d.rcvd[sz]||0);
             const szSt=cn>=v?'cancelled':r>=(v-cn)?(d.isDS?'shipped':'received'):r>0?'partial':(!d.isDS&&(d.blld[sz]||0)>0)?'in_transit':'waiting';
             const c=OE_PO_SC[szSt];
+            const tBl=d.blld[sz]||0,tPart=szSt==='in_transit'&&tBl<(v-cn),tPct=tPart?Math.round(tBl/(v-cn)*100):0;
             return<div key={sz} style={{minWidth:42,textAlign:'center',borderRadius:4,overflow:'hidden',border:'1px solid '+c.bd}}>
               <div style={{fontSize:9,fontWeight:700,letterSpacing:'0.5px',color:'#5A6075',background:'#fff',padding:'1px 0'}}>{sz}</div>
-              <div style={{fontSize:12,fontWeight:800,padding:'2px 0',background:c.bg,color:c.fg}}>{szSt==='cancelled'?'✕':szSt==='partial'?r+'/'+(v-cn):(v-cn)}</div>
+              <div style={{fontSize:12,fontWeight:800,padding:'2px 0',background:tPart?`linear-gradient(90deg,${c.bg} ${tPct}%,${OE_PO_SC.waiting.bg} ${tPct}%)`:c.bg,color:c.fg}}>{szSt==='cancelled'?'✕':szSt==='partial'?r+'/'+(v-cn):tPart?tBl+'/'+(v-cn):(v-cn)}</div>
             </div>})}
         </div>
         <span style={{fontSize:10,padding:'3px 9px',borderRadius:20,fontWeight:700,whiteSpace:'nowrap',marginLeft:'auto',background:sc.bg,color:sc.fg,border:'1px solid '+sc.bd}}>
@@ -5946,9 +5947,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{display:'grid',gridTemplateColumns:'repeat(11,48px)',columnGap:6,rowGap:6,alignItems:'center'}}>
               {poSzKeys.map(sz=>{const v=po[sz]||0;const r=isDS?(blld[sz]||0):(rcvd[sz]||0);const cn=cncl[sz]||0;if(!v)return<div key={sz} style={{width:48,textAlign:'center',fontSize:10,color:'#C2C7D2'}}>—</div>;
                 const szSt=cn>=v?'cancelled':r>=(v-cn)?(isDS?'shipped':'received'):r>0?'partial':(!isDS&&(blld[sz]||0)>0)?'in_transit':'waiting';
+                // Partly billed (some units shipped, rest still at the vendor): split the cell blue/yellow
+                // in proportion so a 1-of-4 shipment doesn't read as the whole size being in transit.
+                const tBl=blld[sz]||0;const tPart=szSt==='in_transit'&&tBl<(v-cn);const tPct=tPart?Math.round(tBl/(v-cn)*100):0;
                 return<div key={sz} className="oe-num" style={{width:48,textAlign:'center',fontSize:12,fontWeight:700,padding:'3px 0',borderRadius:5,
-                  background:szSt==='cancelled'?'#FDECEC':szSt==='received'||szSt==='shipped'?'#EAF6EE':szSt==='in_transit'?'#EDE9FE':'#FEF3C7',
-                  color:szSt==='cancelled'?'#962C32':szSt==='received'||szSt==='shipped'?'#1E7A46':szSt==='in_transit'?'#6D28D9':'#92400E'}}>{szSt==='cancelled'?'✕':szSt==='partial'?r+'/'+(v-cn):v-cn}</div>})}
+                  background:tPart?`linear-gradient(90deg,#EDE9FE ${tPct}%,#FEF3C7 ${tPct}%)`:szSt==='cancelled'?'#FDECEC':szSt==='received'||szSt==='shipped'?'#EAF6EE':szSt==='in_transit'?'#EDE9FE':'#FEF3C7',
+                  color:szSt==='cancelled'?'#962C32':szSt==='received'||szSt==='shipped'?'#1E7A46':szSt==='in_transit'?'#6D28D9':'#92400E'}}>{szSt==='cancelled'?'✕':szSt==='partial'?r+'/'+(v-cn):tPart?tBl+'/'+(v-cn):v-cn}</div>})}
               </div>
               <span className="oe-eb" style={{fontSize:10,padding:'4px 10px',borderRadius:20,marginLeft:2,
                 background:st==='received'||st==='shipped'?'#EAF6EE':st==='in_transit'?'#EDE9FE':'#FEF3C7',border:'1px solid '+(st==='received'||st==='shipped'?'#C9E7D4':st==='in_transit'?'#DDD6FE':'#FDE68A'),
