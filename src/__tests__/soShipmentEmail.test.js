@@ -265,7 +265,18 @@ describe('the email itself', () => {
       packages: [],
     });
     expect(html).toContain('Mockup<br>Image');
-    expect(html).not.toContain('<img class="mock"');
+    expect(html).not.toContain('alt="Mockup of');
+  });
+
+  test('keeps the mockup beside the details on phones instead of stacking it full-width', () => {
+    const { html } = buildSoShipmentEmail({
+      order: { id: 'NSA-3' },
+      lines: [{ brand: 'Sport-Tek', name: 'Tee', color: 'Black', sku: 'ST350', decoration: '', sizes: [{ label: 'M', qty: 1 }], totalQty: 1, mockupUrl: 'https://res.cloudinary.com/demo/image/upload/v1/a.png' }],
+      packages: [],
+    });
+    const card = html.slice(html.indexOf('alt="Mockup of') - 400, html.indexOf('alt="Mockup of') + 900);
+    expect(card).not.toContain('stackcell');
+    expect(html).not.toMatch(/\.mock\{/);
   });
 
   test('each box row lists its garments with color, count and size run', () => {

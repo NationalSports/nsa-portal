@@ -291,10 +291,13 @@ function itemRowHtml(line) {
       <strong style="font-family:${DISPLAY};letter-spacing:1px;">${esc(s.label)}</strong><br><span style="font-size:14px;font-weight:bold;">${s.qty}</span></td>`).join('');
 
   // No mockup on file → the design's gray placeholder panel, never a broken image.
+  // The mockup stays beside the details at every width (no "stackcell"): on a phone
+  // the card scales down as one piece, which reads better than a full-width image
+  // over a full-width size run.
   const mockCell = line.mockupUrl
-    ? `<td class="stackcell" width="150" valign="top" style="width:150px;padding:0;background-color:${PANEL};">
-        <img class="mock" src="${esc(line.mockupUrl)}" width="150" alt="Mockup of ${esc(line.name)}" style="display:block;width:150px;max-width:150px;height:auto;border:0;outline:none;text-decoration:none;background-color:${PANEL};"></td>`
-    : `<td class="stackcell" width="150" valign="middle" align="center" height="170" style="width:150px;height:170px;padding:10px;background-color:${PANEL};font-family:${DISPLAY};font-size:11px;line-height:15px;mso-line-height-rule:exactly;letter-spacing:1.5px;color:#9AA3B5;text-transform:uppercase;">Mockup<br>Image</td>`;
+    ? `<td width="150" valign="top" style="width:150px;padding:0;background-color:${PANEL};">
+        <img src="${esc(line.mockupUrl)}" width="150" alt="Mockup of ${esc(line.name)}" style="display:block;width:150px;max-width:150px;height:auto;border:0;outline:none;text-decoration:none;background-color:${PANEL};"></td>`
+    : `<td width="150" valign="middle" align="center" height="170" style="width:150px;height:170px;padding:10px;background-color:${PANEL};font-family:${DISPLAY};font-size:11px;line-height:15px;mso-line-height-rule:exactly;letter-spacing:1.5px;color:#9AA3B5;text-transform:uppercase;">Mockup<br>Image</td>`;
 
   const details = [line.color, line.sku ? 'SKU ' + line.sku : '', line.decoration].filter(Boolean).map(esc).join(DOT);
 
@@ -303,7 +306,7 @@ function itemRowHtml(line) {
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border:1px solid ${HAIRLINE};background-color:#ffffff;">
       <tr>
         ${mockCell}
-        <td class="stackcell" valign="top" style="padding:18px 20px;">
+        <td valign="top" style="padding:18px 20px;">
           ${line.brand ? `<div style="font-family:${DISPLAY};font-weight:bold;font-size:11px;line-height:14px;mso-line-height-rule:exactly;letter-spacing:2px;color:${RED};text-transform:uppercase;">${esc(line.brand)}</div>` : ''}
           <div style="font-family:${DISPLAY};font-weight:bold;font-size:19px;line-height:23px;mso-line-height-rule:exactly;color:${NAVY};text-transform:uppercase;padding-top:4px;">${esc(line.name)}</div>
           ${details ? `<div style="font-family:${BODY_FONT};font-size:13px;line-height:20px;mso-line-height-rule:exactly;color:${BODY_TEXT};padding-top:4px;">${details}</div>` : ''}
@@ -411,7 +414,6 @@ function buildSoShipmentEmail({
 <style>
   @media only screen and (max-width:620px){
     .stackcell{display:block !important;width:100% !important;max-width:100% !important}
-    .mock{width:100% !important;max-width:100% !important;height:auto !important}
     .h1{font-size:30px !important}
     .pad{padding-left:20px !important;padding-right:20px !important}
   }
