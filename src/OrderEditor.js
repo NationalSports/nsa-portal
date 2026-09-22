@@ -7653,6 +7653,24 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         }catch(e){nf('Email failed: '+e.message,'error')}
         finally{setShpEmailBusy(false)}
       };
+      // Show the exact email — mockups, boxes, size runs — in a new tab without sending
+      // anything. The tab is opened on the click itself: pop-up blockers allow that, but
+      // not a window opened after the fetch comes back.
+      const previewShipmentNotice=async()=>{
+        if(shpEmailBusy)return;
+        const w=window.open('','_blank');
+        if(!w){nf('Pop-up blocked — allow pop-ups for the portal to preview the email','error');return}
+        w.document.write('<p style="font-family:sans-serif;padding:24px;color:#475569">Building the shipping email…</p>');
+        setShpEmailBusy(true);
+        try{
+          const r=await authFetch('/.netlify/functions/so-shipment-notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({soId:o.id,preview:true})});
+          const d=await r.json().catch(()=>({}));
+          if(!r.ok||!d.html){w.close();nf(d.error||'Could not build the shipping email','error');return}
+          w.document.open();w.document.write(d.html);w.document.close();
+          w.document.title='Preview — '+(d.subject||'shipping email');
+        }catch(e){w.close();nf('Preview failed: '+e.message,'error')}
+        finally{setShpEmailBusy(false)}
+      };
 
       return<div style={{display:'grid',gap:16}}>
         {/* ── WAREHOUSE BOXES (BX plates, boxes table) — where is this order physically ── */}
@@ -7687,9 +7705,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   shipped after the order was already closed and invoiced. The warehouse Ready-to-Ship
                   flow is still the main path (it knows which units are in the box); this is the escape
                   hatch for everything else, and it is what gets the shipping COST onto the order. */}
-              {allOutbound.length>0&&<button className="btn btn-sm btn-primary" style={{marginLeft:'auto',fontSize:11,background:'#962C32',borderColor:'#962C32'}}
+              {allOutbound.length>0&&<button className="btn btn-sm btn-secondary" style={{marginLeft:'auto',fontSize:11}}
+                disabled={shpEmailBusy} onClick={previewShipmentNotice} title="Open the coach's shipping email in a new tab — nothing is sent">
+                👁 Preview Email</button>}
+              {allOutbound.length>0&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#962C32',borderColor:'#962C32'}}
                 disabled={shpEmailBusy} onClick={emailShipmentNotice}>
-                {shpEmailBusy?'Sending…':'📧 Email Coach Tracking'}</button>}
+                {shpEmailBusy?'Working…':'📧 Email Coach Tracking'}</button>}
               {canEditCost&&<button className="btn btn-sm btn-secondary" style={{marginLeft:allOutbound.length>0?0:'auto',fontSize:11}}
                 onClick={()=>setAddShp(addShp?null:{tracking:'',carrier:'',date:new Date().toLocaleDateString(),cost:'',notes:''})}>
                 {addShp?'Cancel':'+ Add Shipment'}</button>}
