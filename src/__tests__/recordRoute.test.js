@@ -100,3 +100,21 @@ describe('constants', () => {
     });
   });
 });
+
+describe('item fulfillment routing', () => {
+  test('an IF is its own address, and its param survives a round trip', () => {
+    expect(REC_PARAM_FOR_PG.item_fulfillment).toBe('if');
+    const search = buildRouteSearch('', 'item_fulfillment', 'if', 'IF-1192');
+    expect(search).toBe('?pg=item_fulfillment&if=IF-1192');
+    expect(readRoute(search)).toEqual({ pg: 'item_fulfillment', recParam: 'if', recId: 'IF-1192' });
+  });
+
+  test('leaving the IF page drops ?if= rather than carrying it into another section', () => {
+    expect(buildRouteSearch('?pg=item_fulfillment&if=IF-1192', 'warehouse', null, null)).toBe('?pg=warehouse');
+    expect(buildRouteSearch('?pg=item_fulfillment&if=IF-1192', 'orders', 'so', 'SO-2492')).toBe('?pg=orders&so=SO-2492');
+  });
+
+  test('a bare ?if= link (no ?pg=) still resolves to the IF', () => {
+    expect(readRoute('?if=IF-1192').recId).toBe('IF-1192');
+  });
+});
