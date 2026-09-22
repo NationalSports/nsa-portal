@@ -66,6 +66,33 @@ export const ART_PULLBACK_CLEARS = {
   _coach_cleared: true,
 };
 
+// Production preparation is not a design revision. Keep the approved proof and coach
+// decision, but require fresh confirmation of the requested production files.
+export function requestProductionFilesOnSO(so, { match, artIds, request }) {
+  const ids = artIds || [];
+  const selected = (so.jobs || []).filter(match);
+  const approvedStates = ['art_complete', 'production_files_needed', 'upload_emb_files', 'order_dtf_transfers'];
+  if (!selected.length || selected.some(j => !approvedStates.includes(j.art_status) || j.coach_rejected)
+      || !ids.length || ids.some(id => !so.art_files?.some(a => a.id === id && a.status === 'approved' && !a.archived))) {
+    throw new Error('Approve the artwork before requesting production files only.');
+  }
+  const art_files = so.art_files.map(a => ids.includes(a.id) ? {
+    ...a, prod_files_attached: false, files: markDstsStale(a.files),
+    prod_files: markDstsStale(a.prod_files),
+    sample_art: [...(a.sample_art || []), ...(request.files || [])],
+  } : a);
+  const pending = pendingProdFileGroups(art_files.filter(a => ids.includes(a.id)));
+  const jobs = (so.jobs || []).map((j, i) => match(j, i) ? {
+    ...j, art_status: prodFilesStatusFor(pending[0]?.deco || j.deco_type),
+    _art_moved: true, art_hidden: false,
+    assigned_artist: request.artist || j.assigned_artist,
+    prod_status: ['staging', 'in_process'].includes(j.prod_status) ? 'hold' : j.prod_status,
+    art_requests: [...(j.art_requests || []).map(r => ['requested', 'in_progress'].includes(r.status)
+      ? { ...r, status: 'recalled' } : r), { ...request, type: 'production_files', status: 'requested' }],
+  } : j);
+  return { ...so, art_files, jobs };
+}
+
 // Approve a job's art into `targetStatus` — either 'art_complete' (a production separation is
 // CONFIRMED) or the decoration's production-files stage (the artist still owes the separation).
 // Callers must decide which via artProdFilesConfirmed; approving into art_complete without a

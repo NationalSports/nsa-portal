@@ -70,6 +70,7 @@ import { itemVendorInvSource, vendorInvCacheKey } from './vendorInventory';
 import { stampSplitRuns } from './lib/splitJobPricing';
 import { allocateCustomSplit, openSizes, freeSplitSuffix, planJobMerge } from './lib/splitJobItems';
 import { closeOpenArtRequests } from './lib/artRequests';
+import { requestProductionFilesOnSO } from './lib/artReview';
 import { artFamilyKey } from './lib/artSplitFamily';
 import { parseStitchCount, embStitchTierLabel } from './lib/embStitchParser';
 import { _dbPersistNewPoLine } from './lib/dbEngine';
@@ -320,6 +321,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // without it a save nulling a non-null coach column is treated as stale and the DB value is kept.
   const ART_PULLBACK_CLEARS={sent_to_coach_at:null,follow_up_at:null,coach_approved_at:null,coach_rejected:false,_coach_cleared:true};
   const _activeProd=s=>s==='staging'||s==='in_process';
+  const _requestProdOnly=async()=>{
+    const cur=oRef.current;
+    const job=safeJobs(cur)[artReqModal.jIdx];
+    if(!job)return;
+    const ids=(job._art_ids?.length?job._art_ids:[job.art_file_id]).filter(Boolean);
+    const family=_artFamilyIdxs(artReqModal.jIdx);
+    const request={id:'AR-'+Date.now(),artist:artReqModal.artist,
+      artist_name:REPS.find(r=>r.id===artReqModal.artist)?.name||'',
+      instructions:artReqModal.instructions||'Production files only — keep the approved mockup unchanged.',
+      files:artReqModal.files||[],created_at:new Date().toISOString(),created_by:cu.name};
+    let updated;
+    try{updated=requestProductionFilesOnSO(cur,{match:(jj,i)=>family.includes(i),artIds:ids,request})}
+    catch(e){nf(e.message,'error');return}
+    family.forEach(i=>{const jj=safeJobs(cur)[i];if(_activeProd(jj?.prod_status)&&onStopJobClock)onStopJobClock(cur.id,jj.id)});
+    updated.jobs=_holdArtSiblings(updated.jobs,ids,job.id);
+    if(await saveSONow(updated,'Production file request','Production files requested — mockup approval preserved.'))setArtReqModal(null);
+  };
   // Jobs sharing any of the affected art files must not keep running a design that's being
   // redrawn — put them on hold along with the job being acted on. Any decorator clock on a
   // held job is stopped through App's shared clock-out (audit L10) — the board's applyJobMove
@@ -12923,7 +12941,10 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
         const _grpColors=sel=>new Set(sel.map(k=>(_grpG.find(g=>g.key===k)||{}).color||'')).size;
         // Selection is stored in _grpG order, so element 0 is always the source garment.
         const _grpToggle=key=>{const next=new Set(_grpSel);if(next.has(key))next.delete(key);else next.add(key);setArtReqModal(m=>({...m,group:_grpG.filter(g=>next.has(g.key)).map(g=>g.key)}))};
+        const _canKeepApproval=(j2.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j2.art_status));
+        const _productionOnly=_canKeepApproval&&artReqModal.requestType!=='revision';
         const submitArtReq2=()=>{
+          if(_productionOnly){_requestProdOnly();return}
           const _grp=_grpSel.filter(k=>_grpG.some(g=>g.key===k));
           // A cross-color group means the coach approves one color's mockup for a garment in
           // another color — the same trap the job-page chips confirm on, so confirm here too.
@@ -12964,7 +12985,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
         return<div className="modal-overlay" onClick={()=>setArtReqModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
           <div className="modal-header" style={hasExistingReqs2?{background:'#faf5ff'}:undefined}><h2>{hasExistingReqs2?'Update Art Request':'🎨 Request Art'} — {j2.art_name}</h2><button className="modal-close" onClick={()=>setArtReqModal(null)}>×</button></div>
           <div className="modal-body">
-            {hasExistingReqs2&&<div style={{padding:'10px 14px',marginBottom:12,borderRadius:8,border:'2px solid '+(activeReq2?'#fbbf24':'#86efac'),background:activeReq2?'#fffbeb':'#f0fdf4'}}>
+            {hasExistingReqs2&&!_productionOnly&&<div style={{padding:'10px 14px',marginBottom:12,borderRadius:8,border:'2px solid '+(activeReq2?'#fbbf24':'#86efac'),background:activeReq2?'#fffbeb':'#f0fdf4'}}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <span style={{fontSize:18}}>{activeReq2?(activeReq2.status==='in_progress'?'🎨':'📩'):'✅'}</span>
                 <div style={{flex:1}}>
@@ -12975,6 +12996,12 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
               <div style={{fontSize:11,color:'#475569',marginTop:8,paddingTop:8,borderTop:'1px dashed '+(activeReq2?'#fde68a':'#bbf7d0')}}>ℹ️ Your change goes straight to the artist — the job stays where it is, but the revised art will need <b>your approval again</b> before production.</div>
             </div>}
             <div style={{marginBottom:12}}>
+              <div className="form-label">Request type</div>
+              <select className="form-select" value={_productionOnly?'production_files':'revision'} onChange={e=>setArtReqModal(m=>({...m,requestType:e.target.value}))}>
+                {_canKeepApproval&&<option value="production_files">Production files / separations only — keep mockup approved</option>}
+                <option value="revision">Change the artwork — requires new approval</option>
+              </select>
+              <div style={{fontSize:11,margin:'6px 0 12px'}}>{_productionOnly?'The design stays approved. Only production-file readiness is reopened; mockup grouping is unchanged.':'This changes the design and reopens mockup approval.'}</div>
               <div className="form-label">Artist *</div>
               <select className="form-select" value={artReqModal.artist} onChange={e=>setArtReqModal(m=>({...m,artist:e.target.value}))}>
                 <option value="">Select artist...</option>
@@ -12985,7 +13012,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
               <div className="form-label">{hasExistingReqs2?'Update / Additional Instructions':'Instructions'}</div>
               <textarea className="form-input" rows={4} placeholder={hasExistingReqs2?'Add revision notes, feedback, or additional instructions...':'Describe what you need — mockup, revision, specific colors, placement notes, etc.'} value={artReqModal.instructions} onChange={e=>setArtReqModal(m=>({...m,instructions:e.target.value}))} style={{resize:'vertical'}}/>
             </div>
-            {_grpG.length>1&&<div style={{marginBottom:12}}>
+            {!_productionOnly&&_grpG.length>1&&<div style={{marginBottom:12}}>
               <div className="form-label">🔗 One mockup for several garments (optional)</div>
               <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>Tick the garments that are near-identical — the artist builds <b>one</b> mockup, the rest are linked to it, and the coach approves a single proof instead of two. Reversible from the job page.</div>
               <div style={{border:'1px solid #e2e8f0',borderRadius:6,overflow:'hidden'}}>
@@ -13033,7 +13060,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
           </div>
           <div className="modal-footer">
             <button className="btn btn-secondary" onClick={()=>setArtReqModal(null)}>Cancel</button>
-            <button className="btn btn-primary" style={hasExistingReqs2?{background:'#6d28d9',borderColor:'#6d28d9'}:{}} disabled={!artReqModal.artist} onClick={submitArtReq2}>{hasExistingReqs2?'Send Update':'Send Art Request'}</button>
+            <button className="btn btn-primary" style={hasExistingReqs2?{background:'#6d28d9',borderColor:'#6d28d9'}:{}} disabled={!artReqModal.artist||actionSaving>0} onClick={submitArtReq2}>{_productionOnly?'Request Production Files':hasExistingReqs2?'Send Revision':'Send Art Request'}</button>
           </div>
         </div></div>
       })()}
@@ -14120,7 +14147,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         const _grpToggle=key=>{const next=new Set(_grpSel);if(next.has(key))next.delete(key);else next.add(key);setArtReqModal(m=>({...m,group:_grpG.filter(g=>next.has(g.key)).map(g=>g.key)}))};
         const hasExistingReqs=(j.art_requests||[]).length>0;
         const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
+        const _canKeepApproval=(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status));
+        const _productionOnly=_canKeepApproval&&artReqModal.requestType!=='revision';
         const submitArtReq=()=>{
+          if(_productionOnly){_requestProdOnly();return}
           const _grp=_grpSel.filter(k=>_grpG.some(g=>g.key===k));
           // A cross-color group means the coach approves one color's mockup for a garment in
           // another color — the same trap the job-page chips confirm on, so confirm here too.
@@ -14158,7 +14188,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         return<div className="modal-overlay" onClick={()=>setArtReqModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
           <div className="modal-header" style={hasExistingReqs?{background:'#faf5ff'}:undefined}><h2>{hasExistingReqs?'Update Art Request':'🎨 Request Art'} — {j.art_name}</h2><button className="modal-close" onClick={()=>setArtReqModal(null)}>×</button></div>
           <div className="modal-body">
-            {hasExistingReqs&&<div style={{padding:'10px 14px',marginBottom:12,borderRadius:8,border:'2px solid '+(activeReq?'#fbbf24':'#86efac'),background:activeReq?'#fffbeb':'#f0fdf4'}}>
+            {hasExistingReqs&&!_productionOnly&&<div style={{padding:'10px 14px',marginBottom:12,borderRadius:8,border:'2px solid '+(activeReq?'#fbbf24':'#86efac'),background:activeReq?'#fffbeb':'#f0fdf4'}}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <span style={{fontSize:18}}>{activeReq?(activeReq.status==='in_progress'?'🎨':'📩'):'✅'}</span>
                 <div style={{flex:1}}>
@@ -14169,6 +14199,12 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               <div style={{fontSize:11,color:'#475569',marginTop:8,paddingTop:8,borderTop:'1px dashed '+(activeReq?'#fde68a':'#bbf7d0')}}>ℹ️ Your change goes straight to the artist — the job stays where it is, but the revised art will need <b>your approval again</b> before production.</div>
             </div>}
             <div style={{marginBottom:12}}>
+              <div className="form-label">Request type</div>
+              <select className="form-select" value={_productionOnly?'production_files':'revision'} onChange={e=>setArtReqModal(m=>({...m,requestType:e.target.value}))}>
+                {_canKeepApproval&&<option value="production_files">Production files / separations only — keep mockup approved</option>}
+                <option value="revision">Change the artwork — requires new approval</option>
+              </select>
+              <div style={{fontSize:11,margin:'6px 0 12px'}}>{_productionOnly?'The design stays approved. Only production-file readiness is reopened; mockup grouping is unchanged.':'This changes the design and reopens mockup approval.'}</div>
               <div className="form-label">Artist *</div>
               <select className="form-select" value={artReqModal.artist} onChange={e=>setArtReqModal(m=>({...m,artist:e.target.value}))}>
                 <option value="">Select artist...</option>
@@ -14179,7 +14215,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               <div className="form-label">{hasExistingReqs?'Update / Additional Instructions':'Instructions'}</div>
               <textarea className="form-input" rows={4} placeholder={hasExistingReqs?'Add revision notes, feedback, or additional instructions...':'Describe what you need — mockup, revision, specific colors, placement notes, etc.'} value={artReqModal.instructions} onChange={e=>setArtReqModal(m=>({...m,instructions:e.target.value}))} style={{resize:'vertical'}}/>
             </div>
-            {_grpG.length>1&&<div style={{marginBottom:12}}>
+            {!_productionOnly&&_grpG.length>1&&<div style={{marginBottom:12}}>
               <div className="form-label">🔗 One mockup for several garments (optional)</div>
               <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>Tick the garments that are near-identical — the artist builds <b>one</b> mockup, the rest are linked to it, and the coach approves a single proof instead of two. Reversible from the job page.</div>
               <div style={{border:'1px solid #e2e8f0',borderRadius:6,overflow:'hidden'}}>
@@ -14227,7 +14263,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           </div>
           <div className="modal-footer">
             <button className="btn btn-secondary" onClick={()=>setArtReqModal(null)}>Cancel</button>
-            <button className="btn btn-primary" style={hasExistingReqs?{background:'#6d28d9',borderColor:'#6d28d9'}:{}} disabled={!artReqModal.artist} onClick={submitArtReq}>{hasExistingReqs?'Send Update':'Send Art Request'}</button>
+            <button className="btn btn-primary" style={hasExistingReqs?{background:'#6d28d9',borderColor:'#6d28d9'}:{}} disabled={!artReqModal.artist||actionSaving>0} onClick={submitArtReq}>{_productionOnly?'Request Production Files':hasExistingReqs?'Send Revision':'Send Art Request'}</button>
           </div>
         </div></div>
       })()}
