@@ -48,30 +48,34 @@ function greetingName(contact) {
   return name.split(/\s+/)[0];
 }
 
-exports.handler = async (event) => {
-  if (event.httpMethod !== 'POST') return j(405, { error: 'POST only' });
-
-  const auth = await verifyUser(event);
-  if (!auth.ok) return j(auth.status, { error: auth.error });
-
+/**
+ * Build and send one order's shipping notice. The single implementation behind
+ * BOTH the rep's button (this file's handler) and the automatic sweep
+ * (so-shipment-notify-sweep.js) — neither gets its own copy of who-gets-what.
+ *
+ * Returns { status, payload } so a caller can answer HTTP with it or just read
+ * the outcome. Nothing here trusts the caller for content: `opts` carries an
+ * order id, an optional ETA string, and flags — never a recipient address that
+ * isn't already a contact on the order's customer.
+ */
+async function sendShipmentNotice(admin, opts = {}) {
+  const jj = (status, payload) => ({ status, payload });
+  const soId = String(opts.soId || '').trim();
+  if (!soId) return jj(400, { error: 'soId required' });
+  const preview = opts.preview === true;
+  const resend = opts.resend === true;
+  const requireTracking = opts.requireTracking === true;
+  const sentBy = opts.sentBy || 'portal';
   const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
-
-  let body;
-  try { body = JSON.parse(event.body || '{}'); } catch { return j(400, { error: 'Invalid JSON' }); }
-  const soId = String(body.soId || '').trim();
-  if (!soId) return j(400, { error: 'soId required' });
-  const preview = body.preview === true;
-  const resend = body.resend === true;
   // Free text the REP typed, never a merge field from elsewhere: a carrier ETA
   // isn't stored on the order. Bounded and HTML-escaped by the builder.
-  const etaInput = String(body.eta || '').trim().slice(0, 40);
-  const requestedIds = Array.isArray(body.shipmentIds) ? body.shipmentIds.map(String) : null;
+  const etaInput = String(opts.eta || '').trim().slice(0, 40);
+  const requestedIds = Array.isArray(opts.shipmentIds) ? opts.shipmentIds.map(String) : null;
+  const body = { to: opts.to };
 
-  if (!preview && !brevoKey) return j(500, { error: 'BREVO_API_KEY not configured' });
+  if (!preview && !brevoKey) return jj(500, { error: 'BREVO_API_KEY not configured' });
 
-  // verifyUser hands back the service-role client it already built.
-  const admin = auth.admin;
-
+  const j = jj;
   try {
     const { data: so, error: soErr } = await admin.from('sales_orders')
       .select('id,customer_id,ship_to_id,_shipments,_carrier,_ship_date,_tracking_number,_tracking_url,deliver_on_date,sent_history,deleted_at')
@@ -89,6 +93,16 @@ exports.handler = async (event) => {
     const pool = all.length ? all : legacy;
     const selected = requestedIds ? pool.filter((s) => requestedIds.includes(String(s.id))) : pool;
     if (!selected.length) return j(409, { error: 'This order has no outbound shipments to notify about yet' });
+
+    // The automatic sweep only announces boxes that actually have tracking —
+    // "your gear is on the way, no tracking number" helps nobody. A rep pressing
+    // the button can still send without it (a rep drop-off has no tracking).
+    if (requireTracking) {
+      const untracked = selected.filter((s) => !String(s.tracking_number || '').trim());
+      if (untracked.length) {
+        return j(409, { error: `Waiting on tracking for ${untracked.length} of ${selected.length} box${selected.length === 1 ? '' : 'es'}`, waitingOnTracking: untracked.length });
+      }
+    }
 
     // ── Recipient: resolved from the order's customer, never from the caller ──
     const { data: customer, error: custErr } = await admin.from('customers')
@@ -240,7 +254,7 @@ exports.handler = async (event) => {
     // by a shipping notice.
     const histEntry = {
       sent_at: new Date().toLocaleString(),
-      sent_by: auth.teamMemberId || auth.userId || 'portal',
+      sent_by: sentBy,
       type: 'shipment',
       to: recipient.email,
       messageId: (result && (result.messageId || result.message_id)) || null,
@@ -264,4 +278,31 @@ exports.handler = async (event) => {
     console.error('[so-shipment-notify] failed:', e);
     return j(500, { error: e.message });
   }
+}
+
+// The rep's button. Staff-only, and it passes the caller nothing but an order
+// id, an optional ETA and flags — see sendShipmentNotice above.
+exports.handler = async (event) => {
+  if (event.httpMethod !== 'POST') return j(405, { error: 'POST only' });
+
+  const auth = await verifyUser(event);
+  if (!auth.ok) return j(auth.status, { error: auth.error });
+
+  let body;
+  try { body = JSON.parse(event.body || '{}'); } catch { return j(400, { error: 'Invalid JSON' }); }
+
+  // verifyUser hands back the service-role client it already built.
+  const { status, payload } = await sendShipmentNotice(auth.admin, {
+    soId: body.soId,
+    eta: body.eta,
+    to: body.to,
+    shipmentIds: body.shipmentIds,
+    preview: body.preview === true,
+    resend: body.resend === true,
+    sentBy: auth.teamMemberId || auth.userId || 'portal',
+  });
+  return j(status, payload);
 };
+
+module.exports.sendShipmentNotice = sendShipmentNotice;
+module.exports.isCustomerShipment = isCustomerShipment;

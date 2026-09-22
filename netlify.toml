@@ -343,3 +343,14 @@
 # source for profit and commissions.
 [functions."omg-order-sync-cron"]
   schedule = "15 8 * * *"
+
+# Coach shipping notices — every 15 min. Sends the "your gear is on the way"
+# email for any live sales order whose customer boxes ALL carry a tracking
+# number, once past a short grace window and never for a box older than the max
+# age. Same send path as the rep's Email Coach Tracking button, so the
+# already-sent guard covers both. DEFAULT OFF: without SO_SHIPMENT_AUTONOTIFY=on
+# it runs as a dry run and emails nobody. Staff can POST { action:'run' } (or
+# { dryRun:true }) with a bearer session token. See
+# netlify/functions/so-shipment-notify-sweep.js.
+[functions."so-shipment-notify-sweep"]
+  schedule = "*/15 * * * *"
