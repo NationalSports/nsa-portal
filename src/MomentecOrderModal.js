@@ -8,11 +8,12 @@
 // momentec-proxy and never appear in this payload.
 import React, { useEffect, useMemo, useState } from 'react';
 import { buildMomentecOrderPayload, buildMomentecOrderLines, buildMomentecShippingCostRequest } from './momentecOrder';
-import { momentecSubmitOrder, momentecResolveSkus, momentecOrderDetails, momentecShippingCost } from './vendorApis';
+import { momentecSubmitOrder, momentecResolveSkus, momentecOrderDetails, momentecShippingCost, momentecStyleV2 } from './vendorApis';
 import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
 import { DuplicateMergeWarning, FreeShipNotice } from './VendorOrderGuardPanels';
 import { freeShipGap } from './lib/vendorOrderGuards';
 import { NSA, NSA_WAREHOUSE, BATCH_VENDORS } from './constants';
+import { apiLineSourceKey } from './lib/apiOrderLines';
 
 // Momentec ships integrated orders to NSA's receiving dock (caller can override via shipTo).
 const NSA_SHIP_TO = {
@@ -30,7 +31,7 @@ const NSA_SHIP_TO = {
   postalCode: NSA_WAREHOUSE.zip,
 };
 
-export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'Momentec', shipTo, shipWarning = '', shipPresets = [], onClose, onSubmitted }) {
+export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'Momentec', shipTo, shipWarning = '', shipPresets = [], onClose, onSubmitted, onRemoveLine }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'json'
   const [confirmed, setConfirmed] = useState(false);
   const [live, setLive] = useState(false);  // false = stage/sandbox, true = prod
@@ -45,6 +46,10 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
   const [resolveErr, setResolveErr] = useState('');
   const [verify, setVerify] = useState({ state: 'idle', data: null, error: '' }); // post-submit read-back: idle|checking|found|missing|error
   const [quote, setQuote] = useState(null); // pre-submit freight quote: { state:'loading'|'ok'|'error', amount?, note? } | null
+  const [removedLineKeys, setRemovedLineKeys] = useState(() => new Set());
+  const [removingLine, setRemovingLine] = useState(null);
+  const [removalErr, setRemovalErr] = useState('');
+  const [stockBySku, setStockBySku] = useState(null);
 
   // Auto-selected destination plus the rep's optional hand-edited override.
   const autoShip = shipTo || NSA_SHIP_TO;
@@ -63,7 +68,8 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
   // WITHOUT the ship-to: lines don't vary by destination, and rebuilding them per address
   // keystroke re-fired the SKU resolver below on every character (see SSOrderModal — the
   // same chain there blanked already-matched SKUs when the ship-to was edited).
-  const baseLines = useMemo(() => buildMomentecOrderLines(batchPOs).lines, [batchPOs]);
+  const allBaseLines = useMemo(() => buildMomentecOrderLines(batchPOs).lines, [batchPOs]);
+  const baseLines = useMemo(() => allBaseLines.filter(l => !removedLineKeys.has(apiLineSourceKey(l))), [allBaseLines, removedLineKeys]);
   const missing = useMemo(() => baseLines.filter(l => !l.sku).map(l => ({ key: l.key, style: l.style, color: l.color, size: l.size })), [baseLines]);
 
   // Resolve any line without a stamped SKU live from /v2/Style.
@@ -85,6 +91,25 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
   const built = useMemo(() => buildMomentecOrderPayload({ poNumber, lineItems: lines, shipTo: ship }), [poNumber, lines, ship]);
   const totals = built.summary;
   const unresolvedStyles = useMemo(() => [...new Set(lines.filter(l => !l.sku).map(l => String(l.style || '').toUpperCase().trim()))], [lines]);
+
+  // Momentec's style response includes exact per-SKU quantities. Fetch every style,
+  // including lines whose SKU was already stamped, so zero-stock rows can be removed
+  // before the live order is submitted. Missing/error responses stay unknown, never OOS.
+  const stockStyleSig = useMemo(() => [...new Set(baseLines.map(l => String(l.style || '').split('.')[0].trim()).filter(Boolean))].sort().join(','), [baseLines]);
+  useEffect(() => {
+    let cancelled = false;
+    if (!stockStyleSig) { setStockBySku({}); return; }
+    setStockBySku(null);
+    Promise.all(stockStyleSig.split(',').map(style => momentecStyleV2(style).catch(() => null))).then(styles => {
+      if (cancelled) return;
+      const map = {};
+      styles.filter(Boolean).forEach(style => (style.colors || []).forEach(color => (color.sizes || []).forEach(size => {
+        map[String(`${color.sku}.${size.sizeName}`).toUpperCase()] = Number(size.qty) || 0;
+      })));
+      setStockBySku(map);
+    });
+    return () => { cancelled = true; };
+  }, [stockStyleSig]);
 
   // Repeated SKUs are merged into one payload item (buildMomentecOrderPayload) — the rep has
   // to confirm the combined quantity, since a duplicated batch queue is indistinguishable
@@ -114,10 +139,25 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
     return () => { cancelled = true; clearTimeout(t); };
   }, [canQuote, quoteLinesSig, lines, ship, env]);
 
-  const blocked = lines.length === 0 || warnings.length > 0 || resolving || shipIncomplete || needsDupAck;
+  const blocked = lines.length === 0 || warnings.length > 0 || resolving || shipIncomplete || !!removalErr || needsDupAck;
   const done = submitState === 'success';
   const submitting = submitState === 'submitting';
   const canSubmit = !blocked && confirmed && !submitting && !done;
+
+  const removeLine = async (line) => {
+    if (!onRemoveLine || removingLine != null || submitting) return;
+    if (!window.confirm(`Remove ${line.style} ${line.color || ''} ${line.size} (${line.quantity}) from this PO?\n\nIt will not be sent to Momentec. The sales rep for ${line.sourceSO} will be notified to adjust the order.`)) return;
+    const sourceKey = apiLineSourceKey(line);
+    setRemovingLine(sourceKey); setErrorMsg(''); setRemovalErr('');
+    try {
+      const removed = await onRemoveLine(line);
+      if (!removed) { setRemovalErr('The PO removal could not be confirmed. Do not submit from this window; reload the sales order and verify the PO first.'); return; }
+      setRemovedLineKeys(prev => new Set([...prev, sourceKey]));
+      setConfirmed(false);
+    } catch (error) {
+      setRemovalErr((error?.message || 'The line could not be removed from the source PO.') + ' Do not submit from this window; reload and verify the PO first.');
+    } finally { setRemovingLine(null); }
+  };
 
   const doSubmit = async () => {
     if (!canSubmit) return;
@@ -289,6 +329,7 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
             <Stat label="Total Cost" value={'$' + totals.totalCost.toFixed(2)} />
           </div>
           {!done && <FreeShipNotice vendorName="Momentec" gap={freeShipGap(BATCH_VENDORS.momentec.threshold, totals.totalCost)} quote={quote} />}
+          {!done && removalErr && <div style={{ padding: 10, background: '#fef2f2', border: '2px solid #ef4444', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#991b1b', fontWeight: 700 }}>{removalErr}</div>}
           {!done && shipWarning && (
             <div style={{ padding: 10, background: '#fffbeb', border: '2px solid #f59e0b', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#92400e', fontWeight: 600 }}>
               <strong>⚠ Mixed destinations in this batch.</strong> {shipWarning}
@@ -322,12 +363,14 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
                     <th style={{ ...th, textAlign: 'right' }}>Qty</th>
                     <th style={{ ...th, textAlign: 'right' }}>Unit $</th>
                     <th style={{ ...th, textAlign: 'right' }}>Line $</th>
+                    <th style={th}>Stock</th>
                     <th style={th}>Source SO</th>
+                    {onRemoveLine && <th style={{ ...th, textAlign: 'right' }}></th>}
                   </tr>
                 </thead>
                 <tbody>
-                  {lines.map((l, i) => (
-                    <tr key={l.key} style={{ borderTop: '1px solid #f1f5f9' }}>
+                  {lines.map((l, i) => { const sourceKey = apiLineSourceKey(l); const sku = String(l.sku || '').toUpperCase(); const stockKnown = !!l.sku && stockBySku !== null && Object.prototype.hasOwnProperty.call(stockBySku, sku); const available = stockKnown ? stockBySku[sku] : null; const short = stockKnown && available < l.quantity; return (
+                    <tr key={sourceKey} style={{ borderTop: '1px solid #f1f5f9', background: short ? '#fff7ed' : 'transparent' }}>
                       <td style={td}>{i + 1}</td>
                       <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: l.sku ? '#0f766e' : '#dc2626' }}>{l.sku || (resolving ? '…' : '⚠ missing')}</td>
                       <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: '#1e40af' }}>{l.style}</td>
@@ -336,9 +379,11 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
                       <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{l.quantity}</td>
                       <td style={{ ...td, textAlign: 'right' }}>${(l.unitPrice || 0).toFixed(2)}</td>
                       <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>${(l.quantity * (l.unitPrice || 0)).toFixed(2)}</td>
+                      <td style={{ ...td, fontWeight: short ? 800 : 600, color: short ? '#c2410c' : available > 0 ? '#166534' : '#94a3b8' }}>{stockBySku === null ? '…' : stockKnown ? (short ? (available <= 0 ? 'OUT OF STOCK' : `${available} available / ${l.quantity} needed`) : `${available} available`) : '—'}</td>
                       <td style={{ ...td, color: '#64748b', fontSize: 11 }}>{l.sourceSO}</td>
+                      {onRemoveLine && <td style={{ ...td, textAlign: 'right' }}>{short && <button className="btn btn-sm" disabled={removingLine != null || submitting} onClick={() => removeLine(l)} style={{ color: '#b91c1c', borderColor: '#fca5a5', fontSize: 10, whiteSpace: 'nowrap' }}>{removingLine === sourceKey ? 'Removing…' : 'Remove from order & PO'}</button>}</td>}
                     </tr>
-                  ))}
+                  );})}
                 </tbody>
               </table>
               {lines.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8' }}>No line items.</div>}

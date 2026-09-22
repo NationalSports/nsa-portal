@@ -73,7 +73,7 @@ import { webstoreCheckoutMoney } from './lib/webstoreSoMoney';
 import { acquireOmgCreationGuard, omgCollectedUnitPrice, omgInvoiceIdempotencyKey, webstoreInvoiceIdempotencyKey } from './lib/omgCreationGuard';
 import { matchedBillPoNumber, normalizeBillForReview, prepareQboBackfillBill } from './qbBillReview';
 import { resolvePoDisplayVendor } from './lib/poVendor';
-import { removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
+import { buildOutOfStockRemovalMessage, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
 // paint — so the first Excel import or PDF/SVG export has no download wait, while keeping them
@@ -11541,10 +11541,11 @@ export default function App(){
     }finally{_batchOrderingRef.current.delete(_gk)}
   };
 
-  // Remove a SanMar line that live inventory reports as short before submission. The PO
+  // Remove a vendor-API line that live inventory reports as short before submission. The PO
   // commitment and its batch-queue mirror are updated together; the sales-order item stays
-  // in place so purchasing can source it elsewhere.
-  const removeQueuedSanMarLine=async(line)=>{
+  // in place so purchasing can source it elsewhere. The order's sales rep is tagged on the
+  // SO conversation after the durable save succeeds.
+  const removeQueuedApiLine=async(line)=>{
     const currentSos=_visFlushRefs.current.sos||sos;
     const so=currentSos.find(entry=>entry.id===line?.sourceSO);
     if(!so){nf('The source sales order for this line could not be found. Nothing was changed.','error');return false}
@@ -11552,12 +11553,16 @@ export default function App(){
     if(!result.removed){nf(result.reason||'This line could not be removed from its source PO.','error');return false}
     const updated={...so,items:result.items,updated_at:new Date().toLocaleString()};
     let saved=false;
-    try{saved=await savSONow(updated)}catch(_saveErr){console.error('[removeQueuedSanMarLine] durable save failed',_saveErr)}
+    try{saved=await savSONow(updated)}catch(_saveErr){console.error('[removeQueuedApiLine] durable save failed',_saveErr)}
     if(!saved){nf('The PO removal could not be confirmed. Do not submit; reload the order and verify the PO.','error');return false}
     const nextBatches=removeApiLineFromBatchPOs(_visFlushRefs.current.batchPOs||batchPOs,line);
     _visFlushRefs.current={..._visFlushRefs.current,batchPOs:nextBatches,sos:currentSos.map(entry=>entry.id===updated.id?updated:entry)};
     setBatchPOs(nextBatches);
-    nf('Removed '+line.style+' '+line.size+' from '+result.poId+'; it will not be sent to SanMar.');
+    const customer=cust.find(c=>c.id===so.customer_id)||null;
+    const vendorName=(_visFlushRefs.current.batchPOs||batchPOs||[]).find(bp=>bp.id===line?.sourceBatchId)?.vendor_name||'the vendor';
+    const msg=buildOutOfStockRemovalMessage({line,sourceOrder:so,customer,actor:cu,vendorName});
+    if(msg)setMsgs(prev=>[...prev,msg]);
+    nf('Removed '+line.style+' '+line.size+' from '+result.poId+'; '+so.id+'\'s sales rep was notified.');
     return true;
   };
 
@@ -14932,6 +14937,11 @@ export default function App(){
             </div>
           </div>
 
+          {submittedInfo&&!submittedInfo.api_order_id&&<div style={{padding:'12px 16px',background:'#fffbeb',borderLeft:'4px solid #f59e0b',borderRight:'1px solid #fcd34d',borderBottom:'2px solid #f59e0b',color:'#92400e'}}>
+            <div style={{fontSize:14,fontWeight:900,textTransform:'uppercase',letterSpacing:0.4}}>This will be manually ordered from the company</div>
+            <div style={{fontSize:12,marginTop:3}}>The portal created this PO, but it did <strong>not</strong> send the order to {vendor||'the vendor'}. Place it manually using PO <strong style={{fontFamily:'monospace'}}>{poId}</strong>.</div>
+          </div>}
+
           {/* Flat item list — this is what warehouse sees */}
           <div className="card-body" style={{padding:0}}>
             {submittedInfo?.status!=='received'&&<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 16px',borderBottom:'1px solid #f1f5f9',background:'#f8fafc',flexWrap:'wrap',gap:8}}>
@@ -15291,13 +15301,15 @@ export default function App(){
             <button style={{width:'100%',padding:'12px 20px',borderRadius:8,border:'none',cursor:'pointer',fontWeight:800,fontSize:14,
               background:hitThreshold?'linear-gradient(135deg,#22c55e,#16a34a)':'linear-gradient(135deg,#2563eb,#1d4ed8)',color:'white'}}
               onClick={async()=>{
+                if(!window.confirm('Create '+nextPO+' as a MANUAL order for '+vg.name+'?\n\nThis only records the PO in NSA. It does NOT send anything to the vendor. You must place the order manually with the company.'))return;
                 const poNum=await orderVendorBatch({vendorKey:vk,groupKey:gk});
                 if(!poNum)return;
-                nf('🚀 '+poNum+' ordered for '+vg.name+' ($'+total.toFixed(2)+')');
+                nf(poNum+' created as a manual order for '+vg.name+' — it was not sent to the vendor');
+                setBatchScan(poNum);
                 setPg('batch_pos');
-              }}>{'🚀'} Order {nextPO} for {vg.name}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
+              }}>Manual Order · {nextPO}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
             {vg.vendor_key==='sanmar'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>{const _d=_apiDest(vg);setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipToDecoId:vg.ship_to_deco_id||null,shipTo:vg.ship_to_deco_id?undefined:(_d.shipTo||undefined),shipWarning:_d.warning,onRemoveLine:removeQueuedSanMarLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,shipToDecoId:vg.ship_to_deco_id||null,apiResult:r,apiLines})})}}>
+              onClick={()=>{const _d=_apiDest(vg);setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipToDecoId:vg.ship_to_deco_id||null,shipTo:vg.ship_to_deco_id?undefined:(_d.shipTo||undefined),shipWarning:_d.warning,onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,shipToDecoId:vg.ship_to_deco_id||null,apiResult:r,apiLines})})}}>
               🚀 Submit SanMar Order (API)
             </button>}
             {vg.vendor_key==='sss'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
@@ -15307,12 +15319,12 @@ export default function App(){
                 // the same way the bot-cart and SanMar flows do, then hand SSOrderModal a shipTo
                 // in its shape. Non-deco batches pass no shipTo → default (NSA warehouse).
                 const _d=_apiDest(vg);
-                setSSOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipTo:_d.shipTo||undefined,shipWarning:_d.warning,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})});
+                setSSOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipTo:_d.shipTo||undefined,shipWarning:_d.warning,onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})});
               }}>
               🚀 Order via S&S API
             </button>}
             {vg.vendor_key==='momentec'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #fdba74',background:'white',color:'#c2410c',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>{const _d=_apiDest(vg);setMomentecOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipTo:_d.shipTo||undefined,shipWarning:_d.warning,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})})}}>
+              onClick={()=>{const _d=_apiDest(vg);setMomentecOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipTo:_d.shipTo||undefined,shipWarning:_d.warning,onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})})}}>
               🚀 Order via Momentec API
             </button>}
             <div style={{fontSize:10,color:'#64748b',marginTop:6,textAlign:'center'}}>
