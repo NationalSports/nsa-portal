@@ -145,3 +145,20 @@ export function reconcileVendorLines(sentLines, result, keyOf) {
     lineErrors, missing, short, checkedAgainst: 'lines',
   };
 }
+
+// Free-shipping threshold check for the order review screen.
+//
+// Every batch vendor charges freight below a merchandise threshold (BATCH_VENDORS in
+// constants.js carries the per-vendor number). The batch queue shows "$X to free ship",
+// but nothing on the order modal itself did, so a rep could confirm a $140 order and
+// only learn about the freight charge on the bill. Pure so all three modals share it.
+//
+// Returns null when the vendor has no threshold (Adidas/UA batch for other reasons);
+// otherwise { threshold, total, gap, under } where gap is the $ still needed (0 once met).
+export function freeShipGap(threshold, merchandiseTotal) {
+  const t = Number(threshold) || 0;
+  if (t <= 0) return null;
+  const total = Math.max(0, Number(merchandiseTotal) || 0);
+  const gap = Math.max(0, +(t - total).toFixed(2));
+  return { threshold: t, total, gap, under: total < t };
+}

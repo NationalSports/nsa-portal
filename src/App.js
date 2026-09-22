@@ -35015,11 +35015,8 @@ export default function App(){
           <table style={{fontSize:13}}>
             <thead><tr><th>Vendor</th><th>Free Ship Threshold</th></tr></thead>
             <tbody>
-              <tr><td style={{fontWeight:700}}>S&S Activewear</td><td>$200</td></tr>
-              <tr><td style={{fontWeight:700}}>SanMar</td><td>$200</td></tr>
-              <tr><td style={{fontWeight:700}}>Richardson</td><td>$200</td></tr>
-              <tr><td style={{fontWeight:700}}>Momentec</td><td>$200</td></tr>
-              <tr><td style={{fontWeight:700}}>A4</td><td>$200</td></tr>
+              {/* Read from BATCH_VENDORS so this table can't drift from what the batch queue and the vendor order modals actually enforce. */}
+              {Object.entries(BATCH_VENDORS).filter(([,v])=>v.threshold>0).map(([k,v])=><tr key={k}><td style={{fontWeight:700}}>{v.name}</td><td>${v.threshold}</td></tr>)}
             </tbody>
           </table>
         </div></div>
