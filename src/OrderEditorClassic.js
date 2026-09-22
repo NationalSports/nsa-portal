@@ -852,6 +852,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // copy of so.jobs may be stale or have duplicate ids; here we match on art_file_id
     // first (unique per art), then key, then id. Deferred so auto-sync has committed.
     React.useEffect(()=>{if(!scrollToJobRef)return;setTab('jobs');const _go=()=>{const _j=safeJobs(_navJobsRef.current);const a=scrollToJobRef;let idx=a.artId?_j.findIndex(x=>x.art_file_id===a.artId||(x._art_ids||[]).includes(a.artId)):-1;if(idx<0&&a.key)idx=_j.findIndex(x=>x.key===a.key);if(idx<0&&a.id)idx=_j.findIndex(x=>x.id===a.id);if(idx>=0){setSelJob(idx);const el=document.getElementById('so-job-'+idx);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}}onScrollJobConsumed&&onScrollJobConsumed()};setTimeout(_go,250)},[scrollToJobRef]);// eslint-disable-line
+    // ── SO line ⇄ in-house job links ──
+    // A line's in-house jobs are the so_jobs rows whose items[] reference it (item_idx). Each shows as a
+    // chip (job number + where it stands) at the end of the line's first pick/PO row and on the collapsed
+    // summary; clicking jumps to the job on the Jobs tab. The Jobs tab garment cell links back the other
+    // way (_jumpToItem). Read-only: none of this touches job or item state.
+    const _lineJobs=(idx)=>safeJobs(o).map((job,ji)=>({ji,job})).filter(({job})=>(job.items||[]).some(gi=>gi.item_idx===idx));
+    const _jumpToItem=(idx)=>{setCollapsedItems(c=>c[idx]?{...c,[idx]:false}:c);setTab('items');setTimeout(()=>{const el=document.getElementById('so-item-'+idx);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #3b82f6';setTimeout(()=>{el.style.boxShadow=''},2000)}},200)};
+    const _jumpToJob=(ji)=>{setTab('jobs');setSelJob(ji);setTimeout(()=>{const el=document.getElementById('so-job-'+ji);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}},200)};
+    // Status shown on the chip: production status once the job is moving (In Line / In Process /
+    // Completed / Shipped); before that "On Hold" says nothing, so the art stage that gates it shows.
+    const _jobChipStatus=(j)=>{const _ps=j.prod_status||'hold';const _pl=({draft:'Draft',hold:'On Hold',ready:'Ready',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped'})[_ps]||_ps;const _live=['staging','in_process','completed','shipped','ready'].includes(_ps);const _al=ART_LABELS[j.art_status]||'';return{key:_live?_ps:(j.art_status||_ps),label:_live||!_al?_pl:_al,title:'Job '+j.id+' · Art: '+(_al||'—')+' · Items: '+((j.item_status||'').replace(/_/g,' ')||'—')+' · Production: '+_pl+' — click to open on the Jobs tab'}};
+    const _jobChips=(idx,extraStyle)=>_lineJobs(idx).map(({ji,job})=>{const _st=_jobChipStatus(job);return <button key={'job'+ji} type="button" onClick={e=>{e.stopPropagation();_jumpToJob(ji)}} title={_st.title} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'1px 6px',borderRadius:4,border:'1px solid #bfdbfe',background:'#eff6ff',cursor:'pointer',fontSize:10,fontWeight:700,color:'#1e40af',whiteSpace:'nowrap',lineHeight:'16px',...(extraStyle||{})}}>🏭 {job.id}<span style={{padding:'0 5px',borderRadius:8,fontSize:9,fontWeight:600,background:(SC[_st.key]||ART_FILE_SC[_st.key])?.bg||'#f1f5f9',color:(SC[_st.key]||ART_FILE_SC[_st.key])?.c||'#475569'}}>{_st.label}</span></button>});
+    // Outbound tracking for one job, shown on its detail page: customer shipments that carried one of
+    // this job's garments (sku+color, the same key shippedSizesByLine uses); item-less shipments (manual adds, the legacy single tracking #) can't be attributed to a line, so
+    // they show as whole-order. Warehouse→decorator transfers are skipped. Read-only.
+    const _trackHref=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
+    const _jobTracking=(j)=>{const keys=new Set((j.items||[]).map(gi=>(gi.sku||'')+'|'+(gi.color||'')));
+      const out=[];const seenOut=new Set();
+      const _ships=[...(o._shipments||[])];if(o._tracking_number&&!_ships.some(s=>s.tracking_number===o._tracking_number))_ships.push({tracking_number:o._tracking_number,tracking_url:o._tracking_url,carrier:o._carrier,ship_date:o._ship_date,items:[]});
+      _ships.forEach(s=>{if(!s||s.fulfillment===false||s.shipment_scope==='deco_transfer')return;const t=String(s.tracking_number||'').trim();if(!t||seenOut.has(t))return;const its=s.items||[];const whole=its.length===0;
+        if(!whole&&!its.some(x=>x&&keys.has((x.sku||'')+'|'+(x.color||''))))return;seenOut.add(t);
+        out.push({tn:t,href:s.tracking_url||_trackHref(t),note:[(s.carrier||'').toUpperCase(),s.ship_date,whole?'whole order':''].filter(Boolean).join(' · ')})});
+      return out};
     React.useEffect(()=>{if(openPOId){
       // Check SO-level deco_pos first — decoration POs are cost buckets, not per-item line items.
       const decoPO=(o.deco_pos||[]).find(dp=>dp.po_id===openPOId);
@@ -5630,6 +5653,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 })()}
                 {(()=>{const seen=new Set();return safePOs(item).filter(po=>{const k=po.po_id||'';if(!k||seen.has(k))return false;seen.add(k);return true}).map((po,pi)=>{const lines=[];safeItems(o).forEach((it2,i2)=>{safePOs(it2).forEach((po2,pi2)=>{if(po2.po_id===po.po_id)lines.push({lineIdx:i2,poIdx:pi2})})});return<span key={'po'+pi} style={{fontSize:10,padding:'2px 8px',borderRadius:6,background:'#eff6ff',color:'#1e40af',fontWeight:700,cursor:'pointer',border:'1px solid #bfdbfe',whiteSpace:'nowrap'}} title={'Ordered on supplier PO '+(po.po_id||'')+(po.vendor?' · '+po.vendor:'')+' — click to edit'} onClick={()=>setEditPO({lineIdx:idx,poIdx:(item.po_lines||[]).findIndex(p=>p.po_id===po.po_id),po,allLines:lines.length>0?lines:[{lineIdx:idx,poIdx:0}]})}>🧾 {po.po_id}</span>})})()}
                 {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:10,padding:'2px 8px',borderRadius:6,background:'#ede9fe',color:'#6d28d9',fontWeight:700,cursor:'pointer',border:'1px solid #ddd6fe',whiteSpace:'nowrap'}} title={'On Deco PO '+(dp.po_id||'')+(dp.vendor?' · '+dp.vendor:'')+' — click to edit items / per-item costing'} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>▣ {dp.po_id}{dp.vendor?' · '+dp.vendor:''}</span>)}
+                {isSO&&_jobChips(idx)}
               </div>
             </div>
             <div style={{textAlign:'right',whiteSpace:'nowrap'}}>
@@ -5896,6 +5920,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {pk.ship_dest&&pk.ship_dest!=='in_house'&&<span style={{fontSize:8,padding:'2px 5px',borderRadius:4,fontWeight:700,
                 background:pk.ship_dest==='ship_customer'?'#dbeafe':'#ede9fe',color:pk.ship_dest==='ship_customer'?'#1e40af':'#6d28d9'}}>
                 {pk.ship_dest==='ship_customer'?'📦 → Customer':'🚚 → '+(pk.deco_vendor||'Deco')}</span>}
+              {pi===0&&_jobChips(idx,{marginLeft:4})}
             </div>})}
         </div>}
         {isSO&&(item.po_lines||[]).length>0&&<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
@@ -5939,8 +5964,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {_batchNo&&<span style={{fontSize:9,padding:'2px 7px',borderRadius:4,fontWeight:700,marginLeft:4,background:'#f5f3ff',color:'#7c3aed',border:'1px solid #ddd6fe',fontFamily:'monospace'}} title={'Ordered on batch PO '+_batchNo+(po.vendor?' · '+po.vendor:'')}>📦 Batch: {_batchNo}</span>}
               <ApiOrderBadge po={po} style={{marginLeft:4}}/>
               {isDS&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,marginLeft:4,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
+              {pi===0&&!(item.pick_lines||[]).length&&_jobChips(idx,{marginLeft:4})}
             </div>})}
         </div>}
+        {/* No pick/PO rows yet — the line's jobs still get a slim row where the PO row will land. */}
+        {isSO&&!(item.pick_lines||[]).length&&!(item.po_lines||[]).length&&_lineJobs(idx).length>0&&<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>{_jobChips(idx)}</div>}
         {/* WRITTEN-OFF UNITS — a PO received/billed more than the line still sells (an absorbed
             wrong-size order, or a vendor over-ship). Their cost is still on this SO, so say so
             here rather than leaving an unexplained margin hole on the Costs tab. */}
@@ -11670,6 +11698,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </>}
                 </div>
                 <div style={{fontSize:12,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
+                {(()=>{const _tk=_jobTracking(j);if(!_tk.length)return null;const _a=(x,i)=><a key={i} href={x.href} target="_blank" rel="noreferrer" title={x.note} style={{fontFamily:'monospace',fontSize:10,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'1px 6px',borderRadius:4,textDecoration:'none',whiteSpace:'nowrap'}}>{x.tn}</a>;
+                  return<div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginTop:4,fontSize:11}}>
+                    <span style={{fontWeight:700,color:'#64748b'}} title="Our warehouse → customer (shipments carrying this job's garments)">📤 Shipped:</span>{_tk.map(_a)}
+                  </div>})()}
                 {(()=>{const _outLines=_jobOutsideDecos(j);if(!_outLines.length)return null;
                   return<div style={{fontSize:11,color:'#7c3aed',marginTop:2}} title="These decorations are on the same garments but are produced by an outside vendor — not part of this in-house job">🏭 Also on these garments: {_outLines.map(_outsideDecoText).join(' · ')}</div>})()}
                 {(()=>{// Art-split slices of the same line are disjoint garment batches, not a multi-job item — jobsShareGarments filters them.
@@ -12117,6 +12149,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                           </div>
                         </div>
                         <div style={{textAlign:'right',flexShrink:0,display:'flex',alignItems:'center',gap:8}}>
+                          {gi.item_idx!=null&&<button type="button" className="btn btn-sm btn-secondary" onClick={()=>_jumpToItem(gi.item_idx)} title="Go to this garment's line on the sales order" style={{fontSize:11,padding:'3px 8px',whiteSpace:'nowrap'}}>SO →</button>}
                           <OeGarmentPoChip item={it} szMeta={_PO_SZ_META}/>
                         <div>
                           <div style={{fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:800,fontSize:26,color:'#192853',lineHeight:1}}>{totalUnits}</div>
@@ -12457,6 +12490,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                           </div>
                         </div>
                         <div style={{textAlign:'right',flexShrink:0,display:'flex',alignItems:'center',gap:8}}>
+                          {gi.item_idx!=null&&<button type="button" className="btn btn-sm btn-secondary" onClick={()=>_jumpToItem(gi.item_idx)} title="Go to this garment's line on the sales order" style={{fontSize:11,padding:'3px 8px',whiteSpace:'nowrap'}}>SO →</button>}
                           <OeGarmentPoChip item={it} szMeta={_PO_SZ_META}/>
                         <div>
                           <div style={{fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:800,fontSize:26,color:'#192853',lineHeight:1}}>{totalUnits}</div>
@@ -12745,6 +12779,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                       <span style={{color:'#94a3b8',marginLeft:6}}>({gi.color||'—'})</span>
                       {gi.brand&&<span className="badge badge-gray" style={{marginLeft:6}}>{gi.brand}</span>}</div>
                     </div>
+                    {gi.item_idx!=null&&<button type="button" className="btn btn-sm btn-secondary" onClick={()=>_jumpToItem(gi.item_idx)} title="Go to this garment's line on the sales order" style={{fontSize:11,padding:'3px 8px',whiteSpace:'nowrap'}}>SO →</button>}
                     <div style={{fontWeight:700,color:fulTotal>=rowTotal&&rowTotal>0?'#166534':'#64748b',flexShrink:0}}>{fulTotal}/{rowTotal} units</div>
                   </div>
                   {/* Per-SKU art details */}
@@ -13904,9 +13939,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               <td style={{paddingLeft:24,color:'#94a3b8',fontSize:10}}>↳</td>
               <td colSpan={2} style={{fontSize:11,color:'#475569'}}><span style={{fontWeight:600}}>{gi.sku}</span> {gi.name} <span style={{color:'#94a3b8'}}>({gi.color||'—'})</span></td>
               <td style={{fontSize:11}}>{giDone}/{giUnits}</td>
-              <td colSpan={4} style={{fontSize:11}}>
+              <td colSpan={3} style={{fontSize:11}}>
                 {giSzEntries.length>0&&<div style={{display:'flex',gap:10,flexWrap:'wrap'}}>{giSzEntries.map(([sz,qty])=>{const f=safeNum(giFul[sz]);const done=f>=qty&&qty>0;return<span key={sz} style={{display:'inline-flex',gap:3,alignItems:'baseline'}}><span style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase'}}>{sz}</span><span style={{fontWeight:700,color:done?'#166534':f>0?'#d97706':'#475569'}}>{f}/{qty}</span></span>})}</div>}
               </td>
+              <td style={{textAlign:'right'}}>{gi.item_idx!=null&&<button type="button" className="btn btn-sm btn-secondary" onClick={e=>{e.stopPropagation();_jumpToItem(gi.item_idx)}} title={'Go to this line on the sales order: '+(gi.sku||'')+(gi.color?' · '+gi.color:'')} style={{fontSize:10,padding:'2px 8px',whiteSpace:'nowrap',fontWeight:700}}>SO →</button>}</td>
             </tr>})}
             </React.Fragment>})}
         </tbody></table>}
