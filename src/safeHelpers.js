@@ -714,10 +714,40 @@ export const soLineQty = (it) => {
 export const scopeSoItemsToInvoice = (inv, soItems) => {
   const items = safeArr(soItems);
   const lines = safeArr(inv?.line_items);
-  const all = () => items.map((it, idx) => ({ ...it, _soIdx: idx, _invQty: soLineQty(it), _soQty: soLineQty(it), _invSizes: safeSizes(it) })).filter(it => it._invQty > 0);
-  if (!items.length) return { items: [], extraLines: lines };
-  if (inv?.inv_type === 'deposit' || !lines.length) return { items: all(), extraLines: [] };
+  // Which invoice lines each SO line is billed by, so the document can price the line off
+  // the invoice instead of off the order. See `_invRate` / `_invAmount` below.
   const idxByLine = matchInvoiceLinesToSo(lines, items);
+  const linesByIdx = new Map();
+  idxByLine.forEach((idx, i) => { if (idx >= 0) linesByIdx.set(idx, (linesByIdx.get(idx) || []).concat(i)) });
+  // ── The printed price comes from the invoice, not from the sales order ──
+  // `unit_sell` is the ORDER's list price for the line. What the invoice actually charges
+  // is its stored `rate`, which differs whenever the line carries a per-size upcharge
+  // (2XL+ blended into a per-each rate), is a FREE PROMO garment billed at $0, or was
+  // price-edited by the rep. Documents that re-derived the price from `unit_sell` printed
+  // a number the invoice never charged — INV-63187 printed 24 comped jackets at $58.50
+  // each, $1,404 of phantom charges under a Total that correctly excluded them.
+  // `_invAmount` is the line's stored extended amount (already scaled on a deposit), so a
+  // caller adds it to the document subtotal AS IS rather than re-applying a deposit
+  // percentage; decorations are then informational detail, their price already inside the
+  // rate. Both are absent when no stored line matched (legacy invoices that never stored
+  // line_items), and callers fall back to the order's own pricing there.
+  const priced = (it, idx, extra) => {
+    const o = { ...it, _soIdx: idx, ...extra };
+    const mine = linesByIdx.get(idx);
+    if (mine && mine.length) {
+      o._invAmount = mine.reduce((a, i) => a + safeNum(lines[i]?.amount), 0);
+      o._invRate = mine.length === 1 ? safeNum(lines[mine[0]]?.rate)
+        : (o._invQty > 0 ? Math.round((o._invAmount / o._invQty) * 100) / 100 : 0);
+    }
+    return o;
+  };
+  const all = () => items.map((it, idx) => priced(it, idx, { _invQty: soLineQty(it), _soQty: soLineQty(it), _invSizes: safeSizes(it) })).filter(it => it._invQty > 0);
+  // Lines that match no SO item (hand-added, NetSuite import) are the caller's to print as
+  // plain rows; dropping them would leave the document's subtotal short of its own total.
+  const unmatched = () => lines.filter((li, i) => idxByLine[i] < 0);
+  if (!items.length) return { items: [], extraLines: lines };
+  if (inv?.inv_type === 'deposit') return { items: all(), extraLines: unmatched() };
+  if (!lines.length) return { items: all(), extraLines: [] };
   const qtyByIdx = new Map(); const extraLines = [];
   lines.forEach((li, i) => {
     const idx = idxByLine[i];
@@ -728,7 +758,7 @@ export const scopeSoItemsToInvoice = (inv, soItems) => {
     const q = qtyByIdx.get(idx);
     if (!(q > 0)) return null;
     const soQty = soLineQty(it);
-    return { ...it, _soIdx: idx, _invQty: q, _soQty: soQty, _invSizes: q === soQty ? safeSizes(it) : null };
+    return priced(it, idx, { _invQty: q, _soQty: soQty, _invSizes: q === soQty ? safeSizes(it) : null });
   }).filter(Boolean);
   // Every line matched to a zero-qty / missing SO item: fall back to the full order rather
   // than printing an invoice with no items at all.
