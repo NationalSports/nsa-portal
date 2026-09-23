@@ -377,3 +377,28 @@ describe('sender', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('Google review button', () => {
+  test('a complete shipment carries the review link; GOOGLE_REVIEW_URL overrides it', async () => {
+    // The fixture's third line (the tee) never shipped; drop it so the whole order is in the boxes.
+    rows.so_items = rows.so_items.filter((i) => i.id !== 'i3');
+    await call({ soId: 'NSA-18402' });
+    expect(sentHtml()).not.toContain('Still to come:');
+    expect(sentHtml()).toContain('href="https://g.page/r/CfcLJB_RwxCREBM/review"');
+    expect(sentHtml()).toContain('Leave us a Google review');
+
+    process.env.GOOGLE_REVIEW_URL = 'https://search.google.com/local/writereview?placeid=TEST';
+    try {
+      global.fetch.mockClear();
+      await call({ soId: 'NSA-18402' });
+      expect(sentHtml()).toContain('href="https://search.google.com/local/writereview?placeid=TEST"');
+    } finally { delete process.env.GOOGLE_REVIEW_URL; }
+  });
+
+  test('a partial shipment (units still to come) does not ask yet', async () => {
+    // The fixture as-is: the tee line is still in the shop.
+    await call({ soId: 'NSA-18402' });
+    expect(sentHtml()).toContain('Still to come:');
+    expect(sentHtml()).not.toContain('Leave us a Google review');
+  });
+});

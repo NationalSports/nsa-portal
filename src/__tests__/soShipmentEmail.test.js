@@ -328,3 +328,28 @@ describe('the email itself', () => {
     expect(html).toContain('Track Your Box');
   });
 });
+
+describe('Google review ask', () => {
+  const line = { brand: 'Sport-Tek', name: 'Tee', color: 'Black', sku: 'ST350', decoration: '', sizes: [{ label: 'M', qty: 1 }], totalQty: 1, mockupUrl: '' };
+  const REVIEW = 'https://g.page/r/CfcLJB_RwxCREBM/review';
+
+  test('a fully shipped order carries the review button with the link verbatim', () => {
+    const { html } = buildSoShipmentEmail({ order: { id: 'NSA-3' }, lines: [line], packages: [], remainingUnits: 0, reviewUrl: REVIEW });
+    expect(html).toContain('Happy with how we did?');
+    expect(html).toContain(`href="${REVIEW}"`);
+    expect(html).toContain('Leave us a Google review');
+    // The ask sits above the "short a size?" support line, never in the hero.
+    expect(html.indexOf('Leave us a Google review')).toBeLessThan(html.indexOf('Short a size'));
+  });
+
+  test('a partial shipment does not ask for a review yet', () => {
+    const { html } = buildSoShipmentEmail({ order: { id: 'NSA-3' }, lines: [line], packages: [], remainingUnits: 24, reviewUrl: REVIEW });
+    expect(html).toContain('Still to come:');
+    expect(html).not.toContain('Leave us a Google review');
+  });
+
+  test('no review link means no review block', () => {
+    const { html } = buildSoShipmentEmail({ order: { id: 'NSA-3' }, lines: [line], packages: [], remainingUnits: 0 });
+    expect(html).not.toContain('Happy with how we did?');
+  });
+});
