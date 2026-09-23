@@ -7,6 +7,8 @@
 // calcOrderMargin as `calcMargin` (one copy of the logic, per CLAUDE.md).
 // ═══════════════════════════════════════════════════════════════════
 
+import { isPromoOnlyOrder } from '../pricing';
+
 const N = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 
 // Parse "M/D/YYYY[ time]", "M/D/YY", or "YYYY-MM-DD[...]" into a local Date (midnight).
@@ -570,12 +572,19 @@ function uninvoicedOrderRows({
     // A rep said this order is never invoiced from the portal (billed in
     // NetSuite, OMG-collected, free replacement). It is not exposure.
     if (so.no_invoice_needed) continue;
+    // Promo orders are paid from the parent account's promo funds; the order
+    // editor shows the customer's total as $0.00. Nothing here is billable.
+    if (isPromoOnlyOrder(so)) continue;
     let status = so.status || '';
     try { status = calcStatus ? calcStatus(so) : status; } catch (_) {}
     const storedStatus = String(so.status || '').toLowerCase();
     // The stored workflow state is authoritative for operational TODOs. A
     // calculated ready state must not pull waiting/receiving orders forward.
-    const completed = ['ready_to_invoice', 'complete', 'completed', 'shipped'].includes(storedStatus);
+    // Strict: the stored state says done AND every unit is fulfilled (received,
+    // pulled, or vendor-billed for drop ship). An order marked complete while a
+    // drop-ship PO is still waiting on the vendor is not ready to bill.
+    const completed = ['ready_to_invoice', 'complete', 'completed', 'shipped'].includes(storedStatus)
+      && orderFulfillment(so).fullyFulfilled;
     // An invoice exists and the leftover is small: the invoice was written
     // without tax or with different shipping, not a balance nobody billed.
     // Reported separately as "invoice differs from order", never as ready work.
@@ -660,6 +669,33 @@ export function buildArSnapshotRows({ ar, exposureRows = [], reps = [], asOf }) 
   return [make('team', 'All reps'), ...reps.map((r) => make(r.id, r.name || r.id))];
 }
 
+// ── Fulfillment ───────────────────────────────────────────────────────
+// How much of an order has physically been handled: pulled from stock,
+// received on a PO, or, for a drop-ship PO, received or billed by the vendor
+// (the bill is the proof the goods went out). Service lines (Topstar,
+// digitizing, artwork) have nothing to receive and count as fulfilled.
+// An order with no unit quantities has nothing to fulfil and reads as fulfilled.
+export function orderFulfillment(so) {
+  let totalUnits = 0, fulfilledUnits = 0;
+  for (const item of (Array.isArray(so?.items) ? so.items : [])) {
+    let entries = Object.entries(item?.sizes || {}).filter(([, q]) => N(q) > 0);
+    if (!entries.length && N(item?.est_qty) > 0) entries = [['QTY', N(item.est_qty)]];
+    const isServiceLine = item?._topstar || item?.sku === 'DIGITIZING' || /^artwork$/i.test(String(item?.sku || '').trim());
+    for (const [size, rawQty] of entries) {
+      const qty = N(rawQty); totalUnits += qty;
+      if (isServiceLine) { fulfilledUnits += qty; continue; }
+      const pulled = (Array.isArray(item.pick_lines) ? item.pick_lines : [])
+        .filter((p) => p?.status === 'pulled').reduce((a, p) => a + N(p[size]), 0);
+      const received = (Array.isArray(item.po_lines) ? item.po_lines : []).reduce((a, p) => {
+        const rec = N(p?.received?.[size]);
+        return a + (p?.drop_ship ? Math.max(rec, N(p?.billed?.[size])) : rec);
+      }, 0);
+      fulfilledUnits += Math.min(qty, pulled + received);
+    }
+  }
+  return { totalUnits, fulfilledUnits, fullyFulfilled: totalUnits === 0 || fulfilledUnits >= totalUnits };
+}
+
 // ── Stale / ready-to-invoice sales orders ─────────────────────────────
 // This intentionally has two nets: operational completion signals catch work
 // that looks invoice-ready even when a stored shipment/receiving flag is wrong;
@@ -683,6 +719,9 @@ export function staleOrdersReport({
   const rows = [];
   for (const so of sos) {
     if (!liveSO(so)) continue;
+    // Same exclusions as the Ready-to-invoice report: a promo order is paid
+    // from promo funds, and a rep can mark an order as never portal-invoiced.
+    if (so.no_invoice_needed || isPromoOnlyOrder(so)) continue;
     const orderDate = parseDate(so.created_at);
     const ageDays = orderDate ? Math.max(0, daysBetween(today, orderDate)) : 0;
     const isBooking = so.order_type === 'booking';
@@ -700,23 +739,7 @@ export function staleOrdersReport({
     const shippedJobs = jobs.filter((j) => j.prod_status === 'shipped').length;
     const allJobsDone = jobs.length > 0 && doneJobs === jobs.length;
     const allJobsShipped = jobs.length > 0 && shippedJobs === jobs.length;
-    let totalUnits = 0, fulfilledUnits = 0;
-    for (const item of (Array.isArray(so.items) ? so.items : [])) {
-      let entries = Object.entries(item?.sizes || {}).filter(([, q]) => N(q) > 0);
-      if (!entries.length && N(item?.est_qty) > 0) entries = [['QTY', N(item.est_qty)]];
-      const isServiceLine = item?._topstar || item?.sku === 'DIGITIZING' || /^artwork$/i.test(String(item?.sku || '').trim());
-      for (const [size, rawQty] of entries) {
-        const qty = N(rawQty); totalUnits += qty;
-        if (isServiceLine) { fulfilledUnits += qty; continue; }
-        const pulled = (Array.isArray(item.pick_lines) ? item.pick_lines : [])
-          .filter((p) => p?.status === 'pulled').reduce((a, p) => a + N(p[size]), 0);
-        const received = (Array.isArray(item.po_lines) ? item.po_lines : []).reduce((a, p) => {
-          const rec = N(p?.received?.[size]);
-          return a + (p?.drop_ship ? Math.max(rec, N(p?.billed?.[size])) : rec);
-        }, 0);
-        fulfilledUnits += Math.min(qty, pulled + received);
-      }
-    }
+    const { totalUnits, fulfilledUnits, fullyFulfilled } = orderFulfillment(so);
     const expected = parseDate(so.expected_ship_date) || parseDate(so.ship_on_date)
       || parseDate(so.deliver_on_date) || parseDate(so.expected_date);
     const daysLate = expected ? Math.max(0, daysBetween(today, expected)) : 0;
@@ -736,11 +759,19 @@ export function staleOrdersReport({
     if (invoiced > 0) reasons.push(`${Math.round(invoiced / orderValue * 100)}% already invoiced; remainder is still open`);
 
     const mismatch = allJobsDone && totalUnits > 0 && fulfilledUnits < totalUnits;
+    if (readySignal && !fullyFulfilled) reasons.push(`${fulfilledUnits}/${totalUnits} units received, pulled, or vendor-billed — the rest is not ready to bill`);
     const severity = ((status === 'complete' || storedComplete || allJobsShipped) && openToInvoice >= 1) || ageDays > 90
       ? 'critical' : (status === 'ready_to_invoice' || allJobsDone || ageDays > 60) ? 'high' : 'watch';
-    const category = mismatch ? 'system_mismatch'
-      : (status === 'ready_to_invoice' || status === 'complete' || storedComplete || allJobsDone) ? 'ready'
-        : 'old_open';
+    // Three tiers:
+    //   ready          — strict: a completion signal AND every unit fulfilled
+    //                    (received, pulled, or vendor-billed for drop ship).
+    //   possibly_ready — a completion signal (marked complete, system says
+    //                    ready, all jobs done) but units still outstanding —
+    //                    a drop ship awaiting the vendor bill, or a mismatch.
+    //   old_open       — no completion signal; open 30+ days. A status check.
+    const category = !readySignal ? 'old_open' : fullyFulfilled ? 'ready' : 'possibly_ready';
+    // Only the strict tier is billable; it alone counts as potential billing.
+    const invoiceable = category === 'ready';
     const customer = customerById.get(so.customer_id);
     rows.push({
       so, id: so.id, customerId: so.customer_id, customerName: customer?.name || 'Unknown account',
@@ -748,7 +779,7 @@ export function staleOrdersReport({
       isBooking, ageDays, expected, daysLate, orderValue, invoiced, openToInvoice,
       invoiceCount: linkedInvs.length, invoicePct: orderValue ? Math.min(1, invoiced / orderValue) : 0,
       totalUnits, fulfilledUnits, jobCount: jobs.length, doneJobs, shippedJobs,
-      allJobsDone, allJobsShipped, mismatch, severity, category, reasons,
+      allJobsDone, allJobsShipped, mismatch, severity, category, invoiceable, reasons,
     });
   }
   const severityRank = { critical: 0, high: 1, watch: 2 };
@@ -758,9 +789,15 @@ export function staleOrdersReport({
     rows,
     summary: {
       count: rows.length,
-      value: rows.reduce((a, r) => a + r.openToInvoice, 0),
+      // Potential billing counts only finished work; old open orders are listed
+      // for a status check and their value is reported separately.
+      value: rows.filter((r) => r.invoiceable).reduce((a, r) => a + r.openToInvoice, 0),
+      oldOpenValue: rows.filter((r) => r.category === 'old_open').reduce((a, r) => a + r.openToInvoice, 0),
+      invoiceableCount: rows.filter((r) => r.invoiceable).length,
+      possiblyValue: rows.filter((r) => r.category === 'possibly_ready').reduce((a, r) => a + r.openToInvoice, 0),
       readyCount: rows.filter((r) => r.category === 'ready').length,
-      mismatchCount: rows.filter((r) => r.category === 'system_mismatch').length,
+      possiblyCount: rows.filter((r) => r.category === 'possibly_ready').length,
+      mismatchCount: rows.filter((r) => r.mismatch).length,
       oldCount: rows.filter((r) => r.category === 'old_open').length,
       criticalCount: rows.filter((r) => r.severity === 'critical').length,
     },
