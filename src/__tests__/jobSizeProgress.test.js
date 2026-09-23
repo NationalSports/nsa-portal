@@ -61,6 +61,15 @@ test('garment colors override selected colorway and selected colorway overrides 
   delete art.garment_colors;
   delete item.decorations[0].color_way_id;
   expect(garmentProgress(job,order,rows)[0].specs[0].colors).toBe('');
+  art.color_ways[0].garment_color=' navy ';
+  art.color_ways[1].garment_color='White';
+  expect(garmentProgress(job,order,rows)[0].specs[0].colors).toBe('PMS 186 C');
+  item.color='White';
+  art.color_ways[1].inks=[];
+  expect(garmentProgress(job,order,rows)[0].specs[0].colors).toBe('');
+  const html=renderToStaticMarkup(<GarmentDecorationSpecs specs={garmentProgress(job,order,rows)[0].specs}/>);
+  expect(html).toContain('Not specified');
+  expect(html).not.toContain('PMS 186 C');
 });
 test('repeated garment lines deduplicate structured specs but retain distinct placements', () => {
   const item={sku:'P',color:'Navy',decorations:[{kind:'art',art_file_id:'a',position:'Left Chest'},{kind:'art',art_file_id:'a',position:'Back'}]};

@@ -16,7 +16,10 @@ export function garmentProgress(job, order, rows) {
       const art = safeArt(order).find(a => a.id === d.art_file_id);
       const garmentColors = realInkLines(Object.values(art?.garment_colors?.[key] || {}).flat().join('\n'));
       const colorWays = art?.color_ways || [];
-      const selected = colorWays.find(cw => cw.id === d.color_way_id) || (!d.color_way_id && colorWays.length === 1 ? colorWays[0] : null);
+      const matchingWays = colorWays.filter(cw => String(cw.garment_color || '').trim().toLowerCase() === String(item.color || '').trim().toLowerCase() && String(item.color || '').trim());
+      const selected = colorWays.find(cw => cw.id && cw.id === d.color_way_id)
+        || (!d.color_way_id && matchingWays.length === 1 ? matchingWays[0] : null)
+        || (!d.color_way_id && !matchingWays.length && colorWays.length === 1 && !colorWays[0].garment_color ? colorWays[0] : null);
       const cwColors = realInkLines((selected?.inks || []).join('\n'));
       const fallback = realInkLines(art?.deco_type === 'embroidery' ? art?.thread_colors || art?.ink_colors : art?.ink_colors || art?.thread_colors);
       const colors = [...new Set(garmentColors.length ? garmentColors : cwColors.length ? cwColors : fallback)].join(', ');
@@ -97,9 +100,10 @@ export function GarmentDecorationSpecs({ specs }) {
         <div style={{ fontSize: 10, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>{label}</div>
         <div style={{ fontSize: 12, fontWeight: 600, color: '#334155', overflowWrap: 'anywhere' }}>{value}</div>
       </div>)}
-      {realInkLines(spec.colors).length > 0 && <div style={{ flexBasis: '100%', minWidth: 0 }}>
+      <div style={{ flexBasis: '100%', minWidth: 0 }}>
         <div style={{ fontSize: 10, fontWeight: 600, color: '#64748b', marginBottom: 5 }}>{spec.colorLabel}</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+          {!realInkLines(spec.colors).length && <span style={{ fontSize: 11, color: '#64748b' }}>Not specified</span>}
           {realInkLines(spec.colors).map(color => {
             const hex = spec.colorLabel === 'Thread colors' ? threadHex(color) || pantoneHex(color) : pantoneHex(color);
             return <span key={color} title={hex ? `${color} — approximate screen color` : color} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, maxWidth: '100%', padding: '3px 7px', border: '1px solid #e2e8f0', borderRadius: 5, fontSize: 11, fontWeight: 600, color: '#334155', background: '#f8fafc' }}>
@@ -108,7 +112,7 @@ export function GarmentDecorationSpecs({ specs }) {
             </span>;
           })}
         </div>
-      </div>}
+      </div>
     </div>)}
   </section>;
 }
