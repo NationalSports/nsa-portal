@@ -32,7 +32,7 @@ export function buildSSOrderLines(batchPOs) {
         const sku = String(skuBySize[size] || it._ss_sku || '');
         if (!sku) warnings.push(`Line (${[style, color, size].filter(Boolean).join(' ')}) is missing an S&S SKU`);
         lines.push({
-          key: [bp.id || '', bp.so_id || '', Number.isInteger(it.item_idx) ? it.item_idx : '', style, color, size].join('|'),
+          key: `${style}|${color}|${size}`,
           style, color, size, sku,
           quantity: qty,
           unitPrice: it.unit_cost || 0,
