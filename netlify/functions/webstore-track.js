@@ -11,7 +11,9 @@
 
 const { corsHeaders, getSupabaseAdmin } = require('./_shared');
 
-const EVENTS = new Set(['store_view', 'product_view', 'add_to_cart', 'cart_view', 'checkout_start', 'order_placed']);
+const EVENTS = new Set(['store_view', 'product_view', 'add_to_cart', 'cart_view', 'checkout_start', 'order_placed', 'soldout_view']);
+// Where a visit came from (src/lib/webstoreTracking.js trafficSource). Anything else → 'other'.
+const SOURCES = new Set(['email', 'text', 'qr', 'flyer', 'social', 'coach', 'website', 'search', 'roster_link', 'reminder', 'other_site', 'direct', 'other']);
 const DEVICES = new Set(['mobile', 'tablet', 'desktop']);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SESSION_RE = /^[A-Za-z0-9_-]{8,64}$/;
@@ -29,7 +31,7 @@ function normalizeEvent(raw, storeId, sessionId, device) {
   if (!raw || typeof raw !== 'object' || !EVENTS.has(raw.event)) return null;
   const productId = uuidOrNull(raw.productId);
   const orderId = uuidOrNull(raw.orderId);
-  if ((raw.event === 'product_view' || raw.event === 'add_to_cart') && !productId) return null;
+  if ((raw.event === 'product_view' || raw.event === 'add_to_cart' || raw.event === 'soldout_view') && !productId) return null;
   if (raw.event === 'order_placed' && !orderId) return null;
   const value = Number(raw.value);
   return {
@@ -40,6 +42,9 @@ function normalizeEvent(raw, storeId, sessionId, device) {
     order_id: raw.event === 'order_placed' ? orderId : null,
     device,
     value: Number.isFinite(value) && value >= 0 && value < 1e6 ? Math.round(value * 100) / 100 : null,
+    source: raw.event === 'store_view' ? (SOURCES.has(raw.source) ? raw.source : (raw.source ? 'other' : null)) : null,
+    // Sold-out views carry the sizes the shopper couldn't pick, e.g. "S,2XL".
+    detail: raw.event === 'soldout_view' && typeof raw.detail === 'string' ? (raw.detail.replace(/[^A-Za-z0-9/ ,.-]/g, '').slice(0, 120) || null) : null,
   };
 }
 

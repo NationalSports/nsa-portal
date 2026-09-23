@@ -1764,6 +1764,15 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
     return avail.length ? avail : (isIncoming(c) ? scale : avail);
   };
   const sizesArr = sizesFor(p);
+  // Lost-demand signal: sizes this item normally comes in (its offered scale)
+  // that a shopper can't pick right now because they're out of stock. Recorded
+  // once per item per page load (trackEvent de-dupes), so it's safe from render.
+  if (isOpen && isTracked(p) && hasStockData(p)) {
+    const offered = Array.isArray(p.sizes_offered) && p.sizes_offered.length ? p.sizes_offered.map(_offeredKey) : null;
+    const sellable = new Set(sizesArr.map((z) => String(z).toUpperCase()));
+    const missing = scaleOf(p).filter((z) => (!offered || offered.includes(String(z).toUpperCase())) && !sellable.has(String(z).toUpperCase()));
+    if (missing.length) trackEvent('soldout_view', { productId: p.webstore_product_id, detail: missing.join(',') });
+  }
   // One reusable set of size buttons for a variant row. A click selects both the
   // variant (its SKU) and the size, so a fit row resolves to the right SKU.
   const renderSizeButtons = (c, cSizes) => cSizes.map((sz) => {

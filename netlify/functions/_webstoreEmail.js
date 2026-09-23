@@ -402,4 +402,38 @@ async function bumpCouponUse(sb, storeId, code, orderId) {
   return false;
 }
 
-module.exports = { sendOrderConfirmation, sendPoOrderReceived, sendPoOrderApproved, sendOrderBagged, sendRefundNotice, bumpCouponUse };
+// One-time "finish your order" nudge for a card checkout that reached the payment
+// screen but was never paid (webstore-payment-reminder.js decides who gets it).
+// Built from DB rows only. The link goes back to the store's cart — the buyer's
+// cart is still saved in their browser (it only clears once an order completes).
+function paymentReminderHtml({ store, order, items, portal }) {
+  const shopLink = `${portal}/shop/${encodeURIComponent(store.slug)}/cart?src=reminder`;
+  const first = String(order.buyer_name || '').trim().split(/\s+/)[0];
+  const closes = store.close_at ? new Date(store.close_at).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'America/Los_Angeles' }) : null;
+  const lines = (items || []).slice(0, 12).map((i) => {
+    const bits = [i.name || i.sku || 'Item', i.color, i.size ? 'Size ' + i.size : ''].filter(Boolean).map(esc).join(' · ');
+    return `<li style="margin:0 0 4px">${bits}${(Number(i.qty) || 1) > 1 ? ` <span style="color:#6b7280">× ${Number(i.qty)}</span>` : ''}</li>`;
+  }).join('');
+  const bodyHtml = `
+    <p style="margin:0 0 12px;font-size:15px">Hi${first ? ' ' + esc(first) : ''},</p>
+    <p style="margin:0 0 12px;font-size:15px">It looks like your ${esc(store.name)} order didn’t quite finish — your payment wasn’t completed, so the order hasn’t been placed yet and you haven’t been charged.</p>
+    ${lines ? `<p style="margin:0 0 6px;font-size:13px;color:#6b7280">What you picked out:</p><ul style="margin:0 0 14px;padding-left:18px;font-size:14px">${lines}</ul>` : ''}
+    ${closes ? `<p style="margin:0 0 14px;font-size:14px"><strong>The store closes ${esc(closes)}</strong> — orders can’t be added after that.</p>` : ''}
+    <p style="margin:18px 0"><a href="${shopLink}" style="display:inline-block;background:${store.accent_color || '#e11d2a'};color:#fff;font-weight:800;text-decoration:none;padding:12px 26px;border-radius:6px">Finish my order</a></p>
+    <p style="margin:0;font-size:12px;color:#6b7280">If you already ordered another way, or changed your mind, no need to do anything — this is the only reminder we’ll send. Questions? Reply to <a href="mailto:hello@nationalsportsapparel.com" style="color:#6b7280">hello@nationalsportsapparel.com</a>.</p>`;
+  return emailShell({ store, portal, headline: 'Your order isn’t finished yet', subhead: 'Your cart is saved — it only takes a minute.', bodyHtml });
+}
+
+async function sendPaymentReminder(sb, order, store) {
+  const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
+  if (!brevoKey) return { ok: false, error: 'BREVO_API_KEY missing' };
+  const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || '').replace(/\/+$/, '');
+  const { data: items } = await sb.from('webstore_order_items').select('name,sku,color,size,qty,is_bundle_parent,bundle_ref').eq('order_id', order.id);
+  // Package components ride inside their package line — list the package, not its parts.
+  const shown = (items || []).filter((i) => i.is_bundle_parent || !i.bundle_ref);
+  const html = paymentReminderHtml({ store, order, items: shown, portal });
+  const res = await postBrevo(brevoKey, { fromName: store.name + ' Team Store', toEmail: order.buyer_email, toName: order.buyer_name, subject: `Finish your ${store.name} order`, html });
+  return res.ok ? { ok: true } : { ok: false, error: 'brevo ' + res.status };
+}
+
+module.exports = { sendOrderConfirmation, sendPoOrderReceived, sendPoOrderApproved, sendOrderBagged, sendRefundNotice, bumpCouponUse, sendPaymentReminder, paymentReminderHtml };

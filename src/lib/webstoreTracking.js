@@ -19,6 +19,36 @@ let timer = null;
 let seen = new Set();
 let memSid = null;
 
+// Where this shopper came from, read once from the landing URL (before the
+// storefront's own navigation changes it). Tagged links (?src=email, ?src=qr —
+// see _storefrontSrcUrl in Webstores.js) win; then a roster link; then the
+// referring site; otherwise 'direct' (typed, bookmarked, or a texted link).
+const SOURCE_ALIASES = {
+  email: 'email', newsletter: 'email', mail: 'email',
+  text: 'text', sms: 'text', txt: 'text',
+  qr: 'qr', qrcode: 'qr',
+  flyer: 'flyer', poster: 'flyer', print: 'flyer',
+  social: 'social', facebook: 'social', fb: 'social', instagram: 'social', ig: 'social', twitter: 'social', x: 'social', tiktok: 'social',
+  coach: 'coach', team: 'coach', website: 'website', site: 'website',
+  reminder: 'reminder',
+};
+export function trafficSource(search, referrer, ownHost) {
+  let q; try { q = new URLSearchParams(search || ''); } catch { q = new URLSearchParams(''); }
+  const tag = String(q.get('src') || q.get('utm_source') || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (tag) return SOURCE_ALIASES[tag] || 'other';
+  if (q.get('player')) return 'roster_link';
+  let host = '';
+  try { host = referrer ? new URL(referrer).hostname.toLowerCase() : ''; } catch {}
+  if (!host || host === String(ownHost || '').toLowerCase()) return 'direct';
+  if (/(^|\.)(facebook|fb|instagram|twitter|x|t|tiktok|linkedin|pinterest|snapchat|reddit)\.(com|co)$|lm\.facebook\.com$/.test(host)) return 'social';
+  if (/(^|\.)(google|bing|yahoo|duckduckgo|ecosia)\./.test(host) && !/^mail\./.test(host)) return 'search';
+  if (/^(mail|outlook|webmail)\.|(^|\.)outlook\.(live|office)\.com$/.test(host)) return 'email';
+  if (/nationalsportsapparel\.com$|nsa-portal\.netlify\.app$/.test(host)) return 'direct';
+  return 'other_site';
+}
+let landingSource = 'direct';
+try { landingSource = trafficSource(window.location.search, document.referrer, window.location.hostname); } catch {}
+
 function randomId() {
   try { if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID().replace(/-/g, ''); } catch {}
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 14);
@@ -53,6 +83,18 @@ function isBot() {
   } catch { return true; }
 }
 
+// Staff aren't shoppers. The portal keeps the logged-in team member in
+// localStorage('nsa_user') on this same site, so a browser that has ever been
+// logged in to the portal gets a sticky flag and is never tracked — even after
+// the staff member logs out.
+const STAFF_KEY = 'nsa_staff_device';
+export function isStaffBrowser() {
+  try {
+    if (localStorage.getItem('nsa_user')) { localStorage.setItem(STAFF_KEY, '1'); return true; }
+    return localStorage.getItem(STAFF_KEY) === '1';
+  } catch { return false; }
+}
+
 function flush(useKeepalive) {
   if (timer) { clearTimeout(timer); timer = null; }
   if (!queue.length || !storeId) return;
@@ -76,12 +118,12 @@ function hookUnload() {
   } catch {}
 }
 
-// Point the tracker at the store being shown. Only open stores are tracked, so
-// staff previewing a draft or closed store never shows up as a shopper.
+// Point the tracker at the store being shown. Only open stores are tracked, and
+// never from a staff browser, so the team never shows up as shoppers.
 export function setTrackedStore(id, isOpen) {
   if (id !== storeId) { flush(true); seen = new Set(); }
   storeId = id || null;
-  enabled = !!(id && isOpen) && !isBot();
+  enabled = !!(id && isOpen) && !isBot() && !isStaffBrowser();
   if (enabled) hookUnload();
 }
 
@@ -91,7 +133,7 @@ export function trackEvent(event, extra = {}) {
   if (!enabled || !storeId) return;
   const once = event === 'add_to_cart' ? null : event + ':' + (extra.productId || extra.orderId || '');
   if (once) { if (seen.has(once)) return; seen.add(once); }
-  queue.push({ event, ...extra });
+  queue.push(event === 'store_view' ? { event, source: landingSource, ...extra } : { event, ...extra });
   if (!timer) timer = setTimeout(() => flush(false), FLUSH_MS);
 }
 

@@ -58,17 +58,24 @@ export function biggestLeak(t) {
 // tracking migration isn't applied yet, so callers can say so instead of erroring.
 export async function loadFunnel({ from = null, to = null, storeId = null } = {}) {
   const args = { p_from: from, p_to: to, p_store_id: storeId };
-  const [f, p, first] = await Promise.all([
+  const [f, p, first, src, so] = await Promise.all([
     supabase.rpc('webstore_funnel', args),
     supabase.rpc('webstore_product_funnel', args),
     (() => { let q = supabase.from('webstore_events').select('created_at').order('created_at', { ascending: true }).limit(1); if (storeId) q = q.eq('store_id', storeId); return q; })(),
+    // Added later than the core funnel; an error here just leaves those cards empty.
+    supabase.rpc('webstore_source_funnel', args),
+    supabase.rpc('webstore_soldout', args),
   ]);
   const err = f.error || p.error;
   if (err) {
     const missing = /does not exist|could not find|schema cache/i.test(err.message || '');
-    return { rows: [], products: [], since: null, missing, error: missing ? null : err.message };
+    return { rows: [], products: [], sources: [], soldout: [], since: null, missing, error: missing ? null : err.message };
   }
-  return { rows: f.data || [], products: p.data || [], since: (first.data && first.data[0] && first.data[0].created_at) || null, missing: false, error: null };
+  return {
+    rows: f.data || [], products: p.data || [],
+    sources: (src && !src.error && src.data) || [], soldout: (so && !so.error && so.data) || [],
+    since: (first.data && first.data[0] && first.data[0].created_at) || null, missing: false, error: null,
+  };
 }
 
 const card = { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: 16 };
@@ -167,6 +174,72 @@ export function InterestCard({ products, nameFor, minViewers = 10, limit = 8 }) 
               <td style={{ textAlign: 'right' }}>{n(r.viewers)}</td>
               <td style={{ textAlign: 'right' }}>{n(r.adders)}</td>
               <td style={{ textAlign: 'right', fontWeight: 700, color: r.rate < 0.1 ? '#b91c1c' : '#334155' }}>{Math.round(r.rate * 100)}%</td>
+            </tr>
+          ))}</tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+export const SOURCE_LABELS = {
+  email: 'Email', qr: 'QR code', flyer: 'Flyer', text: 'Text message', social: 'Social media',
+  coach: 'Coach / team', website: 'Team website', search: 'Google / search', roster_link: 'Player roster link', reminder: '“Finish your order” email',
+  other_site: 'Another website', direct: 'Direct / texted link', other: 'Other tagged link',
+};
+
+// Visitors and buyers by where they came from, summed across the rows given.
+export function sumSources(rows) {
+  const by = {};
+  (rows || []).forEach((r) => {
+    const k = r.source || 'direct';
+    if (!by[k]) by[k] = { source: k, visitors: 0, cart_adders: 0, purchasers: 0 };
+    by[k].visitors += n(r.visitors); by[k].cart_adders += n(r.cart_adders); by[k].purchasers += n(r.purchasers);
+  });
+  return Object.values(by).sort((a, b) => b.visitors - a.visitors);
+}
+
+export function SourceCard({ rows }) {
+  const list = sumSources(rows);
+  const total = list.reduce((a, r) => a + r.visitors, 0);
+  return (
+    <div style={card}>
+      <div style={hdr}>Where shoppers came from</div>
+      <div style={sub}>Visitors by how they found the store, and how many bought. Links from the launch email, flyer and QR code are tagged automatically.</div>
+      {total === 0 ? <div style={{ fontSize: 13, color: '#64748b', marginTop: 14 }}>No visits recorded yet.</div> : (
+        <table style={{ width: '100%', marginTop: 10, fontSize: 13, borderCollapse: 'collapse' }}>
+          <thead><tr style={{ color: '#94a3b8', fontSize: 11, textAlign: 'left' }}><th style={{ padding: '4px 0' }}>Source</th><th style={{ textAlign: 'right' }}>Visitors</th><th style={{ textAlign: 'right' }}>Share</th><th style={{ textAlign: 'right' }}>Added to cart</th><th style={{ textAlign: 'right' }}>Bought</th></tr></thead>
+          <tbody>{list.map((r) => (
+            <tr key={r.source} style={{ borderTop: '1px solid #f1f5f9' }}>
+              <td style={{ padding: '6px 0', fontWeight: 600 }}>{SOURCE_LABELS[r.source] || r.source}</td>
+              <td style={{ textAlign: 'right' }}>{r.visitors.toLocaleString()}</td>
+              <td style={{ textAlign: 'right' }}>{pct(r.visitors, total)}%</td>
+              <td style={{ textAlign: 'right' }}>{pct(r.cart_adders, r.visitors)}%</td>
+              <td style={{ textAlign: 'right', fontWeight: 700, color: '#166534' }}>{pct(r.purchasers, r.visitors)}%</td>
+            </tr>
+          ))}</tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+// Sold-out sizes shoppers ran into, worst first. `nameFor(row)` labels the item.
+export function SoldOutCard({ rows, nameFor, limit = 10 }) {
+  const list = [...(rows || [])].sort((a, b) => n(b.viewers) - n(a.viewers)).slice(0, limit);
+  return (
+    <div style={card}>
+      <div style={hdr}>Sold-out sizes shoppers wanted</div>
+      <div style={sub}>Shoppers who opened an item while a size was out of stock — lost demand, and what to stock deeper next time</div>
+      {list.length === 0 ? <div style={{ fontSize: 13, color: '#64748b', marginTop: 14 }}>No shoppers have hit a sold-out size yet.</div> : (
+        <table style={{ width: '100%', marginTop: 10, fontSize: 13, borderCollapse: 'collapse' }}>
+          <thead><tr style={{ color: '#94a3b8', fontSize: 11, textAlign: 'left' }}><th style={{ padding: '4px 0' }}>Item</th><th>Size</th><th style={{ textAlign: 'right' }}>Saw it sold out</th><th style={{ textAlign: 'right' }}>Left without it</th></tr></thead>
+          <tbody>{list.map((r) => (
+            <tr key={r.store_id + ':' + r.webstore_product_id + ':' + r.size} style={{ borderTop: '1px solid #f1f5f9' }}>
+              <td style={{ padding: '6px 8px 6px 0', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={nameFor(r)}>{nameFor(r)}</td>
+              <td style={{ fontWeight: 700 }}>{r.size}</td>
+              <td style={{ textAlign: 'right' }}>{n(r.viewers)}</td>
+              <td style={{ textAlign: 'right', fontWeight: 700, color: '#b91c1c' }}>{Math.max(0, n(r.viewers) - n(r.adders))}</td>
             </tr>
           ))}</tbody>
         </table>

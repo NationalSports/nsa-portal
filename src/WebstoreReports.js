@@ -6,8 +6,8 @@
 // helpers as the per-store Analytics tab (lib/webstoreOrderMoney.js).
 import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from './lib/supabase';
-import { orderNetCollected } from './lib/webstoreOrderMoney';
-import { loadFunnel, sumFunnel, FunnelCard, DeviceCard, InterestCard } from './webstoreFunnel';
+import { orderNetCollected, netFundraise } from './lib/webstoreOrderMoney';
+import { loadFunnel, sumFunnel, FunnelCard, DeviceCard, InterestCard, SourceCard, SoldOutCard } from './webstoreFunnel';
 
 const RANGES = [
   { id: '30', label: 'Last 30 days' },
@@ -58,6 +58,25 @@ export function topItems(items) {
   });
   return Object.values(by).map((r) => ({ ...r, stores: r.stores.size }));
 }
+
+// Spreadsheet export. Cells are quoted, and ones that start like a formula get a
+// leading apostrophe so Excel/Sheets never run them.
+export function toCsv(header, rows) {
+  const cell = (v) => {
+    let t = v == null ? '' : String(v);
+    if (/^[=+\-@]/.test(t) && !/^-?\d+(\.\d+)?$/.test(t)) t = "'" + t;
+    return '"' + t.replace(/"/g, '""') + '"';
+  };
+  return [header, ...rows].map((r) => r.map(cell).join(',')).join('\r\n');
+}
+function downloadCsv(filename, header, rows) {
+  const blob = new Blob([toCsv(header, rows)], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+const exportBtn = { padding: '4px 10px', borderRadius: 6, border: '1px solid #e2e8f0', background: '#fff', color: '#334155', fontSize: 12, fontWeight: 600, cursor: 'pointer' };
 
 async function fetchAll(build, pageSize = 1000) {
   const out = [];
@@ -133,7 +152,7 @@ export default function WebstoreReports({ repId = null, reps = [] }) {
       const stores = await fetchAll(() => supabase.from('webstores').select('id,name,slug,status,rep_id,open_at,close_at,is_template').order('created_at'));
       const orders = await fetchAll(() => {
         let q = supabase.from('webstore_orders')
-          .select('id,store_id,status,payment_mode,total,original_total,refunded_amt,fundraise_amt,discount_amt,coupon_code,buyer_email,created_at,backorder_of')
+          .select('id,store_id,status,payment_mode,total,original_total,refunded_amt,subtotal,fundraise_amt,discount_amt,coupon_code,buyer_email,created_at,backorder_of')
           .is('backorder_of', null).order('created_at');
         if (fromIso) q = q.gte('created_at', fromIso);
         return q;
@@ -158,7 +177,7 @@ export default function WebstoreReports({ repId = null, reps = [] }) {
     const items = state.items.filter((i) => liveIds.has(i.order_id)).map((i) => ({ ...i, _store: orderStore[i.order_id] }));
 
     const revenue = live.reduce((a, o) => a + orderNetCollected(o), 0);
-    const fundraising = live.filter((o) => o.status !== 'refunded').reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
+    const fundraising = live.filter((o) => o.status !== 'refunded').reduce((a, o) => a + netFundraise(o), 0);
     const units = items.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + Math.max(0, (Number(i.qty) || 0) - (Number(i.cancelled_qty) || 0)), 0);
     const buyers = new Set(live.map((o) => String(o.buyer_email || '').toLowerCase()).filter(Boolean));
 
@@ -170,7 +189,7 @@ export default function WebstoreReports({ repId = null, reps = [] }) {
     const per = {};
     live.forEach((o) => {
       const p = per[o.store_id] || (per[o.store_id] = { revenue: 0, orders: 0, fund: 0 });
-      p.revenue += orderNetCollected(o); p.orders += 1; p.fund += o.status === 'refunded' ? 0 : (Number(o.fundraise_amt) || 0);
+      p.revenue += orderNetCollected(o); p.orders += 1; p.fund += o.status === 'refunded' ? 0 : netFundraise(o);
     });
     const storeRows = Object.keys({ ...per, ...funnelByStore }).filter((id) => storeById[id]).map((id) => {
       const s = storeById[id], p = per[id] || { revenue: 0, orders: 0, fund: 0 }, f = funnelByStore[id];
@@ -221,7 +240,9 @@ export default function WebstoreReports({ repId = null, reps = [] }) {
       aov: live.length ? revenue / live.length : 0,
       storesSelling: Object.keys(per).length, openNow: Object.values(storeById).filter((s) => s.status === 'open').length,
       repeatBuyers: (() => { const c = {}; live.forEach((o) => { const e = String(o.buyer_email || '').toLowerCase(); if (e) c[e] = (c[e] || 0) + 1; }); return Object.values(c).filter((x) => x > 1).length; })(),
-      funnelTotals, funnelProducts: (state.funnel.products || []).filter((r) => storeById[r.store_id]), funnelSince: state.funnel.since, funnelMissing: state.funnel.missing, funnelError: state.funnel.error,
+      funnelTotals, funnelProducts: (state.funnel.products || []).filter((r) => storeById[r.store_id]),
+      funnelSources: (state.funnel.sources || []).filter((r) => storeById[r.store_id]),
+      funnelSoldout: (state.funnel.soldout || []).filter((r) => storeById[r.store_id]), funnelSince: state.funnel.since, funnelMissing: state.funnel.missing, funnelError: state.funnel.error,
       storeById, storeRows, items: topItems(items), packages, coupons, sizeRows, months,
       dow: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((label, i) => ({ label, v: dow[i] })),
       hourBlocks, closeRows: Object.entries(closeBuckets).map(([label, v]) => ({ label, v })), closeKnown,
@@ -232,8 +253,9 @@ export default function WebstoreReports({ repId = null, reps = [] }) {
   // Item names for the "looked at, not added" list (only the handful shown).
   const [wpNames, setWpNames] = useState({});
   useEffect(() => {
-    if (!view || !view.funnelProducts.length) return;
-    const ids = [...new Set(view.funnelProducts.filter((r) => Number(r.viewers) >= 10).map((r) => r.webstore_product_id))].filter((id) => !(id in wpNames)).slice(0, 300);
+    if (!view) return;
+    const soldoutTop = [...view.funnelSoldout].sort((a, b) => Number(b.viewers) - Number(a.viewers)).slice(0, 10);
+    const ids = [...new Set([...view.funnelProducts.filter((r) => Number(r.viewers) >= 10), ...soldoutTop].map((r) => r.webstore_product_id))].filter((id) => !(id in wpNames)).slice(0, 300);
     if (!ids.length) return;
     supabase.from('webstore_products').select('id,display_name,sku').in('id', ids).then(({ data }) => {
       const next = {}; ids.forEach((id) => { next[id] = null; });
@@ -269,7 +291,7 @@ export default function WebstoreReports({ repId = null, reps = [] }) {
         <Kpi label="Orders" value={v.orders.toLocaleString()} note={`${v.buyers.toLocaleString()} buyers · ${v.repeatBuyers} bought twice+`} />
         <Kpi label="Avg order" value={money(v.aov)} />
         <Kpi label="Units sold" value={v.units.toLocaleString()} />
-        <Kpi label="Club fundraising" value={money(v.fundraising)} color="#166534" note="before coupon share" />
+        <Kpi label="Club fundraising" value={money(v.fundraising)} color="#166534" note="owed to clubs, after coupons" />
         <Kpi label="Stores selling" value={v.storesSelling} note={`${v.openNow} open right now`} />
         {v.funnelTotals.visitors > 0 && <Kpi label="Shoppers who bought" value={pct(v.funnelTotals.purchasers, v.funnelTotals.visitors)} note={`of ${v.funnelTotals.visitors.toLocaleString()} store visitors`} color="#1e3a8a" />}
       </div>
@@ -281,6 +303,8 @@ export default function WebstoreReports({ repId = null, reps = [] }) {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(320px,1fr))', gap: 16 }}>
             <DeviceCard totals={v.funnelTotals} />
             <InterestCard products={v.funnelProducts} nameFor={wpLabel} />
+            <SourceCard rows={v.funnelSources} />
+            <SoldOutCard rows={v.funnelSoldout} nameFor={wpLabel} />
           </div>
         </>}
 
@@ -297,7 +321,10 @@ export default function WebstoreReports({ repId = null, reps = [] }) {
       <div style={card}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
           <div style={hdr}>Top selling items</div>
-          <div style={{ fontSize: 11, color: '#94a3b8' }}>Units include items inside packages · click a column to sort</div>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <div style={{ fontSize: 11, color: '#94a3b8' }}>Units include items inside packages · click a column to sort</div>
+            {v.items.length > 0 && <button style={exportBtn} onClick={() => downloadCsv(`webstore-items-${range}.csv`, ['Item', 'Color', 'SKU', 'Units', 'Revenue', 'Stores'], [...v.items].sort((a, b) => b.units - a.units).map((r) => [r.name, r.color, r.sku, r.units, r.revenue.toFixed(2), r.stores]))}>⬇ Export all</button>}
+          </div>
         </div>
         {sortedItems.length === 0 ? <div style={{ fontSize: 13, color: '#64748b', marginTop: 10 }}>No items sold in this period.</div> : (
           <div style={{ overflowX: 'auto' }}>
@@ -319,8 +346,11 @@ export default function WebstoreReports({ repId = null, reps = [] }) {
       </div>
 
       <div style={card}>
-        <div style={hdr}>Store leaderboard</div>
-        <div style={sub}>Top 20 stores in this period · click a column to sort</div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
+          <div style={hdr}>Store leaderboard</div>
+          {v.storeRows.length > 0 && <button style={exportBtn} onClick={() => downloadCsv(`webstore-stores-${range}.csv`, ['Store', 'Status', 'Rep', 'Revenue', 'Orders', 'Avg order', 'Visitors', 'Bought %', 'Fundraising'], [...v.storeRows].sort((a, b) => b.revenue - a.revenue).map((r) => [r.name, r.status, r.rep, r.revenue.toFixed(2), r.orders, r.aov.toFixed(2), r.visitors, r.conv == null ? '' : (r.conv * 100).toFixed(1), r.fund.toFixed(2)]))}>⬇ Export all</button>}
+        </div>
+        <div style={sub}>Top 20 stores in this period · click a column to sort · export has every store</div>
         {sortedStores.length === 0 ? <div style={{ fontSize: 13, color: '#64748b' }}>No store activity in this period.</div> : (
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
