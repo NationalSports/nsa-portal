@@ -28,6 +28,8 @@ test('renders Sales Order-style size headers, quantity boxes, status tiles and a
   expect(html).toContain('M: QTY 1 · Received 0/1 · Shipped 0/1. Waiting');
   expect(html.indexOf('XS:')).toBeLessThan(html.indexOf('S: QTY 4'));
   expect(html).toContain('1/4');
+  expect(html).not.toContain('>Received <strong>');
+  expect(html).not.toContain('>Shipped <strong>');
 });
 
 test('decoration specs are visible labeled fields, not collapsed text or invented units', () => {

@@ -57,7 +57,8 @@ export default function JobGarmentProgress({ summary, onViewItem }) {
   const sizes = Object.entries(summary.sizes).filter(([, n]) => n > 0);
   const order = ['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
   sizes.sort(([a], [b]) => (order.indexOf(a) < 0 ? 99 : order.indexOf(a)) - (order.indexOf(b) < 0 ? 99 : order.indexOf(b)));
-  return <><div aria-label="Garment quantities and progress" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px 16px', padding: '12px 4px', fontSize: 12, borderBottom: '1px solid #e2e8f0' }}>
+  return <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '16px 24px', padding: '14px 4px' }}>
+    <div aria-label="Garment quantities and progress" style={{ flex: '1 1 260px', display: 'flex', alignItems: 'center', gap: 16, fontSize: 12, minWidth: 0 }}>
     <strong>QTY {summary.total}</strong>
     <div style={{ flex: 1, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
       {sizes.map(([size, qty]) => {
@@ -70,15 +71,15 @@ export default function JobGarmentProgress({ summary, onViewItem }) {
         </div>;
       })}
     </div>
-    <span style={{ color: summary.receivedTotal >= summary.total ? '#166534' : '#92400e' }}>Received <strong>{summary.receivedTotal}/{summary.total}</strong></span>
-    <span style={{ color: summary.shippedTotal >= summary.total ? '#166534' : '#475569' }}>Shipped <strong>{summary.shippedTotal}/{summary.total}</strong></span>
+    </div>
+    <GarmentDecorationSpecs specs={Array.from(summary.specs || [])} />
     {onViewItem && <button type="button" className="btn btn-sm btn-secondary" onClick={() => onViewItem([...summary.lines][0])} title="Open the garment line on this sales order">SO →</button>}
-  </div><GarmentDecorationSpecs specs={Array.from(summary.specs || [])} /></>;
+  </div>;
 }
 
 export function GarmentDecorationSpecs({ specs }) {
   if (!specs.length) return null;
-  return <section aria-label="Decoration details" style={{ marginTop: 10, padding: '12px 14px', border: '1px solid #e2e8f0', borderRadius: 8, background: 'white' }}>
+  return <section aria-label="Decoration details" style={{ flex: '1 1 320px', minWidth: 0, padding: '12px 14px', border: '1px solid #e2e8f0', borderRadius: 8, background: 'white' }}>
     <div style={{ fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase', fontWeight: 800, color: '#64748b', marginBottom: 10 }}>Decoration</div>
     {specs.map((spec, index) => <div key={JSON.stringify(spec)} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '10px 24px', ...(index ? { borderTop: '1px solid #eef2f6', paddingTop: 10, marginTop: 10 } : {}) }}>
       <div style={{ flex: '1 1 180px', minWidth: 0 }}>
