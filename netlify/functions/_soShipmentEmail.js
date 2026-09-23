@@ -541,7 +541,37 @@ ${wrap(FOOTER_NAVY, `<div style="font-family:${DISPLAY};font-weight:bold;font-si
   };
 }
 
+// A note for the REP, put above the coach's email in the rep's own copy — never
+// in what the coach receives. `tone` 'info' is the routine "here's who got it"
+// copy; 'warn' is the "this did NOT go out" alert. `lines` are plain text,
+// escaped here; `strong` marks the one line to read first.
+function repBannerHtml({ tone = 'info', title = '', lines = [] } = {}) {
+  const warn = tone === 'warn';
+  const bg = warn ? '#FDF2F2' : '#EEF3FB';
+  const edge = warn ? RED : NAVY;
+  const body = lines.filter((l) => String(l || '').trim()).map((l) => `<div style="padding-top:4px;">${esc(l)}</div>`).join('');
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:${PANEL};">
+<tr><td align="center" style="padding:16px 12px 0 12px;">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px;max-width:100%;background-color:${bg};border-left:4px solid ${edge};">
+    <tr><td style="padding:14px 18px;font-family:${BODY_FONT};font-size:13px;line-height:19px;mso-line-height-rule:exactly;color:${NAVY};">
+      <div style="font-family:${DISPLAY};font-weight:bold;font-size:12px;line-height:16px;letter-spacing:1.5px;text-transform:uppercase;color:${edge};">${esc(title)}</div>
+      ${body}
+    </td></tr>
+  </table>
+</td></tr>
+</table>`;
+}
+
+// The rep's copy: the coach's email, unchanged, with the rep banner on top.
+function withRepBanner(html, banner) {
+  const s = String(html || '');
+  const m = s.match(/<body[^>]*>/i);
+  return m ? s.replace(m[0], m[0] + '\n' + banner) : banner + s;
+}
+
 module.exports = {
+  repBannerHtml,
+  withRepBanner,
   buildSoShipmentEmail,
   buildShipmentLines,
   boxContents,

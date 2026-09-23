@@ -151,7 +151,7 @@ async function runSweep(admin, { dryRun, since, now = Date.now() }) {
     console.warn('[so-shipment-notify-sweep] scan hit the row cap — some orders were not examined this pass');
   }
 
-  const summary = { scanned, sent: 0, failed: 0, graceStarted: 0, dryRun: !!dryRun, skipped: {}, sends: [], failures: [], waitingOnTracking: [] };
+  const summary = { scanned, sent: 0, failed: 0, graceStarted: 0, dryRun: !!dryRun, skipped: {}, sends: [], failures: [], waitingOnTracking: [], noContact: [] };
   const sinceMs = since instanceof Date ? since.getTime() : 0;
 
   // One ledger read for the whole pass.
@@ -204,7 +204,11 @@ async function runSweep(admin, { dryRun, since, now = Date.now() }) {
       });
       if (status === 200 && payload && payload.ok) {
         summary.sent += 1;
-        summary.sends.push({ so: so.id, to: payload.to, boxes: payload.boxes });
+        summary.sends.push({ so: so.id, to: payload.to, boxes: payload.boxes, repCopy: payload.repCopy });
+      } else if (status === 409 && payload && payload.noContact) {
+        // No customer email on file — the rep was emailed instead (once), and the
+        // notice goes to the coach on its own as soon as a contact is added.
+        summary.noContact.push({ so: so.id, repAlerted: !!payload.repAlerted, rep: payload.repEmail || '' });
       } else if (status === 409) {
         // A race with the rep's own button, or a contact removed since the scan.
         summary.skipped[`refused_${status}`] = (summary.skipped[`refused_${status}`] || 0) + 1;

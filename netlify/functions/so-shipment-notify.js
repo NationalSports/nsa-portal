@@ -20,7 +20,7 @@
 // Layout lives in _soShipmentEmail.js (pure, unit-tested); this file is the IO.
 
 const { verifyUser } = require('./_shared');
-const { buildSoShipmentEmail, buildShipmentLines, boxContents, remainingUnits, carrierLabel, garmentMockKey } = require('./_soShipmentEmail');
+const { buildSoShipmentEmail, buildShipmentLines, boxContents, remainingUnits, carrierLabel, garmentMockKey, repBannerHtml, withRepBanner } = require('./_soShipmentEmail');
 
 const HEADERS = { 'Content-Type': 'application/json' };
 const PORTAL_BASE = 'https://nationalsportsapparel.com/coach';
@@ -39,6 +39,12 @@ const j = (statusCode, obj) => ({ statusCode, headers: HEADERS, body: JSON.strin
 // domain is; a rep whose team_members email is a personal address is not, so
 // that rep's notices go out from the shared address with them as reply-to.
 const FALLBACK_SENDER = 'noreply@nationalsportsapparel.com';
+
+// When the automatic sweep finds no customer contact with an email, the rep is
+// emailed instead (once). The ledger row's sent_to carries this prefix while
+// sent_at stays null: the sweep keeps checking, doesn't alert the rep again, and
+// sends to the coach on its own as soon as a contact is added.
+const REP_ALERT_PREFIX = 'rep-alert:';
 
 // The "Leave us a Google review" button. Same link the estimate/invoice emails
 // use (src/utils.js GOOGLE_REVIEW_URL — the live Business Profile deep link, kept
@@ -151,14 +157,22 @@ async function sendShipmentNotice(admin, opts = {}) {
       ? withEmail.find((c) => String(c.email).trim().toLowerCase() === requestedTo)
       : (withEmail.find((c) => /coach/i.test(String(c.role || ''))) || withEmail[0]);
     const recipient = testTo ? { email: testTo, name: '' } : contactRecipient;
+    // No one to send to. A rep pressing the button is told on screen. The
+    // automatic sweep has no one watching, so it carries on far enough to email
+    // the REP the notice with a "not sent — add a contact" note instead.
+    let noContact = false;
     if (!preview && !recipient) {
-      return j(409, { error: requestedTo ? 'That email is not a contact on this account' : 'No contact with an email address on this account' });
+      if (requestedTo || source !== 'sweep') {
+        return j(409, { error: requestedTo ? 'That email is not a contact on this account' : 'No contact with an email address on this account', noContact: !requestedTo });
+      }
+      noContact = true;
     }
 
     // ── Already-sent guard: the same boxes don't get announced twice ──
     const signature = selected.map((s) => String(s.id)).sort().join(',');
     let ledgerAvailable = true;
     let already = null;
+    let repAlreadyAlerted = false;
     {
       const { data: rows, error: ledgerErr } = await admin.from('so_shipment_notices')
         .select('shipment_sig,sent_at,sent_to,sent_by,source').eq('so_id', so.id).eq('shipment_sig', signature).limit(1);
@@ -167,6 +181,8 @@ async function sendShipmentNotice(admin, opts = {}) {
         if (requireLedger) return j(503, { error: 'so_shipment_notices is not deployed (migration 20260922210000) — cannot send safely without a record' });
       } else if (ledgerErr) {
         return j(500, { error: ledgerErr.message });
+      } else if (rows && rows[0] && !rows[0].sent_at && String(rows[0].sent_to || '').startsWith(REP_ALERT_PREFIX)) {
+        repAlreadyAlerted = true;
       } else if (rows && rows[0] && rows[0].sent_at) {
         // Shape kept for the button's confirm dialog: { to, sent_at }.
         already = { to: rows[0].sent_to || '', sent_at: new Date(rows[0].sent_at).toLocaleString(), by: rows[0].sent_by || '', source: rows[0].source || '' };
@@ -174,6 +190,9 @@ async function sendShipmentNotice(admin, opts = {}) {
     }
     if (already && !resend && !preview && !testTo) {
       return j(409, { error: `These boxes were already emailed to ${already.to || 'the customer'} on ${already.sent_at}`, alreadySent: already });
+    }
+    if (noContact && repAlreadyAlerted) {
+      return j(409, { error: 'No contact with an email address on this account', noContact: true, repAlerted: true });
     }
 
     const [itemsRes, artRes, repRes] = await Promise.all([
@@ -284,6 +303,60 @@ async function sendShipmentNotice(admin, opts = {}) {
       });
     }
 
+    const brevo = async (payload) => {
+      const r = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
+        body: JSON.stringify(payload),
+      });
+      let out = null;
+      try { out = await r.json(); } catch { out = null; }
+      return { res: r, result: out };
+    };
+    const repNoticeSender = { name: 'NSA Shipping Notices', email: FALLBACK_SENDER };
+    const accountName = customer.name || 'This account';
+
+    // ── No contact on file (automatic sweep only): tell the rep instead ──
+    if (noContact) {
+      if (!rep || !rep.email) {
+        console.warn('[so-shipment-notify] no contact and no rep email for', so.id);
+        return j(409, { error: 'No contact with an email address on this account', noContact: true, repAlerted: false });
+      }
+      const banner = repBannerHtml({
+        tone: 'warn',
+        title: 'Not sent to the customer — no contact email on file',
+        lines: [
+          `${so.id} shipped with tracking, but ${accountName} has no contact with an email address, so this notice went to no one.`,
+          'Add the coach\'s email on the customer record. The portal checks every 15 minutes and will send it to them automatically — or open the order\'s Tracking tab and press Email Coach Tracking.',
+          'Below is exactly what the coach will receive.',
+        ],
+      });
+      const { res: ar, result: aresult } = await brevo({
+        sender: repNoticeSender,
+        to: [{ email: rep.email, name: rep.name || '' }],
+        subject: `Not sent — no coach email on file: ${subject}`,
+        htmlContent: withRepBanner(html, banner),
+      });
+      if (!ar.ok) {
+        const detail = aresult && (aresult.message || aresult.code) ? `: ${aresult.message || aresult.code}` : '';
+        console.error('[so-shipment-notify] rep no-contact alert failed', ar.status, detail);
+        return j(502, { error: `Rep alert failed (HTTP ${ar.status})${detail}`, noContact: true });
+      }
+      if (ledgerAvailable) {
+        const { error: alertLedgerErr } = await admin.from('so_shipment_notices').upsert({
+          so_id: so.id,
+          shipment_sig: signature,
+          box_count: packages.length,
+          sent_to: REP_ALERT_PREFIX + rep.email,
+          sent_by: sentBy,
+          source,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'so_id,shipment_sig' });
+        if (alertLedgerErr) console.error('[so-shipment-notify] rep-alert ledger write failed for', so.id, alertLedgerErr.message);
+      }
+      return j(409, { error: 'No contact with an email address on this account', noContact: true, repAlerted: true, repEmail: rep.email });
+    }
+
     // The notice comes FROM the rep — their name and address in the coach's inbox,
     // not a shared noreply — as long as the rep's address is on the company domain
     // Brevo is authenticated for. Anyone else (or no rep) sends from noreply with
@@ -351,9 +424,46 @@ async function sendShipmentNotice(admin, opts = {}) {
       console.warn('[so-shipment-notify] sent without a ledger record — migration 20260922210000 not applied');
     }
 
+    // ── The rep's copy: same email, with a note on top saying who got it ──
+    // Sent separately (not cc) so the note never shows in the coach's inbox. A
+    // failure here is logged and reported, never undoes the coach's send.
+    let repCopy = 'none';
+    const repEmail = rep && rep.email ? String(rep.email).trim() : '';
+    if (!testTo && repEmail && repEmail.toLowerCase() !== String(recipient.email).trim().toLowerCase()) {
+      const who = recipient.name ? `${recipient.name} <${recipient.email}>` : recipient.email;
+      const role = contactRecipient && contactRecipient.role ? ` (${contactRecipient.role})` : '';
+      const others = withEmail
+        .filter((c) => String(c.email).trim().toLowerCase() !== String(recipient.email).trim().toLowerCase())
+        .map((c) => (c.name ? `${c.name} <${c.email}>` : c.email) + (c.role ? ` (${c.role})` : ''));
+      const banner = repBannerHtml({
+        tone: 'info',
+        title: 'Your copy — shipping notice sent',
+        lines: [
+          `Sent to ${who}${role} for ${accountName}, ${so.id}.`,
+          others.length ? `Not sent to the other contact${others.length === 1 ? '' : 's'} on the account: ${others.join(', ')}. Forward this if they should see it.` : '',
+          'Nothing to do unless they reply — replies come to you.',
+        ],
+      });
+      try {
+        const { res: cr, result: cresult } = await brevo({
+          sender: repNoticeSender,
+          to: [{ email: repEmail, name: rep.name || '' }],
+          subject: `Sent to ${recipient.name || recipient.email}: ${subject}`,
+          htmlContent: withRepBanner(html, banner),
+        });
+        repCopy = cr.ok ? 'sent' : 'failed';
+        if (!cr.ok) console.error('[so-shipment-notify] rep copy failed', cr.status, cresult && (cresult.message || cresult.code));
+      } catch (e) {
+        repCopy = 'failed';
+        console.error('[so-shipment-notify] rep copy failed', e.message);
+      }
+    }
+
     return j(200, {
       ok: true,
       to: recipient.email,
+      repCopy,
+      repEmail: repCopy === 'none' ? undefined : repEmail,
       from: usedSender.email,
       test: !!testTo,
       wouldGoTo: testTo && contactRecipient ? contactRecipient.email : undefined,
