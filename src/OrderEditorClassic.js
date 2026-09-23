@@ -7598,6 +7598,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         }catch(e){w.close();nf('Preview failed: '+e.message,'error')}
         finally{setShpEmailBusy(false)}
       };
+      // A real copy to the signed-in staff member, through Brevo like the real thing —
+      // the only way to see it in an actual inbox (images and all) before a coach does.
+      // The server sends it to the caller's own team_members email; it is never
+      // recorded and never blocks the real send.
+      const testShipmentNotice=async()=>{
+        if(shpEmailBusy)return;
+        if(!window.confirm('Send a test copy of the coach shipping email to your own address ('+(cu?.email||'your team member email')+')?\n\nNothing goes to the customer and nothing is recorded.'))return;
+        setShpEmailBusy(true);
+        try{
+          const r=await authFetch('/.netlify/functions/so-shipment-notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({soId:o.id,test:true,eta:o.deliver_on_date||''})});
+          const d=await r.json().catch(()=>({}));
+          if(!r.ok){nf(d.error||'Test send failed','error');return}
+          nf('Test copy sent to '+d.to+(d.from?' (from '+d.from+')':''));
+        }catch(e){nf('Test send failed: '+e.message,'error')}
+        finally{setShpEmailBusy(false)}
+      };
 
       return<div style={{display:'grid',gap:16}}>
         {/* ── WAREHOUSE BOXES (BX plates, boxes table) — where is this order physically ── */}
@@ -7635,6 +7651,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {allOutbound.length>0&&<button className="btn btn-sm btn-secondary" style={{marginLeft:'auto',fontSize:11}}
                 disabled={shpEmailBusy} onClick={previewShipmentNotice} title="Open the coach's shipping email in a new tab — nothing is sent">
                 👁 Preview Email</button>}
+              {allOutbound.length>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}}
+                disabled={shpEmailBusy} onClick={testShipmentNotice} title="Email yourself a real copy — nothing goes to the customer">
+                ✉️ Test To Me</button>}
               {allOutbound.length>0&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#962C32',borderColor:'#962C32'}}
                 disabled={shpEmailBusy} onClick={emailShipmentNotice}>
                 {shpEmailBusy?'Working…':'📧 Email Coach Tracking'}</button>}

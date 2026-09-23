@@ -35,6 +35,17 @@ const logoUrl = () => {
 
 const j = (statusCode, obj) => ({ statusCode, headers: HEADERS, body: JSON.stringify(obj) });
 
+// Brevo will only send from addresses it is authenticated for. The company
+// domain is; a rep whose team_members email is a personal address is not, so
+// that rep's notices go out from the shared address with them as reply-to.
+const FALLBACK_SENDER = 'noreply@nationalsportsapparel.com';
+const SENDER_DOMAINS = (process.env.SO_SHIPMENT_SENDER_DOMAINS || 'nationalsportsapparel.com')
+  .split(',').map((d) => d.trim().toLowerCase()).filter(Boolean);
+const senderDomainOk = (email) => {
+  const at = String(email || '').trim().toLowerCase().split('@');
+  return at.length === 2 && SENDER_DOMAINS.includes(at[1]);
+};
+
 // The ledger table may not be deployed yet (migration 20260922210000). Mirror of
 // backorder-ready-sweep's check so a missing relation reads as "not applied",
 // not as a crash.
@@ -78,6 +89,12 @@ async function sendShipmentNotice(admin, opts = {}) {
   const etaInput = String(opts.eta || '').trim().slice(0, 40);
   const requestedIds = Array.isArray(opts.shipmentIds) ? opts.shipmentIds.map(String) : null;
   const body = { to: opts.to };
+  // A test copy to the STAFF MEMBER PRESSING THE BUTTON — the handler resolves
+  // this from their own team_members row, never from the request body. It goes
+  // out through Brevo exactly like the real thing (so images and layout can be
+  // checked in a real inbox), but it never counts: no ledger row, no
+  // already-sent block, "[TEST]" on the subject.
+  const testTo = String(opts.testTo || '').trim().toLowerCase();
 
   if (!preview && !brevoKey) return jj(500, { error: 'BREVO_API_KEY not configured' });
 
@@ -124,9 +141,10 @@ async function sendShipmentNotice(admin, opts = {}) {
     // A caller may name WHICH of the customer's contacts to write to; it can
     // never introduce an address the customer doesn't already have on file.
     const requestedTo = String(body.to || '').trim().toLowerCase();
-    const recipient = requestedTo
+    const contactRecipient = requestedTo
       ? withEmail.find((c) => String(c.email).trim().toLowerCase() === requestedTo)
       : (withEmail.find((c) => /coach/i.test(String(c.role || ''))) || withEmail[0]);
+    const recipient = testTo ? { email: testTo, name: '' } : contactRecipient;
     if (!preview && !recipient) {
       return j(409, { error: requestedTo ? 'That email is not a contact on this account' : 'No contact with an email address on this account' });
     }
@@ -148,7 +166,7 @@ async function sendShipmentNotice(admin, opts = {}) {
         already = { to: rows[0].sent_to || '', sent_at: new Date(rows[0].sent_at).toLocaleString(), by: rows[0].sent_by || '', source: rows[0].source || '' };
       }
     }
-    if (already && !resend && !preview) {
+    if (already && !resend && !preview && !testTo) {
       return j(409, { error: `These boxes were already emailed to ${already.to || 'the customer'} on ${already.sent_at}`, alreadySent: already });
     }
 
@@ -259,20 +277,40 @@ async function sendShipmentNotice(admin, opts = {}) {
       });
     }
 
-    const res = await fetch('https://api.brevo.com/v3/smtp/email', {
-      method: 'POST',
-      headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
-      body: JSON.stringify({
-        sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
-        to: [{ email: recipient.email, name: recipient.name || '' }],
-        // A coach replying about a short size must reach their rep, not a black hole.
-        ...(rep && rep.email ? { replyTo: { email: rep.email, name: rep.name || '' } } : {}),
-        subject,
-        htmlContent: html,
-      }),
-    });
+    // The notice comes FROM the rep — their name and address in the coach's inbox,
+    // not a shared noreply — as long as the rep's address is on the company domain
+    // Brevo is authenticated for. Anyone else (or no rep) sends from noreply with
+    // the rep as reply-to. If Brevo rejects the rep as a sender (an address it
+    // hasn't been told about), the send is retried once from noreply so the
+    // coach still hears their gear is on the way.
+    const senders = [];
+    if (rep && rep.email && senderDomainOk(rep.email)) senders.push({ name: rep.name || 'National Sports Apparel', email: String(rep.email).trim() });
+    senders.push({ name: rep && rep.name ? `${rep.name} · National Sports Apparel` : 'National Sports Apparel', email: FALLBACK_SENDER });
+    let res = null;
     let result = null;
-    try { result = await res.json(); } catch { result = null; }
+    let usedSender = senders[0];
+    for (const sender of senders) {
+      usedSender = sender;
+      res = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
+        body: JSON.stringify({
+          sender,
+          to: [{ email: recipient.email, name: recipient.name || '' }],
+          // A coach replying about a short size must reach their rep, not a black hole.
+          ...(rep && rep.email ? { replyTo: { email: rep.email, name: rep.name || '' } } : {}),
+          subject: testTo ? `[TEST] ${subject}` : subject,
+          htmlContent: html,
+        }),
+      });
+      result = null;
+      try { result = await res.json(); } catch { result = null; }
+      if (res.ok) break;
+      const msg = String((result && (result.message || result.code)) || '');
+      const senderRejected = res.status === 400 && /sender/i.test(msg) && sender.email !== FALLBACK_SENDER;
+      if (!senderRejected) break;
+      console.warn('[so-shipment-notify] Brevo rejected sender', sender.email, '— retrying from', FALLBACK_SENDER);
+    }
     if (!res.ok) {
       const detail = result && (result.message || result.code) ? `: ${result.message || result.code}` : '';
       console.error('[so-shipment-notify] Brevo send failed', res.status, detail);
@@ -284,7 +322,10 @@ async function sendShipmentNotice(admin, opts = {}) {
     // waiting out its grace window becomes the sent row. Never sales_orders —
     // see the header comment.
     let ledgerRecorded = false;
-    if (ledgerAvailable) {
+    if (testTo) {
+      // A test copy is not a notice to the coach: nothing is recorded, so the
+      // real send (button or sweep) still happens later.
+    } else if (ledgerAvailable) {
       const nowIso = new Date().toISOString();
       const { error: ledgerWriteErr } = await admin.from('so_shipment_notices').upsert({
         so_id: so.id,
@@ -306,6 +347,9 @@ async function sendShipmentNotice(admin, opts = {}) {
     return j(200, {
       ok: true,
       to: recipient.email,
+      from: usedSender.email,
+      test: !!testTo,
+      wouldGoTo: testTo && contactRecipient ? contactRecipient.email : undefined,
       subject,
       boxes: packages.length,
       pieces: lines.reduce((a, l) => a + l.totalQty, 0),
@@ -329,11 +373,22 @@ exports.handler = async (event) => {
   let body;
   try { body = JSON.parse(event.body || '{}'); } catch { return j(400, { error: 'Invalid JSON' }); }
 
+  // "Send me a test": the address comes from the caller's OWN team_members row,
+  // looked up here from the verified session — the request body cannot name it.
+  let testTo = '';
+  if (body.test === true) {
+    const { data: me, error: meErr } = await auth.admin.from('team_members').select('email').eq('id', auth.teamMemberId).maybeSingle();
+    if (meErr) return j(500, { error: meErr.message });
+    testTo = me && me.email ? String(me.email).trim() : '';
+    if (!/^\S+@\S+\.\S+$/.test(testTo)) return j(409, { error: 'Your team member record has no email address to send a test to' });
+  }
+
   // verifyUser hands back the service-role client it already built.
   const { status, payload } = await sendShipmentNotice(auth.admin, {
     soId: body.soId,
     eta: body.eta,
-    to: body.to,
+    to: testTo ? undefined : body.to,
+    testTo,
     shipmentIds: body.shipmentIds,
     preview: body.preview === true,
     resend: body.resend === true,

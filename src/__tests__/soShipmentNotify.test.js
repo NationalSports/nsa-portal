@@ -118,7 +118,8 @@ test('sends to the coach contact, not the first one on file', async () => {
   expect(payload.to).toEqual([{ email: 'coach@bolsa.org', name: 'Miguel Ramirez' }]);
   // A reply about a short size has to land on the rep's desk.
   expect(payload.replyTo).toEqual({ email: 'danny@nationalsportsapparel.com', name: 'Danny Ortiz' });
-  expect(payload.sender.email).toBe('noreply@nationalsportsapparel.com');
+  // …and the notice itself comes from the rep, not a shared noreply address.
+  expect(payload.sender).toEqual({ name: 'Danny Ortiz', email: 'danny@nationalsportsapparel.com' });
 });
 
 test('the caller cannot introduce an email address of its own', async () => {
@@ -312,4 +313,67 @@ test('a Brevo failure is surfaced and nothing is recorded as sent', async () => 
   const res = await call({ soId: 'NSA-18402' });
   expect(res.status).toBe(502);
   expect(writes).toHaveLength(0);
+});
+
+describe('"Test To Me" — a real copy to the staff member pressing the button', () => {
+  test("goes to the caller's own team_members email, tagged [TEST], and records nothing", async () => {
+    rows.team_members = [{ id: 'tm-1', name: 'Steve Peterson', email: 'steve@nationalsportsapparel.com' }];
+    // Even an already-announced set of boxes can be test-sent, and the body's `to` is ignored.
+    rows.so_shipment_notices = [{ shipment_sig: 'SHP-1,SHP-2', sent_at: '2026-09-21T20:10:00Z', sent_to: 'coach@bolsa.org', sent_by: 'tm-9', source: 'button' }];
+    const res = await call({ soId: 'NSA-18402', test: true, to: 'attacker@example.com' });
+    expect(res.status).toBe(200);
+    expect(res.body.test).toBe(true);
+    expect(res.body.to).toBe('steve@nationalsportsapparel.com');
+    expect(res.body.wouldGoTo).toBe('coach@bolsa.org');
+    const payload = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(payload.to).toEqual([{ email: 'steve@nationalsportsapparel.com', name: '' }]);
+    expect(payload.subject).toMatch(/^\[TEST\] /);
+    expect(payload.htmlContent).toContain('Team Issue Pullover Hoodie');
+    expect(writes).toEqual([]);
+  });
+
+  test('refuses when the caller has no email on file, and sends nothing', async () => {
+    rows.team_members = [{ id: 'tm-1', name: 'New Hire', email: '' }];
+    const res = await call({ soId: 'NSA-18402', test: true });
+    expect(res.status).toBe(409);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('sender', () => {
+  test('the notice comes from the rep when their address is on the company domain', async () => {
+    const res = await call({ soId: 'NSA-18402' });
+    const payload = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(payload.sender).toEqual({ name: 'Danny Ortiz', email: 'danny@nationalsportsapparel.com' });
+    expect(payload.replyTo).toEqual({ email: 'danny@nationalsportsapparel.com', name: 'Danny Ortiz' });
+    expect(res.body.from).toBe('danny@nationalsportsapparel.com');
+  });
+
+  test('a rep on a personal address sends from noreply, still with the rep as reply-to', async () => {
+    rows.team_members = [{ id: 'tm-9', name: 'Danny Ortiz', email: 'danny.ortiz@gmail.com' }];
+    await call({ soId: 'NSA-18402' });
+    const payload = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(payload.sender).toEqual({ name: 'Danny Ortiz · National Sports Apparel', email: 'noreply@nationalsportsapparel.com' });
+    expect(payload.replyTo.email).toBe('danny.ortiz@gmail.com');
+  });
+
+  test('falls back to noreply when Brevo rejects the rep as a sender', async () => {
+    global.fetch = jest.fn()
+      .mockImplementationOnce(async () => ({ ok: false, status: 400, json: async () => ({ code: 'invalid_parameter', message: 'sender email not valid' }) }))
+      .mockImplementationOnce(async () => ({ ok: true, status: 201, json: async () => ({ messageId: '<msg-2@brevo>' }) }));
+    const res = await call({ soId: 'NSA-18402' });
+    expect(res.status).toBe(200);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body).sender.email).toBe('danny@nationalsportsapparel.com');
+    expect(JSON.parse(global.fetch.mock.calls[1][1].body).sender.email).toBe('noreply@nationalsportsapparel.com');
+    expect(res.body.from).toBe('noreply@nationalsportsapparel.com');
+    expect(writes.find((w) => w.table === 'so_shipment_notices')).toBeTruthy();
+  });
+
+  test('a non-sender Brevo failure is not retried', async () => {
+    global.fetch = jest.fn(async () => ({ ok: false, status: 500, json: async () => ({ message: 'upstream down' }) }));
+    const res = await call({ soId: 'NSA-18402' });
+    expect(res.status).toBe(502);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
 });
