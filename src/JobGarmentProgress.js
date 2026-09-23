@@ -33,6 +33,20 @@ export function garmentProgress(job, order, rows) {
   }));
 }
 
+export function sizeProgressCell(qty, received, shipped) {
+  const total = Math.max(0, safeNum(qty));
+  const sent = Math.min(total, Math.max(0, safeNum(shipped)));
+  const arrived = Math.min(total, Math.max(sent, safeNum(received)));
+  const blue = total ? sent / total * 100 : 0;
+  const green = total ? arrived / total * 100 : 0;
+  const background = sent === total && total ? '#dbeafe' : arrived === total && !sent && total ? '#dcfce7'
+    : !arrived ? '#fef3c7' : `linear-gradient(90deg,#dbeafe 0%,#dbeafe ${blue}%,#dcfce7 ${blue}%,#dcfce7 ${green}%,#fef3c7 ${green}%,#fef3c7 100%)`;
+  return { background, color: sent ? '#1e40af' : arrived === total && total ? '#166534' : '#92400e',
+    label: sent ? (sent < total ? `${sent}/${total}` : `${total}`) : arrived && arrived < total ? `${arrived}/${total}` : `${total}`,
+    status: sent ? (sent === total ? 'Shipped' : 'Part shipped') : arrived === total && total ? 'Received' : arrived ? 'Part received' : 'Waiting',
+    title: `QTY ${total} · Received ${Math.min(total, Math.max(0, safeNum(received)))}/${total} · Shipped ${sent}/${total}` };
+}
+
 export default function JobGarmentProgress({ summary, onViewItem }) {
   if (!summary) return null;
   const sizes = Object.entries(summary.sizes).filter(([, n]) => n > 0);
@@ -40,7 +54,17 @@ export default function JobGarmentProgress({ summary, onViewItem }) {
   sizes.sort(([a], [b]) => (order.indexOf(a) < 0 ? 99 : order.indexOf(a)) - (order.indexOf(b) < 0 ? 99 : order.indexOf(b)));
   return <><div aria-label="Garment quantities and progress" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px 16px', padding: '12px 4px', fontSize: 12, borderBottom: '1px solid #e2e8f0' }}>
     <strong>QTY {summary.total}</strong>
-    <span style={{ flex: 1, minWidth: 120, color: '#475569' }}>{sizes.map(([s, n]) => s + ' ' + n).join(' · ')}</span>
+    <div style={{ flex: 1, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+      {sizes.map(([size, qty]) => {
+        const cell = sizeProgressCell(qty, summary.received[size], summary.shipped[size]);
+        return <div key={size} aria-label={`${size}: ${cell.title}. ${cell.status}`} title={`${size}: ${cell.title}. ${cell.status}`} style={{ width: 48, textAlign: 'center' }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: '#475569', marginBottom: 3 }}>{size}</div>
+          <div style={{ border: '1px solid #cbd5e1', borderRadius: 4, background: 'white', color: '#0f172a', fontSize: 14, fontWeight: 700, padding: '4px 0' }}>{qty}</div>
+          <div style={{ marginTop: 5, borderRadius: 4, padding: '3px 0', fontWeight: 700, background: cell.background, color: cell.color }}>{cell.label}</div>
+          <div style={{ fontSize: 8, marginTop: 3, color: '#475569', whiteSpace: 'nowrap' }}>{cell.status}</div>
+        </div>;
+      })}
+    </div>
     <span style={{ color: summary.receivedTotal >= summary.total ? '#166534' : '#92400e' }}>Received <strong>{summary.receivedTotal}/{summary.total}</strong></span>
     <span style={{ color: summary.shippedTotal >= summary.total ? '#166534' : '#475569' }}>Shipped <strong>{summary.shippedTotal}/{summary.total}</strong></span>
     {onViewItem && <button type="button" className="btn btn-sm btn-secondary" onClick={() => onViewItem([...summary.lines][0])} title="Open the garment line on this sales order">SO →</button>}
