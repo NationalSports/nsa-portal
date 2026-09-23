@@ -11,6 +11,12 @@ export const total = sizes => Object.values(sizes || {}).reduce((n, v) => n + qt
 export function safeUrl(value) {
   try { const u = new URL(value); return u.protocol === 'https:' && !u.username && !u.password ? u.href : ''; } catch { return ''; }
 }
+const colorText = value => Array.isArray(value) ? value.map(v=>typeof v==='object'?[v.code,v.name].filter(Boolean).join(' '):text(v)).join(', ') : text(value);
+export function artSpecs(art, decoration, colorWay) {
+ const position=decoration.position||placementById(decoration.placement).label;
+ const embroidery=(decoration.deco_type||decoration.type||art?.deco_type)==='embroidery';
+ return {dimensions:text(art?.art_sizes?.[position]||art?.art_sizes?.[decoration.placement]||art?.art_size||decoration.num_size||decoration.dtf_size),pantoneColors:embroidery?'':colorText(colorWay?.inks)||colorText(art?.ink_colors),threadColors:embroidery?(colorText(colorWay?.inks)||colorText(art?.thread_colors)):colorText(art?.thread_colors),stitches:qty(art?.stitches||decoration.stitches)||null};
+}
 const files = values => arr(values).map(f => ({ url: safeUrl(typeof f === 'string' ? f : f?.url), name: text(f?.name || 'Production file') })).filter(f => f.url);
 const sizeMap = value => Object.fromEntries(Object.entries(value || {}).filter(([s, n]) => !/^(drop_ship|unit_cost|_)/i.test(s) && qty(n) > 0).map(([s, n]) => [s, qty(n)]));
 
@@ -62,7 +68,7 @@ export function buildProductionPacket({ store, orders = [], lines = [], salesOrd
         const applicable = d.split_group ? sizeMap(d.split_sizes) : sizes;
         if (d.split_group && (!total(applicable) || Object.entries(applicable).some(([sz,n]) => n > (sizes[sz] || 0)))) issues.push(`${so.id} ${item.sku}: split decoration allocation is missing or exceeds garment sizes`);
         if (d.split_runs && arr(d.split_runs).length) issues.push(`${so.id} ${item.sku}: split decoration runs need quantity review`);
-        decorations.push({ id: did, garmentId: id, soId: so.id, sku: garment.sku, color: garment.color, name: text(art?.name || d.kind || 'Decoration'), kind: text(d.kind), method: text(d.deco_type || art?.deco_type || d.type || d.num_method || d.name_method), position: text(d.position), dimensions: text(art?.art_size || d.num_size || d.dtf_size), colors: d.reversible ? `Side A: ${arr(cw?.inks).join(', ')} / Side B: ${arr(cwB?.inks).join(', ')}` : arr(cw?.inks).join(', ') || text(art?.ink_colors || art?.thread_colors || d.print_color), decorator: text(d.vendor), units: personalizedUnits == null ? total(applicable) : personalizedUnits, sizes: applicable, approved, mocks, productionFiles: files(art?.prod_files), personalization: { font: text(d.num_font), roster, names: text(d.names_list) } });
+        decorations.push({ id: did, garmentId: id, soId: so.id, sku: garment.sku, color: garment.color, name: text(art?.name || d.kind || 'Decoration'), kind: text(d.kind), method: text(d.deco_type || art?.deco_type || d.type || d.num_method || d.name_method), position: text(d.position), dimensions: text(art?.art_size || d.num_size || d.dtf_size), colors: d.reversible ? `Side A: ${arr(cw?.inks).join(', ')} / Side B: ${arr(cwB?.inks).join(', ')}` : arr(cw?.inks).join(', ') || text(art?.ink_colors || art?.thread_colors || d.print_color), ...artSpecs(art,d,cw), decorator: text(d.vendor), units: personalizedUnits == null ? total(applicable) : personalizedUnits, sizes: applicable, approved, mocks, productionFiles: files(art?.prod_files), personalization: { font: text(d.num_font), roster, names: text(d.names_list) } });
       });
       garments.push(garment);
     });
@@ -91,7 +97,7 @@ export function buildProductionPacket({ store, orders = [], lines = [], salesOrd
       const mockItem={sku:g.sku,color:g.color};
       const mockDecos=ds.map(x=>({...x,kind:x.kind||'art',position:x.position||x.placement}));
       const slots=mockSlotKeys(garmentMockKey(mockItem),mockDecos).map(slot=>({...slot,artFile:arr(store.store_art).find(a=>a.id===(ds[slot.di]?.art_id||ds[slot.di]?.art_file_id)&&!a.archived)}));
-      decorations.push({id:did,garmentId:id,soId:'',unbatched:true,sku:g.sku,color:g.color,name:text(art?.name||d.kind||'Store decoration'),kind:text(d.kind||'art'),method:text(d.deco_type||d.type||art?.deco_type),position:text(d.position||pl.label),dimensions:text(art?.art_size||d.num_size||d.dtf_size),colors:arr(cw?.inks).join(', ')||text(d.print_color),decorator:'',units,sizes,approved:['approved','art_complete'].includes(art?.status),mocks:files(slots.filter(slot=>slot.di===di).flatMap(slot=>slotMockFiles(slot,slots,mockItem))),storePreview:preview,productionFiles:files(art?.prod_files),personalization:{font:text(d.num_font),roster:[],names:''}});
+      decorations.push({id:did,garmentId:id,soId:'',unbatched:true,sku:g.sku,color:g.color,name:text(art?.name||d.kind||'Store decoration'),kind:text(d.kind||'art'),method:text(d.deco_type||d.type||art?.deco_type),position:text(d.position||pl.label),dimensions:text(art?.art_size||d.num_size||d.dtf_size),colors:arr(cw?.inks).join(', ')||text(d.print_color),...artSpecs(art,d,cw),decorator:'',units,sizes,approved:['approved','art_complete'].includes(art?.status),mocks:files(slots.filter(slot=>slot.di===di).flatMap(slot=>slotMockFiles(slot,slots,mockItem))),storePreview:preview,productionFiles:files(art?.prod_files),personalization:{font:text(d.num_font),roster:[],names:''}});
     });
     garments.push(g);
   });

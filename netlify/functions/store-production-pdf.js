@@ -2,7 +2,7 @@ const QRCode = require('qrcode');
 const chromium = require('@sparticuz/chromium');
 const puppeteer = require('puppeteer-core');
 const { _internals: { authorize, loadCurrent, revisionFor } } = require('./store-production-packet');
-const { packetPrintHtml } = require('../../src/productionPacket/print');
+const { packetPrintHtml, packetImageUrls } = require('../../src/productionPacket/print');
 const { getTrustedSiteBaseUrl } = require('./_shared');
 exports.handler = async event => {
  const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
@@ -22,7 +22,7 @@ exports.handler = async event => {
   browser = await puppeteer.launch({ args:chromium.args, defaultViewport:chromium.defaultViewport, executablePath:await chromium.executablePath(), headless:chromium.headless });
   const page = await browser.newPage();
   await page.setJavaScriptEnabled(false);
-  const allowed = new Set(packet.decorations.flatMap(d=>d.mocks.map(f=>f.url)));
+  const allowed = new Set(packetImageUrls(packet));
   // No arbitrary HTML/URL input. Reject redirects and non-image network traffic.
   await page.setRequestInterception(true);
   page.on('request', req => {
