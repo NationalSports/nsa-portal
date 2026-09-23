@@ -1,6 +1,7 @@
 import React, {useCallback,useEffect,useRef,useState} from 'react';
 import {groupPlayerOrders,playerItemCsv} from './model';
 import {packetRequest} from './api';
+import {packetPrintHtml} from './print';
 import './packet.css';
 
 const brandColor=(value,fallback)=>/^#[0-9a-f]{6}$/i.test(value||'')?value:fallback;
@@ -39,7 +40,17 @@ export default function ProductionPacket({fixture=null}){
  const targetOptions=(noteScope==='garment'?p.garments:noteScope==='decoration'?p.decorations:noteScope==='player'?p.players:[]).filter(r=>r.soId===currentSo);
  const playerOrders=groupPlayerOrders(p.players,search);
  const exportItems=()=>{const url=URL.createObjectURL(new Blob(['\ufeff'+playerItemCsv(p.players)],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='production-player-items.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
- const download=async()=>{setBusy(true);setError('');try{const pdf=await packetRequest({...base(),...(shareUrl?{token:new URLSearchParams(new URL(shareUrl).hash.slice(1)).get('token')}:{}),revision_id:p.revisionId||undefined,fingerprint:p.fingerprint},'store-production-pdf');const bytes=Uint8Array.from(atob(pdf.content),c=>c.charCodeAt(0));const url=URL.createObjectURL(new Blob([bytes],{type:'application/pdf'}));const a=document.createElement('a');a.href=url;a.download=pdf.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch(e){setError(e.message);}finally{setBusy(false);}};
+ const download=async()=>{setBusy(true);setError('');let frame;try{
+  const [htmlModule,qrModule]=await Promise.all([import('html2pdf.js'),import('qrcode')]);
+  const html2pdf=htmlModule.default||htmlModule;
+  const qr=qrModule.toDataURL||qrModule.default?.toDataURL;
+  const onlineUrl=shareUrl||window.location.href;
+  const qrDataUrl=qr?await qr(onlineUrl,{width:240,margin:1}):'';
+  frame=document.createElement('iframe');frame.title='Production packet PDF renderer';frame.style.cssText='position:fixed;left:-10000px;top:0;width:816px;height:1056px;border:0;opacity:0;pointer-events:none';document.body.appendChild(frame);
+  await new Promise((resolve,reject)=>{frame.onload=resolve;frame.onerror=()=>reject(new Error('Could not prepare the PDF layout.'));frame.srcdoc=packetPrintHtml(p,{onlineUrl,qrDataUrl,draft:!historical,generatedAt:p.issuedAt||data.fetchedAt});});
+  const images=Array.from(frame.contentDocument.images);await Promise.all(images.map(image=>image.complete?Promise.resolve():new Promise(resolve=>{image.addEventListener('load',resolve,{once:true});image.addEventListener('error',resolve,{once:true});setTimeout(resolve,12000);}])));
+  await html2pdf().set({margin:0,filename:`production-packet-${p.revisionId||'draft'}.pdf`,image:{type:'jpeg',quality:.92},html2canvas:{scale:1.5,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'},pagebreak:{mode:['css','legacy'],avoid:['tr','.instruction','.deco']}}).from(frame.contentDocument.body).save();
+ }catch(e){setError(e.message||'Could not create the PDF.');}finally{if(frame)frame.remove();setBusy(false);}};
  const startMessage=(soId,targetId='')=>{setTab(4);setSo(soId);setTarget(targetId);setReply('');setText('');};
  const primary=brandColor(p.store.primaryColor,'#19333c'), accent=brandColor(p.store.accentColor,'#167b6e');
  return <main className="pp" style={{'--store-primary':primary,'--store-accent':accent,'--store-on-primary':brandText(primary)}}>
