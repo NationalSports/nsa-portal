@@ -1,4 +1,6 @@
 import React from 'react';
+import { pantoneHex, threadHex } from './constants';
+import { realInkLines } from './safeHelpers';
 import { garmentMockKey, safeItems, safeNum, safeJobs, safeArt, jobItemDecosOfKind, jobShippedSizes, shippedSizesByLine } from './safeHelpers';
 
 export function garmentProgress(job, order, rows) {
@@ -12,11 +14,16 @@ export function garmentProgress(job, order, rows) {
     const g = groups.get(key);
     ['art', 'numbers', 'names'].forEach(kind => jobItemDecosOfKind(row, item, kind).forEach(d => {
       const art = safeArt(order).find(a => a.id === d.art_file_id);
-      const colors = Object.values(art?.garment_colors?.[key] || {}).flat().filter(Boolean).join(', ') || art?.ink_colors || art?.thread_colors;
+      const garmentColors = realInkLines(Object.values(art?.garment_colors?.[key] || {}).flat().join('\n'));
+      const colorWays = art?.color_ways || [];
+      const selected = colorWays.find(cw => cw.id === d.color_way_id) || (!d.color_way_id && colorWays.length === 1 ? colorWays[0] : null);
+      const cwColors = realInkLines((selected?.inks || []).join('\n'));
+      const fallback = realInkLines(art?.deco_type === 'embroidery' ? art?.thread_colors || art?.ink_colors : art?.ink_colors || art?.thread_colors);
+      const colors = [...new Set(garmentColors.length ? garmentColors : cwColors.length ? cwColors : fallback)].join(', ');
       const spec = { name: art?.name || (kind === 'numbers' ? 'Numbers' : kind === 'names' ? 'Names' : 'Artwork'),
         method: (art?.deco_type || d.num_method || d.type || '').replace(/_/g, ' '),
         placement: d.position || '', size: art?.art_size || d.num_size || '', colors: colors || '',
-        colorLabel: art?.deco_type === 'embroidery' ? 'Thread colors' : 'Colors' };
+        colorLabel: art?.deco_type === 'embroidery' ? 'Thread colors' : 'Ink / Pantone colors' };
       g.specs.set(JSON.stringify(spec), spec);
     }));
     // A line can appear twice for two decorations, but it is one physical garment.
@@ -86,10 +93,22 @@ export function GarmentDecorationSpecs({ specs }) {
         <div style={{ fontSize: 13, fontWeight: 700, color: '#1e293b', overflowWrap: 'anywhere' }}>{spec.name}</div>
         {spec.method && <span style={{ display: 'inline-block', marginTop: 5, padding: '3px 8px', borderRadius: 4, background: '#eef2ff', color: '#4338ca', fontSize: 11, fontWeight: 600, textTransform: 'capitalize' }}>{spec.method}</span>}
       </div>
-      {[['Placement', spec.placement], ['Art size', spec.size], [spec.colorLabel, spec.colors]].filter(([,value]) => value !== '' && value != null).map(([label,value]) => <div key={label} style={{ maxWidth: '100%' }}>
+      {[['Placement', spec.placement], ['Art size', spec.size]].filter(([,value]) => value !== '' && value != null).map(([label,value]) => <div key={label} style={{ maxWidth: '100%' }}>
         <div style={{ fontSize: 10, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>{label}</div>
         <div style={{ fontSize: 12, fontWeight: 600, color: '#334155', overflowWrap: 'anywhere' }}>{value}</div>
       </div>)}
+      {realInkLines(spec.colors).length > 0 && <div style={{ flexBasis: '100%', minWidth: 0 }}>
+        <div style={{ fontSize: 10, fontWeight: 600, color: '#64748b', marginBottom: 5 }}>{spec.colorLabel}</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+          {realInkLines(spec.colors).map(color => {
+            const hex = spec.colorLabel === 'Thread colors' ? threadHex(color) || pantoneHex(color) : pantoneHex(color);
+            return <span key={color} title={hex ? `${color} — approximate screen color` : color} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, maxWidth: '100%', padding: '3px 7px', border: '1px solid #e2e8f0', borderRadius: 5, fontSize: 11, fontWeight: 600, color: '#334155', background: '#f8fafc' }}>
+              {hex && <span aria-hidden="true" style={{ width: 12, height: 12, flexShrink: 0, borderRadius: 3, border: '1px solid #cbd5e1', background: hex }} />}
+              <span style={{ overflowWrap: 'anywhere', minWidth: 0 }}>{color}</span>
+            </span>;
+          })}
+        </div>
+      </div>}
     </div>)}
   </section>;
 }

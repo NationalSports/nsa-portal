@@ -35,9 +35,32 @@ test('renders Sales Order-style size headers, quantity boxes, status tiles and a
 test('decoration specs are visible labeled fields, not collapsed text or invented units', () => {
   const html=renderToStaticMarkup(<GarmentDecorationSpecs specs={[{name:'SJM logo 3in',method:'embroidery',placement:'Left Chest',size:'3',colorLabel:'Thread colors',colors:'Navy, Red'}]}/>);
   expect(html).not.toContain('<details');
-  for(const text of ['SJM logo 3in','embroidery','Placement','Left Chest','Art size','Thread colors','Navy, Red']) expect(html).toContain(text);
+  for(const text of ['SJM logo 3in','embroidery','Placement','Left Chest','Art size','Thread colors','Navy','Red']) expect(html).toContain(text);
   expect(html).not.toContain('3 inches');
   expect(renderToStaticMarkup(<GarmentDecorationSpecs specs={[]}/>)).toBe('');
+});
+
+test('color chips retain codes, show known swatches and omit placeholder colors', () => {
+  const html=renderToStaticMarkup(<GarmentDecorationSpecs specs={[{name:'Logo',colors:'PMS 186 C, Custom XYZ, Color 1',colorLabel:'Ink / Pantone colors'}]}/>);
+  expect(html).toContain('PMS 186 C');
+  expect(html).toContain('approximate screen color');
+  expect(html).toContain('Custom XYZ');
+  expect(html).not.toContain('Custom XYZ — approximate');
+  expect(html).not.toContain('Color 1');
+});
+
+test('garment colors override selected colorway and selected colorway overrides generic colors', () => {
+  const item={sku:'P',color:'Navy',decorations:[{kind:'art',art_file_id:'a',color_way_id:'navy'}]};
+  const rows=[{item_idx:0,deco_idxs:[0],sizes:{M:1}}];
+  const job={id:'j',items:rows};
+  const art={id:'a',deco_type:'screen_print',ink_colors:'Color 1',color_ways:[{id:'navy',inks:['PMS 186 C']},{id:'white',inks:['Black']}]};
+  const order={items:[item],jobs:[job],art_files:[art]};
+  expect(garmentProgress(job,order,rows)[0].specs[0].colors).toBe('PMS 186 C');
+  art.garment_colors={'P|Navy':{front:['White']}};
+  expect(garmentProgress(job,order,rows)[0].specs[0].colors).toBe('White');
+  delete art.garment_colors;
+  delete item.decorations[0].color_way_id;
+  expect(garmentProgress(job,order,rows)[0].specs[0].colors).toBe('');
 });
 test('repeated garment lines deduplicate structured specs but retain distinct placements', () => {
   const item={sku:'P',color:'Navy',decorations:[{kind:'art',art_file_id:'a',position:'Left Chest'},{kind:'art',art_file_id:'a',position:'Back'}]};
