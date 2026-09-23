@@ -49,11 +49,11 @@ function decryptToken(value, env = process.env) {
   return Buffer.concat([decipher.update(Buffer.from(bodyText, 'base64url')), decipher.final()]).toString('utf8');
 }
 
-async function plaidRequest(path, payload, env = process.env) {
+async function plaidRequest(path, payload, env = process.env, timeoutMs = 18000) {
   const config = plaidConfig(env);
   if (!config.configured) throw new Error('Plaid is not configured for this portal.');
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 18000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(config.baseUrl + path, {
       method: 'POST', signal: controller.signal,
@@ -74,79 +74,74 @@ const merchantKey = value => String(value || '').toLowerCase().replace(/[^a-z0-9
 const cents = value => Math.round(Number(value) * 100);
 const db = result => { if (result.error) throw new Error(result.error.message); return result.data; };
 
-async function upsertAccounts(admin, connection, accessToken) {
-  const response = await plaidRequest('/accounts/get', { access_token: accessToken });
-  const rows = (response.accounts || []).filter(account => !account.balances?.iso_currency_code || account.balances.iso_currency_code === 'USD').map(account => ({
-    connection_id: connection.id, company_key: connection.company_key, provider_account_id: account.account_id,
-    name: account.name || account.official_name || 'Card account', official_name: account.official_name || null, mask: account.mask || null,
-    account_type: account.type, account_subtype: account.subtype || null, currency: account.balances?.iso_currency_code || 'USD',
-    current_balance_cents: account.balances?.current == null ? null : cents(account.balances.current),
-    available_balance_cents: account.balances?.available == null ? null : cents(account.balances.available), is_active: true,
-    updated_at: new Date().toISOString(),
-  }));
-  db(await admin.from('financial_card_accounts').update({ is_active: false, updated_at: new Date().toISOString() }).eq('connection_id', connection.id));
-  if (rows.length) db(await admin.from('financial_card_accounts').upsert(rows, { onConflict: 'provider_account_id' }));
-  return db(await admin.from('financial_card_accounts').select('*').eq('connection_id', connection.id));
+// Fetch a complete Plaid update before committing any transaction changes. A
+// pagination mutation restarts from the original cursor, never a partial cursor.
+async function collectTransactions(accessToken, initialCursor, deadline) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let cursor = initialCursor || undefined;
+    const changed = new Map(), removed = new Set();
+    const totals = { added: 0, modified: 0, removed: 0 };
+    try {
+      for (let page = 0; page < 100; page++) {
+        if (Date.now() > deadline) throw new Error('Card refresh is taking longer than expected. Retry refresh; no partial update was saved.');
+        const response = await plaidRequest('/transactions/sync', { access_token: accessToken, cursor, count: 500,
+          options: { include_personal_finance_category: true } }, process.env, Math.max(1, deadline - Date.now()));
+        for (const transaction of [...(response.added || []), ...(response.modified || [])]) {
+          changed.set(transaction.transaction_id, transaction); removed.delete(transaction.transaction_id);
+        }
+        for (const transaction of response.removed || []) {
+          removed.add(transaction.transaction_id); changed.delete(transaction.transaction_id);
+        }
+        totals.added += (response.added || []).length;
+        totals.modified += (response.modified || []).length;
+        totals.removed += (response.removed || []).length;
+        cursor = response.next_cursor;
+        if (!response.has_more) return { changed: [...changed.values()], removed: [...removed], cursor, totals };
+      }
+      throw new Error('Card history exceeds the refresh limit; no partial update was saved.');
+    } catch (error) {
+      if (error.code !== 'TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION' || attempt === 2) throw error;
+    }
+  }
 }
 
-async function syncConnection(admin, connection) {
-  if (connection.status === 'disconnected' || !connection.access_token_ciphertext) return { added: 0, modified: 0, removed: 0 };
-  const accessToken = decryptToken(connection.access_token_ciphertext);
+async function syncConnection(admin, connection, deadline = Date.now() + 20000) {
+  if (connection.status === 'disconnected' || !connection.access_token_ciphertext) return { skipped: true };
+  const lockId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const claimed = db(await admin.from('financial_card_connections').update({ sync_lock_id: lockId,
+    sync_locked_until: new Date(Date.now() + 120000).toISOString() }).eq('id', connection.id).neq('status', 'disconnected')
+    .or(`sync_locked_until.is.null,sync_locked_until.lt.${now}`).select('*').maybeSingle());
+  if (!claimed) return { skipped: true };
   try {
-    const accounts = await upsertAccounts(admin, connection, accessToken);
-    const accountByProvider = new Map(accounts.map(account => [account.provider_account_id, account]));
-    const rules = db(await admin.from('financial_expense_rules').select('*').eq('company_key', connection.company_key));
-    const ruleByMerchant = new Map(rules.map(rule => [rule.merchant_key, rule]));
-    let cursor = connection.sync_cursor || undefined;
-    let hasMore = true;
-    const totals = { added: 0, modified: 0, removed: 0 };
-    // Save the intermediate cursor after five pages so one connection cannot exhaust
-    // the synchronous function timeout. A later manual or scheduled sync continues it.
-    for (let page = 0; hasMore && page < 5; page++) {
-      const response = await plaidRequest('/transactions/sync', { access_token: accessToken, cursor, count: 500, options: { include_personal_finance_category: true } });
-      const changed = [...(response.added || []), ...(response.modified || [])];
-      const ids = changed.map(transaction => transaction.transaction_id);
-      let existing = [];
-      if (ids.length) existing = db(await admin.from('financial_card_transactions').select('*').in('provider_transaction_id', ids));
-      const existingById = new Map(existing.map(row => [row.provider_transaction_id, row]));
-      const rows = changed.map(transaction => {
-        const account = accountByProvider.get(transaction.account_id);
-        if (!account) return null;
-        const old = existingById.get(transaction.transaction_id);
-        const label = transaction.merchant_name || transaction.name;
-        const rule = !old ? ruleByMerchant.get(merchantKey(label)) : null;
-        if (cents(transaction.amount) === 0) return null;
-        return {
-          id: old?.id || crypto.randomUUID(), connection_id: connection.id, account_id: account.id, company_key: connection.company_key,
-          provider_transaction_id: transaction.transaction_id, pending_transaction_id: transaction.pending_transaction_id || null,
-          transaction_date: transaction.date, authorized_date: transaction.authorized_date || null,
-          merchant_name: transaction.merchant_name || null, description: transaction.name || transaction.merchant_name || 'Card transaction',
-          amount_cents: cents(transaction.amount), currency: transaction.iso_currency_code || 'USD', pending: !!transaction.pending,
-          provider_removed: false, category_primary: transaction.personal_finance_category?.primary || null,
-          category_detailed: transaction.personal_finance_category?.detailed || null,
-          status: old?.status || (rule ? 'ready' : 'new'), expense_account_id: old?.expense_account_id || rule?.expense_account_id || null,
-          expense_account_number: old?.expense_account_number || rule?.expense_account_number || null,
-          expense_account_name: old?.expense_account_name || rule?.expense_account_name || null,
-          purpose: old?.purpose || rule?.purpose || null, receipt_required: old?.receipt_required ?? true,
-          financial_expense_id: old?.financial_expense_id || null, created_at: old?.created_at || new Date().toISOString(), updated_at: new Date().toISOString(),
-        };
-      }).filter(Boolean);
-      if (rows.length) db(await admin.from('financial_card_transactions').upsert(rows, { onConflict: 'provider_transaction_id' }));
-      for (const removed of response.removed || []) {
-        const prior = db(await admin.from('financial_card_transactions').select('id,status').eq('provider_transaction_id', removed.transaction_id).maybeSingle());
-        if (prior) db(await admin.from('financial_card_transactions').update({ provider_removed: true,
-          status: ['submitted', 'posted'].includes(prior.status) ? prior.status : 'removed', updated_at: new Date().toISOString() }).eq('id', prior.id));
-      }
-      totals.added += (response.added || []).length; totals.modified += (response.modified || []).length; totals.removed += (response.removed || []).length;
-      cursor = response.next_cursor; hasMore = !!response.has_more;
-    }
-    db(await admin.from('financial_card_connections').update({ sync_cursor: cursor || null, status: 'active', last_error: null,
-      last_synced_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', connection.id));
-    return totals;
+    const accessToken = decryptToken(claimed.access_token_ciphertext);
+    if (Date.now() >= deadline) throw new Error('Refresh time limit reached. Retry refresh.');
+    const accountResponse = await plaidRequest('/accounts/get', { access_token: accessToken }, process.env, Math.max(1, deadline - Date.now()));
+    const accounts = (accountResponse.accounts || [])
+      .filter(account => account.balances?.iso_currency_code === 'USD' && ['credit', 'depository'].includes(account.type))
+      .map(account => ({ account_id: account.account_id, name: account.name || account.official_name || 'Card account',
+        official_name: account.official_name || null, mask: account.mask || null, type: account.type, subtype: account.subtype || null,
+        current_balance_cents: account.balances.current == null ? null : cents(account.balances.current),
+        available_balance_cents: account.balances.available == null ? null : cents(account.balances.available) }));
+    const update = await collectTransactions(accessToken, claimed.sync_cursor, deadline);
+    const changes = update.changed.filter(transaction => cents(transaction.amount) !== 0).map(transaction => ({
+      transaction_id: transaction.transaction_id, account_id: transaction.account_id, pending_transaction_id: transaction.pending_transaction_id || null,
+      date: transaction.date, authorized_date: transaction.authorized_date || null, merchant_name: transaction.merchant_name || null,
+      description: transaction.name || transaction.merchant_name || 'Card transaction', amount_cents: cents(transaction.amount),
+      currency: transaction.iso_currency_code || 'UNKNOWN', pending: !!transaction.pending,
+      category_primary: transaction.personal_finance_category?.primary || null, category_detailed: transaction.personal_finance_category?.detailed || null,
+      merchant_key: merchantKey(transaction.merchant_name || transaction.name),
+    }));
+    db(await admin.rpc('financial_apply_card_sync', { p_connection_id: claimed.id, p_lock_id: lockId, p_accounts: accounts,
+      p_changes: changes, p_removed: [...update.removed, ...update.changed.filter(transaction => cents(transaction.amount) === 0).map(transaction => transaction.transaction_id)],
+      p_cursor: update.cursor || null }));
+    return update.totals;
   } catch (error) {
-    await admin.from('financial_card_connections').update({ status: 'error', last_error: String(error.message).slice(0, 1000), updated_at: new Date().toISOString() }).eq('id', connection.id);
+    await admin.from('financial_card_connections').update({ status: 'error', last_error: String(error.message).slice(0, 1000),
+      sync_lock_id: null, sync_locked_until: null, updated_at: new Date().toISOString() }).eq('id', claimed.id)
+      .eq('sync_lock_id', lockId).neq('status', 'disconnected');
     throw error;
   }
 }
 
-module.exports = { plaidConfig, plaidRequest, encryptToken, decryptToken, merchantKey, syncConnection };
+module.exports = { plaidConfig, plaidRequest, encryptToken, decryptToken, merchantKey, syncConnection, collectTransactions };

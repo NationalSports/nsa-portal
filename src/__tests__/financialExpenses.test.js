@@ -61,8 +61,8 @@ function fakeAdmin(initial, recurringTemplates = []) {
   };
   return admin;
 }
-function fakeCardAdmin(transaction, cardAccount) {
-  const admin = fakeAdmin(null);
+function fakeCardAdmin(transaction, cardAccount, initial = null) {
+  const admin = fakeAdmin(initial);
   const baseFrom = admin.from;
   admin.from = jest.fn(table => {
     if (!['financial_card_transactions', 'financial_card_accounts'].includes(table)) return baseFrom(table);
@@ -152,10 +152,10 @@ test('options return live QuickBooks account numbers with each applicable accoun
     expect.objectContaining({ Id: '2', AcctNum: '10100', Name: 'Checking', AccountType: 'Bank' }),
   ]);
 });
-test('submits once without touching QBO transaction writes', async () => {
+test('submits actual form payload with blank source IDs once without QBO transaction writes', async () => {
   const admin = fakeAdmin(null); fakeQbo();
   verifyQBOUser.mockResolvedValue({ ok: true, teamMemberId: owner, admin });
-  const first = await handler(event({ ...input, action: 'submit' }));
+  const first = await handler(event({ ...input, action: 'submit', recurring_template_id: '', recurring_month: '', card_transaction_id: '' }));
   expect(first.statusCode).toBe(200);
   expect(admin.row()).toMatchObject({ submitted_by: owner, amount_cents: 12495, realm_id: '123',
     expense_account_number: '62000', expense_account_name: 'Travel', payment_account_number: '10100', payment_account_name: 'Checking' });
@@ -170,7 +170,7 @@ test('records a variable monthly T-Mobile occurrence with server-owned schedule 
   const admin = fakeAdmin(null, [template]); fakeQbo();
   verifyQBOUser.mockResolvedValue({ ok: true, teamMemberId: owner, admin });
   const response = await handler(event({ ...input, action: 'submit', merchant: 'Forged merchant', purpose: 'Forged purpose', amount: '502.63',
-    recurring_template_id: template.id, recurring_month: new Date().toISOString().slice(0, 7) + '-01' }));
+    recurring_template_id: template.id, recurring_month: new Date().toISOString().slice(0, 7) + '-01', card_transaction_id: '' }));
   expect(response.statusCode).toBe(200);
   expect(admin.row()).toMatchObject({ merchant: 'T-Mobile', purpose: template.purpose, amount_cents: 50263,
     recurring_template_id: template.id, recurring_month: new Date().toISOString().slice(0, 7) + '-01' });
@@ -189,16 +189,52 @@ test('keeps vehicle loan reminders out of the one-line QBO expense flow', async 
 test('uses immutable cleared card data and its verified QBO mappings for an imported expense', async () => {
   const transaction = { id: '22222222-2222-4222-8222-222222222222', company_key: 'national', account_id: '11111111-1111-4111-8111-111111111111',
     merchant_name: 'Mobile Carrier', description: 'MOBILE CARRIER', transaction_date: '2026-09-20', amount_cents: 4852,
-    status: 'ready', pending: false, provider_removed: false, expense_account_id: '1', purpose: 'Monthly mobile service' };
-  const cardAccount = { id: transaction.account_id, company_key: 'national', qbo_payment_account_id: '2' };
+    status: 'ready', currency: 'USD', expense_realm_id: '123', pending: false, provider_removed: false, expense_account_id: '1', purpose: 'Monthly mobile service' };
+  const cardAccount = { id: transaction.account_id, company_key: 'national', qbo_payment_account_id: '2', qbo_realm_id: '123' };
   const admin = fakeCardAdmin(transaction, cardAccount); fakeQbo();
   verifyQBOUser.mockResolvedValue({ ok: true, teamMemberId: owner, admin });
   const response = await handler(event({ ...input, action: 'submit', merchant: 'Forged', expense_date: '2026-08-01', amount: '1.00', purpose: 'Forged',
-    expense_account_id: '999', payment_account_id: '2', card_transaction_id: transaction.id }));
+    expense_account_id: '999', payment_account_id: '2', card_transaction_id: transaction.id, recurring_template_id: '', recurring_month: '' }));
   expect(response.statusCode).toBe(200);
   expect(admin.row()).toMatchObject({ merchant: 'Mobile Carrier', expense_date: '2026-09-20', amount_cents: 4852,
     purpose: 'Monthly mobile service', expense_account_id: '1', payment_account_id: '2', card_transaction_id: transaction.id });
-  expect(admin.cardTransaction()).toMatchObject({ status: 'submitted', financial_expense_id: id });
+  // The actual PostgreSQL trigger is covered by check-financial-expenses-schema.
+  transaction.status = 'submitted'; transaction.financial_expense_id = id;
+  expect((await handler(event({ ...input, action: 'submit', card_transaction_id: transaction.id }))).statusCode).toBe(200);
+});
+
+test('retry returns a cancelled submission without resurrecting its card or revalidating an old month', async () => {
+  const row = { ...makeRow(), status: 'cancelled', card_transaction_id: '22222222-2222-4222-8222-222222222222' };
+  const admin = fakeAdmin(row); verifyQBOUser.mockResolvedValue({ ok: true, teamMemberId: owner, admin });
+  const response = await handler(event({ ...input, action: 'submit', recurring_month: '2020-01-01' }));
+  expect(JSON.parse(response.body)).toMatchObject({ alreadySubmitted: true, expense: { status: 'cancelled' } });
+  expect(admin.from).toHaveBeenCalledTimes(1); expect(qbRequest).not.toHaveBeenCalled();
+});
+
+test.each(['999', null])('rejects imported mapping from an unverified or different QBO realm %s', async realm => {
+  const transaction = { id: '22222222-2222-4222-8222-222222222222', company_key: 'national', account_id: '11111111-1111-4111-8111-111111111111',
+    merchant_name: 'Airline', transaction_date: input.expense_date, amount_cents: 12495, status: 'ready', currency: 'USD',
+    expense_realm_id: realm, pending: false, provider_removed: false, expense_account_id: '1', purpose: input.purpose };
+  const admin = fakeCardAdmin(transaction, { id: transaction.account_id, company_key: 'national', qbo_payment_account_id: '2', qbo_realm_id: '123' });
+  verifyQBOUser.mockResolvedValue({ ok: true, teamMemberId: owner, admin });
+  const response = await handler(event({ ...input, action: 'submit', card_transaction_id: transaction.id }));
+  expect(response.statusCode).toBe(400); expect(JSON.parse(response.body).error).toMatch(/company changed/i);
+  expect(admin.row()).toBeFalsy(); expect(qbRequest).not.toHaveBeenCalled();
+});
+
+test('changed provider amount blocks a fresh post while preserving recovery of an earlier QBO success', async () => {
+  const transaction = { id: '22222222-2222-4222-8222-222222222222', company_key: 'national', currency: 'USD',
+    transaction_date: input.expense_date, amount_cents: 15000, merchant_name: input.merchant };
+  const row = { ...makeRow(), card_transaction_id: transaction.id };
+  let admin = fakeCardAdmin(transaction, {}, row);
+  verifyQBOUser.mockResolvedValue({ ok: true, teamMemberId: owner, admin }); fakeQbo();
+  expect((await handler(event({ action: 'post', id }))).statusCode).toBe(400);
+  expect(admin.row().status).toBe('submitted'); expect(qbRequest).not.toHaveBeenCalled();
+  admin = fakeCardAdmin(transaction, {}, { ...row, status: 'error' });
+  verifyQBOUser.mockResolvedValue({ ok: true, teamMemberId: owner, admin });
+  fakeQbo().setRemote({ ...row.qb_payload, Id: '900', TotalAmt: 124.95 });
+  expect((await handler(event({ action: 'post', id }))).statusCode).toBe(200);
+  expect(admin.row().status).toBe('posted'); expect(qbRequest.mock.calls.filter(call => call[0] === 'POST')).toHaveLength(0);
 });
 test('cannot post another business’s expense or to a reconnected realm', async () => {
   const admin = fakeAdmin(makeRow()); verifyQBOUser.mockResolvedValue({ ok: true, teamMemberId: owner, admin }); fakeQbo();

@@ -15,9 +15,9 @@ The card feed uses Plaid Link and Transactions Sync. Cardholders authenticate in
 Available workflow:
 
 - Connect multiple card accounts to National or Methodic and map each one to a verified live QBO bank/credit-card account.
-- Refresh manually or through the six-hour Netlify sweep. Pending charges remain read-only until they clear; provider modifications and removals are reconciled by the sync cursor.
+- Refresh manually or through the six-hour Netlify sweep. Each invocation handles up to three oldest connections concurrently; additional connections wait for the next sweep or refresh. Pending charges remain read-only until they clear.
 - Review a monthly inbox, apply a verified QBO expense/COGS account and business purpose, optionally remember the merchant rule, flag receipt requirements, or ignore a non-business charge.
-- View totals for uncategorized, ready, submitted, posted, and missing-receipt transactions; group spending by QBO account; export the month to CSV.
+- View totals for uncategorized, ready, submitted, posted, and missing-receipt transactions; filter the inbox by status, group spending by QBO account, and export the month to CSV. Gross spending counts cleared positive USD charges only; refunds, pending authorizations, ignored and removed charges are excluded. Reports paginate through the entire month rather than stopping at the API's default row cap; exports escape spreadsheet formulas in source text.
 - Prepare a cleared charge in the existing expense form. Provider merchant/date/amount, the merchant-rule category, and the mapped card account are revalidated server-side. The user can add the receipt, then use the existing explicit QBO review/post action. Database uniqueness prevents the same imported transaction from producing two active expense submissions.
 
 This is the card-import, categorization, receipt-control, report, and QBO-posting portion of an Expensify replacement. It does not yet include receipt OCR/email ingestion, mileage/per-diem, employee reimbursements, card issuing, or multi-level approval policies.
@@ -48,9 +48,13 @@ Use a dedicated production encryption key and retain it: rotating it requires de
 
 Submissions use a client-generated UUID, with same-ID retries returning the stored record. Posting claims use a conditional database update; active claims cannot be reused for two minutes. A fixed QBO payload, stable `requestid`, deterministic document number, and remote identity/amount/account verification recover from an upstream success followed by a lost local acknowledgement. Conflicting or subsequently edited remote records block automatic linking. The form freezes ambiguous failed submissions for retry while it remains mounted; after navigating away, inspect the queue before re-entering an expense.
 
+Card sync acquires a two-minute connection lease, fetches the complete provider update (restarting the original cursor on a pagination mutation), then commits accounts, transactions, removals and cursor in one service-only database transaction. Timeout or malformed data preserves the previous complete update. Provider updates cannot overwrite user categories, QBO mappings, or expense links. Insert, cancellation and posting update the card inbox atomically through database triggers. Card and category mappings pin the QBO realm; older unpinned mappings require remapping. Changed/removed source charges are flagged for reconciliation and cannot initiate a fresh QBO write, while recovery of an already-written QBO record still works.
+
+The provider and QBO flows have automated simulation coverage and isolated PostgreSQL checks. A real institution login, OAuth return, sandbox history import, and end-to-end QBO posting still need deployment validation after provider configuration. Linking the same physical card a second time under a different provider connection is not automatically deduplicated, and existing QBO bank-feed transactions are not automatically matched.
+
 ## Rollout
 
-1. Apply `supabase/migrations/20260908012527_financial_expenses.sql` and `supabase/migrations/20260922090000_financial_card_feed.sql` to the intended portal database before enabling the deployed endpoints.
+1. Apply `supabase/migrations/20260908012527_financial_expenses.sql`, `supabase/migrations/20260922090000_financial_card_feed.sql`, and `supabase/migrations/20260923033522_harden_financial_card_feed.sql` in order to the intended portal database before enabling the deployed endpoints.
 2. Configure the server-only Plaid variables above, then deploy the frontend and Netlify functions together. No new production package is required; the existing QuickBooks OAuth connections continue to supply QBO credentials.
 3. Verify real sign-in for an allowed Financials owner, account loading in each business, private receipt upload/read, and one approved expense in QBO before routine use. No live accounting transaction was created during development.
 

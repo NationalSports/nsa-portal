@@ -90,8 +90,20 @@ exports.handler = async (event) => {
       return reply(200, { vendors: vendors.filter(v => !v.CurrencyRef?.value || v.CurrencyRef.value === 'USD').map(v => ({ Id: v.Id, DisplayName: v.DisplayName })) });
     }
     if (body.action === 'submit') {
+      // Idempotent recovery precedes mutable schedule/card validation. The card
+      // may already be submitted, or the calendar month may have rolled over.
+      check(UUID.test(body.id || ''), 'A valid submission ID is required.');
+      const existing = db(await admin.from(TABLE).select(FIELDS).eq('id', body.id).maybeSingle());
+      if (existing) {
+        check(existing.company_key === company && existing.submitted_by === auth.teamMemberId, 'Submission ID already belongs to another expense.');
+        return reply(200, { expense: existing, alreadySubmitted: true });
+      }
+      for (const field of ['recurring_template_id', 'recurring_month', 'card_transaction_id']) {
+        if (body[field] === '') body[field] = null;
+      }
       let recurringTemplate = null;
       let cardTransaction = null;
+      let cardAccount = null;
       if (body.recurring_template_id != null || body.recurring_month != null) {
         check(UUID.test(body.recurring_template_id || ''), 'Choose a valid monthly expense.');
         check(body.recurring_month === currentMonth(), 'This monthly expense can only be recorded for the current month.');
@@ -106,9 +118,9 @@ exports.handler = async (event) => {
         check(!recurringTemplate && UUID.test(body.card_transaction_id || ''), 'Choose a valid imported card transaction.');
         cardTransaction = db(await admin.from('financial_card_transactions').select('*').eq('id', body.card_transaction_id)
           .eq('company_key', company).maybeSingle());
-        check(cardTransaction && cardTransaction.status === 'ready' && !cardTransaction.pending && !cardTransaction.provider_removed && cardTransaction.amount_cents > 0,
+        check(cardTransaction && cardTransaction.status === 'ready' && !cardTransaction.pending && !cardTransaction.provider_removed && cardTransaction.amount_cents > 0 && cardTransaction.currency === 'USD',
           'This card transaction must be cleared and categorized before it can be submitted.');
-        const cardAccount = db(await admin.from('financial_card_accounts').select('*').eq('id', cardTransaction.account_id).eq('company_key', company).maybeSingle());
+        cardAccount = db(await admin.from('financial_card_accounts').select('*').eq('id', cardTransaction.account_id).eq('company_key', company).maybeSingle());
         check(cardAccount?.qbo_payment_account_id, 'Map this connected card to its QuickBooks payment account first.');
         check(String(body.payment_account_id || '') === String(cardAccount.qbo_payment_account_id), 'The payment account must match the connected card’s verified QuickBooks mapping.');
         body = { ...body, merchant: cardTransaction.merchant_name || cardTransaction.description,
@@ -121,16 +133,11 @@ exports.handler = async (event) => {
         row.recurring_month = body.recurring_month;
       }
       if (cardTransaction) row.card_transaction_id = cardTransaction.id;
-      const existing = db(await admin.from(TABLE).select(FIELDS).eq('id', row.id).maybeSingle());
-      if (existing) {
-        check(existing.company_key === company && existing.submitted_by === auth.teamMemberId, 'Submission ID already belongs to another expense.');
-        if (existing.card_transaction_id) db(await admin.from('financial_card_transactions').update({ status: existing.status === 'posted' ? 'posted' : 'submitted',
-          financial_expense_id: existing.id, updated_at: new Date().toISOString() }).eq('id', existing.card_transaction_id));
-        return reply(200, { expense: existing, alreadySubmitted: true });
-      }
       const receipt = receiptBuffer(body.receipt);
       const qbo = await connection(admin, company);
       check(body.realm_id === qbo.realm_id, 'The QuickBooks connection changed. Reload account choices before submitting.');
+      if (cardTransaction) check(cardAccount.qbo_realm_id === qbo.realm_id && cardTransaction.expense_realm_id === qbo.realm_id,
+        'The QuickBooks company changed. Remap the card and save its expense category again.');
       const mapping = await getMappings(qbo, row);
       row.realm_id = qbo.realm_id;
       row.submitted_by = auth.teamMemberId;
@@ -149,6 +156,9 @@ exports.handler = async (event) => {
         if (upload.error && String(upload.error.statusCode) !== '409' && !/already exists|duplicate/i.test(upload.error.message || '')) throw new Error(upload.error.message);
       }
       const inserted = await admin.from(TABLE).insert(row).select(FIELDS).single();
+      // A source guard rejected the insert before any expense committed, so the
+      // UI can safely unfreeze the form instead of treating it as an ambiguous save.
+      if (inserted.error?.code === 'P0001') check(false, inserted.error.message);
       if (inserted.error?.code === '23505') {
         const prior = db(await admin.from(TABLE).select(FIELDS).eq('id', row.id).maybeSingle());
         if (prior) {
@@ -160,9 +170,7 @@ exports.handler = async (event) => {
         throw new Error('Expense submission conflict.');
       }
       const savedExpense = db(inserted);
-      if (cardTransaction) db(await admin.from('financial_card_transactions').update({ status: 'submitted', financial_expense_id: savedExpense.id,
-        expense_account_id: savedExpense.expense_account_id, expense_account_number: savedExpense.expense_account_number,
-        expense_account_name: savedExpense.expense_account_name, updated_at: new Date().toISOString() }).eq('id', cardTransaction.id).eq('status', 'ready'));
+      // The database trigger links the card in the same transaction as insert.
       return reply(200, { expense: savedExpense });
     }
     check(['receipt', 'post', 'cancel'].includes(body.action), 'Unknown expense action.');
@@ -178,12 +186,18 @@ exports.handler = async (event) => {
       const cancelled = db(await admin.from(TABLE).update({ status: 'cancelled', updated_at: new Date().toISOString() })
         .eq('id', row.id).eq('status', 'submitted').select(FIELDS).maybeSingle());
       if (!cancelled) return reply(409, { error: 'Only submissions that have never been posted can be cancelled. Reconcile any posting attempt first.' });
-      if (cancelled.card_transaction_id) db(await admin.from('financial_card_transactions').update({ status: 'ready', financial_expense_id: null,
-        updated_at: new Date().toISOString() }).eq('id', cancelled.card_transaction_id).eq('financial_expense_id', cancelled.id));
       return reply(200, { expense: cancelled });
     }
     check(row.status !== 'cancelled', 'This submission was cancelled.');
     if (row.status === 'posted') return reply(200, { expense: row, alreadyPosted: true });
+    const verifyCardSource = async () => {
+      if (!row.card_transaction_id) return;
+      const source = db(await admin.from('financial_card_transactions').select('*').eq('id', row.card_transaction_id).eq('company_key', company).maybeSingle());
+      check(source && !source.pending && !source.provider_removed && source.currency === 'USD' && source.amount_cents === row.amount_cents
+        && source.transaction_date === row.expense_date && (source.merchant_name || source.description) === row.merchant,
+      'The imported card transaction changed or was removed. Review it before posting; cancel an unposted submission to prepare it again.');
+    };
+    if (row.status === 'submitted') await verifyCardSource();
     const qbo = await connection(admin, company);
     check(qbo.realm_id === row.realm_id, 'This expense belongs to a different QuickBooks company connection. Restore that connection before posting.');
     // Compare-and-set claim; timed-out invocations can be recovered after two minutes.
@@ -201,6 +215,7 @@ exports.handler = async (event) => {
       check(found.length === 1 && matchesPosting(found[0], row.qb_payload), 'A conflicting QuickBooks transaction exists. Review it before retrying.');
       entity = found[0];
     } else {
+      await verifyCardSource();
       await getMappings(qbo, row);
       const result = await qbo.request('POST', `/${row.qb_entity_type.toLowerCase()}?requestid=${row.id}`, row.qb_payload);
       entity = result[row.qb_entity_type];
@@ -209,8 +224,6 @@ exports.handler = async (event) => {
     const saved = db(await admin.from(TABLE).update({ status: 'posted', qb_entity_id: String(entity.Id),
       posted_at: new Date().toISOString(), posted_by: auth.teamMemberId, updated_at: new Date().toISOString(), last_error: null })
       .eq('id', row.id).eq('status', 'posting').select(FIELDS).single());
-    if (saved.card_transaction_id) db(await admin.from('financial_card_transactions').update({ status: 'posted', updated_at: new Date().toISOString() })
-      .eq('id', saved.card_transaction_id).eq('financial_expense_id', saved.id));
     return reply(200, { expense: saved });
   } catch (error) {
     if (claimedId && admin) {

@@ -106,6 +106,7 @@ export default function ExpensesWorkspace() {
     if (fileInput.current) fileInput.current.value = '';
   };
   const chooseRecurring = item => {
+    if (pendingSubmission.current) return;
     setForm({ ...freshForm(), merchant: item.merchant, amount: item.default_amount_cents == null ? '' : (item.default_amount_cents / 100).toFixed(2),
       purpose: item.purpose, payment_kind: item.payment_kind, recurring_template_id: item.id, recurring_month: item.month });
     setReceipt(null); setVendors([]); setVendorSearch(''); setVendorNote(''); pendingSubmission.current = null;
@@ -113,6 +114,7 @@ export default function ExpensesWorkspace() {
     requestAnimationFrame(() => { formPanel.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }); formPanel.current?.querySelector('select')?.focus(); });
   };
   const chooseCardTransaction = transaction => {
+    if (pendingSubmission.current) return;
     setForm({ ...freshForm(), merchant: transaction.merchant_name || transaction.description, expense_date: transaction.transaction_date,
       amount: (transaction.amount_cents / 100).toFixed(2), purpose: transaction.purpose || '', payment_kind: 'business',
       expense_account_id: transaction.expense_account_id || '', payment_account_id: transaction.account?.qbo_payment_account_id || '',
@@ -168,7 +170,8 @@ export default function ExpensesWorkspace() {
       <div><span>Personal submissions</span><strong>{money(rows.filter(r => r.payment_kind === 'personal' && r.status !== 'cancelled').reduce((sum, r) => sum + r.amount_cents, 0))}</strong><small>Payment status is managed in QuickBooks</small></div>
     </div>
     <p className="expense-muted">Totals cover {rows.length} loaded submissions{nextOffset !== null ? '; load more below to include older expenses' : ''}.</p>
-    <CardFeedPanel company={company} options={options} onPrepare={chooseCardTransaction} refreshKey={cardRefreshKey} />
+    <CardFeedPanel key={company} company={company} options={options} onCompanyChange={setCompany} onPrepare={chooseCardTransaction}
+      disablePrepare={!!busy || retrySubmission} refreshKey={cardRefreshKey} />
     <div className="expense-panel expense-recurring-panel">
       <div className="expense-heading"><div><h3>Monthly expenses</h3><p>Each schedule appears once per month for review before anything is posted to QuickBooks.</p></div><span className="expense-month">{monthLabel}</span></div>
       {!loading && !recurring.length && <p className="expense-muted">No monthly expenses are scheduled for this business.</p>}
@@ -182,7 +185,7 @@ export default function ExpensesWorkspace() {
             <p className="expense-muted">The bill amount can change each month. Enter the current statement total and choose the live QBO account numbers.</p>}
           {occurrence ? <button type="button" disabled={!!busy} onClick={() => setReview(occurrence)}>View {monthLabel} entry</button> : item.requires_accounting_split ?
             <button type="button" disabled title="Principal and interest amounts are required before this can be posted safely.">Record split in QuickBooks</button> :
-            <button type="button" className="expense-primary" disabled={!!busy || !options} onClick={() => chooseRecurring(item)}>Record {monthLabel}</button>}
+            <button type="button" className="expense-primary" disabled={!!busy || retrySubmission || !options} onClick={() => chooseRecurring(item)}>Record {monthLabel}</button>}
         </article>;
       })}</div>
     </div>
@@ -263,6 +266,7 @@ export default function ExpensesWorkspace() {
           const result = await expenseRequest({ action: 'cancel', company, id: review.id });
           setRows(prev => prev.map(r => r.id === result.expense.id ? result.expense : r)); setReview(null);
           if (result.expense.recurring_template_id) setRecurring(prev => prev.map(item => item.id === result.expense.recurring_template_id ? { ...item, current_expense: null } : item));
+          if (result.expense.card_transaction_id) setCardRefreshKey(value => value + 1);
           setNote('Submission cancelled. Enter a new expense with the corrected details.');
         })}>Cancel submission</button></p>}
         {error && <p className="expense-error-text" role="alert">{error}</p>}
@@ -270,6 +274,7 @@ export default function ExpensesWorkspace() {
           const result = await expenseRequest({ action: 'post', company, id: review.id });
           setRows(prev => prev.map(r => r.id === result.expense.id ? result.expense : r)); setReview(null);
           if (result.expense.recurring_template_id) setRecurring(prev => prev.map(item => item.id === result.expense.recurring_template_id ? { ...item, current_expense: result.expense } : item));
+          if (result.expense.card_transaction_id) setCardRefreshKey(value => value + 1);
           setNote('Posted to QuickBooks. ' + (review.payment_kind === 'personal' ? 'The reimbursement bill is ready for payment there.' : 'The expense is recorded against the selected account.'));
         })}>{busy === 'post' ? 'Posting…' : 'Post to QuickBooks'}</button>}</div>
       </div>
