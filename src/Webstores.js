@@ -1,3 +1,4 @@
+import { attachStoreGarmentMocks } from './lib/storeGarmentMocks';
 /* eslint-disable */
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
@@ -3846,7 +3847,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const pids = [...new Set(bLines.map((i) => i.product_id).filter(Boolean))];
     const pinfo = {};
     if (pids.length) {
-      const { data } = await supabase.from('products').select('id,sku,name,brand,color,nsa_cost,retail_price,vendor_id').in('id', pids);
+      const { data } = await supabase.from('products').select('id,sku,name,brand,color,nsa_cost,retail_price,vendor_id,image_front_url,image_back_url').in('id', pids);
       (data || []).forEach((p) => { pinfo[p.id] = p; });
     }
     // Pull every substitute SKU's product candidates too. A SKU can exist under
@@ -3858,7 +3859,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     }).filter(Boolean))];
     const candidatesBySku = {};
     if (overrideSkus.length) {
-      const { data } = await supabase.from('products').select('id,sku,name,brand,color,nsa_cost,retail_price,vendor_id').in('sku', overrideSkus);
+      const { data } = await supabase.from('products').select('id,sku,name,brand,color,nsa_cost,retail_price,vendor_id,image_front_url,image_back_url').in('sku', overrideSkus);
       (data || []).forEach((p) => {
         pinfo[p.id] = p;
         const k = String(p.sku || '').trim().toUpperCase();
@@ -3946,36 +3947,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const posOf = (d) => POS_LABEL[d.placement] || ((d.side === 'back') ? 'Back' : 'Front');
     const placeKey = (d) => (d.art_id || d.art_url || '') + '@' + (d.placement || '') + '@' + (d.side || 'front');
     const soArtFiles = new Map();
-    // Garment mockups — attach each ordered product's store photo to the SO art,
-    // keyed by sku|color (mirrors the OMG store→SO `item_mockups` mapping in
-    // App.js), so the Art Dashboard / production sees the garment proof, not just
-    // the bare logo. The order line captured the storefront image at purchase;
-    // fall back to the catalog product photo.
-    const catImgByPid = {};
-    (detail.catalog || []).forEach((c) => { if (c.product_id && c.image_url && !catImgByPid[c.product_id]) catImgByPid[c.product_id] = c.image_url; });
-    // SKU/color resolved from the product — the webstore order LINE's sku is null for
-    // singles, so keying mockups off i.sku silently dropped every garment (the SO line
-    // then showed "No mockup uploaded"). Key by the SO line's sku|color AND the bare sku
-    // so the SO's mockup lookup (m[sku|color] → m[sku]) always resolves regardless of how
-    // the line's stored color string compares to the master product color.
-    const skuByPid = {}; const colorByPid = {};
-    Object.values(pinfo).forEach((p) => { if (p && p.id) { if (p.sku) skuByPid[p.id] = p.sku; if (p.color) colorByPid[p.id] = p.color; } });
-    (detail.catalog || []).forEach((c) => { if (c.product_id && c.sku && !skuByPid[c.product_id]) skuByPid[c.product_id] = c.sku; });
-    const itemMockups = {};
-    bLines.forEach((i) => {
-      const rsku = i.sku || skuByPid[i.product_id] || '';
-      if (!rsku) return;
-      const img = i.image_url || catImgByPid[i.product_id] || '';
-      if (!img) return;
-      const color = i.color || colorByPid[i.product_id] || '';
-      [rsku + '|' + color, rsku].forEach((key) => { const b = (itemMockups[key] = itemMockups[key] || []); if (!b.includes(img)) b.push(img); });
-    });
-    // Every art file carries the per-garment mockups (production filters by the
-    // job's SKUs, same as OMG). The record's OWN mocks (auto-baked or QuickMockBuilder
-    // proofs — real decorated composites) win over the captured storefront photo, which
-    // only fills keys the record has nothing for. The old spread order let the bare
-    // garment photo clobber a real proof for the same sku|color.
-    const addArtFile = (rec) => { if (rec && rec.id && !soArtFiles.has(rec.id)) soArtFiles.set(rec.id, { ...rec, item_mockups: { ...itemMockups, ...(rec.item_mockups || {}) } }); };
+    // Capture the decorated storefront preview after resolving the final SO lines.
+    // A supplier photo by itself is not a garment mock.
+    const addArtFile = (rec) => { if (rec && rec.id && !soArtFiles.has(rec.id)) soArtFiles.set(rec.id, { ...rec, item_mockups: { ...(rec.item_mockups || {}) } }); };
     const cleanArt = (a) => { const { _srcLabel, _srcCustId, ...rest } = a; return rest; };
     // Store setting "decorated elsewhere" → every decoration lands on the SO already
     // flagged Outside: the whole store is produced off-site, names and numbers
@@ -3991,6 +3965,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const set = (sizesByBaseKey[g._baseKey] = sizesByBaseKey[g._baseKey] || new Set());
       Object.keys(g.sizes).forEach((sz) => set.add(sz));
     });
+    const storeMockSources = [];
     const soItems = Object.values(byProduct).map((g) => {
       const sourcePid = g.source_product_id || g.product_id;
       const sourceInfo = pinfo[sourcePid] || {};
@@ -4062,9 +4037,14 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // collected. Deco sells are suppressed above so the garment line carries it all.
       const qtyTot = Object.values(g.sizes).reduce((a, v) => a + v, 0) || 1;
       const unitSell = r2((g.collected || 0) / qtyTot * discRatio);
-      return { sku: g.sku || info.sku || '', name: info.name || sourceInfo.name || g.sku || 'Item', brand: info.brand || sourceInfo.brand || '', color: sourceInfo.color || info.color || '',
+      const item = { sku: g.sku || info.sku || '', name: info.name || sourceInfo.name || g.sku || 'Item', brand: info.brand || sourceInfo.brand || '', color: sourceInfo.color || info.color || '',
         product_id: g.product_id || info.id || null, vendor_id: g.vendor_id || info.vendor_id || null, nsa_cost: info.nsa_cost || sourceInfo.nsa_cost || 0, retail_price: unitSell, unit_sell: unitSell,
         sizes: g.sizes, available_sizes: [...(sizesByBaseKey[g._baseKey] || new Set(Object.keys(g.sizes)))], no_deco: decorations.length === 0, decorations, pick_lines: [], po_lines: [] };
+      const catalogMatches = (detail.catalog || []).filter(c => sourcePid ? c.product_id === sourcePid : c.sku === item.sku);
+      const placed = [...new Map((decosByKey[sourcePid] || decosByKey[g.sku] || []).map(d => [placeKey(d), d])).values()];
+      storeMockSources.push({ item, product: sourceInfo, catalog: catalogMatches.length === 1 ? catalogMatches[0] : {}, decorations: placed,
+        ambiguous: catalogMatches.length > 1, substituted: !!sourceInfo.sku && sourceInfo.sku !== item.sku });
+      return item;
     });
 
     const units = soItems.reduce((a, i) => a + Object.values(i.sizes).reduce((b, v) => b + v, 0), 0);
@@ -4087,7 +4067,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
     // await — onCreateSO now persists the SO and only resolves an id once it's
     // confirmed saved, so we never tag orders to an SO that doesn't exist yet.
-    const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${bOrders.length} orders${batchMeta.label ? ` — ${batchMeta.label}` : ''}`, production_notes: notes, items: soItems, webstore_id: sel.id, expected_date: expectedDate, art_files: [...soArtFiles.values()], fundraise_cost: fundraiseCost,
+    flash('Preparing garment mocks from store images…');
+    const storeMocks = await attachStoreGarmentMocks([...soArtFiles.values()], storeMockSources, { upload: cloudUpload });
+    const mockWarning = storeMocks.warnings.length ? '\n\nMOCKS NEED REVIEW — use Upload mock image in the job detail:\n' + storeMocks.warnings.join('\n') : '';
+    const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${bOrders.length} orders${batchMeta.label ? ` — ${batchMeta.label}` : ''}`, production_notes: notes + mockWarning, items: soItems, webstore_id: sel.id, expected_date: expectedDate, art_files: storeMocks.artFiles, fundraise_cost: fundraiseCost,
       batch_label: batchMeta.label || null, batch_cutoff: batchMeta.cutoff || null,
       // The server derives the settlement split again from these locked orders; no
       // client-supplied money total is trusted at the accounting boundary.
@@ -4095,7 +4078,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (!soId) { flash('Could not create the Sales Order — orders were not batched. Please try again.'); return; }
     // onCreateSO now returns only after the server atomically links every selected
     // order and records the invoice/payment + fundraising credit.
-    flash(`Created ${soId} · linked ${bOrders.length} orders · accounting recorded`);
+    flash(`Created ${soId} · linked ${bOrders.length} orders · accounting recorded${storeMocks.warnings.length ? " · Some garment mocks need review — see production notes" : ""}`);
     loadDetail(sel);
     }; // end proceed
 
