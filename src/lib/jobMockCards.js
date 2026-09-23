@@ -27,7 +27,8 @@ export function jobMockCardGroups(job, order, priorMocks = {}) {
     const allSlots = mockSlotKeys(garmentMockKey(item), decos).map(slot => {
       const d = decos[slot.di];
       const artFile = slot.kind === 'art' ? arts.find(a => a.id === d.art_file_id) : anchor;
-      return { ...slot, artFile, artId: artFile?.id, label: slot.kind === 'art' ? artFile?.name || 'Artwork' : slot.kind === 'numbers' ? 'Numbers' : 'Names', sub: [d.position, slot.side && 'Side ' + slot.side].filter(Boolean).join(' · ') };
+      const cwId = slot.kind === 'art' ? ((slot.side === 'B' ? d.color_way_id_b : d.color_way_id) || null) : null;
+      return { ...slot, artFile, artId: artFile?.id, cwId, label: slot.kind === 'art' ? artFile?.name || 'Artwork' : slot.kind === 'numbers' ? 'Numbers' : 'Names', sub: [d.position, slot.side && 'Side ' + slot.side].filter(Boolean).join(' · ') };
     });
     const slots = allSlots.filter(s => s.artId && (!owned || owned.includes(s.di))).filter(s => {
       const key = s.artId + '|' + s.key;
@@ -44,6 +45,6 @@ export function jobMockCardGroups(job, order, priorMocks = {}) {
       const candidates = garmentSlotCandidates(s, item, arts, prior);
       return { ...s, candidates };
     });
-    return slots.length ? [{ item, slots, allSlots: allSlots.map(s => slots.find(ownedSlot => ownedSlot.key === s.key && ownedSlot.artId === s.artId) || s) }] : [];
+    return slots.length ? [{ gi, item, slots, allSlots: allSlots.map(s => slots.find(ownedSlot => ownedSlot.key === s.key && ownedSlot.artId === s.artId) || s) }] : [];
   });
 }

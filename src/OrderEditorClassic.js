@@ -11924,7 +11924,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div style={{fontSize:10,color:'#64748b',marginTop:2}}>{pct}% fulfilled</div>
               </div>
             </div>
-            <JobGarmentMocks key={j.id} job={j} order={o} priorMocks={priorMocks} getOrder={()=>oRef.current} onSave={saveArtFilesNow} />
+            {/* Mocks live inside each garment's card once the job has garment cards (approval and
+                approved stages); before that, one standalone panel. */}
+            {!(itemDetails.length>0&&(j.art_status==='waiting_approval'||j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status)))&&<JobGarmentMocks key={j.id} job={j} order={o} priorMocks={priorMocks} getOrder={()=>oRef.current} onSave={saveArtFilesNow} />}
             {/* ── Check Mock: previously-approved art reused on a different color/style ── */}
             {_needsMockCheck&&(()=>{
               const _gLabels=_mockCheckGarments.map(g=>(g.color?g.color+' ':'')+g.sku).join(', ');
@@ -11937,7 +11939,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <span style={{fontSize:18}}>🔍</span>
                   <span style={{fontWeight:800,fontSize:15,color:'#854d0e'}}>Check Mock — garment mockup required</span>
                 </div>
-                <div style={{fontSize:12,color:'#92400e',marginBottom:10}}>There is no confirmed garment mock for <b>{_gLabels}</b> yet. Choose a mock in the garment cards above, or request a new one from the artist.</div>
+                <div style={{fontSize:12,color:'#92400e',marginBottom:10}}>There is no confirmed garment mock for <b>{_gLabels}</b> yet. Choose a mock in the garment cards below, or request a new one from the artist.</div>
                 <div style={{display:'flex',alignItems:'center',gap:10,marginTop:4}} onClick={e=>e.stopPropagation()}>
                   <button className="btn btn-sm" style={{fontSize:11,padding:'5px 12px',background:'white',color:'#b91c1c',border:'1px solid #fca5a5',borderRadius:6,fontWeight:700}}
                     title="None of these mocks are right — pull the art back and have the artist build a new mockup for this garment"
@@ -12062,7 +12064,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               rep-review gate) — a rep who emails the portal link by hand instead of using Send to
               Coach leaves the coach staring at "Proof in progress" with no way to act (SO-1645). */}
               {!_stca&&!_needsSetup&&<div style={{fontSize:12,color:'#92400e',marginBottom:10,fontWeight:600,padding:'8px 12px',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6}}>🔒 The coach can't see or approve this proof yet — their portal shows it as "in progress" until you click 📤 Send to Coach below. Sharing the portal link by email/text does not unlock it.</div>}
-              {_needsSetup&&<div style={{fontSize:12,color:'#92400e',marginBottom:10,fontWeight:600,padding:'8px 12px',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6}}>Choose a mock for each garment in the cards above. Use an existing garment image or upload a new one, then review it for approval.</div>}
+              {_needsSetup&&<div style={{fontSize:12,color:'#92400e',marginBottom:10,fontWeight:600,padding:'8px 12px',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6}}>Choose a mock for each garment in the cards below. Use an existing garment image or upload a new one, then review it for approval.</div>}
               {!_stca&&!_needsSetup&&_jobArtFiles.some(a=>a?.status==='approved')&&<div style={{fontSize:12,color:'#92400e',marginTop:-4,marginBottom:10,fontWeight:600}}>♻️ This art was approved on a previous order — confirm it's good for this one (✅ below), send it to the coach, or request a new mock. It won't go to production until you pick.</div>}
               {_stca&&<div style={{fontSize:12,color:'#1e40af',marginBottom:8,fontWeight:600}}>
                 Sent {_stca.toLocaleDateString('en-US',{weekday:'short'})} {_stca.toLocaleDateString()} @ {_stca.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}
@@ -12236,7 +12238,8 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                         </div>
                       </div>
                         <OeGarmentPoLines item={it} szMeta={_PO_SZ_META} onOpenPo={po=>{const lines=[];safeItems(o).forEach((it2,i2)=>{safePOs(it2).forEach((po2,pi2)=>{if(po2.po_id&&po2.po_id===po.po_id)lines.push({lineIdx:i2,poIdx:pi2})})});if(lines.length)setEditPO({lineIdx:lines[0].lineIdx,poIdx:lines[0].poIdx,po,allLines:lines})}}/>
-                      {/* Mockup — linked garments show a compact reference to their source garment */}
+                      {/* Mockup + logo detail — linked garments show a compact reference to their source garment */}
+                      <JobGarmentMocks job={j} order={o} priorMocks={priorMocks} getOrder={()=>oRef.current} onSave={saveArtFilesNow} itemIdx={gi.item_idx} />
                       {_linkChipsR(gi)}
                       {/* Outsourced designs on the same garment — context only (SO-1660): the proof
                           is judged as the WHOLE garment, so a mixed-media approval must show every
@@ -12517,7 +12520,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                       </div>
                         <OeGarmentPoLines item={it} szMeta={_PO_SZ_META} onOpenPo={po=>{const lines=[];safeItems(o).forEach((it2,i2)=>{safePOs(it2).forEach((po2,pi2)=>{if(po2.po_id&&po2.po_id===po.po_id)lines.push({lineIdx:i2,poIdx:pi2})})});if(lines.length)setEditPO({lineIdx:lines[0].lineIdx,poIdx:lines[0].poIdx,po,allLines:lines})}}/>
                       {/* Mockup — linked garments reference their source garment's mock (read-only) */}
-                      {/* Mocks are managed in the shared job panel above. */}
+                      <JobGarmentMocks job={j} order={o} priorMocks={priorMocks} getOrder={()=>oRef.current} onSave={saveArtFilesNow} itemIdx={gi.item_idx} />
                       {/* Back proof. A garment running numbers or names has its own mockup slot for that
                           side and it renders above whenever one exists — but nothing flagged its ABSENCE,
                           so SO-1605's jerseys sat here with a front mockup, a roster, and no picture of the
@@ -12529,7 +12532,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                         if(nameDecos.length>0&&_nn.names===0)_miss.push('names');
                         if(_miss.length===0)return null;
                         return<div style={{margin:'0 10px 10px',padding:'8px 12px',background:'#fef2f2',border:'2px solid #fecaca',borderRadius:6,color:'#b91c1c',fontSize:11,fontWeight:700}}>
-                          ⚠ No back mockup on file — this garment runs {_miss.join(' and ')}, but no {_miss.join(' / ')} mockup has been uploaded. Add one in Garment mocks above so the floor can see the placement.
+                          ⚠ No back mockup on file — this garment runs {_miss.join(' and ')}, but no {_miss.join(' / ')} mockup has been uploaded. Add one in the mock card above so the floor can see the placement.
                         </div>;})()}
                       {/* Decoration spec */}
                       {(artDecos.length>0||numDecos.length>0||nameDecos.length>0)&&<div style={{padding:'10px 14px',borderTop:'1px solid #EEF1F6',background:'#f8fafc'}}>

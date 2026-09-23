@@ -41,6 +41,7 @@ import * as fabric from 'fabric';
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, REP_PROD_FILE_DECOS, artistOwesProdFiles, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { isApiCatalogVendor, styleSkuOrFilter, buildStyleColorwayMap, lookupStyleColorway } from './lib/vendorColorwayImages';
+import { logoDetailUrl, logoDetailBg, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails } from './lib/logoDetail';
 import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, adoptArtProofAsGarmentMock, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { stampEstimateDraftLineIds } from './lib/orderLineIdentity';
@@ -1396,6 +1397,10 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     } else if(gi.image_url&&_isImgUrl(gi.image_url)){
       sHtml+='<div style="margin:12px 0;page-break-inside:avoid"><img src="'+gi.image_url+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/></div>';
     }
+    // Logo detail: the transparent logo PNG for each design / color way on this garment, printed on
+    // the garment color so the floor can read inks and small type at full size.
+    const _logoTiles=garmentLogoDetails(gi,so,allArtFiles).map(l=>'<div style="flex:1 1 220px;max-width:340px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden"><div style="background:'+logoDetailBg(gi.color)+';-webkit-print-color-adjust:exact;print-color-adjust:exact;height:200px;display:flex;align-items:center;justify-content:center;padding:12px"><img src="'+l.url+'" style="max-height:176px;max-width:100%;object-fit:contain"/></div><div style="padding:5px 8px;font-size:10px;font-weight:700;color:#334155">Logo detail — '+_upEsc(l.artName)+(l.cwLabel?' · CW: '+_upEsc(l.cwLabel):'')+'</div></div>');
+    if(_logoTiles.length>0)sHtml+='<div style="margin:12px 0;display:flex;gap:10px;flex-wrap:wrap;justify-content:center;page-break-inside:avoid">'+_logoTiles.join('')+'</div>';
     itemSectionHtmls.push(sHtml);
   });
   // Generic mockups not tied to a specific item
@@ -7268,6 +7273,23 @@ export default function App(){
     Promise.resolve(_artSaveP).then(ok=>{if(ok!==false)_markRecentlyPulled(merged.id)}).finally(()=>{(!_hasActiveDocumentSave(merged.id)&&_dbSavePendingIds.delete(merged.id))});
     return _artSaveP;
   };
+  // Logo detail (the transparent logo PNG shown beside each garment mock) from the Art Dashboard
+  // dialogs: upload files[0], or remove removeUrl, then an art-only save. Returns false on failure.
+  const saveLogoDetailFor=async(so,slot,{files,removeUrl}={})=>{
+    try{
+      const url=files?await fileUpload(files[0],'nsa-web-logos'):null;
+      const liveSO=sos.find(s=>s.id===so.id)||so;
+      if(!safeArt(liveSO).some(a=>a.id===slot.artId))throw new Error('this artwork was removed');
+      const updArt=url?setLogoDetail(safeArt(liveSO),slot.artId,slot.cwId,{url,name:files[0].name}):removeLogoDetail(safeArt(liveSO),slot.artId,removeUrl);
+      const ok=await savArtFiles({...liveSO,art_files:updArt});
+      if(ok===false)return false;
+      nf(url?'Logo detail saved':'Logo detail removed');
+      return true;
+    }catch(e){nf('Could not save the logo detail: '+(e.message||'upload failed'),'error');return false}
+  };
+  // Props for a mock card's logo detail pane (art slots only).
+  const logoDetailProps=(so,slot,garment)=>slot.kind!=='art'?null:{url:logoDetailUrl(slot.artFile,slot.cwId),bg:logoDetailBg(garment?.color),colorName:garment?.color||'',
+    onUpload:files=>saveLogoDetailFor(so,slot,{files}),onRemove:url=>saveLogoDetailFor(so,slot,{removeUrl:url})};
   // Result-checked FULL save: persist the whole SO (jobs + art) and return a truthful true/false promise so
   // reuse/forward mutations (applyPriorMock, prod-file completion, wizard release) can report failure instead
   // of the fire-and-forget onSave that silently claims "saved". Runs savSO's local-state update + all its
@@ -14432,6 +14454,14 @@ export default function App(){
                       })}
                       </div>
                     </div>}
+                    {/* Logo detail — the logo alone on the garment color, for inks and small type */}
+                    {!_giSrc&&(()=>{const _lds=garmentLogoDetails(gi,so,allArtFiles);if(!_lds.length)return null;
+                      return<div style={{padding:12,background:'#fafbfc',borderBottom:'1px solid #e2e8f0',display:'flex',gap:10,flexWrap:'wrap',justifyContent:'center'}}>
+                        {_lds.map(l=><div key={l.url} style={{flex:'1 1 220px',maxWidth:340,border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden',background:'white'}}>
+                          <div style={{background:logoDetailBg(gi.color),height:190,display:'flex',alignItems:'center',justifyContent:'center',padding:12,cursor:'zoom-in'}} onClick={()=>openFile(l.url)}><img src={l.url} alt="Logo detail" style={{maxHeight:166,maxWidth:'100%',objectFit:'contain'}}/></div>
+                          <div style={{padding:'5px 8px',fontSize:10,fontWeight:700,color:'#334155'}}>Logo detail — {l.artName}{l.cwLabel?' · CW: '+l.cwLabel:''}</div>
+                        </div>)}
+                      </div>})()}
                     {/* Size grid */}
                     {itemSizes.length>0&&<div style={{padding:'10px 14px',borderBottom:'1px solid #e2e8f0',overflowX:'auto'}}>
                       <table style={{fontSize:12,minWidth:300,width:'100%'}}><thead><tr style={{background:'#f0f2f5'}}>
@@ -24575,7 +24605,7 @@ export default function App(){
                   // and the send-for-approval check always line up.
                   mockSlotKeys(_repSkBase,[...effectiveArtDecos,...numDecos,...nameDecos]).forEach(sd=>{
                     if(sd.kind==='art'){const d=effectiveArtDecos[sd.idx];const cwLbl=sd.side==='B'?d.cwLabelB:d.cwLabel;
-                      _repSlots.push({key:sd.key,kind:'art',side:sd.side,primary:sd.primary,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                      _repSlots.push({key:sd.key,kind:'art',side:sd.side,primary:sd.primary,cwId:(sd.side==='B'?d.colorWayIdB:d.colorWayId)||null,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
                     else if(sd.kind==='numbers'){const d=numDecos[sd.idx];
                       _repSlots.push({key:sd.key,kind:'numbers',primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
                     else{const d=nameDecos[sd.idx];
@@ -24623,7 +24653,7 @@ export default function App(){
                         {_myDeps.length>0&&<span style={{fontSize:9,fontWeight:700,color:'#3730a3',background:'#e0e7ff',padding:'2px 8px',borderRadius:10}}>🔗 also used by {_myDeps.map(k=>k.split('|')[0]).join(', ')}</span>}
                       </div>
                       {_repSlots.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>No art assigned to this item yet.</div>
-                       :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repSlots.map(slot=><GarmentMockCard key={slot.artId+'|'+slot.key} label={slot.label} sub={slot.sub} mocks={slotMockFiles(slot,_repSlots,gi)} candidates={garmentSlotCandidates(slot,gi,safeArt(so))} suggest uploadLabel="Upload mock image" busy={artJobDetailUploading} onUse={file=>useArtProofAsMock(slot.artId,slot.key,file,gi)} onRemove={url=>removeSlotMock(slot,_repSlots,gi,url)} onUpload={files=>handleMockupUploadForItem(files,gi,slot.artId,slot.key)} />)}</div>}
+                       :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repSlots.map(slot=><GarmentMockCard key={slot.artId+'|'+slot.key} label={slot.label} sub={slot.sub} logo={logoDetailProps(so,slot,gi)} mocks={slotMockFiles(slot,_repSlots,gi)} candidates={garmentSlotCandidates(slot,gi,safeArt(so))} suggest uploadLabel="Upload mock image" busy={artJobDetailUploading} onUse={file=>useArtProofAsMock(slot.artId,slot.key,file,gi)} onRemove={url=>removeSlotMock(slot,_repSlots,gi,url)} onUpload={files=>handleMockupUploadForItem(files,gi,slot.artId,slot.key)} />)}</div>}
                       {_linkChips(gi)}
                     </div>}
                     {/* Decoration spec */}
@@ -24736,6 +24766,17 @@ export default function App(){
           const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,item_idx:gi.item_idx,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||lookupColorwayImage(mtColorwayImg,it)?.front||lookupStyleColorway(styleColorwayImg[it.sku],it)?.front||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||lookupColorwayImage(mtColorwayImg,it)?.back||lookupStyleColorway(styleColorwayImg[it.sku],it)?.back||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=orderedSizeKeys(itemDetails.flatMap(it=>Object.keys(it.sizes||{})));
+        // Garments that share one mock (mock_links, set on release or by the rep) collapse into the
+        // source garment's card, which lists every covered garment's quantities under it.
+        const _adLinkArts=allArtFiles.length?allArtFiles:(af?[af]:[]);
+        const _adLinkOf=g=>resolveMockLink(_adLinkArts,mockSkuOf(g),g.color);
+        const _adKeys=new Set(itemDetails.map(g=>garmentMockKey(g)));
+        const _adFolded=g=>{const src=_adLinkOf(g);return!!src&&_adKeys.has(src)};
+        const _adDeps=g=>itemDetails.filter(o=>o!==g&&_adLinkOf(o)===garmentMockKey(g));
+        const _adCards=itemDetails.filter(g=>!_adFolded(g));
+        // Release instructions are for the whole job, so they show once above the garments. The
+        // "ONE MOCKUP COVERS" line is dropped when the grouped cards already show that grouping.
+        const _adInstructions=(()=>{const t=latestReq?.instructions||'';return itemDetails.some(_adFolded)?t.replace(/\n*\uD83D\uDD17 ONE MOCKUP COVERS:[^\n]*/,'').trim():t.trim()})();
 
         // Pre-compute per-item decorations and position list (needed by item cards)
         const posList3=(j.positions||'').split(',').map(p=>p.trim()).filter(Boolean);
@@ -25141,6 +25182,9 @@ export default function App(){
           const{currentJob:liveJob,missingImages:_noImg}=approvalArtContext(j,liveSO2,buildJobs(liveSO2));
           const missing=skusMissingMockups(liveJob,liveSO2);
           if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
+          // Every mock goes out with its logo detail (the transparent logo PNG per color way).
+          const _noLogo=jobMissingLogoDetails(liveJob,liveSO2);
+          if(_noLogo.length>0){nf('Cannot send for approval — add the logo detail (transparent PNG) for: '+_noLogo.join(', '),'error');return}
           // LOGO-1: every design needs a usable logo image before it can go out for approval. Per the
           // CW web-logo decision record, preview_url is the design-level fallback, NOT the only accepted
           // source — a web logo or any mockup the design already carries satisfies the visual requirement.
@@ -25194,8 +25238,13 @@ export default function App(){
                   :<button style={{background:'none',border:'1px solid #fecaca',color:'#dc2626',fontSize:10,fontWeight:700,cursor:'pointer',padding:'3px 8px',borderRadius:4}} onClick={()=>setArtJobDetailEditSize(null)}>Cancel Sizes</button>}
                 </div>
               </div>
+              {(_adInstructions||j.rep_notes)&&<div style={{marginBottom:12}}>
+                {_adInstructions&&<div style={{padding:'6px 10px',background:'#faf5ff',borderRadius:6,border:'1px solid #e9d5ff',fontSize:11}}><span style={{fontWeight:700,color:'#6d28d9'}}>Instructions: </span><span style={{color:'#1e293b',whiteSpace:'pre-wrap'}}>{_adInstructions}</span></div>}
+                {j.rep_notes&&<div style={{marginTop:4,padding:'5px 10px',background:'#fffbeb',borderRadius:4,border:'1px solid #fde68a',fontSize:11,color:'#92400e'}}><strong>Notes:</strong> {j.rep_notes}</div>}
+              </div>}
               {/* Per-item grouped cards */}
-              {itemDetails.map((gi,gii)=>{
+              {_adCards.map((gi,gii)=>{
+                const _deps=_adDeps(gi);const _grp=[gi,..._deps];
                 const itemMocks=_getMocks(af,gi);
                 // Per-item decoration data
                 const _gk=gi.sku+'|'+gi.color;
@@ -25215,8 +25264,8 @@ export default function App(){
                 // Per-item production files
                 const _itemPFs=(cu.role==='production'||cu.role==='prod_assistant')?[]:_decos.filter(d=>d.kind==='art'&&d.artFile).flatMap(d=>(d.artFile?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_afName:_decos.filter(d2=>d2.kind==='art').length>1?d.artName:''})));
                 // Copy mockup candidates
-                const _copyFromOthers=itemMocks.length===0?itemDetails.filter((oi,oii)=>oii!==gii&&_getMocks(af,oi).length>0):[];
-                return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?14:0,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',background:'#fafbfc'}}>
+                const _copyFromOthers=itemMocks.length===0?itemDetails.filter(oi=>oi!==gi&&!_deps.includes(oi)&&_getMocks(af,oi).length>0):[];
+                return<div key={gii} style={{marginBottom:gii<_adCards.length-1?14:0,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',background:'#fafbfc'}}>
                   {/* Item header */}
                   <div style={{display:'flex',alignItems:'center',gap:10,padding:'12px 14px',background:'linear-gradient(135deg,#f0f2f5,#e8ecf0)',borderBottom:'1px solid #e2e8f0'}}>
                     <div style={{display:'flex',gap:4,flexShrink:0}}>
@@ -25231,9 +25280,10 @@ export default function App(){
                         {gi.color&&<span style={{color:'#6d28d9',fontWeight:700}}>— {gi.color}</span>}
                         {gi.brand&&<span style={{fontSize:10,padding:'1px 6px',background:'#f1f5f9',borderRadius:4,color:'#64748b',border:'1px solid #e2e8f0'}}>{gi.brand}</span>}
                       </div>
+                      {_deps.length>0&&<div style={{marginTop:4,fontSize:11,fontWeight:700,color:'#3730a3'}}>🔗 One mock for {_grp.length} garments — build it on this one. Also covers {_deps.map(d=>(d.color?d.color+' ':'')+d.sku).join(', ')}</div>}
                     </div>
                     <div style={{textAlign:'right',flexShrink:0}}>
-                      <div style={{fontWeight:800,fontSize:18,color:'#1e40af'}}>{Object.values(gi.sizes).reduce((a,v)=>a+v,0)}</div>
+                      <div style={{fontWeight:800,fontSize:18,color:'#1e40af'}}>{_grp.reduce((n,g)=>n+Object.values(g.sizes).reduce((a,v)=>a+v,0),0)}</div>
                       <div style={{fontSize:9,color:'#64748b',fontWeight:600,textTransform:'uppercase'}}>units</div>
                     </div>
                   </div>
@@ -25251,14 +25301,14 @@ export default function App(){
                       // check always line up.
                       mockSlotKeys(_skBase,[..._effectiveArtDecos,..._numDecos,..._nameDecos]).forEach(sd=>{
                         if(sd.kind==='art'){const d=_effectiveArtDecos[sd.idx];const cwLbl=sd.side==='B'?d.cwLabelB:d.cwLabel;
-                          _slots.push({key:sd.key,kind:'art',side:sd.side,primary:sd.primary,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                          _slots.push({key:sd.key,kind:'art',side:sd.side,primary:sd.primary,cwId:(sd.side==='B'?d.colorWayIdB:d.colorWayId)||null,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
                         else if(sd.kind==='numbers'){const d=_numDecos[sd.idx];
                           _slots.push({key:sd.key,kind:'numbers',primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
                         else{const d=_nameDecos[sd.idx];
                           _slots.push({key:sd.key,kind:'names',primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}});
                       if(_slots.length===0&&af)_slots.push({key:_skBase,kind:'art',primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
                       if(_slots.length===0)return<div style={{fontSize:11,color:'#94a3b8',padding:8}}>No art assigned to this item yet.</div>;
-                      return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=><GarmentMockCard key={slot.artId+'|'+slot.key} label={slot.label} sub={slot.sub} mocks={slotMockFiles(slot,_slots,gi)} candidates={garmentSlotCandidates(slot,gi,safeArt(so))} suggest uploadLabel="Upload mock image" busy={artJobDetailUploading} onUse={file=>useArtProofAsMock(slot.artId,slot.key,file,gi)} onRemove={url=>removeSlotMock(slot,_slots,gi,url)} onUpload={files=>startMockupUpload(files,gi,slot.artId,slot.key)} />)}</div>;
+                      return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=><GarmentMockCard key={slot.artId+'|'+slot.key} label={slot.label} sub={slot.sub} logo={logoDetailProps(so,slot,gi)} mocks={slotMockFiles(slot,_slots,gi)} candidates={garmentSlotCandidates(slot,gi,safeArt(so))} suggest uploadLabel="Upload mock image" busy={artJobDetailUploading} onUse={file=>useArtProofAsMock(slot.artId,slot.key,file,gi)} onRemove={url=>removeSlotMock(slot,_slots,gi,url)} onUpload={files=>startMockupUpload(files,gi,slot.artId,slot.key)} />)}</div>;
                     })()}
                   </div>
                   {/* ─── Copy Mockup From Another Item ─── */}
@@ -25336,22 +25386,22 @@ export default function App(){
                         <span style={{fontSize:12,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 8px',borderRadius:4}}>ABC Names</span>
                         {nd.frontAndBack&&<span style={{fontSize:10,color:'#6d28d9',fontWeight:600}}>Front + Back</span>}
                       </div>)}
-                      {latestReq?.instructions&&<div style={{marginTop:8,padding:'6px 10px',background:'#faf5ff',borderRadius:6,border:'1px solid #e9d5ff',fontSize:11}}><span style={{fontWeight:700,color:'#6d28d9'}}>Instructions: </span><span style={{color:'#1e293b',whiteSpace:'pre-wrap'}}>{latestReq.instructions}</span></div>}
-                      {j.rep_notes&&<div style={{marginTop:4,padding:'5px 10px',background:'#fffbeb',borderRadius:4,border:'1px solid #fde68a',fontSize:11,color:'#92400e'}}><strong>Notes:</strong> {j.rep_notes}</div>}
-                      {_isEditingColors&&gii===itemDetails.length-1&&<button className="btn btn-sm" style={{fontSize:11,padding:'5px 14px',background:'#7c3aed',color:'white',border:'none',borderRadius:6,fontWeight:700,marginTop:6}} onClick={_saveColors}>Save Colors</button>}
-                      {artJobDetailEditSize!==null&&gii===itemDetails.length-1&&<button className="btn btn-sm" style={{fontSize:11,padding:'5px 14px',background:'#7c3aed',color:'white',border:'none',borderRadius:6,fontWeight:700,marginTop:6,marginLeft:6}} onClick={()=>{const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;const sizeObj={};posList3.forEach(p=>{if(artJobDetailEditSize[p]?.trim())sizeObj[p]=artJobDetailEditSize[p].trim()});const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,art_sizes:sizeObj,art_size:Object.values(sizeObj).join(' / ')}:a);savSO({...liveSO,art_files:updArt});setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});setArtJobDetailEditSize(null);nf('Art sizes updated');}}>Save Sizes</button>}
+                      {_isEditingColors&&gii===_adCards.length-1&&<button className="btn btn-sm" style={{fontSize:11,padding:'5px 14px',background:'#7c3aed',color:'white',border:'none',borderRadius:6,fontWeight:700,marginTop:6}} onClick={_saveColors}>Save Colors</button>}
+                      {artJobDetailEditSize!==null&&gii===_adCards.length-1&&<button className="btn btn-sm" style={{fontSize:11,padding:'5px 14px',background:'#7c3aed',color:'white',border:'none',borderRadius:6,fontWeight:700,marginTop:6,marginLeft:6}} onClick={()=>{const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;const sizeObj={};posList3.forEach(p=>{if(artJobDetailEditSize[p]?.trim())sizeObj[p]=artJobDetailEditSize[p].trim()});const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,art_sizes:sizeObj,art_size:Object.values(sizeObj).join(' / ')}:a);savSO({...liveSO,art_files:updArt});setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});setArtJobDetailEditSize(null);nf('Art sizes updated');}}>Save Sizes</button>}
                     </div>
                   </div>}
                   {/* ─── Size Grid ─── */}
                   {_itemSzs.length>0&&<div style={{borderTop:'2px solid #e2e8f0',padding:'10px 14px'}}>
+                    {_deps.length>0&&<div style={{fontSize:10,fontWeight:800,color:'#3730a3',textTransform:'uppercase',letterSpacing:0.4,marginBottom:4}}>Garments on this mock</div>}
                     <div style={{overflowX:'auto'}}><table style={{fontSize:12,minWidth:280,width:'100%'}}><thead><tr style={{background:'#f0f2f5'}}>
                       <th style={{textAlign:'left',padding:'4px 8px',fontSize:10,fontWeight:700}}>SIZE</th>
                       {allSizes.map(sz=><th key={sz} style={{textAlign:'center',padding:'4px 8px',fontSize:10,fontWeight:700,minWidth:32}}>{sz}</th>)}
                       <th style={{textAlign:'center',padding:'4px 8px',fontSize:10,fontWeight:800}}>TOTAL</th>
                     </tr></thead><tbody>
-                      <tr>{['QTY',...allSizes.map(sz=>gi.sizes[sz]||'—'),_rowTotal].map((v,i)=>
+                      {_grp.map((g,ri)=><tr key={ri}>{[_deps.length>0?((g.color?g.color+' ':'')+g.sku):'QTY',...allSizes.map(sz=>g.sizes[sz]||'—'),Object.values(g.sizes).reduce((a,v)=>a+v,0)].map((v,i)=>
                         <td key={i} style={{textAlign:i===0?'left':'center',padding:'4px 8px',fontWeight:typeof v==='number'?800:i===0?700:400,color:typeof v==='number'?'#1e40af':i===0?'#475569':'#cbd5e1',background:typeof v==='number'&&i>0?'#eef2ff':i===allSizes.length+1?'#f0f2f5':''}}>{v}</td>)}
-                      </tr>
+                      </tr>)}
+                      {_deps.length>0&&<tr style={{borderTop:'2px solid #c7d2fe'}}>{['ALL',...allSizes.map(sz=>_grp.reduce((n,g)=>n+(g.sizes[sz]||0),0)||'—'),_grp.reduce((n,g)=>n+Object.values(g.sizes).reduce((a,v)=>a+v,0),0)].map((v,i)=><td key={i} style={{textAlign:i===0?'left':'center',padding:'4px 8px',fontWeight:800,color:typeof v==='number'?'#3730a3':'#475569',background:'#eef2ff'}}>{v}</td>)}</tr>}
                     </tbody></table></div>
                   </div>}
                   {/* ─── Production Files ─── */}
