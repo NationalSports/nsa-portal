@@ -342,14 +342,33 @@ describe('staleOrdersReport', () => {
     const old = d.rows.find((r) => r.id === 'SO-B');
     expect(old.category).toBe('old_open');
     expect(old.invoiceable).toBe(false);
+    // Jobs done but only 5 of 10 units received: possibly ready, not billable yet.
     const mismatch = d.rows.find((r) => r.id === 'SO-D');
-    expect(mismatch.category).toBe('system_mismatch');
-    expect(mismatch.invoiceable).toBe(true);
+    expect(mismatch.category).toBe('possibly_ready');
+    expect(mismatch.mismatch).toBe(true);
+    expect(mismatch.invoiceable).toBe(false);
     expect(mismatch.reasons.join(' ')).toMatch(/verify a receiving\/shipping mismatch/);
-    expect(d.summary).toMatchObject({ count: 3, readyCount: 1, mismatchCount: 1, oldCount: 1, invoiceableCount: 2 });
-    // Potential billing is finished work only; the in-production order's value is reported apart.
-    expect(d.summary.value).toBeCloseTo(600 + 800);
+    expect(mismatch.reasons.join(' ')).toMatch(/5\/10 units received, pulled, or vendor-billed/);
+    expect(d.summary).toMatchObject({ count: 3, readyCount: 1, possiblyCount: 1, mismatchCount: 1, oldCount: 1, invoiceableCount: 1 });
+    // Potential billing is the strict tier only; the other tiers' value is reported apart.
+    expect(d.summary.value).toBeCloseTo(600);
+    expect(d.summary.possiblyValue).toBeCloseTo(800);
     expect(d.summary.oldOpenValue).toBeCloseTo(500);
+  });
+
+  test('a drop-ship order marked complete is only "possibly ready" until the vendor bills or the goods are received', () => {
+    const dropShip = (billed) => [{
+      id: 'SO-DS', customer_id: 'C1', created_at: '2026-08-14', _rev: 2000, _status: 'complete', status: 'complete',
+      items: [{ sizes: { S: 6, M: 4 }, pick_lines: [], po_lines: [{ drop_ship: true, received: {}, billed }] }], jobs: [],
+    }];
+    const waiting = staleOrdersReport({ sos: dropShip({}), invs: [], customers, calcMargin, calcStatus, asOf });
+    expect(waiting.rows[0]).toMatchObject({ category: 'possibly_ready', invoiceable: false, fulfilledUnits: 0, totalUnits: 10 });
+    const billed = staleOrdersReport({ sos: dropShip({ S: 6, M: 4 }), invs: [], customers, calcMargin, calcStatus, asOf });
+    expect(billed.rows[0]).toMatchObject({ category: 'ready', invoiceable: true, fulfilledUnits: 10 });
+    // The Receivables list applies the same strict rule.
+    const args = { invs: [], customers, calcMargin, calcStatus, asOf };
+    expect(completedUninvoicedOrdersReport({ sos: dropShip({}), ...args })).toHaveLength(0);
+    expect(completedUninvoicedOrdersReport({ sos: dropShip({ S: 6, M: 4 }), ...args })).toHaveLength(1);
   });
 });
 
