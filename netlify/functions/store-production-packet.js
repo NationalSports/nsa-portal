@@ -42,7 +42,7 @@ async function authorize(event, body) {
 async function loadCurrent(ctx) {
   const { admin, storeId, soId } = ctx;
   const [store, orders, salesOrders, catalog, notes, shares] = await Promise.all([
-    checked(admin.from('webstores').select('id,name,delivery_mode').eq('id', storeId).single()),
+    checked(admin.from('webstores').select('id,name,delivery_mode,logo_url,primary_color,accent_color').eq('id', storeId).single()),
     all(() => admin.from('webstore_orders').select('id,store_id,so_id,order_number,omg_order_number,status,backorder_of').eq('store_id', storeId).order('id')),
     all(() => admin.from('sales_orders').select('id,webstore_id,status,expected_date,production_notes,deco_pos').eq('webstore_id', storeId).order('id')),
     all(() => admin.from('webstore_products').select('id,product_id,size_skus').eq('store_id', storeId).order('id')),
