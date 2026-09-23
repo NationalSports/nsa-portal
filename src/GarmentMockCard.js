@@ -5,7 +5,7 @@ import './GarmentMockCard.css';
 const urlOf = f => typeof f === 'string' ? f : f?.url || '';
 
 // One preview per slot. Selecting a candidate never changes approval or saves it.
-export default function GarmentMockCard({ label, sub, mocks, candidates, suggest = false, busy, onUse, onRemove, onUpload }) {
+export default function GarmentMockCard({ label, sub, mocks, candidates, suggest = false, busy, onUse, onRemove, onUpload, accept = '.pdf,.png,.jpg,.jpeg,.webp,.gif,.ai,.eps,.svg' }) {
   const [choosing, setChoosing] = useState(false);
   const [selected, setSelected] = useState('');
   const [error, setError] = useState('');
@@ -42,7 +42,7 @@ export default function GarmentMockCard({ label, sub, mocks, candidates, suggest
         {choosing && <button type="button" disabled={busy} onClick={() => { setChoosing(false); setSelected(''); }}>Cancel</button>}
         {file && !choosingExisting && <button type="button" className="mock-remove" disabled={busy} onClick={() => { if (window.confirm('Remove this mock from this garment slot?')) run(() => onRemove(url)); }}>Remove</button>}
       </div>
-      <input ref={input} type="file" hidden multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.ai,.eps,.svg" onChange={e => { if (e.target.files.length) onUpload(Array.from(e.target.files)); e.target.value = ''; }} />
+      <input ref={input} type="file" hidden multiple accept={accept} onChange={e => { if (e.target.files.length) run(() => onUpload(Array.from(e.target.files))); e.target.value = ''; }} />
     </div>
   </section>;
 }
