@@ -351,6 +351,16 @@
 # source for profit and commissions.
 [functions."omg-order-sync-cron"]
   schedule = "15 8 * * *"
+[functions."financial-expenses"]
+  timeout = 26
+
+# Credit-card transaction refresh. Plaid also refreshes institution data on its
+# own cadence; this sweep imports available changes into the review inbox.
+[functions."financial-card-sync"]
+  schedule = "17 */6 * * *"
+  timeout = 26
+[functions."financial-card-feed"]
+  timeout = 26
 
 # Coach shipping notices — every 15 min. Sends the "your gear is on the way"
 # email for a live sales order once every box the warehouse owes a label for
