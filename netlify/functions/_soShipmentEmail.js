@@ -379,6 +379,7 @@ function buildSoShipmentEmail({
   serviceLevel = '',
   portalUrl = '',
   reorderUrl = '',
+  reviewUrl = '',
   logoUrl = '',
 } = {}) {
   const boxCount = packages.length;
@@ -498,6 +499,19 @@ ${lines.map(itemRowHtml).join('\n')}
         ${portalUrl && reorderUrl ? '<td width="12" style="width:12px;font-size:0;line-height:0;">&nbsp;</td>' : ''}
         ${buttonHtml(reorderUrl, 'Reorder', { outline: true })}
       </tr></table>
+    </td>
+  </tr>` : ''}
+  ${(reviewUrl && remainingUnits <= 0) ? `<tr>
+    <td class="pad" style="padding:24px 40px 0 40px;">
+      <!-- Google review ask — only once the WHOLE order has shipped; a coach still
+           waiting on half their gear is not the one to ask. -->
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;background-color:${PANEL};border:1px solid ${HAIRLINE};">
+        <tr><td align="center" style="padding:20px 24px 22px 24px;">
+          <div style="font-family:${DISPLAY};font-weight:bold;font-size:15px;line-height:19px;mso-line-height-rule:exactly;letter-spacing:1px;color:${NAVY};text-transform:uppercase;">Happy with how we did?</div>
+          <div style="font-family:${BODY_FONT};font-size:13px;line-height:20px;mso-line-height-rule:exactly;color:${BODY_TEXT};padding-top:6px;">A quick Google review means a lot to our team &#8212; and helps other coaches find us.</div>
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin-top:14px;"><tr>${buttonHtml(reviewUrl, '★ Leave us a Google review', { fill: RED })}</tr></table>
+        </td></tr>
+      </table>
     </td>
   </tr>` : ''}
   <tr>

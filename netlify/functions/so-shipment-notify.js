@@ -39,6 +39,12 @@ const j = (statusCode, obj) => ({ statusCode, headers: HEADERS, body: JSON.strin
 // domain is; a rep whose team_members email is a personal address is not, so
 // that rep's notices go out from the shared address with them as reply-to.
 const FALLBACK_SENDER = 'noreply@nationalsportsapparel.com';
+
+// The "Leave us a Google review" button. Same link the estimate/invoice emails
+// use (src/utils.js GOOGLE_REVIEW_URL — the live Business Profile deep link, kept
+// verbatim so click-rewriting can't break it); GOOGLE_REVIEW_URL in the env
+// overrides it, the same switch review-request-send.js honours.
+const reviewUrl = () => process.env.GOOGLE_REVIEW_URL || 'https://g.page/r/CfcLJB_RwxCREBM/review';
 const SENDER_DOMAINS = (process.env.SO_SHIPMENT_SENDER_DOMAINS || 'nationalsportsapparel.com')
   .split(',').map((d) => d.trim().toLowerCase()).filter(Boolean);
 const senderDomainOk = (email) => {
@@ -259,6 +265,7 @@ async function sendShipmentNotice(admin, opts = {}) {
       carrier: selected[0].carrier || so._carrier || '',
       portalUrl,
       reorderUrl,
+      reviewUrl: reviewUrl(),
       logoUrl: logoUrl(),
     });
 
