@@ -18,7 +18,7 @@ import { buildIFTask, buildNotHere, zeroInventoryFor, notHereSummary, pickSizeKe
 import BotStatus from './BotStatus';
 import AiInbox from './AiInbox';
 import AiTasks from './AiTasks';
-import MyEmail from './MyEmail';
+import MyEmail, { MyEmailDigest } from './MyEmail';
 import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, decoShipToPresets, botProgress } from './lib/botTasks';
 import { normalizeOmgSize } from './lib/omgReport';
 import { createClient } from '@supabase/supabase-js';
@@ -9865,7 +9865,7 @@ export default function App(){
       onNavigate={setPg}
       onOpenPriority={_openDashPriority}
     />}
-    {uiMode==='new'&&dashView!=='admin'&&_renderWorkspace()}
+    {uiMode==='new'&&dashView!=='admin'&&<><MyEmailDigest supabase={supabase} cu={cu} customers={cust} onOpen={()=>setPg('my_email')}/>{_renderWorkspace()}</>}
 
     {/* ═══ ADMIN VIEW ═══ */}
     {(dashView==='admin'||uiMode==='classic')&&<>
@@ -10101,7 +10101,9 @@ export default function App(){
       </div>
       </>})()}
     {/* Reminders & notes — kept high on the page: monthly sales, to-dos, KPIs and reminders are the priority views */}
-    {uiMode==='new'&&_renderWorkspace()}
+    {/* Shown in classic too: reminders created from My Email (and the rest of the CRM) must be visible in both UIs. */}
+    <MyEmailDigest supabase={supabase} cu={cu} customers={cust} onOpen={()=>setPg('my_email')}/>
+    {_renderWorkspace()}
     <div className="stats-row"><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setEstF(f=>({...f,status:'open',rep:'_me_'}));setPg('estimates')}}><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setSOF(f=>({...f,status:'active',rep:'_me_'}));setPg('orders')}}><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setJobFilters({statuses:['hold','staging','in_process'],rep:'_me_',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''});setPg('jobs')}}><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setMF('unread');setMEntityF('all');setPg('messages')}}><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>{unreadMentions.length>0&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#f59e0b'}} onClick={()=>{setMF('mentions');setMEntityF('all');setPg('messages')}}><div className="stat-label">@ Mentions</div><div className="stat-value" style={{color:'#d97706'}}>{unreadMentions.length}</div></div>}
       {isA&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#fbbf24'}} onClick={()=>{setInvTab('stock');setPg('inventory')}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}
       {/* Bills Inbox — the morning glance for supplier-bill intake: S&S + Sports Inc docs the

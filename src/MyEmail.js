@@ -263,3 +263,59 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
       </div>)})}
   </div>);
 }
+
+// Dashboard card (classic and new UI): the rep's important, untriaged emails,
+// or a one-line nudge to connect Gmail. Renders nothing for roles without My Email
+// or when the tables aren't there yet (migration not applied).
+const EMAIL_ROLES=['admin','super_admin','gm','rep','csr'];
+export function MyEmailDigest({supabase,cu,customers,onOpen}){
+  const allowed=EMAIL_ROLES.includes(cu?.role);
+  const[rows,setRows]=useState(null);
+  const[connected,setConnected]=useState(null);
+  const load=useCallback(async()=>{
+    if(!supabase||!cu?.id||!allowed)return;
+    const{data,error}=await supabase.from('rep_email_insights').select('id,sender_name,sender_email,subject,summary,received_at,customer_id,so_id,estimate_id,tasks,deadlines')
+      .eq('team_member_id',cu.id).eq('important',true).eq('status','new').order('received_at',{ascending:false}).limit(6);
+    setRows(error?null:(data||[]));
+  },[supabase,cu?.id,allowed]);
+  useEffect(()=>{load()},[load]);
+  useEffect(()=>{
+    if(!supabase||!allowed)return;let dead=false;
+    callFn(supabase,'google-connect',{action:'status'}).then(d=>{if(!dead)setConnected(!!d.connected)}).catch(()=>{if(!dead)setConnected(null)});
+    return()=>{dead=true};
+  },[supabase,allowed]);
+  useEffect(()=>{
+    if(!supabase||!cu?.id||!allowed)return;
+    const ch=supabase.channel('my-email-digest-'+cu.id).on('postgres_changes',{event:'*',schema:'public',table:'rep_email_insights',filter:'team_member_id=eq.'+cu.id},load).subscribe();
+    return()=>{supabase.removeChannel(ch)};
+  },[supabase,cu?.id,load]);
+  if(!allowed)return null;
+  if(rows===null)return null;// table missing or still loading
+  const custName=id=>(customers||[]).find(c=>c.id===id)?.name||null;
+  return(<div className="card" style={{marginBottom:16}}>
+    <div className="card-header" style={{display:'flex',alignItems:'center',gap:8}}>
+      <Icon name="mail" size={14}/>
+      <h2 style={{margin:0,fontSize:14}}>From your email{rows.length?' ('+rows.length+(rows.length===6?'+':'')+')':''}</h2>
+      <button className="btn btn-sm btn-secondary" style={{marginLeft:'auto'}} onClick={onOpen}>Open My Email</button>
+    </div>
+    <div className="card-body" style={{padding:rows.length?0:undefined}}>
+      {rows.length===0?<div style={{fontSize:12,color:'#64748b'}}>
+        {connected===false?<>Connect your Gmail and AI will flag important emails, tasks and deadlines here. <button style={{border:'none',background:'none',color:'#2563eb',cursor:'pointer',fontWeight:700,padding:0,fontSize:12}} onClick={onOpen}>Connect Google →</button></>
+        :'Nothing important waiting in your inbox.'}
+      </div>
+      :rows.map(r=>{
+        const cname=custName(r.customer_id);
+        const extras=(r.tasks?.length||0)+(r.deadlines?.length||0);
+        return(<div key={r.id} onClick={onOpen} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}}>
+          <div style={{display:'flex',gap:6,alignItems:'baseline',flexWrap:'wrap'}}>
+            <span style={{fontWeight:700,fontSize:12,color:'#1e293b'}}>{r.sender_name||r.sender_email}</span>
+            {cname&&<span style={{fontSize:10,color:'#475569',background:'#f1f5f9',borderRadius:4,padding:'1px 5px'}}>{cname}</span>}
+            {r.so_id&&<span style={{fontSize:10,color:'#475569',background:'#f1f5f9',borderRadius:4,padding:'1px 5px'}}>{r.so_id}</span>}
+            {extras>0&&<span style={{fontSize:10,color:'#1e40af',fontWeight:700}}>{extras} to-do{extras===1?'':'s'}</span>}
+            <span style={{marginLeft:'auto',fontSize:10,color:'#94a3b8'}}>{fmtWhen(r.received_at)}</span>
+          </div>
+          <div style={{fontSize:12,color:'#334155',marginTop:2}}>{r.summary||r.subject||'(no subject)'}</div>
+        </div>)})}
+    </div>
+  </div>);
+}
