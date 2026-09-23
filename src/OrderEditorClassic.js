@@ -886,6 +886,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }},[openPOId]);
     const origRef=React.useRef(JSON.stringify(o));
     const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showActionsDD,setShowActionsDD]=useState(false);const[showTaxExempt,setShowTaxExempt]=useState(false);const actionsRef=useRef(null);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=1000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[batchReadyPopup,setBatchReadyPopup]=useState(null);const[addShp,setAddShp]=useState(null);// Tracking tab: manual outbound shipment entry (null = form closed)
+    const[shpEmailBusy,setShpEmailBusy]=useState(false);// Tracking tab: coach shipping-notice send in flight
     // Auto-open a send flow when navigated here from a dashboard follow-up "Send" button.
     // {kind:'doc'} opens the estimate/SO SendModal; {kind:'coach',jobId} opens Send-to-Coach for
     // that job (deferred like scrollToJobRef so the post-sync job list has committed).
@@ -7590,6 +7591,64 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const shipCost=safeNum(o._shipping_cost||o._shipstation_cost||0)||shipCostFromShipments;
       const freightCost=safeNum(o._inbound_freight||0);
       const canEditCost=cu?.role==='admin'||cu?.role==='super_admin'||cu?.role==='accounting'||cu?.role==='rep';
+      // ── "Your gear is on the way" — the coach's shipping notice ──
+      // so-shipment-notify builds and sends it server-side from this order: the
+      // boxes, their tracking, the mockups and the coach's address all come from
+      // the DB, so this button hands over an SO id and nothing else. The preview
+      // round-trip is what lets the rep see WHO it's going to before it leaves.
+      const emailShipmentNotice=async()=>{
+        if(shpEmailBusy)return;
+        setShpEmailBusy(true);
+        const post=body=>authFetch('/.netlify/functions/so-shipment-notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({soId:o.id,...body})});
+        try{
+          const pr=await post({preview:true});const pd=await pr.json().catch(()=>({}));
+          if(!pr.ok){nf(pd.error||'Could not prepare the shipping email','error');return}
+          if(!pd.to){nf('No contact with an email address on this account — add one on the customer record first','error');return}
+          const eta=window.prompt('Estimated delivery to show the coach (optional — leave blank to omit):',o.deliver_on_date||'');
+          if(eta===null)return;
+          const warn=pd.alreadySent?'\n\n⚠️ These boxes were already emailed to '+(pd.alreadySent.to||'the customer')+' on '+pd.alreadySent.sent_at+'. Sending again will be a duplicate.':'';
+          if(!window.confirm('Email tracking to '+(pd.to.name?pd.to.name+' <'+pd.to.email+'>':pd.to.email)+'?\n\n'+pd.boxes+' box'+(pd.boxes===1?'':'es')+' · '+pd.pieces+' pieces'+warn))return;
+          const r=await post({eta:eta.trim(),resend:!!pd.alreadySent});const d=await r.json().catch(()=>({}));
+          if(!r.ok){nf(d.error||'Email send failed','error');return}
+          nf('Shipping notice sent to '+d.to+(d.repCopy==='sent'?' — copy sent to '+d.repEmail:''));
+          if(d.historyRecorded===false)nf('Sent — but the send was not recorded on the order','error');
+        }catch(e){nf('Email failed: '+e.message,'error')}
+        finally{setShpEmailBusy(false)}
+      };
+      // Show the exact email — mockups, boxes, size runs — in a new tab without sending
+      // anything. The tab is opened on the click itself: pop-up blockers allow that, but
+      // not a window opened after the fetch comes back.
+      const previewShipmentNotice=async()=>{
+        if(shpEmailBusy)return;
+        const w=window.open('','_blank');
+        if(!w){nf('Pop-up blocked — allow pop-ups for the portal to preview the email','error');return}
+        w.document.write('<p style="font-family:sans-serif;padding:24px;color:#475569">Building the shipping email…</p>');
+        setShpEmailBusy(true);
+        try{
+          const r=await authFetch('/.netlify/functions/so-shipment-notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({soId:o.id,preview:true})});
+          const d=await r.json().catch(()=>({}));
+          if(!r.ok||!d.html){w.close();nf(d.error||'Could not build the shipping email','error');return}
+          w.document.open();w.document.write(d.html);w.document.close();
+          w.document.title='Preview — '+(d.subject||'shipping email');
+        }catch(e){w.close();nf('Preview failed: '+e.message,'error')}
+        finally{setShpEmailBusy(false)}
+      };
+      // A real copy to the signed-in staff member, through Brevo like the real thing —
+      // the only way to see it in an actual inbox (images and all) before a coach does.
+      // The server sends it to the caller's own team_members email; it is never
+      // recorded and never blocks the real send.
+      const testShipmentNotice=async()=>{
+        if(shpEmailBusy)return;
+        if(!window.confirm('Send a test copy of the coach shipping email to your own address ('+(cu?.email||'your team member email')+')?\n\nNothing goes to the customer and nothing is recorded.'))return;
+        setShpEmailBusy(true);
+        try{
+          const r=await authFetch('/.netlify/functions/so-shipment-notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({soId:o.id,test:true,eta:o.deliver_on_date||''})});
+          const d=await r.json().catch(()=>({}));
+          if(!r.ok){nf(d.error||'Test send failed','error');return}
+          nf('Test copy sent to '+d.to+(d.from?' (from '+d.from+')':''));
+        }catch(e){nf('Test send failed: '+e.message,'error')}
+        finally{setShpEmailBusy(false)}
+      };
 
       return<div style={{display:'grid',gap:16}}>
         {/* ── WAREHOUSE BOXES (BX plates, boxes table) — where is this order physically ── */}
@@ -7624,7 +7683,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   shipped after the order was already closed and invoiced. The warehouse Ready-to-Ship
                   flow is still the main path (it knows which units are in the box); this is the escape
                   hatch for everything else, and it is what gets the shipping COST onto the order. */}
-              {canEditCost&&<button className="btn btn-sm btn-secondary" style={{marginLeft:'auto',fontSize:11}}
+              {allOutbound.length>0&&<button className="btn btn-sm btn-secondary" style={{marginLeft:'auto',fontSize:11}}
+                disabled={shpEmailBusy} onClick={previewShipmentNotice} title="Open the coach's shipping email in a new tab — nothing is sent">
+                👁 Preview Email</button>}
+              {allOutbound.length>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}}
+                disabled={shpEmailBusy} onClick={testShipmentNotice} title="Email yourself a real copy — nothing goes to the customer">
+                ✉️ Test To Me</button>}
+              {allOutbound.length>0&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#962C32',borderColor:'#962C32'}}
+                disabled={shpEmailBusy} onClick={emailShipmentNotice}>
+                {shpEmailBusy?'Working…':'📧 Email Coach Tracking'}</button>}
+              {canEditCost&&<button className="btn btn-sm btn-secondary" style={{marginLeft:allOutbound.length>0?0:'auto',fontSize:11}}
                 onClick={()=>setAddShp(addShp?null:{tracking:'',carrier:'',date:new Date().toLocaleDateString(),cost:'',notes:''})}>
                 {addShp?'Cancel':'+ Add Shipment'}</button>}
             </div>

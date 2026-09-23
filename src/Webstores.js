@@ -66,6 +66,22 @@ const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground'
 // ("deco:<id>", resolved against decoLocations from useDecoShipFromLocations).
 // Omitted falls back to the store's saved default, then the warehouse. A
 // decorator with no address throws here, before anything is sent to ShipStation.
+// ShipStation allows ~40 API calls a minute and each label takes 2–3, so a bulk
+// label run hits the limit partway through. A 429 is refused at the door — no
+// label is bought — and the ShipStation order upsert is keyed on the order, so
+// waiting a minute and retrying is safe. Any other error (a timeout above all) is
+// NOT retried: the label may have been bought and only the reply lost.
+async function withShipStationRateRetry(buy, onWait) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await buy(); }
+    catch (e) {
+      if (!/\(429\)/.test((e && e.message) || '') || attempt >= 2) throw e;
+      if (onWait) onWait();
+      await new Promise((r) => setTimeout(r, 62000));
+    }
+  }
+}
+
 async function createWebstoreLabel(order, items, store, weightByPid = {}, imageByPid = {}, fromCode, decoLocations = []) {
   const originCode = shipFromCode(fromCode || store.ship_from_code, decoLocations);
   const shipFrom = shipStationShipFrom(originCode, decoLocations);
@@ -242,10 +258,11 @@ function printPullSheet(store, soLabel, designs, numbers, pulledNote) {
 // the stacked-embed window if the merge fails for any reason.
 async function printLabels(labels) {
   try {
-    await printPdfLabels(labels);
+    return await printPdfLabels(labels);
   } catch (e) {
     const embeds = labels.map((b64) => `<div class="lp"><embed src="data:application/pdf;base64,${b64}" type="application/pdf" width="100%" height="100%"></div>`).join('');
     printHtml(`<!doctype html><html><head><title>Shipping labels</title><style>body{margin:0}.lp{width:100%;height:6in;page-break-after:always}</style></head><body>${embeds || 'No labels.'}</body></html>`);
+    return labels.length;
   }
 }
 
@@ -13537,16 +13554,19 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     setSsMsg((m) => ({ ...m, [soId]: `Creating ${groups.length} labels from ${shipFromLabel(shipFrom, decoLocs)}…` }));
     const weightByPid = {}; (catalog || []).forEach((c) => { if (c.product_id && c.weight_oz != null) weightByPid[c.product_id] = Number(c.weight_oz) || 0; });
     const labels = []; const errs = []; let held = 0;
-    for (const g of groups) {
+    for (let n = 0; n < groups.length; n++) {
+      const g = groups[n];
       const o = g.order;
       const who = o.buyer_name || o.buyer_email || o.id;
+      setSsMsg((m) => ({ ...m, [soId]: `Creating label ${n + 1} of ${groups.length} from ${shipFromLabel(shipFrom, decoLocs)}…` }));
       const plan = webstoreShipPlan(g.items);
       if (!plan.length) { held++; continue; }
       const addrErr = validateShipAddress(o.ship_address);
       if (addrErr) { errs.push({ order: who, msg: addrErr }); continue; }
       const shipItems = plan.map((x) => ({ ...x.item, qty: x.qty }));
       try {
-        const label = await createWebstoreLabel(o, shipItems, store, weightByPid, imageByPid, shipFrom, decoLocs);
+        const label = await withShipStationRateRetry(() => createWebstoreLabel(o, shipItems, store, weightByPid, imageByPid, shipFrom, decoLocs),
+          () => setSsMsg((m) => ({ ...m, [soId]: `ShipStation rate limit — pausing a minute, then continuing with label ${n + 1} of ${groups.length} (${who})…` })));
         // Keep the purchased PDF printable even if the ledger handoff needs
         // attention; retries are idempotent and the error explicitly warns the
         // operator not to buy a second label.
@@ -13561,9 +13581,12 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
       const total = (soOrds || []).reduce((a, x) => a + (Number(x.label_cost) || 0), 0);
       await supabase.from('sales_orders').update({ _shipping_cost: total, _shipstation_cost: total }).eq('id', soId);
     } catch {}
-    if (labels.length) await printLabels(labels);
+    // printPdfLabels quietly drops a PDF it can't read — say so, those labels are paid for.
+    let printed = 0;
+    if (labels.length) { try { printed = await printLabels(labels); } catch {} }
+    const printNote = labels.length && printed < labels.length ? ` Only ${printed} of ${labels.length} made it into the print file — reprint the missing orders from the Orders tab.` : '';
     setSsErr((m) => ({ ...m, [soId]: errs }));
-    setSsMsg((m) => ({ ...m, [soId]: `${labels.length} label${labels.length === 1 ? '' : 's'} created${errs.length ? `, ${errs.length} need attention` : ''}${held ? `, ${held} fully short` : ''}.` }));
+    setSsMsg((m) => ({ ...m, [soId]: `${labels.length} label${labels.length === 1 ? '' : 's'} created${errs.length ? `, ${errs.length} need attention` : ''}${held ? `, ${held} fully short` : ''}.${printNote}` }));
   };
   const maps = buildTransferMaps(catalog, bundleItems);
   const transferLabel = (code) => { const t = transfers.find((x) => x.code === code); if (t) return t.label; const [d, s, c] = code.split('|'); return s ? `#${d} · ${s} · ${c}` : code; };
@@ -14139,22 +14162,11 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
       const { o, plan } = ready[n];
       const who = o.buyer_name || o.buyer_email || o.id;
       setBulkMsg(`Creating label ${n + 1} of ${ready.length} (${who})…`);
-      // ShipStation allows ~40 API calls a minute and each label takes 2–3, so a
-      // big run hits the limit partway through. A 429 is refused at the door —
-      // no label is bought — and the order upsert is keyed, so waiting and
-      // retrying is safe. Any other error (a timeout above all) is NOT retried:
-      // the label may have been bought and only the reply lost.
-      let bought; let lastErr = null;
-      for (let attempt = 0; attempt < 3 && !bought; attempt++) {
-        try { bought = await buyOrderLabel(o, plan, cat); lastErr = null; }
-        catch (e) {
-          lastErr = e;
-          if (!/\(429\)/.test((e && e.message) || '') || attempt === 2) break;
-          setBulkMsg(`ShipStation rate limit — pausing a minute, then continuing with label ${n + 1} of ${ready.length} (${who})…`);
-          await new Promise((r) => setTimeout(r, 62000));
-        }
-      }
-      if (!bought) { failed.push(who); setLabelMsg((m) => ({ ...m, [o.id]: 'Label failed: ' + ((lastErr && lastErr.message) || 'unknown error') })); continue; }
+      let bought;
+      try {
+        bought = await withShipStationRateRetry(() => buyOrderLabel(o, plan, cat),
+          () => setBulkMsg(`ShipStation rate limit — pausing a minute, then continuing with label ${n + 1} of ${ready.length} (${who})…`));
+      } catch (e) { failed.push(who); setLabelMsg((m) => ({ ...m, [o.id]: 'Label failed: ' + ((e && e.message) || 'unknown error') })); continue; }
       const { label, shipItems } = bought;
       if (label.labelData) pdfs.push(label.labelData);
       try {
