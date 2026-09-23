@@ -1,5 +1,6 @@
 import { resolveWebstoreReportLines, reportBlockingIssues } from '../lib/soPlayerReport';
 import { resolveSizeSkuSource } from '../lib/sizeSkuOverrides';
+import { placementById } from '../lib/artPlacements';
 import { isServiceLine } from '../constants';
 import { garmentMockKey, mockSlotKeys, slotMockFiles } from '../safeHelpers';
 
@@ -66,10 +67,39 @@ export function buildProductionPacket({ store, orders = [], lines = [], salesOrd
       garments.push(garment);
     });
   });
+  // Only unbatched active order lines use the store catalog. SO rows stay authoritative.
+  const draftGroups = new Map();
+  reconciled.lines.filter(l => !l._sourceSoId).forEach(l => {
+    const matches = catalog.filter(c => (l.product_id && c.product_id === l.product_id) || c.sku === l.sku);
+    const c = matches.length === 1 ? matches[0] : {};
+    const ds = arr(l.decorations).length ? l.decorations : arr(c.decorations);
+    const key = JSON.stringify([c.id || l.product_id || l.sku, l._effSku || l.sku, l.color, ds]);
+    if (!draftGroups.has(key)) draftGroups.set(key, { c, ds, l, sizes: {} });
+    const group = draftGroups.get(key), size = l._size || l.size || 'OS';
+    group.sizes[size] = (group.sizes[size] || 0) + qty(l.qty);
+  });
+  draftGroups.forEach(({c,ds,l,sizes}, key) => {
+    const id = `store:${encodeURIComponent(text(c.id||l.product_id||l.sku))}:${encodeURIComponent(text(l._effSku||l.sku))}:${encodeURIComponent(text(l.color))}:${[...draftGroups.keys()].indexOf(key)}`, units = total(sizes);
+    const g = {id,soId:'',unbatched:true,sku:text(l._effSku||l.sku),name:text(l.name||c.display_name||l.sku),color:text(l.color),sizes,units,image:safeUrl(l.image_url||c.image_url),decorationIds:[],undecorated:false};
+    ds.forEach((d,di)=>{
+      const art=arr(store.store_art).find(a=>a.id===(d.art_id||d.art_file_id)&&!a.archived);
+      const pick=d.cw_by_color?.[g.color.trim().toLowerCase()];
+      const cw=arr(art?.color_ways).find(w=>w.id===(pick?.color_way_id||d.color_way_id));
+      const pl=placementById(d.placement), bounded=(v,f)=>Number.isFinite(Number(v))?Math.max(0,Math.min(100,Number(v))):f;
+      const preview={image:safeUrl(d.side==='back'?c.image_back_url:(l.image_url||c.image_url)),art:safeUrl((typeof pick==='string'?pick:pick?.url)||d.art_url||d.web_url||art?.web_logo_url),x:bounded(d.x??pl.x,pl.x),y:bounded(d.y??pl.y,pl.y),w:bounded(d.w??pl.w,pl.w),baked:!!d.baked};
+      const did=`${id}:deco:${di}`;g.decorationIds.push(did);
+      const mockItem={sku:g.sku,color:g.color};
+      const mockDecos=ds.map(x=>({...x,kind:x.kind||'art',position:x.position||x.placement}));
+      const slots=mockSlotKeys(garmentMockKey(mockItem),mockDecos).map(slot=>({...slot,artFile:arr(store.store_art).find(a=>a.id===(ds[slot.di]?.art_id||ds[slot.di]?.art_file_id)&&!a.archived)}));
+      decorations.push({id:did,garmentId:id,soId:'',unbatched:true,sku:g.sku,color:g.color,name:text(art?.name||d.kind||'Store decoration'),kind:text(d.kind||'art'),method:text(d.deco_type||d.type||art?.deco_type),position:text(d.position||pl.label),dimensions:text(art?.art_size||d.num_size||d.dtf_size),colors:arr(cw?.inks).join(', ')||text(d.print_color),decorator:'',units,sizes,approved:['approved','art_complete'].includes(art?.status),mocks:files(slots.filter(slot=>slot.di===di).flatMap(slot=>slotMockFiles(slot,slots,mockItem))),storePreview:preview,productionFiles:files(art?.prod_files),personalization:{font:text(d.num_font),roster:[],names:''}});
+    });
+    garments.push(g);
+  });
+  if(draftGroups.size) issues.push('Store order quantities are awaiting an SO batch; review production assignments before issuing');
   const players = reconciled.lines.map((l, i) => {
     const order = reconciled.orderById[l.order_id] || {};
     if (l._verify || l._sizeVerify) issues.push(`${l._sourceSoId || 'Order'} ${l._effSku || l.sku}: player mapping needs verification`);
-    return { id: `${text(l.id || 'extra')}:${text(l._effSku || l.sku)}:${text(l._size || l.size)}:${i}`, orderId: text(order.order_number || order.omg_order_number || l.order_id), soId: text(l._sourceSoId), player: text(l.player_name || 'Unassigned'), number: text(l.player_number), sku: text(l._effSku || l._sku || l.sku), name: text(l._name || l.name), color: text(l._color || l.color), size: text(l._size || l.size), qty: qty(l.qty), wasSku: text(l._wasSku), wasSize: text(l._wasSize), unbatched: !l._sourceSoId, verify: !!(l._verify || l._unmatched || l._sizeVerify), extra: !!l._orderExtra };
+    return { id: `${text(l.id || 'extra')}:${text(l._effSku || l.sku)}:${text(l._size || l.size)}:${i}`, orderKey: text(l.order_id || 'extra'), orderId: text(order.order_number || order.omg_order_number || l.order_id), soId: text(l._sourceSoId), player: text(l.player_name || 'Unassigned'), number: text(l.player_number), sku: text(l._effSku || l._sku || l.sku), name: text(l._name || l.name), color: text(l._color || l.color), size: text(l._size || l.size), qty: qty(l.qty), wasSku: text(l._wasSku), wasSize: text(l._wasSize), unbatched: !l._sourceSoId, verify: !!(l._verify || l._unmatched || l._sizeVerify), extra: !!l._orderExtra };
   });
   const sharedNotes = notes.filter(n => !n.resolved_at && (!soId || !n.so_id || n.so_id === soId)).map(n => ({ id: n.id, soId: n.so_id, scope: n.scope, targetId: n.target_id, text: n.text, createdAt: n.created_at }));
   sharedNotes.filter(n => n.targetId && ![...garments,...decorations,...players].some(r=>r.id===n.targetId)).forEach(n=>issues.push(`Instruction target no longer exists: ${n.text.slice(0,80)}. Review and reassign this instruction.`));
@@ -94,4 +124,15 @@ export function packetChanges(previous, current) {
     for (const row of before.values()) out.push(`Removed ${key}: ${row.sku || row.player || row.text || row.id}`);
   }
   return out;
+}
+
+export function groupPlayerOrders(players, search = '') {
+  const groups = new Map();
+  players.forEach(r=>{const key=r.orderKey||r.orderId;if(!groups.has(key))groups.set(key,{id:key,orderId:r.orderId,rows:[],units:0});const g=groups.get(key);g.rows.push(r);g.units+=r.qty;});
+  const needle=search.trim().toLowerCase();
+  return [...groups.values()].filter(g=>!needle||g.rows.some(r=>`${r.player} ${r.number} ${r.orderId} ${r.sku} ${r.size}`.toLowerCase().includes(needle))).sort((a,b)=>a.orderId.localeCompare(b.orderId,undefined,{numeric:true}));
+}
+export function playerItemCsv(players) {
+  const cell=v=>'"'+String(v??'').replace(/^[=+@\-\t\r]/,"'$&").replace(/"/g,'""')+'"';
+  return [['Order','Player','Number','SO','SKU','Garment','Color','Size','Quantity'],...players.map(r=>[r.orderId,r.player,r.number,r.soId,r.sku,r.name,r.color,r.size,r.qty])].map(row=>row.map(cell).join(',')).join('\r\n');
 }
