@@ -42,6 +42,7 @@ import { unfinishedProdSummary } from './lib/orderCloseGuard';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { CustModal } from './modals';
 import { applyTaxExempt, clearTaxExempt, taxExemptInfo, taxExemptLabel } from './lib/taxExempt';
+import { NO_INVOICE_REASONS, applyNoInvoice, clearNoInvoice, noInvoiceLabel } from './lib/noInvoice';
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
@@ -5367,6 +5368,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 records why so an untaxed doc can answer to an auditor on its own. */}
             <button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:_taxInfo.scope==='order'?'#166534':'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);setShowTaxExempt(true)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🧾 {_taxInfo.scope==='order'?'Tax Exempt — edit reason':'Mark Tax Exempt…'}</button>
 
+            {/* No invoice needed — THIS sales order only. Billed in NetSuite, collected by an
+                OMG store, or a free replacement: the order will never get a portal invoice,
+                so it leaves the Ready-to-invoice report and the rep's TODO list. Reason required. */}
+            {isSO&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:o.no_invoice_needed?'#9a3412':'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
+              if(o.no_invoice_needed){if(!window.confirm('Put '+o.id+' back on the Ready-to-invoice list?'))return;setO(cur=>({...clearNoInvoice(cur),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Order is back on the Ready-to-invoice list');return}
+              const answer=window.prompt('Why does '+o.id+' not need a portal invoice?\n\n'+NO_INVOICE_REASONS.map((r,i)=>(i+1)+'. '+r).join('\n')+'\n\nType a number, or your own reason:');
+              if(answer==null)return;const n=parseInt(answer,10);const text=(String(n)===answer.trim()&&n>=1&&n<=NO_INVOICE_REASONS.length)?NO_INVOICE_REASONS[n-1]:answer.trim();
+              if(!text){nf('A reason is required to mark an order as not needing an invoice','error');return}
+              setO(cur=>({...applyNoInvoice(cur,{reason:text,by:cu?.id}),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Marked no invoice needed — removed from the Ready-to-invoice list')}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🚫 {o.no_invoice_needed?'No Invoice Needed — put back on list':'Mark No Invoice Needed…'}</button>}
+
             {/* Credit — show when customer has credits available */}
             {cust&&!o.credit_applied&&(()=>{const _credits=(cust.credits||[]);const _bal=_credits.reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0);return _bal>0})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#065f46',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
               const credits=(cust.credits||[]).filter(cr=>(cr.amount||0)-(cr.used||0)>0);
@@ -5454,9 +5465,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <div style={{display:'flex',gap:12,marginTop:12,alignItems:'end',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',paddingTop:12}}>
         <div><label className="form-label">Shipping</label><div style={{display:'flex',gap:4,alignItems:'center'}}>
           <Bg options={[{value:'pct',label:'% of Total'},{value:'flat',label:'Flat $'}]} value={o.shipping_type||'pct'} onChange={v=>sv('shipping_type',v)}/>
-          {o.shipping_type==='pct'?<span style={{display:'inline-flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'2px 6px',background:'white'}}><input value={o.shipping_value||0} onChange={e=>sv('shipping_value',parseFloat(e.target.value)||0)} style={{width:40,border:'none',outline:'none',fontSize:15,fontWeight:800,textAlign:'center',background:'transparent'}}/><span style={{fontWeight:700}}>%</span></span>
+          {o.shipping_type==='pct'?<span style={{display:'inline-flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'2px 6px',background:'white'}}><input value={o.shipping_value||0} onChange={e=>{const v=parseFloat(e.target.value)||0;if(v>100){nf('Shipping % cannot exceed 100 — switch to Flat $ to charge a dollar amount','error');sv('shipping_value',100);return}sv('shipping_value',Math.max(0,v))}} style={{width:40,border:'none',outline:'none',fontSize:15,fontWeight:800,textAlign:'center',background:'transparent'}}/><span style={{fontWeight:700}}>%</span></span>
           :<$In value={o.shipping_value||0} onChange={v=>sv('shipping_value',v)} w={60}/>}
           <span style={{fontSize:12,color:'#64748b'}}>= ${totals.ship.toFixed(2)}</span>
+          {isSO&&o.no_invoice_needed&&<span title={'Marked by '+(o.no_invoice_by||'?')+' '+(o.no_invoice_at||'')} style={{fontSize:11,fontWeight:700,color:'#9a3412',background:'#fff7ed',border:'1px solid #fdba74',borderRadius:6,padding:'3px 8px'}}>{noInvoiceLabel(o)}</span>}
         </div></div>
         <div style={{flex:1,minWidth:180}}><label className="form-label">Ship To</label>
           <div style={{display:'flex',gap:4,alignItems:'center'}}>

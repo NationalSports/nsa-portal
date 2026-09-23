@@ -4,7 +4,7 @@ import {
   backlogSchedule, forecastRevenue, cashForecast, insights,
   portalStatement, combineStatement, profitByEntity, forecastAccuracy, buildSnapshotRows,
   receivablesDashboard, staleOrdersReport, arCashForecast,
-  customerExposureReport, completedUninvoicedOrdersReport, buildArSnapshotRows,
+  customerExposureReport, completedUninvoicedOrdersReport, invoiceResidualOrdersReport, buildArSnapshotRows,
   customerFamilyId, rollupCustomerAccounts, rollupCustomerPayments,
 } from '../lib/financeEngine';
 
@@ -262,6 +262,34 @@ describe('operational AR forecast and exposure', () => {
     expect(orderRows[0]).toMatchObject({
       id: 'SO-TAX', orderSubtotal: 110, orderTax: 9, orderValue: 119, invoiced: 55, openToInvoice: 64,
     });
+  });
+
+  test('parks small invoice/order differences as residuals and skips no-invoice-needed orders', () => {
+    const ar = { accountRows: [] };
+    const customers = [{ id: 'C1', name: 'Alpha', primary_rep_id: 'R1' }];
+    const sos = [
+      // Invoiced without the $37 shipping line: a difference, not unbilled work.
+      { id: 'SO-RESID', customer_id: 'C1', status: 'complete', _rev: 34815 },
+      // Invoiced for exactly half: a real remaining balance.
+      { id: 'SO-HALF', customer_id: 'C1', status: 'complete', _rev: 1400 },
+      // Never invoiced, tiny order: still ready work (no invoice exists to differ from).
+      { id: 'SO-TINY', customer_id: 'C1', status: 'ready_to_invoice', _rev: 5 },
+      // Rep said it was billed in NetSuite.
+      { id: 'SO-NS', customer_id: 'C1', status: 'complete', _rev: 9000, no_invoice_needed: true, no_invoice_reason: 'Invoiced in NetSuite' },
+    ];
+    const invs = [
+      { id: 'I1', so_id: 'SO-RESID', total: 34778, tax: 0, status: 'open' },
+      { id: 'I2', so_id: 'SO-HALF', total: 700, tax: 0, status: 'open' },
+    ];
+    const args = { sos, invs, customers, calcMargin, calcStatus: (so) => so.status, asOf: new Date(2026, 8, 23) };
+    const ready = completedUninvoicedOrdersReport(args);
+    const residual = invoiceResidualOrdersReport(args);
+    expect(ready.map((r) => r.id).sort()).toEqual(['SO-HALF', 'SO-TINY']);
+    expect(residual.map((r) => r.id)).toEqual(['SO-RESID']);
+    expect(residual[0]).toMatchObject({ orderValue: 34815, invoiced: 34778, openToInvoice: 37, residual: true });
+    const exposure = customerExposureReport({ ar, ...args });
+    expect(exposure[0].completedUninvoiced).toBe(ready.reduce((sum, r) => sum + r.openToInvoice, 0));
+    expect(exposure[0].completedUninvoiced).toBe(705);
   });
 
   test('builds team and rep daily snapshots with forecast and exposure values', () => {

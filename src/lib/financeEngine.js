@@ -531,6 +531,11 @@ export function arCashForecast({ openInvoices = [], accountPayRows = [], asOf })
   return out;
 }
 
+// Below either bound, a leftover on an already-invoiced order is treated as a
+// difference between the order estimate and the invoice, not as unbilled work.
+export const RESIDUAL_MAX_DOLLARS = 50;
+export const RESIDUAL_MAX_PCT = 0.05;
+
 function uninvoicedOrderRows({
   sos = [], invs = [], histInvs = [], customers = [], calcMargin, calcStatus, asOf,
 }) {
@@ -562,17 +567,24 @@ function uninvoicedOrderRows({
     const invoiced = N(invoicedBySo.get(so.id));
     const openToInvoice = Math.max(0, orderValue - invoiced);
     if (openToInvoice < 1) continue;
+    // A rep said this order is never invoiced from the portal (billed in
+    // NetSuite, OMG-collected, free replacement). It is not exposure.
+    if (so.no_invoice_needed) continue;
     let status = so.status || '';
     try { status = calcStatus ? calcStatus(so) : status; } catch (_) {}
     const storedStatus = String(so.status || '').toLowerCase();
     // The stored workflow state is authoritative for operational TODOs. A
     // calculated ready state must not pull waiting/receiving orders forward.
     const completed = ['ready_to_invoice', 'complete', 'completed', 'shipped'].includes(storedStatus);
+    // An invoice exists and the leftover is small: the invoice was written
+    // without tax or with different shipping, not a balance nobody billed.
+    // Reported separately as "invoice differs from order", never as ready work.
+    const residual = invoiced > 0 && (openToInvoice < RESIDUAL_MAX_DOLLARS || openToInvoice / orderValue < RESIDUAL_MAX_PCT);
     const orderDate = parseDate(so.created_at);
     rows.push({
       id: so.id, customerId: so.customer_id || null, customerName: customer?.name || 'Unknown account',
       repId: customer?.primary_rep_id || so.created_by || null, status, storedStatus: so.status || '',
-      orderSubtotal, orderTax, taxRate, orderValue, invoiced, openToInvoice, completed, orderDate,
+      orderSubtotal, orderTax, taxRate, orderValue, invoiced, openToInvoice, completed, residual, orderDate,
       ageDays: orderDate ? Math.max(0, daysBetween(today, orderDate)) : null,
       memo: so.memo || '', order: so,
     });
@@ -584,7 +596,14 @@ function uninvoicedOrderRows({
 // customerExposureReport on the same row builder guarantees that the visible
 // order list reconciles to the account totals and management snapshot.
 export function completedUninvoicedOrdersReport(args) {
-  return uninvoicedOrderRows(args).filter((r) => r.completed);
+  return uninvoicedOrderRows(args).filter((r) => r.completed && !r.residual);
+}
+
+// Complete orders whose invoice does not quite match the order (tax waived,
+// shipping adjusted). Shown beside the ready list so the small differences are
+// visible without being counted as orders waiting to be billed.
+export function invoiceResidualOrdersReport(args) {
+  return uninvoicedOrderRows(args).filter((r) => r.completed && r.residual);
 }
 
 export function customerExposureReport({
@@ -605,6 +624,7 @@ export function customerExposureReport({
     row.openAR += N(r.total); row.pastDue += N(r.pastDue);
   }
   for (const order of uninvoicedOrderRows({ sos, invs, histInvs, customers, calcMargin, calcStatus, asOf })) {
+    if (order.residual) continue; // invoice/order mismatch, not exposure
     const row = seed(order.customerId, order.customerName, order.repId);
     if (order.completed) { row.completedUninvoiced += order.openToInvoice; row.completedOrders++; }
     else { row.openOrderValue += order.openToInvoice; row.openOrders++; }
