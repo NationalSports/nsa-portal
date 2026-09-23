@@ -895,6 +895,31 @@ const _applyDelivery=(doc,lastSend,res)=>{
   if(res.status==='failed')return{...doc,email_status:'failed',_delivery_failed_to:res.email||lastSend.to||'',_delivery_reason:res.reason||res.event||'',sent_history:hist};
   return{...doc,sent_history:hist};// deferred — Brevo is still retrying, leave the status alone
 };
+// Dashboard to-dos for emails the recipient's mail server rejected (school districts that block
+// our sending service). Without this the only sign was a small red badge inside the document, and
+// reps heard about it from the coach days later. Keyed on the rejected messageId so a dismissed
+// alert comes back if a resend is rejected too; a successful resend flips email_status back to
+// 'sent' and the alert clears itself. Only the last 30 days — older failures aren't actionable.
+const _emailFailedTodos=({ests,sos,invs,cust})=>{
+  const out=[];const cutoff=Date.now()-30*86400000;
+  const add=(doc,kind,label)=>{
+    if(!doc||doc.email_status!=='failed'||doc.deleted_at)return;
+    const f=(doc.sent_history||[]).filter(h=>h&&h.delivery==='failed').slice(-1)[0];
+    if(!f)return;
+    const at=new Date(f.delivery_at||f.sent_at||0).getTime();
+    if(!(at>=cutoff))return;
+    const c=(cust||[]).find(x=>x.id===doc.customer_id);
+    const why=f.delivery_reason||(f.delivery_event==='blocked'?'blocked by their mail server':f.delivery_event)||'rejected';
+    out.push({type:'email_failed',priority:0,msg:'📭 '+label+' email NOT delivered: '+doc.id,
+      detail:(c?.name||c?.alpha_tag||doc.id)+' · '+(f.delivery_to||f.to||'recipient')+' · '+why+' — send the PDF from your own email or get another address',
+      action:'Open',role:'sales',[kind]:doc,...(kind==='est'?{estC:c}:{}),date:f.delivery_at||f.sent_at,
+      dismissKey:'email_failed:'+doc.id+':'+(f.messageId||'')});
+  };
+  (ests||[]).forEach(e=>add(e,'est','Estimate'));
+  (sos||[]).forEach(s=>add(s,'so','Sales order'));
+  (invs||[]).forEach(i=>add(i,'inv','Invoice'));
+  return out;
+};
 
 
 // Circuit breaker: track consecutive poll failures to implement exponential backoff
@@ -3505,6 +3530,8 @@ export default function App(){
   // burst of up to 15 sequential Brevo calls — flooding the rate-limited events API with 429s.
   const _brevoDocsRef=React.useRef({ests,sos,invs});
   _brevoDocsRef.current={ests,sos,invs};
+  // Current user + toast for the poller below (its interval is created once, so it reads these via a ref).
+  const _brevoMeRef=React.useRef(null);
   React.useEffect(()=>{
     if(!_brevoKey)return;
     const checkOpens=async()=>{
@@ -3524,13 +3551,21 @@ export default function App(){
       // list and gets re-polled. Only write when the verdict actually CHANGES, or every cycle
       // would re-stamp identical history and trigger a pointless save.
       const _isNew=(lastSend,res)=>res&&lastSend.delivery!==res.status;
+      // Pop up a warning for the rep who sent it when their email bounces. Every open tab polls,
+      // so only the sender sees it; the dashboard to-do (_emailFailedTodos) is the lasting alert.
+      const _alertFail=(doc,lastSend,res)=>{
+        if(res.status!=='failed')return;
+        const me=_brevoMeRef.current;const u=me&&me.cu;
+        if(!u||!me.nf||!lastSend.sent_by||(lastSend.sent_by!==u.name&&lastSend.sent_by!==u.id))return;
+        me.nf('📭 '+doc.id+' was NOT delivered to '+(res.email||lastSend.to||'the recipient')+' — their mail server blocked it. Send the PDF from your own email.','error');
+      };
       // Check estimates with pending email_status='sent' and a recent messageId send
       const pendingEsts=ests.filter(e=>e.email_status==='sent'&&(e.sent_history||[]).some(_fresh));
       for(const est of pendingEsts.slice(0,5)){
         const lastSend=(est.sent_history||[]).filter(_fresh).slice(-1)[0];
         if(!lastSend)continue;
         const result=await checkBrevoDelivery(lastSend.messageId);
-        if(_isNew(lastSend,result)){setEsts(prev=>prev.map(e=>e.id===est.id?_applyDelivery(e,lastSend,result):e))}
+        if(_isNew(lastSend,result)){setEsts(prev=>prev.map(e=>e.id===est.id?_applyDelivery(e,lastSend,result):e));_alertFail(est,lastSend,result)}
       }
       // Check SOs
       const pendingSOs=sos.filter(s=>s.email_status==='sent'&&(s.sent_history||[]).some(_fresh));
@@ -3538,7 +3573,7 @@ export default function App(){
         const lastSend=(so.sent_history||[]).filter(_fresh).slice(-1)[0];
         if(!lastSend)continue;
         const result=await checkBrevoDelivery(lastSend.messageId);
-        if(_isNew(lastSend,result)){setSOs(prev=>prev.map(s=>s.id===so.id?_applyDelivery(s,lastSend,result):s))}
+        if(_isNew(lastSend,result)){setSOs(prev=>prev.map(s=>s.id===so.id?_applyDelivery(s,lastSend,result):s));_alertFail(so,lastSend,result)}
       }
       // Check invoices
       const pendingInvs=invs.filter(i=>i.email_status==='sent'&&(i.sent_history||[]).some(_fresh));
@@ -3546,7 +3581,7 @@ export default function App(){
         const lastSend=(inv.sent_history||[]).filter(_fresh).slice(-1)[0];
         if(!lastSend)continue;
         const result=await checkBrevoDelivery(lastSend.messageId);
-        if(_isNew(lastSend,result)){setInvs(prev=>prev.map(i=>i.id===inv.id?_applyDelivery(i,lastSend,result):i))}
+        if(_isNew(lastSend,result)){setInvs(prev=>prev.map(i=>i.id===inv.id?_applyDelivery(i,lastSend,result):i));_alertFail(inv,lastSend,result)}
       }
     };
     // 5-minute cadence (was 60s). Open tracking is a dashboard nicety, not realtime data — at 60s,
@@ -6167,7 +6202,7 @@ export default function App(){
   const doSnooze=(t,days)=>{if(_todoIsFollowUp(t))snoozeTodo(t,days);else snoozeTodoUntil(t,days)};
   const _todoCategory=(t)=>{
     if(t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved')return'art';
-    if(t.type==='follow_up'||t.type==='inv_followup')return'follow_up';
+    if(t.type==='follow_up'||t.type==='inv_followup'||t.type==='email_failed')return'follow_up';
     if(t.type==='est_approved'||t.type==='est_update_request')return'est';
     if(t.type==='order'||t.type==='deposit_needed'||t.type==='booking_confirm'||t.type==='if_short')return'order';
     if(t.type==='deadline')return'deadline';
@@ -6251,6 +6286,7 @@ export default function App(){
   // may move follow_up_at; inspecting an order must leave its reminder due.
   const _todoClickedThrough=()=>{};
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
+  _brevoMeRef.current={cu,nf};
   React.useEffect(()=>{
     if(dbLoading||!_dbLoadSuccess.current||!cu?.id)return;
     let cancelled=false;
@@ -9093,6 +9129,8 @@ export default function App(){
       const pri=i.priority==='high'?0:i.priority==='medium'?1:2;
       todos.push({type:'issue',priority:pri,msg:(i.priority==='high'?'🔴':'🟡')+' Issue: '+i.description.slice(0,80)+(i.description.length>80?'...':''),detail:(i.reported_by||i.reportedBy||'Unknown')+' · '+i.page+(i.viewing?' · '+i.viewing:''),action:'View Issue',role:'admin',issueId:i.id,date:i.timestamp||i.created_at});
     });
+    // Emails the recipient's mail server rejected — surfaced so the rep can resend another way.
+    todos.push(..._emailFailedTodos({ests,sos,invs,cust}));
     // Attach repId, dismissKey, and fallback date to each todo
     todos.forEach(t=>{
       if(t.so){const c=cust.find(x=>x.id===t.so.customer_id);t.repId=c?.primary_rep_id||t.so.created_by}
@@ -9766,7 +9804,7 @@ export default function App(){
         else groups=_groupTodos(todos);
       }
       const _navNotif=t=>{setAcOpen(false);if(t.isTaskComplete){setTodoDetailId(t.todoId)}else if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}};
-      const _navTodo=t=>{setAcOpen(false);_todoClickedThrough(t);if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}};
+      const _navTodo=t=>{setAcOpen(false);_todoClickedThrough(t);if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'||(t.type==='email_failed'&&t.est)){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if((t.type==='inv_followup'||t.type==='email_failed')&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}};
       const _msgRow=t=>{const open=acMsgKey===_rk(t);return _hasSO(t)?<div style={{marginTop:open?8:0}}>
         {!open?<button title="Send a message about this" style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#eef2ff',color:'#4338ca',border:'1px solid #c7d2fe',fontWeight:600,whiteSpace:'nowrap',cursor:'pointer'}} onClick={e=>{e.stopPropagation();setAcMsgKey(_rk(t));setAcMsgText('')}}>💬 Message</button>:
         <div onClick={e=>e.stopPropagation()} style={{display:'flex',gap:6,alignItems:'flex-start',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:8}}>
@@ -10214,7 +10252,7 @@ export default function App(){
           {myActionTodos.length===0?<div className="empty" style={{padding:20}}>{todoFilter==='all'?'Nothing pending!':'No '+todoFilter.replace(/_/g,' ')+' items'}</div>:
           (()=>{const capped=myActionTodos.slice(0,20);const groups=_groupTodos(capped);return groups.map(g=><div key={g.cat}>
             {groups.length>1&&<div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>{g.label} <span style={{color:'#94a3b8',fontWeight:600}}>({g.items.length})</span></div>}
-            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{_todoClickedThrough(t);if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{_todoClickedThrough(t);if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'||(t.type==='email_failed'&&t.est)){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if((t.type==='inv_followup'||t.type==='email_failed')&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
               <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId&&cu.role!=='rep'?<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div></div>
               {_fmtTD(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtTD(t.date)}</span>}
               {t.type==='follow_up'&&t.est&&<button title="Open the send window to email this estimate to the coach" className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#2563eb',color:'white',border:'none',borderRadius:8,whiteSpace:'nowrap',fontWeight:700}} onClick={e=>{e.stopPropagation();_todoClickedThrough(t);setOEAutoSend({kind:'doc'});setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}>📧 Send</button>}
@@ -10694,7 +10732,7 @@ export default function App(){
           {actionTodos.length===0?<div className="empty" style={{padding:20}}>{todoFilter==='all'?'All clear!':'No '+todoFilter.replace(/_/g,' ')+' items'}</div>:
           (()=>{const capped=actionTodos.slice(0,20);const groups=_groupTodos(capped);return groups.map(g=><div key={g.cat}>
             {groups.length>1&&<div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>{g.label} <span style={{color:'#94a3b8',fontWeight:600}}>({g.items.length})</span></div>}
-            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{_todoClickedThrough(t);if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{_todoClickedThrough(t);if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'||(t.type==='email_failed'&&t.est)){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if((t.type==='inv_followup'||t.type==='email_failed')&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
               <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId?<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div></div>
               {_fmtTD(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtTD(t.date)}</span>}
               {t.type==='follow_up'&&t.est&&<button title="Open the send window to email this estimate to the coach" className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#2563eb',color:'white',border:'none',borderRadius:8,whiteSpace:'nowrap',fontWeight:700}} onClick={e=>{e.stopPropagation();_todoClickedThrough(t);setOEAutoSend({kind:'doc'});setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}>📧 Send</button>}
@@ -10829,7 +10867,7 @@ export default function App(){
           {myActionTodos.length===0?<div className="empty" style={{padding:20}}>{todoFilter==='all'?'Nothing pending!':'No '+todoFilter.replace(/_/g,' ')+' items'}</div>:
           (()=>{const capped=myActionTodos.slice(0,20);const groups=_groupTodos(capped);return groups.map(g=><div key={g.cat}>
             {groups.length>1&&<div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>{g.label} <span style={{color:'#94a3b8',fontWeight:600}}>({g.items.length})</span></div>}
-            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{_todoClickedThrough(t);if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{_todoClickedThrough(t);if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'||(t.type==='email_failed'&&t.est)){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if((t.type==='inv_followup'||t.type==='email_failed')&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
               <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId&&cu.role!=='rep'?<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div></div>
               {_fmtTD(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtTD(t.date)}</span>}
               {t.type==='follow_up'&&t.est&&<button title="Open the send window to email this estimate to the coach" className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#2563eb',color:'white',border:'none',borderRadius:8,whiteSpace:'nowrap',fontWeight:700}} onClick={e=>{e.stopPropagation();_todoClickedThrough(t);setOEAutoSend({kind:'doc'});setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}>📧 Send</button>}
@@ -13571,12 +13609,15 @@ export default function App(){
       const daysAgo=Math.floor((new Date()-payDate)/86400000);const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
       todos.push({type:'inv_paid',priority:3,msg:'Invoice paid: '+inv2.id+' — $'+safeNum(inv2.total).toFixed(2),detail:tag2+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),so:inv2.so_id?sos.find(s=>s.id===inv2.so_id):null,action:'View',role:'sales',isNotification:true,date:lastPay?.date||inv2.updated_at,dismissKey:'inv_paid:'+inv2.id});
     });
+    // Emails the recipient's mail server rejected — surfaced so the rep can resend another way.
+    todos.push(..._emailFailedTodos({ests,sos,invs,cust}));
     // Attach repId, dismissKey, and fallback date
     todos.forEach(t=>{
       if(t.so){const c=cust.find(x=>x.id===t.so.customer_id);t.repId=c?.primary_rep_id||t.so.created_by}
       else if(t.est){const c=cust.find(x=>x.id===t.est.customer_id);t.repId=c?.primary_rep_id||t.est.created_by}
       else if(t.inv){const c=cust.find(x=>x.id===t.inv.customer_id);t.repId=c?.primary_rep_id||t.inv.created_by}
-      if(t.est)t.dismissKey=t.type+':'+t.est.id;
+      if(t.dismissKey){/* explicit stable key set at creation — keep it */}
+      else if(t.est)t.dismissKey=t.type+':'+t.est.id;
       else if(t.inv)t.dismissKey=t.type+':'+t.inv.id;
       else if(t.so&&t.deliverKey)t.dismissKey=t.type+':'+t.so.id+':'+t.deliverKey;
       else if(t.so&&t.jobId)t.dismissKey=t.type+':'+t.so.id+':'+t.jobId;
