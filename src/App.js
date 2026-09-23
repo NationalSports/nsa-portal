@@ -25184,7 +25184,7 @@ export default function App(){
           if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
           // Every mock goes out with its logo detail (the transparent logo PNG per color way).
           const _noLogo=jobMissingLogoDetails(liveJob,liveSO2);
-          if(_noLogo.length>0){nf('Cannot send for approval — add the logo detail (transparent PNG) for: '+_noLogo.join(', '),'error');return}
+          if(_noLogo.length>0){nf('Cannot send for approval — each mock needs a logo detail: a transparent PNG of the logo exactly as that color way prints. Missing for: '+_noLogo.join(', '),'error');return}
           // LOGO-1: every design needs a usable logo image before it can go out for approval. Per the
           // CW web-logo decision record, preview_url is the design-level fallback, NOT the only accepted
           // source — a web logo or any mockup the design already carries satisfies the visual requirement.

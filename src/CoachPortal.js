@@ -5,6 +5,7 @@ import { statusChipLabel } from './lib/teamshopOrderStatus';
 import { ptDateLabel } from './lib/storeClock';
 import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, realInkLines, soLineKey, scopeSoItemsToInvoice, jobItemDecoIdxs, jobItemDecosOfKind, artProofFallback } from './safeHelpers';
 import { invoiceTotalsRows } from './lib/invoiceDocTotals';
+import { garmentLogoDetails, logoDetailBg } from './lib/logoDetail';
 import { calcSOStatus, resolveOrderShipTo, orderShipToSub, custShipAddrSub, resolveOrderBillTo, orderBillToSub } from './components';
 import { dP, rQ, SP, calcOrderTotals, calcAdidasItemSpend } from './pricing';
 import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, pdfDecoLabel, getBillingContacts, invokeEdgeFn, cloudUpload } from './utils';
@@ -1765,7 +1766,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       // viewer's Art / On Garment toggle only appears when BOTH sides actually have files.
       const artOnly=_filterDisplayable(_itemArtFiles.flatMap(_af=>artProofFallback(_af)));
       const linkedFiles=_mySrc?_filterDisplayable(mockLinkSourceFiles(_jobArtFiles,_mySrc)):[];
-      return{srcItem,_mySrc,_myDeps,_itemArtFiles,itemMockups,itemProofFiles,artDecos,artPos,numDecos,nameDecos,nd,_isEmb,sizes,roster,names,sortedSizes,artOnly,linkedFiles,
+      return{srcItem,logos:garmentLogoDetails(gi,so,safeArt(so)),_mySrc,_myDeps,_itemArtFiles,itemMockups,itemProofFiles,artDecos,artPos,numDecos,nameDecos,nd,_isEmb,sizes,roster,names,sortedSizes,artOnly,linkedFiles,
         units:gi.units||sizes.reduce((a,[,q])=>a+q,0)};
     };
 
@@ -1977,6 +1978,16 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             {_d&&_d._mySrc&&<div style={{padding:'10px 16px',borderTop:'1px solid '+_HAIR,background:_OFF,fontSize:12.5,color:_TXL}}>Shares one mockup with <strong style={{color:_NV}}>{_d._mySrc.split('|')[0]}</strong> — same art, same placement.</div>}
             {_d&&_d._myDeps.length>0&&<div style={{padding:'10px 16px',borderTop:'1px solid '+_HAIR,background:_OFF,fontSize:12.5,color:_TXL}}>This one mockup also covers <strong style={{color:_NV}}>{_d._myDeps.map(k=>k.split('|')[0]).join(', ')}</strong>.</div>}
             {_d&&_d.itemMockups.length===0&&_d.itemProofFiles.length>0&&<div style={{padding:'10px 16px',borderTop:'1px solid '+_HAIR,background:'#FDF6F6',fontSize:12.5,color:_RD,fontWeight:600}}>{_d._isEmb?'Sew-out proof from production files — not a garment mockup.':'Screen-print proof from production files — not a garment mockup.'}</div>}
+            {/* Logo detail — the logo alone, exactly as it prints, on the garment color. */}
+            {_d&&_d.logos.length>0&&<div style={{padding:'16px',borderTop:'1px solid '+_HAIR}}>
+              <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12}}>{_rule(22)}{_head('Logo detail',14)}<span style={{fontSize:12.5,color:_TXL}}>Exactly how the logo prints{_d.srcItem?.color?' on '+_d.srcItem.color:''}</span></div>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:12}}>
+                {_d.logos.map(l=><div key={l.url} onClick={()=>setLightbox(l.url)} style={{cursor:'zoom-in',border:'1px solid '+_HAIR,borderRadius:4,overflow:'hidden'}}>
+                  <div style={{background:logoDetailBg(_d.srcItem?.color),height:200,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}><img src={l.url} alt="Logo detail" style={{maxWidth:'100%',maxHeight:168,objectFit:'contain'}}/></div>
+                  <div style={{padding:'8px 12px',fontSize:12.5,fontWeight:600,color:_NV}}>{l.artName}{l.cwLabel?' · '+l.cwLabel:''}</div>
+                </div>)}
+              </div>
+            </div>}
           </div>
 
 

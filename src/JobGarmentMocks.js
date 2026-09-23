@@ -72,9 +72,10 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
         </div>
       </div>;
     }
+    const covers = deps.length > 0 && <MockCoversTable rows={[g, ...deps].map(x => ({ key: garmentMockKey(x.item), label: garmentLabel(x.item), sizes: sizesOf(x.gi, x.item) }))} />;
     return <div key={garmentMockKey(item)} style={{ marginTop: embedded ? 0 : 12 }}>
       {heading}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>{slots.map(slot => <GarmentMockCard
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>{slots.map((slot, si) => <GarmentMockCard
         key={slot.artId + '|' + slot.key} label={slot.label} sub={slot.sub}
         mocks={slotMockFiles(slot, allSlots, item)} candidates={slot.candidates} suggest busy={busy}
         accept=".pdf,.png,.jpg,.jpeg,.webp,.gif"
@@ -87,14 +88,12 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
           const uploaded = await Promise.all(files.map(async f => ({ url: await fileUpload(f, 'nsa-mockups'), name: f.name })));
           return useFiles(slot, uploaded);
         })}
-      />)}</div>
-      {deps.length > 0 && <div style={{ marginTop: 10, border: '1px solid #dbe2ea', borderRadius: 10, overflow: 'hidden' }}>
-        <MockCoversTable rows={[g, ...deps].map(x => ({ key: garmentMockKey(x.item), label: garmentLabel(x.item), sizes: sizesOf(x.gi, x.item) }))} />
-      </div>}
+      >{slots.length === 1 && si === 0 ? covers : null}</GarmentMockCard>)}</div>
+      {slots.length > 1 && covers && <div className="garment-mock-card" style={{ marginTop: 12 }}>{covers}</div>}
     </div>;
   });
   const errorLine = error && <p role="alert" style={{ color: '#b91c1c', fontSize: 12, margin: '6px 0' }}>{error}</p>;
-  if (embedded) return <div aria-label="Garment mock" style={{ margin: '10px 10px 12px' }}>{errorLine}{body}</div>;
+  if (embedded) return <div aria-label="Garment mock" style={{ margin: '12px 14px 14px' }}>{errorLine}{body}</div>;
   return <section aria-label="Job garment mocks" style={{ margin: '16px 20px', padding: 16, border: '1px solid #dbe2ea', borderRadius: 12, background: '#f8fafc' }}>
     <h3 style={{ margin: '0 0 6px', fontSize: 17 }}>Garment mocks</h3>
     <p style={{ margin: '0 0 14px', fontSize: 12, color: '#64748b' }}>Each garment needs its mock and a logo detail (transparent PNG). Approval stays a separate step.</p>

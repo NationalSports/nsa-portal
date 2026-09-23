@@ -77,3 +77,27 @@ describe('job garment mocks', () => {
     expect(screen.queryByText(/This mock covers/)).toBeNull();
   });
 });
+
+describe('logo detail pane', () => {
+  const GarmentMockCard = require('../GarmentMockCard').default;
+  const { fireEvent, waitFor } = require('@testing-library/react');
+  const card = onUpload => <GarmentMockCard label="WVC" mocks={[{ url: 'm.png' }]} candidates={[]} onUse={() => true} onRemove={() => true} onUpload={() => true}
+    logo={{ url: '', bg: '#9ca3af', colorName: 'Medium Grey Heather', onUpload }} />;
+
+  test('the ? explains what the artist must upload', () => {
+    render(card(jest.fn()));
+    expect(screen.queryByText(/TRANSPARENT background/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'What is a logo detail?' }));
+    expect(screen.getByText(/exactly as this color way prints/)).toBeTruthy();
+    expect(screen.getByText(/TRANSPARENT background/)).toBeTruthy();
+  });
+
+  test('a JPG is refused with an explanation instead of uploading', async () => {
+    const onUpload = jest.fn();
+    const { container } = render(card(onUpload));
+    const input = container.querySelector('input[accept=".png,.webp,.svg"]');
+    fireEvent.change(input, { target: { files: [new File(['x'], 'logo.jpg', { type: 'image/jpeg' })] } });
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/PNG with a transparent background/));
+    expect(onUpload).not.toHaveBeenCalled();
+  });
+});
