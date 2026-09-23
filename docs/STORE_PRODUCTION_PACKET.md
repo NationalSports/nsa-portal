@@ -38,4 +38,4 @@ Revision acknowledgment, per-recipient unread tracking, outbound message notific
 
 ## Validation run
 
-36 tests passed across packet projection, packet access, and existing SO-substitution suites. Local migration check verified RLS/client privilege denial and immutable revision grants. Both serverless functions bundled. Browser fixture verified overview rendering, player search, and the shared/internal message controls. Production build passed before the final refinements; rerun the final build before publishing.
+36 tests passed across packet projection, packet access, and existing SO-substitution suites. Local migration check verified RLS/client privilege denial and immutable revision grants. Both serverless functions bundled. Browser fixture verified overview rendering, player search, and the shared/internal message controls. Final production build passed after the refinements.
