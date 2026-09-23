@@ -169,7 +169,7 @@ describe('ARWorkspace',()=>{
 
   test('shows the exact ready-to-invoice list, links the order, and seeds one normal-priority rep TODO',()=>{
     const api=renderWorkspace(reps[2],{}, {
-      sos:[{id:'SO-READY',customer_id:'C1',created_by:'R1',created_at:'2026-07-01',status:'complete',memo:'Championship uniforms',items:[{sizes:{M:10},unit_sell:100,nsa_cost:50,no_deco:true,decos:[]}]}],
+      sos:[{id:'SO-READY',customer_id:'C1',created_by:'R1',created_at:'2026-07-01',status:'complete',memo:'Championship uniforms',items:[{sizes:{M:10},unit_sell:100,nsa_cost:50,no_deco:true,decos:[],pick_lines:[{status:'pulled',M:10}]}]}],
       invs:[{id:'I-PART',so_id:'SO-READY',customer_id:'C1',date:'2026-08-01',due_date:'2026-08-15',total:250,tax:0,paid:0,status:'open'}],
     });
     expect(screen.getByText('Ready-to-invoice orders')).toBeTruthy();
@@ -196,7 +196,7 @@ describe('ARWorkspace',()=>{
     const legacy={id:'todo-completed-uninvoiced-SO-READY',source:'completed_uninvoiced:SO-READY',title:'Invoice completed order — SO-READY',description:'old amount',created_by:'A1',assigned_to:'R1',customer_id:'C1',so_id:'SO-READY',priority:1,status:'open',due_date:'2026-08-01',created_at:'2026-08-01T12:00:00Z',comments:[]};
     const api=renderWorkspace(reps[2],{}, {
       assignedTodos:[legacy],
-      sos:[{id:'SO-READY',customer_id:'C1',created_by:'R1',created_at:'2026-07-01',status:'complete',items:[{sizes:{M:10},unit_sell:100,nsa_cost:50,no_deco:true,decos:[]}]}],
+      sos:[{id:'SO-READY',customer_id:'C1',created_by:'R1',created_at:'2026-07-01',status:'complete',items:[{sizes:{M:10},unit_sell:100,nsa_cost:50,no_deco:true,decos:[],pick_lines:[{status:'pulled',M:10}]}]}],
     });
     const todos=applyTodoUpdates(api.setAssignedTodos,[legacy]);
     const invoiceTodos=todos.filter(t=>t.source==='completed_uninvoiced:SO-READY');

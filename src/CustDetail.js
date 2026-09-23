@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { _pick, ART_FILE_SC, SZ_ORD, sizeBreakdownStr, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale, isProdArtFile } from './constants';
 import { mockSkuOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback, poLineFulfilledQty, scopeSoItemsToInvoice } from './safeHelpers';
+import { invoiceTotalsRows } from './lib/invoiceDocTotals';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
 import { pickCwAsset, normalizeWebLogos, deriveJobItemStatus, buildJobs } from './businessLogic';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
@@ -44,7 +45,10 @@ const _bulkInvoicePdfOptions=(inv,invoiceCustomer,companyInfo)=>{
   const fmt=n=>'$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
   const lineItems=safeArr(inv?.line_items);
   const shipping=safeNum(inv?.shipping);const tax=safeNum(inv?.tax);const credit=safeNum(inv?.credit_amount);
-  const fallbackSubtotal=Math.max(0,safeNum(inv?.total)-shipping-tax+credit);
+  // Back the one summary line out of the total by removing every OTHER component of it —
+  // the card surcharge included, or the derived line overstates by the fee and the totals
+  // block (which prints the fee separately) no longer adds up to the total.
+  const fallbackSubtotal=Math.max(0,safeNum(inv?.total)-shipping-tax-safeNum(inv?.cc_fee)+credit+safeNum(inv?.deposit_applied));
   const sourceLines=lineItems.length?lineItems:[{qty:1,desc:inv?.memo||'Invoice',rate:fallbackSubtotal,amount:fallbackSubtotal}];
   const rows=sourceLines.map(li=>({cells:[
     {value:safeNum(li.qty)||1,style:'text-align:center'},
@@ -75,13 +79,7 @@ const _bulkInvoicePdfOptions=(inv,invoiceCustomer,companyInfo)=>{
     ],
     tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],rows:[
       ...rows,
-      {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc'},{value:'<strong>'+fmt(subtotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc'}]},
-      ...(shipping>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Shipping',style:'text-align:right;border:none'},{value:fmt(shipping),style:'text-align:right;border:none'}]}]:[]),
-      ...(tax>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Tax',style:'text-align:right;border:none'},{value:fmt(tax),style:'text-align:right;border:none'}]}]:[]),
-      ...(credit>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Credit',style:'text-align:right;border:none;color:#166534'},{value:'-'+fmt(credit),style:'text-align:right;border:none;color:#166534'}]}]:[]),
-      {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong>'+fmt(inv?.total)+'</strong>',style:'text-align:right'}]},
-      ...(safeNum(inv?.paid)>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Paid',style:'text-align:right;border:none;color:#166534'},{value:fmt(inv.paid),style:'text-align:right;border:none;color:#166534'}]}]:[]),
-      ...(balance>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626">'+fmt(balance)+'</strong>',style:'text-align:right'}]}]:[]),
+      ...invoiceTotalsRows({subtotal:subtotal,shipping:shipping,tax:tax,ccFee:safeNum(inv?.cc_fee),credit:safeNum(inv?.credit_amount),depositApplied:safeNum(inv?.deposit_applied),total:inv?.total,paid:inv?.paid,balance:balance},fmt),
     ]}],
   };
 };
@@ -2378,15 +2376,21 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         _scoped.forEach(it=>{
           const qty=it._invQty;const pq=it._soQty;
           const szStr=it._invSizes?sizeBreakdownStr(it._invSizes,it.is_footwear):'';
-          const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
+          // Price off the invoice's own line when it has one (see scopeSoItemsToInvoice): its
+          // rate already blends per-size upcharges, a $0 comped garment and any rep price edit,
+          // and already carries the decoration — so decorations below print as detail, not as a
+          // second charge.
+          const invPriced=it._invAmount!=null;
+          const unitPrice=it._invRate!=null?it._invRate:safeNum(it.unit_sell);
+          const lineAmt=invPriced?it._invAmount:Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
           let itemName=(safeStr(it.name)||'Item')+(it.color?' - '+it.color:'');
           if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
           rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
           safeDecos(it).forEach(d=>{
             const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:pq;const dp2=dP(d,pq,soArt,cq);
-            const eq=dp2._nq!=null?(pq>0&&qty!==pq?Math.round(dp2._nq*qty/pq):dp2._nq):(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;subTotal+=decoAmt;
+            const eq=dp2._nq!=null?(pq>0&&qty!==pq?Math.round(dp2._nq*qty/pq):dp2._nq):(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;if(!invPriced)subTotal+=decoAmt;
             const artF=soArt.find(a2=>a2.id===d.art_file_id);const posLabel=d.position?' — '+d.position:'';
-            rows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+pdfDecoLabel(d,artF)+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
+            rows.push({_class:'deco-row',cells:[{value:invPriced?'':eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+pdfDecoLabel(d,artF)+posLabel+'</span>'},{value:invPriced?'+'+_$(dp2.sell)+'/ea':_$(dp2.sell),style:'text-align:right'+(invPriced?';color:#64748b':'')},{value:invPriced?'':_$(decoAmt),style:'text-align:right'}]});
           });
         });
         // Lines with no SO match (hand-added, NetSuite import) still have to print, or the
@@ -2409,12 +2413,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           ],
           tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
             rows:[...rows,
-              {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$(subTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
-              ...(_ship>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$(_ship),style:'text-align:right;border:none'}]}]:[]),
-              ...(_tax>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax</strong>',style:'text-align:right;border:none'},{value:_$(_tax),style:'text-align:right;border:none'}]}]:[]),
-              {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(inv.total||0)+'</strong>',style:'text-align:right'}]},
-              ...(inv.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$(inv.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
-              ...(bal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$(bal)+'</strong>',style:'text-align:right'}]}]:[]),
+              ...invoiceTotalsRows({subtotal:subTotal,shipping:_ship,tax:_tax,ccFee:safeNum(inv.cc_fee),credit:safeNum(inv.credit_amount),depositApplied:safeNum(inv.deposit_applied),total:inv.total||0,paid:inv.paid,balance:bal},_$),
             ]}],
           footer:inv.inv_type==='deposit'?NSA.depositTerms:NSA.terms
         });

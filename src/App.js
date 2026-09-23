@@ -447,6 +447,7 @@ const AiInventoryPoWizard = lazyRetry(() => import('./AiInventoryPoWizard').then
 const CustDetail = lazyRetry(() => import('./CustDetail'));
 const CoachPortal = lazyRetry(() => import('./CoachPortal'));
 const Webstores = lazyRetry(() => import('./Webstores'));
+const WebstoreReports = lazyRetry(() => import('./WebstoreReports'));
 const OmgOrderPortal = lazyRetry(() => import('./OmgOrderPortal'));
 const OmgMonthlyProfitImport = lazyRetry(() => import('./OmgMonthlyProfitImport'));
 const OmgDepositImport = lazyRetry(() => import('./OmgDepositImport'));
@@ -16083,12 +16084,12 @@ export default function App(){
       finance:<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1Z"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>,
     };
     const _rGroups=[
-      {id:'sales',label:'Sales',icon:_ico.sales,tabs:['overview','pipeline','products','reps']},
+      {id:'sales',label:'Sales',icon:_ico.sales,tabs:['overview','pipeline','products','reps','webstores']},
       {id:'customers',label:'Customers',icon:_ico.customers,tabs:['customers','csr_tasks']},
       {id:'production',label:'Production',icon:_ico.production,tabs:['production','decorator','time','inventory',...(_isWhOk?['warehouse']:[])]},
       {id:'finance',label:'Finance',icon:_ico.finance,tabs:['receivables','sales_tax']},
     ];
-    const _tabLabels={overview:'Overview',pipeline:'Pipeline',products:'Products',reps:'Reps',customers:'Customers',csr_tasks:'CSR Tasks',production:'Production',decorator:'Decorator',time:'Time & Labor',inventory:'Inventory',warehouse:'Warehouse',receivables:'My Receivables',sales_tax:'Sales Tax'};
+    const _tabLabels={overview:'Overview',pipeline:'Pipeline',products:'Products',reps:'Reps',webstores:'Webstores',customers:'Customers',csr_tasks:'CSR Tasks',production:'Production',decorator:'Decorator',time:'Time & Labor',inventory:'Inventory',warehouse:'Warehouse',receivables:'My Receivables',sales_tax:'Sales Tax'};
     const _curGroup=_rGroups.find(g=>g.tabs.includes(rptTab))||_rGroups[0];
     const _curTabs=_curGroup.tabs.map(id=>({id,label:_tabLabels[id]||id}));
     const _salesGroup=_curGroup.id==='sales';
@@ -17329,6 +17330,7 @@ export default function App(){
       </div>}
 
       {/* PRODUCT MIX */}
+      {rptTab==='webstores'&&<ComponentErrorBoundary name="WebstoreReports"><React.Suspense fallback={<LazyFallback/>}><WebstoreReports repId={_rptRepLocked?cu?.id:(rptRep==='all'?null:rptRep)} reps={REPS}/></React.Suspense></ComponentErrorBoundary>}
       {rptTab==='products'&&<div className="card" style={{marginBottom:12}}>
         <WH id="productMix" title="Product Mix & Popularity" icon="📦"/>
         {rptWidgets.productMix&&<div className="card-body" style={{padding:0}}>

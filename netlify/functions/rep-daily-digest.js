@@ -3,6 +3,9 @@
 // every new order on every store, with per-store and overall totals, plus a
 // recap of any of their stores that closed in that window. Reps with no
 // activity get no email. Rep-only (CSRs already get close alerts separately).
+// Also flags the rep's open stores closing within a week, with how many shoppers
+// filled a cart but haven't ordered (storefront tracking, webstore_events) — a
+// prompt to have the coach send a last-call reminder.
 const { getSupabaseAdmin } = require('./_shared');
 
 const money = (n) => '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -69,11 +72,14 @@ exports.handler = async () => {
       .select('id,name,slug,rep_id,close_at,closed_notified_at')
       .gte('closed_notified_at', start.toISOString()).lt('closed_notified_at', end.toISOString());
 
+    const closing = await loadClosingSoon(admin, new Date());
+
     // Group everything by rep.
-    const byRep = {}; // repId -> { stores: {storeId:{store,orders}}, closed: [] }
-    const cell = (repId) => (byRep[repId] || (byRep[repId] = { stores: {}, closed: [] }));
+    const byRep = {}; // repId -> { stores: {storeId:{store,orders}}, closed: [], closing: [] }
+    const cell = (repId) => (byRep[repId] || (byRep[repId] = { stores: {}, closed: [], closing: [] }));
     for (const o of live) { const s = storeById[o.store_id]; if (!s || !s.rep_id) continue; const r = cell(s.rep_id); (r.stores[s.id] || (r.stores[s.id] = { store: s, orders: [] })).orders.push(o); }
     for (const cs of (closedStores || [])) { if (cs.rep_id) cell(cs.rep_id).closed.push(cs); }
+    for (const c of closing) cell(c.store.rep_id).closing.push(c);
 
     const repIds = Object.keys(byRep);
     if (!repIds.length) { console.log('[rep-digest] no activity for', dayLabel); return { statusCode: 200, body: 'No activity' }; }
@@ -89,16 +95,16 @@ exports.handler = async () => {
       const storesArr = Object.values(bundle.stores)
         .map((c) => ({ ...c, sales: c.orders.reduce((a, o) => a + (Number(o.total) || 0), 0) }))
         .sort((a, b) => b.sales - a.sales);
-      if (!storesArr.length && !bundle.closed.length) continue;
+      if (!storesArr.length && !bundle.closed.length && !bundle.closing.length) continue;
 
-      const html = buildDigestHtml({ rep, storesArr, closed: bundle.closed, dayLabel, portal });
+      const html = buildDigestHtml({ rep, storesArr, closed: bundle.closed, closing: bundle.closing, dayLabel, portal });
       const res = await fetch('https://api.brevo.com/v3/smtp/email', {
         method: 'POST',
         headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
         body: JSON.stringify({
           sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
           to: [{ email: rep.email, name: rep.name || '' }],
-          subject: digestSubject(storesArr, bundle.closed, dayLabel),
+          subject: digestSubject(storesArr, bundle.closed, dayLabel, bundle.closing),
           htmlContent: html,
         }),
       });
@@ -112,14 +118,43 @@ exports.handler = async () => {
   }
 };
 
-function digestSubject(storesArr, closed, dayLabel) {
+// Open stores closing within the next 7 days, with their cart-vs-order gap.
+// Tracking data is best-effort: if it can't load, the stores still get listed.
+async function loadClosingSoon(admin, now) {
+  const horizon = new Date(now.getTime() + 7 * 24 * 3600 * 1000);
+  const { data: stores, error } = await admin.from('webstores')
+    .select('id,name,slug,rep_id,close_at,status')
+    .eq('status', 'open').not('rep_id', 'is', null)
+    .gt('close_at', now.toISOString()).lte('close_at', horizon.toISOString());
+  if (error || !stores || !stores.length) return [];
+  const gap = {};
+  try {
+    const { data } = await admin.rpc('webstore_cart_gap', { p_store_ids: stores.map((s) => s.id) });
+    (data || []).forEach((r) => { gap[r.store_id] = r; });
+  } catch (e) { console.warn('[rep-digest] cart gap unavailable:', e && e.message); }
+  return stores.map((store) => {
+    const g = gap[store.id] || {};
+    const visitors = Number(g.visitors) || 0, cartAdders = Number(g.cart_adders) || 0, purchasers = Number(g.purchasers) || 0;
+    return { store, daysLeft: Math.max(0, Math.ceil((new Date(store.close_at) - now) / 86400000)), visitors, cartAdders, purchasers, notOrdered: Math.max(0, cartAdders - purchasers) };
+  }).sort((a, b) => a.daysLeft - b.daysLeft);
+}
+
+function closingLine(c) {
+  const when = c.daysLeft <= 1 ? 'closes within a day' : `closes in ${c.daysLeft} days`;
+  if (!c.visitors) return `${when} · no shopper visits recorded yet`;
+  return `${when} · ${c.cartAdders} shopper${c.cartAdders === 1 ? '' : 's'} added to cart, ${c.purchasers} ordered`
+    + (c.notOrdered > 0 ? ` · <strong style="color:#b91c1c">${c.notOrdered} still haven't ordered</strong>` : '');
+}
+
+function digestSubject(storesArr, closed, dayLabel, closing = []) {
   const nOrders = storesArr.reduce((a, s) => a + s.orders.length, 0);
+  if (!nOrders && !closed.length && closing.length) return (closing.length === 1 ? `${closing[0].store.name} closes this week` : `${closing.length} of your stores close this week`) + ` (${dayLabel})`;
   if (!nOrders && closed.length) return `Store activity — ${closed.length} store${closed.length === 1 ? '' : 's'} closed (${dayLabel})`;
   const sales = storesArr.reduce((a, s) => a + s.sales, 0);
   return `Your store activity — ${nOrders} order${nOrders === 1 ? '' : 's'}, ${money(sales)} (${dayLabel})`;
 }
 
-function buildDigestHtml({ rep, storesArr, closed, dayLabel, portal }) {
+function buildDigestHtml({ rep, storesArr, closed, closing = [], dayLabel, portal }) {
   const NAVY = '#16223F', ACCENT = '#B6985A', INK = '#2A2F3E', SUB = '#6B6256', LINE = '#E7DFD0', CREAM = '#FAF6EF';
   const nsaLogo = `${portal}/NEW%20NSA%20Logo%20on%20white.png`;
   const first = (rep.name || '').trim().split(/\s+/)[0] || 'there';
@@ -179,7 +214,15 @@ function buildDigestHtml({ rep, storesArr, closed, dayLabel, portal }) {
         <a href="${portal}/shop/${esc(c.slug)}" style="color:${ACCENT};text-decoration:none;font-weight:700;font-size:12px"> open →</a></div>`).join('')}
     </div>` : '';
 
-  const empty = (!storesArr.length) ? `<p style="margin:0;color:${SUB};font-size:14px">No new orders yesterday — but here's what changed above.</p>` : '';
+  const closingBlock = closing.length ? `<div style="margin:0 0 16px;border:1px solid #fde68a;background:#fffbeb;border-radius:10px;padding:12px 16px">
+      <div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;letter-spacing:.4px;text-transform:uppercase;color:#92400e;margin-bottom:4px">Closing this week</div>
+      <div style="font-size:12px;color:${SUB};margin-bottom:6px">Shoppers with carts who haven't ordered yet are the easiest sales left — a last-call note from the coach usually brings them back.</div>
+      ${closing.map((c) => `<div style="font-size:14px;color:${INK};padding:6px 0;border-top:1px solid #fde68a">
+        <a href="${portal}/?pg=webstores&store=${esc(c.store.id)}&tab=analytics" style="color:${INK};text-decoration:none"><strong>${esc(c.store.name)}</strong></a>
+        <div style="font-size:12px;color:${SUB};margin-top:2px">${closingLine(c)}</div></div>`).join('')}
+    </div>` : '';
+
+  const empty = (!storesArr.length) ? `<p style="margin:0;color:${SUB};font-size:14px">No new orders yesterday — but here's what changed ${closing.length ? 'below' : 'above'}.</p>` : '';
 
   return `<div style="background:${CREAM};padding:0;margin:0">
   <div style="font-family:'Source Sans 3',-apple-system,Segoe UI,Roboto,sans-serif;color:${INK};max-width:600px;margin:0 auto;padding:20px 16px">
@@ -196,6 +239,7 @@ function buildDigestHtml({ rep, storesArr, closed, dayLabel, portal }) {
       <div style="font-size:14px;color:rgba(255,255,255,.82);margin-top:4px">Here's yesterday's activity across your team stores.</div>
     </div>
     <div style="background:#fff;border:1px solid ${LINE};border-top:none;border-radius:0 0 10px 10px;padding:18px 18px 22px">
+      ${closingBlock}
       ${summary}
       ${storeBlocks}
       ${empty}
@@ -206,3 +250,5 @@ function buildDigestHtml({ rep, storesArr, closed, dayLabel, portal }) {
   </div></div>`;
 }
 
+
+exports._test = { loadClosingSoon, closingLine, digestSubject, buildDigestHtml };

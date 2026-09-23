@@ -13,6 +13,7 @@ import { calculateCreditMemo, creditableBalance, creditedTotal, seedCreditMemoLi
 import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub, resolveOrderShipTo, billToIdFor } from './components';
 import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled, greetLine, withGreeting, emailMoney } from './utils';
 import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms } from './App';
+import { invoiceTotalsRows } from './lib/invoiceDocTotals';
 import { stripePaymentRepairCandidate } from './lib/invoicePaymentReconciliation';
 import { invoiceDetailBalance, invoicePaymentStatus, normalizeInvoiceForDetail } from './lib/invoiceDetail';
 
@@ -341,13 +342,7 @@ export default function InvoicesPage(){
           ],
           tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
             rows:[...pRows,
-              {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$(pSubTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
-              ...(shipAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$(shipAmt),style:'text-align:right;border:none'}]}]:[]),
-              ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax</strong>',style:'text-align:right;border:none'},{value:_$(taxAmt),style:'text-align:right;border:none'}]}]:[]),
-              ...(safeNum(inv.credit_amount)>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-'+_$(safeNum(inv.credit_amount))+'</strong>',style:'text-align:right;border:none'}]}]:[]),
-              {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(inv.total)+'</strong>',style:'text-align:right'}]},
-              ...(inv.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$(inv.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
-              ...(bal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$(bal)+'</strong>',style:'text-align:right'}]}]:[]),
+              ...invoiceTotalsRows({subtotal:pSubTotal,shipping:shipAmt,tax:taxAmt,ccFee:safeNum(inv.cc_fee),credit:safeNum(inv.credit_amount),depositApplied:safeNum(inv.deposit_applied),total:inv.total,paid:inv.paid,balance:bal},_$),
             ]}],footer:inv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms,companyInfo:companyInfo};
       };
 
@@ -1422,13 +1417,7 @@ export default function InvoicesPage(){
                     ],
                     tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
                       rows:[...siRows,
-                        {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$si(siSubTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
-                        ...(siShip>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$si(siShip),style:'text-align:right;border:none'}]}]:[]),
-                        ...(siTax>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax</strong>',style:'text-align:right;border:none'},{value:_$si(siTax),style:'text-align:right;border:none'}]}]:[]),
-                        ...(safeNum(siInv.credit_amount)>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-'+_$si(safeNum(siInv.credit_amount))+'</strong>',style:'text-align:right;border:none'}]}]:[]),
-                        {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$si(siInv.total)+'</strong>',style:'text-align:right'}]},
-                        ...(siInv.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$si(siInv.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
-                        ...(siBal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$si(siBal)+'</strong>',style:'text-align:right'}]}]:[]),
+                        ...invoiceTotalsRows({subtotal:siSubTotal,shipping:siShip,tax:siTax,ccFee:safeNum(siInv.cc_fee),credit:safeNum(siInv.credit_amount),depositApplied:safeNum(siInv.deposit_applied),total:siInv.total,paid:siInv.paid,balance:siBal},_$si),
                       ]}],footer:siInv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms,companyInfo:companyInfo});
                   const styleMatch=docHtml.match(/<style>([\s\S]*?)<\/style>/);const bodyMatch=docHtml.match(/<body>([\s\S]*?)<\/body>/);
                   const pdfFixCss='.header{display:table!important;width:100%!important;table-layout:fixed}.header>*{display:table-cell!important;vertical-align:top!important}.logo{width:55%!important}.logo img{height:50px;vertical-align:middle;margin-right:8px;float:left}.doc-id{width:45%!important;text-align:right!important}.bill-total{display:table!important;width:100%!important;table-layout:fixed}.bill-total>*{display:table-cell!important;vertical-align:top!important}.total-box{width:200px!important;text-align:left!important}.info-row{display:table!important;width:100%!important;table-layout:fixed}.info-cell{display:table-cell!important;vertical-align:top!important}.footer{display:table!important;width:100%!important}.footer>*{display:table-cell!important}.footer>*:last-child{text-align:right!important}';
@@ -1882,13 +1871,7 @@ export default function InvoicesPage(){
                     headers:['Quantity','SKU','Item','Rate','Amount'],
                     aligns:['center','left','left','right','right'],
                     rows:[...fRows,
-                      {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$f(fSubTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
-                      ...(shipAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$f(shipAmt),style:'text-align:right;border:none'}]}]:[]),
-                      ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax</strong>',style:'text-align:right;border:none'},{value:_$f(taxAmt),style:'text-align:right;border:none'}]}]:[]),
-                      ...(safeNum(inv.credit_amount)>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-'+_$f(safeNum(inv.credit_amount))+'</strong>',style:'text-align:right;border:none'}]}]:[]),
-                      {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$f(inv.total)+'</strong>',style:'text-align:right'}]},
-                      ...(inv.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$f(inv.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
-                      ...(inv._bal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$f(inv._bal)+'</strong>',style:'text-align:right'}]}]:[]),
+                      ...invoiceTotalsRows({subtotal:fSubTotal,shipping:shipAmt,tax:taxAmt,ccFee:safeNum(inv.cc_fee),credit:safeNum(inv.credit_amount),depositApplied:safeNum(inv.deposit_applied),total:inv.total,paid:inv.paid,balance:inv._bal},_$f),
                     ]
                   }],
                   footer:inv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms,companyInfo:companyInfo

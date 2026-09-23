@@ -35,12 +35,14 @@ import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, pendingProdFileGroups, prodFileMethodOf, artStatusAfterProdConfirm, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, orderLineSizes, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
 import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, replaceMockLinkGroup, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemArtSlots, jobItemDecosOfKind, jobRosterBlocks, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, placeRosterEntries, rosterDropSummary, autoSellFromCost, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
+import { invoiceTotalsRows } from './lib/invoiceDocTotals';
 import { pickUnits } from './itemFulfillment';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor, TaxExemptModal } from './components';
 import { unfinishedProdSummary } from './lib/orderCloseGuard';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { CustModal } from './modals';
 import { applyTaxExempt, clearTaxExempt, taxExemptInfo, taxExemptLabel } from './lib/taxExempt';
+import { NO_INVOICE_REASONS, applyNoInvoice, clearNoInvoice, noInvoiceLabel } from './lib/noInvoice';
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
@@ -144,9 +146,10 @@ function OeGarmentPoLines({item,szMeta,onOpenPo}){
             const v=po[sz]||0,cn=d.cncl[sz]||0,r=d.isDS?(d.blld[sz]||0):(d.rcvd[sz]||0);
             const szSt=cn>=v?'cancelled':r>=(v-cn)?(d.isDS?'shipped':'received'):r>0?'partial':(!d.isDS&&(d.blld[sz]||0)>0)?'in_transit':'waiting';
             const c=OE_PO_SC[szSt];
+            const tBl=d.blld[sz]||0,tPart=szSt==='in_transit'&&tBl<(v-cn),tPct=tPart?Math.round(tBl/(v-cn)*100):0;
             return<div key={sz} style={{minWidth:42,textAlign:'center',borderRadius:4,overflow:'hidden',border:'1px solid '+c.bd}}>
               <div style={{fontSize:9,fontWeight:700,letterSpacing:'0.5px',color:'#5A6075',background:'#fff',padding:'1px 0'}}>{sz}</div>
-              <div style={{fontSize:12,fontWeight:800,padding:'2px 0',background:c.bg,color:c.fg}}>{szSt==='cancelled'?'✕':szSt==='partial'?r+'/'+(v-cn):(v-cn)}</div>
+              <div style={{fontSize:12,fontWeight:800,padding:'2px 0',background:tPart?`linear-gradient(90deg,${c.bg} ${tPct}%,${OE_PO_SC.waiting.bg} ${tPct}%)`:c.bg,color:c.fg}}>{szSt==='cancelled'?'✕':szSt==='partial'?r+'/'+(v-cn):tPart?tBl+'/'+(v-cn):(v-cn)}</div>
             </div>})}
         </div>
         <span style={{fontSize:10,padding:'3px 9px',borderRadius:20,fontWeight:700,whiteSpace:'nowrap',marginLeft:'auto',background:sc.bg,color:sc.fg,border:'1px solid '+sc.bd}}>
@@ -850,6 +853,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // copy of so.jobs may be stale or have duplicate ids; here we match on art_file_id
     // first (unique per art), then key, then id. Deferred so auto-sync has committed.
     React.useEffect(()=>{if(!scrollToJobRef)return;setTab('jobs');const _go=()=>{const _j=safeJobs(_navJobsRef.current);const a=scrollToJobRef;let idx=a.artId?_j.findIndex(x=>x.art_file_id===a.artId||(x._art_ids||[]).includes(a.artId)):-1;if(idx<0&&a.key)idx=_j.findIndex(x=>x.key===a.key);if(idx<0&&a.id)idx=_j.findIndex(x=>x.id===a.id);if(idx>=0){setSelJob(idx);const el=document.getElementById('so-job-'+idx);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}}onScrollJobConsumed&&onScrollJobConsumed()};setTimeout(_go,250)},[scrollToJobRef]);// eslint-disable-line
+    // ── SO line ⇄ in-house job links ──
+    // A line's in-house jobs are the so_jobs rows whose items[] reference it (item_idx). Each shows as a
+    // chip (job number + where it stands) at the end of the line's first pick/PO row and on the collapsed
+    // summary; clicking jumps to the job on the Jobs tab. The Jobs tab garment cell links back the other
+    // way (_jumpToItem). Read-only: none of this touches job or item state.
+    const _lineJobs=(idx)=>safeJobs(o).map((job,ji)=>({ji,job})).filter(({job})=>(job.items||[]).some(gi=>gi.item_idx===idx));
+    const _jumpToItem=(idx)=>{setCollapsedItems(c=>c[idx]?{...c,[idx]:false}:c);setTab('items');setTimeout(()=>{const el=document.getElementById('so-item-'+idx);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #3b82f6';setTimeout(()=>{el.style.boxShadow=''},2000)}},200)};
+    const _jumpToJob=(ji)=>{setTab('jobs');setSelJob(ji);setTimeout(()=>{const el=document.getElementById('so-job-'+ji);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}},200)};
+    // Status shown on the chip: production status once the job is moving (In Line / In Process /
+    // Completed / Shipped); before that "On Hold" says nothing, so the art stage that gates it shows.
+    const _jobChipStatus=(j)=>{const _ps=j.prod_status||'hold';const _pl=({draft:'Draft',hold:'On Hold',ready:'Ready',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped'})[_ps]||_ps;const _live=['staging','in_process','completed','shipped','ready'].includes(_ps);const _al=ART_LABELS[j.art_status]||'';return{key:_live?_ps:(j.art_status||_ps),label:_live||!_al?_pl:_al,title:'Job '+j.id+' · Art: '+(_al||'—')+' · Items: '+((j.item_status||'').replace(/_/g,' ')||'—')+' · Production: '+_pl+' — click to open on the Jobs tab'}};
+    const _jobChips=(idx,extraStyle)=>_lineJobs(idx).map(({ji,job})=>{const _st=_jobChipStatus(job);return <button key={'job'+ji} type="button" onClick={e=>{e.stopPropagation();_jumpToJob(ji)}} title={_st.title} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'1px 6px',borderRadius:4,border:'1px solid #bfdbfe',background:'#eff6ff',cursor:'pointer',fontSize:10,fontWeight:700,color:'#1e40af',whiteSpace:'nowrap',lineHeight:'16px',...(extraStyle||{})}}>🏭 {job.id}<span style={{padding:'0 5px',borderRadius:8,fontSize:9,fontWeight:600,background:(SC[_st.key]||ART_FILE_SC[_st.key])?.bg||'#f1f5f9',color:(SC[_st.key]||ART_FILE_SC[_st.key])?.c||'#475569'}}>{_st.label}</span></button>});
+    // Outbound tracking for one job, shown on its detail page: customer shipments that carried one of
+    // this job's garments (sku+color, the same key shippedSizesByLine uses); item-less shipments (manual adds, the legacy single tracking #) can't be attributed to a line, so
+    // they show as whole-order. Warehouse→decorator transfers are skipped. Read-only.
+    const _trackHref=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
+    const _jobTracking=(j)=>{const keys=new Set((j.items||[]).map(gi=>(gi.sku||'')+'|'+(gi.color||'')));
+      const out=[];const seenOut=new Set();
+      const _ships=[...(o._shipments||[])];if(o._tracking_number&&!_ships.some(s=>s.tracking_number===o._tracking_number))_ships.push({tracking_number:o._tracking_number,tracking_url:o._tracking_url,carrier:o._carrier,ship_date:o._ship_date,items:[]});
+      _ships.forEach(s=>{if(!s||s.fulfillment===false||s.shipment_scope==='deco_transfer')return;const t=String(s.tracking_number||'').trim();if(!t||seenOut.has(t))return;const its=s.items||[];const whole=its.length===0;
+        if(!whole&&!its.some(x=>x&&keys.has((x.sku||'')+'|'+(x.color||''))))return;seenOut.add(t);
+        out.push({tn:t,href:s.tracking_url||_trackHref(t),note:[(s.carrier||'').toUpperCase(),s.ship_date,whole?'whole order':''].filter(Boolean).join(' · ')})});
+      return out};
     React.useEffect(()=>{if(openPOId){
       // Check SO-level deco_pos first — decoration POs are cost buckets, not per-item line items.
       const decoPO=(o.deco_pos||[]).find(dp=>dp.po_id===openPOId);
@@ -861,6 +887,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }},[openPOId]);
     const origRef=React.useRef(JSON.stringify(o));
     const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showActionsDD,setShowActionsDD]=useState(false);const[showTaxExempt,setShowTaxExempt]=useState(false);const actionsRef=useRef(null);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=1000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[batchReadyPopup,setBatchReadyPopup]=useState(null);const[addShp,setAddShp]=useState(null);// Tracking tab: manual outbound shipment entry (null = form closed)
+    const[shpEmailBusy,setShpEmailBusy]=useState(false);// Tracking tab: coach shipping-notice send in flight
     // Auto-open a send flow when navigated here from a dashboard follow-up "Send" button.
     // {kind:'doc'} opens the estimate/SO SendModal; {kind:'coach',jobId} opens Send-to-Coach for
     // that job (deferred like scrollToJobRef so the post-sync job list has committed).
@@ -5341,6 +5368,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 records why so an untaxed doc can answer to an auditor on its own. */}
             <button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:_taxInfo.scope==='order'?'#166534':'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);setShowTaxExempt(true)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🧾 {_taxInfo.scope==='order'?'Tax Exempt — edit reason':'Mark Tax Exempt…'}</button>
 
+            {/* No invoice needed — THIS sales order only. Billed in NetSuite, collected by an
+                OMG store, or a free replacement: the order will never get a portal invoice,
+                so it leaves the Ready-to-invoice report and the rep's TODO list. Reason required. */}
+            {isSO&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:o.no_invoice_needed?'#9a3412':'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
+              if(o.no_invoice_needed){if(!window.confirm('Put '+o.id+' back on the Ready-to-invoice list?'))return;setO(cur=>({...clearNoInvoice(cur),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Order is back on the Ready-to-invoice list');return}
+              const answer=window.prompt('Why does '+o.id+' not need a portal invoice?\n\n'+NO_INVOICE_REASONS.map((r,i)=>(i+1)+'. '+r).join('\n')+'\n\nType a number, or your own reason:');
+              if(answer==null)return;const n=parseInt(answer,10);const text=(String(n)===answer.trim()&&n>=1&&n<=NO_INVOICE_REASONS.length)?NO_INVOICE_REASONS[n-1]:answer.trim();
+              if(!text){nf('A reason is required to mark an order as not needing an invoice','error');return}
+              setO(cur=>({...applyNoInvoice(cur,{reason:text,by:cu?.id}),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Marked no invoice needed — removed from the Ready-to-invoice list')}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🚫 {o.no_invoice_needed?'No Invoice Needed — put back on list':'Mark No Invoice Needed…'}</button>}
+
             {/* Credit — show when customer has credits available */}
             {cust&&!o.credit_applied&&(()=>{const _credits=(cust.credits||[]);const _bal=_credits.reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0);return _bal>0})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#065f46',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
               const credits=(cust.credits||[]).filter(cr=>(cr.amount||0)-(cr.used||0)>0);
@@ -5428,9 +5465,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <div style={{display:'flex',gap:12,marginTop:12,alignItems:'end',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',paddingTop:12}}>
         <div><label className="form-label">Shipping</label><div style={{display:'flex',gap:4,alignItems:'center'}}>
           <Bg options={[{value:'pct',label:'% of Total'},{value:'flat',label:'Flat $'}]} value={o.shipping_type||'pct'} onChange={v=>sv('shipping_type',v)}/>
-          {o.shipping_type==='pct'?<span style={{display:'inline-flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'2px 6px',background:'white'}}><input value={o.shipping_value||0} onChange={e=>sv('shipping_value',parseFloat(e.target.value)||0)} style={{width:40,border:'none',outline:'none',fontSize:15,fontWeight:800,textAlign:'center',background:'transparent'}}/><span style={{fontWeight:700}}>%</span></span>
+          {o.shipping_type==='pct'?<span style={{display:'inline-flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'2px 6px',background:'white'}}><input value={o.shipping_value||0} onChange={e=>{const v=parseFloat(e.target.value)||0;if(v>100){nf('Shipping % cannot exceed 100 — switch to Flat $ to charge a dollar amount','error');sv('shipping_value',100);return}sv('shipping_value',Math.max(0,v))}} style={{width:40,border:'none',outline:'none',fontSize:15,fontWeight:800,textAlign:'center',background:'transparent'}}/><span style={{fontWeight:700}}>%</span></span>
           :<$In value={o.shipping_value||0} onChange={v=>sv('shipping_value',v)} w={60}/>}
           <span style={{fontSize:12,color:'#64748b'}}>= ${totals.ship.toFixed(2)}</span>
+          {isSO&&o.no_invoice_needed&&<span title={'Marked by '+(o.no_invoice_by||'?')+' '+(o.no_invoice_at||'')} style={{fontSize:11,fontWeight:700,color:'#9a3412',background:'#fff7ed',border:'1px solid #fdba74',borderRadius:6,padding:'3px 8px'}}>{noInvoiceLabel(o)}</span>}
         </div></div>
         <div style={{flex:1,minWidth:180}}><label className="form-label">Ship To</label>
           <div style={{display:'flex',gap:4,alignItems:'center'}}>
@@ -5628,6 +5666,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 })()}
                 {(()=>{const seen=new Set();return safePOs(item).filter(po=>{const k=po.po_id||'';if(!k||seen.has(k))return false;seen.add(k);return true}).map((po,pi)=>{const lines=[];safeItems(o).forEach((it2,i2)=>{safePOs(it2).forEach((po2,pi2)=>{if(po2.po_id===po.po_id)lines.push({lineIdx:i2,poIdx:pi2})})});return<span key={'po'+pi} style={{fontSize:10,padding:'2px 8px',borderRadius:6,background:'#eff6ff',color:'#1e40af',fontWeight:700,cursor:'pointer',border:'1px solid #bfdbfe',whiteSpace:'nowrap'}} title={'Ordered on supplier PO '+(po.po_id||'')+(po.vendor?' · '+po.vendor:'')+' — click to edit'} onClick={()=>setEditPO({lineIdx:idx,poIdx:(item.po_lines||[]).findIndex(p=>p.po_id===po.po_id),po,allLines:lines.length>0?lines:[{lineIdx:idx,poIdx:0}]})}>🧾 {po.po_id}</span>})})()}
                 {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:10,padding:'2px 8px',borderRadius:6,background:'#ede9fe',color:'#6d28d9',fontWeight:700,cursor:'pointer',border:'1px solid #ddd6fe',whiteSpace:'nowrap'}} title={'On Deco PO '+(dp.po_id||'')+(dp.vendor?' · '+dp.vendor:'')+' — click to edit items / per-item costing'} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>▣ {dp.po_id}{dp.vendor?' · '+dp.vendor:''}</span>)}
+                {isSO&&_jobChips(idx)}
               </div>
             </div>
             <div style={{textAlign:'right',whiteSpace:'nowrap'}}>
@@ -5894,6 +5933,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {pk.ship_dest&&pk.ship_dest!=='in_house'&&<span style={{fontSize:8,padding:'2px 5px',borderRadius:4,fontWeight:700,
                 background:pk.ship_dest==='ship_customer'?'#dbeafe':'#ede9fe',color:pk.ship_dest==='ship_customer'?'#1e40af':'#6d28d9'}}>
                 {pk.ship_dest==='ship_customer'?'📦 → Customer':'🚚 → '+(pk.deco_vendor||'Deco')}</span>}
+              {pi===0&&_jobChips(idx,{marginLeft:4})}
             </div>})}
         </div>}
         {isSO&&(item.po_lines||[]).length>0&&<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
@@ -5924,9 +5964,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{display:'grid',gridTemplateColumns:'repeat(11,48px)',columnGap:6,rowGap:6,alignItems:'center'}}>
               {poSzKeys.map(sz=>{const v=po[sz]||0;const r=isDS?(blld[sz]||0):(rcvd[sz]||0);const cn=cncl[sz]||0;if(!v)return<div key={sz} style={{width:48,textAlign:'center',fontSize:10,color:'#d1d5db'}}>—</div>;
                 const szSt=cn>=v?'cancelled':r>=(v-cn)?(isDS?'shipped':'received'):r>0?'partial':(!isDS&&(blld[sz]||0)>0)?'in_transit':'waiting';
+                // Partly billed (some units shipped, rest still at the vendor): split the cell blue/yellow
+                // in proportion so a 1-of-4 shipment doesn't read as the whole size being in transit.
+                const tBl=blld[sz]||0;const tPart=szSt==='in_transit'&&tBl<(v-cn);const tPct=tPart?Math.round(tBl/(v-cn)*100):0;
                 return<div key={sz} style={{width:48,textAlign:'center',fontSize:12,fontWeight:700,padding:'2px 0',borderRadius:3,
-                  background:szSt==='cancelled'?'#fef2f2':szSt==='received'||szSt==='shipped'?'#dcfce7':szSt==='in_transit'?'#dbeafe':szSt==='partial'?'#fef3c7':'#fef3c7',
-                  color:szSt==='cancelled'?'#dc2626':szSt==='received'||szSt==='shipped'?'#166534':szSt==='in_transit'?'#1e40af':szSt==='partial'?'#b45309':'#92400e'}}>{szSt==='cancelled'?'✕':szSt==='partial'?r+'/'+(v-cn):v-cn}</div>})}
+                  background:tPart?`linear-gradient(90deg,#dbeafe ${tPct}%,#fef3c7 ${tPct}%)`:szSt==='cancelled'?'#fef2f2':szSt==='received'||szSt==='shipped'?'#dcfce7':szSt==='in_transit'?'#dbeafe':szSt==='partial'?'#fef3c7':'#fef3c7',
+                  color:szSt==='cancelled'?'#dc2626':szSt==='received'||szSt==='shipped'?'#166534':szSt==='in_transit'?'#1e40af':szSt==='partial'?'#b45309':'#92400e'}}>{szSt==='cancelled'?'✕':szSt==='partial'?r+'/'+(v-cn):tPart?tBl+'/'+(v-cn):v-cn}</div>})}
               </div>
               <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,marginLeft:4,
                 background:st==='received'||st==='shipped'?'#dcfce7':st==='in_transit'?'#dbeafe':st==='partial'?'#fff7ed':'#fef3c7',
@@ -5934,8 +5977,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {_batchNo&&<span style={{fontSize:9,padding:'2px 7px',borderRadius:4,fontWeight:700,marginLeft:4,background:'#f5f3ff',color:'#7c3aed',border:'1px solid #ddd6fe',fontFamily:'monospace'}} title={'Ordered on batch PO '+_batchNo+(po.vendor?' · '+po.vendor:'')}>📦 Batch: {_batchNo}</span>}
               <ApiOrderBadge po={po} style={{marginLeft:4}}/>
               {isDS&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,marginLeft:4,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
+              {pi===0&&!(item.pick_lines||[]).length&&_jobChips(idx,{marginLeft:4})}
             </div>})}
         </div>}
+        {/* No pick/PO rows yet — the line's jobs still get a slim row where the PO row will land. */}
+        {isSO&&!(item.pick_lines||[]).length&&!(item.po_lines||[]).length&&_lineJobs(idx).length>0&&<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>{_jobChips(idx)}</div>}
         {/* WRITTEN-OFF UNITS — a PO received/billed more than the line still sells (an absorbed
             wrong-size order, or a vendor over-ship). Their cost is still on this SO, so say so
             here rather than leaving an unexplained margin hole on the Costs tab. */}
@@ -7557,6 +7603,64 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const shipCost=safeNum(o._shipping_cost||o._shipstation_cost||0)||shipCostFromShipments;
       const freightCost=safeNum(o._inbound_freight||0);
       const canEditCost=cu?.role==='admin'||cu?.role==='super_admin'||cu?.role==='accounting'||cu?.role==='rep';
+      // ── "Your gear is on the way" — the coach's shipping notice ──
+      // so-shipment-notify builds and sends it server-side from this order: the
+      // boxes, their tracking, the mockups and the coach's address all come from
+      // the DB, so this button hands over an SO id and nothing else. The preview
+      // round-trip is what lets the rep see WHO it's going to before it leaves.
+      const emailShipmentNotice=async()=>{
+        if(shpEmailBusy)return;
+        setShpEmailBusy(true);
+        const post=body=>authFetch('/.netlify/functions/so-shipment-notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({soId:o.id,...body})});
+        try{
+          const pr=await post({preview:true});const pd=await pr.json().catch(()=>({}));
+          if(!pr.ok){nf(pd.error||'Could not prepare the shipping email','error');return}
+          if(!pd.to){nf('No contact with an email address on this account — add one on the customer record first','error');return}
+          const eta=window.prompt('Estimated delivery to show the coach (optional — leave blank to omit):',o.deliver_on_date||'');
+          if(eta===null)return;
+          const warn=pd.alreadySent?'\n\n⚠️ These boxes were already emailed to '+(pd.alreadySent.to||'the customer')+' on '+pd.alreadySent.sent_at+'. Sending again will be a duplicate.':'';
+          if(!window.confirm('Email tracking to '+(pd.to.name?pd.to.name+' <'+pd.to.email+'>':pd.to.email)+'?\n\n'+pd.boxes+' box'+(pd.boxes===1?'':'es')+' · '+pd.pieces+' pieces'+warn))return;
+          const r=await post({eta:eta.trim(),resend:!!pd.alreadySent});const d=await r.json().catch(()=>({}));
+          if(!r.ok){nf(d.error||'Email send failed','error');return}
+          nf('Shipping notice sent to '+d.to+(d.repCopy==='sent'?' — copy sent to '+d.repEmail:''));
+          if(d.historyRecorded===false)nf('Sent — but the send was not recorded on the order','error');
+        }catch(e){nf('Email failed: '+e.message,'error')}
+        finally{setShpEmailBusy(false)}
+      };
+      // Show the exact email — mockups, boxes, size runs — in a new tab without sending
+      // anything. The tab is opened on the click itself: pop-up blockers allow that, but
+      // not a window opened after the fetch comes back.
+      const previewShipmentNotice=async()=>{
+        if(shpEmailBusy)return;
+        const w=window.open('','_blank');
+        if(!w){nf('Pop-up blocked — allow pop-ups for the portal to preview the email','error');return}
+        w.document.write('<p style="font-family:sans-serif;padding:24px;color:#475569">Building the shipping email…</p>');
+        setShpEmailBusy(true);
+        try{
+          const r=await authFetch('/.netlify/functions/so-shipment-notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({soId:o.id,preview:true})});
+          const d=await r.json().catch(()=>({}));
+          if(!r.ok||!d.html){w.close();nf(d.error||'Could not build the shipping email','error');return}
+          w.document.open();w.document.write(d.html);w.document.close();
+          w.document.title='Preview — '+(d.subject||'shipping email');
+        }catch(e){w.close();nf('Preview failed: '+e.message,'error')}
+        finally{setShpEmailBusy(false)}
+      };
+      // A real copy to the signed-in staff member, through Brevo like the real thing —
+      // the only way to see it in an actual inbox (images and all) before a coach does.
+      // The server sends it to the caller's own team_members email; it is never
+      // recorded and never blocks the real send.
+      const testShipmentNotice=async()=>{
+        if(shpEmailBusy)return;
+        if(!window.confirm('Send a test copy of the coach shipping email to your own address ('+(cu?.email||'your team member email')+')?\n\nNothing goes to the customer and nothing is recorded.'))return;
+        setShpEmailBusy(true);
+        try{
+          const r=await authFetch('/.netlify/functions/so-shipment-notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({soId:o.id,test:true,eta:o.deliver_on_date||''})});
+          const d=await r.json().catch(()=>({}));
+          if(!r.ok){nf(d.error||'Test send failed','error');return}
+          nf('Test copy sent to '+d.to+(d.from?' (from '+d.from+')':''));
+        }catch(e){nf('Test send failed: '+e.message,'error')}
+        finally{setShpEmailBusy(false)}
+      };
 
       return<div style={{display:'grid',gap:16}}>
         {/* ── WAREHOUSE BOXES (BX plates, boxes table) — where is this order physically ── */}
@@ -7591,7 +7695,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   shipped after the order was already closed and invoiced. The warehouse Ready-to-Ship
                   flow is still the main path (it knows which units are in the box); this is the escape
                   hatch for everything else, and it is what gets the shipping COST onto the order. */}
-              {canEditCost&&<button className="btn btn-sm btn-secondary" style={{marginLeft:'auto',fontSize:11}}
+              {allOutbound.length>0&&<button className="btn btn-sm btn-secondary" style={{marginLeft:'auto',fontSize:11}}
+                disabled={shpEmailBusy} onClick={previewShipmentNotice} title="Open the coach's shipping email in a new tab — nothing is sent">
+                👁 Preview Email</button>}
+              {allOutbound.length>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}}
+                disabled={shpEmailBusy} onClick={testShipmentNotice} title="Email yourself a real copy — nothing goes to the customer">
+                ✉️ Test To Me</button>}
+              {allOutbound.length>0&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#962C32',borderColor:'#962C32'}}
+                disabled={shpEmailBusy} onClick={emailShipmentNotice}>
+                {shpEmailBusy?'Working…':'📧 Email Coach Tracking'}</button>}
+              {canEditCost&&<button className="btn btn-sm btn-secondary" style={{marginLeft:allOutbound.length>0?0:'auto',fontSize:11}}
                 onClick={()=>setAddShp(addShp?null:{tracking:'',carrier:'',date:new Date().toLocaleDateString(),cost:'',notes:''})}>
                 {addShp?'Cancel':'+ Add Shipment'}</button>}
             </div>
@@ -8961,7 +9074,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         _scoped.forEach(it=>{
           const qty=it._invQty;const pq=it._soQty;
           const szStr=it._invSizes?sizeBreakdownStr(it._invSizes,it.is_footwear):'';
-          const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
+          // Price off the invoice's own line when it has one (see scopeSoItemsToInvoice):
+          // its rate already blends per-size upcharges, a $0 comped garment and any rep
+          // price edit, and already carries the decoration — so decorations below print as
+          // detail rather than as a second charge.
+          const invPriced=it._invAmount!=null;
+          const unitPrice=it._invRate!=null?it._invRate:safeNum(it.unit_sell);
+          const lineAmt=invPriced?it._invAmount:Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
           let itemName=(it.name||'')+(it.color?' - '+it.color:'');
           if(szStr)itemName+='<br/><span>'+szStr+'</span>';
           if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
@@ -8970,8 +9089,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:pq;const dp2=dP(d,pq,soArt,cq);
             const artF=soArt.find(a2=>a2.id===d.art_file_id);
             const decoLabel=pdfDecoLabel(d,artF);
-            const posLabel=d.position?' — '+d.position:'';const eq=dp2._nq!=null?(pq>0&&qty!==pq?Math.round(dp2._nq*qty/pq):dp2._nq):(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;subTotal+=decoAmt;
-            rows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
+            const posLabel=d.position?' — '+d.position:'';const eq=dp2._nq!=null?(pq>0&&qty!==pq?Math.round(dp2._nq*qty/pq):dp2._nq):(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;if(!invPriced)subTotal+=decoAmt;
+            rows.push({_class:'deco-row',cells:[{value:invPriced?'':eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:invPriced?'+'+_$(dp2.sell)+'/ea':_$(dp2.sell),style:'text-align:right'+(invPriced?';color:#64748b':'')},{value:invPriced?'':_$(decoAmt),style:'text-align:right'}]});
           });
         });
         // Lines with no SO match (hand-added, NetSuite import) still have to print, or the
@@ -8989,13 +9108,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           ],
           tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
             rows:[...rows,
-              {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$(subTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
-              ...(shipAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$(shipAmt),style:'text-align:right;border:none'}]}]:[]),
-              ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax</strong>',style:'text-align:right;border:none'},{value:_$(taxAmt),style:'text-align:right;border:none'}]}]:[]),
-              ...(safeNum(ir.credit_amount)>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-'+_$(safeNum(ir.credit_amount))+'</strong>',style:'text-align:right;border:none'}]}]:[]),
-              {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(ir.total)+'</strong>',style:'text-align:right'}]},
-              ...(ir.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$(ir.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
-              ...(bal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$(bal)+'</strong>',style:'text-align:right'}]}]:[]),
+              ...invoiceTotalsRows({subtotal:subTotal,shipping:shipAmt,tax:taxAmt,ccFee:safeNum(ir.cc_fee),credit:safeNum(ir.credit_amount),depositApplied:safeNum(ir.deposit_applied),total:ir.total,paid:ir.paid,balance:bal},_$),
             ]}],
           footer:ir.inv_type==='deposit'?_ci.depositTerms:_ci.terms,companyInfo:_ci};
       };
@@ -9192,7 +9305,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             _scoped.forEach(it=>{
               const qty=it._invQty;const pq=it._soQty;
               const szStr=it._invSizes?sizeBreakdownStr(it._invSizes,it.is_footwear):'';
-              const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*eDepPct*100)/100;eSubTotal+=lineAmt;
+              // Price off the invoice's own line when it has one (see scopeSoItemsToInvoice): its
+              // rate already blends per-size upcharges, a $0 comped garment and any rep price edit,
+              // and already carries the decoration — so decorations below print as detail, not as a
+              // second charge.
+              const invPriced=it._invAmount!=null;
+              const unitPrice=it._invRate!=null?it._invRate:safeNum(it.unit_sell);
+              const lineAmt=invPriced?it._invAmount:Math.round(qty*unitPrice*eDepPct*100)/100;eSubTotal+=lineAmt;
               let itemName=(it.name||'')+(it.color?' - '+it.color:'');
               if(szStr)itemName+='<br/><span>'+szStr+'</span>';
               if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
@@ -9201,8 +9320,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:pq;const dp2=dP(d,pq,eSoArt,cq);
                 const artF=eSoArt.find(a2=>a2.id===d.art_file_id);
                 const decoLabel=pdfDecoLabel(d,artF);
-                const posLabel=d.position?' — '+d.position:'';const eq=dp2._nq!=null?(pq>0&&qty!==pq?Math.round(dp2._nq*qty/pq):dp2._nq):(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*eDepPct*100)/100;eSubTotal+=decoAmt;
-                eRows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$e(dp2.sell),style:'text-align:right'},{value:_$e(decoAmt),style:'text-align:right'}]});
+                const posLabel=d.position?' — '+d.position:'';const eq=dp2._nq!=null?(pq>0&&qty!==pq?Math.round(dp2._nq*qty/pq):dp2._nq):(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*eDepPct*100)/100;if(!invPriced)eSubTotal+=decoAmt;
+                eRows.push({_class:'deco-row',cells:[{value:invPriced?'':eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:invPriced?'+'+_$e(dp2.sell)+'/ea':_$e(dp2.sell),style:'text-align:right'+(invPriced?';color:#64748b':'')},{value:invPriced?'':_$e(decoAmt),style:'text-align:right'}]});
               });
             });
             // Lines with no SO match (hand-added, NetSuite import) still have to print, or the
@@ -9221,13 +9340,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 ],
                 tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
                   rows:[...eRows,
-                    {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$e(eSubTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
-                    ...(shipAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$e(shipAmt),style:'text-align:right;border:none'}]}]:[]),
-                    ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax</strong>',style:'text-align:right;border:none'},{value:_$e(taxAmt),style:'text-align:right;border:none'}]}]:[]),
-                    ...(safeNum(ir.credit_amount)>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-'+_$e(safeNum(ir.credit_amount))+'</strong>',style:'text-align:right;border:none'}]}]:[]),
-                    {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$e(ir.total)+'</strong>',style:'text-align:right'}]},
-                    ...(ir.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$e(ir.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
-                    ...(irBal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$e(irBal)+'</strong>',style:'text-align:right'}]}]:[]),
+                    ...invoiceTotalsRows({subtotal:eSubTotal,shipping:shipAmt,tax:taxAmt,ccFee:safeNum(ir.cc_fee),credit:safeNum(ir.credit_amount),depositApplied:safeNum(ir.deposit_applied),total:ir.total,paid:ir.paid,balance:irBal},_$e),
                   ]}],footer:ir.inv_type==='deposit'?_ci.depositTerms:_ci.terms});
               const styleMatch=docHtml.match(/<style>([\s\S]*?)<\/style>/);const bodyMatch=docHtml.match(/<body>([\s\S]*?)<\/body>/);
               const pdfFixCss='.header{display:table!important;width:100%!important;table-layout:fixed}.header>*{display:table-cell!important;vertical-align:top!important}.logo{width:55%!important}.logo img{height:50px;vertical-align:middle;margin-right:8px;float:left}.doc-id{width:45%!important;text-align:right!important}.bill-total{display:table!important;width:100%!important;table-layout:fixed}.bill-total>*{display:table-cell!important;vertical-align:top!important}.total-box{width:200px!important;text-align:left!important}.info-row{display:table!important;width:100%!important;table-layout:fixed}.info-cell{display:table-cell!important;vertical-align:top!important}.footer{display:table!important;width:100%!important}.footer>*{display:table-cell!important}.footer>*:last-child{text-align:right!important}';
@@ -11665,6 +11778,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </>}
                 </div>
                 <div style={{fontSize:12,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
+                {(()=>{const _tk=_jobTracking(j);if(!_tk.length)return null;const _a=(x,i)=><a key={i} href={x.href} target="_blank" rel="noreferrer" title={x.note} style={{fontFamily:'monospace',fontSize:10,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'1px 6px',borderRadius:4,textDecoration:'none',whiteSpace:'nowrap'}}>{x.tn}</a>;
+                  return<div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginTop:4,fontSize:11}}>
+                    <span style={{fontWeight:700,color:'#64748b'}} title="Our warehouse → customer (shipments carrying this job's garments)">📤 Shipped:</span>{_tk.map(_a)}
+                  </div>})()}
                 {(()=>{const _outLines=_jobOutsideDecos(j);if(!_outLines.length)return null;
                   return<div style={{fontSize:11,color:'#7c3aed',marginTop:2}} title="These decorations are on the same garments but are produced by an outside vendor — not part of this in-house job">🏭 Also on these garments: {_outLines.map(_outsideDecoText).join(' · ')}</div>})()}
                 {(()=>{// Art-split slices of the same line are disjoint garment batches, not a multi-job item — jobsShareGarments filters them.
@@ -12112,6 +12229,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                           </div>
                         </div>
                         <div style={{textAlign:'right',flexShrink:0,display:'flex',alignItems:'center',gap:8}}>
+                          {gi.item_idx!=null&&<button type="button" className="btn btn-sm btn-secondary" onClick={()=>_jumpToItem(gi.item_idx)} title="Go to this garment's line on the sales order" style={{fontSize:11,padding:'3px 8px',whiteSpace:'nowrap'}}>SO →</button>}
                           <OeGarmentPoChip item={it} szMeta={_PO_SZ_META}/>
                         <div>
                           <div style={{fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:800,fontSize:26,color:'#192853',lineHeight:1}}>{totalUnits}</div>
@@ -12452,6 +12570,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                           </div>
                         </div>
                         <div style={{textAlign:'right',flexShrink:0,display:'flex',alignItems:'center',gap:8}}>
+                          {gi.item_idx!=null&&<button type="button" className="btn btn-sm btn-secondary" onClick={()=>_jumpToItem(gi.item_idx)} title="Go to this garment's line on the sales order" style={{fontSize:11,padding:'3px 8px',whiteSpace:'nowrap'}}>SO →</button>}
                           <OeGarmentPoChip item={it} szMeta={_PO_SZ_META}/>
                         <div>
                           <div style={{fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:800,fontSize:26,color:'#192853',lineHeight:1}}>{totalUnits}</div>
@@ -12740,6 +12859,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                       <span style={{color:'#94a3b8',marginLeft:6}}>({gi.color||'—'})</span>
                       {gi.brand&&<span className="badge badge-gray" style={{marginLeft:6}}>{gi.brand}</span>}</div>
                     </div>
+                    {gi.item_idx!=null&&<button type="button" className="btn btn-sm btn-secondary" onClick={()=>_jumpToItem(gi.item_idx)} title="Go to this garment's line on the sales order" style={{fontSize:11,padding:'3px 8px',whiteSpace:'nowrap'}}>SO →</button>}
                     <div style={{fontWeight:700,color:fulTotal>=rowTotal&&rowTotal>0?'#166534':'#64748b',flexShrink:0}}>{fulTotal}/{rowTotal} units</div>
                   </div>
                   {/* Per-SKU art details */}
@@ -13899,9 +14019,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               <td style={{paddingLeft:24,color:'#94a3b8',fontSize:10}}>↳</td>
               <td colSpan={2} style={{fontSize:11,color:'#475569'}}><span style={{fontWeight:600}}>{gi.sku}</span> {gi.name} <span style={{color:'#94a3b8'}}>({gi.color||'—'})</span></td>
               <td style={{fontSize:11}}>{giDone}/{giUnits}</td>
-              <td colSpan={4} style={{fontSize:11}}>
+              <td colSpan={3} style={{fontSize:11}}>
                 {giSzEntries.length>0&&<div style={{display:'flex',gap:10,flexWrap:'wrap'}}>{giSzEntries.map(([sz,qty])=>{const f=safeNum(giFul[sz]);const done=f>=qty&&qty>0;return<span key={sz} style={{display:'inline-flex',gap:3,alignItems:'baseline'}}><span style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase'}}>{sz}</span><span style={{fontWeight:700,color:done?'#166534':f>0?'#d97706':'#475569'}}>{f}/{qty}</span></span>})}</div>}
               </td>
+              <td style={{textAlign:'right'}}>{gi.item_idx!=null&&<button type="button" className="btn btn-sm btn-secondary" onClick={e=>{e.stopPropagation();_jumpToItem(gi.item_idx)}} title={'Go to this line on the sales order: '+(gi.sku||'')+(gi.color?' · '+gi.color:'')} style={{fontSize:10,padding:'2px 8px',whiteSpace:'nowrap',fontWeight:700}}>SO →</button>}</td>
             </tr>})}
             </React.Fragment>})}
         </tbody></table>}
@@ -14800,9 +14921,44 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               const poVendorName=po.po_type==='outside_deco'?(po.deco_vendor||''):(po.vendor||vendorList.find(v=>v.id===item?.vendor_id)?.name||'');
               const onPoIdxs=new Set(draft.lines.map(l=>l.lineIdx));
               const addedIdxs=new Set(draft.adds.map(a=>a.itemIdx));
-              const addable=safeItems(o).map((it2,i2)=>({it2,i2})).filter(({it2,i2})=>!onPoIdxs.has(i2)&&!addedIdxs.has(i2)&&(it2.sku||it2.name));
+              // Only offer this PO's vendor's items. An outside-deco PO carries garments from any
+              // supplier, and an item with no vendor on file can't be told apart, so those stay open.
+              const _itVendor=it2=>vendorList.find(v=>v.id===(it2.vendor_id||findProd(it2)?.vendor_id))?.name||'';
+              const _sameVendor=it2=>{if(po.po_type==='outside_deco'||!poVendorName)return true;const iv=_itVendor(it2);return!iv||iv.trim().toLowerCase()===poVendorName.trim().toLowerCase()};
+              // What the order still needs of a size, for this PO to cover: ordered − picked − what OTHER
+              // POs (and this PO's batch-queued lines) already cover. The lines being edited here are left
+              // out, so their draft quantities can be measured against it.
+              const _editIdx=new Set(draft.lines.filter(l=>!l.queued).map(l=>l.lineIdx+':'+l.poIdx));
+              const _ordOf=(i2,sz)=>{const it2=o.items[i2]||{};const szs=safeSizes(it2);return sz==='QTY'&&!Object.keys(szs).some(k=>safeNum(szs[k])>0)?safeNum(it2.est_qty):safeNum(szs[sz])};
+              const _needOf=(i2,sz)=>{const it2=o.items[i2]||{};const picked=safePicks(it2).reduce((a,pk)=>a+(pk[sz]||0),0);const other=poCommitted((it2.po_lines||[]).filter((pl,pi)=>!_editIdx.has(i2+':'+pi)),sz);return Math.max(0,_ordOf(i2,sz)-picked-other)};
+              // What this PO had for the size before the edit — an over-order that was already there isn't re-flagged.
+              const _origOf=(i2,sz)=>poCommitted((o.items[i2]?.po_lines||[]).filter((pl,pi)=>_editIdx.has(i2+':'+pi)),sz);
+              const _draftOf=(i2,sz)=>draft.lines.filter(l=>l.lineIdx===i2&&!l.queued&&!l.removed).reduce((a,l)=>a+Math.max(0,parseInt(l.sizes[sz])||0),0)+draft.adds.filter(a=>a.itemIdx===i2).reduce((a,ad)=>a+Math.max(0,parseInt(ad.sizes[sz])||0),0);
+              const _remain=(i2,sz)=>Math.max(0,_needOf(i2,sz)-_draftOf(i2,sz));
+              const _overBy=(i2,sz)=>{const q=_draftOf(i2,sz);return q>Math.max(_needOf(i2,sz),_origOf(i2,sz))?q-_needOf(i2,sz):0};
+              const _excess=(i2,sz)=>Math.max(0,_draftOf(i2,sz)-_needOf(i2,sz));// shown on the box, including an over-order already on the PO
+              const _itSizes=i2=>{const szs=safeSizes(o.items[i2]||{});const k=Object.keys(szs).filter(sz=>safeNum(szs[sz])>0);return k.length?k.sort(_szSort):(safeNum(o.items[i2]?.est_qty)>0?['QTY']:[])};
+              // Only items the order still needs something of — a fully pulled / fully PO'd item used to be
+              // offered anyway, which is how a second size 11 got ordered on top of two already pulled.
+              const addable=safeItems(o).map((it2,i2)=>({it2,i2})).filter(({it2,i2})=>!onPoIdxs.has(i2)&&!addedIdxs.has(i2)&&(it2.sku||it2.name)&&_sameVendor(it2)&&_itSizes(i2).some(sz=>_remain(i2,sz)>0));
+              // +Size picker: sizes the order line already carries come first (with what's still needed),
+              // then the rest of the item's own size run — shoes get shoe sizes, balls get ball sizes.
+              const _szOpts=(i2,have)=>{
+                const it2=o.items[i2]||{};
+                const pool=it2.is_footwear?FOOTWEAR_SIZES:((it2.available_sizes||[]).length>0&&(it2.available_sizes||[]).every(s=>BALL_SIZES.includes(s))?BALL_SIZES:APPAREL_SIZES);
+                const onOrder=Object.keys(safeSizes(it2)).filter(sz=>safeNum(safeSizes(it2)[sz])>0&&!have.includes(sz)).sort(_szSort);
+                const rest=[...new Set([...(it2.available_sizes||[]),...pool])].filter(sz=>!have.includes(sz)&&!onOrder.includes(sz)).sort(_szSort);
+                return<>{onOrder.length>0&&<optgroup label="On this order">{onOrder.map(sz=>{const op=_remain(i2,sz);return<option key={sz} value={sz}>{sz}{op>0?' ('+op+' needed)':''}</option>})}</optgroup>}
+                  <optgroup label="Other sizes">{rest.map(sz=><option key={sz} value={sz}>{sz}</option>)}</optgroup></>;
+              };
+              // One-click buttons for sizes the order still needs and this PO doesn't cover yet.
+              const _needRow=(i2,onAdd)=>{const nd=_itSizes(i2).map(sz=>[sz,_remain(i2,sz)]).filter(([,n])=>n>0);if(!nd.length)return null;
+                return<div style={{display:'flex',gap:4,alignItems:'center',flexWrap:'wrap',marginTop:6,fontSize:10}}>
+                  <span style={{fontWeight:700,color:'#b45309'}}>Still needed on the order:</span>
+                  {nd.map(([sz,n])=><button key={sz} className="btn btn-sm" style={{fontSize:10,fontWeight:700,padding:'1px 7px',color:'#b45309',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:4}} title={'Put '+n+' × '+sz+' on this PO'} onClick={()=>onAdd(sz,n)}>+ {sz} ×{n}</button>)}
+                </div>};
               return<div style={{marginTop:8,padding:10,border:'1px dashed #7c3aed',borderRadius:6,background:'#faf5ff'}}>
-                <div style={{fontSize:11,color:'#6d28d9',marginBottom:8}}>Whatever you type is the PO's new total for that size (it can't go below what's already received). Lower a number and the difference goes back to the order as available to re-pick or put on another PO. You can also add sizes, remove lines, or pull more of this order's items onto the PO — including SKUs assigned to other vendors.</div>
+                <div style={{fontSize:11,color:'#6d28d9',marginBottom:8}}>Whatever you type is the PO's new total for that size (it can't go below what's already received). Lower a number and the difference goes back to the order as available to re-pick or put on another PO. You can also add sizes, remove lines, or pull more of this order's items onto the PO{po.po_type!=='outside_deco'&&poVendorName?' from '+poVendorName:''}.</div>
                 {draft.lines.map((ln,li)=>{
                   if(ln.queued)return<div key={'q'+li} style={{padding:8,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:4,marginBottom:6,fontSize:11,color:'#b45309'}}><strong>{ln.sku}</strong> — queued in a batch; edit it from the Batch POs page.</div>;
                   const rcvT=Object.values(ln.received).reduce((a,v)=>a+safeNum(v),0);
@@ -14811,7 +14967,6 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                     <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,removed:false}:l)}))}>Undo remove</button>
                   </div>;
                   const lnSzKeys=[...new Set([...Object.keys(ln.sizes),...Object.keys(ln.received).filter(sz=>safeNum(ln.received[sz])>0)])].sort(_szSort);
-                  const addableSz=[...new Set([...Object.keys(safeSizes(o.items[ln.lineIdx]||{})),...APPAREL_SIZES])].filter(sz=>!lnSzKeys.includes(sz)).sort(_szSort);
                   return<div key={li} style={{padding:8,background:'white',border:'1px solid #e2e8f0',borderRadius:4,marginBottom:6}}>
                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6,gap:8,flexWrap:'wrap'}}>
                       <div style={{fontSize:12,fontWeight:700}}><span style={{fontFamily:'monospace',color:'#1e40af'}}>{ln.sku}</span> {ln.name}{ln.color?' — '+ln.color:''}</div>
@@ -14823,21 +14978,22 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                         <input id={'po-editq-'+li+'-'+sz} style={{width:46,textAlign:'center',border:'1px solid '+(below?'#dc2626':'#c4b5fd'),borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:below?'#fef2f2':'white'}} value={ln.sizes[sz]??''} placeholder="0"
                           onChange={e=>{const v=Math.max(0,parseInt(e.target.value)||0);setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,sizes:{...l.sizes,[sz]:v}}:l)}))}}/>
                         {rcv>0&&<div style={{fontSize:9,fontWeight:700,color:below?'#dc2626':'#166534'}} title={below?'Below received — will be kept at '+rcv+' on save':'Already received'}>rcvd {rcv}</div>}
+                        {_excess(ln.lineIdx,sz)>0&&<div style={{fontSize:9,fontWeight:700,color:'#dc2626'}} title="More than the order still needs of this size (after what's been pulled and what's on other POs)">+{_excess(ln.lineIdx,sz)} over</div>}
                       </div>})}
                       <div style={{textAlign:'center'}}>
                         <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',marginBottom:2}}>+ Size</div>
-                        <select value="" style={{width:62,fontSize:11,padding:'4px 2px',border:'1px dashed #c4b5fd',borderRadius:4,background:'#faf5ff',color:'#7c3aed',cursor:'pointer'}}
-                          onChange={e=>{const sz=e.target.value;if(!sz)return;setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,sizes:{...l.sizes,[sz]:l.sizes[sz]||0}}:l)}))}}>
+                        <select value="" style={{width:84,fontSize:11,padding:'4px 2px',border:'1px dashed #c4b5fd',borderRadius:4,background:'#faf5ff',color:'#7c3aed',cursor:'pointer'}}
+                          onChange={e=>{const sz=e.target.value;if(!sz)return;setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,sizes:{...l.sizes,[sz]:l.sizes[sz]||_remain(l.lineIdx,sz)}}:l)}))}}>
                           <option value="">add…</option>
-                          {addableSz.map(sz=><option key={sz} value={sz}>{sz}</option>)}
+                          {_szOpts(ln.lineIdx,lnSzKeys)}
                         </select>
                       </div>
                     </div>
+                    {_needRow(ln.lineIdx,(sz,n)=>setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,sizes:{...l.sizes,[sz]:(Math.max(0,parseInt(l.sizes[sz])||0))+n}}:l)})))}
                   </div>})}
                 {draft.adds.map((ad,ai)=>{
                   const it2=o.items[ad.itemIdx]||{};
                   const adSzKeys=Object.keys(ad.sizes).sort(_szSort);
-                  const addableSz=[...new Set([...Object.keys(safeSizes(it2)),...APPAREL_SIZES])].filter(sz=>!adSzKeys.includes(sz)).sort(_szSort);
                   return<div key={'a'+ai} style={{padding:8,background:'#f0fdf4',border:'1px solid #86efac',borderRadius:4,marginBottom:6}}>
                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6,gap:8,flexWrap:'wrap'}}>
                       <div style={{fontSize:12,fontWeight:700}}><span style={{fontSize:9,fontWeight:800,color:'#166534',background:'#dcfce7',padding:'1px 5px',borderRadius:3,marginRight:4,verticalAlign:'middle'}}>NEW</span><span style={{fontFamily:'monospace',color:'#1e40af'}}>{ad.sku}</span> {ad.name}{ad.color?' — '+ad.color:''}</div>
@@ -14853,42 +15009,35 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                         <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
                         <input style={{width:46,textAlign:'center',border:'1px solid #86efac',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:'white'}} value={ad.sizes[sz]??''} placeholder="0"
                           onChange={e=>{const v=Math.max(0,parseInt(e.target.value)||0);setDraft(d=>({...d,adds:d.adds.map((a,i)=>i===ai?{...a,sizes:{...a.sizes,[sz]:v}}:a)}))}}/>
+                        {_excess(ad.itemIdx,sz)>0&&<div style={{fontSize:9,fontWeight:700,color:'#dc2626'}} title="More than the order still needs of this size (after what's been pulled and what's on other POs)">+{_excess(ad.itemIdx,sz)} over</div>}
                       </div>)}
                       <div style={{textAlign:'center'}}>
                         <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',marginBottom:2}}>+ Size</div>
-                        <select value="" style={{width:62,fontSize:11,padding:'4px 2px',border:'1px dashed #86efac',borderRadius:4,background:'#f0fdf4',color:'#166534',cursor:'pointer'}}
-                          onChange={e=>{const sz=e.target.value;if(!sz)return;setDraft(d=>({...d,adds:d.adds.map((a,i)=>i===ai?{...a,sizes:{...a.sizes,[sz]:a.sizes[sz]||0}}:a)}))}}>
+                        <select value="" style={{width:84,fontSize:11,padding:'4px 2px',border:'1px dashed #86efac',borderRadius:4,background:'#f0fdf4',color:'#166534',cursor:'pointer'}}
+                          onChange={e=>{const sz=e.target.value;if(!sz)return;setDraft(d=>({...d,adds:d.adds.map((a,i)=>i===ai?{...a,sizes:{...a.sizes,[sz]:a.sizes[sz]||_remain(a.itemIdx,sz)}}:a)}))}}>
                           <option value="">add…</option>
-                          {addableSz.map(sz=><option key={sz} value={sz}>{sz}</option>)}
+                          {_szOpts(ad.itemIdx,adSzKeys)}
                         </select>
                       </div>
                     </div>
+                    {_needRow(ad.itemIdx,(sz,n)=>setDraft(d=>({...d,adds:d.adds.map((a,i)=>i===ai?{...a,sizes:{...a.sizes,[sz]:(Math.max(0,parseInt(a.sizes[sz])||0))+n}}:a)})))}
                   </div>})}
                 {addable.length>0&&<div style={{marginTop:4,marginBottom:8}}>
                   <div style={{fontSize:10,fontWeight:700,color:'#6d28d9',textTransform:'uppercase',marginBottom:4}}>Add another item from this order</div>
                   <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
                     {addable.map(({it2,i2})=>{
                       const cat=findProd(it2);
-                      const itemVendor=vendorList.find(v=>v.id===(it2.vendor_id||cat?.vendor_id))?.name||'';
-                      const offVendor=poVendorName&&itemVendor&&itemVendor!==poVendorName;
                       return<div key={i2} style={{padding:'4px 8px',borderRadius:5,cursor:'pointer',border:'1px dashed #94a3b8',background:'white',fontSize:11,display:'flex',gap:4,alignItems:'center'}} onClick={()=>{
-                        const open={};
-                        Object.entries(safeSizes(it2)).forEach(([sz,v])=>{if(safeNum(v)<=0)return;const picked=safePicks(it2).reduce((a,pk)=>a+(pk[sz]||0),0);const cm=poCommitted(it2.po_lines,sz);open[sz]=Math.max(0,safeNum(v)-picked-cm)});
-                        if(Object.keys(open).length===0&&safeNum(it2.est_qty)>0){const picked=safePicks(it2).reduce((a,pk)=>a+(pk['QTY']||0),0);const cm=poCommitted(it2.po_lines,'QTY');open['QTY']=Math.max(0,safeNum(it2.est_qty)-picked-cm)}
-                        // Every size fully picked / already on another PO (or the item carries no sized
-                        // qty yet) left the added row with NO boxes at all — nothing to type into, so the
-                        // item could never actually be added. Always seed something editable.
-                        if(Object.keys(open).length===0){const seed=Object.keys(safeSizes(it2));(seed.length?seed:['QTY']).forEach(sz=>{open[sz]=0})}
+                        const open={};_itSizes(i2).forEach(sz=>{const n=_remain(i2,sz);if(n>0)open[sz]=n});
                         setDraft(d=>({...d,adds:[...d.adds,{itemIdx:i2,sku:it2.sku||'',name:it2.name||'',color:it2.color||'',sizes:open,unit_cost:safeNum(cat?.nsa_cost??it2.nsa_cost)}]}));
                       }}>
                         <span style={{color:'#16a34a',fontWeight:800,fontSize:13}}>+</span>
                         <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it2.sku}</span>
                         <span style={{fontWeight:600}}>{it2.name}</span>
                         {it2.color&&<span style={{color:'#64748b'}}>{it2.color}</span>}
-                        {offVendor&&<span style={{fontSize:9,fontWeight:700,padding:'1px 5px',borderRadius:3,background:'#fffbeb',color:'#b45309',border:'1px solid #fde68a'}} title={'Catalog vendor is '+itemVendor+' — it will still be added to this '+(poVendorName||'')+' PO'}>{itemVendor}</span>}
                       </div>})}
                   </div>
-                  <div style={{fontSize:9,color:'#94a3b8',marginTop:4}}>Quantities default to each size's open (not yet picked or on a PO) amount — adjust them above after adding. Need a SKU that isn't on this order yet? Add it on the Items tab first, then pull it onto the PO here.</div>
+                  <div style={{fontSize:9,color:'#94a3b8',marginTop:4}}>Quantities default to what the order still needs of each size (not yet pulled or on a PO) — adjust them above after adding.{po.po_type!=='outside_deco'&&poVendorName?' Only '+poVendorName+' items are listed.':''} Need a SKU that isn't on this order yet? Add it on the Items tab first, then pull it onto the PO here.</div>
                 </div>}
                 <div style={{display:'flex',gap:6,marginTop:8}}>
                   <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',fontSize:11,fontWeight:700}} onClick={()=>{
@@ -14896,6 +15045,13 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                     // the PO saved "successfully" and the item simply wasn't on it. Say so instead.
                     const _emptyAdds=draft.adds.filter(ad=>!Object.values(ad.sizes||{}).some(v=>Math.max(0,parseInt(v)||0)>0));
                     if(_emptyAdds.length){nf('Enter a quantity for '+_emptyAdds.map(a=>a.sku||a.name||'the added item').join(', ')+' — an item with no quantity cannot be added to the PO','error');return}
+                    // Ordering more than the order needs (already pulled from inventory or on another PO) is
+                    // almost always a mistake — make the rep say so before it goes to the vendor.
+                    const _overs=[];[...new Set([...draft.lines.filter(l=>!l.queued&&!l.removed).map(l=>l.lineIdx),...draft.adds.map(a=>a.itemIdx)])].forEach(i2=>{
+                      const szs=new Set();draft.lines.filter(l=>l.lineIdx===i2&&!l.queued&&!l.removed).forEach(l=>Object.keys(l.sizes).forEach(k=>szs.add(k)));draft.adds.filter(a=>a.itemIdx===i2).forEach(a=>Object.keys(a.sizes).forEach(k=>szs.add(k)));
+                      szs.forEach(sz=>{const ob=_overBy(i2,sz);if(ob>0)_overs.push((o.items[i2]?.sku||'item')+' '+(sz==='QTY'?'':sz+' ')+'(+'+ob+')')});
+                    });
+                    if(_overs.length&&!window.confirm('This orders more than the order needs — already pulled from inventory or on another PO:\n\n'+_overs.join('\n')+'\n\nOrder the extra anyway?'))return;
                     const items2=o.items.map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
                     let clampedAny=false;const willRemove=[];
                     draft.lines.forEach(ln=>{

@@ -32,7 +32,8 @@ import { downloadSilverScreenFulfillment } from './lib/silverScreenFulfillment';
 import { selectFulfillmentReportScope } from './lib/fulfillmentReportScope';
 import { webstoreProductionKey } from './lib/storeSkuGrouping';
 import { allocateMoneyCents } from './lib/bundleMoney';
-import { buildCondensedPlayerRows, orderNetCollected, originalOrderTotal } from './lib/webstoreOrderMoney';
+import { buildCondensedPlayerRows, orderNetCollected, originalOrderTotal, netFundraise } from './lib/webstoreOrderMoney';
+import { loadFunnel, sumFunnel, FunnelCard, DeviceCard, InterestCard, SourceCard, SoldOutCard } from './webstoreFunnel';
 import { sanmarPricingSnapshot, sanmarStyleFromSku } from './lib/sanmarPricing';
 import { WEBSTORE_DELIVERY_WINDOWS, deliveryWindowLabel, normalizeDeliveryWindow, salesOrderDueDate } from './lib/webstoreDeliveryWindow';
 
@@ -65,6 +66,22 @@ const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground'
 // ("deco:<id>", resolved against decoLocations from useDecoShipFromLocations).
 // Omitted falls back to the store's saved default, then the warehouse. A
 // decorator with no address throws here, before anything is sent to ShipStation.
+// ShipStation allows ~40 API calls a minute and each label takes 2–3, so a bulk
+// label run hits the limit partway through. A 429 is refused at the door — no
+// label is bought — and the ShipStation order upsert is keyed on the order, so
+// waiting a minute and retrying is safe. Any other error (a timeout above all) is
+// NOT retried: the label may have been bought and only the reply lost.
+async function withShipStationRateRetry(buy, onWait) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await buy(); }
+    catch (e) {
+      if (!/\(429\)/.test((e && e.message) || '') || attempt >= 2) throw e;
+      if (onWait) onWait();
+      await new Promise((r) => setTimeout(r, 62000));
+    }
+  }
+}
+
 async function createWebstoreLabel(order, items, store, weightByPid = {}, imageByPid = {}, fromCode, decoLocations = []) {
   const originCode = shipFromCode(fromCode || store.ship_from_code, decoLocations);
   const shipFrom = shipStationShipFrom(originCode, decoLocations);
@@ -241,10 +258,11 @@ function printPullSheet(store, soLabel, designs, numbers, pulledNote) {
 // the stacked-embed window if the merge fails for any reason.
 async function printLabels(labels) {
   try {
-    await printPdfLabels(labels);
+    return await printPdfLabels(labels);
   } catch (e) {
     const embeds = labels.map((b64) => `<div class="lp"><embed src="data:application/pdf;base64,${b64}" type="application/pdf" width="100%" height="100%"></div>`).join('');
     printHtml(`<!doctype html><html><head><title>Shipping labels</title><style>body{margin:0}.lp{width:100%;height:6in;page-break-after:always}</style></head><body>${embeds || 'No labels.'}</body></html>`);
+    return labels.length;
   }
 }
 
@@ -1070,6 +1088,10 @@ const PUBLIC_SITE = 'https://nationalsportsapparel.com';
 // Per-image deadline for the flyer PDF's photo/QR fetches (see _imgB64).
 const IMG_FETCH_MS = 12_000;
 const _storefrontUrl = (store) => `${PUBLIC_SITE}/shop/${store.slug}`;
+// Same link tagged with where it was shared (?src=email|qr|…) so the Analytics tab
+// can credit visits to the flyer, the launch email, etc. (webstoreTracking.js).
+// Printed/visible link text stays the clean URL; only clickable/scannable links carry the tag.
+const _storefrontSrcUrl = (store, src) => `${_storefrontUrl(store)}?src=${src}`;
 // QuickChart renders a standard 8-bit PNG that email clients reliably display; the previous
 // goqr.me image came back as a 1-bit colormap PNG that several clients/image-proxies dropped.
 const _qrImg = (data, size = 300) => `https://quickchart.io/qr?size=${size}&margin=2&ecLevel=M&text=${encodeURIComponent(data)}`;
@@ -1122,7 +1144,7 @@ function launchEmailHtml(store, portalUrl) {
       <div style="font-size:12px;letter-spacing:2.5px;text-transform:uppercase;color:${accent};font-weight:700">${_esc(store.name)}</div>
       <h1 style="font-size:40px;font-weight:900;line-height:1;text-transform:uppercase;color:#fff;margin:12px 0 0">The Team Store Is <span style="color:${accent}">Now Open</span></h1>
       <p style="font-size:15px;line-height:1.65;color:rgba(255,255,255,.88);margin:18px auto 0;max-width:420px">Order your player&rsquo;s official, custom-decorated gear online. Everything ships straight to the team &mdash; just place your order before the store closes.</p>
-      <a href="${url}" style="display:inline-block;margin-top:22px;background:${accent};color:${ink};font-size:15px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;text-decoration:none;padding:14px 32px">Shop The Store &rarr;</a>
+      <a href="${_storefrontSrcUrl(store, 'email')}" style="display:inline-block;margin-top:22px;background:${accent};color:${ink};font-size:15px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;text-decoration:none;padding:14px 32px">Shop The Store &rarr;</a>
     </div>
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${ink};border-collapse:collapse">
       <tr>
@@ -1142,7 +1164,7 @@ function launchEmailHtml(store, portalUrl) {
     </table>
     <div style="padding:26px 24px 8px;text-align:center">
       <div style="font-size:14px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:${ink};margin-bottom:12px">Scan to shop</div>
-      <img src="${_qrImg(url, 220)}" alt="QR code to the store" width="160" height="160" style="border:4px solid ${primary};border-radius:10px"/>
+      <img src="${_qrImg(_storefrontSrcUrl(store, 'qr'), 220)}" alt="QR code to the store" width="160" height="160" style="border:4px solid ${primary};border-radius:10px"/>
       <div style="font-size:11px;color:${sub};margin-top:8px">${_esc(url)}</div>
     </div>
     <div style="padding:14px 24px 18px">
@@ -1279,7 +1301,7 @@ function flyerHtml(store, items = []) {
           <div style="font-size:11px;color:${sub};margin-top:1px">Questions? hello@nationalsportsapparel.com</div>
         </div>
         <div style="text-align:center;flex-shrink:0">
-          <img src="${_qrImg(url, 160)}" alt="QR" width="64" height="64" style="border:2px solid ${ink};border-radius:5px;display:block"/>
+          <img src="${_qrImg(_storefrontSrcUrl(store, 'qr'), 160)}" alt="QR" width="64" height="64" style="border:2px solid ${ink};border-radius:5px;display:block"/>
           <div style="font-size:8.5px;letter-spacing:1px;text-transform:uppercase;color:${sub};margin-top:3px">Scan To Shop</div>
         </div>
       </div>
@@ -1489,7 +1511,7 @@ async function generateFlyerPdfBase64(store, items = []) {
   doc.text('SCAN TO SHOP', W/2, y, {align:'center'});
   y += 10;
   try {
-    const qrResp = await fetchWithTimeout(_qrImg(url, 200), {}, IMG_FETCH_MS);
+    const qrResp = await fetchWithTimeout(_qrImg(_storefrontSrcUrl(store, 'qr'), 200), {}, IMG_FETCH_MS);
     const qrBlob = await qrResp.blob();
     const qrB64 = await new Promise((resolve)=>{ const r=new FileReader(); r.onloadend=()=>resolve(r.result); r.readAsDataURL(qrBlob); });
     doc.addImage(qrB64,'PNG',W/2-70,y,140,140,'','FAST');
@@ -6565,6 +6587,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
         : (Number(String(a.id).replace(/\D/g, '')) || 0) - (Number(String(b.id).replace(/\D/g, '')) || 0));
   })();
 
+  const [labelAllRequested, setLabelAllRequested] = useState(false); // More ▾ → Create all labels
   // Primary tabs stay visible; the rest tuck into a "More ▾" menu. Store settings
   // live behind the header ⚙ Settings button (the rich editor), not a tab.
   const PRIMARY_TABS = [
@@ -6586,7 +6609,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
   const tabsButtons = (
     <>
       {PRIMARY_TABS.map((t) => <button key={t.id} className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab(t.id)}>{t.label}</button>)}
-      <MenuButton label="More" primary={MORE_TABS.some((t) => t.id === tab)} items={MORE_TABS.map((t) => ({ label: t.label, onClick: () => setTab(t.id) }))} />
+      <MenuButton label="More" primary={MORE_TABS.some((t) => t.id === tab)} items={[...MORE_TABS.map((t) => ({ label: t.label, onClick: () => setTab(t.id) })), { divider: true }, { label: '🏷️ Create all labels', title: 'Buy and print a shipping label for every ship-to-home order that has items ready', onClick: () => { setTab('orders'); setLabelAllRequested(true); } }]} />
     </>
   );
   // product_id -> stock (warehouse + Adidas) for the batch health check.
@@ -6727,7 +6750,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
           {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} teamHexes={[...new Set([...(detail?.storeColors || []).map((pc) => pc && pc.hex), s.primary_color, s.accent_color].filter(Boolean))]} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddGrouped={onAddGrouped} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onBulkRemove={onBulkRemove} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onRemoveColor={onRemoveColor} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
           {tab === 'appearance' && <ShowcaseAppearanceTab store={s} onFlash={onFlash} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onSaveArtFolder={onAddStoreArtFolder} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
-          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} nameByPid={nameByPid} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onPlayerReportPdf={onPlayerReportPdf} onPlayerReportCondensed={onPlayerReportCondensed} onStockReport={onStockReport} onProductReport={onProductReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
+          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} nameByPid={nameByPid} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onPlayerReportPdf={onPlayerReportPdf} onPlayerReportCondensed={onPlayerReportCondensed} onStockReport={onStockReport} onProductReport={onProductReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} labelAllRequested={labelAllRequested} onLabelAllHandled={() => setLabelAllRequested(false)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
@@ -12904,11 +12927,71 @@ function CouponsTab({ store, coupons = [], orders = [], onCreate, onUpdate, onRe
   );
 }
 
-// Store analytics — computed live from orders.
-function AnalyticsTab({ store, orders: allOrders, orderItems, stockByWp, catalog = [], libraryArt = [] }) {
+// Store analytics: the shopper funnel (from storefront tracking) on top, then
+// the order-based numbers below.
+function AnalyticsTab(props) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <StoreFunnel store={props.store} catalog={props.catalog} stockByWp={props.stockByWp} />
+      <OrderAnalytics {...props} />
+    </div>
+  );
+}
+
+// Shopper funnel for this store, over its whole life (webstoreFunnel.js).
+function StoreFunnel({ store, catalog = [], stockByWp = {} }) {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    setData(null);
+    loadFunnel({ storeId: store.id }).then((d) => { if (!cancelled) setData(d); }).catch((e) => { if (!cancelled) setData({ rows: [], products: [], error: e.message }); });
+    return () => { cancelled = true; };
+  }, [store.id]);
+  if (!data) return <div className="card"><div style={{ padding: 16, fontSize: 13, color: '#94a3b8' }}>Loading shopper funnel…</div></div>;
+  if (data.missing || data.error) return <div className="card"><div style={{ padding: 16, fontSize: 13, color: '#94a3b8' }}>Shopper funnel isn’t available{data.error ? ': ' + data.error : ' yet (tracking table not set up).'}</div></div>;
+  const totals = sumFunnel(data.rows);
+  const byId = {}; (catalog || []).forEach((c) => { byId[c.id] = c; });
+  const nameFor = (r) => { const c = byId[r.webstore_product_id]; return (c && (c.display_name || stockByWp[c.id]?.name || c.sku)) || 'Removed item'; };
+  return (
+    <>
+      <FunnelCard totals={totals} since={data.since} />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 16 }}>
+        <DeviceCard totals={totals} />
+        <InterestCard products={data.products} nameFor={nameFor} minViewers={5} />
+        <SourceCard rows={data.sources} />
+        <SoldOutCard rows={data.soldout} nameFor={nameFor} />
+      </div>
+      <ShareLinksCard store={store} />
+    </>
+  );
+}
+
+// Tagged links for promoting a store, so "Where shoppers came from" can credit
+// each channel. The launch email, flyer and QR code already use these.
+function ShareLinksCard({ store }) {
+  const [copied, setCopied] = useState('');
+  const links = [['email', 'Email'], ['text', 'Text message'], ['social', 'Social media post'], ['coach', 'Coach / team announcement'], ['website', 'Team website'], ['flyer', 'Printed flyer (no QR)']];
+  const copy = (src) => {
+    const url = _storefrontSrcUrl(store, src);
+    try { navigator.clipboard.writeText(url).then(() => { setCopied(src); setTimeout(() => setCopied(''), 1500); }).catch(() => window.prompt('Copy this link:', url)); }
+    catch { window.prompt('Copy this link:', url); }
+  };
+  return (
+    <div className="card"><div style={{ padding: 16 }}>
+      <div style={{ fontWeight: 800 }}>Share links</div>
+      <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2, marginBottom: 10 }}>Use the matching link when you or the coach promote the store — visits then show up under the right source above.</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {links.map(([src, label]) => <button key={src} className="btn btn-sm btn-secondary" onClick={() => copy(src)}>{copied === src ? '✓ Copied' : '📋 ' + label}</button>)}
+      </div>
+    </div></div>
+  );
+}
+
+// Order-based analytics — computed live from orders.
+function OrderAnalytics({ store, orders: allOrders, orderItems, stockByWp, catalog = [], libraryArt = [] }) {
   // Exclude abandoned pre-payment carts and cancellations from analytics.
   const orders = allOrders.filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled');
-  if (!orders.length) return <Empty msg="No orders yet — analytics will appear once shoppers start ordering." />;
+  if (!orders.length) return <Empty msg="No orders yet — order analytics will appear once shoppers start ordering." />;
   const nameBySku = {}; Object.values(stockByWp).forEach((s) => { if (s.sku) nameBySku[s.sku] = s.name; });
   // Catalog (with placed decorations) + art names, for the decoration breakdown.
   const catByPid = {}; (catalog || []).forEach((c) => { if (c.product_id) catByPid[c.product_id] = c; });
@@ -12916,19 +12999,7 @@ function AnalyticsTab({ store, orders: allOrders, orderItems, stockByWp, catalog
   const artName = {}; (libraryArt || []).forEach((a) => { if (a && a.id) artName[a.id] = a.name || 'Logo'; });
   const revenue = orders.reduce((a, o) => a + orderNetCollected(o), 0);
   const r2f = (n) => Math.round((Number(n) || 0) * 100) / 100;
-  // Fundraising the club is actually owed on an order = its fundraise_amt, less the share of
-  // any coupon discount that came off the pot. Checkout applies the % to subtotal + fundraise
-  // together, so a discounted order collected proportionally less fundraising, and a 100%-off
-  // order collected none — paying the club the gross fundraise_amt overpaid them on every
-  // discounted order.
-  const netFundraise = (o) => {
-    const sub = Number(o.subtotal) || 0, fund = Number(o.fundraise_amt) || 0;
-    if (fund <= 0) return 0;
-    const base = sub + fund;
-    if (base <= 0) return r2f(fund);
-    const disc = Math.min(Number(o.discount_amt) || 0, base);
-    return Math.max(0, r2f(fund - disc * (fund / base)));
-  };
+  // Fundraising owed nets out the coupon share (netFundraise, lib/webstoreOrderMoney.js).
   const fundGross = orders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
   const shipCollected = orders.reduce((a, o) => a + (Number(o.shipping_fee) || 0), 0);
   const shipCost = orders.reduce((a, o) => a + (Number(o.label_cost) || 0), 0);
@@ -13483,16 +13554,19 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     setSsMsg((m) => ({ ...m, [soId]: `Creating ${groups.length} labels from ${shipFromLabel(shipFrom, decoLocs)}…` }));
     const weightByPid = {}; (catalog || []).forEach((c) => { if (c.product_id && c.weight_oz != null) weightByPid[c.product_id] = Number(c.weight_oz) || 0; });
     const labels = []; const errs = []; let held = 0;
-    for (const g of groups) {
+    for (let n = 0; n < groups.length; n++) {
+      const g = groups[n];
       const o = g.order;
       const who = o.buyer_name || o.buyer_email || o.id;
+      setSsMsg((m) => ({ ...m, [soId]: `Creating label ${n + 1} of ${groups.length} from ${shipFromLabel(shipFrom, decoLocs)}…` }));
       const plan = webstoreShipPlan(g.items);
       if (!plan.length) { held++; continue; }
       const addrErr = validateShipAddress(o.ship_address);
       if (addrErr) { errs.push({ order: who, msg: addrErr }); continue; }
       const shipItems = plan.map((x) => ({ ...x.item, qty: x.qty }));
       try {
-        const label = await createWebstoreLabel(o, shipItems, store, weightByPid, imageByPid, shipFrom, decoLocs);
+        const label = await withShipStationRateRetry(() => createWebstoreLabel(o, shipItems, store, weightByPid, imageByPid, shipFrom, decoLocs),
+          () => setSsMsg((m) => ({ ...m, [soId]: `ShipStation rate limit — pausing a minute, then continuing with label ${n + 1} of ${groups.length} (${who})…` })));
         // Keep the purchased PDF printable even if the ledger handoff needs
         // attention; retries are idempotent and the error explicitly warns the
         // operator not to buy a second label.
@@ -13507,9 +13581,12 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
       const total = (soOrds || []).reduce((a, x) => a + (Number(x.label_cost) || 0), 0);
       await supabase.from('sales_orders').update({ _shipping_cost: total, _shipstation_cost: total }).eq('id', soId);
     } catch {}
-    if (labels.length) await printLabels(labels);
+    // printPdfLabels quietly drops a PDF it can't read — say so, those labels are paid for.
+    let printed = 0;
+    if (labels.length) { try { printed = await printLabels(labels); } catch {} }
+    const printNote = labels.length && printed < labels.length ? ` Only ${printed} of ${labels.length} made it into the print file — reprint the missing orders from the Orders tab.` : '';
     setSsErr((m) => ({ ...m, [soId]: errs }));
-    setSsMsg((m) => ({ ...m, [soId]: `${labels.length} label${labels.length === 1 ? '' : 's'} created${errs.length ? `, ${errs.length} need attention` : ''}${held ? `, ${held} fully short` : ''}.` }));
+    setSsMsg((m) => ({ ...m, [soId]: `${labels.length} label${labels.length === 1 ? '' : 's'} created${errs.length ? `, ${errs.length} need attention` : ''}${held ? `, ${held} fully short` : ''}.${printNote}` }));
   };
   const maps = buildTransferMaps(catalog, bundleItems);
   const transferLabel = (code) => { const t = transfers.find((x) => x.code === code); if (t) return t.label; const [d, s, c] = code.split('|'); return s ? `#${d} · ${s} · ${c}` : code; };
@@ -13894,7 +13971,7 @@ function webstoreShortGate(items, what) {
   return true;
 }
 
-function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onPlayerReportPdf, onPlayerReportCondensed, onStockReport, onProductReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, soBatch = {}, onOpenSO, focusOrderId = null, msgTagIds = [] }) {
+function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onPlayerReportPdf, onPlayerReportCondensed, onStockReport, onProductReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, soBatch = {}, onOpenSO, focusOrderId = null, msgTagIds = [], labelAllRequested = false, onLabelAllHandled }) {
   const [q, setQ] = useState('');
   // Per-order customer message threads (same shared `messages` table the OMG
   // portal and the public order page use).
@@ -13904,6 +13981,7 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
   // Per-order shipping label (no Bagging Station, no batch needed).
   const [labelBusy, setLabelBusy] = useState(null);   // order id being labeled
   const [labelMsg, setLabelMsg] = useState({});       // order id -> status line
+  const [bulkMsg, setBulkMsg] = useState('');         // "Create all labels" progress / result
   const [shipFrom, setShipFrom] = useState(shipFromCode(store && store.ship_from_code));
   const decoLocs = useDecoShipFromLocations();
   const [labelCat, setLabelCat] = useState({ weightByPid: {}, imageByPid: {} });
@@ -13981,6 +14059,23 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
   };
   // Ship-to-home and still live — the only orders a label makes sense for.
   const canLabel = (o) => o.ship_method === 'ship_home' && isLiveWebstoreOrder(o);
+  // Buy one order's label and lock it in. The label is bought and paid for once
+  // createWebstoreLabel returns, so mark it on the LIVE line objects and the order
+  // BEFORE printing or recording: if either of those fails, the plan must
+  // recompute to "nothing left" so a retry cannot buy a second label for a parcel
+  // that already has one. Shared by the single-order button and "Create all labels".
+  const buyOrderLabel = async (o, plan, cat) => {
+    const shipItems = plan.map((x) => ({ ...x.item, qty: x.qty }));
+    const label = await createWebstoreLabel(o, shipItems, store, cat.weightByPid, cat.imageByPid, shipFrom, decoLocs);
+    plan.forEach((x) => { x.item.shipped_qty = (Number(x.item.shipped_qty) || 0) + x.qty; });
+    o.label_data = label.labelData || o.label_data;
+    o.shipstation_shipment_id = label.shipmentId || o.shipstation_shipment_id;
+    o.tracking_number = label.trackingNumber || o.tracking_number;
+    o.carrier = label.carrier || o.carrier;
+    o.label_cost = label.cost != null ? label.cost : o.label_cost;
+    o.ship_from_code = label.shipFromCode;
+    return { label, shipItems };
+  };
   // Buy and print a label for ONE order, straight from this tab — no bag scan and
   // no batch. Ships only what's in hand: already-shipped and held-short units stay
   // behind and the order stays open so the rest can go later.
@@ -14006,20 +14101,8 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
     if (!window.confirm(`Buy a ${String(store.shipstation_carrier || 'fedex').toUpperCase()} label for ${units} item${units === 1 ? '' : 's'} to ${o.buyer_name || 'this buyer'}?\n\nShips from: ${shipFromLabel(shipFrom, decoLocs)} — ${shipFromAddressLine(shipFrom, decoLocs)}\n\nThis charges the ShipStation account.`)) return;
     setLabelBusy(o.id);
     setLabelMsg((m) => ({ ...m, [o.id]: 'Creating label…' }));
-    const shipItems = plan.map((x) => ({ ...x.item, qty: x.qty }));
     try {
-      const label = await createWebstoreLabel(o, shipItems, store, labelCat.weightByPid, labelCat.imageByPid, shipFrom, decoLocs);
-      // The label is bought and paid for from here on. Lock that in on the LIVE
-      // line objects and the order BEFORE printing or recording: if either of
-      // those fails, the plan must recompute to "nothing left" so a retry click
-      // cannot buy a second label for a parcel that already has one.
-      plan.forEach((x) => { x.item.shipped_qty = (Number(x.item.shipped_qty) || 0) + x.qty; });
-      o.label_data = label.labelData || o.label_data;
-      o.shipstation_shipment_id = label.shipmentId || o.shipstation_shipment_id;
-      o.tracking_number = label.trackingNumber || o.tracking_number;
-      o.carrier = label.carrier || o.carrier;
-      o.label_cost = label.cost != null ? label.cost : o.label_cost;
-      o.ship_from_code = label.shipFromCode;
+      const { label, shipItems } = await buyOrderLabel(o, plan, labelCat);
       // Print before recording: a recording hiccup must never cost the operator the PDF.
       if (label.labelData) { try { await printPdfLabels([label.labelData]); } catch {} }
       try {
@@ -14034,6 +14117,87 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
       setLabelMsg((m) => ({ ...m, [o.id]: 'Label failed: ' + ((e && e.message) || 'unknown error') }));
     } finally { setLabelBusy(null); }
   };
+  // "Create all labels" (store More ▾ menu): one label per ship-to-home order that
+  // has something in hand to ship, same guards as the single-order button — live
+  // orders only, validated address, held-short and already-shipped units stay
+  // behind, one open-short gate for the whole run. All PDFs print as one file.
+  const createAllLabels = async () => {
+    if (labelBusy || !store) return;
+    const byOrder = {};
+    orderItems.forEach((i) => { (byOrder[i.order_id] = byOrder[i.order_id] || []).push(i); });
+    const ready = []; const badAddr = [];
+    orders.filter(canLabel).forEach((o) => {
+      const plan = webstoreShipPlan(byOrder[o.id]);
+      if (!plan.length) return;
+      const addrErr = validateShipAddress(o.ship_address);
+      if (addrErr) { badAddr.push(o); setLabelMsg((m) => ({ ...m, [o.id]: addrErr })); return; }
+      ready.push({ o, plan, items: byOrder[o.id] || [] });
+    });
+    const skipNote = badAddr.length ? ` ${badAddr.length} skipped for a bad address (${badAddr.map((o) => o.buyer_name || o.id).join(', ')}).` : '';
+    if (!ready.length) {
+      setBulkMsg(orders.some((o) => o.ship_method === 'ship_home')
+        ? 'No ship-to-home orders are ready for a label — everything is already shipped, held short, or not paid.' + skipNote
+        : 'This store has no ship-to-home orders — its orders are delivered to the team, so there is nothing to label.');
+      return;
+    }
+    if (!webstoreShortGate(ready.flatMap((r) => r.items), `${ready.length} order${ready.length === 1 ? '' : 's'}`)) return;
+    const units = ready.reduce((a, r) => a + r.plan.reduce((b, x) => b + x.qty, 0), 0);
+    if (!window.confirm(`Buy ${ready.length} ${String(store.shipstation_carrier || 'fedex').toUpperCase()} label${ready.length === 1 ? '' : 's'} (${units} item${units === 1 ? '' : 's'} total)?\n\nShips from: ${shipFromLabel(shipFrom, decoLocs)} — ${shipFromAddressLine(shipFrom, decoLocs)}${badAddr.length ? `\n\n${badAddr.length} order${badAddr.length === 1 ? '' : 's'} will be skipped for a bad address.` : ''}\n\nThis charges the ShipStation account.`)) return;
+    setLabelBusy('all');
+    // Fresh weights/photos: the tab's own copy may still be loading when the run
+    // is started straight from the menu, and weight is what the carrier bills.
+    let cat = labelCat;
+    try {
+      const { data } = await supabase.from('webstore_products').select('product_id,weight_oz,image_url').eq('store_id', store.id);
+      const weightByPid = {}; const imageByPid = {};
+      (data || []).forEach((c) => {
+        if (!c.product_id) return;
+        if (c.weight_oz != null) weightByPid[c.product_id] = Number(c.weight_oz) || 0;
+        if (c.image_url) imageByPid[c.product_id] = c.image_url;
+      });
+      cat = { weightByPid, imageByPid };
+    } catch {}
+    const pdfs = []; const failed = []; const unrecorded = [];
+    for (let n = 0; n < ready.length; n++) {
+      const { o, plan } = ready[n];
+      const who = o.buyer_name || o.buyer_email || o.id;
+      setBulkMsg(`Creating label ${n + 1} of ${ready.length} (${who})…`);
+      let bought;
+      try {
+        bought = await withShipStationRateRetry(() => buyOrderLabel(o, plan, cat),
+          () => setBulkMsg(`ShipStation rate limit — pausing a minute, then continuing with label ${n + 1} of ${ready.length} (${who})…`));
+      } catch (e) { failed.push(who); setLabelMsg((m) => ({ ...m, [o.id]: 'Label failed: ' + ((e && e.message) || 'unknown error') })); continue; }
+      const { label, shipItems } = bought;
+      if (label.labelData) pdfs.push(label.labelData);
+      try {
+        await recordCreatedWebstoreLabel(o, shipItems, label);
+        setLabelMsg((m) => ({ ...m, [o.id]: `Label created${label.trackingNumber ? ' · ' + label.trackingNumber : ''}.` }));
+      } catch (e) {
+        unrecorded.push(who);
+        setLabelMsg((m) => ({ ...m, [o.id]: `Label BOUGHT and printed${label.trackingNumber ? ' (' + label.trackingNumber + ')' : ''}, but recording it failed: ${(e && e.message) || 'unknown error'}. Do not create another label — the ShipStation webhook will catch it up, or reload and use Reprint.` }));
+      }
+    }
+    // printPdfLabels quietly drops a PDF it can't read, so compare what went to
+    // the printer with what was bought and say so — those labels are paid for.
+    let printed = 0;
+    if (pdfs.length) { try { printed = await printPdfLabels(pdfs); } catch {} }
+    const made = ready.length - failed.length;
+    const printNote = made > 0 && printed < made
+      ? ` Only ${printed} of ${made} made it into the print file — open the missing orders and use Reprint.`
+      : '';
+    setBulkMsg(`${made} label${made === 1 ? '' : 's'} created and sent to print.${printNote}`
+      + (failed.length ? ` ${failed.length} failed (${failed.join(', ')}) — open the order to see why.` : '')
+      + (unrecorded.length ? ` ${unrecorded.length} BOUGHT but not recorded (${unrecorded.join(', ')}) — do not re-create them.` : '')
+      + skipNote + ' Refresh to update order statuses.');
+    setLabelBusy(null);
+  };
+  // The menu's request arrives as a flag, so it runs exactly once even when this
+  // tab mounts because of the same click.
+  useEffect(() => {
+    if (!labelAllRequested) return;
+    if (onLabelAllHandled) onLabelAllHandled();
+    createAllLabels();
+  }, [labelAllRequested]); // eslint-disable-line react-hooks/exhaustive-deps
   // Reprint the order's last saved label (no re-buy).
   const reprintLabel = async (o) => { if (!o.label_data) return; try { await printPdfLabels([o.label_data]); } catch {} };
   // Void the order's last label in ShipStation and reopen the shipped lines.
@@ -14157,6 +14321,10 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
               Create Batch ({unbatchedCount})
             </button>}
       </div>
+      {bulkMsg && <div style={{ marginBottom: 10, padding: '8px 12px', borderRadius: 8, border: '1px solid #bbf7d0', background: '#f0fdf4', color: '#166534', fontSize: 12.5, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span style={{ flex: 1 }}>🏷️ {bulkMsg}</span>
+        {labelBusy !== 'all' && <button className="btn btn-sm btn-secondary" onClick={() => setBulkMsg('')}>Dismiss</button>}
+      </div>}
       <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>Showing {filtered.length} of {listable.length} orders.</div>
       <div className="card"><div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -14221,7 +14389,7 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
                     <div style={{ marginTop: 8, fontSize: 11.5, color: '#94a3b8' }}>Lines marked short are held back when you create shipping labels — the order stays open so you can ship the rest later.</div>
                     {(o.label_cost != null || o.tracking_number) && <div style={{ marginTop: 8, fontSize: 11.5, color: '#475569' }}><span style={{ color: '#94a3b8' }}>Label </span><b>{o.label_cost != null ? money(o.label_cost) : '—'}</b>{o.carrier ? ' · ' + String(o.carrier).toUpperCase().replace('STAMPS_COM', 'USPS') : ''}{o.tracking_number ? ' · ' + o.tracking_number : ''}{o.ship_from_code ? ' · from ' + shipFromLabel(o.ship_from_code, decoLocs) : ''}</div>}
                     {(canLabel(o) || o.label_data || o.shipstation_shipment_id) && <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-                      {canLabel(o) && <button className="btn btn-sm btn-secondary" disabled={labelBusy === o.id} onClick={() => createOrderLabel(o, items)}>{labelBusy === o.id ? 'Creating…' : '🏷️ Create & print label'}</button>}
+                      {canLabel(o) && <button className="btn btn-sm btn-secondary" disabled={!!labelBusy} onClick={() => createOrderLabel(o, items)}>{labelBusy === o.id ? 'Creating…' : '🏷️ Create & print label'}</button>}
                       {canLabel(o) && <ShipFromPicker value={shipFrom} onChange={setShipFrom} decoLocations={decoLocs} compact />}
                       {o.label_data && <button className="btn btn-sm btn-secondary" onClick={() => reprintLabel(o)}>🔁 Reprint label</button>}
                       {o.shipstation_shipment_id && <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c', borderColor: '#fecaca' }} onClick={() => voidLabel(o)}>✖ Void label</button>}

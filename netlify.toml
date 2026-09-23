@@ -127,6 +127,12 @@
 [functions."webstore-close-sweep"]
   schedule = "0 * * * *"
 
+# "Finish your order" reminder — hourly. One email to shoppers whose card checkout
+# stalled at payment (see the function header for every rule). Stays OFF until
+# WEBSTORE_PAYMENT_REMINDERS=on is set in the Netlify environment.
+[functions."webstore-payment-reminder"]
+  schedule = "17 * * * *"
+
 # Automated follow-up sweep — hourly. Sends the rep's scheduled follow-up emails for
 # estimates, invoices, and art (so_jobs) whose follow_up_at has arrived, then re-arms
 # the next send (repeat cadence) or stops once resolved / capped. See
@@ -345,3 +351,17 @@
 # source for profit and commissions.
 [functions."omg-order-sync-cron"]
   schedule = "15 8 * * *"
+
+# Coach shipping notices — every 15 min. Sends the "your gear is on the way"
+# email for a live sales order once every box the warehouse owes a label for
+# carries a tracking number (a box confirmed today and labelled on Awaiting
+# Pickup days later still counts — the grace clock starts when tracking
+# appears). Same send path and same so_shipment_notices ledger as the rep's
+# Email Coach Tracking button, so the two can never double up. DEFAULT OFF:
+# SO_SHIPMENT_AUTONOTIFY must hold a go-live DATE (YYYY-MM-DD); boxes created
+# before it are never auto-announced, and with it unset the sweep is a dry run
+# that emails nobody. Needs migration 20260922210000. Staff can POST
+# { action:'run' } (or { dryRun:true }) with a bearer session token. See
+# netlify/functions/so-shipment-notify-sweep.js.
+[functions."so-shipment-notify-sweep"]
+  schedule = "*/15 * * * *"
