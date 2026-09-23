@@ -222,6 +222,9 @@ export default function FinancialsPage() {
   const [snaps, setSnaps] = useState(null);        // saved forecast snapshots (null = loading)
   const [snapNote, setSnapNote] = useState('');
   const [staleFilter, setStaleFilter] = useState('all');
+  // 'ready' = strict, every unit fulfilled; 'possibly' = completion signal but units outstanding;
+  // 'check' = old orders still open with no completion signal (status check, not billable yet)
+  const [staleMode, setStaleMode] = useState('ready');
   const [staleRep, setStaleRep] = useState('all');
   const [staleSearch, setStaleSearch] = useState('');
   const [staleSelectedId, setStaleSelectedId] = useState(null);
@@ -324,6 +327,7 @@ export default function FinancialsPage() {
   const repName = (id) => (REPS || []).find((r) => r.id === id)?.name || id || '\u2014';
   const custName = (id) => (cust || []).find((c) => c.id === id)?.name || id || '\u2014';
   const staleRows = stale.rows.filter((r) => {
+    if ((staleMode === 'ready' ? 'ready' : staleMode === 'possibly' ? 'possibly_ready' : 'old_open') !== r.category) return false;
     if (staleFilter !== 'all' && r.category !== staleFilter && r.severity !== staleFilter) return false;
     if (staleRep !== 'all' && r.repId !== staleRep) return false;
     const q = staleSearch.trim().toLowerCase();
@@ -390,7 +394,7 @@ export default function FinancialsPage() {
   const exportProfit = () => downloadCsv('profitability-by-' + (profitBy === 'rep' ? 'rep' : profitCustomerLevel + '-account') + '.csv',
     [profitBy === 'rep' ? 'Rep' : profitCustomerLevel === 'parent' ? 'Parent account' : 'Child account', 'Revenue', 'COGS', 'Gross profit', 'Margin', 'Orders', 'Open to invoice', 'Unpaid'],
     profit.map((r) => [profitBy === 'rep' ? repName(r.key) : custName(r.key), r.revenue.toFixed(2), r.cogs.toFixed(2), r.gp.toFixed(2), pct1(r.gpPct), r.orders, r.openValue.toFixed(2), r.openBalance.toFixed(2)]));
-  const exportStale = () => downloadCsv('stale-orders-' + today.toLocaleDateString('en-CA') + '.csv',
+  const exportStale = () => downloadCsv((staleMode === 'ready' ? 'ready-to-invoice-' : staleMode === 'possibly' ? 'possibly-ready-' : 'check-status-orders-') + today.toLocaleDateString('en-CA') + '.csv',
     ['Order', 'Account', 'Rep', 'Age (days)', 'Expected date', 'Days late', 'System state', 'Fulfilled units', 'Total units', 'Jobs done', 'Job count', 'Invoice %', 'Invoice count', 'Invoiced', 'Open to invoice', 'Reasons'],
     staleRows.map((r) => [r.id, r.customerName, repName(r.repId), r.ageDays, r.expected ? r.expected.toLocaleDateString() : '', r.daysLate || 0, String(r.status || '').replace(/_/g, ' '), r.fulfilledUnits, r.totalUnits, r.doneJobs, r.jobCount, Math.round(r.invoicePct * 100) + '%', r.invoiceCount, r.invoiced.toFixed(2), r.openToInvoice.toFixed(2), r.reasons.join(' | ')]));
   const exportRevForecast = () => downloadCsv('revenue-outlook.csv',
@@ -405,7 +409,7 @@ export default function FinancialsPage() {
 
   const tabs = [
     ['overview', 'Overview'], ['pl', 'P&L'], ['statement', 'Statement'],
-    ['profit', 'Profitability'], ['stale', 'Stale Orders'], ['ar', 'Receivables'], ['forecast', 'Forecast'],
+    ['profit', 'Profitability'], ['stale', 'Ready to Invoice'], ['ar', 'Receivables'], ['forecast', 'Forecast'],
     ['comm', 'Commission Reports'], ['expenses', 'Expenses'],
   ];
   const S = { h2: { fontFamily: FD, fontSize: 17, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: NAVY, margin: '0 0 8px' } };
@@ -697,20 +701,26 @@ export default function FinancialsPage() {
       {tab === 'stale' && (
         <>
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-            <Tile label="Potential billing" value={$k(stale.summary.value)} sub={stale.summary.count + ' sales orders need review'} subColor={stale.summary.count ? WARN : GOOD} />
-            <Tile label="Ready / production done" value={stale.summary.readyCount} sub="operational completion signal" />
-            <Tile label="Likely system mismatch" value={stale.summary.mismatchCount} sub="finished work vs fulfillment data" subColor={stale.summary.mismatchCount ? CRIT : GOOD} />
-            <Tile label="Old non-booking" value={stale.summary.oldCount} sub="open more than 30 days" subColor={stale.summary.oldCount ? WARN : GOOD} />
+            <Tile label="Ready to invoice" value={$k(stale.summary.value)} sub={stale.summary.readyCount + ' orders · every unit received, pulled, or vendor-billed'} subColor={stale.summary.readyCount ? WARN : GOOD} />
+            <Tile label="Possibly ready" value={stale.summary.possiblyCount} sub={'marked done, units outstanding · ' + $k(stale.summary.possiblyValue)} subColor={stale.summary.possiblyCount ? WARN : GOOD} />
+            <Tile label="Likely system mismatch" value={stale.summary.mismatchCount} sub="jobs finished vs fulfillment data" subColor={stale.summary.mismatchCount ? CRIT : GOOD} />
+            <Tile label="Check status" value={stale.summary.oldCount} sub={'still open after 30 days · ' + $k(stale.summary.oldOpenValue) + ' not billable yet'} subColor={stale.summary.oldCount ? WARN : GOOD} />
             <Tile label="Critical" value={stale.summary.criticalCount} sub="shipped/complete or 90+ days" subColor={stale.summary.criticalCount ? CRIT : GOOD} />
           </div>
           <div style={card}>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
               <div style={{ flex: '1 1 420px' }}>
-                <h2 style={S.h2}>Stale sales orders that may be ready to invoice</h2>
+                <h2 style={S.h2}>{staleMode === 'ready' ? 'Ready to invoice' : staleMode === 'possibly' ? 'Possibly ready \u2014 marked done, units still outstanding' : 'Check status \u2014 still open, not ready to invoice'}</h2>
                 <div style={{ fontSize: 11.5, color: INK2, maxWidth: 850 }}>
-                  Includes every uninvoiced order with a completion signal, plus every non-booking order still open after 30 days.
-                  Finished jobs are intentionally allowed through even when receiving or shipping data is incomplete &mdash; those rows are marked
-                  as a likely system mismatch instead of being hidden.
+                  {staleMode === 'ready'
+                    ? <>Strict: the order is shipped, marked complete, or every production job is done, <b>and</b> every unit has been received, pulled from
+                      stock, or (drop ship) billed by the vendor. Promo orders and orders marked \u201cno invoice needed\u201d are excluded.</>
+                    : staleMode === 'possibly'
+                      ? <>The order is marked complete, the system says ready, or every job is done, but some units are not yet received, pulled, or
+                        vendor-billed &mdash; typically a drop ship still waiting on the vendor bill, or receiving data that was never entered.
+                        Confirm what actually went out before invoicing.</>
+                      : <>Non-booking orders still open after 30 days with production not finished. These are here to chase a status, not to bill:
+                        an order still in production is not ready to invoice. The value shown is what the order would bill once it ships.</>}
                 </div>
               </div>
               <input value={staleSearch} onChange={(e) => setStaleSearch(e.target.value)} placeholder="Search SO, account, memo…"
@@ -721,12 +731,14 @@ export default function FinancialsPage() {
               </select>
               <ExportButton onClick={exportStale} label={'⬇ Export ' + staleRows.length + ' rows'} />
             </div>
-            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 12, marginBottom: 10 }}>
-              {[
-                ['all', 'All ' + stale.summary.count], ['critical', 'Critical ' + stale.summary.criticalCount],
-                ['ready', 'Ready ' + stale.summary.readyCount], ['system_mismatch', 'Mismatch ' + stale.summary.mismatchCount],
-                ['old_open', 'Old open ' + stale.summary.oldCount],
-              ].map(([id, label]) => <button key={id} onClick={() => setStaleFilter(id)} style={{
+            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 12, marginBottom: 10, alignItems: 'center' }}>
+              {[['ready', 'Ready to invoice ' + stale.summary.readyCount], ['possibly', 'Possibly ready ' + stale.summary.possiblyCount], ['check', 'Check status ' + stale.summary.oldCount]].map(([id, label]) =>
+                <button key={id} onClick={() => { setStaleMode(id); setStaleFilter('all'); }} style={{
+                  border: '1px solid ' + (staleMode === id ? NAVY : HAIR), borderRadius: 7, padding: '5px 11px', cursor: 'pointer',
+                  background: staleMode === id ? NAVY : '#fff', color: staleMode === id ? '#fff' : INK2, fontSize: 12, fontWeight: 800,
+                }}>{label}</button>)}
+              <span style={{ width: 1, height: 18, background: HAIR, margin: '0 4px' }} />
+              {[['all', 'All ' + (staleMode === 'ready' ? stale.summary.readyCount : staleMode === 'possibly' ? stale.summary.possiblyCount : stale.summary.oldCount)], ['critical', 'Critical']].map(([id, label]) => <button key={id} onClick={() => setStaleFilter(id)} style={{
                 border: '1px solid ' + (staleFilter === id ? NAVY : HAIR), borderRadius: 7, padding: '4px 9px', cursor: 'pointer',
                 background: staleFilter === id ? NAVY : '#fff', color: staleFilter === id ? '#fff' : INK2, fontSize: 11.5, fontWeight: 700,
               }}>{label}</button>)}
@@ -738,12 +750,12 @@ export default function FinancialsPage() {
                   <th style={{ ...th, textAlign: 'left' }}>Account / rep</th>
                   <th style={th}>Age / expected</th><th style={{ ...th, textAlign: 'left' }}>System state</th>
                   <th style={th}>Fulfillment</th><th style={th}>Invoice coverage</th>
-                  <th style={th}>Open to invoice</th><th style={{ ...th, textAlign: 'left' }}>Why it is here</th>
+                  <th style={th}>{staleMode === 'check' ? 'Uninvoiced value' : 'Open to invoice'}</th><th style={{ ...th, textAlign: 'left' }}>Why it is here</th>
                 </tr></thead>
                 <tbody>
                   {staleRows.map((r) => {
                     const color = r.severity === 'critical' ? CRIT : r.severity === 'high' ? WARN : C1;
-                    return <tr key={r.id} style={{ background: r.category === 'system_mismatch' ? '#fff7ed' : undefined }}>
+                    return <tr key={r.id} style={{ background: r.mismatch ? '#fff7ed' : undefined }}>
                       <td style={tdL}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                           <span style={{ color, fontSize: 9 }}>&#9632;</span>
@@ -783,7 +795,7 @@ export default function FinancialsPage() {
                   })}
                 </tbody>
               </table>
-              {!staleRows.length && <div style={{ padding: 24, textAlign: 'center', color: INK2 }}>No stale orders match these filters.</div>}
+              {!staleRows.length && <div style={{ padding: 24, textAlign: 'center', color: INK2 }}>{staleMode === 'ready' ? 'No fully fulfilled orders are waiting to be invoiced.' : staleMode === 'possibly' ? 'No orders are marked done with units outstanding.' : 'No old open orders match these filters.'}</div>}
             </div>
           </div>
           {staleSelected && <div style={{ position: 'fixed', inset: 0, zIndex: 125, background: 'rgba(15,23,42,.38)' }} onMouseDown={(e) => { if (e.target === e.currentTarget) setStaleSelectedId(null); }}><aside style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 'min(720px,96vw)', background: '#fff', boxShadow: '-16px 0 44px rgba(15,23,42,.22)', overflowY: 'auto' }}>

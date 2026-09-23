@@ -264,7 +264,7 @@ describe('operational AR forecast and exposure', () => {
     });
   });
 
-  test('parks small invoice/order differences as residuals and skips no-invoice-needed orders', () => {
+  test('parks small invoice/order differences as residuals and skips no-invoice-needed and promo orders', () => {
     const ar = { accountRows: [] };
     const customers = [{ id: 'C1', name: 'Alpha', primary_rep_id: 'R1' }];
     const sos = [
@@ -276,6 +276,8 @@ describe('operational AR forecast and exposure', () => {
       { id: 'SO-TINY', customer_id: 'C1', status: 'ready_to_invoice', _rev: 5 },
       // Rep said it was billed in NetSuite.
       { id: 'SO-NS', customer_id: 'C1', status: 'complete', _rev: 9000, no_invoice_needed: true, no_invoice_reason: 'Invoiced in NetSuite' },
+      // Promo order: paid from promo funds, the editor shows a $0.00 customer total.
+      { id: 'SO-PROMO', customer_id: 'C1', status: 'complete', _rev: 13843, promo_applied: true, promo_amount: 13843 },
     ];
     const invs = [
       { id: 'I1', so_id: 'SO-RESID', total: 34778, tax: 0, status: 'open' },
@@ -323,6 +325,8 @@ describe('staleOrdersReport', () => {
       items: [{ sizes: { M: 10 }, pick_lines: [], po_lines: [{ received: { M: 5 } }] }],
       jobs: [{ id: 'J1', prod_status: 'completed' }] },
     { id: 'SO-E', customer_id: 'C1', created_at: '2026-06-01', _rev: 300, _status: 'need_order', items: [] },
+    // Old and finished, but paid from promo funds: nothing to bill.
+    { id: 'SO-PROMO', customer_id: 'C1', created_at: '2026-05-01', _rev: 900, _status: 'complete', promo_applied: true, items: [] },
   ];
   const invs = [
     { id: 'IA', so_id: 'SO-A', date: '2026-08-20', total: 400, tax: 0, paid: 0, status: 'open' },
@@ -330,15 +334,41 @@ describe('staleOrdersReport', () => {
   ];
   const calcStatus = (so) => so._status;
 
-  test('finds ready, mismatch, and 30-day non-booking orders while excluding bookings and fully invoiced orders', () => {
+  test('finds ready, mismatch, and 30-day non-booking orders while excluding bookings, promo, and fully invoiced orders', () => {
     const d = staleOrdersReport({ sos, invs, customers, calcMargin, calcStatus, asOf });
     expect(d.rows.map((r) => r.id).sort()).toEqual(['SO-A', 'SO-B', 'SO-D']);
     expect(d.rows.find((r) => r.id === 'SO-A').openToInvoice).toBeCloseTo(600);
-    expect(d.rows.find((r) => r.id === 'SO-B').category).toBe('old_open');
+    expect(d.rows.find((r) => r.id === 'SO-A').invoiceable).toBe(true);
+    const old = d.rows.find((r) => r.id === 'SO-B');
+    expect(old.category).toBe('old_open');
+    expect(old.invoiceable).toBe(false);
+    // Jobs done but only 5 of 10 units received: possibly ready, not billable yet.
     const mismatch = d.rows.find((r) => r.id === 'SO-D');
-    expect(mismatch.category).toBe('system_mismatch');
+    expect(mismatch.category).toBe('possibly_ready');
+    expect(mismatch.mismatch).toBe(true);
+    expect(mismatch.invoiceable).toBe(false);
     expect(mismatch.reasons.join(' ')).toMatch(/verify a receiving\/shipping mismatch/);
-    expect(d.summary).toMatchObject({ count: 3, readyCount: 1, mismatchCount: 1, oldCount: 1 });
+    expect(mismatch.reasons.join(' ')).toMatch(/5\/10 units received, pulled, or vendor-billed/);
+    expect(d.summary).toMatchObject({ count: 3, readyCount: 1, possiblyCount: 1, mismatchCount: 1, oldCount: 1, invoiceableCount: 1 });
+    // Potential billing is the strict tier only; the other tiers' value is reported apart.
+    expect(d.summary.value).toBeCloseTo(600);
+    expect(d.summary.possiblyValue).toBeCloseTo(800);
+    expect(d.summary.oldOpenValue).toBeCloseTo(500);
+  });
+
+  test('a drop-ship order marked complete is only "possibly ready" until the vendor bills or the goods are received', () => {
+    const dropShip = (billed) => [{
+      id: 'SO-DS', customer_id: 'C1', created_at: '2026-08-14', _rev: 2000, _status: 'complete', status: 'complete',
+      items: [{ sizes: { S: 6, M: 4 }, pick_lines: [], po_lines: [{ drop_ship: true, received: {}, billed }] }], jobs: [],
+    }];
+    const waiting = staleOrdersReport({ sos: dropShip({}), invs: [], customers, calcMargin, calcStatus, asOf });
+    expect(waiting.rows[0]).toMatchObject({ category: 'possibly_ready', invoiceable: false, fulfilledUnits: 0, totalUnits: 10 });
+    const billed = staleOrdersReport({ sos: dropShip({ S: 6, M: 4 }), invs: [], customers, calcMargin, calcStatus, asOf });
+    expect(billed.rows[0]).toMatchObject({ category: 'ready', invoiceable: true, fulfilledUnits: 10 });
+    // The Receivables list applies the same strict rule.
+    const args = { invs: [], customers, calcMargin, calcStatus, asOf };
+    expect(completedUninvoicedOrdersReport({ sos: dropShip({}), ...args })).toHaveLength(0);
+    expect(completedUninvoicedOrdersReport({ sos: dropShip({ S: 6, M: 4 }), ...args })).toHaveLength(1);
   });
 });
 

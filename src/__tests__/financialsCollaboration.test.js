@@ -25,7 +25,11 @@ describe('Financials stale-order collaboration', () => {
     };
 
     render(<AppDataProvider value={value}><FinancialsPage /></AppDataProvider>);
-    fireEvent.click(screen.getByText('Stale Orders'));
+    fireEvent.click(screen.getByText('Ready to Invoice'));
+    // An old order still in production is a status check, not billable work: it lives on the
+    // "Check status" list and never on the ready-to-invoice list.
+    expect(screen.queryByText('SO-STALE')).toBeNull();
+    fireEvent.click(screen.getByText(/^Check status 1$/));
     expect(screen.getByText('SO-STALE')).toBeTruthy();
     fireEvent.click(screen.getByText('Chat / TODO'));
 
