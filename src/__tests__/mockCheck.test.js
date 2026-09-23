@@ -12,7 +12,7 @@
 
 const {
   skusMissingMockups, garmentsNeedingMockCheck, resolveMockLink, mockLinkDependents,
-  mockSlotKeys, slotMockFiles, nnMockCounts,
+  mockSlotKeys, slotMockFiles, nnMockCounts, adoptArtProofAsGarmentMock,
 } = require('../safeHelpers');
 
 // Build a job + sales-order pair where one item references one art file.
@@ -84,6 +84,27 @@ describe('skusMissingMockups — reused art with only a proof needs setup, not r
     const art = { id: 'af-mocked', deco_type: 'embroidery', item_mockups: { 'A2009|White': [{ url: 'http://x/white.png' }] }, mockup_files: [], prod_files: [{ url: 'http://x/sewout.pdf' }] };
     const { job, so } = makeCase(art);
     expect(skusMissingMockups(job, so)).toEqual([]);
+  });
+});
+
+describe('adoptArtProofAsGarmentMock', () => {
+  test('associates the existing proof with the exact garment slot without removing the production file', () => {
+    const proof = { url: 'http://x/garment-proof.png', name: 'garment-proof.png' };
+    const art = { id: 'af-proof', deco_type: 'embroidery', item_mockups: {}, prod_files: [proof] };
+    const before = JSON.stringify(art);
+    const adopted = adoptArtProofAsGarmentMock([art], art.id, 'A2009|White', proof);
+    expect(JSON.stringify(art)).toBe(before);
+    expect(adopted[0].prod_files).toEqual([proof]);
+    expect(adopted[0].item_mockups['A2009|White']).toEqual([proof]);
+    const { job, so } = makeCase(adopted[0]);
+    expect(skusMissingMockups(job, so)).toEqual([]);
+  });
+
+  test('does not duplicate a proof already adopted into the slot', () => {
+    const proof = { url: 'http://x/garment-proof.png' };
+    const art = { id: 'af-proof', item_mockups: { 'A2009|White': [proof] }, prod_files: [proof] };
+    const arts = [art];
+    expect(adoptArtProofAsGarmentMock(arts, art.id, 'A2009|White', proof)).toBe(arts);
   });
 });
 

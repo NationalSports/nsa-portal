@@ -1,3 +1,6 @@
+import GarmentMockCard from './GarmentMockCard';
+import { garmentMockCandidates, removeGarmentSlotMock } from './safeHelpers';
+import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jobMockReadiness';
 import {createHistoryStore} from './lib/documentHistory';
 import {createCoalescedReload} from './lib/coalescedReload';
 import { indexFirstById } from './lib/rowLookup';
@@ -37,7 +40,7 @@ import * as fabric from 'fabric';
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, REP_PROD_FILE_DECOS, artistOwesProdFiles, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { isApiCatalogVendor, styleSkuOrFilter, buildStyleColorwayMap, lookupStyleColorway } from './lib/vendorColorwayImages';
-import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
+import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, adoptArtProofAsGarmentMock, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { stampEstimateDraftLineIds } from './lib/orderLineIdentity';
 import { searchSalesOrders } from './lib/searchSalesOrders';
@@ -47,7 +50,7 @@ import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError
 import { createBillApplySession, billAttemptJournal, billingAttemptKey, sameBillingSnapshot } from './billApplySession';
 import { canViewAiInbox, resolveAccessUser } from './lib/pageAccess';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
-import { buildJobs, billOverageQty, billLineNeed, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost, assistantNormSize, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
+import { buildJobs, billOverageQty, billLineNeed, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost, assistantNormSize, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, schoolPOBoxes, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, mailProxyFetch, _withTimeout, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages, dedupeMockDupes } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty, isPromoOnlyOrder } from './pricing';
@@ -8891,6 +8894,9 @@ export default function App(){
     sos.forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
+        if((j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&['hold','ready',''].includes(j.prod_status||'')&&missingJobMocks(j,so).length){
+          todos.push({type:'art',priority:1,msg:'🎨 Previous art — set up the mockup: '+j.art_name,detail:tag+' · '+so.id+' · No garment mockup yet — reuse an approved mock or send to the artist',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Set up art',role:'sales',date:j.updated_at||so.updated_at});
+        }
         if(j.art_status==='waiting_approval'){
           if(shouldShowMockupReviewNotice(j,so)){
             // Reused / previously-approved art is parked at waiting_approval so the rep confirms it
@@ -9516,7 +9522,7 @@ export default function App(){
 
     // Shared data builders
     const{pullTasks,shipTasks,decoTasks}=buildWarehouseData();
-    const activeJobs=[];sos.forEach(so=>{safeJobs(so).forEach(j=>{if(!['completed','shipped'].includes(j.prod_status))activeJobs.push({...j,so,cName:cust.find(x=>x.id===so.customer_id)?.name})})});
+    const activeJobs=[];sos.forEach(so=>{safeJobs(so).forEach(j=>{if(!['completed','shipped'].includes(j.prod_status))activeJobs.push({...j,prod_status:mockAwareProductionStatus(j,so),so,cName:cust.find(x=>x.id===so.customer_id)?.name})})});
 
     // Notification timestamps — friendly "when the action happened" (e.g. items received, invoice paid).
     const _fmtNotifDT=(d)=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const now=new Date();
@@ -10446,7 +10452,7 @@ export default function App(){
       const byStatus={hold:0,staging:0,in_process:0,completed:0,shipped:0};
       activeJobs.forEach(j=>{byStatus[j.prod_status]=(byStatus[j.prod_status]||0)+1});
       const readyForBoard=activeJobs.filter(j=>j.prod_status==='hold'&&isJobReady(j,j.so));
-      const artReady=activeJobs.filter(j=>j.art_status==='art_complete'||j.art_status==='waiting_approval');
+      const artReady=activeJobs.filter(j=>(j.art_status==='art_complete'||j.art_status==='waiting_approval')&&!missingJobMocks(j,j.so).length);
       const decorators=REPS.filter(r=>r.role==='production');
       const decoWorkload=decorators.map(d=>{const jobs=activeJobs.filter(j=>(j.prod_status==='in_process'||j.prod_status==='staging')&&j.assigned_to===d.name);return{...d,jobs,count:jobs.length}});
       return<>
@@ -10478,7 +10484,7 @@ export default function App(){
               <div style={{display:'flex',alignItems:'center',gap:4,marginTop:3}}>
                 <span style={{fontSize:10,color:'#64748b'}}>{j.cName} · {j.soId} · {j.rep}{j.expected?' · Due '+j.expected:''}</span>
                 <div style={{marginLeft:'auto',display:'flex',gap:4}}>
-                  {prodDashFilter==='hold'&&j.item_status==='items_received'&&j.art_status==='art_complete'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#f59e0b',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'staging')}>→ In Line</button>}
+                  {prodDashFilter==='hold'&&isJobReady(j,j.so)&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#f59e0b',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'staging')}>→ In Line</button>}
                   {prodDashFilter==='staging'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'in_process')}>→ In Process</button>}
                   {prodDashFilter==='in_process'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'completed')}>✓ Done</button>}
                   {prodDashFilter==='completed'&&<span style={{fontSize:9,padding:'2px 6px',color:'#166534',fontWeight:600}}>✓ Done — ships from warehouse</span>}
@@ -10524,7 +10530,7 @@ export default function App(){
             {artReady.length===0?<div className="empty" style={{padding:20}}>No art ready</div>:
             artReady.map(j=><div key={j.id+j.so?.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9'}}>
               <div style={{display:'flex',alignItems:'center',gap:6}}>
-                <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,fontWeight:700,background:j.art_status==='art_complete'?'#dcfce7':'#fef3c7',color:j.art_status==='art_complete'?'#166534':'#92400e'}}>{j.art_status==='art_complete'?'Done':'Waiting Approval'}</span>
+                <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,fontWeight:700,background:j.art_status==='art_complete'?'#dcfce7':'#fef3c7',color:j.art_status==='art_complete'?'#166534':'#92400e'}}>{missingJobMocks(j,j.so).length?'Check Mock':j.art_status==='art_complete'?'Done':'Waiting Approval'}</span>
                 <span style={{fontWeight:700,fontSize:11}}>{j.art_name}</span>
                 <span style={{fontSize:10,color:'#64748b',marginLeft:'auto'}}>{j.cName}</span>
               </div></div>)}
@@ -11061,7 +11067,7 @@ export default function App(){
       const byStatus={hold:0,staging:0,in_process:0,completed:0,shipped:0};
       activeJobs.forEach(j=>{byStatus[j.prod_status]=(byStatus[j.prod_status]||0)+1});
       const readyForBoard=activeJobs.filter(j=>j.prod_status==='hold'&&isJobReady(j,j.so));
-      const artReady=activeJobs.filter(j=>j.art_status==='art_complete'||j.art_status==='waiting_approval');
+      const artReady=activeJobs.filter(j=>(j.art_status==='art_complete'||j.art_status==='waiting_approval')&&!missingJobMocks(j,j.so).length);
       const decorators=REPS.filter(r=>r.role==='production');
       const decoWorkload=decorators.map(d=>{const jobs=activeJobs.filter(j=>(j.prod_status==='in_process'||j.prod_status==='staging')&&j.assigned_to===d.name);return{...d,jobs,count:jobs.length}});
       return<>
@@ -11093,7 +11099,7 @@ export default function App(){
               <div style={{display:'flex',alignItems:'center',gap:4,marginTop:3}}>
                 <span style={{fontSize:10,color:'#64748b'}}>{j.cName} · {j.soId} · {j.rep}{j.expected?' · Due '+j.expected:''}</span>
                 <div style={{marginLeft:'auto',display:'flex',gap:4}}>
-                  {prodDashFilter==='hold'&&j.item_status==='items_received'&&j.art_status==='art_complete'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#f59e0b',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'staging')}>→ In Line</button>}
+                  {prodDashFilter==='hold'&&isJobReady(j,j.so)&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#f59e0b',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'staging')}>→ In Line</button>}
                   {prodDashFilter==='staging'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'in_process')}>→ In Process</button>}
                   {prodDashFilter==='in_process'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'completed')}>✓ Done</button>}
                   {prodDashFilter==='completed'&&<span style={{fontSize:9,padding:'2px 6px',color:'#166534',fontWeight:600}}>✓ Done — ships from warehouse</span>}
@@ -11139,7 +11145,7 @@ export default function App(){
             {artReady.length===0?<div className="empty" style={{padding:20}}>No art ready</div>:
             artReady.map(j=><div key={j.id+j.so?.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9'}}>
               <div style={{display:'flex',alignItems:'center',gap:6}}>
-                <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,fontWeight:700,background:j.art_status==='art_complete'?'#dcfce7':'#fef3c7',color:j.art_status==='art_complete'?'#166534':'#92400e'}}>{j.art_status==='art_complete'?'Done':'Waiting Approval'}</span>
+                <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,fontWeight:700,background:j.art_status==='art_complete'?'#dcfce7':'#fef3c7',color:j.art_status==='art_complete'?'#166534':'#92400e'}}>{missingJobMocks(j,j.so).length?'Check Mock':j.art_status==='art_complete'?'Done':'Waiting Approval'}</span>
                 <span style={{fontWeight:700,fontSize:11}}>{j.art_name}</span>
                 <span style={{fontSize:10,color:'#64748b',marginLeft:'auto'}}>{j.cName}</span>
               </div></div>)}
@@ -13016,7 +13022,7 @@ export default function App(){
     // Skip cancelled and soft-deleted orders — their jobs aren't real production work. Same guard the
     // rest of the app uses (sales reports, orders list) so the Jobs page doesn't surface dead orders.
     sos.forEach(so=>{if(so.status==='cancelled'||so.status==='deleted'||so.deleted_at)return;const c=cust.find(x=>x.id===so.customer_id);const _pid=c?.parent_id||c?.id||null;
-      buildJobs(so).filter(j=>j.prod_status!=='draft').forEach(j=>{allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
+      buildJobs(so).filter(j=>j.prod_status!=='draft').forEach(j=>{allJobs.push({...j,prod_status:mockAwareProductionStatus(j,so),so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
         parentId:_pid,grpKey:jobGroupKey(j,_pid),orderState:deriveJobItemStatus(j,so),..._jobInbound(j,so),
         repId:c?.primary_rep_id||so.created_by,rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',
         expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null})})});
@@ -13200,7 +13206,7 @@ export default function App(){
             <td title={j.billed+' of '+j.total_units+' units billed by vendor'+(j.pulledStock>0?' · '+j.pulledStock+' pulled from stock':'')}>
               <span style={{fontWeight:700,color:j.total_units>0&&j.billed>=j.total_units?'#166534':j.billed>0?'#1e40af':'#94a3b8'}}>{j.billed}/{j.total_units}</span>
               <div style={{width:40,background:'#e2e8f0',borderRadius:3,height:4,marginTop:2}}><div style={{height:4,borderRadius:3,background:bpct>=100?'#22c55e':bpct>0?'#3b82f6':'#e2e8f0',width:bpct+'%'}}/></div></td>
-            <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{j.art_status==='art_complete'?'Done':j.art_status==='waiting_approval'?'Waiting':'Need'}</span></td>
+            <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{missingJobMocks(j,j.so).length?'Check Mock':j.art_status==='art_complete'?'Done':j.art_status==='waiting_approval'?'Waiting':'Need'}</span></td>
             <td style={{fontSize:11}}>{(j.items||[]).length} <span style={{color:'#94a3b8'}}>garment{(j.items||[]).length!==1?'s':''}</span></td>
             <td>{ready?<span title="Artwork, production files, and garments are all in — production can start" style={{fontSize:10,fontWeight:700,color:'#166534',whiteSpace:'nowrap'}}>✅ Ready</span>
               :(()=>{
@@ -13464,6 +13470,9 @@ export default function App(){
     sos.forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
+        if((j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&['hold','ready',''].includes(j.prod_status||'')&&missingJobMocks(j,so).length){
+          todos.push({type:'art',priority:1,msg:'🎨 Previous art — set up the mockup: '+j.art_name,detail:tag+' · '+so.id+' · No garment mockup yet — reuse an approved mock or send to the artist',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Set up art',role:'sales',date:j.updated_at||so.updated_at});
+        }
         if(j.art_status==='waiting_approval'){
           if(j.sent_to_coach_at&&!j.coach_approved_at&&!DECO_OR_LATER_STATUSES.includes(j.prod_status)){const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(!j.follow_up_auto&&isDue)todos.push({type:'coach_followup',priority:1,msg:'Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
         if(j.coach_approved_at&&!DECO_OR_LATER_STATUSES.includes(j.prod_status)&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'Coach approved art: '+j.art_name,detail:tag+' · '+so.id+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
@@ -13680,6 +13689,8 @@ export default function App(){
   const applyJobMove=(j,newStatus,machine,person)=>{
     const so=sos.find(s=>s.id===j.soId);
     if(!so)return;
+    const liveJob=safeJobs(so).find(x=>x.id===j.id)||j;
+    if(['ready','staging','in_process'].includes(newStatus)&&missingJobMocks(liveJob,so).length){nf(missingMockupsMsg(missingJobMocks(liveJob,so)),'error');return}
     // ── Move the run-together group as one ──
     // Resolve this job's group (only when it's ready), then advance the job PLUS every READY
     // linked sibling — including jobs on other sales orders — so a linked set moves through
@@ -13801,7 +13812,7 @@ export default function App(){
       const c=cust.find(x=>x.id===so.customer_id);
       const parentId=c?.parent_id||c?.id||null;
       safeJobs(so).forEach(j=>{
-        allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
+        allJobs.push({...j,prod_status:mockAwareProductionStatus(j,so),so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
           parentId,grpKey:(j.link_group||isJobReady(j,so))?jobGroupKey(j,parentId):null,
           rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—',
           expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
@@ -13843,7 +13854,7 @@ export default function App(){
       .filter(j=>!(j.prod_status==='completed'&&_isSOComplete(j.so)&&!jobRecentlyCompleted(j)));
     // Decorator filtering: decorators see all Ready for Prod plus the shared In Line queue (jobs sit
     // unassigned until pulled into In Process), but only their assigned jobs in In Process/Completed
-    const roleFiltered=isDecorator?readyOnly.filter(j=>(j.prod_status==='hold'&&isJobReady(j,j.so))||j.prod_status==='ready'||(j.prod_status==='staging'&&!j.assigned_to)||j.assigned_to===cu?.name):readyOnly;
+    const roleFiltered=isDecorator?readyOnly.filter(j=>(['hold','ready'].includes(j.prod_status)&&isJobReady(j,j.so))||(j.prod_status==='staging'&&!j.assigned_to)||j.assigned_to===cu?.name):readyOnly;
     const byStatus=prodStatF==='active'?roleFiltered.filter(j=>j.prod_status!=='completed'):prodStatF==='all'?roleFiltered:prodStatF==='hold'?roleFiltered.filter(j=>j.prod_status==='hold'||j.prod_status==='ready'):roleFiltered.filter(j=>j.prod_status===prodStatF);
     const totalUnits=byStatus.reduce((a,j)=>a+j.total_units,0);
     const fulfilledUnits=byStatus.reduce((a,j)=>a+j.fulfilled_units,0);
@@ -13851,7 +13862,7 @@ export default function App(){
     const inProcess=byStatus.filter(j=>j.prod_status==='in_process').length;
     const allDecoTypes=[...new Set(allJobs.map(j=>j.deco_type).filter(Boolean))];
     const kanbanCols=[
-      {id:'hold',label:'Ready for Prod',color:'#6366f1',bg:'#eef2ff',filter:j=>(j.prod_status==='hold'&&isJobReady(j,j.so))||j.prod_status==='ready'},
+      {id:'hold',label:'Ready for Prod',color:'#6366f1',bg:'#eef2ff',filter:j=>(['hold','ready'].includes(j.prod_status)&&isJobReady(j,j.so))},
       {id:'staging',label:'In Line',color:'#d97706',bg:'#fffbeb'},
       {id:'in_process',label:'In Process',color:'#2563eb',bg:'#eff6ff'},
       {id:'completed',label:'Completed',color:'#166534',bg:'#f0fdf4'},
@@ -15068,7 +15079,7 @@ export default function App(){
                     // Recalculate job item_status/fulfilled_units after receiving — mirrors the warehouse
                     // stock-pull flow so the Production dashboard and "Ready for Deco" tab reflect received stock.
                     const _newJobs=recalcJobFulfillment(so,updItems);
-                    _decoReady.push(...jobsNowReadyForDeco(so.jobs,_newJobs));
+                    _decoReady.push(...jobsNowReadyForDeco(so.jobs,_newJobs).filter(j=>!missingJobMocks(j,so).length));
                     // Persist through the result-checked save (savSONow), not fire-and-forget savSO: it
                     // registers the pending id synchronously, writes directly, marks the SO recently-pulled
                     // on success (so a background poll/realtime reload can't revert the local receipt for 30s),
@@ -19959,7 +19970,7 @@ export default function App(){
     const cc=cust.find(c=>c.id===so.customer_id);let grand=0;
     Object.entries(pullMap).forEach(([ii,qtys])=>{const it=items[ii];if(!it)return;const szStr=Object.entries(qtys).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ');const qty=Object.values(qtys).reduce((a,v)=>a+(v||0),0);grand+=qty;if(qty>0)addWhAction({type:'pulled',pickId,soId,customer:cc?.name||'',sku:it.sku,name:it.name,color:it.color,productId:it.product_id,sizes:szStr,qty,by:cu?.id||'warehouse'})});
     nf('✅ '+pickId+' pulled — '+grand+' units');
-    const _deco=jobsNowReadyForDeco(so.jobs,_newJobs);
+    const _deco=jobsNowReadyForDeco(so.jobs,_newJobs).filter(j=>!missingJobMocks(j,so).length);
     notifyDecoReady(_deco);
     // PULLED pull-sheet label — same 4×6 format as a receiving label, printed from the
     // confirmation screen on tap (not auto), so it never fires before the save is applied.
@@ -20014,7 +20025,7 @@ export default function App(){
     _fastP.then(fast=>{_fullP.then(ok=>{if(ok===false&&fast!==true)nf('⚠️ '+soId+': receipt did not save — please retry','error')})});
     const saveP=_fastP.then(fast=>fast===true?true:_fullP);
     acts.forEach(a=>addWhAction(a));
-    const decoJobs=jobsNowReadyForDeco(so.jobs,_newJobs);
+    const decoJobs=jobsNowReadyForDeco(so.jobs,_newJobs).filter(j=>!missingJobMocks(j,so).length);
     // Aggregate what was received per item (across POs) for the confirmation summary.
     const itemQtyMap={};
     lines.forEach(({itemIdx,rcv})=>{const m=itemQtyMap[itemIdx]||(itemQtyMap[itemIdx]={});Object.entries(rcv||{}).forEach(([sz,q])=>{if(q>0)m[sz]=(m[sz]||0)+q})});
@@ -20608,7 +20619,7 @@ export default function App(){
                           }).catch(()=>printQrLabel(legacyLabel));
                         }
                       }catch(e){/* label print is best-effort */}
-                      nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totPulling2+' units');notifyDecoReady(jobsNowReadyForDeco(so.jobs,_newJobs));setWhPulling(false);setWhViewIF(null);
+                      nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totPulling2+' units');notifyDecoReady(jobsNowReadyForDeco(so.jobs,_newJobs).filter(j=>!missingJobMocks(j,so).length));setWhPulling(false);setWhViewIF(null);
                     }}>{whPulling?'Saving...':(isFull?'✓ Mark as Pulled ('+totPulling2+' units)':isPartial?'✓ Mark Partial Pull ('+totPulling2+' of '+grandNeed+')':'✓ Mark as Pulled')}</button>
                     {!isFull&&<button className="btn btn-sm" style={{fontSize:11,background:'#d97706',color:'white',border:'none',padding:'6px 14px',fontWeight:700}} onClick={()=>{
                       const filled={};pickItems.forEach(pi=>{filled[pi.itemIdx]=Object.fromEntries(pi.szKeys.map(sz=>[sz,Math.max(0,(pi.sizes[sz]||0)-(pi.pulled[sz]||0))]))});setPullQtys(filled);
@@ -21258,7 +21269,7 @@ export default function App(){
                       });
                       // Recalculate job item_status after receiving items
                       const _newJobs=recalcJobFulfillment(grpSO,updItems);
-                      _decoReady.push(...jobsNowReadyForDeco(grpSO.jobs,_newJobs));
+                      _decoReady.push(...jobsNowReadyForDeco(grpSO.jobs,_newJobs).filter(j=>!missingJobMocks(j,grpSO).length));
                       // Result-checked save (see the Confirm-Received path): synchronous pending-id + direct
                       // write + recently-pulled-on-success so a reload can't revert the receipt, plus a truthful
                       // result so a hard save failure surfaces instead of failing silently.
@@ -24424,6 +24435,35 @@ export default function App(){
             if(typeof nf==='function')nf(dismissed?'Production proof cleared — upload a garment mockup for this item':'Production proof restored');
           }finally{setArtJobDetailUploading(false)}
         };
+        const useArtProofAsMock=async(artId,slotKey,proofFile,g)=>{
+          if(artJobDetailUploading)return;
+          setArtJobDetailUploading(true);
+          try{
+            const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+            const updArt=adoptArtProofAsGarmentMock(safeArt(liveSO),artId,slotKey,proofFile);
+            if(updArt===safeArt(liveSO))return;
+            const pendingSO={...liveSO,art_files:updArt};
+            const ok=await _dbSaveSO(pendingSO);
+            if(ok===false){if(typeof nf==='function')nf('Failed to use this proof as the mock. Please retry.','error');return false}
+            const newSO=savSO(pendingSO);
+            setArtMockupModal(m=>m&&m.id===j.id?{...j,so:newSO,artFile:updArt.find(a=>a.id===j.art_file_id)||updArt[0]}:m);
+            if(typeof nf==='function')nf('Proof is now the garment mock for '+(g?.sku||'this item'));
+          }finally{setArtJobDetailUploading(false)}
+        };
+        const removeSlotMock=async(slot,slots,g,url)=>{
+          if(artJobDetailUploading)return false;
+          setArtJobDetailUploading(true);
+          try{
+            const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+            const updArt=removeGarmentSlotMock(safeArt(liveSO),slot,slots,g,url);
+            const pendingSO={...liveSO,art_files:updArt};
+            if(await _dbSaveSO(pendingSO)===false)throw new Error('Save failed');
+            const newSO=savSO(pendingSO);
+            setArtMockupModal(m=>m&&m.id===j.id?{...m,so:newSO,artFile:updArt.find(a=>a.id===j.art_file_id)||updArt[0]}:m);
+            nf('Mock removed from this garment');
+            return true;
+          }finally{setArtJobDetailUploading(false)}
+        };
         // ── Mock links ── stored on the job's primary design: garment -> source garment.
         const _linkAnchorId=af?.id||null;
         // Link a garment to another garment's mockup (sourceKey), or unlink (null). Chains
@@ -24455,37 +24495,6 @@ export default function App(){
             </div>
           </div>
           <div className="modal-body" style={{padding:0}}>
-            {/* General mockup — only shown if no per-item mockups have been uploaded */}
-            {!itemDetails.some(gi=>_getMocks(af,gi).length>0)&&<div style={{background:'#f8fafc',padding:28,display:'flex',flexDirection:'column',alignItems:'center',borderBottom:'1px solid #e2e8f0'}}>
-              {mockupFiles.length>0?<>
-                {mockupFiles.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
-                  return<div key={i} style={{width:'100%',maxWidth:600,marginBottom:i<mockupFiles.length-1?12:0,borderRadius:12,background:'white',border:'1px solid #e2e8f0',overflow:'hidden'}}>
-                    {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>openFile(url)}/>
-                    :_isPdfUrl(url)?<div style={{position:'relative'}}>
-                      {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
-                      <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:40,gap:8}}>
-                        <span style={{fontSize:48}}>PDF</span>
-                        <span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span>
-                      </div>
-                      <button className="btn btn-sm" style={{position:'absolute',bottom:8,right:8,fontSize:11,background:'#1e40af',color:'white',border:'none',padding:'6px 14px',borderRadius:6}} onClick={()=>openFile(url)}>Open PDF</button>
-                    </div>
-                    :<div style={{display:'flex',flexDirection:'column',alignItems:'center',padding:40,gap:8,cursor:'pointer'}} onClick={()=>openFile(url)}>
-                      <span style={{fontSize:48}}>📄</span>
-                      <span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span>
-                    </div>}
-                    <div style={{padding:'6px 12px',borderTop:'1px solid #f1f5f9',display:'flex',alignItems:'center',justifyContent:'space-between',fontSize:11,color:'#64748b'}}>
-                      <span>{name}</span>
-                      <button className="btn btn-sm" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>openFile(url)}>Open in new tab</button>
-                    </div>
-                  </div>})}
-              </>:allArtFiles2.some(a2=>artProofFallback(a2).length>0)?<div style={{width:'100%',maxWidth:600,padding:'10px 14px',borderRadius:10,background:'#fffbeb',border:'1px solid #fde68a',fontSize:12,color:'#92400e',fontWeight:600}}>
-                ♻️ Reused art — its production proof is shown on each item below.
-              </div>:<div style={{width:'100%',maxWidth:480,minHeight:320,borderRadius:12,background:'white',border:'2px dashed #d1d5db',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column'}}>
-                <div style={{fontSize:64,marginBottom:8}}>🎨</div>
-                <div style={{fontSize:13,color:'#94a3b8',fontWeight:600}}>No mockup uploaded yet</div>
-              </div>}
-            </div>}
-
             {/* ─── Per-Item Grouped Cards ─── */}
             <div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
               <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',marginBottom:12}}>📦 {itemDetails.length} item{itemDetails.length!==1?'s':''} — {j.total_units} total units</div>
@@ -24601,53 +24610,7 @@ export default function App(){
                         {_myDeps.length>0&&<span style={{fontSize:9,fontWeight:700,color:'#3730a3',background:'#e0e7ff',padding:'2px 8px',borderRadius:10}}>🔗 also used by {_myDeps.map(k=>k.split('|')[0]).join(', ')}</span>}
                       </div>
                       {_repSlots.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>No art assigned to this item yet.</div>
-                       :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repSlots.map(slot=>{const a=slot.artFile;const proofLabel=/embroid/.test(String(a?.deco_type||j.deco_type||'').toLowerCase())?'Sew-out proof':/screen[\s_-]*print/.test(String(a?.deco_type||j.deco_type||'').toLowerCase())?'Screen-print proof':'Artwork proof';
-                        const mocks=_dedupMockDupes(slotMockFiles(slot,_repSlots,gi));const primary=mocks[0]||null;const extra=mocks.slice(1);
-                        const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
-                        // Reused/pre-digitized art has no per-garment mocks — the approval gate and the SO
-                        // page accept the general bucket / sew-out proof instead, so the slot must show it
-                        // too rather than an empty upload zone (SO-1638). Read-only: proofs live in
-                        // prod_files/mockup_files, not this slot, so no × here — uploading replaces it.
-                        const proof=(!primary&&slot.primary)?artProofFallback(a):[];const proofPrimary=proof[0]||null;
-                        const pUrl=proofPrimary?(typeof proofPrimary==='string'?proofPrimary:(proofPrimary?.url||'')):'';const pName=proofPrimary?fileDisplayName(proofPrimary):'';
-                        const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)handleMockupUploadForItem(files,gi,slot.artId,slot.key)};
-                        const pick=()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>doUpload(Array.from(inp.files));inp.click()};
-                        return<div key={slot.key} style={{flex:'1 1 220px',minWidth:200,display:'flex',flexDirection:'column'}}>
-                          <div style={{flex:1,minHeight:150,borderRadius:8,border:primary?'2px solid #7c3aed':proofPrimary?'2px solid #f59e0b':'2px dashed #a78bfa',background:primary?'white':proofPrimary?'#fffbeb':'#faf5ff',overflow:'hidden',display:'flex',flexDirection:'column',cursor:(primary||proofPrimary)?'default':(artJobDetailUploading?'wait':'pointer'),position:'relative'}}
-                            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';if(!primary&&!proofPrimary)e.currentTarget.style.background='#ede9fe'}}
-                            onDragLeave={e=>{e.currentTarget.style.borderColor=primary?'#7c3aed':proofPrimary?'#f59e0b':'#a78bfa';if(!primary&&!proofPrimary)e.currentTarget.style.background='#faf5ff'}}
-                            onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor=primary?'#7c3aed':proofPrimary?'#f59e0b':'#a78bfa';if(!primary&&!proofPrimary)e.currentTarget.style.background='#faf5ff';doUpload(Array.from(e.dataTransfer.files))}}
-                            onClick={(primary||proofPrimary)?undefined:pick}>
-                            {primary&&<div style={{position:'absolute',top:4,left:4,background:'#7c3aed',color:'white',fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:3,zIndex:1}}>MOCKUP</div>}
-                            {!primary&&proofPrimary&&<div style={{position:'absolute',top:4,left:4,background:'#f59e0b',color:'white',fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:3,zIndex:1}} title="No mockup for this garment yet — showing the approved art's proof file instead">♻️ PROOF</div>}
-                            {artJobDetailUploading?<div style={{margin:'auto',fontSize:11,color:'#7c3aed',fontWeight:600}}>Uploading...</div>
-                             :primary?<>
-                               {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:240,objectFit:'contain',background:'white',cursor:'pointer',display:'block'}} onClick={()=>openFile(url)}/>
-                                :<div style={{padding:20,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(url)}><div style={{fontSize:30}}>{_isPdfUrl(url)?'PDF':'📄'}</div><div style={{fontSize:10,color:'#1e40af',marginTop:4,wordBreak:'break-all'}}>{name}</div></div>}
-                               <div style={{marginTop:'auto',padding:'4px 8px',borderTop:'1px solid #e9d5ff',fontSize:10,color:'#64748b',display:'flex',alignItems:'center',gap:4}}>
-                                 <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}{extra.length>0?' (+'+extra.length+')':''}</span>
-                                 <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(url)}>Open</button>
-                                 <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} onClick={()=>{if(window.confirm('Remove this mockup for '+gi.sku+'?'))handleMockupDeleteForItem(url,gi.sku)}} title="Remove">×</button>
-                               </div>
-                               <div style={{padding:'4px 8px',borderTop:'1px solid #f1f5f9',textAlign:'center',fontSize:10,color:'#7c3aed',fontWeight:600,cursor:'pointer'}} onClick={pick}>+ Add / replace</div>
-                             </>
-                             :proofPrimary?<>
-                               {_isImgUrl(pUrl)?<img src={pUrl} alt={pName} style={{width:'100%',maxHeight:240,objectFit:'contain',background:'white',cursor:'pointer',display:'block'}} onClick={()=>openFile(pUrl)}/>
-                                :<div style={{padding:20,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(pUrl)}><div style={{fontSize:30}}>{_isPdfUrl(pUrl)?'PDF':'📄'}</div><div style={{fontSize:10,color:'#1e40af',marginTop:4,wordBreak:'break-all'}}>{pName}</div></div>}
-                               <div style={{marginTop:'auto',padding:'4px 8px',borderTop:'1px solid #fde68a',fontSize:10,color:'#92400e',display:'flex',alignItems:'center',gap:4}}>
-                                 <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{pName}{proof.length>1?' (+'+(proof.length-1)+')':''}</span>
-                                 <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(pUrl)}>Open</button>
-                                 <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} title={'Clear this '+proofLabel.toLowerCase()+' from the slot — keeps the production files'} onClick={()=>{if(window.confirm('Clear this '+proofLabel.toLowerCase()+' from this item?\n\nThe production files stay attached — this only removes the proof standing in as the mockup, so you can upload a garment mockup instead.'))setArtProofDismissed(slot.artId,true)}}>×</button>
-                               </div>
-                               <div style={{padding:'4px 8px',borderTop:'1px solid #fde68a',textAlign:'center',fontSize:10,color:'#92400e',fontWeight:600,cursor:'pointer'}} onClick={pick} title="Proof comes from the art's production files — uploading a garment mockup replaces it here">{proofLabel} · + upload garment mockup</div>
-                             </>
-                             :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div>{a?.proof_dismissed&&artProofFallback({...a,proof_dismissed:false}).length>0&&<button onClick={e=>{e.stopPropagation();setArtProofDismissed(slot.artId,false)}} style={{marginTop:8,background:'none',border:'1px solid #fde68a',color:'#92400e',fontSize:10,fontWeight:600,cursor:'pointer',padding:'2px 8px',borderRadius:4}} title="Show this art's production proof in the slot again">↺ Restore production proof</button>}</div>}
-                          </div>
-                          <div style={{marginTop:6,textAlign:'center'}}>
-                            <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',lineHeight:1.2}}>{slot.label||'Unnamed art'}</div>
-                            {slot.sub&&<div style={{fontSize:9,color:'#64748b'}}>{slot.sub}</div>}
-                          </div>
-                        </div>;})}</div>}
+                       :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repSlots.map(slot=><GarmentMockCard key={slot.artId+'|'+slot.key} label={slot.label} sub={slot.sub} mocks={slotMockFiles(slot,_repSlots,gi)} candidates={garmentMockCandidates(slot.artFile)} suggest={slot.primary&&!Object.prototype.hasOwnProperty.call(slot.artFile?.item_mockups||{},slot.key)&&artProofFallback(slot.artFile).length>0} busy={artJobDetailUploading} onUse={file=>useArtProofAsMock(slot.artId,slot.key,file,gi)} onRemove={url=>removeSlotMock(slot,_repSlots,gi,url)} onUpload={files=>handleMockupUploadForItem(files,gi,slot.artId,slot.key)} />)}</div>}
                       {_linkChips(gi)}
                     </div>}
                     {/* Decoration spec */}
@@ -25045,6 +25008,36 @@ export default function App(){
           nf(dismissed?'Production proof cleared — upload a garment mockup for this item':'Production proof restored');
         };
 
+        const useArtProofAsMock=async(artId,slotKey,proofFile,g)=>{
+          if(artJobDetailUploading)return;
+          setArtJobDetailUploading(true);
+          try{
+            const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+            const updArt=adoptArtProofAsGarmentMock(safeArt(liveSO),artId,slotKey,proofFile);
+            if(updArt===safeArt(liveSO))return;
+            const pendingSO={...liveSO,art_files:updArt};
+            const ok=await _dbSaveSO(pendingSO);
+            if(ok===false){nf('Failed to use this proof as the mock. Please retry.','error');return false}
+            const newSO=savSO(pendingSO);
+            setArtJobDetailModal(m=>m&&m.id===j.id?{...j,so:newSO,artFile:updArt.find(a=>a.id===j.art_file_id)||updArt[0]}:m);
+            nf('Proof is now the garment mock for '+(g?.sku||'this item'));
+          }finally{setArtJobDetailUploading(false)}
+        };
+
+        const removeSlotMock=async(slot,slots,g,url)=>{
+          if(artJobDetailUploading)return false;
+          setArtJobDetailUploading(true);
+          try{
+            const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+            const updArt=removeGarmentSlotMock(safeArt(liveSO),slot,slots,g,url);
+            const pendingSO={...liveSO,art_files:updArt};
+            if(await _dbSaveSO(pendingSO)===false)throw new Error('Save failed');
+            const newSO=savSO(pendingSO);
+            setArtJobDetailModal(m=>m&&m.id===j.id?{...m,so:newSO,artFile:updArt.find(a=>a.id===j.art_file_id)||updArt[0]}:m);
+            nf('Mock removed from this garment');
+            return true;
+          }finally{setArtJobDetailUploading(false)}
+        };
         // Upload handler for production files. Accepts [{file, artId}] so multi-art jobs can route each file to the correct art.
         const handleProdFileUpload=async(entries)=>{
           setArtJobDetailUploading(true);
@@ -25252,54 +25245,7 @@ export default function App(){
                           _slots.push({key:sd.key,kind:'names',primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}});
                       if(_slots.length===0&&af)_slots.push({key:_skBase,kind:'art',primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
                       if(_slots.length===0)return<div style={{fontSize:11,color:'#94a3b8',padding:8}}>No art assigned to this item yet.</div>;
-                      return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=>{const a=slot.artFile;const proofLabel=/embroid/.test(String(a?.deco_type||j.deco_type||'').toLowerCase())?'Sew-out proof':/screen[\s_-]*print/.test(String(a?.deco_type||j.deco_type||'').toLowerCase())?'Screen-print proof':'Artwork proof';
-                        const mocks=_dedupMockDupes(slotMockFiles(slot,_slots,gi));const primary=mocks[0]||null;const extra=mocks.slice(1);
-                        const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
-                        // Reused/pre-digitized art: no per-garment mocks anywhere, so show the same
-                        // general-bucket / sew-out proof the approval gate + SO page accept, instead of
-                        // an empty upload zone (SO-1638). Read-only here — uploading replaces it.
-                        const proof=(!primary&&slot.primary)?artProofFallback(a):[];const proofPrimary=proof[0]||null;
-                        const pUrl=proofPrimary?(typeof proofPrimary==='string'?proofPrimary:(proofPrimary?.url||'')):'';const pName=proofPrimary?fileDisplayName(proofPrimary):'';
-                        const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)startMockupUpload(files,gi,slot.artId,slot.key)};
-                        const pick=()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>doUpload(Array.from(inp.files));inp.click()};
-                        return<div key={slot.key} style={{flex:'1 1 220px',minWidth:200,display:'flex',flexDirection:'column'}}>
-                          <div style={{flex:1,minHeight:150,borderRadius:8,border:primary?'2px solid #7c3aed':proofPrimary?'2px solid #f59e0b':'2px dashed #a78bfa',background:primary?'white':proofPrimary?'#fffbeb':'#faf5ff',overflow:'hidden',display:'flex',flexDirection:'column',cursor:(primary||proofPrimary)?'default':(artJobDetailUploading?'wait':'pointer'),position:'relative'}}
-                            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';if(!primary&&!proofPrimary)e.currentTarget.style.background='#ede9fe'}}
-                            onDragLeave={e=>{e.currentTarget.style.borderColor=primary?'#7c3aed':proofPrimary?'#f59e0b':'#a78bfa';if(!primary&&!proofPrimary)e.currentTarget.style.background='#faf5ff'}}
-                            onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor=primary?'#7c3aed':proofPrimary?'#f59e0b':'#a78bfa';if(!primary&&!proofPrimary)e.currentTarget.style.background='#faf5ff';doUpload(Array.from(e.dataTransfer.files))}}
-                            onClick={(primary||proofPrimary)?undefined:pick}>
-                            {primary&&<div style={{position:'absolute',top:4,left:4,background:'#7c3aed',color:'white',fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:3,zIndex:1}}>MOCKUP</div>}
-                            {!primary&&proofPrimary&&<div style={{position:'absolute',top:4,left:4,background:'#f59e0b',color:'white',fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:3,zIndex:1}} title="No mockup for this garment yet — showing the approved art's proof file instead">♻️ PROOF</div>}
-                            {artJobDetailUploading?<div style={{margin:'auto',fontSize:11,color:'#7c3aed',fontWeight:600}}>Uploading...</div>
-                             :primary?<>
-                               {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:280,objectFit:'contain',background:'white',cursor:'pointer',display:'block'}} onClick={()=>openFile(url)}/>
-                                :_isPdfUrl(url)?<div style={{cursor:'pointer'}} onClick={()=>openFile(url)}>{_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:280,objectFit:'contain',background:'white',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='block'}}/>:null}<div style={{display:_cloudinaryPdfThumb(url)?'none':'block',padding:20,textAlign:'center'}}><div style={{fontSize:30}}>PDF</div><div style={{fontSize:10,color:'#1e40af',marginTop:4,wordBreak:'break-all'}}>{name}</div></div></div>
-                                :<div style={{padding:20,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(url)}><div style={{fontSize:30}}>📄</div><div style={{fontSize:10,color:'#1e40af',marginTop:4,wordBreak:'break-all'}}>{name}</div></div>}
-                               <div style={{marginTop:'auto',padding:'4px 8px',borderTop:'1px solid #e9d5ff',fontSize:10,color:'#64748b',display:'flex',alignItems:'center',gap:4}}>
-                                 <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}{extra.length>0?' (+'+extra.length+')':''}</span>
-                                 <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(url)}>Open</button>
-                                 <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} onClick={()=>{if(window.confirm('Remove this mockup?'))handleItemMockupDelete(url,gi.sku,gi.color,slot.key)}} title="Remove">×</button>
-                               </div>
-                               <div style={{padding:'4px 8px',borderTop:'1px solid #f1f5f9',textAlign:'center',fontSize:10,color:'#7c3aed',fontWeight:600,cursor:'pointer'}} onClick={pick}>+ Add / replace</div>
-                             </>
-                             :proofPrimary?<>
-                               {_isImgUrl(pUrl)?<img src={pUrl} alt={pName} style={{width:'100%',maxHeight:280,objectFit:'contain',background:'white',cursor:'pointer',display:'block'}} onClick={()=>openFile(pUrl)}/>
-                                :_isPdfUrl(pUrl)?<div style={{cursor:'pointer'}} onClick={()=>openFile(pUrl)}>{_cloudinaryPdfThumb(pUrl)?<img src={_cloudinaryPdfThumb(pUrl)} alt={pName} style={{width:'100%',maxHeight:280,objectFit:'contain',background:'white',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='block'}}/>:null}<div style={{display:_cloudinaryPdfThumb(pUrl)?'none':'block',padding:20,textAlign:'center'}}><div style={{fontSize:30}}>PDF</div><div style={{fontSize:10,color:'#1e40af',marginTop:4,wordBreak:'break-all'}}>{pName}</div></div></div>
-                                :<div style={{padding:20,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(pUrl)}><div style={{fontSize:30}}>📄</div><div style={{fontSize:10,color:'#1e40af',marginTop:4,wordBreak:'break-all'}}>{pName}</div></div>}
-                               <div style={{marginTop:'auto',padding:'4px 8px',borderTop:'1px solid #fde68a',fontSize:10,color:'#92400e',display:'flex',alignItems:'center',gap:4}}>
-                                 <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{pName}{proof.length>1?' (+'+(proof.length-1)+')':''}</span>
-                                 <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(pUrl)}>Open</button>
-                                 <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} title={'Clear this '+proofLabel.toLowerCase()+' from the slot — keeps the production files'} onClick={()=>{if(window.confirm('Clear this '+proofLabel.toLowerCase()+' from this item?\n\nThe production files stay attached — this only removes the proof standing in as the mockup, so you can upload a garment mockup instead.'))setArtProofDismissed(slot.artId,true)}}>×</button>
-                               </div>
-                               <div style={{padding:'4px 8px',borderTop:'1px solid #fde68a',textAlign:'center',fontSize:10,color:'#92400e',fontWeight:600,cursor:'pointer'}} onClick={pick} title="Proof comes from the art's production files — uploading a garment mockup replaces it here">{proofLabel} · + upload garment mockup</div>
-                             </>
-                             :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div>{a?.proof_dismissed&&artProofFallback({...a,proof_dismissed:false}).length>0&&<button onClick={e=>{e.stopPropagation();setArtProofDismissed(slot.artId,false)}} style={{marginTop:8,background:'none',border:'1px solid #fde68a',color:'#92400e',fontSize:10,fontWeight:600,cursor:'pointer',padding:'2px 8px',borderRadius:4}} title="Show this art's production proof in the slot again">↺ Restore production proof</button>}</div>}
-                          </div>
-                          <div style={{marginTop:6,textAlign:'center'}}>
-                            <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',lineHeight:1.2}}>{slot.label||'Unnamed art'}</div>
-                            {slot.sub&&<div style={{fontSize:9,color:'#64748b'}}>{slot.sub}</div>}
-                          </div>
-                        </div>;})}</div>;
+                      return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=><GarmentMockCard key={slot.artId+'|'+slot.key} label={slot.label} sub={slot.sub} mocks={slotMockFiles(slot,_slots,gi)} candidates={garmentMockCandidates(slot.artFile)} suggest={slot.primary&&!Object.prototype.hasOwnProperty.call(slot.artFile?.item_mockups||{},slot.key)&&artProofFallback(slot.artFile).length>0} busy={artJobDetailUploading} onUse={file=>useArtProofAsMock(slot.artId,slot.key,file,gi)} onRemove={url=>removeSlotMock(slot,_slots,gi,url)} onUpload={files=>startMockupUpload(files,gi,slot.artId,slot.key)} />)}</div>;
                     })()}
                   </div>
                   {/* ─── Copy Mockup From Another Item ─── */}

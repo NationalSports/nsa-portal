@@ -1350,7 +1350,7 @@ export const slotMockFiles = (slot, slots, it) => {
   const own = safeStr(slot?.key).startsWith(base)
     ? itemMockFiles(mocks, it, safeStr(slot.key).slice(base.length))
     : safeArr(mocks[slot?.key]);
-  if (own.length > 0 || slot?.kind !== 'art' || !art) return own;
+  if (own.length > 0 || Object.prototype.hasOwnProperty.call(mocks, slot?.key) || slot?.kind !== 'art' || !art) return own;
   const shared = safeArr(slots).some((s) => s && s !== slot && s.artFile && s.artFile.id === art.id);
   return shared ? own : bareRead();
 };
@@ -1383,6 +1383,44 @@ export const artProofFallback = (a) => {
   const gen = (safeArr(a?.mockup_files).length > 0 ? safeArr(a.mockup_files) : safeArr(a?.files)).filter(displayableProofFile);
   return gen.length > 0 ? gen : safeArr(a?.prod_files).filter(displayableProofFile);
 };
+
+// Promote a proof that already shows the garment into the garment's real mockup slot.
+// The source stays in prod_files/mockup_files; this only records the user's confirmation
+// that the same asset is also the mock for this garment and decoration slot.
+export const adoptArtProofAsGarmentMock = (artFiles, artId, slotKey, proofFile) => {
+  if (!artId || !slotKey || !proofFile) return artFiles;
+  const fileUrl = (f) => typeof f === 'string' ? f : safeStr(f?.url);
+  const proofUrl = fileUrl(proofFile);
+  if (!proofUrl) return artFiles;
+  let changed = false;
+  const next = safeArr(artFiles).map((a) => {
+    if (a?.id !== artId) return a;
+    const itemMockups = safeObj(a.item_mockups);
+    const existing = safeArr(itemMockups[slotKey]);
+    if (existing.some((f) => fileUrl(f) === proofUrl)) return a;
+    changed = true;
+    return markArtFieldEdit(a, 'item_mockups', { ...itemMockups, [slotKey]: [proofFile, ...existing] });
+  });
+  return changed ? next : artFiles;
+};
+
+// Explicit reuse candidates, never automatic evidence that another garment is mocked.
+export const garmentMockCandidates = (art) => {
+  const seen = new Set();
+  return [...safeArr(art?.mockup_files), ...safeArr(art?.files), ...safeArr(art?.prod_files), ...Object.values(safeObj(art?.item_mockups)).flatMap(safeArr)]
+    .filter(f => { const url = typeof f === 'string' ? f : f?.url; if (!url || !displayableProofFile(f) || seen.has(url)) return false; seen.add(url); return true; });
+};
+
+// Materialize a slot's fallback into its own bucket before removing. Other slots,
+// legacy buckets and production files may share the URL and must keep it.
+export const removeGarmentSlotMock = (artFiles, slot, slots, item, url) => safeArr(artFiles).map(a => {
+  if (a?.id !== slot.artId) return a;
+  const liveSlots = slots.map(s => s.artId === a.id ? { ...s, artFile: a } : s);
+  const liveSlot = liveSlots.find(s => s.key === slot.key && s.artId === slot.artId);
+  if (!liveSlot) return a;
+  const remaining = slotMockFiles(liveSlot, liveSlots, item).filter(f => (typeof f === 'string' ? f : f?.url) !== url);
+  return markArtFieldEdit(a, 'item_mockups', { ...safeObj(a.item_mockups), [slot.key]: remaining });
+});
 
 // Returns the list of SKUs on a job that have no mockup attached. Mirrors the
 // per-item mockup lookup in OrderEditor: for each item, find the art files this
@@ -1495,6 +1533,7 @@ export const skusMissingMockups = (job, so) => {
     // mock approved on a different color/style (reused art) would silently satisfy the
     // gate. garmentsNeedingMockCheck surfaces those so the rep can confirm or redo.
     const general = artFiles.flatMap(a => {
+      if (Object.prototype.hasOwnProperty.call(a?.item_mockups || {}, garmentMockKey(mLine))) return [];
       const hasPerItem = Object.values(a?.item_mockups || {}).some(v => safeArr(v).length > 0);
       if (hasPerItem) return [];
       return safeArr(a?.mockup_files).length > 0 ? safeArr(a?.mockup_files) : safeArr(a?.files);
@@ -1505,6 +1544,7 @@ export const skusMissingMockups = (job, so) => {
     // mockup_files/item_mockups. Keep embroidery stricter: a digitizer sew-out is often a
     // recolor and must not stand in for a garment mockup (SO-1661).
     const hasScreenPrintProof = artFiles.some(a => {
+      if (Object.prototype.hasOwnProperty.call(a?.item_mockups || {}, garmentMockKey(mLine))) return false;
       const method = String(a?.deco_type || job?.deco_type || '').toLowerCase();
       if (!/screen[\s_-]*print/.test(method) || a?.proof_dismissed) return false;
       const hasPerItem = Object.values(a?.item_mockups || {}).some(v => safeArr(v).length > 0);

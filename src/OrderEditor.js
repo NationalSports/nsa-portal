@@ -1,3 +1,5 @@
+import JobGarmentMocks from './JobGarmentMocks';
+import { isJobReady, missingJobMocks, jobMockChecks } from './lib/jobMockReadiness';
 import { jobArtBadgeSt } from './lib/jobArtBadge';
 import { webstoreCheckoutMoney, webstoreDocMoneyRows } from './lib/webstoreSoMoney';
 import {useOrderCatalogResults} from './lib/orderCatalogSearch';
@@ -47,7 +49,7 @@ import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoI
 import { sanmarPricingSnapshot } from './lib/sanmarPricing';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
-import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit, unfulfilledSizes, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantRemoveLineApply, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
+import { jobScreenKey, jobGroupKey, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit, unfulfilledSizes, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantRemoveLineApply, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
 import { remapFrozenJobDecoIndexes, detachChangedArtRow, liveArtSplitSizes, refreshOpenJobRows, attachSameArtAdditions } from './lib/stableJobAssignments';
@@ -274,10 +276,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const cuEmail=(cu?.email)||(REPS||[]).find(r=>r.id===cu?.id)?.email||'';
   // Warehouse alert — fired by receive/shipment-edit flows the moment a job crosses into
   // items_received with art already complete, so the person checking in knows it can move to decoration now.
-  const notifyDecoReady=(prevJobs,nextJobs)=>{const r=jobsNowReadyForDeco(prevJobs,nextJobs);if(r.length&&nf)nf('🎽 Ready for decoration: '+r.map(j=>j.art_name||j.id).join(', ')+' — all items in & art complete!')};
+  const notifyDecoReady=(prevJobs,nextJobs)=>{const r=jobsNowReadyForDeco(prevJobs,nextJobs).filter(j=>!missingJobMocks(j,o).length);if(r.length&&nf)nf('🎽 Ready for decoration: '+r.map(j=>j.art_name||j.id).join(', ')+' — all items in & art complete!')};
   // One-click hand-off from the PO receive views: staging = "In Line" on the production board.
   // Mirrors the jobs-tab Production select (no assignment prompt — production assigns on the board).
-  const moveJobToDeco=(jobId)=>{const jj=safeJobs(o).find(x=>x.id===jobId);const updJobs=safeJobs(o).map(x=>x.id===jobId?{...x,prod_status:'staging'}:x);const updated={...o,jobs:updJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf('🎽 '+(jj?.art_name||jobId)+' moved to In Line for decoration')};
+  const moveJobToDeco=(jobId)=>{const jj=safeJobs(o).find(x=>x.id===jobId);if(jj&&missingJobMocks(jj,o).length){nf(missingMockupsMsg(missingJobMocks(jj,o)),'error');return}const updJobs=safeJobs(o).map(x=>x.id===jobId?{...x,prod_status:'staging'}:x);const updated={...o,jobs:updJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf('🎽 '+(jj?.art_name||jobId)+' moved to In Line for decoration')};
   // Approve a job's art, routing it to either 'art_complete' (a production separation is CONFIRMED)
   // or its production-files stage (the artist still owes the separation). stampProd marks the
   // per-design prod_files_attached flag so a confirmed job stays out of the seps stage on the next
@@ -289,6 +291,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Approving resolves any outstanding coach change-request — warn before overriding it, then clear
     // the flag so coach_rejected can't stay stranded=true on an approved/in-production job.
     const _jb=safeJobs(curO).find(jj=>jj.id===jobId);
+    if(_jb&&missingJobMocks(_jb,curO).length){nf(missingMockupsMsg(missingJobMocks(_jb,curO)),'error');return}
     // Every approve/complete button funnels through here — a job whose art is still the TBD
     // placeholder has nothing to approve, and letting it through persists a completed status
     // that syncJobs' heal would immediately fight (status flip-flop, stale DB state).
@@ -5573,7 +5576,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <button className={`tab ${tab==='messages'?'active':''}`} onClick={()=>setTab('messages')}>Messages {(()=>{const entityMsgs=(msgs||[]).filter(m=>(m.entity_id===o.id)||(m.so_id===o.id));const unread=entityMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{unread}</span>:` (${entityMsgs.length})`})()}</button>
       {isSO&&<button className={`tab ${tab==='transactions'?'active':''}`} onClick={()=>setTab('transactions')}>Linked</button>}
       {isSO&&<button className={`tab ${tab==='jobs'?'active':''}`} onClick={()=>setTab('jobs')}>Jobs {(()=>{const jc=(o.jobs||[]).length;return jc>0?` (${jc})`:''})()}</button>}
-      {isSO&&<button className={`tab ${tab==='methodic'?'active':''}`} onClick={()=>setTab('methodic')} style={tab==='methodic'?{background:'#312e81',color:'white'}:{}}>Methodic</button>}
+      {/* Methodic tab temporarily hidden on sales orders. */}
       {isSO&&<button className={`tab ${tab==='tracking'?'active':''}`} onClick={()=>setTab('tracking')}>Tracking {(()=>{const sc=(o._shipments||[]).length||(o._tracking_number?1:0);return sc>0?<span style={{background:'#166534',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{sc}</span>:''})()}</button>}
       {isSO&&<button className={`tab ${tab==='costs'?'active':''}`} onClick={()=>setTab('costs')} style={tab==='costs'?{background:'#166534',color:'white'}:{}}>💰 Costs</button>}
       <button className={`tab ${tab==='history'?'active':''}`} onClick={()=>setTab('history')}>History</button>
@@ -11786,7 +11789,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(_fbIdx>=0){j=jobs[_fbIdx];ji=_fbIdx;}
         }
         if(!j)return<div className="card"><div className="card-body"><button className="btn btn-sm btn-secondary" onClick={()=>setSelJob(null)}><Icon name="back" size={12}/> Back to Jobs</button><div style={{padding:20,color:'#94a3b8'}}>Job not found</div></div></div>;
-        const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';
+        const canProduce=isJobReady(j,o);
         const canOverride=cu.role==="admin"||cu.role==="production"||cu.role==="prod_manager"||cu.role==="gm";
         // Live allocation, same as the jobs list — otherwise clicking a row that reads 37/37 opened
         // a detail header still reading its stored 40/40. itemDetails below already derives its
@@ -11817,7 +11820,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // Reused art whose mock hasn't been confirmed for this garment yet — drives the Check
         // Mock panel/badge AND downgrades the "approved / ready for production" status until the
         // rep confirms a mock (so the job doesn't read as done when it isn't).
-        const _mockCheckGarments=(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))?garmentsNeedingMockCheck(j,o,priorMocks):[];
+        const _mockCheckGarments=(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))?jobMockChecks(j,o,priorMocks):[];
         const _needsMockCheck=_mockCheckGarments.length>0;
         // art_complete but a live design was never explicitly confirmed (checkbox / .dst) — the job
         // skipped the production-files stage (e.g. a stray PDF in prod_files), so keep the prod-files
@@ -11840,7 +11843,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <span style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{j.id}</span>
                   {_needsMockCheck?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef9c3',color:'#854d0e',border:'1px solid #fde047'}} title="Reused art — confirm a mock for this garment before it's production-ready">🔍 Check Mock</span>:(()=>{const fSt=artF?jobArtBadgeSt(j,artF):null;return fSt?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:(ART_FILE_SC[fSt]||SC[fSt])?.bg||'#f1f5f9',color:(ART_FILE_SC[fSt]||SC[fSt])?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||ART_LABELS[fSt]||fSt}</span>:null})()}
                   {(()=>{const _is=jItemStatus(j);return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[_is]?.bg,color:SC[_is]?.c}}>{itemLabels[_is]}</span>})()}
-                  <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}}>{prodLabels[j.prod_status]}</span>
+                  <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}}>{_needsMockCheck&&['hold','ready'].includes(j.prod_status)?'Waiting for mock':prodLabels[j.prod_status]}</span>
                 </div>
                 <div style={{display:'flex',alignItems:'center',gap:6,marginTop:4,flexWrap:'wrap'}}>
                   {editingJobName===j.id?<input type="text" autoFocus className="form-input" defaultValue={j.art_name||''}
@@ -11999,6 +12002,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div style={{fontSize:10,color:'#64748b',marginTop:2}}>{pct}% fulfilled</div>
               </div>
             </div>
+            <JobGarmentMocks key={j.id} job={j} order={o} priorMocks={priorMocks} getOrder={()=>oRef.current} onSave={saveArtFilesNow} />
             {/* ── Check Mock: previously-approved art reused on a different color/style ── */}
             {_needsMockCheck&&(()=>{
               const _gLabels=_mockCheckGarments.map(g=>(g.color?g.color+' ':'')+g.sku).join(', ');
@@ -12009,15 +12013,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               return<div style={{margin:'0 20px 8px',padding:'14px 16px',background:'linear-gradient(135deg,#fef9c3,#fffbeb)',border:'2px solid #fde047',borderRadius:10}}>
                 <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
                   <span style={{fontSize:18}}>🔍</span>
-                  <span style={{fontWeight:800,fontSize:15,color:'#854d0e'}}>Check Mock — art reused on a different garment</span>
+                  <span style={{fontWeight:800,fontSize:15,color:'#854d0e'}}>Check Mock — garment mockup required</span>
                 </div>
-                <div style={{fontSize:12,color:'#92400e',marginBottom:10}}>This art was approved on a different color/style, so there's no confirmed mock for <b>{_gLabels}</b> yet. If the mock below is right, approve it as-is — or request a new mock from the artist.</div>
-                {/* Approve-as-is: the prior approved mocks render right here (color-way matched) so the rep
-                    can confirm one in a click — no wizard. Same picker the Set up job wizard uses. */}
-                {_mockCheckGarments.map((cg,ci)=><div key={ci} style={{marginBottom:8}} onClick={e=>e.stopPropagation()}>
-                  <div style={{fontSize:11,fontWeight:700,color:'#0f172a',marginBottom:4}}>{cg.color?cg.color+' · ':''}{cg.sku}</div>
-                  {priorMockCards(cg,j.id)}
-                </div>)}
+                <div style={{fontSize:12,color:'#92400e',marginBottom:10}}>There is no confirmed garment mock for <b>{_gLabels}</b> yet. Choose a mock in the garment cards above, or request a new one from the artist.</div>
                 <div style={{display:'flex',alignItems:'center',gap:10,marginTop:4}} onClick={e=>e.stopPropagation()}>
                   <button className="btn btn-sm" style={{fontSize:11,padding:'5px 12px',background:'white',color:'#b91c1c',border:'1px solid #fca5a5',borderRadius:6,fontWeight:700}}
                     title="None of these mocks are right — pull the art back and have the artist build a new mockup for this garment"
@@ -12136,13 +12134,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               return<div style={{margin:'0 20px',padding:'16px',background:_stca?'linear-gradient(135deg,#dbeafe,#eff6ff)':'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid '+(_stca?'#93c5fd':'#fbbf24'),borderRadius:10}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
                 <span style={{fontSize:20}}>{_stca?'📤':_needsSetup?'🎨':'⚠️'}</span>
-                <span style={{fontWeight:800,fontSize:16,color:_stca?'#1e40af':'#92400e'}}>{_stca?'Sent to Coach for Approval':_needsSetup?'Set Up This Artwork':'Artwork Needs Your Approval'}</span>
+                <span style={{fontWeight:800,fontSize:16,color:_stca?'#1e40af':'#92400e'}}>{_stca?'Sent to Coach for Approval':_needsSetup?'Choose a Garment Mock':'Artwork Needs Your Approval'}</span>
               </div>
               {/* The coach portal hides its Approve button until sent_to_coach_at is stamped (the
               rep-review gate) — a rep who emails the portal link by hand instead of using Send to
               Coach leaves the coach staring at "Proof in progress" with no way to act (SO-1645). */}
               {!_stca&&!_needsSetup&&<div style={{fontSize:12,color:'#92400e',marginBottom:10,fontWeight:600,padding:'8px 12px',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6}}>🔒 The coach can't see or approve this proof yet — their portal shows it as "in progress" until you click 📤 Send to Coach below. Sharing the portal link by email/text does not unlock it.</div>}
-              {_needsSetup&&<div style={{fontSize:12,color:'#92400e',marginBottom:10,fontWeight:600,padding:'8px 12px',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6}}>♻️ This art was used before, but it has no garment mockup for this order yet — a sew-out proof alone can't be approved or sent to the coach. Set it up below: reuse an approved mock, or send it to the artist for a new one. It won't go to production until you do.</div>}
+              {_needsSetup&&<div style={{fontSize:12,color:'#92400e',marginBottom:10,fontWeight:600,padding:'8px 12px',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6}}>Choose a mock for each garment in the cards above. Use an existing garment image or upload a new one, then review it for approval.</div>}
               {!_stca&&!_needsSetup&&_jobArtFiles.some(a=>a?.status==='approved')&&<div style={{fontSize:12,color:'#92400e',marginTop:-4,marginBottom:10,fontWeight:600}}>♻️ This art was approved on a previous order — confirm it's good for this one (✅ below), send it to the coach, or request a new mock. It won't go to production until you pick.</div>}
               {_stca&&<div style={{fontSize:12,color:'#1e40af',marginBottom:8,fontWeight:600}}>
                 Sent {_stca.toLocaleDateString('en-US',{weekday:'short'})} {_stca.toLocaleDateString()} @ {_stca.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}
@@ -12317,68 +12315,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                       </div>
                         <OeGarmentPoLines item={it} szMeta={_PO_SZ_META} onOpenPo={po=>{const lines=[];safeItems(o).forEach((it2,i2)=>{safePOs(it2).forEach((po2,pi2)=>{if(po2.po_id&&po2.po_id===po.po_id)lines.push({lineIdx:i2,poIdx:pi2})})});if(lines.length)setEditPO({lineIdx:lines[0].lineIdx,poIdx:lines[0].poIdx,po,allLines:lines})}}/>
                       {/* Mockup — linked garments show a compact reference to their source garment */}
-                      {_myLinkSrc?(()=>{const srcFiles=_filterDisplayable(mockLinkSourceFiles(_jobArts,_myLinkSrc));const sf=srcFiles[0]||null;const sUrl=sf?(typeof sf==='string'?sf:(sf?.url||'')):'';
-                        return<div style={{margin:10,padding:'10px 12px',background:'#eef2ff',border:'1px solid #c7d2fe',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
-                          {sUrl&&_isImgUrl(sUrl,sf)?<img src={sUrl} alt="" style={{width:54,height:54,objectFit:'contain',borderRadius:6,border:'1px solid #c7d2fe',background:'white',cursor:'pointer',flexShrink:0}} onClick={()=>setMockupLightbox(sUrl)}/>
-                           :<div style={{width:54,height:54,borderRadius:6,border:'1px dashed #a5b4fc',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>🖼️</div>}
-                          <div style={{flex:1,minWidth:0}}>
-                            <div style={{fontSize:12,fontWeight:700,color:'#3730a3'}}>🔗 Same mockup as {_myLinkSrc.split('|')[0]}</div>
-                            <div style={{fontSize:10,color:srcFiles.length>0?'#64748b':'#b45309'}}>{srcFiles.length>0?'Approval uses that mockup for this garment too.':'Waiting on that garment’s mockup.'}</div>
-                          </div>
-                          <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',flexShrink:0}} onClick={()=>setMockLinkOE(_linkArtId,gi.sku+'|'+(gi.color||''),null)}>Unlink</button>
-                        </div>;})()
-                      :itemMockups.length>0?(()=>{const _ordered=[...itemMockups].sort((a,b)=>_mockOrd(a)-_mockOrd(b));const _ou=_ordered.map(f=>typeof f==='string'?f:(f?.url||''));
-                        // A sew-out proof is NOT a garment mockup — render it small, grey-bordered and
-                        // labeled "production reference" so it never reads as the approved mockup. Real
-                        // mockups keep the prominent 280px orange frame.
-                        const _mkH=_proofOnly?132:280;const _mkBd=_proofOnly?'#D1D5DE':'#962C32';
-                        return<><div style={{padding:10}}>
-                        {_myDeps.length>0&&<div style={{fontSize:10,fontWeight:700,color:'#3730a3',marginBottom:6}}>🔗 Mockup also used by {_myDeps.map(k=>k.split('|')[0]).join(', ')}</div>}
-                        {/* Squash: two near-identical garments (same print, near-identical blanks) don't
-                            need two proofs. Linking drops THIS card's image in favour of the source's —
-                            nothing is moved or deleted, so Unlink restores it exactly. Only on the
-                            actionable panel, and never over a sew-out proof (that has its own picker). */}
-                        {!_proofOnly&&_linkArtId&&itemDetails.length>1&&<div style={{marginBottom:6,position:'relative',display:'inline-block'}}>
-                          <button onClick={()=>setSquashPickFor(k=>k===_mk?null:_mk)}
-                            title="Near-identical garment? Share another garment's mockup instead of showing a second, almost-identical proof — the coach then approves one."
-                            style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:12,border:'1px solid #c7d2fe',background:squashPickFor===_mk?'#e0e7ff':'#eef2ff',color:'#3730a3',fontSize:10,fontWeight:700,cursor:'pointer'}}>🔗 {squashPickFor===_mk?'Cancel':'Squash into another garment\u2019s mockup'}</button>
-                          {squashPickFor===_mk&&_linkChipsR(gi,'Use the mockup for:',true)}
-                        </div>}
-                        {_proofOnly&&<div style={{fontSize:12,fontWeight:600,color:'#962C32',background:'#FDF6F6',border:'1px solid #EEF1F6',borderLeft:'3px solid #962C32',borderRadius:4,padding:'8px 12px',marginBottom:8}}>This is the digitizer's sew-out proof from the production files — <u>not a garment mockup</u>. It can't be approved or sent to the coach. Pick an option below: reuse an approved mockup, or send to the artist for a new one.</div>}
-                        <div style={{display:'grid',gridTemplateColumns:_proofOnly?'repeat(auto-fill,minmax(150px,1fr))':(_ordered.length>1?'1fr 1fr':'1fr'),gap:8}}>
-                          {_ordered.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const _sd=_mockSide(f);const _lbl=(typeof f!=='string'&&f?.art_label)||'';/* A mockup is labelled by WHERE the art sits, never by the upload's file name — a hashed name tells nobody anything. Art label + side first, then the decoration's own placement, numbered when several views share it. */const _named=[_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ');const _posCap=[...new Set((artDecos||[]).map(d=>d&&d.position).filter(Boolean))].join(', ');const _base=_named||(_posCap?(_ordered.length>1?_posCap+' · '+(fi+1):_posCap):('Mockup '+(fi+1)));const _cap=_proofOnly?('Production reference — '+_base):_base;
-                            return<div key={fi} style={{position:'relative',borderRadius:4,border:'1px '+(_proofOnly?'dashed':'solid')+' #EEF1F6',borderTop:'3px solid '+_mkBd,overflow:'hidden',background:'#fff',boxShadow:'0 2px 12px rgba(0,0,0,0.06)',opacity:_proofOnly?0.92:1}}>
-                              {_proofOnly&&<span style={{position:'absolute',top:6,left:6,zIndex:2,fontSize:9,fontWeight:800,textTransform:'uppercase',letterSpacing:0.4,color:'#475569',background:'rgba(241,245,249,0.95)',border:'1px solid #cbd5e1',borderRadius:4,padding:'1px 6px'}}>Proof · not a mockup</span>}
-                              {!_proofOnly&&<button title="Remove this mockup" onClick={e=>{e.stopPropagation();if(window.confirm('Remove this mockup from the job?\n\n'+_cap))removeMockupUrl(url,{item:_line,artFileIds:itemArtFiles.map(a=>a.id)})}} style={{position:'absolute',top:6,right:6,zIndex:2,width:24,height:24,borderRadius:'50%',border:'none',background:'rgba(220,38,38,0.92)',color:'#fff',fontSize:14,lineHeight:'24px',cursor:'pointer',padding:0,boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}>×</button>}
-                              <div style={{cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
-                              {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:_mkH,objectFit:'contain',display:'block',...OE_MOCK_CANVAS}}/>
-                              :_isPdfUrl(url,f)?<div style={{position:'relative',height:_mkH,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
-                                {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:_mkH,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
-                                <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',gap:4}}>
-                                  <span style={{fontSize:32}}>PDF</span><span style={{fontSize:12,color:'#1e40af'}}>{name}</span></div></div>
-                              :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:_mkH,background:'#fafafa'}}>
-                                <span style={{fontSize:20}}>📄</span><span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
-                              </div>
-                              <div style={{padding:'4px 10px',borderTop:'1px solid #EEF1F6',fontSize:11,color:_proofOnly?'#5A6075':'#192853',fontWeight:700,display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}}>
-                                <span style={{display:'flex',alignItems:'center',gap:4,minWidth:0}}>
-                                  {_ordered.length>1&&<>
-                                    <button title="Move earlier" disabled={fi===0} onClick={e=>{e.stopPropagation();moveMock(_ou,fi,-1)}} style={{border:'1px solid #D1D5DE',background:'#fff',color:'#192853',borderRadius:3,fontSize:11,lineHeight:1,padding:'2px 5px',cursor:fi===0?'default':'pointer',opacity:fi===0?0.4:1}}>◀</button>
-                                    <button title="Move later" disabled={fi===_ordered.length-1} onClick={e=>{e.stopPropagation();moveMock(_ou,fi,1)}} style={{border:'1px solid #D1D5DE',background:'#fff',color:'#192853',borderRadius:3,fontSize:11,lineHeight:1,padding:'2px 5px',cursor:fi===_ordered.length-1?'default':'pointer',opacity:fi===_ordered.length-1?0.4:1}}>▶</button>
-                                  </>}
-                                  <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:700,fontSize:13,letterSpacing:'0.7px',textTransform:'uppercase'}}>{_cap}</span>
-                                </span>
-                                <span style={{color:'#962C32',cursor:'pointer',flexShrink:0,fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:700,fontSize:12.5,letterSpacing:'0.7px',textTransform:'uppercase'}} onClick={()=>setMockupLightbox(url)}>Enlarge</span>
-                              </div>
-                            </div>})}
-                        </div>
-                      </div>
-                      {_proofOnly&&(_priorPickR(gi)||_requestMockR(gi,true))}
-                      {_proofOnly&&_linkChipsR(gi)}
-                      </>})():<>
-                       <div style={{padding:14,margin:'10px 10px 6px',textAlign:'center',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,color:'#9a3412',fontSize:12,fontWeight:600}}>No mockup uploaded yet for {gi.sku}</div>
-                       {_priorPickR(gi)||_requestMockR(gi,false)}
-                       {_linkChipsR(gi)}
-                      </>}
+                      {_linkChipsR(gi)}
                       {/* Outsourced designs on the same garment — context only (SO-1660): the proof
                           is judged as the WHOLE garment, so a mixed-media approval must show every
                           location, including the vendor-produced one. Not part of this approval. */}
@@ -12662,46 +12599,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                       </div>
                         <OeGarmentPoLines item={it} szMeta={_PO_SZ_META} onOpenPo={po=>{const lines=[];safeItems(o).forEach((it2,i2)=>{safePOs(it2).forEach((po2,pi2)=>{if(po2.po_id&&po2.po_id===po.po_id)lines.push({lineIdx:i2,poIdx:pi2})})});if(lines.length)setEditPO({lineIdx:lines[0].lineIdx,poIdx:lines[0].poIdx,po,allLines:lines})}}/>
                       {/* Mockup — linked garments reference their source garment's mock (read-only) */}
-                      {_myLinkSrc?(()=>{const srcFiles=_filterDisplayable(mockLinkSourceFiles(_jArts2,_myLinkSrc));const sf=srcFiles[0]||null;const sUrl=sf?(typeof sf==='string'?sf:(sf?.url||'')):'';
-                        return<div style={{margin:10,padding:'10px 12px',background:'#F7F8FB',border:'1px solid #EEF1F6',borderLeft:'3px solid #192853',borderRadius:4,display:'flex',alignItems:'center',gap:10}}>
-                          {sUrl&&_isImgUrl(sUrl,sf)?<img src={sUrl} alt="" style={{width:54,height:54,objectFit:'contain',borderRadius:4,border:'1px solid #EEF1F6',background:'#fff',cursor:'pointer',flexShrink:0}} onClick={()=>setMockupLightbox(sUrl)}/>
-                           :<div style={{width:54,height:54,borderRadius:4,border:'1px dashed #D1D5DE',background:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>🖼️</div>}
-                          <div style={{fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:700,fontSize:15,letterSpacing:'0.5px',textTransform:'uppercase',color:'#192853'}}>Same mockup as {_myLinkSrc.split('|')[0]}</div>
-                        </div>;})()
-                      :itemMockups.length>0?(()=>{const _ordered=[...itemMockups].sort((a,b)=>_mockOrd(a)-_mockOrd(b));const _ou=_ordered.map(f=>typeof f==='string'?f:(f?.url||''));
-                        // Parity with the editable panel: a sew-out proof is NOT a garment mockup, so
-                        // render it small, grey, dashed and badged — never as the approved green mockup.
-                        const _mkH=_proofOnly?132:280;const _mkBd=_proofOnly?'#D1D5DE':'#1E7A46';
-                        return<div style={{padding:10}}>
-                        {_myDeps.length>0&&<div style={{fontSize:11,fontWeight:600,color:'#5A6075',marginBottom:6}}>One mockup — also covers {_myDeps.map(k=>k.split('|')[0]).join(', ')}</div>}
-                        {_proofOnly&&<div style={{fontSize:12,fontWeight:600,color:'#962C32',background:'#FDF6F6',border:'1px solid #EEF1F6',borderLeft:'3px solid #962C32',borderRadius:4,padding:'8px 12px',marginBottom:8}}>This is the digitizer's sew-out proof from the production files — <u>not a garment mockup</u>. Use the Check Mock panel above to confirm the real approved mockup or send it to the artist.</div>}
-                        <div style={{display:'grid',gridTemplateColumns:_proofOnly?'repeat(auto-fill,minmax(150px,1fr))':(_ordered.length>1?'1fr 1fr':'1fr'),gap:8}}>
-                          {_ordered.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const _sd=_mockSide(f);const _lbl=(typeof f!=='string'&&f?.art_label)||'';/* A mockup is labelled by WHERE the art sits, never by the upload's file name — a hashed name tells nobody anything. Art label + side first, then the decoration's own placement, numbered when several views share it. */const _named=[_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ');const _posCap=[...new Set((artDecos||[]).map(d=>d&&d.position).filter(Boolean))].join(', ');const _base=_named||(_posCap?(_ordered.length>1?_posCap+' · '+(fi+1):_posCap):('Mockup '+(fi+1)));const _cap=_proofOnly?('Production reference — '+_base):_base;
-                            return<div key={fi} style={{position:'relative',borderRadius:4,border:'1px '+(_proofOnly?'dashed':'solid')+' #EEF1F6',borderTop:'3px solid '+_mkBd,overflow:'hidden',background:'#fff',boxShadow:'0 2px 12px rgba(0,0,0,0.06)',opacity:_proofOnly?0.92:1}}>
-                              {_proofOnly&&<span style={{position:'absolute',top:6,left:6,zIndex:2,fontSize:9,fontWeight:800,textTransform:'uppercase',letterSpacing:0.4,color:'#475569',background:'rgba(241,245,249,0.95)',border:'1px solid #cbd5e1',borderRadius:4,padding:'1px 6px'}}>Proof · not a mockup</span>}
-                              {!_proofOnly&&<button title="Remove this mockup" onClick={e=>{e.stopPropagation();if(window.confirm('Remove this mockup from the job?\n\n'+_cap))removeMockupUrl(url,{item:_line,artFileIds:itemArtFiles.map(a=>a.id)})}} style={{position:'absolute',top:6,right:6,zIndex:2,width:24,height:24,borderRadius:'50%',border:'none',background:'rgba(220,38,38,0.92)',color:'#fff',fontSize:14,lineHeight:'24px',cursor:'pointer',padding:0,boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}>×</button>}
-                              <div style={{cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
-                              {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:_mkH,objectFit:'contain',display:'block',...OE_MOCK_CANVAS}}/>
-                              :_isPdfUrl(url,f)?<div style={{position:'relative',height:_mkH,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
-                                {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:_mkH,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
-                                <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',gap:4}}>
-                                  <span style={{fontSize:32}}>PDF</span><span style={{fontSize:12,color:'#1e40af'}}>{name}</span></div></div>
-                              :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:_mkH,background:'#fafafa'}}>
-                                <span style={{fontSize:20}}>📄</span><span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
-                              </div>
-                              <div style={{padding:'4px 10px',borderTop:'1px solid #EEF1F6',fontSize:11,color:_proofOnly?'#5A6075':'#192853',fontWeight:700,display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}}>
-                                <span style={{display:'flex',alignItems:'center',gap:4,minWidth:0}}>
-                                  {_ordered.length>1&&<>
-                                    <button title="Move earlier" disabled={fi===0} onClick={e=>{e.stopPropagation();moveMock(_ou,fi,-1)}} style={{border:'1px solid #D1D5DE',background:'#fff',color:'#192853',borderRadius:3,fontSize:11,lineHeight:1,padding:'2px 5px',cursor:fi===0?'default':'pointer',opacity:fi===0?0.4:1}}>◀</button>
-                                    <button title="Move later" disabled={fi===_ordered.length-1} onClick={e=>{e.stopPropagation();moveMock(_ou,fi,1)}} style={{border:'1px solid #D1D5DE',background:'#fff',color:'#192853',borderRadius:3,fontSize:11,lineHeight:1,padding:'2px 5px',cursor:fi===_ordered.length-1?'default':'pointer',opacity:fi===_ordered.length-1?0.4:1}}>▶</button>
-                                  </>}
-                                  <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:700,fontSize:13,letterSpacing:'0.7px',textTransform:'uppercase'}}>{_cap}</span>
-                                </span>
-                                <span style={{color:'#962C32',cursor:'pointer',flexShrink:0,fontFamily:"'Barlow Condensed','Arial Narrow',sans-serif",fontWeight:700,fontSize:12.5,letterSpacing:'0.7px',textTransform:'uppercase'}} onClick={()=>setMockupLightbox(url)}>Enlarge</span>
-                              </div>
-                            </div>})}
-                        </div>
-                      </div>})():<div style={{padding:14,margin:10,textAlign:'center',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,color:'#9a3412',fontSize:12,fontWeight:600}}>No mockup uploaded yet for {gi.sku}</div>}
+                      {/* Mocks are managed in the shared job panel above. */}
                       {/* Back proof. A garment running numbers or names has its own mockup slot for that
                           side and it renders above whenever one exists — but nothing flagged its ABSENCE,
                           so SO-1605's jerseys sat here with a front mockup, a roster, and no picture of the
@@ -12713,7 +12611,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                         if(nameDecos.length>0&&_nn.names===0)_miss.push('names');
                         if(_miss.length===0)return null;
                         return<div style={{margin:'0 10px 10px',padding:'8px 12px',background:'#fef2f2',border:'2px solid #fecaca',borderRadius:6,color:'#b91c1c',fontSize:11,fontWeight:700}}>
-                          ⚠ No back mockup on file — this garment runs {_miss.join(' and ')}, but no {_miss.join(' / ')} mockup has been uploaded. Add one from the Art Dashboard so the floor can see the placement.
+                          ⚠ No back mockup on file — this garment runs {_miss.join(' and ')}, but no {_miss.join(' / ')} mockup has been uploaded. Add one in Garment mocks above so the floor can see the placement.
                         </div>;})()}
                       {/* Decoration spec */}
                       {(artDecos.length>0||numDecos.length>0||nameDecos.length>0)&&<div style={{padding:'10px 14px',borderTop:'1px solid #EEF1F6',background:'#f8fafc'}}>
@@ -12805,7 +12703,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
             {/* Status controls */}
             <div style={{padding:'10px 20px',borderTop:'1px solid #f1f5f9',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
               <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Art:</div>
-              <select className="form-select" style={{width:150,fontSize:11}} value={j.art_status} onChange={e=>{const ns=e.target.value;const artIds=j._art_ids||[j.art_file_id].filter(Boolean);if(ns==='art_complete'){/* STRICT gate: explicit prod_files_attached confirmation (or an embroidery .dst) — a stray PDF sitting in prod_files must not satisfy the manual dropdown when every button path requires confirmation. */const missingProd=artIds.some(aid=>{const af2=af.find(a=>a.id===aid);return af2&&!artProdFilesConfirmed(af2)});if(missingProd){nf('Confirm production files for all art first (checkbox, or a .dst for embroidery)','error');return}if(!window.confirm('Force this job to Art Complete? This skips the coach-approval flow — only continue if the artwork is approved and the production files are final.'))return}if(ns==='waiting_approval'){const missing=skusMissingMockups(j,o);if(missing.length>0){nf('Cannot move to Waiting Approval — mockups missing for: '+missing.join(', '),'error');return}}const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;/* A manual forward move supersedes an unaddressed coach rejection in the SAME write — never leave art_status ahead with coach_rejected stranded true (the SO-1199 shape). */const _fwd=ns==='waiting_approval'||ns==='art_complete'||PROD_FILES_STATUSES.includes(ns);const upd={...jj,art_status:ns,...(_fwd&&jj.coach_rejected?{coach_rejected:false}:{})};/* warehouse must explicitly Move to Deco — no auto-transition. A forward move (incl. waiting_approval) closes the artist's open request — otherwise the job reads as both "Needs Approval" and an open request (SO-1625). */if(_fwd&&upd.art_requests)upd.art_requests=closeOpenArtRequests(upd.art_requests);return upd});const afSt=ns==='waiting_approval'?'needs_approval':(PROD_FILES_STATUSES.includes(ns)||ns==='art_complete')?'approved':(ns==='needs_art'||ns==='art_requested')?'waiting_for_art':ns==='art_in_progress'?'waiting_for_art':null;/* The dropdown never stamps prod_files_attached — the strict gate above already required confirmation (checkbox or .dst), and a manual pick must not manufacture it (H3). */const updArt2=afSt?af.map(a=>artIds.includes(a.id)?{...a,status:afSt}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false)}}>
+              <select className="form-select" style={{width:150,fontSize:11}} value={j.art_status} onChange={e=>{const ns=e.target.value;const artIds=j._art_ids||[j.art_file_id].filter(Boolean);if(ns==='art_complete'&&missingJobMocks(j,o).length){nf(missingMockupsMsg(missingJobMocks(j,o)),'error');return}if(ns==='art_complete'){/* STRICT gate: explicit prod_files_attached confirmation (or an embroidery .dst) — a stray PDF sitting in prod_files must not satisfy the manual dropdown when every button path requires confirmation. */const missingProd=artIds.some(aid=>{const af2=af.find(a=>a.id===aid);return af2&&!artProdFilesConfirmed(af2)});if(missingProd){nf('Confirm production files for all art first (checkbox, or a .dst for embroidery)','error');return}if(!window.confirm('Force this job to Art Complete? This skips the coach-approval flow — only continue if the artwork is approved and the production files are final.'))return}if(ns==='waiting_approval'){const missing=skusMissingMockups(j,o);if(missing.length>0){nf('Cannot move to Waiting Approval — mockups missing for: '+missing.join(', '),'error');return}}const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;/* A manual forward move supersedes an unaddressed coach rejection in the SAME write — never leave art_status ahead with coach_rejected stranded true (the SO-1199 shape). */const _fwd=ns==='waiting_approval'||ns==='art_complete'||PROD_FILES_STATUSES.includes(ns);const upd={...jj,art_status:ns,...(_fwd&&jj.coach_rejected?{coach_rejected:false}:{})};/* warehouse must explicitly Move to Deco — no auto-transition. A forward move (incl. waiting_approval) closes the artist's open request — otherwise the job reads as both "Needs Approval" and an open request (SO-1625). */if(_fwd&&upd.art_requests)upd.art_requests=closeOpenArtRequests(upd.art_requests);return upd});const afSt=ns==='waiting_approval'?'needs_approval':(PROD_FILES_STATUSES.includes(ns)||ns==='art_complete')?'approved':(ns==='needs_art'||ns==='art_requested')?'waiting_for_art':ns==='art_in_progress'?'waiting_for_art':null;/* The dropdown never stamps prod_files_attached — the strict gate above already required confirmation (checkbox or .dst), and a manual pick must not manufacture it (H3). */const updArt2=afSt?af.map(a=>artIds.includes(a.id)?{...a,status:afSt}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false)}}>
                 {Object.entries(artLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>
               {(()=>{const _artIds3=j._art_ids||[j.art_file_id].filter(Boolean);const isTbd=_artIds3.length===0||(_artIds3.length===1&&_artIds3[0]==='__tbd');const hasActiveReqs=(j.art_requests||[]).some(r=>r.status!=='recalled');const hasAnyReqs=(j.art_requests||[]).length>0;if(isTbd&&!hasAnyReqs)return null;const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
                 return<>{hasActiveReqs&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:activeReq?'#fef3c7':'#dcfce7',color:activeReq?'#92400e':'#166534',marginRight:4,animation:activeReq?'pulse 2s infinite':'none'}}>
@@ -12830,6 +12728,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
               <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Production:</div>
               {j.prod_status==='hold'&&!canProduce&&!canOverride?<span style={{fontSize:11,color:'#94a3b8'}}>Waiting items/art</span>
               :<><select className="form-select" style={{width:150,fontSize:11}} value={j.prod_status} onChange={e=>{const v=e.target.value;
+                if(['ready','staging','in_process'].includes(v)&&missingJobMocks(j,o).length){nf(missingMockupsMsg(missingJobMocks(j,o)),'error');return}
                 // Leaving staging/in_process for a non-running status bypasses the board's applyJobMove —
                 // stop any running decorator clock through App's shared clock-out (L10).
                 if(v!==j.prod_status&&v!=='in_process'&&_activeProd(j.prod_status)&&onStopJobClock)onStopJobClock(o.id,j.id);
@@ -13546,13 +13445,15 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
           // already approved (reused art being sent back for a fresh mock), which otherwise would
           // skip the request and stay art_complete.
           // BUT don't re-request art that is already production-ready (approved AND prod files
-          // confirmed → would land art_complete). That art is finished, not "reused for a fresh
+          // confirmed → would land art_complete). With a garment mock, that art is finished, not "reused for a fresh
           // mock"; re-requesting it bounced approved, prod-ready jobs back to "Art Requested" on
           // every release (SO-1468/JOB-1468-01: rep saw Needs Art/Art Requested after approval).
           // Approved-but-not-yet-prod-ready art still gets a fresh request; a rep who wants a new
           // mock on finished art can still request one by hand.
-          const autoArtRequest=activateAll&&!g.skipArtist&&!g.quickMock&&hasArtToRequest&&(artStatus==='needs_art'||(hasArtist&&allApproved&&!allProdFiles));
+          const releaseMissingMocks=missingJobMocks({_art_ids:artIds,art_file_id:artIds[0],items:releaseItems},o).length>0;
+          const autoArtRequest=activateAll&&!g.skipArtist&&!g.quickMock&&hasArtToRequest&&(artStatus==='needs_art'||(hasArtist&&allApproved&&(!allProdFiles||releaseMissingMocks)));
           if(autoArtRequest)artStatus='art_requested';
+          else if(releaseMissingMocks&&artStatus==='art_complete')artStatus='waiting_approval';
           const totalUnits=releaseItems.reduce((a,it)=>a+it.units,0);
           // Positions ride the same multi-deco read — a merged front+sleeve job lists both.
           const positions=[...new Set(releaseItems.flatMap(it=>{const ds=_rowArtDecos(it);return ds?ds.map(d=>safeStr(d.position)||it.position):[it.position]}).filter(Boolean))].join(', ');
@@ -14007,7 +13908,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
           return<div style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No decorations assigned yet. Add artwork to items — jobs will populate automatically, then click "Submit to Art" when ready.</div>})()}
         {jobs.length>0&&<table style={{fontSize:12}}><thead><tr>{mergeMode&&<th style={{width:30}}></th>}<th>Job ID</th><th>Artwork / Decoration</th><th>Items</th><th>Units</th><th>Items Status</th><th>Art</th><th>Production</th><th></th></tr></thead><tbody>
           {_clustered.map(({j,oi})=>{const ji=oi;
-            const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';const canOverride2=cu.role==='admin'||cu.role==='super_admin'||cu.role==='production'||cu.role==='prod_manager'||cu.role==='gm';
+            const canProduce=isJobReady(j,o);const canOverride2=cu.role==='admin'||cu.role==='super_admin'||cu.role==='production'||cu.role==='prod_manager'||cu.role==='gm';
             // UNITS reads the LIVE family-apportioned allocation, not the stored scalars — same
             // source as the per-size chips on the sub-rows below and as the ITEMS STATUS badge
             // (jItemStatus). The stored snapshots only refresh when a receive/split runs, so a
@@ -14022,7 +13923,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
             const canSplit=(j.items||[]).length>0&&jTot>1;
             // Reused art still needing its mock confirmed for this garment — show "Check Mock"
             // instead of an "approved / complete" status in the list (mirrors the job detail).
-            const _cm=(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&garmentsNeedingMockCheck(j,o,priorMocks).length>0;
+            const _cm=(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&jobMockChecks(j,o,priorMocks).length>0;
             const isMergeSel=mergeMode&&mergeMode.selected.includes(ji);
             return<React.Fragment key={j.id}>
               <tr id={'so-job-'+ji} style={{background:isMergeSel?'#dbeafe':j.prod_status==='completed'||j.prod_status==='shipped'?'#f0fdf4':undefined,cursor:'pointer',transition:'box-shadow 0.3s'}} onClick={()=>mergeMode?setMergeMode({selected:isMergeSel?mergeMode.selected.filter(x=>x!==ji):[...mergeMode.selected,ji]}):setSelJob(ji)}>
@@ -14051,7 +13952,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                 <div style={{width:50,background:'#e2e8f0',borderRadius:3,height:4,marginTop:2}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>0?'#f59e0b':'#e2e8f0',width:pct+'%'}}/></div></td>
               <td>{(()=>{const _is=jItemStatus(j);return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[_is]?.bg,color:SC[_is]?.c}}>{itemLabels[_is]}</span>})()}</td>
               <td>{(()=>{if(_cm)return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef9c3',color:'#854d0e',border:'1px solid #fde047'}} title="Reused art — confirm a mock for this garment">🔍 Check Mock</span>;const sentCust=j.art_status==='waiting_approval'&&j.sent_to_coach_at;const aLbl=sentCust?'Sent to Customer':(artLabels[j.art_status]||j.art_status);const aSt=sentCust?{bg:'#ede9fe',c:'#6d28d9'}:SC[j.art_status];return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:aSt?.bg,color:aSt?.c}}>{aLbl}</span>})()}</td>
-              <td>{(()=>{const readyForProd=j.prod_status==='hold'&&canProduce;const pSt=readyForProd?{bg:'#dcfce7',c:'#166534'}:(SC[j.prod_status]||{bg:'#f1f5f9',c:'#475569'});return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:pSt.bg,color:pSt.c}}>{readyForProd?'Ready for Prod':(prodLabels[j.prod_status]||j.prod_status)}</span>})()}</td>
+              <td>{(()=>{if(_cm&&['hold','ready'].includes(j.prod_status))return <span style={{color:'#854d0e',fontWeight:700}}>Waiting for mock</span>;const readyForProd=j.prod_status==='hold'&&canProduce;const pSt=readyForProd?{bg:'#dcfce7',c:'#166534'}:(SC[j.prod_status]||{bg:'#f1f5f9',c:'#475569'});return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:pSt.bg,color:pSt.c}}>{readyForProd?'Ready for Prod':(prodLabels[j.prod_status]||j.prod_status)}</span>})()}</td>
               <td style={{whiteSpace:'nowrap'}}>
 
                 {(()=>{const _artIds4=j._art_ids||[j.art_file_id].filter(Boolean);if(_artIds4.length===0||(_artIds4.length===1&&_artIds4[0]==='__tbd'))return null;const hasActiveReqs=(j.art_requests||[]).some(r=>r.status!=='recalled');const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
