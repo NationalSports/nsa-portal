@@ -1,3 +1,5 @@
+import GarmentMockCard from './GarmentMockCard';
+import { garmentMockCandidates, removeGarmentSlotMock } from './safeHelpers';
 import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jobMockReadiness';
 import {createHistoryStore} from './lib/documentHistory';
 import {createCoalescedReload} from './lib/coalescedReload';
@@ -24201,10 +24203,24 @@ export default function App(){
             if(updArt===safeArt(liveSO))return;
             const pendingSO={...liveSO,art_files:updArt};
             const ok=await _dbSaveSO(pendingSO);
-            if(ok===false){if(typeof nf==='function')nf('Failed to use this proof as the mock. Please retry.','error');return}
+            if(ok===false){if(typeof nf==='function')nf('Failed to use this proof as the mock. Please retry.','error');return false}
             const newSO=savSO(pendingSO);
             setArtMockupModal(m=>m&&m.id===j.id?{...j,so:newSO,artFile:updArt.find(a=>a.id===j.art_file_id)||updArt[0]}:m);
             if(typeof nf==='function')nf('Proof is now the garment mock for '+(g?.sku||'this item'));
+          }finally{setArtJobDetailUploading(false)}
+        };
+        const removeSlotMock=async(slot,slots,g,url)=>{
+          if(artJobDetailUploading)return false;
+          setArtJobDetailUploading(true);
+          try{
+            const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+            const updArt=removeGarmentSlotMock(safeArt(liveSO),slot,slots,g,url);
+            const pendingSO={...liveSO,art_files:updArt};
+            if(await _dbSaveSO(pendingSO)===false)throw new Error('Save failed');
+            const newSO=savSO(pendingSO);
+            setArtMockupModal(m=>m&&m.id===j.id?{...m,so:newSO,artFile:updArt.find(a=>a.id===j.art_file_id)||updArt[0]}:m);
+            nf('Mock removed from this garment');
+            return true;
           }finally{setArtJobDetailUploading(false)}
         };
         // ── Mock links ── stored on the job's primary design: garment -> source garment.
@@ -24238,37 +24254,6 @@ export default function App(){
             </div>
           </div>
           <div className="modal-body" style={{padding:0}}>
-            {/* General mockup — only shown if no per-item mockups have been uploaded */}
-            {!itemDetails.some(gi=>_getMocks(af,gi).length>0)&&<div style={{background:'#f8fafc',padding:28,display:'flex',flexDirection:'column',alignItems:'center',borderBottom:'1px solid #e2e8f0'}}>
-              {mockupFiles.length>0?<>
-                {mockupFiles.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
-                  return<div key={i} style={{width:'100%',maxWidth:600,marginBottom:i<mockupFiles.length-1?12:0,borderRadius:12,background:'white',border:'1px solid #e2e8f0',overflow:'hidden'}}>
-                    {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>openFile(url)}/>
-                    :_isPdfUrl(url)?<div style={{position:'relative'}}>
-                      {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
-                      <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:40,gap:8}}>
-                        <span style={{fontSize:48}}>PDF</span>
-                        <span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span>
-                      </div>
-                      <button className="btn btn-sm" style={{position:'absolute',bottom:8,right:8,fontSize:11,background:'#1e40af',color:'white',border:'none',padding:'6px 14px',borderRadius:6}} onClick={()=>openFile(url)}>Open PDF</button>
-                    </div>
-                    :<div style={{display:'flex',flexDirection:'column',alignItems:'center',padding:40,gap:8,cursor:'pointer'}} onClick={()=>openFile(url)}>
-                      <span style={{fontSize:48}}>📄</span>
-                      <span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span>
-                    </div>}
-                    <div style={{padding:'6px 12px',borderTop:'1px solid #f1f5f9',display:'flex',alignItems:'center',justifyContent:'space-between',fontSize:11,color:'#64748b'}}>
-                      <span>{name}</span>
-                      <button className="btn btn-sm" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>openFile(url)}>Open in new tab</button>
-                    </div>
-                  </div>})}
-              </>:allArtFiles2.some(a2=>artProofFallback(a2).length>0)?<div style={{width:'100%',maxWidth:600,padding:'10px 14px',borderRadius:10,background:'#fffbeb',border:'1px solid #fde68a',fontSize:12,color:'#92400e',fontWeight:600}}>
-                ♻️ Reused art — its production proof is shown on each item below.
-              </div>:<div style={{width:'100%',maxWidth:480,minHeight:320,borderRadius:12,background:'white',border:'2px dashed #d1d5db',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column'}}>
-                <div style={{fontSize:64,marginBottom:8}}>🎨</div>
-                <div style={{fontSize:13,color:'#94a3b8',fontWeight:600}}>No mockup uploaded yet</div>
-              </div>}
-            </div>}
-
             {/* ─── Per-Item Grouped Cards ─── */}
             <div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
               <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',marginBottom:12}}>📦 {itemDetails.length} item{itemDetails.length!==1?'s':''} — {j.total_units} total units</div>
@@ -24384,56 +24369,7 @@ export default function App(){
                         {_myDeps.length>0&&<span style={{fontSize:9,fontWeight:700,color:'#3730a3',background:'#e0e7ff',padding:'2px 8px',borderRadius:10}}>🔗 also used by {_myDeps.map(k=>k.split('|')[0]).join(', ')}</span>}
                       </div>
                       {_repSlots.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>No art assigned to this item yet.</div>
-                       :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repSlots.map(slot=>{const a=slot.artFile;const proofLabel=/embroid/.test(String(a?.deco_type||j.deco_type||'').toLowerCase())?'Sew-out proof':/screen[\s_-]*print/.test(String(a?.deco_type||j.deco_type||'').toLowerCase())?'Screen-print proof':'Artwork proof';
-                        const mocks=_dedupMockDupes(slotMockFiles(slot,_repSlots,gi));const primary=mocks[0]||null;const extra=mocks.slice(1);
-                        const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
-                        // Reused/pre-digitized art has no per-garment mocks — the approval gate and the SO
-                        // page accept the general bucket / sew-out proof instead, so the slot must show it
-                        // too rather than an empty upload zone (SO-1638). Read-only: proofs live in
-                        // prod_files/mockup_files, not this slot, so no × here — uploading replaces it.
-                        const proof=(!primary&&slot.primary)?artProofFallback(a):[];const proofPrimary=proof[0]||null;
-                        const pUrl=proofPrimary?(typeof proofPrimary==='string'?proofPrimary:(proofPrimary?.url||'')):'';const pName=proofPrimary?fileDisplayName(proofPrimary):'';
-                        const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)handleMockupUploadForItem(files,gi,slot.artId,slot.key)};
-                        const pick=()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>doUpload(Array.from(inp.files));inp.click()};
-                        return<div key={slot.key} style={{flex:'1 1 220px',minWidth:200,display:'flex',flexDirection:'column'}}>
-                          <div style={{flex:1,minHeight:150,borderRadius:8,border:primary?'2px solid #7c3aed':proofPrimary?'2px solid #f59e0b':'2px dashed #a78bfa',background:primary?'white':proofPrimary?'#fffbeb':'#faf5ff',overflow:'hidden',display:'flex',flexDirection:'column',cursor:(primary||proofPrimary)?'default':(artJobDetailUploading?'wait':'pointer'),position:'relative'}}
-                            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';if(!primary&&!proofPrimary)e.currentTarget.style.background='#ede9fe'}}
-                            onDragLeave={e=>{e.currentTarget.style.borderColor=primary?'#7c3aed':proofPrimary?'#f59e0b':'#a78bfa';if(!primary&&!proofPrimary)e.currentTarget.style.background='#faf5ff'}}
-                            onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor=primary?'#7c3aed':proofPrimary?'#f59e0b':'#a78bfa';if(!primary&&!proofPrimary)e.currentTarget.style.background='#faf5ff';doUpload(Array.from(e.dataTransfer.files))}}
-                            onClick={(primary||proofPrimary)?undefined:pick}>
-                            {primary&&<div style={{position:'absolute',top:4,left:4,background:'#7c3aed',color:'white',fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:3,zIndex:1}}>MOCKUP</div>}
-                            {!primary&&proofPrimary&&<div style={{position:'absolute',top:4,left:4,background:'#f59e0b',color:'white',fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:3,zIndex:1}} title="No mockup for this garment yet — showing the approved art's proof file instead">♻️ PROOF</div>}
-                            {artJobDetailUploading?<div style={{margin:'auto',fontSize:11,color:'#7c3aed',fontWeight:600}}>Uploading...</div>
-                             :primary?<>
-                               {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:240,objectFit:'contain',background:'white',cursor:'pointer',display:'block'}} onClick={()=>openFile(url)}/>
-                                :<div style={{padding:20,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(url)}><div style={{fontSize:30}}>{_isPdfUrl(url)?'PDF':'📄'}</div><div style={{fontSize:10,color:'#1e40af',marginTop:4,wordBreak:'break-all'}}>{name}</div></div>}
-                               <div style={{marginTop:'auto',padding:'4px 8px',borderTop:'1px solid #e9d5ff',fontSize:10,color:'#64748b',display:'flex',alignItems:'center',gap:4}}>
-                                 <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}{extra.length>0?' (+'+extra.length+')':''}</span>
-                                 <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(url)}>Open</button>
-                                 <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} onClick={()=>{if(window.confirm('Remove this mockup for '+gi.sku+'?'))handleMockupDeleteForItem(url,gi.sku)}} title="Remove">×</button>
-                               </div>
-                               <div style={{padding:'4px 8px',borderTop:'1px solid #f1f5f9',textAlign:'center',fontSize:10,color:'#7c3aed',fontWeight:600,cursor:'pointer'}} onClick={pick}>+ Add / replace</div>
-                             </>
-                             :proofPrimary?<>
-                               {_isImgUrl(pUrl)?<img src={pUrl} alt={pName} style={{width:'100%',maxHeight:240,objectFit:'contain',background:'white',cursor:'pointer',display:'block'}} onClick={()=>openFile(pUrl)}/>
-                                :<div style={{padding:20,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(pUrl)}><div style={{fontSize:30}}>{_isPdfUrl(pUrl)?'PDF':'📄'}</div><div style={{fontSize:10,color:'#1e40af',marginTop:4,wordBreak:'break-all'}}>{pName}</div></div>}
-                               <div style={{marginTop:'auto',padding:'4px 8px',borderTop:'1px solid #fde68a',fontSize:10,color:'#92400e',display:'flex',alignItems:'center',gap:4}}>
-                                 <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{pName}{proof.length>1?' (+'+(proof.length-1)+')':''}</span>
-                                 <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(pUrl)}>Open</button>
-                                 <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} title={'Clear this '+proofLabel.toLowerCase()+' from the slot — keeps the production files'} onClick={()=>{if(window.confirm('Clear this '+proofLabel.toLowerCase()+' from this item?\n\nThe production files stay attached — this only removes the proof standing in as the mockup, so you can upload a garment mockup instead.'))setArtProofDismissed(slot.artId,true)}}>×</button>
-                               </div>
-                               <div style={{display:'flex',borderTop:'1px solid #fde68a'}}>
-                                 <button disabled={artJobDetailUploading} style={{flex:1,padding:'5px 8px',border:0,borderRight:'1px solid #fde68a',background:'#fef3c7',color:'#854d0e',fontSize:10,fontWeight:800,cursor:artJobDetailUploading?'wait':'pointer'}} onClick={()=>useArtProofAsMock(slot.artId,slot.key,proofPrimary,gi)} title="Confirm that this proof already shows the correct garment mockup">✓ Use this as the mock</button>
-                                 <button disabled={artJobDetailUploading} style={{padding:'5px 8px',border:0,background:'#fffbeb',color:'#92400e',fontSize:10,fontWeight:600,cursor:artJobDetailUploading?'wait':'pointer'}} onClick={pick} title="Upload a different garment mockup">+ Upload another</button>
-                               </div>
-                             </>
-                             :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div>{a?.proof_dismissed&&artProofFallback({...a,proof_dismissed:false}).length>0&&<button onClick={e=>{e.stopPropagation();setArtProofDismissed(slot.artId,false)}} style={{marginTop:8,background:'none',border:'1px solid #fde68a',color:'#92400e',fontSize:10,fontWeight:600,cursor:'pointer',padding:'2px 8px',borderRadius:4}} title="Show this art's production proof in the slot again">↺ Restore production proof</button>}</div>}
-                          </div>
-                          <div style={{marginTop:6,textAlign:'center'}}>
-                            <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',lineHeight:1.2}}>{slot.label||'Unnamed art'}</div>
-                            {slot.sub&&<div style={{fontSize:9,color:'#64748b'}}>{slot.sub}</div>}
-                          </div>
-                        </div>;})}</div>}
+                       :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repSlots.map(slot=><GarmentMockCard key={slot.artId+'|'+slot.key} label={slot.label} sub={slot.sub} mocks={slotMockFiles(slot,_repSlots,gi)} candidates={garmentMockCandidates(slot.artFile)} suggest={slot.primary&&!Object.prototype.hasOwnProperty.call(slot.artFile?.item_mockups||{},slot.key)&&artProofFallback(slot.artFile).length>0} busy={artJobDetailUploading} onUse={file=>useArtProofAsMock(slot.artId,slot.key,file,gi)} onRemove={url=>removeSlotMock(slot,_repSlots,gi,url)} onUpload={files=>handleMockupUploadForItem(files,gi,slot.artId,slot.key)} />)}</div>}
                       {_linkChips(gi)}
                     </div>}
                     {/* Decoration spec */}
@@ -24840,13 +24776,27 @@ export default function App(){
             if(updArt===safeArt(liveSO))return;
             const pendingSO={...liveSO,art_files:updArt};
             const ok=await _dbSaveSO(pendingSO);
-            if(ok===false){nf('Failed to use this proof as the mock. Please retry.','error');return}
+            if(ok===false){nf('Failed to use this proof as the mock. Please retry.','error');return false}
             const newSO=savSO(pendingSO);
             setArtJobDetailModal(m=>m&&m.id===j.id?{...j,so:newSO,artFile:updArt.find(a=>a.id===j.art_file_id)||updArt[0]}:m);
             nf('Proof is now the garment mock for '+(g?.sku||'this item'));
           }finally{setArtJobDetailUploading(false)}
         };
 
+        const removeSlotMock=async(slot,slots,g,url)=>{
+          if(artJobDetailUploading)return false;
+          setArtJobDetailUploading(true);
+          try{
+            const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+            const updArt=removeGarmentSlotMock(safeArt(liveSO),slot,slots,g,url);
+            const pendingSO={...liveSO,art_files:updArt};
+            if(await _dbSaveSO(pendingSO)===false)throw new Error('Save failed');
+            const newSO=savSO(pendingSO);
+            setArtJobDetailModal(m=>m&&m.id===j.id?{...m,so:newSO,artFile:updArt.find(a=>a.id===j.art_file_id)||updArt[0]}:m);
+            nf('Mock removed from this garment');
+            return true;
+          }finally{setArtJobDetailUploading(false)}
+        };
         // Upload handler for production files. Accepts [{file, artId}] so multi-art jobs can route each file to the correct art.
         const handleProdFileUpload=async(entries)=>{
           setArtJobDetailUploading(true);
@@ -25054,57 +25004,7 @@ export default function App(){
                           _slots.push({key:sd.key,kind:'names',primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}});
                       if(_slots.length===0&&af)_slots.push({key:_skBase,kind:'art',primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
                       if(_slots.length===0)return<div style={{fontSize:11,color:'#94a3b8',padding:8}}>No art assigned to this item yet.</div>;
-                      return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=>{const a=slot.artFile;const proofLabel=/embroid/.test(String(a?.deco_type||j.deco_type||'').toLowerCase())?'Sew-out proof':/screen[\s_-]*print/.test(String(a?.deco_type||j.deco_type||'').toLowerCase())?'Screen-print proof':'Artwork proof';
-                        const mocks=_dedupMockDupes(slotMockFiles(slot,_slots,gi));const primary=mocks[0]||null;const extra=mocks.slice(1);
-                        const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
-                        // Reused/pre-digitized art: no per-garment mocks anywhere, so show the same
-                        // general-bucket / sew-out proof the approval gate + SO page accept, instead of
-                        // an empty upload zone (SO-1638). Read-only here — uploading replaces it.
-                        const proof=(!primary&&slot.primary)?artProofFallback(a):[];const proofPrimary=proof[0]||null;
-                        const pUrl=proofPrimary?(typeof proofPrimary==='string'?proofPrimary:(proofPrimary?.url||'')):'';const pName=proofPrimary?fileDisplayName(proofPrimary):'';
-                        const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)startMockupUpload(files,gi,slot.artId,slot.key)};
-                        const pick=()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>doUpload(Array.from(inp.files));inp.click()};
-                        return<div key={slot.key} style={{flex:'1 1 220px',minWidth:200,display:'flex',flexDirection:'column'}}>
-                          <div style={{flex:1,minHeight:150,borderRadius:8,border:primary?'2px solid #7c3aed':proofPrimary?'2px solid #f59e0b':'2px dashed #a78bfa',background:primary?'white':proofPrimary?'#fffbeb':'#faf5ff',overflow:'hidden',display:'flex',flexDirection:'column',cursor:(primary||proofPrimary)?'default':(artJobDetailUploading?'wait':'pointer'),position:'relative'}}
-                            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';if(!primary&&!proofPrimary)e.currentTarget.style.background='#ede9fe'}}
-                            onDragLeave={e=>{e.currentTarget.style.borderColor=primary?'#7c3aed':proofPrimary?'#f59e0b':'#a78bfa';if(!primary&&!proofPrimary)e.currentTarget.style.background='#faf5ff'}}
-                            onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor=primary?'#7c3aed':proofPrimary?'#f59e0b':'#a78bfa';if(!primary&&!proofPrimary)e.currentTarget.style.background='#faf5ff';doUpload(Array.from(e.dataTransfer.files))}}
-                            onClick={(primary||proofPrimary)?undefined:pick}>
-                            {primary&&<div style={{position:'absolute',top:4,left:4,background:'#7c3aed',color:'white',fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:3,zIndex:1}}>MOCKUP</div>}
-                            {!primary&&proofPrimary&&<div style={{position:'absolute',top:4,left:4,background:'#f59e0b',color:'white',fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:3,zIndex:1}} title="No mockup for this garment yet — showing the approved art's proof file instead">♻️ PROOF</div>}
-                            {artJobDetailUploading?<div style={{margin:'auto',fontSize:11,color:'#7c3aed',fontWeight:600}}>Uploading...</div>
-                             :primary?<>
-                               {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:280,objectFit:'contain',background:'white',cursor:'pointer',display:'block'}} onClick={()=>openFile(url)}/>
-                                :_isPdfUrl(url)?<div style={{cursor:'pointer'}} onClick={()=>openFile(url)}>{_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:280,objectFit:'contain',background:'white',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='block'}}/>:null}<div style={{display:_cloudinaryPdfThumb(url)?'none':'block',padding:20,textAlign:'center'}}><div style={{fontSize:30}}>PDF</div><div style={{fontSize:10,color:'#1e40af',marginTop:4,wordBreak:'break-all'}}>{name}</div></div></div>
-                                :<div style={{padding:20,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(url)}><div style={{fontSize:30}}>📄</div><div style={{fontSize:10,color:'#1e40af',marginTop:4,wordBreak:'break-all'}}>{name}</div></div>}
-                               <div style={{marginTop:'auto',padding:'4px 8px',borderTop:'1px solid #e9d5ff',fontSize:10,color:'#64748b',display:'flex',alignItems:'center',gap:4}}>
-                                 <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}{extra.length>0?' (+'+extra.length+')':''}</span>
-                                 <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(url)}>Open</button>
-                                 <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} onClick={()=>{if(window.confirm('Remove this mockup?'))handleItemMockupDelete(url,gi.sku,gi.color,slot.key)}} title="Remove">×</button>
-                               </div>
-                               <div style={{padding:'4px 8px',borderTop:'1px solid #f1f5f9',textAlign:'center',fontSize:10,color:'#7c3aed',fontWeight:600,cursor:'pointer'}} onClick={pick}>+ Add / replace</div>
-                             </>
-                             :proofPrimary?<>
-                               {_isImgUrl(pUrl)?<img src={pUrl} alt={pName} style={{width:'100%',maxHeight:280,objectFit:'contain',background:'white',cursor:'pointer',display:'block'}} onClick={()=>openFile(pUrl)}/>
-                                :_isPdfUrl(pUrl)?<div style={{cursor:'pointer'}} onClick={()=>openFile(pUrl)}>{_cloudinaryPdfThumb(pUrl)?<img src={_cloudinaryPdfThumb(pUrl)} alt={pName} style={{width:'100%',maxHeight:280,objectFit:'contain',background:'white',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='block'}}/>:null}<div style={{display:_cloudinaryPdfThumb(pUrl)?'none':'block',padding:20,textAlign:'center'}}><div style={{fontSize:30}}>PDF</div><div style={{fontSize:10,color:'#1e40af',marginTop:4,wordBreak:'break-all'}}>{pName}</div></div></div>
-                                :<div style={{padding:20,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(pUrl)}><div style={{fontSize:30}}>📄</div><div style={{fontSize:10,color:'#1e40af',marginTop:4,wordBreak:'break-all'}}>{pName}</div></div>}
-                               <div style={{marginTop:'auto',padding:'4px 8px',borderTop:'1px solid #fde68a',fontSize:10,color:'#92400e',display:'flex',alignItems:'center',gap:4}}>
-                                 <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{pName}{proof.length>1?' (+'+(proof.length-1)+')':''}</span>
-                                 <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(pUrl)}>Open</button>
-                                 <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} title={'Clear this '+proofLabel.toLowerCase()+' from the slot — keeps the production files'} onClick={()=>{if(window.confirm('Clear this '+proofLabel.toLowerCase()+' from this item?\n\nThe production files stay attached — this only removes the proof standing in as the mockup, so you can upload a garment mockup instead.'))setArtProofDismissed(slot.artId,true)}}>×</button>
-                               </div>
-                               <div style={{display:'flex',borderTop:'1px solid #fde68a'}}>
-                                 <button disabled={artJobDetailUploading} style={{flex:1,padding:'5px 8px',border:0,borderRight:'1px solid #fde68a',background:'#fef3c7',color:'#854d0e',fontSize:10,fontWeight:800,cursor:artJobDetailUploading?'wait':'pointer'}} onClick={()=>useArtProofAsMock(slot.artId,slot.key,proofPrimary,gi)} title="Confirm that this proof already shows the correct garment mockup">✓ Use this as the mock</button>
-                                 <button disabled={artJobDetailUploading} style={{padding:'5px 8px',border:0,background:'#fffbeb',color:'#92400e',fontSize:10,fontWeight:600,cursor:artJobDetailUploading?'wait':'pointer'}} onClick={pick} title="Upload a different garment mockup">+ Upload another</button>
-                               </div>
-                             </>
-                             :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div>{a?.proof_dismissed&&artProofFallback({...a,proof_dismissed:false}).length>0&&<button onClick={e=>{e.stopPropagation();setArtProofDismissed(slot.artId,false)}} style={{marginTop:8,background:'none',border:'1px solid #fde68a',color:'#92400e',fontSize:10,fontWeight:600,cursor:'pointer',padding:'2px 8px',borderRadius:4}} title="Show this art's production proof in the slot again">↺ Restore production proof</button>}</div>}
-                          </div>
-                          <div style={{marginTop:6,textAlign:'center'}}>
-                            <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',lineHeight:1.2}}>{slot.label||'Unnamed art'}</div>
-                            {slot.sub&&<div style={{fontSize:9,color:'#64748b'}}>{slot.sub}</div>}
-                          </div>
-                        </div>;})}</div>;
+                      return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=><GarmentMockCard key={slot.artId+'|'+slot.key} label={slot.label} sub={slot.sub} mocks={slotMockFiles(slot,_slots,gi)} candidates={garmentMockCandidates(slot.artFile)} suggest={slot.primary&&!Object.prototype.hasOwnProperty.call(slot.artFile?.item_mockups||{},slot.key)&&artProofFallback(slot.artFile).length>0} busy={artJobDetailUploading} onUse={file=>useArtProofAsMock(slot.artId,slot.key,file,gi)} onRemove={url=>removeSlotMock(slot,_slots,gi,url)} onUpload={files=>startMockupUpload(files,gi,slot.artId,slot.key)} />)}</div>;
                     })()}
                   </div>
                   {/* ─── Copy Mockup From Another Item ─── */}
