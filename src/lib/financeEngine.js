@@ -688,6 +688,9 @@ export function staleOrdersReport({
   const rows = [];
   for (const so of sos) {
     if (!liveSO(so)) continue;
+    // Same exclusions as the Ready-to-invoice report: a promo order is paid
+    // from promo funds, and a rep can mark an order as never portal-invoiced.
+    if (so.no_invoice_needed || isPromoOnlyOrder(so)) continue;
     const orderDate = parseDate(so.created_at);
     const ageDays = orderDate ? Math.max(0, daysBetween(today, orderDate)) : 0;
     const isBooking = so.order_type === 'booking';
@@ -746,6 +749,10 @@ export function staleOrdersReport({
     const category = mismatch ? 'system_mismatch'
       : (status === 'ready_to_invoice' || status === 'complete' || storedComplete || allJobsDone) ? 'ready'
         : 'old_open';
+    // Only an order whose work is finished (shipped, complete, every job done)
+    // is billable. An old order still in production is a status check, not an
+    // invoice to send; it must never be counted as potential billing.
+    const invoiceable = category !== 'old_open';
     const customer = customerById.get(so.customer_id);
     rows.push({
       so, id: so.id, customerId: so.customer_id, customerName: customer?.name || 'Unknown account',
@@ -753,7 +760,7 @@ export function staleOrdersReport({
       isBooking, ageDays, expected, daysLate, orderValue, invoiced, openToInvoice,
       invoiceCount: linkedInvs.length, invoicePct: orderValue ? Math.min(1, invoiced / orderValue) : 0,
       totalUnits, fulfilledUnits, jobCount: jobs.length, doneJobs, shippedJobs,
-      allJobsDone, allJobsShipped, mismatch, severity, category, reasons,
+      allJobsDone, allJobsShipped, mismatch, severity, category, invoiceable, reasons,
     });
   }
   const severityRank = { critical: 0, high: 1, watch: 2 };
@@ -763,7 +770,11 @@ export function staleOrdersReport({
     rows,
     summary: {
       count: rows.length,
-      value: rows.reduce((a, r) => a + r.openToInvoice, 0),
+      // Potential billing counts only finished work; old open orders are listed
+      // for a status check and their value is reported separately.
+      value: rows.filter((r) => r.invoiceable).reduce((a, r) => a + r.openToInvoice, 0),
+      oldOpenValue: rows.filter((r) => !r.invoiceable).reduce((a, r) => a + r.openToInvoice, 0),
+      invoiceableCount: rows.filter((r) => r.invoiceable).length,
       readyCount: rows.filter((r) => r.category === 'ready').length,
       mismatchCount: rows.filter((r) => r.category === 'system_mismatch').length,
       oldCount: rows.filter((r) => r.category === 'old_open').length,

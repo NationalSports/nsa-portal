@@ -325,6 +325,8 @@ describe('staleOrdersReport', () => {
       items: [{ sizes: { M: 10 }, pick_lines: [], po_lines: [{ received: { M: 5 } }] }],
       jobs: [{ id: 'J1', prod_status: 'completed' }] },
     { id: 'SO-E', customer_id: 'C1', created_at: '2026-06-01', _rev: 300, _status: 'need_order', items: [] },
+    // Old and finished, but paid from promo funds: nothing to bill.
+    { id: 'SO-PROMO', customer_id: 'C1', created_at: '2026-05-01', _rev: 900, _status: 'complete', promo_applied: true, items: [] },
   ];
   const invs = [
     { id: 'IA', so_id: 'SO-A', date: '2026-08-20', total: 400, tax: 0, paid: 0, status: 'open' },
@@ -332,15 +334,22 @@ describe('staleOrdersReport', () => {
   ];
   const calcStatus = (so) => so._status;
 
-  test('finds ready, mismatch, and 30-day non-booking orders while excluding bookings and fully invoiced orders', () => {
+  test('finds ready, mismatch, and 30-day non-booking orders while excluding bookings, promo, and fully invoiced orders', () => {
     const d = staleOrdersReport({ sos, invs, customers, calcMargin, calcStatus, asOf });
     expect(d.rows.map((r) => r.id).sort()).toEqual(['SO-A', 'SO-B', 'SO-D']);
     expect(d.rows.find((r) => r.id === 'SO-A').openToInvoice).toBeCloseTo(600);
-    expect(d.rows.find((r) => r.id === 'SO-B').category).toBe('old_open');
+    expect(d.rows.find((r) => r.id === 'SO-A').invoiceable).toBe(true);
+    const old = d.rows.find((r) => r.id === 'SO-B');
+    expect(old.category).toBe('old_open');
+    expect(old.invoiceable).toBe(false);
     const mismatch = d.rows.find((r) => r.id === 'SO-D');
     expect(mismatch.category).toBe('system_mismatch');
+    expect(mismatch.invoiceable).toBe(true);
     expect(mismatch.reasons.join(' ')).toMatch(/verify a receiving\/shipping mismatch/);
-    expect(d.summary).toMatchObject({ count: 3, readyCount: 1, mismatchCount: 1, oldCount: 1 });
+    expect(d.summary).toMatchObject({ count: 3, readyCount: 1, mismatchCount: 1, oldCount: 1, invoiceableCount: 2 });
+    // Potential billing is finished work only; the in-production order's value is reported apart.
+    expect(d.summary.value).toBeCloseTo(600 + 800);
+    expect(d.summary.oldOpenValue).toBeCloseTo(500);
   });
 });
 
