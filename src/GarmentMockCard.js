@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { fileDisplayName, _isImgUrl, _cloudinaryPdfThumb, openFile } from './utils';
+import { sizeProgressCell } from './JobGarmentProgress';
 import './GarmentMockCard.css';
 
 const urlOf = f => typeof f === 'string' ? f : f?.url || '';
@@ -117,7 +118,7 @@ export default function GarmentMockCard({ label, sub, mocks, candidates, suggest
         {error && <p role="alert" className="mock-error">{error}</p>}
         <div className="panel-actions">
           {file && choosingExisting && <button type="button" className="mock-primary" disabled={busy} onClick={() => run(() => onUse(file))}>{busy ? 'Saving…' : 'Use this mock'}</button>}
-          {!choosing && candidates.length > 0 && !(suggest && !mocks.length) && <button type="button" disabled={busy} onClick={() => { setChoosing(true); setSelected(''); }}>Use existing image</button>}
+          {!choosing && candidates.length > 0 && !(suggest && !mocks.length) && <button type="button" disabled={busy} onClick={() => { setChoosing(true); setSelected(''); }}>{mocks.length ? 'Change mock' : 'Use existing image'}</button>}
           <button type="button" disabled={busy} onClick={() => input.current.click()}>{uploadLabel}</button>
           {choosing && <button type="button" disabled={busy} onClick={() => { setChoosing(false); setSelected(''); }}>Cancel</button>}
           {file && !choosingExisting && <button type="button" className="mock-remove" disabled={busy} onClick={() => { if (window.confirm('Remove this mock from this garment slot?')) run(() => onRemove(url)); }}>Remove</button>}
@@ -133,8 +134,10 @@ export default function GarmentMockCard({ label, sub, mocks, candidates, suggest
 const SIZE_ORDER = ['YXS', 'YS', 'YM', 'YL', 'YXL', 'XXS', 'XS', 'S', 'M', 'L', 'XL', '2XL', 'XXL', '3XL', 'XXXL', '4XL', '5XL', '6XL', 'OSFA'];
 const _sizeRank = s => { const i = SIZE_ORDER.indexOf(String(s).toUpperCase()); return i < 0 ? SIZE_ORDER.length : i; };
 
-// The garments one shared mock covers, with each garment's size quantities and a combined total.
-// rows = [{ key, label, sizes: { M: 2, ... } }]
+// The garments one shared mock covers, listed together: each garment's size quantities and a
+// combined total. With received / shipped maps (from garmentProgress) each size cell is tinted by
+// its progress and Received / Shipped columns are added. rows = [{ key, label, sizes, received?,
+// shipped?, onView? }]
 export function MockCoversTable({ rows }) {
   const list = (rows || []).filter(Boolean);
   if (list.length < 2) return null;
@@ -142,13 +145,26 @@ export function MockCoversTable({ rows }) {
   const sizes = [...new Set(list.flatMap(r => Object.keys(r.sizes || {}).filter(sz => qty(r.sizes[sz]) > 0)))]
     .sort((a, b) => _sizeRank(a) - _sizeRank(b));
   const total = r => sizes.reduce((n, sz) => n + qty(r.sizes?.[sz]), 0);
+  const progress = list.some(r => r.received || r.shipped);
+  const sum = (r, m) => sizes.reduce((n, sz) => n + Math.min(qty(r.sizes?.[sz]), qty(r[m]?.[sz])), 0);
+  const cell = (r, sz) => {
+    const n = qty(r.sizes?.[sz]);
+    if (!n) return <td key={sz} className="zero">—</td>;
+    if (!progress) return <td key={sz} className="qty">{n}</td>;
+    const c = sizeProgressCell(n, r.received?.[sz], r.shipped?.[sz]);
+    return <td key={sz} className="qty" title={sz + ': ' + c.title + '. ' + c.status}><span className="cover-cell" style={{ background: c.background, color: c.color }}>{n}</span></td>;
+  };
   return <div className="mock-covers">
     <h5>🔗 This mock covers {list.length} garments</h5>
     <div style={{ overflowX: 'auto' }}><table>
-      <thead><tr><th>Garment</th>{sizes.map(sz => <th key={sz}>{sz}</th>)}<th>Total</th></tr></thead>
+      <thead><tr><th>Garment</th>{sizes.map(sz => <th key={sz}>{sz}</th>)}<th>Total</th>{progress && <><th>Received</th><th>Shipped</th></>}{list.some(r => r.onView) && <th />}</tr></thead>
       <tbody>
-        {list.map(r => <tr key={r.key}><td>{r.label}</td>{sizes.map(sz => <td key={sz} className={qty(r.sizes?.[sz]) ? 'qty' : 'zero'}>{qty(r.sizes?.[sz]) || '—'}</td>)}<td className="qty">{total(r)}</td></tr>)}
-        <tr className="total"><td>All garments</td>{sizes.map(sz => <td key={sz}>{list.reduce((n, r) => n + qty(r.sizes?.[sz]), 0) || '—'}</td>)}<td>{list.reduce((n, r) => n + total(r), 0)}</td></tr>
+        {list.map(r => <tr key={r.key}><td>{r.label}</td>{sizes.map(sz => cell(r, sz))}<td className="qty">{total(r)}</td>
+          {progress && <><td>{sum(r, 'received')}/{total(r)}</td><td>{sum(r, 'shipped')}/{total(r)}</td></>}
+          {list.some(x => x.onView) && <td>{r.onView && <button type="button" className="cover-link" onClick={r.onView} title="Open this garment's line on the sales order">SO →</button>}</td>}</tr>)}
+        <tr className="total"><td>All garments</td>{sizes.map(sz => <td key={sz}>{list.reduce((n, r) => n + qty(r.sizes?.[sz]), 0) || '—'}</td>)}<td>{list.reduce((n, r) => n + total(r), 0)}</td>
+          {progress && <><td>{list.reduce((n, r) => n + sum(r, 'received'), 0)}/{list.reduce((n, r) => n + total(r), 0)}</td><td>{list.reduce((n, r) => n + sum(r, 'shipped'), 0)}/{list.reduce((n, r) => n + total(r), 0)}</td></>}
+          {list.some(r => r.onView) && <td />}</tr>
       </tbody>
     </table></div>
   </div>;

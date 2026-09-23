@@ -71,11 +71,22 @@ describe('job garment mocks', () => {
     expect(screen.getAllByText('Needs logo detail')).toHaveLength(1);
   });
 
-  test('embedded in a garment card, a linked garment shows a compact reference', () => {
-    render(<JobGarmentMocks job={job} order={order} getOrder={() => order} onSave={noop} itemIdx={1} />);
-    expect(screen.getByText(/Shares the mock from AT106 · Medium Grey Heather/)).toBeTruthy();
-    expect(screen.queryByText(/This mock covers/)).toBeNull();
-  });
+});
+
+test('shared garments are listed together with their received / shipped counts', () => {
+  const linked = { ...art, mock_links: { 'JW6597|Heather Grey': 'AT106|Medium Grey Heather' }, item_mockups: { 'AT106|Medium Grey Heather': [{ url: 'mock.png' }] } };
+  const order = { items: [line('AT106', 'Medium Grey Heather', 'cw1', { XL: 2 }), line('JW6597', 'Heather Grey', 'cw1', { M: 3 })], art_files: [linked] };
+  const twoJob = { ...job, items: job.items.slice(0, 2) };
+  const itemDetails = [{ item_idx: 0, sizes: { XL: 2 }, fulSizes: { XL: 2 } }, { item_idx: 1, sizes: { M: 3 }, fulSizes: { M: 1 } }];
+  const onView = jest.fn();
+  render(<JobGarmentMocks job={twoJob} order={order} getOrder={() => order} onSave={() => true} itemDetails={itemDetails} onViewItem={onView} />);
+  expect(screen.getByText(/This mock covers 2 garments/)).toBeTruthy();
+  expect(screen.getByText('Received')).toBeTruthy();
+  expect(screen.getByText('2/2')).toBeTruthy();
+  expect(screen.getByText('1/3')).toBeTruthy();
+  // One block for the pair: a single mock card, no separate QTY row per garment.
+  expect(document.querySelectorAll('section.garment-mock-card')).toHaveLength(1);
+  expect(screen.queryByLabelText('Garment quantities and progress')).toBeNull();
 });
 
 describe('logo detail pane', () => {
