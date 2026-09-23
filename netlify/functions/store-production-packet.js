@@ -58,8 +58,8 @@ async function loadCurrent(ctx) {
     inBatches(admin, 'messages', 'so_id', ids, 'id,so_id,author_id,author,text,ts,thread_id,attachments'),
     inBatches(admin, 'so_jobs', 'so_id', ids),
   ]);
-  const products = await inBatches(admin, 'products', 'id', [...new Set(catalog.map(c=>c.product_id).filter(Boolean))], 'id,image_front_url,image_back_url');
-  catalog.forEach(c=>{const product=products.find(p=>p.id===c.product_id);c.image_url=c.image_url||product?.image_front_url;c.image_back_url=c.image_back_url||product?.image_back_url;});
+  const products = await inBatches(admin, 'products', 'id', [...new Set(catalog.map(c=>c.product_id).filter(Boolean))], 'id,name,image_front_url,image_back_url');
+  catalog.forEach(c=>{const product=products.find(p=>p.id===c.product_id);c.display_name=c.display_name||product?.name;c.image_url=c.image_url||product?.image_front_url;c.image_back_url=c.image_back_url||product?.image_back_url;});
   const decos = await inBatches(admin, 'so_item_decorations', 'so_item_id', items.map(i => i.id));
   salesOrders.forEach(so => {
     so.items = items.filter(i => i.so_id === so.id).sort((a, b) => a.item_index - b.item_index).map(i => ({ ...i, decorations: decos.filter(d => d.so_item_id === i.id).sort((a, b) => a.deco_index - b.deco_index) }));

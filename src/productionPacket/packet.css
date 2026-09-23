@@ -14,3 +14,5 @@ body:has(.pp){margin:0}
 @media(max-width:440px){.pp-store-identity{flex-direction:column}.pp-title{padding:20px}}
 
 .pp-player-order{border:1px solid var(--border);border-radius:12px;margin-top:22px;overflow:hidden}.pp-player-order>.pp-section-head{padding:18px 20px;margin:0;background:#f5f7f8}.pp-player-order h3{margin:0}.pp-player-order p{margin:4px 0}.pp-reference{width:100%}.pp-store-preview{position:relative;max-width:340px;margin:auto;background:#fff}.pp-store-preview>img{display:block;width:100%;height:auto;object-fit:contain}.pp-store-preview>img.pp-overlay{position:absolute;height:auto;transform:translate(-50%,-50%)}.pp-store-preview>img.pp-art-reference{height:220px;object-fit:contain}
+
+.pp-store-preview>img.pp-overlay{background:transparent;border-radius:0}
