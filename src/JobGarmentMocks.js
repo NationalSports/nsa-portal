@@ -20,7 +20,8 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
   const useFiles = (slot, files) => {
     const live = getOrder();
     if (!safeArt(live).some(a => a.id === slot.artId)) throw new Error('This artwork was removed. Reopen the job to continue.');
-    return onSave(files.reduce((arts, file) => adoptArtProofAsGarmentMock(arts, slot.artId, slot.key, file), safeArt(live)), 'Garment mock');
+    return onSave(files.reduce((arts, file) => adoptArtProofAsGarmentMock(arts, slot.artId, slot.key,
+      { ...(typeof file === 'string' ? { url: file } : file), art_file_id: slot.artId }), safeArt(live)), 'Garment mock');
   };
   return <section aria-label="Job garment mocks" style={{ margin: '16px 20px', padding: 16, border: '1px solid #dbe2ea', borderRadius: 12, background: '#f8fafc' }}>
     <h3 style={{ margin: '0 0 6px', fontSize: 17 }}>Garment mocks</h3>
@@ -39,6 +40,7 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
           key={slot.artId + '|' + slot.key} label={slot.label} sub={slot.sub}
           mocks={slotMockFiles(slot, allSlots, item)} candidates={slot.candidates} suggest busy={busy}
           accept=".pdf,.png,.jpg,.jpeg,.webp,.gif"
+          uploadLabel="Upload mock image"
           onUse={file => run(() => useFiles(slot, [file]))}
           onRemove={url => run(() => onSave(removeGarmentSlotMock(safeArt(getOrder()), slot, allSlots, item, url), 'Mock removed'))}
           onUpload={files => run(async () => {

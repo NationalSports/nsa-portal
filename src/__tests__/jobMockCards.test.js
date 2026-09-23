@@ -49,3 +49,19 @@ test('deduplicates repeated job garment entries and skips unresolved art', () =>
   expect(jobMockCardGroups({ ...job, items: [...job.items, ...job.items] }, order)).toHaveLength(1);
   expect(jobMockCardGroups(job, { ...order, art_files: [] })).toEqual([]);
 });
+
+test('SO-2245: exact garment mocks on the original art precede the replacement sew-out', () => {
+  const original = { id: 'old', name: 'Original store art', item_mockups: {
+    'TEE|Blue': [{ url: 'store-garment.png' }],
+    'TEE|White': [{ url: 'wrong-color.png' }],
+    'VISOR|Blue': [{ url: 'wrong-garment.png' }],
+    'TEE|Blue|names': [{ url: 'names.png' }],
+  } };
+  const so = { ...order, source: 'webstore', art_files: [art, original] };
+  const [group] = jobMockCardGroups(job, so);
+  const slot = group.slots[0];
+  expect(slot.candidates.map(f => f.url)).toEqual(['store-garment.png', proof.url]);
+  expect(slot.candidates[0].requires_mock_review).toBe(true);
+  expect(slotMockFiles(slot, group.allSlots, item)).toEqual([]);
+  expect(so.art_files[0].item_mockups).toBeUndefined();
+});

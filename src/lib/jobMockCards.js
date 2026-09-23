@@ -1,4 +1,4 @@
-import { safeArr, safeArt, safeItems, safeDecos, garmentMockKey, mockSlotKeys, jobItemDecoIdxs, garmentMockCandidates } from '../safeHelpers';
+import { safeArr, safeArt, safeItems, safeDecos, garmentMockKey, mockSlotKeys, jobItemDecoIdxs, garmentMockCandidates, itemMockFiles } from '../safeHelpers';
 
 // Build keys before filtering by job: a split job's second design must not write
 // into the first design's slot. Previous-order images are suggestions, never mocks.
@@ -24,7 +24,17 @@ export function jobMockCardGroups(job, order, priorMocks = {}) {
       const a = s.artFile;
       const priorKey = (a.name || '').trim().toLowerCase() + '||' + (a.deco_type || '');
       const prior = [...safeArr(priorMocks[priorKey])].sort((x, y) => Number(y.from === garmentMockKey(item)) - Number(x.from === garmentMockKey(item)));
-      const candidates = garmentMockCandidates({ files: [...garmentMockCandidates(a), ...prior.flatMap(g => safeArr(g.files))] });
+      // A store garment proof may still live on the original art after the rep
+      // assigns digitized/replacement artwork. Offer the exact garment's images
+      // before sew-out references, but never count them as the new art's mock.
+      // No bare-SKU fallback across art: another color must not be suggested here.
+      const sameGarment = s.kind === 'art' && !s.side ? arts.filter(other => other.id !== a.id).flatMap(other =>
+        safeArr(other.item_mockups?.[garmentMockKey(item)]).map(f => ({ ...(typeof f === 'string' ? { url: f } : f), source_art_name: other.name || 'Other artwork', requires_mock_review: true }))
+      ) : [];
+      const candidates = garmentMockCandidates({ files: [
+        ...itemMockFiles(a.item_mockups, item), ...sameGarment,
+        ...prior.flatMap(g => safeArr(g.files)), ...garmentMockCandidates(a),
+      ] });
       return { ...s, candidates };
     });
     return slots.length ? [{ item, slots, allSlots: allSlots.map(s => slots.find(ownedSlot => ownedSlot.key === s.key && ownedSlot.artId === s.artId) || s) }] : [];
