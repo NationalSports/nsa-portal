@@ -9551,6 +9551,10 @@ export default function App(){
       // Deadlines: title is the order name, subtitle the customer + SO# (the raw ISO date is replaced by the pill).
       const title=due?(t.so.memo||t.so.id):String(t.msg||'').replace(/^[^\w$]+/,'');
       const sub=due?[soCust?.name||soCust?.alpha_tag,t.so.id].filter(Boolean).join(' · '):t.detail;
+      // Order value (SO or estimate grand total, same calcOrderTotals as the Sales Orders list) so a rep can
+      // weigh the item at a glance. Job rows show their parent SO's total.
+      const _doc=t.so||t.est;const _docC=_doc?cust.find(cc=>cc.id===_doc.customer_id):null;
+      const total=(()=>{if(!_doc)return 0;try{return Number(calcOrderTotals(_doc,_docC?.tax_rate||0)?.grand)||0}catch{return 0}})();
       const repName=t.repId&&t.repId!==cu.id?(REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''):'';
       const age=due?'':_fmtTodoAge(t.date);
       const chip=t.action&&!['Open SO','View'].includes(t.action);
@@ -9560,7 +9564,7 @@ export default function App(){
       return<div key={key} className="nsa-todo-row" style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>_openTodo(t)}>
         <div style={{flex:1,minWidth:0}}>
           <div title={t.msg} style={{fontSize:13,fontWeight:600,color:'#0f172a',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{title}</div>
-          <div title={t.detail} style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{sub}{repName&&<span style={{color:'#2563eb'}}> · {repName}</span>}</div>
+          <div title={t.detail} style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{sub}{total>0&&<span style={{color:'#334155',fontWeight:600}}> · ${Math.round(total).toLocaleString()}</span>}{repName&&<span style={{color:'#2563eb'}}> · {repName}</span>}</div>
         </div>
         {canAssign&&<button className="nsa-todo-hover" title="Assign as a task to someone" style={ghost} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:String(t.msg||'').replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2,due_date:''})}}>Assign</button>}
         <button className="nsa-todo-hover" title="Dismiss" style={ghost} onClick={e=>{e.stopPropagation();dismissTodo(t.dismissKey)}}>✕</button>
