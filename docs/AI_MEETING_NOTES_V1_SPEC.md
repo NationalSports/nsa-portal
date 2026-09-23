@@ -15,7 +15,11 @@ These override anything below that disagrees.
      on return the screen shows "Recording paused — tap to resume" and the resumed audio joins the
      same meeting.
    - Wake lock support in home-screen PWAs varies by iOS version — verify on the reps' actual phones
-     in step 4.
+     in step 7.
+   - The team is mostly iPhone with some Android. Test every recording step on at least one Android
+     phone (Chrome) as well. On Android, the install banner uses Chrome's own install prompt
+     (`beforeinstallprompt`) instead of the iOS Share → Add to Home Screen illustration, and push
+     works without installing.
    - All recording code lives in one module (e.g. `src/meetingRecorder.js`) whose only contract is
      start / pause / resume / stop and "here is a chunk". If the pilot shows reps need to lock the
      phone, a Capacitor build with a native background-audio recorder replaces that one module;
