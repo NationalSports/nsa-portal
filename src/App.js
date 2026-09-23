@@ -37,7 +37,7 @@ import * as fabric from 'fabric';
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, REP_PROD_FILE_DECOS, artistOwesProdFiles, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { isApiCatalogVendor, styleSkuOrFilter, buildStyleColorwayMap, lookupStyleColorway } from './lib/vendorColorwayImages';
-import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
+import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, adoptArtProofAsGarmentMock, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { stampEstimateDraftLineIds } from './lib/orderLineIdentity';
 import { searchSalesOrders } from './lib/searchSalesOrders';
@@ -24192,6 +24192,21 @@ export default function App(){
             if(typeof nf==='function')nf(dismissed?'Production proof cleared — upload a garment mockup for this item':'Production proof restored');
           }finally{setArtJobDetailUploading(false)}
         };
+        const useArtProofAsMock=async(artId,slotKey,proofFile,g)=>{
+          if(artJobDetailUploading)return;
+          setArtJobDetailUploading(true);
+          try{
+            const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+            const updArt=adoptArtProofAsGarmentMock(safeArt(liveSO),artId,slotKey,proofFile);
+            if(updArt===safeArt(liveSO))return;
+            const pendingSO={...liveSO,art_files:updArt};
+            const ok=await _dbSaveSO(pendingSO);
+            if(ok===false){if(typeof nf==='function')nf('Failed to use this proof as the mock. Please retry.','error');return}
+            const newSO=savSO(pendingSO);
+            setArtMockupModal(m=>m&&m.id===j.id?{...j,so:newSO,artFile:updArt.find(a=>a.id===j.art_file_id)||updArt[0]}:m);
+            if(typeof nf==='function')nf('Proof is now the garment mock for '+(g?.sku||'this item'));
+          }finally{setArtJobDetailUploading(false)}
+        };
         // ── Mock links ── stored on the job's primary design: garment -> source garment.
         const _linkAnchorId=af?.id||null;
         // Link a garment to another garment's mockup (sourceKey), or unlink (null). Chains
@@ -24407,7 +24422,10 @@ export default function App(){
                                  <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(pUrl)}>Open</button>
                                  <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} title={'Clear this '+proofLabel.toLowerCase()+' from the slot — keeps the production files'} onClick={()=>{if(window.confirm('Clear this '+proofLabel.toLowerCase()+' from this item?\n\nThe production files stay attached — this only removes the proof standing in as the mockup, so you can upload a garment mockup instead.'))setArtProofDismissed(slot.artId,true)}}>×</button>
                                </div>
-                               <div style={{padding:'4px 8px',borderTop:'1px solid #fde68a',textAlign:'center',fontSize:10,color:'#92400e',fontWeight:600,cursor:'pointer'}} onClick={pick} title="Proof comes from the art's production files — uploading a garment mockup replaces it here">{proofLabel} · + upload garment mockup</div>
+                               <div style={{display:'flex',borderTop:'1px solid #fde68a'}}>
+                                 <button disabled={artJobDetailUploading} style={{flex:1,padding:'5px 8px',border:0,borderRight:'1px solid #fde68a',background:'#fef3c7',color:'#854d0e',fontSize:10,fontWeight:800,cursor:artJobDetailUploading?'wait':'pointer'}} onClick={()=>useArtProofAsMock(slot.artId,slot.key,proofPrimary,gi)} title="Confirm that this proof already shows the correct garment mockup">✓ Use this as the mock</button>
+                                 <button disabled={artJobDetailUploading} style={{padding:'5px 8px',border:0,background:'#fffbeb',color:'#92400e',fontSize:10,fontWeight:600,cursor:artJobDetailUploading?'wait':'pointer'}} onClick={pick} title="Upload a different garment mockup">+ Upload another</button>
+                               </div>
                              </>
                              :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div>{a?.proof_dismissed&&artProofFallback({...a,proof_dismissed:false}).length>0&&<button onClick={e=>{e.stopPropagation();setArtProofDismissed(slot.artId,false)}} style={{marginTop:8,background:'none',border:'1px solid #fde68a',color:'#92400e',fontSize:10,fontWeight:600,cursor:'pointer',padding:'2px 8px',borderRadius:4}} title="Show this art's production proof in the slot again">↺ Restore production proof</button>}</div>}
                           </div>
@@ -24813,6 +24831,22 @@ export default function App(){
           nf(dismissed?'Production proof cleared — upload a garment mockup for this item':'Production proof restored');
         };
 
+        const useArtProofAsMock=async(artId,slotKey,proofFile,g)=>{
+          if(artJobDetailUploading)return;
+          setArtJobDetailUploading(true);
+          try{
+            const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+            const updArt=adoptArtProofAsGarmentMock(safeArt(liveSO),artId,slotKey,proofFile);
+            if(updArt===safeArt(liveSO))return;
+            const pendingSO={...liveSO,art_files:updArt};
+            const ok=await _dbSaveSO(pendingSO);
+            if(ok===false){nf('Failed to use this proof as the mock. Please retry.','error');return}
+            const newSO=savSO(pendingSO);
+            setArtJobDetailModal(m=>m&&m.id===j.id?{...j,so:newSO,artFile:updArt.find(a=>a.id===j.art_file_id)||updArt[0]}:m);
+            nf('Proof is now the garment mock for '+(g?.sku||'this item'));
+          }finally{setArtJobDetailUploading(false)}
+        };
+
         // Upload handler for production files. Accepts [{file, artId}] so multi-art jobs can route each file to the correct art.
         const handleProdFileUpload=async(entries)=>{
           setArtJobDetailUploading(true);
@@ -25059,7 +25093,10 @@ export default function App(){
                                  <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(pUrl)}>Open</button>
                                  <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} title={'Clear this '+proofLabel.toLowerCase()+' from the slot — keeps the production files'} onClick={()=>{if(window.confirm('Clear this '+proofLabel.toLowerCase()+' from this item?\n\nThe production files stay attached — this only removes the proof standing in as the mockup, so you can upload a garment mockup instead.'))setArtProofDismissed(slot.artId,true)}}>×</button>
                                </div>
-                               <div style={{padding:'4px 8px',borderTop:'1px solid #fde68a',textAlign:'center',fontSize:10,color:'#92400e',fontWeight:600,cursor:'pointer'}} onClick={pick} title="Proof comes from the art's production files — uploading a garment mockup replaces it here">{proofLabel} · + upload garment mockup</div>
+                               <div style={{display:'flex',borderTop:'1px solid #fde68a'}}>
+                                 <button disabled={artJobDetailUploading} style={{flex:1,padding:'5px 8px',border:0,borderRight:'1px solid #fde68a',background:'#fef3c7',color:'#854d0e',fontSize:10,fontWeight:800,cursor:artJobDetailUploading?'wait':'pointer'}} onClick={()=>useArtProofAsMock(slot.artId,slot.key,proofPrimary,gi)} title="Confirm that this proof already shows the correct garment mockup">✓ Use this as the mock</button>
+                                 <button disabled={artJobDetailUploading} style={{padding:'5px 8px',border:0,background:'#fffbeb',color:'#92400e',fontSize:10,fontWeight:600,cursor:artJobDetailUploading?'wait':'pointer'}} onClick={pick} title="Upload a different garment mockup">+ Upload another</button>
+                               </div>
                              </>
                              :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div>{a?.proof_dismissed&&artProofFallback({...a,proof_dismissed:false}).length>0&&<button onClick={e=>{e.stopPropagation();setArtProofDismissed(slot.artId,false)}} style={{marginTop:8,background:'none',border:'1px solid #fde68a',color:'#92400e',fontSize:10,fontWeight:600,cursor:'pointer',padding:'2px 8px',borderRadius:4}} title="Show this art's production proof in the slot again">↺ Restore production proof</button>}</div>}
                           </div>

@@ -1354,6 +1354,26 @@ export const artProofFallback = (a) => {
   return gen.length > 0 ? gen : safeArr(a?.prod_files).filter(displayableProofFile);
 };
 
+// Promote a proof that already shows the garment into the garment's real mockup slot.
+// The source stays in prod_files/mockup_files; this only records the user's confirmation
+// that the same asset is also the mock for this garment and decoration slot.
+export const adoptArtProofAsGarmentMock = (artFiles, artId, slotKey, proofFile) => {
+  if (!artId || !slotKey || !proofFile) return artFiles;
+  const fileUrl = (f) => typeof f === 'string' ? f : safeStr(f?.url);
+  const proofUrl = fileUrl(proofFile);
+  if (!proofUrl) return artFiles;
+  let changed = false;
+  const next = safeArr(artFiles).map((a) => {
+    if (a?.id !== artId) return a;
+    const itemMockups = safeObj(a.item_mockups);
+    const existing = safeArr(itemMockups[slotKey]);
+    if (existing.some((f) => fileUrl(f) === proofUrl)) return a;
+    changed = true;
+    return { ...a, item_mockups: { ...itemMockups, [slotKey]: [proofFile, ...existing] } };
+  });
+  return changed ? next : artFiles;
+};
+
 // Returns the list of SKUs on a job that have no mockup attached. Mirrors the
 // per-item mockup lookup in OrderEditor: for each item, find the art files this
 // item's decorations actually reference (intersected with the job's art set,
