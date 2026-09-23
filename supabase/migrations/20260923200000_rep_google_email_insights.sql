@@ -39,7 +39,13 @@ create table if not exists public.rep_email_insights (
   snippet text
     constraint rep_email_insights_snippet_check check (snippet is null or char_length(snippet) <= 400),
   received_at timestamptz,
+  -- Tags: which account / order / quote this email is about. Set automatically
+  -- by the sync (contact email, SO-/EST- numbers in the email) or by the rep.
   customer_id text references public.customers(id) on delete set null,
+  so_id text references public.sales_orders(id) on delete set null,
+  estimate_id text references public.estimates(id) on delete set null,
+  link_source text
+    constraint rep_email_insights_link_source_check check (link_source is null or link_source in ('auto', 'manual')),
   important boolean not null default false,
   importance_reason text,
   summary text,
@@ -60,6 +66,14 @@ create index if not exists rep_email_insights_owner_idx
 create index if not exists rep_email_insights_customer_idx
   on public.rep_email_insights (customer_id, received_at desc)
   where customer_id is not null;
+
+create index if not exists rep_email_insights_so_idx
+  on public.rep_email_insights (so_id)
+  where so_id is not null;
+
+create index if not exists rep_email_insights_estimate_idx
+  on public.rep_email_insights (estimate_id)
+  where estimate_id is not null;
 
 alter table public.rep_email_insights enable row level security;
 revoke all on table public.rep_email_insights from anon;
@@ -100,6 +114,8 @@ create policy "rep_email_insights_owner_update"
     )
   );
 
--- Only the triage status is client-editable; everything else is written by the sync.
+-- The rep may triage (status) and re-tag (customer / order / quote); the AI
+-- output and message metadata are written only by the sync.
 revoke update on table public.rep_email_insights from authenticated;
-grant update (status, updated_at) on table public.rep_email_insights to authenticated;
+grant update (status, customer_id, so_id, estimate_id, link_source, updated_at)
+  on table public.rep_email_insights to authenticated;

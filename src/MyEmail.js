@@ -5,7 +5,7 @@
 // page shows the important ones; one tap turns a task or deadline into a
 // workspace_items reminder (the same notes/reminders panel on the dashboard).
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Icon } from './components';
+import { Icon, SearchSelect } from './components';
 
 const callFn=async(supabase,fn,body)=>{
   const{data:{session}}=await supabase.auth.getSession();
@@ -29,7 +29,7 @@ const CALLBACK_MESSAGES={
   error:['Google sign-in failed. Try again.','error'],
 };
 
-export default function MyEmail({supabase,cu,customers,notify:notifyProp}){
+export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyProp}){
   // App's notify is recreated every render; read it through a ref so loaders stay stable.
   const notifyRef=useRef(notifyProp);notifyRef.current=notifyProp;
   const notify=useCallback((...a)=>notifyRef.current?.(...a),[]);
@@ -39,8 +39,16 @@ export default function MyEmail({supabase,cu,customers,notify:notifyProp}){
   const[filter,setFilter]=useState('important');
   const[busy,setBusy]=useState('');
   const[added,setAdded]=useState({});
+  const[tagEdit,setTagEdit]=useState(null);// {id, customer_id, so_id, estimate_id}
 
   const custName=useCallback(id=>(customers||[]).find(c=>c.id===id)?.name||null,[customers]);
+  const custOptions=useMemo(()=>(customers||[]).filter(c=>c.is_active!==false).map(c=>({value:c.id,label:c.name+(c.alpha_tag?' ('+c.alpha_tag+')':''),searchText:c.alpha_tag||''})),[customers]);
+  // An account's orders include its sub-accounts' (teams under a school) and its parent's.
+  const familyIds=useCallback(cid=>{
+    const all=customers||[];const me=all.find(c=>c.id===cid);
+    return new Set([cid,...all.filter(c=>c.parent_id===cid).map(c=>c.id),...(me?.parent_id?[me.parent_id]:[])]);
+  },[customers]);
+  const docLabel=d=>d.id+(d.memo?' · '+String(d.memo).slice(0,50):'')+(d.status?' · '+d.status:'');
 
   const loadStatus=useCallback(async()=>{
     if(!supabase)return;
@@ -99,6 +107,26 @@ export default function MyEmail({supabase,cu,customers,notify:notifyProp}){
     if(error){notify?.('Could not update: '+error.message,'error');loadRows()}
   };
 
+  // Manual re-tag. Changing the account clears an order/quote from a different account.
+  const saveTags=async()=>{
+    const t=tagEdit;if(!t)return;
+    const patch={customer_id:t.customer_id||null,so_id:t.so_id||null,estimate_id:t.estimate_id||null,updated_at:new Date().toISOString()};
+    patch.link_source=(patch.customer_id||patch.so_id||patch.estimate_id)?'manual':null;
+    setBusy('tags');
+    const{error}=await supabase.from('rep_email_insights').update(patch).eq('id',t.id);
+    setBusy('');
+    if(error){notify?.('Could not save tags: '+error.message,'error');return}
+    setRows(prev=>prev.map(r=>r.id===t.id?{...r,...patch}:r));
+    setTagEdit(null);
+    notify?.('Tags saved');
+  };
+  const pickTagCustomer=cid=>setTagEdit(t=>{
+    const fam=familyIds(cid);
+    const soOk=t.so_id&&fam.has((sos||[]).find(o=>o.id===t.so_id)?.customer_id);
+    const estOk=t.estimate_id&&fam.has((ests||[]).find(o=>o.id===t.estimate_id)?.customer_id);
+    return{...t,customer_id:cid,so_id:soOk?t.so_id:'',estimate_id:estOk?t.estimate_id:''};
+  });
+
   const addReminder=async(row,key,{title,date,label})=>{
     const t=String(title||'').trim().slice(0,180);
     if(!t)return;
@@ -114,7 +142,9 @@ export default function MyEmail({supabase,cu,customers,notify:notifyProp}){
         label,
         created_by:cu.id,
         visibility:'personal',
-        customer_id:row.customer_id||null,
+        // workspace_items holds one link: the order when tagged, else the account.
+        so_id:row.so_id||null,
+        customer_id:row.so_id?null:(row.customer_id||null),
         remind_on:date||localDate(1),
       });
       if(error)throw error;
@@ -177,12 +207,39 @@ export default function MyEmail({supabase,cu,customers,notify:notifyProp}){
           <div style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
             {r.important&&<span style={{width:8,height:8,borderRadius:4,background:'#2563eb',display:'inline-block'}} title="Important"/>}
             <span style={{fontWeight:800,color:'#1e293b'}}>{r.sender_name||r.sender_email}</span>
-            {cname&&<span className="badge badge-gray" style={{fontSize:10}}>{cname}</span>}
             <span style={{marginLeft:'auto',fontSize:11,color:'#94a3b8'}}>{fmtWhen(r.received_at)}</span>
           </div>
           <div style={{fontSize:13,fontWeight:600,color:'#334155'}}>{r.subject||'(no subject)'}</div>
           {r.summary?<div style={{fontSize:13,color:'#1e293b'}}>{r.summary}</div>:<div style={{fontSize:12,color:'#64748b'}}>{r.snippet}</div>}
           {r.importance_reason&&<div style={{fontSize:11,color:'#64748b'}}>Why: {r.importance_reason}</div>}
+          {tagEdit?.id===r.id?<div style={{display:'grid',gap:6,padding:8,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6}}>
+            <div style={{fontSize:11,fontWeight:700,color:'#64748b'}}>ACCOUNT</div>
+            <SearchSelect options={custOptions} value={tagEdit.customer_id||null} onChange={pickTagCustomer} placeholder="Pick an account…" limit={50}/>
+            {tagEdit.customer_id&&<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+              <select className="form-select" style={{flex:1,minWidth:180,fontSize:12}} value={tagEdit.so_id||''} onChange={e=>setTagEdit(t=>({...t,so_id:e.target.value}))}>
+                <option value="">No sales order</option>
+                {(sos||[]).filter(o=>familyIds(tagEdit.customer_id).has(o.customer_id)).slice().sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||''))).slice(0,100).map(o=><option key={o.id} value={o.id}>{docLabel(o)}</option>)}
+              </select>
+              <select className="form-select" style={{flex:1,minWidth:180,fontSize:12}} value={tagEdit.estimate_id||''} onChange={e=>setTagEdit(t=>({...t,estimate_id:e.target.value}))}>
+                <option value="">No estimate</option>
+                {(ests||[]).filter(o=>familyIds(tagEdit.customer_id).has(o.customer_id)).slice().sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||''))).slice(0,100).map(o=><option key={o.id} value={o.id}>{docLabel(o)}</option>)}
+              </select>
+            </div>}
+            <div style={{display:'flex',gap:6}}>
+              <button className="btn btn-sm btn-primary" disabled={busy==='tags'} onClick={saveTags}>{busy==='tags'?'Saving…':'Save tags'}</button>
+              {(tagEdit.customer_id||tagEdit.so_id||tagEdit.estimate_id)&&<button className="btn btn-sm btn-secondary" onClick={()=>setTagEdit(t=>({...t,customer_id:'',so_id:'',estimate_id:''}))}>Clear</button>}
+              <button className="btn btn-sm btn-secondary" onClick={()=>setTagEdit(null)}>Cancel</button>
+            </div>
+          </div>
+          :<div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',fontSize:11}}>
+            {cname||r.so_id||r.estimate_id?<>
+              {cname&&<span style={{...chip,fontSize:11,padding:'2px 6px'}}>{cname}</span>}
+              {r.so_id&&<span style={{...chip,fontSize:11,padding:'2px 6px'}}>{r.so_id}</span>}
+              {r.estimate_id&&<span style={{...chip,fontSize:11,padding:'2px 6px'}}>{r.estimate_id}</span>}
+              <span style={{color:'#94a3b8'}}>{r.link_source==='manual'?'tagged by you':'auto-tagged'}</span>
+            </>:<span style={{color:'#94a3b8'}}>Not tagged to an account</span>}
+            <button style={{border:'none',background:'none',color:'#2563eb',cursor:'pointer',fontSize:11,fontWeight:700,padding:0}} onClick={()=>setTagEdit({id:r.id,customer_id:r.customer_id||'',so_id:r.so_id||'',estimate_id:r.estimate_id||''})}>{cname||r.so_id||r.estimate_id?'Edit tags':'Tag account / order'}</button>
+          </div>}
           {(r.tasks?.length>0||r.deadlines?.length>0)&&<div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:2}}>
             {(r.tasks||[]).map((t,i)=>{const key=r.id+':t'+i;return(
               <span key={key} style={chip}>
