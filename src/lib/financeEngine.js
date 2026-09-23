@@ -7,6 +7,8 @@
 // calcOrderMargin as `calcMargin` (one copy of the logic, per CLAUDE.md).
 // ═══════════════════════════════════════════════════════════════════
 
+import { isPromoOnlyOrder } from '../pricing';
+
 const N = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 
 // Parse "M/D/YYYY[ time]", "M/D/YY", or "YYYY-MM-DD[...]" into a local Date (midnight).
@@ -570,6 +572,9 @@ function uninvoicedOrderRows({
     // A rep said this order is never invoiced from the portal (billed in
     // NetSuite, OMG-collected, free replacement). It is not exposure.
     if (so.no_invoice_needed) continue;
+    // Promo orders are paid from the parent account's promo funds; the order
+    // editor shows the customer's total as $0.00. Nothing here is billable.
+    if (isPromoOnlyOrder(so)) continue;
     let status = so.status || '';
     try { status = calcStatus ? calcStatus(so) : status; } catch (_) {}
     const storedStatus = String(so.status || '').toLowerCase();

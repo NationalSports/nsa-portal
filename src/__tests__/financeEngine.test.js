@@ -264,7 +264,7 @@ describe('operational AR forecast and exposure', () => {
     });
   });
 
-  test('parks small invoice/order differences as residuals and skips no-invoice-needed orders', () => {
+  test('parks small invoice/order differences as residuals and skips no-invoice-needed and promo orders', () => {
     const ar = { accountRows: [] };
     const customers = [{ id: 'C1', name: 'Alpha', primary_rep_id: 'R1' }];
     const sos = [
@@ -276,6 +276,8 @@ describe('operational AR forecast and exposure', () => {
       { id: 'SO-TINY', customer_id: 'C1', status: 'ready_to_invoice', _rev: 5 },
       // Rep said it was billed in NetSuite.
       { id: 'SO-NS', customer_id: 'C1', status: 'complete', _rev: 9000, no_invoice_needed: true, no_invoice_reason: 'Invoiced in NetSuite' },
+      // Promo order: paid from promo funds, the editor shows a $0.00 customer total.
+      { id: 'SO-PROMO', customer_id: 'C1', status: 'complete', _rev: 13843, promo_applied: true, promo_amount: 13843 },
     ];
     const invs = [
       { id: 'I1', so_id: 'SO-RESID', total: 34778, tax: 0, status: 'open' },
