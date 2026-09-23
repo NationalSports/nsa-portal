@@ -1,14 +1,17 @@
 import React, { useRef, useState } from 'react';
 import GarmentMockCard from './GarmentMockCard';
+import JobGarmentProgress, { garmentProgress } from './JobGarmentProgress';
 import { jobMockCardGroups } from './lib/jobMockCards';
 import { safeArt, garmentMockKey, mockSkuOf, slotMockFiles, adoptArtProofAsGarmentMock, removeGarmentSlotMock, resolveMockLink, mockLinkSourceFiles, applyMockLink } from './safeHelpers';
 import { fileUpload, openFile } from './utils';
 
-export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSave }) {
+export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSave, itemDetails = [], onViewItem }) {
   const [busy, setBusy] = useState(false);
   const lock = useRef(false);
   const [error, setError] = useState('');
   const groups = jobMockCardGroups(job, order, priorMocks);
+  const progress = garmentProgress(job, order, itemDetails);
+  progress.forEach(g => { if (!groups.some(group => garmentMockKey(group.item) === g.key)) groups.push({ item: g.item, slots: [], allSlots: [] }); });
   if (!groups.length) return null;
   const run = async action => {
     if (lock.current) return false;
@@ -49,6 +52,7 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
             return useFiles(slot, uploaded);
           })}
         />)}</div>}
+        <JobGarmentProgress summary={progress.find(g => g.key === garmentMockKey(item))} onViewItem={onViewItem} />
       </div>;
     })}
   </section>;
