@@ -8,6 +8,7 @@ import { DecoOverlay } from '../lib/decoOverlay';
 import { foldScale, foldedQty, foldedSoon, regularSize, sizeRank, scaleOf as _scaleOf } from '../lib/storeInventory';
 import { normSzName } from '../pricing';
 import { deliveryWindowLabel, estimatedDeliveryDate, estimatedDeliveryRangeLabel } from '../lib/webstoreDeliveryWindow';
+import { setTrackedStore, trackEvent } from '../lib/webstoreTracking';
 
 // Route SanMar garment photos through a Cloudinary transform that trims to the
 // garment (on its white studio background) and pads to a uniform 4:5 frame, so
@@ -535,7 +536,11 @@ export default function Storefront() {
   const [cart, setCart] = useState([]);
   useEffect(() => { if (route.slug) setCart(loadCart(route.slug)); }, [route.slug]);
   const updateCart = useCallback((items) => { setCart(items); saveCart(route.slug, items); }, [route.slug]);
-  const addToCart = useCallback((line) => { const next = [...loadCart(route.slug), { ...line, key: Math.random().toString(36).slice(2) }]; updateCart(next); }, [route.slug, updateCart]);
+  const addToCart = useCallback((line) => {
+    const next = [...loadCart(route.slug), { ...line, key: Math.random().toString(36).slice(2) }];
+    updateCart(next);
+    trackEvent('add_to_cart', { productId: line.webstore_product_id, value: lineUnit(line) * (Number(line.qty) || 1) });
+  }, [route.slug, updateCart]);
 
   // Roster player context, resolved from ?player=<token> (or a previously
   // stashed token for this store). null = shopping as a normal guest.
@@ -623,6 +628,22 @@ export default function Storefront() {
   }, []);
 
   useEffect(() => { if (route.slug) load(route.slug); }, [route.slug, load]);
+
+  // Shopper-funnel tracking (anonymous; see src/lib/webstoreTracking.js). Open
+  // stores only, and never the staff appearance preview. Each page view is
+  // recorded once per page load; add-to-cart and order placement are recorded
+  // where they happen.
+  const trackStoreId = status === 'ok' && store ? store.id : null;
+  const trackOpen = !!(store && store.status === 'open' && !store.presentation_preview);
+  useEffect(() => { setTrackedStore(trackStoreId, trackOpen); }, [trackStoreId, trackOpen]);
+  useEffect(() => {
+    if (!trackStoreId) return;
+    trackEvent('store_view');
+    if ((route.view === 'p' || route.view === 'b') && route.id) trackEvent('product_view', { productId: route.id });
+    else if (route.view === 'cart') trackEvent('cart_view');
+    else if (route.view === 'checkout' && cart.length) trackEvent('checkout_start', { value: cartTotal(cart) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackStoreId, trackOpen, route.view, route.id, cart.length > 0]);
   const theme = useTheme(store);
   const scrolled = useScrolled(56);
 
@@ -2415,6 +2436,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
     const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'unpaid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), clientRef: orderRefFor('unpaid'), rosterToken: player ? player.token : null });
     setBusy(false);
     if (r.error) { if (r.code === 'totals_changed') return onTotalsChanged(); setErr(r.error.message); return; }
+    if (r.order) trackEvent('order_placed', { orderId: r.order.id, value: payable });
     clearOrderRef();
     onClear(); navTo(orderPath(store, r.order));
   };
@@ -2428,6 +2450,9 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
     setBusy(true);
     const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), clientRef: orderRefFor('paid'), rosterToken: player ? player.token : null });
     if (r.error) { setBusy(false); if (r.code === 'totals_changed') return onTotalsChanged(); setErr(r.error.message); return; }
+    // The order row exists now (pending until paid); the funnel only counts it as
+    // a purchase once webstore_orders says it went through.
+    if (r.order) trackEvent('order_placed', { orderId: r.order.id, value: payable });
     if (r.alreadyPaid) {
       // Replay of an order whose payment already went through — finalize and land
       // on the confirmation instead of showing a card form for a settled intent.

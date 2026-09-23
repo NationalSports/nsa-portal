@@ -33,6 +33,7 @@ import { selectFulfillmentReportScope } from './lib/fulfillmentReportScope';
 import { webstoreProductionKey } from './lib/storeSkuGrouping';
 import { allocateMoneyCents } from './lib/bundleMoney';
 import { buildCondensedPlayerRows, orderNetCollected, originalOrderTotal } from './lib/webstoreOrderMoney';
+import { loadFunnel, sumFunnel, FunnelCard, DeviceCard, InterestCard } from './webstoreFunnel';
 import { sanmarPricingSnapshot, sanmarStyleFromSku } from './lib/sanmarPricing';
 import { WEBSTORE_DELIVERY_WINDOWS, deliveryWindowLabel, normalizeDeliveryWindow, salesOrderDueDate } from './lib/webstoreDeliveryWindow';
 
@@ -12905,11 +12906,47 @@ function CouponsTab({ store, coupons = [], orders = [], onCreate, onUpdate, onRe
   );
 }
 
-// Store analytics — computed live from orders.
-function AnalyticsTab({ store, orders: allOrders, orderItems, stockByWp, catalog = [], libraryArt = [] }) {
+// Store analytics: the shopper funnel (from storefront tracking) on top, then
+// the order-based numbers below.
+function AnalyticsTab(props) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <StoreFunnel store={props.store} catalog={props.catalog} stockByWp={props.stockByWp} />
+      <OrderAnalytics {...props} />
+    </div>
+  );
+}
+
+// Shopper funnel for this store, over its whole life (webstoreFunnel.js).
+function StoreFunnel({ store, catalog = [], stockByWp = {} }) {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    setData(null);
+    loadFunnel({ storeId: store.id }).then((d) => { if (!cancelled) setData(d); }).catch((e) => { if (!cancelled) setData({ rows: [], products: [], error: e.message }); });
+    return () => { cancelled = true; };
+  }, [store.id]);
+  if (!data) return <div className="card"><div style={{ padding: 16, fontSize: 13, color: '#94a3b8' }}>Loading shopper funnel…</div></div>;
+  if (data.missing || data.error) return <div className="card"><div style={{ padding: 16, fontSize: 13, color: '#94a3b8' }}>Shopper funnel isn’t available{data.error ? ': ' + data.error : ' yet (tracking table not set up).'}</div></div>;
+  const totals = sumFunnel(data.rows);
+  const byId = {}; (catalog || []).forEach((c) => { byId[c.id] = c; });
+  const nameFor = (r) => { const c = byId[r.webstore_product_id]; return (c && (c.display_name || stockByWp[c.id]?.name || c.sku)) || 'Removed item'; };
+  return (
+    <>
+      <FunnelCard totals={totals} since={data.since} />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 16 }}>
+        <DeviceCard totals={totals} />
+        <InterestCard products={data.products} nameFor={nameFor} minViewers={5} />
+      </div>
+    </>
+  );
+}
+
+// Order-based analytics — computed live from orders.
+function OrderAnalytics({ store, orders: allOrders, orderItems, stockByWp, catalog = [], libraryArt = [] }) {
   // Exclude abandoned pre-payment carts and cancellations from analytics.
   const orders = allOrders.filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled');
-  if (!orders.length) return <Empty msg="No orders yet — analytics will appear once shoppers start ordering." />;
+  if (!orders.length) return <Empty msg="No orders yet — order analytics will appear once shoppers start ordering." />;
   const nameBySku = {}; Object.values(stockByWp).forEach((s) => { if (s.sku) nameBySku[s.sku] = s.name; });
   // Catalog (with placed decorations) + art names, for the decoration breakdown.
   const catByPid = {}; (catalog || []).forEach((c) => { if (c.product_id) catByPid[c.product_id] = c; });
