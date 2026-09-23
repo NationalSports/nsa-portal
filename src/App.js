@@ -1,5 +1,6 @@
+import { garmentSlotCandidates } from "./lib/jobMockCards";
 import GarmentMockCard from './GarmentMockCard';
-import { garmentMockCandidates, removeGarmentSlotMock } from './safeHelpers';
+import { removeGarmentSlotMock } from './safeHelpers';
 import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jobMockReadiness';
 import {createHistoryStore} from './lib/documentHistory';
 import {createCoalescedReload} from './lib/coalescedReload';
@@ -24452,7 +24453,7 @@ export default function App(){
           setArtJobDetailUploading(true);
           try{
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
-            const updArt=adoptArtProofAsGarmentMock(safeArt(liveSO),artId,slotKey,proofFile);
+            const updArt=adoptArtProofAsGarmentMock(safeArt(liveSO),artId,slotKey,{...(typeof proofFile==='string'?{url:proofFile}:proofFile),art_file_id:artId});
             if(updArt===safeArt(liveSO))return;
             const pendingSO={...liveSO,art_files:updArt};
             const ok=await _dbSaveSO(pendingSO);
@@ -24574,7 +24575,7 @@ export default function App(){
                   // and the send-for-approval check always line up.
                   mockSlotKeys(_repSkBase,[...effectiveArtDecos,...numDecos,...nameDecos]).forEach(sd=>{
                     if(sd.kind==='art'){const d=effectiveArtDecos[sd.idx];const cwLbl=sd.side==='B'?d.cwLabelB:d.cwLabel;
-                      _repSlots.push({key:sd.key,kind:'art',primary:sd.primary,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                      _repSlots.push({key:sd.key,kind:'art',side:sd.side,primary:sd.primary,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
                     else if(sd.kind==='numbers'){const d=numDecos[sd.idx];
                       _repSlots.push({key:sd.key,kind:'numbers',primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
                     else{const d=nameDecos[sd.idx];
@@ -24622,7 +24623,7 @@ export default function App(){
                         {_myDeps.length>0&&<span style={{fontSize:9,fontWeight:700,color:'#3730a3',background:'#e0e7ff',padding:'2px 8px',borderRadius:10}}>🔗 also used by {_myDeps.map(k=>k.split('|')[0]).join(', ')}</span>}
                       </div>
                       {_repSlots.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>No art assigned to this item yet.</div>
-                       :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repSlots.map(slot=><GarmentMockCard key={slot.artId+'|'+slot.key} label={slot.label} sub={slot.sub} mocks={slotMockFiles(slot,_repSlots,gi)} candidates={garmentMockCandidates(slot.artFile)} suggest={slot.primary&&!Object.prototype.hasOwnProperty.call(slot.artFile?.item_mockups||{},slot.key)&&artProofFallback(slot.artFile).length>0} busy={artJobDetailUploading} onUse={file=>useArtProofAsMock(slot.artId,slot.key,file,gi)} onRemove={url=>removeSlotMock(slot,_repSlots,gi,url)} onUpload={files=>handleMockupUploadForItem(files,gi,slot.artId,slot.key)} />)}</div>}
+                       :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repSlots.map(slot=><GarmentMockCard key={slot.artId+'|'+slot.key} label={slot.label} sub={slot.sub} mocks={slotMockFiles(slot,_repSlots,gi)} candidates={garmentSlotCandidates(slot,gi,safeArt(so))} suggest uploadLabel="Upload mock image" busy={artJobDetailUploading} onUse={file=>useArtProofAsMock(slot.artId,slot.key,file,gi)} onRemove={url=>removeSlotMock(slot,_repSlots,gi,url)} onUpload={files=>handleMockupUploadForItem(files,gi,slot.artId,slot.key)} />)}</div>}
                       {_linkChips(gi)}
                     </div>}
                     {/* Decoration spec */}
@@ -25025,7 +25026,7 @@ export default function App(){
           setArtJobDetailUploading(true);
           try{
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
-            const updArt=adoptArtProofAsGarmentMock(safeArt(liveSO),artId,slotKey,proofFile);
+            const updArt=adoptArtProofAsGarmentMock(safeArt(liveSO),artId,slotKey,{...(typeof proofFile==='string'?{url:proofFile}:proofFile),art_file_id:artId});
             if(updArt===safeArt(liveSO))return;
             const pendingSO={...liveSO,art_files:updArt};
             const ok=await _dbSaveSO(pendingSO);
@@ -25250,14 +25251,14 @@ export default function App(){
                       // check always line up.
                       mockSlotKeys(_skBase,[..._effectiveArtDecos,..._numDecos,..._nameDecos]).forEach(sd=>{
                         if(sd.kind==='art'){const d=_effectiveArtDecos[sd.idx];const cwLbl=sd.side==='B'?d.cwLabelB:d.cwLabel;
-                          _slots.push({key:sd.key,kind:'art',primary:sd.primary,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                          _slots.push({key:sd.key,kind:'art',side:sd.side,primary:sd.primary,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
                         else if(sd.kind==='numbers'){const d=_numDecos[sd.idx];
                           _slots.push({key:sd.key,kind:'numbers',primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
                         else{const d=_nameDecos[sd.idx];
                           _slots.push({key:sd.key,kind:'names',primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}});
                       if(_slots.length===0&&af)_slots.push({key:_skBase,kind:'art',primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
                       if(_slots.length===0)return<div style={{fontSize:11,color:'#94a3b8',padding:8}}>No art assigned to this item yet.</div>;
-                      return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=><GarmentMockCard key={slot.artId+'|'+slot.key} label={slot.label} sub={slot.sub} mocks={slotMockFiles(slot,_slots,gi)} candidates={garmentMockCandidates(slot.artFile)} suggest={slot.primary&&!Object.prototype.hasOwnProperty.call(slot.artFile?.item_mockups||{},slot.key)&&artProofFallback(slot.artFile).length>0} busy={artJobDetailUploading} onUse={file=>useArtProofAsMock(slot.artId,slot.key,file,gi)} onRemove={url=>removeSlotMock(slot,_slots,gi,url)} onUpload={files=>startMockupUpload(files,gi,slot.artId,slot.key)} />)}</div>;
+                      return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=><GarmentMockCard key={slot.artId+'|'+slot.key} label={slot.label} sub={slot.sub} mocks={slotMockFiles(slot,_slots,gi)} candidates={garmentSlotCandidates(slot,gi,safeArt(so))} suggest uploadLabel="Upload mock image" busy={artJobDetailUploading} onUse={file=>useArtProofAsMock(slot.artId,slot.key,file,gi)} onRemove={url=>removeSlotMock(slot,_slots,gi,url)} onUpload={files=>startMockupUpload(files,gi,slot.artId,slot.key)} />)}</div>;
                     })()}
                   </div>
                   {/* ─── Copy Mockup From Another Item ─── */}

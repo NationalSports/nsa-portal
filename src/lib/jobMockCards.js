@@ -1,5 +1,18 @@
 import { safeArr, safeArt, safeItems, safeDecos, garmentMockKey, mockSlotKeys, jobItemDecoIdxs, garmentMockCandidates, itemMockFiles } from '../safeHelpers';
 
+// Shared by job detail and both Art Dashboard dialogs. Read all SO artwork,
+// not just artwork currently assigned to the selected job.
+export function garmentSlotCandidates(slot, item, arts, prior = []) {
+  const a = slot.artFile || {};
+  const sameGarment = slot.kind === 'art' && !slot.side ? safeArr(arts).filter(other => other.id !== a.id).flatMap(other =>
+    safeArr(other.item_mockups?.[garmentMockKey(item)]).map(f => ({ ...(typeof f === 'string' ? { url: f } : f), source_art_name: other.name || 'Other artwork', requires_mock_review: true }))
+  ) : [];
+  return garmentMockCandidates({ files: [
+    ...itemMockFiles(a.item_mockups, item), ...sameGarment,
+    ...prior.flatMap(g => safeArr(g.files)), ...garmentMockCandidates(a),
+  ] });
+}
+
 // Build keys before filtering by job: a split job's second design must not write
 // into the first design's slot. Previous-order images are suggestions, never mocks.
 export function jobMockCardGroups(job, order, priorMocks = {}) {
@@ -28,13 +41,7 @@ export function jobMockCardGroups(job, order, priorMocks = {}) {
       // assigns digitized/replacement artwork. Offer the exact garment's images
       // before sew-out references, but never count them as the new art's mock.
       // No bare-SKU fallback across art: another color must not be suggested here.
-      const sameGarment = s.kind === 'art' && !s.side ? arts.filter(other => other.id !== a.id).flatMap(other =>
-        safeArr(other.item_mockups?.[garmentMockKey(item)]).map(f => ({ ...(typeof f === 'string' ? { url: f } : f), source_art_name: other.name || 'Other artwork', requires_mock_review: true }))
-      ) : [];
-      const candidates = garmentMockCandidates({ files: [
-        ...itemMockFiles(a.item_mockups, item), ...sameGarment,
-        ...prior.flatMap(g => safeArr(g.files)), ...garmentMockCandidates(a),
-      ] });
+      const candidates = garmentSlotCandidates(s, item, arts, prior);
       return { ...s, candidates };
     });
     return slots.length ? [{ item, slots, allSlots: allSlots.map(s => slots.find(ownedSlot => ownedSlot.key === s.key && ownedSlot.artId === s.artId) || s) }] : [];
