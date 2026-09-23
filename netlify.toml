@@ -127,6 +127,12 @@
 [functions."webstore-close-sweep"]
   schedule = "0 * * * *"
 
+# "Finish your order" reminder — hourly. One email to shoppers whose card checkout
+# stalled at payment (see the function header for every rule). Stays OFF until
+# WEBSTORE_PAYMENT_REMINDERS=on is set in the Netlify environment.
+[functions."webstore-payment-reminder"]
+  schedule = "17 * * * *"
+
 # Automated follow-up sweep — hourly. Sends the rep's scheduled follow-up emails for
 # estimates, invoices, and art (so_jobs) whose follow_up_at has arrived, then re-arms
 # the next send (repeat cadence) or stops once resolved / capped. See

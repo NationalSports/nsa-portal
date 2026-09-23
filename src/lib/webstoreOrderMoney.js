@@ -11,6 +11,21 @@
 export const originalOrderTotal = (o) => Number(o && (o.original_total != null ? o.original_total : o.total)) || 0;
 export const orderNetCollected = (o) => Math.max(0, originalOrderTotal(o) - (Number(o && o.refunded_amt) || 0));
 
+// Fundraising the club is actually owed on an order: its fundraise_amt, less the
+// share of any coupon discount that came off the pot. Checkout applies the % to
+// subtotal + fundraise together, so a discounted order collected proportionally
+// less fundraising, and a 100%-off order collected none. Same rule as
+// netlify/functions/_webstoreClose.js (the store-close summary email).
+export const netFundraise = (o) => {
+  const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const sub = Number(o && o.subtotal) || 0, fund = Number(o && o.fundraise_amt) || 0;
+  if (fund <= 0) return 0;
+  const base = sub + fund;
+  if (base <= 0) return r2(fund);
+  const disc = Math.min(Number(o.discount_amt) || 0, base);
+  return Math.max(0, r2(fund - disc * (fund / base)));
+};
+
 // One row per player for the condensed report: who they are, whose card paid,
 // how many items, and what it came to.
 //
