@@ -1,6 +1,6 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import JobGarmentProgress, { sizeProgressCell } from '../JobGarmentProgress';
+import JobGarmentProgress, { sizeProgressCell, GarmentDecorationSpecs, garmentProgress } from '../JobGarmentProgress';
 
 test.each([
   [6,0,0,'Waiting','6','#fef3c7'],
@@ -28,4 +28,21 @@ test('renders Sales Order-style size headers, quantity boxes, status tiles and a
   expect(html).toContain('M: QTY 1 · Received 0/1 · Shipped 0/1. Waiting');
   expect(html.indexOf('XS:')).toBeLessThan(html.indexOf('S: QTY 4'));
   expect(html).toContain('1/4');
+});
+
+test('decoration specs are visible labeled fields, not collapsed text or invented units', () => {
+  const html=renderToStaticMarkup(<GarmentDecorationSpecs specs={[{name:'SJM logo 3in',method:'embroidery',placement:'Left Chest',size:'3',colorLabel:'Thread colors',colors:'Navy, Red'}]}/>);
+  expect(html).not.toContain('<details');
+  for(const text of ['SJM logo 3in','embroidery','Placement','Left Chest','Art size','Thread colors','Navy, Red']) expect(html).toContain(text);
+  expect(html).not.toContain('3 inches');
+  expect(renderToStaticMarkup(<GarmentDecorationSpecs specs={[]}/>)).toBe('');
+});
+test('repeated garment lines deduplicate structured specs but retain distinct placements', () => {
+  const item={sku:'P',color:'Navy',decorations:[{kind:'art',art_file_id:'a',position:'Left Chest'},{kind:'art',art_file_id:'a',position:'Back'}]};
+  const rows=[{item_idx:0,deco_idxs:[0,1],sizes:{M:1}},{item_idx:1,deco_idxs:[0,1],sizes:{S:2}}];
+  const job={id:'j',items:rows};
+  const order={items:[item,item],jobs:[job],art_files:[{id:'a',name:'Logo',deco_type:'embroidery',art_size:'3',thread_colors:'Red'}]};
+  const [group]=garmentProgress(job,order,rows);
+  expect(group.specs).toHaveLength(2);
+  expect(group.specs[0]).toMatchObject({name:'Logo',placement:'Left Chest',size:'3',colors:'Red',colorLabel:'Thread colors'});
 });

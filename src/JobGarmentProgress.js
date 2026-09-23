@@ -8,12 +8,16 @@ export function garmentProgress(job, order, rows) {
   rows.forEach((row, index) => {
     const item = safeItems(order)[row.item_idx] || row;
     const key = garmentMockKey(item);
-    if (!groups.has(key)) groups.set(key, { key, item, sizes: {}, received: {}, shipped: {}, lines: new Set(), specs: new Set() });
+    if (!groups.has(key)) groups.set(key, { key, item, sizes: {}, received: {}, shipped: {}, lines: new Set(), specs: new Map() });
     const g = groups.get(key);
     ['art', 'numbers', 'names'].forEach(kind => jobItemDecosOfKind(row, item, kind).forEach(d => {
       const art = safeArt(order).find(a => a.id === d.art_file_id);
       const colors = Object.values(art?.garment_colors?.[key] || {}).flat().filter(Boolean).join(', ') || art?.ink_colors || art?.thread_colors;
-      g.specs.add([art?.name || kind, (art?.deco_type || d.num_method || d.type || '').replace(/_/g, ' '), d.position, art?.art_size || d.num_size, colors].filter(Boolean).join(' · '));
+      const spec = { name: art?.name || (kind === 'numbers' ? 'Numbers' : kind === 'names' ? 'Names' : 'Artwork'),
+        method: (art?.deco_type || d.num_method || d.type || '').replace(/_/g, ' '),
+        placement: d.position || '', size: art?.art_size || d.num_size || '', colors: colors || '',
+        colorLabel: art?.deco_type === 'embroidery' ? 'Thread colors' : 'Colors' };
+      g.specs.set(JSON.stringify(spec), spec);
     }));
     // A line can appear twice for two decorations, but it is one physical garment.
     if (g.lines.has(row.item_idx)) return;
@@ -27,6 +31,7 @@ export function garmentProgress(job, order, rows) {
     });
   });
   return [...groups.values()].map(g => ({ ...g,
+    specs: [...g.specs.values()],
     total: Object.values(g.sizes).reduce((a, n) => a + n, 0),
     receivedTotal: Object.values(g.received).reduce((a, n) => a + n, 0),
     shippedTotal: Object.entries(g.sizes).reduce((a, [s, n]) => a + Math.min(n, g.shipped[s] || 0), 0),
@@ -68,5 +73,22 @@ export default function JobGarmentProgress({ summary, onViewItem }) {
     <span style={{ color: summary.receivedTotal >= summary.total ? '#166534' : '#92400e' }}>Received <strong>{summary.receivedTotal}/{summary.total}</strong></span>
     <span style={{ color: summary.shippedTotal >= summary.total ? '#166534' : '#475569' }}>Shipped <strong>{summary.shippedTotal}/{summary.total}</strong></span>
     {onViewItem && <button type="button" className="btn btn-sm btn-secondary" onClick={() => onViewItem([...summary.lines][0])} title="Open the garment line on this sales order">SO →</button>}
-  </div>{summary.specs.size > 0 && <details style={{ fontSize: 11, color: '#475569', padding: '8px 4px' }}><summary style={{ cursor: 'pointer' }}>Decoration details</summary>{[...summary.specs].map(s => <p key={s}>{s}</p>)}</details>}</>;
+  </div><GarmentDecorationSpecs specs={Array.from(summary.specs || [])} /></>;
+}
+
+export function GarmentDecorationSpecs({ specs }) {
+  if (!specs.length) return null;
+  return <section aria-label="Decoration details" style={{ marginTop: 10, padding: '12px 14px', border: '1px solid #e2e8f0', borderRadius: 8, background: 'white' }}>
+    <div style={{ fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase', fontWeight: 800, color: '#64748b', marginBottom: 10 }}>Decoration</div>
+    {specs.map((spec, index) => <div key={JSON.stringify(spec)} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '10px 24px', ...(index ? { borderTop: '1px solid #eef2f6', paddingTop: 10, marginTop: 10 } : {}) }}>
+      <div style={{ flex: '1 1 180px', minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#1e293b', overflowWrap: 'anywhere' }}>{spec.name}</div>
+        {spec.method && <span style={{ display: 'inline-block', marginTop: 5, padding: '3px 8px', borderRadius: 4, background: '#eef2ff', color: '#4338ca', fontSize: 11, fontWeight: 600, textTransform: 'capitalize' }}>{spec.method}</span>}
+      </div>
+      {[['Placement', spec.placement], ['Art size', spec.size], [spec.colorLabel, spec.colors]].filter(([,value]) => value !== '' && value != null).map(([label,value]) => <div key={label} style={{ maxWidth: '100%' }}>
+        <div style={{ fontSize: 10, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>{label}</div>
+        <div style={{ fontSize: 12, fontWeight: 600, color: '#334155', overflowWrap: 'anywhere' }}>{value}</div>
+      </div>)}
+    </div>)}
+  </section>;
 }
