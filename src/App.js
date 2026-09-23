@@ -58,7 +58,7 @@ import { consolidateArtFamilies, artFamilyIds, artFamilyIdsIn } from './lib/artS
 import { approveArtOnSO, sendArtBackOnSO, artApproveTarget } from './lib/artReview';
 import { approvalArtContext } from './lib/artApproval';
 import { closeOpenArtRequests, jobAwaitingArtist } from './lib/artRequests';
-import { completedJobInvoiceExplanation, getOrderInvoiceCoverage, hasResponsePoForPull, isOrderFullyInvoiced, isFreshNotificationDate, picksForCurrentSku, pulledItemsHaveMovedInLine, shouldShowCompletedJobNotice, shouldShowMockupReviewNotice } from './lib/dashboardNotificationRules';
+import { completedJobInvoiceExplanation, getOrderInvoiceCoverage, hasResponsePoForPull, isOrderFullyInvoiced, isOrderFullyShipped, isFreshNotificationDate, picksForCurrentSku, pulledItemsHaveMovedInLine, shouldShowCompletedJobNotice, shouldShowMockupReviewNotice } from './lib/dashboardNotificationRules';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { AppDataProvider } from './AppContext';
 import PortalAssistant from './PortalAssistant';
@@ -6186,6 +6186,7 @@ export default function App(){
     ready_for_deco:{label:'🎽 Ready for Decoration',order:2},
     items_received:{label:'📦 Items Received',order:3},
     job_completed:{label:'🏭 Jobs Completed',order:4},
+    so_shipped:{label:'📦 Orders Shipped',order:4.5},
     if_pulled:{label:'📦 IFs Pulled',order:5},
     inv_paid:{label:'💰 Invoices Paid',order:6},
     _task:{label:'📌 Task Updates',order:7},
@@ -8939,8 +8940,17 @@ export default function App(){
             if(j.prod_status==='hold'||!j.prod_status)todos.push({type:'ready_for_deco',priority:2,msg:'🎽 Ready for decoration: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — items in & art complete',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Move to deco',role:'production',isNotification:true,date:_rcvdAt})}
         }
         // Notify rep when a job is completed (decoration done)
-        if(shouldShowCompletedJobNotice(j,so,[...invs,...(histInvs||[])])){const _jobShipped=j.prod_status==='shipped';const _invoiceExplanation=completedJobInvoiceExplanation(so,[...invs,...(histInvs||[])]);todos.push({type:'job_completed',priority:3,msg:(_jobShipped?'📦 Job shipped — invoice needed: ':'🏭 Job completed: ')+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — '+(_jobShipped?'awaiting invoice':'ready to ship')+' · '+_invoiceExplanation,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
+        // Shipped jobs don't notify one by one — see the order-level "Order shipped" notice after this loop.
+        if(j.prod_status!=='shipped'&&shouldShowCompletedJobNotice(j,so,[...invs,...(histInvs||[])])){const _jobShipped=j.prod_status==='shipped';const _invoiceExplanation=completedJobInvoiceExplanation(so,[...invs,...(histInvs||[])]);todos.push({type:'job_completed',priority:3,msg:(_jobShipped?'📦 Job shipped — invoice needed: ':'🏭 Job completed: ')+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — '+(_jobShipped?'awaiting invoice':'ready to ship')+' · '+_invoiceExplanation,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
       });
+      // Order shipped — ONE notice per SO, only once the final goods are out (isOrderFullyShipped): every
+      // job shipped and nothing still inbound on a PO. Stays until the order is invoiced; promo orders
+      // don't invoice, so they never get it (same as the old per-job shipped notice).
+      {const _allJ=buildJobs(so),_shipJ=_allJ.filter(j=>j.prod_status==='shipped');
+        if(_shipJ.length&&!so.promo_applied&&!isOrderFullyInvoiced(so,[...invs,...(histInvs||[])])&&isOrderFullyShipped(_allJ,opsFulfillment(so))){
+          const _lastShip=_shipJ.map(j=>j.shipped_at||j.completed_at||j.updated_at).filter(Boolean).sort().pop()||so.updated_at;
+          todos.push({type:'so_shipped',priority:3,msg:'📦 Order shipped — invoice needed: '+(so.memo||so.id),detail:tag+' · '+so.id+' · '+completedJobInvoiceExplanation(so,[...invs,...(histInvs||[])]),so,repId:_repId,action:'View',role:'sales',isNotification:true,date:_lastShip,dismissKey:'so_shipped:'+so.id});
+        }}
       safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'📌 Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm',date:f.created_at||so.created_at})});
       if(so.expected_date&&!so.deleted_at&&so._shipped!==true&&so._shipping_status!=='shipped'&&!['complete','cancelled','canceled','void','archived','deleted'].includes(so.status)){
         const due=parseDate(so.expected_date),today=new Date();
@@ -13501,8 +13511,17 @@ export default function App(){
             // Warehouse hand-off — items are in and art is complete, so the job can move straight to decoration. Clears once production moves it off hold.
             if(j.prod_status==='hold'||!j.prod_status)todos.push({type:'ready_for_deco',priority:2,msg:'Ready for decoration: '+j.art_name,detail:tag+' · '+so.id+' · items in & art complete',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Move to deco',role:'production',isNotification:true,date:_rcvdAt})}
         }
-        if(shouldShowCompletedJobNotice(j,so,[...invs,...(histInvs||[])])){const _jobShipped=j.prod_status==='shipped';const _invoiceExplanation=completedJobInvoiceExplanation(so,[...invs,...(histInvs||[])]);todos.push({type:'job_completed',priority:3,msg:(_jobShipped?'Job shipped — invoice needed: ':'Job completed: ')+j.art_name,detail:tag+' · '+so.id+' · '+_invoiceExplanation,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
+        // Shipped jobs don't notify one by one — see the order-level "Order shipped" notice after this loop.
+        if(j.prod_status!=='shipped'&&shouldShowCompletedJobNotice(j,so,[...invs,...(histInvs||[])])){const _jobShipped=j.prod_status==='shipped';const _invoiceExplanation=completedJobInvoiceExplanation(so,[...invs,...(histInvs||[])]);todos.push({type:'job_completed',priority:3,msg:(_jobShipped?'Job shipped — invoice needed: ':'Job completed: ')+j.art_name,detail:tag+' · '+so.id+' · '+_invoiceExplanation,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
       });
+      // Order shipped — ONE notice per SO, only once the final goods are out (isOrderFullyShipped): every
+      // job shipped and nothing still inbound on a PO. Stays until the order is invoiced; promo orders
+      // don't invoice, so they never get it (same as the old per-job shipped notice).
+      {const _allJ=buildJobs(so),_shipJ=_allJ.filter(j=>j.prod_status==='shipped');
+        if(_shipJ.length&&!so.promo_applied&&!isOrderFullyInvoiced(so,[...invs,...(histInvs||[])])&&isOrderFullyShipped(_allJ,opsFulfillment(so))){
+          const _lastShip=_shipJ.map(j=>j.shipped_at||j.completed_at||j.updated_at).filter(Boolean).sort().pop()||so.updated_at;
+          todos.push({type:'so_shipped',priority:3,msg:'Order shipped — invoice needed: '+(so.memo||so.id),detail:tag+' · '+so.id+' · '+completedJobInvoiceExplanation(so,[...invs,...(histInvs||[])]),so,repId:_repId,action:'View',role:'sales',isNotification:true,date:_lastShip,dismissKey:'so_shipped:'+so.id});
+        }}
       safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm',date:f.created_at||so.created_at})});
       if(so.expected_date&&!so.deleted_at&&so._shipped!==true&&so._shipping_status!=='shipped'&&!['complete','cancelled','canceled','void','archived','deleted'].includes(so.status)){
         const due=parseDate(so.expected_date),today=new Date();

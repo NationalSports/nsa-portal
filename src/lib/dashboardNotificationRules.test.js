@@ -4,6 +4,7 @@ import {
   hasResponsePoForPull,
   hasFreshMockForLatestArtRequest,
   isOrderFullyInvoiced,
+  isOrderFullyShipped,
   isFreshNotificationDate,
   pickSkuChanged,
   picksForCurrentSku,
@@ -119,5 +120,24 @@ describe('dashboard notification lifecycle rules', () => {
     };
     expect(hasFreshMockForLatestArtRequest(reviewJob, reviewSo)).toBe(true);
     expect(shouldShowMockupReviewNotice(reviewJob, reviewSo)).toBe(true);
+  });
+});
+
+describe('isOrderFullyShipped — shipped notice only for the final goods on an SO', () => {
+  const allIn = { totalSz: 30, fulfilledSz: 30 };
+  test('every job shipped and every unit in → shipped', () => {
+    expect(isOrderFullyShipped([{ prod_status: 'shipped' }, { prod_status: 'shipped' }], allIn)).toBe(true);
+  });
+  test('a job shipped but a PO is still inbound → not shipped', () => {
+    expect(isOrderFullyShipped([{ prod_status: 'shipped' }], { totalSz: 30, fulfilledSz: 18 })).toBe(false);
+  });
+  test('one job shipped, another still in production → not shipped', () => {
+    expect(isOrderFullyShipped([{ prod_status: 'shipped' }, { prod_status: 'in_process' }], allIn)).toBe(false);
+  });
+  test('draft jobs are ignored; no jobs or no counters → not shipped', () => {
+    expect(isOrderFullyShipped([{ prod_status: 'shipped' }, { prod_status: 'draft' }], allIn)).toBe(true);
+    expect(isOrderFullyShipped([], allIn)).toBe(false);
+    expect(isOrderFullyShipped([{ prod_status: 'shipped' }], null)).toBe(false);
+    expect(isOrderFullyShipped([{ prod_status: 'shipped' }], { totalSz: 0, fulfilledSz: 0 })).toBe(false);
   });
 });
