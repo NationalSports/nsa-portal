@@ -5188,6 +5188,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                 <tr style={{ background: '#FAFBFD', borderBottom: '1.5px solid #EEF1F6' }}>
                   <th style={{ ...TH, width: 34, padding: '12px 8px' }}></th>
                   <th onClick={() => setSort('store')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Store{sortArrow('store')}</th>
+                  <th style={{ ...TH, textAlign: 'left' }}>Store #</th>
                   <th onClick={() => setSort('status')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Status{sortArrow('status')}</th>
                   <th onClick={() => setSort('rep')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Rep{sortArrow('rep')}</th>
                   <th onClick={() => setSort('revenue')} style={{ ...TH, textAlign: 'right', cursor: 'pointer' }}>Revenue{sortArrow('revenue')}</th>
@@ -5220,11 +5221,11 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                         <td style={{ ...TD, maxWidth: 260 }}>
                           <div style={{ fontWeight: 700, color: '#192853', fontSize: 15, lineHeight: 1.25, display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                             <span title={s.name} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{s.name}</span>
-                            {s.store_code && <span title="Store #" style={{ flexShrink: 0, fontFamily: 'monospace', fontSize: 11, fontWeight: 700, letterSpacing: '.04em', background: '#eef0f3', color: '#3A4150', padding: '1px 6px', borderRadius: 4 }}>{s.store_code}</span>}
                             {coachReview && <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, background: '#fef3c7', color: '#92400e', padding: '1px 6px', borderRadius: 4 }}>★ Review</span>}
                           </div>
                           <div title={custName(s.customer_id)} style={{ color: '#8A93A8', fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{custName(s.customer_id)}</div>
                         </td>
+                        <td style={{ ...TD, fontFamily: 'monospace', fontWeight: 700, letterSpacing: '.06em', color: '#192853', whiteSpace: 'nowrap' }}>{s.store_code || <span style={{ color: '#D1D5DE' }}>—</span>}</td>
                         <td style={TD}><span style={statusStyle(st)}>{st}</span></td>
                         <td style={TD}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -5275,7 +5276,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                       </tr>
                       {isExp && (
                         <tr style={{ borderBottom: '1px solid #EEF1F6' }}>
-                          <td colSpan={9} style={{ padding: 0, background: '#FAFBFD' }} onClick={(e) => e.stopPropagation()}>
+                          <td colSpan={10} style={{ padding: 0, background: '#FAFBFD' }} onClick={(e) => e.stopPropagation()}>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 0.9fr', gap: 26, padding: '22px 24px 24px 50px', animation: 'wsExpand .18s ease-out' }}>
                               {/* Col 1: Sales Reporting */}
                               <div>
@@ -5330,6 +5331,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                                 <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 700, fontSize: 12, color: '#962C32', marginBottom: 12 }}>Store Setup</div>
                                 <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 14px', fontSize: 13.5, marginBottom: 16 }}>
                                   {[
+                                    ...(s.store_code ? [['Store #', s.store_code]] : []),
                                     ['Payment', s.payment_mode === 'either' ? 'Paid + Invoice' : s.payment_mode === 'unpaid' ? 'Invoice only' : 'Card only'],
                                     ['Delivery', s.delivery_mode === 'deliver_club' ? 'Deliver to club' : 'Ship to home'],
                                     ['Numbers', s.number_enabled ? (s.number_unique ? 'Unique #s' : 'On') : '—'],
@@ -5338,7 +5340,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                                   ].map(([label, val]) => (
                                     <React.Fragment key={label}>
                                       <span style={{ color: '#8A93A8' }}>{label}</span>
-                                      <span style={{ color: '#2A2F3E', fontWeight: 600 }}>{val}</span>
+                                      <span style={label === 'Store #' ? { color: '#191919', fontWeight: 800, fontFamily: 'monospace', letterSpacing: '.06em' } : { color: '#2A2F3E', fontWeight: 600 }}>{val}</span>
                                     </React.Fragment>
                                   ))}
                                 </div>
@@ -5351,7 +5353,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                   );
                 })}
                 {filtered.length === 0 && (
-                  <tr><td colSpan={9} style={{ padding: 48, textAlign: 'center', color: '#8A93A8', fontSize: 15 }}>No stores match these filters.</td></tr>
+                  <tr><td colSpan={10} style={{ padding: 48, textAlign: 'center', color: '#8A93A8', fontSize: 15 }}>No stores match these filters.</td></tr>
                 )}
               </tbody>
             </table>
