@@ -2482,6 +2482,289 @@ tbody tr { cursor: pointer; }
   gap: 7px;
 }
 
+/* Compact home banner: greeting and the four headline numbers share one row
+   instead of a 260px hero, so the priority list and calendar sit above the fold. */
+.dash-overview__hero {
+  min-height: 0;
+  padding: 14px 18px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.dash-overview__hero::before {
+  top: -60px;
+  width: 170px;
+  height: 200px;
+}
+.dash-overview__hero-copy {
+  flex: 0 1 260px;
+}
+.dash-overview__eyebrow {
+  margin-bottom: 4px;
+}
+.dash-overview__hero h2 {
+  font-size: clamp(22px, 2.3vw, 28px);
+  white-space: nowrap;
+}
+.dash-overview__hero-copy p {
+  margin-top: 4px;
+  font-size: 12px;
+}
+.dash-overview__hero-mark {
+  display: none;
+}
+.dash-overview__metrics {
+  position: relative;
+  left: auto;
+  right: auto;
+  bottom: auto;
+  flex: 1 1 520px;
+  border-bottom: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 10px;
+}
+.dash-overview__metrics button {
+  padding: 9px 14px 10px;
+}
+.dash-overview__metrics strong {
+  font-size: 22px;
+}
+.dash-overview__metric-foot {
+  min-height: 0;
+  margin-top: 2px;
+}
+
+/* Home calendar (src/DashboardCalendar.js) */
+.dash-cal {
+  margin: 16px 0 18px;
+}
+.dash-cal__controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.dash-cal__controls > button,
+.dash-cal__toggle button {
+  padding: 5px 10px;
+  color: var(--connect-navy, #192853);
+  font-size: 12px;
+  font-weight: 700;
+  background: #fff;
+  border: 1px solid var(--connect-line, #e8ebf1);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.dash-cal__toggle {
+  display: inline-flex;
+  margin-left: 6px;
+}
+.dash-cal__toggle button + button {
+  margin-left: -1px;
+}
+.dash-cal__toggle button.is-active {
+  color: #fff;
+  background: var(--connect-navy, #192853);
+  border-color: var(--connect-navy, #192853);
+}
+.dash-cal__legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin: 10px 0 12px;
+  color: var(--connect-muted, #768095);
+  font-size: 11px;
+}
+.dash-cal__legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.dash-cal__legend i {
+  width: 8px;
+  height: 8px;
+  background: var(--cal-kind);
+  border-radius: 50%;
+}
+.dash-cal__legend em {
+  margin-left: auto;
+  font-style: normal;
+}
+.dash-cal__agenda {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+.dash-cal__group h4 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+  color: var(--connect-navy, #192853);
+  font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.dash-cal__group h4 span {
+  padding: 0 6px;
+  color: var(--connect-muted, #768095);
+  font-size: 11px;
+  background: var(--connect-panel, #f7f8fb);
+  border-radius: 999px;
+}
+.dash-cal__group.is-overdue h4,
+.dash-cal__group.is-today h4 {
+  color: var(--connect-red, #962c32);
+}
+.dash-cal__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.dash-cal__item:hover:not(:disabled) {
+  background: var(--connect-panel, #f7f8fb);
+}
+.dash-cal__item:disabled {
+  cursor: default;
+}
+.dash-cal__dot {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  background: var(--cal-kind);
+  border-radius: 50%;
+}
+.dash-cal__item-copy {
+  min-width: 0;
+}
+.dash-cal__item-copy strong {
+  display: block;
+  overflow: hidden;
+  color: var(--connect-ink, #252c3c);
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-cal__item-copy small {
+  display: block;
+  overflow: hidden;
+  color: var(--connect-muted, #768095);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-cal__empty,
+.dash-cal__more {
+  margin: 4px 0;
+  color: var(--connect-muted, #768095);
+  font-size: 12px;
+}
+.dash-cal__grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  border-top: 1px solid var(--connect-line, #e8ebf1);
+  border-left: 1px solid var(--connect-line, #e8ebf1);
+}
+.dash-cal__wd {
+  padding: 5px 6px;
+  color: var(--connect-muted, #768095);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  border-right: 1px solid var(--connect-line, #e8ebf1);
+  border-bottom: 1px solid var(--connect-line, #e8ebf1);
+}
+.dash-cal__cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  min-height: 84px;
+  padding: 4px;
+  text-align: left;
+  background: #fff;
+  border: 0;
+  border-right: 1px solid var(--connect-line, #e8ebf1);
+  border-bottom: 1px solid var(--connect-line, #e8ebf1);
+  cursor: pointer;
+}
+.dash-cal__cell:hover {
+  background: var(--connect-panel, #f7f8fb);
+}
+.dash-cal__cell.is-out {
+  background: #fbfbfd;
+}
+.dash-cal__cell.is-out .dash-cal__num {
+  color: #c0c5d0;
+}
+.dash-cal__cell.is-picked {
+  box-shadow: inset 0 0 0 2px var(--connect-navy, #192853);
+}
+.dash-cal__num {
+  color: var(--connect-ink, #252c3c);
+  font-size: 11px;
+  font-weight: 700;
+}
+.dash-cal__cell.is-today .dash-cal__num {
+  align-self: flex-start;
+  padding: 0 6px;
+  color: #fff;
+  background: var(--connect-red, #962c32);
+  border-radius: 999px;
+}
+.dash-cal__chip {
+  overflow: hidden;
+  padding: 1px 5px;
+  color: #fff;
+  font-size: 10px;
+  line-height: 1.5;
+  background: var(--cal-kind);
+  border-radius: 4px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-cal__chip-more {
+  color: var(--connect-muted, #768095);
+  font-size: 10px;
+}
+.dash-cal__day {
+  margin-top: 12px;
+}
+@media (max-width: 680px) {
+  .dash-overview__hero {
+    min-height: 0;
+    padding: 14px;
+  }
+  .dash-overview__hero h2 {
+    white-space: normal;
+  }
+  .dash-overview__metrics {
+    flex-basis: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .dash-cal__cell {
+    min-height: 54px;
+  }
+  .dash-cal__chip {
+    width: 6px;
+    height: 6px;
+    padding: 0;
+    font-size: 0;
+    border-radius: 50%;
+  }
+}
+
 @media (max-width: 1260px) {
   .dash-action-hub {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2498,9 +2781,6 @@ tbody tr { cursor: pointer; }
 }
 
 @media (max-width: 1050px) {
-  .dash-overview__hero {
-    min-height: 305px;
-  }
   .dash-overview__metrics {
     grid-template-columns: 1fr 1fr;
   }
@@ -2560,8 +2840,6 @@ tbody tr { cursor: pointer; }
 
 @media (max-width: 680px) {
   .dash-overview__hero {
-    min-height: 390px;
-    padding: 24px 18px 0;
     border-radius: 14px;
   }
   .dash-overview__hero::before {
@@ -2569,20 +2847,13 @@ tbody tr { cursor: pointer; }
   }
   .dash-overview__hero h2 {
     max-width: 85%;
-    font-size: 34px;
+    font-size: 24px;
   }
   .dash-overview__hero-mark {
     display: none;
   }
-  .dash-overview__metrics {
-    left: 18px;
-    right: 18px;
-  }
   .dash-overview__metrics button {
-    padding: 12px;
-  }
-  .dash-overview__metrics strong {
-    font-size: 22px;
+    padding: 10px 12px;
   }
   .dash-overview__panel {
     padding: 17px 14px 14px;

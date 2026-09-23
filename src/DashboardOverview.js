@@ -91,6 +91,7 @@ export default function DashboardOverview({
   calcMargin,
   onNavigate,
   onOpenPriority,
+  afterPriority = null,
 }) {
   const now = new Date();
   const titleByView = {
@@ -323,6 +324,7 @@ export default function DashboardOverview({
         )}
       </article>
 
+      {afterPriority}
       <div className="dash-overview__grid">
         <article className="dash-overview__panel dash-overview__chart-panel">
           <header className="dash-overview__panel-header">

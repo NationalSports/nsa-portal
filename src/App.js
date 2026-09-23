@@ -19,6 +19,7 @@ import BotStatus from './BotStatus';
 import AiInbox from './AiInbox';
 import AiTasks from './AiTasks';
 import MyEmail, { MyEmailDigest } from './MyEmail';
+import DashboardCalendar from './DashboardCalendar';
 import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, decoShipToPresets, botProgress } from './lib/botTasks';
 import { normalizeOmgSize } from './lib/omgReport';
 import { createClient } from '@supabase/supabase-js';
@@ -9864,6 +9865,25 @@ export default function App(){
       calcMargin={calcOrderMargin}
       onNavigate={setPg}
       onOpenPriority={_openDashPriority}
+      afterPriority={<DashboardCalendar supabase={supabase} cu={cu} onOpenEmail={()=>setPg('my_email')} items={(()=>{
+      // Everything dated that belongs to the signed-in rep. Ownership mirrors the
+      // dashboard deadline to-dos: an SO is yours when you're the customer's
+      // primary rep (or created it); reminders/estimates by creator; to-dos by assignee.
+      const _d=v=>{const p=parseDate(v);return p&&!isNaN(p)?`${p.getFullYear()}-${String(p.getMonth()+1).padStart(2,'0')}-${String(p.getDate()).padStart(2,'0')}`:null};
+      const _cn=id=>{const c=cust.find(x=>x.id===id);return c?.name||c?.alpha_tag||''};
+      const _openSO=id=>{const so=sos.find(x=>x.id===id);if(!so){nf(id+' not found in current data','error');return}setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')};
+      const out=[];
+      workspaceItems.filter(x=>x.item_kind==='reminder'&&x.status==='open'&&x.created_by===cu.id&&x.remind_on).forEach(x=>out.push({id:'ws:'+x.id,date:String(x.remind_on).slice(0,10),kind:'reminder',title:x.title,sub:x.customer_id?_cn(x.customer_id):(x.so_id||''),onOpen:()=>_openWorkspaceModal('reminder',x)}));
+      assignedTodos.filter(t=>t.status==='open'&&t.assigned_to===cu.id&&t.due_date).forEach(t=>out.push({id:'td:'+t.id,date:_d(t.due_date),kind:'todo',title:t.title,sub:t.so_id||(t.customer_id?_cn(t.customer_id):''),onOpen:t.so_id?()=>_openSO(t.so_id):null}));
+      sos.forEach(so=>{
+        if(!so.expected_date||so.deleted_at||so._shipped===true||so._shipping_status==='shipped'||['complete','cancelled','canceled','void','archived','deleted'].includes(so.status))return;
+        const c=cust.find(x=>x.id===so.customer_id);if((c?.primary_rep_id||so.created_by)!==cu.id)return;
+        if(calcSOStatus(so)==='complete')return;
+        out.push({id:'so:'+so.id,date:_d(so.expected_date),kind:'so',title:(so.memo||so.id)+' in-hands',sub:(c?.name||'')+' · '+so.id,onOpen:()=>_openSO(so.id)});
+      });
+      ests.filter(e=>e.follow_up_at&&e.status==='sent'&&e.created_by===cu.id).forEach(e=>out.push({id:'est:'+e.id,date:_d(e.follow_up_at),kind:'estimate',title:'Follow up: '+(e.memo||e.id),sub:_cn(e.customer_id)+' · '+e.id,onOpen:()=>{setEEst(e);setEEstC(cust.find(c=>c.id===e.customer_id));setPg('estimates')}}));
+      return out.filter(x=>x.date);
+    })()}/>}
     />}
     {uiMode==='new'&&dashView!=='admin'&&<><MyEmailDigest supabase={supabase} cu={cu} customers={cust} onOpen={()=>setPg('my_email')}/>{_renderWorkspace()}</>}
 
