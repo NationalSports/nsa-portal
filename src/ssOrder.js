@@ -37,6 +37,11 @@ export function buildSSOrderLines(batchPOs) {
           quantity: qty,
           unitPrice: it.unit_cost || 0,
           sourceSO: bp.so_id,
+          sourcePO: bp.po_id || '',
+          sourceBatchId: bp.id || '',
+          sourceItemIdx: Number.isInteger(it.item_idx) ? it.item_idx : null,
+          sourceSku: it.sku || '',
+          sourceColor: it.color || '',
           name: it.name || '',
         });
       });

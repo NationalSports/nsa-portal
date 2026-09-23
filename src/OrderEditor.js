@@ -65,7 +65,7 @@ import { _dbPersistNewPoLine } from './lib/dbEngine';
 import { applyFullPromoPricing, recoverGarmentCost as recoverGarmentCostShared } from './lib/promoPricing';
 import { fetchPaidPromoHistoryInvoices, mergePromoHistoryInvoices, promoHalfWindows, withEarnedPromoAllocation } from './lib/promoHistory';
 import { itemVendorInvSource, vendorInvCacheKey } from './vendorInventory';
-import { apiVerificationForPoLine, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
+import { apiVerificationForPoLine, buildOutOfStockRemovalMessage, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
 import { markTopstarEmailFailed, markTopstarEmailSent, topstarAttachmentName, topstarPoMatches } from './lib/topstarEmail';
 import './orderEditor.redesign.css';
 
@@ -865,7 +865,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       onOpenPOConsumed&&onOpenPOConsumed();
     }},[openPOId]);
     const origRef=React.useRef(JSON.stringify(o));
-    const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showActionsDD,setShowActionsDD]=useState(false);const[showTaxExempt,setShowTaxExempt]=useState(false);const actionsRef=useRef(null);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=1000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[batchReadyPopup,setBatchReadyPopup]=useState(null);const[addShp,setAddShp]=useState(null);// Tracking tab: manual outbound shipment entry (null = form closed)
+    const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showActionsDD,setShowActionsDD]=useState(false);const[showTaxExempt,setShowTaxExempt]=useState(false);const actionsRef=useRef(null);const apiRemovalOrderCache=useRef({});const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=1000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[batchReadyPopup,setBatchReadyPopup]=useState(null);const[manualOrderReceipt,setManualOrderReceipt]=useState(null);const[addShp,setAddShp]=useState(null);// Tracking tab: manual outbound shipment entry (null = form closed)
     const[shpEmailBusy,setShpEmailBusy]=useState(false);// Tracking tab: coach shipping-notice send in flight
     // Auto-open a send flow when navigated here from a dashboard follow-up "Send" button.
     // {kind:'doc'} opens the estimate/SO SendModal; {kind:'coach',jobId} opens Send-to-Coach for
@@ -3282,19 +3282,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }
     return _recordApiOrder(apiOrder,r,apiLines);
   };
-  const _removeSanMarApiLine=async(line)=>{
-    if(line?.sourceSO&&line.sourceSO!==o.id){nf('Open '+line.sourceSO+' to remove this line from its PO. Nothing was changed.','error');return false}
+  const _removeApiOrderLine=async(line)=>{
     const current=oRef.current||o;
-    const result=removeApiLineFromPoItems(safeItems(current),line);
+    const sourceOrder=line?.sourceSO===current.id?current:(apiRemovalOrderCache.current[line?.sourceSO]||(allOrders||[]).find(so=>so.id===line?.sourceSO));
+    if(!sourceOrder){nf('The source sales order for this line could not be found. Nothing was changed.','error');return false}
+    if(sourceOrder.id!==current.id&&!onSaveNow){nf('Open '+sourceOrder.id+' to remove this line from its PO. Nothing was changed.','error');return false}
+    const result=removeApiLineFromPoItems(safeItems(sourceOrder),line);
     if(!result.removed){nf(result.reason||'This line could not be removed from the PO.','error');return false}
-    const updated={...current,items:result.items,updated_at:new Date().toLocaleString()};
-    setO(updated);oRef.current=updated;
+    const updated={...sourceOrder,items:result.items,updated_at:new Date().toLocaleString()};
+    if(sourceOrder.id===current.id){setO(updated);oRef.current=updated}
     let saved=true;
-    try{saved=onSaveNow?await onSaveNow(updated):(onSave(updated)!==false)}catch(_saveErr){saved=false;console.error('[removeSanMarApiLine] durable save failed',_saveErr)}
-    if(!saved){setO(current);oRef.current=current;nf('The PO removal could not be confirmed. Do not submit; reload the order and verify the PO.','error');return false}
+    try{saved=onSaveNow?await onSaveNow(updated):(sourceOrder.id===current.id&&onSave(updated)!==false)}catch(_saveErr){saved=false;console.error('[removeApiOrderLine] durable save failed',_saveErr)}
+    if(!saved){if(sourceOrder.id===current.id){setO(current);oRef.current=current}nf('The PO removal could not be confirmed. Do not submit; reload the order and verify the PO.','error');return false}
+    apiRemovalOrderCache.current[sourceOrder.id]=updated;
     if(line.sourceBatchId&&onBatchPO)onBatchPO(prev=>removeApiLineFromBatchPOs(prev,line));
-    setPoFullPage(pf=>{if(!pf)return pf;let first=null;const allLines=[];result.items.forEach((it,lineIdx)=>{const poIdx=(it.po_lines||[]).findIndex(pl=>pl.po_id===result.poId);if(poIdx>=0){allLines.push({lineIdx,poIdx});if(!first)first={item:it,po:it.po_lines[poIdx]}}});return first?{...pf,item:first.item,po:first.po,soItems:result.items,allLines}:null});
-    nf('Removed '+line.style+' '+line.size+' from '+result.poId+'; it will not be sent to SanMar.');
+    if(sourceOrder.id===current.id)setPoFullPage(pf=>{if(!pf)return pf;let first=null;const allLines=[];result.items.forEach((it,lineIdx)=>{const poIdx=(it.po_lines||[]).findIndex(pl=>pl.po_id===result.poId);if(poIdx>=0){allLines.push({lineIdx,poIdx});if(!first)first={item:it,po:it.po_lines[poIdx]}}});return first?{...pf,item:first.item,po:first.po,soItems:result.items,allLines}:null});
+    const customer=(allCustomers||[]).find(c=>c.id===sourceOrder.customer_id)||null;
+    const msg=buildOutOfStockRemovalMessage({line,sourceOrder,customer,actor:cu,vendorName:apiOrder?.vendorName});
+    if(msg&&onMsg)onMsg(prev=>[...prev,msg]);
+    nf('Removed '+line.style+' '+line.size+' from '+result.poId+'; '+sourceOrder.id+'\'s sales rep was notified.');
     return true;
   };
   const uSz=(i,sz,v)=>{
@@ -11090,6 +11096,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setO(updated);onSave(updated);
           }
         };
+        const manualOrderBatch=async()=>{
+          if(!window.confirm('Create '+(batchPONum||'this batch PO')+' as a MANUAL order for '+batchReadyPopup.vendorName+'?\n\nThis only records the PO in NSA. It does NOT send anything to the vendor. You must place the order manually with the company.'))return;
+          const orderedNum=await onOrderBatch({vendorKey:batchReadyPopup.vendorKey,groupKey:batchReadyPopup.groupKey||null,skipSoId:o.id});
+          if(!orderedNum){nf('Batch queue is empty — nothing to order','error');setBatchReadyPopup(null);return}
+          const myBatchIds=new Set(liveBatches.filter(bp=>bp.so_id===o.id).map(bp=>bp.id));
+          if(myBatchIds.size>0){
+            const current=oRef.current||o;
+            const items2=safeItems(current).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+batchReadyPopup.vendorName}:pl)}));
+            const updated={...current,items:items2,updated_at:new Date().toLocaleString()};
+            setO(updated);oRef.current=updated;
+            if(onSaveNow)await onSaveNow(updated);else onSave(updated);
+          }
+          setManualOrderReceipt({poNumber:orderedNum,vendorName:batchReadyPopup.vendorName,total:liveTotal,batches:liveBatches});
+          setBatchReadyPopup(null);
+          nf(orderedNum+' created as a manual order for '+batchReadyPopup.vendorName+' — it was not sent to the vendor');
+        };
         return<div className="modal-overlay" onClick={()=>setBatchReadyPopup(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:780,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2>🎯 {batchReadyPopup.vendorName} Batch Ready</h2><button className="modal-close" onClick={()=>setBatchReadyPopup(null)}>x</button></div>
         <div className="modal-body">
@@ -11147,9 +11169,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>;
             })}
           </div>
-          <p style={{fontSize:12,color:'#64748b',margin:0}}>
-            Use the PO# above when placing the order online with {batchReadyPopup.vendorName}.{batchReadyPopup.vendorKey==='momentec'?' "Order via API" submits directly to Momentec. "Mark Ordered Manually" just records the batch as placed in NSA — you still need to place the order on Momentec\'s website yourself.':' The Order button below records all queued POs as placed in NSA — it does not submit to the vendor directly. Same as the button on the Batch POs page.'} To edit sizes or remove a line first, open the Batch POs page.{batchReadyPopup.vendorKey==='sanmar'&&' Preview the API payload below to see what would be sent once live submit is enabled.'}
-          </p>
+          <div style={{fontSize:12,color:'#92400e',margin:0,padding:'9px 11px',background:'#fffbeb',border:'1px solid #fcd34d',borderRadius:7}}>
+            <strong>Manual Order</strong> only creates the PO in NSA. It does not send anything to {batchReadyPopup.vendorName}; you must place it manually with the company. Use the separate API button to submit electronically.
+          </div>
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setBatchReadyPopup(null)}>Continue working</button>
@@ -11186,47 +11208,41 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setBatchReadyPopup(null);
           }}>🚀 Submit S&S Order (API)</button>}
           {onNavBatch&&<button className="btn btn-secondary" style={{color:'#7c3aed',borderColor:'#ddd6fe'}} onClick={()=>{setBatchReadyPopup(null);onNavBatch()}}><Icon name="package" size={14}/> Open Batch POs page</button>}
-          {onOrderBatch&&batchReadyPopup.vendorKey==='momentec'&&<button className="btn btn-secondary" onClick={async()=>{
-            if(!window.confirm('Mark '+(batchPONum||'this batch')+' as manually ordered for '+batchReadyPopup.vendorName+'? This records all '+liveBatches.length+' queued PO'+(liveBatches.length!==1?'s':'')+' ($'+liveTotal.toFixed(2)+') as placed in NSA and clears the queue — you still need to place the order on Momentec\'s website.'))return;
-            const orderedNum=await onOrderBatch({vendorKey:batchReadyPopup.vendorKey,groupKey:batchReadyPopup.groupKey||null,skipSoId:o.id});
-            if(!orderedNum){nf('Batch queue is empty — nothing to order','error');setBatchReadyPopup(null);return}
-            // Promote this SO's own queued lines through the editor copy — App skipped them
-            // (skipSoId), so a later save from the editor can't revert the promotion.
-            const myBatchIds=new Set(liveBatches.filter(bp=>bp.so_id===o.id).map(bp=>bp.id));
-            if(myBatchIds.size>0){
-              const items2=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+batchReadyPopup.vendorName}:pl)}));
-              const updated={...o,items:items2,updated_at:new Date().toLocaleString()};
-              setO(updated);onSave(updated);
-            }
-            setBatchReadyPopup(null);
-            nf('✓ '+orderedNum+' recorded as ordered for '+batchReadyPopup.vendorName+' ($'+liveTotal.toFixed(2)+') — place the order on Momentec\'s website');
-          }}>✓ Mark Ordered Manually</button>}
-          {onOrderBatch&&batchReadyPopup.vendorKey==='momentec'&&<button className="btn btn-primary" style={{background:'linear-gradient(135deg,#22c55e,#16a34a)',borderColor:'#16a34a',fontWeight:800}} onClick={()=>{
+          {onOrderBatch&&batchReadyPopup.vendorKey==='momentec'&&<button className="btn btn-secondary" style={{color:'#c2410c',borderColor:'#fdba74'}} onClick={()=>{
             setApiOrder({vendorKey:'momentec',poNumber:batchPONum||'',vendorName:batchReadyPopup.vendorName,batchPOs:liveBatches,isBatch:true,skipSoId:o.id,groupKey:batchReadyPopup.groupKey||null});
             setBatchReadyPopup(null);
-          }}>🚀 Order {batchPONum||'NSA####'} via API (${liveTotal.toFixed(2)})</button>}
-          {onOrderBatch&&batchReadyPopup.vendorKey!=='momentec'&&<button className="btn btn-primary" style={{background:'linear-gradient(135deg,#22c55e,#16a34a)',borderColor:'#16a34a',fontWeight:800}} onClick={async()=>{
-            if(!window.confirm('Order '+(batchPONum||'this batch')+' for '+batchReadyPopup.vendorName+'? This submits all '+liveBatches.length+' queued PO'+(liveBatches.length!==1?'s':'')+' ($'+liveTotal.toFixed(2)+') and clears the queue — use '+(batchPONum||'the batch PO#')+' when placing the online order.'))return;
-            const orderedNum=await onOrderBatch({vendorKey:batchReadyPopup.vendorKey,groupKey:batchReadyPopup.groupKey||null,skipSoId:o.id});
-            if(!orderedNum){nf('Batch queue is empty — nothing to order','error');setBatchReadyPopup(null);return}
-            // Promote this SO's own queued lines through the editor copy — App skipped them
-            // (skipSoId), so a later save from the editor can't revert the promotion.
-            const myBatchIds=new Set(liveBatches.filter(bp=>bp.so_id===o.id).map(bp=>bp.id));
-            if(myBatchIds.size>0){
-              const items2=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+batchReadyPopup.vendorName}:pl)}));
-              const updated={...o,items:items2,updated_at:new Date().toLocaleString()};
-              setO(updated);onSave(updated);
-            }
-            setBatchReadyPopup(null);
-            nf('🚀 '+orderedNum+' ordered for '+batchReadyPopup.vendorName+' ($'+liveTotal.toFixed(2)+')');
-          }}>🚀 Order {batchPONum||'batch'} for {batchReadyPopup.vendorName} (${liveTotal.toFixed(2)})</button>}
+          }}>Order via Momentec API</button>}
+          {onOrderBatch&&<button className="btn btn-primary" style={{background:'linear-gradient(135deg,#22c55e,#16a34a)',borderColor:'#16a34a',fontWeight:800}} onClick={manualOrderBatch}>Manual Order · {batchPONum||'batch'} (${liveTotal.toFixed(2)})</button>}
         </div>
       </div></div>;
       })()}
 
-      {apiOrder&&apiOrder.vendorKey==='sanmar'&&<SanMarPreviewModal {...apiOrder} decoVendors={(decoVendors||[]).map(dv=>{if(dv.address_line1)return dv;const _v=vendorList.find(v2=>v2.id===dv.vendor_id);return _v?{...dv,address_line1:_v.address_line1||'',address_line2:_v.address_line2||'',city:_v.city||'',state:_v.state||'',zip:_v.zip||''}:dv})} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted} onRemoveLine={_removeSanMarApiLine}/>}
-      {apiOrder&&apiOrder.vendorKey==='sss'&&<SSOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted}/>}
-      {apiOrder&&apiOrder.vendorKey==='momentec'&&<MomentecOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted}/>}
+      {manualOrderReceipt&&<div className="modal-overlay" onClick={()=>setManualOrderReceipt(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:650}}>
+        <div className="modal-header"><h2>Manual Purchase Order Created</h2><button className="modal-close" onClick={()=>setManualOrderReceipt(null)}>x</button></div>
+        <div className="modal-body">
+          <div style={{padding:16,background:'#fffbeb',border:'3px solid #f59e0b',borderRadius:9,color:'#92400e',marginBottom:14,textAlign:'center'}}>
+            <div style={{fontSize:15,fontWeight:900,textTransform:'uppercase',letterSpacing:0.5}}>This will be manually ordered from the company</div>
+            <div style={{fontSize:12,marginTop:5}}>Nothing was sent through the API. Place this order directly with <strong>{manualOrderReceipt.vendorName}</strong>.</div>
+          </div>
+          <div style={{padding:14,border:'1px solid #e2e8f0',borderRadius:8,background:'#f8fafc'}}>
+            <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Purchase Order</div>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,marginTop:2}}>
+              <div style={{fontSize:26,fontWeight:900,fontFamily:'monospace',color:'#1e40af',letterSpacing:2}}>{manualOrderReceipt.poNumber}</div>
+              <div style={{fontSize:22,fontWeight:900,color:'#15803d'}}>${safeNum(manualOrderReceipt.total).toFixed(2)}</div>
+            </div>
+            <div style={{fontSize:12,color:'#475569',marginTop:8}}>{(manualOrderReceipt.batches||[]).map(bp=>(bp.po_id||bp.so_id)+' · '+bp.so_id).join(' | ')}</div>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={()=>{navigator.clipboard?.writeText(manualOrderReceipt.poNumber||'');nf('Copied '+(manualOrderReceipt.poNumber||''))}}>Copy PO Number</button>
+          {onNavBatch&&<button className="btn btn-secondary" onClick={()=>{setManualOrderReceipt(null);onNavBatch()}}>Open Batch POs</button>}
+          <button className="btn btn-primary" onClick={()=>setManualOrderReceipt(null)}>Done</button>
+        </div>
+      </div></div>}
+
+      {apiOrder&&apiOrder.vendorKey==='sanmar'&&<SanMarPreviewModal {...apiOrder} decoVendors={(decoVendors||[]).map(dv=>{if(dv.address_line1)return dv;const _v=vendorList.find(v2=>v2.id===dv.vendor_id);return _v?{...dv,address_line1:_v.address_line1||'',address_line2:_v.address_line2||'',city:_v.city||'',state:_v.state||'',zip:_v.zip||''}:dv})} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted} onRemoveLine={_removeApiOrderLine}/>}
+      {apiOrder&&apiOrder.vendorKey==='sss'&&<SSOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted} onRemoveLine={_removeApiOrderLine}/>}
+      {apiOrder&&apiOrder.vendorKey==='momentec'&&<MomentecOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted} onRemoveLine={_removeApiOrderLine}/>}
 
         {showPick&&<div className="modal-overlay" onClick={()=>{setShowPick(false);setPickSel({})}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
       <div className="modal-header"><h2>{typeof showPick==='object'?'IF — '+pickId:'Create IF — Select Items'}</h2><button className="modal-close" onClick={()=>{setShowPick(false);setPickSel({})}}>x</button></div>

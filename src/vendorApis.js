@@ -1692,7 +1692,7 @@ const momentecResolveSkus = async (missing) => {
     if (!style) return;
     const cand = [];
     for (const c of (style.colors || [])) for (const s of (c.sizes || [])) {
-      cand.push({ color: c.colorName, colorCode: c.colorCode, size: s.sizeName, sku: `${c.sku}.${s.sizeName}` });
+      cand.push({ color: c.colorName, colorCode: c.colorCode, size: s.sizeName, sku: `${c.sku}.${s.sizeName}`, qty: Number(s.qty) || 0 });
     }
     candidates[String(design).toUpperCase()] = cand;
     for (const m of byDesign.get(design)) {

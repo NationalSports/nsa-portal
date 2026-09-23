@@ -1,5 +1,7 @@
-import { apiLineSourceKey, apiVerificationForPoLine, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from '../lib/apiOrderLines';
+import { apiLineSourceKey, apiVerificationForPoLine, buildOutOfStockRemovalMessage, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from '../lib/apiOrderLines';
 import { buildSanMarLineItems } from '../sanmarPO';
+import { buildSSOrderLines } from '../ssOrder';
+import { buildMomentecOrderLines } from '../momentecOrder';
 
 const po = { po_id: 'PO 58989 GHBSB', vendor: 'SanMar', status: 'waiting', received: {}, shipments: [], S: 8, M: 36 };
 const items = [{ sku: 'ST420', color: 'Forest Green', po_lines: [po] }];
@@ -7,6 +9,14 @@ const items = [{ sku: 'ST420', color: 'Forest Green', po_lines: [po] }];
 test('SanMar lines retain the exact SO, PO, batch, item, and SKU source', () => {
   const { lines } = buildSanMarLineItems([{ id: 'BPO-1', so_id: 'SO-2306', po_id: po.po_id, items: [{ item_idx: 0, sku: 'ST420', color: 'Forest Green', sizes: { S: 8 }, unit_cost: 17.25 }] }]);
   expect(lines[0]).toMatchObject({ sourceSO: 'SO-2306', sourcePO: po.po_id, sourceBatchId: 'BPO-1', sourceItemIdx: 0, sourceSku: 'ST420', sourceColor: 'Forest Green', size: 'S', quantity: 8 });
+});
+
+test.each([
+  ['S&S', buildSSOrderLines, { _ss_skus: { M: 'B106F8094' } }],
+  ['Momentec', buildMomentecOrderLines, { _mt_skus: { M: 'AT106.GREY.M' } }],
+])('%s lines retain the source needed for cross-order PO removal', (_vendor, build, vendorFields) => {
+  const { lines } = build([{ id: 'BPO-2497', so_id: 'SO-2497', po_id: 'PO 59727 WVCWP', items: [{ item_idx: 3, sku: 'AT106', color: 'Medium Grey Heather', sizes: { M: 1 }, unit_cost: 10, ...vendorFields }] }]);
+  expect(lines[0]).toMatchObject({ sourceSO: 'SO-2497', sourcePO: 'PO 59727 WVCWP', sourceBatchId: 'BPO-2497', sourceItemIdx: 3, sourceSku: 'AT106', sourceColor: 'Medium Grey Heather', size: 'M', quantity: 1 });
 });
 
 test('source identity survives display-line renumbering after an earlier line is removed', () => {
@@ -66,6 +76,22 @@ test('removing a size updates the queued batch quantity and cost', () => {
   const next = removeApiLineFromBatchPOs(batches, { sourceBatchId: 'BPO-1', sourceItemIdx: 0, size: 'S', quantity: 8 });
   expect(next[0].items[0]).toMatchObject({ sizes: { M: 2 }, qty: 2 });
   expect(next[0].total_cost).toBe(34.5);
+});
+
+test('out-of-stock removal tags the source order sales rep with adjustment details', () => {
+  const message = buildOutOfStockRemovalMessage({
+    line: { sourceSO: 'SO-2497', sourcePO: 'PO 59727 WVCWP', sourceSku: 'AT106', sourceColor: 'Medium Grey Heather', size: 'M', quantity: 1 },
+    sourceOrder: { id: 'SO-2497', customer_id: 'C-1', created_by: 'fallback-rep' },
+    customer: { id: 'C-1', primary_rep_id: 'rep-2497' },
+    actor: { id: 'buyer-1' },
+    vendorName: 'S&S Activewear',
+    now: new Date('2026-09-22T12:00:00Z'),
+  });
+  expect(message).toMatchObject({ so_id: 'SO-2497', entity_id: 'SO-2497', tagged_members: ['rep-2497'], read_by: ['buyer-1'], out_of_stock_removal: true });
+  expect(message.text).toMatch(/OUT OF STOCK/);
+  expect(message.text).toMatch(/AT106/);
+  expect(message.text).toMatch(/PO 59727 WVCWP/);
+  expect(message.text).toMatch(/Adjust the item or source it elsewhere on SO-2497/);
 });
 
 test('API verification reports accepted quantities and predicted warehouses by size', () => {

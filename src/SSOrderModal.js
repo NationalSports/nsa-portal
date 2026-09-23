@@ -10,6 +10,7 @@ import { DuplicateMergeWarning, UnacceptedLinesPanel, FreeShipNotice } from './V
 import WarehouseChips, { rankWarehouses, SS_WAREHOUSES } from './WarehouseChips';
 import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
 import { NSA, NSA_WAREHOUSE, BATCH_VENDORS } from './constants';
+import { apiLineSourceKey } from './lib/apiOrderLines';
 
 // S&S ships integrated orders to NSA's receiving dock (caller can override via shipTo).
 const NSA_SHIP_TO = {
@@ -22,7 +23,7 @@ const NSA_SHIP_TO = {
   postalCode: NSA_WAREHOUSE.zip,
 };
 
-export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Activewear', shipTo, shipWarning = '', shipPresets = [], onClose, onSubmitted, onLearnSkus }) {
+export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Activewear', shipTo, shipWarning = '', shipPresets = [], onClose, onSubmitted, onLearnSkus, onRemoveLine }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'json'
   const [confirmed, setConfirmed] = useState(false);
   // Live-only (owner 2026-07-31): the test-order mode was removed once S&S orders were
@@ -57,6 +58,9 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   // a color S&S names differently from us is still reachable.
   const [rowFilter, setRowFilter] = useState('');
   const [sizeOnly, setSizeOnly] = useState(true);
+  const [removedLineKeys, setRemovedLineKeys] = useState(() => new Set());
+  const [removingLine, setRemovingLine] = useState(null);
+  const [removalErr, setRemovalErr] = useState('');
 
   // Auto-selected destination (NSA dock, or the deco/customer address the caller
   // passed), plus the rep's optional hand-edited override.
@@ -73,7 +77,8 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   // SKU resolver below on every character (owner 2026-08-13: editing the ship-to blanked
   // every already-matched SKU, because the burst of lookups tripped S&S's rate limit and
   // ssResolveSkus reports a failed lookup as "no match").
-  const baseLines = useMemo(() => buildSSOrderLines(batchPOs).lines, [batchPOs]);
+  const allBaseLines = useMemo(() => buildSSOrderLines(batchPOs).lines, [batchPOs]);
+  const baseLines = useMemo(() => allBaseLines.filter(l => !removedLineKeys.has(apiLineSourceKey(l))), [allBaseLines, removedLineKeys]);
   const missing = useMemo(() => baseLines.filter(l => !l.sku).map(l => ({ key: l.key, style: l.style, color: l.color, size: l.size })), [baseLines]);
 
   useEffect(() => {
@@ -129,7 +134,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   useEffect(() => { setDupAck(false); }, [dupSig]);
 
   const shipIncomplete = shipToIncomplete(ship);
-  const blocked = lines.length === 0 || warnings.length > 0 || resolving || shipIncomplete || needsDupAck;
+  const blocked = lines.length === 0 || warnings.length > 0 || resolving || shipIncomplete || !!removalErr || needsDupAck;
   const done = submitState === 'success';
   const submitting = submitState === 'submitting';
   const live = !testMode;
@@ -204,6 +209,21 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
     closeSearch();
   };
   const clearManual = (key) => setManualSku(m => { const n = { ...m }; delete n[key]; return n; });
+
+  const removeLine = async (line) => {
+    if (!onRemoveLine || removingLine != null || submitting) return;
+    if (!window.confirm(`Remove ${line.style} ${line.color || ''} ${line.size} (${line.quantity}) from this PO?\n\nIt will not be sent to S&S. The sales rep for ${line.sourceSO} will be notified to adjust the order.`)) return;
+    const sourceKey = apiLineSourceKey(line);
+    setRemovingLine(sourceKey); setErrorMsg(''); setRemovalErr('');
+    try {
+      const removed = await onRemoveLine(line);
+      if (!removed) { setRemovalErr('The PO removal could not be confirmed. Do not submit from this window; reload the sales order and verify the PO first.'); return; }
+      setRemovedLineKeys(prev => new Set([...prev, sourceKey]));
+      setConfirmed(false);
+    } catch (error) {
+      setRemovalErr((error?.message || 'The line could not be removed from the source PO.') + ' Do not submit from this window; reload and verify the PO first.');
+    } finally { setRemovingLine(null); }
+  };
 
   const safeClose = submitting ? undefined : onClose;
 
@@ -388,6 +408,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
             <Stat label="Total Cost" value={'$' + totals.totalCost.toFixed(2)} />
           </div>
           {!done && <FreeShipNotice vendorName="S&S" gap={freeShipGap(BATCH_VENDORS.sss?.threshold, totals.totalCost)} />}
+          {!done && removalErr && <div style={{ padding: 10, background: '#fef2f2', border: '2px solid #ef4444', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#991b1b', fontWeight: 700 }}>{removalErr}</div>}
           {!done && shipWarning && (
             <div style={{ padding: 10, background: '#fffbeb', border: '2px solid #f59e0b', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#92400e', fontWeight: 600 }}>
               <strong>⚠ Mixed destinations in this batch.</strong> {shipWarning}
@@ -423,11 +444,12 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                     <th style={{ ...th, textAlign: 'right' }}>Line $</th>
                     <th style={th}>Ships From (stock)</th>
                     <th style={th}>Source SO</th>
+                    {onRemoveLine && <th style={{ ...th, textAlign: 'right' }}></th>}
                   </tr>
                 </thead>
                 <tbody>
-                  {lines.map((l, i) => (
-                    <tr key={l.key} style={{ borderTop: '1px solid #f1f5f9' }}>
+                  {lines.map((l, i) => { const sourceKey = apiLineSourceKey(l); const sku = String(l.sku || '').toUpperCase(); const stockRows = whseBySku?.[sku] || []; const stockKnown = !!l.sku && whseBySku !== null && Object.prototype.hasOwnProperty.call(whseBySku, sku); const available = stockRows.reduce((sum, row) => sum + (Number(row.qty) || 0), 0); const short = stockKnown && available < l.quantity; return (
+                    <tr key={sourceKey} style={{ borderTop: '1px solid #f1f5f9', background: short ? '#fff7ed' : 'transparent' }}>
                       <td style={td}>{i + 1}</td>
                       <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: l.sku ? '#0f766e' : '#dc2626' }}>
                         {l.sku
@@ -448,14 +470,16 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                         <WarehouseChips
                           loading={l.sku ? whseBySku === null : false}
                           entries={rankWarehouses(
-                            (whseBySku?.[String(l.sku || '').toUpperCase()] || []).map(w => ({ label: w.abbr, city: SS_WAREHOUSES[w.abbr], qty: w.qty, closest: w.closest })),
+                            stockRows.map(w => ({ label: w.abbr, city: SS_WAREHOUSES[w.abbr], qty: w.qty, closest: w.closest })),
                             l.quantity
                           ).filter(e => e.primary)}
                         />
+                        {short && <div style={{ marginTop: 3, fontSize: 10, fontWeight: 800, color: '#c2410c' }}>{available <= 0 ? 'OUT OF STOCK' : `SHORT — ${available} available / ${l.quantity} needed`}</div>}
                       </td>
                       <td style={{ ...td, color: '#64748b', fontSize: 11 }}>{l.sourceSO}</td>
+                      {onRemoveLine && <td style={{ ...td, textAlign: 'right' }}>{short && <button className="btn btn-sm" disabled={removingLine != null || submitting} onClick={() => removeLine(l)} style={{ color: '#b91c1c', borderColor: '#fca5a5', fontSize: 10, whiteSpace: 'nowrap' }}>{removingLine === sourceKey ? 'Removing…' : 'Remove from order & PO'}</button>}</td>}
                     </tr>
-                  ))}
+                  );})}
                 </tbody>
               </table>
               {lines.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8' }}>No line items.</div>}
