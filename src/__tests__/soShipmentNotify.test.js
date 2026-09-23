@@ -252,7 +252,9 @@ describe('the ledger', () => {
     const res = await call({ soId: 'NSA-18402' });
     expect(res.status).toBe(200);
     expect(res.body.historyRecorded).toBe(false);
-    expect(global.fetch).toHaveBeenCalledTimes(1);
+    // The coach's email, then the rep's copy.
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body).to[0].email).toBe('coach@bolsa.org');
   });
 
   test('with the ledger not deployed, the sweep’s send is refused — it could not stop repeating itself', async () => {
@@ -363,7 +365,8 @@ describe('sender', () => {
       .mockImplementationOnce(async () => ({ ok: true, status: 201, json: async () => ({ messageId: '<msg-2@brevo>' }) }));
     const res = await call({ soId: 'NSA-18402' });
     expect(res.status).toBe(200);
-    expect(global.fetch).toHaveBeenCalledTimes(2);
+    // Rejected as the rep, retried from noreply, then the rep's own copy.
+    expect(global.fetch).toHaveBeenCalledTimes(3);
     expect(JSON.parse(global.fetch.mock.calls[0][1].body).sender.email).toBe('danny@nationalsportsapparel.com');
     expect(JSON.parse(global.fetch.mock.calls[1][1].body).sender.email).toBe('noreply@nationalsportsapparel.com');
     expect(res.body.from).toBe('noreply@nationalsportsapparel.com');
@@ -400,5 +403,107 @@ describe('Google review button', () => {
     await call({ soId: 'NSA-18402' });
     expect(sentHtml()).toContain('Still to come:');
     expect(sentHtml()).not.toContain('Leave us a Google review');
+  });
+});
+
+describe("the rep's copy", () => {
+  const bodies = () => global.fetch.mock.calls.map((c) => JSON.parse(c[1].body));
+
+  test('every coach send also goes to the rep, with a note saying exactly who got it', async () => {
+    const res = await call({ soId: 'NSA-18402' });
+    expect(res.status).toBe(200);
+    expect(res.body.repCopy).toBe('sent');
+    const [coach, copy] = bodies();
+    expect(coach.to).toEqual([{ email: 'coach@bolsa.org', name: 'Miguel Ramirez' }]);
+    // The coach never sees the rep's note.
+    expect(coach.htmlContent).not.toContain('Your copy');
+    expect(copy.to).toEqual([{ email: 'danny@nationalsportsapparel.com', name: 'Danny Ortiz' }]);
+    expect(copy.subject).toMatch(/^Sent to Miguel Ramirez: /);
+    expect(copy.htmlContent).toContain('Your copy');
+    expect(copy.htmlContent).toContain('Sent to Miguel Ramirez &lt;coach@bolsa.org&gt; (Head Coach)');
+    // The other contact is named so the rep can forward it.
+    expect(copy.htmlContent).toContain('Alice Booster &lt;booster@bolsa.org&gt; (Booster)');
+    // Same email underneath.
+    expect(copy.htmlContent).toContain('Team Issue Pullover Hoodie');
+  });
+
+  test('a failed rep copy never undoes the coach send', async () => {
+    global.fetch = jest.fn()
+      .mockImplementationOnce(async () => ({ ok: true, status: 201, json: async () => ({ messageId: '<m@b>' }) }))
+      .mockImplementationOnce(async () => ({ ok: false, status: 500, json: async () => ({ message: 'down' }) }));
+    const res = await call({ soId: 'NSA-18402' });
+    expect(res.status).toBe(200);
+    expect(res.body.repCopy).toBe('failed');
+    expect(writes.find((w) => w.table === 'so_shipment_notices').vals.sent_to).toBe('coach@bolsa.org');
+  });
+
+  test('no copy when the rep is the recipient, when there is no rep, or for a test send', async () => {
+    rows.customer_contacts = [{ name: 'Danny Ortiz', email: 'danny@nationalsportsapparel.com', role: 'Coach', sort_order: 0 }];
+    expect((await call({ soId: 'NSA-18402' })).body.repCopy).toBe('none');
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+
+    rows = ROWS(); mockDb = fakeAdmin(); global.fetch.mockClear();
+    rows.customers[0].primary_rep_id = null;
+    expect((await call({ soId: 'NSA-18402' })).body.repCopy).toBe('none');
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+
+    rows = ROWS(); mockDb = fakeAdmin(); global.fetch.mockClear();
+    rows.team_members = [{ id: 'tm-1', name: 'Danny Ortiz', email: 'danny@nationalsportsapparel.com' }];
+    await call({ soId: 'NSA-18402', test: true });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('no contact on the account', () => {
+  const sweepSend = () => sendShipmentNotice(mockDb, { soId: 'NSA-18402', requireLedger: true, requireTracking: true, source: 'sweep', sentBy: 'shipment-sweep' });
+
+  test('the button is told on screen and nothing is emailed', async () => {
+    rows.customer_contacts = [{ name: 'No Email', email: '', role: 'Head Coach', sort_order: 0 }];
+    const res = await call({ soId: 'NSA-18402' });
+    expect(res.status).toBe(409);
+    expect(res.body.noContact).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test('the sweep emails the rep instead, once, and marks it without counting it as sent', async () => {
+    rows.customer_contacts = [];
+    const { status, payload } = await sweepSend();
+    expect(status).toBe(409);
+    expect(payload).toMatchObject({ noContact: true, repAlerted: true, repEmail: 'danny@nationalsportsapparel.com' });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const alert = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(alert.to).toEqual([{ email: 'danny@nationalsportsapparel.com', name: 'Danny Ortiz' }]);
+    expect(alert.subject).toMatch(/^Not sent — no coach email on file: /);
+    expect(alert.htmlContent).toContain('went to no one');
+    expect(alert.htmlContent).toContain('Team Issue Pullover Hoodie');
+    const w = writes.find((x) => x.table === 'so_shipment_notices');
+    expect(w.vals.sent_to).toBe('rep-alert:danny@nationalsportsapparel.com');
+    expect(w.vals.sent_at).toBeUndefined();
+  });
+
+  test('the next pass does not alert the rep again', async () => {
+    rows.customer_contacts = [];
+    rows.so_shipment_notices = [{ shipment_sig: 'SHP-1,SHP-2', sent_at: null, sent_to: 'rep-alert:danny@nationalsportsapparel.com', first_tracked_at: '2026-09-21T20:00:00Z' }];
+    const { status, payload } = await sweepSend();
+    expect(status).toBe(409);
+    expect(payload.repAlerted).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test('once a contact is added, the next pass sends to the coach on its own', async () => {
+    rows.so_shipment_notices = [{ shipment_sig: 'SHP-1,SHP-2', sent_at: null, sent_to: 'rep-alert:danny@nationalsportsapparel.com', first_tracked_at: '2026-09-21T20:00:00Z' }];
+    const { status, payload } = await sweepSend();
+    expect(status).toBe(200);
+    expect(payload.to).toBe('coach@bolsa.org');
+    expect(writes.find((x) => x.table === 'so_shipment_notices').vals.sent_to).toBe('coach@bolsa.org');
+  });
+
+  test('no contact and no rep email: nothing is sent, and it says so', async () => {
+    rows.customer_contacts = [];
+    rows.customers[0].primary_rep_id = null;
+    const { status, payload } = await sweepSend();
+    expect(status).toBe(409);
+    expect(payload).toMatchObject({ noContact: true, repAlerted: false });
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 });

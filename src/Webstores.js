@@ -32,7 +32,8 @@ import { downloadSilverScreenFulfillment } from './lib/silverScreenFulfillment';
 import { selectFulfillmentReportScope } from './lib/fulfillmentReportScope';
 import { webstoreProductionKey } from './lib/storeSkuGrouping';
 import { allocateMoneyCents } from './lib/bundleMoney';
-import { buildCondensedPlayerRows, orderNetCollected, originalOrderTotal } from './lib/webstoreOrderMoney';
+import { buildCondensedPlayerRows, orderNetCollected, originalOrderTotal, netFundraise } from './lib/webstoreOrderMoney';
+import { loadFunnel, sumFunnel, FunnelCard, DeviceCard, InterestCard, SourceCard, SoldOutCard } from './webstoreFunnel';
 import { sanmarPricingSnapshot, sanmarStyleFromSku } from './lib/sanmarPricing';
 import { WEBSTORE_DELIVERY_WINDOWS, deliveryWindowLabel, normalizeDeliveryWindow, salesOrderDueDate } from './lib/webstoreDeliveryWindow';
 
@@ -1087,6 +1088,10 @@ const PUBLIC_SITE = 'https://nationalsportsapparel.com';
 // Per-image deadline for the flyer PDF's photo/QR fetches (see _imgB64).
 const IMG_FETCH_MS = 12_000;
 const _storefrontUrl = (store) => `${PUBLIC_SITE}/shop/${store.slug}`;
+// Same link tagged with where it was shared (?src=email|qr|…) so the Analytics tab
+// can credit visits to the flyer, the launch email, etc. (webstoreTracking.js).
+// Printed/visible link text stays the clean URL; only clickable/scannable links carry the tag.
+const _storefrontSrcUrl = (store, src) => `${_storefrontUrl(store)}?src=${src}`;
 // QuickChart renders a standard 8-bit PNG that email clients reliably display; the previous
 // goqr.me image came back as a 1-bit colormap PNG that several clients/image-proxies dropped.
 const _qrImg = (data, size = 300) => `https://quickchart.io/qr?size=${size}&margin=2&ecLevel=M&text=${encodeURIComponent(data)}`;
@@ -1139,7 +1144,7 @@ function launchEmailHtml(store, portalUrl) {
       <div style="font-size:12px;letter-spacing:2.5px;text-transform:uppercase;color:${accent};font-weight:700">${_esc(store.name)}</div>
       <h1 style="font-size:40px;font-weight:900;line-height:1;text-transform:uppercase;color:#fff;margin:12px 0 0">The Team Store Is <span style="color:${accent}">Now Open</span></h1>
       <p style="font-size:15px;line-height:1.65;color:rgba(255,255,255,.88);margin:18px auto 0;max-width:420px">Order your player&rsquo;s official, custom-decorated gear online. Everything ships straight to the team &mdash; just place your order before the store closes.</p>
-      <a href="${url}" style="display:inline-block;margin-top:22px;background:${accent};color:${ink};font-size:15px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;text-decoration:none;padding:14px 32px">Shop The Store &rarr;</a>
+      <a href="${_storefrontSrcUrl(store, 'email')}" style="display:inline-block;margin-top:22px;background:${accent};color:${ink};font-size:15px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;text-decoration:none;padding:14px 32px">Shop The Store &rarr;</a>
     </div>
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${ink};border-collapse:collapse">
       <tr>
@@ -1159,7 +1164,7 @@ function launchEmailHtml(store, portalUrl) {
     </table>
     <div style="padding:26px 24px 8px;text-align:center">
       <div style="font-size:14px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:${ink};margin-bottom:12px">Scan to shop</div>
-      <img src="${_qrImg(url, 220)}" alt="QR code to the store" width="160" height="160" style="border:4px solid ${primary};border-radius:10px"/>
+      <img src="${_qrImg(_storefrontSrcUrl(store, 'qr'), 220)}" alt="QR code to the store" width="160" height="160" style="border:4px solid ${primary};border-radius:10px"/>
       <div style="font-size:11px;color:${sub};margin-top:8px">${_esc(url)}</div>
     </div>
     <div style="padding:14px 24px 18px">
@@ -1296,7 +1301,7 @@ function flyerHtml(store, items = []) {
           <div style="font-size:11px;color:${sub};margin-top:1px">Questions? hello@nationalsportsapparel.com</div>
         </div>
         <div style="text-align:center;flex-shrink:0">
-          <img src="${_qrImg(url, 160)}" alt="QR" width="64" height="64" style="border:2px solid ${ink};border-radius:5px;display:block"/>
+          <img src="${_qrImg(_storefrontSrcUrl(store, 'qr'), 160)}" alt="QR" width="64" height="64" style="border:2px solid ${ink};border-radius:5px;display:block"/>
           <div style="font-size:8.5px;letter-spacing:1px;text-transform:uppercase;color:${sub};margin-top:3px">Scan To Shop</div>
         </div>
       </div>
@@ -1506,7 +1511,7 @@ async function generateFlyerPdfBase64(store, items = []) {
   doc.text('SCAN TO SHOP', W/2, y, {align:'center'});
   y += 10;
   try {
-    const qrResp = await fetchWithTimeout(_qrImg(url, 200), {}, IMG_FETCH_MS);
+    const qrResp = await fetchWithTimeout(_qrImg(_storefrontSrcUrl(store, 'qr'), 200), {}, IMG_FETCH_MS);
     const qrBlob = await qrResp.blob();
     const qrB64 = await new Promise((resolve)=>{ const r=new FileReader(); r.onloadend=()=>resolve(r.result); r.readAsDataURL(qrBlob); });
     doc.addImage(qrB64,'PNG',W/2-70,y,140,140,'','FAST');
@@ -12922,11 +12927,71 @@ function CouponsTab({ store, coupons = [], orders = [], onCreate, onUpdate, onRe
   );
 }
 
-// Store analytics — computed live from orders.
-function AnalyticsTab({ store, orders: allOrders, orderItems, stockByWp, catalog = [], libraryArt = [] }) {
+// Store analytics: the shopper funnel (from storefront tracking) on top, then
+// the order-based numbers below.
+function AnalyticsTab(props) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <StoreFunnel store={props.store} catalog={props.catalog} stockByWp={props.stockByWp} />
+      <OrderAnalytics {...props} />
+    </div>
+  );
+}
+
+// Shopper funnel for this store, over its whole life (webstoreFunnel.js).
+function StoreFunnel({ store, catalog = [], stockByWp = {} }) {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    setData(null);
+    loadFunnel({ storeId: store.id }).then((d) => { if (!cancelled) setData(d); }).catch((e) => { if (!cancelled) setData({ rows: [], products: [], error: e.message }); });
+    return () => { cancelled = true; };
+  }, [store.id]);
+  if (!data) return <div className="card"><div style={{ padding: 16, fontSize: 13, color: '#94a3b8' }}>Loading shopper funnel…</div></div>;
+  if (data.missing || data.error) return <div className="card"><div style={{ padding: 16, fontSize: 13, color: '#94a3b8' }}>Shopper funnel isn’t available{data.error ? ': ' + data.error : ' yet (tracking table not set up).'}</div></div>;
+  const totals = sumFunnel(data.rows);
+  const byId = {}; (catalog || []).forEach((c) => { byId[c.id] = c; });
+  const nameFor = (r) => { const c = byId[r.webstore_product_id]; return (c && (c.display_name || stockByWp[c.id]?.name || c.sku)) || 'Removed item'; };
+  return (
+    <>
+      <FunnelCard totals={totals} since={data.since} />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 16 }}>
+        <DeviceCard totals={totals} />
+        <InterestCard products={data.products} nameFor={nameFor} minViewers={5} />
+        <SourceCard rows={data.sources} />
+        <SoldOutCard rows={data.soldout} nameFor={nameFor} />
+      </div>
+      <ShareLinksCard store={store} />
+    </>
+  );
+}
+
+// Tagged links for promoting a store, so "Where shoppers came from" can credit
+// each channel. The launch email, flyer and QR code already use these.
+function ShareLinksCard({ store }) {
+  const [copied, setCopied] = useState('');
+  const links = [['email', 'Email'], ['text', 'Text message'], ['social', 'Social media post'], ['coach', 'Coach / team announcement'], ['website', 'Team website'], ['flyer', 'Printed flyer (no QR)']];
+  const copy = (src) => {
+    const url = _storefrontSrcUrl(store, src);
+    try { navigator.clipboard.writeText(url).then(() => { setCopied(src); setTimeout(() => setCopied(''), 1500); }).catch(() => window.prompt('Copy this link:', url)); }
+    catch { window.prompt('Copy this link:', url); }
+  };
+  return (
+    <div className="card"><div style={{ padding: 16 }}>
+      <div style={{ fontWeight: 800 }}>Share links</div>
+      <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2, marginBottom: 10 }}>Use the matching link when you or the coach promote the store — visits then show up under the right source above.</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {links.map(([src, label]) => <button key={src} className="btn btn-sm btn-secondary" onClick={() => copy(src)}>{copied === src ? '✓ Copied' : '📋 ' + label}</button>)}
+      </div>
+    </div></div>
+  );
+}
+
+// Order-based analytics — computed live from orders.
+function OrderAnalytics({ store, orders: allOrders, orderItems, stockByWp, catalog = [], libraryArt = [] }) {
   // Exclude abandoned pre-payment carts and cancellations from analytics.
   const orders = allOrders.filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled');
-  if (!orders.length) return <Empty msg="No orders yet — analytics will appear once shoppers start ordering." />;
+  if (!orders.length) return <Empty msg="No orders yet — order analytics will appear once shoppers start ordering." />;
   const nameBySku = {}; Object.values(stockByWp).forEach((s) => { if (s.sku) nameBySku[s.sku] = s.name; });
   // Catalog (with placed decorations) + art names, for the decoration breakdown.
   const catByPid = {}; (catalog || []).forEach((c) => { if (c.product_id) catByPid[c.product_id] = c; });
@@ -12934,19 +12999,7 @@ function AnalyticsTab({ store, orders: allOrders, orderItems, stockByWp, catalog
   const artName = {}; (libraryArt || []).forEach((a) => { if (a && a.id) artName[a.id] = a.name || 'Logo'; });
   const revenue = orders.reduce((a, o) => a + orderNetCollected(o), 0);
   const r2f = (n) => Math.round((Number(n) || 0) * 100) / 100;
-  // Fundraising the club is actually owed on an order = its fundraise_amt, less the share of
-  // any coupon discount that came off the pot. Checkout applies the % to subtotal + fundraise
-  // together, so a discounted order collected proportionally less fundraising, and a 100%-off
-  // order collected none — paying the club the gross fundraise_amt overpaid them on every
-  // discounted order.
-  const netFundraise = (o) => {
-    const sub = Number(o.subtotal) || 0, fund = Number(o.fundraise_amt) || 0;
-    if (fund <= 0) return 0;
-    const base = sub + fund;
-    if (base <= 0) return r2f(fund);
-    const disc = Math.min(Number(o.discount_amt) || 0, base);
-    return Math.max(0, r2f(fund - disc * (fund / base)));
-  };
+  // Fundraising owed nets out the coupon share (netFundraise, lib/webstoreOrderMoney.js).
   const fundGross = orders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
   const shipCollected = orders.reduce((a, o) => a + (Number(o.shipping_fee) || 0), 0);
   const shipCost = orders.reduce((a, o) => a + (Number(o.label_cost) || 0), 0);

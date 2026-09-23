@@ -7695,7 +7695,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(!window.confirm('Email tracking to '+(pd.to.name?pd.to.name+' <'+pd.to.email+'>':pd.to.email)+'?\n\n'+pd.boxes+' box'+(pd.boxes===1?'':'es')+' · '+pd.pieces+' pieces'+warn))return;
           const r=await post({eta:eta.trim(),resend:!!pd.alreadySent});const d=await r.json().catch(()=>({}));
           if(!r.ok){nf(d.error||'Email send failed','error');return}
-          nf('Shipping notice sent to '+d.to);
+          nf('Shipping notice sent to '+d.to+(d.repCopy==='sent'?' — copy sent to '+d.repEmail:''));
           if(d.historyRecorded===false)nf('Sent — but the send was not recorded on the order','error');
         }catch(e){nf('Email failed: '+e.message,'error')}
         finally{setShpEmailBusy(false)}

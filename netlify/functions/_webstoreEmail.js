@@ -402,4 +402,152 @@ async function bumpCouponUse(sb, storeId, code, orderId) {
   return false;
 }
 
-module.exports = { sendOrderConfirmation, sendPoOrderReceived, sendPoOrderApproved, sendOrderBagged, sendRefundNotice, bumpCouponUse };
+// One-time "finish your order" nudge for a card checkout that reached the payment
+// screen but was never paid (webstore-payment-reminder.js decides who gets it).
+// Built from DB rows only. The link goes back to the store's cart — the buyer's
+// cart is still saved in their browser (it only clears once an order completes).
+//
+// Layout and look copy the coach shipping notice (_soShipmentEmail.js, the Claude
+// Design "NSA Shipment Email"): navy/red rule, NSA masthead with the star tagline,
+// navy hero, panel card with the one red button, navy footer. Table-based and
+// inline-styled because it's an email — keep flexbox/grid out of it.
+const RM = { NAVY: '#192853', RED: '#962C32', RED_LIGHT: '#D94A52', FOOTER_NAVY: '#0F1A38', PANEL: '#F7F8FB', HAIRLINE: '#EEF1F6', BODY_TEXT: '#6B7487', MUTED: '#8A93A6' };
+const RM_DISPLAY = "'Arial Narrow',Arial,Helvetica,sans-serif";
+const RM_BODY = 'Arial,Helvetica,sans-serif';
+const RM_DOT = ' &nbsp;&#183;&nbsp; ';
+const rmEsc = (v) => esc(v).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+const rmUrl = (u) => (/^https?:\/\//i.test(String(u || '')) ? String(u) : '');
+const rmWrap = (bg, inner, pad) => `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px;max-width:600px;background-color:${bg};">
+  <tr><td class="pad" style="padding:${pad};">${inner}</td></tr>
+</table>`;
+const rmRule = (w, h, color) => `<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td width="${w}" height="${h}" style="width:${w}px;height:${h}px;background-color:${color};font-size:0;line-height:0;">&nbsp;</td></tr></table>`;
+
+function paymentReminderHtml({ store, order, items, portal }) {
+  const { NAVY, RED, RED_LIGHT, FOOTER_NAVY, PANEL, HAIRLINE, BODY_TEXT, MUTED } = RM;
+  const shopLink = `${portal}/shop/${encodeURIComponent(store.slug)}/cart?src=reminder`;
+  const logoUrl = process.env.NSA_LOGO_URL || `${portal}/NEW%20NSA%20Logo%20on%20white.png`;
+  const first = String(order.buyer_name || '').trim().split(/\s+/)[0];
+  const closes = store.close_at ? new Date(store.close_at).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'America/Los_Angeles' }) : null;
+  const shown = (items || []).slice(0, 12);
+  const pieces = shown.reduce((a, i) => a + (Number(i.qty) || 1), 0);
+  const preheader = `Your ${store.name} cart is saved — you haven’t been charged. It only takes a minute to finish.`;
+
+  const itemRows = shown.map((i) => {
+    const details = [i.color, i.size ? 'Size ' + i.size : ''].filter(Boolean).map(rmEsc).join(RM_DOT);
+    const img = rmUrl(i.image_url);
+    return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px;max-width:600px;background-color:#ffffff;">
+  <tr><td class="pad" style="padding:10px 40px 0 40px;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border:1px solid ${HAIRLINE};background-color:#ffffff;">
+      <tr>
+        ${img ? `<td width="84" valign="top" style="width:84px;padding:0;background-color:${PANEL};"><img src="${rmEsc(img)}" width="84" alt="${rmEsc(i.name || 'Item')}" style="display:block;width:84px;max-width:84px;height:auto;border:0;outline:none;text-decoration:none;"></td>` : ''}
+        <td valign="middle" style="padding:14px 18px;">
+          <div style="font-family:${RM_DISPLAY};font-weight:bold;font-size:17px;line-height:21px;mso-line-height-rule:exactly;color:${NAVY};text-transform:uppercase;">${rmEsc(i.name || i.sku || 'Item')}</div>
+          ${details ? `<div style="font-family:${RM_BODY};font-size:13px;line-height:20px;mso-line-height-rule:exactly;color:${BODY_TEXT};padding-top:3px;">${details}</div>` : ''}
+        </td>
+        <td width="70" align="right" valign="middle" style="width:70px;padding:14px 18px 14px 0;font-family:${RM_DISPLAY};font-weight:bold;font-size:15px;line-height:18px;letter-spacing:1px;color:${NAVY};">&times; ${Number(i.qty) || 1}</td>
+      </tr>
+    </table>
+  </td></tr>
+</table>`;
+  }).join('\n');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finish your ${rmEsc(store.name)} order</title>
+<!--[if mso]>
+<style>body,table,td,a{font-family:Arial,Helvetica,sans-serif !important;}</style>
+<![endif]-->
+<style>
+  @media only screen and (max-width:620px){
+    .h1{font-size:30px !important}
+    .pad{padding-left:20px !important;padding-right:20px !important}
+  }
+</style>
+</head>
+<body style="margin:0;padding:0;background-color:${PANEL};">
+<span style="display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;overflow:hidden;mso-hide:all;">${rmEsc(preheader)}</span>
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:${PANEL};">
+<tr><td align="center" style="padding:0;">
+
+<!-- top rule -->
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px;max-width:600px;background-color:#ffffff;">
+  <tr>
+    <td width="300" height="5" style="width:300px;height:5px;background-color:${NAVY};font-size:0;line-height:0;">&nbsp;</td>
+    <td width="300" height="5" style="width:300px;height:5px;background-color:${RED};font-size:0;line-height:0;">&nbsp;</td>
+  </tr>
+</table>
+
+<!-- masthead -->
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px;max-width:600px;background-color:#ffffff;">
+  <tr>
+    <td align="center" style="padding:26px 30px 8px 30px;">
+      ${rmUrl(logoUrl) ? `<img src="${rmEsc(rmUrl(logoUrl))}" width="170" alt="National Sports Apparel" style="display:block;width:170px;max-width:170px;height:auto;border:0;outline:none;text-decoration:none;margin:0 auto;">`
+    : `<div style="font-family:${RM_DISPLAY};font-weight:bold;font-size:24px;letter-spacing:1.5px;color:${NAVY};text-transform:uppercase;">National Sports Apparel</div>`}
+      <div style="font-family:${RM_BODY};font-size:11px;line-height:16px;mso-line-height-rule:exactly;letter-spacing:2px;color:${RED};text-transform:uppercase;padding-top:8px;">&#9733;&nbsp; California's Largest Independent Team Dealer &nbsp;&#9733;</div>
+    </td>
+  </tr>
+  <tr><td height="24" style="height:24px;font-size:0;line-height:0;">&nbsp;</td></tr>
+</table>
+
+<!-- hero -->
+${rmWrap(NAVY, `<div style="font-family:${RM_DISPLAY};font-size:12px;line-height:14px;mso-line-height-rule:exactly;letter-spacing:3px;color:${RED_LIGHT};text-transform:uppercase;font-weight:bold;">${rmEsc(store.name)}${RM_DOT}Team Store</div>
+      ${rmRule(60, 4, RED)}
+      <div class="h1" style="font-family:${RM_DISPLAY};font-weight:bold;font-size:38px;line-height:40px;mso-line-height-rule:exactly;color:#ffffff;text-transform:uppercase;letter-spacing:0.5px;padding-top:14px;">Your Order Isn’t<br><em style="color:${RED_LIGHT};font-style:italic;">Finished Yet</em></div>
+      <div style="font-family:${RM_BODY};font-size:15px;line-height:24px;mso-line-height-rule:exactly;color:#D8DDE9;padding-top:14px;">Hi${first ? ' ' + rmEsc(first) : ''} — your payment wasn’t completed, so the order hasn’t been placed and you haven’t been charged. Your cart is saved and it only takes a minute to finish.</div>`, '34px 40px')}
+
+<!-- deadline + button card -->
+${rmWrap('#ffffff', `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;background-color:${PANEL};border:1px solid ${HAIRLINE};">
+        <tr><td style="padding:22px 24px 20px 24px;">
+          <div style="font-family:${RM_DISPLAY};font-weight:bold;font-size:12px;line-height:14px;mso-line-height-rule:exactly;letter-spacing:2px;color:${NAVY};text-transform:uppercase;">${pieces} item${pieces === 1 ? '' : 's'} waiting in your cart</div>
+          ${closes ? `<div style="font-family:${RM_BODY};font-size:14px;line-height:22px;mso-line-height-rule:exactly;color:#4A5468;padding-top:4px;">The store closes <strong style="color:${NAVY};">${rmEsc(closes)}</strong> — orders can’t be added after that.</div>` : ''}
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:18px;"><tr>
+            <td bgcolor="${RED}" style="background-color:${RED};border-radius:4px;">
+              <a href="${rmEsc(shopLink)}" style="display:block;padding:14px 30px;font-family:${RM_DISPLAY};font-weight:bold;font-size:15px;line-height:18px;mso-line-height-rule:exactly;letter-spacing:2px;color:#ffffff;text-decoration:none;text-transform:uppercase;">Finish My Order</a>
+            </td></tr></table>
+        </td></tr>
+      </table>`, '28px 40px 4px')}
+
+${shown.length ? `<!-- items -->
+${rmWrap('#ffffff', `<div style="font-family:${RM_DISPLAY};font-weight:bold;font-size:22px;line-height:24px;mso-line-height-rule:exactly;letter-spacing:1px;color:${NAVY};text-transform:uppercase;">What You Picked Out</div>
+      ${rmRule(60, 4, RED)}`, '26px 40px 4px')}
+${itemRows}` : ''}
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px;max-width:600px;background-color:#ffffff;">
+  <tr>
+    <td class="pad" style="padding:22px 40px 30px 40px;">
+      <div style="font-family:${RM_BODY};font-size:13px;line-height:21px;mso-line-height-rule:exactly;color:${BODY_TEXT};">Already ordered another way, or changed your mind? No need to do anything — this is the only reminder we’ll send. Questions? Reply to this email or call <a href="tel:+17142798777" style="color:${RED};text-decoration:none;">(714) 279-8777</a>.</div>
+    </td>
+  </tr>
+</table>
+
+<!-- footer -->
+${rmWrap(FOOTER_NAVY, `<div style="font-family:${RM_DISPLAY};font-weight:bold;font-size:16px;line-height:20px;mso-line-height-rule:exactly;letter-spacing:1.5px;color:#ffffff;text-transform:uppercase;">National Sports Apparel</div>
+      ${rmRule(30, 3, RED)}
+      <div style="font-family:${RM_BODY};font-size:12px;line-height:20px;mso-line-height-rule:exactly;color:#A9B2C6;padding-top:12px;">2238 N Glassell St Ste E, Orange, CA 92865<br>Mon&#8211;Fri 7:00 AM&#8211;3:00 PM PT &#183; English &amp; Spanish<br><a href="mailto:hello@nationalsportsapparel.com" style="color:${RED_LIGHT};text-decoration:none;">hello@nationalsportsapparel.com</a></div>
+      <div style="font-family:${RM_BODY};font-size:11px;line-height:18px;mso-line-height-rule:exactly;color:#7A849B;padding-top:16px;">You’re receiving this one-time reminder because a checkout was started at the ${rmEsc(store.name)} team store.</div>`, '30px 40px 28px')}
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px;max-width:600px;"><tr><td height="30" style="height:30px;font-size:0;line-height:0;">&nbsp;</td></tr></table>
+
+</td></tr>
+</table>
+</body>
+</html>`;
+}
+
+async function sendPaymentReminder(sb, order, store) {
+  const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
+  if (!brevoKey) return { ok: false, error: 'BREVO_API_KEY missing' };
+  const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || '').replace(/\/+$/, '');
+  const { data: items } = await sb.from('webstore_order_items').select('name,sku,color,size,qty,image_url,is_bundle_parent,bundle_ref').eq('order_id', order.id);
+  // Package components ride inside their package line — list the package, not its parts.
+  const shown = (items || []).filter((i) => i.is_bundle_parent || !i.bundle_ref);
+  const html = paymentReminderHtml({ store, order, items: shown, portal });
+  const res = await postBrevo(brevoKey, { fromName: 'National Sports Apparel', toEmail: order.buyer_email, toName: order.buyer_name, subject: `Finish your ${store.name} order`, html });
+  return res.ok ? { ok: true } : { ok: false, error: 'brevo ' + res.status };
+}
+
+module.exports = { sendOrderConfirmation, sendPoOrderReceived, sendPoOrderApproved, sendOrderBagged, sendRefundNotice, bumpCouponUse, sendPaymentReminder, paymentReminderHtml };
