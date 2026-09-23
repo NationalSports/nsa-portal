@@ -5168,6 +5168,21 @@ export default function App(){
       return error?[]:(data||[]);
     }catch{return[]}
   },[]);
+  // Stores by store # (e.g. VR2G8), OMG sale code, or name. The longest token drives the
+  // ilike; every token must then match, so "sjm basketball" works as well as a bare code.
+  const _queryWebstores=useCallback(async(q,limit)=>{
+    const toks=(q||'').toLowerCase().replace(/[,()%#]/g,' ').split(/\s+/).filter(Boolean);
+    if(!toks.length)return[];
+    const like='%'+toks.reduce((a,b)=>b.length>a.length?b:a)+'%';
+    try{
+      const{data,error}=await supabase.from('webstores')
+        .select('id,name,store_code,omg_sale_code,source,status,is_template')
+        .or('store_code.ilike.'+like+',omg_sale_code.ilike.'+like+',name.ilike.'+like)
+        .order('updated_at',{ascending:false}).limit(50);
+      if(error)return[];
+      return(data||[]).filter(w=>!w.is_template&&toks.every(t=>((w.name||'')+' '+(w.store_code||'')+' '+(w.omg_sale_code||'')).toLowerCase().includes(t))).slice(0,limit);
+    }catch{return[]}
+  },[]);
   const[gWsOrders,setGWsOrders]=useState([]);const _gWsOrderTimer=useRef(null);
   useEffect(()=>{
     if(_gWsOrderTimer.current)clearTimeout(_gWsOrderTimer.current);
@@ -5175,17 +5190,27 @@ export default function App(){
     _gWsOrderTimer.current=setTimeout(async()=>{setGWsOrders(await _queryWsOrders(gQ.trim(),5))},250);
     return()=>{if(_gWsOrderTimer.current)clearTimeout(_gWsOrderTimer.current)};
   },[gQ]);// eslint-disable-line
-  const[wsOrderSearchResults,setWsOrderSearchResults]=useState([]);const _wsOrderSearchTimer=useRef(null);
+  const[wsOrderSearchResults,setWsOrderSearchResults]=useState([]);const[wsStoreSearchResults,setWsStoreSearchResults]=useState([]);const _wsOrderSearchTimer=useRef(null);
   useEffect(()=>{
     if(_wsOrderSearchTimer.current)clearTimeout(_wsOrderSearchTimer.current);
-    if(!supabase||pg!=='search'||!gSearchQ||gSearchQ.trim().length<2){setWsOrderSearchResults([]);return}
-    _wsOrderSearchTimer.current=setTimeout(async()=>{setWsOrderSearchResults(await _queryWsOrders(gSearchQ.trim(),50))},250);
+    if(!supabase||pg!=='search'||!gSearchQ||gSearchQ.trim().length<2){setWsOrderSearchResults([]);setWsStoreSearchResults([]);return}
+    _wsOrderSearchTimer.current=setTimeout(async()=>{const q=gSearchQ.trim();const[o,st]=await Promise.all([_queryWsOrders(q,50),_queryWebstores(q,20)]);setWsOrderSearchResults(o);setWsStoreSearchResults(st)},250);
     return()=>{if(_wsOrderSearchTimer.current)clearTimeout(_wsOrderSearchTimer.current)};
   },[gSearchQ,pg]);// eslint-disable-line
   // Open a webstore-order search hit: OMG-sourced stores route to the OMG page (its order
   // portal owns those), everything else deep-links into Webstores via the same ?store/?tab/?order
   // params the daily-store email uses. If Webstores is already mounted, its popstate handler
   // reconciles from the URL (the deep-link boot only runs on mount).
+  // Open a store search hit: OMG stores open on the OMG page, the rest on the store in Webstores.
+  const openWebstoreResult=(ws)=>{
+    if(ws.source==='omg'){
+      const st=omgStores.find(s2=>s2._omg_sale_code&&s2._omg_sale_code===ws.omg_sale_code);
+      if(st){setOmgSel(st);setPg('omg');return}
+    }
+    try{const u=new URL(window.location);u.searchParams.set('store',ws.id);['tab','order'].forEach(k=>u.searchParams.delete(k));window.history.replaceState({},'',u)}catch(e){}
+    if(pg==='webstores'){try{window.dispatchEvent(new PopStateEvent('popstate'))}catch(e){}}
+    else setPg('webstores');
+  };
   const openWsOrderResult=(o)=>{
     setGQ('');setGOpen(false);
     const ws=o.webstores||{};
@@ -38329,7 +38354,8 @@ export default function App(){
     // all-tokens-must-match narrowing. '#1010492' should match too, so strip leading '#' per token.
     const _wsoHay=(o)=>((o.order_number||'')+' '+(o.omg_order_number||'')+' '+(o.buyer_name||'')+' '+(o.buyer_email||'')+' '+(o.webstores?.name||'')+' '+(o.status||'')).toLowerCase();
     const rwso=(wsOrderSearchResults||[]).filter(o=>_toks.every(t=>_wsoHay(o).includes(t.replace(/^#/,''))));
-    const tot=rc.length+re.length+rs.length+rp.length+rti.length+rpk.length+rpo.length+rj.length+ri.length+rv.length+rsi.length+rwso.length;
+    const rws=wsStoreSearchResults||[];
+    const tot=rc.length+re.length+rs.length+rp.length+rti.length+rpk.length+rpo.length+rj.length+ri.length+rv.length+rsi.length+rwso.length+rws.length;
     const row=(children,onClick,key)=><div key={key} style={{padding:'10px 14px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',borderTop:'1px solid #f1f5f9'}} onClick={onClick}>{children}</div>;
     const section=(label,items,render)=>items.length>0&&<div className="card" style={{marginBottom:12}}>
       <div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
@@ -38353,6 +38379,7 @@ export default function App(){
         {section('Customers',rc,cc=>row(<><Icon name="users" size={14}/><span style={{fontWeight:600}}>{cc.name}</span>{cc.alpha_tag&&<span className="badge badge-gray">{cc.alpha_tag}</span>}</>,()=>{setSelC(cc);setPg('customers')},cc.id))}
         {section('Sales Orders',rs,so=>{const cc=cust.find(x=>x.id===so.customer_id);return row(<><Icon name="box" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{so.id}</span><span>{so.memo}</span>{cc&&<span style={{color:'#64748b',fontSize:11}}>{cc.alpha_tag||cc.name}</span>}</>,()=>{setESO(so);setESOC(cc);setPg('orders')},so.id)})}
         {section('Estimates',re,e=>{const cc=cust.find(x=>x.id===e.customer_id);return row(<><Icon name="dollar" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{e.id}</span><span>{e.memo}</span>{cc&&<span style={{color:'#64748b',fontSize:11}}>{cc.alpha_tag||cc.name}</span>}</>,()=>{setEEst(e);setEEstC(cc);setPg('estimates')},e.id)})}
+        {section('Webstores',rws,w=>row(<><Icon name="store" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{w.store_code}</span><span>{w.name}</span>{w.source==='omg'&&<span className="badge badge-gray">OMG</span>}<span className="badge badge-blue" style={{marginLeft:'auto'}}>{w.status}</span></>,()=>openWebstoreResult(w),'ws-'+w.id))}
         {section('Webstore Orders',rwso,o=>row(<><Icon name="store" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>#{o.order_number||o.omg_order_number}</span><span>{o.buyer_name||o.buyer_email||''}</span>{o.webstores?.name&&<span style={{color:'#64748b',fontSize:11}}>{o.webstores.name}</span>}<span style={{fontWeight:700,marginLeft:'auto'}}>${(Number(o.total)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</span><span className={`badge ${o.status==='paid'||o.status==='shipped'||o.status==='completed'?'badge-green':o.status==='cancelled'||o.status==='refunded'?'badge-gray':'badge-blue'}`}>{o.status}</span></>,()=>openWsOrderResult(o),'wso-'+o.id))}
         {section('Products',rp,p=>row(<><Icon name="package" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span><span>{p.name}</span>{p.color&&<span style={{color:'#64748b',fontSize:11}}>{p.color}</span>}</>,()=>{setSelP(p);setPg('products');setQ('')},p.id))}
         {section('Ordered Items (sold before, not in catalog)',rti,ti=>row(<><Icon name="file" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#475569'}}>{ti.sku}</span>{ti.name&&<span>{ti.name}</span>}
@@ -38520,13 +38547,14 @@ export default function App(){
     <div className="main"><div className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button><h1>{(eEst&&pg==='estimates')?eEst.id:(eSO&&pg==='orders')?eSO.id:(selC&&pg==='customers')?selC.name:(selV&&pg==='vendors')?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
           <GlobalSearch customers={cust} estimates={ests} salesOrders={sos} products={prod} invoices={invs} vendors={vend} submittedBatches={submittedBatches} inventoryPOs={invPOs}
-            searchProducts={_searchProductsServer} searchTxnItems={_searchTxnItemsServer} mergeTxnItems={_mergeTxnItems} searchWebstoreOrders={_queryWsOrders}
+            searchProducts={_searchProductsServer} searchTxnItems={_searchTxnItemsServer} mergeTxnItems={_mergeTxnItems} searchWebstoreOrders={_queryWsOrders} searchWebstores={_queryWebstores}
             orderSearchHay={_soJobsSearchHay} searchPOStatus={_searchPOStatus} newTabHref={_newTabHref}
             onSeeAll={query=>{setGSearchQ(query);setNlSpec(null);setCoachFinder(null);setPg('search')}}
             onOpen={(kind,value)=>{
               if(kind==='customer'){setSelC(value);setPg('customers')}
               else if(kind==='order'){setESO(value);setESOC(cust.find(c=>c.id===value.customer_id));setPg('orders')}
               else if(kind==='webstore')openWsOrderResult(value);
+              else if(kind==='store')openWebstoreResult(value);
               else if(kind==='estimate'){setEEst(value);setEEstC(cust.find(c=>c.id===value.customer_id));setPg('estimates')}
               else if(kind==='product'){setSelP(value);setPg('products');setQ('')}
               else if(kind==='txn')openTxnItem(value);

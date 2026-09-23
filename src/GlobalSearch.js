@@ -3,21 +3,21 @@ import React from 'react';
 import { Icon, calcSOStatus } from './components';
 import { safeItems, safePicks, safePOs, safeJobs } from './safeHelpers';
 
-const labels={customer:'Customers',order:'Sales Orders',webstore:'Webstore Orders',estimate:'Estimates',product:'Products',txn:'Ordered Items',pick:'Item Fulfillments',po:'Purchase Orders',job:'Jobs',invoice:'Invoices',vendor:'Vendors'};
-const icons={customer:'users',order:'box',webstore:'store',estimate:'dollar',product:'package',txn:'file',pick:'grid',po:'cart',job:'grid',invoice:'file',vendor:'building'};
-const limits={customer:6,order:4,webstore:5,estimate:4,product:6,txn:5,pick:4,po:4,job:4,invoice:4,vendor:4};
+const labels={store:'Webstores',customer:'Customers',order:'Sales Orders',webstore:'Webstore Orders',estimate:'Estimates',product:'Products',txn:'Ordered Items',pick:'Item Fulfillments',po:'Purchase Orders',job:'Jobs',invoice:'Invoices',vendor:'Vendors'};
+const icons={store:'store',customer:'users',order:'box',webstore:'store',estimate:'dollar',product:'package',txn:'file',pick:'grid',po:'cart',job:'grid',invoice:'file',vendor:'building'};
+const limits={store:5,customer:6,order:4,webstore:5,estimate:4,product:6,txn:5,pick:4,po:4,job:4,invoice:4,vendor:4};
 const text=v=>String(v||'').toLowerCase();
 
 // Keep keystroke state and search-index work out of App. App is intentionally huge, so
 // controlling this input there made every character reconcile the entire portal tree.
 export default React.memo(function GlobalSearch({
   customers=[],estimates=[],salesOrders=[],products=[],invoices=[],vendors=[],submittedBatches=[],inventoryPOs=[],
-  searchProducts,searchTxnItems,mergeTxnItems,searchWebstoreOrders,orderSearchHay=()=>'',searchPOStatus,
+  searchProducts,searchTxnItems,mergeTxnItems,searchWebstoreOrders,searchWebstores,orderSearchHay=()=>'',searchPOStatus,
   newTabHref,onSeeAll,onOpen,
 }){
   const[query,setQuery]=React.useState('');
   const[open,setOpen]=React.useState(false);
-  const[remote,setRemote]=React.useState({products:[],txn:[],webstore:[]});
+  const[remote,setRemote]=React.useState({products:[],txn:[],webstore:[],store:[]});
   const deferredQuery=React.useDeferredValue(query);
   const searchActive=deferredQuery.trim().length>=2;
   const requestSeq=React.useRef(0);
@@ -51,20 +51,21 @@ export default React.memo(function GlobalSearch({
 
   React.useEffect(()=>{
     const q=query.trim();const seq=++requestSeq.current;
-    if(q.length<2){setRemote({products:[],txn:[],webstore:[]});return undefined}
+    if(q.length<2){setRemote({products:[],txn:[],webstore:[],store:[]});return undefined}
     const timer=setTimeout(async()=>{
-      const [productResult,txnRows,webstoreRows]=await Promise.all([
+      const [productResult,txnRows,webstoreRows,storeRows]=await Promise.all([
         Promise.resolve(searchProducts?.(q,{},0,6)).catch(()=>null),
         Promise.resolve(searchTxnItems?.(q,8)).catch(()=>null),
         Promise.resolve(searchWebstoreOrders?.(q,5)).catch(()=>[]),
+        Promise.resolve(searchWebstores?.(q,5)).catch(()=>[]),
       ]);
       let productRows=productResult?.products;
       if(!productRows){const s=text(q);productRows=products.filter(p=>text((p.sku||'')+' '+(p.name||'')+' '+(p.brand||'')+' '+(p.color||'')).includes(s)).slice(0,6)}
       const archive=(txnRows||[]).filter(r=>!r.in_catalog);
-      if(seq===requestSeq.current)setRemote({products:productRows||[],txn:mergeTxnItems?.(archive,q,5)||[],webstore:webstoreRows||[]});
+      if(seq===requestSeq.current)setRemote({products:productRows||[],txn:mergeTxnItems?.(archive,q,5)||[],webstore:webstoreRows||[],store:storeRows||[]});
     },250);
     return()=>clearTimeout(timer);
-  },[query,products,searchProducts,searchTxnItems,mergeTxnItems,searchWebstoreOrders]);
+  },[query,products,searchProducts,searchTxnItems,mergeTxnItems,searchWebstoreOrders,searchWebstores]);
 
   const grouped=React.useMemo(()=>{
     const q=deferredQuery.trim().toLowerCase();if(q.length<2)return{};
@@ -73,17 +74,18 @@ export default React.memo(function GlobalSearch({
     if(out.order)out.order=searchSalesOrders(out.order,q,calcSOStatus);
     if(out.customer)out.customer.sort((a,b)=>Number(!!a.parent_id)-Number(!!b.parent_id));
     Object.keys(out).forEach(kind=>{out[kind]=out[kind].slice(0,limits[kind]||4)});
-    out.product=remote.products.slice(0,6);out.txn=remote.txn.slice(0,5);out.webstore=remote.webstore.slice(0,5);
+    out.product=remote.products.slice(0,6);out.txn=remote.txn.slice(0,5);out.webstore=remote.webstore.slice(0,5);out.store=remote.store.slice(0,5);
     return out;
   },[deferredQuery,index,remote]);
 
-  const clear=()=>{setQuery('');setOpen(false);setRemote({products:[],txn:[],webstore:[]})};
+  const clear=()=>{setQuery('');setOpen(false);setRemote({products:[],txn:[],webstore:[],store:[]})};
   const select=(kind,value,event)=>{if(event&&(event.ctrlKey||event.metaKey||event.shiftKey||event.button===1))return;event?.preventDefault();clear();onOpen(kind,value,index.customerById)};
   const seeAll=()=>{const q=query.trim();if(q.length<2)return;setOpen(false);onSeeAll(q)};
-  const kinds=['customer','order','estimate','webstore','product','txn','pick','po','job','invoice','vendor'];
+  const kinds=['store','customer','order','estimate','webstore','product','txn','pick','po','job','invoice','vendor'];
   const total=kinds.reduce((n,k)=>n+(grouped[k]?.length||0),0);
   const hrefFor=(kind,v)=>kind==='customer'?newTabHref({cust:v.id}):kind==='estimate'?newTabHref({est:v.id}):kind==='order'?newTabHref({so:v.id}):kind==='product'?newTabHref({prod:v.id}):kind==='invoice'?newTabHref({inv:v.id}):kind==='vendor'?newTabHref({vend:v.id}):kind==='pick'&&v.pick_id?newTabHref({pg:'item_fulfillment',if:v.pick_id}):(kind==='po'||kind==='job')&&v.so_id?newTabHref({so:v.so_id}):null;
   const row=(kind,v)=>{
+    if(kind==='store')return <><strong style={{fontFamily:'monospace',color:'#1e40af'}}>{v.store_code}</strong><span>{v.name}</span>{v.source==='omg'&&<span className="badge badge-gray">OMG</span>}<span className="badge badge-blue" style={{marginLeft:'auto'}}>{v.status}</span></>;
     if(kind==='customer')return <><strong>{v.name}</strong>{v.alpha_tag&&<span className="badge badge-gray">{v.alpha_tag}</span>}</>;
     if(kind==='order'||kind==='estimate')return <><strong style={{color:'#1e40af'}}>{v.id}</strong><span>{v.memo}</span>{index.customerById.get(v.customer_id)&&<small>{index.customerById.get(v.customer_id).alpha_tag||index.customerById.get(v.customer_id).name}</small>}</>;
     if(kind==='webstore')return <><strong style={{color:'#1e40af'}}>#{v.order_number||v.omg_order_number}</strong><span>{v.buyer_name||v.buyer_email||''}</span>{v.webstores?.name&&<small>{v.webstores.name}</small>}<span className={`badge ${['paid','shipped','completed'].includes(v.status)?'badge-green':['cancelled','refunded'].includes(v.status)?'badge-gray':'badge-blue'}`}>{v.status}</span></>;
