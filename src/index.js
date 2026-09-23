@@ -67,6 +67,7 @@ const Storefront = React.lazy(() => import('./storefront/Storefront'));
 // from the storefront because it loads an order by token regardless of store
 // status (OMG shadow stores are archived) — see src/storefront/OrderTrack.js.
 const OrderTrack = React.lazy(() => import('./storefront/OrderTrack'));
+const ProductionReport = React.lazy(() => import('./storefront/ProductionReport'));
 // Public coach-facing adidas inventory reference at /adidas — login-free like
 // the storefront; joins the adidas catalog with live Cowork availability.
 const AdidasInventory = React.lazy(() => import('./storefront/AdidasInventory'));
@@ -117,6 +118,7 @@ const isBaggingStation = isBaggingStationPath(_path);
 const isMoveCheckin = isMoveCheckinPath(_path);
 const isVendorDigitizing = isVendorDigitizingPath(_path);
 const isOrderTrack = _path.startsWith('/shop/order/');
+const isProductionReport = _path.startsWith('/production-report/');
 const isStorefront = _path.startsWith('/shop/') && !isOrderTrack;
 // /adidas is the canonical path. /livelook is the same catalog, served at
 // nationalsportsapparel.com/livelook via a Netlify proxy rewrite from the
@@ -286,6 +288,8 @@ root.render(
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading team stores…</div>}><TeamStores /></React.Suspense>
         : isOrderTrack
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading your order…</div>}><OrderTrack /></React.Suspense>
+        : isProductionReport
+        ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading production report…</div>}><ProductionReport /></React.Suspense>
         : isStorefront
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading store…</div>}><Storefront /></React.Suspense>
         : isAuthFlow || isCoachPortal || isOnboarding || isUniformBuilder
