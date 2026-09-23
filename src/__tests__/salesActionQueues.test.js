@@ -330,3 +330,30 @@ test('clicking through an estimate, invoice, or art reminder does not snooze or 
   expect(appSource).toContain('const doSnooze=(t,days)=>');
   expect(appSource).toContain('snoozeTodoUntil(t,days)');
 });
+
+test('per-invoice follow-up todos are paused behind INVOICE_FOLLOWUP_TODOS on both surfaces', () => {
+  expect(appSource).toContain('const INVOICE_FOLLOWUP_TODOS=false;');
+  const gated = appSource.split("if(INVOICE_FOLLOWUP_TODOS)invs.filter(i=>opsOpenInvoice(i)").length - 1;
+  const all = appSource.split('invs.filter(i=>opsOpenInvoice(i)&&!').length - 1;
+  expect(gated).toBe(2);
+  expect(all).toBe(gated);
+});
+
+test('weekly overdue-invoice todo is keyed to the Friday that starts its week', () => {
+  const section = sectionBetween(appSource, '// Weekly overdue-invoice review', '// Invoice follow-up alerts');
+  const run = (now, role = 'rep') => {
+    const RealDate = Date;
+    global.Date = class extends RealDate { constructor(...a) { super(...(a.length ? a : [now])); } };
+    try {
+      return new Function('cu', `const todos=[];${section};return todos;`)({ id: 'R1', role });
+    } finally { global.Date = RealDate; }
+  };
+  // Wed 2026-09-23 → week began Fri 2026-09-18
+  const wed = run('2026-09-23T12:00:00');
+  expect(wed).toHaveLength(1);
+  expect(wed[0]).toMatchObject({ type: 'overdue_invoices', repId: 'R1', role: 'sales', dismissKey: 'overdue_invoices:R1:2026-09-18' });
+  // Friday itself starts a new week
+  expect(run('2026-09-25T09:00:00')[0].dismissKey).toBe('overdue_invoices:R1:2026-09-25');
+  // Not for CSR / production users
+  expect(run('2026-09-23T12:00:00', 'csr')).toHaveLength(0);
+});
