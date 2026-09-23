@@ -365,3 +365,19 @@
 # netlify/functions/so-shipment-notify-sweep.js.
 [functions."so-shipment-notify-sweep"]
   schedule = "*/15 * * * *"
+
+[functions."store-production-packet"]
+  node_bundler = "esbuild"
+  timeout = 26
+
+[functions."store-production-pdf"]
+  node_bundler = "esbuild"
+  timeout = 26
+  external_node_modules = ["@sparticuz/chromium"]
+
+[[headers]]
+  for = "/production-packet*"
+  [headers.values]
+    Referrer-Policy = "no-referrer"
+    X-Robots-Tag = "noindex, nofollow"
+    Cache-Control = "no-store"
