@@ -5170,9 +5170,12 @@ export default function App(){
   },[]);
   // Stores by store # (e.g. VR2G8), OMG sale code, or name. The longest token drives the
   // ilike; every token must then match, so "sjm basketball" works as well as a bare code.
+  // Called with no query it returns every store — the top search bar indexes them locally.
   const _queryWebstores=useCallback(async(q,limit)=>{
     const toks=(q||'').toLowerCase().replace(/[,()%#]/g,' ').split(/\s+/).filter(Boolean);
-    if(!toks.length)return[];
+    if(!toks.length){
+      try{const{data,error}=await supabase.from('webstores').select('id,name,store_code,omg_sale_code,source,status,is_template').limit(2000);return error?[]:(data||[]).filter(w=>!w.is_template)}catch{return[]}
+    }
     const like='%'+toks.reduce((a,b)=>b.length>a.length?b:a)+'%';
     try{
       const{data,error}=await supabase.from('webstores')

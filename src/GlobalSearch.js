@@ -17,7 +17,14 @@ export default React.memo(function GlobalSearch({
 }){
   const[query,setQuery]=React.useState('');
   const[open,setOpen]=React.useState(false);
-  const[remote,setRemote]=React.useState({products:[],txn:[],webstore:[],store:[]});
+  const[remote,setRemote]=React.useState({products:[],txn:[],webstore:[]});
+  // All webstores (≈100 rows) held locally so a store # like 49P54 matches as you type,
+  // with no round-trip. Loaded when the box is focused, refreshed at most once a minute.
+  const[stores,setStores]=React.useState([]);const storesAt=React.useRef(0);
+  const loadStores=React.useCallback(()=>{
+    if(!searchWebstores||Date.now()-storesAt.current<60000)return;storesAt.current=Date.now();
+    Promise.resolve(searchWebstores()).then(rows=>setStores(rows||[])).catch(()=>{storesAt.current=0});
+  },[searchWebstores]);
   const deferredQuery=React.useDeferredValue(query);
   const searchActive=deferredQuery.trim().length>=2;
   const requestSeq=React.useRef(0);
@@ -46,26 +53,26 @@ export default React.memo(function GlobalSearch({
     inventoryPOs.forEach(po=>{if(!po.po_number||seenPoIds.has(po.po_number))return;seenPoIds.add(po.po_number);entries.push({kind:'po',value:{po_id:po.po_number,vendor:po.vendor_name,status:po.status||'ordered',so_id:'',so:null,customer:'',isInvPO:true},hay:text((po.po_number||'')+' '+(po.vendor_name||'')+' '+(po.memo||''))})});
     invoices.forEach(inv=>entries.push({kind:'invoice',value:inv,hay:text((inv.id||'')+' '+(inv.memo||'')+' '+(customerById.get(inv.customer_id)?.name||''))}));
     vendors.forEach(v=>entries.push({kind:'vendor',value:v,hay:text((v.name||'')+' '+(v.rep_name||''))}));
+    stores.forEach(w=>entries.push({kind:'store',value:w,hay:text((w.name||'')+' '+(w.store_code||'')+' '+(w.omg_sale_code||''))}));
     return{entries,customerById};
-  },[searchActive,customers,estimates,salesOrders,invoices,vendors,submittedBatches,inventoryPOs,orderSearchHay,searchPOStatus]);
+  },[stores,searchActive,customers,estimates,salesOrders,invoices,vendors,submittedBatches,inventoryPOs,orderSearchHay,searchPOStatus]);
 
   React.useEffect(()=>{
     const q=query.trim();const seq=++requestSeq.current;
-    if(q.length<2){setRemote({products:[],txn:[],webstore:[],store:[]});return undefined}
+    if(q.length<2){setRemote({products:[],txn:[],webstore:[]});return undefined}
     const timer=setTimeout(async()=>{
-      const [productResult,txnRows,webstoreRows,storeRows]=await Promise.all([
+      const [productResult,txnRows,webstoreRows]=await Promise.all([
         Promise.resolve(searchProducts?.(q,{},0,6)).catch(()=>null),
         Promise.resolve(searchTxnItems?.(q,8)).catch(()=>null),
         Promise.resolve(searchWebstoreOrders?.(q,5)).catch(()=>[]),
-        Promise.resolve(searchWebstores?.(q,5)).catch(()=>[]),
       ]);
       let productRows=productResult?.products;
       if(!productRows){const s=text(q);productRows=products.filter(p=>text((p.sku||'')+' '+(p.name||'')+' '+(p.brand||'')+' '+(p.color||'')).includes(s)).slice(0,6)}
       const archive=(txnRows||[]).filter(r=>!r.in_catalog);
-      if(seq===requestSeq.current)setRemote({products:productRows||[],txn:mergeTxnItems?.(archive,q,5)||[],webstore:webstoreRows||[],store:storeRows||[]});
+      if(seq===requestSeq.current)setRemote({products:productRows||[],txn:mergeTxnItems?.(archive,q,5)||[],webstore:webstoreRows||[]});
     },250);
     return()=>clearTimeout(timer);
-  },[query,products,searchProducts,searchTxnItems,mergeTxnItems,searchWebstoreOrders,searchWebstores]);
+  },[query,products,searchProducts,searchTxnItems,mergeTxnItems,searchWebstoreOrders]);
 
   const grouped=React.useMemo(()=>{
     const q=deferredQuery.trim().toLowerCase();if(q.length<2)return{};
@@ -74,11 +81,11 @@ export default React.memo(function GlobalSearch({
     if(out.order)out.order=searchSalesOrders(out.order,q,calcSOStatus);
     if(out.customer)out.customer.sort((a,b)=>Number(!!a.parent_id)-Number(!!b.parent_id));
     Object.keys(out).forEach(kind=>{out[kind]=out[kind].slice(0,limits[kind]||4)});
-    out.product=remote.products.slice(0,6);out.txn=remote.txn.slice(0,5);out.webstore=remote.webstore.slice(0,5);out.store=remote.store.slice(0,5);
+    out.product=remote.products.slice(0,6);out.txn=remote.txn.slice(0,5);out.webstore=remote.webstore.slice(0,5);
     return out;
   },[deferredQuery,index,remote]);
 
-  const clear=()=>{setQuery('');setOpen(false);setRemote({products:[],txn:[],webstore:[],store:[]})};
+  const clear=()=>{setQuery('');setOpen(false);setRemote({products:[],txn:[],webstore:[]})};
   const select=(kind,value,event)=>{if(event&&(event.ctrlKey||event.metaKey||event.shiftKey||event.button===1))return;event?.preventDefault();clear();onOpen(kind,value,index.customerById)};
   const seeAll=()=>{const q=query.trim();if(q.length<2)return;setOpen(false);onSeeAll(q)};
   const kinds=['store','customer','order','estimate','webstore','product','txn','pick','po','job','invoice','vendor'];
@@ -99,7 +106,7 @@ export default React.memo(function GlobalSearch({
   };
 
   return <>
-    <div className="search-bar" data-tour-id="global-search" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={query} onChange={e=>{const value=e.target.value;setQuery(value);setOpen(value.length>=2)}} onFocus={()=>{if(query.length>=2)setOpen(true)}} onKeyDown={e=>{if(e.key==='Enter')seeAll();else if(e.key==='Escape')setOpen(false)}}/>{query&&<button onClick={clear} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
+    <div className="search-bar" data-tour-id="global-search" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={query} onChange={e=>{const value=e.target.value;setQuery(value);setOpen(value.length>=2)}} onFocus={()=>{loadStores();if(query.length>=2)setOpen(true)}} onKeyDown={e=>{if(e.key==='Enter')seeAll();else if(e.key==='Escape')setOpen(false)}}/>{query&&<button onClick={clear} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
     {open&&query.length>=2&&total>0&&<div style={{position:'absolute',top:'100%',left:0,right:0,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:60,maxHeight:350,overflow:'auto'}}>
       {kinds.map(kind=>(grouped[kind]?.length?<React.Fragment key={kind}><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>{labels[kind]}{kind==='txn'&&<span style={{fontWeight:400,textTransform:'none'}}> · sold before, not in catalog</span>}</div>{grouped[kind].map((value,i)=>{const href=hrefFor(kind,value);const Tag=href?'a':'div';return <Tag key={(value.id||value.po_id||value.pick_id||value.sku||i)+'-'+kind} {...(href?{href}:{})} onClick={e=>select(kind,value,e)} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}}><Icon name={icons[kind]} size={14}/>{row(kind,value)}</Tag>})}</React.Fragment>:null))}
       <div onClick={seeAll} style={{padding:'10px 12px',borderTop:'1px solid #e2e8f0',background:'#f8fafc',cursor:'pointer',fontSize:12,fontWeight:600,color:'#1e40af',display:'flex',alignItems:'center',gap:6}}><Icon name="search" size={12}/>See all results for "{query}" <span style={{color:'#94a3b8',fontWeight:400,marginLeft:'auto'}}>Press Enter ↵</span></div>
