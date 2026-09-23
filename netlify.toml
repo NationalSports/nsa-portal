@@ -324,6 +324,13 @@
   schedule = "*/5 * * * *"
   timeout = 26
 
+# "My Email": reads each rep's connected Gmail (Primary inbox), stores AI
+# summaries/tasks/deadlines in rep_email_insights. Read-only against Gmail.
+# See netlify/functions/rep-gmail-sync.js.
+[functions."rep-gmail-sync"]
+  schedule = "*/10 * * * *"
+  timeout = 26
+
 # Durable webstore notification retry queue. Customer replies and shipment
 # emails are persisted before delivery; this sweep retries provider/API failures.
 [functions."webstore-notification-sweep"]
