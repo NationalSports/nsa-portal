@@ -49,6 +49,28 @@ describe('notifyStoreClosed — close-out notify guards', () => {
     expect(sent[0].key).toMatch(/^[0-9a-f-]{36}$/);
   });
 
+  test('emails both the rep and the assigned CSR, not just the CSR', async () => {
+    const members = [
+      { id: 'rep1', name: 'Rep', email: 'rep@example.com' },
+      { id: 'csr1', name: 'CSR', email: 'csr@example.com' },
+    ];
+    let askedIds = null;
+    const admin = {
+      from: (table) => {
+        const c = {};
+        ['select', 'eq', 'update', 'insert'].forEach((m) => { c[m] = () => c; });
+        c.in = (col, ids) => { if (table === 'team_members') askedIds = ids; return c; };
+        c.then = (resolve) => resolve({ data: table === 'team_members' ? members : [], error: null });
+        return c;
+      },
+    };
+    const r = await notifyStoreClosed(admin, { id: 's1', name: 'Test Store', close_at: '2026-09-01T20:00:00.000Z', rep_id: 'rep1', csr_id: 'csr1' }, {
+      sendEmail: async () => {},
+    });
+    expect(askedIds).toEqual(['rep1', 'csr1']);
+    expect(r.emailed).toEqual(['rep@example.com', 'csr@example.com', 'stores@nationalsportsapparel.com']);
+  });
+
   test('stable close identities make to-do creation and email delivery retry-safe', () => {
     const store = { id: 's1', close_at: '2026-09-01T20:00:00.000Z' };
     expect(closeTodoId(store)).toBe(closeTodoId({ ...store }));

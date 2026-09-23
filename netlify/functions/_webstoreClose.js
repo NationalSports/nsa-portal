@@ -105,10 +105,10 @@ async function notifyStoreClosed(admin, store, opts = {}) {
     todoOk = true; // a duplicate means an earlier retry already created it
   }
 
-  // 2. Email the assigned CSR — they process the closed store. Fall back to the
-  //    rep only when no CSR is assigned, and always include the webstore team so
-  //    a missing assignment or staff email cannot make the close invisible.
-  const ids = [store.csr_id || store.rep_id].filter(Boolean);
+  // 2. Email the store's rep AND its assigned CSR (the CSR processes the store, but the
+  //    rep owns the account and must hear it closed), and always include the webstore
+  //    team so a missing assignment or staff email cannot make the close invisible.
+  const ids = [...new Set([store.rep_id, store.csr_id].filter(Boolean))];
   let members = [];
   if (ids.length) {
     const memberResult = await admin.from('team_members').select('id,name,email').in('id', ids);
