@@ -29,7 +29,7 @@ exports.handler = async event => {
    const url = req.url();
    if(url === qrDataUrl) return req.continue();
    let u; try {u=new URL(url);}catch {return req.abort();}
-   const trusted = u.hostname === 'res.cloudinary.com' || /^[a-z0-9-]+\.supabase\.co$/.test(u.hostname);
+   const trusted = ['res.cloudinary.com','b2bprod-res.cloudinary.com','images.salsify.com'].includes(u.hostname) || /^[a-z0-9-]+\.supabase\.co$/.test(u.hostname);
    if(req.resourceType()==='image' && allowed.has(url) && trusted && u.protocol==='https:' && req.redirectChain().length===0) req.continue(); else req.abort();
   });
   await page.setContent(packetPrintHtml(packet,{onlineUrl,qrDataUrl,draft:!revision,generatedAt:revision?.created_at}),{waitUntil:'networkidle0',timeout:15000});
