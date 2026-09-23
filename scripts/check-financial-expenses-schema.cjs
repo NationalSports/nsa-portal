@@ -22,8 +22,12 @@ async function main() {
       insert into public.team_members values ('00000000-0000-0000-0000-000000000001');
     `);
     await db.exec(fs.readFileSync(path.join(__dirname, '../supabase/migrations/20260908012527_financial_expenses.sql'), 'utf8'));
+    await db.exec(fs.readFileSync(path.join(__dirname, '../supabase/migrations/20260922090000_financial_card_feed.sql'), 'utf8'));
     ok((await db.query("select relrowsecurity from pg_class where oid = 'public.financial_expenses'::regclass")).rows[0].relrowsecurity);
     ok((await db.query("select relrowsecurity from pg_class where oid = 'public.financial_recurring_expenses'::regclass")).rows[0].relrowsecurity);
+    for (const table of ['financial_card_connections', 'financial_card_accounts', 'financial_card_transactions', 'financial_expense_rules']) {
+      ok((await db.query(`select relrowsecurity from pg_class where oid = 'public.${table}'::regclass`)).rows[0].relrowsecurity);
+    }
     const schedules = (await db.query("select label, default_amount_cents, requires_accounting_split from public.financial_recurring_expenses order by label")).rows;
     ok(schedules.length === 3);
     ok(schedules.find(row => row.label === 'Tesla loan payment').default_amount_cents === 112977);
@@ -36,7 +40,8 @@ async function main() {
     await db.exec(`insert into storage.objects values ('11111111-1111-4111-8111-111111111111','expense-receipts'), ('22222222-2222-4222-8222-222222222222','other');`);
     for (const role of ['anon', 'authenticated']) {
       await db.exec(`set role ${role}`);
-      for (const sql of ['select * from public.financial_expenses', 'insert into public.financial_expenses(id) values (gen_random_uuid())', "update public.financial_expenses set status='posted'", 'delete from public.financial_expenses', 'select * from public.financial_recurring_expenses']) {
+      for (const sql of ['select * from public.financial_expenses', 'insert into public.financial_expenses(id) values (gen_random_uuid())', "update public.financial_expenses set status='posted'", 'delete from public.financial_expenses', 'select * from public.financial_recurring_expenses',
+        'select * from public.financial_card_connections', 'select * from public.financial_card_accounts', 'select * from public.financial_card_transactions', 'select * from public.financial_expense_rules']) {
         await assert.rejects(db.exec(sql), /permission denied/); checks++;
       }
       const objects = (await db.query('select bucket_id from storage.objects')).rows;
@@ -62,6 +67,23 @@ async function main() {
       (id,company_key,realm_id,submitted_by,merchant,expense_date,amount_cents,purpose,payment_kind,expense_account_id,expense_account_name,payment_account_id,payment_account_name,qb_entity_type,qb_payload,recurring_template_id,recurring_month)
       values ('55555555-5555-4555-8555-555555555555','national','123','00000000-0000-0000-0000-000000000001','T-Mobile','2026-09-02',51000,'Monthly service','business','1','Telephone','2','Checking','Purchase','{}','a50f6e8d-1c53-4f88-9f91-dc7d3c4b74cb','2026-09-01');`);
     ok((await db.query("select count(*)::int as n from public.financial_expenses where recurring_template_id is not null")).rows[0].n === 2);
+    await db.exec(`insert into public.financial_card_connections
+      (id,company_key,provider_item_id,access_token_ciphertext,institution_name,created_by)
+      values ('66666666-6666-4666-8666-666666666666','national','item-test','v1:ciphertext','Test Bank','00000000-0000-0000-0000-000000000001');
+      insert into public.financial_card_accounts
+      (id,connection_id,company_key,provider_account_id,name,account_type,qbo_payment_account_id,qbo_payment_account_name)
+      values ('77777777-7777-4777-8777-777777777777','66666666-6666-4666-8666-666666666666','national','account-test','Business Card','credit','2','Business Card');
+      insert into public.financial_card_transactions
+      (id,connection_id,account_id,company_key,provider_transaction_id,transaction_date,description,amount_cents,status,expense_account_id,expense_account_name,purpose)
+      values ('88888888-8888-4888-8888-888888888888','66666666-6666-4666-8666-666666666666','77777777-7777-4777-8777-777777777777','national','txn-test','2026-09-20','Card charge',4852,'ready','1','Telephone','Monthly mobile service');
+      insert into public.financial_expenses
+      (id,company_key,realm_id,submitted_by,merchant,expense_date,amount_cents,purpose,payment_kind,expense_account_id,expense_account_name,payment_account_id,payment_account_name,qb_entity_type,qb_payload,card_transaction_id)
+      values ('99999999-9999-4999-8999-999999999999','national','123','00000000-0000-0000-0000-000000000001','Card charge','2026-09-20',4852,'Monthly mobile service','business','1','Telephone','2','Business Card','Purchase','{}','88888888-8888-4888-8888-888888888888');
+      update public.financial_card_transactions set status='submitted',financial_expense_id='99999999-9999-4999-8999-999999999999' where id='88888888-8888-4888-8888-888888888888';`);
+    ok((await db.query("select status from public.financial_card_transactions where id='88888888-8888-4888-8888-888888888888'")).rows[0].status === 'submitted');
+    await assert.rejects(db.exec(`insert into public.financial_expenses
+      (id,company_key,realm_id,submitted_by,merchant,expense_date,amount_cents,purpose,payment_kind,expense_account_id,expense_account_name,payment_account_id,payment_account_name,qb_entity_type,qb_payload,card_transaction_id)
+      values ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','national','123','00000000-0000-0000-0000-000000000001','Duplicate','2026-09-20',4852,'Duplicate','business','1','Telephone','2','Business Card','Purchase','{}','88888888-8888-4888-8888-888888888888')`), /unique constraint/); checks++;
     await assert.rejects(db.exec("update public.financial_expenses set status='posted'"), /financial_expense_posted_identity/); checks++;
     await assert.rejects(db.exec('update public.financial_expenses set amount_cents=0'), /check constraint/); checks++;
     const claim = "update public.financial_expenses set status='posting',updated_at=now() where id='33333333-3333-4333-8333-333333333333' and (status in ('submitted','error') or (status='posting' and updated_at<now()-interval '2 minutes')) returning id";

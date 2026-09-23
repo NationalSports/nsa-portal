@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { supabase } from './lib/supabase';
+import CardFeedPanel from './CardFeedPanel';
 import './ExpensesWorkspace.css';
 
 export async function expenseRequest(body) {
@@ -22,7 +23,8 @@ const accountSort = (a, b) => {
   return String(a.AcctNum || '').localeCompare(String(b.AcctNum || ''), undefined, { numeric: true }) || a.Name.localeCompare(b.Name);
 };
 const freshForm = () => ({ merchant: '', expense_date: new Date().toLocaleDateString('en-CA'), amount: '', purpose: '',
-  payment_kind: 'personal', expense_account_id: '', payment_account_id: '', vendor_id: '', recurring_template_id: '', recurring_month: '' });
+  payment_kind: 'personal', expense_account_id: '', payment_account_id: '', vendor_id: '', recurring_template_id: '', recurring_month: '',
+  card_transaction_id: '', card_source_label: '' });
 const statusLabel = { submitted: 'Ready to post', posting: 'Posting…', posted: 'Posted to QuickBooks', error: 'Needs attention', cancelled: 'Cancelled' };
 const readReceipt = file => new Promise((resolve, reject) => {
   const reader = new FileReader();
@@ -49,6 +51,7 @@ export default function ExpensesWorkspace() {
   const [filter, setFilter] = useState('all');
   const [review, setReview] = useState(null);
   const [receiptUrl, setReceiptUrl] = useState(null);
+  const [cardRefreshKey, setCardRefreshKey] = useState(0);
   const pendingSubmission = useRef(null);
   const operationInProgress = useRef(false);
   const reviewPanel = useRef(null);
@@ -109,6 +112,14 @@ export default function ExpensesWorkspace() {
     if (fileInput.current) fileInput.current.value = '';
     requestAnimationFrame(() => { formPanel.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }); formPanel.current?.querySelector('select')?.focus(); });
   };
+  const chooseCardTransaction = transaction => {
+    setForm({ ...freshForm(), merchant: transaction.merchant_name || transaction.description, expense_date: transaction.transaction_date,
+      amount: (transaction.amount_cents / 100).toFixed(2), purpose: transaction.purpose || '', payment_kind: 'business',
+      expense_account_id: transaction.expense_account_id || '', payment_account_id: transaction.account?.qbo_payment_account_id || '',
+      card_transaction_id: transaction.id, card_source_label: `${transaction.account?.name || 'Connected card'}${transaction.account?.mask ? ` ••${transaction.account.mask}` : ''}` });
+    setReceipt(null); pendingSubmission.current = null; if (fileInput.current) fileInput.current.value = '';
+    requestAnimationFrame(() => { formPanel.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }); fileInput.current?.focus(); });
+  };
   const submit = event => {
     event.preventDefault();
     run('submit', async () => {
@@ -121,6 +132,7 @@ export default function ExpensesWorkspace() {
       catch (failure) { if (failure.status >= 400 && failure.status < 500) pendingSubmission.current = null; throw failure; }
       setRows(prev => [result.expense, ...prev.filter(r => r.id !== result.expense.id)]);
       if (result.expense.recurring_template_id) setRecurring(prev => prev.map(item => item.id === result.expense.recurring_template_id ? { ...item, current_expense: result.expense } : item));
+      if (result.expense.card_transaction_id) setCardRefreshKey(value => value + 1);
       pendingSubmission.current = null;
       clearForm();
       setNote('Expense submitted. Review the account mapping below, then post it to QuickBooks.');
@@ -136,6 +148,8 @@ export default function ExpensesWorkspace() {
   const shown = rows.filter(r => filter === 'all' || (filter === 'pending' ? !['posted', 'cancelled'].includes(r.status) : r.status === filter));
   const retrySubmission = !!pendingSubmission.current;
   const selectedRecurring = recurring.find(item => item.id === form.recurring_template_id);
+  const selectedCard = !!form.card_transaction_id;
+  const lockedSource = !!selectedRecurring || selectedCard;
   const monthLabel = recurring[0]?.month ? new Date(`${recurring[0].month}T12:00:00`).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : 'This month';
 
   return <section className="expenses-workspace" aria-label="Expenses">
@@ -154,6 +168,7 @@ export default function ExpensesWorkspace() {
       <div><span>Personal submissions</span><strong>{money(rows.filter(r => r.payment_kind === 'personal' && r.status !== 'cancelled').reduce((sum, r) => sum + r.amount_cents, 0))}</strong><small>Payment status is managed in QuickBooks</small></div>
     </div>
     <p className="expense-muted">Totals cover {rows.length} loaded submissions{nextOffset !== null ? '; load more below to include older expenses' : ''}.</p>
+    <CardFeedPanel company={company} options={options} onPrepare={chooseCardTransaction} refreshKey={cardRefreshKey} />
     <div className="expense-panel expense-recurring-panel">
       <div className="expense-heading"><div><h3>Monthly expenses</h3><p>Each schedule appears once per month for review before anything is posted to QuickBooks.</p></div><span className="expense-month">{monthLabel}</span></div>
       {!loading && !recurring.length && <p className="expense-muted">No monthly expenses are scheduled for this business.</p>}
@@ -174,19 +189,20 @@ export default function ExpensesWorkspace() {
     <div className="expense-panel" ref={formPanel}>
       <h3>Submit an expense</h3>
       {selectedRecurring && <div className="expense-message"><b>Recording {selectedRecurring.label} for {monthLabel}.</b> Merchant, purpose, and payment type come from the schedule; you can choose the current QuickBooks account numbers.{selectedRecurring.default_amount_cents == null && ' Enter this month’s statement amount.'} <button type="button" disabled={!!busy || retrySubmission} onClick={clearForm}>Clear</button></div>}
+      {selectedCard && <div className="expense-message"><b>Preparing an imported charge from {form.card_source_label}.</b> The cleared card transaction controls the merchant, date, amount, expense category, and payment account. Add its receipt, review the mapping, then submit. <button type="button" disabled={!!busy || retrySubmission} onClick={clearForm}>Clear</button></div>}
       {loading ? <p role="status">Loading expenses and QuickBooks accounts…</p> : !options ? <p>Account choices are unavailable. Check the business connection in QuickBooks Sync, then reload this tab.</p> : <form onSubmit={submit}>
         <fieldset disabled={!!busy || retrySubmission}>
           <div className="expense-form-grid">
-            <label>Merchant<input required readOnly={!!selectedRecurring} maxLength={200} value={form.merchant} onChange={e => update('merchant', e.target.value)} placeholder="Where did you spend?" /></label>
-            <label>Expense date<input required type="date" max={new Date().toLocaleDateString('en-CA')} value={form.expense_date} onChange={e => update('expense_date', e.target.value)} /></label>
-            <label>Amount (USD)<input required readOnly={selectedRecurring?.default_amount_cents != null} type="number" min="0.01" max="9999999.99" step="0.01" value={form.amount} onChange={e => update('amount', e.target.value)} placeholder="0.00" /></label>
-            <label>Who paid?<select disabled={!!selectedRecurring} value={form.payment_kind} onChange={e => setForm(prev => ({ ...prev, payment_kind: e.target.value, payment_account_id: '', vendor_id: '' }))}>
+            <label>Merchant<input required readOnly={lockedSource} maxLength={200} value={form.merchant} onChange={e => update('merchant', e.target.value)} placeholder="Where did you spend?" /></label>
+            <label>Expense date<input required readOnly={selectedCard} type="date" max={new Date().toLocaleDateString('en-CA')} value={form.expense_date} onChange={e => update('expense_date', e.target.value)} /></label>
+            <label>Amount (USD)<input required readOnly={selectedCard || selectedRecurring?.default_amount_cents != null} type="number" min="0.01" max="9999999.99" step="0.01" value={form.amount} onChange={e => update('amount', e.target.value)} placeholder="0.00" /></label>
+            <label>Who paid?<select disabled={lockedSource} value={form.payment_kind} onChange={e => setForm(prev => ({ ...prev, payment_kind: e.target.value, payment_account_id: '', vendor_id: '' }))}>
               <option value="personal">I paid personally · reimburse me</option><option value="business">Business bank account or card</option>
             </select></label>
-            <label>QuickBooks expense account<select required value={form.expense_account_id} onChange={e => update('expense_account_id', e.target.value)}>
+            <label>QuickBooks expense account<select required disabled={selectedCard} value={form.expense_account_id} onChange={e => update('expense_account_id', e.target.value)}>
               <option value="">Choose an account number</option>{expenseAccounts.map(a => <option key={a.Id} value={a.Id}>{accountLabel(a)} · {a.AccountType}</option>)}
             </select></label>
-            <label>{form.payment_kind === 'personal' ? 'Accounts payable account' : 'Paid from account'}<select required value={form.payment_account_id} onChange={e => update('payment_account_id', e.target.value)}>
+            <label>{form.payment_kind === 'personal' ? 'Accounts payable account' : 'Paid from account'}<select required disabled={selectedCard} value={form.payment_account_id} onChange={e => update('payment_account_id', e.target.value)}>
               <option value="">Choose an account number</option>{paymentAccounts.map(a => <option key={a.Id} value={a.Id}>{accountLabel(a)} · {a.AccountType}</option>)}
             </select></label>
           </div>
@@ -196,7 +212,7 @@ export default function ExpensesWorkspace() {
             <label>Reimbursement payee<select required value={form.vendor_id} onChange={e => update('vendor_id', e.target.value)}><option value="">Choose who should be reimbursed</option>{vendors.map(v => <option key={v.Id} value={v.Id}>{v.DisplayName}</option>)}</select></label>
             {vendorNote && <p role="status" className="expense-muted">{vendorNote}</p>}
           </div>}
-          <label>Business purpose<textarea required readOnly={!!selectedRecurring} maxLength={1000} rows={2} value={form.purpose} onChange={e => update('purpose', e.target.value)} placeholder="What was this expense for?" /></label>
+          <label>Business purpose<textarea required readOnly={lockedSource} maxLength={1000} rows={2} value={form.purpose} onChange={e => update('purpose', e.target.value)} placeholder="What was this expense for?" /></label>
           <label className="expense-upload">Receipt · PDF, JPG, or PNG up to 3 MB<input ref={fileInput} type="file" accept="application/pdf,image/jpeg,image/png" onChange={e => {
             const file = e.target.files?.[0];
             if (file && (file.size > 3145728 || !['application/pdf', 'image/jpeg', 'image/png'].includes(file.type))) { setError('Choose a PDF, JPG, or PNG up to 3 MB.'); e.target.value = ''; setReceipt(null); return; }

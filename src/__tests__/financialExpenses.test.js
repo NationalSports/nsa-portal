@@ -61,6 +61,29 @@ function fakeAdmin(initial, recurringTemplates = []) {
   };
   return admin;
 }
+function fakeCardAdmin(transaction, cardAccount) {
+  const admin = fakeAdmin(null);
+  const baseFrom = admin.from;
+  admin.from = jest.fn(table => {
+    if (!['financial_card_transactions', 'financial_card_accounts'].includes(table)) return baseFrom(table);
+    const target = table === 'financial_card_transactions' ? transaction : cardAccount;
+    let values = null, filters = [];
+    const query = {
+      select: () => query,
+      eq: (key, value) => { filters.push([key, value]); return query; },
+      update: patch => { values = patch; return query; },
+      maybeSingle: async () => ({ data: filters.every(([key, value]) => target[key] === value) ? { ...target } : null }),
+      then: (resolve, reject) => Promise.resolve((() => {
+        if (!filters.every(([key, value]) => target[key] === value)) return { data: null };
+        if (values) Object.assign(target, values);
+        return { data: { ...target } };
+      })()).then(resolve, reject),
+    };
+    return query;
+  });
+  admin.cardTransaction = () => transaction;
+  return admin;
+}
 function fakeQbo() {
   let remote = null;
   qbRequest.mockImplementation(async (method, path, token, payload) => {
@@ -162,6 +185,20 @@ test('keeps vehicle loan reminders out of the one-line QBO expense flow', async 
   expect(response.statusCode).toBe(400);
   expect(JSON.parse(response.body).error).toMatch(/principal and interest/i);
   expect(getValidAccessToken).not.toHaveBeenCalled();
+});
+test('uses immutable cleared card data and its verified QBO mappings for an imported expense', async () => {
+  const transaction = { id: '22222222-2222-4222-8222-222222222222', company_key: 'national', account_id: '11111111-1111-4111-8111-111111111111',
+    merchant_name: 'Mobile Carrier', description: 'MOBILE CARRIER', transaction_date: '2026-09-20', amount_cents: 4852,
+    status: 'ready', pending: false, provider_removed: false, expense_account_id: '1', purpose: 'Monthly mobile service' };
+  const cardAccount = { id: transaction.account_id, company_key: 'national', qbo_payment_account_id: '2' };
+  const admin = fakeCardAdmin(transaction, cardAccount); fakeQbo();
+  verifyQBOUser.mockResolvedValue({ ok: true, teamMemberId: owner, admin });
+  const response = await handler(event({ ...input, action: 'submit', merchant: 'Forged', expense_date: '2026-08-01', amount: '1.00', purpose: 'Forged',
+    expense_account_id: '999', payment_account_id: '2', card_transaction_id: transaction.id }));
+  expect(response.statusCode).toBe(200);
+  expect(admin.row()).toMatchObject({ merchant: 'Mobile Carrier', expense_date: '2026-09-20', amount_cents: 4852,
+    purpose: 'Monthly mobile service', expense_account_id: '1', payment_account_id: '2', card_transaction_id: transaction.id });
+  expect(admin.cardTransaction()).toMatchObject({ status: 'submitted', financial_expense_id: id });
 });
 test('cannot post another business’s expense or to a reconnected realm', async () => {
   const admin = fakeAdmin(makeRow()); verifyQBOUser.mockResolvedValue({ ok: true, teamMemberId: owner, admin }); fakeQbo();

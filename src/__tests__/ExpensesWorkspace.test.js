@@ -24,8 +24,10 @@ beforeEach(() => {
   requests = []; submitFail = false;
   supabase.auth.getSession.mockResolvedValue({ data: { session: { access_token: 'test' } } });
   Object.defineProperty(global, 'crypto', { configurable: true, value: { randomUUID: () => row.id } });
-  global.fetch = jest.fn(async (_, opts) => {
+  global.fetch = jest.fn(async (url, opts) => {
     const body = JSON.parse(opts.body); requests.push(body);
+    if (url.includes('financial-card-feed')) return { ok: true, json: async () => ({ configured: false, environment: 'sandbox', connections: [], accounts: [], transactions: [], rules: [],
+      report: { total_cents: 0, count: 0, needs_review: 0, ready: 0, submitted: 0, posted: 0, missing_receipts: 0, by_account: [] } }) };
     let data;
     if (body.action === 'list') data = { expenses: [row], recurring: body.company === 'national' ? recurring : [], nextOffset: null };
     if (body.action === 'options') data = { realm_id: '123', accounts: body.company === 'methodic' ? [{ Id: '20', AcctNum: '62100', Name: 'Methodic Travel', AccountType: 'Expense' }] : accounts };

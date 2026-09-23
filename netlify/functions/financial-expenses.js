@@ -4,7 +4,7 @@ const { OWNERS, UUID, check, validateInput, validateMappings, buildPayload, matc
 const TABLE = 'financial_expenses';
 const RECURRING_TABLE = 'financial_recurring_expenses';
 const BUCKET = 'expense-receipts';
-const FIELDS = 'id,company_key,realm_id,submitted_by,merchant,expense_date,amount_cents,currency,purpose,payment_kind,expense_account_id,expense_account_number,expense_account_name,payment_account_id,payment_account_number,payment_account_name,vendor_id,vendor_name,receipt_name,recurring_template_id,recurring_month,status,qb_entity_type,qb_entity_id,last_error,posted_at,created_at,updated_at';
+const FIELDS = 'id,company_key,realm_id,submitted_by,merchant,expense_date,amount_cents,currency,purpose,payment_kind,expense_account_id,expense_account_number,expense_account_name,payment_account_id,payment_account_number,payment_account_name,vendor_id,vendor_name,receipt_name,recurring_template_id,recurring_month,card_transaction_id,status,qb_entity_type,qb_entity_id,last_error,posted_at,created_at,updated_at';
 const RECURRING_FIELDS = 'id,company_key,label,merchant,default_amount_cents,currency,purpose,payment_kind,frequency,starts_on,ends_on,is_active,requires_accounting_split';
 const currentMonth = () => {
   const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit' }).formatToParts(new Date());
@@ -91,6 +91,7 @@ exports.handler = async (event) => {
     }
     if (body.action === 'submit') {
       let recurringTemplate = null;
+      let cardTransaction = null;
       if (body.recurring_template_id != null || body.recurring_month != null) {
         check(UUID.test(body.recurring_template_id || ''), 'Choose a valid monthly expense.');
         check(body.recurring_month === currentMonth(), 'This monthly expense can only be recorded for the current month.');
@@ -101,14 +102,30 @@ exports.handler = async (event) => {
         body = { ...body, merchant: recurringTemplate.merchant, purpose: recurringTemplate.purpose, payment_kind: recurringTemplate.payment_kind };
         if (recurringTemplate.default_amount_cents != null) check(String(body.amount) === (recurringTemplate.default_amount_cents / 100).toFixed(2), 'The amount does not match this fixed monthly expense.');
       }
+      if (body.card_transaction_id != null) {
+        check(!recurringTemplate && UUID.test(body.card_transaction_id || ''), 'Choose a valid imported card transaction.');
+        cardTransaction = db(await admin.from('financial_card_transactions').select('*').eq('id', body.card_transaction_id)
+          .eq('company_key', company).maybeSingle());
+        check(cardTransaction && cardTransaction.status === 'ready' && !cardTransaction.pending && !cardTransaction.provider_removed && cardTransaction.amount_cents > 0,
+          'This card transaction must be cleared and categorized before it can be submitted.');
+        const cardAccount = db(await admin.from('financial_card_accounts').select('*').eq('id', cardTransaction.account_id).eq('company_key', company).maybeSingle());
+        check(cardAccount?.qbo_payment_account_id, 'Map this connected card to its QuickBooks payment account first.');
+        check(String(body.payment_account_id || '') === String(cardAccount.qbo_payment_account_id), 'The payment account must match the connected card’s verified QuickBooks mapping.');
+        body = { ...body, merchant: cardTransaction.merchant_name || cardTransaction.description,
+          expense_date: cardTransaction.transaction_date, amount: (cardTransaction.amount_cents / 100).toFixed(2),
+          purpose: cardTransaction.purpose, payment_kind: 'business', expense_account_id: cardTransaction.expense_account_id };
+      }
       const row = validateInput(body);
       if (recurringTemplate) {
         row.recurring_template_id = recurringTemplate.id;
         row.recurring_month = body.recurring_month;
       }
+      if (cardTransaction) row.card_transaction_id = cardTransaction.id;
       const existing = db(await admin.from(TABLE).select(FIELDS).eq('id', row.id).maybeSingle());
       if (existing) {
         check(existing.company_key === company && existing.submitted_by === auth.teamMemberId, 'Submission ID already belongs to another expense.');
+        if (existing.card_transaction_id) db(await admin.from('financial_card_transactions').update({ status: existing.status === 'posted' ? 'posted' : 'submitted',
+          financial_expense_id: existing.id, updated_at: new Date().toISOString() }).eq('id', existing.card_transaction_id));
         return reply(200, { expense: existing, alreadySubmitted: true });
       }
       const receipt = receiptBuffer(body.receipt);
@@ -139,9 +156,14 @@ exports.handler = async (event) => {
           return reply(200, { expense: prior, alreadySubmitted: true });
         }
         check(!row.recurring_template_id, 'This monthly expense has already been recorded for the current month.');
+        check(!row.card_transaction_id, 'This card transaction has already been submitted.');
         throw new Error('Expense submission conflict.');
       }
-      return reply(200, { expense: db(inserted) });
+      const savedExpense = db(inserted);
+      if (cardTransaction) db(await admin.from('financial_card_transactions').update({ status: 'submitted', financial_expense_id: savedExpense.id,
+        expense_account_id: savedExpense.expense_account_id, expense_account_number: savedExpense.expense_account_number,
+        expense_account_name: savedExpense.expense_account_name, updated_at: new Date().toISOString() }).eq('id', cardTransaction.id).eq('status', 'ready'));
+      return reply(200, { expense: savedExpense });
     }
     check(['receipt', 'post', 'cancel'].includes(body.action), 'Unknown expense action.');
     check(UUID.test(body.id || ''), 'Invalid expense ID.');
@@ -156,6 +178,8 @@ exports.handler = async (event) => {
       const cancelled = db(await admin.from(TABLE).update({ status: 'cancelled', updated_at: new Date().toISOString() })
         .eq('id', row.id).eq('status', 'submitted').select(FIELDS).maybeSingle());
       if (!cancelled) return reply(409, { error: 'Only submissions that have never been posted can be cancelled. Reconcile any posting attempt first.' });
+      if (cancelled.card_transaction_id) db(await admin.from('financial_card_transactions').update({ status: 'ready', financial_expense_id: null,
+        updated_at: new Date().toISOString() }).eq('id', cancelled.card_transaction_id).eq('financial_expense_id', cancelled.id));
       return reply(200, { expense: cancelled });
     }
     check(row.status !== 'cancelled', 'This submission was cancelled.');
@@ -185,6 +209,8 @@ exports.handler = async (event) => {
     const saved = db(await admin.from(TABLE).update({ status: 'posted', qb_entity_id: String(entity.Id),
       posted_at: new Date().toISOString(), posted_by: auth.teamMemberId, updated_at: new Date().toISOString(), last_error: null })
       .eq('id', row.id).eq('status', 'posting').select(FIELDS).single());
+    if (saved.card_transaction_id) db(await admin.from('financial_card_transactions').update({ status: 'posted', updated_at: new Date().toISOString() })
+      .eq('id', saved.card_transaction_id).eq('financial_expense_id', saved.id));
     return reply(200, { expense: saved });
   } catch (error) {
     if (claimedId && admin) {
