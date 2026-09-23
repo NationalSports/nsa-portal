@@ -67,8 +67,8 @@ export default function JobGarmentProgress({ summary, onViewItem }) {
   const sizes = Object.entries(summary.sizes).filter(([, n]) => n > 0);
   const order = ['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
   sizes.sort(([a], [b]) => (order.indexOf(a) < 0 ? 99 : order.indexOf(a)) - (order.indexOf(b) < 0 ? 99 : order.indexOf(b)));
-  return <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '16px 24px', padding: '14px 4px' }}>
-    <div aria-label="Garment quantities and progress" style={{ flex: '1 1 260px', display: 'flex', alignItems: 'center', gap: 16, fontSize: 12, minWidth: 0 }}>
+  return <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '12px 16px', padding: '12px 4px' }}>
+    <div aria-label="Garment quantities and progress" style={{ flex: '0 1 auto', maxWidth: '100%', display: 'flex', alignItems: 'center', gap: 12, fontSize: 12, minWidth: 0 }}>
     <strong>QTY {summary.total}</strong>
     <div style={{ flex: 1, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
       {sizes.map(([size, qty]) => {
@@ -89,10 +89,10 @@ export default function JobGarmentProgress({ summary, onViewItem }) {
 
 export function GarmentDecorationSpecs({ specs }) {
   if (!specs.length) return null;
-  return <section aria-label="Decoration details" style={{ flex: '1 1 320px', minWidth: 0, padding: '12px 14px', border: '1px solid #e2e8f0', borderRadius: 8, background: 'white' }}>
-    <div style={{ fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase', fontWeight: 800, color: '#64748b', marginBottom: 10 }}>Decoration</div>
-    {specs.map((spec, index) => <div key={JSON.stringify(spec)} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '10px 24px', ...(index ? { borderTop: '1px solid #eef2f6', paddingTop: 10, marginTop: 10 } : {}) }}>
-      <div style={{ flex: '1 1 180px', minWidth: 0 }}>
+  return <section aria-label="Decoration details" style={{ flex: '1 1 440px', minWidth: 0, padding: '8px 12px', border: '1px solid #e2e8f0', borderRadius: 8, background: 'white' }}>
+    {specs.map((spec, index) => <div key={JSON.stringify(spec)} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px 16px', ...(index ? { borderTop: '1px solid #eef2f6', paddingTop: 8, marginTop: 8 } : {}) }}>
+      <div style={{ flex: '1 1 120px', minWidth: 0 }}>
+        <div style={{ fontSize: 10, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>Decoration</div>
         <div style={{ fontSize: 13, fontWeight: 700, color: '#1e293b', overflowWrap: 'anywhere' }}>{spec.name}</div>
         {spec.method && <span style={{ display: 'inline-block', marginTop: 5, padding: '3px 8px', borderRadius: 4, background: '#eef2ff', color: '#4338ca', fontSize: 11, fontWeight: 600, textTransform: 'capitalize' }}>{spec.method}</span>}
       </div>
@@ -100,7 +100,7 @@ export function GarmentDecorationSpecs({ specs }) {
         <div style={{ fontSize: 10, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>{label}</div>
         <div style={{ fontSize: 12, fontWeight: 600, color: '#334155', overflowWrap: 'anywhere' }}>{value}</div>
       </div>)}
-      <div style={{ flexBasis: '100%', minWidth: 0 }}>
+      <div style={{ flex: '1 1 120px', minWidth: 0 }}>
         <div style={{ fontSize: 10, fontWeight: 600, color: '#64748b', marginBottom: 5 }}>{spec.colorLabel}</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
           {!realInkLines(spec.colors).length && <span style={{ fontSize: 11, color: '#64748b' }}>Not specified</span>}
