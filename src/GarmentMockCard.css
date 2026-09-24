@@ -36,3 +36,8 @@
 @media(max-width:640px){.mock-panels.two{grid-template-columns:minmax(0,1fr)}.panel-frame{height:230px}.garment-mock-card{flex-basis:100%}.panel-actions button{min-height:42px}}
 .mock-covers .cover-cell{display:inline-block;min-width:26px;padding:2px 6px;border-radius:4px}
 .mock-covers .cover-link{border:1px solid #d8dee8;border-radius:6px;background:#fff;color:#334155;font-size:10px;font-weight:600;padding:3px 7px;cursor:pointer;white-space:nowrap}
+.bg-switch{display:inline-flex;border:1px solid #d8dee8;border-radius:999px;overflow:hidden;background:#fff}
+.bg-switch button{border:0;background:transparent;color:#475569;font-size:10.5px;font-weight:600;padding:4px 10px;cursor:pointer;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bg-switch button+button{border-left:1px solid #e2e8f0}
+.bg-switch button[aria-pressed=true]{background:#6251c5;color:#fff}
+.logo-frame.bg-checker{background:repeating-conic-gradient(#cbd5e1 0 25%,#ffffff 0 50%) 50%/16px 16px}.logo-frame.bg-dark{background:#1f2937}

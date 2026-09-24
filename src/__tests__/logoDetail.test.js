@@ -103,6 +103,18 @@ describe('logo detail pane', () => {
     expect(screen.getByText(/TRANSPARENT background/)).toBeTruthy();
   });
 
+  test('the background can be switched so a white logo is visible on a light garment', () => {
+    const { container } = render(<GarmentMockCard label="WVC" mocks={[{ url: 'm.png' }]} candidates={[]} onUse={() => true} onRemove={() => true} onUpload={() => true}
+      logo={{ url: 'white-logo.png', bg: '#ffffff', colorName: 'White', onUpload: jest.fn() }} />);
+    const frame = container.querySelector('.logo-frame');
+    expect(frame.style.background).toMatch(/255, 255, 255|#ffffff/i);
+    fireEvent.click(screen.getByRole('button', { name: 'Checkered' }));
+    expect(frame.className).toMatch(/bg-checker/);
+    fireEvent.click(screen.getByRole('button', { name: 'Dark' }));
+    expect(frame.className).toMatch(/bg-dark/);
+    expect(frame.style.background).toBe('');
+  });
+
   test('a JPG is refused with an explanation instead of uploading', async () => {
     const onUpload = jest.fn();
     const { container } = render(card(onUpload));

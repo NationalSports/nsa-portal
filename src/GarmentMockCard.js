@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { fileDisplayName, _isImgUrl, _cloudinaryPdfThumb, openFile } from './utils';
 import { sizeProgressCell } from './JobGarmentProgress';
 import './GarmentMockCard.css';
@@ -36,6 +36,33 @@ async function hasTransparency(file) {
   finally { if (url) URL.revokeObjectURL(url); }
 }
 
+// Is this logo mostly light (e.g. an all-white logo)? Averages the visible pixels of the image.
+// Resolves null when the image can't be read (no canvas, or the host blocks cross-origin reads).
+function logoIsLight(url) {
+  return new Promise(resolve => {
+    if (!url || typeof document === 'undefined') return resolve(null);
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const w = Math.max(1, Math.min(img.naturalWidth, 120));
+        const h = Math.max(1, Math.round(img.naturalHeight * w / (img.naturalWidth || 1)));
+        const c = document.createElement('canvas'); c.width = w; c.height = h;
+        const ctx = c.getContext('2d');
+        if (!ctx) return resolve(null);
+        ctx.drawImage(img, 0, 0, w, h);
+        const d = ctx.getImageData(0, 0, w, h).data;
+        let sum = 0, n = 0;
+        for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 128) { sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]; n++; }
+        resolve(n ? sum / n > 205 : null);
+      } catch (e) { resolve(null); }
+    };
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+}
+const _hexLum = hex => { const m = String(hex || '').replace('#', '').match(/.{2}/g); if (!m || m.length < 3) return 128; const [r, g, b] = m.map(x => parseInt(x, 16)); return 0.299 * r + 0.587 * g + 0.114 * b; };
+
 // The logo detail panel: the design's transparent logo PNG painted on the garment color, so the
 // close-up reads the way it will print. `logo` = { url, bg, colorName, onUpload, onRemove };
 // without onUpload it is read-only.
@@ -44,6 +71,12 @@ function LogoDetailPane({ logo, busy }) {
   const [error, setError] = useState('');
   const [help, setHelp] = useState(false);
   const [drag, setDrag] = useState(false);
+  const [bgMode, setBgMode] = useState(null);
+  const [light, setLight] = useState(null);
+  useEffect(() => { let live = true; setLight(null); logoIsLight(logo.url).then(v => { if (live) setLight(v); }); return () => { live = false; }; }, [logo.url]);
+  // A light (e.g. all-white) logo on a light garment would vanish, so it starts on dark instead.
+  const autoDark = light === true && _hexLum(logo.bg) > 180;
+  const mode = bgMode || (autoDark ? 'dark' : 'garment');
   const run = async fn => {
     setError('');
     try { const ok = await fn(); if (ok === false) setError('Could not save the logo detail. Please try again.'); }
@@ -67,11 +100,14 @@ function LogoDetailPane({ logo, busy }) {
       <button type="button" className="help-btn" aria-expanded={help} aria-label="What is a logo detail?" onClick={() => setHelp(h => !h)}>?</button>
     </div>
     {help && <div className="logo-help" role="note"><ul>{LOGO_HELP.map(t => <li key={t}>{t}</li>)}</ul></div>}
-    <div className={'panel-frame logo-frame' + (drag ? ' dragging' : '')} style={{ background: logo.bg || '#e5e7eb' }} {...drop}>
+    <div className={'panel-frame logo-frame bg-' + mode + (drag ? ' dragging' : '')} style={mode === 'garment' ? { background: logo.bg || '#e5e7eb' } : undefined} {...drop}>
       {logo.url ? <button type="button" className="frame-open" onClick={() => openFile(logo.url)} aria-label="Open full size logo detail"><img src={logo.url} alt="Logo detail" /></button>
         : <span className="logo-empty">{logo.onUpload ? <>Drop the transparent logo PNG here<br /><small>or use Upload logo PNG</small></> : 'No logo detail yet'}</span>}
     </div>
-    <div className="panel-meta">{logo.colorName ? 'Shown on ' + logo.colorName : 'Shown on the garment color'}</div>
+    {logo.url && <div className="bg-switch" role="group" aria-label="Logo background">
+      {[['garment', logo.colorName || 'Garment'], ['checker', 'Checkered'], ['dark', 'Dark']].map(([k, lbl]) => <button key={k} type="button" aria-pressed={mode === k} onClick={() => setBgMode(k)}>{lbl}</button>)}
+    </div>}
+    <div className="panel-meta">{mode === 'garment' ? (logo.colorName ? 'Shown on ' + logo.colorName : 'Shown on the garment color') : autoDark && !bgMode ? 'Light logo — shown on dark so it stays visible' : mode === 'checker' ? 'Checkered = transparent areas' : 'Shown on dark'}</div>
     {error && <p role="alert" className="mock-error">{error}</p>}
     {logo.onUpload && <div className="panel-actions">
       <button type="button" disabled={busy} onClick={() => input.current.click()}>{logo.url ? 'Replace logo' : 'Upload logo PNG'}</button>
