@@ -41,7 +41,7 @@ export default function ProductionPacket({fixture=null}){
  const targetOptions=(noteScope==='garment'?p.garments:noteScope==='decoration'?p.decorations:noteScope==='player'?p.players:[]).filter(r=>r.soId===currentSo);
  const playerOrders=groupPlayerOrders(p.players,search);
  const exportItems=()=>{const url=URL.createObjectURL(new Blob(['\ufeff'+playerItemCsv(p.players)],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='production-player-items.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
- const download=async()=>{setBusy(true);setError('');let frame;try{
+ const download=async()=>{setBusy(true);setError('');let frame;const pdfWindow=window.open('','_blank');if(pdfWindow){pdfWindow.document.title='Preparing production packet';pdfWindow.document.body.innerHTML='<p style="font:16px system-ui;padding:32px">Preparing production packet PDF…</p>';}try{
   const [,qrModule]=await Promise.all([window.html2pdf?Promise.resolve():new Promise((resolve,reject)=>{const script=document.createElement('script');script.src=HTML2PDF_SRC;script.onload=resolve;script.onerror=()=>reject(new Error('Could not load the PDF generator.'));document.head.appendChild(script);}),import('qrcode')]);
   const html2pdf=window.html2pdf;
   const qr=qrModule.toDataURL||qrModule.default?.toDataURL;
@@ -52,8 +52,8 @@ export default function ProductionPacket({fixture=null}){
   const images=Array.from(frame.contentDocument.images);await Promise.all(images.map(image=>image.complete?Promise.resolve():new Promise(resolve=>{image.addEventListener('load',resolve,{once:true});image.addEventListener('error',resolve,{once:true});setTimeout(resolve,12000);})))
   const name=`production-packet-${p.revisionId||'draft'}.pdf`;
   const blob=await html2pdf().set({margin:0,filename:name,image:{type:'jpeg',quality:.9},html2canvas:{scale:1,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'},pagebreak:{mode:['css','legacy'],avoid:['tr','.instruction','.deco']}}).from(frame.contentDocument.body).outputPdf('blob');
-  const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
- }catch(e){setError(e.message||'Could not create the PDF.');}finally{if(frame)frame.remove();setBusy(false);}};
+  const url=URL.createObjectURL(blob);if(pdfWindow&&!pdfWindow.closed){pdfWindow.location.replace(url);}else{const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();}setTimeout(()=>URL.revokeObjectURL(url),60000);
+ }catch(e){if(pdfWindow&&!pdfWindow.closed)pdfWindow.close();setError(e.message||'Could not create the PDF.');}finally{if(frame)frame.remove();setBusy(false);}};
  const startMessage=(soId,targetId='')=>{setTab(4);setSo(soId);setTarget(targetId);setReply('');setText('');};
  const primary=brandColor(p.store.primaryColor,'#19333c'), accent=brandColor(p.store.accentColor,'#167b6e');
  return <main className="pp" style={{'--store-primary':primary,'--store-accent':accent,'--store-on-primary':brandText(primary)}}>
