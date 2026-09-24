@@ -33,6 +33,16 @@ describe('logo detail helpers', () => {
     expect(arts[0].web_logos.map(w => w.url)).toEqual(['two.png']);
   });
 
+  test('replacing or removing a logo detail is recorded as an intentional delete (no merge resurrection)', () => {
+    let arts = setLogoDetail([art], 'a', 'cw1', 'old.png');
+    arts = setLogoDetail(arts.map(({ _artDeletes, _artEditedFields, ...a }) => a), 'a', 'cw1', 'new.png');
+    expect(arts[0].web_logos[0].url).toBe('new.png');
+    expect(arts[0]._artDeletes.web_logos).toEqual(['old.png']);
+    const removed = removeLogoDetail(setLogoDetail([art], 'a', null, 'def.png'), 'a', 'def.png');
+    expect(removed[0]._artDeletes.web_logos).toContain('def.png');
+    expect(removed[0]._artEditedFields).toContain('web_logo_url');
+  });
+
   test('the approval gate names each design / color way still missing a logo detail', () => {
     const order = { items: [line('AT106', 'Medium Grey Heather'), line('JW6597', 'White', 'cw2')], art_files: [art] };
     const twoItems = { ...job, items: job.items.slice(0, 2) };

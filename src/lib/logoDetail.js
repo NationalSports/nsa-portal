@@ -1,4 +1,4 @@
-import { safeArr, safeArt, safeItems, safeStr, jobItemArtSlots, jobArtFileIds } from '../safeHelpers';
+import { safeArr, safeArt, safeItems, safeStr, jobItemArtSlots, jobArtFileIds, markArtFieldEdit } from '../safeHelpers';
 import { pickCwAsset } from '../businessLogic';
 import { knownGarmentHex, exactGarmentHex } from './artGrid';
 
@@ -62,14 +62,18 @@ export const setLogoDetail = (arts, artId, colorWayId, file) => {
       ? { url, ...(name ? { name } : {}), color_way_id: colorWayId, color_way: _cwLabel(a, colorWayId) }
       : { url, ...(name ? { name } : {}), color_way: '', is_default: true };
     const keep = safeArr(a.web_logos).filter(w => w && w.url && (colorWayId ? w.color_way_id !== colorWayId : !_isDefaultLogo(w)));
-    return { ...a, web_logos: [...keep, entry], ...(colorWayId ? {} : { web_logo_url: url }) };
+    // Newest first (resolvers take the first match), and the replaced entry is marked as an
+    // intentional removal so a conflict merge can't bring the old logo back.
+    const next = markArtFieldEdit(a, 'web_logos', [entry, ...keep]);
+    return colorWayId ? next : markArtFieldEdit(next, 'web_logo_url', url);
   });
 };
 
 // Remove one logo detail image (by url) from a design.
 export const removeLogoDetail = (arts, artId, url) => safeArr(arts).map(a => {
   if (!a || a.id !== artId || !url) return a;
-  return { ...a, web_logos: safeArr(a.web_logos).filter(w => w && w.url !== url), ...(a.web_logo_url === url ? { web_logo_url: '' } : {}) };
+  const next = markArtFieldEdit(a, 'web_logos', safeArr(a.web_logos).filter(w => w && w.url !== url));
+  return a.web_logo_url === url ? markArtFieldEdit(next, 'web_logo_url', '') : next;
 });
 
 // Every (design, color way) pair this job prints — one logo detail each. Scoped like the mock
