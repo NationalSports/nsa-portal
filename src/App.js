@@ -899,11 +899,15 @@ const _applyDelivery=(doc,lastSend,res)=>{
 // our sending service). Without this the only sign was a small red badge inside the document, and
 // reps heard about it from the coach days later. Keyed on the rejected messageId so a dismissed
 // alert comes back if a resend is rejected too; a successful resend flips email_status back to
-// 'sent' and the alert clears itself. Only the last 30 days — older failures aren't actionable.
+// 'sent' and the alert clears itself. Only the last 30 days — older failures aren't actionable —
+// and only while the document still needs the customer: an estimate they already approved or that
+// converted to an order, a paid/void invoice, or a closed order has nothing left to chase.
+const _EMAIL_FAIL_DONE=/^(converted|approved|lost|declined|cancel+ed|closed|archived|void|complete|completed)$/i;
 const _emailFailedTodos=({ests,sos,invs,cust})=>{
   const out=[];const cutoff=Date.now()-30*86400000;
   const add=(doc,kind,label)=>{
     if(!doc||doc.email_status!=='failed'||doc.deleted_at)return;
+    if((kind==='inv'&&!opsOpenInvoice(doc))||_EMAIL_FAIL_DONE.test(String(doc.status||'')))return;
     const f=(doc.sent_history||[]).filter(h=>h&&h.delivery==='failed').slice(-1)[0];
     if(!f)return;
     const at=new Date(f.delivery_at||f.sent_at||0).getTime();
