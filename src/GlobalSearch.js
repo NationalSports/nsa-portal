@@ -3,21 +3,28 @@ import React from 'react';
 import { Icon, calcSOStatus } from './components';
 import { safeItems, safePicks, safePOs, safeJobs } from './safeHelpers';
 
-const labels={customer:'Customers',order:'Sales Orders',webstore:'Webstore Orders',estimate:'Estimates',product:'Products',txn:'Ordered Items',pick:'Item Fulfillments',po:'Purchase Orders',job:'Jobs',invoice:'Invoices',vendor:'Vendors'};
-const icons={customer:'users',order:'box',webstore:'store',estimate:'dollar',product:'package',txn:'file',pick:'grid',po:'cart',job:'grid',invoice:'file',vendor:'building'};
-const limits={customer:6,order:4,webstore:5,estimate:4,product:6,txn:5,pick:4,po:4,job:4,invoice:4,vendor:4};
+const labels={store:'Webstores',customer:'Customers',order:'Sales Orders',webstore:'Webstore Orders',estimate:'Estimates',product:'Products',txn:'Ordered Items',pick:'Item Fulfillments',po:'Purchase Orders',job:'Jobs',invoice:'Invoices',vendor:'Vendors'};
+const icons={store:'store',customer:'users',order:'box',webstore:'store',estimate:'dollar',product:'package',txn:'file',pick:'grid',po:'cart',job:'grid',invoice:'file',vendor:'building'};
+const limits={store:5,customer:6,order:4,webstore:5,estimate:4,product:6,txn:5,pick:4,po:4,job:4,invoice:4,vendor:4};
 const text=v=>String(v||'').toLowerCase();
 
 // Keep keystroke state and search-index work out of App. App is intentionally huge, so
 // controlling this input there made every character reconcile the entire portal tree.
 export default React.memo(function GlobalSearch({
   customers=[],estimates=[],salesOrders=[],products=[],invoices=[],vendors=[],submittedBatches=[],inventoryPOs=[],
-  searchProducts,searchTxnItems,mergeTxnItems,searchWebstoreOrders,orderSearchHay=()=>'',searchPOStatus,
+  searchProducts,searchTxnItems,mergeTxnItems,searchWebstoreOrders,searchWebstores,orderSearchHay=()=>'',searchPOStatus,
   newTabHref,onSeeAll,onOpen,
 }){
   const[query,setQuery]=React.useState('');
   const[open,setOpen]=React.useState(false);
   const[remote,setRemote]=React.useState({products:[],txn:[],webstore:[]});
+  // All webstores (≈100 rows) held locally so a store # like 49P54 matches as you type,
+  // with no round-trip. Loaded when the box is focused, refreshed at most once a minute.
+  const[stores,setStores]=React.useState([]);const storesAt=React.useRef(0);
+  const loadStores=React.useCallback(()=>{
+    if(!searchWebstores||Date.now()-storesAt.current<60000)return;storesAt.current=Date.now();
+    Promise.resolve(searchWebstores()).then(rows=>setStores(rows||[])).catch(()=>{storesAt.current=0});
+  },[searchWebstores]);
   const deferredQuery=React.useDeferredValue(query);
   const searchActive=deferredQuery.trim().length>=2;
   const requestSeq=React.useRef(0);
@@ -46,8 +53,9 @@ export default React.memo(function GlobalSearch({
     inventoryPOs.forEach(po=>{if(!po.po_number||seenPoIds.has(po.po_number))return;seenPoIds.add(po.po_number);entries.push({kind:'po',value:{po_id:po.po_number,vendor:po.vendor_name,status:po.status||'ordered',so_id:'',so:null,customer:'',isInvPO:true},hay:text((po.po_number||'')+' '+(po.vendor_name||'')+' '+(po.memo||''))})});
     invoices.forEach(inv=>entries.push({kind:'invoice',value:inv,hay:text((inv.id||'')+' '+(inv.memo||'')+' '+(customerById.get(inv.customer_id)?.name||''))}));
     vendors.forEach(v=>entries.push({kind:'vendor',value:v,hay:text((v.name||'')+' '+(v.rep_name||''))}));
+    stores.forEach(w=>entries.push({kind:'store',value:w,hay:text((w.name||'')+' '+(w.store_code||'')+' '+(w.omg_sale_code||''))}));
     return{entries,customerById};
-  },[searchActive,customers,estimates,salesOrders,invoices,vendors,submittedBatches,inventoryPOs,orderSearchHay,searchPOStatus]);
+  },[stores,searchActive,customers,estimates,salesOrders,invoices,vendors,submittedBatches,inventoryPOs,orderSearchHay,searchPOStatus]);
 
   React.useEffect(()=>{
     const q=query.trim();const seq=++requestSeq.current;
@@ -80,10 +88,11 @@ export default React.memo(function GlobalSearch({
   const clear=()=>{setQuery('');setOpen(false);setRemote({products:[],txn:[],webstore:[]})};
   const select=(kind,value,event)=>{if(event&&(event.ctrlKey||event.metaKey||event.shiftKey||event.button===1))return;event?.preventDefault();clear();onOpen(kind,value,index.customerById)};
   const seeAll=()=>{const q=query.trim();if(q.length<2)return;setOpen(false);onSeeAll(q)};
-  const kinds=['customer','order','estimate','webstore','product','txn','pick','po','job','invoice','vendor'];
+  const kinds=['store','customer','order','estimate','webstore','product','txn','pick','po','job','invoice','vendor'];
   const total=kinds.reduce((n,k)=>n+(grouped[k]?.length||0),0);
   const hrefFor=(kind,v)=>kind==='customer'?newTabHref({cust:v.id}):kind==='estimate'?newTabHref({est:v.id}):kind==='order'?newTabHref({so:v.id}):kind==='product'?newTabHref({prod:v.id}):kind==='invoice'?newTabHref({inv:v.id}):kind==='vendor'?newTabHref({vend:v.id}):kind==='pick'&&v.pick_id?newTabHref({pg:'item_fulfillment',if:v.pick_id}):(kind==='po'||kind==='job')&&v.so_id?newTabHref({so:v.so_id}):null;
   const row=(kind,v)=>{
+    if(kind==='store')return <><strong style={{fontFamily:'monospace',color:'#1e40af'}}>{v.store_code}</strong><span>{v.name}</span>{v.source==='omg'&&<span className="badge badge-gray">OMG</span>}<span className="badge badge-blue" style={{marginLeft:'auto'}}>{v.status}</span></>;
     if(kind==='customer')return <><strong>{v.name}</strong>{v.alpha_tag&&<span className="badge badge-gray">{v.alpha_tag}</span>}</>;
     if(kind==='order'||kind==='estimate')return <><strong style={{color:'#1e40af'}}>{v.id}</strong><span>{v.memo}</span>{index.customerById.get(v.customer_id)&&<small>{index.customerById.get(v.customer_id).alpha_tag||index.customerById.get(v.customer_id).name}</small>}</>;
     if(kind==='webstore')return <><strong style={{color:'#1e40af'}}>#{v.order_number||v.omg_order_number}</strong><span>{v.buyer_name||v.buyer_email||''}</span>{v.webstores?.name&&<small>{v.webstores.name}</small>}<span className={`badge ${['paid','shipped','completed'].includes(v.status)?'badge-green':['cancelled','refunded'].includes(v.status)?'badge-gray':'badge-blue'}`}>{v.status}</span></>;
@@ -97,7 +106,7 @@ export default React.memo(function GlobalSearch({
   };
 
   return <>
-    <div className="search-bar" data-tour-id="global-search" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={query} onChange={e=>{const value=e.target.value;setQuery(value);setOpen(value.length>=2)}} onFocus={()=>{if(query.length>=2)setOpen(true)}} onKeyDown={e=>{if(e.key==='Enter')seeAll();else if(e.key==='Escape')setOpen(false)}}/>{query&&<button onClick={clear} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
+    <div className="search-bar" data-tour-id="global-search" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={query} onChange={e=>{const value=e.target.value;setQuery(value);setOpen(value.length>=2)}} onFocus={()=>{loadStores();if(query.length>=2)setOpen(true)}} onKeyDown={e=>{if(e.key==='Enter')seeAll();else if(e.key==='Escape')setOpen(false)}}/>{query&&<button onClick={clear} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
     {open&&query.length>=2&&total>0&&<div style={{position:'absolute',top:'100%',left:0,right:0,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:60,maxHeight:350,overflow:'auto'}}>
       {kinds.map(kind=>(grouped[kind]?.length?<React.Fragment key={kind}><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>{labels[kind]}{kind==='txn'&&<span style={{fontWeight:400,textTransform:'none'}}> · sold before, not in catalog</span>}</div>{grouped[kind].map((value,i)=>{const href=hrefFor(kind,value);const Tag=href?'a':'div';return <Tag key={(value.id||value.po_id||value.pick_id||value.sku||i)+'-'+kind} {...(href?{href}:{})} onClick={e=>select(kind,value,e)} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}}><Icon name={icons[kind]} size={14}/>{row(kind,value)}</Tag>})}</React.Fragment>:null))}
       <div onClick={seeAll} style={{padding:'10px 12px',borderTop:'1px solid #e2e8f0',background:'#f8fafc',cursor:'pointer',fontSize:12,fontWeight:600,color:'#1e40af',display:'flex',alignItems:'center',gap:6}}><Icon name="search" size={12}/>See all results for "{query}" <span style={{color:'#94a3b8',fontWeight:400,marginLeft:'auto'}}>Press Enter ↵</span></div>

@@ -373,6 +373,14 @@ export const NSA_DEFAULTS={name:'National Sports Apparel',legal:'National Sports
   logo:'NSA',logoUrl:'/NEW%20NSA%20Logo%20on%20white.png',terms:'Net 30 from invoice date unless otherwise agreed.',
   depositTerms:'50% deposit required to begin production. Balance due upon completion.'};
 export const NSA={...NSA_DEFAULTS};
+// Estimate footer: quote the customer's account terms. Only prepay accounts get the deposit
+// line; net-terms accounts (and accounts with no terms set, which default to net30 everywhere
+// else) are told their Net N terms instead of a 50% deposit they don't actually owe.
+export const estimateTermsFooter=(cust,ci=NSA)=>{
+  const t=String(cust?.payment_terms||'net30').toLowerCase().replace(/[^a-z0-9]/g,'');
+  const m=t.match(/^net(\d+)$/);
+  return 'Prices subject to change. '+(m?'Payment terms: Net '+m[1]+' from invoice date.':(ci?.depositTerms||NSA.depositTerms));
+};
 // Physical warehouse / receiving address (where goods ship back to). Distinct from the
 // company billing address in NSA above. Used by Manual Ship's "Our Warehouse" destination.
 const _NSA_WH=shipFromLocation('warehouse');

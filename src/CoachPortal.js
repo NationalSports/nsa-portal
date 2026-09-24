@@ -1,6 +1,6 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
-import { SZ_ORD, sizeBreakdownStr, pantoneHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, artDstOnFile } from './constants';
+import { SZ_ORD, sizeBreakdownStr, pantoneHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, artDstOnFile, estimateTermsFooter } from './constants';
 import { statusChipLabel } from './lib/teamshopOrderStatus';
 import { ptDateLabel } from './lib/storeClock';
 import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, realInkLines, soLineKey, scopeSoItemsToInvoice, jobItemDecoIdxs, jobItemDecosOfKind, artProofFallback } from './safeHelpers';
@@ -1352,7 +1352,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             ...(estTax>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax ('+(estTaxRate*100).toFixed(2)+'%)</strong>',style:'text-align:right;border:none'},{value:_$(estTax),style:'text-align:right;border:none'}]}]:[]),
             {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong>'+_$(estTotal)+'</strong>',style:'text-align:right'}]},
           ]}],
-        footer:'Prices subject to change. '+NSA.depositTerms
+        footer:estimateTermsFooter(customer,NSA)
       });
     };
     const _estStatusPill=est.status==='approved'?['Approved','#1F7A43','#E8F5EC']:est.status==='converted'?['Converted to Order','#1A3A6B','#E6ECF5']:['Open',tAccent,tAccentSoft];
