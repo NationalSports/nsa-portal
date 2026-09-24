@@ -52,7 +52,7 @@ export default function ProductionPacket({fixture=null}){
   const images=Array.from(frame.contentDocument.images);await Promise.all(images.map(image=>image.complete?Promise.resolve():new Promise(resolve=>{image.addEventListener('load',resolve,{once:true});image.addEventListener('error',resolve,{once:true});setTimeout(resolve,12000);})))
   const name=`production-packet-${p.revisionId||'draft'}.pdf`;
   const blob=await html2pdf().set({margin:0,filename:name,image:{type:'jpeg',quality:.9},html2canvas:{scale:1,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'},pagebreak:{mode:['css','legacy'],avoid:['tr','.instruction','.deco']}}).from(frame.contentDocument.body).outputPdf('blob');
-  const url=URL.createObjectURL(blob);if(pdfWindow&&!pdfWindow.closed){pdfWindow.location.replace(url);}else{const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();}setTimeout(()=>URL.revokeObjectURL(url),60000);
+  const url=URL.createObjectURL(blob);if(pdfWindow&&!pdfWindow.closed){pdfWindow.location.replace(url);}else{window.location.assign(url);}setTimeout(()=>URL.revokeObjectURL(url),60000);
  }catch(e){if(pdfWindow&&!pdfWindow.closed)pdfWindow.close();setError(e.message||'Could not create the PDF.');}finally{if(frame)frame.remove();setBusy(false);}};
  const startMessage=(soId,targetId='')=>{setTab(4);setSo(soId);setTarget(targetId);setReply('');setText('');};
  const primary=brandColor(p.store.primaryColor,'#19333c'), accent=brandColor(p.store.accentColor,'#167b6e');
