@@ -5002,7 +5002,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
     if (repFilter !== 'all' && s.rep_id !== repFilter) return false;
     if (search.trim()) {
       const q = search.toLowerCase();
-      if (!((s.name || '').toLowerCase().includes(q) || (custName(s.customer_id) || '').toLowerCase().includes(q) || (s.slug || '').toLowerCase().includes(q))) return false;
+      if (!((s.name || '').toLowerCase().includes(q) || (custName(s.customer_id) || '').toLowerCase().includes(q) || (s.slug || '').toLowerCase().includes(q) || (s.store_code || '').toLowerCase().includes(q))) return false;
     }
     return true;
   };
@@ -5047,7 +5047,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
     if (repFilter !== 'all' && s.rep_id !== repFilter) return false;
     if (search.trim()) {
       const q = search.toLowerCase();
-      if (!((s.name || '').toLowerCase().includes(q) || (custName(s.customer_id) || '').toLowerCase().includes(q) || (s.slug || '').toLowerCase().includes(q))) return false;
+      if (!((s.name || '').toLowerCase().includes(q) || (custName(s.customer_id) || '').toLowerCase().includes(q) || (s.slug || '').toLowerCase().includes(q) || (s.store_code || '').toLowerCase().includes(q))) return false;
     }
     return true;
   });
@@ -5160,7 +5160,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
             </div>
             <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 9, background: '#fff', border: '1px solid #D1D5DE', borderRadius: 7, padding: '7px 12px', minWidth: 210 }}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#8A93A8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Filter stores…" style={{ border: 'none', outline: 'none', fontFamily: "'Source Sans 3',sans-serif", fontSize: 14, color: '#2A2F3E', width: '100%', background: 'transparent' }} />
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Filter stores — name, customer, or store #…" style={{ border: 'none', outline: 'none', fontFamily: "'Source Sans 3',sans-serif", fontSize: 14, color: '#2A2F3E', width: '100%', background: 'transparent' }} />
             </div>
           </div>
 
@@ -5171,6 +5171,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                 <tr style={{ background: '#FAFBFD', borderBottom: '1.5px solid #EEF1F6' }}>
                   <th style={{ ...TH, width: 34, padding: '12px 8px' }}></th>
                   <th onClick={() => setSort('store')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Store{sortArrow('store')}</th>
+                  <th style={{ ...TH, textAlign: 'left' }}>Store #</th>
                   <th onClick={() => setSort('status')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Status{sortArrow('status')}</th>
                   <th onClick={() => setSort('rep')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Rep{sortArrow('rep')}</th>
                   <th onClick={() => setSort('revenue')} style={{ ...TH, textAlign: 'right', cursor: 'pointer' }}>Revenue{sortArrow('revenue')}</th>
@@ -5207,6 +5208,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                           </div>
                           <div title={custName(s.customer_id)} style={{ color: '#8A93A8', fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{custName(s.customer_id)}</div>
                         </td>
+                        <td style={{ ...TD, fontFamily: 'monospace', fontWeight: 700, letterSpacing: '.06em', color: '#192853', whiteSpace: 'nowrap' }}>{s.store_code || <span style={{ color: '#D1D5DE' }}>—</span>}</td>
                         <td style={TD}><span style={statusStyle(st)}>{st}</span></td>
                         <td style={TD}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -5257,7 +5259,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                       </tr>
                       {isExp && (
                         <tr style={{ borderBottom: '1px solid #EEF1F6' }}>
-                          <td colSpan={9} style={{ padding: 0, background: '#FAFBFD' }} onClick={(e) => e.stopPropagation()}>
+                          <td colSpan={10} style={{ padding: 0, background: '#FAFBFD' }} onClick={(e) => e.stopPropagation()}>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 0.9fr', gap: 26, padding: '22px 24px 24px 50px', animation: 'wsExpand .18s ease-out' }}>
                               {/* Col 1: Sales Reporting */}
                               <div>
@@ -5312,6 +5314,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                                 <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 700, fontSize: 12, color: '#962C32', marginBottom: 12 }}>Store Setup</div>
                                 <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 14px', fontSize: 13.5, marginBottom: 16 }}>
                                   {[
+                                    ...(s.store_code ? [['Store #', s.store_code]] : []),
                                     ['Payment', s.payment_mode === 'either' ? 'Paid + Invoice' : s.payment_mode === 'unpaid' ? 'Invoice only' : 'Card only'],
                                     ['Delivery', s.delivery_mode === 'deliver_club' ? 'Deliver to club' : 'Ship to home'],
                                     ['Numbers', s.number_enabled ? (s.number_unique ? 'Unique #s' : 'On') : '—'],
@@ -5320,7 +5323,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                                   ].map(([label, val]) => (
                                     <React.Fragment key={label}>
                                       <span style={{ color: '#8A93A8' }}>{label}</span>
-                                      <span style={{ color: '#2A2F3E', fontWeight: 600 }}>{val}</span>
+                                      <span style={label === 'Store #' ? { color: '#191919', fontWeight: 800, fontFamily: 'monospace', letterSpacing: '.06em' } : { color: '#2A2F3E', fontWeight: 600 }}>{val}</span>
                                     </React.Fragment>
                                   ))}
                                 </div>
@@ -5333,7 +5336,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                   );
                 })}
                 {filtered.length === 0 && (
-                  <tr><td colSpan={9} style={{ padding: 48, textAlign: 'center', color: '#8A93A8', fontSize: 15 }}>No stores match these filters.</td></tr>
+                  <tr><td colSpan={10} style={{ padding: 48, textAlign: 'center', color: '#8A93A8', fontSize: 15 }}>No stores match these filters.</td></tr>
                 )}
               </tbody>
             </table>
@@ -5892,6 +5895,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
       <Section title="Basics">
         <Row label={`${noun} (customer) — link this first`}><CustomerPicker customers={cust} value={f.customer_id} onChange={applyCustomer} placeholder="Search by name or alpha — e.g. OLu" /></Row>
         <Row label="Store name (auto-named from customer)"><input className="form-input" value={f.name} onChange={(e) => setName(e.target.value)} placeholder="OLu Football Team Store" /></Row>
+        {store?.store_code && <Row label="Store # (auto-assigned — use it to look this store up)"><div style={{ fontFamily: 'monospace', fontSize: 15, fontWeight: 800, letterSpacing: '.06em', color: '#191919', padding: '6px 0' }}>{store.store_code}</div></Row>}
         <Row label="URL slug"><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ color: '#94a3b8', fontSize: 13, fontFamily: 'monospace' }}>/shop/</span><input className="form-input" value={f.slug} onChange={(e) => { setSlugTouched(true); set('slug', slugify(e.target.value)); }} placeholder="olu-football" /></div></Row>
         <div style={{ display: 'flex', gap: 12 }}>
           <Row label="Rep (auto-set from customer)"><select className="form-select" value={f.rep_id || ''} onChange={(e) => { const rid = e.target.value; setF((p) => ({ ...p, rep_id: rid, csr_id: primaryCsrForRep(rid) || '' })); }}><option value="">—</option>{repOptions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Row>
@@ -6701,7 +6705,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
                   : <div style={{ height: 48, width: 48, borderRadius: 10, background: accent, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 22, flexShrink: 0 }}>{(s.name || '?')[0].toUpperCase()}</div>}
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 21, fontWeight: 800, letterSpacing: 0.2, lineHeight: 1.05, textTransform: 'uppercase' }}>{s.name}</div>
-                  <div style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.82)', marginTop: 3 }}>{custName(s.customer_id)} · Rep: {repName(s.rep_id)} · <span style={{ fontFamily: 'monospace' }}>/shop/{s.slug}</span></div>
+                  <div style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.82)', marginTop: 3 }}>{custName(s.customer_id)} · Rep: {repName(s.rep_id)}{s.store_code ? <> · Store # <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{s.store_code}</span></> : null} · <span style={{ fontFamily: 'monospace' }}>/shop/{s.slug}</span></div>
                   <div style={{ marginTop: 6 }}><StatusBadge status={s.status} /></div>
                 </div>
               </div>

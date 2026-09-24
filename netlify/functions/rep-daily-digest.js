@@ -64,12 +64,12 @@ exports.handler = async () => {
     const storeIds = [...new Set(live.map((o) => o.store_id).filter(Boolean))];
     let stores = [];
     if (storeIds.length) {
-      const { data } = await admin.from('webstores').select('id,name,slug,rep_id,primary_color,accent_color,logo_url').in('id', storeIds);
+      const { data } = await admin.from('webstores').select('id,name,slug,store_code,rep_id,primary_color,accent_color,logo_url').in('id', storeIds);
       stores = data || [];
     }
     const storeById = {}; stores.forEach((s) => { storeById[s.id] = s; });
     const { data: closedStores } = await admin.from('webstores')
-      .select('id,name,slug,rep_id,close_at,closed_notified_at')
+      .select('id,name,slug,store_code,rep_id,close_at,closed_notified_at')
       .gte('closed_notified_at', start.toISOString()).lt('closed_notified_at', end.toISOString());
 
     const closing = await loadClosingSoon(admin, new Date());
@@ -123,7 +123,7 @@ exports.handler = async () => {
 async function loadClosingSoon(admin, now) {
   const horizon = new Date(now.getTime() + 7 * 24 * 3600 * 1000);
   const { data: stores, error } = await admin.from('webstores')
-    .select('id,name,slug,rep_id,close_at,status')
+    .select('id,name,slug,store_code,rep_id,close_at,status')
     .eq('status', 'open').not('rep_id', 'is', null)
     .gt('close_at', now.toISOString()).lte('close_at', horizon.toISOString());
   if (error || !stores || !stores.length) return [];
@@ -145,6 +145,11 @@ function closingLine(c) {
   return `${when} · ${c.cartAdders} shopper${c.cartAdders === 1 ? '' : 's'} added to cart, ${c.purchasers} ordered`
     + (c.notOrdered > 0 ? ` · <strong style="color:#b91c1c">${c.notOrdered} still haven't ordered</strong>` : '');
 }
+
+// Store reference code (e.g. VR2G8) shown beside a store's name so it can be quoted/searched.
+const codeTag = (store, color) => (store && store.store_code
+  ? ` <span style="color:${color};font-family:Menlo,Consolas,monospace;font-size:12px;font-weight:700;letter-spacing:.5px">${esc(store.store_code)}</span>`
+  : '');
 
 function digestSubject(storesArr, closed, dayLabel, closing = []) {
   const nOrders = storesArr.reduce((a, s) => a + s.orders.length, 0);
@@ -194,7 +199,7 @@ function buildDigestHtml({ rep, storesArr, closed, closing = [], dayLabel, porta
     }).join('');
     return `<div style="border:1px solid ${LINE};border-radius:10px;overflow:hidden;margin:0 0 14px">
       <a href="${reportsLink}" style="display:block;background:${store.primary_color || NAVY};padding:12px 16px;text-decoration:none">
-        <span style="color:#fff;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:18px;letter-spacing:.3px;text-transform:uppercase">${esc(store.name)}</span>
+        <span style="color:#fff;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:18px;letter-spacing:.3px;text-transform:uppercase">${esc(store.name)}</span>${codeTag(store, 'rgba(255,255,255,.78)')}
         <span style="color:rgba(255,255,255,.78);font-size:12px;font-weight:700"> &nbsp;·&nbsp; ${orders.length} order${orders.length === 1 ? '' : 's'} · ${money(sales)}</span>
       </a>
       <table width="100%" style="border-collapse:collapse"><tbody>
@@ -210,7 +215,7 @@ function buildDigestHtml({ rep, storesArr, closed, closing = [], dayLabel, porta
   const closedBlock = closed.length ? `<div style="margin-top:18px">
       <div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;letter-spacing:.4px;text-transform:uppercase;color:${NAVY};margin-bottom:8px">Stores closed</div>
       ${closed.map((c) => `<div style="font-size:14px;color:${INK};padding:6px 0;border-bottom:1px solid #f1ece1">
-        <strong>${esc(c.name)}</strong> <span style="color:${SUB};font-size:12px">· closed &amp; ready to process</span>
+        <strong>${esc(c.name)}</strong>${codeTag(c, SUB)} <span style="color:${SUB};font-size:12px">· closed &amp; ready to process</span>
         <a href="${portal}/shop/${esc(c.slug)}" style="color:${ACCENT};text-decoration:none;font-weight:700;font-size:12px"> open →</a></div>`).join('')}
     </div>` : '';
 
@@ -218,7 +223,7 @@ function buildDigestHtml({ rep, storesArr, closed, closing = [], dayLabel, porta
       <div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;letter-spacing:.4px;text-transform:uppercase;color:#92400e;margin-bottom:4px">Closing this week</div>
       <div style="font-size:12px;color:${SUB};margin-bottom:6px">Shoppers with carts who haven't ordered yet are the easiest sales left — a last-call note from the coach usually brings them back.</div>
       ${closing.map((c) => `<div style="font-size:14px;color:${INK};padding:6px 0;border-top:1px solid #fde68a">
-        <a href="${portal}/?pg=webstores&store=${esc(c.store.id)}&tab=analytics" style="color:${INK};text-decoration:none"><strong>${esc(c.store.name)}</strong></a>
+        <a href="${portal}/?pg=webstores&store=${esc(c.store.id)}&tab=analytics" style="color:${INK};text-decoration:none"><strong>${esc(c.store.name)}</strong></a>${codeTag(c.store, SUB)}
         <div style="font-size:12px;color:${SUB};margin-top:2px">${closingLine(c)}</div></div>`).join('')}
     </div>` : '';
 
