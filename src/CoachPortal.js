@@ -1983,7 +1983,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12}}>{_rule(22)}{_head('Logo detail',14)}<span style={{fontSize:12.5,color:_TXL}}>Exactly how the logo prints{_d.srcItem?.color?' on '+_d.srcItem.color:''}</span></div>
               <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:12}}>
                 {_d.logos.map(l=><div key={l.url} onClick={()=>setLightbox(l.url)} style={{cursor:'zoom-in',border:'1px solid '+_HAIR,borderRadius:4,overflow:'hidden'}}>
-                  <div style={{background:logoDetailBg(_d.srcItem?.color,l.cwLabel),height:200,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}><img src={l.url} alt="Logo detail" style={{maxWidth:'100%',maxHeight:168,objectFit:'contain'}}/></div>
+                  <div style={{background:logoDetailBg(_d.srcItem?.color,l.cwLabel,l.side),height:200,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}><img src={l.url} alt="Logo detail" style={{maxWidth:'100%',maxHeight:168,objectFit:'contain'}}/></div>
                   <div style={{padding:'8px 12px',fontSize:12.5,fontWeight:600,color:_NV}}>{l.artName}{l.cwLabel?' · '+l.cwLabel:''}</div>
                 </div>)}
               </div>

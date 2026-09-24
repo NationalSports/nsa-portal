@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import GarmentMockCard, { MockCoversTable } from './GarmentMockCard';
+import GarmentMockCard, { MockCoversTable, LogoDetailTiles } from './GarmentMockCard';
 import JobGarmentProgress, { garmentProgress, GarmentDecorationSpecs } from './JobGarmentProgress';
 import { jobMockCardGroups } from './lib/jobMockCards';
 import { logoDetailUrl, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail } from './lib/logoDetail';
@@ -40,14 +40,30 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
   };
   const useFiles = (slot, files) => onSave(files.reduce((arts, file) => adoptArtProofAsGarmentMock(arts, slot.artId, slot.key,
     { ...(typeof file === 'string' ? { url: file } : file), art_file_id: slot.artId }), liveArts(slot.artId)), 'Garment mock');
-  const logoFor = (slot, item) => { if (slot.kind !== 'art') return null; const b = logoDetailBackground(item.color, cwGarmentColor(slot.artFile, slot.cwId)); return {
-    url: logoDetailUrl(slot.artFile, slot.cwId), bg: b.bg, bgKnown: b.known, colorName: b.label,
+  const logoFor = (slot, item) => { if (slot.kind !== 'art') return null; const b = logoDetailBackground(item.color, cwGarmentColor(slot.artFile, slot.cwId), slot.side); return {
+    url: logoDetailUrl(slot.artFile, slot.cwId), bg: b.bg, bgKnown: b.known, bgSource: b.source, colorName: b.label,
     onUpload: files => run(async () => {
       const url = await fileUpload(files[0], 'nsa-web-logos');
       return onSave(setLogoDetail(liveArts(slot.artId), slot.artId, slot.cwId, { url, name: files[0].name }), 'Logo detail');
     }),
     onRemove: url => run(() => onSave(removeLogoDetail(liveArts(slot.artId), slot.artId, url), 'Logo detail removed')),
   }; };
+  // One mock can cover garments of different colors (and each may print its own color way), so
+  // the shared block also shows the logo detail on every covered garment's color.
+  const groupLogoTiles = list => {
+    const seen = new Set();
+    const tiles = list.flatMap(x => {
+      const slot = x.slots.find(sl => sl.kind === 'art');
+      if (!slot) return [];
+      const b = logoDetailBackground(x.item.color, cwGarmentColor(slot.artFile, slot.cwId), slot.side);
+      const url = logoDetailUrl(slot.artFile, slot.cwId);
+      const key = url + '|' + b.bg;
+      if (seen.has(key)) return [];
+      seen.add(key);
+      return [{ key, url, bg: b.bg, label: b.label || garmentLabel(x.item), onUpload: url ? null : logoFor(slot, x.item).onUpload }];
+    });
+    return tiles.length > 1 ? tiles : [];
+  };
   const coverRow = x => {
     const s = summaryOf(x);
     return { key: garmentMockKey(x.item), label: garmentLabel(x.item), sizes: s ? s.sizes : sizesOf(x.gi, x.item),
@@ -94,7 +110,9 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
           })}
         />)}</div>}
         {deps.length > 0 ? <>
-          <div className="garment-mock-card" style={{ marginTop: 12 }}><MockCoversTable rows={[g, ...deps].map(coverRow)} /></div>
+          <div className="garment-mock-card" style={{ marginTop: 12 }}><MockCoversTable rows={[g, ...deps].map(coverRow)} />
+            <LogoDetailTiles tiles={groupLogoTiles([g, ...deps])} />
+          </div>
           {summary && <div style={{ display: 'flex', padding: '12px 4px 0' }}><GarmentDecorationSpecs specs={Array.from(summary.specs || [])} /></div>}
         </> : <JobGarmentProgress summary={summary} onViewItem={onViewItem} />}
       </div>;

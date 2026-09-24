@@ -39,7 +39,7 @@ describe('logo detail helpers', () => {
     expect(jobMissingLogoDetails(twoItems, order)).toEqual(['WVC Water Polo (Grey)', 'WVC Water Polo (White)']);
     const done = { ...order, art_files: setLogoDetail(setLogoDetail([art], 'a', 'cw1', 'g.png'), 'a', 'cw2', 'w.png') };
     expect(jobMissingLogoDetails(twoItems, done)).toEqual([]);
-    expect(garmentLogoDetails(twoItems.items[1], done, done.art_files)).toEqual([{ url: 'w.png', artName: 'WVC Water Polo', cwLabel: 'White' }]);
+    expect(garmentLogoDetails(twoItems.items[1], done, done.art_files)).toEqual([{ url: 'w.png', artName: 'WVC Water Polo', cwLabel: 'White', side: '' }]);
   });
 
   test('background follows the garment main color', () => {
@@ -50,11 +50,24 @@ describe('logo detail helpers', () => {
   test('a garment named CUSTOM uses its color way color; nothing known falls back to neutral grey', () => {
     const crest = { id: 'c', color_ways: [{ id: 'cwN', garment_color: 'Navy' }] };
     expect(cwGarmentColor(crest, 'cwN')).toBe('Navy');
-    expect(logoDetailBackground('CUSTOM', cwGarmentColor(crest, 'cwN'))).toEqual({ bg: '#1f2a44', label: 'Navy', known: true });
+    expect(logoDetailBackground('CUSTOM', cwGarmentColor(crest, 'cwN'))).toEqual({ bg: '#1f2a44', label: 'Navy', known: true, source: 'colorway' });
     expect(logoDetailBackground('CUSTOM', '')).toMatchObject({ known: false, bg: '#94a3b8' });
     // The line's own real color still wins over the color way (the WVC "Whiute" typo case).
     expect(logoDetailBackground('Medium Grey Heather', 'Whiute')).toMatchObject({ bg: '#9ca3af', label: 'Medium Grey Heather' });
     expect(logoDetailBg('Dark Heather')).toBe('#1f2937');
+  });
+
+  test('background edge cases: vendor names, ink-style color way labels, reversible B side', () => {
+    expect(logoDetailBackground('Team Light Blue')).toMatchObject({ bg: '#7dd3fc', source: 'garment' });
+    expect(logoDetailBackground('Collegiate Navy/White')).toMatchObject({ bg: '#1f2a44', label: 'Collegiate Navy' });
+    expect(logoDetailBackground('Heather Navy').bg).toBe('#1f2a44');
+    // Reversible: side B prints on the second color.
+    expect(logoDetailBackground('Navy/White', '', 'B')).toMatchObject({ bg: '#ffffff', label: 'White' });
+    // A color way label that describes INK is not a garment color.
+    expect(logoDetailBackground('CUSTOM', 'White ink on dark')).toMatchObject({ source: 'unknown', bg: '#94a3b8' });
+    expect(logoDetailBackground('CUSTOM', 'Navy')).toMatchObject({ source: 'colorway', bg: '#1f2a44' });
+    // A real garment color always wins over the color way: one color way reused on several colors.
+    expect(logoDetailBackground('Black', 'Navy')).toMatchObject({ source: 'garment', bg: '#111827' });
   });
 
   test('mock slots carry the color way the logo detail keys on', () => {
@@ -97,6 +110,18 @@ test('shared garments are listed together with their received / shipped counts',
   // One block for the pair: a single mock card, no separate QTY row per garment.
   expect(document.querySelectorAll('section.garment-mock-card')).toHaveLength(1);
   expect(screen.queryByLabelText('Garment quantities and progress')).toBeNull();
+});
+
+test('a shared mock over different colors shows the logo on each color, uploadable where missing', () => {
+  const two = { ...art, mock_links: { 'JW6597|Black': 'AT106|Navy' }, item_mockups: { 'AT106|Navy': [{ url: 'mock.png' }] }, web_logos: [{ url: 'navy-logo.png', color_way_id: 'cw1', color_way: 'Grey' }] };
+  const order = { items: [line('AT106', 'Navy', 'cw1', { XL: 2 }), line('JW6597', 'Black', 'cw2', { M: 3 })], art_files: [two] };
+  const twoJob = { ...job, items: job.items.slice(0, 2) };
+  render(<JobGarmentMocks job={twoJob} order={order} getOrder={() => order} onSave={() => true} />);
+  const strip = screen.getByLabelText('Logo detail on each garment color');
+  expect(strip.textContent).toMatch(/Navy/);
+  expect(strip.textContent).toMatch(/Black/);
+  // JW6597 prints color way cw2, which has no logo detail yet — it can be uploaded from the tile.
+  expect(strip.querySelector('input[type=file]')).toBeTruthy();
 });
 
 describe('logo detail pane', () => {

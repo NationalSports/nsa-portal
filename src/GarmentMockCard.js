@@ -89,6 +89,43 @@ async function mockGarmentHex(url) {
 }
 const _hexLum = hex => { const m = String(hex || '').replace('#', '').match(/.{2}/g); if (!m || m.length < 3) return 128; const [r, g, b] = m.map(x => parseInt(x, 16)); return 0.299 * r + 0.587 * g + 0.114 * b; };
 
+// Why a file can't be a logo detail, or '' when it can.
+async function logoFileProblem(f) {
+  if (!/\.(png|webp|svg)$/i.test(f.name)) return 'Logo detail must be a PNG with a transparent background — not a JPG or PDF.';
+  if (!(await hasTransparency(f))) return 'This PNG has a solid background. Re-export it with a transparent background so it sits on the garment color.';
+  return '';
+}
+
+// Small logo-detail tiles, one per garment color a shared mock covers. A tile whose color way has
+// no logo detail yet can be uploaded right here (its garment has no card of its own).
+// tiles = [{ key, url, bg, label, onUpload? }]
+export function LogoDetailTiles({ tiles, title = 'Logo detail on each garment color' }) {
+  const [error, setError] = useState('');
+  const [busyKey, setBusyKey] = useState('');
+  if (!tiles || !tiles.length) return null;
+  const upload = async (t, files) => {
+    if (!files.length || !t.onUpload) return;
+    const bad = await logoFileProblem(files[0]);
+    if (bad) { setError(bad); return; }
+    setError(''); setBusyKey(t.key);
+    try { if ((await t.onUpload([files[0]])) === false) setError('Could not save the logo detail. Please try again.'); }
+    catch (e) { setError(e.message || 'Could not save the logo detail. Please try again.'); }
+    finally { setBusyKey(''); }
+  };
+  return <div className="mock-covers" aria-label={title}>
+    <h5>{title}</h5>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>{tiles.map(t => <div key={t.key} style={{ width: 150, textAlign: 'center' }}>
+      <div style={{ height: 90, borderRadius: 8, border: '1px solid #dbe2ea', background: t.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 8 }}>
+        {t.url ? <img src={t.url} alt="" onClick={() => openFile(t.url)} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', cursor: 'zoom-in' }} />
+          : t.onUpload ? <label className="tile-upload">{busyKey === t.key ? 'Saving…' : 'Upload logo PNG'}<input type="file" hidden accept=".png,.webp,.svg" disabled={!!busyKey} onChange={e => { upload(t, Array.from(e.target.files)); e.target.value = ''; }} /></label>
+          : <span className="tile-upload">Needs logo detail</span>}
+      </div>
+      <div style={{ fontSize: 10.5, color: '#475569', marginTop: 4 }}>{t.label}</div>
+    </div>)}</div>
+    {error && <p role="alert" className="mock-error" style={{ marginTop: 6 }}>{error}</p>}
+  </div>;
+}
+
 // The logo detail panel: the design's transparent logo PNG painted on the garment color, so the
 // close-up reads the way it will print. `logo` = { url, bg, colorName, onUpload, onRemove };
 // without onUpload it is read-only.
@@ -101,15 +138,22 @@ function LogoDetailPane({ logo, busy, mockUrl = '' }) {
   const [hasWhite, setHasWhite] = useState(null);
   const [mockHex, setMockHex] = useState(null);
   useEffect(() => { let live = true; setHasWhite(null); logoHasWhite(logo.url).then(v => { if (live) setHasWhite(v); }); return () => { live = false; }; }, [logo.url]);
-  // The garment's color name isn't a real color ("CUSTOM") and its color way didn't name one
-  // either: read the shirt color off the mock itself.
-  const sampleMock = logo.bgKnown === false && !!mockUrl;
+  // The garment line doesn't name its own color ("CUSTOM"): the mock IS that garment, so its
+  // shirt color beats the color way's label (one color way is often reused on several colors).
+  const fromGarment = logo.bgSource ? logo.bgSource === 'garment' : logo.bgKnown !== false;
+  const sampleMock = !fromGarment && !!mockUrl;
   useEffect(() => { let live = true; setMockHex(null); if (sampleMock) mockGarmentHex(mockUrl).then(v => { if (live) setMockHex(v); }); return () => { live = false; }; }, [sampleMock, mockUrl]);
-  const bg = (sampleMock && mockHex) || logo.bg || '#e5e7eb';
-  const bgName = sampleMock && mockHex ? 'Mock color' : logo.colorName || 'Garment';
-  // White parts of a logo vanish on a light background, so it starts on dark instead.
-  const autoDark = hasWhite === true && _hexLum(bg) > 180;
-  const mode = bgMode || (autoDark ? 'dark' : 'garment');
+  const fromMock = sampleMock && !!mockHex;
+  const bg = (fromMock && mockHex) || logo.bg || '#e5e7eb';
+  const bgName = fromMock ? 'Mock color' : logo.colorName || 'Garment';
+  const bgNote = fromMock ? 'Shown on the shirt color read from the mock'
+    : fromGarment ? (logo.colorName ? 'Shown on ' + logo.colorName : 'Shown on the garment color')
+    : logo.bgSource === 'colorway' || (logo.bgKnown && logo.colorName) ? 'Shown on ' + logo.colorName + ' (color way) — garment color not set on the line'
+    : 'Garment color unknown — shown on neutral grey';
+  // The detail shows how the logo PRINTS, so it stays on the garment color even when that hides
+  // white ink — and says so, because white ink on a light garment is worth a second look.
+  const mode = bgMode || 'garment';
+  const whiteWarning = mode === 'garment' && hasWhite === true && _hexLum(bg) > 200;
   const run = async fn => {
     setError('');
     try { const ok = await fn(); if (ok === false) setError('Could not save the logo detail. Please try again.'); }
@@ -118,8 +162,8 @@ function LogoDetailPane({ logo, busy, mockUrl = '' }) {
   const upload = async files => {
     if (!files.length || !logo.onUpload) return;
     const f = files[0];
-    if (!/\.(png|webp|svg)$/i.test(f.name)) { setError('Logo detail must be a PNG with a transparent background — not a JPG or PDF.'); return; }
-    if (!(await hasTransparency(f))) { setError('This PNG has a solid background. Re-export it with a transparent background so it sits on the garment color.'); return; }
+    const bad = await logoFileProblem(f);
+    if (bad) { setError(bad); return; }
     run(() => logo.onUpload([f]));
   };
   const drop = logo.onUpload ? {
@@ -140,7 +184,8 @@ function LogoDetailPane({ logo, busy, mockUrl = '' }) {
     {logo.url && <div className="bg-switch" role="group" aria-label="Logo background">
       {[['garment', bgName], ['checker', 'Checkered'], ['dark', 'Dark']].map(([k, lbl]) => <button key={k} type="button" aria-pressed={mode === k} onClick={() => setBgMode(k)}>{lbl}</button>)}
     </div>}
-    <div className="panel-meta">{mode === 'garment' ? (sampleMock && mockHex ? 'Shown on the garment color from the mock' : logo.colorName ? 'Shown on ' + logo.colorName : 'Shown on a neutral grey — garment color unknown') : autoDark && !bgMode ? 'Logo has white — shown on dark so it stays visible' : mode === 'checker' ? 'Checkered = transparent areas' : 'Shown on dark'}</div>
+    <div className="panel-meta">{mode === 'garment' ? bgNote : mode === 'checker' ? 'Checkered = transparent areas' : 'Shown on dark'}</div>
+    {whiteWarning && <p className="logo-warning">White parts of this logo won't show on {bgName === 'Mock color' ? 'this garment' : bgName}. Check the color way — use Dark to see them.</p>}
     {error && <p role="alert" className="mock-error">{error}</p>}
     {logo.onUpload && <div className="panel-actions">
       <button type="button" disabled={busy} onClick={() => input.current.click()}>{logo.url ? 'Replace logo' : 'Upload logo PNG'}</button>

@@ -41,3 +41,5 @@
 .bg-switch button+button{border-left:1px solid #e2e8f0}
 .bg-switch button[aria-pressed=true]{background:#6251c5;color:#fff}
 .logo-frame.bg-checker{background:repeating-conic-gradient(#cbd5e1 0 25%,#ffffff 0 50%) 50%/16px 16px}.logo-frame.bg-dark{background:#1f2937}
+.logo-warning{margin:0;max-width:100%;font-size:11px;font-weight:600;color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:5px 8px}
+.tile-upload{font-size:10px;font-weight:700;background:#fffffff0;border:1px dashed #94a3b8;border-radius:5px;padding:4px 7px;color:#92400e;cursor:pointer}

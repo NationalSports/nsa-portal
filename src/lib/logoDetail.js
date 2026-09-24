@@ -1,6 +1,6 @@
 import { safeArr, safeArt, safeItems, safeStr, jobItemArtSlots, jobArtFileIds } from '../safeHelpers';
 import { pickCwAsset } from '../businessLogic';
-import { knownGarmentHex } from './artGrid';
+import { knownGarmentHex, exactGarmentHex } from './artGrid';
 
 // ── Logo detail ──
 // Every garment mock has a partner: the LOGO DETAIL, a close-up of the logo alone that the floor,
@@ -15,22 +15,30 @@ import { knownGarmentHex } from './artGrid';
 export const logoDetailUrl = (art, colorWayId) =>
   art ? pickCwAsset({ ...art, preview_url: '' }, { kind: 'web_logo', colorWayId: colorWayId || null }) : '';
 
-// Background behind the transparent logo: the garment's main color ("Light Blue/White" → light
-// blue). A line whose color isn't a real color name ("CUSTOM", blank) falls back to the color way's
-// garment color, then to a neutral mid grey that keeps white AND dark inks readable.
+// Background behind the transparent logo — the color of the garment it is printed on:
+//  1. the garment line's own color when it names a real color. A logo used on several garment
+//     colors therefore shows on EACH garment's color. Two-tone names use the first color
+//     ("Light Blue/White" → light blue); the B side of a reversible uses the second.
+//  2. else ("CUSTOM", blank, an unknown vendor name) the color way's garment color — but only
+//     when that label IS a color ("Navy"), never an ink description ("White ink on dark").
+//  3. else a neutral mid grey that keeps white AND dark inks readable. (The mock card also tries
+//     reading the shirt color off the mock image before settling for this.)
+// source: 'garment' | 'colorway' | 'unknown'.
 export const UNKNOWN_GARMENT_BG = '#94a3b8';
-const _knownBg = (color) => {
-  const main = safeStr(color).split('/')[0].trim();
-  return (main && knownGarmentHex(main)) || (safeStr(color).trim() ? knownGarmentHex(color) : null);
+const _sideColor = (color, side) => {
+  const parts = safeStr(color).split('/').map(x => x.trim()).filter(Boolean);
+  return (side === 'B' && parts[1]) || parts[0] || '';
 };
-export const logoDetailBackground = (color, cwColor) => {
-  const k = _knownBg(color);
-  if (k) return { bg: k, label: safeStr(color).trim(), known: true };
-  const c = _knownBg(cwColor);
-  if (c) return { bg: c, label: safeStr(cwColor).trim(), known: true };
-  return { bg: UNKNOWN_GARMENT_BG, label: '', known: false };
+export const logoDetailBackground = (color, cwColor, side) => {
+  const own = _sideColor(color, side);
+  const k = own && knownGarmentHex(own);
+  if (k) return { bg: k, label: own, known: true, source: 'garment' };
+  const cw = safeStr(cwColor).trim();
+  const c = cw && (exactGarmentHex(cw) || exactGarmentHex(_sideColor(cw)));
+  if (c) return { bg: c, label: cw, known: true, source: 'colorway' };
+  return { bg: UNKNOWN_GARMENT_BG, label: '', known: false, source: 'unknown' };
 };
-export const logoDetailBg = (color, cwColor) => logoDetailBackground(color, cwColor).bg;
+export const logoDetailBg = (color, cwColor, side) => logoDetailBackground(color, cwColor, side).bg;
 // The garment color a color way is designed for ("Navy"), used when the line's own color is unknown.
 export const cwGarmentColor = (art, colorWayId) =>
   colorWayId ? safeStr(safeArr(art?.color_ways).find(c => c && c.id === colorWayId)?.garment_color).trim() : '';
@@ -93,7 +101,7 @@ export const jobMissingLogoDetails = (job, so) =>
   jobLogoDetailNeeds(job, so).filter(n => !logoDetailUrl(n.art, n.colorWayId)).map(n => n.label);
 
 // The logo details to show beside one job garment's mock: one per design / color way it prints,
-// deduped by image. [{ url, artName, cwLabel }]
+// deduped by image (per reversible side). [{ url, artName, cwLabel, side }]
 export const garmentLogoDetails = (gi, so, artFiles) => {
   const line = safeItems(so)[gi?.item_idx];
   if (!line) return [];
@@ -102,12 +110,12 @@ export const garmentLogoDetails = (gi, so, artFiles) => {
   jobItemArtSlots(gi, line).forEach(({ d }) => {
     const a = safeArr(artFiles).find(x => x?.id === d.art_file_id);
     if (!a) return;
-    [d.color_way_id || null, ...(d.reversible ? [d.color_way_id_b || null] : [])].forEach(cw => {
+    [[d.color_way_id || null, d.reversible ? 'A' : ''], ...(d.reversible ? [[d.color_way_id_b || null, 'B']] : [])].forEach(([cw, side]) => {
       const url = logoDetailUrl(a, cw);
-      if (!url || seen.has(url)) return;
-      seen.add(url);
+      if (!url || seen.has(url + side)) return;
+      seen.add(url + side);
       const cwObj = cw ? safeArr(a.color_ways).find(c => c && c.id === cw) : null;
-      out.push({ url, artName: a.name || 'Artwork', cwLabel: safeStr(cwObj?.garment_color).trim() });
+      out.push({ url, artName: a.name || 'Artwork', cwLabel: safeStr(cwObj?.garment_color).trim(), side });
     });
   });
   return out;

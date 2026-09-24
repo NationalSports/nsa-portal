@@ -1,5 +1,5 @@
 import { garmentSlotCandidates } from "./lib/jobMockCards";
-import GarmentMockCard from './GarmentMockCard';
+import GarmentMockCard, { LogoDetailTiles } from './GarmentMockCard';
 import { removeGarmentSlotMock } from './safeHelpers';
 import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jobMockReadiness';
 import {createHistoryStore} from './lib/documentHistory';
@@ -1399,7 +1399,7 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     }
     // Logo detail: the transparent logo PNG for each design / color way on this garment, printed on
     // the garment color so the floor can read inks and small type at full size.
-    const _logoTiles=garmentLogoDetails(gi,so,allArtFiles).map(l=>'<div style="flex:1 1 220px;max-width:340px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden"><div style="background:'+logoDetailBg(gi.color,l.cwLabel)+';-webkit-print-color-adjust:exact;print-color-adjust:exact;height:200px;display:flex;align-items:center;justify-content:center;padding:12px"><img src="'+l.url+'" style="max-height:176px;max-width:100%;object-fit:contain"/></div><div style="padding:5px 8px;font-size:10px;font-weight:700;color:#334155">Logo detail — '+_upEsc(l.artName)+(l.cwLabel?' · CW: '+_upEsc(l.cwLabel):'')+'</div></div>');
+    const _logoTiles=garmentLogoDetails(gi,so,allArtFiles).map(l=>'<div style="flex:1 1 220px;max-width:340px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden"><div style="background:'+logoDetailBg(gi.color,l.cwLabel,l.side)+';-webkit-print-color-adjust:exact;print-color-adjust:exact;height:200px;display:flex;align-items:center;justify-content:center;padding:12px"><img src="'+l.url+'" style="max-height:176px;max-width:100%;object-fit:contain"/></div><div style="padding:5px 8px;font-size:10px;font-weight:700;color:#334155">Logo detail — '+_upEsc(l.artName)+(l.cwLabel?' · CW: '+_upEsc(l.cwLabel):'')+'</div></div>');
     if(_logoTiles.length>0)sHtml+='<div style="margin:12px 0;display:flex;gap:10px;flex-wrap:wrap;justify-content:center;page-break-inside:avoid">'+_logoTiles.join('')+'</div>';
     itemSectionHtmls.push(sHtml);
   });
@@ -7288,7 +7288,7 @@ export default function App(){
     }catch(e){nf('Could not save the logo detail: '+(e.message||'upload failed'),'error');return false}
   };
   // Props for a mock card's logo detail pane (art slots only).
-  const logoDetailProps=(so,slot,garment)=>{if(slot.kind!=='art')return null;const b=logoDetailBackground(garment?.color,cwGarmentColor(slot.artFile,slot.cwId));return{url:logoDetailUrl(slot.artFile,slot.cwId),bg:b.bg,bgKnown:b.known,colorName:b.label,
+  const logoDetailProps=(so,slot,garment)=>{if(slot.kind!=='art')return null;const b=logoDetailBackground(garment?.color,cwGarmentColor(slot.artFile,slot.cwId),slot.side);return{url:logoDetailUrl(slot.artFile,slot.cwId),bg:b.bg,bgKnown:b.known,bgSource:b.source,colorName:b.label,
     onUpload:files=>saveLogoDetailFor(so,slot,{files}),onRemove:url=>saveLogoDetailFor(so,slot,{removeUrl:url})}};
   // Result-checked FULL save: persist the whole SO (jobs + art) and return a truthful true/false promise so
   // reuse/forward mutations (applyPriorMock, prod-file completion, wizard release) can report failure instead
@@ -14458,7 +14458,7 @@ export default function App(){
                     {!_giSrc&&(()=>{const _lds=garmentLogoDetails(gi,so,allArtFiles);if(!_lds.length)return null;
                       return<div style={{padding:12,background:'#fafbfc',borderBottom:'1px solid #e2e8f0',display:'flex',gap:10,flexWrap:'wrap',justifyContent:'center'}}>
                         {_lds.map(l=><div key={l.url} style={{flex:'1 1 220px',maxWidth:340,border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden',background:'white'}}>
-                          <div style={{background:logoDetailBg(gi.color,l.cwLabel),height:190,display:'flex',alignItems:'center',justifyContent:'center',padding:12,cursor:'zoom-in'}} onClick={()=>openFile(l.url)}><img src={l.url} alt="Logo detail" style={{maxHeight:166,maxWidth:'100%',objectFit:'contain'}}/></div>
+                          <div style={{background:logoDetailBg(gi.color,l.cwLabel,l.side),height:190,display:'flex',alignItems:'center',justifyContent:'center',padding:12,cursor:'zoom-in'}} onClick={()=>openFile(l.url)}><img src={l.url} alt="Logo detail" style={{maxHeight:166,maxWidth:'100%',objectFit:'contain'}}/></div>
                           <div style={{padding:'5px 8px',fontSize:10,fontWeight:700,color:'#334155'}}>Logo detail — {l.artName}{l.cwLabel?' · CW: '+l.cwLabel:''}</div>
                         </div>)}
                       </div>})()}
@@ -25311,6 +25311,11 @@ export default function App(){
                       return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=><GarmentMockCard key={slot.artId+'|'+slot.key} label={slot.label} sub={slot.sub} logo={logoDetailProps(so,slot,gi)} mocks={slotMockFiles(slot,_slots,gi)} candidates={garmentSlotCandidates(slot,gi,safeArt(so))} suggest uploadLabel="Upload mock image" busy={artJobDetailUploading} onUse={file=>useArtProofAsMock(slot.artId,slot.key,file,gi)} onRemove={url=>removeSlotMock(slot,_slots,gi,url)} onUpload={files=>startMockupUpload(files,gi,slot.artId,slot.key)} />)}</div>;
                     })()}
                   </div>
+                  {/* Shared mock over several garment colors: the logo detail on each covered color way /
+                      garment color, uploadable here since the covered garments have no card of their own. */}
+                  {_deps.length>0&&(()=>{const seen=new Set();const tiles=_grp.flatMap(g=>{const d=(_perItemDecos[g.item_idx]||[]).find(x=>x.kind==='art'&&x.artFile);if(!d)return[];const b=logoDetailBackground(g.color,cwGarmentColor(d.artFile,d.colorWayId));const url=logoDetailUrl(d.artFile,d.colorWayId);const key=url+'|'+b.bg;if(seen.has(key))return[];seen.add(key);
+                    return[{key,url,bg:b.bg,label:b.label||((g.color?g.color+' ':'')+g.sku),onUpload:url?null:files=>saveLogoDetailFor(so,{artId:d.artFile.id,cwId:d.colorWayId||null},{files})}]});
+                    return tiles.length>1?<div style={{padding:'0 10px 10px'}}><LogoDetailTiles tiles={tiles}/></div>:null;})()}
                   {/* ─── Copy Mockup From Another Item ─── */}
                   {_copyFromOthers.length>0&&<div style={{padding:'6px 14px',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',background:'#fdfcff'}}><span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Copy mock from:</span>{_copyFromOthers.map((oi,oii)=><button key={oii} className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#ede9fe',color:'#7c3aed',border:'1px solid #ddd6fe',borderRadius:4,fontWeight:700,cursor:'pointer'}} onClick={()=>_copyMockup(oi,gi)}>{oi.sku}{oi.color?' ('+oi.color+')':''}</button>)}</div>}
                   {/* ─── Decoration Spec ─── */}
