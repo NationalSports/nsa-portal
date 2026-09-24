@@ -179,3 +179,96 @@ export const logoDetailCustomerUpdates = (customers, customerId, orderArts, chan
     return arts ? [{ ...c, art_files: arts }] : [];
   });
 };
+
+// ── Apply an Art Library web-logo edit to one copy of the design ──
+// The Art Library editor edits ONE representative copy of a design (`before` → `after` web_logos
+// list) and fans the change out to the library and every order carrying the design. Replacing
+// each copy's list wholesale wiped color-way logos that existed only on another order (e.g. a
+// logo detail made on that job). This applies just the edit: removed images are removed, new or
+// changed entries replace that color way's entry (matched by color_way_id, then label, then the
+// "all garments" default), and entries the copy lacks are filled in — everything else stays.
+// mark=true stamps the removals for the order-save merge (markArtFieldEdit) so they stick.
+const _wlKey = (w, cws) => {
+  if (!w) return '';
+  if (w.is_default || (!w.color_way_id && !safeStr(w.color_way).trim())) return 'default';
+  const byId = w.color_way_id && safeArr(cws).find(c => c && c.id === w.color_way_id);
+  const lbl = safeStr(byId ? byId.garment_color : w.color_way).trim().toLowerCase();
+  return lbl ? 'cw:' + lbl : 'id:' + w.color_way_id;
+};
+export const mergeWebLogoEdit = (target, before, after, { mark = true } = {}) => {
+  if (!target) return target;
+  const cws = safeArr(target.color_ways);
+  const was = safeArr(before).filter(w => w && w.url);
+  const now = safeArr(after).filter(w => w && w.url);
+  const nowUrls = new Set(now.map(w => w.url));
+  const removed = new Set(was.map(w => w.url).filter(u => !nowUrls.has(u)));
+  const sig = w => w.url + '|' + _wlKey(w, cws);
+  const wasSigs = new Set(was.map(sig));
+  const changed = now.filter(w => !wasSigs.has(sig(w)));
+  const restamp = w => {
+    if (!w.color_way_id || cws.some(c => c.id === w.color_way_id)) return w;
+    const lbl = safeStr(w.color_way).trim().toLowerCase();
+    const m = lbl && cws.find(c => safeStr(c.garment_color).trim().toLowerCase() === lbl);
+    if (m) return { ...w, color_way_id: m.id };
+    const { color_way_id, ...rest } = w; return rest; // a foreign id would never resolve here
+  };
+  let list = safeArr(target.web_logos).filter(w => w && w.url && !removed.has(w.url));
+  changed.forEach(w => { const k = _wlKey(w, cws); list = [restamp(w), ...list.filter(x => _wlKey(x, cws) !== k)]; });
+  // Fill in color ways this copy has no logo for yet (the editor's list is the source of truth
+  // for what the design has); never override the copy's own entry for a color way.
+  now.forEach(w => { const k = _wlKey(w, cws); if (!list.some(x => _wlKey(x, cws) === k)) list.push(restamp(w)); });
+  const def = (list.find(w => _wlKey(w, cws) === 'default') || {}).url
+    || (removed.has(target.web_logo_url) ? '' : safeStr(target.web_logo_url));
+  if (!mark) return { ...target, web_logos: list, web_logo_url: def };
+  const next = markArtFieldEdit(target, 'web_logos', list);
+  return def === safeStr(target.web_logo_url) ? next : markArtFieldEdit(next, 'web_logo_url', def);
+};
+
+// ── Reused art that still needs its web logo ──
+// Previous art dropped onto a new order usually skips the artist (its mock is reused and it can
+// go straight to approved), so the "Send for approval" logo-detail check never runs for it. This
+// finds those designs so the Art Dashboard can ask for the PNG: jobs on open orders, past the
+// artist stage, whose design is REUSED — it sits in the customer's (or parent program's) Art
+// Library, or on another of the customer's orders — and whose color way has no logo detail yet.
+// One entry per order + design + color way: [{ key, so, job, art, colorWayId, garmentColor, label }]
+const _ARTIST_STAGES = ['needs_art', 'art_requested', 'art_in_progress'];
+export const reusedLogoDetailNeeds = (jobs, sos, customers) => {
+  const custById = new Map(safeArr(customers).filter(Boolean).map(c => [c.id, c]));
+  const family = cid => { const c = custById.get(cid); const root = c?.parent_id || cid; return root; };
+  const libOf = cid => { const c = custById.get(cid); const p = c?.parent_id ? custById.get(c.parent_id) : null; return [...safeArr(c?.art_files), ...safeArr(p?.art_files)]; };
+  // Index every order's designs once (by program family): design_id and name+deco -> order ids.
+  const idx = new Map();
+  const _nk = a => safeStr(a.name).trim().toLowerCase() + '|' + (a.deco_type || '');
+  safeArr(sos).forEach(o => { if (!o) return; const f = family(o.customer_id); safeArt(o).forEach(a => {
+    [a.design_id ? 'd:' + a.design_id : '', safeStr(a.name).trim() ? 'n:' + _nk(a) : ''].filter(Boolean).forEach(k => {
+      const key = f + '#' + k; if (!idx.has(key)) idx.set(key, new Set()); idx.get(key).add(o.id); }); }); });
+  const seenOn = (art, so) => {
+    const f = family(so.customer_id);
+    return [art.design_id ? 'd:' + art.design_id : '', safeStr(art.name).trim() ? 'n:' + _nk(art) : ''].filter(Boolean)
+      .some(k => [...(idx.get(f + '#' + k) || [])].some(id => id !== so.id));
+  };
+  const out = new Map();
+  safeArr(jobs).forEach(j => {
+    const so = j?.so;
+    if (!so || so.status === 'complete' || _ARTIST_STAGES.includes(j.art_status) || ['completed', 'shipped'].includes(j.prod_status)) return;
+    const items = safeItems(so);
+    const jobArtIds = jobArtFileIds(j, items);
+    safeArr(j.items).forEach(gi => {
+      const it = items[gi?.item_idx];
+      if (!it) return;
+      jobItemArtSlots(gi, it).forEach(({ d }) => {
+        if (!jobArtIds.has(d.art_file_id)) return;
+        const art = safeArt(so).find(a => a?.id === d.art_file_id);
+        if (!art) return;
+        [[d.color_way_id || null, ''], ...(d.reversible ? [[d.color_way_id_b || null, 'B']] : [])].forEach(([cw, side]) => {
+          const key = so.id + '|' + art.id + '|' + (cw || '');
+          if (out.has(key) || logoDetailUrl(art, cw)) return;
+          if (!libOf(so.customer_id).some(l => _sameDesign(l, art)) && !seenOn(art, so)) return;
+          out.set(key, { key, so, job: j, art, colorWayId: cw, side, garmentColor: safeStr(it.color),
+            label: (art.name || 'Artwork') + (cw ? ' · ' + _cwLabel(art, cw) : '') });
+        });
+      });
+    });
+  });
+  return [...out.values()];
+};

@@ -41,7 +41,7 @@ import * as fabric from 'fabric';
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, REP_PROD_FILE_DECOS, artistOwesProdFiles, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { isApiCatalogVendor, styleSkuOrFilter, buildStyleColorwayMap, lookupStyleColorway } from './lib/vendorColorwayImages';
-import { logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails, logoDetailCustomerUpdates } from './lib/logoDetail';
+import { logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails, logoDetailCustomerUpdates, reusedLogoDetailNeeds } from './lib/logoDetail';
 import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, adoptArtProofAsGarmentMock, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { stampEstimateDraftLineIds } from './lib/orderLineIdentity';
@@ -24217,6 +24217,17 @@ export default function App(){
 
       {/* ═══ ARTIST WORKBOARD ═══ */}
       <>
+        {/* Reused (previous) art skips the artist, so its web logo PNG is requested here instead:
+            every open order whose reused design / color way has no logo detail yet. Uploading
+            saves it on the order AND the customer's Art Library (webstores read that copy). */}
+        {(()=>{const _need=reusedLogoDetailNeeds(filtered,sos,cust);if(!_need.length)return null;
+          return<details className="card" style={{marginBottom:10,border:'1px solid #fcd34d',background:'#fffbeb'}} open={_need.length<=8}>
+            <summary style={{padding:'10px 14px',cursor:'pointer',fontSize:13,fontWeight:800,color:'#92400e'}}>🖼️ Web logos needed — reused art ({_need.length})
+              <span style={{fontWeight:500,fontSize:11,color:'#a16207',marginLeft:8}}>Previous art used again on an order has no transparent logo PNG for this color way yet. Upload it here.</span></summary>
+            <div style={{padding:'0 10px 10px'}}><LogoDetailTiles title="Upload the logo exactly as each color way prints — transparent PNG" tiles={_need.map(n=>({key:n.key,url:'',bg:logoDetailBg(n.garmentColor,cwGarmentColor(n.art,n.colorWayId),n.side),
+              label:n.label+' — '+(n.job.customer||n.so.customer_id||'')+' · '+n.so.id,
+              onUpload:files=>saveLogoDetailFor(n.so,{artId:n.art.id,cwId:n.colorWayId},{files})}))}/></div>
+          </details>;})()}
         <div className="stats-row">
           {artistCols.map(c=><div key={c.id} className="stat-card"><div className="stat-label">{c.label}</div><div className="stat-value" style={{color:c.color}}>{artistCounts[c.id]}</div></div>)}
           <div className="stat-card"><div className="stat-label">{inProductionCol.label}</div><div className="stat-value" style={{color:inProductionCol.color}}>{inProductionJobs.length}</div></div>

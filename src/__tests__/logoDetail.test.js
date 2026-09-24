@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import JobGarmentMocks from '../JobGarmentMocks';
-import { logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, logoDetailLibraryUpdate, logoDetailCustomerUpdates, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails } from '../lib/logoDetail';
+import { logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, logoDetailLibraryUpdate, logoDetailCustomerUpdates, mergeWebLogoEdit, reusedLogoDetailNeeds, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails } from '../lib/logoDetail';
 import { jobMockCardGroups } from '../lib/jobMockCards';
 
 const art = {
@@ -113,6 +113,61 @@ describe('logo detail reaches the customer Art Library', () => {
     const customers = [{ id: 'team', parent_id: 'prog', art_files: [] }, { id: 'prog', art_files: [{ ...art }] }, { id: 'other', art_files: [{ ...art }] }];
     const ups = logoDetailCustomerUpdates(customers, 'team', orderArt, { artId: 'a', colorWayId: 'cw1', url: 'grey.png' });
     expect(ups.map(c => c.id)).toEqual(['prog']);
+  });
+});
+
+describe('Art Library web-logo edits apply only the edit to each copy', () => {
+  const cws = [{ id: 'cw1', garment_color: 'Navy' }, { id: 'cw2', garment_color: 'White' }];
+  const before = [{ url: 'def.png', color_way: '', is_default: true }];
+  test('another order keeps its own color-way logo; the edited default is applied', () => {
+    const order = { id: 'o', color_ways: cws, web_logos: [{ url: 'job-navy.png', color_way_id: 'cw1', color_way: 'Navy' }, { url: 'def.png', color_way: '', is_default: true }], web_logo_url: 'def.png' };
+    const after = [{ url: 'def2.png', color_way: '', is_default: true }];
+    const out = mergeWebLogoEdit(order, before, after);
+    expect(logoDetailUrl(out, 'cw1')).toBe('job-navy.png');
+    expect(logoDetailUrl(out, 'cw2')).toBe('def2.png');
+    expect(out.web_logo_url).toBe('def2.png');
+    expect(out._artDeletes.web_logos).toEqual(['def.png']);
+  });
+  test('a color way added in the library is filled in; a copy missing everything gets the list', () => {
+    const after = [...before, { url: 'white.png', color_way: 'White', color_way_id: 'libW' }];
+    const out = mergeWebLogoEdit({ id: 'o', color_ways: cws, web_logos: [] }, before, after, { mark: false });
+    expect(logoDetailUrl(out, 'cw2')).toBe('white.png'); // foreign library cw id re-stamped by label
+    expect(out.web_logos.find(w => w.url === 'white.png').color_way_id).toBe('cw2');
+    expect(out._artDeletes).toBeUndefined();
+  });
+  test('removing the default clears it everywhere, including legacy web_logo_url', () => {
+    const out = mergeWebLogoEdit({ id: 'o', web_logos: [], web_logo_url: 'def.png' }, before, []);
+    expect(out.web_logo_url).toBe('');
+    expect(out._artEditedFields).toContain('web_logo_url');
+  });
+});
+
+describe('reused art asks for its web logo', () => {
+  const mk = (id, cust, arts, jobState = {}) => {
+    const so = { id, customer_id: cust, status: 'open', items: [line('AT106', 'Navy')], art_files: arts };
+    return { so, job: { id: id + '-J', art_file_id: 'a', art_status: 'art_complete', prod_status: 'hold', items: [{ item_idx: 0, deco_idxs: [0] }], so, ...jobState } };
+  };
+  test('design in the Art Library, reused without a logo detail, is listed once per color way', () => {
+    const { so, job } = mk('SO-2', 'team', [{ ...art }]);
+    const need = reusedLogoDetailNeeds([job, { ...job, id: 'dup' }], [so], [{ id: 'team', art_files: [{ ...art, id: 'lib' }] }]);
+    expect(need.map(n => n.label)).toEqual(['WVC Water Polo · Grey']);
+    expect(need[0].garmentColor).toBe('Navy');
+  });
+  test('reuse is also detected from another order of the same program', () => {
+    const a = mk('SO-1', 'teamA', [{ ...art }]);
+    const b = mk('SO-2', 'teamB', [{ ...art }]);
+    const customers = [{ id: 'teamA', parent_id: 'prog' }, { id: 'teamB', parent_id: 'prog' }, { id: 'prog' }];
+    expect(reusedLogoDetailNeeds([b.job], [a.so, b.so], customers).length).toBe(1);
+  });
+  test('not listed: brand-new art, art with its logo, jobs still with the artist, finished jobs', () => {
+    const fresh = mk('SO-3', 'solo', [{ ...art }]);
+    expect(reusedLogoDetailNeeds([fresh.job], [fresh.so], [{ id: 'solo' }])).toEqual([]);
+    const lib = [{ id: 'team', art_files: [{ ...art }] }];
+    const done = mk('SO-4', 'team', setLogoDetail([art], 'a', 'cw1', 'x.png'));
+    expect(reusedLogoDetailNeeds([done.job], [done.so], lib)).toEqual([]);
+    const withArtist = mk('SO-5', 'team', [{ ...art }], { art_status: 'art_requested' });
+    const shipped = mk('SO-6', 'team', [{ ...art }], { prod_status: 'shipped' });
+    expect(reusedLogoDetailNeeds([withArtist.job, shipped.job], [withArtist.so, shipped.so], lib)).toEqual([]);
   });
 });
 
