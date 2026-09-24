@@ -1,6 +1,7 @@
 import { canReviewJobMocks } from './lib/jobMockReadiness';
 import { skusMissingRevColorWays, missingRevColorWaysMsg } from './safeHelpers';
 import JobGarmentMocks from './JobGarmentMocks';
+import { logoDetailCustomerUpdates } from './lib/logoDetail';
 import { isJobReady, missingJobMocks, jobMockChecks } from './lib/jobMockReadiness';
 import { jobArtBadgeSt } from './lib/jobArtBadge';
 import { webstoreCheckoutMoney, webstoreDocMoneyRows } from './lib/webstoreSoMoney';
@@ -3792,6 +3793,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const _artKey=a=>(a.name||'').toLowerCase().trim()+'|'+(a.deco_type||'');
   // Is this art group already saved in the program library?
   const artInLibrary=art=>{const nm=(art.name||'').trim();return !!nm&&(libCust?.art_files||[]).some(a=>_artKey(a)===_artKey(art))};
+  // A logo detail saved/removed on a job is the design's web logo: mirror it onto the customer's
+  // (and parent program's) Art Library copy so webstores and the Previous Artwork picker see it.
+  const syncLogoLibrary=change=>{if(!onSaveCustomer)return;const pool=(allCustomers||[]).map(c=>cust&&c.id===cust.id?cust:c);logoDetailCustomerUpdates(pool,o.customer_id,oRef.current.art_files||[],change).forEach(c=>{if(cust&&c.id===cust.id)setCust(c);onSaveCustomer(c)})};
   // Promote an order art group into the program library so other teams (sub-customers) can reuse it.
   const promoteArtToLibrary=art=>{
     if(!libCust||!onSaveCustomer){nf&&nf('No customer to add this art to','error');return}
@@ -3801,7 +3805,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(lib.some(a=>_artKey(a)===_artKey(art))){nf&&nf('"'+nm+'" is already in '+(libCust.name||'the')+' library');return}
     const toLib=cust&&cust.parent_id;// promoting up to a parent vs. saving to own library
     if(!window.confirm('Add "'+nm+'" to '+(toLib?(libCust.name||'the parent')+'\'s program library so other teams can use it':'the program library so it applies to all teams')+'?'))return;
-    const entry={id:'caf'+Date.now(),name:nm,deco_type:art.deco_type||'screen_print',ink_colors:art.ink_colors||'',thread_colors:art.thread_colors||'',art_size:art.art_size||'',color_ways:(art.color_ways||[]).map(cw=>({...cw,inks:[...(cw.inks||[])]})),files:[],mockup_files:(art.mockup_files||[]).slice(),prod_files:(art.prod_files||[]).slice(),preview_url:art.preview_url||'',notes:art.notes||'',status:art.status==='uploaded'?'needs_approval':(art.status||'approved'),uploaded:new Date().toLocaleDateString()};
+    const entry={id:'caf'+Date.now(),name:nm,deco_type:art.deco_type||'screen_print',ink_colors:art.ink_colors||'',thread_colors:art.thread_colors||'',art_size:art.art_size||'',color_ways:(art.color_ways||[]).map(cw=>({...cw,inks:[...(cw.inks||[])]})),files:[],mockup_files:(art.mockup_files||[]).slice(),prod_files:(art.prod_files||[]).slice(),preview_url:art.preview_url||'',web_logos:(art.web_logos||[]).filter(w=>w&&w.url).map(w=>({...w})),web_logo_url:art.web_logo_url||'',notes:art.notes||'',status:art.status==='uploaded'?'needs_approval':(art.status||'approved'),uploaded:new Date().toLocaleDateString()};
     const updated={...libCust,art_files:[...lib,entry]};
     if(libCust.id===cust.id)setCust(updated);
     onSaveCustomer(updated);
@@ -11955,7 +11959,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(j.items||[]).length>0&&dTot>1&&<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:10}} onClick={()=>setSplitModal({jIdx:ji,jobId:j.id,mode:null,selectedIdxs:[]})}>✂️ Split Job</button>}
             </div>
             {_mockReady&&j.art_status!=='waiting_approval'&&<section aria-label="Review saved mocks" style={{margin:'0 20px 16px',padding:14,background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:10}}><strong>Mocks ready — review next</strong><p style={{fontSize:12,color:'#475569'}}>Send the mocks to the coach, or approve the artwork if approval is already confirmed. Production files are checked next.</p><div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{_reviewActions}</div></section>}
-            <JobGarmentMocks key={j.id} job={j} order={o} priorMocks={priorMocks} getOrder={()=>oRef.current} itemDetails={itemDetails} onViewItem={_jumpToItem} onSave={saveArtFilesNow} />
+            <JobGarmentMocks key={j.id} job={j} order={o} priorMocks={priorMocks} getOrder={()=>oRef.current} itemDetails={itemDetails} onViewItem={_jumpToItem} onSave={saveArtFilesNow} onLibrarySync={syncLogoLibrary} />
             {/* ── Check Mock: previously-approved art reused on a different color/style ── */}
             {_needsMockCheck&&(()=>{
               const _gLabels=_mockCheckGarments.map(g=>(g.color?g.color+' ':'')+g.sku).join(', ');

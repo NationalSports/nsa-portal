@@ -124,3 +124,58 @@ export const garmentLogoDetails = (gi, so, artFiles) => {
   });
   return out;
 };
+
+// ── Keep the customer's Art Library in step ──
+// A logo detail is the design's web logo, and webstores / the Previous Artwork picker / the Art
+// Library read the LIBRARY copy of a design first. So a logo detail saved (or removed) on an order
+// is applied to the matching library art too — same id, or same name + deco type (artWriteMatches'
+// rule). Color ways are matched by id, then by garment-color label (library copies usually keep
+// the order's ids). Only the one color way's entry changes; the library's other web logos stay.
+const _sameDesign = (lib, art) => !!lib && !!art && (lib.id === art.id || (
+  safeStr(lib.name).trim().toLowerCase() !== '' &&
+  safeStr(lib.name).trim().toLowerCase() === safeStr(art.name).trim().toLowerCase() &&
+  (lib.deco_type || '') === (art.deco_type || '')));
+const _libCwId = (lib, art, cwId) => {
+  if (!cwId) return null;
+  if (safeArr(lib.color_ways).some(c => c && c.id === cwId)) return cwId;
+  const lbl = _cwLabel(art, cwId).toLowerCase();
+  const m = safeArr(lib.color_ways).find(c => c && safeStr(c.garment_color).trim().toLowerCase() === lbl);
+  return m ? m.id : undefined; // undefined = the library design has no such color way
+};
+// change = { artId, colorWayId, url } to set, or { artId, removeUrl } to remove, applied to the
+// order's art `orderArts`. Returns the updated library art array, or null when nothing changed.
+export const logoDetailLibraryUpdate = (libArts, orderArts, change) => {
+  const art = safeArr(orderArts).find(a => a && a.id === change?.artId);
+  const idx = safeArr(libArts).findIndex(l => _sameDesign(l, art));
+  if (!art || idx < 0) return null;
+  const lib = libArts[idx];
+  let next;
+  if (change.removeUrl) {
+    if (!safeArr(lib.web_logos).some(w => w && w.url === change.removeUrl) && lib.web_logo_url !== change.removeUrl) return null;
+    next = removeLogoDetail([lib], lib.id, change.removeUrl)[0];
+  } else {
+    const cw = _libCwId(lib, art, change.colorWayId);
+    if (cw === undefined) {
+      // The library design lacks this color way: add it with the order's label so it can key on it.
+      const src = safeArr(art.color_ways).find(c => c && c.id === change.colorWayId);
+      if (!src) return null;
+      const withCw = { ...lib, color_ways: [...safeArr(lib.color_ways), { ...src, inks: [...safeArr(src.inks)] }] };
+      next = setLogoDetail([withCw], lib.id, src.id, change.url)[0];
+    } else {
+      if (logoDetailUrl(lib, cw) === change.url && safeArr(lib.web_logos).some(w => w && w.url === change.url)) return null;
+      next = setLogoDetail([lib], lib.id, cw, change.url)[0];
+    }
+  }
+  // Library rows are saved whole with the customer record; the order-save merge markers don't apply.
+  const { _artDeletes, _artEditedFields, ...clean } = next;
+  return libArts.map((l, i) => (i === idx ? clean : l));
+};
+// The customer records (own, then parent program) whose library holds this design, updated.
+export const logoDetailCustomerUpdates = (customers, customerId, orderArts, change) => {
+  const own = safeArr(customers).find(c => c && c.id === customerId);
+  const chain = [own, own?.parent_id ? safeArr(customers).find(c => c && c.id === own.parent_id) : null].filter(Boolean);
+  return chain.flatMap(c => {
+    const arts = logoDetailLibraryUpdate(safeArr(c.art_files), orderArts, change);
+    return arts ? [{ ...c, art_files: arts }] : [];
+  });
+};

@@ -13,7 +13,7 @@ const garmentLabel = item => [mockSkuOf(item), item.color].filter(Boolean).join(
 // Garment mocks for a job: one block per garment with its mock (+ logo detail) and its quantity /
 // received / shipped row. Garments linked to one shared mock collapse into ONE block — the source
 // garment's mock, then a single table listing every covered garment's SKU and sizes.
-export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSave, itemDetails = [], onViewItem }) {
+export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSave, itemDetails = [], onViewItem, onLibrarySync }) {
   const [busy, setBusy] = useState(false);
   const lock = useRef(false);
   const [error, setError] = useState('');
@@ -44,9 +44,15 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
     url: logoDetailUrl(slot.artFile, slot.cwId), bg: b.bg, bgKnown: b.known, bgSource: b.source, colorName: b.label,
     onUpload: files => run(async () => {
       const url = await fileUpload(files[0], 'nsa-web-logos');
-      return onSave(setLogoDetail(liveArts(slot.artId), slot.artId, slot.cwId, { url, name: files[0].name }), 'Logo detail');
+      const ok = await onSave(setLogoDetail(liveArts(slot.artId), slot.artId, slot.cwId, { url, name: files[0].name }), 'Logo detail');
+      if (ok && onLibrarySync) onLibrarySync({ artId: slot.artId, colorWayId: slot.cwId, url });
+      return ok;
     }),
-    onRemove: url => run(() => onSave(removeLogoDetail(liveArts(slot.artId), slot.artId, url), 'Logo detail removed')),
+    onRemove: url => run(async () => {
+      const ok = await onSave(removeLogoDetail(liveArts(slot.artId), slot.artId, url), 'Logo detail removed');
+      if (ok && onLibrarySync) onLibrarySync({ artId: slot.artId, removeUrl: url });
+      return ok;
+    }),
   }; };
   // One mock can cover garments of different colors (and each may print its own color way), so
   // the shared block also shows the logo detail on every covered garment's color.

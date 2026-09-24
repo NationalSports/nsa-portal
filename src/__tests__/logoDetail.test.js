@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import JobGarmentMocks from '../JobGarmentMocks';
-import { logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails } from '../lib/logoDetail';
+import { logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, logoDetailLibraryUpdate, logoDetailCustomerUpdates, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails } from '../lib/logoDetail';
 import { jobMockCardGroups } from '../lib/jobMockCards';
 
 const art = {
@@ -84,6 +84,35 @@ describe('logo detail helpers', () => {
     const order = { items: [line('AT106', 'Medium Grey Heather')], art_files: [art] };
     const [group] = jobMockCardGroups({ ...job, items: job.items.slice(0, 1) }, order);
     expect(group.slots[0].cwId).toBe('cw1');
+  });
+});
+
+describe('logo detail reaches the customer Art Library', () => {
+  const orderArt = setLogoDetail([art], 'a', 'cw1', 'grey.png');
+  test('same design by id: the library copy gets the color way logo, other logos kept', () => {
+    const lib = [{ ...art, web_logos: [{ url: 'white.png', color_way_id: 'cw2', color_way: 'White' }] }];
+    const out = logoDetailLibraryUpdate(lib, orderArt, { artId: 'a', colorWayId: 'cw1', url: 'grey.png' });
+    expect(logoDetailUrl(out[0], 'cw1')).toBe('grey.png');
+    expect(logoDetailUrl(out[0], 'cw2')).toBe('white.png');
+    expect(out[0]._artDeletes).toBeUndefined();
+  });
+  test('same design by name + deco with different color way ids: matched by garment color label', () => {
+    const lib = [{ id: 'lib1', name: 'wvc water polo', deco_type: 'screen_print', color_ways: [{ id: 'L1', garment_color: 'Grey' }] }];
+    const out = logoDetailLibraryUpdate(lib, orderArt, { artId: 'a', colorWayId: 'cw1', url: 'grey.png' });
+    expect(logoDetailUrl(out[0], 'L1')).toBe('grey.png');
+  });
+  test('library design missing the color way gets it added; removal mirrors; unrelated library untouched', () => {
+    const lib = [{ id: 'a', name: art.name, deco_type: art.deco_type, color_ways: [] }];
+    const added = logoDetailLibraryUpdate(lib, orderArt, { artId: 'a', colorWayId: 'cw1', url: 'grey.png' });
+    expect(added[0].color_ways.map(c => c.id)).toEqual(['cw1']);
+    const removed = logoDetailLibraryUpdate(added, orderArt, { artId: 'a', removeUrl: 'grey.png' });
+    expect(logoDetailUrl(removed[0], 'cw1')).toBe('');
+    expect(logoDetailLibraryUpdate([{ id: 'x', name: 'Other', deco_type: 'screen_print' }], orderArt, { artId: 'a', colorWayId: 'cw1', url: 'grey.png' })).toBeNull();
+  });
+  test('checks the team and its parent program library', () => {
+    const customers = [{ id: 'team', parent_id: 'prog', art_files: [] }, { id: 'prog', art_files: [{ ...art }] }, { id: 'other', art_files: [{ ...art }] }];
+    const ups = logoDetailCustomerUpdates(customers, 'team', orderArt, { artId: 'a', colorWayId: 'cw1', url: 'grey.png' });
+    expect(ups.map(c => c.id)).toEqual(['prog']);
   });
 });
 
