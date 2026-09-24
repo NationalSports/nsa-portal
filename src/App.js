@@ -51,7 +51,7 @@ import { buildJobs, billOverageQty, billLineNeed, isJobReady, recalcJobFulfillme
 import { invokeEdgeFn, buildDocHtml, schoolPOBoxes, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, mailProxyFetch, _withTimeout, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages, dedupeMockDupes } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty, isPromoOnlyOrder } from './pricing';
-import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd, quoteAgeDays as opsQuoteAgeDays, quoteColdBucket as opsQuoteColdBucket, numericSizeKeys as opsNumericSizeKeys } from './lib/opsRecap';
+import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd, quoteAgeDays as opsQuoteAgeDays, numericSizeKeys as opsNumericSizeKeys } from './lib/opsRecap';
 import { parseNetSuitePdf, parseNetSuitePdfMulti } from './lib/netsuitePdfParser';
 import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/recordRoute';
 import { consolidateArtFamilies, artFamilyIds, artFamilyIdsIn } from './lib/artSplitFamily';
@@ -103,6 +103,11 @@ const parseDate=d=>{if(!d)return null;try{const m=typeof d==='string'?d.match(/^
 // Per-invoice "Follow up on invoice" to-dos are paused: collections run off the Friday rep-ar-digest
 // email plus the single weekly "overdue invoices" to-do instead. Flip to true to bring them back.
 const INVOICE_FOLLOWUP_TODOS=false;
+// FYI-only notices (coach approved art, all items received, IF pulled) are news, not work: show them
+// for this many days, then let them drop off so the Notifications card stays short.
+const FYI_NOTICE_DAYS=2;
+// Sent estimates get ONE follow-up to-do after this many days without a response.
+const ESTIMATE_FOLLOWUP_DAYS=7;
 const _isSystemAssignedTodo=t=>/^(completed_uninvoiced|past_due_current|past_due_weekly|ar_data_quality):/.test(String(t?.source||''));
 const todoCreatorLabel=(t,reps)=>_isSystemAssignedTodo(t)?'NSA System':(reps.find(r=>r.id===t?.created_by)?.name||'Team');
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
@@ -8909,7 +8914,7 @@ export default function App(){
             else{todos.push({type:'art',priority:1,msg:'🎨 Mockup ready for review: '+j.art_name,detail:tag+' · '+so.id+' · Artist uploaded proof — review & send to coach',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Review Mockup',role:'sales',date:j.updated_at||so.updated_at})}
           }
           else if(j.sent_to_coach_at&&!j.coach_approved_at&&!DECO_OR_LATER_STATUSES.includes(j.prod_status)){const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(!j.follow_up_auto&&isDue)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
-        if(j.coach_approved_at&&!DECO_OR_LATER_STATUSES.includes(j.prod_status)&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'✅ Coach approved art: '+j.art_name,detail:tag+' · '+so.id+' · '+(daysAgo===0?'Today':daysAgo+' day'+(daysAgo!==1?'s':'')+' ago')+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
+        if(j.coach_approved_at&&!DECO_OR_LATER_STATUSES.includes(j.prod_status)&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<FYI_NOTICE_DAYS)todos.push({type:'art_approved',priority:3,msg:'✅ Coach approved art: '+j.art_name,detail:tag+' · '+so.id+' · '+(daysAgo===0?'Today':daysAgo+' day'+(daysAgo!==1?'s':'')+' ago')+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
         // Production-files step is rep/CSR-owned for embroidery (upload DST + PDF) and DTF (order transfer films) — not the artist.
         if(PROD_FILES_STATUSES.includes(j.art_status)){
           const _pdAf=safeArt(so).find(f=>f.id===j.art_file_id);const _pdDeco=_pdAf?.deco_type||j.deco_type;
@@ -8935,7 +8940,7 @@ export default function App(){
           // ART_ATTENTION_STALE_DAYS. Art that's with the artist and still fresh is somebody
           // else's open task — surfacing it here just adds noise (artNeedsAttention).
           if(needsArt){if(artNeedsAttention(j.art_status,_rcvdAt)){const _artAge=Math.floor((Date.now()-new Date(_rcvdAt).getTime())/86400000);todos.push({type:'items_received_needs_art',priority:1,msg:'📦 All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id+' · Art: '+(j.art_status||'needs_art').replace(/_/g,' ')+(Number.isFinite(_artAge)&&_artAge>ART_ATTENTION_STALE_DAYS?' · sitting '+_artAge+' days':''),so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review art',role:'sales',date:_rcvdAt})}}
-          else{todos.push({type:'items_received',priority:3,msg:'📦 All items received: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units ready',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:_rcvdAt});
+          else{if(isFreshNotificationDate(_rcvdAt,new Date(),FYI_NOTICE_DAYS))todos.push({type:'items_received',priority:3,msg:'📦 All items received: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units ready',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:_rcvdAt});
             // Warehouse hand-off — items are in and art is complete, so the job can move straight to decoration. Clears once production moves it off hold.
             if(j.prod_status==='hold'||!j.prod_status)todos.push({type:'ready_for_deco',priority:2,msg:'🎽 Ready for decoration: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — items in & art complete',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Move to deco',role:'production',isNotification:true,date:_rcvdAt})}
         }
@@ -8996,7 +9001,7 @@ export default function App(){
         });
       });
       Object.entries(_ifPulls).forEach(([ifKey,g])=>{
-        const daysAgo=Math.floor((new Date()-g.latest)/(1000*60*60*24));if(daysAgo>7)return;
+        const daysAgo=Math.floor((new Date()-g.latest)/(1000*60*60*24));if(daysAgo>=FYI_NOTICE_DAYS)return;
         if(pulledItemsHaveMovedInLine(buildJobs(so),g.itemIndexes))return;
         const when=daysAgo===0?' · Today':' · '+daysAgo+'d ago';
         const skuLbl=g.skus.length===1?g.skus[0]:g.skus.length+' items';
@@ -9074,10 +9079,10 @@ export default function App(){
       if(e.follow_up_at&&new Date()<new Date(e.follow_up_at))return;
       // Aging tiers shared with the emailed rep-ops-digest via opsRecap (3-6d / 7-13d / 14d+).
       const sentDate=e.updated_at||e.created_at;
-      const days=opsQuoteAgeDays(e);const bucket=opsQuoteColdBucket(days);
-      if(bucket==='follow_up')todos.push({type:'follow_up',priority:2,msg:'📧 Follow up on estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · Sent '+days+' days ago',action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
-      else if(bucket==='going_cold')todos.push({type:'follow_up',priority:1,msg:'⚠️ Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2+' · No response in '+days+' days',action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
-      else if(bucket==='stale')todos.push({type:'follow_up',priority:0,msg:'🔴 Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · '+days+' days with no response',action:'Close or Re-send',role:'sales',est:e,estC:c2,date:sentDate});
+      const days=opsQuoteAgeDays(e);
+      // One follow-up nudge once a quote has sat 7 days with no answer — no escalating "going cold" /
+      // "stale" tiers. It stays until the rep sends, snoozes or dismisses it (dismiss is per estimate).
+      if(days!=null&&days>=ESTIMATE_FOLLOWUP_DAYS)todos.push({type:'follow_up',priority:2,msg:'📧 Follow up on estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · Sent '+days+' days ago',action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
     });
     // Weekly overdue-invoice review — ONE to-do per week in place of per-invoice follow-ups. The week
     // runs Friday→Thursday to line up with the Friday rep-ar-digest email; dismissing it means "done
@@ -13495,7 +13500,7 @@ export default function App(){
       buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval'){
           if(j.sent_to_coach_at&&!j.coach_approved_at&&!DECO_OR_LATER_STATUSES.includes(j.prod_status)){const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(!j.follow_up_auto&&isDue)todos.push({type:'coach_followup',priority:1,msg:'Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
-        if(j.coach_approved_at&&!DECO_OR_LATER_STATUSES.includes(j.prod_status)&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'Coach approved art: '+j.art_name,detail:tag+' · '+so.id+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
+        if(j.coach_approved_at&&!DECO_OR_LATER_STATUSES.includes(j.prod_status)&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<FYI_NOTICE_DAYS)todos.push({type:'art_approved',priority:3,msg:'Coach approved art: '+j.art_name,detail:tag+' · '+so.id+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
         // M6 (same rule as the desktop dashboard generator): rejection visible until re-sent.
         if(j.coach_rejected&&!j.sent_to_coach_at&&j.art_status!=='waiting_approval'&&j.art_status!=='art_complete'&&!PROD_FILES_STATUSES.includes(j.art_status)){todos.push({type:'art_rejected',priority:1,msg:'Coach rejected art: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review feedback',role:'sales',date:j.updated_at||so.updated_at})}
         // Same rule as the desktop dashboard generator: the receiving notice is stale once the job
@@ -13507,7 +13512,7 @@ export default function App(){
           // Same gate as the desktop dashboard generator (artNeedsAttention): with the artist and
           // still fresh = not a to-do here.
           if(needsArt){if(artNeedsAttention(j.art_status,_rcvdAt))todos.push({type:'items_received_needs_art',priority:1,msg:'All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review art',role:'sales',date:_rcvdAt})}
-          else{todos.push({type:'items_received',priority:3,msg:'All items received: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:_rcvdAt});
+          else{if(isFreshNotificationDate(_rcvdAt,new Date(),FYI_NOTICE_DAYS))todos.push({type:'items_received',priority:3,msg:'All items received: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:_rcvdAt});
             // Warehouse hand-off — items are in and art is complete, so the job can move straight to decoration. Clears once production moves it off hold.
             if(j.prod_status==='hold'||!j.prod_status)todos.push({type:'ready_for_deco',priority:2,msg:'Ready for decoration: '+j.art_name,detail:tag+' · '+so.id+' · items in & art complete',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Move to deco',role:'production',isNotification:true,date:_rcvdAt})}
         }
@@ -13577,10 +13582,8 @@ export default function App(){
       if(e.follow_up_at&&new Date()<new Date(e.follow_up_at))return;
       // Aging tiers shared with rDash and the emailed rep-ops-digest via opsRecap.
       const sentDate=e.updated_at||e.created_at;
-      const days=opsQuoteAgeDays(e);const bucket=opsQuoteColdBucket(days);
-      if(bucket==='follow_up')todos.push({type:'follow_up',priority:2,msg:'Follow up on estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
-      else if(bucket==='going_cold')todos.push({type:'follow_up',priority:1,msg:'Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
-      else if(bucket==='stale')todos.push({type:'follow_up',priority:0,msg:'Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Close or Re-send',role:'sales',est:e,estC:c2,date:sentDate});
+      const days=opsQuoteAgeDays(e);
+      if(days!=null&&days>=ESTIMATE_FOLLOWUP_DAYS)todos.push({type:'follow_up',priority:2,msg:'Follow up on estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
     });
     if(INVOICE_FOLLOWUP_TODOS)invs.filter(i=>opsOpenInvoice(i)&&!['cancelled','canceled'].includes(String(i.status||'').toLowerCase())&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
       const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;

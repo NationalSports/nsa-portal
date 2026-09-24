@@ -357,3 +357,17 @@ test('weekly overdue-invoice todo is keyed to the Friday that starts its week', 
   // Not for CSR / production users
   expect(run('2026-09-23T12:00:00', 'csr')).toHaveLength(0);
 });
+
+test('sent estimates get one follow-up to-do at 7 days — no going-cold / stale tiers', () => {
+  expect(appSource).toContain('const ESTIMATE_FOLLOWUP_DAYS=7;');
+  expect(appSource).not.toContain('Estimate going cold (');
+  expect(appSource).not.toContain('Stale estimate (');
+  expect(appSource.split('days>=ESTIMATE_FOLLOWUP_DAYS)todos.push({type:\'follow_up\'').length - 1).toBe(2);
+});
+
+test('FYI notices (art approved, items received, IF pulled) only show for 2 days', () => {
+  expect(appSource).toContain('const FYI_NOTICE_DAYS=2;');
+  expect(appSource.split("if(daysAgo<FYI_NOTICE_DAYS)todos.push({type:'art_approved'").length - 1).toBe(2);
+  expect(appSource.split("isFreshNotificationDate(_rcvdAt,new Date(),FYI_NOTICE_DAYS))todos.push({type:'items_received'").length - 1).toBe(2);
+  expect(appSource).toContain('if(daysAgo>=FYI_NOTICE_DAYS)return;');
+});
