@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import JobGarmentMocks from '../JobGarmentMocks';
-import { logoDetailUrl, logoDetailBg, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails } from '../lib/logoDetail';
+import { logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails } from '../lib/logoDetail';
 import { jobMockCardGroups } from '../lib/jobMockCards';
 
 const art = {
@@ -45,6 +45,16 @@ describe('logo detail helpers', () => {
   test('background follows the garment main color', () => {
     expect(logoDetailBg('Light Blue/White')).toBe('#7dd3fc');
     expect(logoDetailBg('Medium Grey Heather')).toBe('#9ca3af');
+  });
+
+  test('a garment named CUSTOM uses its color way color; nothing known falls back to neutral grey', () => {
+    const crest = { id: 'c', color_ways: [{ id: 'cwN', garment_color: 'Navy' }] };
+    expect(cwGarmentColor(crest, 'cwN')).toBe('Navy');
+    expect(logoDetailBackground('CUSTOM', cwGarmentColor(crest, 'cwN'))).toEqual({ bg: '#1f2a44', label: 'Navy', known: true });
+    expect(logoDetailBackground('CUSTOM', '')).toMatchObject({ known: false, bg: '#94a3b8' });
+    // The line's own real color still wins over the color way (the WVC "Whiute" typo case).
+    expect(logoDetailBackground('Medium Grey Heather', 'Whiute')).toMatchObject({ bg: '#9ca3af', label: 'Medium Grey Heather' });
+    expect(logoDetailBg('Dark Heather')).toBe('#1f2937');
   });
 
   test('mock slots carry the color way the logo detail keys on', () => {

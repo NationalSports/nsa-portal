@@ -36,46 +36,79 @@ async function hasTransparency(file) {
   finally { if (url) URL.revokeObjectURL(url); }
 }
 
-// Is this logo mostly light (e.g. an all-white logo)? Averages the visible pixels of the image.
-// Resolves null when the image can't be read (no canvas, or the host blocks cross-origin reads).
-function logoIsLight(url) {
+// Read an image's pixels (downscaled). Resolves null when it can't be read (no canvas, or the
+// host blocks cross-origin reads) — callers then keep their default.
+function readPixels(url, max = 120) {
   return new Promise(resolve => {
     if (!url || typeof document === 'undefined') return resolve(null);
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
       try {
-        const w = Math.max(1, Math.min(img.naturalWidth, 120));
+        const w = Math.max(1, Math.min(img.naturalWidth, max));
         const h = Math.max(1, Math.round(img.naturalHeight * w / (img.naturalWidth || 1)));
         const c = document.createElement('canvas'); c.width = w; c.height = h;
         const ctx = c.getContext('2d');
         if (!ctx) return resolve(null);
         ctx.drawImage(img, 0, 0, w, h);
-        const d = ctx.getImageData(0, 0, w, h).data;
-        let sum = 0, n = 0;
-        for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 128) { sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]; n++; }
-        resolve(n ? sum / n > 205 : null);
+        resolve(ctx.getImageData(0, 0, w, h).data);
       } catch (e) { resolve(null); }
     };
     img.onerror = () => resolve(null);
     img.src = url;
   });
 }
+const _lum = (r, g, b) => 0.299 * r + 0.587 * g + 0.114 * b;
+// Does a real share of this logo print white/near-white (white text, outlines)? Those parts
+// disappear on a light background even when most of the logo is colored.
+async function logoHasWhite(url) {
+  const d = await readPixels(url);
+  if (!d) return null;
+  let white = 0, n = 0;
+  for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 128) { n++; if (_lum(d[i], d[i + 1], d[i + 2]) > 225) white++; }
+  return n ? white / n > 0.05 : null;
+}
+// The garment color in a mock image: the biggest non-white color area (mock backgrounds are
+// white). Null when no single color clearly dominates — e.g. a white shirt on a white background.
+async function mockGarmentHex(url) {
+  const d = await readPixels(url, 80);
+  if (!d) return null;
+  const buckets = new Map(); let n = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] < 200) continue;
+    n++;
+    if (_lum(d[i], d[i + 1], d[i + 2]) > 235) continue;
+    const k = (d[i] >> 4) + ',' + (d[i + 1] >> 4) + ',' + (d[i + 2] >> 4);
+    const e = buckets.get(k) || { c: 0, r: 0, g: 0, b: 0 };
+    e.c++; e.r += d[i]; e.g += d[i + 1]; e.b += d[i + 2]; buckets.set(k, e);
+  }
+  const top = [...buckets.values()].sort((x, y) => y.c - x.c)[0];
+  if (!top || top.c < n * 0.15) return null;
+  const hx = v => Math.round(v / top.c).toString(16).padStart(2, '0');
+  return '#' + hx(top.r) + hx(top.g) + hx(top.b);
+}
 const _hexLum = hex => { const m = String(hex || '').replace('#', '').match(/.{2}/g); if (!m || m.length < 3) return 128; const [r, g, b] = m.map(x => parseInt(x, 16)); return 0.299 * r + 0.587 * g + 0.114 * b; };
 
 // The logo detail panel: the design's transparent logo PNG painted on the garment color, so the
 // close-up reads the way it will print. `logo` = { url, bg, colorName, onUpload, onRemove };
 // without onUpload it is read-only.
-function LogoDetailPane({ logo, busy }) {
+function LogoDetailPane({ logo, busy, mockUrl = '' }) {
   const input = useRef(null);
   const [error, setError] = useState('');
   const [help, setHelp] = useState(false);
   const [drag, setDrag] = useState(false);
   const [bgMode, setBgMode] = useState(null);
-  const [light, setLight] = useState(null);
-  useEffect(() => { let live = true; setLight(null); logoIsLight(logo.url).then(v => { if (live) setLight(v); }); return () => { live = false; }; }, [logo.url]);
-  // A light (e.g. all-white) logo on a light garment would vanish, so it starts on dark instead.
-  const autoDark = light === true && _hexLum(logo.bg) > 180;
+  const [hasWhite, setHasWhite] = useState(null);
+  const [mockHex, setMockHex] = useState(null);
+  useEffect(() => { let live = true; setHasWhite(null); logoHasWhite(logo.url).then(v => { if (live) setHasWhite(v); }); return () => { live = false; }; }, [logo.url]);
+  // The garment's color name isn't a real color ("CUSTOM") and its color way didn't name one
+  // either: read the shirt color off the mock itself.
+  const sampleMock = logo.bgKnown === false && !!mockUrl;
+  useEffect(() => { let live = true; setMockHex(null); if (sampleMock) mockGarmentHex(mockUrl).then(v => { if (live) setMockHex(v); }); return () => { live = false; }; }, [sampleMock, mockUrl]);
+  const bg = (sampleMock && mockHex) || logo.bg || '#e5e7eb';
+  const bgName = sampleMock && mockHex ? 'Mock color' : logo.colorName || 'Garment';
+  // White parts of a logo vanish on a light background, so it starts on dark instead.
+  const autoDark = hasWhite === true && _hexLum(bg) > 180;
   const mode = bgMode || (autoDark ? 'dark' : 'garment');
   const run = async fn => {
     setError('');
@@ -100,14 +133,14 @@ function LogoDetailPane({ logo, busy }) {
       <button type="button" className="help-btn" aria-expanded={help} aria-label="What is a logo detail?" onClick={() => setHelp(h => !h)}>?</button>
     </div>
     {help && <div className="logo-help" role="note"><ul>{LOGO_HELP.map(t => <li key={t}>{t}</li>)}</ul></div>}
-    <div className={'panel-frame logo-frame bg-' + mode + (drag ? ' dragging' : '')} style={mode === 'garment' ? { background: logo.bg || '#e5e7eb' } : undefined} {...drop}>
+    <div className={'panel-frame logo-frame bg-' + mode + (drag ? ' dragging' : '')} style={mode === 'garment' ? { background: bg } : undefined} {...drop}>
       {logo.url ? <button type="button" className="frame-open" onClick={() => openFile(logo.url)} aria-label="Open full size logo detail"><img src={logo.url} alt="Logo detail" /></button>
         : <span className="logo-empty">{logo.onUpload ? <>Drop the transparent logo PNG here<br /><small>or use Upload logo PNG</small></> : 'No logo detail yet'}</span>}
     </div>
     {logo.url && <div className="bg-switch" role="group" aria-label="Logo background">
-      {[['garment', logo.colorName || 'Garment'], ['checker', 'Checkered'], ['dark', 'Dark']].map(([k, lbl]) => <button key={k} type="button" aria-pressed={mode === k} onClick={() => setBgMode(k)}>{lbl}</button>)}
+      {[['garment', bgName], ['checker', 'Checkered'], ['dark', 'Dark']].map(([k, lbl]) => <button key={k} type="button" aria-pressed={mode === k} onClick={() => setBgMode(k)}>{lbl}</button>)}
     </div>}
-    <div className="panel-meta">{mode === 'garment' ? (logo.colorName ? 'Shown on ' + logo.colorName : 'Shown on the garment color') : autoDark && !bgMode ? 'Light logo — shown on dark so it stays visible' : mode === 'checker' ? 'Checkered = transparent areas' : 'Shown on dark'}</div>
+    <div className="panel-meta">{mode === 'garment' ? (sampleMock && mockHex ? 'Shown on the garment color from the mock' : logo.colorName ? 'Shown on ' + logo.colorName : 'Shown on a neutral grey — garment color unknown') : autoDark && !bgMode ? 'Logo has white — shown on dark so it stays visible' : mode === 'checker' ? 'Checkered = transparent areas' : 'Shown on dark'}</div>
     {error && <p role="alert" className="mock-error">{error}</p>}
     {logo.onUpload && <div className="panel-actions">
       <button type="button" disabled={busy} onClick={() => input.current.click()}>{logo.url ? 'Replace logo' : 'Upload logo PNG'}</button>
@@ -161,7 +194,7 @@ export default function GarmentMockCard({ label, sub, mocks, candidates, suggest
           <input ref={input} type="file" hidden multiple accept={accept} onChange={e => { if (e.target.files.length) run(() => onUpload(Array.from(e.target.files))); e.target.value = ''; }} />
         </div>
       </div>
-      {logo && <LogoDetailPane logo={logo} busy={busy} />}
+      {logo && <LogoDetailPane logo={logo} busy={busy} mockUrl={mocks.length ? urlOf(mocks[0]) : ''} />}
     </div>
     {children}
   </section>;

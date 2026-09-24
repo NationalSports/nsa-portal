@@ -2,7 +2,7 @@ import React, { useRef, useState } from 'react';
 import GarmentMockCard, { MockCoversTable } from './GarmentMockCard';
 import JobGarmentProgress, { garmentProgress, GarmentDecorationSpecs } from './JobGarmentProgress';
 import { jobMockCardGroups } from './lib/jobMockCards';
-import { logoDetailUrl, logoDetailBg, setLogoDetail, removeLogoDetail } from './lib/logoDetail';
+import { logoDetailUrl, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail } from './lib/logoDetail';
 import { safeArt, safeNum, safeSizes, garmentMockKey, mockSkuOf, slotMockFiles, adoptArtProofAsGarmentMock, removeGarmentSlotMock, resolveMockLink, mockLinkSourceFiles, applyMockLink } from './safeHelpers';
 import { fileUpload, openFile, _isImgUrl } from './utils';
 
@@ -40,14 +40,14 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
   };
   const useFiles = (slot, files) => onSave(files.reduce((arts, file) => adoptArtProofAsGarmentMock(arts, slot.artId, slot.key,
     { ...(typeof file === 'string' ? { url: file } : file), art_file_id: slot.artId }), liveArts(slot.artId)), 'Garment mock');
-  const logoFor = (slot, item) => slot.kind !== 'art' ? null : {
-    url: logoDetailUrl(slot.artFile, slot.cwId), bg: logoDetailBg(item.color), colorName: item.color,
+  const logoFor = (slot, item) => { if (slot.kind !== 'art') return null; const b = logoDetailBackground(item.color, cwGarmentColor(slot.artFile, slot.cwId)); return {
+    url: logoDetailUrl(slot.artFile, slot.cwId), bg: b.bg, bgKnown: b.known, colorName: b.label,
     onUpload: files => run(async () => {
       const url = await fileUpload(files[0], 'nsa-web-logos');
       return onSave(setLogoDetail(liveArts(slot.artId), slot.artId, slot.cwId, { url, name: files[0].name }), 'Logo detail');
     }),
     onRemove: url => run(() => onSave(removeLogoDetail(liveArts(slot.artId), slot.artId, url), 'Logo detail removed')),
-  };
+  }; };
   const coverRow = x => {
     const s = summaryOf(x);
     return { key: garmentMockKey(x.item), label: garmentLabel(x.item), sizes: s ? s.sizes : sizesOf(x.gi, x.item),

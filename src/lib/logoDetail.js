@@ -1,6 +1,6 @@
 import { safeArr, safeArt, safeItems, safeStr, jobItemArtSlots, jobArtFileIds } from '../safeHelpers';
 import { pickCwAsset } from '../businessLogic';
-import { garmentHex } from './artGrid';
+import { knownGarmentHex } from './artGrid';
 
 // ── Logo detail ──
 // Every garment mock has a partner: the LOGO DETAIL, a close-up of the logo alone that the floor,
@@ -15,11 +15,25 @@ import { garmentHex } from './artGrid';
 export const logoDetailUrl = (art, colorWayId) =>
   art ? pickCwAsset({ ...art, preview_url: '' }, { kind: 'web_logo', colorWayId: colorWayId || null }) : '';
 
-// Background behind the transparent logo: the garment's main color ("Light Blue/White" → light blue).
-export const logoDetailBg = (color) => {
+// Background behind the transparent logo: the garment's main color ("Light Blue/White" → light
+// blue). A line whose color isn't a real color name ("CUSTOM", blank) falls back to the color way's
+// garment color, then to a neutral mid grey that keeps white AND dark inks readable.
+export const UNKNOWN_GARMENT_BG = '#94a3b8';
+const _knownBg = (color) => {
   const main = safeStr(color).split('/')[0].trim();
-  return garmentHex(main || color);
+  return (main && knownGarmentHex(main)) || (safeStr(color).trim() ? knownGarmentHex(color) : null);
 };
+export const logoDetailBackground = (color, cwColor) => {
+  const k = _knownBg(color);
+  if (k) return { bg: k, label: safeStr(color).trim(), known: true };
+  const c = _knownBg(cwColor);
+  if (c) return { bg: c, label: safeStr(cwColor).trim(), known: true };
+  return { bg: UNKNOWN_GARMENT_BG, label: '', known: false };
+};
+export const logoDetailBg = (color, cwColor) => logoDetailBackground(color, cwColor).bg;
+// The garment color a color way is designed for ("Navy"), used when the line's own color is unknown.
+export const cwGarmentColor = (art, colorWayId) =>
+  colorWayId ? safeStr(safeArr(art?.color_ways).find(c => c && c.id === colorWayId)?.garment_color).trim() : '';
 
 const _cwLabel = (art, colorWayId) => {
   const cw = safeArr(art?.color_ways).find(c => c && c.id === colorWayId);

@@ -40,6 +40,11 @@ const _garmentHexOf = (name) => {
   for (const w of key.split(/[^a-z0-9]+/).filter(Boolean)) { if (GARMENT_HEX[w]) return GARMENT_HEX[w]; }
   return null;
 };
+// A garment color's swatch hex only when the name is actually recognized (a swatch word, or a
+// dark word like "Dark Heather"); null for names like "CUSTOM" that say nothing about the color.
+export function knownGarmentHex(name) {
+  return _garmentHexOf(name) || (guessDarkColor(name) ? '#1f2937' : null);
+}
 // Background hex for a garment color — known swatch, else a neutral dark/light by brightness.
 export function garmentHex(name) {
   return _garmentHexOf(name) || (guessDarkColor(name) ? '#1f2937' : '#e5e7eb');

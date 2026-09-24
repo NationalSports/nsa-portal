@@ -41,7 +41,7 @@ import * as fabric from 'fabric';
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, REP_PROD_FILE_DECOS, artistOwesProdFiles, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { isApiCatalogVendor, styleSkuOrFilter, buildStyleColorwayMap, lookupStyleColorway } from './lib/vendorColorwayImages';
-import { logoDetailUrl, logoDetailBg, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails } from './lib/logoDetail';
+import { logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails } from './lib/logoDetail';
 import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, adoptArtProofAsGarmentMock, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { stampEstimateDraftLineIds } from './lib/orderLineIdentity';
@@ -1399,7 +1399,7 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     }
     // Logo detail: the transparent logo PNG for each design / color way on this garment, printed on
     // the garment color so the floor can read inks and small type at full size.
-    const _logoTiles=garmentLogoDetails(gi,so,allArtFiles).map(l=>'<div style="flex:1 1 220px;max-width:340px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden"><div style="background:'+logoDetailBg(gi.color)+';-webkit-print-color-adjust:exact;print-color-adjust:exact;height:200px;display:flex;align-items:center;justify-content:center;padding:12px"><img src="'+l.url+'" style="max-height:176px;max-width:100%;object-fit:contain"/></div><div style="padding:5px 8px;font-size:10px;font-weight:700;color:#334155">Logo detail — '+_upEsc(l.artName)+(l.cwLabel?' · CW: '+_upEsc(l.cwLabel):'')+'</div></div>');
+    const _logoTiles=garmentLogoDetails(gi,so,allArtFiles).map(l=>'<div style="flex:1 1 220px;max-width:340px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden"><div style="background:'+logoDetailBg(gi.color,l.cwLabel)+';-webkit-print-color-adjust:exact;print-color-adjust:exact;height:200px;display:flex;align-items:center;justify-content:center;padding:12px"><img src="'+l.url+'" style="max-height:176px;max-width:100%;object-fit:contain"/></div><div style="padding:5px 8px;font-size:10px;font-weight:700;color:#334155">Logo detail — '+_upEsc(l.artName)+(l.cwLabel?' · CW: '+_upEsc(l.cwLabel):'')+'</div></div>');
     if(_logoTiles.length>0)sHtml+='<div style="margin:12px 0;display:flex;gap:10px;flex-wrap:wrap;justify-content:center;page-break-inside:avoid">'+_logoTiles.join('')+'</div>';
     itemSectionHtmls.push(sHtml);
   });
@@ -7288,8 +7288,8 @@ export default function App(){
     }catch(e){nf('Could not save the logo detail: '+(e.message||'upload failed'),'error');return false}
   };
   // Props for a mock card's logo detail pane (art slots only).
-  const logoDetailProps=(so,slot,garment)=>slot.kind!=='art'?null:{url:logoDetailUrl(slot.artFile,slot.cwId),bg:logoDetailBg(garment?.color),colorName:garment?.color||'',
-    onUpload:files=>saveLogoDetailFor(so,slot,{files}),onRemove:url=>saveLogoDetailFor(so,slot,{removeUrl:url})};
+  const logoDetailProps=(so,slot,garment)=>{if(slot.kind!=='art')return null;const b=logoDetailBackground(garment?.color,cwGarmentColor(slot.artFile,slot.cwId));return{url:logoDetailUrl(slot.artFile,slot.cwId),bg:b.bg,bgKnown:b.known,colorName:b.label,
+    onUpload:files=>saveLogoDetailFor(so,slot,{files}),onRemove:url=>saveLogoDetailFor(so,slot,{removeUrl:url})}};
   // Result-checked FULL save: persist the whole SO (jobs + art) and return a truthful true/false promise so
   // reuse/forward mutations (applyPriorMock, prod-file completion, wizard release) can report failure instead
   // of the fire-and-forget onSave that silently claims "saved". Runs savSO's local-state update + all its
@@ -14458,7 +14458,7 @@ export default function App(){
                     {!_giSrc&&(()=>{const _lds=garmentLogoDetails(gi,so,allArtFiles);if(!_lds.length)return null;
                       return<div style={{padding:12,background:'#fafbfc',borderBottom:'1px solid #e2e8f0',display:'flex',gap:10,flexWrap:'wrap',justifyContent:'center'}}>
                         {_lds.map(l=><div key={l.url} style={{flex:'1 1 220px',maxWidth:340,border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden',background:'white'}}>
-                          <div style={{background:logoDetailBg(gi.color),height:190,display:'flex',alignItems:'center',justifyContent:'center',padding:12,cursor:'zoom-in'}} onClick={()=>openFile(l.url)}><img src={l.url} alt="Logo detail" style={{maxHeight:166,maxWidth:'100%',objectFit:'contain'}}/></div>
+                          <div style={{background:logoDetailBg(gi.color,l.cwLabel),height:190,display:'flex',alignItems:'center',justifyContent:'center',padding:12,cursor:'zoom-in'}} onClick={()=>openFile(l.url)}><img src={l.url} alt="Logo detail" style={{maxHeight:166,maxWidth:'100%',objectFit:'contain'}}/></div>
                           <div style={{padding:'5px 8px',fontSize:10,fontWeight:700,color:'#334155'}}>Logo detail — {l.artName}{l.cwLabel?' · CW: '+l.cwLabel:''}</div>
                         </div>)}
                       </div>})()}
