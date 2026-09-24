@@ -50,7 +50,9 @@ export default function ProductionPacket({fixture=null}){
   frame=document.createElement('iframe');frame.title='Production packet PDF renderer';frame.style.cssText='position:fixed;left:-10000px;top:0;width:816px;height:1056px;border:0;opacity:0;pointer-events:none';document.body.appendChild(frame);
   await new Promise((resolve,reject)=>{frame.onload=resolve;frame.onerror=()=>reject(new Error('Could not prepare the PDF layout.'));frame.srcdoc=packetPrintHtml(p,{onlineUrl,qrDataUrl,draft:!historical,generatedAt:p.issuedAt||data.fetchedAt});});
   const images=Array.from(frame.contentDocument.images);await Promise.all(images.map(image=>image.complete?Promise.resolve():new Promise(resolve=>{image.addEventListener('load',resolve,{once:true});image.addEventListener('error',resolve,{once:true});setTimeout(resolve,12000);})))
-  await html2pdf().set({margin:0,filename:`production-packet-${p.revisionId||'draft'}.pdf`,image:{type:'jpeg',quality:.92},html2canvas:{scale:1.5,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'},pagebreak:{mode:['css','legacy'],avoid:['tr','.instruction','.deco']}}).from(frame.contentDocument.body).save();
+  const name=`production-packet-${p.revisionId||'draft'}.pdf`;
+  const blob=await html2pdf().set({margin:0,filename:name,image:{type:'jpeg',quality:.9},html2canvas:{scale:1,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'},pagebreak:{mode:['css','legacy'],avoid:['tr','.instruction','.deco']}}).from(frame.contentDocument.body).outputPdf('blob');
+  const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
  }catch(e){setError(e.message||'Could not create the PDF.');}finally{if(frame)frame.remove();setBusy(false);}};
  const startMessage=(soId,targetId='')=>{setTab(4);setSo(soId);setTarget(targetId);setReply('');setText('');};
  const primary=brandColor(p.store.primaryColor,'#19333c'), accent=brandColor(p.store.accentColor,'#167b6e');
