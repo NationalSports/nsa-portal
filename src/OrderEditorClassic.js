@@ -3895,6 +3895,91 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }
     return{name:(cust?.name||'Customer')+' (Drop Ship)',lines:split(addr)};
   },[o,_ci,cust,addrs,decoShipForItems]);
+  // Purchase-order PDF options — shared by the PO modal and the PO full page so Print /
+  // Download / Email all produce the same document. `allLines` must carry poIdx.
+  const buildPoDoc=(po,allLines,item,poStatus)=>{
+    const isDropShip=!!po.drop_ship;
+    const _poShipTo=poShipToFor(po,allLines,o.items);
+    const vendorRec=po.po_type==='outside_deco'?null:vendorList.find(v=>v.id===item?.vendor_id);
+    const vendor=po.po_type==='outside_deco'?(po.deco_vendor||'Outside Decorator'):(vendorRec?.name||D_V.find(v=>v.id===item?.vendor_id)?.name||item?.brand||'Vendor');
+    const vendorEmail=po.po_type==='outside_deco'?'':(vendorRec?.contact_email||'');
+    const isDPO=po.po_type==='outside_deco';
+    // Drop-ship POs ship directly from the vendor to the customer, so the Ship To
+    // on the PO should be the customer's shipping address, not NSA's address.
+    // Blanks drop-shipped to an outside decorator ship to the decorator's address, not the
+    // customer's. Null when no decorator covers these items (or it has no saved address).
+    const _decoDest=isDropShip?decoShipForItems(allLines.map(ln=>ln.lineIdx)):null;
+    // A write-in address stamped on the PO line at creation (Ship To → "✏️ New address")
+    // is the rep's explicit choice — it beats the decorator/customer fallbacks below.
+    const _plWriteIn=isDropShip?(po.ship_to||allLines.map(ln=>o.items[ln.lineIdx]?.po_lines?.[ln.poIdx]?.ship_to).find(st=>st&&(st.line1||st.city))||null):null;
+    // Same address the Ship To block shows (resolved once, up in the modal prologue) —
+    // the label/PDF just needs it as HTML rather than lines.
+    const _shipTo={name:_poShipTo.name,sub:_poShipTo.lines.join('<br/>')};
+    // Per-line data for every item on this PO (not just the active one) so the PDF
+    // captures the full purchase order. Re-derive size keys / totals from the live
+    // po line for each item, since the user may have different sizes per line.
+    const _excludeKeys=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping','api_order_id','api_ordered_at','vendor_keys']);
+    const linesData=allLines.map(ln=>{
+      const it=o.items[ln.lineIdx];const pl=it?.po_lines?.[ln.poIdx];
+      if(!it||!pl)return null;
+      const sk=Object.keys(pl).filter(k=>!k.startsWith('_')&&!_excludeKeys.has(k)&&typeof pl[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+      const rcvd=pl.received||{};const cncl=pl.cancelled||{};const billed=pl.billed||{};
+      const gR=sz=>(rcvd[sz]||0),gC=sz=>(cncl[sz]||0),gB=sz=>(billed[sz]||0),gO=sz=>Math.max(0,(pl[sz]||0)-gR(sz)-gC(sz));
+      const tOrd=sk.reduce((a,sz)=>a+(pl[sz]||0),0);
+      const tR=sk.reduce((a,sz)=>a+gR(sz),0);const tC=sk.reduce((a,sz)=>a+gC(sz),0);
+      const tB=sk.reduce((a,sz)=>a+gB(sz),0);const tO=sk.reduce((a,sz)=>a+gO(sz),0);
+      const u=pl.unit_cost!=null?safeNum(pl.unit_cost):safeNum(it.nsa_cost);
+      return{it,pl,sk,tOrd,tR,tC,tB,tO,u,lineTotal:tOrd*u,gR,gC,gB,gO};
+    }).filter(Boolean);
+    const grandSubtotal=linesData.reduce((a,l)=>a+l.lineTotal,0);
+    const grandOrdered=linesData.reduce((a,l)=>a+l.tOrd,0);
+    const shipping=safeNum(po.shipping);
+    const grandTotal=grandSubtotal+shipping;
+    const _makePoDocOpts=()=>({
+      title:vendor,docNum:po.po_id,
+      docType:isDPO?'DECORATION PURCHASE ORDER':'PURCHASE ORDER',
+      headerRight:'<div class="ta" style="font-size:18px">Status: '+(poStatus==='received'?'Received':poStatus==='partial'?'Partial':poStatus==='shipped'?'Shipped':'Open')+'</div><div class="ts">'+grandOrdered+' unit'+(grandOrdered!==1?'s':'')+' · Total: <strong>$'+grandTotal.toFixed(2)+'</strong></div>',
+      infoBoxes:[
+        {label:'Vendor',value:vendor,sub:isDPO?(po.deco_type||'').replace(/_/g,' '):(vendorEmail||undefined)},
+        {label:'Ship To',value:_shipTo.name,sub:_shipTo.sub},
+        {label:'Sales Order',value:o.id,sub:(cust?.name||'')+(o.memo?' — '+o.memo:'')},
+        {label:'Expected Date',value:o.expected_date||'TBD',sub:'Rep: '+(REPS.find(r=>r.id===(cust?.primary_rep_id||o.created_by))?.name||'—')},
+      ],
+      tables:[
+        ...linesData.map(ld=>({
+          title:(ld.it.sku||'')+' — '+(ld.it.name||'')+(ld.it.color?' · '+ld.it.color:'')+(ld.it.notes&&String(ld.it.notes).trim()?'<br/><span style="color:#854d0e;font-style:italic;font-weight:400">'+String(ld.it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>':''),
+          headers:['Size',...ld.sk.filter(sz=>ld.pl[sz]>0).map(s=>s),'Total','Unit $','Amount'],
+          aligns:['left',...ld.sk.filter(sz=>ld.pl[sz]>0).map(()=>'center'),'center','right','right'],
+          rows:(()=>{
+            const szH=ld.sk.filter(sz=>ld.pl[sz]>0);
+            const rows=[
+              {cells:[{value:'<strong>Ordered</strong>',style:'font-weight:700'},...szH.map(s=>({value:ld.pl[s]||0,style:(ld.pl[s]>0?'font-weight:800;color:#1e3a5f':'')})),{value:ld.tOrd,style:'font-weight:800'},{value:'$'+ld.u.toFixed(2),style:'text-align:right'},{value:'$'+ld.lineTotal.toFixed(2),style:'text-align:right;font-weight:800'}]},
+            ];
+            if(ld.tB>0)rows.push({cells:[{value:'Billed',style:'color:#1e40af'},...szH.map(s=>({value:ld.gB(s)||'—',style:'color:#1e40af'})),{value:ld.tB,style:'color:#1e40af;font-weight:700'},{value:'',style:''},{value:'$'+(ld.tB*ld.u).toFixed(2),style:'text-align:right;color:#1e40af'}]});
+            if(ld.tR>0)rows.push({cells:[{value:'Received',style:'color:#166534'},...szH.map(s=>({value:ld.gR(s)||'—',style:'color:#166534'})),{value:ld.tR,style:'color:#166534;font-weight:700'},{value:'',style:''},{value:'$'+(ld.tR*ld.u).toFixed(2),style:'text-align:right;color:#166534'}]});
+            if(ld.tO>0)rows.push({cells:[{value:'Open',style:'color:#b45309'},...szH.map(s=>({value:ld.gO(s)||'—',style:'color:#b45309'})),{value:ld.tO,style:'color:#b45309;font-weight:700'},{value:'',style:''},{value:'$'+(ld.tO*ld.u).toFixed(2),style:'text-align:right;color:#b45309'}]});
+            return rows;
+          })()
+        })),
+        // Totals summary — Subtotal + (optional) Shipping + Total
+        {
+          title:'PO Totals',
+          headers:['','Amount'],
+          aligns:['right','right'],
+          rows:[
+            {cells:[{value:'Subtotal ('+grandOrdered+' unit'+(grandOrdered!==1?'s':'')+')',style:'text-align:right'},{value:'$'+grandSubtotal.toFixed(2),style:'text-align:right;font-weight:700'}]},
+            ...(shipping>0?[{cells:[{value:'Shipping',style:'text-align:right'},{value:'$'+shipping.toFixed(2),style:'text-align:right'}]}]:[]),
+            {_class:'totals-row',cells:[{value:'<strong>PO Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:13px">$'+grandTotal.toFixed(2)+'</strong>',style:'text-align:right'}]},
+          ]
+        },
+      ],
+      notes:(()=>{const parts=[];if(isDPO)parts.push('Deco Type: '+(po.deco_type||'—').replace(/_/g,' '));if(po.notes)parts.push(po.notes);if(isDropShip)parts.push('<strong>DROP SHIP</strong> — Please ship directly to the '+(_plWriteIn&&(_plWriteIn.line1||_plWriteIn.city)?'delivery':_decoDest?'decorator':'customer')+' address above.');return parts.length?parts.join('<br/>'):null})(),
+      footer:isDPO?'Expected return: '+(po.expected_date||'TBD'):'Please confirm receipt and expected ship date.',
+      companyInfo:_ci
+    });
+    const _pdfFilename='PO-'+po.po_id+(vendor?'-'+vendor.replace(/[^a-z0-9]+/gi,'_'):'');
+    return{makeDocOpts:_makePoDocOpts,vendor,vendorEmail,isDPO,filename:_pdfFilename};
+  };
   const artQty=useMemo(()=>{const m={};safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){m[d.art_file_id]=(m[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}})});return m},[o]);
   // Combined deco COST tier qty for manually-linked jobs that share a screen across orders
   // (so_jobs.link_group). Lowers the rep's cost/margin so one shared setup isn't paid twice;
@@ -15191,84 +15276,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             {(()=>{
               // Build PO doc options once, shared by Print / Download / Email so the PDF format
               // matches the SO PDF (same buildDocHtml pipeline, same _PRINT_CSS).
-              const vendorRec=po.po_type==='outside_deco'?null:vendorList.find(v=>v.id===item?.vendor_id);
-              const vendor=po.po_type==='outside_deco'?(po.deco_vendor||'Outside Decorator'):(vendorRec?.name||D_V.find(v=>v.id===item?.vendor_id)?.name||item?.brand||'Vendor');
-              const vendorEmail=po.po_type==='outside_deco'?'':(vendorRec?.contact_email||'');
-              const isDPO=po.po_type==='outside_deco';
-              // Drop-ship POs ship directly from the vendor to the customer, so the Ship To
-              // on the PO should be the customer's shipping address, not NSA's address.
-              // Blanks drop-shipped to an outside decorator ship to the decorator's address, not the
-              // customer's. Null when no decorator covers these items (or it has no saved address).
-              const _decoDest=isDropShip?decoShipForItems(allLines.map(ln=>ln.lineIdx)):null;
-              // A write-in address stamped on the PO line at creation (Ship To → "✏️ New address")
-              // is the rep's explicit choice — it beats the decorator/customer fallbacks below.
-              const _plWriteIn=isDropShip?(po.ship_to||allLines.map(ln=>o.items[ln.lineIdx]?.po_lines?.[ln.poIdx]?.ship_to).find(st=>st&&(st.line1||st.city))||null):null;
-              // Same address the Ship To block shows (resolved once, up in the modal prologue) —
-              // the label/PDF just needs it as HTML rather than lines.
-              const _shipTo={name:_poShipTo.name,sub:_poShipTo.lines.join('<br/>')};
-              // Per-line data for every item on this PO (not just the active one) so the PDF
-              // captures the full purchase order. Re-derive size keys / totals from the live
-              // po line for each item, since the user may have different sizes per line.
-              const _excludeKeys=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping','api_order_id','api_ordered_at','vendor_keys']);
-              const linesData=allLines.map(ln=>{
-                const it=o.items[ln.lineIdx];const pl=it?.po_lines?.[ln.poIdx];
-                if(!it||!pl)return null;
-                const sk=Object.keys(pl).filter(k=>!k.startsWith('_')&&!_excludeKeys.has(k)&&typeof pl[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
-                const rcvd=pl.received||{};const cncl=pl.cancelled||{};const billed=pl.billed||{};
-                const gR=sz=>(rcvd[sz]||0),gC=sz=>(cncl[sz]||0),gB=sz=>(billed[sz]||0),gO=sz=>Math.max(0,(pl[sz]||0)-gR(sz)-gC(sz));
-                const tOrd=sk.reduce((a,sz)=>a+(pl[sz]||0),0);
-                const tR=sk.reduce((a,sz)=>a+gR(sz),0);const tC=sk.reduce((a,sz)=>a+gC(sz),0);
-                const tB=sk.reduce((a,sz)=>a+gB(sz),0);const tO=sk.reduce((a,sz)=>a+gO(sz),0);
-                const u=pl.unit_cost!=null?safeNum(pl.unit_cost):safeNum(it.nsa_cost);
-                return{it,pl,sk,tOrd,tR,tC,tB,tO,u,lineTotal:tOrd*u,gR,gC,gB,gO};
-              }).filter(Boolean);
-              const grandSubtotal=linesData.reduce((a,l)=>a+l.lineTotal,0);
-              const grandOrdered=linesData.reduce((a,l)=>a+l.tOrd,0);
-              const shipping=safeNum(po.shipping);
-              const grandTotal=grandSubtotal+shipping;
-              const _makePoDocOpts=()=>({
-                title:vendor,docNum:po.po_id,
-                docType:isDPO?'DECORATION PURCHASE ORDER':'PURCHASE ORDER',
-                headerRight:'<div class="ta" style="font-size:18px">Status: '+(poStatus==='received'?'Received':poStatus==='partial'?'Partial':poStatus==='shipped'?'Shipped':'Open')+'</div><div class="ts">'+grandOrdered+' unit'+(grandOrdered!==1?'s':'')+' · Total: <strong>$'+grandTotal.toFixed(2)+'</strong></div>',
-                infoBoxes:[
-                  {label:'Vendor',value:vendor,sub:isDPO?(po.deco_type||'').replace(/_/g,' '):(vendorEmail||undefined)},
-                  {label:'Ship To',value:_shipTo.name,sub:_shipTo.sub},
-                  {label:'Sales Order',value:o.id,sub:(cust?.name||'')+(o.memo?' — '+o.memo:'')},
-                  {label:'Expected Date',value:o.expected_date||'TBD',sub:'Rep: '+(REPS.find(r=>r.id===(cust?.primary_rep_id||o.created_by))?.name||'—')},
-                ],
-                tables:[
-                  ...linesData.map(ld=>({
-                    title:(ld.it.sku||'')+' — '+(ld.it.name||'')+(ld.it.color?' · '+ld.it.color:''),
-                    headers:['Size',...ld.sk.filter(sz=>ld.pl[sz]>0).map(s=>s),'Total','Unit $','Amount'],
-                    aligns:['left',...ld.sk.filter(sz=>ld.pl[sz]>0).map(()=>'center'),'center','right','right'],
-                    rows:(()=>{
-                      const szH=ld.sk.filter(sz=>ld.pl[sz]>0);
-                      const rows=[
-                        {cells:[{value:'<strong>Ordered</strong>',style:'font-weight:700'},...szH.map(s=>({value:ld.pl[s]||0,style:(ld.pl[s]>0?'font-weight:800;color:#1e3a5f':'')})),{value:ld.tOrd,style:'font-weight:800'},{value:'$'+ld.u.toFixed(2),style:'text-align:right'},{value:'$'+ld.lineTotal.toFixed(2),style:'text-align:right;font-weight:800'}]},
-                      ];
-                      if(ld.tB>0)rows.push({cells:[{value:'Billed',style:'color:#1e40af'},...szH.map(s=>({value:ld.gB(s)||'—',style:'color:#1e40af'})),{value:ld.tB,style:'color:#1e40af;font-weight:700'},{value:'',style:''},{value:'$'+(ld.tB*ld.u).toFixed(2),style:'text-align:right;color:#1e40af'}]});
-                      if(ld.tR>0)rows.push({cells:[{value:'Received',style:'color:#166534'},...szH.map(s=>({value:ld.gR(s)||'—',style:'color:#166534'})),{value:ld.tR,style:'color:#166534;font-weight:700'},{value:'',style:''},{value:'$'+(ld.tR*ld.u).toFixed(2),style:'text-align:right;color:#166534'}]});
-                      if(ld.tO>0)rows.push({cells:[{value:'Open',style:'color:#b45309'},...szH.map(s=>({value:ld.gO(s)||'—',style:'color:#b45309'})),{value:ld.tO,style:'color:#b45309;font-weight:700'},{value:'',style:''},{value:'$'+(ld.tO*ld.u).toFixed(2),style:'text-align:right;color:#b45309'}]});
-                      return rows;
-                    })()
-                  })),
-                  // Totals summary — Subtotal + (optional) Shipping + Total
-                  {
-                    title:'PO Totals',
-                    headers:['','Amount'],
-                    aligns:['right','right'],
-                    rows:[
-                      {cells:[{value:'Subtotal ('+grandOrdered+' unit'+(grandOrdered!==1?'s':'')+')',style:'text-align:right'},{value:'$'+grandSubtotal.toFixed(2),style:'text-align:right;font-weight:700'}]},
-                      ...(shipping>0?[{cells:[{value:'Shipping',style:'text-align:right'},{value:'$'+shipping.toFixed(2),style:'text-align:right'}]}]:[]),
-                      {_class:'totals-row',cells:[{value:'<strong>PO Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:13px">$'+grandTotal.toFixed(2)+'</strong>',style:'text-align:right'}]},
-                    ]
-                  },
-                ],
-                notes:(()=>{const parts=[];if(isDPO)parts.push('Deco Type: '+(po.deco_type||'—').replace(/_/g,' '));if(po.notes)parts.push(po.notes);if(isDropShip)parts.push('<strong>DROP SHIP</strong> — Please ship directly to the '+(_plWriteIn&&(_plWriteIn.line1||_plWriteIn.city)?'delivery':_decoDest?'decorator':'customer')+' address above.');return parts.length?parts.join('<br/>'):null})(),
-                footer:isDPO?'Expected return: '+(po.expected_date||'TBD'):'Please confirm receipt and expected ship date.',
-                companyInfo:_ci
-              });
-              const _pdfFilename='PO-'+po.po_id+(vendor?'-'+vendor.replace(/[^a-z0-9]+/gi,'_'):'');
+              const{makeDocOpts:_makePoDocOpts,vendor,vendorEmail,isDPO,filename:_pdfFilename}=buildPoDoc(po,allLines,item,poStatus);
               return<>
                 <button className="btn btn-sm btn-primary" style={{marginTop:8,marginLeft:6,fontSize:11}} onClick={()=>printDoc(_makePoDocOpts())}>🖨️ Print Full PO</button>
                 <button className="btn btn-sm btn-secondary" style={{marginTop:8,marginLeft:6,fontSize:11}} onClick={async()=>{
@@ -15927,6 +15935,13 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               {po.po_type==='outside_deco'&&<span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>}
               {isManualCostPO&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#fffbeb',color:'#92400e'}}>💳 Manual Cost</span>}
               <button className="btn btn-sm btn-secondary" style={{marginLeft:8,fontSize:11}} onClick={()=>{setEditPO({lineIdx:allLines?.[0]?.lineIdx||0,poIdx:soItems?.[allLines?.[0]?.lineIdx]?.po_lines?.findIndex(p=>p.po_id===po.po_id)||0,po,allLines:allLines||[{lineIdx:0,poIdx:0}]});setPoFullPage(null)}}>Edit PO</button>
+              {!isManualCostPO&&(()=>{const _pd=buildPoDoc(po,allLines,item,poStatus);return<>
+                <button className="btn btn-sm btn-secondary" style={{marginLeft:6,fontSize:11}} onClick={()=>printDoc(_pd.makeDocOpts())}>🖨️ Print PO</button>
+                <button className="btn btn-sm btn-secondary" style={{marginLeft:6,fontSize:11}} onClick={async()=>{
+                  try{await downloadDoc(_pd.makeDocOpts(),_pd.filename);nf('📥 Downloaded '+po.po_id+'.pdf')}
+                  catch(err){console.warn('PO PDF download failed:',err);nf('Download failed: '+(err?.message||'unknown'),'error')}
+                }}>📥 Download PDF</button>
+              </>})()}
               {/* Order via API — surface the same submit path that lives in the Edit PO modal directly on
                   the PO page. Hidden once the PO carries an api_order_id (apiPo) so an already-placed order
                   can't be double-submitted; buildApiOrderFromPO returns null for non-API vendors / deco POs. */}
@@ -16009,7 +16024,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                     const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.unit_cost!=null?safeNum(p.unit_cost):safeNum(it.nsa_cost);
                     return<tr key={idx} style={{borderBottom:'1px solid #e2e8f0'}}>
                       <td style={{padding:'6px 8px',fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</td>
-                      <td style={{padding:'6px 8px',fontWeight:600}}>{it.name}</td>
+                      <td style={{padding:'6px 8px',fontWeight:600}}>{it.name}{it.notes&&String(it.notes).trim()&&<div style={{fontSize:11,fontWeight:400,fontStyle:'italic',color:'#854d0e',marginTop:2}}>{it.notes}</div>}</td>
                       <td style={{padding:'6px 8px',color:'#64748b'}}>{it.color}</td>
                       <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700}}>{qty}<div style={{fontSize:10,color:'#94a3b8'}}>{sk.map(sz=>sz+':'+p[sz]).join(' ')}</div></td>
                       <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600}}>${uc.toFixed(2)}</td>
