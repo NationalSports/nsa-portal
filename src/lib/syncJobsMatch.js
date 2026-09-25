@@ -367,17 +367,25 @@ export const isClosedJob = (job) => !!job && CLOSED_PROD_STATUSES.includes(job.p
  * plain auto job stores no per-size record of what that run committed to, so any share we carved
  * off it would be a guess.
  *
+ * A row one of the job's split slices already owns (`sliceOwnedKeys`) is NEITHER kept nor added:
+ * it was split off on purpose, so it isn't a new garment and must not be carved again. Without
+ * this a row the parent's rebuild failed to drop (an `_artSplit` row, which bypasses the sliceOwned
+ * drop) was re-carved on every sync — SO-2121's PC68H hoodie spawned JOB-2121-06-A … -A50.
+ *
  * @param {object[]} rebuiltItems — the freshly built job's rows
  * @param {object[]} committedItems — the closed job's saved rows
+ * @param {Set<string>} [sliceOwnedKeys] — `item_idx-sku` keys the job's split slices own
  * @returns {{keep: object[], added: object[]}}
  */
-export function splitClosedJobAdditions(rebuiltItems, committedItems) {
+export function splitClosedJobAdditions(rebuiltItems, committedItems, sliceOwnedKeys) {
   const committed = new Set();
   (committedItems || []).forEach((gi) => { if (gi) committed.add(gi.item_idx + '-' + gi.sku); });
   const keep = []; const added = [];
   (rebuiltItems || []).forEach((gi) => {
     if (!gi) return;
-    (committed.has(gi.item_idx + '-' + gi.sku) ? keep : added).push(gi);
+    const k = gi.item_idx + '-' + gi.sku;
+    if (committed.has(k)) keep.push(gi);
+    else if (!(sliceOwnedKeys && sliceOwnedKeys.has(k))) added.push(gi);
   });
   return { keep, added };
 }

@@ -4545,7 +4545,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       let hasOverride=false;
       const rebuilt=[];
       nj.items.forEach(gi=>{
-        if(gi._artSplit){rebuilt.push(gi);return}// split-art allocations are re-derived each sync — never restore the prior slice
+        if(gi._artSplit){
+          // Split-art allocations are re-derived each sync — never restore the prior slice. But a row
+          // the saved parent no longer carries because a slice took it stays off (SO-2121: re-adding
+          // it to a closed parent re-carved it every sync, JOB-2121-06-A … -A50).
+          if(!existing.items.some(g=>g.item_idx===gi.item_idx&&g.sku===gi.sku)&&sliceOwned.has(gi.item_idx+'-'+gi.sku)){hasOverride=true;return}
+          rebuilt.push(gi);return}
         const ex=existing.items.find(g=>g.item_idx===gi.item_idx&&g.sku===gi.sku);
         if(!ex||!ex.sizes||(!existing.split_from&&!sliceOwned.size)){
           // Not on the saved parent: a slice owns it → it was split off, so drop it here (don't
@@ -4593,7 +4598,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const existing=existingJobMap[nj.key];
       if(!existing||existing.id!==nj.id||!isClosedJob(existing))return;
       if(!Array.isArray(existing.items)||!existing.items.length)return;
-      const {keep,added}=splitClosedJobAdditions(nj.items,existing.items);
+      const {keep,added}=splitClosedJobAdditions(nj.items,existing.items,splitSliceOwnedKeys(_sourceJobs,existing.id,sj=>sj._merged||_isRel(sj)));
       // No additions, or NONE of the closed run's garments are on this rebuild — the latter is a
       // deleted line / index drift, not an addition, so leave it to the existing heals.
       if(!added.length||!keep.length)return;
