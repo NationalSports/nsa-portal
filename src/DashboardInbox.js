@@ -17,7 +17,7 @@ const when = (v) => {
 
 const EMAIL_ROLES = ['admin', 'super_admin', 'gm', 'rep', 'csr'];
 
-export default function DashboardInbox({ supabase, cu, customers, messages = [], isMention, authorName, onOpenEmail, onOpenMessage, onOpenAll }) {
+export default function DashboardInbox({ supabase, cu, customers, messages = [], isMention, authorName, onOpenEmail, onOpenMessage, onOpenAll, onCount }) {
   const [emails, setEmails] = useState([]);
   const [filter, setFilter] = useState('all');
   const allowed = EMAIL_ROLES.includes(cu?.role);
@@ -55,6 +55,9 @@ export default function DashboardInbox({ supabase, cu, customers, messages = [],
     })),
   ].sort((a, b) => String(b.ts || '').localeCompare(String(a.ts || '')));
 
+  // Tell the dashboard when the inbox is empty so it can reflow the top row.
+  useEffect(() => { onCount?.(rows.length); }, [rows.length, onCount]);
+
   const counts = { email: emails.length, mention: rows.filter((r) => r.kind === 'mention').length, msg: rows.filter((r) => r.kind !== 'email').length };
   const shown = rows.filter((r) => filter === 'all' || (filter === 'email' ? r.kind === 'email' : filter === 'mention' ? r.kind === 'mention' : r.kind !== 'email')).slice(0, 7);
   const SRC = { email: 'Email', mention: '@you', msg: 'Portal' };
@@ -75,7 +78,7 @@ export default function DashboardInbox({ supabase, cu, customers, messages = [],
         </div>
       )}
       <div className="dash-card__list">
-        {shown.length === 0 && <p className="dash-card__empty">Inbox zero. New important emails and portal messages land here.</p>}
+        {shown.length === 0 && <p className="dash-card__empty">Inbox zero — new important emails and portal messages land here.</p>}
         {shown.map((r) => (
           <button key={r.key} type="button" className={`dash-row is-${r.kind}`} onClick={r.open}>
             <span className="dash-row__dot" aria-hidden="true" />

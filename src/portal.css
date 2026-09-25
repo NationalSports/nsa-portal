@@ -2541,7 +2541,37 @@ tbody tr { cursor: pointer; }
   grid-template-columns: 1.15fr 1fr 1fr;
   gap: 14px;
   margin: 14px 0 18px;
-  align-items: start;
+  align-items: stretch;
+}
+/* Cards in the top row share the row's height so the three line up. */
+.dash-top > .dash-card,
+.dash-top__col > .dash-card:only-child {
+  display: flex;
+  flex-direction: column;
+}
+.dash-top__col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.dash-top__col > :only-child {
+  flex: 1;
+}
+/* "Where work lives now" when it moves up under an empty Inbox. */
+.dash-top__col .dash-overview__flow-panel {
+  flex: 1;
+  padding: 12px 14px;
+  border-radius: 12px;
+}
+.dash-top__col .dash-overview__flow-panel h3 {
+  font-size: 17px;
+}
+.dash-top__col .dash-overview__flow-panel .dash-overview__panel-kicker {
+  font-size: 10px;
+}
+.dash-overview__grid.is-solo {
+  grid-template-columns: minmax(0, 1fr);
 }
 .dash-card {
   min-width: 0;

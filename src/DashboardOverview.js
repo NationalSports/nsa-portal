@@ -180,6 +180,7 @@ export default function DashboardOverview({
   inboxSlot = null,
 }) {
   const now = new Date();
+  const [inboxCount, setInboxCount] = React.useState(null);
   const titleByView = {
     admin: 'Business pulse',
     sales: 'My book of business',
@@ -333,6 +334,48 @@ export default function DashboardOverview({
   const greeting =
     now.getHours() < 12 ? 'Good morning' : now.getHours() < 17 ? 'Good afternoon' : 'Good evening';
 
+  // "Where work lives now" moves up beside the action cards when the Inbox is
+  // empty, so the top row stays even instead of leaving a short Inbox box.
+  const pipelineUp = !!inboxSlot && inboxCount === 0;
+  const flowPanel = (
+        <article className="dash-overview__panel dash-overview__flow-panel">
+          <header className="dash-overview__panel-header">
+            <div>
+              <span className="dash-overview__panel-kicker">Live workflow</span>
+              <h3>Where work lives now</h3>
+            </div>
+            <span className="dash-overview__live"><i />Live</span>
+          </header>
+          <div className="dash-overview__flow-bar" aria-label="Current work distribution">
+            {stages.map((stage) => (
+              <span
+                key={stage.key}
+                style={{ width: `${Math.max(stage.value ? 7 : 0, (stage.value / stageTotal) * 100)}%`, background: stage.color }}
+                title={`${stage.label}: ${stage.value}`}
+              />
+            ))}
+          </div>
+          <div className="dash-overview__stage-list">
+            {stages.map((stage) => (
+              <button type="button" key={stage.key} onClick={() => onNavigate?.(stage.route)}>
+                <i style={{ background: stage.color }} />
+                <span>
+                  <strong>{stage.label}</strong>
+                  <small>{stage.detail}</small>
+                </span>
+                <b>{stage.value}</b>
+                <span className="dash-overview__stage-arrow" aria-hidden="true">↗</span>
+              </button>
+            ))}
+          </div>
+          <div className="dash-overview__rings">
+            <RingMetric label="Jobs complete" value={completionRate} tone="#3d8b69" />
+            <RingMetric label="Art ready" value={artReadyRate} tone="#b94349" />
+            <RingMetric label="Items in" value={itemsReadyRate} tone="#5678b8" />
+          </div>
+        </article>
+  );
+
   return (
     <section className="dash-overview" aria-labelledby="dashboard-overview-title">
       <div className="dash-overview__hero">
@@ -375,11 +418,16 @@ export default function DashboardOverview({
       <div className="dash-top">
         <NeedsAction items={priorityItems} total={actionCount} onOpen={onOpenPriority} onViewAll={() => { const hub = typeof document !== 'undefined' && document.querySelector('.dash-action-hub'); if (hub) hub.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} />
         {todaySlot}
-        {inboxSlot}
+        {inboxSlot && (
+          <div className="dash-top__col">
+            {React.cloneElement(inboxSlot, { onCount: setInboxCount })}
+            {pipelineUp && flowPanel}
+          </div>
+        )}
       </div>
 
       {afterPriority}
-      <div className="dash-overview__grid">
+      <div className={`dash-overview__grid${pipelineUp ? ' is-solo' : ''}`}>
         <article className="dash-overview__panel dash-overview__chart-panel">
           <header className="dash-overview__panel-header">
             <div>
@@ -420,42 +468,7 @@ export default function DashboardOverview({
           </div>
         </article>
 
-        <article className="dash-overview__panel dash-overview__flow-panel">
-          <header className="dash-overview__panel-header">
-            <div>
-              <span className="dash-overview__panel-kicker">Live workflow</span>
-              <h3>Where work lives now</h3>
-            </div>
-            <span className="dash-overview__live"><i />Live</span>
-          </header>
-          <div className="dash-overview__flow-bar" aria-label="Current work distribution">
-            {stages.map((stage) => (
-              <span
-                key={stage.key}
-                style={{ width: `${Math.max(stage.value ? 7 : 0, (stage.value / stageTotal) * 100)}%`, background: stage.color }}
-                title={`${stage.label}: ${stage.value}`}
-              />
-            ))}
-          </div>
-          <div className="dash-overview__stage-list">
-            {stages.map((stage) => (
-              <button type="button" key={stage.key} onClick={() => onNavigate?.(stage.route)}>
-                <i style={{ background: stage.color }} />
-                <span>
-                  <strong>{stage.label}</strong>
-                  <small>{stage.detail}</small>
-                </span>
-                <b>{stage.value}</b>
-                <span className="dash-overview__stage-arrow" aria-hidden="true">↗</span>
-              </button>
-            ))}
-          </div>
-          <div className="dash-overview__rings">
-            <RingMetric label="Jobs complete" value={completionRate} tone="#3d8b69" />
-            <RingMetric label="Art ready" value={artReadyRate} tone="#b94349" />
-            <RingMetric label="Items in" value={itemsReadyRate} tone="#5678b8" />
-          </div>
-        </article>
+        {!pipelineUp && flowPanel}
       </div>
     </section>
   );
