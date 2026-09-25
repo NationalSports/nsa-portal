@@ -12,6 +12,14 @@ export function safeUrl(value) {
   try { const u = new URL(value); return u.protocol === 'https:' && !u.username && !u.password ? u.href : ''; } catch { return ''; }
 }
 const colorText = value => Array.isArray(value) ? value.map(v=>typeof v==='object'?[v.code,v.name].filter(Boolean).join(' '):text(v)).join(', ') : text(value);
+export const isPersonalization = value => ['names','numbers'].includes(typeof value === 'string' ? value : value?.kind);
+export const productionLabel = value => {
+  const kind=typeof value === 'string' ? value : value?.kind;
+  if(kind==='names')return 'Player names';
+  if(kind==='numbers')return 'Player numbers';
+  return text(typeof value === 'string' ? value : value?.name) || 'Decoration artwork';
+};
+export const humanizeProductionValue = value => text(value).replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
 export function artSpecs(art, decoration, colorWay) {
  const position=decoration.position||placementById(decoration.placement).label;
  const embroidery=(decoration.deco_type||decoration.type||art?.deco_type)==='embroidery';
@@ -54,6 +62,7 @@ export function buildProductionPacket({ store, orders = [], lines = [], salesOrd
         const mocks = files(slots.filter(s => s.di === di).flatMap(s => slotMockFiles(s, slots, item)));
         const cw = arr(art?.color_ways).find(c => c.id === d.color_way_id);
         const cwB = arr(art?.color_ways).find(c => c.id === d.color_way_id_b);
+        const personalization = isPersonalization(d);
         const rosterSource = d.kind === 'names' ? d.names : d.roster;
         const roster = rosterSource && typeof rosterSource === 'object' && !Array.isArray(rosterSource) ? Object.entries(rosterSource).flatMap(([size, entries]) => arr(entries).slice(0, sizes[size] || 0).filter(v=>text(v).trim()).map(v=>({size,number:d.kind==='numbers'?text(v):'',name:d.kind==='names'?text(v):'',qty:1}))) : arr(rosterSource).map(r=>({size:text(r.size),number:text(r.number),name:text(r.name),qty:qty(r.qty||1)}));
         const override = qty(d.kind === 'numbers' ? d.num_qty : d.name_qty);
@@ -63,12 +72,15 @@ export function buildProductionPacket({ store, orders = [], lines = [], salesOrd
         garment.decorationIds.push(did);
         const approved = ['approved', 'art_complete'].includes(art?.status);
         if (d.kind === 'art' && (!art || !approved)) issues.push(`${so.id} ${item.sku} ${d.position || ''}: artwork is not approved`);
-        if (!mocks.length) issues.push(`${so.id} ${item.sku} ${d.position || d.kind}: garment mock missing`);
+        // Names and numbers are production applications, not artwork. They do not
+        // require a separate garment-art mock and must not block an otherwise ready packet.
+        if (!personalization && !mocks.length) issues.push(`${so.id} ${item.sku} ${d.position || d.kind}: garment mock missing`);
         // Complicated splits must be reviewed instead of silently printing the full garment count.
         const applicable = d.split_group ? sizeMap(d.split_sizes) : sizes;
         if (d.split_group && (!total(applicable) || Object.entries(applicable).some(([sz,n]) => n > (sizes[sz] || 0)))) issues.push(`${so.id} ${item.sku}: split decoration allocation is missing or exceeds garment sizes`);
         if (d.split_runs && arr(d.split_runs).length) issues.push(`${so.id} ${item.sku}: split decoration runs need quantity review`);
-        decorations.push({ id: did, garmentId: id, soId: so.id, sku: garment.sku, color: garment.color, name: text(art?.name || d.kind || 'Decoration'), kind: text(d.kind), method: text(d.deco_type || art?.deco_type || d.type || d.num_method || d.name_method), position: text(d.position), dimensions: text(art?.art_size || d.num_size || d.dtf_size), colors: d.reversible ? `Side A: ${arr(cw?.inks).join(', ')} / Side B: ${arr(cwB?.inks).join(', ')}` : arr(cw?.inks).join(', ') || text(art?.ink_colors || art?.thread_colors || d.print_color), ...artSpecs(art,d,cw), decorator: text(d.vendor), units: personalizedUnits == null ? total(applicable) : personalizedUnits, sizes: applicable, approved, mocks, productionFiles: files(art?.prod_files), personalization: { font: text(d.num_font), roster, names: text(d.names_list) } });
+        const method=d.kind==='names'?(d.name_method||'heat_press'):d.kind==='numbers'?(d.num_method||'heat_transfer'):(d.deco_type||art?.deco_type||d.type);
+        decorations.push({ id: did, garmentId: id, soId: so.id, sku: garment.sku, color: garment.color, name: text(art?.name || productionLabel(d)), kind: text(d.kind), isPersonalization: personalization, method: text(method), position: text(d.position), dimensions: text(art?.art_size || d.num_size || d.dtf_size), colors: d.reversible ? `Side A: ${arr(cw?.inks).join(', ')} / Side B: ${arr(cwB?.inks).join(', ')}` : arr(cw?.inks).join(', ') || text(art?.ink_colors || art?.thread_colors || d.print_color), ...artSpecs(art,d,cw), decorator: text(d.vendor), units: personalizedUnits == null ? total(applicable) : personalizedUnits, sizes: applicable, approved: personalization ? null : approved, mocks, productionFiles: files(art?.prod_files), personalization: { font: text(d.num_font), roster, names: text(d.names_list) } });
       });
       garments.push(garment);
     });
@@ -97,7 +109,8 @@ export function buildProductionPacket({ store, orders = [], lines = [], salesOrd
       const mockItem={sku:g.sku,color:g.color};
       const mockDecos=ds.map(x=>({...x,kind:x.kind||'art',position:x.position||x.placement}));
       const slots=mockSlotKeys(garmentMockKey(mockItem),mockDecos).map(slot=>({...slot,artFile:arr(store.store_art).find(a=>a.id===(ds[slot.di]?.art_id||ds[slot.di]?.art_file_id)&&!a.archived)}));
-      decorations.push({id:did,garmentId:id,soId:'',unbatched:true,sku:g.sku,color:g.color,name:text(art?.name||d.kind||'Store decoration'),kind:text(d.kind||'art'),method:text(d.deco_type||d.type||art?.deco_type),position:text(d.position||pl.label),dimensions:text(art?.art_size||d.num_size||d.dtf_size),colors:arr(cw?.inks).join(', ')||text(d.print_color),...artSpecs(art,d,cw),decorator:'',units,sizes,approved:['approved','art_complete'].includes(art?.status),mocks:files(slots.filter(slot=>slot.di===di).flatMap(slot=>slotMockFiles(slot,slots,mockItem))),storePreview:preview,productionFiles:files(art?.prod_files),personalization:{font:text(d.num_font),roster:[],names:''}});
+      const kind=text(d.kind||'art'), personalization=isPersonalization(kind), method=kind==='names'?(d.name_method||'heat_press'):kind==='numbers'?(d.num_method||'heat_transfer'):(d.deco_type||d.type||art?.deco_type);
+      decorations.push({id:did,garmentId:id,soId:'',unbatched:true,sku:g.sku,color:g.color,name:text(art?.name||productionLabel(kind)),kind,isPersonalization:personalization,method:text(method),position:text(d.position||pl.label),dimensions:text(art?.art_size||d.num_size||d.dtf_size),colors:arr(cw?.inks).join(', ')||text(d.print_color),...artSpecs(art,d,cw),decorator:'',units,sizes,approved:personalization?null:['approved','art_complete'].includes(art?.status),mocks:files(slots.filter(slot=>slot.di===di).flatMap(slot=>slotMockFiles(slot,slots,mockItem))),storePreview:personalization?null:preview,productionFiles:files(art?.prod_files),personalization:{font:text(d.num_font),roster:[],names:''}});
     });
     garments.push(g);
   });
@@ -113,7 +126,7 @@ export function buildProductionPacket({ store, orders = [], lines = [], salesOrd
   sharedMessages.filter(m => ['question', 'action'].includes(m.kind) && !m.resolvedAt).forEach(m => issues.push(`${m.soId}: unresolved ${m.kind} — ${m.text.slice(0, 120)}`));
   if (!includedSos.length) issues.push('No linked sales order is ready for production');
   const uniqueIssues = [...new Set(issues)];
-  return { schemaVersion: 1, store: { id: store.id, name: store.name, logoUrl: safeUrl(store.logo_url), primaryColor: /^#[0-9a-f]{6}$/i.test(store.primary_color || '') ? store.primary_color : '#19333c', accentColor: /^#[0-9a-f]{6}$/i.test(store.accent_color || '') ? store.accent_color : '#167b6e', deliveryMode: store.delivery_mode || '' }, soId, salesOrders: includedSos.map(s => ({ id: s.id, dueDate: s.expected_date || s.due_date || null, status: s.status })), garments, decorations, players, notes: sharedNotes, messages: sharedMessages, issues: uniqueIssues, ready: !uniqueIssues.length, changes: { substitutions: reconciled.audit.substitutions, sizeChanges: reconciled.audit.sizeChanges }, totals: { garments: garments.reduce((n, g) => n + g.units, 0), playerUnits: players.filter(p => !p.unbatched).reduce((n, p) => n + p.qty, 0), unbatchedUnits: players.filter(p => p.unbatched).reduce((n, p) => n + p.qty, 0), players: new Set(players.filter(p => !p.extra).map(p => `${p.orderId}:${p.player}`)).size } };
+  return { schemaVersion: 1, store: { id: store.id, name: store.name, logoUrl: safeUrl(store.logo_url), primaryColor: /^#[0-9a-f]{6}$/i.test(store.primary_color || '') ? store.primary_color : '#19333c', accentColor: /^#[0-9a-f]{6}$/i.test(store.accent_color || '') ? store.accent_color : '#167b6e', deliveryMode: store.delivery_mode || '' }, soId, salesOrders: includedSos.map(s => ({ id: s.id, dueDate: s.expected_date || s.due_date || null, status: s.status })), garments, decorations, players, notes: sharedNotes, messages: sharedMessages, issues: uniqueIssues, ready: !uniqueIssues.length, changes: { substitutions: reconciled.audit.substitutions, sizeChanges: reconciled.audit.sizeChanges }, totals: { garments: garments.reduce((n, g) => n + g.units, 0), playerUnits: players.filter(p => !p.unbatched).reduce((n, p) => n + p.qty, 0), unbatchedUnits: players.filter(p => p.unbatched).reduce((n, p) => n + p.qty, 0), orders: new Set(players.filter(p => !p.extra).map(p => p.orderKey)).size, players: new Set(players.filter(p => !p.extra).map(p => `${p.orderId}:${p.player}`)).size } };
 }
 
 export function packetChanges(previous, current) {
@@ -136,7 +149,7 @@ export function groupPlayerOrders(players, search = '') {
   const groups = new Map();
   players.forEach(r=>{const key=r.orderKey||r.orderId;if(!groups.has(key))groups.set(key,{id:key,orderId:r.orderId,rows:[],units:0});const g=groups.get(key);g.rows.push(r);g.units+=r.qty;});
   const needle=search.trim().toLowerCase();
-  return [...groups.values()].filter(g=>!needle||g.rows.some(r=>`${r.player} ${r.number} ${r.orderId} ${r.sku} ${r.size}`.toLowerCase().includes(needle))).sort((a,b)=>a.orderId.localeCompare(b.orderId,undefined,{numeric:true}));
+  return [...groups.values()].map(g=>{const counts=new Map();g.rows.forEach(r=>{if(r.player&&r.player!=='Unassigned')counts.set(r.player,(counts.get(r.player)||0)+r.qty);});g.recipient=[...counts].sort((a,b)=>b[1]-a[1]||b[0].length-a[0].length)[0]?.[0]||'Unassigned';return g;}).filter(g=>!needle||g.rows.some(r=>`${r.player} ${r.number} ${r.orderId} ${r.sku} ${r.size}`.toLowerCase().includes(needle))).sort((a,b)=>a.orderId.localeCompare(b.orderId,undefined,{numeric:true}));
 }
 export function playerItemCsv(players) {
   const cell=v=>'"'+String(v??'').replace(/^[=+@\-\t\r]/,"'$&").replace(/"/g,'""')+'"';
