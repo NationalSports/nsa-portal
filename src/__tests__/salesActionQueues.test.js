@@ -371,3 +371,27 @@ test('FYI notices (art approved, items received, IF pulled) only show for 2 days
   expect(appSource.split("isFreshNotificationDate(_rcvdAt,new Date(),FYI_NOTICE_DAYS))todos.push({type:'items_received'").length - 1).toBe(2);
   expect(appSource).toContain('if(daysAgo>=FYI_NOTICE_DAYS)return;');
 });
+
+describe('need-by date is entered by the rep, never defaulted', () => {
+  const classicSource = fs.readFileSync(path.join(__dirname, '..', 'OrderEditorClassic.js'), 'utf8');
+  const newEditorSource = fs.readFileSync(path.join(__dirname, '..', 'OrderEditor.js'), 'utf8');
+  test('no "today + 28 days" default on new or converted sales orders', () => {
+    expect(appSource).not.toContain('fourWeeks');
+    expect(appSource).not.toContain('getDate()+28');
+  });
+  test('creating or converting without a date opens the need-by prompt instead of creating the SO', () => {
+    const newSO = sectionBetween(appSource, 'const newSOFn=(c,needBy)=>{', 'const mk=');
+    expect(newSO).toContain("if(!needBy){setNeedByAsk({kind:'new',c,date:''});return}");
+    const convert = sectionBetween(appSource, 'const convertSO=async(est,needBy)=>{', '// Auto-heal');
+    expect(convert).toContain("if(!needBy){setNeedByAsk({kind:'convert',est,date:''});return}");
+    const modal = sectionBetween(appSource, '═══ NEED-BY DATE (global)', '═══ CREATE TODO MODAL (global)');
+    expect(modal).toContain('disabled={!_ok}');
+    expect(modal).toContain('convertSO(a.est,a.date)');
+    expect(modal).toContain('newSOFn(a.c,a.date)');
+  });
+  test('both order editors label it Need-by and refuse to clear it (same logic in classic and new)', () => {
+    const rule = "if(!e.target.value){nf('Need-by date is required — pick the date the customer needs it','error');return}sv('expected_date',e.target.value)";
+    expect(classicSource).toContain(rule);
+    expect(newEditorSource).toContain(rule);
+  });
+});

@@ -2758,6 +2758,7 @@ export default function App(){
   const[taxRemitBusy,setTaxRemitBusy]=useState(false);
   const[taxRemitError,setTaxRemitError]=useState('');
   const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null});
+  const[needByAsk,setNeedByAsk]=useState(null);// {kind:'new'|'convert',c?,est?,date} — required need-by date before a sales order is created
   // Portal-side Adidas availability for the Assign Task bot card: the portal
   // already syncs per-size stock + restock dates (adidas_inventory), so show
   // them at assign time and ship the snapshot in the payload — the bot starts
@@ -7513,9 +7514,10 @@ export default function App(){
   };
   // Create a blank Sales Order directly (skipping the estimate stage). Reps still pick a
   // customer from inside the editor — same default shape as a freshly converted SO.
-  const newSOFn=(c)=>{const mk=c?.catalog_markup||1.65;
-    const fourWeeks=new Date();fourWeeks.setDate(fourWeeks.getDate()+28);
-    const defExp=fourWeeks.toISOString().split('T')[0];
+  // Need-by date: no default. The rep enters the customer's real in-hands date before the order
+  // exists — a made-up "today + 28 days" filled the dashboard with fake deadlines and fake "overdue"s.
+  const newSOFn=(c,needBy)=>{if(!needBy){setNeedByAsk({kind:'new',c,date:''});return}const mk=c?.catalog_markup||1.65;
+    const defExp=needBy;
     const so={id:nextSOId(sos),customer_id:c?.id||null,estimate_id:null,memo:'',status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,expected_date:defExp,production_notes:'',shipping_type:'pct',shipping_value:5,ship_to_id:'default',firm_dates:[],art_files:[],items:[],order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_alert_days:100,promo_applied:false,promo_amount:0,credit_applied:false,credit_amount:0,tax_rate:c?.tax_rate||0,tax_exempt:c?.tax_exempt||false};
     setESO(so);setESOC(c||null);setPg('orders');return so};
   // Re-fetch an estimate's items + decorations from the DB and rebuild the items
@@ -7587,7 +7589,8 @@ export default function App(){
     });
     return{...so,items,_itemsHydrated:true,_decosHydrated:true};
   };
-  const convertSO=async est=>{
+  const convertSO=async(est,needBy)=>{
+    if(!needBy){setNeedByAsk({kind:'convert',est,date:''});return}
     // Auto-heal a partially-loaded estimate before converting. The loader flags
     // _decosHydrated/_itemsHydrated false when estimate_item_decorations or
     // estimate_items timed out on the last load — in that state est.items can be
@@ -7602,7 +7605,7 @@ export default function App(){
       try{est=await _refetchEstimateForConvert(est);}
       catch(e){console.error('[convertSO] decoration re-fetch failed:',e);nf("Couldn't load this estimate's decorations to convert it — reload the page and try again.",'error');return;}
     }
-    const fourWeeks=new Date();fourWeeks.setDate(fourWeeks.getDate()+28);const defExp=fourWeeks.toISOString().split('T')[0];
+    const defExp=needBy;
     // Deep clone items+decorations so nested objects (roster, names, art refs) are fully independent
     const clonedItems=safeItems(est).map(it=>{const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];return clone});
     // Calculate promo amount if promo is applied
@@ -38813,6 +38816,18 @@ export default function App(){
       <div className="content">{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='uniforms'&&<ComponentErrorBoundary name="UniformJobs"><React.Suspense fallback={<LazyFallback/>}><UniformOrdersAdmin/></React.Suspense></ComponentErrorBoundary>}{pg==='methodic'&&<ComponentErrorBoundary name="MethodicOperations"><React.Suspense fallback={<LazyFallback/>}><MethodicDashboard orders={sos} estimates={ests} customers={cust} teamMembers={REPS} currentUser={cu} notify={nf} onOpenDocument={(type,id)=>{if(type==='estimate'){const est=ests.find(x=>x.id===id);if(est){setEEst(est);setEEstC(cust.find(c=>c.id===est.customer_id)||null);setPg('estimates')}else nf('Estimate '+id+' not found','error')}else{const so=sos.find(x=>x.id===id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setESOTab('methodic');setPg('orders')}else nf('Sales order '+id+' not found','error')}}}/></React.Suspense></ComponentErrorBoundary>}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{(pg==='warehouse'||pg==='item_fulfillment')&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&<ComponentErrorBoundary name="Invoices"><React.Suspense fallback={<LazyFallback/>}><InvoicesPage/></React.Suspense></ComponentErrorBoundary>}{pg==='commissions'&&<ComponentErrorBoundary name="Commissions"><React.Suspense fallback={<LazyFallback/>}><CommissionsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='financials'&&<ComponentErrorBoundary name="Financials"><React.Suspense fallback={<LazyFallback/>}><FinancialsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='omg'&&rOMG()}{pg==='webstores'&&<ComponentErrorBoundary name="Webstores"><React.Suspense fallback={<LazyFallback/>}><Webstores cust={cust} REPS={REPS} repCsr={repCsrAssignments} sos={sos} ests={ests} cu={cu} onCreateSO={webstoreCreateSO} onOpenSO={(soId)=>{const so=sos.find(x=>x.id===soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}else nf('Sales order '+soId+' not found — try reloading','warn')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='reports'&&rReports()}{pg==='salesmap'&&<ComponentErrorBoundary name="SalesMap"><React.Suspense fallback={<LazyFallback/>}><SalesMap customers={cust} orders={sos} invoices={invs} historicalInvoices={histInvs} vendors={vend} reps={REPS} calcMargin={calcOrderMargin} companyInfo={companyInfo} currentUser={cu} onOpenCustomer={c2=>{setSelC(c2.parent_id?cust.find(x=>x.id===c2.parent_id)||c2:c2);setPg('customers')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&<ComponentErrorBoundary name="QuickBooks"><React.Suspense fallback={<LazyFallback/>}><QBPage/></React.Suspense></ComponentErrorBoundary>}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='marketing'&&<ComponentErrorBoundary name="Marketing"><React.Suspense fallback={<LazyFallback/>}><MarketingPage/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
     {pg==='ai_inbox'&&canAccess('ai_inbox')&&<div className="content"><AiInbox supabase={supabase} customers={cust} onCreateEstimate={createEstimateFromInbox} notify={nf}/></div>}
     {pg==='ai_tasks'&&<div className="content"><AiTasks supabase={supabase} customers={cust} notify={nf}/></div>}
+    {/* ═══ NEED-BY DATE (global) — asked before a sales order is created or converted ═══ */}
+    {needByAsk&&(()=>{const _t=new Date();const _today=_t.getFullYear()+'-'+String(_t.getMonth()+1).padStart(2,'0')+'-'+String(_t.getDate()).padStart(2,'0');const _ok=!!needByAsk.date;
+      const _go=()=>{if(!_ok)return;const a=needByAsk;setNeedByAsk(null);if(a.kind==='convert')convertSO(a.est,a.date);else newSOFn(a.c,a.date)};
+      return<div className="modal-overlay" onClick={()=>setNeedByAsk(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
+      <div className="modal-header"><h2>📅 When does the customer need it?</h2><button className="modal-close" onClick={()=>setNeedByAsk(null)}>×</button></div>
+      <div className="modal-body">
+        <label className="form-label">Need-by date (in-hands) *</label>
+        <input className="form-input" type="date" autoFocus min={_today} value={needByAsk.date} onChange={e=>setNeedByAsk(a=>({...a,date:e.target.value}))} onKeyDown={e=>{if(e.key==='Enter')_go()}}/>
+        <div style={{fontSize:11,color:'#64748b',marginTop:6}}>Use the date the coach actually needs it. This drives the deadlines on everyone's dashboard, so please don't guess.</div>
+      </div>
+      <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setNeedByAsk(null)}>Cancel</button><button className="btn btn-primary" disabled={!_ok} onClick={_go}>{needByAsk.kind==='convert'?'Convert to sales order':'Create sales order'}</button></div>
+    </div></div>})()}
     {/* ═══ CREATE TODO MODAL (global) ═══ */}
     {todoModal.open&&<div className="modal-overlay" onClick={()=>setTodoModal(m=>({...m,open:false}))}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
       <div className="modal-header"><h2>📌 Assign Task</h2><button className="modal-close" onClick={()=>setTodoModal(m=>({...m,open:false}))}>×</button></div>

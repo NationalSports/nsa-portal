@@ -5162,8 +5162,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {isSO&&o.no_invoice_needed&&<div title={'Marked by '+(o.no_invoice_by||'?')+' '+(o.no_invoice_at||'')} style={{display:'inline-block',marginTop:4,fontSize:10,fontWeight:700,color:'#9a3412',background:'#fff7ed',border:'1px solid #fdba74',borderRadius:6,padding:'2px 7px'}}>{noInvoiceLabel(o)}</div>}
             </div>
             {isSO&&<div style={{flex:1,minWidth:130}}>
-              <label className="form-label">Expected</label>
-              <input className="form-input" type="date" value={o.expected_date||''} onChange={e=>sv('expected_date',e.target.value)}/>
+              <label className="form-label" title="The date the customer needs it in hand — drives dashboard deadlines">Need-by <span style={{color:'#dc2626'}}>*</span></label>
+              <input className="form-input" type="date" value={o.expected_date||''} style={o.expected_date?undefined:{borderColor:'#dc2626'}} onChange={e=>{/* required: the need-by date can be changed, never cleared */if(!e.target.value){nf('Need-by date is required — pick the date the customer needs it','error');return}sv('expected_date',e.target.value)}}/>
             </div>}
             {isSO&&o.order_type==='booking'&&<div style={{width:140}}>
               <label className="form-label">Ship Date</label>

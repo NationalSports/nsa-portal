@@ -5156,8 +5156,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <option value="at_once">At-Once</option><option value="booking">Booking</option></select>
         </div>}
         {isSO&&<div style={{width:140}}>
-          <label className="form-label">Expected</label>
-          <input className="form-input" type="date" value={o.expected_date||''} onChange={e=>sv('expected_date',e.target.value)}/>
+          <label className="form-label" title="The date the customer needs it in hand — drives dashboard deadlines">Need-by <span style={{color:'#dc2626'}}>*</span></label>
+          <input className="form-input" type="date" value={o.expected_date||''} style={o.expected_date?undefined:{borderColor:'#dc2626'}} onChange={e=>{/* required: the need-by date can be changed, never cleared */if(!e.target.value){nf('Need-by date is required — pick the date the customer needs it','error');return}sv('expected_date',e.target.value)}}/>
         </div>}
         {isSO&&o.order_type==='booking'&&<div style={{width:140}}>
           <label className="form-label">Ship Date</label>
