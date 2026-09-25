@@ -165,8 +165,13 @@ async function settleProcessedCloseTodos(admin) {
     .select('id').eq('status', 'open').like('id', 'todo-close-%').limit(500);
   if (error) throw new Error(`Could not load close-out to-dos: ${error.message}`);
   if (!todos || !todos.length) return { completed: 0 };
-  // id = todo-close-<store.id>-<12 hex> (see closeTodoId)
-  const storeOf = (id) => id.slice('todo-close-'.length).replace(/-[0-9a-f]{12}$/, '');
+  // id = todo-close-<store uuid>-<suffix>. Today the suffix is 12 hex (see
+  // closeTodoId); older to-dos used a base36 timestamp, so read the uuid itself.
+  const storeOf = (id) => {
+    const rest = id.slice('todo-close-'.length);
+    const m = rest.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+    return m ? m[0] : rest.replace(/-[0-9a-z]+$/i, '');
+  };
   const storeIds = [...new Set(todos.map((t) => storeOf(t.id)))];
   const { data: stores, error: sErr } = await admin.from('webstores').select('id,status').in('id', storeIds);
   if (sErr) throw new Error(`Could not load stores for close-out to-dos: ${sErr.message}`);
