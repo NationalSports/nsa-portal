@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { SZ_ORD, sizeBreakdownStr, pantoneHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, artDstOnFile, estimateTermsFooter } from './constants';
 import { statusChipLabel } from './lib/teamshopOrderStatus';
 import { ptDateLabel } from './lib/storeClock';
-import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, realInkLines, soLineKey, scopeSoItemsToInvoice, jobItemDecoIdxs, jobItemDecosOfKind, artProofFallback } from './safeHelpers';
+import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, jobItemRoster, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, realInkLines, soLineKey, scopeSoItemsToInvoice, jobItemDecoIdxs, jobItemDecosOfKind, artProofFallback } from './safeHelpers';
 import { invoiceTotalsRows } from './lib/invoiceDocTotals';
 import { calcSOStatus, resolveOrderShipTo, orderShipToSub, custShipAddrSub, resolveOrderBillTo, orderBillToSub } from './components';
 import { dP, rQ, SP, calcOrderTotals, calcAdidasItemSpend } from './pricing';
@@ -1758,7 +1758,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       const nd=numDecos[0];const _isEmb=artFile?.deco_type==='embroidery';
       const sizesSrc=gi.sizes?Object.entries(gi.sizes).filter(([,v])=>v>0):(srcItem?Object.entries(safeSizes(srcItem)).filter(([,v])=>v>0):[]);
       const sizes=sizesSrc.sort((a,b)=>{const o2=SZ_ORD;return(o2.indexOf(a[0])<0?99:o2.indexOf(a[0]))-(o2.indexOf(b[0])<0?99:o2.indexOf(b[0]))});
-      const roster=gi.roster||(numDecos.length>0?numDecos[0].roster:null);
+      // Split rows show only their share of the LIVE SO list — SO-2257 (see jobItemRoster).
+      const roster=numDecos.length>0?jobItemRoster(safeItems(so),safeJobs(so),j,(j.items||[])[items.indexOf(gi)],'numbers'):(gi.roster||null);
       const names=nameDecos.length>0?nameDecos[0].names:null;
       const sortedSizes=sizes.map(([sz])=>sz);
       // "Art only" view: the art's own proof files, independent of any garment mockup. The
