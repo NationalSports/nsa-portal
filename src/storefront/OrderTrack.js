@@ -60,6 +60,7 @@ export default function OrderTrack() {
   const [shipments, setShipments] = useState([]);
   const [status, setStatus] = useState('loading');
   const [msgs, setMsgs] = useState([]);
+  useEffect(() => { document.title = 'Order Status · National Sports Apparel'; }, []); // WCAG 2.4.2
   const [reply, setReply] = useState('');
   const [sending, setSending] = useState(false);
 
@@ -99,7 +100,7 @@ export default function OrderTrack() {
   }), [store]);
 
   if (status === 'loading') return <Shell><Splash>Loading your order…</Splash></Shell>;
-  if (status === 'notfound') return <Shell><Splash><div style={{ fontSize: 40, marginBottom: 10 }}>🔍</div>We couldn’t find that order.<div style={{ fontSize: 13, opacity: 0.7, marginTop: 8 }}>Check the link in your confirmation email, or contact us at stores@nationalsportsapparel.com.</div></Splash></Shell>;
+  if (status === 'notfound') return <Shell><Splash><div style={{ fontSize: 40, marginBottom: 10 }}>🔍</div>We couldn’t find that order.<div style={{ fontSize: 13, marginTop: 8 }}>Check the link in your confirmation email, or contact us at stores@nationalsportsapparel.com.</div></Splash></Shell>;
 
   // Overall progress = the *least* advanced active line (so the order isn't
   // "complete" until every item is). Cancelled lines are ignored, and bundle
@@ -320,7 +321,7 @@ function Shell({ children }) {
     </div>
   );
 }
-function Splash({ children }) { return <div style={{ minHeight: '60vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: '#64748b', fontSize: 16, padding: '60px 24px' }}>{children}</div>; }
+function Splash({ children }) { return <div style={{ minHeight: '60vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: '#475569', fontSize: 16, padding: '60px 24px' }}>{children}</div>; }
 function Footer({ theme }) {
   return <footer style={{ background: `linear-gradient(120deg, ${theme.primary}, ${shade(theme.primary, -10)})`, color: 'rgba(255,255,255,0.82)', textAlign: 'center', padding: '30px 20px', borderTop: `3px solid ${theme.accent}` }}>
     <div style={{ fontFamily: DISPLAY, fontSize: 19, letterSpacing: 1, textTransform: 'uppercase', color: '#fff' }}>National Sports Apparel</div>

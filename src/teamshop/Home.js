@@ -376,7 +376,7 @@ export default function Home({
         </div>
 
         {/* ---- Pagination dots ---- */}
-        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 'clamp(10px, 1.6vw, 18px)', display: 'flex', justifyContent: 'center', gap: 10, zIndex: 5 }}>
+        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 'calc(clamp(10px, 1.6vw, 18px) - 7px)', display: 'flex', justifyContent: 'center', gap: 0, zIndex: 5 }}>
           {Array.from({ length: HERO_SLIDE_COUNT }).map((_, i) => (
             <button
               // eslint-disable-next-line react/no-array-index-key
@@ -385,7 +385,8 @@ export default function Home({
               onClick={() => setHeroSlide(i)}
               aria-label={`Go to slide ${i + 1}`}
               aria-current={heroSlide === i}
-              style={{ width: 10, height: 10, padding: 0, borderRadius: 999, border: 'none', cursor: 'pointer', background: heroSlide === i ? RED : 'rgba(255,255,255,0.45)' }}
+              // 24px hit area (WCAG 2.5.8) around the same 10px painted dot.
+              style={{ boxSizing: 'border-box', width: 24, height: 24, padding: 7, backgroundClip: 'content-box', borderRadius: 999, border: 'none', cursor: 'pointer', background: heroSlide === i ? RED : 'rgba(255,255,255,0.45)' }}
             />
           ))}
         </div>

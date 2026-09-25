@@ -586,7 +586,7 @@ function ColorDots({ colorways, max = 7 }) {
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
       {fams.slice(0, max).map((f) => <span key={f} className="ai-dot" style={{ background: COLOR_DOTS[f] || '#CBD5E1' }} title={f} />)}
-      <span style={{ fontSize: 12, color: '#6A7180', fontWeight: 600, marginLeft: 2 }}>
+      <span style={{ fontSize: 12, color: '#5F6675', fontWeight: 600, marginLeft: 2 }}>
         {colorways.length} {colorways.length === 1 ? 'color' : 'colors'}
       </span>
     </span>
@@ -672,13 +672,13 @@ function StyleCard({ st, matchCws, colorSel, popColor, onOpen, yourPriceFn, canF
       </div>
       <div style={{ padding: '12px 14px 14px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1, width: '100%' }}>
         <div>
-          {st.brand && <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: '#6A7180' }}>{st.brand}</div>}
+          {st.brand && <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: '#5F6675' }}>{st.brand}</div>}
           <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 17, lineHeight: 1.15, textTransform: 'uppercase' }}>{st.name}</div>
-          <div style={{ fontSize: 12, color: '#6A7180', marginTop: 3 }}>
+          <div style={{ fontSize: 12, color: '#5F6675', marginTop: 3 }}>
             {st.category}{st.sport ? ' · ' + st.sport : ''}
           </div>
           {coverSku && (
-            <div style={{ fontSize: 11.5, color: '#9AA1AC', fontFamily: 'monospace', marginTop: 2 }}>{coverSku}</div>
+            <div style={{ fontSize: 11.5, color: '#5F6675', fontFamily: 'monospace', marginTop: 2 }}>{coverSku}</div>
           )}
         </div>
         <ColorDots colorways={matchCws.length ? matchCws : st.colorways} />
@@ -687,7 +687,7 @@ function StyleCard({ st, matchCws, colorSel, popColor, onOpen, yourPriceFn, canF
         ) : (
           <div className="ai-chipgrid">
             {sizes.slice(0, 8).map((s) => <span key={s} className="ai-chip">{sizeLabel(s)}</span>)}
-            {sizes.length > 8 && <span className="ai-chip" style={{ color: '#6A7180' }}>+{sizes.length - 8}</span>}
+            {sizes.length > 8 && <span className="ai-chip" style={{ color: '#5F6675' }}>+{sizes.length - 8}</span>}
           </div>
         )}
         <div style={{ marginTop: 'auto', fontSize: 12, fontWeight: 700, color: '#3A4150', borderTop: '1px dashed #E6E8EC', paddingTop: 8 }}>
@@ -789,12 +789,12 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
       <div className="ai-modal" onClick={(e) => e.stopPropagation()}>
         <div style={{ padding: '20px 24px 10px', display: 'flex', alignItems: 'flex-start', gap: 12 }}>
           <div style={{ flex: 1 }}>
-            {st.brand && <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: '#6A7180' }}>{st.brand}</div>}
+            {st.brand && <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: '#5F6675' }}>{st.brand}</div>}
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <h2 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 28, margin: 0, textTransform: 'uppercase', lineHeight: 1.05 }}>{st.name}</h2>
               {gb && <span className="ai-badge" style={{ background: gb.bg, color: gb.fg }}>{st.gender}</span>}
             </div>
-            <div style={{ fontSize: 13, color: '#6A7180', marginTop: 4 }}>
+            <div style={{ fontSize: 13, color: '#5F6675', marginTop: 4 }}>
               {st.category}{st.sport ? ' · ' + st.sport : ''} · {st.colorways.length} {st.colorways.length === 1 ? 'colorway' : 'colorways'}
             </div>
           </div>
@@ -806,19 +806,19 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
             {st.description}
           </div>
         )}
-        <div style={{ padding: '0 24px 6px', fontSize: 12, color: '#6A7180' }}>
+        <div style={{ padding: '0 24px 6px', fontSize: 12, color: '#5F6675' }}>
           Type quantities under the sizes you need — they go straight onto your order list.
         </div>
         {st.colorways.length > 10 && (
           <div style={{ position: 'sticky', top: 0, zIndex: 5, background: '#fff', padding: '4px 24px 10px' }}>
             <input className="ai-search" value={colorQ} onChange={(e) => setColorQ(e.target.value)}
               placeholder={`Search ${st.colorways.length} colors…`} style={{ width: '100%' }} />
-            {cq && <div style={{ fontSize: 12, color: '#6A7180', marginTop: 6 }}>{shownCws.length} of {st.colorways.length} colors</div>}
+            {cq && <div style={{ fontSize: 12, color: '#5F6675', marginTop: 6 }}>{shownCws.length} of {st.colorways.length} colors</div>}
           </div>
         )}
         <div style={{ padding: '0 24px 22px', ...(oneSize ? { display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(300px,1fr))', gap: 10, alignItems: 'start' } : null) }}>
           {cq && shownCws.length === 0 && (
-            <div style={{ padding: '14px 0', fontSize: 13.5, color: '#6A7180', gridColumn: '1 / -1' }}>No colors match “{colorQ}”.</div>
+            <div style={{ padding: '14px 0', fontSize: 13.5, color: '#5F6675', gridColumn: '1 / -1' }}>No colors match “{colorQ}”.</div>
           )}
           {shownCws.map((cw) => {
             const availNow = (s) => (s.q || 0) + (s.ih || 0);
@@ -847,7 +847,7 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <span className="ai-dot" style={{ background: COLOR_DOTS[cw.family] || '#CBD5E1' }} />
                     <span style={{ fontWeight: 700, fontSize: 14.5 }}>{cw.color || cw.family}</span>
-                    <span style={{ fontSize: 12, color: '#6A7180', fontFamily: 'monospace' }}>{cw.sku}</span>
+                    <span style={{ fontSize: 12, color: '#5F6675', fontFamily: 'monospace' }}>{cw.sku}</span>
                     <button className="ai-iconbtn" onClick={async () => { if (await copyText(cw.sku)) notify(`SKU ${cw.sku} copied`); }} title="Copy SKU">Copy SKU</button>
                     {hasOOS && (
                       <button className="ai-iconbtn" onClick={() => { setAlertFor(alertFor === cw.sku ? null : cw.sku); setAlertSize(''); }} title="Email me when out-of-stock sizes return">
@@ -856,7 +856,7 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
                     )}
                     {fmtPrice(cw.price) && (
                       <span style={{ fontSize: 12.5, fontWeight: 700, marginLeft: 'auto' }}>
-                        {(() => { const y = yourPriceFn && yourPriceFn(cw); return y ? <><s style={{ color: '#9AA1AC', fontWeight: 500, marginRight: 6 }}>{fmtPrice(cw.price)}</s><b style={{ color: '#15803D' }}>{fmtPrice(y)}</b></> : fmtPrice(cw.price); })()}
+                        {(() => { const y = yourPriceFn && yourPriceFn(cw); return y ? <><s style={{ color: '#5F6675', fontWeight: 500, marginRight: 6 }}>{fmtPrice(cw.price)}</s><b style={{ color: '#15803D' }}>{fmtPrice(y)}</b></> : fmtPrice(cw.price); })()}
                       </span>
                     )}
                   </div>
@@ -921,7 +921,7 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
           })}
         </div>
         <div style={{ position: 'sticky', bottom: 0, background: '#fff', borderTop: '1px solid #EEF0F3', borderRadius: '0 0 16px 16px', padding: '12px 24px', display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span style={{ fontSize: 12.5, color: '#6A7180', flex: 1 }}>
+          <span style={{ fontSize: 12.5, color: '#5F6675', flex: 1 }}>
             {unitsInList > 0
               ? `${fmtQty(unitsInList)} unit${unitsInList === 1 ? '' : 's'} from this style on your list`
               : 'Type quantities above to add sizes'}
@@ -982,9 +982,9 @@ function SavedOrdersList({ savedOrders = [], activeOrderId, savedLoading, onLoad
   const savedBtn = { background: '#fff', border: '1px solid #E2E5EA', borderRadius: 7, padding: '4px 9px', fontSize: 11, fontWeight: 600, color: '#3A4150', cursor: 'pointer', fontFamily: 'inherit', flex: 'none' };
   return (
     <div style={{ marginTop: 4 }}>
-      {savedLoading && <div style={{ fontSize: 12.5, color: '#9AA1AC', padding: '6px 0' }}>Loading…</div>}
+      {savedLoading && <div style={{ fontSize: 12.5, color: '#5F6675', padding: '6px 0' }}>Loading…</div>}
       {!savedLoading && savedOrders.length === 0 && (
-        <div style={{ fontSize: 12.5, color: '#9AA1AC', padding: '4px 0 8px' }}>No saved orders yet — build a list and tap Save to keep it for later.</div>
+        <div style={{ fontSize: 12.5, color: '#5F6675', padding: '4px 0 8px' }}>No saved orders yet — build a list and tap Save to keep it for later.</div>
       )}
       {savedOrders.map((o) => {
         const u = (Array.isArray(o.lines) ? o.lines : []).reduce((a, l) => a + (parseInt(l.qty) || 0), 0);
@@ -1002,7 +1002,7 @@ function SavedOrdersList({ savedOrders = [], activeOrderId, savedLoading, onLoad
               <button onClick={() => onLoadOrder && onLoadOrder(o)} title="Open this order"
                 style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{o.name || 'Untitled order'}</div>
-                <div style={{ fontSize: 11, color: '#6A7180', marginTop: 1 }}>
+                <div style={{ fontSize: 11, color: '#5F6675', marginTop: 1 }}>
                   {u} unit{u === 1 ? '' : 's'} · {fmtUpdated(o.updated_at)}
                   {o.submit_count > 0 ? ` · sent ${o.submit_count}×` : ''}
                   {o.created_by_name ? ` · ${o.created_by_name}` : ''}
@@ -1019,7 +1019,7 @@ function SavedOrdersList({ savedOrders = [], activeOrderId, savedLoading, onLoad
           </div>
         );
       })}
-      {onNewOrder && <button onClick={() => onNewOrder()} style={{ background: 'none', border: '1px dashed #C6CAD2', borderRadius: 8, padding: '6px 10px', fontSize: 12, fontWeight: 600, color: '#6A7180', cursor: 'pointer', fontFamily: 'inherit' }}>+ Start a new blank order</button>}
+      {onNewOrder && <button onClick={() => onNewOrder()} style={{ background: 'none', border: '1px dashed #C6CAD2', borderRadius: 8, padding: '6px 10px', fontSize: 12, fontWeight: 600, color: '#5F6675', cursor: 'pointer', fontFamily: 'inherit' }}>+ Start a new blank order</button>}
     </div>
   );
 }
@@ -1037,7 +1037,7 @@ function AccountPanel({ account, onClose, savedOrders, activeOrderId, savedLoadi
         <div style={{ background: '#191919', color: '#fff', padding: '18px 22px', display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 22, textTransform: 'uppercase' }}>My account</div>
-            <div style={{ fontSize: 12.5, color: '#9AA1AC', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{account.customerName || account.email} · your team pricing</div>
+            <div style={{ fontSize: 12.5, color: '#A6ACB8', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{account.customerName || account.email} · your team pricing</div>
           </div>
           <button onClick={onClose} aria-label="Close" style={{ border: 'none', background: '#2B2F38', color: '#fff', borderRadius: 8, width: 32, height: 32, fontSize: 16, cursor: 'pointer', fontWeight: 700 }}>✕</button>
         </div>
@@ -1047,9 +1047,9 @@ function AccountPanel({ account, onClose, savedOrders, activeOrderId, savedLoadi
             onLoadOrder={onOpenOrder} onRenameOrder={onRenameOrder} onDeleteOrder={onDeleteOrder} onNewOrder={onNewOrder} />
 
           <h3 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 15, textTransform: 'uppercase', margin: '22px 0 8px' }}>Favorites{favorites.length ? ` (${favorites.length})` : ''}</h3>
-          {favLoading && <div style={{ fontSize: 12.5, color: '#9AA1AC' }}>Loading…</div>}
+          {favLoading && <div style={{ fontSize: 12.5, color: '#5F6675' }}>Loading…</div>}
           {!favLoading && favorites.length === 0 && (
-            <div style={{ fontSize: 12.5, color: '#9AA1AC', padding: '2px 0 6px' }}>No favorites yet — tap the ☆ on any item in the catalog to save it here.</div>
+            <div style={{ fontSize: 12.5, color: '#5F6675', padding: '2px 0 6px' }}>No favorites yet — tap the ☆ on any item in the catalog to save it here.</div>
           )}
           {favorites.length > 0 && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(148px, 1fr))', gap: 12 }}>
@@ -1061,9 +1061,9 @@ function AccountPanel({ account, onClose, savedOrders, activeOrderId, savedLoadi
                       {f.image_url ? <img src={f.image_url} alt={f.name || ''} style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span style={{ color: '#C6CAD2', fontSize: 26 }}>★</span>}
                     </div>
                     <div style={{ padding: '8px 10px' }}>
-                      {f.brand && <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: '#6A7180' }}>{f.brand}</div>}
+                      {f.brand && <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: '#5F6675' }}>{f.brand}</div>}
                       <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, lineHeight: 1.15, textTransform: 'uppercase' }}>{f.name || f.style_key}</div>
-                      {f.category && <div style={{ fontSize: 11, color: '#9AA1AC', marginTop: 2 }}>{f.category}</div>}
+                      {f.category && <div style={{ fontSize: 11, color: '#5F6675', marginTop: 2 }}>{f.category}</div>}
                     </div>
                   </button>
                   <button onClick={() => onUnfavorite(f.style_key)} aria-label="Remove favorite" title="Remove favorite"
@@ -1236,13 +1236,13 @@ function OrderDrawer({ list, updateLine, setSkuDeco, removeLine, clearList, onCl
           <div style={{ padding: 28, textAlign: 'center' }}>
             <div style={{ fontSize: 42 }}>✅</div>
             <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 24, textTransform: 'uppercase', marginTop: 8 }}>Request sent</div>
-            <p style={{ fontSize: 14, color: '#6A7180', lineHeight: 1.55, marginTop: 8 }}>
+            <p style={{ fontSize: 14, color: '#5F6675', lineHeight: 1.55, marginTop: 8 }}>
               Your rep has your list and will follow up with a formal estimate at your team pricing.
               A copy went to <b>{coach.email}</b>'s rep inbox — reply there with any changes.
             </p>
             {account ? (
               <>
-                <p style={{ fontSize: 13, color: '#6A7180', lineHeight: 1.5, marginTop: 6 }}>
+                <p style={{ fontSize: 13, color: '#5F6675', lineHeight: 1.5, marginTop: 6 }}>
                   We saved this as <b>{orderName.trim() || 'Untitled order'}</b> in your team's orders — edit it and re-send anytime.
                 </p>
                 <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 18, flexWrap: 'wrap' }}>
@@ -1262,10 +1262,10 @@ function OrderDrawer({ list, updateLine, setSkuDeco, removeLine, clearList, onCl
                   <button
                     onClick={() => setSavedOpen((s) => !s)}
                     style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', background: 'none', border: 'none', padding: '6px 0', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, fontWeight: 700, color: '#191919' }}>
-                    <span style={{ fontSize: 11, color: '#9AA1AC' }}>{savedOpen ? '▾' : '▸'}</span>
+                    <span style={{ fontSize: 11, color: '#5F6675' }}>{savedOpen ? '▾' : '▸'}</span>
                     Saved orders{savedOrders.length ? ` (${savedOrders.length})` : ''}
                     <span style={{ flex: 1 }} />
-                    {activeOrder && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#6A7180', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 150 }}>Editing: {activeOrder.name}</span>}
+                    {activeOrder && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#5F6675', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 150 }}>Editing: {activeOrder.name}</span>}
                   </button>
                   {savedOpen && (
                     <SavedOrdersList savedOrders={savedOrders} activeOrderId={activeOrderId} savedLoading={savedLoading}
@@ -1289,7 +1289,7 @@ function OrderDrawer({ list, updateLine, setSkuDeco, removeLine, clearList, onCl
                 </div>
               )}
               {list.length === 0 && (
-                <p style={{ fontSize: 14, color: '#6A7180', padding: '22px 0', textAlign: 'center' }}>
+                <p style={{ fontSize: 14, color: '#5F6675', padding: '22px 0', textAlign: 'center' }}>
                   Your list is empty — {account ? 'load a saved order above, or open' : 'open'} a style and type quantities under the sizes you need.
                 </p>
               )}
@@ -1312,7 +1312,7 @@ function OrderDrawer({ list, updateLine, setSkuDeco, removeLine, clearList, onCl
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontWeight: 700, fontSize: 13.5, lineHeight: 1.2 }}>{withBrand(g.brand, g.name)}</div>
-                      <div style={{ fontSize: 12, color: '#6A7180', marginTop: 2 }}>
+                      <div style={{ fontSize: 12, color: '#5F6675', marginTop: 2 }}>
                         {g.color} · <span style={{ fontFamily: 'monospace' }}>{g.sku}</span>
                       </div>
                     </div>
@@ -1356,7 +1356,7 @@ function OrderDrawer({ list, updateLine, setSkuDeco, removeLine, clearList, onCl
                     ))}
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 8, fontSize: 12.5 }}>
-                    <span style={{ color: '#6A7180' }}>{gUnits} unit{gUnits === 1 ? '' : 's'}</span>
+                    <span style={{ color: '#5F6675' }}>{gUnits} unit{gUnits === 1 ? '' : 's'}</span>
                     <span style={{ fontWeight: 700, fontSize: 13 }}>{gTotal ? fmtPrice(gTotal) : '—'}</span>
                   </div>
                 </div>
@@ -1369,7 +1369,7 @@ function OrderDrawer({ list, updateLine, setSkuDeco, removeLine, clearList, onCl
                 </div>
               )}
               {list.length > 0 && (
-                <p style={{ fontSize: 11.5, color: '#6A7180', margin: '2px 0 10px' }}>
+                <p style={{ fontSize: 11.5, color: '#5F6675', margin: '2px 0 10px' }}>
                   {account
                     ? 'Prices shown are your team pricing — your rep will confirm on the formal estimate.'
                     : 'Retail prices are list-price reference only — your rep will quote your team pricing on the estimate.'}
@@ -1404,11 +1404,11 @@ function OrderDrawer({ list, updateLine, setSkuDeco, removeLine, clearList, onCl
                   </div>
                 ))}
                 {images.length < MAX_IMG && (
-                  <label style={{ width: 52, height: 52, borderRadius: 8, border: '1.5px dashed #C6CAD2', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#6A7180', fontSize: 22, flex: 'none' }}>
+                  <label style={{ width: 52, height: 52, borderRadius: 8, border: '1.5px dashed #C6CAD2', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#5F6675', fontSize: 22, flex: 'none' }}>
                     +<input type="file" accept="image/*" multiple onChange={onAddImages} style={{ display: 'none' }} />
                   </label>
                 )}
-                <span style={{ fontSize: 11, color: '#9AA1AC', flex: 1, minWidth: 130 }}>Optional — add a logo, mockup, or reference image for your rep.</span>
+                <span style={{ fontSize: 11, color: '#5F6675', flex: 1, minWidth: 130 }}>Optional — add a logo, mockup, or reference image for your rep.</span>
               </div>
               {state === 'error' && <div style={{ fontSize: 13, color: '#B91C1C', fontWeight: 600 }}>{errMsg}</div>}
               <button
@@ -2071,7 +2071,7 @@ export default function AdidasInventory() {
         style={{ background: 'none', border: '1px solid #3A4150', color: '#C3C8D0', borderRadius: 999, padding: '7px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
         My account{(savedOrders.length + favorites.length) ? ` (${savedOrders.length + favorites.length})` : ''}
       </button>
-      <button onClick={signOut} style={{ background: 'none', border: 'none', color: '#9AA1AC', fontSize: 12.5, cursor: 'pointer', textDecoration: 'underline', fontFamily: 'inherit' }}>Sign out</button>
+      <button onClick={signOut} style={{ background: 'none', border: 'none', color: '#A6ACB8', fontSize: 12.5, cursor: 'pointer', textDecoration: 'underline', fontFamily: 'inherit' }}>Sign out</button>
     </>
   ) : signInOpen ? (
     signInState === 'sent' ? (
@@ -2087,9 +2087,9 @@ export default function AdidasInventory() {
           style={{ background: '#fff', color: '#191919', border: 'none', borderRadius: 999, padding: '8px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>
           {signInState === 'sending' ? 'Sending…' : 'Email me a sign-in link'}
         </button>
-        <button onClick={() => { setSignInOpen(false); setSignInState('idle'); }} style={{ background: 'none', border: 'none', color: '#9AA1AC', fontSize: 14, cursor: 'pointer', fontFamily: 'inherit' }}>✕</button>
+        <button onClick={() => { setSignInOpen(false); setSignInState('idle'); }} style={{ background: 'none', border: 'none', color: '#A6ACB8', fontSize: 14, cursor: 'pointer', fontFamily: 'inherit' }}>✕</button>
         {signInState === 'error' && <span style={{ fontSize: 12.5, color: '#FCA5A5' }}>Couldn't send — try again</span>}
-        <a href={REQUEST_ACCT_HREF} style={{ fontSize: 11.5, color: '#9AA1AC', textDecoration: 'underline', whiteSpace: 'nowrap', fontFamily: 'inherit' }}>
+        <a href={REQUEST_ACCT_HREF} style={{ fontSize: 11.5, color: '#A6ACB8', textDecoration: 'underline', whiteSpace: 'nowrap', fontFamily: 'inherit' }}>
           No account? Request one →
         </a>
       </>
@@ -2101,7 +2101,7 @@ export default function AdidasInventory() {
         Coach sign in — see your team pricing
       </button>
       <a href={REQUEST_ACCT_HREF}
-        style={{ fontSize: 13, color: '#9AA1AC', textDecoration: 'underline', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+        style={{ fontSize: 13, color: '#A6ACB8', textDecoration: 'underline', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
         Request an account
       </a>
     </>
@@ -2118,7 +2118,7 @@ export default function AdidasInventory() {
             <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(30px,5vw,44px)', margin: 0, textTransform: 'uppercase', letterSpacing: '.01em' }}>
               Product Live Look
             </h1>
-            <span style={{ fontFamily: DISPLAY, fontWeight: 600, fontSize: 18, color: '#9AA1AC', textTransform: 'uppercase', letterSpacing: '.08em' }}>
+            <span style={{ fontFamily: DISPLAY, fontWeight: 600, fontSize: 18, color: '#A6ACB8', textTransform: 'uppercase', letterSpacing: '.08em' }}>
               National Sports Apparel
             </span>
           </div>
@@ -2139,7 +2139,7 @@ export default function AdidasInventory() {
         <div style={{ background: '#191919', color: '#fff' }}>
           <div style={{ maxWidth: 1240, margin: '0 auto', padding: '9px 20px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             {!coach && !signInOpen && (
-              <span style={{ fontSize: 12.5, color: '#9AA1AC', marginRight: 'auto' }}>
+              <span style={{ fontSize: 12.5, color: '#A6ACB8', marginRight: 'auto' }}>
                 Coaches —{' '}
                 <button onClick={() => setSignInOpen(true)} style={{ background: 'none', border: 'none', color: '#C3C8D0', cursor: 'pointer', fontFamily: 'inherit', fontSize: 'inherit', padding: 0, textDecoration: 'underline' }}>sign in</button>
                 {' '}for team pricing &amp; saved orders, or{' '}
@@ -2192,7 +2192,7 @@ export default function AdidasInventory() {
               {colorOpen && (
                 <>
                   <div className="ai-colorpop">
-                    <div style={{ fontSize: 11.5, fontWeight: 700, color: '#6A7180', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
+                    <div style={{ fontSize: 11.5, fontWeight: 700, color: '#5F6675', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
                       Pick up to 5 — shows gear featuring your colors
                     </div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6 }}>
@@ -2211,7 +2211,7 @@ export default function AdidasInventory() {
                 </>
               )}
             </div>
-            <span style={{ fontSize: 13, color: '#6A7180', fontWeight: 600, marginLeft: 'auto' }}>
+            <span style={{ fontSize: 13, color: '#5F6675', fontWeight: 600, marginLeft: 'auto' }}>
               {loading ? 'Loading…' : `${visible.length} style${visible.length === 1 ? '' : 's'}`}
               {!loading && loadingAll ? ' · loading more…' : ''}
             </span>
@@ -2220,7 +2220,7 @@ export default function AdidasInventory() {
               (Footwear surfaced first). Full category list stays in the dropdown above. */}
           {facets.categories.length > 1 && (
           <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7180', textTransform: 'uppercase', letterSpacing: '.05em' }}>Shop:</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#5F6675', textTransform: 'uppercase', letterSpacing: '.05em' }}>Shop:</span>
             <button className={'ai-filterbtn' + (category === 'All' ? ' on' : '')} style={{ padding: '3px 11px', fontSize: 12.5 }} onClick={() => setCategory('All')}>All</button>
             {QUICK_CATS.filter((c) => facets.categories.some((fc) => fc.v === c)).map((c) => (
               <button key={c} className={'ai-filterbtn' + (category === c ? ' on' : '')} style={{ padding: '3px 11px', fontSize: 12.5 }}
@@ -2231,7 +2231,7 @@ export default function AdidasInventory() {
           </div>
           )}
           <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7180', textTransform: 'uppercase', letterSpacing: '.05em' }}>In stock in:</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#5F6675', textTransform: 'uppercase', letterSpacing: '.05em' }}>In stock in:</span>
             {FILTER_SIZES.map((s) => (
               <button key={s} className={'ai-filterbtn' + (sizeSel.includes(s) ? ' on' : '')} style={{ padding: '3px 11px', fontSize: 12.5 }} onClick={() => toggleSize(s)}>{s}</button>
             ))}
@@ -2245,12 +2245,12 @@ export default function AdidasInventory() {
               Include incoming
             </button>
             <span style={{ width: 1, height: 18, background: '#D8DCE2', margin: '0 3px' }} />
-            <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7180', textTransform: 'uppercase', letterSpacing: '.05em' }}>Need by:</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#5F6675', textTransform: 'uppercase', letterSpacing: '.05em' }}>Need by:</span>
             <input type="date" value={needBy} min={new Date().toISOString().slice(0, 10)} onChange={(e) => setNeedBy(e.target.value)}
               style={{ border: '1px solid ' + (needBy ? '#191919' : '#D8DCE2'), background: needBy ? '#191919' : '#fff', color: needBy ? '#fff' : '#3A4150', borderRadius: 999, padding: '3px 11px', fontSize: 12.5, fontWeight: 600, fontFamily: 'inherit', outline: 'none', cursor: 'pointer' }}
               title="Only show gear that's in stock now or arriving at least 4 weeks before this date — time for decoration and delivery" />
             {needCutoff && (
-              <span style={{ fontSize: 11.5, color: '#6A7180' }}>
+              <span style={{ fontSize: 11.5, color: '#5F6675' }}>
                 = in stock now or inbound by <b style={{ color: '#3A4150' }}>{fmtDate(needCutoff)}</b>
               </span>
             )}
@@ -2264,7 +2264,7 @@ export default function AdidasInventory() {
       {/* Body */}
       <main style={{ maxWidth: 1240, margin: '0 auto', padding: '22px 20px 60px' }}>
         {loading && (
-          <div style={{ textAlign: 'center', padding: '80px 0', color: '#6A7180', fontSize: 15 }}>
+          <div style={{ textAlign: 'center', padding: '80px 0', color: '#5F6675', fontSize: 15 }}>
             Loading live inventory…
           </div>
         )}
@@ -2274,7 +2274,7 @@ export default function AdidasInventory() {
           </div>
         )}
         {!loading && !error && visible.length === 0 && (
-          <div style={{ textAlign: 'center', padding: '80px 0', color: '#6A7180', fontSize: 15 }}>
+          <div style={{ textAlign: 'center', padding: '80px 0', color: '#5F6675', fontSize: 15 }}>
             No styles match those filters.
             {hasFilters && <div style={{ marginTop: 12 }}><button className="ai-filterbtn" onClick={clearFilters}>Clear all filters</button></div>}
           </div>
@@ -2368,7 +2368,7 @@ export default function AdidasInventory() {
       {toast && <div key={toast.ts} className="ai-toast">{toast.msg}</div>}
 
       {!embedded && (
-      <footer style={{ background: '#191919', color: '#9AA1AC', fontSize: 12.5, lineHeight: 1.6 }}>
+      <footer style={{ background: '#191919', color: '#A6ACB8', fontSize: 12.5, lineHeight: 1.6 }}>
         <div style={{ maxWidth: 1240, margin: '0 auto', padding: '22px 20px' }}>
           Availability is pulled from each brand's warehouse feed and updated automatically — quantities are not guaranteed until ordered.
           “Inbound” dates are projected restock delivery dates.

@@ -113,6 +113,7 @@ function StoreStyles() {
         .sf-skew:hover{transform:skewX(-3deg) translateY(-2px)}
         .sf-card{transition:transform .2s cubic-bezier(.4,0,.2,1), box-shadow .2s ease, border-color .2s ease}
         .sf-card .sf-img{transition:transform .35s ease}
+        [data-kb-activate]:focus-visible{outline:3px solid var(--sf-primary,#8C1D40);outline-offset:3px}
         .sf-card:hover{transform:translateY(-4px);box-shadow:0 10px 30px rgba(25,40,83,.10);border-color:var(--sf-primary,#8C1D40) !important}
         .sf-card:hover .sf-img{transform:scale(1.05)}
         .sf-showcase .sf-card{border-color:rgba(22,34,63,.08);box-shadow:0 14px 34px rgba(22,34,63,.10)}
@@ -575,6 +576,8 @@ export default function Storefront() {
   // Browse filters driven by the persistent category sub-nav + search field.
   const [cat, setCat] = useState('all');
   const [query, setQuery] = useState('');
+  // Descriptive tab title for screen readers / browser history (WCAG 2.4.2).
+  useEffect(() => { if (store && store.name) document.title = `${store.name} · National Sports Apparel`; }, [store && store.name]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = useCallback(async (slug) => {
     setStatus('loading');
@@ -825,7 +828,7 @@ function VsHeader({ store, theme, cartCount = 0, collapsed = false, query, setQu
   return (
     <header style={{ position: 'relative', background: theme.band, boxShadow: '0 2px 18px rgba(0,0,0,0.18)' }}>
       <div className="sf-vs-hdr" style={{ maxWidth: 1240, height: collapsed ? 60 : 76, margin: '0 auto', padding: '0 24px', display: 'flex', alignItems: 'center', gap: 24, transition: 'height .2s ease' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer', minWidth: 0, flex: 1 }} onClick={() => navTo('/shop/' + store.slug)}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer', minWidth: 0, flex: 1 }} {...kbActivate(() => navTo('/shop/' + store.slug))} aria-label={`${store.name || 'Store'} home`}>
           <span className="sf-vs-crest" style={{ height: collapsed ? 44 : 56, minWidth: collapsed ? 40 : 46, maxWidth: collapsed ? 58 : 76, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, background: '#fff', borderRadius: 2, padding: 5, transition: 'height .2s ease' }}>
             {store.logo_url
               ? <img src={store.logo_url} alt="" style={{ height: collapsed ? 34 : 46, width: 'auto', maxWidth: collapsed ? 48 : 66, objectFit: 'contain' }} />
@@ -839,7 +842,7 @@ function VsHeader({ store, theme, cartCount = 0, collapsed = false, query, setQu
         </nav>
         <div className={'sf-vs-search' + (open ? ' sf-vs-search-open' : '')} style={{ display: open ? 'flex' : 'none', alignItems: 'center', gap: 8, background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.28)', borderRadius: 2, padding: '0 11px', height: 36, width: 210, overflow: 'hidden' }}>
           <SearchIcon color="rgba(255,255,255,0.8)" />
-          <input ref={inputRef} className="sf-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search the store"
+          <input ref={inputRef} className="sf-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search the store" aria-label="Search the store"
             style={{ border: 'none', background: 'transparent', outline: 'none', fontFamily: BODY, fontSize: 14, color: '#fff', width: '100%' }} />
         </div>
         <button type="button" aria-label="Search the store" onClick={() => setSearchOpen((o) => !o)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 6, color: 'rgba(255,255,255,0.88)', flexShrink: 0 }}>
@@ -927,6 +930,17 @@ function VsSectionHead({ theme, eyebrow, head, tail, right, id }) {
       {right && <div style={{ paddingBottom: 19 }}>{right}</div>}
     </div>
   );
+}
+
+// Keyboard access for the click-to-navigate tiles (product cards, the bundle
+// banner, the store-name home link): without these a keyboard or screen-reader
+// shopper can't open a product at all (WCAG 2.1.1). Enter/Space activate, like
+// a native link/button; `data-kb-activate` hooks the shared focus ring.
+function kbActivate(fn) {
+  return {
+    role: 'link', tabIndex: 0, 'data-kb-activate': '', onClick: fn,
+    onKeyDown: (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); fn(); } },
+  };
 }
 
 // ── Varsity category card ────────────────────────────────────────────
@@ -1035,7 +1049,7 @@ function Header({ store, theme, cartCount = 0, collapsed = false }) {
   return (
     <header style={{ background: theme.paper, borderBottom: `1px solid ${theme.line}`, boxShadow: '0 2px 16px rgba(0,0,0,0.06)' }}>
       <div style={{ maxWidth: 1240, margin: '0 auto', padding: collapsed ? '8px 16px' : '14px 24px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'nowrap', transition: 'padding .2s ease' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', minWidth: 0, flex: 1 }} onClick={() => navTo('/shop/' + store.slug)}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', minWidth: 0, flex: 1 }} {...kbActivate(() => navTo('/shop/' + store.slug))} aria-label={`${store.name || 'Store'} home`}>
           <Crest store={store} theme={theme} size={collapsed ? 30 : 40} />
           <div style={{ lineHeight: 1.05, minWidth: 0 }}>
             {!collapsed && <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 2.5, textTransform: 'uppercase', color: theme.accentDeep }}>Official Team Store</div>}
@@ -1082,7 +1096,7 @@ function CategoryNav({ theme, categories, cat, onCat, query, setQuery, onSearch 
         </button>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, background: theme.cream, border: `1px solid ${theme.line}`, borderRadius: 4, padding: '0 12px', height: 38, minWidth: 200 }} className={'sf-search-wrap' + (open ? ' sf-search-open' : '')}>
           <SearchIcon color={theme.subText} />
-          <input ref={inputRef} className="sf-search" value={query} onChange={(e) => { setQuery(e.target.value); if (e.target.value) onSearch(); }} placeholder="Search the store" style={{ border: 'none', background: 'transparent', outline: 'none', fontFamily: BODY, fontSize: 14, color: theme.inkText, width: '100%' }} />
+          <input ref={inputRef} className="sf-search" value={query} onChange={(e) => { setQuery(e.target.value); if (e.target.value) onSearch(); }} placeholder="Search the store" aria-label="Search the store" style={{ border: 'none', background: 'transparent', outline: 'none', fontFamily: BODY, fontSize: 14, color: theme.inkText, width: '100%' }} />
         </div>
       </div>
     </nav>
@@ -1386,7 +1400,7 @@ function PackPromo({ store, theme, bundle, bundleItems = [], onClick }) {
   const retail = comps.reduce((a, c) => a + (Number(c.qty || 1) * 0), 0); // components carry no price in this view
   return (
     <div style={{ maxWidth: 1240, margin: '0 auto', padding: '8px 24px clamp(8px,2vw,16px)' }}>
-      <div onClick={onClick} className="sf-btn" style={{ position: 'relative', cursor: 'pointer', overflow: 'hidden', borderRadius: 8, background: `linear-gradient(120deg, ${theme.primary}, ${theme.deep})`, padding: 'clamp(24px,3vw,34px) clamp(24px,3vw,38px)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, flexWrap: 'wrap', boxShadow: '0 14px 36px rgba(0,0,0,0.16)' }}>
+      <div {...kbActivate(onClick)} className="sf-btn" style={{ position: 'relative', cursor: 'pointer', overflow: 'hidden', borderRadius: 8, background: `linear-gradient(120deg, ${theme.primary}, ${theme.deep})`, padding: 'clamp(24px,3vw,34px) clamp(24px,3vw,38px)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, flexWrap: 'wrap', boxShadow: '0 14px 36px rgba(0,0,0,0.16)' }}>
         <div aria-hidden style={{ position: 'absolute', inset: 0, background: HASH, pointerEvents: 'none' }} />
         <div style={{ position: 'relative', zIndex: 1 }}>
           <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 12, letterSpacing: 2, textTransform: 'uppercase', color: theme.accent, marginBottom: 8 }}>Required for every player</div>
@@ -1552,7 +1566,7 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
   const showBadge = !vs || b.text !== 'In stock';
   const go = () => navTo(`/shop/${store.slug}/${isBundle ? 'b' : 'p'}/${p.webstore_product_id}`);
   return (
-    <div className="sf-card" onClick={go} style={{ cursor: 'pointer', position: 'relative', display: 'flex', flexDirection: 'column', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: vs ? 2 : 6, overflow: 'hidden', boxShadow: vs ? 'none' : '0 2px 12px rgba(0,0,0,0.06)' }}>
+    <div className="sf-card" {...kbActivate(go)} style={{ cursor: 'pointer', position: 'relative', display: 'flex', flexDirection: 'column', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: vs ? 2 : 6, overflow: 'hidden', boxShadow: vs ? 'none' : '0 2px 12px rgba(0,0,0,0.06)' }}>
       <div style={{ position: 'relative', width: '100%', aspectRatio: '4 / 5', background: '#fff', overflow: 'hidden' }}>
         {hasCollage
           ? <BundleCollage comps={comps} theme={theme} />
@@ -1598,7 +1612,7 @@ function BannerCard({ store, theme, p, bundleItems = [], compInfo = {}, wpById =
   const tiles = imgs.length ? Array.from({ length: 4 }, (_, i) => imgs[i % imgs.length]) : [];
   const go = () => navTo(`/shop/${store.slug}/b/${p.webstore_product_id}`);
   return (
-    <div className="sf-card" onClick={go} style={{ gridColumn: '1 / -1', cursor: 'pointer', position: 'relative', overflow: 'hidden', borderRadius: 8, background: `linear-gradient(120deg, ${theme.primary}, ${theme.deep})`, display: 'flex', alignItems: 'stretch', minHeight: 190, boxShadow: '0 14px 36px rgba(0,0,0,0.16)' }}>
+    <div className="sf-card" {...kbActivate(go)} style={{ gridColumn: '1 / -1', cursor: 'pointer', position: 'relative', overflow: 'hidden', borderRadius: 8, background: `linear-gradient(120deg, ${theme.primary}, ${theme.deep})`, display: 'flex', alignItems: 'stretch', minHeight: 190, boxShadow: '0 14px 36px rgba(0,0,0,0.16)' }}>
       <div aria-hidden style={{ position: 'absolute', inset: 0, background: HASH, pointerEvents: 'none' }} />
       <div style={{ flex: 1, padding: 'clamp(22px,3vw,32px) clamp(24px,3vw,38px)', display: 'flex', flexDirection: 'column', justifyContent: 'center', position: 'relative', zIndex: 1, minWidth: 0 }}>
         <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 800, letterSpacing: 2.5, textTransform: 'uppercase', color: theme.accent, marginBottom: 8 }}>★ Required for every player</div>
@@ -1632,7 +1646,7 @@ function ShowcaseCard({ store, theme, p, bundleItems = [], compInfo = {}, wpById
     .map((c) => { const m = compMeta(c, wpById, compInfo); return { img: m.image, name: m.name, decorations: m.decorations, color: m.color }; });
   const go = () => navTo(`/shop/${store.slug}/b/${p.webstore_product_id}`);
   return (
-    <div className="sf-card" onClick={go} style={{ gridColumn: '1 / -1', cursor: 'pointer', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 8, overflow: 'hidden', boxShadow: '0 2px 16px rgba(0,0,0,0.07)' }}>
+    <div className="sf-card" {...kbActivate(go)} style={{ gridColumn: '1 / -1', cursor: 'pointer', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 8, overflow: 'hidden', boxShadow: '0 2px 16px rgba(0,0,0,0.07)' }}>
       {/* Dark header */}
       <div style={{ position: 'relative', overflow: 'hidden', background: `linear-gradient(120deg, ${theme.primary}, ${theme.deep})`, padding: '18px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
         <div aria-hidden style={{ position: 'absolute', inset: 0, background: HASH, pointerEvents: 'none' }} />

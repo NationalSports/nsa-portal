@@ -55,6 +55,7 @@ function Fonts() {
         .ts-card{transition:transform .16s ease, box-shadow .16s ease}
         .ts-card:hover{transform:translateY(-5px);box-shadow:0 18px 40px rgba(15,26,56,.18)}
         .ts-input::placeholder{color:rgba(255,255,255,0.55)}
+        .ts-root a:focus-visible,.ts-root button:focus-visible,.ts-input:focus-visible{outline:3px solid #fff;outline-offset:2px;box-shadow:0 0 0 5px #192853}
       `}</style>
     </>
   );
@@ -123,7 +124,7 @@ export default function TeamStores() {
           <h1 style={{ fontFamily: DISPLAY, margin: '0 0 26px', fontSize: 'clamp(38px,6.5vw,72px)', letterSpacing: 0.3, textTransform: 'uppercase', lineHeight: 0.98, fontWeight: 800 }}>Find your <em style={{ fontStyle: 'italic', color: shade(RED, 26) }}>Team Store</em></h1>
           <div style={{ position: 'relative', maxWidth: 640, margin: '0 auto' }}>
             <span style={{ position: 'absolute', left: 20, top: '50%', transform: 'translateY(-50%)', fontSize: 18, opacity: 0.6 }}>🔍</span>
-            <input className="ts-input" autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by school, team, or organization name…"
+            <input className="ts-input" autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by school, team, or organization name…" aria-label="Search team stores"
               style={{ width: '100%', fontFamily: BODY, fontSize: 17, color: '#fff', padding: '16px 18px 16px 52px', borderRadius: 12, border: '1.5px solid rgba(255,255,255,0.28)', background: 'rgba(255,255,255,0.08)', outline: 'none' }} />
           </div>
           <div style={{ marginTop: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 18, flexWrap: 'wrap' }}>
@@ -136,7 +137,7 @@ export default function TeamStores() {
       {/* Results — only after a search */}
       <div style={{ maxWidth: 1180, margin: '0 auto', padding: 'clamp(24px,4vw,42px) 20px clamp(40px,6vw,72px)' }}>
         {term.length < 2
-          ? <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: 15, padding: '30px 20px' }}>Start typing your team or school name to find your store.</div>
+          ? <div style={{ textAlign: 'center', color: '#5A6075', fontSize: 15, padding: '30px 20px' }}>Start typing your team or school name to find your store.</div>
           : searching
             ? <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: 15, padding: '40px 20px' }}>Searching…</div>
             : (results && results.length)
