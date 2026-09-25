@@ -5,7 +5,7 @@ import { jobMockCardGroups } from './lib/jobMockCards';
 import { safeArt, garmentMockKey, mockSkuOf, slotMockFiles, adoptArtProofAsGarmentMock, removeGarmentSlotMock, resolveMockLink, mockLinkSourceFiles, applyMockLink } from './safeHelpers';
 import { fileUpload, openFile } from './utils';
 
-export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSave, itemDetails = [], onViewItem }) {
+export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSave, itemDetails = [], onViewItem, onSendToArtist }) {
   const [busy, setBusy] = useState(false);
   const lock = useRef(false);
   const [error, setError] = useState('');
@@ -44,6 +44,7 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
           mocks={slotMockFiles(slot, allSlots, item)} candidates={slot.candidates} suggest busy={busy}
           accept=".pdf,.png,.jpg,.jpeg,.webp,.gif"
           uploadLabel="Upload mock image"
+          onSendToArtist={onSendToArtist && (() => onSendToArtist('Need a new mock for ' + [item.color, mockSkuOf(item), item.name].filter(Boolean).join(' ') + (slot.sub ? ' (' + slot.sub + ')' : '') + ' — the existing mock is the wrong garment/color.'))}
           onUse={file => run(() => useFiles(slot, [file]))}
           onRemove={url => run(() => onSave(removeGarmentSlotMock(safeArt(getOrder()), slot, allSlots, item, url), 'Mock removed'))}
           onUpload={files => run(async () => {

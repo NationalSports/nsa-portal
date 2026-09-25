@@ -12138,7 +12138,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(j.items||[]).length>0&&dTot>1&&<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:10}} onClick={()=>setSplitModal({jIdx:ji,jobId:j.id,mode:null,selectedIdxs:[]})}>✂️ Split Job</button>}
             </div>
             {_mockReady&&j.art_status!=='waiting_approval'&&<section aria-label="Review saved mocks" style={{margin:'0 20px 16px',padding:14,background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:10}}><strong>Mocks ready — review next</strong><p style={{fontSize:12,color:'#475569'}}>Send the mocks to the coach, or approve the artwork if approval is already confirmed. Production files are checked next.</p><div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{_reviewActions}</div></section>}
-            <JobGarmentMocks key={j.id} job={j} order={o} priorMocks={priorMocks} getOrder={()=>oRef.current} itemDetails={itemDetails} onViewItem={_jumpToItem} onSave={saveArtFilesNow} />
+            <JobGarmentMocks key={j.id} job={j} order={o} priorMocks={priorMocks} getOrder={()=>oRef.current} itemDetails={itemDetails} onViewItem={_jumpToItem} onSave={saveArtFilesNow} onSendToArtist={note=>setArtReqModal({jIdx:ji,artist:_activeArtistId(j.assigned_artist||((j.art_requests||[]).slice(-1)[0]?.artist)),instructions:note,files:[]})} />
             {/* ── Check Mock: previously-approved art reused on a different color/style ── */}
             {_needsMockCheck&&(()=>{
               const _gLabels=_mockCheckGarments.map(g=>(g.color?g.color+' ':'')+g.sku).join(', ');
