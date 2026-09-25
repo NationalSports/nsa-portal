@@ -686,6 +686,20 @@ describe('splitClosedJobAdditions', () => {
     expect(keep).toEqual(shipped);
   });
 
+  test('SO-2121: a row a split slice already owns is never re-carved (the -A … -A50 runaway)', () => {
+    // JOB-2121-06 (completed) ran PC78 + AT106. The two-logo PC68H hoodie is an _artSplit row, so
+    // the parent's rebuild kept re-adding it; each sync carved it into yet another -A slice.
+    const closed = [{ item_idx: 0, sku: 'PC78-Navy', units: 15, fulfilled: 15 }];
+    const hoodie = { item_idx: 4, sku: 'PC68H-TrueNavy', units: 18, fulfilled: 15, _artSplit: true };
+    const owned = new Set(['4-PC68H-TrueNavy']);// JOB-2121-06-B holds it
+    const { keep, added } = splitClosedJobAdditions([...closed, hoodie], closed, owned);
+    expect(added).toEqual([]);
+    expect(keep).toEqual(closed);
+    // A genuinely new garment is still carved even while a slice owns another row.
+    const late = { item_idx: 9, sku: 'PC78-Navy', units: 3, fulfilled: 0 };
+    expect(splitClosedJobAdditions([...closed, hoodie, late], closed, owned).added).toEqual([late]);
+  });
+
   test('tolerates missing/garbage rows', () => {
     expect(splitClosedJobAdditions(null, null)).toEqual({ keep: [], added: [] });
     expect(splitClosedJobAdditions([null, reprint], undefined).added).toEqual([reprint]);
