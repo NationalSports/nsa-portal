@@ -53,6 +53,7 @@ const ACTION_GROUPS = [
   { key: 'art', label: 'Art', color: '#0891b2' },
   { key: 'follow', label: 'Follow-ups', color: '#7c3aed' },
   { key: 'pay', label: 'Payments', color: '#15803d' },
+  { key: 'task', label: 'Tasks', color: '#475569' },
   { key: 'other', label: 'Other', color: '#64748b' },
 ];
 const actionGroup = (item) => {
@@ -60,7 +61,8 @@ const actionGroup = (item) => {
   if (t === 'deadline' || t === 'firm' || t === 'booking_confirm') return 'due';
   if (/art|deco|mockup/.test(t)) return 'art';
   if (/inv|pay|deposit|credit/.test(t)) return 'pay';
-  if (/follow|est|coach|quote/.test(t) || item._priorityKind === 'workspace' || item._priorityKind === 'assigned') return 'follow';
+  if (item._priorityKind === 'assigned') return 'task';
+  if (/follow|est|coach|quote/.test(t) || item._priorityKind === 'workspace') return 'follow';
   return 'other';
 };
 // Strip the leading emoji / "Overdue by N days:" prefix; the tag carries that now.
@@ -68,8 +70,14 @@ const actionTitle = (msg) => String(msg || '')
   .replace(/^[^\p{L}\p{N}]+/u, '')
   .replace(/^(Overdue by \d+ days?|Due in \d+ days?|Reminder):\s*/i, '');
 const actionTag = (item, today) => {
-  const datedKinds = item.type === 'deadline' || item._priorityKind === 'workspace' || item._priorityKind === 'assigned';
-  const due = datedKinds ? parsePortalDate(item.date) : null;
+  // Only real due dates count toward "late": an SO in-hands date, a reminder's
+  // day, or an assigned task's due_date. item.date falls back to created_at for
+  // tasks without a due date, which would wrongly read as "41d late".
+  const dueRaw = item.type === 'deadline' ? item.date
+    : item._priorityKind === 'workspace' ? item._workspaceItem?.remind_on || item.date
+    : item._priorityKind === 'assigned' ? item._assignedTask?.due_date
+    : null;
+  const due = dueRaw ? parsePortalDate(dueRaw) : null;
   if (due) {
     const diff = Math.round((new Date(due.getFullYear(), due.getMonth(), due.getDate()) - today) / 864e5);
     if (diff < 0) return { text: `${-diff}d late`, tone: 'late' };

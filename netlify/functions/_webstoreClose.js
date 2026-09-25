@@ -152,4 +152,41 @@ async function notifyStoreClosed(admin, store, opts = {}) {
   return { notified: true, todoId: todoOk ? todoId : null, emailed, breakdown: b };
 }
 
-module.exports = { notifyStoreClosed, buildBreakdown, netFundraise, closeTodoId, closeEmailKey, sendCloseEmail };
+// Same rule as the Webstores list and src/lib/soPlayerReport.js isLiveWebstoreOrder:
+// cancelled / unpaid carts / refunded orders are not work to process.
+const isLiveOrder = (o) => !!o && !/^(cancelled|canceled|pending_payment|refunded)$/i.test(String(o.status || '').trim());
+
+// Close-out to-dos used to stay open forever: nothing completed them once the
+// store's orders were batched onto a Sales Order. Complete every open
+// "Process closed store" to-do whose store is closed and has no live order left
+// without an so_id (the same "fully processed" test the Webstores list uses).
+async function settleProcessedCloseTodos(admin) {
+  const { data: todos, error } = await admin.from('assigned_todos')
+    .select('id').eq('status', 'open').like('id', 'todo-close-%').limit(500);
+  if (error) throw new Error(`Could not load close-out to-dos: ${error.message}`);
+  if (!todos || !todos.length) return { completed: 0 };
+  // id = todo-close-<store.id>-<12 hex> (see closeTodoId)
+  const storeOf = (id) => id.slice('todo-close-'.length).replace(/-[0-9a-f]{12}$/, '');
+  const storeIds = [...new Set(todos.map((t) => storeOf(t.id)))];
+  const { data: stores, error: sErr } = await admin.from('webstores').select('id,status').in('id', storeIds);
+  if (sErr) throw new Error(`Could not load stores for close-out to-dos: ${sErr.message}`);
+  const closed = new Set((stores || []).filter((st) => st.status && st.status !== 'open').map((st) => st.id));
+  const pending = new Set();
+  for (let i = 0; i < storeIds.length; i += 100) {
+    const chunk = storeIds.slice(i, i + 100);
+    const { data: orders, error: oErr } = await admin.from('webstore_orders').select('store_id,status,so_id').in('store_id', chunk);
+    if (oErr) throw new Error(`Could not load store orders for close-out to-dos: ${oErr.message}`);
+    (orders || []).forEach((o) => { if (isLiveOrder(o) && !o.so_id) pending.add(o.store_id); });
+  }
+  const done = todos.filter((t) => { const sid = storeOf(t.id); return closed.has(sid) && !pending.has(sid); }).map((t) => t.id);
+  if (!done.length) return { completed: 0 };
+  const now = new Date().toISOString();
+  const { error: uErr } = await admin.from('assigned_todos').update({
+    status: 'completed', completed_at: now, completed_by: null,
+    completion_note: 'Auto-completed: every store order is on a Sales Order', updated_at: now,
+  }).in('id', done).eq('status', 'open');
+  if (uErr) throw new Error(`Could not complete close-out to-dos: ${uErr.message}`);
+  return { completed: done.length };
+}
+
+module.exports = { notifyStoreClosed, buildBreakdown, netFundraise, closeTodoId, closeEmailKey, sendCloseEmail, settleProcessedCloseTodos };
