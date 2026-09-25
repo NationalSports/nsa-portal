@@ -131,8 +131,12 @@ export const garmentLogoDetails = (gi, so, artFiles) => {
 // is applied to the matching library art too — same id, or same name + deco type (artWriteMatches'
 // rule). Color ways are matched by id, then by garment-color label (library copies usually keep
 // the order's ids). Only the one color way's entry changes; the library's other web logos stay.
+// Placeholder names reps give art that doesn't exist yet ("ART TBD 1", "Untitled") repeat across a
+// customer's orders, so they never identify the same design.
+const _PLACEHOLDER_ART_NAME = /^(art\s*tbd\b.*|tbd\b.*|untitled.*|new art.*|art\s*\d*)$/i;
+const _realName = a => { const n = safeStr(a?.name).trim(); return n && !_PLACEHOLDER_ART_NAME.test(n) ? n.toLowerCase() : ''; };
 const _sameDesign = (lib, art) => !!lib && !!art && (lib.id === art.id || (
-  safeStr(lib.name).trim().toLowerCase() !== '' &&
+  _realName(lib) !== '' &&
   safeStr(lib.name).trim().toLowerCase() === safeStr(art.name).trim().toLowerCase() &&
   (lib.deco_type || '') === (art.deco_type || '')));
 const _libCwId = (lib, art, cwId) => {
@@ -240,11 +244,11 @@ export const reusedLogoDetailNeeds = (jobs, sos, customers) => {
   const idx = new Map();
   const _nk = a => safeStr(a.name).trim().toLowerCase() + '|' + (a.deco_type || '');
   safeArr(sos).forEach(o => { if (!o) return; const f = family(o.customer_id); safeArt(o).forEach(a => {
-    [a.design_id ? 'd:' + a.design_id : '', safeStr(a.name).trim() ? 'n:' + _nk(a) : ''].filter(Boolean).forEach(k => {
+    [a.design_id ? 'd:' + a.design_id : '', _realName(a) ? 'n:' + _nk(a) : ''].filter(Boolean).forEach(k => {
       const key = f + '#' + k; if (!idx.has(key)) idx.set(key, new Set()); idx.get(key).add(o.id); }); }); });
   const seenOn = (art, so) => {
     const f = family(so.customer_id);
-    return [art.design_id ? 'd:' + art.design_id : '', safeStr(art.name).trim() ? 'n:' + _nk(art) : ''].filter(Boolean)
+    return [art.design_id ? 'd:' + art.design_id : '', _realName(art) ? 'n:' + _nk(art) : ''].filter(Boolean)
       .some(k => [...(idx.get(f + '#' + k) || [])].some(id => id !== so.id));
   };
   const out = new Map();

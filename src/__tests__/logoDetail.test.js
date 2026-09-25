@@ -159,6 +159,12 @@ describe('reused art asks for its web logo', () => {
     const customers = [{ id: 'teamA', parent_id: 'prog' }, { id: 'teamB', parent_id: 'prog' }, { id: 'prog' }];
     expect(reusedLogoDetailNeeds([b.job], [a.so, b.so], customers).length).toBe(1);
   });
+  test('placeholder names like "ART TBD 1" on several orders are not treated as reuse', () => {
+    const tbd = { ...art, name: 'ART TBD 1' };
+    const a = mk('SO-1', 'team', [{ ...tbd }]);
+    const b = mk('SO-2', 'team', [{ ...tbd }]);
+    expect(reusedLogoDetailNeeds([b.job], [a.so, b.so], [{ id: 'team', art_files: [{ ...tbd, id: 'lib' }] }])).toEqual([]);
+  });
   test('not listed: brand-new art, art with its logo, jobs still with the artist, finished jobs', () => {
     const fresh = mk('SO-3', 'solo', [{ ...art }]);
     expect(reusedLogoDetailNeeds([fresh.job], [fresh.so], [{ id: 'solo' }])).toEqual([]);
