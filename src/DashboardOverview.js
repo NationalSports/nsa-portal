@@ -46,6 +46,82 @@ const formatCompact = (value) => {
   return MONEY.format(amount);
 };
 
+// Needs-action grouping: the dashboard to-do queue mixes many generated types;
+// the card filters them into a few buckets a rep recognises.
+const ACTION_GROUPS = [
+  { key: 'due', label: 'Due dates', color: '#b94349' },
+  { key: 'art', label: 'Art', color: '#0891b2' },
+  { key: 'follow', label: 'Follow-ups', color: '#7c3aed' },
+  { key: 'pay', label: 'Payments', color: '#15803d' },
+  { key: 'other', label: 'Other', color: '#64748b' },
+];
+const actionGroup = (item) => {
+  const t = String(item.type || '');
+  if (t === 'deadline' || t === 'firm' || t === 'booking_confirm') return 'due';
+  if (/art|deco|mockup/.test(t)) return 'art';
+  if (/inv|pay|deposit|credit/.test(t)) return 'pay';
+  if (/follow|est|coach|quote/.test(t) || item._priorityKind === 'workspace' || item._priorityKind === 'assigned') return 'follow';
+  return 'other';
+};
+// Strip the leading emoji / "Overdue by N days:" prefix; the tag carries that now.
+const actionTitle = (msg) => String(msg || '')
+  .replace(/^[^\p{L}\p{N}]+/u, '')
+  .replace(/^(Overdue by \d+ days?|Due in \d+ days?|Reminder):\s*/i, '');
+const actionTag = (item, today) => {
+  const datedKinds = item.type === 'deadline' || item._priorityKind === 'workspace' || item._priorityKind === 'assigned';
+  const due = datedKinds ? parsePortalDate(item.date) : null;
+  if (due) {
+    const diff = Math.round((new Date(due.getFullYear(), due.getMonth(), due.getDate()) - today) / 864e5);
+    if (diff < 0) return { text: `${-diff}d late`, tone: 'late' };
+    if (diff === 0) return { text: 'Today', tone: 'today' };
+    return { text: `in ${diff}d`, tone: '' };
+  }
+  const g = ACTION_GROUPS.find((x) => x.key === actionGroup(item));
+  return { text: g ? g.label.replace(/s$/, '') : 'Open', tone: (item.priority ?? 2) <= 0 ? 'late' : '' };
+};
+
+function NeedsAction({ items, total, onOpen, onViewAll }) {
+  const [filter, setFilter] = React.useState('all');
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const counts = {};
+  items.forEach((it) => { const g = actionGroup(it); counts[g] = (counts[g] || 0) + 1; });
+  const shown = items.filter((it) => filter === 'all' || actionGroup(it) === filter).slice(0, 7);
+  return (
+    <article className="dash-card" aria-labelledby="dash-action-title">
+      <header className="dash-card__head">
+        <h3 id="dash-action-title">Needs action</h3>
+        <span className={`dash-card__badge${total ? ' is-red' : ''}`}>{total}</span>
+        <button type="button" className="dash-card__link" onClick={onViewAll}>View all →</button>
+      </header>
+      {items.length > 0 && (
+        <div className="dash-card__chips" role="tablist">
+          <button type="button" role="tab" aria-selected={filter === 'all'} className={filter === 'all' ? 'is-on' : ''} onClick={() => setFilter('all')}>All</button>
+          {ACTION_GROUPS.filter((g) => counts[g.key]).map((g) => (
+            <button key={g.key} type="button" role="tab" aria-selected={filter === g.key} className={filter === g.key ? 'is-on' : ''} style={{ '--c': g.color }} onClick={() => setFilter(g.key)}>
+              <i />{g.label} {counts[g.key]}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="dash-card__list">
+        {items.length === 0 ? (
+          <p className="dash-card__empty">✓ You’re caught up. Nothing needs action.</p>
+        ) : shown.map((item, index) => {
+          const g = ACTION_GROUPS.find((x) => x.key === actionGroup(item));
+          const tag = actionTag(item, today);
+          return (
+            <button type="button" className="dash-row" key={item.dismissKey || item.id || `${item.type}-${index}`} style={{ '--c': g?.color }} onClick={() => onOpen?.(item)}>
+              <span className="dash-row__dot" aria-hidden="true" />
+              <span className="dash-row__copy"><b>{actionTitle(item.msg)}</b><small>{item.detail || item.action || ''}</small></span>
+              <span className={`dash-row__tag${tag.tone ? ' is-' + tag.tone : ''}`}>{tag.text}</span>
+            </button>
+          );
+        })}
+      </div>
+    </article>
+  );
+}
+
 function TrendBadge({ value }) {
   const positive = value >= 0;
   return (
@@ -92,6 +168,8 @@ export default function DashboardOverview({
   onNavigate,
   onOpenPriority,
   afterPriority = null,
+  todaySlot = null,
+  inboxSlot = null,
 }) {
   const now = new Date();
   const titleByView = {
@@ -171,6 +249,13 @@ export default function DashboardOverview({
   const openEstimates = scopedEstimates.filter((estimate) =>
     ['draft', 'open', 'sent'].includes(estimate.status),
   );
+  const openQuoteValue = openEstimates.reduce((sum, estimate) => {
+    try {
+      return sum + (Number(calcMargin?.(estimate, orders)?.rev) || 0);
+    } catch {
+      return sum;
+    }
+  }, 0);
   const activeJobs = scopedJobs.filter(
     (job) => !['completed', 'shipped'].includes(job.prod_status),
   );
@@ -271,58 +356,19 @@ export default function DashboardOverview({
             <strong>{activeOrders.length}</strong>
             <span className="dash-overview__metric-foot">{activeJobs.length} live production jobs</span>
           </button>
-          <button type="button" onClick={() => onNavigate?.(unreadCount ? 'messages' : 'dashboard')}>
-            <span className="dash-overview__metric-label">Needs attention</span>
-            <strong>{actionCount}</strong>
-            <span className="dash-overview__metric-foot">{unreadCount} unread messages</span>
+          <button type="button" onClick={() => onNavigate?.('estimates')}>
+            <span className="dash-overview__metric-label">Open quotes</span>
+            <strong>{openEstimates.length}</strong>
+            <span className="dash-overview__metric-foot">{formatCompact(openQuoteValue)} outstanding</span>
           </button>
         </div>
       </div>
 
-      <article className="dash-overview__priority" aria-labelledby="dashboard-priority-title">
-        <header className="dash-overview__priority-header">
-          <div>
-            <span className="dash-overview__panel-kicker">Start here</span>
-            <h3 id="dashboard-priority-title">Priority to-do</h3>
-          </div>
-          <div className="dash-overview__priority-count">
-            <strong>{actionCount}</strong>
-            <span>open item{actionCount === 1 ? '' : 's'}</span>
-          </div>
-        </header>
-        <div className="dash-overview__priority-list">
-          {priorityItems.length === 0 ? (
-            <div className="dash-overview__priority-empty">
-              <span aria-hidden="true">✓</span>
-              <div><strong>You’re caught up</strong><small>No action items need attention.</small></div>
-            </div>
-          ) : priorityItems.map((item, index) => {
-            const priority = item.priority ?? 2;
-            const tone = priority <= 0 ? 'urgent' : priority === 1 ? 'high' : 'normal';
-            const label = priority <= 0 ? 'Urgent' : priority === 1 ? 'High' : 'Next';
-            return (
-              <button
-                type="button"
-                className={`dash-overview__priority-item is-${tone}`}
-                key={item.dismissKey || item.id || `${item.type}-${index}`}
-                onClick={() => onOpenPriority?.(item)}
-              >
-                <span className="dash-overview__priority-rank">{String(index + 1).padStart(2, '0')}</span>
-                <span className="dash-overview__priority-copy">
-                  <span><b>{label}</b>{item.msg}</span>
-                  <small>{item.detail || 'Open this item to continue.'}</small>
-                </span>
-                <span className="dash-overview__priority-action">{item.action || 'Open'} <i aria-hidden="true">→</i></span>
-              </button>
-            );
-          })}
-        </div>
-        {actionCount > priorityItems.length && (
-          <button type="button" className="dash-overview__priority-all" onClick={() => onNavigate?.('dashboard')}>
-            {actionCount - priorityItems.length} more in the full queue below <span aria-hidden="true">↓</span>
-          </button>
-        )}
-      </article>
+      <div className="dash-top">
+        <NeedsAction items={priorityItems} total={actionCount} onOpen={onOpenPriority} onViewAll={() => { const hub = typeof document !== 'undefined' && document.querySelector('.dash-action-hub'); if (hub) hub.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} />
+        {todaySlot}
+        {inboxSlot}
+      </div>
 
       {afterPriority}
       <div className="dash-overview__grid">

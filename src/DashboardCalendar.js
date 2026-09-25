@@ -97,7 +97,13 @@ export default function DashboardCalendar({ supabase, cu, items, onOpenEmail }) 
   const byDay = useMemo(() => {
     const m = new Map();
     for (const x of all) { if (!m.has(x.date)) m.set(x.date, []); m.get(x.date).push(x); }
-    for (const list of m.values()) list.sort((a, b) => String(a.sortTime || '~').localeCompare(String(b.sortTime || '~')) || a.kind.localeCompare(b.kind)); // timed meetings first, in time order
+    for (const list of m.values()) list.sort((a, b) => {
+      // Timed meetings first, in time order; then everything else by type.
+      // (Plain comparison: localeCompare ignores punctuation, so a '~' sentinel sorts wrong.)
+      const ta = a.sortTime || '\uffff'; const tb = b.sortTime || '\uffff';
+      if (ta !== tb) return ta < tb ? -1 : 1;
+      return a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0;
+    });
     return m;
   }, [all]);
 
@@ -107,22 +113,26 @@ export default function DashboardCalendar({ supabase, cu, items, onOpenEmail }) 
 
   const renderRow = (x, showDate) => {
     const k = KINDS[x.kind] || KINDS.reminder;
-    const meta = [x.time, showDate ? dayLabel(x.date, today) : null, x.sub].filter(Boolean).join(' · ');
+    const tag = x.time || (showDate ? dayLabel(x.date, today) : k.label);
     return (
-      <button key={x.id} type="button" className="dash-cal__item" onClick={x.onOpen || undefined} disabled={!x.onOpen} style={{ '--cal-kind': k.color }} title={k.label}>
-        <span className="dash-cal__dot" aria-hidden="true" />
-        <strong>{x.title}</strong>
-        {meta && <small>{meta}</small>}
+      <button key={x.id} type="button" className="dash-row" onClick={x.onOpen || undefined} disabled={!x.onOpen} style={{ '--c': k.color }} title={k.label}>
+        <span className="dash-row__dot" aria-hidden="true" />
+        <span className="dash-row__copy"><b>{x.title}</b><small>{[k.label, x.sub].filter(Boolean).join(' · ')}</small></span>
+        <span className={`dash-row__tag${showDate && x.date < today ? ' is-late' : ''}`}>{tag}</span>
       </button>
     );
   };
 
-  // Rolling week strip starting today; the selected day (or "overdue") lists below.
+  // Rolling week strip starting today. The list shows the picked day; when that
+  // leaves room, it fills with what's coming up next so upcoming work is visible.
+  const LIMIT = 7;
   const week = Array.from({ length: 7 }, (_, i) => ymd(addDays(fromYmd(today), i)));
   const sel = picked || today;
   const selList = sel === 'overdue' ? overdue : (byDay.get(sel) || []);
-  const LIMIT = 4;
-  const shown = expanded ? selList : selList.slice(0, LIMIT);
+  const upcoming = sel === 'overdue' || view === 'month' ? [] : week.filter((d) => d > sel).flatMap((d) => byDay.get(d) || []);
+  const primary = expanded ? selList : selList.slice(0, LIMIT);
+  const fill = expanded ? upcoming : upcoming.slice(0, Math.max(0, LIMIT - primary.length));
+  const hidden = expanded ? 0 : (selList.length - primary.length) + (upcoming.length - fill.length);
   const weekCount = week.reduce((n, d) => n + (byDay.get(d)?.length || 0), 0);
 
   const googleNote = google.state === 'off' ? 'Connect Google in My Email to add your calendar'
@@ -138,40 +148,36 @@ export default function DashboardCalendar({ supabase, cu, items, onOpenEmail }) 
     </span>
   );
   const pick = (d) => { setPicked(d); setExpanded(false); };
+  const title = view === 'month' ? month.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+    : sel === today ? 'Today' : sel === 'overdue' ? 'Overdue' : dayLabel(sel, today);
 
   return (
-    <article className="dash-overview__panel dash-cal" aria-labelledby="dash-cal-title">
-      <header className="dash-cal__head">
-        <span className="dash-overview__panel-kicker">Your calendar</span>
-        <h3 id="dash-cal-title">{view === 'month' ? month.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : `This week · ${weekCount}`}</h3>
-        {googleNote && <em className="dash-cal__note">{googleNote}</em>}
-        <div className="dash-cal__controls">
-          {view === 'month' && <>
-            <button type="button" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))} aria-label="Previous month">‹</button>
-            <button type="button" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))} aria-label="Next month">›</button>
-          </>}
-          <span className="dash-cal__toggle" role="tablist">
-            {['agenda', 'month'].map((v) => <button key={v} type="button" role="tab" aria-selected={view === v} className={view === v ? 'is-active' : ''} onClick={() => { setView(v); if (v === 'month') { const d = new Date(); setMonth(new Date(d.getFullYear(), d.getMonth(), 1)); } }}>{v === 'agenda' ? 'Week' : 'Month'}</button>)}
-          </span>
-        </div>
+    <article className="dash-card dash-cal" aria-labelledby="dash-cal-title">
+      <header className="dash-card__head">
+        <h3 id="dash-cal-title">{title}</h3>
+        <span className="dash-card__badge">{view === 'month' ? all.filter((x) => x.date.slice(0, 7) === monthKey).length : weekCount}</span>
+        {view === 'month' && <span className="dash-cal__nav">
+          <button type="button" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))} aria-label="Previous month">‹</button>
+          <button type="button" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))} aria-label="Next month">›</button>
+        </span>}
+        <button type="button" className="dash-card__link" onClick={() => { const next = view === 'month' ? 'agenda' : 'month'; setView(next); if (next === 'month') { const d = new Date(); setMonth(new Date(d.getFullYear(), d.getMonth(), 1)); } }}>
+          {view === 'month' ? 'Week →' : 'Month →'}
+        </button>
       </header>
 
       {view === 'agenda' ? (
         <div className="dash-cal__strip" role="tablist" aria-label="Pick a day">
-          {overdue.length > 0 && (
-            <button type="button" role="tab" aria-selected={sel === 'overdue'} className={`dash-cal__day is-overdue${sel === 'overdue' ? ' is-picked' : ''}`} onClick={() => pick('overdue')}>
-              <span className="dash-cal__wk">Late</span>
-              <span className="dash-cal__n">{overdue.length}</span>
-              <span className="dash-cal__cnt">overdue</span>
-            </button>
-          )}
+          <button type="button" role="tab" aria-selected={sel === 'overdue'} className={`dash-cal__day is-overdue${sel === 'overdue' ? ' is-picked' : ''}${overdue.length ? '' : ' is-empty'}`} onClick={() => overdue.length && pick('overdue')} disabled={!overdue.length}>
+            <span className="dash-cal__wk">Late</span>
+            <span className="dash-cal__n">{overdue.length}</span>
+          </button>
           {week.map((d, i) => {
             const list = byDay.get(d) || [];
             return (
-              <button key={d} type="button" role="tab" aria-selected={sel === d} className={`dash-cal__day${i === 0 ? ' is-today' : ''}${sel === d ? ' is-picked' : ''}${list.length ? '' : ' is-empty'}`} onClick={() => pick(d)}>
-                <span className="dash-cal__wk">{i === 0 ? 'Today' : fromYmd(d).toLocaleDateString('en-US', { weekday: 'short' })}</span>
+              <button key={d} type="button" role="tab" aria-selected={sel === d} className={`dash-cal__day${i === 0 ? ' is-today' : ''}${sel === d ? ' is-picked' : ''}${list.length ? '' : ' is-empty'}`} onClick={() => pick(d)} title={list.length ? `${list.length} item${list.length === 1 ? '' : 's'}` : 'Nothing scheduled'}>
+                <span className="dash-cal__wk">{fromYmd(d).toLocaleDateString('en-US', { weekday: 'short' })}</span>
                 <span className="dash-cal__n">{Number(d.slice(8))}</span>
-                {list.length ? <>{dots(list)}<span className="dash-cal__cnt">{list.length}</span></> : <span className="dash-cal__cnt">—</span>}
+                {dots(list)}
               </button>
             );
           })}
@@ -192,17 +198,23 @@ export default function DashboardCalendar({ supabase, cu, items, onOpenEmail }) 
         </div>
       )}
 
-      <div className="dash-cal__list">
-        <div className="dash-cal__list-head">{sel === 'overdue' ? 'Overdue' : dayLabel(sel, today)}</div>
-        {selList.length === 0
-          ? <p className="dash-cal__empty">{sel === today ? 'Nothing on today. ' : 'Nothing on this day. '}Reminders, due dates and in-hands dates show up here.</p>
-          : shown.map((x) => renderRow(x, sel === 'overdue'))}
-        {selList.length > LIMIT && (
-          <button type="button" className="dash-cal__more" onClick={() => setExpanded((v) => !v)}>
-            {expanded ? 'Show less' : `Show all ${selList.length}`}
-          </button>
+      <div className="dash-card__list">
+        {primary.length === 0 && fill.length === 0 && (
+          <p className="dash-card__empty">Nothing scheduled{sel === today ? ' today' : ''}. Reminders, due dates and in-hands dates show up here.</p>
         )}
+        {view === 'month' && sel !== today && <div className="dash-cal__sub">{dayLabel(sel, today)}</div>}
+        {primary.map((x) => renderRow(x, sel === 'overdue'))}
+        {view === 'agenda' && fill.length > 0 && <>
+          <div className="dash-cal__sub">Coming up</div>
+          {fill.map((x) => renderRow(x, true))}
+        </>}
       </div>
+      {(hidden > 0 || expanded) && (
+        <button type="button" className="dash-card__more" onClick={() => setExpanded((v) => !v)}>
+          {expanded ? 'Show less' : `Expand · ${hidden} more this week`}
+        </button>
+      )}
+      {googleNote && <p className="dash-card__note">{googleNote}</p>}
     </article>
   );
 }
