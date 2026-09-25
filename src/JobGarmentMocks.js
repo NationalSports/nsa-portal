@@ -13,7 +13,7 @@ const garmentLabel = item => [mockSkuOf(item), item.color].filter(Boolean).join(
 // Garment mocks for a job: one block per garment with its mock (+ logo detail) and its quantity /
 // received / shipped row. Garments linked to one shared mock collapse into ONE block — the source
 // garment's mock, then a single table listing every covered garment's SKU and sizes.
-export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSave, itemDetails = [], onViewItem, onLibrarySync }) {
+export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSave, itemDetails = [], onViewItem, onSendToArtist, onLibrarySync }) {
   const [busy, setBusy] = useState(false);
   const lock = useRef(false);
   const [error, setError] = useState('');
@@ -106,6 +106,7 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
           mocks={slotMockFiles(slot, allSlots, item)} candidates={slot.candidates} suggest busy={busy}
           accept=".pdf,.png,.jpg,.jpeg,.webp,.gif"
           uploadLabel="Upload mock image"
+          onSendToArtist={onSendToArtist && (() => onSendToArtist('Need a new mock for ' + [item.color, mockSkuOf(item), item.name].filter(Boolean).join(' ') + (slot.sub ? ' (' + slot.sub + ')' : '') + ' — the existing mock is the wrong garment/color.'))}
           logo={logoFor(slot, item)}
           onUse={file => run(() => useFiles(slot, [file]))}
           onRemove={url => run(() => onSave(removeGarmentSlotMock(safeArt(getOrder()), slot, allSlots, item, url), 'Mock removed'))}

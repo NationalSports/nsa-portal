@@ -195,7 +195,7 @@ function LogoDetailPane({ logo, busy, mockUrl = '' }) {
   </div>;
 }
 
-export default function GarmentMockCard({ label, sub, mocks, candidates, suggest = false, busy, onUse, onRemove, onUpload, uploadLabel = 'Upload', accept = '.pdf,.png,.jpg,.jpeg,.webp,.gif,.ai,.eps,.svg', logo = null, children = null }) {
+export default function GarmentMockCard({ label, sub, mocks, candidates, suggest = false, busy, onUse, onRemove, onUpload, onSendToArtist, uploadLabel = 'Upload', accept = '.pdf,.png,.jpg,.jpeg,.webp,.gif,.ai,.eps,.svg', logo = null, children = null }) {
   const [choosing, setChoosing] = useState(false);
   const [selected, setSelected] = useState('');
   const [error, setError] = useState('');
@@ -232,6 +232,7 @@ export default function GarmentMockCard({ label, sub, mocks, candidates, suggest
         {error && <p role="alert" className="mock-error">{error}</p>}
         <div className="panel-actions">
           {file && choosingExisting && <button type="button" className="mock-primary" disabled={busy} onClick={() => run(() => onUse(file))}>{busy ? 'Saving…' : 'Use this mock'}</button>}
+          {onSendToArtist && <button type="button" className="mock-artist" disabled={busy} title="None of these mocks are right — pick an artist to build a new mock for this garment" onClick={onSendToArtist}>🎨 Send to Artist</button>}
           {!choosing && candidates.length > 0 && !(suggest && !mocks.length) && <button type="button" disabled={busy} onClick={() => { setChoosing(true); setSelected(''); }}>{mocks.length ? 'Change mock' : 'Use existing image'}</button>}
           <button type="button" disabled={busy} onClick={() => input.current.click()}>{uploadLabel}</button>
           {choosing && <button type="button" disabled={busy} onClick={() => { setChoosing(false); setSelected(''); }}>Cancel</button>}
