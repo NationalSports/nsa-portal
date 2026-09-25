@@ -3,6 +3,7 @@ import GarmentMockCard from './GarmentMockCard';
 import { removeGarmentSlotMock } from './safeHelpers';
 import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jobMockReadiness';
 import {createHistoryStore} from './lib/documentHistory';
+import { setEmailBlockRegistry, isDeadMailboxReason } from './lib/emailRouting';
 import {createCoalescedReload} from './lib/coalescedReload';
 import { indexFirstById } from './lib/rowLookup';
 import { localRowIsNewer as _localRowIsNewer, keepLocalAdoptVersion as _keepLocalAdoptVersion } from './lib/pollMergeRecency';
@@ -858,6 +859,7 @@ const _BREVO_SOFT=/softbounce|soft_bounce|deferred|bounce/i;           // tempor
 // is visible the same day instead of surfacing weeks later as an unpaid invoice.
 const checkBrevoDelivery=async(messageId)=>{
   if(!_brevoKey||!messageId)return null;
+  if(String(messageId).startsWith('gmail:'))return null;// sent through Gmail (district blocks Brevo) — Brevo has no record of it
   if(Date.now()<_brevoBackoffUntil)return null;
   try{
     // Same neutral-path-first proxy the sends use — a blocker that kills the vendor URL
@@ -913,9 +915,13 @@ const _emailFailedTodos=({ests,sos,invs,cust})=>{
     const at=new Date(f.delivery_at||f.sent_at||0).getTime();
     if(!(at>=cutoff))return;
     const c=(cust||[]).find(x=>x.id===doc.customer_id);
-    const why=f.delivery_reason||(f.delivery_event==='blocked'?'blocked by their mail server':f.delivery_event)||'rejected';
+    // A mailbox that doesn't exist needs a new address; anything else is the district blocking our
+    // sender, and a resend from the portal now goes out through Gmail (lib/emailRouting).
+    const dead=isDeadMailboxReason(f.delivery_reason);
+    const fix=dead?'that mailbox doesn\'t exist — get a new address from the coach'
+      :'their mail server blocks our normal sender — resend it from the portal (it goes out through Gmail now)';
     out.push({type:'email_failed',priority:0,msg:'📭 '+label+' email NOT delivered: '+doc.id,
-      detail:(c?.name||c?.alpha_tag||doc.id)+' · '+(f.delivery_to||f.to||'recipient')+' · '+why+' — send the PDF from your own email or get another address',
+      detail:(c?.name||c?.alpha_tag||doc.id)+' · '+(f.delivery_to||f.to||'recipient')+' · '+fix,
       action:'Open',role:'sales',[kind]:doc,...(kind==='est'?{estC:c}:{}),date:f.delivery_at||f.sent_at,
       dismissKey:'email_failed:'+doc.id+':'+(f.messageId||'')});
   };
@@ -3532,6 +3538,9 @@ export default function App(){
   // Read current docs through refs so the poll interval is created ONCE (empty deps).
   // Previously this depended on [ests,sos,invs], so every save re-fired an immediate
   // burst of up to 15 sequential Brevo calls — flooding the rate-limited events API with 429s.
+  // Teach the shared sender which recipients bounced before, so sends to a district that blocks
+  // Brevo go out through Gmail and dead mailboxes are refused (lib/emailRouting).
+  React.useEffect(()=>{setEmailBlockRegistry([ests,sos,invs])},[ests,sos,invs]);
   const _brevoDocsRef=React.useRef({ests,sos,invs});
   _brevoDocsRef.current={ests,sos,invs};
   // Current user + toast for the poller below (its interval is created once, so it reads these via a ref).
@@ -3561,7 +3570,7 @@ export default function App(){
         if(res.status!=='failed')return;
         const me=_brevoMeRef.current;const u=me&&me.cu;
         if(!u||!me.nf||!lastSend.sent_by||(lastSend.sent_by!==u.name&&lastSend.sent_by!==u.id))return;
-        me.nf('📭 '+doc.id+' was NOT delivered to '+(res.email||lastSend.to||'the recipient')+' — their mail server blocked it. Send the PDF from your own email.','error');
+        me.nf('📭 '+doc.id+' was NOT delivered to '+(res.email||lastSend.to||'the recipient')+' — their mail server blocked it. Send it again from the portal; it will go out through Gmail this time.','error');
       };
       // Check estimates with pending email_status='sent' and a recent messageId send
       const pendingEsts=ests.filter(e=>e.email_status==='sent'&&(e.sent_history||[]).some(_fresh));

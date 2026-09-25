@@ -152,13 +152,22 @@ async function getMessage(token, id) {
   return gmailFetch(token, `/messages/${encodeURIComponent(id)}?format=full`);
 }
 
-function buildMime({ to, subject, text, html, inReplyTo, references, attachments = [] }) {
+// RFC 2047 for non-ASCII headers (subjects carry em dashes, names can carry accents).
+const encodeHeader = (value) => {
+  const v = cleanHeader(value);
+  return /[^\x20-\x7e]/.test(v) ? `=?UTF-8?B?${Buffer.from(v, 'utf8').toString('base64')}?=` : v;
+};
+
+function buildMime({ to, subject, text, html, inReplyTo, references, attachments = [], from, cc, bcc, replyTo }) {
   const mixed = `nsa_mixed_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   const alt = `nsa_alt_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   const lines = [
-    `From: National Sports Apparel <${cleanHeader(SALES_EMAIL)}>`,
+    from ? `From: ${from}` : `From: National Sports Apparel <${cleanHeader(SALES_EMAIL)}>`,
     `To: ${cleanHeader(to)}`,
-    `Subject: ${cleanHeader(subject)}`,
+    ...(cc ? [`Cc: ${cleanHeader(cc)}`] : []),
+    ...(bcc ? [`Bcc: ${cleanHeader(bcc)}`] : []),
+    ...(replyTo ? [`Reply-To: ${replyTo}`] : []),
+    `Subject: ${encodeHeader(subject)}`,
     ...(inReplyTo ? [`In-Reply-To: ${cleanHeader(inReplyTo)}`] : []),
     ...(references ? [`References: ${cleanHeader(references)}`] : []),
     'MIME-Version: 1.0',
@@ -250,6 +259,8 @@ module.exports = {
   parseMessage,
   isAddressedToSales,
   buildMime,
+  encodeHeader,
+  gmailFetch,
   createReplyDraft,
   sendReply,
 };

@@ -10,7 +10,7 @@ import { safeArt, safeDecos, safeItems, safeNum, safePicks, safeSizes, soLineKey
 import { isCommissionRep } from './businessLogic';
 import { applyHistoricalInvoicePayment, historicalInvoiceAr } from './lib/historicalInvoiceAr';
 import { calculateCreditMemo, creditableBalance, creditedTotal, seedCreditMemoLines, setCreditMemoLineQty, validateCreditMemo } from './invoiceCreditMemo';
-import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub, resolveOrderShipTo, billToIdFor } from './components';
+import { EmailRouteNotice, Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub, resolveOrderShipTo, billToIdFor } from './components';
 import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled, greetLine, withGreeting, emailMoney } from './utils';
 import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms } from './App';
 import { invoiceTotalsRows } from './lib/invoiceDocTotals';
@@ -1361,6 +1361,7 @@ export default function InvoicesPage(){
                   <div><label className="form-label" style={{fontSize:11}}>Text Message <span style={{color:'#94a3b8',fontWeight:400}}>({(si.smsMsg||'').length}/160)</span></label><textarea className="form-input" rows={2} value={si.smsMsg||''} onChange={e=>setInvSendModalDirect(s=>({...s,smsMsg:e.target.value}))} maxLength={160} style={{fontSize:12,resize:'vertical'}}/></div>
                 </div>}
               </div>}
+              <EmailRouteNotice emails={siRecipients}/>
               {/* Automated follow-ups (server sweep) — falls back to the manual todo reminder below when off */}
               <div style={{marginBottom:12}}>
                 <FollowUpAutoPanel value={si.followUp} onChange={val=>setInvSendModalDirect(s=>({...s,followUp:val}))} defaultMessage={greetLine(siRecipients,si.sendContacts)+'\n\nJust a friendly reminder that invoice '+si.inv.id+' is still open. When you have a moment, please review and submit payment — let us know if you have any questions!\n\nThank you,\nNSA Team'}/>
@@ -1449,6 +1450,7 @@ export default function InvoicesPage(){
                   const smsRes=await sendBrevoSms({to:si.smsPhone,content:(si.smsMsg||'').substring(0,160)});
                   if(smsRes.ok){nf('Text sent to '+si.smsPhone)}else{nf('SMS failed: '+(smsRes.error||'Unknown'),'error')}
                 }
+                if(!res.ok)return;// don't mark it sent — that would also clear the "not delivered" alert
                 // Automated follow-ups (server sweep) take priority; else fall back to the manual todo reminder.
                 // Never arm auto-sends off a failed initial email — the customer hasn't heard from us yet.
                 const _siAuto=si.followUp&&si.followUp.auto&&res.ok;

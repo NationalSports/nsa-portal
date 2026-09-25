@@ -5,6 +5,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC, isServiceLine } from './constants';
 import { TAX_EXEMPT_REASONS, TAX_EXEMPT_OTHER, composeTaxExemptReason, canSaveTaxExempt, taxExemptInfo } from './lib/taxExempt';
 // html2pdf is loaded on demand (see buildPdfAttachment below) to keep it out of the eager bundle.
+import { checkEmailRecipients, blockedDomainOf } from './lib/emailRouting';
 import { sendBrevoEmail, _brevoKey, _smsUiEnabled, sendBrevoSms, cloudUpload, buildBrandedEmailHtml, _cloudinaryPdfThumb, _isImgUrl, _urlExt, createGmailDraft, buildHtmlPdfAttachment, greetLine, withGreeting, emailMoney } from './utils';
 
 // allowVector: when true the gallery also accepts vector (.ai/.eps/.svg) and .pdf
@@ -305,6 +306,22 @@ function FollowUpAutoPanel({value,onChange,defaultMessage}){
 
 // SEND ESTIMATE MODAL
 
+// Pre-send warning for recipients our normal sender can't reach (learned from past bounces —
+// lib/emailRouting). sendBrevoEmail acts on the same check; this just tells the rep beforehand.
+function EmailRouteNotice({emails,style,scheduled}){
+  const{gmail,dead}=checkEmailRecipients(emails);
+  if(!gmail.length&&!dead.length)return null;
+  const domains=[...new Set(gmail.map(e=>blockedDomainOf(e)||e))];
+  const box={fontSize:12,lineHeight:1.45,borderRadius:6,padding:'8px 10px',margin:'8px 0',...style};
+  return<>
+    {dead.length>0&&<div style={{...box,background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b'}}>
+      <strong>⚠️ {dead.join(', ')}</strong> bounced before — that mailbox doesn't exist. This email won't send until you remove or fix that address.</div>}
+    {gmail.length>0&&<div style={{...box,background:'#fffbeb',border:'1px solid #fde68a',color:'#92400e'}}>
+      <strong>🛡️ {domains.join(', ')}</strong> {domains.length>1?'block':'blocks'} our normal email service, so this will be sent through Gmail instead. Replies still come to you.
+      {scheduled&&<div style={{marginTop:4,fontWeight:600}}>Scheduled sends can't go through Gmail — clear the send date to send it now.</div>}</div>}
+  </>;
+}
+
 function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachmentHtml,repUser,defaultFollowUpDays,companyInfo,supabase,docTotal}){
   const[body,setBody]=useState('');const[attachments,setAttachments]=useState([]);
   const[checkedEmails,setCheckedEmails]=useState({});const[customEmails,setCustomEmails]=useState([]);const[addingEmail,setAddingEmail]=useState('');
@@ -469,6 +486,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
             <button className="btn btn-sm btn-secondary" disabled={!addingEmail.includes('@')} onClick={()=>{const em=addingEmail.trim();setCustomEmails(arr=>arr.includes(em)?arr:[...arr,em]);setCheckedEmails(m=>({...m,[em]:true}));setAddingEmail('')}}>Add</button>
           </div>
         </div>
+        <EmailRouteNotice emails={allTargets}/>
       </div>
       <div style={{marginBottom:12}}><label className="form-label">Subject</label><input className="form-input" value={`National Sports ${label} - ${estimate?.id}${estimate?.memo?' - "'+estimate.memo+'"':''}`} readOnly style={{color:'#64748b'}}/></div>
       <div style={{marginBottom:12}}><label className="form-label">Message</label><textarea className="form-input" rows={8} value={body} onChange={e=>setBody(e.target.value)} style={{fontFamily:'inherit',resize:'vertical'}}/></div>
@@ -823,4 +841,4 @@ function TaxExemptModal({ order, customer, docLabel = 'order', promoApplied = fa
   );
 }
 
-export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor, TaxExemptModal };
+export { EmailRouteNotice, Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor, TaxExemptModal };

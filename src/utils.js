@@ -5,6 +5,7 @@ import { TWA as _TWA_TABLE } from './pricing';
 import JsBarcode from 'jsbarcode';
 import { supabase as _sbAuthClient } from './lib/supabase';
 import { buildQrSheetInfoBoxes } from './lib/pickTicket';
+import { checkEmailRecipients, blockedDomainOf } from './lib/emailRouting';
 // pdf-lib is loaded on demand (see printPdfLabels below) to keep it out of the eager bundle.
 
 // fetch() that attaches the signed-in user's Supabase JWT — required by the
@@ -158,6 +159,21 @@ export const reviewTextBlock=()=>'Happy with how we did? A quick Google review m
 // is unreliable; flip to true (or wire to env) to re-enable. Send code paths
 // remain intact so re-enabling is a one-line change.
 export const _smsUiEnabled = false;
+// Gmail route for recipients whose school district blocks Brevo (netlify/functions/gmail-send).
+// No Brevo fallback on failure: Brevo would drop it again, so the rep is told to send it by hand.
+const _sendViaGmail=async(body,blocked)=>{
+  const who=[...new Set(blocked.map(e=>blockedDomainOf(e)||e))].join(', ');
+  const manual=' — '+who+' blocks our normal email service, so download the PDF and send it from your own email.';
+  let r;
+  try{r=await authFetch('/.netlify/functions/gmail-send',{method:'POST',headers:{'accept':'application/json','content-type':'application/json'},body})}
+  catch(e){return{ok:false,error:'Could not reach the Gmail sender ('+(e.message||'network error')+')'+manual}}
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok){
+    if(r.status===401)return{ok:false,error:'Your session has expired. Please refresh the page and sign in again to send this email.'};
+    return{ok:false,error:(d.error||('Gmail send failed (HTTP '+r.status+')'))+manual};
+  }
+  return{ok:true,messageId:d.messageId,via:'gmail'};
+};
 export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,senderName,senderEmail,replyTo,attachment})=>{
   try{const payload={sender:{name:senderName||'National Sports Apparel',email:senderEmail||'noreply@nationalsportsapparel.com'},to:Array.isArray(to)?to:[{email:to}],subject,htmlContent:htmlContent||undefined,textContent:textContent||undefined};
     // Version save-guard mail at the transport boundary. The server strips this private field
@@ -172,6 +188,12 @@ export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,sen
     const body=JSON.stringify(payload);
     const bytes=(typeof Blob!=='undefined')?new Blob([body]).size:body.length;
     if(bytes>_MAIL_MAX_BYTES)return{ok:false,error:'This email is too large to send ('+(bytes/1048576).toFixed(1)+' MB; the limit is 5 MB). The document PDF is attached automatically, so a large photo or PDF you added is usually the cause — remove or shrink it and send again.'};
+    // Recipients Brevo can't reach (learned from past bounces — see lib/emailRouting). A mailbox
+    // that doesn't exist is refused outright: Brevo would silently drop it and the rep would think
+    // it went. A school district that blocks Brevo gets the email through Gmail instead.
+    const _route=checkEmailRecipients([...payload.to,...(payload.cc||[]),...(payload.bcc||[])]);
+    if(_route.dead.length)return{ok:false,error:'Not sent — '+_route.dead.join(', ')+' bounced before because that mailbox doesn\'t exist. Check the address with the customer, fix it on their contact, and send again.'};
+    if(_route.gmail.length&&!(payload.attachment||[]).some(a=>a&&a.url))return _sendViaGmail(body,_route.gmail);
     const{res:r,netErr}=await mailProxyFetch('',{method:'POST',headers:{'accept':'application/json','content-type':'application/json'},body});
     // fetch() itself threw on both paths: the request never left the browser (or died on
     // the wire). Name the usual cause instead of surfacing a bare "Failed to fetch".

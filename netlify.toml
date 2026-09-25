@@ -63,7 +63,8 @@
   # the ⚠ Review pill (src/lib/billAnomalies.js).
   # _baggingShip + webstore-shipment-record share the shipping-label origin addresses
   # with the portal's label buttons (src/lib/shipFrom.js).
-  included_files = ["src/lib/opsRecap.js", "src/lib/decoPricing.js", "src/lib/teamshopFaq.js", "src/lib/teamshopOrderStatus.js", "src/lib/billAnomalies.js", "src/lib/shipFrom.js"]
+  # followup-sweep shares the "which schools block Brevo" rules with the portal (src/lib/emailRouting.js).
+  included_files = ["src/lib/opsRecap.js", "src/lib/decoPricing.js", "src/lib/teamshopFaq.js", "src/lib/teamshopOrderStatus.js", "src/lib/billAnomalies.js", "src/lib/shipFrom.js", "src/lib/emailRouting.js"]
 
 # New-hire onboarding reminders — daily at 16:07 UTC (~8-9 AM PT). Nudges hires
 # who were invited but haven't finished (capped at 3 reminders, 3 days apart).
