@@ -1,10 +1,10 @@
 # Handoff: Accessibility (VPAT) work
 
 **Context:** Schools and colleges are asking National Sports Apparel for a VPAT, which reports
-how well a site meets WCAG 2.1 AA. The first pass on the customer-facing site landed in
+how well a site meets WCAG 2.1 AA. Two rounds of fixes landed in
 [PR #2393](https://github.com/NationalSports/nsa-portal/pull/2393). Read
-`ACCESSIBILITY_VPAT_2026-09-25.md` first. It has the before/after scan results, a prioritized
-to-do list, and a draft WCAG 2.1 A/AA conformance table.
+`ACCESSIBILITY_VPAT_2026-09-25.md` first. It has before/after scan results, everything fixed,
+what's left, and the draft WCAG 2.1 A/AA conformance table.
 
 **Scope:** only the pages schools, coaches and parents use:
 
@@ -13,93 +13,90 @@ to-do list, and a draft WCAG 2.1 A/AA conformance table.
 - Team Stores directory (`/team-stores`)
 - Order tracking (`/shop/order/<id>`)
 - Adidas catalog (`/adidas`)
-- Uniform builder
 - Coach portal (`/?portal=<alpha_tag>`)
+- Accessibility Statement (`/accessibility`)
 
-The staff portal is out of scope.
+The staff portal is out of scope. The uniform builder isn't offered to customers yet, so it's
+out of scope until it launches.
 
-## Fixes in PR #2393
+## Where things stand
 
-1. **`src/storefront/Storefront.js`**
-   - Added a `kbActivate(fn)` helper (just above `VsCategoryCard`). It returns `role="link"`,
-     `tabIndex=0`, `data-kb-activate`, `onClick`, and an `onKeyDown` where Enter or Space
-     activates.
-   - Applied it to the product cards, package cards, bundle banner, and the store-name home
-     link in both headers. These were click-only `<div>`s, so keyboard users couldn't open a
-     product (WCAG 2.1.1, Level A).
-   - Added a `[data-kb-activate]:focus-visible` focus ring in the style block.
-   - Added `aria-label` to both "Search the store" inputs.
-   - Added a `useEffect` that sets `document.title` to the store's name.
-2. **`src/teamshop/theme.js`**
-   - `TEXT_FAINT` changed from `#8790A5` to `#666E85` (now 4.8:1 contrast).
-   - `RED_SOFT` changed from `#D94A52` to `#E4737A` (now 4.8:1 on navy).
-3. **`src/teamshop/Home.js`:** carousel dots now have a 24×24px tap area (padding plus
-   `backgroundClip: content-box`). The painted dot looks the same, and the container's bottom
-   offset was adjusted by 7px so the dot stays in place.
-4. **`src/storefront/TeamStores.js`:** search input `aria-label`, a focus-visible ring, and
-   the hint text darkened to `#5A6075`.
-5. **`src/storefront/OrderTrack.js`:** splash text darkened to `#475569`, the `opacity: 0.7`
-   removed from the not-found hint, and a `document.title` added.
-6. **`src/storefront/AdidasInventory.js`**
-   - Gray text on light backgrounds changed to `#5F6675`; this replaced `#6A7180` and
-     `#9AA1AC`.
-   - Gray text on dark backgrounds (`#191919`/`#2B2F38`: header, footer, sign-in strip,
-     account panel header) changed to `#A6ACB8`.
-   - The `Grey: '#9AA1AC'` swatch color was deliberately left unchanged.
+- **Automated scan:** 0 axe WCAG 2.1 AA failures on every in-scope page, checked against a
+  local build with live data.
+- **Keyboard:** everything is keyboard-operable. Scripted tests confirm:
+  - The skip link works.
+  - Team store product cards open with Enter.
+  - Coach portal order rows and invoices open with Enter.
+  - The Art Locker viewer opens with Enter, focuses its Close button, and closes with Escape.
+- **Reflow:** no sideways scrolling at 320px.
+- **Tests:** full Jest suite passes (443 suites).
+- **Owed before sending a VPAT (manual):**
+  - Screen-reader walkthrough
+  - 200% zoom check
+  - Text-spacing check
+  - Color-only review
+  - Error-message review
+- **One known code issue left:** text-field borders are very light gray (about 1.2:1). WCAG
+  1.4.11 wants 3:1. It was logged, not fixed, because it changes the look of every form.
 
-## Verified
+## Shared helpers: `src/lib/a11y.js`
 
-- An axe-core rescan of a local build against live data shows 0 violations on the Team Shop
-  catalog, FAQ and start-order pages, the directory, order tracking, the Adidas catalog
-  (was 76) and the uniform builder.
-- Tab to a team-store product card and press Enter, and the product page opens.
-- 39 Jest suites (588 tests) pass, and `lint:undef` shows 0 errors in the changed files.
+Use these instead of writing new copies.
 
-## Still flagged (by design or pending)
+- **`kbActivate(fn, role = 'link')`** makes a clickable `<div>` a keyboard control. Spread it
+  onto the element: `<div {...kbActivate(fn)}>`. Use `'button'` for in-page actions. Don't put
+  it on an element that contains other buttons; put it on an inner non-interactive part (see
+  the proof tiles in `CoachPortal.js`). Each surface's CSS adds
+  `[data-kb-activate]:focus-visible` for the focus ring.
+- **`SkipLink` + `MAIN_ID`** render `<SkipLink />` first in the page and put
+  `id={MAIN_ID}` on the `<main>`. It focuses the target in JavaScript, so the pushState
+  routers never see a `#hash`.
+- **`readable(bg, preferred)`** returns `preferred` if it has 4.5:1 contrast on `bg`,
+  otherwise white or near-black.
+- **`legibleOn(fg, bg)`** nudges a brand color (usually the school accent) toward white or
+  black just enough to reach 4.5:1 on `bg`.
+- **`contrastRatio(a, b)`** is the WCAG contrast ratio.
 
-- The large "01/02/03" step numbers on Team Shop home and decoration are decorative and
-  `aria-hidden`, so WCAG exempts them.
-- The chat button is partly covered by its "Need a hand?" bubble.
-- Team-store text drawn in school colors can fail contrast.
+**Rule of thumb for school colors:** never draw text in, or on, `theme.accent` /
+`theme.primary` / `tAccent` / `cpTheme.*` directly. Wrap it:
 
-## Next work, in priority order
+- In the storefront, use `readable(theme.accent, '#fff')` or `theme.accentOnDark`.
+- In the coach portal, use `tAccentText` or `readable(tAccent, '#fff')`.
 
-1. **Coach portal keyboard access (`src/CoachPortal.js`).** About 37 click-only `<div>`s
-   (order rows, art tiles, proof thumbnails, back links) are the main Level A blocker. Use the
-   same `kbActivate` pattern. The portal never finished loading in the headless browser, so
-   check it by hand.
-2. **Automatic contrast guard for school colors** in the storefront theme builder. When a
-   school's colors don't reach 4.5:1, pick black or white text, or shift the accent color.
-   This covers the top-strip text, cart button, badges and footer.
-3. **Skip-to-content link** on the public pages, plus an `<h1>` on the team store page and
-   page titles for the cart, uniform builder and coach portal.
-4. **`aria-label`s** for inputs that only have placeholder text (Adidas search and date
-   fields, staff login).
-5. **Horizontal scroll at 320px** on the Team Shop start-order page.
-6. **Accessibility Statement page**, linked from the Team Shop and team-store footers.
-7. **axe check in the Playwright e2e suite** (`@axe-core/playwright`) to catch regressions.
-8. **Manual screen-reader pass** on the buying path, then fill in the official VPAT 2.5 WCAG
-   form from itic.org.
+## Where the changes are
+
+| Area | Files |
+|---|---|
+| Team stores | `src/storefront/Storefront.js`: `kbActivate` on cards/banner/header link, `SkipLink`, screen-reader `<h1>` in `VsHero`, `accentOnDark` theme token, `readable()` on accent buttons/badges, tab title, labels, `role="status"` on "Added to cart", Accessibility link in footers |
+| Team Shop | `src/teamshop/theme.js` (`TEXT_FAINT`, `RED_SOFT`), `Home.js` (dot tap targets; removed a duplicate hidden "Open chat" button), `TeamShopApp.js` (`SkipLink`, per-route `document.title`, footer link), `StartWithLogo.js` (320px overflow), `CheckoutPage.js` (autocomplete), `ChatWidget.js`, `CoachGate.js` (labels) |
+| Coach portal | `src/CoachPortal.js`: `kbActivate` on ~20 row/tile/thumbnail elements, dialog semantics + Escape + focused "Close" on viewers, `tAccentText`, `readable()` on accent fills, gray text → `#5A6075`, Pay button → `#15803D`, `SkipLink` + main, tab title, 19 labels, autocomplete, header name truncates at 320px, footer link |
+| Order tracking | `src/storefront/OrderTrack.js`: `readable()` on summary card, step circles and buttons; darker grays; `role="main"`; tab title; email as a link |
+| Adidas catalog | `src/storefront/AdidasInventory.js`: grays (light vs dark backgrounds), `SkipLink`, 12 labels, autocomplete, `role="status"` toast, footer link |
+| Directory | `src/storefront/TeamStores.js`: label, focus ring, `role="main"` |
+| Statement | `public/accessibility.html`, `/accessibility` in `public/_redirects` |
 
 ## Tooling notes for the cloud sandbox
 
 - Chromium doesn't trust the egress proxy's certificate. Route traffic through Node with
   `context.route('**/*', async r => r.fulfill({ response: await r.fetch() }))` and run with
   `NODE_EXTRA_CA_CERTS=/root/.ccr/ca-bundle.crt`. Never disable TLS checks.
-- nationalteamshop.com is behind an "Opening soon" gate, so scan `/teamshop/*` on
-  nsa-portal.netlify.app instead.
+- nationalteamshop.com is behind an "Opening soon" gate, so scan `/teamshop/*` instead.
 - To test a local build with real data:
-  - Build with `REACT_APP_SUPABASE_URL` and `REACT_APP_SUPABASE_ANON_KEY` set to the
-    project's public anon key (get it from Supabase `get_publishable_keys`).
+  - Build with `REACT_APP_SUPABASE_URL` and `REACT_APP_SUPABASE_ANON_KEY` set to the public
+    anon key (Supabase `get_publishable_keys`).
   - Serve `build/` with SPA fallback.
-  - Forward `/.netlify/*` requests to `https://nsa-portal.netlify.app`.
-- Cap each page at about 90 seconds, because some pages hang axe.
-- Test stores with products: `olu-creative-worship-team-store` and
-  `bishop-alemany-basketball-team-store`. A coach portal tag that has a store: `OLuOCW`.
+  - Forward `/.netlify/*` to `https://nsa-portal.netlify.app`.
+- The coach portal loads all customers first. Wait for `.nsa-nav` (up to about 60s) before
+  scanning.
+- Test data:
+  - Stores with products: `olu-creative-worship-team-store`, `sjmbasketball2026`.
+  - Coach tags: `OLuOCW` (no orders) and `FPUTR` (orders, art, invoices).
+- A first-Tab test must not click the page first. Clicking sets the browser's Tab starting
+  point past the skip link.
 
 ## Repo rules (from CLAUDE.md)
 
 - Push to the designated branch, then open a PR to `main`, subscribe to its activity, and
   never merge without the user's approval.
-- Any change to `OrderEditor.js` must also be made in `OrderEditorClassic.js`. That doesn't
-  affect this work.
+- Any change to `OrderEditor.js` must also be made in `OrderEditorClassic.js`. Neither was
+  touched here.

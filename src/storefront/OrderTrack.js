@@ -8,6 +8,7 @@
 // "your order is being processed" link points here.
 import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { readable, legibleOn } from '../lib/a11y';
 
 const DISPLAY = "'Barlow Condensed','Oswald','Helvetica Neue',Impact,sans-serif";
 const BODY = "'Source Sans 3','Source Sans Pro','Helvetica Neue',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif";
@@ -100,7 +101,7 @@ export default function OrderTrack() {
   }), [store]);
 
   if (status === 'loading') return <Shell><Splash>Loading your order…</Splash></Shell>;
-  if (status === 'notfound') return <Shell><Splash><div style={{ fontSize: 40, marginBottom: 10 }}>🔍</div>We couldn’t find that order.<div style={{ fontSize: 13, marginTop: 8 }}>Check the link in your confirmation email, or contact us at stores@nationalsportsapparel.com.</div></Splash></Shell>;
+  if (status === 'notfound') return <Shell><Splash><div style={{ fontSize: 40, marginBottom: 10 }}>🔍</div>We couldn’t find that order.<div style={{ fontSize: 13, marginTop: 8 }}>Check the link in your confirmation email, or contact us at <a href="mailto:stores@nationalsportsapparel.com" style={{ color: 'inherit' }}>stores@nationalsportsapparel.com</a>.</div></Splash></Shell>;
 
   // Overall progress = the *least* advanced active line (so the order isn't
   // "complete" until every item is). Cancelled lines are ignored, and bundle
@@ -129,13 +130,13 @@ export default function OrderTrack() {
       <div style={{ maxWidth: 660, margin: '0 auto', padding: '0 18px 60px' }}>
 
         {/* Hero status card */}
-        <div style={{ background: `linear-gradient(135deg, ${theme.primary}, ${shade(theme.primary, -14)})`, color: '#fff', borderRadius: 18, padding: '28px 26px', marginTop: 22, boxShadow: '0 20px 48px rgba(11,18,32,.22)' }}>
+        <div style={{ background: `linear-gradient(135deg, ${theme.primary}, ${shade(theme.primary, -14)})`, color: readable(theme.primary, '#fff'), borderRadius: 18, padding: '28px 26px', marginTop: 22, boxShadow: '0 20px 48px rgba(11,18,32,.22)' }}>
           <div style={{ fontSize: 12, letterSpacing: 1.6, textTransform: 'uppercase', opacity: 0.85 }}>{store.name}</div>
           <div style={{ fontFamily: DISPLAY, fontSize: 34, lineHeight: 1.05, textTransform: 'uppercase', marginTop: 6 }}>
             {hero.icon} {hero.label}
           </div>
           <div style={{ fontSize: 15, opacity: 0.9, marginTop: 6 }}>{hero.blurb}</div>
-          {(order.omg_order_number || order.order_number) && <div style={{ fontSize: 12, opacity: 0.7, marginTop: 12 }}>Order #{order.omg_order_number || order.order_number}{order.buyer_name ? ` · ${order.buyer_name}` : ''}</div>}
+          {(order.omg_order_number || order.order_number) && <div style={{ fontSize: 12, opacity: 0.85, marginTop: 12 }}>Order #{order.omg_order_number || order.order_number}{order.buyer_name ? ` · ${order.buyer_name}` : ''}</div>}
         </div>
 
         {/* Vertical progress timeline */}
@@ -146,12 +147,12 @@ export default function OrderTrack() {
             return (
               <div key={s.key} style={{ display: 'flex', gap: 16, position: 'relative', paddingBottom: i === STAGES.length - 1 ? 16 : 26 }}>
                 {i < STAGES.length - 1 && <div style={{ position: 'absolute', left: 17, top: 36, bottom: 0, width: 2, background: done ? theme.accent : '#eef1f5' }} />}
-                <div style={{ width: 36, height: 36, flex: '0 0 36px', borderRadius: '50%', background: done || current ? dot : '#f1f5f9', color: done || current ? '#fff' : '#94a3b8', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 800, boxShadow: current ? `0 0 0 5px ${hexA(theme.accent, 0.16)}` : 'none', transition: 'all .2s' }}>
+                <div style={{ width: 36, height: 36, flex: '0 0 36px', borderRadius: '50%', background: done || current ? dot : '#f1f5f9', color: done || current ? readable(dot, '#fff') : '#5A6075', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 800, boxShadow: current ? `0 0 0 5px ${hexA(theme.accent, 0.16)}` : 'none', transition: 'all .2s' }}>
                   {done ? '✓' : current ? s.icon : i + 1}
                 </div>
                 <div style={{ paddingTop: 3 }}>
-                  <div style={{ fontWeight: 800, fontSize: 15, color: done || current ? '#0b1220' : '#94a3b8' }}>{s.label}</div>
-                  <div style={{ fontSize: 13, color: current ? '#475569' : '#94a3b8' }}>{s.blurb}{current ? ' — happening now' : ''}</div>
+                  <div style={{ fontWeight: 800, fontSize: 15, color: done || current ? '#0b1220' : '#5A6075' }}>{s.label}</div>
+                  <div style={{ fontSize: 13, color: current ? '#475569' : '#5A6075' }}>{s.blurb}{current ? ' — happening now' : ''}</div>
                 </div>
               </div>
             );
@@ -195,7 +196,7 @@ export default function OrderTrack() {
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontWeight: 800, fontSize: 14.5 }}>{i.name || 'Player Pack'}</div>
-                      <div style={{ fontSize: 12, color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4 }}>Bundle · {kids.length} items</div>
+                      <div style={{ fontSize: 12, color: '#5A6075', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4 }}>Bundle · {kids.length} items</div>
                     </div>
                     <div style={{ textAlign: 'right', flex: '0 0 auto' }}>
                       <StatusChip stage={minStageOf(kids)} accent={theme.accent} />
@@ -277,13 +278,13 @@ export default function OrderTrack() {
             </div>
           )}
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-            <textarea value={reply} onChange={(e) => setReply(e.target.value)} placeholder="Type a message…" rows={2} style={{ flex: 1, resize: 'vertical', minHeight: 44, padding: '10px 12px', borderRadius: 10, border: '1px solid #e2e8f0', fontSize: 14, fontFamily: BODY }} />
+            <textarea aria-label="Message" value={reply} onChange={(e) => setReply(e.target.value)} placeholder="Type a message…" rows={2} style={{ flex: 1, resize: 'vertical', minHeight: 44, padding: '10px 12px', borderRadius: 10, border: '1px solid #e2e8f0', fontSize: 14, fontFamily: BODY }} />
             <button onClick={sendReply} disabled={sending || !reply.trim()} style={{ ...btn(theme.accent), border: 'none', cursor: sending || !reply.trim() ? 'default' : 'pointer', opacity: sending || !reply.trim() ? 0.5 : 1 }}>{sending ? 'Sending…' : 'Send'}</button>
           </div>
         </div>
 
-        <div style={{ textAlign: 'center', marginTop: 26, fontSize: 13, color: '#94a3b8' }}>
-          Questions? Email <a href="mailto:stores@nationalsportsapparel.com" style={{ color: theme.accent, fontWeight: 600 }}>stores@nationalsportsapparel.com</a>
+        <div style={{ textAlign: 'center', marginTop: 26, fontSize: 13, color: '#5A6075' }}>
+          Questions? Email <a href="mailto:stores@nationalsportsapparel.com" style={{ color: legibleOn(theme.accent, '#F7F8FB'), fontWeight: 600 }}>stores@nationalsportsapparel.com</a>
           <div style={{ marginTop: 8 }}>Save this page — bookmark the link to check back anytime.</div>
         </div>
       </div>
@@ -317,7 +318,7 @@ function Shell({ children }) {
     <div style={{ minHeight: '100vh', background: '#F7F8FB', color: '#2A2F3E', fontFamily: BODY, display: 'flex', flexDirection: 'column', WebkitFontSmoothing: 'antialiased' }}>
       <link rel="preconnect" href="https://fonts.googleapis.com" />
       <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
-      <div style={{ flex: 1 }}>{children}</div>
+      <div role="main" style={{ flex: 1 }}>{children}</div>
     </div>
   );
 }
@@ -325,11 +326,11 @@ function Splash({ children }) { return <div style={{ minHeight: '60vh', display:
 function Footer({ theme }) {
   return <footer style={{ background: `linear-gradient(120deg, ${theme.primary}, ${shade(theme.primary, -10)})`, color: 'rgba(255,255,255,0.82)', textAlign: 'center', padding: '30px 20px', borderTop: `3px solid ${theme.accent}` }}>
     <div style={{ fontFamily: DISPLAY, fontSize: 19, letterSpacing: 1, textTransform: 'uppercase', color: '#fff' }}>National Sports Apparel</div>
-    <div style={{ fontSize: 12, marginTop: 6, opacity: 0.7 }}>Custom team apparel · Powered by NSA</div>
+    <div style={{ fontSize: 12, marginTop: 6 }}>Custom team apparel · Powered by NSA · <a href="/accessibility" style={{ color: 'inherit' }}>Accessibility</a></div>
   </footer>;
 }
 
-const btn = (accent) => ({ display: 'inline-block', background: accent, color: '#fff', textDecoration: 'none', padding: '11px 22px', borderRadius: 9, fontWeight: 700, fontSize: 14 });
+const btn = (accent) => ({ display: 'inline-block', background: accent, color: readable(accent, '#fff'), textDecoration: 'none', padding: '11px 22px', borderRadius: 9, fontWeight: 700, fontSize: 14 });
 function shade(hex, pct) {
   try {
     const h = (hex || '#0b1f3a').replace('#', '');

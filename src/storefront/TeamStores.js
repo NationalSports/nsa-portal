@@ -116,7 +116,7 @@ export default function TeamStores() {
 
   const term = cleanTerm(q);
   return (
-    <div className="ts-root" style={{ fontFamily: BODY, color: '#2A2F3E', minHeight: '100vh', background: '#F7F8FB' }}>
+    <div className="ts-root" role="main" style={{ fontFamily: BODY, color: '#2A2F3E', minHeight: '100vh', background: '#F7F8FB' }}>
       <Fonts />
       {/* Hero + search */}
       <section style={{ position: 'relative', overflow: 'hidden', background: `repeating-linear-gradient(-55deg, transparent 0 30px, rgba(255,255,255,0.03) 30px 60px), linear-gradient(135deg, ${NAVY}, ${shade(NAVY, -18)})`, color: '#fff' }}>

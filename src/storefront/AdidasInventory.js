@@ -17,6 +17,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabaseCoach as supabase } from '../lib/supabaseCoach';
 import { fetchPublicInventory } from '../lib/webstorePublicData';
 import { rQ, auTierDisc } from '../pricing';
+import { SkipLink, MAIN_ID } from '../lib/a11y';
 
 // Type system aligned with the NSA marketing site (same as Storefront.js)
 const DISPLAY = "'Barlow Condensed','Oswald','Helvetica Neue',Impact,sans-serif";
@@ -811,7 +812,7 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
         </div>
         {st.colorways.length > 10 && (
           <div style={{ position: 'sticky', top: 0, zIndex: 5, background: '#fff', padding: '4px 24px 10px' }}>
-            <input className="ai-search" value={colorQ} onChange={(e) => setColorQ(e.target.value)}
+            <input aria-label="Search colors" className="ai-search" value={colorQ} onChange={(e) => setColorQ(e.target.value)}
               placeholder={`Search ${st.colorways.length} colors…`} style={{ width: '100%' }} />
             {cq && <div style={{ fontSize: 12, color: '#5F6675', marginTop: 6 }}>{shownCws.length} of {st.colorways.length} colors</div>}
           </div>
@@ -866,7 +867,7 @@ function StyleModal({ st, matchSet, onClose, onSetQty, qtyInList, unitsInList, o
                         <option value="">Any size</option>
                         {oosSizes.map((s) => <option key={s.size} value={s.size}>{sizeLabel(s.size)}</option>)}
                       </select>
-                      <input className="ai-input" style={{ flex: '1 1 150px', padding: '6px 10px', fontSize: 13 }} placeholder="you@school.org" type="email"
+                      <input aria-label="Email for restock alert" className="ai-input" style={{ flex: '1 1 150px', padding: '6px 10px', fontSize: 13 }} placeholder="you@school.org" type="email"
                         value={alertEmail} onChange={(e) => setAlertEmail(e.target.value)} />
                       <button className="ai-iconbtn" style={{ padding: '7px 14px', fontSize: 12.5, background: '#191919', color: '#fff', borderColor: '#191919' }}
                         disabled={alertBusy} onClick={() => submitAlert(cw)}>
@@ -992,7 +993,7 @@ function SavedOrdersList({ savedOrders = [], activeOrderId, savedLoading, onLoad
         return (
           <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 8px', borderRadius: 8, background: isActive ? '#F0F4FF' : '#F7F8FA', border: '1px solid ' + (isActive ? '#C7D6FF' : '#EEF0F3'), marginBottom: 6 }}>
             {renameId === o.id ? (
-              <input
+              <input aria-label="Order name"
                 className="ai-input" autoFocus value={renameVal}
                 onChange={(e) => setRenameVal(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') { onRenameOrder && onRenameOrder(o.id, renameVal); setRenameId(null); } if (e.key === 'Escape') setRenameId(null); }}
@@ -1272,7 +1273,7 @@ function OrderDrawer({ list, updateLine, setSkuDeco, removeLine, clearList, onCl
                       onLoadOrder={onLoadOrder} onRenameOrder={onRenameOrder} onDeleteOrder={onDeleteOrder} onNewOrder={onNewOrder} />
                   )}
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '10px 0 4px' }}>
-                    <input className="ai-input" placeholder={activeOrder ? activeOrder.name : 'Name this order (e.g. Fall practice gear)'}
+                    <input aria-label="Order name" className="ai-input" placeholder={activeOrder ? activeOrder.name : 'Name this order (e.g. Fall practice gear)'}
                       value={orderName} onChange={(e) => setOrderName(e.target.value)} style={{ flex: 1 }} />
                     <button onClick={() => doSave(false)} disabled={!list.length || saveState === 'saving'}
                       style={{ border: 'none', borderRadius: 8, padding: '9px 16px', fontSize: 13, fontWeight: 700, cursor: list.length ? 'pointer' : 'not-allowed', fontFamily: 'inherit', background: list.length ? '#191919' : '#C6CAD2', color: '#fff', whiteSpace: 'nowrap' }}>
@@ -1379,12 +1380,12 @@ function OrderDrawer({ list, updateLine, setSkuDeco, removeLine, clearList, onCl
 
             <div style={{ borderTop: '1px solid #EEF0F3', padding: '14px 20px 18px', display: 'flex', flexDirection: 'column', gap: 8 }}>
               <div style={{ display: 'flex', gap: 8 }}>
-                <input className="ai-input" placeholder="Your name *" value={coach.name} onChange={setField('name')} />
-                <input className="ai-input" placeholder="Team / organization" value={coach.team} onChange={setField('team')} />
+                <input aria-label="Your name" autoComplete="name" className="ai-input" placeholder="Your name *" value={coach.name} onChange={setField('name')} />
+                <input aria-label="Team or organization" autoComplete="organization" className="ai-input" placeholder="Team / organization" value={coach.team} onChange={setField('team')} />
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
-                <input className="ai-input" placeholder="Email *" type="email" value={coach.email} onChange={setField('email')} />
-                <input className="ai-input" placeholder="Phone" type="tel" value={coach.phone} onChange={setField('phone')} />
+                <input aria-label="Email" autoComplete="email" className="ai-input" placeholder="Email *" type="email" value={coach.email} onChange={setField('email')} />
+                <input aria-label="Phone" autoComplete="tel" className="ai-input" placeholder="Phone" type="tel" value={coach.phone} onChange={setField('phone')} />
               </div>
               {reorderArt && (
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '9px 11px', background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 10 }}>
@@ -1394,7 +1395,7 @@ function OrderDrawer({ list, updateLine, setSkuDeco, removeLine, clearList, onCl
                   <div style={{ fontSize: 12, color: '#166534', lineHeight: 1.35 }}><b>{reorderArt.name}</b> is attached to this order{reorderArt.deco ? ' (' + reorderArt.deco + ')' : ''}. Your rep will apply this artwork.</div>
                 </div>
               )}
-              <textarea className="ai-input" placeholder="Notes for your rep (decoration, deadline, budget…)" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} style={{ resize: 'vertical' }} />
+              <textarea aria-label="Notes for your rep" className="ai-input" placeholder="Notes for your rep (decoration, deadline, budget…)" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} style={{ resize: 'vertical' }} />
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
                 {images.map((im, i) => (
                   <div key={i} style={{ position: 'relative' }}>
@@ -2080,7 +2081,7 @@ export default function AdidasInventory() {
       </span>
     ) : (
       <>
-        <input value={signInEmail} onChange={(e) => setSignInEmail(e.target.value)} placeholder="coach@school.org" type="email"
+        <input aria-label="Coach email for sign-in link" value={signInEmail} onChange={(e) => setSignInEmail(e.target.value)} placeholder="coach@school.org" type="email"
           onKeyDown={(e) => { if (e.key === 'Enter') sendMagicLink(); }}
           style={{ background: '#2B2F38', border: '1px solid #3A4150', borderRadius: 999, padding: '7px 16px', fontSize: 13.5, color: '#fff', outline: 'none', fontFamily: 'inherit', width: 230 }} autoFocus />
         <button onClick={sendMagicLink} disabled={signInState === 'sending'}
@@ -2109,6 +2110,7 @@ export default function AdidasInventory() {
   return (
     <div className="ai-root" style={{ fontFamily: BODY }}>
       <Styles />
+      <SkipLink />
 
       {/* Header — hidden when embedded; the marketing site supplies its own */}
       {!embedded && (
@@ -2156,7 +2158,7 @@ export default function AdidasInventory() {
         <div style={{ maxWidth: 1240, margin: '0 auto', padding: '12px 20px', display: 'flex', flexDirection: 'column', gap: 9 }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <div style={{ flex: '1 1 200px', maxWidth: 340 }}>
-              <input className="ai-search" placeholder="Search style, SKU, or color…" value={search} onChange={(e) => setSearch(e.target.value)} />
+              <input aria-label="Search style, SKU, or color" className="ai-search" placeholder="Search style, SKU, or color…" value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
             {facets.brands.length > 1 && (
             <select className="ai-select" value={brand} onChange={(e) => setBrand(e.target.value)} aria-label="Brand">
@@ -2246,7 +2248,7 @@ export default function AdidasInventory() {
             </button>
             <span style={{ width: 1, height: 18, background: '#D8DCE2', margin: '0 3px' }} />
             <span style={{ fontSize: 12, fontWeight: 700, color: '#5F6675', textTransform: 'uppercase', letterSpacing: '.05em' }}>Need by:</span>
-            <input type="date" value={needBy} min={new Date().toISOString().slice(0, 10)} onChange={(e) => setNeedBy(e.target.value)}
+            <input aria-label="Need-by date" type="date" value={needBy} min={new Date().toISOString().slice(0, 10)} onChange={(e) => setNeedBy(e.target.value)}
               style={{ border: '1px solid ' + (needBy ? '#191919' : '#D8DCE2'), background: needBy ? '#191919' : '#fff', color: needBy ? '#fff' : '#3A4150', borderRadius: 999, padding: '3px 11px', fontSize: 12.5, fontWeight: 600, fontFamily: 'inherit', outline: 'none', cursor: 'pointer' }}
               title="Only show gear that's in stock now or arriving at least 4 weeks before this date — time for decoration and delivery" />
             {needCutoff && (
@@ -2262,7 +2264,7 @@ export default function AdidasInventory() {
       </div>
 
       {/* Body */}
-      <main style={{ maxWidth: 1240, margin: '0 auto', padding: '22px 20px 60px' }}>
+      <main id={MAIN_ID} style={{ maxWidth: 1240, margin: '0 auto', padding: '22px 20px 60px' }}>
         {loading && (
           <div style={{ textAlign: 'center', padding: '80px 0', color: '#5F6675', fontSize: 15 }}>
             Loading live inventory…
@@ -2365,7 +2367,7 @@ export default function AdidasInventory() {
         />
       )}
 
-      {toast && <div key={toast.ts} className="ai-toast">{toast.msg}</div>}
+      <div role="status">{toast && <div key={toast.ts} className="ai-toast">{toast.msg}</div>}</div>
 
       {!embedded && (
       <footer style={{ background: '#191919', color: '#A6ACB8', fontSize: 12.5, lineHeight: 1.6 }}>
@@ -2374,7 +2376,7 @@ export default function AdidasInventory() {
           “Inbound” dates are projected restock delivery dates.
           “In house” stock is on the shelf at National Sports Apparel and ships immediately.
           <span style={{ display: 'block', marginTop: 6, color: '#C3C8D0', fontWeight: 600 }}>
-            National Sports Apparel · nationalsportsapparel.com
+            National Sports Apparel · nationalsportsapparel.com · <a href="/accessibility" style={{ color: 'inherit' }}>Accessibility</a>
           </span>
         </div>
       </footer>
