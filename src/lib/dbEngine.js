@@ -2646,6 +2646,22 @@ const _dbSaveInvoiceInner = async (inv) => {
       }
     }
     const{error:invErr}=await supabase.from('invoices').upsert(invRow,{onConflict:'id'});
+    // The core-column retry exists ONLY for a column this DB doesn't have yet. It used to fire on
+    // ANY error, so a unique violation on idempotency_key — the DB correctly refusing a second
+    // invoice for the same store — was retried with that very column stripped, and the row was
+    // written anyway, over whatever invoice held this id. That is how INV-64140 (Biola) and
+    // INV-64141 (Exeter) were overwritten with the previous store's invoice on 2026-09-25: both
+    // rows kept their original idempotency_key, which only this retry can produce.
+    if(invErr&&invErr.code==='23505'){
+      console.error('[DB] SAFETY: Blocking invoice save —',inv.id,'violates a unique key (',invErr.message,')');
+      if(_dbNotify)_dbNotify('Save blocked — '+inv.id+' duplicates an existing invoice. Please reload before editing.','error');
+      if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:inv.id,reason:'unique key violation on save — refused overwrite ('+invErr.message+')'});
+      _emitOutboxConflict('invoices',inv);_dbSaveFailedIds.delete(inv.id);_clearSaveError(inv.id);_persistFailedIds();
+      return false;
+    }
+    if(invErr&&!(invErr.code==='42703'||invErr.code==='PGRST204')){
+      console.error('[DB] invoices upsert failed:',invErr.message);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoices: '+invErr.message);_persistFailedIds();return false;
+    }
     if(invErr){
       console.warn('[DB] invoices upsert failed, retrying without extra cols:',invErr.message);
       const coreRow={};Object.keys(invRow).forEach(k=>{if(!_invExtraCols.has(k))coreRow[k]=invRow[k]});
