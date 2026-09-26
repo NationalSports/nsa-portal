@@ -72,7 +72,8 @@ import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit, unfulfilledSizes, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantRemoveLineApply, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
-import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
+import { resolvePriorMockKey, prevArtAutoWireTargets } from './lib/artIdentity';
+import { previousArtSport, previousArtSourceKey, previousArtReuseDesignId, filterPreviousArt } from './lib/previousArtSearch';
 import { remapFrozenJobDecoIndexes, detachChangedArtRow, liveArtSplitSizes, refreshOpenJobRows, attachSameArtAdditions } from './lib/stableJobAssignments';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors, splitSliceOwnedKeys, splitSliceOwnedSizes, clampSplitOverrideSizes, SLICE_PRUNE_STATUSES, pruneStaleSliceRows, reparentOrphanSplitJobs, remapFrozenJobItemIndexes } from './lib/syncJobsMatch';
 import { itemVendorInvSource, vendorInvCacheKey } from './vendorInventory';
@@ -766,8 +767,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Keep non-image files (e.g. .ai production art legacy records stash in `files`) and any
     // explicitly-whitelisted mockup image; drop every other mockup image.
     const keep=arr=>(arr||[]).filter(f=>{const u=_u(f);if(!_isImgUrl(u,f))return true;return selUrls?selUrls.has(u):false});
-    const clone={...JSON.parse(JSON.stringify(art)),id:'af'+Date.now(),uploaded:new Date().toLocaleDateString()};
-    delete clone._so_id;delete clone._so_memo;
+    const clone={...JSON.parse(JSON.stringify(art)),id:'af'+Date.now(),design_id:previousArtReuseDesignId(art,art._srcCustId),uploaded:new Date().toLocaleDateString()};
+    delete clone._so_id;delete clone._so_memo;delete clone._srcCustId;delete clone._srcTeam;delete clone._sport;
     // Keep design_id so the reused logo stays linked to its design identity (LOGO-1).
     // REUSE-6: the source order's garment mock_links don't apply here (they reference that
     // order's garments), and inherited production files must be re-reviewed, not auto-confirmed.
@@ -1244,7 +1245,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // button) pick which line items the art goes on, plus per-item location and color way.
   // {artId,rows:[{ii,checked,already,position,color_way_id,cwExact}]} — null = closed.
   const[artApply,setArtApply]=useState(null);
-  const[prevArtFilter,setPrevArtFilter]=useState('all');// Previous Artwork deco-type filter: all|screen_print|embroidery|heat_transfer (heat_transfer is the catch-all, incl. DTF)
+  const[prevArtFilter,setPrevArtFilter]=useState('all');// Previous Artwork deco-type filter
+  const[prevArtSearch,setPrevArtSearch]=useState('');// Search artwork name or source team
+  const[prevArtSport,setPrevArtSport]=useState('all');// Sport from source customer's team
   const[prevArtFamily,setPrevArtFamily]=useState(false);// Previous Artwork: opt-in to see ALL of the parent program's teams (labeled per team) instead of just this team + the parent
   const[priorMocks,setPriorMocks]=useState({});// {name||deco_type:[{from,files:[{url,name}]}]} — approved mocks for reused art, fetched from the customer's OTHER orders (their art isn't always hydrated in memory). Drives the Check Mock panel.
   const[mockApplyModal,setMockApplyModal]=useState(null);// {sku,color,artId,files,mockUrl,jobId} — after picking a prior mock, choose: already approved vs send to coach.
@@ -7273,20 +7276,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _famIds=_famParentId?[_famParentId,...(allCustomers||[]).filter(c=>c.parent_id===_famParentId).map(c=>c.id)]:[custId];
       const custIds2=prevArtFamily&&_famParentId?[...new Set(_famIds)]:(parentCust2?.parent_id?[parentCust2.parent_id,custId]:[custId]);
       const _famParentName=_famParentId?(allCustomers.find(c=>c.id===_famParentId)?.name||'program'):null;
-      const _teamLabel=cid=>{if(cid===custId)return'';const c=allCustomers.find(cc=>cc.id===cid);return c?(c.name||c.alpha_tag||''):''};
+      const _sourceMeta=(cid,art,memo)=>{const c=allCustomers.find(cc=>cc.id===cid);return{_srcCustId:cid,_srcTeam:c?.name||c?.alpha_tag||'Unknown team',_sport:previousArtSport(c,_famParentId,art,memo)}};
       const prevArtList=[];
       const _byKey=new Map();
       // Merge a design's library copy with its source-order copy: key on the stable
       // logo identity (name+deco+size+cw), NOT the id — promoteArtToLibrary gives the
       // library copy a fresh id, so an id-keyed dedup double-listed the same design.
-      const _dedupKey=prevArtDedupKey;
+      const _dedupKey=(art,meta)=>previousArtSourceKey(art,meta._srcCustId,meta._sport);
       // Merge all file buckets across sources so the offered logo always carries every mockup AND production file,
       // even if one source (e.g. a library copy saved before the seps were uploaded) is missing some.
       const _fKey=f=>typeof f==='string'?f:(f?.url||'');
       const _mergeFiles=(a=[],b=[])=>{const seen=new Set((a||[]).map(_fKey));const out=[...(a||[])];(b||[]).forEach(f=>{const k=_fKey(f);if(k&&!seen.has(k)){seen.add(k);out.push(f)}});return out};
       // ART TBD rows are system placeholders (a priced deco with no design yet) — there is
       // nothing to reuse, and they were polluting the picker as "ART TBD 1..4" cards.
-      const _pushArt=(art,meta)=>{if(art.archived)return;if((art.name||'').startsWith('ART TBD'))return;const k=_dedupKey(art);
+      const _pushArt=(art,meta)=>{if(art.archived)return;if((art.name||'').startsWith('ART TBD'))return;const k=_dedupKey(art,meta);
         if(_byKey.has(k)){const cur=_byKey.get(k);
           cur.prod_files=_mergeFiles(cur.prod_files,art.prod_files);
           cur.mockup_files=_mergeFiles(cur.mockup_files,art.mockup_files);
@@ -7294,12 +7297,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const im={...(cur.item_mockups||{})};Object.entries(art.item_mockups||{}).forEach(([ik,arr])=>{im[ik]=_mergeFiles(im[ik],arr)});cur.item_mockups=im;
         }else{const entry={...art,prod_files:[...(art.prod_files||[])],mockup_files:[...(art.mockup_files||[])],files:[...(art.files||[])],item_mockups:{...(art.item_mockups||{})},...meta};_byKey.set(k,entry);prevArtList.push(entry)}};
       // Include customer-level art library
-      custIds2.forEach(cid=>{const c=allCustomers.find(cc=>cc.id===cid);(c?.art_files||[]).forEach(art=>_pushArt(art,{_so_id:'Library',_so_memo:c.alpha_tag||c.name||''}))});
+      custIds2.forEach(cid=>{const c=allCustomers.find(cc=>cc.id===cid);(c?.art_files||[]).forEach(art=>_pushArt(art,{..._sourceMeta(cid,art),_so_id:'Library',_so_memo:c.alpha_tag||c.name||''}))});
       // Pull from estimates + sales orders (artSourceOrders) so a new estimate also surfaces art created
       // on prior estimates; fall back to allOrders for any caller that doesn't supply the combined list.
       (artSourceOrders||allOrders||[]).filter(so=>custIds2.includes(so.customer_id)&&so.id!==o.id).forEach(so=>{
-        const _tl=_teamLabel(so.customer_id);
-        (so.art_files||[]).forEach(art=>_pushArt(art,{_so_id:so.id,_so_memo:(_tl?_tl+' · ':'')+(so.memo||'')}));
+        (so.art_files||[]).forEach(art=>_pushArt(art,{..._sourceMeta(so.customer_id,art,so.memo),_so_id:so.id,_so_memo:so.memo||''}));
       });
       // Bucket every deco_type into one of three groups; "heat transfer" is the catch-all (incl. DTF, sublimation, vinyl), matching the 🔥 icon used elsewhere.
       const _artCat=dt=>dt==='screen_print'?'screen_print':dt==='embroidery'?'embroidery':'heat_transfer';
@@ -7308,23 +7310,31 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       prevArtList.sort((a,b)=>_catRank[_artCat(a.deco_type)]-_catRank[_artCat(b.deco_type)]);
       const PREV_TABS=[{id:'all',label:'All'},{id:'screen_print',label:'🎨 Screen Print'},{id:'embroidery',label:'🧵 Embroidery'},{id:'heat_transfer',label:'🔥 Heat Transfer'}];
       const _tabColor={all:'#64748b',screen_print:'#1e40af',embroidery:'#6d28d9',heat_transfer:'#92400e'};
-      const _catCount=c=>prevArtList.filter(a=>_artCat(a.deco_type)===c).length;
-      const visibleArt=prevArtFilter==='all'?prevArtList:prevArtList.filter(a=>_artCat(a.deco_type)===prevArtFilter);
+      const sportOptions=[...new Set(prevArtList.map(a=>a._sport).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+      const searchedArt=filterPreviousArt(prevArtList,{search:prevArtSearch,sport:prevArtSport});
+      const _catCount=c=>searchedArt.filter(a=>_artCat(a.deco_type)===c).length;
+      const visibleArt=filterPreviousArt(searchedArt,{deco:prevArtFilter});
       return<div className="modal-overlay" onClick={()=>{setShowPrevArt(false);setReplaceTbdId(null)}}><div className="modal" style={{maxWidth:700}} onClick={e=>e.stopPropagation()}>
         <div className="modal-header"><h2>{replaceTbdId?"Change to previous art":"📂 Previous Artwork"}</h2><button className="modal-close" onClick={()=>{setShowPrevArt(false);setReplaceTbdId(null)}}>×</button></div>
         <div className="modal-body" style={{maxHeight:500,overflowY:'auto'}}>
           {prevArtList.length===0?<div className="empty">No previous artwork found for this customer</div>:
           <>
             <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12,alignItems:'center'}}>
-              {PREV_TABS.map(t=>{const cnt=t.id==='all'?prevArtList.length:_catCount(t.id);const active=prevArtFilter===t.id;const col=_tabColor[t.id];
+              {PREV_TABS.map(t=>{const cnt=t.id==='all'?searchedArt.length:_catCount(t.id);const active=prevArtFilter===t.id;const col=_tabColor[t.id];
                 return<button key={t.id} style={{fontSize:11,padding:'3px 10px',borderRadius:12,border:'1px solid '+(active?col:'#e2e8f0'),background:active?col+'15':'white',color:active?col:'#94a3b8',cursor:'pointer',fontWeight:600}} onClick={()=>setPrevArtFilter(t.id)}>{t.label} ({cnt})</button>})}
               {_famParentId&&<label style={{fontSize:11,display:'inline-flex',alignItems:'center',gap:5,marginLeft:'auto',padding:'3px 10px',borderRadius:12,border:'1px solid '+(prevArtFamily?'#7c3aed':'#e2e8f0'),background:prevArtFamily?'#f5f3ff':'white',color:prevArtFamily?'#6d28d9':'#64748b',cursor:'pointer',fontWeight:600}} title="Show artwork from every team under this program — each card is labeled with its source team. Reusing another team's art is an explicit choice; double-check it's the right design for this team.">
-                <input type="checkbox" checked={prevArtFamily} onChange={e=>setPrevArtFamily(e.target.checked)} style={{margin:0}}/> All {_famParentName} teams</label>}
+                <input type="checkbox" checked={prevArtFamily} onChange={e=>{setPrevArtFamily(e.target.checked);setPrevArtSport('all')}} style={{margin:0}}/> All {_famParentName} teams</label>}
             </div>
-            {visibleArt.length===0?<div className="empty">No {prevArtFilter.replace(/_/g,' ')} artwork for this customer</div>:
+            <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap'}}>
+              <input className="form-input" type="search" aria-label="Search previous artwork by name or team" placeholder="Search artwork name or team..." value={prevArtSearch} onChange={e=>setPrevArtSearch(e.target.value)} style={{flex:'1 1 230px',fontSize:12}}/>
+              <select className="form-select" aria-label="Filter previous artwork by sport" value={prevArtSport} onChange={e=>setPrevArtSport(e.target.value)} style={{flex:'0 1 190px',fontSize:12}}>
+                <option value="all">All sports</option>{sportOptions.map(sport=><option key={sport} value={sport}>{sport}</option>)}
+              </select>
+            </div>
+            {visibleArt.length===0?<div className="empty">No artwork matches these filters. <button className="btn btn-sm" onClick={()=>{setPrevArtSearch('');setPrevArtSport('all');setPrevArtFilter('all')}}>Clear filters</button></div>:
             <div style={{display:'flex',flexDirection:'column',gap:8}}>
             {visibleArt.map((art,i)=>{
-              const alreadyAdded=af.some(a=>a.id===art.id||(a.name===art.name&&a.deco_type===art.deco_type&&a.art_size===art.art_size));
+              const alreadyAdded=af.some(a=>a.id===art.id||(a.design_id&&a.design_id===previousArtReuseDesignId(art,art._srcCustId))||(!prevArtFamily&&a.name===art.name&&a.deco_type===art.deco_type&&a.art_size===art.art_size));
               const previewImg=art.preview_url||'';
               // Only include actual mockup sources (not prod seps/AIs) and prefer files tagged for
               // this art when art_file_id is present — but library/promoted COPIES carry entries
@@ -7354,7 +7364,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <div style={{flex:1}}>
                     <div style={{fontWeight:700,fontSize:14}}>{art.name||'Untitled'}</div>
                     <div style={{fontSize:11,color:'#64748b'}}>{(art.deco_type||'').replace(/_/g,' ')}{(art.color_ways||[]).length>0?' · '+art.color_ways.length+' CW'+(art.color_ways.length>1?'s':''):art.ink_colors?' · '+art.ink_colors.split('\n').filter(l=>l.trim()).length+' color(s)':art.thread_colors?' · '+art.thread_colors:''}{art.art_size?' · '+art.art_size:''}</div>
-                    <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>{art._so_id} — {art._so_memo}</div>
+                    <div style={{display:'flex',gap:5,alignItems:'center',flexWrap:'wrap',marginTop:3}}><span style={{fontSize:10,fontWeight:700,color:'#6d28d9',background:'#ede9fe',borderRadius:10,padding:'1px 6px'}}>{art._sport}</span><span style={{fontSize:10,color:'#64748b'}}>{art._srcTeam}</span></div>
+                    <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>{art._so_id}{art._so_memo?' — '+art._so_memo:''}</div>
                     {mockups.length>1&&<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:6}}>
                       {mockups.slice(1,5).map((f,fi)=>{const fUrl=_urlOf(f);return _isImgUrl(fUrl)?<img key={fi} src={fUrl} alt="" style={{width:48,height:48,borderRadius:4,objectFit:'contain',cursor:'pointer',background:'white',border:'1px solid #e2e8f0'}} onClick={e=>{e.stopPropagation();openFile(f)}}/>:null})}
                       {mockups.length>5&&<span style={{fontSize:10,color:'#64748b',alignSelf:'center'}}>+{mockups.length-5} more</span>}

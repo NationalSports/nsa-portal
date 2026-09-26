@@ -1,3 +1,5 @@
+import { previousArtReuseDesignId } from './previousArtSearch';
+
 // Keep the placeholder's id when a rep chooses existing art. Every decoration already
 // assigned to the TBD group then continues to point at the replacement design.
 export function replaceTbdArt(order, tbdId, source) {
@@ -6,12 +8,16 @@ export function replaceTbdArt(order, tbdId, source) {
   const replacement = JSON.parse(JSON.stringify(source));
   delete replacement._so_id;
   delete replacement._so_memo;
+  delete replacement._srcCustId;
+  delete replacement._srcTeam;
+  delete replacement._sport;
   delete replacement.so_id;
   delete replacement.estimate_id;
   delete replacement.customer_id;
   delete replacement._artEditedFields;
   delete replacement._artDeletes;
   replacement.id = tbdId;
+  replacement.design_id = previousArtReuseDesignId(source, source._srcCustId);
   if (current._version != null) replacement._version = current._version;
   else delete replacement._version;
   replacement.uploaded = new Date().toLocaleDateString();
