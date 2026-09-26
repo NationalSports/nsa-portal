@@ -12,8 +12,22 @@ import { knownGarmentHex, exactGarmentHex } from './artGrid';
 // The logo detail for a design + color way: exact color way, then the "all garments" default,
 // then the legacy single web_logo_url. preview_url is a design thumbnail, not a cutout, so it
 // never counts as a logo detail.
-export const logoDetailUrl = (art, colorWayId) =>
-  art ? pickCwAsset({ ...art, preview_url: '' }, { kind: 'web_logo', colorWayId: colorWayId || null }) : '';
+export const resolveLogoColorWay = (art, id, color, side) => {
+  const ways = safeArr(art?.color_ways);
+  if (id) return ways.some(c => c.id === id) ? id : undefined;
+  if (!ways.length) return null;
+  const label = safeStr(color).split('/')[side === 'B' ? 1 : 0]?.trim().toLowerCase();
+  const matches = ways.filter(c => label && safeStr(c.garment_color).trim().toLowerCase() === label);
+  if (matches.length === 1) return matches[0].id;
+  if (ways.length === 1 && !safeStr(ways[0].garment_color).trim()) return ways[0].id;
+  return undefined;
+};
+export const logoDetailUrl = (art, colorWayId) => {
+  if (!art || colorWayId === undefined) return '';
+  // No implicit first-colorway fallback: a logo from another garment is not approval evidence.
+  if (!colorWayId) return safeArr(art.web_logos).find(_isDefaultLogo)?.url || art.web_logo_url || '';
+  return pickCwAsset({ ...art, preview_url: '' }, { kind: 'web_logo', colorWayId });
+};
 
 // Background behind the transparent logo — the color of the garment it is printed on:
 //  1. the garment line's own color when it names a real color. A logo used on several garment
@@ -53,6 +67,7 @@ const _isDefaultLogo = (w) => !!(w && (w.is_default || (!w.color_way_id && !safe
 // it is the design's "all garments" default (mirrored to web_logo_url, like the Art Library does).
 // The color_way label is always filled in: a blank label reads as the default everywhere else.
 export const setLogoDetail = (arts, artId, colorWayId, file) => {
+  if (colorWayId === undefined) throw new Error('Choose this garment’s color way in Art Library / Apply to items before uploading its logo.');
   const url = safeStr(typeof file === 'string' ? file : file?.url);
   if (!url || !artId) return safeArr(arts);
   const name = typeof file === 'object' && file?.name ? file.name : undefined;
@@ -70,10 +85,12 @@ export const setLogoDetail = (arts, artId, colorWayId, file) => {
 };
 
 // Remove one logo detail image (by url) from a design.
-export const removeLogoDetail = (arts, artId, url) => safeArr(arts).map(a => {
+export const removeLogoDetail = (arts, artId, url, colorWayId) => safeArr(arts).map(a => {
   if (!a || a.id !== artId || !url) return a;
-  const next = markArtFieldEdit(a, 'web_logos', safeArr(a.web_logos).filter(w => w && w.url !== url));
-  return a.web_logo_url === url ? markArtFieldEdit(next, 'web_logo_url', '') : next;
+  const matches = w => colorWayId === undefined || (colorWayId ? w.color_way_id === colorWayId || (!w.color_way_id && w.color_way === _cwLabel(a, colorWayId)) : _isDefaultLogo(w));
+  if (colorWayId && !safeArr(a.web_logos).some(w=>w.url===url&&matches(w))) throw new Error('This logo is the shared all-garments default. Replace it for this color way, or remove the default in Art Library.');
+  const next = markArtFieldEdit(a, 'web_logos', safeArr(a.web_logos).filter(w => w && !(w.url === url && matches(w))));
+  return !colorWayId && a.web_logo_url === url ? markArtFieldEdit(next, 'web_logo_url', '') : next;
 });
 
 // Every (design, color way) pair this job prints — one logo detail each. Scoped like the mock
@@ -90,10 +107,10 @@ export const jobLogoDetailNeeds = (job, so) => {
       if (!jobArtIds.has(d.art_file_id)) return;
       const art = arts.find(a => a?.id === d.art_file_id);
       if (!art) return;
-      const cws = [d.color_way_id || null, ...(d.reversible ? [d.color_way_id_b || null] : [])];
+      const cws = [resolveLogoColorWay(art,d.color_way_id,it.color,'A'), ...(d.reversible ? [resolveLogoColorWay(art,d.color_way_id_b,it.color,'B')] : [])];
       cws.forEach(cw => {
-        const key = art.id + '|' + (cw || '');
-        if (!out.has(key)) out.set(key, { art, colorWayId: cw, label: (art.name || 'Artwork') + (cw ? ' (' + _cwLabel(art, cw) + ')' : '') });
+        const key = art.id + '|' + (cw === undefined ? 'unresolved:'+it.color : cw || '');
+        if (!out.has(key)) out.set(key, { art, colorWayId: cw, label: (art.name || 'Artwork') + (cw === undefined ? ' — choose color way for '+it.color : cw ? ' (' + _cwLabel(art, cw) + ')' : '') });
       });
     });
   });
@@ -115,6 +132,7 @@ export const garmentLogoDetails = (gi, so, artFiles) => {
     const a = safeArr(artFiles).find(x => x?.id === d.art_file_id);
     if (!a) return;
     [[d.color_way_id || null, d.reversible ? 'A' : ''], ...(d.reversible ? [[d.color_way_id_b || null, 'B']] : [])].forEach(([cw, side]) => {
+      cw = resolveLogoColorWay(a,cw,line.color,side);
       const url = logoDetailUrl(a, cw);
       if (!url || seen.has(url + side)) return;
       seen.add(url + side);
@@ -135,7 +153,7 @@ export const garmentLogoDetails = (gi, so, artFiles) => {
 // customer's orders, so they never identify the same design.
 const _PLACEHOLDER_ART_NAME = /^(art\s*tbd\b.*|tbd\b.*|untitled.*|new art.*|art\s*\d*)$/i;
 const _realName = a => { const n = safeStr(a?.name).trim(); return n && !_PLACEHOLDER_ART_NAME.test(n) ? n.toLowerCase() : ''; };
-const _sameDesign = (lib, art) => !!lib && !!art && (lib.id === art.id || (
+const _sameDesign = (lib, art) => !!lib && !!art && (lib.design_id && art.design_id ? lib.design_id === art.design_id : lib.id === art.id || (
   _realName(lib) !== '' &&
   safeStr(lib.name).trim().toLowerCase() === safeStr(art.name).trim().toLowerCase() &&
   (lib.deco_type || '') === (art.deco_type || '')));
@@ -143,20 +161,25 @@ const _libCwId = (lib, art, cwId) => {
   if (!cwId) return null;
   if (safeArr(lib.color_ways).some(c => c && c.id === cwId)) return cwId;
   const lbl = _cwLabel(art, cwId).toLowerCase();
-  const m = safeArr(lib.color_ways).find(c => c && safeStr(c.garment_color).trim().toLowerCase() === lbl);
-  return m ? m.id : undefined; // undefined = the library design has no such color way
+  const matches = safeArr(lib.color_ways).filter(c => c && safeStr(c.garment_color).trim().toLowerCase() === lbl);
+  if(matches.length>1)throw new Error('Multiple library color ways match. Update the intended color way in Art Library.');
+  return matches[0]?.id; // undefined = the library design has no such color way
 };
 // change = { artId, colorWayId, url } to set, or { artId, removeUrl } to remove, applied to the
 // order's art `orderArts`. Returns the updated library art array, or null when nothing changed.
 export const logoDetailLibraryUpdate = (libArts, orderArts, change) => {
   const art = safeArr(orderArts).find(a => a && a.id === change?.artId);
-  const idx = safeArr(libArts).findIndex(l => _sameDesign(l, art));
+  const matches = safeArr(libArts).map((l,i)=>_sameDesign(l,art)?i:-1).filter(i=>i>=0);
+  if (matches.length > 1) throw new Error('Multiple library designs match. Update the intended design in Art Library.');
+  const idx = matches[0] ?? -1;
   if (!art || idx < 0) return null;
   const lib = libArts[idx];
   let next;
   if (change.removeUrl) {
     if (!safeArr(lib.web_logos).some(w => w && w.url === change.removeUrl) && lib.web_logo_url !== change.removeUrl) return null;
-    next = removeLogoDetail([lib], lib.id, change.removeUrl)[0];
+    const cw = _libCwId(lib, art, change.colorWayId);
+    if (change.colorWayId && cw === undefined) return null;
+    next = removeLogoDetail([lib], lib.id, change.removeUrl, cw)[0];
   } else {
     const cw = _libCwId(lib, art, change.colorWayId);
     if (cw === undefined) {
@@ -265,11 +288,12 @@ export const reusedLogoDetailNeeds = (jobs, sos, customers) => {
         const art = safeArt(so).find(a => a?.id === d.art_file_id);
         if (!art) return;
         [[d.color_way_id || null, ''], ...(d.reversible ? [[d.color_way_id_b || null, 'B']] : [])].forEach(([cw, side]) => {
-          const key = so.id + '|' + art.id + '|' + (cw || '');
+          cw = resolveLogoColorWay(art,cw,it.color,side);
+          const key = so.id + '|' + art.id + '|' + (cw === undefined ? 'unresolved:'+it.color+':'+side : cw || '');
           if (out.has(key) || logoDetailUrl(art, cw)) return;
           if (!libOf(so.customer_id).some(l => _sameDesign(l, art)) && !seenOn(art, so)) return;
           out.set(key, { key, so, job: j, art, colorWayId: cw, side, garmentColor: safeStr(it.color),
-            label: (art.name || 'Artwork') + (cw ? ' · ' + _cwLabel(art, cw) : '') });
+            label: (art.name || 'Artwork') + (cw === undefined ? ' · Choose color way for '+it.color : cw ? ' · ' + _cwLabel(art, cw) : '') });
         });
       });
     });

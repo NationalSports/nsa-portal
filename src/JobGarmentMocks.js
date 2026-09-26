@@ -24,8 +24,15 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
   const summaryOf = g => progress.find(p => p.key === garmentMockKey(g.item));
   const jobArts = [...new Set(groups.flatMap(g => g.slots.map(s => s.artFile)).filter(Boolean))];
   const linkOf = g => resolveMockLink(jobArts, mockSkuOf(g.item), g.item.color || '');
-  const inJob = key => groups.some(g => garmentMockKey(g.item) === key);
-  const dependentsOf = g => groups.filter(o => o !== g && linkOf(o) === garmentMockKey(g.item));
+  // Keep every dependent's design/side controls accessible; share the image, not the slots.
+  const canFold = g => {
+    const source=groups.find(x=>garmentMockKey(x.item)===linkOf(g));
+    if (!source || source===g || linkOf(source) || g.slots.length!==1 || source.slots.length!==1) return false;
+    const a=g.slots[0],b=source.slots[0];
+    return a.kind==='art' && b.kind==='art' && !a.side && !b.side && a.artId===b.artId && a.sub===b.sub;
+  };
+  const dependentsOf = g => groups.filter(o => o !== g && canFold(o) && linkOf(o) === garmentMockKey(g.item));
+  const separate = item => run(() => onSave(jobArts.reduce((all,a)=>applyMockLink(all,a.id,garmentMockKey(item),null),safeArt(getOrder())), 'Mock link removed'));
   const run = async action => {
     if (lock.current) return false;
     lock.current = true; setBusy(true); setError('');
@@ -41,16 +48,17 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
   const useFiles = (slot, files) => onSave(files.reduce((arts, file) => adoptArtProofAsGarmentMock(arts, slot.artId, slot.key,
     { ...(typeof file === 'string' ? { url: file } : file), art_file_id: slot.artId }), liveArts(slot.artId)), 'Garment mock');
   const logoFor = (slot, item) => { if (slot.kind !== 'art') return null; const b = logoDetailBackground(item.color, cwGarmentColor(slot.artFile, slot.cwId), slot.side); return {
-    url: logoDetailUrl(slot.artFile, slot.cwId), bg: b.bg, bgKnown: b.known, bgSource: b.source, colorName: b.label,
+    url: logoDetailUrl(slot.artFile, slot.cwId), needsColorWay: slot.cwId===undefined, bg: b.bg, bgKnown: b.known, bgSource: b.source, colorName: b.label,
     onUpload: files => run(async () => {
+      if (slot.cwId === undefined) throw new Error('Choose this garment’s color way in Art Library / Apply to items first.');
       const url = await fileUpload(files[0], 'nsa-web-logos');
       const ok = await onSave(setLogoDetail(liveArts(slot.artId), slot.artId, slot.cwId, { url, name: files[0].name }), 'Logo detail');
-      if (ok && onLibrarySync) onLibrarySync({ artId: slot.artId, colorWayId: slot.cwId, url });
+      if (ok && onLibrarySync) await onLibrarySync({ artId: slot.artId, colorWayId: slot.cwId, url });
       return ok;
     }),
     onRemove: url => run(async () => {
-      const ok = await onSave(removeLogoDetail(liveArts(slot.artId), slot.artId, url), 'Logo detail removed');
-      if (ok && onLibrarySync) onLibrarySync({ artId: slot.artId, removeUrl: url });
+      const ok = await onSave(removeLogoDetail(liveArts(slot.artId), slot.artId, url, slot.cwId), 'Logo detail removed');
+      if (ok && onLibrarySync) await onLibrarySync({ artId: slot.artId, colorWayId: slot.cwId, removeUrl: url });
       return ok;
     }),
   }; };
@@ -59,14 +67,14 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
   const groupLogoTiles = list => {
     const seen = new Set();
     const tiles = list.flatMap(x => {
-      const slot = x.slots.find(sl => sl.kind === 'art');
-      if (!slot) return [];
+      return x.slots.filter(sl => sl.kind === 'art').flatMap(slot => {
       const b = logoDetailBackground(x.item.color, cwGarmentColor(slot.artFile, slot.cwId), slot.side);
       const url = logoDetailUrl(slot.artFile, slot.cwId);
-      const key = url + '|' + b.bg;
+      const key = slot.artId + '|' + slot.cwId + '|' + slot.side + '|' + b.bg;
       if (seen.has(key)) return [];
       seen.add(key);
-      return [{ key, url, bg: b.bg, label: b.label || garmentLabel(x.item), onUpload: url ? null : logoFor(slot, x.item).onUpload }];
+      return [{ key, url, bg: b.bg, label: slot.label + ' · ' + (b.label || garmentLabel(x.item)) + (slot.side ? ' · Side '+slot.side : ''), onUpload: url ? null : logoFor(slot, x.item).onUpload }];
+      });
     });
     return tiles.length > 1 ? tiles : [];
   };
@@ -83,8 +91,8 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
     {groups.map(g => {
       const { item, slots, allSlots } = g;
       const linked = linkOf(g);
+      if(canFold(g))return null;
       // A garment sharing another job garment's mock is listed inside that garment's block.
-      if (linked && inJob(linked)) return null;
       const deps = linked ? [] : dependentsOf(g);
       const summary = summaryOf(g);
       return <div key={garmentMockKey(item)} style={{ marginTop: 12 }}>
@@ -101,7 +109,8 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
             <button type="button" disabled={busy} style={{ border: '1px solid #c7d2fe', borderRadius: 7, background: '#fff', color: '#3730a3', fontSize: 11, fontWeight: 600, padding: '6px 10px', cursor: 'pointer', flexShrink: 0 }}
               onClick={() => run(() => onSave(jobArts.reduce((all, a) => applyMockLink(all, a.id, garmentMockKey(item), null), safeArt(getOrder())), 'Mock link removed'))}>Give it its own mock</button>
           </div>;
-        })() : slots.length > 0 && <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>{slots.map(slot => <GarmentMockCard
+        })() : null}
+        {slots.length > 0 && <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>{slots.map(slot => <GarmentMockCard
           key={slot.artId + '|' + slot.key} label={slot.label} sub={slot.sub}
           mocks={slotMockFiles(slot, allSlots, item)} candidates={slot.candidates} suggest busy={busy}
           accept=".pdf,.png,.jpg,.jpeg,.webp,.gif"
@@ -119,6 +128,7 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
         {deps.length > 0 ? <>
           <div className="garment-mock-card" style={{ marginTop: 12 }}><MockCoversTable rows={[g, ...deps].map(coverRow)} />
             <LogoDetailTiles tiles={groupLogoTiles([g, ...deps])} />
+            <div style={{display:'flex',gap:8,flexWrap:'wrap',padding:12}}>{deps.map(dep=><button type="button" key={garmentMockKey(dep.item)} disabled={busy} onClick={()=>separate(dep.item)}>Separate mock: {garmentLabel(dep.item)}</button>)}</div>
           </div>
           {summary && <div style={{ display: 'flex', padding: '12px 4px 0' }}><GarmentDecorationSpecs specs={Array.from(summary.specs || [])} /></div>}
         </> : <JobGarmentProgress summary={summary} onViewItem={onViewItem} />}

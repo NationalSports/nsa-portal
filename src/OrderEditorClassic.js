@@ -3795,7 +3795,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const artInLibrary=art=>{const nm=(art.name||'').trim();return !!nm&&(libCust?.art_files||[]).some(a=>_artKey(a)===_artKey(art))};
   // A logo detail saved/removed on a job is the design's web logo: mirror it onto the customer's
   // (and parent program's) Art Library copy so webstores and the Previous Artwork picker see it.
-  const syncLogoLibrary=change=>{if(!onSaveCustomer)return;const pool=(allCustomers||[]).map(c=>cust&&c.id===cust.id?cust:c);logoDetailCustomerUpdates(pool,o.customer_id,oRef.current.art_files||[],change).forEach(c=>{if(cust&&c.id===cust.id)setCust(c);onSaveCustomer(c)})};
+  const syncLogoLibrary=async change=>{if(!onSaveCustomer)return;const pool=(allCustomers||[]).map(c=>cust&&c.id===cust.id?cust:c);const updates=logoDetailCustomerUpdates(pool,o.customer_id,oRef.current.art_files||[],change);if(!updates.length||!window.confirm('Saved on this job. Also update the reusable Art Library logo? This affects future reuse and stores. Cancel keeps the change on this job only.'))return;for(const c of updates){if((await onSaveCustomer(c,{confirmWrite:true}))===false)throw new Error('Saved on this job, but Art Library sync failed. Retry from Art Library.');if(cust&&c.id===cust.id)setCust(c)}};
   // Promote an order art group into the program library so other teams (sub-customers) can reuse it.
   const promoteArtToLibrary=art=>{
     if(!libCust||!onSaveCustomer){nf&&nf('No customer to add this art to','error');return}

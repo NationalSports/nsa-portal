@@ -1,4 +1,5 @@
 import React from 'react';
+jest.mock('../utils',()=>({fileDisplayName:f=>f.name||f.url||'',_isImgUrl:()=>true,_cloudinaryPdfThumb:()=>null,openFile:jest.fn(),fileUpload:jest.fn()}));
 import { render, screen } from '@testing-library/react';
 import JobGarmentMocks from '../JobGarmentMocks';
 import { logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, logoDetailLibraryUpdate, logoDetailCustomerUpdates, mergeWebLogoEdit, reusedLogoDetailNeeds, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails } from '../lib/logoDetail';
@@ -105,7 +106,7 @@ describe('logo detail reaches the customer Art Library', () => {
     const lib = [{ id: 'a', name: art.name, deco_type: art.deco_type, color_ways: [] }];
     const added = logoDetailLibraryUpdate(lib, orderArt, { artId: 'a', colorWayId: 'cw1', url: 'grey.png' });
     expect(added[0].color_ways.map(c => c.id)).toEqual(['cw1']);
-    const removed = logoDetailLibraryUpdate(added, orderArt, { artId: 'a', removeUrl: 'grey.png' });
+    const removed = logoDetailLibraryUpdate(added, orderArt, { artId: 'a', colorWayId: 'cw1', removeUrl: 'grey.png' });
     expect(logoDetailUrl(removed[0], 'cw1')).toBe('');
     expect(logoDetailLibraryUpdate([{ id: 'x', name: 'Other', deco_type: 'screen_print' }], orderArt, { artId: 'a', colorWayId: 'cw1', url: 'grey.png' })).toBeNull();
   });
@@ -253,7 +254,7 @@ describe('logo detail pane', () => {
   test('a JPG is refused with an explanation instead of uploading', async () => {
     const onUpload = jest.fn();
     const { container } = render(card(onUpload));
-    const input = container.querySelector('input[accept=".png,.webp,.svg"]');
+    const input = container.querySelector('input[accept=".png"]');
     fireEvent.change(input, { target: { files: [new File(['x'], 'logo.jpg', { type: 'image/jpeg' })] } });
     await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/PNG with a transparent background/));
     expect(onUpload).not.toHaveBeenCalled();

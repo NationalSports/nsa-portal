@@ -1,4 +1,5 @@
 import { garmentSlotCandidates } from "./lib/jobMockCards";
+import { resolveLogoColorWay } from './lib/logoDetail';
 import GarmentMockCard, { LogoDetailTiles } from './GarmentMockCard';
 import { removeGarmentSlotMock } from './safeHelpers';
 import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jobMockReadiness';
@@ -7056,7 +7057,8 @@ export default function App(){
     }
     nf('Rep updated to '+newRepName);
   };
-  const savC=async c=>{console.log('[SAVE] Customer save triggered:',c.id,c.name,{tax_rate:c.tax_rate,contacts:c.contacts?.length,shipping_state:c.shipping_state});
+  const savC=async (c,{confirmWrite=false}={})=>{console.log('[SAVE] Customer save triggered:',c.id,c.name,{tax_rate:c.tax_rate,contacts:c.contacts?.length,shipping_state:c.shipping_state});
+    if(confirmWrite && (await _dbSaveCustomer(c))===false)return false;
     let subCount=0;let tagCount=0;let shipCount=0;let contactCount=0;
     // Is this a brand-new customer (e.g. created inline while building an estimate)? If so we confirm it
     // actually landed in the DB before letting it stand — a phantom customer that only exists in local state
@@ -7145,6 +7147,7 @@ export default function App(){
       }
     }
     nf(parts.length?'Saved — '+parts.join(', '):'Saved');
+    return true;
   };
   // Lock decoration pricing on save so matrix changes don't affect existing orders
   const lockPrices=(order)=>{const af=order.art_files||[];
@@ -7343,22 +7346,31 @@ export default function App(){
   };
   // Logo detail (the transparent logo PNG shown beside each garment mock) from the Art Dashboard
   // dialogs: upload files[0], or remove removeUrl, then an art-only save. Returns false on failure.
+  const logoOrdersRef=useRef(sos);logoOrdersRef.current=sos;
+  const logoSaveLocks=useRef(new Set());
   const saveLogoDetailFor=async(so,slot,{files,removeUrl}={})=>{
+    if(logoSaveLocks.current.has(so.id)){nf('A logo is still saving on this order. Wait for it to finish, then retry.','error');return false}
+    logoSaveLocks.current.add(so.id);
     try{
+      if(slot.cwId===undefined)throw new Error('Choose this garment’s color way in Art Library / Apply to items first.');
       const url=files?await fileUpload(files[0],'nsa-web-logos'):null;
-      const liveSO=sos.find(s=>s.id===so.id)||so;
+      const liveSO=logoOrdersRef.current.find(s=>s.id===so.id)||so;
       if(!safeArt(liveSO).some(a=>a.id===slot.artId))throw new Error('this artwork was removed');
-      const updArt=url?setLogoDetail(safeArt(liveSO),slot.artId,slot.cwId,{url,name:files[0].name}):removeLogoDetail(safeArt(liveSO),slot.artId,removeUrl);
+      const updArt=url?setLogoDetail(safeArt(liveSO),slot.artId,slot.cwId,{url,name:files[0].name}):removeLogoDetail(safeArt(liveSO),slot.artId,removeUrl,slot.cwId);
       const ok=await savArtFiles({...liveSO,art_files:updArt});
       if(ok===false)return false;
       // Mirror onto the customer's Art Library copy (webstores and the reuse picker read that one).
-      logoDetailCustomerUpdates(cust,liveSO.customer_id,updArt,url?{artId:slot.artId,colorWayId:slot.cwId,url}:{artId:slot.artId,removeUrl}).forEach(c=>savC(c));
+      const updates=logoDetailCustomerUpdates(cust,liveSO.customer_id,updArt,url?{artId:slot.artId,colorWayId:slot.cwId,url}:{artId:slot.artId,colorWayId:slot.cwId,removeUrl});
+      if(updates.length&&window.confirm('Saved on this job. Also update the reusable Art Library logo? This affects future reuse and stores. Cancel keeps the change on this job only.')){
+        for(const c of updates)if((await savC(c,{confirmWrite:true}))===false)throw new Error('Saved on this job, but Art Library sync failed. Retry from Art Library.');
+      }
       nf(url?'Logo detail saved':'Logo detail removed');
       return true;
-    }catch(e){nf('Could not save the logo detail: '+(e.message||'upload failed'),'error');return false}
+    }catch(e){nf('Could not finish the logo update: '+(e.message||'upload failed'),'error');return false}
+    finally{logoSaveLocks.current.delete(so.id)}
   };
   // Props for a mock card's logo detail pane (art slots only).
-  const logoDetailProps=(so,slot,garment)=>{if(slot.kind!=='art')return null;const b=logoDetailBackground(garment?.color,cwGarmentColor(slot.artFile,slot.cwId),slot.side);return{url:logoDetailUrl(slot.artFile,slot.cwId),bg:b.bg,bgKnown:b.known,bgSource:b.source,colorName:b.label,
+  const logoDetailProps=(so,slot,garment)=>{if(slot.kind!=='art')return null;slot={...slot,cwId:resolveLogoColorWay(slot.artFile,slot.cwId,garment?.color,slot.side)};const b=logoDetailBackground(garment?.color,cwGarmentColor(slot.artFile,slot.cwId),slot.side);return{url:logoDetailUrl(slot.artFile,slot.cwId),needsColorWay:slot.cwId===undefined,bg:b.bg,bgKnown:b.known,bgSource:b.source,colorName:b.label,
     onUpload:files=>saveLogoDetailFor(so,slot,{files}),onRemove:url=>saveLogoDetailFor(so,slot,{removeUrl:url})}};
   // Result-checked FULL save: persist the whole SO (jobs + art) and return a truthful true/false promise so
   // reuse/forward mutations (applyPriorMock, prod-file completion, wizard release) can report failure instead
@@ -24857,12 +24869,11 @@ export default function App(){
         const _adLinkArts=allArtFiles.length?allArtFiles:(af?[af]:[]);
         const _adLinkOf=g=>resolveMockLink(_adLinkArts,mockSkuOf(g),g.color);
         const _adKeys=new Set(itemDetails.map(g=>garmentMockKey(g)));
-        const _adFolded=g=>{const src=_adLinkOf(g);return!!src&&_adKeys.has(src)};
-        const _adDeps=g=>itemDetails.filter(o=>o!==g&&_adLinkOf(o)===garmentMockKey(g));
-        const _adCards=itemDetails.filter(g=>!_adFolded(g));
+        // Keep each garment's editable design/side slots visible, even when its image is shared.
+        const _adFolded=g=>{const source=itemDetails.find(x=>garmentMockKey(x)===_adLinkOf(g));if(!source||source===g||_adLinkOf(source))return false;const ds=_perItemDecos[g.item_idx]||[],ss=_perItemDecos[source.item_idx]||[];return ds.length===1&&ss.length===1&&ds[0].kind==='art'&&ss[0].kind==='art'&&!ds[0].reversible&&!ss[0].reversible&&ds[0].artFile?.id===ss[0].artFile?.id&&ds[0].position===ss[0].position};
+        const _adDeps=g=>itemDetails.filter(o=>o!==g&&_adFolded(o)&&_adLinkOf(o)===garmentMockKey(g));
         // Release instructions are for the whole job, so they show once above the garments. The
         // "ONE MOCKUP COVERS" line is dropped when the grouped cards already show that grouping.
-        const _adInstructions=(()=>{const t=latestReq?.instructions||'';return itemDetails.some(_adFolded)?t.replace(/\n*\uD83D\uDD17 ONE MOCKUP COVERS:[^\n]*/,'').trim():t.trim()})();
 
         // Pre-compute per-item decorations and position list (needed by item cards)
         const posList3=(j.positions||'').split(',').map(p=>p.trim()).filter(Boolean);
@@ -24898,6 +24909,8 @@ export default function App(){
             }
           });
         });
+        const _adCards=itemDetails.filter(g=>!_adFolded(g));
+        const _adInstructions=(()=>{const t=latestReq?.instructions||'';return itemDetails.some(_adFolded)?t.replace(/\n*\uD83D\uDD17 ONE MOCKUP COVERS:[^\n]*/,'').trim():t.trim()})();
         // Color editing helpers (hoisted from deco IIFE)
         const _isEditingColors=artJobDetailEditColors!==null&&typeof artJobDetailEditColors==='object'&&artJobDetailEditColors._perGarment;
         const _startEditColors=()=>{
@@ -25399,9 +25412,10 @@ export default function App(){
                   </div>
                   {/* Shared mock over several garment colors: the logo detail on each covered color way /
                       garment color, uploadable here since the covered garments have no card of their own. */}
-                  {_deps.length>0&&(()=>{const seen=new Set();const tiles=_grp.flatMap(g=>{const d=(_perItemDecos[g.item_idx]||[]).find(x=>x.kind==='art'&&x.artFile);if(!d)return[];const b=logoDetailBackground(g.color,cwGarmentColor(d.artFile,d.colorWayId));const url=logoDetailUrl(d.artFile,d.colorWayId);const key=url+'|'+b.bg;if(seen.has(key))return[];seen.add(key);
-                    return[{key,url,bg:b.bg,label:b.label||((g.color?g.color+' ':'')+g.sku),onUpload:url?null:files=>saveLogoDetailFor(so,{artId:d.artFile.id,cwId:d.colorWayId||null},{files})}]});
+                  {_deps.length>0&&(()=>{const seen=new Set();const tiles=_grp.flatMap(g=>{const d=(_perItemDecos[g.item_idx]||[]).find(x=>x.kind==='art'&&x.artFile);if(!d)return[];const cw=resolveLogoColorWay(d.artFile,d.colorWayId,g.color);const b=logoDetailBackground(g.color,cwGarmentColor(d.artFile,cw));const url=logoDetailUrl(d.artFile,cw);const key=d.artFile.id+'|'+cw+'|'+b.bg;if(seen.has(key))return[];seen.add(key);
+                    return[{key,url,bg:b.bg,label:b.label||((g.color?g.color+' ':'')+g.sku),onUpload:url?null:files=>saveLogoDetailFor(so,{artId:d.artFile.id,cwId:cw},{files})}]});
                     return tiles.length>1?<div style={{padding:'0 10px 10px'}}><LogoDetailTiles tiles={tiles}/></div>:null;})()}
+                  {_deps.length>0&&<div style={{padding:10,display:'flex',gap:8,flexWrap:'wrap'}}>{_deps.map(dep=><button type="button" className="btn btn-sm" key={garmentMockKey(dep)} onClick={async()=>{const live=sos.find(x=>x.id===so.id)||so;await savArtFiles({...live,art_files:_adLinkArts.reduce((arts,a)=>applyMockLink(arts,a.id,garmentMockKey(dep),null),safeArt(live))})}}>Separate mock: {dep.sku} · {dep.color}</button>)}</div>}
                   {/* ─── Copy Mockup From Another Item ─── */}
                   {_copyFromOthers.length>0&&<div style={{padding:'6px 14px',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',background:'#fdfcff'}}><span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Copy mock from:</span>{_copyFromOthers.map((oi,oii)=><button key={oii} className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#ede9fe',color:'#7c3aed',border:'1px solid #ddd6fe',borderRadius:4,fontWeight:700,cursor:'pointer'}} onClick={()=>_copyMockup(oi,gi)}>{oi.sku}{oi.color?' ('+oi.color+')':''}</button>)}</div>}
                   {/* ─── Decoration Spec ─── */}

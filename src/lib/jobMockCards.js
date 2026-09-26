@@ -1,4 +1,5 @@
 import { safeArr, safeArt, safeItems, safeDecos, garmentMockKey, mockSlotKeys, jobItemDecoIdxs, garmentMockCandidates, itemMockFiles } from '../safeHelpers';
+import { resolveLogoColorWay } from './logoDetail';
 
 // Shared by job detail and both Art Dashboard dialogs. Read all SO artwork,
 // not just artwork currently assigned to the selected job.
@@ -27,7 +28,7 @@ export function jobMockCardGroups(job, order, priorMocks = {}) {
     const allSlots = mockSlotKeys(garmentMockKey(item), decos).map(slot => {
       const d = decos[slot.di];
       const artFile = slot.kind === 'art' ? arts.find(a => a.id === d.art_file_id) : anchor;
-      const cwId = slot.kind === 'art' ? ((slot.side === 'B' ? d.color_way_id_b : d.color_way_id) || null) : null;
+      const cwId = slot.kind === 'art' ? resolveLogoColorWay(artFile,slot.side === 'B' ? d.color_way_id_b : d.color_way_id,item.color,slot.side) : null;
       return { ...slot, artFile, artId: artFile?.id, cwId, label: slot.kind === 'art' ? artFile?.name || 'Artwork' : slot.kind === 'numbers' ? 'Numbers' : 'Names', sub: [d.position, slot.side && 'Side ' + slot.side].filter(Boolean).join(' · ') };
     });
     const slots = allSlots.filter(s => s.artId && (!owned || owned.includes(s.di))).filter(s => {

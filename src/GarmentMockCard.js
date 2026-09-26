@@ -12,27 +12,30 @@ const LOGO_HELP = [
   'Export a PNG with a TRANSPARENT background (not white or black). We paint the garment color behind it.',
   'One logo per color way. A white-ink version and a navy-ink version are two separate uploads.',
   'Front and back designs each have their own card — upload a logo detail on each.',
-  'Shown to the coach, on the production sheet and used as the webstore logo. Required before Send for approval.',
+  'Artist: required before Send to Rep for Approval. Reps can still send the garment mock to the coach.',
+  'Saving changes this job. You will be asked before updating reusable Art Library artwork.',
 ];
 
 // Does this image have any see-through pixels? A PNG exported with a solid white box would sit on
 // the garment color as a white rectangle. Returns true when it can't tell (SVG, no canvas).
 async function hasTransparency(file) {
-  if (!/\.(png|webp)$/i.test(file.name) || typeof document === 'undefined') return true;
+  if (typeof document === 'undefined') return false;
   let url = '';
   try {
     url = URL.createObjectURL(file);
     const img = await new Promise((ok, bad) => { const i = new Image(); i.onload = () => ok(i); i.onerror = bad; i.src = url; });
-    const w = Math.max(1, Math.min(img.naturalWidth, 300));
-    const h = Math.max(1, Math.round(img.naturalHeight * w / (img.naturalWidth || 1)));
+    const scale = Math.min(1, 300 / Math.max(img.naturalWidth, img.naturalHeight, 1));
+    const w = Math.max(1, Math.round(img.naturalWidth * scale));
+    const h = Math.max(1, Math.round(img.naturalHeight * scale));
     const c = document.createElement('canvas'); c.width = w; c.height = h;
     const ctx = c.getContext('2d');
-    if (!ctx) return true;
+    if (!ctx) return false;
     ctx.drawImage(img, 0, 0, w, h);
     const d = ctx.getImageData(0, 0, w, h).data;
-    for (let i = 3; i < d.length; i += 4) if (d[i] < 250) return true;
-    return false;
-  } catch (e) { return true; }
+    let transparent=false, visible=false;
+    for (let i = 3; i < d.length; i += 4) { if(d[i]<250)transparent=true; if(d[i]>128)visible=true; }
+    return transparent && visible;
+  } catch (e) { throw new Error('Could not read this PNG. Export it again and retry.'); }
   finally { if (url) URL.revokeObjectURL(url); }
 }
 
@@ -90,9 +93,11 @@ async function mockGarmentHex(url) {
 const _hexLum = hex => { const m = String(hex || '').replace('#', '').match(/.{2}/g); if (!m || m.length < 3) return 128; const [r, g, b] = m.map(x => parseInt(x, 16)); return 0.299 * r + 0.587 * g + 0.114 * b; };
 
 // Why a file can't be a logo detail, or '' when it can.
-async function logoFileProblem(f) {
-  if (!/\.(png|webp|svg)$/i.test(f.name)) return 'Logo detail must be a PNG with a transparent background — not a JPG or PDF.';
-  if (!(await hasTransparency(f))) return 'This PNG has a solid background. Re-export it with a transparent background so it sits on the garment color.';
+export async function logoFileProblem(f) {
+  if (!/\.png$/i.test(f.name) || (f.type && f.type !== 'image/png')) return 'Logo detail must be a PNG with a transparent background — not a JPG, PDF, SVG or WebP.';
+  if (f.size > 10 * 1024 * 1024) return 'Choose a PNG smaller than 10 MB.';
+  try { if (!(await hasTransparency(f))) return 'Transparency could not be verified. Re-export this PNG with a transparent background and retry.'; }
+  catch (e) { return e.message; }
   return '';
 }
 
@@ -117,7 +122,7 @@ export function LogoDetailTiles({ tiles, title = 'Logo detail on each garment co
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>{tiles.map(t => <div key={t.key} style={{ width: 150, textAlign: 'center' }}>
       <div style={{ height: 90, borderRadius: 8, border: '1px solid #dbe2ea', background: t.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 8 }}>
         {t.url ? <img src={t.url} alt="" onClick={() => openFile(t.url)} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', cursor: 'zoom-in' }} />
-          : t.onUpload ? <label className="tile-upload">{busyKey === t.key ? 'Saving…' : 'Upload logo PNG'}<input type="file" hidden accept=".png,.webp,.svg" disabled={!!busyKey} onChange={e => { upload(t, Array.from(e.target.files)); e.target.value = ''; }} /></label>
+        : t.onUpload ? <label className="tile-upload">{busyKey === t.key ? 'Saving…' : 'Upload logo PNG'}<input type="file" hidden accept=".png" disabled={!!busyKey} onChange={e => { upload(t, Array.from(e.target.files)); e.target.value = ''; }} /></label>
           : <span className="tile-upload">Needs logo detail</span>}
       </div>
       <div style={{ fontSize: 10.5, color: '#475569', marginTop: 4 }}>{t.label}</div>
@@ -187,10 +192,11 @@ function LogoDetailPane({ logo, busy, mockUrl = '' }) {
     <div className="panel-meta">{mode === 'garment' ? bgNote : mode === 'checker' ? 'Checkered = transparent areas' : 'Shown on dark'}</div>
     {whiteWarning && <p className="logo-warning">White parts of this logo won't show on {bgName === 'Mock color' ? 'this garment' : bgName}. Check the color way — use Dark to see them.</p>}
     {error && <p role="alert" className="mock-error">{error}</p>}
+    {logo.onUpload && !logo.url && <p className="panel-hint">{logo.needsColorWay ? 'Choose a color way in Art Library → Apply to items first.' : 'Artist next step: upload the transparent logo PNG. Reps can still send the garment mock to the coach.'}</p>}
     {logo.onUpload && <div className="panel-actions">
-      <button type="button" disabled={busy} onClick={() => input.current.click()}>{logo.url ? 'Replace logo' : 'Upload logo PNG'}</button>
+      <button type="button" disabled={busy || logo.needsColorWay} onClick={() => input.current.click()}>{logo.url ? 'Replace logo' : 'Upload logo PNG'}</button>
       {logo.url && logo.onRemove && <button type="button" className="mock-remove" disabled={busy} onClick={() => { if (window.confirm('Remove this logo detail?')) run(() => logo.onRemove(logo.url)); }}>Remove</button>}
-      <input ref={input} type="file" hidden accept=".png,.webp,.svg" onChange={e => { upload(Array.from(e.target.files)); e.target.value = ''; }} />
+      <input ref={input} type="file" hidden accept=".png" onChange={e => { upload(Array.from(e.target.files)); e.target.value = ''; }} />
     </div>}
   </div>;
 }
