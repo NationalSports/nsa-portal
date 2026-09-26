@@ -213,7 +213,6 @@ export default function Home({
   }, []);
 
   const dismissPopup = () => { setPopupOpen(false); setDismissed(true); };
-  const toggleChat = () => { setPopupOpen((v) => !v); setDismissed(true); };
 
   // ---- Hero slider state -------------------------------------------------
   const [heroSlide, setHeroSlide] = useState(0);
@@ -376,7 +375,7 @@ export default function Home({
         </div>
 
         {/* ---- Pagination dots ---- */}
-        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 'clamp(10px, 1.6vw, 18px)', display: 'flex', justifyContent: 'center', gap: 10, zIndex: 5 }}>
+        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 'calc(clamp(10px, 1.6vw, 18px) - 7px)', display: 'flex', justifyContent: 'center', gap: 0, zIndex: 5 }}>
           {Array.from({ length: HERO_SLIDE_COUNT }).map((_, i) => (
             <button
               // eslint-disable-next-line react/no-array-index-key
@@ -385,7 +384,8 @@ export default function Home({
               onClick={() => setHeroSlide(i)}
               aria-label={`Go to slide ${i + 1}`}
               aria-current={heroSlide === i}
-              style={{ width: 10, height: 10, padding: 0, borderRadius: 999, border: 'none', cursor: 'pointer', background: heroSlide === i ? RED : 'rgba(255,255,255,0.45)' }}
+              // 24px hit area (WCAG 2.5.8) around the same 10px painted dot.
+              style={{ boxSizing: 'border-box', width: 24, height: 24, padding: 7, backgroundClip: 'content-box', borderRadius: 999, border: 'none', cursor: 'pointer', background: heroSlide === i ? RED : 'rgba(255,255,255,0.45)' }}
             />
           ))}
         </div>
@@ -699,16 +699,9 @@ export default function Home({
         </div>
       )}
 
-      {/* ============ CHAT BUBBLE ============ */}
-      <button
-        type="button"
-        onClick={toggleChat}
-        aria-label="Open chat"
-        className="nts-cta-navy"
-        style={{ position: 'fixed', right: 24, bottom: 24, zIndex: 71, width: 58, height: 58, borderRadius: 999, border: 'none', background: NAVY, color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 12px 30px rgba(15,26,56,0.35)' }}
-      >
-        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.5 7.2L4 20l1-4.5A8 8 0 1 1 21 12z" /><circle cx="9" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="15" cy="12" r="1" fill="currentColor" stroke="none" /></svg>
-      </button>
+      {/* The old navy chat-bubble toggle for this popup was removed: it sat under
+          the real Team Shop Assistant launcher (ChatWidget) on desktop — an invisible
+          keyboard stop — and on phones stacked on top of the tab bar's Account tab. */}
     </div>
   );
 }

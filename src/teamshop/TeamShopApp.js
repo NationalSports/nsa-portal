@@ -23,6 +23,7 @@ import { STORAGE_KEY as NTS_CUSTOMER_KEY } from './TeamPicker';
 import { supabaseCoach } from '../lib/supabaseCoach';
 import { getProductBySku } from './productBySku';
 import { useTeamShopRoute, parseRoute } from './useTeamShopRoute';
+import { SkipLink, MAIN_ID } from '../lib/a11y';
 import {
   ensureTeamShopStyles, NAVY, NAVY_DARK, RED, BORDER, TEXT_MUTED, FONT_BODY, displayType,
 } from './theme';
@@ -187,6 +188,29 @@ export default function TeamShopApp() {
   const { signedIn: coachSignedIn } = useCoachSession(); // header sign-in label only
 
   useEffect(() => { ensureTeamShopStyles(); }, []);
+
+  // Per-route tab title (WCAG 2.4.2). The edge function (og-teamshop.js) injects
+  // one on a cold load for SEO, but in-app navigation never updated it, and
+  // /cart and /order/* had none at all.
+  useEffect(() => {
+    const ov = route.name === 'order' ? route.orderView : null;
+    const page = route.name === 'landing' ? null
+      : route.name === 'catalog' ? 'Custom Team Apparel Catalog'
+      : route.name === 'product' ? ((previewProduct && previewProduct.name) || 'Product')
+      : route.name === 'stores' ? 'Team Stores'
+      : route.name === 'decoration' ? 'Decoration Methods'
+      : route.name === 'faq' ? 'FAQ'
+      : route.name === 'search' ? 'Search'
+      : route.name === 'account' ? 'Your Account'
+      : route.name === 'cart' ? 'Your Cart'
+      : ov === 'checkout' ? 'Checkout'
+      : ov === 'confirmed' ? 'Order Confirmed'
+      : ov === 'logos' ? 'Choose Your Logo'
+      : ov === 'placement' ? 'Logo Placement'
+      : route.name === 'order' ? 'Start Your Order'
+      : null;
+    document.title = page ? `${page} | National Team Shop` : 'National Team Shop — Your logo. Team-quality gear.';
+  }, [route, previewProduct]);
 
   // Route-keyed normalization/guards — re-runs on every route change (not
   // mount-only), so forward/back re-entry is re-guarded exactly like a cold
@@ -438,6 +462,7 @@ export default function TeamShopApp() {
 
   return (
     <div className="nts-root" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: '#fff', color: '#2A2F3E', fontFamily: FONT_BODY }}>
+      <SkipLink />
       {handoffBusy && (
         <div style={{ background: NAVY, color: '#fff', textAlign: 'center', fontSize: 13, fontWeight: 600, padding: '6px 12px' }}>Signing you in…</div>
       )}
@@ -523,7 +548,7 @@ export default function TeamShopApp() {
         </div>
       </header>
 
-      <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+      <main id={MAIN_ID} style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
         {route.name === 'landing' && (
           <Home onStartOrder={goStartWithLogo} onBrowseCatalog={goCatalog} onOpenDecoration={goDecoration} onOpenStores={goTeamStores} />
         )}
@@ -773,6 +798,7 @@ export default function TeamShopApp() {
               <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13 }}>Privacy</span>
               <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13 }}>Terms</span>
               <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13 }}>Shipping &amp; Returns</span>
+              <a href="/accessibility" style={{ color: 'rgba(255,255,255,0.78)', fontSize: 13 }}>Accessibility</a>
             </div>
           </div>
         </div>

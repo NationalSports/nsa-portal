@@ -10,13 +10,13 @@
 export const NAVY = '#192853';
 export const NAVY_DARK = '#0F1A38';
 export const RED = '#962C32'; // accent ONLY — never large fills
-export const RED_SOFT = '#D94A52'; // thin accent strokes on navy surfaces (mockup roster card)
+export const RED_SOFT = '#E4737A'; // accent strokes + eyebrow text on navy surfaces; lightened from the mockup's #D94A52 to clear 4.5:1 text contrast on NAVY (WCAG 1.4.3)
 export const OFF_WHITE = '#F7F8FB';
 export const BORDER = '#EEF1F6';
 export const BORDER_DARK = '#D1D5DE';
 export const TEXT = '#2A2F3E';
 export const TEXT_MUTED = '#5A6075';
-export const TEXT_FAINT = '#8790A5';
+export const TEXT_FAINT = '#666E85'; // darkened from the mockup's #8790A5 (3.0:1) to clear 4.5:1 on white/OFF_WHITE (WCAG 1.4.3)
 export const GREEN = '#2F6B45'; // "Ready to decorate" / in-stock check
 
 export const FONT_DISPLAY = "'Barlow Condensed', sans-serif";

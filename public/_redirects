@@ -5,4 +5,5 @@
 /api/mail-send  /.netlify/functions/brevo-proxy  200
 /roster.html  /roster.html  200
 /review       /review.html  200
+/accessibility  /accessibility.html  200
 /*    /index.html   200
