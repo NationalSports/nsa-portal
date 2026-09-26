@@ -52,6 +52,14 @@
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
 
+# The decorator URL is a bearer link. Never send its token as the Referer
+# when the packet loads mock images or opens a production file.
+[[headers]]
+  for = "/production-report/*"
+  [headers.values]
+    Cache-Control = "no-store"
+    Referrer-Policy = "no-referrer"
+
 [functions]
   directory = "netlify/functions"
   # rep-ops-digest shares its category rules with the client (src/lib/opsRecap.js),
@@ -85,6 +93,10 @@
   timeout = 26
 
 [functions."omg-player-report-ingest"]
+  timeout = 26
+
+# The decorator packet reads all player lines and their linked production SOs.
+[functions."webstore-production-report"]
   timeout = 26
 
 # Silver Screen portal job creation — logs into portal.silverscreenprinting.com and
