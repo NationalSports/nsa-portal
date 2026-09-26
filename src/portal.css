@@ -3292,3 +3292,8 @@ tbody tr { cursor: pointer; }
   .nsa-todo-row:hover .nsa-todo-hover,
   .nsa-todo-row:focus-within .nsa-todo-hover { opacity: 1; }
 }
+
+/* AI Notes quick voice-note button on the home page (both UIs). */
+.nsa-note-fab{position:fixed;right:24px;bottom:92px;z-index:60;width:56px;height:56px;border-radius:28px;border:none;background:#dc2626;color:#fff;font-size:24px;line-height:1;cursor:pointer;box-shadow:0 8px 22px rgba(220,38,38,.35);display:flex;align-items:center;justify-content:center}
+.nsa-note-fab:hover{background:#b91c1c}
+@media print{.nsa-note-fab{display:none}}

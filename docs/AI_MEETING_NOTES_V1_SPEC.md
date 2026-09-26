@@ -44,6 +44,27 @@ These override anything below that disagrees.
 8. **Build order is reordered** so reps get value before the riskiest parts ship — see the revised
    table in "Build order for Claude Code".
 
+## Build status (Sep 26) — what exists in code
+
+Steps 1-3, 5 and 7 are built (web app, desktop + mobile portal); not live until the setup below.
+
+- Tables: `meetings`, `meeting_transcripts` (raw text split out so only the rep + admins read it),
+  `ai_jobs`; `customer_contacts` gains `source`, `sport`, `created_at`. Private `meeting-audio` bucket.
+  Migration `20260926120000_ai_meeting_notes.sql`.
+- Netlify functions instead of Supabase Edge Functions (matches the rest of the portal):
+  `meeting-notes` (create / paste / finalize / retry / approve / discard),
+  `meeting-process-background` (15-minute budget, so it polls AssemblyAI instead of a webhook),
+  `meeting-audio-sweep` (hourly 24h backstop). Prompt + validation: `_meetingAi.js`.
+- Approval writes to-dos to `assigned_todos` (`source = meeting:<id>:<n>`, deterministic ids) and new
+  people to `customer_contacts`; the note itself is the approved `meetings` row, shown on the account's
+  **Notes** tab. No separate `activities` table yet (step 4, timeline backfill, is still to do).
+- Approved notes are readable by all active staff (account history); drafts only by the rep + admins/GMs.
+- Stage suggestions are stored on the note (`final.accepted_stage`) but not applied to customers yet.
+- Not built yet: step 4 (timeline + backfill), step 6 (PWA install), step 8 (push, manager feed).
+- Setup to go live: apply the migration; set `ASSEMBLYAI_API_KEY` in Netlify (enable zero data
+  retention on the AssemblyAI account); `ANTHROPIC_API_KEY` is already used by the portal;
+  optional `MEETING_NOTES_MODEL`.
+
 ## Overview and goals
 
 Reps tap one button, talk (or let a meeting run), and the portal produces a clean note, reminders, and contacts on the account without typing. This is the first CRM feature because it gives reps something they want on day one and quietly builds the account timeline everything else depends on.

@@ -372,3 +372,13 @@
 # netlify/functions/so-shipment-notify-sweep.js.
 [functions."so-shipment-notify-sweep"]
   schedule = "*/15 * * * *"
+
+# AI meeting notes: audio is never kept. Processing deletes it right after
+# transcription; this hourly sweep removes anything a failed/abandoned recording
+# left behind after 24h. See netlify/functions/meeting-audio-sweep.js.
+[functions."meeting-audio-sweep"]
+  schedule = "17 * * * *"
+  timeout = 26
+
+[functions."meeting-notes"]
+  timeout = 26

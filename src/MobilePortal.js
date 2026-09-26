@@ -1,6 +1,8 @@
 /* eslint-disable */
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import BarcodeScanner from './BarcodeScanner';
+import MeetingNotes from './MeetingNotes';
+import { supabase } from './lib/supabase';
 import { auTierDisc, dP, calcOrderTotals, isAU } from './pricing';
 import { isJobReady, mockAwareProductionStatus } from './lib/jobMockReadiness';
 import { isBoxCode, boxUnits, BOX_STATUS_META } from './boxTracking';
@@ -49,10 +51,14 @@ const _msubFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveSOPOBatch,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxMerge,onBoxLabel,receipt,onReceiptDone,onPrintLabels}){
+export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveSOPOBatch,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxMerge,onBoxLabel,receipt,onReceiptDone,onPrintLabels,onNoteContactsAdded}){
   const isOps=cu.role==='warehouse'||cu.role==='production';// ops roles: no sales/financial reporting
   const _caTop=canAccess||(()=>true);// page-access check usable anywhere in the component
   const[tab,setTab]=useState(()=>_mtabFromUrl()||'home');
+  // AI Notes (voice memo / meeting / paste) — sales roles only.
+  const canNotes=['admin','super_admin','gm','rep','csr'].includes(cu?.role);
+  const[noteInit,setNoteInit]=useState(null);// {mode, customerId?}
+  const openNotes=(init)=>{setNoteInit(init||null);setDetail(null);setTab('more');setMoreSubPage('notes')};
   const[botCompose,setBotCompose]=useState(null);// {title,so_id} when the quick "Assign to Claude" form is open
   const[q,setQ]=useState('');
   const[showSearch,setShowSearch]=useState(false);
@@ -1162,6 +1168,9 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         <MIcon name="search" size={18}/>
         <span style={{flex:1,color:'#94a3b8',fontSize:15}}>Search orders, customers, estimates…</span>
       </div>
+      {canNotes&&<button onClick={()=>openNotes({mode:'dictated'})} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:10,padding:'14px',borderRadius:12,border:'none',background:'#dc2626',color:'white',fontWeight:800,fontSize:15,cursor:'pointer',margin:'4px 0 12px',minHeight:52}}>
+        <span style={{fontSize:18}}>🎙️</span> Voice note after a visit
+      </button>}
       {/* Quick stats */}
       <div className="mp-stats-grid">
         <div className="mp-stat-card" onClick={()=>setTab('orders')}>
@@ -2051,6 +2060,13 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         </div>)}
       </div>;
     }
+    if(subPage==='notes'&&canNotes)return<div className="mp-page">
+      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
+        <button className="mp-back-btn" onClick={()=>setSubPage(null)}><MIcon name="back" size={20}/></button>
+        <div className="mp-page-title" style={{margin:0,flex:1}}>AI Notes</div>
+      </div>
+      <MeetingNotes supabase={supabase} cu={cu} customers={cust} reps={REPS} notify={nf} initialMode={noteInit?.mode} initialCustomerId={noteInit?.customerId} onConsumedInitial={()=>setNoteInit(null)} onContactsAdded={onNoteContactsAdded}/>
+    </div>;
     if(subPage==='warehouse')return renderWarehouse();
     if(subPage==='reports'){
       const now=new Date();
@@ -2135,6 +2151,10 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     return<div className="mp-page">
       <div className="mp-page-title">More</div>
       <div className="mp-more-grid">
+        {canNotes&&<div className="mp-more-item" onClick={()=>setSubPage('notes')}>
+          <div className="mp-more-icon" style={{color:'#dc2626'}}><MIcon name="file" size={22}/></div>
+          <div>AI Notes</div>
+        </div>}
         {_ca('estimates')&&<div className="mp-more-item" onClick={()=>setSubPage('estimates')}>
           <div className="mp-more-icon"><MIcon name="dollar" size={22}/></div>
           <div>Estimates</div>
@@ -2408,6 +2428,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       {id:'orders',label:'Sales Orders',icon:'box'},
       {id:'messages',label:'Messages',icon:'mail',badge:unreadForMeCount},
       {id:'customers',label:'Customers',icon:'users'},
+      ...(canNotes?[{id:'notes',label:'AI Notes',icon:'file',sub:true}]:[]),
       {id:'estimates',label:'Estimates',icon:'dollar',sub:true},
       {id:'invoices',label:'Invoices',icon:'file',sub:true},
       {id:'inventory',label:'Inventory',icon:'warehouse',sub:true},
