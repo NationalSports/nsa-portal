@@ -275,7 +275,7 @@ function HumanCard({ onSent }) {
       <p style={{ fontSize: 12.5, color: TEXT_MUTED, margin: '0 0 8px', lineHeight: 1.5 }}>
         Leave a message and your rep will get back to you.
       </p>
-      <textarea
+      <textarea aria-label="Message"
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder="What can we help with?"

@@ -1,5 +1,6 @@
 import { canReviewJobMocks } from './lib/jobMockReadiness';
 import JobGarmentMocks from './JobGarmentMocks';
+import { logoDetailCustomerUpdates } from './lib/logoDetail';
 import { isJobReady, missingJobMocks, jobMockChecks } from './lib/jobMockReadiness';
 import { jobArtBadgeSt } from './lib/jobArtBadge';
 import { webstoreCheckoutMoney, webstoreDocMoneyRows } from './lib/webstoreSoMoney';
@@ -8,6 +9,8 @@ import { poEligibleVendors } from './lib/vendorPoEligibility';
 import QuantityDraftInput from './QuantityDraftInput';
 import TextDraftInput from './TextDraftInput';
 /* eslint-disable */
+import { openProductionPacket } from './productionPacket/api';
+import ShareMessageButton from './productionPacket/ShareMessageButton';
 import { canAcknowledgeSave } from './lib/saveAcknowledgement';
 import { lineIntentKey, newOrderLineId } from './lib/orderLineIdentity';
 import { liveSoInvoices, soInvoiceBalance, invoiceBalanceSnapshot } from './lib/soInvoiceBalance';
@@ -3801,6 +3804,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const _artKey=a=>(a.name||'').toLowerCase().trim()+'|'+(a.deco_type||'');
   // Is this art group already saved in the program library?
   const artInLibrary=art=>{const nm=(art.name||'').trim();return !!nm&&(libCust?.art_files||[]).some(a=>_artKey(a)===_artKey(art))};
+  // A logo detail saved/removed on a job is the design's web logo: mirror it onto the customer's
+  // (and parent program's) Art Library copy so webstores and the Previous Artwork picker see it.
+  const syncLogoLibrary=async change=>{if(!onSaveCustomer)return;const pool=(allCustomers||[]).map(c=>cust&&c.id===cust.id?cust:c);const updates=logoDetailCustomerUpdates(pool,o.customer_id,oRef.current.art_files||[],change);if(!updates.length||!window.confirm('Saved on this job. Also update the reusable Art Library logo? This affects future reuse and stores. Cancel keeps the change on this job only.'))return;for(const c of updates){if((await onSaveCustomer(c,{confirmWrite:true}))===false)throw new Error('Saved on this job, but Art Library sync failed. Retry from Art Library.');if(cust&&c.id===cust.id)setCust(c)}};
   // Promote an order art group into the program library so other teams (sub-customers) can reuse it.
   const promoteArtToLibrary=art=>{
     if(!libCust||!onSaveCustomer){nf&&nf('No customer to add this art to','error');return}
@@ -3810,7 +3816,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(lib.some(a=>_artKey(a)===_artKey(art))){nf&&nf('"'+nm+'" is already in '+(libCust.name||'the')+' library');return}
     const toLib=cust&&cust.parent_id;// promoting up to a parent vs. saving to own library
     if(!window.confirm('Add "'+nm+'" to '+(toLib?(libCust.name||'the parent')+'\'s program library so other teams can use it':'the program library so it applies to all teams')+'?'))return;
-    const entry={id:'caf'+Date.now(),name:nm,deco_type:art.deco_type||'screen_print',ink_colors:art.ink_colors||'',thread_colors:art.thread_colors||'',art_size:art.art_size||'',color_ways:(art.color_ways||[]).map(cw=>({...cw,inks:[...(cw.inks||[])]})),files:[],mockup_files:(art.mockup_files||[]).slice(),prod_files:(art.prod_files||[]).slice(),preview_url:art.preview_url||'',notes:art.notes||'',status:art.status==='uploaded'?'needs_approval':(art.status||'approved'),uploaded:new Date().toLocaleDateString()};
+    const entry={id:'caf'+Date.now(),name:nm,deco_type:art.deco_type||'screen_print',ink_colors:art.ink_colors||'',thread_colors:art.thread_colors||'',art_size:art.art_size||'',color_ways:(art.color_ways||[]).map(cw=>({...cw,inks:[...(cw.inks||[])]})),files:[],mockup_files:(art.mockup_files||[]).slice(),prod_files:(art.prod_files||[]).slice(),preview_url:art.preview_url||'',web_logos:(art.web_logos||[]).filter(w=>w&&w.url).map(w=>({...w})),web_logo_url:art.web_logo_url||'',notes:art.notes||'',status:art.status==='uploaded'?'needs_approval':(art.status||'approved'),uploaded:new Date().toLocaleDateString()};
     const updated={...libCust,art_files:[...lib,entry]};
     if(libCust.id===cust.id)setCust(updated);
     onSaveCustomer(updated);
@@ -5092,6 +5098,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </span>;})}
               </span>;})()}
             {isSO&&o.omg_store_id&&onNavOmgStore&&<span style={{color:'#1E7A46',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={onNavOmgStore} title="Open the linked OMG store">🏪 OMG Store</span>}
+            {isSO&&o.webstore_id&&<button className="btn btn-sm" onClick={()=>openProductionPacket(o.webstore_id)}>Production packet</button>}
             {isSO&&o.webstore_id&&!o.omg_store_id&&onNavWebstore&&<span style={{color:'#1E7A46',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={onNavWebstore} title="Open the webstore this batch was pulled from">🛒 Webstore</span>}
             {/* Player report rebuilt from the CURRENT SO items — swapped items print as what
                 we're actually buying, so this is the copy that goes to Silver Screen. */}
@@ -7553,12 +7560,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             onClick={()=>{if(unread&&onMsg){onMsg(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...(mm.read_by||[]),cu.id]}:mm))}}}>
             <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
               <div style={{display:'flex',gap:6,alignItems:'center'}}>
-                <span style={{fontSize:12,fontWeight:700,color:isMe?'#1e40af':'#475569'}}>{author?.name||'Unknown'}</span>
+                <span style={{fontSize:12,fontWeight:700,color:isMe?'#1e40af':'#475569'}}>{author?.name||m.author||'Unknown'}</span>
                 {dept&&dept.id!=='all'&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:dept.color+'20',color:dept.color}}>@{dept.label}</span>}
                 {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:'#fef3c7',color:'#92400e'}}>Tagged you</span>}
               </div>
               <div style={{display:'flex',gap:6,alignItems:'center'}}>
                 <span style={{fontSize:10,color:'#94a3b8'}}>{m.ts}</span>
+                {isSO&&o.webstore_id&&<ShareMessageButton soId={o.id} messageId={m.id} notify={nf}/>}
                 {!indent&&<button style={{fontSize:9,padding:'1px 6px',borderRadius:6,border:'1px solid #e2e8f0',background:replyTo===m.id?'#3b82f6':'white',color:replyTo===m.id?'white':'#64748b',cursor:'pointer'}} onClick={(e)=>{e.stopPropagation();const on=replyTo!==m.id;setReplyTo(on?m.id:null);/* Replying auto-tags the author so they get the ping without retyping the name. */if(on&&author&&!isMe)tagMember(author)}}>Reply{replies.length>0?` (${replies.length})`:''}</button>}
               </div>
             </div>
@@ -12138,7 +12146,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(j.items||[]).length>0&&dTot>1&&<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:10}} onClick={()=>setSplitModal({jIdx:ji,jobId:j.id,mode:null,selectedIdxs:[]})}>✂️ Split Job</button>}
             </div>
             {_mockReady&&j.art_status!=='waiting_approval'&&<section aria-label="Review saved mocks" style={{margin:'0 20px 16px',padding:14,background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:10}}><strong>Mocks ready — review next</strong><p style={{fontSize:12,color:'#475569'}}>Send the mocks to the coach, or approve the artwork if approval is already confirmed. Production files are checked next.</p><div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{_reviewActions}</div></section>}
-            <JobGarmentMocks key={j.id} job={j} order={o} priorMocks={priorMocks} getOrder={()=>oRef.current} itemDetails={itemDetails} onViewItem={_jumpToItem} onSave={saveArtFilesNow} onSendToArtist={note=>setArtReqModal({jIdx:ji,artist:_activeArtistId(j.assigned_artist||((j.art_requests||[]).slice(-1)[0]?.artist)),instructions:note,files:[]})} />
+            <JobGarmentMocks key={j.id} job={j} order={o} priorMocks={priorMocks} getOrder={()=>oRef.current} itemDetails={itemDetails} onViewItem={_jumpToItem} onSave={saveArtFilesNow} onSendToArtist={note=>setArtReqModal({jIdx:ji,artist:_activeArtistId(j.assigned_artist||((j.art_requests||[]).slice(-1)[0]?.artist)),instructions:note,files:[]})} onLibrarySync={syncLogoLibrary} />
             {/* ── Check Mock: previously-approved art reused on a different color/style ── */}
             {_needsMockCheck&&(()=>{
               const _gLabels=_mockCheckGarments.map(g=>(g.color?g.color+' ':'')+g.sku).join(', ');

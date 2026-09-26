@@ -53,10 +53,23 @@ function sanitizeName(raw, max = 120) {
   return s || 'Logo';
 }
 
-// First renderable URL on a staff art_files entry (entries store files/mockups
-// as strings or {url} objects — see the customer Artwork tab in CustDetail.js).
+// The design's web logo — the transparent PNG cutout staff/artists make per color way (the
+// same image the job's "logo detail" and webstores use): the "all garments" default entry,
+// then the legacy web_logo_url, then any color-way entry. '' when there is none.
+function artWebLogoUrl(a) {
+  const wl = (Array.isArray(a.web_logos) ? a.web_logos : []).filter((w) => w && typeof w.url === 'string' && w.url);
+  const def = wl.find((w) => w.is_default || (!w.color_way_id && !String(w.color_way || '').trim()));
+  return (def && def.url) || (typeof a.web_logo_url === 'string' && a.web_logo_url) || (wl[0] && wl[0].url) || '';
+}
+
+// First renderable URL on a staff art_files entry: the web logo when the design has one (a
+// clean transparent cutout reads far better in the coach's logo picker than a mockup or the
+// production file), else the files/mockups (strings or {url} objects — see the customer
+// Artwork tab in CustDetail.js).
 function artEntryUrl(a) {
   if (!a) return '';
+  const web = artWebLogoUrl(a);
+  if (web) return web;
   if (typeof a.url === 'string' && a.url) return a.url;
   const lists = [a.files, a.mockup_files];
   for (const list of lists) {

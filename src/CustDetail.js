@@ -5,6 +5,7 @@ import { mockSkuOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos
 import { invoiceTotalsRows } from './lib/invoiceDocTotals';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
 import { pickCwAsset, normalizeWebLogos, deriveJobItemStatus, buildJobs } from './businessLogic';
+import { mergeWebLogoEdit } from './lib/logoDetail';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
 import { artWriteMatches } from './lib/artIdentity';
 import { ptDateInput } from './lib/storeClock';
@@ -1561,17 +1562,16 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       if(!ok){nf&&nf('Use a transparent PNG or SVG for the web logo','error');return}
       nf&&nf('Uploading '+file.name+'...');
       let url;try{url=await fileUpload(file,'nsa-store-art')}catch(e){nf&&nf('Upload failed: '+e.message,'error');return}
-      if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if(_rowMatch(a,so.customer_id)){changed=true;return{...a,web_logo_url:url}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
-      const hadLib=updateLibArt(a=>({...a,web_logo_url:url}));
-      if(!hadLib)addLibArt(_libSeed({web_logo_url:url}));
-      setCustArtDetail(d=>d?{...d,web_logo_url:url}:d);
+      // The single web logo IS the "all garments" default entry — set it through the same
+      // per-color-way merge so other color ways' logos (on the library and every order) stay.
+      saveWebLogos([{url,color_way:'',is_default:true},...webLogos.filter(w=>!(w.is_default||!((w.color_way||'').trim())))]);
       nf&&nf('Web logo added');
     };
     const pickWebLogo=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.svg,image/png,image/svg+xml';inp.onchange=()=>{const f=inp.files&&inp.files[0];if(f)setWebLogoFile(f)};inp.click()};
     const removeWebLogo=()=>{
-      if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if(_rowMatch(a,so.customer_id)&&a.web_logo_url){changed=true;return{...a,web_logo_url:''}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
-      updateLibArt(a=>({...a,web_logo_url:''}));
-      setCustArtDetail(d=>d?{...d,web_logo_url:''}:d);
+      // Removing the default must also drop its web_logos entry, or it keeps resolving.
+      const gone=art.web_logo_url;
+      saveWebLogos(webLogos.filter(w=>w.url!==gone&&!(w.is_default||!((w.color_way||'').trim()))));
       nf&&nf('Web logo removed');
     };
     const prodFiles=(art._allProd&&art._allProd.length)?art._allProd:(art.prod_files||[]).filter(f=>f).map(f=>({file:f,url:typeof f==='string'?f:(f?.url||''),src:art._srcLabel||''}));
@@ -1629,8 +1629,11 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       // resolution survives CW renames; blank entries become the is_default "all garments" logo.
       const clean=normalizeWebLogos(list,cwList||art.color_ways||[]);
       const def=(clean.find(w=>w.is_default||!((w.color_way||'').trim()))||clean[0]||{}).url||'';
-      if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if(_rowMatch(a,so.customer_id)){changed=true;return{...a,web_logos:clean,web_logo_url:def}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
-      const hadLib=updateLibArt(a=>({...a,web_logos:clean,web_logo_url:def}));
+      // Apply only this edit to each copy (library + every order): wholesale replacement wiped
+      // color-way logos another order had (e.g. a job's logo detail). Order writes carry the
+      // removal markers so a conflict merge can't bring a removed logo back.
+      if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if(_rowMatch(a,so.customer_id)){changed=true;return mergeWebLogoEdit(a,webLogos,clean)}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
+      const hadLib=updateLibArt(a=>mergeWebLogoEdit(a,webLogos,clean,{mark:false}));
       if(!hadLib)addLibArt(_libSeed({web_logos:clean,web_logo_url:def}));
       setCustArtDetail(d=>d?{...d,web_logos:clean,web_logo_url:def}:d);
     };
