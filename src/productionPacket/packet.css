@@ -30,3 +30,4 @@ body:has(.pp){margin:0}
 .pp-issue-list{display:grid;gap:8px;margin:10px 0}.pp-issue-list>button{display:flex;justify-content:space-between;gap:16px;text-align:left;background:#fff8ec;border-color:#ecd8b5;color:#855314}.pp-issue-list>button strong{white-space:nowrap}
 .pp-roster{margin-top:18px}.pp-personal-card{border-top:4px solid var(--store-accent)}.pp-garment-mocks summary small{color:var(--teal);font-size:10px}
 @media(max-width:800px){.pp-section-intro{display:block}.pp-section-intro>strong{display:inline-block;margin-top:8px}}
+.pp-share-tools{margin:16px 0}.pp-share-tools>input{width:100%;margin:8px 0}.pp-share-tools label{display:block;margin:12px 0;font-weight:600}.pp-share-tools label input,.pp-share-tools label textarea,.pp-share-tools select{display:block;width:100%;margin-top:6px}.pp-share-tools .pp-card{margin-top:12px}.pp-share-tools .pp-card>button{margin-right:8px}

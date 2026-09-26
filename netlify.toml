@@ -370,6 +370,10 @@
   node_bundler = "esbuild"
   timeout = 26
 
+[functions."store-production-email"]
+  node_bundler = "esbuild"
+  timeout = 26
+
 [functions."store-production-pdf"]
   node_bundler = "esbuild"
   timeout = 26
