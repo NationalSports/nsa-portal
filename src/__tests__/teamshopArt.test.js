@@ -217,3 +217,15 @@ describe('upload success path', () => {
     expect(/[\u0000-\u001f\u007f]/.test(row.name)).toBe(false);
   });
 });
+
+describe('web logos in the coach logo list', () => {
+  test('a design with a web logo offers that transparent cutout, not the production file', () => {
+    const [a] = teamshopArt.sanitizeArtFiles([{ id: 'a1', name: 'Crest', files: [{ url: 'crest.ai.pdf' }],
+      web_logos: [{ url: 'navy.png', color_way_id: 'cw1', color_way: 'Navy' }, { url: 'default.png', color_way: '', is_default: true }] }]);
+    expect(a.url).toBe('default.png');
+    const [b] = teamshopArt.sanitizeArtFiles([{ id: 'b', name: 'B', web_logo_url: 'legacy.png', files: ['x.pdf'] }]);
+    expect(b.url).toBe('legacy.png');
+    const [c] = teamshopArt.sanitizeArtFiles([{ id: 'c', name: 'C', mockup_files: [{ url: 'mock.png' }] }]);
+    expect(c.url).toBe('mock.png');
+  });
+});
