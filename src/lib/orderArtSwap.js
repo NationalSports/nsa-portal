@@ -6,7 +6,14 @@ export function replaceTbdArt(order, tbdId, source) {
   const replacement = JSON.parse(JSON.stringify(source));
   delete replacement._so_id;
   delete replacement._so_memo;
+  delete replacement.so_id;
+  delete replacement.estimate_id;
+  delete replacement.customer_id;
+  delete replacement._artEditedFields;
+  delete replacement._artDeletes;
   replacement.id = tbdId;
+  if (current._version != null) replacement._version = current._version;
+  else delete replacement._version;
   replacement.uploaded = new Date().toLocaleDateString();
   replacement.mock_links = {};
   replacement.item_mockups = {};
