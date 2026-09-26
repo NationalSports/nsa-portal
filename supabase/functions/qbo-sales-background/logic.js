@@ -113,10 +113,14 @@ export function classifySourceInvoice(invoice, today) {
 // leaves QBO permanently short. Payments for the new total are then refused for as
 // long as the mapping lives, so the drift is reported instead of silently skipped.
 export function linkedInvoiceTotalDrift(invoice, qboInvoice) {
+  // A voided or deleted Portal invoice is excluded for the same reason
+  // classifySourceInvoice excludes it: its QBO counterpart is zeroed on purpose,
+  // so the difference is the void working, not a total that moved.
+  if (invoice?.deleted_at || clean(invoice?.status).toLowerCase()==='void') return null;
   const portalTotal=money(invoice?.total), qboTotal=money(qboInvoice?.TotalAmt);
   const difference=money(portalTotal-qboTotal);
   if(Math.abs(difference)<=0.005)return null;
-  return {portal_total:portalTotal, qbo_total:qboTotal, difference, cc_fee:money(invoice?.cc_fee)};
+  return {portal_total:portalTotal, qbo_total:qboTotal, difference};
 }
 
 export function taxPlan(invoice, customer, partnerTaxEnabled=true) {

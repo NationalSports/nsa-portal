@@ -389,3 +389,94 @@ describe('_dbSaveInvoiceInner — identity guard with no client created_at', () 
     expect(invCalls(__mockState).filter(c => c.method === 'upsert').length).toBe(1);
   });
 });
+
+// ── The core-column retry must not launder a unique violation (2026-09-25) ──────────────────
+// Three OMG store invoices were created seconds apart. Twice, a save carrying the PREVIOUS store's
+// invoice landed on the next invoice's number. The DB refused it — its idempotency_key duplicated
+// the previous invoice's — but the upsert fallback retried with every "extra" column stripped,
+// idempotency_key included, and wrote it anyway. INV-64140 (Biola, $1,901.39) became a second
+// San Joaquin invoice and was synced to QuickBooks; INV-64141 (Exeter) became Biola's.
+describe('_dbSaveInvoiceInner — unique violation is a refusal, not a schema gap', () => {
+  beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
+  afterEach(() => { restoreEnv(); jest.resetModules(); });
+
+  const incumbentBiola = { id: 'INV-64140', created_at: '2026-09-25T16:16:55.295116+00:00', customer_id: 'c-ns-2832', so_id: 'SO-2424', total: 1901.39, paid: 1901.39, status: 'paid' };
+  // Created seconds earlier, so the created_at tolerance treats it as the same document and the
+  // save reaches the upsert — exactly as it did in production.
+  const sanJoaquinDup = () => ({
+    id: 'INV-64140', created_at: '2026-09-25T16:16:51+00:00', customer_id: 'c-ns-4536', so_id: 'SO-2421',
+    total: 1331.3, paid: 1331.3, status: 'paid', idempotency_key: 'omg:OMG-sale_ESAYD',
+    payments: [{ amount: 1331.3, method: 'store', ref: 'OMG ESAYD', date: '09/25/2026', cc_fee: 0 }], items: [],
+  });
+  const uniqueViolation = { code: '23505', message: 'duplicate key value violates unique constraint "invoices_idempotency_key_uidx"' };
+
+  test('a duplicate idempotency_key blocks the save instead of overwriting the incumbent', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [
+        { data: incumbentBiola, error: null },   // identity read
+        { error: uniqueViolation },              // the upsert the DB refuses
+        { error: null },                         // what a core-column retry would get
+      ],
+      ...invChildren(),
+    };
+
+    const { _dbSaveInvoice, _outboxList } = require('../lib/dbEngine');
+    const inv = sanJoaquinDup();
+    const result = await _dbSaveInvoice(inv);
+
+    expect(result).toBe(false);
+    const upserts = invCalls(__mockState).filter(c => c.method === 'upsert');
+    // Exactly the one refused attempt — no retry with idempotency_key stripped.
+    expect(upserts.length).toBe(1);
+    expect(upserts[0].args[0].idempotency_key).toBe('omg:OMG-sale_ESAYD');
+    // Nothing was written against Biola's invoice: no payment rows, no line items.
+    expect(__mockState.calls.filter(c => c.table === 'invoice_payments' && c.method !== 'select').length).toBe(0);
+    expect(__mockState.calls.filter(c => c.table === 'invoice_items' && c.method !== 'select').length).toBe(0);
+    // Parked for a person to look at, not silently dropped.
+    expect((_outboxList() || []).filter(e => e && e.id === 'INV-64140').length).toBeGreaterThan(0);
+  });
+
+  test('a genuinely missing column still retries without the extra columns', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [
+        { data: null, error: null },             // brand-new invoice, nothing at this id
+        { error: { code: 'PGRST204', message: "Could not find the 'idempotency_key' column of 'invoices' in the schema cache" } },
+        { error: null },                         // core-column retry succeeds
+      ],
+      ...invChildren(),
+    };
+
+    const { _dbSaveInvoice } = require('../lib/dbEngine');
+    const inv = { ...sanJoaquinDup(), id: 'INV-64199', payments: [] };
+    const result = await _dbSaveInvoice(inv);
+
+    expect(result).not.toBe(false);
+    const upserts = invCalls(__mockState).filter(c => c.method === 'upsert');
+    expect(upserts.length).toBe(2);
+    expect(upserts[1].args[0]).not.toHaveProperty('idempotency_key');
+  });
+
+  test('any other upsert error fails the save for retry rather than forcing a stripped row through', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [
+        { data: null, error: null },
+        { error: { code: '23514', message: 'new row violates check constraint' } },
+        { error: null },
+      ],
+      ...invChildren(),
+    };
+
+    const { _dbSaveInvoice } = require('../lib/dbEngine');
+    const inv = { ...sanJoaquinDup(), id: 'INV-64199', payments: [] };
+    const result = await _dbSaveInvoice(inv);
+
+    expect(result).toBe(false);
+    expect(invCalls(__mockState).filter(c => c.method === 'upsert').length).toBe(1);
+  });
+});
