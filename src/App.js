@@ -4,6 +4,7 @@ import GarmentMockCard, { LogoDetailTiles } from './GarmentMockCard';
 import { removeGarmentSlotMock } from './safeHelpers';
 import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jobMockReadiness';
 import {createHistoryStore} from './lib/documentHistory';
+import { setEmailBlockRegistry, deliveryFailureAdvice } from './lib/emailRouting';
 import {createCoalescedReload} from './lib/coalescedReload';
 import { indexFirstById } from './lib/rowLookup';
 import { localRowIsNewer as _localRowIsNewer, keepLocalAdoptVersion as _keepLocalAdoptVersion } from './lib/pollMergeRecency';
@@ -881,6 +882,8 @@ const checkBrevoDelivery=async(messageId)=>{
     if(netErr)return null;
     if(r.status===429){_brevoBackoffUntil=Date.now()+600000;return null}// rate-limited: back off 10 min
     if(!r.ok)return null;const d=await r.json();
+    if(String(messageId).startsWith('gmail:'))return d.delivery&&d.delivery.status==='failed'?d.delivery:null;
+    if(d.automaticRetry&&['resent','retrying','review'].includes(d.automaticRetry.status))return{status:'failed',automatic_retry:d.automaticRetry,at:d.automaticRetry.updated_at,email:d.automaticRetry.rejection_events?.[0]?.email||(d.automaticRetry.retry_recipients||[])[0]||'',event:d.automaticRetry.rejection_events?.[0]?.event||'automatic_retry',reason:d.automaticRetry.rejection_events?.[0]?.reason||d.automaticRetry.error||''};
     const evs=Array.isArray(d.events)?d.events:[];
     if(!evs.length)return null;
     const _ev=e=>String((e&&e.event)||'');
@@ -890,7 +893,7 @@ const checkBrevoDelivery=async(messageId)=>{
     const open=evs.find(e=>_BREVO_OPEN.test(_ev(e)));
     if(open)return{status:'opened',at:open.date,email:open.email||null};
     const bad=evs.find(e=>_BREVO_FAIL.test(_ev(e)));
-    if(bad)return{status:'failed',at:bad.date,email:bad.email||null,event:_ev(bad),reason:bad.reason||''};
+    if(bad)return{status:'failed',at:bad.date,email:bad.email||null,event:_ev(bad),reason:bad.reason||'',automatic_retry:d.automaticRetry||null};
     const soft=evs.find(e=>_BREVO_SOFT.test(_ev(e)));
     if(soft)return{status:'deferred',at:soft.date,email:soft.email||null,event:_ev(soft),reason:soft.reason||''};
     return null;// requests/delivered only — in flight, nothing to report yet
@@ -904,8 +907,13 @@ const checkBrevoDelivery=async(messageId)=>{
 // while the entry we patch lives in the latest state, so the two are never the same object.
 const _applyDelivery=(doc,lastSend,res)=>{
   const hist=(doc.sent_history||[]).map(h=>(h&&h.messageId&&h.messageId===lastSend.messageId)
-    ?{...h,delivery:res.status,delivery_at:res.at||null,delivery_event:res.event||null,delivery_reason:res.reason||null,delivery_to:res.email||h.to||null}
+    ?{...h,automatic_retry:res.automatic_retry||h.automatic_retry||null,delivery:res.status,delivery_at:res.at||null,delivery_event:res.event||null,delivery_reason:res.reason||null,delivery_to:res.email||h.to||null}
     :h);
+  if(res.automatic_retry){
+    const sent=(res.automatic_retry.retry_results||[]).filter(r=>r.status==='sent'&&r.messageId);
+    for(const r of sent)if(!hist.some(h=>h.messageId===r.messageId))hist.push({sent_at:r.at,sent_by:lastSend.sent_by||'auto',to:r.email,type:'automatic_firewall_retry',messageId:r.messageId,from:r.from,auto_retry_of:lastSend.messageId});
+    if(res.automatic_retry.status==='resent')return{...doc,email_status:'sent',sent_history:hist};
+  }
   if(res.status==='opened')return{...doc,email_status:'opened',email_opened_at:new Date(res.at).toLocaleString(),_opened_by_email:res.email||lastSend.to||'',sent_history:hist};
   if(res.status==='failed')return{...doc,email_status:'failed',_delivery_failed_to:res.email||lastSend.to||'',_delivery_reason:res.reason||res.event||'',sent_history:hist};
   return{...doc,sent_history:hist};// deferred — Brevo is still retrying, leave the status alone
@@ -928,9 +936,9 @@ const _emailFailedTodos=({ests,sos,invs,cust})=>{
     const at=new Date(f.delivery_at||f.sent_at||0).getTime();
     if(!(at>=cutoff))return;
     const c=(cust||[]).find(x=>x.id===doc.customer_id);
-    const why=f.delivery_reason||(f.delivery_event==='blocked'?'blocked by their mail server':f.delivery_event)||'rejected';
+    const fix=deliveryFailureAdvice(f);
     out.push({type:'email_failed',priority:0,msg:'📭 '+label+' email NOT delivered: '+doc.id,
-      detail:(c?.name||c?.alpha_tag||doc.id)+' · '+(f.delivery_to||f.to||'recipient')+' · '+why+' — send the PDF from your own email or get another address',
+      detail:(c?.name||c?.alpha_tag||doc.id)+' · '+(f.delivery_to||f.to||'recipient')+' · '+fix,
       action:'Open',role:'sales',[kind]:doc,...(kind==='est'?{estC:c}:{}),date:f.delivery_at||f.sent_at,
       dismissKey:'email_failed:'+doc.id+':'+(f.messageId||'')});
   };
@@ -3552,6 +3560,9 @@ export default function App(){
   // Read current docs through refs so the poll interval is created ONCE (empty deps).
   // Previously this depended on [ests,sos,invs], so every save re-fired an immediate
   // burst of up to 15 sequential Brevo calls — flooding the rate-limited events API with 429s.
+  // Teach the shared sender which recipients bounced before, so sends to a district that blocks
+  // Brevo go out through Gmail and dead mailboxes are refused (lib/emailRouting).
+  React.useEffect(()=>{setEmailBlockRegistry([ests,sos,invs])},[ests,sos,invs]);
   const _brevoDocsRef=React.useRef({ests,sos,invs});
   _brevoDocsRef.current={ests,sos,invs};
   // Current user + toast for the poller below (its interval is created once, so it reads these via a ref).
@@ -3574,17 +3585,18 @@ export default function App(){
       // A 'deferred' verdict leaves email_status on 'sent', so this doc stays in the pending
       // list and gets re-polled. Only write when the verdict actually CHANGES, or every cycle
       // would re-stamp identical history and trigger a pointless save.
-      const _isNew=(lastSend,res)=>res&&lastSend.delivery!==res.status;
+      const _isNew=(lastSend,res)=>res&&(lastSend.delivery!==res.status||lastSend.automatic_retry?.status!==res.automatic_retry?.status);
       // Pop up a warning for the rep who sent it when their email bounces. Every open tab polls,
       // so only the sender sees it; the dashboard to-do (_emailFailedTodos) is the lasting alert.
       const _alertFail=(doc,lastSend,res)=>{
         if(res.status!=='failed')return;
         const me=_brevoMeRef.current;const u=me&&me.cu;
         if(!u||!me.nf||!lastSend.sent_by||(lastSend.sent_by!==u.name&&lastSend.sent_by!==u.id))return;
-        me.nf('📭 '+doc.id+' was NOT delivered to '+(res.email||lastSend.to||'the recipient')+' — their mail server blocked it. Send the PDF from your own email.','error');
+        if(res.automatic_retry?.status==='resent'){me.nf(doc.id+' was automatically resent through Gmail. Delivery is unconfirmed; no manual resend is needed.');return;}
+        me.nf('📭 '+doc.id+' was NOT delivered to '+(res.email||lastSend.to||'the recipient')+' — '+deliveryFailureAdvice({messageId:lastSend.messageId,delivery_reason:res.reason,delivery_event:res.event,automatic_retry:res.automatic_retry}),'error');
       };
       // Check estimates with pending email_status='sent' and a recent messageId send
-      const pendingEsts=ests.filter(e=>e.email_status==='sent'&&(e.sent_history||[]).some(_fresh));
+      const pendingEsts=ests.filter(e=>(e.email_status==='sent'||(e.email_status==='failed'&&(e.sent_history||[]).some(h=>h.automatic_retry&&['pending','retrying'].includes(h.automatic_retry.status))))&&(e.sent_history||[]).some(_fresh));
       for(const est of pendingEsts.slice(0,5)){
         const lastSend=(est.sent_history||[]).filter(_fresh).slice(-1)[0];
         if(!lastSend)continue;
@@ -3592,7 +3604,7 @@ export default function App(){
         if(_isNew(lastSend,result)){setEsts(prev=>prev.map(e=>e.id===est.id?_applyDelivery(e,lastSend,result):e));_alertFail(est,lastSend,result)}
       }
       // Check SOs
-      const pendingSOs=sos.filter(s=>s.email_status==='sent'&&(s.sent_history||[]).some(_fresh));
+      const pendingSOs=sos.filter(s=>(s.email_status==='sent'||(s.email_status==='failed'&&(s.sent_history||[]).some(h=>h.automatic_retry&&['pending','retrying'].includes(h.automatic_retry.status))))&&(s.sent_history||[]).some(_fresh));
       for(const so of pendingSOs.slice(0,5)){
         const lastSend=(so.sent_history||[]).filter(_fresh).slice(-1)[0];
         if(!lastSend)continue;
@@ -3600,7 +3612,7 @@ export default function App(){
         if(_isNew(lastSend,result)){setSOs(prev=>prev.map(s=>s.id===so.id?_applyDelivery(s,lastSend,result):s));_alertFail(so,lastSend,result)}
       }
       // Check invoices
-      const pendingInvs=invs.filter(i=>i.email_status==='sent'&&(i.sent_history||[]).some(_fresh));
+      const pendingInvs=invs.filter(i=>(i.email_status==='sent'||(i.email_status==='failed'&&(i.sent_history||[]).some(h=>h.automatic_retry&&['pending','retrying'].includes(h.automatic_retry.status))))&&(i.sent_history||[]).some(_fresh));
       for(const inv of pendingInvs.slice(0,5)){
         const lastSend=(inv.sent_history||[]).filter(_fresh).slice(-1)[0];
         if(!lastSend)continue;

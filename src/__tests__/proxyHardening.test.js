@@ -73,6 +73,11 @@ describe('image-proxy (SAFE-allowlisted)', () => {
 // SAFE-allowlisted (the fetched host is hardcoded to api.brevo.com; the caller
 // cannot steer it) + GATED (staff-only — carries the company Brevo key).
 describe('brevo-proxy (SAFE-allowlisted, GATED)', () => {
+  beforeEach(() => {
+    // Successful auth now provides the admin client for the shared routing lookup.
+    const chain = { select: () => chain, not: () => chain, order: () => chain, range: async () => ({ data: [] }) };
+    mockVerifyResult.admin = { from: () => chain };
+  });
   test('anonymous caller is rejected before any fetch (no anonymous relay of the API key)', async () => {
     mockVerifyResult = { ok: false, status: 401, error: 'Missing bearer token' };
     process.env.BREVO_API_KEY = 'brevo-secret-key';
@@ -86,7 +91,7 @@ describe('brevo-proxy (SAFE-allowlisted, GATED)', () => {
   test('authenticated send only ever fetches api.brevo.com, and the key is a request header, never in the response body', async () => {
     process.env.BREVO_API_KEY = 'brevo-secret-key';
     const { handler } = load('brevo-proxy.js');
-    global.fetch = jest.fn(async () => ({ status: 200, text: async () => JSON.stringify({ messageId: 'abc' }) }));
+    global.fetch = jest.fn(async () => ({ ok: true, status: 200, json: async () => ({ messageId: 'abc' }) }));
     const res = await handler({ httpMethod: 'POST', queryStringParameters: null, body: JSON.stringify({ to: [{ email: 'a@b.com' }] }) });
     expect(res.statusCode).toBe(200);
     expect(new URL(global.fetch.mock.calls[0][0]).hostname).toBe('api.brevo.com');
@@ -107,7 +112,7 @@ describe('brevo-proxy (SAFE-allowlisted, GATED)', () => {
   test('current save-guard alert is forwarded without the private protocol marker', async () => {
     process.env.BREVO_API_KEY = 'brevo-secret-key';
     const { handler } = load('brevo-proxy.js');
-    global.fetch = jest.fn(async () => ({status:201,text:async()=>JSON.stringify({messageId:'m2'})}));
+    global.fetch = jest.fn(async () => ({ok:true,status:201,json:async()=>({messageId:'m2'})}));
     const body={sender:{name:'NSA Portal'},subject:'⚠️ NSA Portal — Save blocked on EST-2583',portalAlertVersion:2};
     const res=await handler({httpMethod:'POST',queryStringParameters:null,body:JSON.stringify(body)});
     expect(res.statusCode).toBe(201);

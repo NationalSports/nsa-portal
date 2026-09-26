@@ -3975,8 +3975,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const decorations = [];
       // Numbers / names attach as deco lines with the actual values (roster/names
       // keyed by size), NOT as free-text production notes.
-      if (pdef.num && hasVals(g.numbers)) decorations.push({ kind: 'numbers', position: 'Back', num_method: 'screen_print', num_size: '6"', two_color: false, sell_override: null, sell_suppressed: true, custom_font_art_id: null, roster: g.numbers, ...routing });
-      if (pdef.name && hasVals(g.names)) decorations.push({ kind: 'names', position: 'Back Center', sell_override: null, sell_suppressed: true, sell_each: 6, cost_each: 3, names: g.names, ...routing });
+      // Checkout revenue is already in unit_sell. Persist the zero override: the
+      // transient sell_suppressed flag is stripped when decorations are saved.
+      if (pdef.num && hasVals(g.numbers)) decorations.push({ kind: 'numbers', position: 'Back', num_method: 'screen_print', num_size: '6"', two_color: false, sell_override: 0, sell_suppressed: true, custom_font_art_id: null, roster: g.numbers, ...routing });
+      if (pdef.name && hasVals(g.names)) decorations.push({ kind: 'names', position: 'Back Center', sell_override: 0, sell_suppressed: true, sell_each: 6, cost_each: 3, names: g.names, ...routing });
       // Each builder logo placement → one art deco + its art file on the SO.
       const seenPlace = new Set();
       (decosByKey[sourcePid] || decosByKey[g.sku] || []).forEach((d) => {

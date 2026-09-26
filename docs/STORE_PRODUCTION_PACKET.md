@@ -47,3 +47,9 @@ Revision acknowledgment, per-recipient unread tracking, outbound message notific
 - The live page requests fresh data every 30 seconds while visible, on focus, and on Refresh. An issued revision and downloaded PDF remain snapshots. SO art is authoritative for batched orders; master store artwork edits do not propagate into an existing copied SO art record through this feature.
 - Regression coverage includes source artwork dimension/thread/stitch changes, partial personalization size totals, substitutions, quantity mismatches, public access boundaries, and PDF verification/message metadata.
 - Recipient identity is not inferred from a majority of line names; supplied row names remain intact, including orders containing multiple people.
+
+## Sharing links and DPO references
+
+The sharing panel always shows the existing recipient link. Copy link and Copy message with link work without a staff session. Open in my email app starts a mailto draft addressed to the selected DPO's linked vendor contact; the user sends it from their own email account. There is no server email send action in this flow.
+
+The packet token authorizes reading only associated DPO contacts and downloading a dated DPO reference PDF within its stored store/SO scope. Expired/revoked tokens remain invalid, and request parameters cannot widen scope. Recipients follow the same packet link to download the associated DPO. Existing staff-only views can create a recipient link with Copy link. No recipient token is minted or renewed when an existing recipient forwards their link.
