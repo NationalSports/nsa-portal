@@ -48,8 +48,8 @@ Revision acknowledgment, per-recipient unread tracking, outbound message notific
 - Regression coverage includes source artwork dimension/thread/stitch changes, partial personalization size totals, substitutions, quantity mismatches, public access boundaries, and PDF verification/message metadata.
 - Recipient identity is not inferred from a majority of line names; supplied row names remain intact, including orders containing multiple people.
 
-## Decorator email
+## Sharing links and DPO references
 
-Copy link is available in the packet header, including on recipient-token pages. Email decorator requires an authenticated staff session; public links do not expose vendor contacts or grant sending access. Staff select a current DPO attached to the store's SOs, then review a draft. The recipient resolves through the DPO's deco_vendor_id to the decorator's linked vendor contact_email (an explicit DPO contact overrides the vendor default). Missing emails remain editable rather than guessed.
+The sharing panel always shows the existing recipient link. Copy link and Copy message with link work without a staff session. Open in my email app starts a mailto draft addressed to the selected DPO's linked vendor contact; the user sends it from their own email account. There is no server email send action in this flow.
 
-Preparing creates a revocable 90-day link scoped to the selected DPO's SO and a dated DPO reference PDF with saved terms, covered garment sizes, rates, and DPO notes. The email uses the existing staff-only Brevo proxy, includes that attachment and link, and sends only after Send email is clicked. No customer-facing invoice or SO prices are included in the DPO PDF. Provider acceptance is reported separately from delivery.
+The packet token authorizes reading only associated DPO contacts and downloading a dated DPO reference PDF within its stored store/SO scope. Expired/revoked tokens remain invalid, and request parameters cannot widen scope. Recipients follow the same packet link to download the associated DPO. Existing staff-only views can create a recipient link with Copy link. No recipient token is minted or renewed when an existing recipient forwards their link.
