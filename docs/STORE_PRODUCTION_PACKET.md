@@ -47,3 +47,9 @@ Revision acknowledgment, per-recipient unread tracking, outbound message notific
 - The live page requests fresh data every 30 seconds while visible, on focus, and on Refresh. An issued revision and downloaded PDF remain snapshots. SO art is authoritative for batched orders; master store artwork edits do not propagate into an existing copied SO art record through this feature.
 - Regression coverage includes source artwork dimension/thread/stitch changes, partial personalization size totals, substitutions, quantity mismatches, public access boundaries, and PDF verification/message metadata.
 - Recipient identity is not inferred from a majority of line names; supplied row names remain intact, including orders containing multiple people.
+
+## Decorator email
+
+Copy link is available in the packet header, including on recipient-token pages. Email decorator requires an authenticated staff session; public links do not expose vendor contacts or grant sending access. Staff select a current DPO attached to the store's SOs, then review a draft. The recipient resolves through the DPO's deco_vendor_id to the decorator's linked vendor contact_email (an explicit DPO contact overrides the vendor default). Missing emails remain editable rather than guessed.
+
+Preparing creates a revocable 90-day link scoped to the selected DPO's SO and a dated DPO reference PDF with saved terms, covered garment sizes, rates, and DPO notes. The email uses the existing staff-only Brevo proxy, includes that attachment and link, and sends only after Send email is clicked. No customer-facing invoice or SO prices are included in the DPO PDF. Provider acceptance is reported separately from delivery.
