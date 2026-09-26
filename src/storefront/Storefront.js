@@ -9,6 +9,7 @@ import { foldScale, foldedQty, foldedSoon, regularSize, sizeRank, scaleOf as _sc
 import { normSzName } from '../pricing';
 import { deliveryWindowLabel, estimatedDeliveryDate, estimatedDeliveryRangeLabel } from '../lib/webstoreDeliveryWindow';
 import { setTrackedStore, trackEvent } from '../lib/webstoreTracking';
+import { kbActivate, SkipLink, MAIN_ID, readable, legibleOn } from '../lib/a11y';
 
 // Route SanMar garment photos through a Cloudinary transform that trims to the
 // garment (on its white studio background) and pads to a uniform 4:5 frame, so
@@ -113,6 +114,7 @@ function StoreStyles() {
         .sf-skew:hover{transform:skewX(-3deg) translateY(-2px)}
         .sf-card{transition:transform .2s cubic-bezier(.4,0,.2,1), box-shadow .2s ease, border-color .2s ease}
         .sf-card .sf-img{transition:transform .35s ease}
+        [data-kb-activate]:focus-visible{outline:3px solid var(--sf-ink,#16223F);outline-offset:3px}
         .sf-card:hover{transform:translateY(-4px);box-shadow:0 10px 30px rgba(25,40,83,.10);border-color:var(--sf-primary,#8C1D40) !important}
         .sf-card:hover .sf-img{transform:scale(1.05)}
         .sf-showcase .sf-card{border-color:rgba(22,34,63,.08);box-shadow:0 14px 34px rgba(22,34,63,.10)}
@@ -385,6 +387,9 @@ function useTheme(store) {
     const varsity = look === 'varsity';
     // A primary deep enough for white type / heading use (see bandColor).
     const band = bandColor(primary);
+    // The dark band the top strip sits on (varsity: `deepest`, else `ink`), so the
+    // accent-colored star / closing-soon text there stays legible.
+    const stripBg = varsity ? darken(band, 0.55) : ink;
     return {
       // NEUTRAL first so the team-derived tokens below actually win — `ink` used
       // to be clobbered by the spread and store.ink_color was silently ignored.
@@ -394,6 +399,7 @@ function useTheme(store) {
       deep: darken(primary, 0.34),
       accent,
       accentDeep: darken(accent, 0.24),
+      accentOnDark: legibleOn(accent, stripBg),
       band,
       ink,
       theme,
@@ -575,6 +581,8 @@ export default function Storefront() {
   // Browse filters driven by the persistent category sub-nav + search field.
   const [cat, setCat] = useState('all');
   const [query, setQuery] = useState('');
+  // Descriptive tab title for screen readers / browser history (WCAG 2.4.2).
+  useEffect(() => { if (store && store.name) document.title = `${store.name} · National Sports Apparel`; }, [store && store.name]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = useCallback(async (slug) => {
     setStatus('loading');
@@ -676,6 +684,7 @@ export default function Storefront() {
   const resetBrowse = () => { setQuery(''); onCat('all'); };
   return (
     <div className={`sf-root${theme.varsity ? ' sf-vs' : ''}${store.presentation_mode === 'showcase' ? ' sf-showcase' : ''}`} style={{ '--sf-accent': theme.accent, '--sf-primary': theme.primary, '--sf-ink': theme.ink, fontFamily: BODY, color: theme.inkText, minHeight: '100vh', background: theme.cream, display: 'flex', flexDirection: 'column' }}>
+      <SkipLink />
       <StoreStyles />
       <div style={{ position: 'sticky', top: 0, zIndex: 30 }}>
         {theme.varsity ? (
@@ -706,7 +715,7 @@ export default function Storefront() {
       {!isOpen && <PreviewBanner status={store.status} />}
       {store.presentation_preview && <AppearancePreviewBanner mode={store.presentation_mode} />}
       {playerCtx && <PlayerBanner player={playerCtx} theme={theme} onClear={clearPlayer} />}
-      <main style={{ flex: 1 }}>
+      <main id={MAIN_ID} style={{ flex: 1 }}>
         {route.view === 'home' && <Home store={store} theme={theme} products={shownProducts} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} onCat={onCat} onResetFilters={resetBrowse} query={query} />}
         {route.view === 'p' && (() => {
           const grp = groupProducts(shownProducts).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
@@ -803,8 +812,8 @@ function VsTopStrip({ store, theme, collapsed = false }) {
     <div style={{ background: theme.deepest, color: 'rgba(255,255,255,0.82)', maxHeight: collapsed ? 0 : 36, overflow: 'hidden', transition: 'max-height .25s ease' }}>
       <div className="sf-topstrip-inner" style={{ maxWidth: 1240, height: 36, margin: '0 auto', padding: '0 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, fontFamily: DISPLAY, fontSize: 14, fontWeight: 600, letterSpacing: '0.09em', textTransform: 'uppercase' }}>
         <a className="sf-topstrip-brand" href="https://nationalsportsapparel.com" style={{ color: 'inherit', textDecoration: 'none', whiteSpace: 'nowrap' }}>← National Sports Apparel</a>
-        <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: closes && closes.urgent ? theme.accent : 'inherit' }}>
-          <span style={{ color: theme.accent }}>★</span>{' '}{deliver} in {estimate} after close{calendarEstimate ? ` · Around ${calendarEstimate}` : ''}{closes ? ` · ${closes.text}` : ''}{' '}<span style={{ color: theme.accent }}>★</span>
+        <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: closes && closes.urgent ? theme.accentOnDark : 'inherit' }}>
+          <span style={{ color: theme.accentOnDark }}>★</span>{' '}{deliver} in {estimate} after close{calendarEstimate ? ` · Around ${calendarEstimate}` : ''}{closes ? ` · ${closes.text}` : ''}{' '}<span style={{ color: theme.accentOnDark }}>★</span>
         </span>
         <a className="sf-vs-phone" href="tel:+17142798777" style={{ color: 'inherit', textDecoration: 'none', whiteSpace: 'nowrap' }}>(714) 279-8777</a>
       </div>
@@ -825,7 +834,7 @@ function VsHeader({ store, theme, cartCount = 0, collapsed = false, query, setQu
   return (
     <header style={{ position: 'relative', background: theme.band, boxShadow: '0 2px 18px rgba(0,0,0,0.18)' }}>
       <div className="sf-vs-hdr" style={{ maxWidth: 1240, height: collapsed ? 60 : 76, margin: '0 auto', padding: '0 24px', display: 'flex', alignItems: 'center', gap: 24, transition: 'height .2s ease' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer', minWidth: 0, flex: 1 }} onClick={() => navTo('/shop/' + store.slug)}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer', minWidth: 0, flex: 1 }} {...kbActivate(() => navTo('/shop/' + store.slug))} aria-label={`${store.name || 'Store'} home`}>
           <span className="sf-vs-crest" style={{ height: collapsed ? 44 : 56, minWidth: collapsed ? 40 : 46, maxWidth: collapsed ? 58 : 76, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, background: '#fff', borderRadius: 2, padding: 5, transition: 'height .2s ease' }}>
             {store.logo_url
               ? <img src={store.logo_url} alt="" style={{ height: collapsed ? 34 : 46, width: 'auto', maxWidth: collapsed ? 48 : 66, objectFit: 'contain' }} />
@@ -839,14 +848,14 @@ function VsHeader({ store, theme, cartCount = 0, collapsed = false, query, setQu
         </nav>
         <div className={'sf-vs-search' + (open ? ' sf-vs-search-open' : '')} style={{ display: open ? 'flex' : 'none', alignItems: 'center', gap: 8, background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.28)', borderRadius: 2, padding: '0 11px', height: 36, width: 210, overflow: 'hidden' }}>
           <SearchIcon color="rgba(255,255,255,0.8)" />
-          <input ref={inputRef} className="sf-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search the store"
+          <input ref={inputRef} className="sf-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search the store" aria-label="Search the store"
             style={{ border: 'none', background: 'transparent', outline: 'none', fontFamily: BODY, fontSize: 14, color: '#fff', width: '100%' }} />
         </div>
         <button type="button" aria-label="Search the store" onClick={() => setSearchOpen((o) => !o)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 6, color: 'rgba(255,255,255,0.88)', flexShrink: 0 }}>
           <SearchIcon color="rgba(255,255,255,0.88)" />
         </button>
         <button className="sf-btn" onClick={() => navTo('/shop/' + store.slug + '/cart')}
-          style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 9, background: theme.accent, color: '#fff', border: 'none', borderRadius: 0, padding: '10px 16px', cursor: 'pointer', fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, letterSpacing: '0.09em', transform: 'skewX(-3deg)' }}>
+          style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 9, background: theme.accent, color: readable(theme.accent, '#fff'), border: 'none', borderRadius: 0, padding: '10px 16px', cursor: 'pointer', fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, letterSpacing: '0.09em', transform: 'skewX(-3deg)' }}>
           <span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>Cart · {cartCount}</span>
         </button>
       </div>
@@ -858,19 +867,25 @@ function VsHeader({ store, theme, cartCount = 0, collapsed = false, query, setQu
 // ── Varsity hero ─────────────────────────────────────────────────────
 // Light hatched panel · team name ghosted large behind · team logo in front ·
 // accent wedge on the right edge · dot matrix · ribbon tab top-left.
+// Visually hidden but read by screen readers.
+const SR_ONLY = { position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0,0,0,0)', whiteSpace: 'nowrap', border: 0 };
+
 function VsHero({ store, theme }) {
   const word = mascotWord(store.name);
   const short = storeShortName(store.name);
   const ribbonSize = varsityRibbonSize(store.name);
   return (
     <section style={{ position: 'relative', overflow: 'hidden', background: '#F7F8FB', borderBottom: `1px solid ${theme.line}` }}>
+      {/* The visible team name below is decorative (aria-hidden, ghosted behind the
+          logo), so the page's one <h1> is this screen-reader-only copy (WCAG 1.3.1 / 2.4.6). */}
+      <h1 style={SR_ONLY}>{store.name}</h1>
       <div aria-hidden style={{ position: 'absolute', inset: 0, background: VS_HATCH, pointerEvents: 'none' }} />
       <div aria-hidden className="sf-vs-edge-left" style={{ position: 'absolute', top: 0, bottom: 0, left: 0, width: '15%', background: 'repeating-linear-gradient(-55deg, rgba(20,32,26,0.14) 0 3px, transparent 3px 12px)', clipPath: 'polygon(0 0,88% 0,100% 8%,90% 22%,100% 40%,88% 58%,100% 74%,90% 90%,100% 100%,0 100%)', pointerEvents: 'none' }} />
       <div aria-hidden className="sf-vs-edge-right" style={{ position: 'absolute', top: 0, bottom: 0, right: 0, width: '15%', background: theme.accent, opacity: 0.9, clipPath: 'polygon(12% 0,100% 0,100% 100%,10% 100%,0 88%,12% 74%,0 58%,12% 40%,0 22%,12% 8%)', pointerEvents: 'none' }} />
       <div aria-hidden className="sf-vs-dots" style={{ position: 'absolute', top: '14%', right: '18%', width: 180, height: 200, background: vsDots(hexA(theme.accent, 0.55)), pointerEvents: 'none' }} />
 
       <div style={{ position: 'relative', zIndex: 2, maxWidth: 1240, margin: '0 auto', padding: '24px 24px 0', width: '100%' }}>
-        <span className="sf-vs-ribbon" style={{ display: 'inline-flex', maxWidth: 'calc(85% - 24px)', background: theme.accent, color: '#fff', fontFamily: DISPLAY, fontWeight: 700, fontSize: ribbonSize, letterSpacing: '0.14em', textTransform: 'uppercase', padding: '8px 18px', transform: 'skewX(-6deg)' }}>
+        <span className="sf-vs-ribbon" style={{ display: 'inline-flex', maxWidth: 'calc(85% - 24px)', background: theme.accent, color: readable(theme.accent, '#fff'), fontFamily: DISPLAY, fontWeight: 700, fontSize: ribbonSize, letterSpacing: '0.14em', textTransform: 'uppercase', padding: '8px 18px', transform: 'skewX(-6deg)' }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 14, transform: 'skewX(6deg)', minWidth: 0, whiteSpace: 'nowrap' }}>
             The official {short} team store · Powered by National Sports Apparel
             <span aria-hidden style={{ display: 'inline-flex', gap: 8, color: 'rgba(255,255,255,0.8)' }}>✕ ✕ ✕</span>
@@ -984,8 +999,8 @@ function VsFooter({ store, theme }) {
         </div>
       </div>
       <div style={{ borderTop: '1px solid rgba(255,255,255,0.14)' }}>
-        <div style={{ maxWidth: 1240, margin: '0 auto', padding: '16px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', fontFamily: DISPLAY, fontSize: 12.5, fontWeight: 600, letterSpacing: 1.3, textTransform: 'uppercase', color: 'rgba(255,255,255,0.6)' }}>
-          <span>© {new Date().getFullYear()} {short || 'Team'} Team Store · Operated by National Sports Apparel.</span>
+        <div style={{ maxWidth: 1240, margin: '0 auto', padding: '16px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', fontFamily: DISPLAY, fontSize: 12.5, fontWeight: 600, letterSpacing: 1.3, textTransform: 'uppercase', color: 'rgba(255,255,255,0.82)' }}>
+          <span>© {new Date().getFullYear()} {short || 'Team'} Team Store · Operated by National Sports Apparel. · <a href="/accessibility" style={{ color: 'inherit' }}>Accessibility</a></span>
           <span>{dealers.join(' · ')}</span>
         </div>
       </div>
@@ -1022,9 +1037,9 @@ function TopStrip({ store, theme, collapsed = false }) {
     <div style={{ background: theme.ink, color: 'rgba(255,255,255,0.82)', maxHeight: collapsed ? 0 : 44, overflow: 'hidden', transition: 'max-height .25s ease' }}>
       <div className="sf-topstrip-inner" style={{ maxWidth: 1240, margin: '0 auto', padding: '7px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, fontFamily: DISPLAY, fontSize: 12.5, fontWeight: 600, letterSpacing: 1.4, textTransform: 'uppercase' }}>
         <span className="sf-topstrip-brand" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          <span style={{ color: theme.accent }}>★</span> Official Team Store · National Sports Apparel
+          <span style={{ color: theme.accentOnDark }}>★</span> Official Team Store · National Sports Apparel
         </span>
-        <span style={{ whiteSpace: 'nowrap', color: closes && closes.urgent ? theme.accent : 'rgba(255,255,255,0.82)' }}>{status}</span>
+        <span style={{ whiteSpace: 'nowrap', color: closes && closes.urgent ? theme.accentOnDark : 'rgba(255,255,255,0.82)' }}>{status}</span>
       </div>
     </div>
   );
@@ -1035,7 +1050,7 @@ function Header({ store, theme, cartCount = 0, collapsed = false }) {
   return (
     <header style={{ background: theme.paper, borderBottom: `1px solid ${theme.line}`, boxShadow: '0 2px 16px rgba(0,0,0,0.06)' }}>
       <div style={{ maxWidth: 1240, margin: '0 auto', padding: collapsed ? '8px 16px' : '14px 24px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'nowrap', transition: 'padding .2s ease' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', minWidth: 0, flex: 1 }} onClick={() => navTo('/shop/' + store.slug)}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', minWidth: 0, flex: 1 }} {...kbActivate(() => navTo('/shop/' + store.slug))} aria-label={`${store.name || 'Store'} home`}>
           <Crest store={store} theme={theme} size={collapsed ? 30 : 40} />
           <div style={{ lineHeight: 1.05, minWidth: 0 }}>
             {!collapsed && <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 2.5, textTransform: 'uppercase', color: theme.accentDeep }}>Official Team Store</div>}
@@ -1045,7 +1060,7 @@ function Header({ store, theme, cartCount = 0, collapsed = false }) {
         <button className="sf-btn sf-skew" onClick={() => navTo('/shop/' + store.slug + '/cart')} style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 9, background: theme.primary, color: '#fff', border: 'none', borderRadius: 4, padding: '11px 18px', cursor: 'pointer', fontFamily: DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: 1.4, textTransform: 'uppercase' }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 9, transform: 'skewX(3deg)' }}>
             <CartIcon />Cart
-            <span style={{ background: theme.accent, color: theme.ink, borderRadius: 999, minWidth: 20, height: 20, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 800, padding: '0 6px' }}>{cartCount}</span>
+            <span style={{ background: theme.accent, color: readable(theme.accent, theme.ink), borderRadius: 999, minWidth: 20, height: 20, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 800, padding: '0 6px' }}>{cartCount}</span>
           </span>
         </button>
       </div>
@@ -1082,7 +1097,7 @@ function CategoryNav({ theme, categories, cat, onCat, query, setQuery, onSearch 
         </button>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, background: theme.cream, border: `1px solid ${theme.line}`, borderRadius: 4, padding: '0 12px', height: 38, minWidth: 200 }} className={'sf-search-wrap' + (open ? ' sf-search-open' : '')}>
           <SearchIcon color={theme.subText} />
-          <input ref={inputRef} className="sf-search" value={query} onChange={(e) => { setQuery(e.target.value); if (e.target.value) onSearch(); }} placeholder="Search the store" style={{ border: 'none', background: 'transparent', outline: 'none', fontFamily: BODY, fontSize: 14, color: theme.inkText, width: '100%' }} />
+          <input ref={inputRef} className="sf-search" value={query} onChange={(e) => { setQuery(e.target.value); if (e.target.value) onSearch(); }} placeholder="Search the store" aria-label="Search the store" style={{ border: 'none', background: 'transparent', outline: 'none', fontFamily: BODY, fontSize: 14, color: theme.inkText, width: '100%' }} />
         </div>
       </div>
     </nav>
@@ -1263,7 +1278,7 @@ function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [], com
       <div aria-hidden style={{ position: 'absolute', inset: 0, background: HASH, pointerEvents: 'none' }} />
       <div style={{ position: 'relative', zIndex: 1, maxWidth: 1240, margin: '0 auto', padding: 'clamp(32px,4vw,56px) 24px', display: 'grid', gridTemplateColumns: showCollage ? 'minmax(0,1.05fr) minmax(0,0.95fr)' : '1fr', gap: 'clamp(24px,4vw,48px)', alignItems: 'center' }} className="sf-hero-grid">
         <div>
-          <span style={{ display: 'inline-block', background: theme.accent, color: theme.ink, fontFamily: DISPLAY, fontWeight: 700, fontSize: 12.5, letterSpacing: 1.6, textTransform: 'uppercase', padding: '7px 16px', marginBottom: 18, transform: 'skewX(-6deg)' }}>
+          <span style={{ display: 'inline-block', background: theme.accent, color: readable(theme.accent, theme.ink), fontFamily: DISPLAY, fontWeight: 700, fontSize: 12.5, letterSpacing: 1.6, textTransform: 'uppercase', padding: '7px 16px', marginBottom: 18, transform: 'skewX(-6deg)' }}>
             <span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>{closes && closes.urgent ? closes.text : 'Spirit Pack · Now Open'}</span>
           </span>
           <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(40px,5.2vw,72px)', lineHeight: 0.95, textTransform: 'uppercase', margin: '0 0 18px', color: '#fff' }}>
@@ -1332,7 +1347,7 @@ function HeroBold({ store, theme, lead, goBundle, scrollGrid }) {
       <div aria-hidden style={{ position: 'absolute', inset: 0, background: HASH, pointerEvents: 'none' }} />
       <div aria-hidden style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.16)', clipPath: 'polygon(28% 0,100% 0,100% 100%,0 100%)', pointerEvents: 'none' }} />
       <div style={{ position: 'relative', zIndex: 2, maxWidth: 1240, margin: '0 auto', padding: 'clamp(40px,5vw,72px) 24px' }}>
-        <span style={{ display: 'inline-block', background: theme.accent, color: theme.ink, fontFamily: DISPLAY, fontWeight: 700, fontSize: 12.5, letterSpacing: 1.6, textTransform: 'uppercase', padding: '7px 16px', marginBottom: 18, transform: 'skewX(-6deg)' }}>
+        <span style={{ display: 'inline-block', background: theme.accent, color: readable(theme.accent, theme.ink), fontFamily: DISPLAY, fontWeight: 700, fontSize: 12.5, letterSpacing: 1.6, textTransform: 'uppercase', padding: '7px 16px', marginBottom: 18, transform: 'skewX(-6deg)' }}>
           <span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>Official Team Store</span>
         </span>
         <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(44px,6vw,84px)', lineHeight: 0.92, textTransform: 'uppercase', margin: '0 0 18px', maxWidth: 900 }}>
@@ -1352,7 +1367,7 @@ function HeroBold({ store, theme, lead, goBundle, scrollGrid }) {
 function SkewBtn({ theme, variant = 'primary', onClick, children }) {
   const map = {
     primary: { background: theme.primary, color: '#fff', border: 'none' },
-    accent: { background: theme.accent, color: theme.ink, border: 'none' },
+    accent: { background: theme.accent, color: readable(theme.accent, theme.ink), border: 'none' },
     outline: { background: 'transparent', color: theme.primary, border: `2px solid ${theme.primary}` },
     outlineLight: { background: 'transparent', color: '#fff', border: '2px solid rgba(255,255,255,0.7)' },
   };
@@ -1386,7 +1401,7 @@ function PackPromo({ store, theme, bundle, bundleItems = [], onClick }) {
   const retail = comps.reduce((a, c) => a + (Number(c.qty || 1) * 0), 0); // components carry no price in this view
   return (
     <div style={{ maxWidth: 1240, margin: '0 auto', padding: '8px 24px clamp(8px,2vw,16px)' }}>
-      <div onClick={onClick} className="sf-btn" style={{ position: 'relative', cursor: 'pointer', overflow: 'hidden', borderRadius: 8, background: `linear-gradient(120deg, ${theme.primary}, ${theme.deep})`, padding: 'clamp(24px,3vw,34px) clamp(24px,3vw,38px)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, flexWrap: 'wrap', boxShadow: '0 14px 36px rgba(0,0,0,0.16)' }}>
+      <div {...kbActivate(onClick)} className="sf-btn" style={{ position: 'relative', cursor: 'pointer', overflow: 'hidden', borderRadius: 8, background: `linear-gradient(120deg, ${theme.primary}, ${theme.deep})`, padding: 'clamp(24px,3vw,34px) clamp(24px,3vw,38px)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, flexWrap: 'wrap', boxShadow: '0 14px 36px rgba(0,0,0,0.16)' }}>
         <div aria-hidden style={{ position: 'absolute', inset: 0, background: HASH, pointerEvents: 'none' }} />
         <div style={{ position: 'relative', zIndex: 1 }}>
           <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 12, letterSpacing: 2, textTransform: 'uppercase', color: theme.accent, marginBottom: 8 }}>Required for every player</div>
@@ -1396,7 +1411,7 @@ function PackPromo({ store, theme, bundle, bundleItems = [], onClick }) {
         <div style={{ position: 'relative', zIndex: 1, display: 'flex', alignItems: 'center', gap: 20 }}>
           {retail > price && <span style={{ fontFamily: DISPLAY, fontSize: 20, color: 'rgba(255,255,255,0.6)', textDecoration: 'line-through' }}>{money(retail)}</span>}
           <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 38, color: '#fff', lineHeight: 1 }}>{money(price)}</span>
-          <span style={{ background: theme.accent, color: theme.ink, fontFamily: DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: 1, textTransform: 'uppercase', padding: '9px 16px', transform: 'skewX(-6deg)' }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>Build It →</span></span>
+          <span style={{ background: theme.accent, color: readable(theme.accent, theme.ink), fontFamily: DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: 1, textTransform: 'uppercase', padding: '9px 16px', transform: 'skewX(-6deg)' }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>Build It →</span></span>
         </div>
       </div>
     </div>
@@ -1552,7 +1567,7 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
   const showBadge = !vs || b.text !== 'In stock';
   const go = () => navTo(`/shop/${store.slug}/${isBundle ? 'b' : 'p'}/${p.webstore_product_id}`);
   return (
-    <div className="sf-card" onClick={go} style={{ cursor: 'pointer', position: 'relative', display: 'flex', flexDirection: 'column', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: vs ? 2 : 6, overflow: 'hidden', boxShadow: vs ? 'none' : '0 2px 12px rgba(0,0,0,0.06)' }}>
+    <div className="sf-card" {...kbActivate(go)} style={{ cursor: 'pointer', position: 'relative', display: 'flex', flexDirection: 'column', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: vs ? 2 : 6, overflow: 'hidden', boxShadow: vs ? 'none' : '0 2px 12px rgba(0,0,0,0.06)' }}>
       <div style={{ position: 'relative', width: '100%', aspectRatio: '4 / 5', background: '#fff', overflow: 'hidden' }}>
         {hasCollage
           ? <BundleCollage comps={comps} theme={theme} />
@@ -1568,8 +1583,8 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
             : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
         {/* Stock / package badge — flat tag top-left in varsity, skewed −6° top-right otherwise */}
         {showBadge && <span style={vs
-          ? { position: 'absolute', top: 0, left: 0, fontFamily: DISPLAY, fontSize: 12, fontWeight: 800, letterSpacing: 1.4, textTransform: 'uppercase', padding: '6px 14px', background: b.bg, color: b.color, zIndex: 2 }
-          : { position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', padding: '4px 10px', background: b.bg, color: b.color, transform: 'skewX(-6deg)', borderRadius: 2, zIndex: 2 }}>
+          ? { position: 'absolute', top: 0, left: 0, fontFamily: DISPLAY, fontSize: 12, fontWeight: 800, letterSpacing: 1.4, textTransform: 'uppercase', padding: '6px 14px', background: b.bg, color: readable(b.bg, b.color), zIndex: 2 }
+          : { position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', padding: '4px 10px', background: b.bg, color: readable(b.bg, b.color), transform: 'skewX(-6deg)', borderRadius: 2, zIndex: 2 }}>
           {vs ? b.text : <span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>{b.text}</span>}
         </span>}
         {/* Category label — bottom-right (varsity moves it above the name instead) */}
@@ -1598,7 +1613,7 @@ function BannerCard({ store, theme, p, bundleItems = [], compInfo = {}, wpById =
   const tiles = imgs.length ? Array.from({ length: 4 }, (_, i) => imgs[i % imgs.length]) : [];
   const go = () => navTo(`/shop/${store.slug}/b/${p.webstore_product_id}`);
   return (
-    <div className="sf-card" onClick={go} style={{ gridColumn: '1 / -1', cursor: 'pointer', position: 'relative', overflow: 'hidden', borderRadius: 8, background: `linear-gradient(120deg, ${theme.primary}, ${theme.deep})`, display: 'flex', alignItems: 'stretch', minHeight: 190, boxShadow: '0 14px 36px rgba(0,0,0,0.16)' }}>
+    <div className="sf-card" {...kbActivate(go)} style={{ gridColumn: '1 / -1', cursor: 'pointer', position: 'relative', overflow: 'hidden', borderRadius: 8, background: `linear-gradient(120deg, ${theme.primary}, ${theme.deep})`, display: 'flex', alignItems: 'stretch', minHeight: 190, boxShadow: '0 14px 36px rgba(0,0,0,0.16)' }}>
       <div aria-hidden style={{ position: 'absolute', inset: 0, background: HASH, pointerEvents: 'none' }} />
       <div style={{ flex: 1, padding: 'clamp(22px,3vw,32px) clamp(24px,3vw,38px)', display: 'flex', flexDirection: 'column', justifyContent: 'center', position: 'relative', zIndex: 1, minWidth: 0 }}>
         <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 800, letterSpacing: 2.5, textTransform: 'uppercase', color: theme.accent, marginBottom: 8 }}>★ Required for every player</div>
@@ -1617,7 +1632,7 @@ function BannerCard({ store, theme, p, bundleItems = [], compInfo = {}, wpById =
         )}
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 10 }}>
           <span style={{ fontFamily: DISPLAY, fontWeight: 900, fontSize: 38, color: '#fff', lineHeight: 1 }}>{money(priceOf(p))}</span>
-          <span style={{ background: theme.accent, color: theme.ink, fontFamily: DISPLAY, fontWeight: 800, fontSize: 13, letterSpacing: 1, textTransform: 'uppercase', padding: '9px 16px', transform: 'skewX(-6deg)', borderRadius: 2 }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>Build It →</span></span>
+          <span style={{ background: theme.accent, color: readable(theme.accent, theme.ink), fontFamily: DISPLAY, fontWeight: 800, fontSize: 13, letterSpacing: 1, textTransform: 'uppercase', padding: '9px 16px', transform: 'skewX(-6deg)', borderRadius: 2 }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>Build It →</span></span>
         </div>
       </div>
     </div>
@@ -1632,7 +1647,7 @@ function ShowcaseCard({ store, theme, p, bundleItems = [], compInfo = {}, wpById
     .map((c) => { const m = compMeta(c, wpById, compInfo); return { img: m.image, name: m.name, decorations: m.decorations, color: m.color }; });
   const go = () => navTo(`/shop/${store.slug}/b/${p.webstore_product_id}`);
   return (
-    <div className="sf-card" onClick={go} style={{ gridColumn: '1 / -1', cursor: 'pointer', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 8, overflow: 'hidden', boxShadow: '0 2px 16px rgba(0,0,0,0.07)' }}>
+    <div className="sf-card" {...kbActivate(go)} style={{ gridColumn: '1 / -1', cursor: 'pointer', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 8, overflow: 'hidden', boxShadow: '0 2px 16px rgba(0,0,0,0.07)' }}>
       {/* Dark header */}
       <div style={{ position: 'relative', overflow: 'hidden', background: `linear-gradient(120deg, ${theme.primary}, ${theme.deep})`, padding: '18px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
         <div aria-hidden style={{ position: 'absolute', inset: 0, background: HASH, pointerEvents: 'none' }} />
@@ -1642,7 +1657,7 @@ function ShowcaseCard({ store, theme, p, bundleItems = [], compInfo = {}, wpById
         </div>
         <div style={{ position: 'relative', zIndex: 1, display: 'flex', alignItems: 'center', gap: 16, flexShrink: 0 }}>
           <span style={{ fontFamily: DISPLAY, fontWeight: 900, fontSize: 32, color: '#fff' }}>{money(priceOf(p))}</span>
-          <span style={{ background: theme.accent, color: theme.ink, fontFamily: DISPLAY, fontWeight: 800, fontSize: 12, letterSpacing: 1, textTransform: 'uppercase', padding: '8px 16px', transform: 'skewX(-6deg)', borderRadius: 2 }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>Build It →</span></span>
+          <span style={{ background: theme.accent, color: readable(theme.accent, theme.ink), fontFamily: DISPLAY, fontWeight: 800, fontSize: 12, letterSpacing: 1, textTransform: 'uppercase', padding: '8px 16px', transform: 'skewX(-6deg)', borderRadius: 2 }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>Build It →</span></span>
         </div>
       </div>
       {/* Item row */}
@@ -1901,11 +1916,11 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', margin: '4px 0 18px' }}>
               {p.takes_number && <div>
                 <div style={label}>Number</div>
-                <input className="sf-input" value={num} onChange={(e) => setNum(e.target.value.replace(/[^0-9]/g, '').slice(0, 3))} placeholder="#" inputMode="numeric" style={fieldStyle(theme, 80)} />
+                <input aria-label="Jersey number" className="sf-input" value={num} onChange={(e) => setNum(e.target.value.replace(/[^0-9]/g, '').slice(0, 3))} placeholder="#" inputMode="numeric" style={fieldStyle(theme, 80)} />
               </div>}
               {p.takes_name && <div>
                 <div style={label}>Name {nameUp > 0 ? `(+${money(nameUp)})` : ''}</div>
-                <input className="sf-input" value={pname} onChange={(e) => setPname(e.target.value.slice(0, 20))} placeholder="Last name" style={fieldStyle(theme, 220)} />
+                <input aria-label="Name on jersey" className="sf-input" value={pname} onChange={(e) => setPname(e.target.value.slice(0, 20))} placeholder="Last name" style={fieldStyle(theme, 220)} />
               </div>}
             </div>
           )}
@@ -1929,7 +1944,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
                 style={{ ...cta(theme), flex: '1 1 150px', width: 'auto', minWidth: 150, background: 'transparent', color: theme.band, border: `2px solid ${theme.band}` }}>Keep Shopping</button>
             )}
           </div>
-          {added && <div style={{ marginTop: 14, background: '#EAF3EC', border: '1px solid #BFE0C8', color: STOCK.in, borderRadius: 6, padding: '11px 14px', fontWeight: 700, fontSize: 14, display: 'flex', alignItems: 'center', gap: 8 }}>✓ Added to cart — <span onClick={() => navTo('/shop/' + store.slug + '/cart')} style={{ textDecoration: 'underline', cursor: 'pointer' }}>view cart</span></div>}
+          <div role="status">{added && <div style={{ marginTop: 14, background: '#EAF3EC', border: '1px solid #BFE0C8', color: STOCK.in, borderRadius: 6, padding: '11px 14px', fontWeight: 700, fontSize: 14, display: 'flex', alignItems: 'center', gap: 8 }}>✓ Added to cart — <span onClick={() => navTo('/shop/' + store.slug + '/cart')} style={{ textDecoration: 'underline', cursor: 'pointer' }}>view cart</span></div>}</div>
 
           <div style={{ marginTop: 24, display: 'grid', gap: 10, borderTop: `1px solid ${theme.line}`, paddingTop: 20 }}>
             {proof.map((pt) => <div key={pt} style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 14.5, color: theme.subText }}>
@@ -2026,7 +2041,7 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
         <div style={{ position: 'relative', zIndex: 1, textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
           {showSave && <span style={{ fontFamily: DISPLAY, fontSize: 20, color: 'rgba(255,255,255,0.6)', textDecoration: 'line-through' }}>{money(list)}</span>}
           <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 44, lineHeight: 1 }}>{money(pack)}</span>
-          {showSave && <span style={{ background: theme.accent, color: theme.ink, fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 1, textTransform: 'uppercase', padding: '6px 12px', transform: 'skewX(-6deg)' }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>Save {money(save)}</span></span>}
+          {showSave && <span style={{ background: theme.accent, color: readable(theme.accent, theme.ink), fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 1, textTransform: 'uppercase', padding: '6px 12px', transform: 'skewX(-6deg)' }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>Save {money(save)}</span></span>}
         </div>
       </div>
 
@@ -2063,11 +2078,11 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
                   <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
                     {c.takes_number && <div>
                       <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: theme.subText, marginBottom: 6 }}>Number</div>
-                      <input className="sf-input" value={nums[c.id] || ''} onChange={(e) => setNums((x) => ({ ...x, [c.id]: e.target.value.replace(/[^0-9]/g, '').slice(0, 3) }))} placeholder="#" inputMode="numeric" style={fieldStyle(theme, 70)} />
+                      <input aria-label="Jersey number" className="sf-input" value={nums[c.id] || ''} onChange={(e) => setNums((x) => ({ ...x, [c.id]: e.target.value.replace(/[^0-9]/g, '').slice(0, 3) }))} placeholder="#" inputMode="numeric" style={fieldStyle(theme, 70)} />
                     </div>}
                     {c.takes_name && <div>
                       <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: theme.subText, marginBottom: 6 }}>Name {Number(c.name_upcharge) > 0 ? `(+${money(c.name_upcharge)})` : ''}</div>
-                      <input className="sf-input" value={names[c.id] || ''} onChange={(e) => setNames((x) => ({ ...x, [c.id]: e.target.value.slice(0, 20) }))} placeholder="Last name" style={fieldStyle(theme, 160)} />
+                      <input aria-label="Name on jersey" className="sf-input" value={names[c.id] || ''} onChange={(e) => setNames((x) => ({ ...x, [c.id]: e.target.value.slice(0, 20) }))} placeholder="Last name" style={fieldStyle(theme, 160)} />
                     </div>}
                   </div>
                 )}
@@ -2554,7 +2569,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
           </div>
         ) : locked ? null : (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <input style={{ ...inp, maxWidth: 220 }} placeholder="Discount / scholarship code" value={couponInput} onChange={(e) => setCouponInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') applyCoupon(); }} />
+            <input aria-label="Discount or scholarship code" style={{ ...inp, maxWidth: 220 }} placeholder="Discount / scholarship code" value={couponInput} onChange={(e) => setCouponInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') applyCoupon(); }} />
             <button onClick={applyCoupon} style={{ background: '#fff', border: '2px solid #e2e8f0', borderRadius: 8, padding: '10px 18px', fontWeight: 800, fontSize: 13, cursor: 'pointer' }}>Apply</button>
           </div>
         )}
@@ -3063,7 +3078,7 @@ function Footer({ store, theme }) {
       </div>
       <div style={{ borderTop: '1px solid rgba(255,255,255,0.12)' }}>
         <div style={{ maxWidth: 1240, margin: '0 auto', padding: '16px 24px', fontSize: 12.5, letterSpacing: 0.4, color: 'rgba(255,255,255,0.6)' }}>
-          © 2026 National Sports Apparel · (714) 279-8777 · hello@nationalsportsapparel.com
+          © 2026 National Sports Apparel · (714) 279-8777 · hello@nationalsportsapparel.com · <a href="/accessibility" style={{ color: 'inherit' }}>Accessibility</a>
         </div>
       </div>
     </footer>

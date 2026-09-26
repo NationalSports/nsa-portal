@@ -1,14 +1,17 @@
 import React, { useRef, useState } from 'react';
 import GarmentMockCard from './GarmentMockCard';
+import JobGarmentProgress, { garmentProgress } from './JobGarmentProgress';
 import { jobMockCardGroups } from './lib/jobMockCards';
 import { safeArt, garmentMockKey, mockSkuOf, slotMockFiles, adoptArtProofAsGarmentMock, removeGarmentSlotMock, resolveMockLink, mockLinkSourceFiles, applyMockLink } from './safeHelpers';
 import { fileUpload, openFile } from './utils';
 
-export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSave }) {
+export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSave, itemDetails = [], onViewItem, onSendToArtist }) {
   const [busy, setBusy] = useState(false);
   const lock = useRef(false);
   const [error, setError] = useState('');
   const groups = jobMockCardGroups(job, order, priorMocks);
+  const progress = garmentProgress(job, order, itemDetails);
+  progress.forEach(g => { if (!groups.some(group => garmentMockKey(group.item) === g.key)) groups.push({ item: g.item, slots: [], allSlots: [] }); });
   if (!groups.length) return null;
   const run = async action => {
     if (lock.current) return false;
@@ -41,6 +44,7 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
           mocks={slotMockFiles(slot, allSlots, item)} candidates={slot.candidates} suggest busy={busy}
           accept=".pdf,.png,.jpg,.jpeg,.webp,.gif"
           uploadLabel="Upload mock image"
+          onSendToArtist={onSendToArtist && (() => onSendToArtist('Need a new mock for ' + [item.color, mockSkuOf(item), item.name].filter(Boolean).join(' ') + (slot.sub ? ' (' + slot.sub + ')' : '') + ' — the existing mock is the wrong garment/color.'))}
           onUse={file => run(() => useFiles(slot, [file]))}
           onRemove={url => run(() => onSave(removeGarmentSlotMock(safeArt(getOrder()), slot, allSlots, item, url), 'Mock removed'))}
           onUpload={files => run(async () => {
@@ -49,6 +53,7 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
             return useFiles(slot, uploaded);
           })}
         />)}</div>}
+        <JobGarmentProgress summary={progress.find(g => g.key === garmentMockKey(item))} onViewItem={onViewItem} />
       </div>;
     })}
   </section>;

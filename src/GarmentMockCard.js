@@ -5,7 +5,7 @@ import './GarmentMockCard.css';
 const urlOf = f => typeof f === 'string' ? f : f?.url || '';
 
 // One preview per slot. Selecting a candidate never changes approval or saves it.
-export default function GarmentMockCard({ label, sub, mocks, candidates, suggest = false, busy, onUse, onRemove, onUpload, uploadLabel = 'Upload', accept = '.pdf,.png,.jpg,.jpeg,.webp,.gif,.ai,.eps,.svg' }) {
+export default function GarmentMockCard({ label, sub, mocks, candidates, suggest = false, busy, onUse, onRemove, onUpload, onSendToArtist, uploadLabel = 'Upload', accept = '.pdf,.png,.jpg,.jpeg,.webp,.gif,.ai,.eps,.svg' }) {
   const [choosing, setChoosing] = useState(false);
   const [selected, setSelected] = useState('');
   const [error, setError] = useState('');
@@ -38,7 +38,8 @@ export default function GarmentMockCard({ label, sub, mocks, candidates, suggest
       {error && <p role="alert" className="mock-error">{error}</p>}
       <div className="mock-actions">
         {file && choosingExisting && <button type="button" className="mock-primary" disabled={busy} onClick={() => run(() => onUse(file))}>{busy ? 'Saving…' : 'Use this mock'}</button>}
-        {!choosing && candidates.length > 0 && !(suggest && !mocks.length) && <button type="button" disabled={busy} onClick={() => { setChoosing(true); setSelected(''); }}>Use existing image</button>}
+        {onSendToArtist && <button type="button" className="mock-artist" disabled={busy} title="None of these mocks are right — pick an artist to build a new mock for this garment" onClick={onSendToArtist}>🎨 Send to Artist</button>}
+        {!choosing && candidates.length > 0 && !(suggest && !mocks.length) && <button type="button" disabled={busy} onClick={() => { setChoosing(true); setSelected(''); }}>{mocks.length ? 'Change mock' : 'Use existing image'}</button>}
         <button type="button" disabled={busy} onClick={() => input.current.click()}>{uploadLabel}</button>
         {choosing && <button type="button" disabled={busy} onClick={() => { setChoosing(false); setSelected(''); }}>Cancel</button>}
         {file && !choosingExisting && <button type="button" className="mock-remove" disabled={busy} onClick={() => { if (window.confirm('Remove this mock from this garment slot?')) run(() => onRemove(url)); }}>Remove</button>}

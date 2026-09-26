@@ -364,19 +364,19 @@ export default function CheckoutPage({ customer, quote: initialQuote, onBack }) 
         </div>
       </div>
 
-      <Field l="Your name"><input style={inp} value={contact.name} disabled={locked} onChange={(e) => setContact({ ...contact, name: e.target.value })} /></Field>
+      <Field l="Your name"><input style={inp} autoComplete="name" value={contact.name} disabled={locked} onChange={(e) => setContact({ ...contact, name: e.target.value })} /></Field>
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        <Field l="Email"><input style={inp} value={contact.email} disabled={locked} onChange={(e) => setContact({ ...contact, email: e.target.value })} /></Field>
-        <Field l="Phone (optional)"><input style={inp} value={contact.phone} disabled={locked} onChange={(e) => setContact({ ...contact, phone: e.target.value })} /></Field>
+        <Field l="Email"><input style={inp} autoComplete="email" value={contact.email} disabled={locked} onChange={(e) => setContact({ ...contact, email: e.target.value })} /></Field>
+        <Field l="Phone (optional)"><input style={inp} autoComplete="tel" value={contact.phone} disabled={locked} onChange={(e) => setContact({ ...contact, phone: e.target.value })} /></Field>
       </div>
 
       <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#64748b', margin: '8px 0 8px' }}>Ship to</div>
-      <Field l="Street"><input style={inp} value={ship.street1} disabled={locked} onChange={(e) => setShip({ ...ship, street1: e.target.value })} /></Field>
-      <Field l="Apt / suite (optional)"><input style={inp} value={ship.street2} disabled={locked} onChange={(e) => setShip({ ...ship, street2: e.target.value })} /></Field>
+      <Field l="Street"><input style={inp} autoComplete="address-line1" value={ship.street1} disabled={locked} onChange={(e) => setShip({ ...ship, street1: e.target.value })} /></Field>
+      <Field l="Apt / suite (optional)"><input style={inp} autoComplete="address-line2" value={ship.street2} disabled={locked} onChange={(e) => setShip({ ...ship, street2: e.target.value })} /></Field>
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        <Field l="City"><input style={inp} value={ship.city} disabled={locked} onChange={(e) => setShip({ ...ship, city: e.target.value })} /></Field>
-        <Field l="State"><input style={inp} value={ship.state} disabled={locked} onChange={(e) => setShip({ ...ship, state: e.target.value })} /></Field>
-        <Field l="ZIP"><input style={inp} value={ship.zip} disabled={locked} onChange={(e) => setShip({ ...ship, zip: e.target.value })} /></Field>
+        <Field l="City"><input style={inp} autoComplete="address-level2" value={ship.city} disabled={locked} onChange={(e) => setShip({ ...ship, city: e.target.value })} /></Field>
+        <Field l="State"><input style={inp} autoComplete="address-level1" value={ship.state} disabled={locked} onChange={(e) => setShip({ ...ship, state: e.target.value })} /></Field>
+        <Field l="ZIP"><input style={inp} autoComplete="postal-code" value={ship.zip} disabled={locked} onChange={(e) => setShip({ ...ship, zip: e.target.value })} /></Field>
       </div>
 
       {/* Payment method — card and bank transfer (ACH) for every signed-in

@@ -80,15 +80,16 @@ describe('ARWorkspace',()=>{
     expect(handled).toHaveBeenCalled();
   });
 
-  test('replaces obsolete weekly totals and creates one current past-due and data-quality TODO per rep',()=>{
+  test('closes past-due TODOs (paused for the weekly overdue to-do) and creates one data-quality TODO per rep',()=>{
     const legacy={id:'OLD-WEEK',source:'past_due_weekly:R1:2026-W34',title:'Past-due invoices — $4,000,000',status:'open',assigned_to:'R1',created_by:'R1',comments:[]};
-    const api=renderWorkspace(reps[2],{scopeRepId:'all'},{assignedTodos:[legacy]});
-    const todos=applyTodoUpdates(api.setAssignedTodos,[legacy]);
+    const current={id:'todo-past-due-current-R1',source:'past_due_current:R1',title:'Past-due invoices — 1 account, $1,000.00',status:'open',assigned_to:'R1',created_by:'R1',comments:[]};
+    const api=renderWorkspace(reps[2],{scopeRepId:'all'},{assignedTodos:[legacy,current]});
+    const todos=applyTodoUpdates(api.setAssignedTodos,[legacy,current]);
     expect(todos.find(t=>t.id==='OLD-WEEK')).toMatchObject({status:'completed',completion_note:'Superseded by the current live Receivables summary.'});
-    const current=todos.filter(t=>t.source==='past_due_current:R1');
-    expect(current).toHaveLength(1);
-    expect(current[0].title).toContain('$1,000.00');
-    expect(current[0].description).toContain('Reports → Finance → My Receivables');
+    const pastDue=todos.filter(t=>t.source==='past_due_current:R1');
+    expect(pastDue).toHaveLength(1);
+    expect(pastDue[0].status).toBe('completed');
+    expect(todos.filter(t=>t.source==='past_due_current:R1'&&t.status==='open')).toHaveLength(0);
     expect(todos.filter(t=>t.source==='ar_data_quality:R1')).toHaveLength(1);
     expect(todos.find(t=>t.source==='ar_data_quality:R1').description).toContain('Account information TODOs');
   });

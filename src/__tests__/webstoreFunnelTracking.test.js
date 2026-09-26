@@ -258,6 +258,17 @@ describe('rep digest: closing-this-week alert', () => {
     expect(html).toContain('4 still haven\'t ordered');
   });
 
+  test('closed stores link to the portal Orders tab and show whole-store totals', () => {
+    const closed = [{ id: 'st1', name: 'Girls Hoops', slug: 'gh', _stats: { orders: 3, items: 7, sales: 150, fund: 0 } }];
+    const html = digest.buildDigestHtml({ rep: { name: 'Sam' }, storesArr: [], closed, closing: [], dayLabel: 'Monday', portal: 'https://p' });
+    expect(html).toContain('https://p/?pg=webstores&store=st1&tab=orders');
+    expect(html).not.toContain('https://p/shop/gh');
+    expect(html).toContain('3 orders · 7 items · $150.00');
+    expect(html).toContain("here's what changed below");
+    expect(digest.closedStatsLine({ orders: 0, items: 0, sales: 0, fund: 0 })).toBe('No orders placed');
+    expect(digest.closedStatsLine(undefined)).toBe('');
+  });
+
   test('loads open stores closing within 7 days and survives a tracking error', async () => {
     const now = new Date('2026-09-23T12:00:00Z');
     const q = { select: () => q, eq: () => q, not: () => q, gt: () => q, lte: () => Promise.resolve({ data: [{ id: 's1', name: 'A', rep_id: 'r', close_at: '2026-09-26T12:00:00Z', status: 'open' }] }) };

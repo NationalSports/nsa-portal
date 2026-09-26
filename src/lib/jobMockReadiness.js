@@ -1,7 +1,15 @@
 // Artwork approval and garment mock coverage are separate. Reused approved art
 // can keep its approval while this order still needs a garment mock (SO-2102).
 import { isJobReady as baseIsJobReady } from '../businessLogic';
-import { safeArr, safeItems, skusMissingMockups, garmentsNeedingMockCheck, jobHasUnresolvedArt } from '../safeHelpers';
+import { safeArr, safeItems, skusMissingMockups, skusMissingRevColorWays, garmentsNeedingMockCheck, jobHasUnresolvedArt } from '../safeHelpers';
+import { jobMockCardGroups } from './jobMockCards';
+
+export const canReviewJobMocks = (job, so) => {
+  if (!['needs_art', 'art_requested', 'art_in_progress', 'waiting_approval'].includes(job?.art_status)) return false;
+  if (so?._artHydrated === false || so?._decosHydrated === false || so?._itemsHydrated === false) return false;
+  return jobMockCardGroups(job, so).length > 0 && !jobHasUnresolvedArt(job, so)
+    && skusMissingMockups(job, so).length === 0 && skusMissingRevColorWays(job, so).length === 0;
+};
 
 export const missingJobMocks = (job, so) => skusMissingMockups(job, so);
 export const isJobReady = (job, so) => {

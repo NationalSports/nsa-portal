@@ -57,7 +57,7 @@ export default function CoachGate({ children }) {
         <p style={{ fontSize: 14, color: '#16a34a', fontWeight: 600 }}>Check your email for the sign-in link.</p>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <input
+          <input aria-label="Coach email"
             value={signInEmail}
             onChange={(e) => setSignInEmail(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') sendMagicLink(); }}

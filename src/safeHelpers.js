@@ -174,6 +174,57 @@ export const jobItemArtSlots = (gi, it) => {
     .filter(({ di }) => !dis || dis.includes(di));
 };
 
+// ── A job row's personalization, read from the LIVE SO ──
+// Splitting a job used to copy each half's numbers onto the job row (gi.roster) and every
+// sheet printed that copy forever — numbers fixed on the SO afterwards never reached the
+// floor (SO-2257: the jersey job was split 9/17, the SO list was re-entered later, and the
+// tech sheet kept the old numbers; lines numbered after the split printed blank).
+// Now every row that runs the same line's decoration takes its share of the LIVE list:
+// rows are walked in job order and each consumes its own size qty, so the halves of a
+// split are disjoint and together cover the SO list. A job already pressed (decorated_at /
+// completed) keeps the numbers it printed. `jobs` is the order's job list — without it
+// (or when this job isn't in it) the old copy-first behavior is kept.
+// kind: 'numbers' (deco.roster) or 'names' (deco.names). Returns a per-size map or null.
+export const jobItemRoster = (items, jobs, job, gi, kind = 'numbers') => {
+  const it = safeArr(items)[gi?.item_idx];
+  if (!it) return null;
+  const d = jobItemDecosOfKind(gi, it, kind)[0];
+  const live = d ? (kind === 'names' ? d.names : d.roster) : null;
+  const frozen = kind === 'numbers' ? gi?.roster : null;
+  const sizes = gi?.sizes || safeSizes(it);
+  const legacy = () => { const raw = frozen || live; return raw ? scopeRosterToSizes(raw, sizes) : null; };
+  if (!Array.isArray(jobs) || !live || (frozen && (job?.decorated_at || job?.prod_status === 'completed'))) return legacy();
+  // Which of the job's rows for this line is `gi` (a job can hold a line more than once).
+  const nth = safeArr(job?.items).filter((r) => r?.item_idx === gi.item_idx).indexOf(gi);
+  const di = safeDecos(it).indexOf(d);
+  const rows = [];
+  let self = -1;
+  safeArr(jobs).forEach((j) => {
+    let seen = 0;
+    safeArr(j?.items).forEach((r) => {
+      if (r?.item_idx !== gi.item_idx) return;
+      const mine = j?.id != null && j.id === job?.id && seen++ === nth;
+      const dis = jobItemDecoIdxs(r);
+      if (dis && !dis.includes(di)) return;
+      if (mine) self = rows.length;
+      rows.push(r);
+    });
+  });
+  if (self < 0 || nth < 0) return legacy();
+  if (rows.length === 1) return scopeRosterToSizes(live, sizes);
+  // Every row must say which sizes it runs, or the shares can't be worked out.
+  if (rows.some((r) => !r?.sizes)) return legacy();
+  const out = {};
+  Object.entries(safeObj(rows[self].sizes)).forEach(([sz, q]) => {
+    const n = safeNum(q);
+    if (n <= 0) return;
+    const offset = rows.slice(0, self).reduce((a, r) => a + Math.max(0, safeNum(safeObj(r.sizes)[sz])), 0);
+    const arr = safeArr(safeObj(live)[sz]).slice(offset, offset + n);
+    if (arr.length) out[sz] = arr;
+  });
+  return out;
+};
+
 // ── Job roster blocks ──
 // The "numbers to print" roll-up for a job. A job can carry several garment lines, and
 // their rosters are NOT interchangeable. Garments holding the SAME list are one team
@@ -184,19 +235,18 @@ export const jobItemArtSlots = (gi, it) => {
 // different garments — SO-2361/JOB-2361-01 carried two jersey lines with 38 numbers
 // between them and the job showed 36 (an S 23 and an M 3 collapsed).
 // Returns [{ labels:[garment…], rows:[[size, numbers[]]…], total }], sizes in szOrder.
-export const jobRosterBlocks = (job, items, szOrder = []) => {
+// Pass the order's `jobs` so split rows read their share of the live SO list (jobItemRoster).
+export const jobRosterBlocks = (job, items, szOrder = [], jobs = null) => {
   const rank = (s) => (szOrder.indexOf(s) < 0 ? 99 : szOrder.indexOf(s));
   const clean = (v) => String(v == null ? '' : v).trim();
   const blocks = [];
   safeArr(job?.items).forEach((gi) => {
     const it = safeArr(items)[gi?.item_idx];
     if (!it) return;
-    // Split jobs carry their own roster/size slice on the job item — prefer it so a split
-    // only ever lists the numbers it actually runs.
-    const nd = jobItemDecosOfKind(gi, it, 'numbers')[0];
-    const raw = gi?.roster || nd?.roster || null;
+    // A split row lists only its own share of the numbers (see jobItemRoster).
+    const raw = jobItemRoster(items, jobs, job, gi, 'numbers');
     if (!raw) return;
-    const rows = Object.entries(safeObj(scopeRosterToSizes(raw, gi?.sizes || safeSizes(it))))
+    const rows = Object.entries(safeObj(raw))
       .map(([sz, arr]) => [sz, safeArr(arr).map(clean).filter(Boolean)])
       .filter(([, nums]) => nums.length > 0)
       .sort((a, b) => rank(a[0]) - rank(b[0]));

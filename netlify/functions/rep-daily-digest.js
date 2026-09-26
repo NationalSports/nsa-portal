@@ -64,14 +64,15 @@ exports.handler = async () => {
     const storeIds = [...new Set(live.map((o) => o.store_id).filter(Boolean))];
     let stores = [];
     if (storeIds.length) {
-      const { data } = await admin.from('webstores').select('id,name,slug,rep_id,primary_color,accent_color,logo_url').in('id', storeIds);
+      const { data } = await admin.from('webstores').select('id,name,slug,store_code,rep_id,primary_color,accent_color,logo_url').in('id', storeIds);
       stores = data || [];
     }
     const storeById = {}; stores.forEach((s) => { storeById[s.id] = s; });
     const { data: closedStores } = await admin.from('webstores')
-      .select('id,name,slug,rep_id,close_at,closed_notified_at')
+      .select('id,name,slug,store_code,rep_id,close_at,closed_notified_at')
       .gte('closed_notified_at', start.toISOString()).lt('closed_notified_at', end.toISOString());
 
+    await attachClosedStats(admin, closedStores || []);
     const closing = await loadClosingSoon(admin, new Date());
 
     // Group everything by rep.
@@ -118,12 +119,45 @@ exports.handler = async () => {
   }
 };
 
+// Whole-store totals for each closed store (orders, items, sales, raised for the
+// team), attached as _stats. Same demand rules as the daily numbers above.
+// Best-effort: on error the store is still listed, just without stats.
+async function attachClosedStats(admin, closedStores) {
+  if (!closedStores.length) return;
+  try {
+    const stats = {};
+    closedStores.forEach((c) => { stats[c.id] = { orders: 0, items: 0, sales: 0, fund: 0 }; });
+    const { data: orders, error } = await admin.from('webstore_orders')
+      .select('id,store_id,total,fundraise_amt,status').in('store_id', Object.keys(stats));
+    if (error) throw error;
+    const live = (orders || []).filter((o) => !LIVE_EXCLUDE.has(o.status));
+    const storeByOrder = {};
+    live.forEach((o) => {
+      const st = stats[o.store_id]; storeByOrder[o.id] = st;
+      st.orders++; st.sales += Number(o.total) || 0; st.fund += Number(o.fundraise_amt) || 0;
+    });
+    const ids = live.map((o) => o.id);
+    for (let i = 0; i < ids.length; i += 200) {
+      const { data: its } = await admin.from('webstore_order_items').select('order_id,qty,is_bundle_parent').in('order_id', ids.slice(i, i + 200));
+      (its || []).forEach((it) => { if (!it.is_bundle_parent && storeByOrder[it.order_id]) storeByOrder[it.order_id].items += Number(it.qty) || 0; });
+    }
+    closedStores.forEach((c) => { c._stats = stats[c.id]; });
+  } catch (e) { console.warn('[rep-digest] closed-store stats unavailable:', e && e.message); }
+}
+
+function closedStatsLine(st) {
+  if (!st) return '';
+  if (!st.orders) return 'No orders placed';
+  return [`${st.orders} order${st.orders === 1 ? '' : 's'}`, `${st.items} item${st.items === 1 ? '' : 's'}`, money(st.sales),
+    st.fund > 0 ? `${money(st.fund)} raised for the team` : ''].filter(Boolean).join(' · ');
+}
+
 // Open stores closing within the next 7 days, with their cart-vs-order gap.
 // Tracking data is best-effort: if it can't load, the stores still get listed.
 async function loadClosingSoon(admin, now) {
   const horizon = new Date(now.getTime() + 7 * 24 * 3600 * 1000);
   const { data: stores, error } = await admin.from('webstores')
-    .select('id,name,slug,rep_id,close_at,status')
+    .select('id,name,slug,store_code,rep_id,close_at,status')
     .eq('status', 'open').not('rep_id', 'is', null)
     .gt('close_at', now.toISOString()).lte('close_at', horizon.toISOString());
   if (error || !stores || !stores.length) return [];
@@ -145,6 +179,11 @@ function closingLine(c) {
   return `${when} · ${c.cartAdders} shopper${c.cartAdders === 1 ? '' : 's'} added to cart, ${c.purchasers} ordered`
     + (c.notOrdered > 0 ? ` · <strong style="color:#b91c1c">${c.notOrdered} still haven't ordered</strong>` : '');
 }
+
+// Store reference code (e.g. VR2G8) shown beside a store's name so it can be quoted/searched.
+const codeTag = (store, color) => (store && store.store_code
+  ? ` <span style="color:${color};font-family:Menlo,Consolas,monospace;font-size:12px;font-weight:700;letter-spacing:.5px">${esc(store.store_code)}</span>`
+  : '');
 
 function digestSubject(storesArr, closed, dayLabel, closing = []) {
   const nOrders = storesArr.reduce((a, s) => a + s.orders.length, 0);
@@ -194,7 +233,7 @@ function buildDigestHtml({ rep, storesArr, closed, closing = [], dayLabel, porta
     }).join('');
     return `<div style="border:1px solid ${LINE};border-radius:10px;overflow:hidden;margin:0 0 14px">
       <a href="${reportsLink}" style="display:block;background:${store.primary_color || NAVY};padding:12px 16px;text-decoration:none">
-        <span style="color:#fff;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:18px;letter-spacing:.3px;text-transform:uppercase">${esc(store.name)}</span>
+        <span style="color:#fff;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:18px;letter-spacing:.3px;text-transform:uppercase">${esc(store.name)}</span>${codeTag(store, 'rgba(255,255,255,.78)')}
         <span style="color:rgba(255,255,255,.78);font-size:12px;font-weight:700"> &nbsp;·&nbsp; ${orders.length} order${orders.length === 1 ? '' : 's'} · ${money(sales)}</span>
       </a>
       <table width="100%" style="border-collapse:collapse"><tbody>
@@ -209,20 +248,26 @@ function buildDigestHtml({ rep, storesArr, closed, closing = [], dayLabel, porta
 
   const closedBlock = closed.length ? `<div style="margin-top:18px">
       <div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;letter-spacing:.4px;text-transform:uppercase;color:${NAVY};margin-bottom:8px">Stores closed</div>
-      ${closed.map((c) => `<div style="font-size:14px;color:${INK};padding:6px 0;border-bottom:1px solid #f1ece1">
-        <strong>${esc(c.name)}</strong> <span style="color:${SUB};font-size:12px">· closed &amp; ready to process</span>
-        <a href="${portal}/shop/${esc(c.slug)}" style="color:${ACCENT};text-decoration:none;font-weight:700;font-size:12px"> open →</a></div>`).join('')}
+      ${closed.map((c) => {
+        // Link to the store's Orders tab in the portal (the public storefront is closed).
+        const ordersLink = `${portal}/?pg=webstores&store=${esc(c.id)}&tab=orders`;
+        const stats = closedStatsLine(c._stats);
+        return `<div style="font-size:14px;color:${INK};padding:8px 0;border-bottom:1px solid #f1ece1">
+        <a href="${ordersLink}" style="color:${INK};text-decoration:none"><strong>${esc(c.name)}</strong></a>${codeTag(c, SUB)} <span style="color:${SUB};font-size:12px">· closed &amp; ready to process</span>
+        ${stats ? `<div style="font-size:13px;color:${INK};margin-top:3px;font-weight:600">${esc(stats)}</div>` : ''}
+        <a href="${ordersLink}" style="display:inline-block;margin-top:6px;font-size:12px;color:${ACCENT};text-decoration:none;font-weight:700">View store orders →</a></div>`;
+      }).join('')}
     </div>` : '';
 
   const closingBlock = closing.length ? `<div style="margin:0 0 16px;border:1px solid #fde68a;background:#fffbeb;border-radius:10px;padding:12px 16px">
       <div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;letter-spacing:.4px;text-transform:uppercase;color:#92400e;margin-bottom:4px">Closing this week</div>
       <div style="font-size:12px;color:${SUB};margin-bottom:6px">Shoppers with carts who haven't ordered yet are the easiest sales left — a last-call note from the coach usually brings them back.</div>
       ${closing.map((c) => `<div style="font-size:14px;color:${INK};padding:6px 0;border-top:1px solid #fde68a">
-        <a href="${portal}/?pg=webstores&store=${esc(c.store.id)}&tab=analytics" style="color:${INK};text-decoration:none"><strong>${esc(c.store.name)}</strong></a>
+        <a href="${portal}/?pg=webstores&store=${esc(c.store.id)}&tab=analytics" style="color:${INK};text-decoration:none"><strong>${esc(c.store.name)}</strong></a>${codeTag(c.store, SUB)}
         <div style="font-size:12px;color:${SUB};margin-top:2px">${closingLine(c)}</div></div>`).join('')}
     </div>` : '';
 
-  const empty = (!storesArr.length) ? `<p style="margin:0;color:${SUB};font-size:14px">No new orders yesterday — but here's what changed ${closing.length ? 'below' : 'above'}.</p>` : '';
+  const empty = (!storesArr.length) ? `<p style="margin:0;color:${SUB};font-size:14px">No new orders yesterday — but here's what changed ${closed.length ? 'below' : 'above'}.</p>` : '';
 
   return `<div style="background:${CREAM};padding:0;margin:0">
   <div style="font-family:'Source Sans 3',-apple-system,Segoe UI,Roboto,sans-serif;color:${INK};max-width:600px;margin:0 auto;padding:20px 16px">
@@ -251,4 +296,4 @@ function buildDigestHtml({ rep, storesArr, closed, closing = [], dayLabel, porta
 }
 
 
-exports._test = { loadClosingSoon, closingLine, digestSubject, buildDigestHtml };
+exports._test = { loadClosingSoon, closingLine, closedStatsLine, digestSubject, buildDigestHtml };
