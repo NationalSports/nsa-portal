@@ -354,8 +354,14 @@ test('weekly overdue-invoice todo is keyed to the Friday that starts its week', 
   expect(wed[0]).toMatchObject({ type: 'overdue_invoices', repId: 'R1', role: 'sales', dismissKey: 'overdue_invoices:R1:2026-09-18' });
   // Friday itself starts a new week
   expect(run('2026-09-25T09:00:00')[0].dismissKey).toBe('overdue_invoices:R1:2026-09-25');
-  // Not for CSR / production users
-  expect(run('2026-09-23T12:00:00', 'csr')).toHaveLength(0);
+  expect(wed[0]).toMatchObject({ invRep: '_me_' });
+  // CSRs get one too, covering their reps' book (no repId → passes the CSR filter; opens all reps' overdue list)
+  const csr = run('2026-09-23T12:00:00', 'csr');
+  expect(csr).toHaveLength(1);
+  expect(csr[0]).toMatchObject({ role: 'all', invRep: 'all', dismissKey: 'overdue_invoices:R1:2026-09-18' });
+  expect(csr[0].repId).toBeUndefined();
+  // Not for production / warehouse users
+  expect(run('2026-09-23T12:00:00', 'production')).toHaveLength(0);
 });
 
 test('sent estimates get one follow-up to-do at 7 days — no going-cold / stale tiers', () => {
