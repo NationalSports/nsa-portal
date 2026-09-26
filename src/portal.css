@@ -2703,3 +2703,13 @@ tbody tr { cursor: pointer; }
     flex: 1;
   }
 }
+
+/* Dashboard to-do rows (_renderTodoRow in App.js): keep rows calm — secondary controls
+   (Assign, Dismiss, Snooze) only show on hover/focus. Touch screens have no hover, so they
+   always show there. */
+.nsa-todo-row:hover { background: #f8fafc; }
+@media (hover: hover) {
+  .nsa-todo-row .nsa-todo-hover { opacity: 0; transition: opacity .12s; }
+  .nsa-todo-row:hover .nsa-todo-hover,
+  .nsa-todo-row:focus-within .nsa-todo-hover { opacity: 1; }
+}
