@@ -192,7 +192,7 @@ export default function StartWithLogo({ customer, onCustomerSelect, onLogoChosen
   const goAccount = () => { /* TODO(teamshop-nav): no account view yet */ };
 
   return (
-    <div style={{ maxWidth: 1040, width: '100%', margin: '0 auto', padding: 'clamp(28px,4vw,56px) 24px clamp(48px,6vw,80px)' }}>
+    <div style={{ maxWidth: 1088, width: '100%', boxSizing: 'border-box', margin: '0 auto', padding: 'clamp(28px,4vw,56px) 24px clamp(48px,6vw,80px)' }}>
       <div style={{ textAlign: 'center', marginBottom: 'clamp(28px,3.5vw,44px)' }}>
         <p style={displayType(13, { letterSpacing: '0.16em', color: RED, margin: '0 0 8px' })}>Start with your logo</p>
         <h1 style={displayType('clamp(2rem,4vw,2.8rem)', { color: NAVY, margin: '0 0 10px', letterSpacing: '0.01em' })}>Upload once. Reorder forever.</h1>

@@ -75,11 +75,26 @@ describe('payment idempotency',()=>{
 describe('linked invoice total drift',()=>{
   // INV-63804: invoiced to QBO at $456.00, then a 2.9% card surcharge raised the
   // Portal total to $469.22 at payment time, so the $469.22 payment was refused.
-  const invoice={id:'INV-63804',total:469.22,cc_fee:13.22};
+  const invoice={id:'INV-63804',total:469.22,status:'paid'};
   test('a surcharge added after linking is reported with both totals',()=>{
     expect(linkedInvoiceTotalDrift(invoice,{TotalAmt:456})).toEqual({
-      portal_total:469.22,qbo_total:456,difference:13.22,cc_fee:13.22,
+      portal_total:469.22,qbo_total:456,difference:13.22,
     });
+  });
+  test('cc_fee is never reported, because the sync snapshot does not carry it',()=>{
+    // The invoices projection in qbo_sales_source_snapshot_without_links has no
+    // cc_fee column, so reading it always yielded 0 -- claiming "no card fee" on
+    // the very invoices a card fee drifted.  An absent field beats a wrong one.
+    expect(linkedInvoiceTotalDrift({...invoice,cc_fee:13.22},{TotalAmt:456}))
+      .not.toHaveProperty('cc_fee');
+    expect(read('supabase/functions/qbo-sales-background/logic.js')).not.toContain('cc_fee');
+  });
+  test('a voided invoice whose QBO counterpart was zeroed is not drift',()=>{
+    // INV-63120/INV-63121: $930 each, voided in the Portal, zeroed in QBO on
+    // purpose.  The mapped-invoice branch runs before classifySourceInvoice, so
+    // without this the void exclusion never reached them and both alerted.
+    expect(linkedInvoiceTotalDrift({id:'INV-63120',total:930,status:'void'},{TotalAmt:0})).toBeNull();
+    expect(linkedInvoiceTotalDrift({id:'INV-63120',total:930,deleted_at:'2026-09-24T00:00:00Z'},{TotalAmt:0})).toBeNull();
   });
   test('a matching total is not drift',()=>{
     expect(linkedInvoiceTotalDrift(invoice,{TotalAmt:469.22})).toBeNull();

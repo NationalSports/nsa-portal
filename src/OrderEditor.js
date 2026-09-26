@@ -1,5 +1,6 @@
 import { canReviewJobMocks } from './lib/jobMockReadiness';
 import JobGarmentMocks from './JobGarmentMocks';
+import { logoDetailCustomerUpdates } from './lib/logoDetail';
 import { isJobReady, missingJobMocks, jobMockChecks } from './lib/jobMockReadiness';
 import { jobArtBadgeSt } from './lib/jobArtBadge';
 import { webstoreCheckoutMoney, webstoreDocMoneyRows } from './lib/webstoreSoMoney';
@@ -7,7 +8,10 @@ import {useOrderCatalogResults} from './lib/orderCatalogSearch';
 import { poEligibleVendors } from './lib/vendorPoEligibility';
 import QuantityDraftInput from './QuantityDraftInput';
 import TextDraftInput from './TextDraftInput';
+import { replaceTbdArt, tbdArtName, tbdArtLabel } from './lib/orderArtSwap';
 /* eslint-disable */
+import { openProductionPacket } from './productionPacket/api';
+import ShareMessageButton from './productionPacket/ShareMessageButton';
 import { canAcknowledgeSave } from './lib/saveAcknowledgement';
 import { lineIntentKey, newOrderLineId } from './lib/orderLineIdentity';
 import { liveSoInvoices, soInvoiceBalance, invoiceBalanceSnapshot } from './lib/soInvoiceBalance';
@@ -53,7 +57,8 @@ import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit, unfulfilledSizes, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantRemoveLineApply, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
-import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
+import { resolvePriorMockKey, prevArtAutoWireTargets } from './lib/artIdentity';
+import { previousArtSport, previousArtSourceKey, previousArtReuseDesignId, filterPreviousArt } from './lib/previousArtSearch';
 import { remapFrozenJobDecoIndexes, detachChangedArtRow, liveArtSplitSizes, refreshOpenJobRows, attachSameArtAdditions } from './lib/stableJobAssignments';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors, splitSliceOwnedKeys, splitSliceOwnedSizes, clampSplitOverrideSizes, SLICE_PRUNE_STATUSES, pruneStaleSliceRows, reparentOrphanSplitJobs, remapFrozenJobItemIndexes } from './lib/syncJobsMatch';
 import { stampSplitRuns } from './lib/splitJobPricing';
@@ -740,8 +745,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Keep non-image files (e.g. .ai production art legacy records stash in `files`) and any
     // explicitly-whitelisted mockup image; drop every other mockup image.
     const keep=arr=>(arr||[]).filter(f=>{const u=_u(f);if(!_isImgUrl(u,f))return true;return selUrls?selUrls.has(u):false});
-    const clone={...JSON.parse(JSON.stringify(art)),id:'af'+Date.now(),uploaded:new Date().toLocaleDateString()};
-    delete clone._so_id;delete clone._so_memo;
+    const clone={...JSON.parse(JSON.stringify(art)),id:'af'+Date.now(),design_id:previousArtReuseDesignId(art,art._srcCustId),uploaded:new Date().toLocaleDateString()};
+    delete clone._so_id;delete clone._so_memo;delete clone._srcCustId;delete clone._srcTeam;delete clone._sport;
     // Keep design_id so the reused logo stays linked to its design identity (LOGO-1).
     // REUSE-6: the source order's garment mock_links don't apply here (they reference that
     // order's garments), and inherited production files must be re-reviewed, not auto-confirmed.
@@ -1216,11 +1221,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const _activeArtistId=(id)=>(id&&(REPS||[]).some(r=>r.id===id&&(r.role==='art'||r.role==='artist')&&r.is_active!==false))?id:'';
   const[artRevisionNote,setArtRevisionNote]=useState('');
   const[showPrevArt,setShowPrevArt]=useState(false);// Previous Artwork picker modal
+  const[replaceTbdId,setReplaceTbdId]=useState(null);// Art group being swapped for a prior design
   // 🎯 Apply-art picker: after a new art folder is created (or via each folder's "Apply to items"
   // button) pick which line items the art goes on, plus per-item location and color way.
   // {artId,rows:[{ii,checked,already,position,color_way_id,cwExact}]} — null = closed.
   const[artApply,setArtApply]=useState(null);
-  const[prevArtFilter,setPrevArtFilter]=useState('all');// Previous Artwork deco-type filter: all|screen_print|embroidery|heat_transfer (heat_transfer is the catch-all, incl. DTF)
+  const[prevArtFilter,setPrevArtFilter]=useState('all');// Previous Artwork deco-type filter
+  const[prevArtSearch,setPrevArtSearch]=useState('');// Search artwork name or source team
+  const[prevArtSport,setPrevArtSport]=useState('all');// Sport from source customer's team
   const[prevArtFamily,setPrevArtFamily]=useState(false);// Previous Artwork: opt-in to see ALL of the parent program's teams (labeled per team) instead of just this team + the parent
   const[priorMocks,setPriorMocks]=useState({});// {name||deco_type:[{from,files:[{url,name}]}]} — approved mocks for reused art, fetched from the customer's OTHER orders (their art isn't always hydrated in memory). Drives the Check Mock panel.
   const[mockApplyModal,setMockApplyModal]=useState(null);// {sku,color,artId,files,mockUrl,jobId} — after picking a prior mock, choose: already approved vs send to coach.
@@ -3664,6 +3672,39 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // folder has no name or color ways yet, so the picker had nothing useful to offer.
   // The rep fills the folder in first, then uses its "🎯 Apply to items" button.
   const addArt=()=>{setO(e=>({...e,art_files:[...(e.art_files||[]),{id:'af'+Date.now(),design_id:'design_'+Date.now().toString(36)+Math.random().toString(36).slice(2,8),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],mock_links:{},preview_url:'',prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}],updated_at:new Date().toLocaleString()}));setDirty(true)};
+  const renameTbdArt=async(ii,di)=>{
+    const current=oRef.current;
+    const deco=safeDecos(safeItems(current)[ii]||{})[di];
+    const art=(current.art_files||[]).find(a=>a.id===deco?.art_file_id);
+    if(!deco||!(deco.art_file_id==='__tbd'||/^ART TBD\b/i.test(art?.name||'')))return;
+    const label=window.prompt('Identify this Art TBD for the art team:',tbdArtLabel(art?.name));
+    if(label===null||!label.trim())return;
+    if(art){
+      const arts=(current.art_files||[]).map(a=>a.id===art.id?markArtFieldEdit(a,'name',tbdArtName(a.name,label)):a);
+      await saveSONow({...current,art_files:arts,updated_at:new Date().toLocaleString()},'Art TBD name');
+      return;
+    }
+    const n=(current.art_files||[]).filter(a=>/^ART TBD\b/i.test(a.name||'')).length+1;
+    const id='af'+Date.now();
+    const name=tbdArtName('ART TBD '+n,label);
+    const tbd={id,name,deco_type:deco.art_tbd_type||'screen_print',status:'waiting_for_art',ink_colors:Array.from({length:deco.tbd_colors||1},(_,i)=>'Color '+(i+1)).join('\n'),stitches:deco.tbd_stitches||8000,color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',uploaded:new Date().toLocaleDateString()};
+    const updated={...current,art_files:[...(current.art_files||[]),tbd],items:safeItems(current).map((it,x)=>x===ii?{...it,decorations:safeDecos(it).map((d,i)=>i===di?{...d,art_file_id:id}:d)}:it),updated_at:new Date().toLocaleString()};
+    await saveSONow(updated,'Art TBD name');
+  };
+  const swapTbdForPrevious=async(source)=>{
+    const id=replaceTbdId;
+    if(!id)return;
+    const current=oRef.current;
+    const art=(current.art_files||[]).find(a=>a.id===id);
+    const count=safeItems(current).reduce((n,it)=>n+safeDecos(it).filter(d=>d.art_file_id===id).length,0);
+    const lockedJob=safeJobs(current).find(j=>(j.art_file_id===id||(j._art_ids||[]).includes(id))&&['staging','in_process','completed','shipped'].includes(j.prod_status));
+    if(lockedJob){nf('This art is already in or past production. Recall the job before changing its design.','error');return}
+    if(!art||!window.confirm('Change '+(art.name||'Art TBD')+' to "'+(source.name||'Untitled')+'" on '+count+' decoration'+(count===1?'':'s')+'? Review color ways and production files afterward.'))return;
+    const next=replaceTbdArt(current,id,source);
+    const updated={...next,art_files:markArtChanges(current.art_files||[],next.art_files||[])};
+    setShowPrevArt(false);setReplaceTbdId(null);
+    await saveSONow(updated,'Previous artwork','Changed '+count+' decoration'+(count===1?'':'s')+' to '+(source.name||'previous art')+'. Review color ways and production files.');
+  };
   const uArt=(i,k,v)=>{setO(e=>({...e,art_files:(e.art_files||[]).map((f,x)=>x===i?markArtFieldEdit(f,k,v):f),updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Persist an art_files change to the DB right now — used immediately after a file upload so a freshly
   // uploaded mockup/production/preview file is durable the moment it lands. This closes the "uploaded to
@@ -3802,6 +3843,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const _artKey=a=>(a.name||'').toLowerCase().trim()+'|'+(a.deco_type||'');
   // Is this art group already saved in the program library?
   const artInLibrary=art=>{const nm=(art.name||'').trim();return !!nm&&(libCust?.art_files||[]).some(a=>_artKey(a)===_artKey(art))};
+  // A logo detail saved/removed on a job is the design's web logo: mirror it onto the customer's
+  // (and parent program's) Art Library copy so webstores and the Previous Artwork picker see it.
+  const syncLogoLibrary=async change=>{if(!onSaveCustomer)return;const pool=(allCustomers||[]).map(c=>cust&&c.id===cust.id?cust:c);const updates=logoDetailCustomerUpdates(pool,o.customer_id,oRef.current.art_files||[],change);if(!updates.length||!window.confirm('Saved on this job. Also update the reusable Art Library logo? This affects future reuse and stores. Cancel keeps the change on this job only.'))return;for(const c of updates){if((await onSaveCustomer(c,{confirmWrite:true}))===false)throw new Error('Saved on this job, but Art Library sync failed. Retry from Art Library.');if(cust&&c.id===cust.id)setCust(c)}};
   // Promote an order art group into the program library so other teams (sub-customers) can reuse it.
   const promoteArtToLibrary=art=>{
     if(!libCust||!onSaveCustomer){nf&&nf('No customer to add this art to','error');return}
@@ -3811,7 +3855,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(lib.some(a=>_artKey(a)===_artKey(art))){nf&&nf('"'+nm+'" is already in '+(libCust.name||'the')+' library');return}
     const toLib=cust&&cust.parent_id;// promoting up to a parent vs. saving to own library
     if(!window.confirm('Add "'+nm+'" to '+(toLib?(libCust.name||'the parent')+'\'s program library so other teams can use it':'the program library so it applies to all teams')+'?'))return;
-    const entry={id:'caf'+Date.now(),name:nm,deco_type:art.deco_type||'screen_print',ink_colors:art.ink_colors||'',thread_colors:art.thread_colors||'',art_size:art.art_size||'',color_ways:(art.color_ways||[]).map(cw=>({...cw,inks:[...(cw.inks||[])]})),files:[],mockup_files:(art.mockup_files||[]).slice(),prod_files:(art.prod_files||[]).slice(),preview_url:art.preview_url||'',notes:art.notes||'',status:art.status==='uploaded'?'needs_approval':(art.status||'approved'),uploaded:new Date().toLocaleDateString()};
+    const entry={id:'caf'+Date.now(),name:nm,deco_type:art.deco_type||'screen_print',ink_colors:art.ink_colors||'',thread_colors:art.thread_colors||'',art_size:art.art_size||'',color_ways:(art.color_ways||[]).map(cw=>({...cw,inks:[...(cw.inks||[])]})),files:[],mockup_files:(art.mockup_files||[]).slice(),prod_files:(art.prod_files||[]).slice(),preview_url:art.preview_url||'',web_logos:(art.web_logos||[]).filter(w=>w&&w.url).map(w=>({...w})),web_logo_url:art.web_logo_url||'',notes:art.notes||'',status:art.status==='uploaded'?'needs_approval':(art.status||'approved'),uploaded:new Date().toLocaleDateString()};
     const updated={...libCust,art_files:[...lib,entry]};
     if(libCust.id===cust.id)setCust(updated);
     onSaveCustomer(updated);
@@ -5093,6 +5137,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </span>;})}
               </span>;})()}
             {isSO&&o.omg_store_id&&onNavOmgStore&&<span style={{color:'#1E7A46',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={onNavOmgStore} title="Open the linked OMG store">🏪 OMG Store</span>}
+            {isSO&&o.webstore_id&&<button className="btn btn-sm" onClick={()=>openProductionPacket(o.webstore_id)}>Production packet</button>}
             {isSO&&o.webstore_id&&!o.omg_store_id&&onNavWebstore&&<span style={{color:'#1E7A46',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={onNavWebstore} title="Open the webstore this batch was pulled from">🛒 Webstore</span>}
             {/* Player report rebuilt from the CURRENT SO items — swapped items print as what
                 we're actually buying, so this is the copy that goes to Silver Screen. */}
@@ -5168,8 +5213,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {isSO&&o.no_invoice_needed&&<div title={'Marked by '+(o.no_invoice_by||'?')+' '+(o.no_invoice_at||'')} style={{display:'inline-block',marginTop:4,fontSize:10,fontWeight:700,color:'#9a3412',background:'#fff7ed',border:'1px solid #fdba74',borderRadius:6,padding:'2px 7px'}}>{noInvoiceLabel(o)}</div>}
             </div>
             {isSO&&<div style={{flex:1,minWidth:130}}>
-              <label className="form-label">Expected</label>
-              <input className="form-input" type="date" value={o.expected_date||''} onChange={e=>sv('expected_date',e.target.value)}/>
+              <label className="form-label" title="The date the customer needs it in hand — drives dashboard deadlines">Need-by <span style={{color:'#dc2626'}}>*</span></label>
+              <input className="form-input" type="date" value={o.expected_date||''} style={o.expected_date?undefined:{borderColor:'#dc2626'}} onChange={e=>{/* required: the need-by date can be changed, never cleared */if(!e.target.value){nf('Need-by date is required — pick the date the customer needs it','error');return}sv('expected_date',e.target.value)}}/>
             </div>}
             {isSO&&o.order_type==='booking'&&<div style={{width:140}}>
               <label className="form-label">Ship Date</label>
@@ -5779,6 +5824,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         <option value="__new_tbd">➕ New Art TBD...</option>
                         {af.filter(f=>f.id!=='__tbd').map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}
                       </select>
+                      {(d.art_file_id==='__tbd'||/^ART TBD\b/i.test(artF?.name||''))&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>renameTbdArt(idx,di)}>Rename</button>}
                       <select className="form-select" style={{fontSize:10,padding:'1px 3px',height:24,maxWidth:110,border:'1px solid #ddd6fe',color:'#7c3aed',fontWeight:600,background:'white'}} value={d.position||''} onChange={e=>uD(idx,di,'position',e.target.value)} title="Decoration position">{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
                     </span>;
                   });
@@ -6183,6 +6229,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <option value="">⚠️ Select artwork...</option>
                     <option value="__tbd">🎨 Art TBD (pricing only)</option>
                     <option value="__new_tbd">➕ New Art TBD...</option>{af.filter(f=>f.id!=='__tbd').map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}</select>
+                  {(deco.art_file_id==='__tbd'||/^ART TBD\b/i.test(artF?.name||''))&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>renameTbdArt(idx,di)}>Rename</button>}
                   {deco.art_file_id==='__tbd'&&<><select className="form-select" style={{width:130,fontSize:11,border:'1px solid #f59e0b'}} value={deco.art_tbd_type||'screen_print'} onChange={e=>uDM(idx,di,{art_tbd_type:e.target.value,sell_override:null})}>
                     <option value="screen_print">Screen Print</option><option value="embroidery">Embroidery</option><option value="heat_press">Heat Press</option><option value="dtf">DTF</option></select>
                   {(deco.art_tbd_type||'screen_print')==='screen_print'&&<select className="form-select" style={{width:90,fontSize:10}} value={deco.tbd_colors||1} onChange={e=>uDM(idx,di,{tbd_colors:parseInt(e.target.value),sell_override:null})}>
@@ -7127,7 +7174,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // On failure (e.g. an expired session whose writes RLS now rejects) keep the editor dirty and warn the
         // rep NOT to reload — her entries are still in memory and will save once she's signed back in.
         if(onSaveArtFiles){const ok=await onSaveArtFiles(updated);if(ok){setDirty(false);setSaved(true);nf('Art saved')}else{nf('⚠️ Artwork did NOT save. Your session may have expired — sign in again and click Save. Do NOT reload: your entries are still here.','error')}}
-        else{onSave(updated);setDirty(false);setSaved(true);nf('Art saved')}}} style={{background:'#166534',borderColor:'#166534'}}>Save</button>}<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={()=>setShowPrevArt(true)}>🗂 Previous Artwork</button><button className="oe2-cta" style={{fontSize:13,padding:'8px 16px'}} onClick={addArt}><span><Icon name="plus" size={12}/> New Art Group</span></button></div></div>
+        else{onSave(updated);setDirty(false);setSaved(true);nf('Art saved')}}} style={{background:'#166534',borderColor:'#166534'}}>Save</button>}<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={()=>{setReplaceTbdId(null);setShowPrevArt(true)}}>🗂 Previous Artwork</button><button className="oe2-cta" style={{fontSize:13,padding:'8px 16px'}} onClick={addArt}><span><Icon name="plus" size={12}/> New Art Group</span></button></div></div>
       <div className="card-body">{af.length===0?<div className="empty">No art uploaded. Create art groups and add files.</div>:
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
           {af.map((art,i)=>{const usedIn=safeItems(o).reduce((a,it)=>a+safeDecos(it).filter(d=>d.art_file_id===art.id).length,0);
@@ -7159,6 +7206,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(art.color_ways||[]).length>0&&<span className="oe-num" style={{fontSize:11,color:'#9aa0ad',marginRight:2}}>{(art.color_ways||[]).length} CW</span>}
                 {art.dtf_purchased&&<span title={'DTF purchased'+(art.dtf_purchased.po_id?' on '+art.dtf_purchased.po_id:'')+(art.dtf_purchased.vendor?' from '+art.dtf_purchased.vendor:'')+(art.dtf_purchased.date?' · '+art.dtf_purchased.date:'')} style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:700,flexShrink:0,background:'#fef3c7',color:'#b45309'}}>🖨️ DTF Purchased</span>}
                 <span className="oe-eb" style={{fontSize:10,padding:'4px 10px',borderRadius:20,flexShrink:0,background:ART_FILE_SC[art.status]?.bg||ART_FILE_SC.waiting_for_art.bg,color:ART_FILE_SC[art.status]?.c||ART_FILE_SC.waiting_for_art.c}}>{art.status==='approved'?'Approved':art.status==='needs_approval'?'Needs Approval':'Waiting'}</span>
+                {/^ART TBD\b/i.test(art.name||'')&&<button className="btn btn-sm" style={{fontSize:10,flexShrink:0,background:"#ede9fe",color:"#6d28d9",border:"1px solid #c4b5fd",fontWeight:700}} onClick={e=>{e.stopPropagation();setReplaceTbdId(art.id);setShowPrevArt(true)}}>Change to previous art</button>}
                 <button className="btn btn-sm" style={{fontSize:10,flexShrink:0,background:'#4f46e5',color:'white',border:'none',fontWeight:700}} title="Pick which line items this art applies to, with location and color way per item" onClick={e=>{e.stopPropagation();openArtApply(art)}}>🎯 Apply to items</button>
                 <button className="btn btn-sm btn-secondary" style={{fontSize:10,flexShrink:0}} onClick={e=>{e.stopPropagation();rmArt(i)}}><Icon name="trash" size={10}/></button>
               </div>
@@ -7310,20 +7358,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _famIds=_famParentId?[_famParentId,...(allCustomers||[]).filter(c=>c.parent_id===_famParentId).map(c=>c.id)]:[custId];
       const custIds2=prevArtFamily&&_famParentId?[...new Set(_famIds)]:(parentCust2?.parent_id?[parentCust2.parent_id,custId]:[custId]);
       const _famParentName=_famParentId?(allCustomers.find(c=>c.id===_famParentId)?.name||'program'):null;
-      const _teamLabel=cid=>{if(cid===custId)return'';const c=allCustomers.find(cc=>cc.id===cid);return c?(c.name||c.alpha_tag||''):''};
+      const _sourceMeta=(cid,art,memo)=>{const c=allCustomers.find(cc=>cc.id===cid);return{_srcCustId:cid,_srcTeam:c?.name||c?.alpha_tag||'Unknown team',_sport:previousArtSport(c,_famParentId,art,memo)}};
       const prevArtList=[];
       const _byKey=new Map();
       // Merge a design's library copy with its source-order copy: key on the stable
       // logo identity (name+deco+size+cw), NOT the id — promoteArtToLibrary gives the
       // library copy a fresh id, so an id-keyed dedup double-listed the same design.
-      const _dedupKey=prevArtDedupKey;
+      const _dedupKey=(art,meta)=>previousArtSourceKey(art,meta._srcCustId,meta._sport);
       // Merge all file buckets across sources so the offered logo always carries every mockup AND production file,
       // even if one source (e.g. a library copy saved before the seps were uploaded) is missing some.
       const _fKey=f=>typeof f==='string'?f:(f?.url||'');
       const _mergeFiles=(a=[],b=[])=>{const seen=new Set((a||[]).map(_fKey));const out=[...(a||[])];(b||[]).forEach(f=>{const k=_fKey(f);if(k&&!seen.has(k)){seen.add(k);out.push(f)}});return out};
       // ART TBD rows are system placeholders (a priced deco with no design yet) — there is
       // nothing to reuse, and they were polluting the picker as "ART TBD 1..4" cards.
-      const _pushArt=(art,meta)=>{if(art.archived)return;if((art.name||'').startsWith('ART TBD'))return;const k=_dedupKey(art);
+      const _pushArt=(art,meta)=>{if(art.archived)return;if((art.name||'').startsWith('ART TBD'))return;const k=_dedupKey(art,meta);
         if(_byKey.has(k)){const cur=_byKey.get(k);
           cur.prod_files=_mergeFiles(cur.prod_files,art.prod_files);
           cur.mockup_files=_mergeFiles(cur.mockup_files,art.mockup_files);
@@ -7331,12 +7379,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const im={...(cur.item_mockups||{})};Object.entries(art.item_mockups||{}).forEach(([ik,arr])=>{im[ik]=_mergeFiles(im[ik],arr)});cur.item_mockups=im;
         }else{const entry={...art,prod_files:[...(art.prod_files||[])],mockup_files:[...(art.mockup_files||[])],files:[...(art.files||[])],item_mockups:{...(art.item_mockups||{})},...meta};_byKey.set(k,entry);prevArtList.push(entry)}};
       // Include customer-level art library
-      custIds2.forEach(cid=>{const c=allCustomers.find(cc=>cc.id===cid);(c?.art_files||[]).forEach(art=>_pushArt(art,{_so_id:'Library',_so_memo:c.alpha_tag||c.name||''}))});
+      custIds2.forEach(cid=>{const c=allCustomers.find(cc=>cc.id===cid);(c?.art_files||[]).forEach(art=>_pushArt(art,{..._sourceMeta(cid,art),_so_id:'Library',_so_memo:c.alpha_tag||c.name||''}))});
       // Pull from estimates + sales orders (artSourceOrders) so a new estimate also surfaces art created
       // on prior estimates; fall back to allOrders for any caller that doesn't supply the combined list.
       (artSourceOrders||allOrders||[]).filter(so=>custIds2.includes(so.customer_id)&&so.id!==o.id).forEach(so=>{
-        const _tl=_teamLabel(so.customer_id);
-        (so.art_files||[]).forEach(art=>_pushArt(art,{_so_id:so.id,_so_memo:(_tl?_tl+' · ':'')+(so.memo||'')}));
+        (so.art_files||[]).forEach(art=>_pushArt(art,{..._sourceMeta(so.customer_id,art,so.memo),_so_id:so.id,_so_memo:so.memo||''}));
       });
       // Bucket every deco_type into one of three groups; "heat transfer" is the catch-all (incl. DTF, sublimation, vinyl), matching the 🔥 icon used elsewhere.
       const _artCat=dt=>dt==='screen_print'?'screen_print':dt==='embroidery'?'embroidery':'heat_transfer';
@@ -7345,23 +7392,31 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       prevArtList.sort((a,b)=>_catRank[_artCat(a.deco_type)]-_catRank[_artCat(b.deco_type)]);
       const PREV_TABS=[{id:'all',label:'All'},{id:'screen_print',label:'🎨 Screen Print'},{id:'embroidery',label:'🧵 Embroidery'},{id:'heat_transfer',label:'🔥 Heat Transfer'}];
       const _tabColor={all:'#64748b',screen_print:'#1e40af',embroidery:'#6d28d9',heat_transfer:'#92400e'};
-      const _catCount=c=>prevArtList.filter(a=>_artCat(a.deco_type)===c).length;
-      const visibleArt=prevArtFilter==='all'?prevArtList:prevArtList.filter(a=>_artCat(a.deco_type)===prevArtFilter);
-      return<div className="modal-overlay" onClick={()=>setShowPrevArt(false)}><div className="modal" style={{maxWidth:700}} onClick={e=>e.stopPropagation()}>
-        <div className="modal-header"><h2>📂 Previous Artwork</h2><button className="modal-close" onClick={()=>setShowPrevArt(false)}>×</button></div>
+      const sportOptions=[...new Set(prevArtList.map(a=>a._sport).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+      const searchedArt=filterPreviousArt(prevArtList,{search:prevArtSearch,sport:prevArtSport});
+      const _catCount=c=>searchedArt.filter(a=>_artCat(a.deco_type)===c).length;
+      const visibleArt=filterPreviousArt(searchedArt,{deco:prevArtFilter});
+      return<div className="modal-overlay" onClick={()=>{setShowPrevArt(false);setReplaceTbdId(null)}}><div className="modal" style={{maxWidth:700}} onClick={e=>e.stopPropagation()}>
+        <div className="modal-header"><h2>{replaceTbdId?"Change to previous art":"📂 Previous Artwork"}</h2><button className="modal-close" onClick={()=>{setShowPrevArt(false);setReplaceTbdId(null)}}>×</button></div>
         <div className="modal-body" style={{maxHeight:500,overflowY:'auto'}}>
           {prevArtList.length===0?<div className="empty">No previous artwork found for this customer</div>:
           <>
             <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12,alignItems:'center'}}>
-              {PREV_TABS.map(t=>{const cnt=t.id==='all'?prevArtList.length:_catCount(t.id);const active=prevArtFilter===t.id;const col=_tabColor[t.id];
+              {PREV_TABS.map(t=>{const cnt=t.id==='all'?searchedArt.length:_catCount(t.id);const active=prevArtFilter===t.id;const col=_tabColor[t.id];
                 return<button key={t.id} style={{fontSize:11,padding:'3px 10px',borderRadius:12,border:'1px solid '+(active?col:'#e2e8f0'),background:active?col+'15':'white',color:active?col:'#94a3b8',cursor:'pointer',fontWeight:600}} onClick={()=>setPrevArtFilter(t.id)}>{t.label} ({cnt})</button>})}
               {_famParentId&&<label style={{fontSize:11,display:'inline-flex',alignItems:'center',gap:5,marginLeft:'auto',padding:'3px 10px',borderRadius:12,border:'1px solid '+(prevArtFamily?'#7c3aed':'#e2e8f0'),background:prevArtFamily?'#f5f3ff':'white',color:prevArtFamily?'#6d28d9':'#64748b',cursor:'pointer',fontWeight:600}} title="Show artwork from every team under this program — each card is labeled with its source team. Reusing another team's art is an explicit choice; double-check it's the right design for this team.">
-                <input type="checkbox" checked={prevArtFamily} onChange={e=>setPrevArtFamily(e.target.checked)} style={{margin:0}}/> All {_famParentName} teams</label>}
+                <input type="checkbox" checked={prevArtFamily} onChange={e=>{setPrevArtFamily(e.target.checked);setPrevArtSport('all')}} style={{margin:0}}/> All {_famParentName} teams</label>}
             </div>
-            {visibleArt.length===0?<div className="empty">No {prevArtFilter.replace(/_/g,' ')} artwork for this customer</div>:
+            <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap'}}>
+              <input className="form-input" type="search" aria-label="Search previous artwork by name or team" placeholder="Search artwork name or team..." value={prevArtSearch} onChange={e=>setPrevArtSearch(e.target.value)} style={{flex:'1 1 230px',fontSize:12}}/>
+              <select className="form-select" aria-label="Filter previous artwork by sport" value={prevArtSport} onChange={e=>setPrevArtSport(e.target.value)} style={{flex:'0 1 190px',fontSize:12}}>
+                <option value="all">All sports</option>{sportOptions.map(sport=><option key={sport} value={sport}>{sport}</option>)}
+              </select>
+            </div>
+            {visibleArt.length===0?<div className="empty">No artwork matches these filters. <button className="btn btn-sm" onClick={()=>{setPrevArtSearch('');setPrevArtSport('all');setPrevArtFilter('all')}}>Clear filters</button></div>:
             <div style={{display:'flex',flexDirection:'column',gap:8}}>
             {visibleArt.map((art,i)=>{
-              const alreadyAdded=af.some(a=>a.id===art.id||(a.name===art.name&&a.deco_type===art.deco_type&&a.art_size===art.art_size));
+              const alreadyAdded=af.some(a=>a.id===art.id||(a.design_id&&a.design_id===previousArtReuseDesignId(art,art._srcCustId))||(!prevArtFamily&&a.name===art.name&&a.deco_type===art.deco_type&&a.art_size===art.art_size));
               const previewImg=art.preview_url||'';
               // Only include actual mockup sources (not prod seps/AIs) and prefer files tagged for
               // this art when art_file_id is present — but library/promoted COPIES carry entries
@@ -7391,7 +7446,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <div style={{flex:1}}>
                     <div style={{fontWeight:700,fontSize:14}}>{art.name||'Untitled'}</div>
                     <div style={{fontSize:11,color:'#64748b'}}>{(art.deco_type||'').replace(/_/g,' ')}{(art.color_ways||[]).length>0?' · '+art.color_ways.length+' CW'+(art.color_ways.length>1?'s':''):art.ink_colors?' · '+art.ink_colors.split('\n').filter(l=>l.trim()).length+' color(s)':art.thread_colors?' · '+art.thread_colors:''}{art.art_size?' · '+art.art_size:''}</div>
-                    <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>{art._so_id} — {art._so_memo}</div>
+                    <div style={{display:'flex',gap:5,alignItems:'center',flexWrap:'wrap',marginTop:3}}><span style={{fontSize:10,fontWeight:700,color:'#6d28d9',background:'#ede9fe',borderRadius:10,padding:'1px 6px'}}>{art._sport}</span><span style={{fontSize:10,color:'#64748b'}}>{art._srcTeam}</span></div>
+                    <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>{art._so_id}{art._so_memo?' — '+art._so_memo:''}</div>
                     {mockups.length>1&&<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:6}}>
                       {mockups.slice(1,5).map((f,fi)=>{const fUrl=_urlOf(f);return _isImgUrl(fUrl)?<img key={fi} src={fUrl} alt="" style={{width:48,height:48,borderRadius:4,objectFit:'contain',cursor:'pointer',background:'white',border:'1px solid #e2e8f0'}} onClick={e=>{e.stopPropagation();openFile(f)}}/>:null})}
                       {mockups.length>5&&<span style={{fontSize:10,color:'#64748b',alignSelf:'center'}}>+{mockups.length-5} more</span>}
@@ -7401,7 +7457,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     {/* M13: reusing un-approved art dead-ends (no mock/seps) — badge the state, don't hide it */}
                     {(art.status==='approved'||art.status==='art_complete')?<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 8px',borderRadius:10}}>✓ Approved</span>
                       :<span style={{fontSize:10,fontWeight:700,color:'#b45309',background:'#fef3c7',padding:'1px 8px',borderRadius:10}} title="This design was never approved on the source order — reusing it likely means going back to the artist">⚠️ {ART_FILE_LABELS[art.status]||'Not approved'}</span>}
-                    {alreadyAdded?<span style={{fontSize:10,color:'#22c55e',fontWeight:600}}>Already added</span>:
+                    {replaceTbdId?<button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={()=>swapTbdForPrevious(art)}>Change to this art</button>:
+                    alreadyAdded?<span style={{fontSize:10,color:'#22c55e',fontWeight:600}}>Already added</span>:
                     <button className="btn btn-sm btn-primary" style={{fontSize:11}} title="Adds the art + production files and offers to point matching garments' decorations at it (one confirm). Mockups are not auto-applied — pick them per garment." onClick={()=>addPrevArt(art,new Set())}>+ Add</button>}
                     {mockups.length>0&&<span style={{fontSize:10,color:'#94a3b8'}}>{mockups.length} mockup(s) — not auto-applied</span>}
                     {(art.prod_files||[]).length>0&&<span style={{fontSize:10,color:'#16a34a',fontWeight:600}}>🏭 {art.prod_files.length} prod file(s)</span>}
@@ -7554,12 +7611,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             onClick={()=>{if(unread&&onMsg){onMsg(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...(mm.read_by||[]),cu.id]}:mm))}}}>
             <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
               <div style={{display:'flex',gap:6,alignItems:'center'}}>
-                <span style={{fontSize:12,fontWeight:700,color:isMe?'#1e40af':'#475569'}}>{author?.name||'Unknown'}</span>
+                <span style={{fontSize:12,fontWeight:700,color:isMe?'#1e40af':'#475569'}}>{author?.name||m.author||'Unknown'}</span>
                 {dept&&dept.id!=='all'&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:dept.color+'20',color:dept.color}}>@{dept.label}</span>}
                 {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:'#fef3c7',color:'#92400e'}}>Tagged you</span>}
               </div>
               <div style={{display:'flex',gap:6,alignItems:'center'}}>
                 <span style={{fontSize:10,color:'#94a3b8'}}>{m.ts}</span>
+                {isSO&&o.webstore_id&&<ShareMessageButton soId={o.id} messageId={m.id} notify={nf}/>}
                 {!indent&&<button style={{fontSize:9,padding:'1px 6px',borderRadius:6,border:'1px solid #e2e8f0',background:replyTo===m.id?'#3b82f6':'white',color:replyTo===m.id?'white':'#64748b',cursor:'pointer'}} onClick={(e)=>{e.stopPropagation();const on=replyTo!==m.id;setReplyTo(on?m.id:null);/* Replying auto-tags the author so they get the ping without retyping the name. */if(on&&author&&!isMe)tagMember(author)}}>Reply{replies.length>0?` (${replies.length})`:''}</button>}
               </div>
             </div>
@@ -12144,7 +12202,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(j.items||[]).length>0&&dTot>1&&<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:10}} onClick={()=>setSplitModal({jIdx:ji,jobId:j.id,mode:null,selectedIdxs:[]})}>✂️ Split Job</button>}
             </div>
             {_mockReady&&j.art_status!=='waiting_approval'&&<section aria-label="Review saved mocks" style={{margin:'0 20px 16px',padding:14,background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:10}}><strong>Mocks ready — review next</strong><p style={{fontSize:12,color:'#475569'}}>Send the mocks to the coach, or approve the artwork if approval is already confirmed. Production files are checked next.</p><div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{_reviewActions}</div></section>}
-            <JobGarmentMocks key={j.id} job={j} order={o} priorMocks={priorMocks} getOrder={()=>oRef.current} itemDetails={itemDetails} onViewItem={_jumpToItem} onSave={saveArtFilesNow} onSendToArtist={note=>setArtReqModal({jIdx:ji,artist:_activeArtistId(j.assigned_artist||((j.art_requests||[]).slice(-1)[0]?.artist)),instructions:note,files:[]})} />
+            <JobGarmentMocks key={j.id} job={j} order={o} priorMocks={priorMocks} getOrder={()=>oRef.current} itemDetails={itemDetails} onViewItem={_jumpToItem} onSave={saveArtFilesNow} onSendToArtist={note=>setArtReqModal({jIdx:ji,artist:_activeArtistId(j.assigned_artist||((j.art_requests||[]).slice(-1)[0]?.artist)),instructions:note,files:[]})} onLibrarySync={syncLogoLibrary} />
             {/* ── Check Mock: previously-approved art reused on a different color/style ── */}
             {_needsMockCheck&&(()=>{
               const _gLabels=_mockCheckGarments.map(g=>(g.color?g.color+' ':'')+g.sku).join(', ');

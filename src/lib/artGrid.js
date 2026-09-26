@@ -30,6 +30,8 @@ const GARMENT_HEX = {
   'carolina blue': '#4b9cd3', 'columbia blue': '#9bcbeb', teal: '#14b8a6', brown: '#5c4033',
   tan: '#d2b48c', natural: '#f0ead6', cream: '#fffdd0', sand: '#e0d3af', ash: '#e6e8ea',
   midnight: '#0b1220', hunter: '#14532d', olive: '#556b2f', crimson: '#a11221',
+  blue: '#2563eb', 'sky blue': '#7dd3fc', 'powder blue': '#b0d4ee', onix: '#6b7280', 'light grey': '#d1d5db',
+  'light gray': '#d1d5db', 'dark grey': '#4b5563', 'dark gray': '#4b5563', 'sport grey': '#a8adb4',
 };
 // Look up a garment-color hex: exact name, else any word in it ("Heather Charcoal" →
 // charcoal), else null so the caller can fall back by brightness.
@@ -40,6 +42,25 @@ const _garmentHexOf = (name) => {
   for (const w of key.split(/[^a-z0-9]+/).filter(Boolean)) { if (GARMENT_HEX[w]) return GARMENT_HEX[w]; }
   return null;
 };
+// A garment color's swatch hex only when the name is actually recognized (a swatch word, or a
+// dark word like "Dark Heather"); null for names like "CUSTOM" that say nothing about the color.
+// Matches the LONGEST color phrase in the name, so "Team Light Blue" reads light blue (not the
+// generic "blue") and "Collegiate Navy" reads navy.
+export function knownGarmentHex(name) {
+  const words = String(name || '').trim().toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  for (let len = Math.min(3, words.length); len > 0; len--) {
+    for (let i = 0; i + len <= words.length; i++) {
+      const hex = GARMENT_HEX[words.slice(i, i + len).join(' ')];
+      if (hex) return hex;
+    }
+  }
+  return guessDarkColor(name) ? '#1f2937' : null;
+}
+// Strict form for labels that may describe INK rather than the garment ("White ink on dark"):
+// only a label that IS a color name counts.
+export function exactGarmentHex(name) {
+  return GARMENT_HEX[String(name || '').trim().toLowerCase()] || null;
+}
 // Background hex for a garment color — known swatch, else a neutral dark/light by brightness.
 export function garmentHex(name) {
   return _garmentHexOf(name) || (guessDarkColor(name) ? '#1f2937' : '#e5e7eb');

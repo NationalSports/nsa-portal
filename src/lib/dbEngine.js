@@ -1029,6 +1029,15 @@ const _resolveArtRows=(clientArtFiles,dbRows,parentId)=>{
 // Adopt the exact conflict-resolved row back into the live object. Rebasing only `_version` poisons the
 // client: its stale status/files then look current and the NEXT save can undo the protection. Preserve
 // client-only UI keys via Object.assign, but consume the one-save edit/deletion markers after success.
+// Art rows this client has itself written this session, keyed 'table:parentId'. The art delete guard only
+// removes rows the client "knew about" — originally just _hydratedArtIds, captured at load. Art added in the
+// editor after load (Previous Artwork pull, upload) was saved but never became known, so deleting it later in
+// the same session silently never reached the DB and it came back on the next reload (EST-2688: the Golden
+// Eagles logo). A row we wrote ourselves is as safe to delete as one we loaded; another user's concurrent add
+// is still in neither set and is still preserved.
+const _dbWrittenArtIds=new Map();
+const _markArtWritten=(table,parentId,ids)=>{const k=table+':'+parentId;let s=_dbWrittenArtIds.get(k);if(!s){s=new Set();_dbWrittenArtIds.set(k,s)}(ids||[]).forEach(id=>{if(id)s.add(id)})};
+const _knownArtIdsFor=(table,doc)=>new Set([...(Array.isArray(doc._hydratedArtIds)?doc._hydratedArtIds:[]),...(_dbWrittenArtIds.get(table+':'+doc.id)||[])]);
 const _adoptResolvedArtRow=({client,row,baseVersion})=>{
   Object.assign(client,row,{_version:baseVersion+1});
   delete client._artDeletes;delete client._artEditedFields;
@@ -1082,7 +1091,7 @@ const _dbSaveEstimateInner = async (est) => {
     const resolvedArt=Array.isArray(art_files)?_resolveArtRows(art_files,estimateArt,est.id):[];
     const artUpserts=resolvedArt.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,estimate_id:est.id}));
     const currentArtIds=new Set((art_files||[]).map(a=>a.id));
-    const knownArtIds=new Set(est._hydratedArtIds||[]);
+    const knownArtIds=_knownArtIdsFor('estimate_art_files',est);
     const artDeletes=Array.isArray(art_files)&&est._artHydrated!==false?(estimateArt||[]).filter(a=>knownArtIds.has(a.id)&&!currentArtIds.has(a.id)).map(a=>a.id):[];
     // The estimate row is now written by the atomic save_estimate RPC below — together with its items and
     // decorations in a single transaction. We intentionally no longer upsert it separately here: writing the
@@ -1331,6 +1340,7 @@ const _dbSaveEstimateInner = async (est) => {
     // Artwork is part of the same transaction, so no later art request can turn
     // a committed estimate into a partially failed save.
     resolvedArt.forEach(_adoptResolvedArtRow);
+    _markArtWritten('estimate_art_files',est.id,artUpserts.map(r=>r.id));
     _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();_dbRecentSaves[est.id]=Date.now();_dbStaleCooldown.delete(est.id);
     // Bump local version to match server (DB trigger increments on UPDATE) — ONLY when the RPC didn't
     // return the post-save version (pre-00128 fallback). When it did, est._version is already exact and
@@ -1598,17 +1608,17 @@ const _dbSaveSOInner = async (so) => {
         let soAfRows=_resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,so_id:so.id}));
         let _afOk=true;
         savePlan.art_upserts=soAfRows;
-        afterCommit.push(()=>_resolved.forEach(_adoptResolvedArtRow));
+        afterCommit.push(()=>{_resolved.forEach(_adoptResolvedArtRow);_markArtWritten('so_art_files',so.id,soAfRows.map(r=>r.id))});
       }
       // Delete only art the client deliberately removed: it had loaded the row and no longer holds it.
       const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
-      const _knownArtIds=new Set(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]);
+      const _knownArtIds=_knownArtIdsFor('so_art_files',so);
       const toDeleteAf=(_dbAf||[]).filter(ea=>!currentAfIds.has(ea.id)&&_knownArtIds.has(ea.id)).map(ea=>ea.id);
       savePlan.art_deletes.push(...toDeleteAf);
     }else if(Array.isArray(art_files)&&so._artHydrated!==false){
       // User removed every art group (art_files === []). Delete only the rows the client had loaded; any art
       // added by another user since (not in _hydratedArtIds) is preserved.
-      const _knownArtIds=(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]).filter(id=>_dbAfVerById.has(id));
+      const _knownArtIds=[..._knownArtIdsFor('so_art_files',so)].filter(id=>_dbAfVerById.has(id));
       savePlan.art_deletes.push(..._knownArtIds);
     }}
     // SAFETY: a background sync (poll/realtime _diffSave, _bgSync=true) must NEVER shrink or empty an SO's
@@ -2484,7 +2494,7 @@ const _dbSaveArtFilesInner = async (so) => {
     if(readError)throw new Error(readError.message);
     const resolved=_resolveArtRows(so.art_files,dbArt,so.id);
     const present=new Set(so.art_files.map(a=>a.id));
-    const known=new Set(so._hydratedArtIds||[]);
+    const known=_knownArtIdsFor('so_art_files',so);
     const plan={header:{id:so.id},write_header:false,is_new:false,items:null,firm_dates:null,
       art_upserts:resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,so_id:so.id})),
       art_deletes:so._artHydrated===false?[]:(dbArt||[]).filter(a=>known.has(a.id)&&!present.has(a.id)).map(a=>a.id),
@@ -2493,6 +2503,7 @@ const _dbSaveArtFilesInner = async (so) => {
     if(error)throw new Error(error.message);
     if(data?.saved!==true)throw new Error('Database did not confirm the artwork save');
     resolved.forEach(_adoptResolvedArtRow);
+    _markArtWritten('so_art_files',so.id,plan.art_upserts.map(r=>r.id));
     return true;
   }catch(error){
     if(_isAuthError(error))return _handleAuthSaveFailure(so.id,error);
@@ -2635,6 +2646,22 @@ const _dbSaveInvoiceInner = async (inv) => {
       }
     }
     const{error:invErr}=await supabase.from('invoices').upsert(invRow,{onConflict:'id'});
+    // The core-column retry exists ONLY for a column this DB doesn't have yet. It used to fire on
+    // ANY error, so a unique violation on idempotency_key — the DB correctly refusing a second
+    // invoice for the same store — was retried with that very column stripped, and the row was
+    // written anyway, over whatever invoice held this id. That is how INV-64140 (Biola) and
+    // INV-64141 (Exeter) were overwritten with the previous store's invoice on 2026-09-25: both
+    // rows kept their original idempotency_key, which only this retry can produce.
+    if(invErr&&invErr.code==='23505'){
+      console.error('[DB] SAFETY: Blocking invoice save —',inv.id,'violates a unique key (',invErr.message,')');
+      if(_dbNotify)_dbNotify('Save blocked — '+inv.id+' duplicates an existing invoice. Please reload before editing.','error');
+      if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:inv.id,reason:'unique key violation on save — refused overwrite ('+invErr.message+')'});
+      _emitOutboxConflict('invoices',inv);_dbSaveFailedIds.delete(inv.id);_clearSaveError(inv.id);_persistFailedIds();
+      return false;
+    }
+    if(invErr&&!(invErr.code==='42703'||invErr.code==='PGRST204')){
+      console.error('[DB] invoices upsert failed:',invErr.message);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoices: '+invErr.message);_persistFailedIds();return false;
+    }
     if(invErr){
       console.warn('[DB] invoices upsert failed, retrying without extra cols:',invErr.message);
       const coreRow={};Object.keys(invRow).forEach(k=>{if(!_invExtraCols.has(k))coreRow[k]=invRow[k]});
