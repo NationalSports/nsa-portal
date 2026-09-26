@@ -110,6 +110,11 @@
 [functions."so-health-alert"]
   schedule = "0 */2 * * *"
 
+# Backup health alert — daily at 13:30 UTC (~6:30 AM PT, after the 07:00 UTC
+# daily backup). Emails Steve only if backups are missing, failed or stuck.
+[functions."backup-health-alert"]
+  schedule = "30 13 * * *"
+
 # UPS pickup auto-check — daily at 13:00 UTC (~5-6 AM PT). Marks shipments as
 # picked up in Supabase once UPS has scanned the package, so Awaiting Pickup
 # clears itself even when nobody has the portal open.

@@ -2125,6 +2125,72 @@ function LostArtJobsCard(){
   );
 }
 
+// Automatic server backups — backed by public.backup_runs (see migration
+// 20260922230000_backup_every_table). Turns red when no daily backup has
+// finished in 26h, so a stalled backup is noticed the next day instead of
+// months later (the old one failed silently from June 19 to Sept 22, 2026).
+function ServerBackupsCard(){
+  const[runs,setRuns]=React.useState(null);
+  const[err,setErr]=React.useState('');
+  const[loading,setLoading]=React.useState(false);
+  const load=React.useCallback(async()=>{
+    if(!supabase){setErr('No DB connection');return}
+    setLoading(true);setErr('');
+    try{
+      const{data,error}=await supabase.from('backup_runs').select('id,kind,status,created_at,finished_at,total_rows,total_bytes,cursor,tables,last_error').order('created_at',{ascending:false}).limit(10);
+      if(error)throw error;
+      setRuns(data||[]);
+    }catch(e){setErr(e.message||String(e));setRuns(null)}
+    finally{setLoading(false)}
+  },[]);
+  React.useEffect(()=>{load()},[load]);
+  const lastDaily=runs?runs.find(r=>r.kind==='daily'&&r.status==='ok'):null;
+  const running=runs?runs.find(r=>r.status==='running'):null;
+  const fresh=!!lastDaily&&Date.now()-new Date(lastDaily.finished_at).getTime()<26*3600000;
+  const statusColor=!runs?'#64748b':fresh?'#16a34a':'#dc2626';
+  const mb=b=>(Number(b||0)/1048576).toFixed(1)+' MB';
+  return(
+    <div className="card" style={{marginBottom:16,borderLeft:`4px solid ${statusColor}`}}>
+      <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <h2>🗄️ Automatic Server Backups</h2>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <button className="btn btn-sm btn-secondary" onClick={load} disabled={loading} style={{fontSize:11}}>{loading?'…':'Refresh'}</button>
+          <span style={{fontSize:12,color:statusColor,fontWeight:600}}>{loading?'Loading…':err?'Status unavailable':fresh?'Backed up':'No backup in 26h'}</span>
+        </div>
+      </div>
+      <div className="card-body">
+        <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Every table is copied automatically at 3am ET and every 3 hours during the day. Daily copies are kept 30 days, intraday copies 4 days, in private Supabase storage. No action needed.</div>
+        {err&&<div style={{padding:8,background:'#fef2f2',color:'#dc2626',fontSize:12,borderRadius:6,marginBottom:8}}>Error: {err}</div>}
+        {runs&&<div style={{fontSize:13,marginBottom:10,color:fresh?'#166534':'#991b1b',fontWeight:600}}>
+          {lastDaily?`Last complete daily backup: ${new Date(lastDaily.finished_at).toLocaleString()} — ${Number(lastDaily.total_rows).toLocaleString()} rows, ${mb(lastDaily.total_bytes)}`:'No complete daily backup yet.'}
+          {!fresh&&' Export a manual backup below and let the developer know.'}
+        </div>}
+        {running&&<div style={{fontSize:12,color:'#1e40af',marginBottom:10}}>⏳ {running.kind==='daily'?'Daily':'Intraday'} backup in progress — table {Math.min((running.cursor?.ti||0)+1,running.tables?.length||0)} of {running.tables?.length||0}{running.last_error?` (retrying: ${running.last_error.slice(0,120)})`:''}</div>}
+        {runs&&runs.length>0&&(
+          <div style={{maxHeight:240,overflowY:'auto',border:'1px solid #e2e8f0',borderRadius:6}}>
+            <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
+              <thead style={{background:'#f8fafc',position:'sticky',top:0}}>
+                <tr><th style={{textAlign:'left',padding:'6px 8px'}}>Started</th><th style={{textAlign:'left',padding:'6px 8px'}}>Type</th><th style={{textAlign:'left',padding:'6px 8px'}}>Status</th><th style={{textAlign:'right',padding:'6px 8px'}}>Rows</th><th style={{textAlign:'right',padding:'6px 8px'}}>Size</th></tr>
+              </thead>
+              <tbody>
+                {runs.map(r=>(
+                  <tr key={r.id} style={{borderTop:'1px solid #e2e8f0'}} title={r.last_error||''}>
+                    <td style={{padding:'6px 8px',whiteSpace:'nowrap',color:'#64748b'}}>{new Date(r.created_at).toLocaleString()}</td>
+                    <td style={{padding:'6px 8px'}}>{r.kind==='daily'?'Daily':'Intraday'}</td>
+                    <td style={{padding:'6px 8px',fontWeight:600,color:r.status==='ok'?'#16a34a':r.status==='failed'?'#dc2626':'#1e40af'}}>{r.status==='ok'?'✅ Complete':r.status==='failed'?'❌ Failed':'⏳ Running'}</td>
+                    <td style={{padding:'6px 8px',textAlign:'right'}}>{Number(r.total_rows).toLocaleString()}</td>
+                    <td style={{padding:'6px 8px',textAlign:'right'}}>{mb(r.total_bytes)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // System Health card — backed by public.get_health_report() RPC.
 // Renders orphans / missing-deco SOs grouped by audit-log verdict
 // (system_loss / user_removed / no_audit) so reviewers can tell a real
@@ -2675,7 +2741,7 @@ export default function App(){
   // Changelog & backup system
   const[changeLog,setChangeLog]=useState(()=>loadState('change_log',[]));// [{ts,user,action,entity,entityId,detail}]
   const[lastBackup,setLastBackup]=useState(null);
-  const[autoBackupEnabled,setAutoBackupEnabled]=useState(true);
+  const[exportingBackup,setExportingBackup]=useState(false);
   const logChange=(action,entity,entityId,detail)=>{setChangeLog(prev=>[{ts:new Date().toLocaleString(),user:cu?.name||'Portal Coach',action,entity,entityId,detail},...prev].slice(0,500))};
   // Deco vendor management
   const[decoVendors,setDecoVendors]=useState([]);const[decoVendorPricing,setDecoVendorPricing]=useState([]);
@@ -15529,18 +15595,25 @@ export default function App(){
     inv_adj_log:invAdjLog,inv_pos:invPOs,inv_po_counter:invPOCounter
   });
   const exportBackup=async()=>{
+    // Loading ~10k version-history snapshots takes a minute or more — say so, or the click looks dead.
+    nf('⏳ Preparing backup — gathering order history, this can take a minute or two…');
     let history;try{history=await _loadHistory()}catch(e){nf("Backup cancelled: "+e.message,"error");return;}
-    const data=getFullState(history);
-    const json=JSON.stringify(data,null,2);
-    const blob=new Blob([json],{type:'application/json'});
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement('a');
-    const ts=new Date().toISOString().split('T')[0];
-    a.href=url;a.download='NSA-backup-'+ts+'.json';a.click();
-    URL.revokeObjectURL(url);
-    setLastBackup(new Date().toLocaleString());
-    logChange('backup','system','full','Full system backup exported');
-    nf('💾 Backup exported: NSA-backup-'+ts+'.json');
+    try{
+      const data=getFullState(history);
+      // Compact JSON: pretty-printing roughly doubled a file that is already 100+ MB.
+      const json=JSON.stringify(data);
+      const blob=new Blob([json],{type:'application/json'});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');
+      const ts=new Date().toISOString().split('T')[0];
+      a.href=url;a.download='NSA-backup-'+ts+'.json';
+      // Attach before clicking and revoke later — revoking right after click() can cancel a large download.
+      document.body.appendChild(a);a.click();a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url),60000);
+      setLastBackup(new Date().toLocaleString());
+      logChange('backup','system','full','Full system backup exported');
+      nf('💾 Backup exported: NSA-backup-'+ts+'.json');
+    }catch(e){nf('Backup failed: '+(e.message||e),'error');}
   };
   const importBackup=(file)=>{
     const reader=new FileReader();
@@ -34305,8 +34378,8 @@ export default function App(){
                 <div><span style={{color:'#64748b'}}>File size:</span> <strong>{sizeMB} MB</strong></div>
               </div>
             </div>
-            <button className="btn btn-primary" style={{width:'100%',padding:'12px 20px',fontSize:14}} onClick={exportBackup}>
-              <Icon name="save" size={16}/> Export Full Backup
+            <button className="btn btn-primary" style={{width:'100%',padding:'12px 20px',fontSize:14}} disabled={exportingBackup} onClick={async()=>{setExportingBackup(true);try{await exportBackup()}finally{setExportingBackup(false)}}}>
+              <Icon name="save" size={16}/> {exportingBackup?'Preparing backup…':'Export Full Backup'}
             </button>
             {lastBackup&&<div style={{fontSize:11,color:'#166534',marginTop:8,textAlign:'center'}}>Last manual backup: {lastBackup}</div>}
           </div>
@@ -34333,18 +34406,8 @@ export default function App(){
         </div>
       </div>
 
-      {/* Auto-backup toggle */}
-      <div className="card" style={{marginBottom:16}}>
-        <div className="card-body" style={{padding:'12px 18px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-          <div>
-            <div style={{fontWeight:700}}>Auto-Backup to Browser</div>
-            <div style={{fontSize:12,color:'#64748b'}}>Saves a snapshot to localStorage every 5 minutes. Survives page refreshes but NOT browser cache clears.</div>
-          </div>
-          <button className={`btn btn-sm ${autoBackupEnabled?'btn-primary':'btn-secondary'}`} onClick={()=>setAutoBackupEnabled(!autoBackupEnabled)}>
-            {autoBackupEnabled?'✅ Enabled':'Disabled'}
-          </button>
-        </div>
-      </div>
+      {/* Automatic server backups */}
+      <ServerBackupsCard/>
 
       {/* System Health */}
       <SystemHealthCard sos={sos} cust={cust} setESO={setESO} setESOC={setESOC} setPg={setPg} nf={nf}/>
@@ -34360,9 +34423,10 @@ export default function App(){
         <div className="card-body">
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
             <button className="btn btn-primary" style={{background:'#4285f4',borderColor:'#4285f4',padding:'12px 20px',fontSize:13}} onClick={async()=>{
+              nf('⏳ Preparing backup — gathering order history, this can take a minute or two…');
               let history;try{history=await _loadHistory()}catch(e){nf('Backup cancelled: '+e.message,'error');return;}
               const data=getFullState(history);
-              const json=JSON.stringify(data,null,2);
+              const json=JSON.stringify(data);
               const blob=new Blob([json],{type:'application/json'});
               const ts=new Date().toISOString().split('T')[0];
               const fileName='NSA-backup-'+ts+'.json';
@@ -34373,7 +34437,7 @@ export default function App(){
                 }).catch(()=>{});
               } else {
                 // Fallback: download + open Drive upload page
-                const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=fileName;a.click();URL.revokeObjectURL(url);
+                const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=fileName;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
                 window.open('https://drive.google.com/drive/my-drive','_blank');
                 setLastBackup(new Date().toLocaleString()+' (downloaded)');logChange('backup','system','drive-download','Downloaded for Drive: '+fileName);
                 nf('💾 Downloaded — upload to Drive in the tab that opened');
