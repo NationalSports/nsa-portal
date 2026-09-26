@@ -3693,6 +3693,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const current=oRef.current;
     const art=(current.art_files||[]).find(a=>a.id===id);
     const count=safeItems(current).reduce((n,it)=>n+safeDecos(it).filter(d=>d.art_file_id===id).length,0);
+    const lockedJob=safeJobs(current).find(j=>(j.art_file_id===id||(j._art_ids||[]).includes(id))&&['staging','in_process','completed','shipped'].includes(j.prod_status));
+    if(lockedJob){nf('This art is already in or past production. Recall the job before changing its design.','error');return}
     if(!art||!window.confirm('Change '+(art.name||'Art TBD')+' to "'+(source.name||'Untitled')+'" on '+count+' decoration'+(count===1?'':'s')+'? Review color ways and production files afterward.'))return;
     const next=replaceTbdArt(current,id,source);
     const updated={...next,art_files:markArtChanges(current.art_files||[],next.art_files||[])};

@@ -25,3 +25,16 @@ test('a TBD identifier keeps the placeholder prefix', () => {
   expect(tbdArtLabel('ART TBD 1 — CSM crest')).toBe('CSM crest');
   expect(tbdArtName('ART TBD 1 — CSM crest', 'new ID')).toBe('ART TBD 1 — new ID');
 });
+
+test('a mixed-art job stays in Needs Art if its other design is still pending', () => {
+  const order = {
+    art_files: [
+      { id: 'tbd', name: 'ART TBD 1' },
+      { id: 'other', name: 'Second design', status: 'waiting_for_art' },
+    ],
+    items: [],
+    jobs: [{ art_file_id: 'tbd', _art_ids: ['tbd', 'other'], art_name: 'Two designs', art_status: 'art_requested', prod_status: 'ready' }],
+  };
+  const next = replaceTbdArt(order, 'tbd', { id: 'prior', name: 'School Crest', status: 'approved' });
+  expect(next.jobs[0]).toMatchObject({ art_name: 'Two designs', art_status: 'needs_art', prod_status: 'hold' });
+});

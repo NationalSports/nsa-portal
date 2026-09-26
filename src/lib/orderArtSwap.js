@@ -40,10 +40,14 @@ export function replaceTbdArt(order, tbdId, source) {
     jobs: (order.jobs || []).map(job => {
       const usesArt = job.art_file_id === tbdId || (job._art_ids || []).includes(tbdId);
       if (!usesArt) return job;
+      const otherArtIds = (job._art_ids || []).filter(id => id && id !== tbdId);
+      const otherArtReady = otherArtIds.every(id =>
+        ['approved', 'art_complete'].includes((order.art_files || []).find(a => a.id === id)?.status));
       return {
         ...job,
-        art_name: replacement.name,
-        art_status: ['approved', 'art_complete'].includes(replacement.status) ? 'waiting_approval' : 'needs_art',
+        art_name: otherArtIds.length ? job.art_name : replacement.name,
+        art_status: otherArtReady && ['approved', 'art_complete'].includes(replacement.status) ? 'waiting_approval' : 'needs_art',
+        prod_status: job.prod_status === 'ready' ? 'hold' : job.prod_status,
         assigned_artist: '',
         sent_to_coach_at: null,
         follow_up_at: null,
