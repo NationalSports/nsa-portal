@@ -8,6 +8,7 @@ import {useOrderCatalogResults} from './lib/orderCatalogSearch';
 import { poEligibleVendors } from './lib/vendorPoEligibility';
 import QuantityDraftInput from './QuantityDraftInput';
 import TextDraftInput from './TextDraftInput';
+import { replaceTbdArt, tbdArtName, tbdArtLabel } from './lib/orderArtSwap';
 /* eslint-disable */
 import { openProductionPacket } from './productionPacket/api';
 import ShareMessageButton from './productionPacket/ShareMessageButton';
@@ -1218,6 +1219,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const _activeArtistId=(id)=>(id&&(REPS||[]).some(r=>r.id===id&&(r.role==='art'||r.role==='artist')&&r.is_active!==false))?id:'';
   const[artRevisionNote,setArtRevisionNote]=useState('');
   const[showPrevArt,setShowPrevArt]=useState(false);// Previous Artwork picker modal
+  const[replaceTbdId,setReplaceTbdId]=useState(null);// Art group being swapped for a prior design
   // 🎯 Apply-art picker: after a new art folder is created (or via each folder's "Apply to items"
   // button) pick which line items the art goes on, plus per-item location and color way.
   // {artId,rows:[{ii,checked,already,position,color_way_id,cwExact}]} — null = closed.
@@ -3666,6 +3668,37 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // folder has no name or color ways yet, so the picker had nothing useful to offer.
   // The rep fills the folder in first, then uses its "🎯 Apply to items" button.
   const addArt=()=>{setO(e=>({...e,art_files:[...(e.art_files||[]),{id:'af'+Date.now(),design_id:'design_'+Date.now().toString(36)+Math.random().toString(36).slice(2,8),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],mock_links:{},preview_url:'',prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}],updated_at:new Date().toLocaleString()}));setDirty(true)};
+  const renameTbdArt=async(ii,di)=>{
+    const current=oRef.current;
+    const deco=safeDecos(safeItems(current)[ii]||{})[di];
+    const art=(current.art_files||[]).find(a=>a.id===deco?.art_file_id);
+    if(!deco||!(deco.art_file_id==='__tbd'||/^ART TBD\b/i.test(art?.name||'')))return;
+    const label=window.prompt('Identify this Art TBD for the art team:',tbdArtLabel(art?.name));
+    if(label===null||!label.trim())return;
+    if(art){
+      const arts=(current.art_files||[]).map(a=>a.id===art.id?markArtFieldEdit(a,'name',tbdArtName(a.name,label)):a);
+      await saveSONow({...current,art_files:arts,updated_at:new Date().toLocaleString()},'Art TBD name');
+      return;
+    }
+    const n=(current.art_files||[]).filter(a=>/^ART TBD\b/i.test(a.name||'')).length+1;
+    const id='af'+Date.now();
+    const name=tbdArtName('ART TBD '+n,label);
+    const tbd={id,name,deco_type:deco.art_tbd_type||'screen_print',status:'waiting_for_art',ink_colors:Array.from({length:deco.tbd_colors||1},(_,i)=>'Color '+(i+1)).join('\n'),stitches:deco.tbd_stitches||8000,color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',uploaded:new Date().toLocaleDateString()};
+    const updated={...current,art_files:[...(current.art_files||[]),tbd],items:safeItems(current).map((it,x)=>x===ii?{...it,decorations:safeDecos(it).map((d,i)=>i===di?{...d,art_file_id:id}:d)}:it),updated_at:new Date().toLocaleString()};
+    await saveSONow(updated,'Art TBD name');
+  };
+  const swapTbdForPrevious=async(source)=>{
+    const id=replaceTbdId;
+    if(!id)return;
+    const current=oRef.current;
+    const art=(current.art_files||[]).find(a=>a.id===id);
+    const count=safeItems(current).reduce((n,it)=>n+safeDecos(it).filter(d=>d.art_file_id===id).length,0);
+    if(!art||!window.confirm('Change '+(art.name||'Art TBD')+' to "'+(source.name||'Untitled')+'" on '+count+' decoration'+(count===1?'':'s')+'? Review color ways and production files afterward.'))return;
+    const next=replaceTbdArt(current,id,source);
+    const updated={...next,art_files:markArtChanges(current.art_files||[],next.art_files||[])};
+    setShowPrevArt(false);setReplaceTbdId(null);
+    await saveSONow(updated,'Previous artwork','Changed '+count+' decoration'+(count===1?'':'s')+' to '+(source.name||'previous art')+'. Review color ways and production files.');
+  };
   const uArt=(i,k,v)=>{setO(e=>({...e,art_files:(e.art_files||[]).map((f,x)=>x===i?markArtFieldEdit(f,k,v):f),updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Persist an art_files change to the DB right now — used immediately after a file upload so a freshly
   // uploaded mockup/production/preview file is durable the moment it lands. This closes the "uploaded to
@@ -5785,6 +5818,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         <option value="__new_tbd">➕ New Art TBD...</option>
                         {af.filter(f=>f.id!=='__tbd').map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}
                       </select>
+                      {(d.art_file_id==='__tbd'||/^ART TBD\b/i.test(artF?.name||''))&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>renameTbdArt(idx,di)}>Rename</button>}
                       <select className="form-select" style={{fontSize:10,padding:'1px 3px',height:24,maxWidth:110,border:'1px solid #ddd6fe',color:'#7c3aed',fontWeight:600,background:'white'}} value={d.position||''} onChange={e=>uD(idx,di,'position',e.target.value)} title="Decoration position">{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
                     </span>;
                   });
@@ -6189,6 +6223,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <option value="">⚠️ Select artwork...</option>
                     <option value="__tbd">🎨 Art TBD (pricing only)</option>
                     <option value="__new_tbd">➕ New Art TBD...</option>{af.filter(f=>f.id!=='__tbd').map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}</select>
+                  {(deco.art_file_id==='__tbd'||/^ART TBD\b/i.test(artF?.name||''))&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>renameTbdArt(idx,di)}>Rename</button>}
                   {deco.art_file_id==='__tbd'&&<><select className="form-select" style={{width:130,fontSize:11,border:'1px solid #f59e0b'}} value={deco.art_tbd_type||'screen_print'} onChange={e=>uDM(idx,di,{art_tbd_type:e.target.value,sell_override:null})}>
                     <option value="screen_print">Screen Print</option><option value="embroidery">Embroidery</option><option value="heat_press">Heat Press</option><option value="dtf">DTF</option></select>
                   {(deco.art_tbd_type||'screen_print')==='screen_print'&&<select className="form-select" style={{width:90,fontSize:10}} value={deco.tbd_colors||1} onChange={e=>uDM(idx,di,{tbd_colors:parseInt(e.target.value),sell_override:null})}>
@@ -7133,7 +7168,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // On failure (e.g. an expired session whose writes RLS now rejects) keep the editor dirty and warn the
         // rep NOT to reload — her entries are still in memory and will save once she's signed back in.
         if(onSaveArtFiles){const ok=await onSaveArtFiles(updated);if(ok){setDirty(false);setSaved(true);nf('Art saved')}else{nf('⚠️ Artwork did NOT save. Your session may have expired — sign in again and click Save. Do NOT reload: your entries are still here.','error')}}
-        else{onSave(updated);setDirty(false);setSaved(true);nf('Art saved')}}} style={{background:'#166534',borderColor:'#166534'}}>Save</button>}<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={()=>setShowPrevArt(true)}>🗂 Previous Artwork</button><button className="oe2-cta" style={{fontSize:13,padding:'8px 16px'}} onClick={addArt}><span><Icon name="plus" size={12}/> New Art Group</span></button></div></div>
+        else{onSave(updated);setDirty(false);setSaved(true);nf('Art saved')}}} style={{background:'#166534',borderColor:'#166534'}}>Save</button>}<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={()=>{setReplaceTbdId(null);setShowPrevArt(true)}}>🗂 Previous Artwork</button><button className="oe2-cta" style={{fontSize:13,padding:'8px 16px'}} onClick={addArt}><span><Icon name="plus" size={12}/> New Art Group</span></button></div></div>
       <div className="card-body">{af.length===0?<div className="empty">No art uploaded. Create art groups and add files.</div>:
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
           {af.map((art,i)=>{const usedIn=safeItems(o).reduce((a,it)=>a+safeDecos(it).filter(d=>d.art_file_id===art.id).length,0);
@@ -7165,6 +7200,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(art.color_ways||[]).length>0&&<span className="oe-num" style={{fontSize:11,color:'#9aa0ad',marginRight:2}}>{(art.color_ways||[]).length} CW</span>}
                 {art.dtf_purchased&&<span title={'DTF purchased'+(art.dtf_purchased.po_id?' on '+art.dtf_purchased.po_id:'')+(art.dtf_purchased.vendor?' from '+art.dtf_purchased.vendor:'')+(art.dtf_purchased.date?' · '+art.dtf_purchased.date:'')} style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:700,flexShrink:0,background:'#fef3c7',color:'#b45309'}}>🖨️ DTF Purchased</span>}
                 <span className="oe-eb" style={{fontSize:10,padding:'4px 10px',borderRadius:20,flexShrink:0,background:ART_FILE_SC[art.status]?.bg||ART_FILE_SC.waiting_for_art.bg,color:ART_FILE_SC[art.status]?.c||ART_FILE_SC.waiting_for_art.c}}>{art.status==='approved'?'Approved':art.status==='needs_approval'?'Needs Approval':'Waiting'}</span>
+                {/^ART TBD\b/i.test(art.name||'')&&<button className="btn btn-sm" style={{fontSize:10,flexShrink:0,background:"#ede9fe",color:"#6d28d9",border:"1px solid #c4b5fd",fontWeight:700}} onClick={e=>{e.stopPropagation();setReplaceTbdId(art.id);setShowPrevArt(true)}}>Change to previous art</button>}
                 <button className="btn btn-sm" style={{fontSize:10,flexShrink:0,background:'#4f46e5',color:'white',border:'none',fontWeight:700}} title="Pick which line items this art applies to, with location and color way per item" onClick={e=>{e.stopPropagation();openArtApply(art)}}>🎯 Apply to items</button>
                 <button className="btn btn-sm btn-secondary" style={{fontSize:10,flexShrink:0}} onClick={e=>{e.stopPropagation();rmArt(i)}}><Icon name="trash" size={10}/></button>
               </div>
@@ -7353,8 +7389,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _tabColor={all:'#64748b',screen_print:'#1e40af',embroidery:'#6d28d9',heat_transfer:'#92400e'};
       const _catCount=c=>prevArtList.filter(a=>_artCat(a.deco_type)===c).length;
       const visibleArt=prevArtFilter==='all'?prevArtList:prevArtList.filter(a=>_artCat(a.deco_type)===prevArtFilter);
-      return<div className="modal-overlay" onClick={()=>setShowPrevArt(false)}><div className="modal" style={{maxWidth:700}} onClick={e=>e.stopPropagation()}>
-        <div className="modal-header"><h2>📂 Previous Artwork</h2><button className="modal-close" onClick={()=>setShowPrevArt(false)}>×</button></div>
+      return<div className="modal-overlay" onClick={()=>{setShowPrevArt(false);setReplaceTbdId(null)}}><div className="modal" style={{maxWidth:700}} onClick={e=>e.stopPropagation()}>
+        <div className="modal-header"><h2>{replaceTbdId?"Change to previous art":"📂 Previous Artwork"}</h2><button className="modal-close" onClick={()=>{setShowPrevArt(false);setReplaceTbdId(null)}}>×</button></div>
         <div className="modal-body" style={{maxHeight:500,overflowY:'auto'}}>
           {prevArtList.length===0?<div className="empty">No previous artwork found for this customer</div>:
           <>
@@ -7407,7 +7443,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     {/* M13: reusing un-approved art dead-ends (no mock/seps) — badge the state, don't hide it */}
                     {(art.status==='approved'||art.status==='art_complete')?<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 8px',borderRadius:10}}>✓ Approved</span>
                       :<span style={{fontSize:10,fontWeight:700,color:'#b45309',background:'#fef3c7',padding:'1px 8px',borderRadius:10}} title="This design was never approved on the source order — reusing it likely means going back to the artist">⚠️ {ART_FILE_LABELS[art.status]||'Not approved'}</span>}
-                    {alreadyAdded?<span style={{fontSize:10,color:'#22c55e',fontWeight:600}}>Already added</span>:
+                    {replaceTbdId?<button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={()=>swapTbdForPrevious(art)}>Change to this art</button>:
+                    alreadyAdded?<span style={{fontSize:10,color:'#22c55e',fontWeight:600}}>Already added</span>:
                     <button className="btn btn-sm btn-primary" style={{fontSize:11}} title="Adds the art + production files and offers to point matching garments' decorations at it (one confirm). Mockups are not auto-applied — pick them per garment." onClick={()=>addPrevArt(art,new Set())}>+ Add</button>}
                     {mockups.length>0&&<span style={{fontSize:10,color:'#94a3b8'}}>{mockups.length} mockup(s) — not auto-applied</span>}
                     {(art.prod_files||[]).length>0&&<span style={{fontSize:10,color:'#16a34a',fontWeight:600}}>🏭 {art.prod_files.length} prod file(s)</span>}
