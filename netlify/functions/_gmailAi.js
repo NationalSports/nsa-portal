@@ -158,7 +158,7 @@ const encodeHeader = (value) => {
   return /[^\x20-\x7e]/.test(v) ? `=?UTF-8?B?${Buffer.from(v, 'utf8').toString('base64')}?=` : v;
 };
 
-function buildMime({ to, subject, text, html, inReplyTo, references, attachments = [], from, cc, bcc, replyTo }) {
+function buildMime({ to, subject, text, html, inReplyTo, references, attachments = [], from, cc, bcc, replyTo, headers = {} }) {
   const mixed = `nsa_mixed_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   const alt = `nsa_alt_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   const lines = [
@@ -170,6 +170,7 @@ function buildMime({ to, subject, text, html, inReplyTo, references, attachments
     `Subject: ${encodeHeader(subject)}`,
     ...(inReplyTo ? [`In-Reply-To: ${cleanHeader(inReplyTo)}`] : []),
     ...(references ? [`References: ${cleanHeader(references)}`] : []),
+    ...['List-Unsubscribe', 'List-Unsubscribe-Post'].filter((key) => headers[key]).map((key) => `${key}: ${cleanHeader(headers[key])}`),
     'MIME-Version: 1.0',
     `Content-Type: multipart/mixed; boundary="${mixed}"`,
     '',

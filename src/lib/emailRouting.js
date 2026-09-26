@@ -1,72 +1,83 @@
-// Which recipients our normal sender (Brevo) can't reach, learned from past delivery failures.
-//
-// Some school districts' mail filters reject everything Brevo sends (a "550 ... blocked"
-// hard bounce), and once an address bounces Brevo puts it on its own suppression list and
-// silently drops every later send to it (a "blocked" event). Reps kept re-sending into that
-// void. Two kinds of failure are told apart here:
-//   - dead address: the mailbox doesn't exist — no sender can fix that, the rep needs a new address.
-//   - blocked: the district rejects our SENDER. The whole domain is treated as blocked (it's the
-//     district's server doing it), and those sends are routed through Gmail instead.
-// Consumer mailboxes (gmail.com etc.) are never blocked domain-wide — one bad address there says
-// nothing about the rest of the domain — so they're tracked per address.
-//
-// CommonJS so the portal (webpack) and netlify/functions/followup-sweep.js share it
-// (listed in netlify.toml included_files). Keep it dependency-free CJS with no object spread
-// (Babel would inject an ESM helper and break the webpack import — see src/lib/shipFrom.js).
-
+// Shared, dependency-free CommonJS routing rules for the portal and server workers.
 const _DEAD = /does not exist|5\.1\.1|user unknown|no such user|unknown user|recipient.*not found|invalid (recipient|address|mailbox)/i;
 const _CONSUMER = /^(gmail|googlemail|yahoo|ymail|hotmail|outlook|live|msn|icloud|me|mac|aol|comcast|att|sbcglobal|verizon|proton|protonmail)\./i;
-
 const _lc = (s) => String(s || '').trim().toLowerCase();
 const _domain = (email) => { const e = _lc(email); const i = e.lastIndexOf('@'); return i > 0 ? e.slice(i + 1) : ''; };
-
-// True when a bounce reason means the mailbox itself doesn't exist (vs. the district blocking us).
 const isDeadMailboxReason = (reason) => _DEAD.test(String(reason || ''));
-
-// Build the registry from documents' sent_history. A later successful delivery (opened) to the
-// same address clears a dead-address mark, so a fixed typo or a mailbox that came back isn't
-// held forever.
+function failureKind(h) {
+  const reason = String(h.delivery_reason || '');
+  const event = String(h.delivery_event || '');
+  // Never route around a recipient's opt-out or spam complaint.
+  if (/unsubscribe|complaint|spam$/i.test(event) || /unsubscrib|spam complaint|complained|opt.out/i.test(reason)) return 'suppressed';
+  if (isDeadMailboxReason(reason)) return 'dead';
+  if (/soft.?bounce|defer/i.test(event) || /mailbox full|quota|temporar|rate.limit|try again/i.test(reason)) return 'temporary';
+  // A bare Brevo "blocked" event is an address suppression, not evidence that
+  // every mailbox at that district rejects our sender. Unknown causes need review.
+  if (/block|blacklist|deny.?list|reject/i.test(reason) && /550|5\.7\.|sender|sending|ip address|barracuda/i.test(reason)) return 'blocked';
+  if (/^blocked$/i.test(event) || /suppress|blocklist|blacklist/i.test(reason)) return 'review';
+  return 'unknown';
+}
 function buildEmailBlockRegistry(docLists) {
-  const domains = new Map(), addrs = new Map(), dead = new Map(), opened = new Map();
-  for (const list of docLists || []) {
-    for (const doc of list || []) {
-      for (const h of (doc && doc.sent_history) || []) {
-        if (!h) continue;
-        const at = new Date(h.delivery_at || h.sent_at || 0).getTime() || 0;
-        const email = _lc(h.delivery_to || String(h.to || '').split(/[,;]/)[0]);
-        if (!email.includes('@')) continue;
-        if (h.delivery === 'opened') { if (at > (opened.get(email) || 0)) opened.set(email, at); continue; }
-        if (h.delivery !== 'failed') continue;
-        const hit = { at, docId: doc.id };
-        if (isDeadMailboxReason(h.delivery_reason)) { dead.set(email, { at: hit.at, docId: hit.docId, reason: h.delivery_reason }); continue; }
-        const d = _domain(email);
-        if (d && !_CONSUMER.test(d)) domains.set(d, hit); else addrs.set(email, hit);
-      }
+  const domains = new Map(), addrs = new Map(), dead = new Map(), suppressed = new Map(), review = new Map();
+  const failures = new Map(), successes = new Map(), brevoSuccesses = new Map();
+  const latest = (map, email, hit) => { if (!map.has(email) || hit.at >= map.get(email).at) map.set(email, hit); };
+  for (const list of docLists || []) for (const doc of list || []) for (const h of (doc && doc.sent_history) || []) {
+    if (!h) continue;
+    const at = new Date(h.delivery_at || h.sent_at || 0).getTime() || 0;
+    // Only attribute a multi-recipient result when the provider identified the mailbox.
+    const targets = String(h.to || '').split(/[,;]/).map(_lc).filter(Boolean);
+    const email = _lc(h.delivery_to || (targets.length === 1 ? targets[0] : ''));
+    if (!email.includes('@') || /[,;]/.test(email)) continue;
+    const hit = { at, docId: doc.id, reason: h.delivery_reason, kind: failureKind(h) };
+    if (['opened', 'delivered'].includes(h.delivery)) {
+      latest(successes, email, hit);
+      if (!String(h.messageId || '').startsWith('gmail:')) latest(brevoSuccesses, email, hit);
+    } else if (h.delivery === 'failed') {
+      if (hit.kind === 'suppressed') latest(suppressed, email, hit);
+      // Gmail failures cannot teach us that Brevo is blocked.
+      else if (hit.kind === 'dead' || !String(h.messageId || '').startsWith('gmail:')) latest(failures, email + ":" + hit.kind, Object.assign({ email }, hit));
     }
   }
-  for (const [email, hit] of dead) if ((opened.get(email) || 0) > hit.at) dead.delete(email);
-  return { domains, addrs, dead };
+  for (const hit of failures.values()) {
+    const email = hit.email;
+    if (hit.kind === 'dead') {
+      if (!successes.has(email) || successes.get(email).at <= hit.at) dead.set(email, hit);
+    } else if (hit.kind === 'review') {
+      if (!brevoSuccesses.has(email) || brevoSuccesses.get(email).at <= hit.at) review.set(email, hit);
+    } else if (hit.kind === 'blocked' && (!brevoSuccesses.has(email) || brevoSuccesses.get(email).at <= hit.at)) {
+      const d = _domain(email);
+      if (d && !_CONSUMER.test(d)) latest(domains, d, hit); else addrs.set(email, hit);
+    }
+  }
+  // Brevo may emit a later reasonless suppression after a diagnosed sender block.
+  // Preserve that diagnosis for this exact address (not unrelated district mailboxes).
+  for (const hit of failures.values()) if (hit.kind === 'blocked' && (!brevoSuccesses.has(hit.email) || brevoSuccesses.get(hit.email).at <= hit.at)) review.delete(hit.email);
+  return { domains, addrs, dead, suppressed, review };
 }
-
-// The portal keeps one live registry, rebuilt whenever its documents change (App.js).
 let _registry = buildEmailBlockRegistry([]);
 function setEmailBlockRegistry(docLists) { _registry = buildEmailBlockRegistry(docLists); }
-
-// For a list of recipient emails (strings or {email}): which need the Gmail route, and which
-// are known-dead. Pass a registry to check against something other than the portal's live one.
 function checkEmailRecipients(emails, registry) {
   const reg = registry || _registry;
-  const gmail = [], dead = [];
+  const gmail = [], dead = [], suppressed = [], review = [];
   for (const raw of emails || []) {
     const email = _lc(raw && typeof raw === 'object' ? raw.email : raw);
     if (!email) continue;
-    if (reg.dead.has(email)) dead.push(email);
+    if (reg.suppressed && reg.suppressed.has(email)) suppressed.push(email);
+    else if (reg.dead.has(email)) dead.push(email);
+    else if (reg.review && reg.review.has(email)) review.push(email);
+    else if (reg.brevoOverrides && (reg.brevoOverrides.has(email) || reg.brevoOverrides.has(_domain(email)))) continue;
     else if (reg.addrs.has(email) || reg.domains.has(_domain(email))) gmail.push(email);
   }
-  return { gmail, dead };
+  return { gmail, dead, suppressed, review };
 }
-
-// Domain named in the send-screen warning ("sangerusd.net blocks…"), or '' for a per-address block.
 const blockedDomainOf = (email, registry) => ((registry || _registry).domains.has(_domain(email)) ? _domain(email) : '');
-
-module.exports = { isDeadMailboxReason, buildEmailBlockRegistry, setEmailBlockRegistry, checkEmailRecipients, blockedDomainOf };
+function deliveryFailureAdvice(h) {
+  const kind = failureKind(h || {});
+  if (kind === 'dead') return 'That mailbox does not exist. Correct the contact address before sending again.';
+  if (kind === 'suppressed') return 'This recipient opted out or reported spam. Do not resend through another provider.';
+  if (String((h || {}).messageId || '').startsWith('gmail:')) return 'Gmail also reported a delivery failure. Confirm the address and ask the district to review its email filter.';
+  if (kind === 'blocked') return 'The sender was blocked. Resend from the portal to use Gmail.';
+  return 'Review the delivery error and confirm the address with the customer before retrying.';
+}
+const emailDeliveryLabel = (h) => !h ? '' : h.delivery === 'failed' ? 'Delivery failed' : h.delivery === 'opened' ? 'Opened' : h.delivery === 'delivered' ? 'Delivered' : String(h.messageId || '').startsWith('gmail:') ? 'Sent through Gmail — delivery unconfirmed' : h.delivery === 'deferred' ? 'Delivery delayed' : '';
+module.exports = { isDeadMailboxReason, failureKind, deliveryFailureAdvice, emailDeliveryLabel, buildEmailBlockRegistry, setEmailBlockRegistry, checkEmailRecipients, blockedDomainOf };

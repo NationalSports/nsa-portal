@@ -60,3 +60,21 @@ test('delegation failure falls back to sales@', async () => {
   expect(out).toMatchObject({ status: 200, via: 'sales' });
   expect(out.delegationError).toContain('unauthorized_client');
 });
+
+test('Gmail reminders preserve one-click unsubscribe headers', async () => {
+  await sendViaGmail(admin(rep), { ...payload, headers: { 'List-Unsubscribe': '<https://portal.example.com/unsubscribe>', 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click', 'X-Untrusted': 'ignored' } });
+  const raw = rawOf(gmailFetch.mock.calls[0]);
+  expect(raw).toContain('List-Unsubscribe: <https://portal.example.com/unsubscribe>');
+  expect(raw).toContain('List-Unsubscribe-Post: List-Unsubscribe=One-Click');
+  expect(raw).not.toContain('X-Untrusted');
+});
+test('an ambiguous delegated send never falls back to sales and creates a duplicate', async () => {
+  process.env.GMAIL_SEND_AS_REPS = 'true';
+  process.env.GOOGLE_SA_EMAIL = 'sa@x.iam.gserviceaccount.com';
+  process.env.GOOGLE_SA_PRIVATE_KEY = require('crypto').generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' });
+  global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ access_token: 'rep-token' }) }));
+  gmailFetch.mockRejectedValue(new Error('timeout'));
+  expect(await sendViaGmail(admin(rep), payload)).toMatchObject({ status: 502, uncertain: true });
+  expect(gmailFetch).toHaveBeenCalledTimes(1);
+  expect(getAccessToken).not.toHaveBeenCalled();
+});

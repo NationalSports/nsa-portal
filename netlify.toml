@@ -366,3 +366,12 @@
 # netlify/functions/so-shipment-notify-sweep.js.
 [functions."so-shipment-notify-sweep"]
   schedule = "*/15 * * * *"
+
+# Shared history checks plus bounded Gmail bounce lookups may take longer than a send.
+[functions."brevo-proxy"]
+  timeout = 26
+[functions."gmail-send"]
+  timeout = 26
+
+[functions."scheduled-email-send"]
+  timeout = 26

@@ -39,6 +39,7 @@ async function delegatedToken(subject) {
 }
 
 async function sendViaGmail(admin, p) {
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return res(400, { error: 'Invalid email payload' });
   const to = emailList(p.to), cc = emailList(p.cc), bcc = emailList(p.bcc);
   const all = [...to, ...cc, ...bcc];
   if (!to.length) return res(400, { error: 'At least one recipient is required' });
@@ -68,6 +69,7 @@ async function sendViaGmail(admin, p) {
     subject: p.subject,
     text: p.textContent || String(p.htmlContent || '').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&'),
     html: p.htmlContent || '',
+    headers: p.headers || {},
     attachments: attachments.map((a) => {
       const ext = String(a.name || '').split('.').pop().toLowerCase();
       return { name: a.name || 'attachment.pdf', content: a.content, mime_type: MIME_BY_EXT[ext] || 'application/octet-stream' };
@@ -80,13 +82,18 @@ async function sendViaGmail(admin, p) {
 
   let delegationError = null;
   if (rep && process.env.GMAIL_SEND_AS_REPS === 'true' && process.env.GOOGLE_SA_EMAIL && process.env.GOOGLE_SA_PRIVATE_KEY) {
-    try {
-      const token = await delegatedToken(rep.email);
-      const sent = await send(token, { from: addr(rep.name, rep.email), bcc: bcc.join(', ') || undefined });
-      return res(200, { messageId: `gmail:${sent.id}`, via: 'rep', from: rep.email });
-    } catch (e) {
-      delegationError = e.message; // fall through to the shared mailbox
-      console.warn('[gmail-send] send-as-rep failed, using sales@:', e.message);
+    let token;
+    try { token = await delegatedToken(rep.email); }
+    catch (e) { delegationError = e.message; }
+    if (token) {
+      try {
+        const sent = await send(token, { from: addr(rep.name, rep.email), bcc: bcc.join(', ') || undefined });
+        return res(200, { messageId: `gmail:rep:${rep.email}:${sent.id}`, via: 'rep', from: rep.email });
+      } catch (e) {
+        // A timed-out send may already have reached Google. Do not send a second
+        // copy from sales@ after an ambiguous outcome.
+        return res(502, { uncertain: true, error: 'Gmail could not confirm the send. Check the rep’s Sent folder before retrying. ' + e.message });
+      }
     }
   }
 
@@ -101,7 +108,7 @@ async function sendViaGmail(admin, p) {
     return res(200, { messageId: `gmail:${sent.id}`, via: 'sales', from: SALES_EMAIL, delegationError });
   } catch (e) {
     console.error('[gmail-send] failed:', e.message);
-    return res(502, { error: `Gmail send failed: ${e.message}` });
+    return res(502, { uncertain: true, error: `Gmail could not confirm the send. Check the sales mailbox Sent folder before retrying: ${e.message}` });
   }
 }
 

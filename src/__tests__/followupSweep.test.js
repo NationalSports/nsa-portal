@@ -31,6 +31,9 @@ function makeAdmin(route) {
         lte(col, val) { op.filters.push(['lte:' + col, val]); return chain; },
         in(col, val) { op.filters.push(['in:' + col, val]); return chain; },
         limit() { return chain; },
+        not() { return chain; },
+        order() { return chain; },
+        range() { op.registry = true; return chain; },
         then(resolve, reject) {
           ops.push(op);
           return Promise.resolve(route(op) || { data: [], error: null }).then(resolve, reject);
@@ -165,4 +168,20 @@ describe('followup-sweep send safety', () => {
     expect(upd.values).toEqual({ follow_up_auto: false, follow_up_at: null });
     expect(upd.filters).toEqual([['id', 'EST-1001']]);
   });
+});
+
+test('reminders share district history from other documents and preserve Gmail unsubscribe headers', async () => {
+  process.env.BREVO_API_KEY = 'test';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-secret';
+  global.fetch = brevoFetchMock();
+  sendViaGmail.mockResolvedValue({ status: 200, messageId: 'gmail:abc' });
+  await runSweep((op) => {
+    if (op.registry && op.table === 'invoices') return { data: [{ id: 'old', sent_history: [{ delivery: 'failed', delivery_to: 'old@district.edu', delivery_reason: 'sender blocked' }] }] };
+    if (op.registry) return { data: [] };
+    if (op.kind === 'select' && op.table === 'estimates') return { data: [dueEstimate({ follow_up_to: 'new@district.edu' })] };
+    if (op.kind === 'update') return { data: [{ id: 'EST-1001' }] };
+    return { data: [] };
+  });
+  expect(global.fetch).not.toHaveBeenCalled();
+  expect(sendViaGmail.mock.calls[0][1].headers['List-Unsubscribe-Post']).toBe('List-Unsubscribe=One-Click');
 });

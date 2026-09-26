@@ -18,8 +18,7 @@
 
 const { getSupabaseAdmin } = require('./_shared');
 const { unsubUrl } = require('./_followupShared');
-const { buildEmailBlockRegistry, checkEmailRecipients } = require('../../src/lib/emailRouting');
-const { sendViaGmail } = require('./_gmailSend');
+const { loadEmailRegistry, sendPortalEmail } = require('./_emailRouter');
 
 // Matches the client-side default (Send modals seed follow_up_max||4) — the two used to
 // disagree (client 4 vs sweep 6), so a row saved without an explicit max got 2 extra nags.
@@ -53,39 +52,13 @@ function buildHtml(messageText, portalUrl, ctaLabel, unsubLink) {
   </div>`;
 }
 
-async function sendEmail({ admin, history, toList, subject, html, replyTo, unsubLink }) {
-  // This document's own bounces decide the route (src/lib/emailRouting): a mailbox that doesn't
-  // exist is dropped, and a school district that blocks Brevo gets the reminder through Gmail —
-  // Brevo would accept it and then silently drop it, so the sweep would think it went out.
-  const route = checkEmailRecipients(toList, buildEmailBlockRegistry([[{ sent_history: history }]]));
-  if (route.dead.length) toList = toList.filter((t) => !route.dead.includes(String(t.email).toLowerCase()));
-  if (!toList.length) return { ok: false, error: 'recipient mailbox does not exist' };
-  if (route.gmail.length) {
-    const g = await sendViaGmail(admin, {
-      sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
-      to: toList, subject, htmlContent: html, ...(replyTo ? { replyTo } : {}),
-    });
-    return g.status === 200 ? { ok: true, messageId: g.messageId } : { ok: false, error: g.error };
-  }
-  const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY || '';
-  if (!brevoKey) return { ok: false, error: 'BREVO_API_KEY not configured' };
-  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
-    method: 'POST',
-    headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
-    body: JSON.stringify({
-      sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
-      to: toList,
-      subject,
-      htmlContent: html,
-      ...(replyTo ? { replyTo } : {}),
-      // RFC 8058 one-click unsubscribe — mail clients surface their own opt-out UI from these.
-      ...(unsubLink ? { headers: { 'List-Unsubscribe': `<${unsubLink}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' } } : {}),
-    }),
-  });
-  if (!res.ok) return { ok: false, error: `Brevo ${res.status}` };
-  let messageId = null;
-  try { messageId = (await res.json()).messageId || null; } catch { /* ignore */ }
-  return { ok: true, messageId };
+async function sendEmail({ admin, registry, toList, subject, html, replyTo, unsubLink }) {
+  const out = await sendPortalEmail(admin, {
+    sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+    to: toList, subject, htmlContent: html, ...(replyTo ? { replyTo } : {}),
+    ...(unsubLink ? { headers: { 'List-Unsubscribe': `<${unsubLink}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' } } : {}),
+  }, registry);
+  return out.status >= 200 && out.status < 300 ? { ok: true, messageId: out.messageId } : { ok: false, error: out.error };
 }
 
 function parseRecipients(followUpTo) {
@@ -111,6 +84,9 @@ async function repEmailMap(admin, ids) {
 exports.handler = async () => {
   let admin;
   try { admin = getSupabaseAdmin(); } catch (e) { return { statusCode: 500, body: e.message }; }
+  let registry;
+  try { registry = await loadEmailRegistry(admin); }
+  catch (e) { return { statusCode: 503, body: JSON.stringify({ error: e.message }) }; }
   const nowIso = new Date().toISOString();
   const results = { estimate: 0, invoice: 0, art: 0, stopped: 0, errors: 0, deferred: 0 };
 
@@ -201,7 +177,7 @@ exports.handler = async () => {
       const link = portalLink(cust.alpha_tag, 'est=' + encodeURIComponent(r.id));
       const msg = r.follow_up_message || defaultMessage('estimate', r.memo, link);
       const unsub = unsubUrl('estimates', r.id);
-      const out = await sendEmail({ admin, history: r.sent_history, toList: to, subject: `Following up on your estimate${r.memo ? ` — ${r.memo}` : ''}`, html: buildHtml(msg, link, 'View & approve your estimate', unsub), replyTo: reps[r.created_by], unsubLink: unsub });
+      const out = await sendEmail({ admin, registry, toList: to, subject: `Following up on your estimate${r.memo ? ` — ${r.memo}` : ''}`, html: buildHtml(msg, link, 'View & approve your estimate', unsub), replyTo: reps[r.created_by], unsubLink: unsub });
       if (out.ok) { results.estimate++; await finalize('estimates', r, true, histEntry('estimate', to, r, out.messageId)); }
       else { results.errors++; await backoff('estimates', r); }
     }
@@ -228,7 +204,7 @@ exports.handler = async () => {
       const link = portalLink(cust.alpha_tag, 'inv=' + encodeURIComponent(r.id));
       const msg = r.follow_up_message || defaultMessage('invoice', r.id, link);
       const unsub = unsubUrl('invoices', r.id);
-      const out = await sendEmail({ admin, history: r.sent_history, toList: to, subject: `Following up on invoice ${r.id}`, html: buildHtml(msg, link, 'View & pay your invoice', unsub), replyTo: reps[r.created_by], unsubLink: unsub });
+      const out = await sendEmail({ admin, registry, toList: to, subject: `Following up on invoice ${r.id}`, html: buildHtml(msg, link, 'View & pay your invoice', unsub), replyTo: reps[r.created_by], unsubLink: unsub });
       if (out.ok) { results.invoice++; await finalize('invoices', r, true, histEntry('invoice', to, r, out.messageId)); }
       else { results.errors++; await backoff('invoices', r); }
     }
@@ -263,7 +239,7 @@ exports.handler = async () => {
       const link = portalLink(cust.alpha_tag, r.so_id ? 'so=' + encodeURIComponent(r.so_id) + '&job=' + encodeURIComponent(r.id) : '');
       const msg = r.follow_up_message || defaultMessage('art', r.art_name, link);
       const unsub = unsubUrl('so_jobs', r.id);
-      const out = await sendEmail({ admin, history: r.sent_history, toList: to, subject: `Reminder: artwork ready for approval${r.art_name ? ` — ${r.art_name}` : ''}`, html: buildHtml(msg, link, 'Review & approve your artwork', unsub), replyTo: reps[so.created_by], unsubLink: unsub });
+      const out = await sendEmail({ admin, registry, toList: to, subject: `Reminder: artwork ready for approval${r.art_name ? ` — ${r.art_name}` : ''}`, html: buildHtml(msg, link, 'Review & approve your artwork', unsub), replyTo: reps[so.created_by], unsubLink: unsub });
       if (out.ok) { results.art++; await finalize('so_jobs', r, true, histEntry('art', to, r, out.messageId)); }
       else { results.errors++; await backoff('so_jobs', r); }
     }

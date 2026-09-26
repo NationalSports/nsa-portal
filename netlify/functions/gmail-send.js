@@ -18,7 +18,7 @@
 // delivery poller not to look this message up in Brevo.
 
 const { corsHeaders, verifyUser } = require('./_shared');
-const { sendViaGmail } = require('./_gmailSend');
+const { sendPortalEmail } = require('./_emailRouter');
 
 const MAX_BODY_BYTES = 6 * 1024 * 1024;
 const json = (statusCode, body) => ({ statusCode, headers: corsHeaders(), body: JSON.stringify(body) });
@@ -34,6 +34,8 @@ exports.handler = async (event) => {
 
   let p;
   try { p = JSON.parse(event.body || '{}'); } catch { return json(400, { error: 'Invalid JSON' }); }
-  const { status, ...out } = await sendViaGmail(v.admin, p);
-  return json(status, out);
+  try {
+    const { status, ...out } = await sendPortalEmail(v.admin, p);
+    return json(status, out);
+  } catch (e) { return json(503, { error: e.message }); }
 };

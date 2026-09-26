@@ -42,7 +42,7 @@ import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, saf
 import { invoiceTotalsRows } from './lib/invoiceDocTotals';
 import { pickUnits } from './itemFulfillment';
 import { EmailRouteNotice, Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor, TaxExemptModal } from './components';
-import { checkEmailRecipients } from './lib/emailRouting';
+import { checkEmailRecipients, emailDeliveryLabel } from './lib/emailRouting';
 import { unfinishedProdSummary } from './lib/orderCloseGuard';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { CustModal } from './modals';
@@ -5057,7 +5057,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <span>{new Date(h.sent_at).toLocaleDateString()} @ {new Date(h.sent_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}</span>
               <span style={{color:'#94a3b8'}}>by {h.sent_by}</span>
               {h.methods&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#eff6ff',color:'#1e40af'}}>{h.methods.join(', ')}</span>}
-              {h.to&&<span style={{fontSize:9,color:'#94a3b8'}}>→ {h.to}</span>}
+              {String(h.messageId||'').startsWith('gmail:')&&<span>{emailDeliveryLabel(h)}</span>}{h.to&&<span style={{fontSize:9,color:'#94a3b8'}}>→ {h.to}</span>}
             </div>)}
             {o.email_opened_at&&<div style={{fontSize:11,color:'#1e40af',marginTop:4,fontWeight:600}}>👁️ Opened: {o.email_opened_at}</div>}
             {o.follow_up_at&&<div style={{fontSize:11,color:'#92400e',marginTop:2}}>⏰ Follow-up: {new Date(o.follow_up_at).toLocaleDateString()}{new Date(o.follow_up_at)<new Date()?' (overdue)':''}</div>}
@@ -9465,7 +9465,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const _emailSubject='Invoice '+ir.id+' — $'+ir.total.toFixed(2)+' from National Sports Apparel';
             let res;
             // The scheduled sender runs server-side through Brevo, which these districts block.
-            if(_scheduleFuture&&checkEmailRecipients([...toList,..._invCc]).gmail.length){
+            if(_scheduleFuture&&process.env.REACT_APP_ROUTED_SCHEDULED_EMAILS!=='true'&&checkEmailRecipients([...toList,..._invCc]).gmail.length){
               res={ok:false,error:'This school blocks our normal email service, and scheduled sends can\'t go through Gmail. Clear the send date to send it now.'};
               nf(res.error,'error');setInvSendingState({error:res.error});
             }else if(_scheduleFuture){
