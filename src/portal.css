@@ -2482,6 +2482,597 @@ tbody tr { cursor: pointer; }
   gap: 7px;
 }
 
+/* Compact home banner: greeting and the four headline numbers share one row
+   instead of a 260px hero, so the priority list and calendar sit above the fold. */
+.dash-overview__hero {
+  min-height: 0;
+  padding: 14px 18px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.dash-overview__hero::before {
+  top: -60px;
+  width: 170px;
+  height: 200px;
+}
+.dash-overview__hero-copy {
+  flex: 0 1 260px;
+}
+.dash-overview__eyebrow {
+  margin-bottom: 4px;
+}
+.dash-overview__hero h2 {
+  font-size: clamp(22px, 2.3vw, 28px);
+  white-space: nowrap;
+}
+.dash-overview__hero-copy p {
+  margin-top: 4px;
+  font-size: 12px;
+}
+.dash-overview__hero-mark {
+  display: none;
+}
+.dash-overview__metrics {
+  position: relative;
+  left: auto;
+  right: auto;
+  bottom: auto;
+  flex: 1 1 520px;
+  border-bottom: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 10px;
+}
+.dash-overview__metrics button {
+  padding: 9px 14px 10px;
+}
+.dash-overview__metrics strong {
+  font-size: 22px;
+}
+.dash-overview__metric-foot {
+  min-height: 0;
+  margin-top: 2px;
+}
+
+/* New-UI home top row: Needs action · Today · Inbox. Every card shares one
+   header style and one-line rows so no single card dominates the page. */
+.dash-top {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr 1fr;
+  gap: 14px;
+  margin: 14px 0 18px;
+  align-items: stretch;
+}
+/* Cards in the top row share the row's height so the three line up. */
+.dash-top > .dash-card,
+.dash-top__col > .dash-card:only-child {
+  display: flex;
+  flex-direction: column;
+}
+.dash-top__col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.dash-top__col > :only-child {
+  flex: 1;
+}
+/* "Where work lives now" when it moves up under an empty Inbox. */
+.dash-top__col .dash-overview__flow-panel {
+  flex: 1;
+  padding: 12px 14px;
+  border-radius: 12px;
+}
+.dash-top__col .dash-overview__flow-panel h3 {
+  font-size: 17px;
+}
+.dash-top__col .dash-overview__flow-panel .dash-overview__panel-kicker {
+  font-size: 10px;
+}
+.dash-overview__grid.is-solo {
+  grid-template-columns: minmax(0, 1fr);
+}
+.dash-card {
+  min-width: 0;
+  padding: 12px 14px 10px;
+  background: #fff;
+  border: 1px solid var(--connect-line, #e8ebf1);
+  border-radius: 12px;
+  box-shadow: 0 4px 14px rgba(15, 26, 56, .05);
+}
+.dash-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.dash-card__head h3 {
+  margin: 0;
+  color: var(--connect-navy, #192853);
+  font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: .02em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+.dash-card__badge {
+  padding: 2px 7px;
+  color: var(--connect-muted, #768095);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  background: var(--connect-panel, #f7f8fb);
+  border-radius: 999px;
+}
+.dash-card__badge.is-red {
+  color: var(--connect-red, #962c32);
+  background: #fbeeee;
+}
+.dash-card__link {
+  margin-left: auto;
+  padding: 0;
+  color: var(--connect-red, #962c32);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.dash-card__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 6px;
+}
+.dash-card__chips button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  color: var(--connect-ink, #252c3c);
+  font-size: 11px;
+  font-weight: 700;
+  background: #fff;
+  border: 1px solid var(--connect-line, #e8ebf1);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.dash-card__chips button i {
+  width: 7px;
+  height: 7px;
+  background: var(--c);
+  border-radius: 50%;
+}
+.dash-card__chips button.is-on {
+  color: #fff;
+  background: var(--connect-navy, #192853);
+  border-color: var(--connect-navy, #192853);
+}
+.dash-card__list {
+  display: flex;
+  flex-direction: column;
+}
+.dash-card__empty,
+.dash-card__note {
+  margin: 6px 2px;
+  color: var(--connect-muted, #768095);
+  font-size: 12px;
+}
+.dash-card__note {
+  margin-bottom: 0;
+  font-size: 11px;
+}
+.dash-card__more {
+  margin-top: 4px;
+  padding: 4px 2px;
+  color: var(--connect-red, #962c32);
+  font-size: 11px;
+  font-weight: 700;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.dash-row {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 4px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid #f1f3f7;
+  cursor: pointer;
+}
+.dash-row:first-child {
+  border-top: 0;
+}
+.dash-row:hover:not(:disabled) {
+  background: var(--connect-panel, #f7f8fb);
+}
+.dash-row:disabled {
+  cursor: default;
+}
+.dash-row__dot {
+  width: 8px;
+  height: 8px;
+  background: var(--c, #94a3b8);
+  border-radius: 50%;
+}
+.dash-row__copy {
+  min-width: 0;
+}
+.dash-row__copy b,
+.dash-row__copy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-row__copy b {
+  color: var(--connect-ink, #252c3c);
+  font-size: 13px;
+  font-weight: 600;
+}
+.dash-row__copy small {
+  color: var(--connect-muted, #768095);
+  font-size: 11px;
+}
+.dash-row__tag {
+  padding: 2px 6px;
+  color: var(--connect-muted, #768095);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  background: var(--connect-panel, #f7f8fb);
+  border-radius: 5px;
+}
+.dash-row__tag.is-late {
+  color: var(--connect-red, #962c32);
+  background: #fbeeee;
+}
+.dash-row__tag.is-today {
+  color: #b45309;
+  background: #fff4e5;
+}
+.dash-row__when {
+  color: var(--connect-muted, #768095);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.dash-row.is-email { --c: #0f766e; }
+.dash-row.is-mention { --c: #3730a3; }
+.dash-row.is-msg { --c: #64748b; }
+.dash-src {
+  margin-right: 6px;
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+  border-radius: 4px;
+}
+.dash-src.is-email { color: #0f766e; background: #e6f4f1; }
+.dash-src.is-mention { color: #3730a3; background: #eef2ff; }
+.dash-src.is-msg { color: #475569; background: #f1f5f9; }
+.dash-cal__nav {
+  display: inline-flex;
+  gap: 3px;
+  margin-left: auto;
+}
+.dash-cal__nav + .dash-card__link {
+  margin-left: 6px;
+}
+.dash-cal__nav button {
+  padding: 1px 7px;
+  color: var(--connect-navy, #192853);
+  font-weight: 700;
+  background: #fff;
+  border: 1px solid var(--connect-line, #e8ebf1);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.dash-cal__sub {
+  margin: 6px 4px 2px;
+  color: var(--connect-muted, #768095);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+@media (max-width: 1100px) {
+  .dash-top {
+    grid-template-columns: 1fr 1fr;
+  }
+  .dash-top > :first-child {
+    grid-column: 1 / -1;
+  }
+}
+@media (max-width: 760px) {
+  .dash-top {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Supporting panels below the top row stay quieter than the three action cards. */
+.dash-overview__grid {
+  align-items: start;
+}
+.dash-overview__grid .dash-overview__panel {
+  padding: 12px 14px 12px;
+  border-radius: 12px;
+}
+.dash-overview__grid .dash-overview__panel h3 {
+  font-size: 17px;
+}
+.dash-overview__grid .dash-overview__panel-kicker {
+  font-size: 10px;
+}
+.dash-overview__grid .dash-overview__chart {
+  height: 150px;
+  margin-top: 10px;
+}
+
+/* Home calendar (src/DashboardCalendar.js): a one-row week strip + the picked
+   day's items, so it stays compact on the dashboard. Month view uses dots. */
+.dash-cal {
+  min-width: 0;
+}
+.dash-cal__head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-bottom: 10px;
+}
+.dash-cal__head .dash-overview__panel-kicker {
+  margin: 0;
+}
+.dash-cal__head h3 {
+  font-size: 18px;
+}
+.dash-cal__note {
+  color: var(--connect-muted, #768095);
+  font-size: 11px;
+  font-style: normal;
+}
+.dash-cal__controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+.dash-cal__controls > button,
+.dash-cal__toggle button {
+  padding: 3px 9px;
+  color: var(--connect-navy, #192853);
+  font-size: 11px;
+  font-weight: 700;
+  background: #fff;
+  border: 1px solid var(--connect-line, #e8ebf1);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.dash-cal__toggle {
+  display: inline-flex;
+  margin-left: 4px;
+}
+.dash-cal__toggle button + button {
+  margin-left: -1px;
+}
+.dash-cal__toggle button.is-active {
+  color: #fff;
+  background: var(--connect-navy, #192853);
+  border-color: var(--connect-navy, #192853);
+}
+.dash-cal__strip {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.dash-cal__day {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 4px;
+  background: var(--connect-panel, #f7f8fb);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.dash-cal__day:hover {
+  border-color: var(--connect-line, #e8ebf1);
+}
+.dash-cal__day.is-empty {
+  opacity: .6;
+}
+.dash-cal__day.is-picked {
+  background: #fff;
+  border-color: var(--connect-navy, #192853);
+  box-shadow: 0 2px 8px rgba(15, 26, 56, .08);
+  opacity: 1;
+}
+.dash-cal__day.is-overdue {
+  background: #fbeeee;
+}
+.dash-cal__day.is-overdue .dash-cal__wk,
+.dash-cal__day.is-overdue .dash-cal__n {
+  color: var(--connect-red, #962c32);
+}
+.dash-cal__wk {
+  color: var(--connect-muted, #768095);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.dash-cal__day.is-today .dash-cal__wk {
+  color: var(--connect-red, #962c32);
+}
+.dash-cal__n {
+  color: var(--connect-navy, #192853);
+  font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1;
+}
+.dash-cal__cnt {
+  color: var(--connect-muted, #768095);
+  font-size: 10px;
+}
+.dash-cal__dots {
+  display: inline-flex;
+  gap: 3px;
+  min-height: 6px;
+}
+.dash-cal__dots i {
+  width: 6px;
+  height: 6px;
+  background: var(--cal-kind);
+  border-radius: 50%;
+}
+.dash-cal__list {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--connect-line, #e8ebf1);
+}
+.dash-cal__list-head {
+  margin-bottom: 2px;
+  color: var(--connect-navy, #192853);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.dash-cal__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 6px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.dash-cal__item:hover:not(:disabled) {
+  background: var(--connect-panel, #f7f8fb);
+}
+.dash-cal__item:disabled {
+  cursor: default;
+}
+.dash-cal__dot {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  background: var(--cal-kind);
+  border-radius: 50%;
+}
+.dash-cal__item strong {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--connect-ink, #252c3c);
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-cal__item small {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--connect-muted, #768095);
+  font-size: 11px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-cal__empty {
+  margin: 4px 0;
+  color: var(--connect-muted, #768095);
+  font-size: 12px;
+}
+.dash-cal__more {
+  padding: 4px 6px;
+  color: var(--connect-red, #962c32);
+  font-size: 11px;
+  font-weight: 700;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.dash-cal__grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 3px;
+}
+.dash-cal__wd {
+  color: var(--connect-muted, #768095);
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+.dash-cal__cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-height: 38px;
+  padding: 4px 2px;
+  background: var(--connect-panel, #f7f8fb);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.dash-cal__cell.is-out {
+  background: transparent;
+}
+.dash-cal__cell.is-out .dash-cal__num {
+  color: #c0c5d0;
+}
+.dash-cal__cell.is-picked {
+  background: #fff;
+  border-color: var(--connect-navy, #192853);
+}
+.dash-cal__num {
+  color: var(--connect-ink, #252c3c);
+  font-size: 11px;
+  font-weight: 700;
+}
+.dash-cal__cell.is-today .dash-cal__num {
+  padding: 0 6px;
+  color: #fff;
+  background: var(--connect-red, #962c32);
+  border-radius: 999px;
+}
+@media (max-width: 680px) {
+  .dash-overview__hero {
+    min-height: 0;
+    padding: 14px;
+  }
+  .dash-overview__hero h2 {
+    white-space: normal;
+  }
+  .dash-overview__metrics {
+    flex-basis: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .dash-cal__item small {
+    display: none;
+  }
+}
+
 @media (max-width: 1260px) {
   .dash-action-hub {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2498,9 +3089,6 @@ tbody tr { cursor: pointer; }
 }
 
 @media (max-width: 1050px) {
-  .dash-overview__hero {
-    min-height: 305px;
-  }
   .dash-overview__metrics {
     grid-template-columns: 1fr 1fr;
   }
@@ -2560,8 +3148,6 @@ tbody tr { cursor: pointer; }
 
 @media (max-width: 680px) {
   .dash-overview__hero {
-    min-height: 390px;
-    padding: 24px 18px 0;
     border-radius: 14px;
   }
   .dash-overview__hero::before {
@@ -2569,20 +3155,13 @@ tbody tr { cursor: pointer; }
   }
   .dash-overview__hero h2 {
     max-width: 85%;
-    font-size: 34px;
+    font-size: 24px;
   }
   .dash-overview__hero-mark {
     display: none;
   }
-  .dash-overview__metrics {
-    left: 18px;
-    right: 18px;
-  }
   .dash-overview__metrics button {
-    padding: 12px;
-  }
-  .dash-overview__metrics strong {
-    font-size: 22px;
+    padding: 10px 12px;
   }
   .dash-overview__panel {
     padding: 17px 14px 14px;
@@ -2713,3 +3292,8 @@ tbody tr { cursor: pointer; }
   .nsa-todo-row:hover .nsa-todo-hover,
   .nsa-todo-row:focus-within .nsa-todo-hover { opacity: 1; }
 }
+
+/* AI Notes quick voice-note button on the home page (both UIs). */
+.nsa-note-fab{position:fixed;right:24px;bottom:92px;z-index:60;width:56px;height:56px;border-radius:28px;border:none;background:#dc2626;color:#fff;font-size:24px;line-height:1;cursor:pointer;box-shadow:0 8px 22px rgba(220,38,38,.35);display:flex;align-items:center;justify-content:center}
+.nsa-note-fab:hover{background:#b91c1c}
+@media print{.nsa-note-fab{display:none}}

@@ -325,6 +325,13 @@
   schedule = "*/5 * * * *"
   timeout = 26
 
+# "My Email": reads each rep's connected Gmail (Primary inbox), stores AI
+# summaries/tasks/deadlines in rep_email_insights. Read-only against Gmail.
+# See netlify/functions/rep-gmail-sync.js.
+[functions."rep-gmail-sync"]
+  schedule = "*/10 * * * *"
+  timeout = 26
+
 # Durable webstore notification retry queue. Customer replies and shipment
 # emails are persisted before delivery; this sweep retries provider/API failures.
 [functions."webstore-notification-sweep"]
@@ -366,6 +373,16 @@
 # netlify/functions/so-shipment-notify-sweep.js.
 [functions."so-shipment-notify-sweep"]
   schedule = "*/15 * * * *"
+
+# AI meeting notes: audio is never kept. Processing deletes it right after
+# transcription; this hourly sweep removes anything a failed/abandoned recording
+# left behind after 24h. See netlify/functions/meeting-audio-sweep.js.
+[functions."meeting-audio-sweep"]
+  schedule = "17 * * * *"
+  timeout = 26
+
+[functions."meeting-notes"]
+  timeout = 26
 
 # Shared history checks plus bounded Gmail bounce lookups may take longer than a send.
 [functions."brevo-proxy"]
