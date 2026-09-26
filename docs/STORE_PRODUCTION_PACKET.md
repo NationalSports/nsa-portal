@@ -1,6 +1,6 @@
 # Store production packet
 
-Status: implementation draft; do not deploy the public route until the migration and preview smoke tests below pass.
+Status: release verification completed on 2026-09-26; see validation notes below.
 
 The same server-side projection feeds a six-tab web page and a paginated PDF. Entry points are native-store Orders, the OMG store header (after its shadow store is linked), and the linked SO. `/production-packet` accepts a staff store/SO reference or a recipient token in the URL fragment.
 
@@ -20,9 +20,9 @@ The same server-side projection feeds a six-tab web page and a paginated PDF. En
 
 Apply `supabase/migrations/20260923153844_store_production_packets.sql` before enabling the route. All four new tables enable RLS and revoke anonymous/authenticated Data API access. Netlify functions verify active staff or validate a hashed recipient token, then access these tables with the server role. Revisions grant that role SELECT/INSERT only.
 
-No migration has been applied to the production database by this task. No production messages, notes, links, or revisions were created.
+The deployed database has all four packet tables with RLS enabled and anonymous/authenticated SELECT denied. A temporary packet message was created on SO-2649 for integration verification and removed afterward, including its sharing row.
 
-Functions use Netlify esbuild; PDF generation uses the existing Chromium/Puppeteer dependencies. The renderer accepts a verified packet, not arbitrary HTML. Mock images are restricted to existing Cloudinary/Supabase sources. A failed image blocks PDF generation rather than creating a silently incomplete production document.
+Functions use Netlify esbuild; PDF generation uses the existing Chromium/Puppeteer dependencies. The renderer accepts a verified packet, not arbitrary HTML. Mock images are restricted to existing Cloudinary/Supabase sources. The primary download runs in the browser. The server renderer remains available and substitutes an explicit unavailable-image notice for failed images.
 
 ## Before marking ready / merging
 
@@ -39,3 +39,11 @@ Revision acknowledgment, per-recipient unread tracking, outbound message notific
 ## Validation run
 
 36 tests passed across packet projection, packet access, and existing SO-substitution suites. Local migration check verified RLS/client privilege denial and immutable revision grants. Both serverless functions bundled. Browser fixture verified overview rendering, player search, and the shared/internal message controls. Final production build passed after the refinements.
+
+## Release verification — 2026-09-26
+
+- Live token API loaded the current SO-2649 packet. Packet-created test message was verified in the portal's `messages` table with both `so_id` and `entity_id`, and its public share row. Updating that test message was reflected on the next packet request. Test rows were removed.
+- Portal subscribes to `messages` via Supabase Realtime with a coalesced reload; database publication includes `messages`. Portal replies require explicit **Share with decorator** to appear publicly. Private conversation is not automatically exposed.
+- The live page requests fresh data every 30 seconds while visible, on focus, and on Refresh. An issued revision and downloaded PDF remain snapshots. SO art is authoritative for batched orders; master store artwork edits do not propagate into an existing copied SO art record through this feature.
+- Regression coverage includes source artwork dimension/thread/stitch changes, partial personalization size totals, substitutions, quantity mismatches, public access boundaries, and PDF verification/message metadata.
+- Recipient identity is not inferred from a majority of line names; supplied row names remain intact, including orders containing multiple people.

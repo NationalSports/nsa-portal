@@ -17,7 +17,27 @@ test('personalization is production-ready without an artwork mock and uses usefu
 test('removed instruction targets block issue instead of silently dropping instructions',()=>{const f=fixture();f.notes=[{id:'n1',scope:'garment',target_id:'deleted-line',text:'Do not substitute'}];const p=buildProductionPacket(f);expect(p.notes).toHaveLength(1);expect(p.ready).toBe(false);expect(p.issues.join(' ')).toContain('target no longer exists');});
 
 test('unbatched orders use saved catalog decoration and store art without becoming production ready',()=>{const f=fixture();f.orders[0].so_id=null;f.salesOrders=[];f.catalog=[{id:'c',sku:'A',decorations:[{art_id:'art',placement:'left_chest',art_url:'https://example.com/logo.png'}],image_url:'https://example.com/shirt.png'}];f.store.store_art=[{id:'art',name:'Team crest',status:'approved',deco_type:'embroidery',prod_files:[{url:'https://example.com/file.dst'}]}];const p=buildProductionPacket(f);expect(p.garments[0]).toMatchObject({sku:'A',units:2,unbatched:true});expect(p.decorations[0]).toMatchObject({name:'Team crest',method:'embroidery',units:2,storePreview:{image:'https://example.com/shirt.png',art:'https://example.com/logo.png'}});expect(p.ready).toBe(false);});
-test('order grouping retains multiple players, chooses the dominant recipient, and keeps export item-level',()=>{const rows=[{orderKey:'a',orderId:'10',player:'Taylor Smith',sku:'TEE',qty:2},{orderKey:'a',orderId:'10',player:'Smith',sku:'HAT',qty:1},{orderKey:'b',orderId:'11',player:'Taylor',sku:'TEE',qty:1}];const groups=groupPlayerOrders(rows,'HAT');expect(groups).toHaveLength(1);expect(groups[0].rows).toHaveLength(2);expect(groups[0].units).toBe(3);expect(groups[0].recipient).toBe('Taylor Smith');expect(playerItemCsv(rows).split('\r\n')).toHaveLength(4);});
+test('order grouping retains multiple players, preserves supplied names without guessing identity, and keeps export item-level',()=>{const rows=[{orderKey:'a',orderId:'10',player:'Taylor Smith',sku:'TEE',qty:2},{orderKey:'a',orderId:'10',player:'Smith',sku:'HAT',qty:1},{orderKey:'b',orderId:'11',player:'Taylor',sku:'TEE',qty:1}];const groups=groupPlayerOrders(rows,'HAT');expect(groups).toHaveLength(1);expect(groups[0].rows).toHaveLength(2);expect(groups[0].units).toBe(3);expect(groups[0].recipient).toBe('Taylor Smith · Smith');expect(playerItemCsv(rows).split('\r\n')).toHaveLength(4);});
 
 test('PDF allowlist includes both store mock layers but excludes unsafe and unused baked art',()=>{expect(packetImageUrls({decorations:[{mocks:[],storePreview:{image:'https://res.cloudinary.com/garment.png',art:'https://res.cloudinary.com/logo.png'}},{mocks:[],storePreview:{image:'javascript:bad',art:'https://res.cloudinary.com/baked.png',baked:true}}]})).toEqual(['https://res.cloudinary.com/garment.png','https://res.cloudinary.com/logo.png']);});
 test('original art specs preserve placement dimensions, stitch count and selected thread colors',()=>{expect(artSpecs({deco_type:'embroidery',art_size:'10 x 4',art_sizes:{'Left chest':'3 x 2'},stitches:8450,thread_colors:'Red'}, {position:'Left chest'},{inks:['Madeira 1147','White']})).toEqual({dimensions:'3 x 2',stitches:8450,threadColors:'Madeira 1147, White',pantoneColors:''});expect(artSpecs({deco_type:'screen_print',ink_colors:'185C'}, {},null).pantoneColors).toBe('185C');});
+
+ test('fresh projection reads updated SO artwork specs and preserves issued snapshots',()=>{
+ const f=fixture(); f.salesOrders[0].items[0].decorations=[{kind:'art',art_file_id:'a',position:'Front',color_way_id:'cw'}];
+ f.salesOrders[0].art_files=[{id:'a',name:'Logo',status:'approved',deco_type:'embroidery',art_size:'3 x 2',stitches:1234,color_ways:[{id:'cw',inks:['Red']}]}];
+ const before=buildProductionPacket(f);
+ Object.assign(f.salesOrders[0].art_files[0],{art_size:'4 x 3',stitches:5678,color_ways:[{id:'cw',inks:['Blue']}]});
+ const after=buildProductionPacket(f);
+ expect(after.decorations[0]).toMatchObject({dimensions:'4 x 3',stitches:5678,threadColors:'Blue'});
+ expect(before.decorations[0]).toMatchObject({dimensions:'3 x 2',threadColors:'Red'});
+ expect(packetChanges(before,after).join(' ')).toContain('Updated decorations');
+ });
+ test('partial personalization sizes match the actual roster quantity',()=>{
+ const f=fixture();f.salesOrders[0].items[0].decorations=[{kind:'names',names:{M:['Taylor','']}}];
+ const d=buildProductionPacket(f).decorations[0];expect(d.units).toBe(1);expect(d.sizes).toEqual({M:1});
+ });
+ test('PDF preserves verification flags, size substitutions, message timestamps and attachments',()=>{
+ const p=buildProductionPacket(fixture());p.players[0].verify=true;p.players[0].wasSize='S';
+ p.messages=[{author:'Staff',soId:'SO-1',kind:'message',text:'Shared note',ts:'2026-09-26',attachments:[{name:'Proof.pdf',url:'https://example.com/proof.pdf'}]}];
+ const html=packetPrintHtml(p);expect(html).toContain('VERIFY ASSIGNMENT');expect(html).toContain('(was S)');expect(html).toContain('Proof.pdf');expect(html).toContain('2026-09-26');
+ });

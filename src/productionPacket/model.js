@@ -76,7 +76,7 @@ export function buildProductionPacket({ store, orders = [], lines = [], salesOrd
         // require a separate garment-art mock and must not block an otherwise ready packet.
         if (!personalization && !mocks.length) issues.push(`${so.id} ${item.sku} ${d.position || d.kind}: garment mock missing`);
         // Complicated splits must be reviewed instead of silently printing the full garment count.
-        const applicable = d.split_group ? sizeMap(d.split_sizes) : sizes;
+        const applicable = personalization && roster.length ? roster.reduce((out,r)=>({...out,[r.size]:(out[r.size]||0)+r.qty}),{}) : d.split_group ? sizeMap(d.split_sizes) : sizes;
         if (d.split_group && (!total(applicable) || Object.entries(applicable).some(([sz,n]) => n > (sizes[sz] || 0)))) issues.push(`${so.id} ${item.sku}: split decoration allocation is missing or exceeds garment sizes`);
         if (d.split_runs && arr(d.split_runs).length) issues.push(`${so.id} ${item.sku}: split decoration runs need quantity review`);
         const method=d.kind==='names'?(d.name_method||'heat_press'):d.kind==='numbers'?(d.num_method||'heat_transfer'):(d.deco_type||art?.deco_type||d.type);
@@ -149,7 +149,7 @@ export function groupPlayerOrders(players, search = '') {
   const groups = new Map();
   players.forEach(r=>{const key=r.orderKey||r.orderId;if(!groups.has(key))groups.set(key,{id:key,orderId:r.orderId,rows:[],units:0});const g=groups.get(key);g.rows.push(r);g.units+=r.qty;});
   const needle=search.trim().toLowerCase();
-  return [...groups.values()].map(g=>{const counts=new Map();g.rows.forEach(r=>{if(r.player&&r.player!=='Unassigned')counts.set(r.player,(counts.get(r.player)||0)+r.qty);});g.recipient=[...counts].sort((a,b)=>b[1]-a[1]||b[0].length-a[0].length)[0]?.[0]||'Unassigned';return g;}).filter(g=>!needle||g.rows.some(r=>`${r.player} ${r.number} ${r.orderId} ${r.sku} ${r.size}`.toLowerCase().includes(needle))).sort((a,b)=>a.orderId.localeCompare(b.orderId,undefined,{numeric:true}));
+  return [...groups.values()].map(g=>({...g,recipient:[...new Set(g.rows.map(r=>r.player).filter(Boolean))].join(' · ')})).filter(g=>!needle||g.rows.some(r=>`${r.player} ${r.number} ${r.orderId} ${r.sku} ${r.size}`.toLowerCase().includes(needle))).sort((a,b)=>a.orderId.localeCompare(b.orderId,undefined,{numeric:true}));
 }
 export function playerItemCsv(players) {
   const cell=v=>'"'+String(v??'').replace(/^[=+@\-\t\r]/,"'$&").replace(/"/g,'""')+'"';
