@@ -1,3 +1,4 @@
+import { emailDeliveryLabel } from './lib/emailRouting';
 // Invoices page — lifted verbatim out of App() (was `function rInvoices()`)
 // as step 3 of the App.js decomposition. All shared state comes from useAppData();
 // this component holds no state of its own, so mount/unmount on page switch is
@@ -10,7 +11,7 @@ import { safeArt, safeDecos, safeItems, safeNum, safePicks, safeSizes, soLineKey
 import { isCommissionRep } from './businessLogic';
 import { applyHistoricalInvoicePayment, historicalInvoiceAr } from './lib/historicalInvoiceAr';
 import { calculateCreditMemo, creditableBalance, creditedTotal, seedCreditMemoLines, setCreditMemoLineQty, validateCreditMemo } from './invoiceCreditMemo';
-import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub, resolveOrderShipTo, billToIdFor } from './components';
+import { EmailRouteNotice, Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub, resolveOrderShipTo, billToIdFor } from './components';
 import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled, greetLine, withGreeting, emailMoney } from './utils';
 import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms } from './App';
 import { invoiceTotalsRows } from './lib/invoiceDocTotals';
@@ -457,7 +458,7 @@ export default function InvoicesPage(){
           {((inv.sent_history||[]).length>0||inv.email_sent_at)&&<div className="card-body" style={{padding:'12px 24px',borderBottom:'1px solid #e2e8f0'}}>
             <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:4}}>
               <span style={{fontSize:12,fontWeight:700,color:'#475569'}}>Send History</span>
-              {inv.email_status==='sent'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#fef3c7',color:'#92400e',fontWeight:600}}>✉️ Sent</span>}
+              {inv.email_status==='sent'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#fef3c7',color:'#92400e',fontWeight:600}}>{emailDeliveryLabel((inv.sent_history||[]).slice(-1)[0])||'✉️ Sent'}</span>}
               {inv.email_status==='opened'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>👁️ Opened {inv.email_opened_at||''}</span>}
               {inv.email_status==='failed'&&<span title={_deliveryFailure(inv)?.delivery_reason||'The email provider rejected this address.'} style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#fee2e2',color:'#b91c1c',fontWeight:700}}>⚠️ Not delivered — pay link never arrived</span>}
               {inv.follow_up_at&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:new Date(inv.follow_up_at)<new Date()?'#fef2f2':'#fffbeb',color:new Date(inv.follow_up_at)<new Date()?'#dc2626':'#92400e',fontWeight:600}}>⏰ Follow-up {new Date(inv.follow_up_at).toLocaleDateString()}{new Date(inv.follow_up_at)<new Date()?' (overdue)':''}</span>}
@@ -468,6 +469,7 @@ export default function InvoicesPage(){
               <span style={{color:'#94a3b8'}}>by {h.sent_by}</span>
               {h.methods&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#eff6ff',color:'#1e40af'}}>{h.methods.join(', ')}</span>}
               {h.to&&<span style={{fontSize:9,color:'#94a3b8'}}>→ {h.to}</span>}
+              {String(h.messageId||'').startsWith('gmail:')&&<span>{emailDeliveryLabel(h)}</span>}
               {/* Per-send outcome, so a resend that worked isn't tarred by an earlier bounce */}
               {h.delivery==='failed'&&<span title={h.delivery_reason||h.delivery_event||''} style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#fee2e2',color:'#b91c1c',fontWeight:700}}>⚠️ bounced{h.delivery_to?' ('+h.delivery_to+')':''}</span>}
               {h.delivery==='deferred'&&<span title={h.delivery_reason||h.delivery_event||''} style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>⏳ delayed</span>}
@@ -1361,6 +1363,7 @@ export default function InvoicesPage(){
                   <div><label className="form-label" style={{fontSize:11}}>Text Message <span style={{color:'#94a3b8',fontWeight:400}}>({(si.smsMsg||'').length}/160)</span></label><textarea className="form-input" rows={2} value={si.smsMsg||''} onChange={e=>setInvSendModalDirect(s=>({...s,smsMsg:e.target.value}))} maxLength={160} style={{fontSize:12,resize:'vertical'}}/></div>
                 </div>}
               </div>}
+              <EmailRouteNotice emails={siRecipients}/>
               {/* Automated follow-ups (server sweep) — falls back to the manual todo reminder below when off */}
               <div style={{marginBottom:12}}>
                 <FollowUpAutoPanel value={si.followUp} onChange={val=>setInvSendModalDirect(s=>({...s,followUp:val}))} defaultMessage={greetLine(siRecipients,si.sendContacts)+'\n\nJust a friendly reminder that invoice '+si.inv.id+' is still open. When you have a moment, please review and submit payment — let us know if you have any questions!\n\nThank you,\nNSA Team'}/>
@@ -1449,6 +1452,7 @@ export default function InvoicesPage(){
                   const smsRes=await sendBrevoSms({to:si.smsPhone,content:(si.smsMsg||'').substring(0,160)});
                   if(smsRes.ok){nf('Text sent to '+si.smsPhone)}else{nf('SMS failed: '+(smsRes.error||'Unknown'),'error')}
                 }
+                if(!res.ok)return;// don't mark it sent — that would also clear the "not delivered" alert
                 // Automated follow-ups (server sweep) take priority; else fall back to the manual todo reminder.
                 // Never arm auto-sends off a failed initial email — the customer hasn't heard from us yet.
                 const _siAuto=si.followUp&&si.followUp.auto&&res.ok;

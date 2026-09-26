@@ -63,7 +63,8 @@
   # the ⚠ Review pill (src/lib/billAnomalies.js).
   # _baggingShip + webstore-shipment-record share the shipping-label origin addresses
   # with the portal's label buttons (src/lib/shipFrom.js).
-  included_files = ["src/lib/opsRecap.js", "src/lib/decoPricing.js", "src/lib/teamshopFaq.js", "src/lib/teamshopOrderStatus.js", "src/lib/billAnomalies.js", "src/lib/shipFrom.js"]
+  # followup-sweep shares the "which schools block Brevo" rules with the portal (src/lib/emailRouting.js).
+  included_files = ["src/lib/opsRecap.js", "src/lib/decoPricing.js", "src/lib/teamshopFaq.js", "src/lib/teamshopOrderStatus.js", "src/lib/billAnomalies.js", "src/lib/shipFrom.js", "src/lib/emailRouting.js"]
 
 # New-hire onboarding reminders — daily at 16:07 UTC (~8-9 AM PT). Nudges hires
 # who were invited but haven't finished (capped at 3 reminders, 3 days apart).
@@ -365,6 +366,21 @@
 # netlify/functions/so-shipment-notify-sweep.js.
 [functions."so-shipment-notify-sweep"]
   schedule = "*/15 * * * *"
+
+# Shared history checks plus bounded Gmail bounce lookups may take longer than a send.
+[functions."brevo-proxy"]
+  timeout = 26
+[functions."gmail-send"]
+  timeout = 26
+
+[functions."scheduled-email-send"]
+  timeout = 26
+
+# One automatic Gmail retry after a confirmed permanent district sender block.
+# Dormant until the database migration and EMAIL_AUTO_FIREWALL_RETRY_ENABLED=true.
+[functions."email-firewall-retry"]
+  schedule = "*/5 * * * *"
+  timeout = 26
 
 [functions."store-production-packet"]
   node_bundler = "esbuild"

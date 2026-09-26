@@ -27,7 +27,8 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, skusMissingRevColorWays, missingRevColorWaysMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, replaceMockLinkGroup, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemArtSlots, jobItemDecosOfKind, jobRosterBlocks, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, jobItemRoster, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, placeRosterEntries, rosterDropSummary, autoSellFromCost, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { invoiceTotalsRows } from './lib/invoiceDocTotals';
 import { pickUnits } from './itemFulfillment';
-import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor, TaxExemptModal } from './components';
+import { EmailRouteNotice, Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor, TaxExemptModal } from './components';
+import { checkEmailRecipients, emailDeliveryLabel } from './lib/emailRouting';
 import { unfinishedProdSummary } from './lib/orderCloseGuard';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { CustModal } from './modals';
@@ -5114,7 +5115,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <span>{new Date(h.sent_at).toLocaleDateString()} @ {new Date(h.sent_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}</span>
               <span style={{color:'#94a3b8'}}>by {h.sent_by}</span>
               {h.methods&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#eff6ff',color:'#1e40af'}}>{h.methods.join(', ')}</span>}
-              {h.to&&<span style={{fontSize:9,color:'#94a3b8'}}>→ {h.to}</span>}
+              {String(h.messageId||'').startsWith('gmail:')&&<span>{emailDeliveryLabel(h)}</span>}{h.to&&<span style={{fontSize:9,color:'#94a3b8'}}>→ {h.to}</span>}
             </div>)}
             {o.email_opened_at&&<div style={{fontSize:11,color:'#1e40af',marginTop:4,fontWeight:600}}>👁️ Opened: {o.email_opened_at}</div>}
             {o.follow_up_at&&<div style={{fontSize:11,color:'#92400e',marginTop:2}}>⏰ Follow-up: {new Date(o.follow_up_at).toLocaleDateString()}{new Date(o.follow_up_at)<new Date()?' (overdue)':''}</div>}
@@ -9503,6 +9504,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {/* Automated follow-ups */}
           <FollowUpAutoPanel value={invFollowUp} onChange={setInvFollowUp} defaultMessage={greetLine(selectedEmails,contacts)+'\n\nJust a friendly reminder that invoice '+ir.id+' is still open. When you have a moment, please review and submit payment — let us know if you have any questions!\n\nThank you,\nNSA Team'}/>
         </div>
+        <div style={{padding:'0 16px'}}><EmailRouteNotice emails={allRecipients} scheduled={!!invSendAt&&invSendAt>new Date().toLocaleDateString('en-CA')}/></div>
         {invSendingState&&<div style={{padding:'12px 16px',background:invSendingState==='success'?'#f0fdf4':invSendingState==='sending'?'#eff6ff':'#fef2f2',borderTop:'1px solid '+(invSendingState==='success'?'#86efac':invSendingState==='sending'?'#93c5fd':'#fecaca'),display:'flex',alignItems:'center',gap:10,fontSize:13}}>
           <span style={{fontSize:18}}>{invSendingState==='success'?'✅':invSendingState==='sending'?'⏳':'❌'}</span>
           <div style={{flex:1}}>{invSendingState==='sending'?<span style={{color:'#1e40af',fontWeight:600}}>Sending invoice, please wait...</span>:invSendingState==='success'?<span style={{color:'#166534',fontWeight:600}}>Invoice sent successfully!</span>:<div><div style={{fontWeight:700,color:'#dc2626'}}>Failed to send</div><div style={{color:'#dc2626',fontSize:12}}>{invSendingState.error}</div></div>}</div>
@@ -9598,7 +9600,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const _scheduleFuture=invSendAt&&invSendAt>_today&&onScheduleEmail;
             const _emailSubject='Invoice '+ir.id+' — $'+ir.total.toFixed(2)+' from National Sports Apparel';
             let res;
-            if(_scheduleFuture){
+            // The scheduled sender runs server-side through Brevo, which these districts block.
+            if(_scheduleFuture&&process.env.REACT_APP_ROUTED_SCHEDULED_EMAILS!=='true'&&checkEmailRecipients([...toList,..._invCc]).gmail.length){
+              res={ok:false,error:'This school blocks our normal email service, and scheduled sends can\'t go through Gmail. Clear the send date to send it now.'};
+              nf(res.error,'error');setInvSendingState({error:res.error});
+            }else if(_scheduleFuture){
               // Hold for the cron worker to send on the chosen date.
               const _sendAtIso=new Date(invSendAt+'T09:00:00').toISOString();
               const schedRes=await onScheduleEmail({

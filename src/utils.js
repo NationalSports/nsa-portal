@@ -172,6 +172,7 @@ export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,sen
     const body=JSON.stringify(payload);
     const bytes=(typeof Blob!=='undefined')?new Blob([body]).size:body.length;
     if(bytes>_MAIL_MAX_BYTES)return{ok:false,error:'This email is too large to send ('+(bytes/1048576).toFixed(1)+' MB; the limit is 5 MB). The document PDF is attached automatically, so a large photo or PDF you added is usually the cause — remove or shrink it and send again.'};
+    // The server makes the authoritative routing decision from shared history.
     const{res:r,netErr}=await mailProxyFetch('',{method:'POST',headers:{'accept':'application/json','content-type':'application/json'},body});
     // fetch() itself threw on both paths: the request never left the browser (or died on
     // the wire). Name the usual cause instead of surfacing a bare "Failed to fetch".
@@ -185,7 +186,7 @@ export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,sen
       if(r.status===413)return{ok:false,error:'This email is too large to send. Remove or shrink the attachments and send again.'};
       return{ok:false,error:d.error||d.message||('Send failed (HTTP '+r.status+')')};
     }
-    return{ok:true,messageId:d.messageId}}
+    return{ok:true,messageId:d.messageId,via:d.via,from:d.from}}
   catch(e){return{ok:false,error:e.message}}
 };
 

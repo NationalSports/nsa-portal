@@ -11,13 +11,13 @@
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 const { verifyUser } = require('./_shared');
+const { retryStatus } = require('./_emailFirewallRetry');
+const { checkGmailDelivery } = require('./_gmailDelivery');
+const { sendPortalEmail } = require('./_emailRouter');
 
 exports.handler = async (event) => {
   const apiKey = process.env.BREVO_API_KEY;
-  if (!apiKey) {
-    return { statusCode: 500, headers: JSON_HEADERS,
-      body: JSON.stringify({ error: 'BREVO_API_KEY not configured in environment variables' }) };
-  }
+
 
   // Staff-only: this forwards arbitrary content to Brevo's send API with the
   // company key — unauthenticated it was an open relay from the verified sender
@@ -39,6 +39,11 @@ exports.handler = async (event) => {
         return { statusCode: 400, headers: JSON_HEADERS,
           body: JSON.stringify({ error: 'messageId query param is required for stats' }) };
       }
+      if (String(qs.messageId).startsWith('gmail:')) {
+        const delivery = await checkGmailDelivery(qs.messageId);
+        return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ delivery }) };
+      }
+      if (!apiKey) return { statusCode: 503, headers: JSON_HEADERS, body: JSON.stringify({ error: 'BREVO_API_KEY not configured' }) };
       // `event` is OPTIONAL on Brevo's side, and omitting it returns EVERY event for the
       // message — opens, bounces, blocks, spam, deferrals — in one call. The caller needs
       // all of them to tell "delivered but unread" apart from "never arrived", and one
@@ -53,6 +58,13 @@ exports.handler = async (event) => {
         headers: { 'accept': 'application/json', 'api-key': apiKey },
       });
       const data = await response.text();
+      if (response.ok) {
+        const automaticRetry = await retryStatus(v.admin, qs.messageId);
+        if (automaticRetry) {
+          try { return { statusCode: response.status, headers: JSON_HEADERS, body: JSON.stringify({ ...JSON.parse(data), automaticRetry }) }; }
+          catch (_) { /* preserve the provider response if it is not JSON */ }
+        }
+      }
       return { statusCode: response.status, headers: JSON_HEADERS, body: data };
     }
 
@@ -61,9 +73,10 @@ exports.handler = async (event) => {
       return { statusCode: 405, headers: JSON_HEADERS,
         body: JSON.stringify({ error: 'Method not allowed. Use POST.' }) };
     }
-    let sendBody = event.body;
+    let payload;
     try {
-      const payload = JSON.parse(event.body || '{}');
+      payload = JSON.parse(event.body || '{}');
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Invalid email payload');
       const isSaveGuardAlert = payload.sender && payload.sender.name === 'NSA Portal'
         && /^⚠️ NSA Portal — (?:Save blocked|Save protection triggered|Save not persisting|data-loss alerts throttled)/.test(payload.subject || '');
       // Old browser bundles can remain open with durable recovery entries that correctly block
@@ -75,21 +88,11 @@ exports.handler = async (event) => {
           body: JSON.stringify({ messageId: null, suppressed: true, reason: 'stale-portal-alert-client' }) };
       }
       delete payload.portalAlertVersion;
-      sendBody = JSON.stringify(payload);
     } catch (_) {
-      // Preserve Brevo's existing validation response for malformed/non-JSON requests.
+      return { statusCode: 400, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Invalid email payload' }) };
     }
-    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
-      method: 'POST',
-      headers: {
-        'accept': 'application/json',
-        'content-type': 'application/json',
-        'api-key': apiKey,
-      },
-      body: sendBody,
-    });
-    const data = await response.text();
-    return { statusCode: response.status, headers: JSON_HEADERS, body: data };
+    const { status, ...data } = await sendPortalEmail(v.admin, payload);
+    return { statusCode: status, headers: JSON_HEADERS, body: JSON.stringify(data) };
   } catch (error) {
     return { statusCode: 500, headers: JSON_HEADERS,
       body: JSON.stringify({ error: `Brevo API call failed: ${error.message}` }) };

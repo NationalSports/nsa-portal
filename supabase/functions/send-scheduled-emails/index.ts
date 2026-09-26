@@ -1,7 +1,7 @@
 // supabase/functions/send-scheduled-emails/index.ts
 // ─────────────────────────────────────────────────────────
 // Scheduled email worker. Picks up due rows from the
-// `scheduled_emails` table and POSTs them to Brevo, then
+// `scheduled_emails` table and sends them through the shared portal email router, then
 // marks each row as sent or failed.
 //
 // Triggered every 15 minutes by pg_cron (see migration 00067).
@@ -14,7 +14,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const BREVO_API_KEY = Deno.env.get("BREVO_API_KEY") ?? "";
+const EMAIL_ROUTER_URL = Deno.env.get("EMAIL_ROUTER_URL") ?? "";
+const INTERNAL_SECRET = Deno.env.get("INTERNAL_FUNCTION_SECRET") || SUPABASE_SERVICE_KEY;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
@@ -45,8 +46,12 @@ type ScheduledRow = {
   attempt_count: number;
 };
 
-async function sendOne(row: ScheduledRow): Promise<{ ok: boolean; messageId?: string; error?: string }> {
-  if (!BREVO_API_KEY) return { ok: false, error: "BREVO_API_KEY not configured" };
+async function sendOne(row: ScheduledRow): Promise<{ ok: boolean; messageId?: string; error?: string; uncertain?: boolean }> {
+  if (!EMAIL_ROUTER_URL) return { ok: false, error: "EMAIL_ROUTER_URL not configured; no email sent" };
+  try {
+    const routerUrl = new URL(EMAIL_ROUTER_URL);
+    if (routerUrl.protocol !== 'https:' || routerUrl.pathname !== '/.netlify/functions/scheduled-email-send') return { ok: false, error: "Invalid EMAIL_ROUTER_URL" };
+  } catch { return { ok: false, error: "Invalid EMAIL_ROUTER_URL" }; }
 
   const payload: Record<string, unknown> = {
     sender: {
@@ -62,20 +67,20 @@ async function sendOne(row: ScheduledRow): Promise<{ ok: boolean; messageId?: st
   if (row.attachments && row.attachments.length > 0) payload.attachment = row.attachments;
 
   try {
-    const r = await fetch("https://api.brevo.com/v3/smtp/email", {
+    const r = await fetch(EMAIL_ROUTER_URL, {
       method: "POST",
       headers: {
         accept: "application/json",
         "content-type": "application/json",
-        "api-key": BREVO_API_KEY,
+        "x-internal-secret": INTERNAL_SECRET,
       },
       body: JSON.stringify(payload),
     });
     const d = await r.json();
-    if (!r.ok) return { ok: false, error: d.message || `HTTP ${r.status}` };
+    if (!r.ok) return { ok: false, error: d.error || d.message || `HTTP ${r.status}`, uncertain: !!d.uncertain };
     return { ok: true, messageId: d.messageId };
   } catch (e) {
-    return { ok: false, error: (e as Error).message };
+    return { ok: false, uncertain: true, error: "Send outcome unknown; check provider history before retrying: " + (e as Error).message };
   }
 }
 
@@ -95,6 +100,9 @@ async function pruneOld(): Promise<number> {
 }
 
 serve(async (_req: Request) => {
+  if (_req.method !== 'POST' || _req.headers.get('Authorization') !== `Bearer ${SUPABASE_SERVICE_KEY}`) {
+    return new Response('Unauthorized', { status: 401 });
+  }
   const started = Date.now();
 
   const { data: due, error: fetchErr } = await supabase
@@ -116,6 +124,12 @@ serve(async (_req: Request) => {
   let sent = 0;
   let failed = 0;
   for (const row of (due ?? []) as ScheduledRow[]) {
+    // Claim before contacting either provider. An interrupted processing row stays
+    // for manual review rather than automatically sending a duplicate.
+    const { data: claimed, error: claimError } = await supabase.from('scheduled_emails')
+      .update({ status: 'processing' }).eq('id', row.id).eq('status', 'pending')
+      .eq('attempt_count', row.attempt_count).select('id');
+    if (claimError || !claimed?.length) continue;
     const res = await sendOne(row);
     if (res.ok) {
       await supabase
@@ -133,7 +147,7 @@ serve(async (_req: Request) => {
       await supabase
         .from("scheduled_emails")
         .update({
-          status: nextAttempt >= MAX_ATTEMPTS ? "failed" : "pending",
+          status: res.uncertain || nextAttempt >= MAX_ATTEMPTS ? "failed" : "pending",
           error_message: res.error ?? "unknown",
           attempt_count: nextAttempt,
         })
