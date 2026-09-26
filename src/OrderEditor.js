@@ -8,6 +8,8 @@ import { poEligibleVendors } from './lib/vendorPoEligibility';
 import QuantityDraftInput from './QuantityDraftInput';
 import TextDraftInput from './TextDraftInput';
 /* eslint-disable */
+import { openProductionPacket } from './productionPacket/api';
+import ShareMessageButton from './productionPacket/ShareMessageButton';
 import { canAcknowledgeSave } from './lib/saveAcknowledgement';
 import { lineIntentKey, newOrderLineId } from './lib/orderLineIdentity';
 import { liveSoInvoices, soInvoiceBalance, invoiceBalanceSnapshot } from './lib/soInvoiceBalance';
@@ -5092,6 +5094,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </span>;})}
               </span>;})()}
             {isSO&&o.omg_store_id&&onNavOmgStore&&<span style={{color:'#1E7A46',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={onNavOmgStore} title="Open the linked OMG store">🏪 OMG Store</span>}
+            {isSO&&o.webstore_id&&<button className="btn btn-sm" onClick={()=>openProductionPacket(o.webstore_id)}>Production packet</button>}
             {isSO&&o.webstore_id&&!o.omg_store_id&&onNavWebstore&&<span style={{color:'#1E7A46',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={onNavWebstore} title="Open the webstore this batch was pulled from">🛒 Webstore</span>}
             {/* Player report rebuilt from the CURRENT SO items — swapped items print as what
                 we're actually buying, so this is the copy that goes to Silver Screen. */}
@@ -7553,12 +7556,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             onClick={()=>{if(unread&&onMsg){onMsg(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...(mm.read_by||[]),cu.id]}:mm))}}}>
             <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
               <div style={{display:'flex',gap:6,alignItems:'center'}}>
-                <span style={{fontSize:12,fontWeight:700,color:isMe?'#1e40af':'#475569'}}>{author?.name||'Unknown'}</span>
+                <span style={{fontSize:12,fontWeight:700,color:isMe?'#1e40af':'#475569'}}>{author?.name||m.author||'Unknown'}</span>
                 {dept&&dept.id!=='all'&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:dept.color+'20',color:dept.color}}>@{dept.label}</span>}
                 {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:'#fef3c7',color:'#92400e'}}>Tagged you</span>}
               </div>
               <div style={{display:'flex',gap:6,alignItems:'center'}}>
                 <span style={{fontSize:10,color:'#94a3b8'}}>{m.ts}</span>
+                {isSO&&o.webstore_id&&<ShareMessageButton soId={o.id} messageId={m.id} notify={nf}/>}
                 {!indent&&<button style={{fontSize:9,padding:'1px 6px',borderRadius:6,border:'1px solid #e2e8f0',background:replyTo===m.id?'#3b82f6':'white',color:replyTo===m.id?'white':'#64748b',cursor:'pointer'}} onClick={(e)=>{e.stopPropagation();const on=replyTo!==m.id;setReplyTo(on?m.id:null);/* Replying auto-tags the author so they get the ping without retyping the name. */if(on&&author&&!isMe)tagMember(author)}}>Reply{replies.length>0?` (${replies.length})`:''}</button>}
               </div>
             </div>

@@ -1,3 +1,4 @@
+import { openSharedProductionPacket } from './productionPacket/api';
 import { attachStoreGarmentMocks } from './lib/storeGarmentMocks';
 /* eslint-disable */
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
@@ -14286,6 +14287,7 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
             📦 Stock report
           </button>
         )}
+        {store?.id && <button className="btn btn-secondary" onClick={() => openSharedProductionPacket(store.id).catch(() => {})}>Production packet</button>}
         {/* One Player Report control. Every per-player handoff for this store lives
             behind it: the packing-slip PDF the warehouse works from, the flat CSV,
             and Silver Screen's own import workbook — all built from the same scoped,

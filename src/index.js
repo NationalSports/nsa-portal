@@ -21,7 +21,7 @@ if (_qboCallbackForwardUrl) window.location.replace(_qboCallbackForwardUrl);
 // bundle is expected. No-op when unset, so local/dev builds are unaffected. v7
 // default integrations capture uncaught errors + unhandled promise rejections;
 // the App error boundary additionally reports React render errors.
-if (process.env.REACT_APP_SENTRY_DSN) {
+if (process.env.REACT_APP_SENTRY_DSN && window.location.pathname !== '/production-packet') {
   Sentry.init({
     dsn: process.env.REACT_APP_SENTRY_DSN,
     environment: process.env.REACT_APP_SENTRY_ENV || process.env.NODE_ENV,
@@ -46,6 +46,7 @@ const _isChunkErr = (err) => {
     || /Loading chunk [\w-]+ failed/i.test(msg)
     || /failed to fetch dynamically imported module/i.test(msg);
 };
+const ProductionPacket = React.lazy(() => import('./productionPacket/ProductionPacket'));
 const PayableReviewPage = React.lazy(() => import('./PayableReviewPage'));
 const App = React.lazy(() =>
   import('./App').catch((err) => {
@@ -298,6 +299,8 @@ root.render(
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><BaggingStation /></React.Suspense>
         : isMoveCheckin
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><MoveCheckIn /></React.Suspense>
+        : _path === '/production-packet'
+        ? <React.Suspense fallback={<AppFallback />}><ProductionPacket /></React.Suspense>
         : isVendorDigitizing
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><VendorDigitizing /></React.Suspense>
         : isTeamShop

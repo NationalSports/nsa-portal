@@ -7,6 +7,7 @@ import {createCoalescedReload} from './lib/coalescedReload';
 import { indexFirstById } from './lib/rowLookup';
 import { localRowIsNewer as _localRowIsNewer, keepLocalAdoptVersion as _keepLocalAdoptVersion } from './lib/pollMergeRecency';
 /* eslint-disable */
+import { openProductionPacket } from './productionPacket/api';
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import * as Sentry from '@sentry/react';
 import './portal.css';
@@ -18890,6 +18891,7 @@ export default function App(){
                 background:s.status==='open'?'#dcfce7':s.status==='closed'?'#dbeafe':s.status==='draft'?'#f1f5f9':'#fef3c7',
                 color:s.status==='open'?'#166534':s.status==='closed'?'#1e40af':s.status==='draft'?'#64748b':'#92400e'}}>{s.status.toUpperCase()}</span>
                 {s.open_date&&<span style={{marginLeft:8,fontSize:11,color:'#64748b'}}>📅 {s.open_date} → {s.close_date}</span>}
+                {sos.find(x=>x.omg_store_id===s.id)?.webstore_id&&<button className="btn btn-sm" onClick={()=>openProductionPacket(sos.find(x=>x.omg_store_id===s.id).webstore_id)}>Production packet</button>}
                 <button onClick={()=>{const el=document.getElementById('omg-parent-portal');if(el)el.scrollIntoView({behavior:'smooth',block:'start'})}} title="Jump to the Parent Order Portal — player report, packing slip, parent emails & tracking" style={{marginLeft:8,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #c7d2fe',background:'#eef2ff',color:'#4338ca',cursor:'pointer'}}>📦 Parent Order Portal ↓</button>
                 <button onClick={()=>setOmgGuideOpen(true)} title="How to create an OMG store, step by step" style={{marginLeft:6,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #fcd34d',background:'#fffbeb',color:'#92400e',cursor:'pointer'}}>📖 Step-by-step</button>
                 {(s.products||[]).length>0&&<button onClick={()=>setOmgReviewOpen(true)} title="Review & correct every style number for this store — an edited SKU re-sources its cost & vendor automatically" style={{marginLeft:6,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #c7d2fe',background:'#eef2ff',color:'#4338ca',cursor:'pointer'}}>🔍 Review SKUs</button>}
