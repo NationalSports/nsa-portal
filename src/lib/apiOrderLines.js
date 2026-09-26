@@ -22,6 +22,32 @@ export function apiLineSourceKey(line) {
   ].map(norm).join('|');
 }
 
+// A removed out-of-stock vendor line is purchasing work returned to Sales. Post it
+// to the SO conversation and tag that order's rep so the adjustment cannot disappear
+// inside the buyer's batch workflow.
+export function buildOutOfStockRemovalMessage({ line, sourceOrder, customer, actor, vendorName, now = new Date() }) {
+  if (!sourceOrder?.id) return null;
+  const repId = customer?.primary_rep_id || sourceOrder.created_by || '';
+  const qty = Math.max(0, Number(line?.quantity) || 0);
+  const item = [line?.sourceSku || line?.style, line?.sourceColor || line?.color, line?.size].filter(Boolean).join(' · ');
+  const vendor = vendorName || 'the vendor';
+  const po = line?.sourcePO ? ` from ${line.sourcePO}` : '';
+  const ts = now.toLocaleString();
+  return {
+    id: `m${now.getTime()}-oos-${sourceOrder.id}-${String(line?.size || '').replace(/[^a-z0-9]/gi, '')}`,
+    so_id: sourceOrder.id,
+    author_id: actor?.id || '',
+    text: `⚠️ OUT OF STOCK: ${item || 'Vendor item'}${qty ? ` (qty ${qty})` : ''} was removed${po} and will not be ordered from ${vendor}. Adjust the item or source it elsewhere on ${sourceOrder.id}.`,
+    ts,
+    read_by: actor?.id ? [actor.id] : [],
+    dept: 'sales',
+    tagged_members: repId ? [repId] : [],
+    entity_type: 'so',
+    entity_id: sourceOrder.id,
+    out_of_stock_removal: true,
+  };
+}
+
 const poHasHistory = po => {
   const anyPositive = value => value && Object.values(value).some(qty => Number(qty) > 0);
   return !!(po && (po.api_order_id || po.api_ordered_at || po.vendor_keys?.order_no

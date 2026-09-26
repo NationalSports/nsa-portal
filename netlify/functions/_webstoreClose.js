@@ -94,7 +94,7 @@ async function notifyStoreClosed(admin, store, opts = {}) {
   const todoId = closeTodoId(store);
   let todoOk = false;
   if (store.rep_id) {
-    const desc = `Store "${store.name}" has closed. ${summaryLines.join(' · ')}.\n\nProcess the orders into a Sales Order from the store's Orders tab.`;
+    const desc = `Store "${store.name}"${store.store_code ? ` (${store.store_code})` : ''} has closed. ${summaryLines.join(' · ')}.\n\nProcess the orders into a Sales Order from the store's Orders tab.`;
     const { error } = await admin.from('assigned_todos').insert({
       id: todoId, title: `Process closed store — ${store.name} (${b.orderCount} order${b.orderCount === 1 ? '' : 's'})`,
       description: desc, created_by: null, assigned_to: store.rep_id, so_id: null,
@@ -105,10 +105,10 @@ async function notifyStoreClosed(admin, store, opts = {}) {
     todoOk = true; // a duplicate means an earlier retry already created it
   }
 
-  // 2. Email the assigned CSR — they process the closed store. Fall back to the
-  //    rep only when no CSR is assigned, and always include the webstore team so
-  //    a missing assignment or staff email cannot make the close invisible.
-  const ids = [store.csr_id || store.rep_id].filter(Boolean);
+  // 2. Email the store's rep AND its assigned CSR (the CSR processes the store, but the
+  //    rep owns the account and must hear it closed), and always include the webstore
+  //    team so a missing assignment or staff email cannot make the close invisible.
+  const ids = [...new Set([store.rep_id, store.csr_id].filter(Boolean))];
   let members = [];
   if (ids.length) {
     const memberResult = await admin.from('team_members').select('id,name,email').in('id', ids);
@@ -121,13 +121,14 @@ async function notifyStoreClosed(admin, store, opts = {}) {
   ];
   const seen = new Set(); const toUniq = to.filter((t) => { const k = t.email.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
   const rows = [
+    ...(store.store_code ? [['Store #', store.store_code]] : []),
     ['Orders', String(b.orderCount)], ['Units', String(b.units)],
     ['Gross', money(b.gross)], ['Fundraising', money(b.fundraise)], ['Delivery', b.delivery],
   ].map(([k, v]) => `<tr><td style="padding:4px 14px 4px 0;color:#64748b;font-size:13px">${esc(k)}</td><td style="padding:4px 0;font-weight:700;font-size:13px;color:#0f172a">${esc(v)}</td></tr>`).join('');
   const payload = {
     sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
     to: toUniq,
-    subject: `Store closed — ${store.name} (${b.orderCount} order${b.orderCount === 1 ? '' : 's'} to process)`,
+    subject: `Store closed — ${store.name}${store.store_code ? ` [${store.store_code}]` : ''} (${b.orderCount} order${b.orderCount === 1 ? '' : 's'} to process)`,
     htmlContent: `
       <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:0 auto">
         <div style="background:#192853;color:#fff;padding:18px 22px;border-radius:8px 8px 0 0">

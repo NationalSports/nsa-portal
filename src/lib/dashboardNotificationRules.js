@@ -118,6 +118,18 @@ export const shouldShowCompletedJobNotice = (job, so, invoices) => {
   return !isOrderFullyInvoiced(so, invoices);
 };
 
+// "Shipped" is an ORDER-level event for reps: they only want to hear once the FINAL goods on the SO
+// have gone out. So an order counts as fully shipped only when every (non-draft) production job has
+// shipped AND every ordered unit is physically in (received on a PO or pulled from stock — the
+// soFulfillment counters from lib/opsRecap). One job shipping while another PO is still inbound is
+// not a shipped order yet.
+export const isOrderFullyShipped = (jobs, ff) => {
+  const live = (jobs || []).filter((job) => job && job.prod_status !== 'draft');
+  if (!live.length || !ff) return false;
+  if (!live.every((job) => job.prod_status === 'shipped')) return false;
+  return ff.totalSz > 0 && ff.fulfilledSz >= ff.totalSz;
+};
+
 // IF notifications are grouped across line items. Keep the grouped notice until every
 // production job that consumes those lines has actually moved into the production queue.
 export const pulledItemsHaveMovedInLine = (jobs, itemIndexes) => {

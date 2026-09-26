@@ -174,6 +174,57 @@ export const jobItemArtSlots = (gi, it) => {
     .filter(({ di }) => !dis || dis.includes(di));
 };
 
+// ── A job row's personalization, read from the LIVE SO ──
+// Splitting a job used to copy each half's numbers onto the job row (gi.roster) and every
+// sheet printed that copy forever — numbers fixed on the SO afterwards never reached the
+// floor (SO-2257: the jersey job was split 9/17, the SO list was re-entered later, and the
+// tech sheet kept the old numbers; lines numbered after the split printed blank).
+// Now every row that runs the same line's decoration takes its share of the LIVE list:
+// rows are walked in job order and each consumes its own size qty, so the halves of a
+// split are disjoint and together cover the SO list. A job already pressed (decorated_at /
+// completed) keeps the numbers it printed. `jobs` is the order's job list — without it
+// (or when this job isn't in it) the old copy-first behavior is kept.
+// kind: 'numbers' (deco.roster) or 'names' (deco.names). Returns a per-size map or null.
+export const jobItemRoster = (items, jobs, job, gi, kind = 'numbers') => {
+  const it = safeArr(items)[gi?.item_idx];
+  if (!it) return null;
+  const d = jobItemDecosOfKind(gi, it, kind)[0];
+  const live = d ? (kind === 'names' ? d.names : d.roster) : null;
+  const frozen = kind === 'numbers' ? gi?.roster : null;
+  const sizes = gi?.sizes || safeSizes(it);
+  const legacy = () => { const raw = frozen || live; return raw ? scopeRosterToSizes(raw, sizes) : null; };
+  if (!Array.isArray(jobs) || !live || (frozen && (job?.decorated_at || job?.prod_status === 'completed'))) return legacy();
+  // Which of the job's rows for this line is `gi` (a job can hold a line more than once).
+  const nth = safeArr(job?.items).filter((r) => r?.item_idx === gi.item_idx).indexOf(gi);
+  const di = safeDecos(it).indexOf(d);
+  const rows = [];
+  let self = -1;
+  safeArr(jobs).forEach((j) => {
+    let seen = 0;
+    safeArr(j?.items).forEach((r) => {
+      if (r?.item_idx !== gi.item_idx) return;
+      const mine = j?.id != null && j.id === job?.id && seen++ === nth;
+      const dis = jobItemDecoIdxs(r);
+      if (dis && !dis.includes(di)) return;
+      if (mine) self = rows.length;
+      rows.push(r);
+    });
+  });
+  if (self < 0 || nth < 0) return legacy();
+  if (rows.length === 1) return scopeRosterToSizes(live, sizes);
+  // Every row must say which sizes it runs, or the shares can't be worked out.
+  if (rows.some((r) => !r?.sizes)) return legacy();
+  const out = {};
+  Object.entries(safeObj(rows[self].sizes)).forEach(([sz, q]) => {
+    const n = safeNum(q);
+    if (n <= 0) return;
+    const offset = rows.slice(0, self).reduce((a, r) => a + Math.max(0, safeNum(safeObj(r.sizes)[sz])), 0);
+    const arr = safeArr(safeObj(live)[sz]).slice(offset, offset + n);
+    if (arr.length) out[sz] = arr;
+  });
+  return out;
+};
+
 // ── Job roster blocks ──
 // The "numbers to print" roll-up for a job. A job can carry several garment lines, and
 // their rosters are NOT interchangeable. Garments holding the SAME list are one team
@@ -184,19 +235,18 @@ export const jobItemArtSlots = (gi, it) => {
 // different garments — SO-2361/JOB-2361-01 carried two jersey lines with 38 numbers
 // between them and the job showed 36 (an S 23 and an M 3 collapsed).
 // Returns [{ labels:[garment…], rows:[[size, numbers[]]…], total }], sizes in szOrder.
-export const jobRosterBlocks = (job, items, szOrder = []) => {
+// Pass the order's `jobs` so split rows read their share of the live SO list (jobItemRoster).
+export const jobRosterBlocks = (job, items, szOrder = [], jobs = null) => {
   const rank = (s) => (szOrder.indexOf(s) < 0 ? 99 : szOrder.indexOf(s));
   const clean = (v) => String(v == null ? '' : v).trim();
   const blocks = [];
   safeArr(job?.items).forEach((gi) => {
     const it = safeArr(items)[gi?.item_idx];
     if (!it) return;
-    // Split jobs carry their own roster/size slice on the job item — prefer it so a split
-    // only ever lists the numbers it actually runs.
-    const nd = jobItemDecosOfKind(gi, it, 'numbers')[0];
-    const raw = gi?.roster || nd?.roster || null;
+    // A split row lists only its own share of the numbers (see jobItemRoster).
+    const raw = jobItemRoster(items, jobs, job, gi, 'numbers');
     if (!raw) return;
-    const rows = Object.entries(safeObj(scopeRosterToSizes(raw, gi?.sizes || safeSizes(it))))
+    const rows = Object.entries(safeObj(raw))
       .map(([sz, arr]) => [sz, safeArr(arr).map(clean).filter(Boolean)])
       .filter(([, nums]) => nums.length > 0)
       .sort((a, b) => rank(a[0]) - rank(b[0]));
@@ -1350,7 +1400,7 @@ export const slotMockFiles = (slot, slots, it) => {
   const own = safeStr(slot?.key).startsWith(base)
     ? itemMockFiles(mocks, it, safeStr(slot.key).slice(base.length))
     : safeArr(mocks[slot?.key]);
-  if (own.length > 0 || slot?.kind !== 'art' || !art) return own;
+  if (own.length > 0 || Object.prototype.hasOwnProperty.call(mocks, slot?.key) || slot?.kind !== 'art' || !art) return own;
   const shared = safeArr(slots).some((s) => s && s !== slot && s.artFile && s.artFile.id === art.id);
   return shared ? own : bareRead();
 };
@@ -1383,6 +1433,44 @@ export const artProofFallback = (a) => {
   const gen = (safeArr(a?.mockup_files).length > 0 ? safeArr(a.mockup_files) : safeArr(a?.files)).filter(displayableProofFile);
   return gen.length > 0 ? gen : safeArr(a?.prod_files).filter(displayableProofFile);
 };
+
+// Promote a proof that already shows the garment into the garment's real mockup slot.
+// The source stays in prod_files/mockup_files; this only records the user's confirmation
+// that the same asset is also the mock for this garment and decoration slot.
+export const adoptArtProofAsGarmentMock = (artFiles, artId, slotKey, proofFile) => {
+  if (!artId || !slotKey || !proofFile) return artFiles;
+  const fileUrl = (f) => typeof f === 'string' ? f : safeStr(f?.url);
+  const proofUrl = fileUrl(proofFile);
+  if (!proofUrl) return artFiles;
+  let changed = false;
+  const next = safeArr(artFiles).map((a) => {
+    if (a?.id !== artId) return a;
+    const itemMockups = safeObj(a.item_mockups);
+    const existing = safeArr(itemMockups[slotKey]);
+    if (existing.some((f) => fileUrl(f) === proofUrl)) return a;
+    changed = true;
+    return markArtFieldEdit(a, 'item_mockups', { ...itemMockups, [slotKey]: [proofFile, ...existing] });
+  });
+  return changed ? next : artFiles;
+};
+
+// Explicit reuse candidates, never automatic evidence that another garment is mocked.
+export const garmentMockCandidates = (art) => {
+  const seen = new Set();
+  return [...safeArr(art?.mockup_files), ...safeArr(art?.files), ...safeArr(art?.prod_files), ...Object.values(safeObj(art?.item_mockups)).flatMap(safeArr)]
+    .filter(f => { const url = typeof f === 'string' ? f : f?.url; if (!url || !displayableProofFile(f) || seen.has(url)) return false; seen.add(url); return true; });
+};
+
+// Materialize a slot's fallback into its own bucket before removing. Other slots,
+// legacy buckets and production files may share the URL and must keep it.
+export const removeGarmentSlotMock = (artFiles, slot, slots, item, url) => safeArr(artFiles).map(a => {
+  if (a?.id !== slot.artId) return a;
+  const liveSlots = slots.map(s => s.artId === a.id ? { ...s, artFile: a } : s);
+  const liveSlot = liveSlots.find(s => s.key === slot.key && s.artId === slot.artId);
+  if (!liveSlot) return a;
+  const remaining = slotMockFiles(liveSlot, liveSlots, item).filter(f => (typeof f === 'string' ? f : f?.url) !== url);
+  return markArtFieldEdit(a, 'item_mockups', { ...safeObj(a.item_mockups), [slot.key]: remaining });
+});
 
 // Returns the list of SKUs on a job that have no mockup attached. Mirrors the
 // per-item mockup lookup in OrderEditor: for each item, find the art files this
@@ -1495,6 +1583,7 @@ export const skusMissingMockups = (job, so) => {
     // mock approved on a different color/style (reused art) would silently satisfy the
     // gate. garmentsNeedingMockCheck surfaces those so the rep can confirm or redo.
     const general = artFiles.flatMap(a => {
+      if (Object.prototype.hasOwnProperty.call(a?.item_mockups || {}, garmentMockKey(mLine))) return [];
       const hasPerItem = Object.values(a?.item_mockups || {}).some(v => safeArr(v).length > 0);
       if (hasPerItem) return [];
       return safeArr(a?.mockup_files).length > 0 ? safeArr(a?.mockup_files) : safeArr(a?.files);
@@ -1505,6 +1594,7 @@ export const skusMissingMockups = (job, so) => {
     // mockup_files/item_mockups. Keep embroidery stricter: a digitizer sew-out is often a
     // recolor and must not stand in for a garment mockup (SO-1661).
     const hasScreenPrintProof = artFiles.some(a => {
+      if (Object.prototype.hasOwnProperty.call(a?.item_mockups || {}, garmentMockKey(mLine))) return false;
       const method = String(a?.deco_type || job?.deco_type || '').toLowerCase();
       if (!/screen[\s_-]*print/.test(method) || a?.proof_dismissed) return false;
       const hasPerItem = Object.values(a?.item_mockups || {}).some(v => safeArr(v).length > 0);

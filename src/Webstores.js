@@ -1,3 +1,4 @@
+import { attachStoreGarmentMocks } from './lib/storeGarmentMocks';
 /* eslint-disable */
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
@@ -3846,7 +3847,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const pids = [...new Set(bLines.map((i) => i.product_id).filter(Boolean))];
     const pinfo = {};
     if (pids.length) {
-      const { data } = await supabase.from('products').select('id,sku,name,brand,color,nsa_cost,retail_price,vendor_id').in('id', pids);
+      const { data } = await supabase.from('products').select('id,sku,name,brand,color,nsa_cost,retail_price,vendor_id,image_front_url,image_back_url').in('id', pids);
       (data || []).forEach((p) => { pinfo[p.id] = p; });
     }
     // Pull every substitute SKU's product candidates too. A SKU can exist under
@@ -3858,7 +3859,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     }).filter(Boolean))];
     const candidatesBySku = {};
     if (overrideSkus.length) {
-      const { data } = await supabase.from('products').select('id,sku,name,brand,color,nsa_cost,retail_price,vendor_id').in('sku', overrideSkus);
+      const { data } = await supabase.from('products').select('id,sku,name,brand,color,nsa_cost,retail_price,vendor_id,image_front_url,image_back_url').in('sku', overrideSkus);
       (data || []).forEach((p) => {
         pinfo[p.id] = p;
         const k = String(p.sku || '').trim().toUpperCase();
@@ -3946,36 +3947,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const posOf = (d) => POS_LABEL[d.placement] || ((d.side === 'back') ? 'Back' : 'Front');
     const placeKey = (d) => (d.art_id || d.art_url || '') + '@' + (d.placement || '') + '@' + (d.side || 'front');
     const soArtFiles = new Map();
-    // Garment mockups — attach each ordered product's store photo to the SO art,
-    // keyed by sku|color (mirrors the OMG store→SO `item_mockups` mapping in
-    // App.js), so the Art Dashboard / production sees the garment proof, not just
-    // the bare logo. The order line captured the storefront image at purchase;
-    // fall back to the catalog product photo.
-    const catImgByPid = {};
-    (detail.catalog || []).forEach((c) => { if (c.product_id && c.image_url && !catImgByPid[c.product_id]) catImgByPid[c.product_id] = c.image_url; });
-    // SKU/color resolved from the product — the webstore order LINE's sku is null for
-    // singles, so keying mockups off i.sku silently dropped every garment (the SO line
-    // then showed "No mockup uploaded"). Key by the SO line's sku|color AND the bare sku
-    // so the SO's mockup lookup (m[sku|color] → m[sku]) always resolves regardless of how
-    // the line's stored color string compares to the master product color.
-    const skuByPid = {}; const colorByPid = {};
-    Object.values(pinfo).forEach((p) => { if (p && p.id) { if (p.sku) skuByPid[p.id] = p.sku; if (p.color) colorByPid[p.id] = p.color; } });
-    (detail.catalog || []).forEach((c) => { if (c.product_id && c.sku && !skuByPid[c.product_id]) skuByPid[c.product_id] = c.sku; });
-    const itemMockups = {};
-    bLines.forEach((i) => {
-      const rsku = i.sku || skuByPid[i.product_id] || '';
-      if (!rsku) return;
-      const img = i.image_url || catImgByPid[i.product_id] || '';
-      if (!img) return;
-      const color = i.color || colorByPid[i.product_id] || '';
-      [rsku + '|' + color, rsku].forEach((key) => { const b = (itemMockups[key] = itemMockups[key] || []); if (!b.includes(img)) b.push(img); });
-    });
-    // Every art file carries the per-garment mockups (production filters by the
-    // job's SKUs, same as OMG). The record's OWN mocks (auto-baked or QuickMockBuilder
-    // proofs — real decorated composites) win over the captured storefront photo, which
-    // only fills keys the record has nothing for. The old spread order let the bare
-    // garment photo clobber a real proof for the same sku|color.
-    const addArtFile = (rec) => { if (rec && rec.id && !soArtFiles.has(rec.id)) soArtFiles.set(rec.id, { ...rec, item_mockups: { ...itemMockups, ...(rec.item_mockups || {}) } }); };
+    // Capture the decorated storefront preview after resolving the final SO lines.
+    // A supplier photo by itself is not a garment mock.
+    const addArtFile = (rec) => { if (rec && rec.id && !soArtFiles.has(rec.id)) soArtFiles.set(rec.id, { ...rec, item_mockups: { ...(rec.item_mockups || {}) } }); };
     const cleanArt = (a) => { const { _srcLabel, _srcCustId, ...rest } = a; return rest; };
     // Store setting "decorated elsewhere" → every decoration lands on the SO already
     // flagged Outside: the whole store is produced off-site, names and numbers
@@ -3991,6 +3965,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const set = (sizesByBaseKey[g._baseKey] = sizesByBaseKey[g._baseKey] || new Set());
       Object.keys(g.sizes).forEach((sz) => set.add(sz));
     });
+    const storeMockSources = [];
     const soItems = Object.values(byProduct).map((g) => {
       const sourcePid = g.source_product_id || g.product_id;
       const sourceInfo = pinfo[sourcePid] || {};
@@ -4062,9 +4037,14 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // collected. Deco sells are suppressed above so the garment line carries it all.
       const qtyTot = Object.values(g.sizes).reduce((a, v) => a + v, 0) || 1;
       const unitSell = r2((g.collected || 0) / qtyTot * discRatio);
-      return { sku: g.sku || info.sku || '', name: info.name || sourceInfo.name || g.sku || 'Item', brand: info.brand || sourceInfo.brand || '', color: sourceInfo.color || info.color || '',
+      const item = { sku: g.sku || info.sku || '', name: info.name || sourceInfo.name || g.sku || 'Item', brand: info.brand || sourceInfo.brand || '', color: sourceInfo.color || info.color || '',
         product_id: g.product_id || info.id || null, vendor_id: g.vendor_id || info.vendor_id || null, nsa_cost: info.nsa_cost || sourceInfo.nsa_cost || 0, retail_price: unitSell, unit_sell: unitSell,
         sizes: g.sizes, available_sizes: [...(sizesByBaseKey[g._baseKey] || new Set(Object.keys(g.sizes)))], no_deco: decorations.length === 0, decorations, pick_lines: [], po_lines: [] };
+      const catalogMatches = (detail.catalog || []).filter(c => sourcePid ? c.product_id === sourcePid : c.sku === item.sku);
+      const placed = [...new Map((decosByKey[sourcePid] || decosByKey[g.sku] || []).map(d => [placeKey(d), d])).values()];
+      storeMockSources.push({ item, product: sourceInfo, catalog: catalogMatches.length === 1 ? catalogMatches[0] : {}, decorations: placed,
+        ambiguous: catalogMatches.length > 1, substituted: !!sourceInfo.sku && sourceInfo.sku !== item.sku });
+      return item;
     });
 
     const units = soItems.reduce((a, i) => a + Object.values(i.sizes).reduce((b, v) => b + v, 0), 0);
@@ -4087,7 +4067,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
     // await — onCreateSO now persists the SO and only resolves an id once it's
     // confirmed saved, so we never tag orders to an SO that doesn't exist yet.
-    const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${bOrders.length} orders${batchMeta.label ? ` — ${batchMeta.label}` : ''}`, production_notes: notes, items: soItems, webstore_id: sel.id, expected_date: expectedDate, art_files: [...soArtFiles.values()], fundraise_cost: fundraiseCost,
+    flash('Preparing garment mocks from store images…');
+    const storeMocks = await attachStoreGarmentMocks([...soArtFiles.values()], storeMockSources, { upload: cloudUpload });
+    const mockWarning = storeMocks.warnings.length ? '\n\nMOCKS NEED REVIEW — use Upload mock image in the job detail:\n' + storeMocks.warnings.join('\n') : '';
+    const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${bOrders.length} orders${batchMeta.label ? ` — ${batchMeta.label}` : ''}`, production_notes: notes + mockWarning, items: soItems, webstore_id: sel.id, expected_date: expectedDate, art_files: storeMocks.artFiles, fundraise_cost: fundraiseCost,
       batch_label: batchMeta.label || null, batch_cutoff: batchMeta.cutoff || null,
       // The server derives the settlement split again from these locked orders; no
       // client-supplied money total is trusted at the accounting boundary.
@@ -4095,7 +4078,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (!soId) { flash('Could not create the Sales Order — orders were not batched. Please try again.'); return; }
     // onCreateSO now returns only after the server atomically links every selected
     // order and records the invoice/payment + fundraising credit.
-    flash(`Created ${soId} · linked ${bOrders.length} orders · accounting recorded`);
+    flash(`Created ${soId} · linked ${bOrders.length} orders · accounting recorded${storeMocks.warnings.length ? " · Some garment mocks need review — see production notes" : ""}`);
     loadDetail(sel);
     }; // end proceed
 
@@ -5019,7 +5002,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
     if (repFilter !== 'all' && s.rep_id !== repFilter) return false;
     if (search.trim()) {
       const q = search.toLowerCase();
-      if (!((s.name || '').toLowerCase().includes(q) || (custName(s.customer_id) || '').toLowerCase().includes(q) || (s.slug || '').toLowerCase().includes(q))) return false;
+      if (!((s.name || '').toLowerCase().includes(q) || (custName(s.customer_id) || '').toLowerCase().includes(q) || (s.slug || '').toLowerCase().includes(q) || (s.store_code || '').toLowerCase().includes(q))) return false;
     }
     return true;
   };
@@ -5064,7 +5047,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
     if (repFilter !== 'all' && s.rep_id !== repFilter) return false;
     if (search.trim()) {
       const q = search.toLowerCase();
-      if (!((s.name || '').toLowerCase().includes(q) || (custName(s.customer_id) || '').toLowerCase().includes(q) || (s.slug || '').toLowerCase().includes(q))) return false;
+      if (!((s.name || '').toLowerCase().includes(q) || (custName(s.customer_id) || '').toLowerCase().includes(q) || (s.slug || '').toLowerCase().includes(q) || (s.store_code || '').toLowerCase().includes(q))) return false;
     }
     return true;
   });
@@ -5177,7 +5160,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
             </div>
             <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 9, background: '#fff', border: '1px solid #D1D5DE', borderRadius: 7, padding: '7px 12px', minWidth: 210 }}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#8A93A8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Filter stores…" style={{ border: 'none', outline: 'none', fontFamily: "'Source Sans 3',sans-serif", fontSize: 14, color: '#2A2F3E', width: '100%', background: 'transparent' }} />
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Filter stores — name, customer, or store #…" style={{ border: 'none', outline: 'none', fontFamily: "'Source Sans 3',sans-serif", fontSize: 14, color: '#2A2F3E', width: '100%', background: 'transparent' }} />
             </div>
           </div>
 
@@ -5188,6 +5171,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                 <tr style={{ background: '#FAFBFD', borderBottom: '1.5px solid #EEF1F6' }}>
                   <th style={{ ...TH, width: 34, padding: '12px 8px' }}></th>
                   <th onClick={() => setSort('store')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Store{sortArrow('store')}</th>
+                  <th style={{ ...TH, textAlign: 'left' }}>Store #</th>
                   <th onClick={() => setSort('status')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Status{sortArrow('status')}</th>
                   <th onClick={() => setSort('rep')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Rep{sortArrow('rep')}</th>
                   <th onClick={() => setSort('revenue')} style={{ ...TH, textAlign: 'right', cursor: 'pointer' }}>Revenue{sortArrow('revenue')}</th>
@@ -5224,6 +5208,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                           </div>
                           <div title={custName(s.customer_id)} style={{ color: '#8A93A8', fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{custName(s.customer_id)}</div>
                         </td>
+                        <td style={{ ...TD, fontFamily: 'monospace', fontWeight: 700, letterSpacing: '.06em', color: '#192853', whiteSpace: 'nowrap' }}>{s.store_code || <span style={{ color: '#D1D5DE' }}>—</span>}</td>
                         <td style={TD}><span style={statusStyle(st)}>{st}</span></td>
                         <td style={TD}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -5274,7 +5259,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                       </tr>
                       {isExp && (
                         <tr style={{ borderBottom: '1px solid #EEF1F6' }}>
-                          <td colSpan={9} style={{ padding: 0, background: '#FAFBFD' }} onClick={(e) => e.stopPropagation()}>
+                          <td colSpan={10} style={{ padding: 0, background: '#FAFBFD' }} onClick={(e) => e.stopPropagation()}>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 0.9fr', gap: 26, padding: '22px 24px 24px 50px', animation: 'wsExpand .18s ease-out' }}>
                               {/* Col 1: Sales Reporting */}
                               <div>
@@ -5329,6 +5314,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                                 <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 700, fontSize: 12, color: '#962C32', marginBottom: 12 }}>Store Setup</div>
                                 <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 14px', fontSize: 13.5, marginBottom: 16 }}>
                                   {[
+                                    ...(s.store_code ? [['Store #', s.store_code]] : []),
                                     ['Payment', s.payment_mode === 'either' ? 'Paid + Invoice' : s.payment_mode === 'unpaid' ? 'Invoice only' : 'Card only'],
                                     ['Delivery', s.delivery_mode === 'deliver_club' ? 'Deliver to club' : 'Ship to home'],
                                     ['Numbers', s.number_enabled ? (s.number_unique ? 'Unique #s' : 'On') : '—'],
@@ -5337,7 +5323,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                                   ].map(([label, val]) => (
                                     <React.Fragment key={label}>
                                       <span style={{ color: '#8A93A8' }}>{label}</span>
-                                      <span style={{ color: '#2A2F3E', fontWeight: 600 }}>{val}</span>
+                                      <span style={label === 'Store #' ? { color: '#191919', fontWeight: 800, fontFamily: 'monospace', letterSpacing: '.06em' } : { color: '#2A2F3E', fontWeight: 600 }}>{val}</span>
                                     </React.Fragment>
                                   ))}
                                 </div>
@@ -5350,7 +5336,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                   );
                 })}
                 {filtered.length === 0 && (
-                  <tr><td colSpan={9} style={{ padding: 48, textAlign: 'center', color: '#8A93A8', fontSize: 15 }}>No stores match these filters.</td></tr>
+                  <tr><td colSpan={10} style={{ padding: 48, textAlign: 'center', color: '#8A93A8', fontSize: 15 }}>No stores match these filters.</td></tr>
                 )}
               </tbody>
             </table>
@@ -5909,6 +5895,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
       <Section title="Basics">
         <Row label={`${noun} (customer) — link this first`}><CustomerPicker customers={cust} value={f.customer_id} onChange={applyCustomer} placeholder="Search by name or alpha — e.g. OLu" /></Row>
         <Row label="Store name (auto-named from customer)"><input className="form-input" value={f.name} onChange={(e) => setName(e.target.value)} placeholder="OLu Football Team Store" /></Row>
+        {store?.store_code && <Row label="Store # (auto-assigned — use it to look this store up)"><div style={{ fontFamily: 'monospace', fontSize: 15, fontWeight: 800, letterSpacing: '.06em', color: '#191919', padding: '6px 0' }}>{store.store_code}</div></Row>}
         <Row label="URL slug"><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ color: '#94a3b8', fontSize: 13, fontFamily: 'monospace' }}>/shop/</span><input className="form-input" value={f.slug} onChange={(e) => { setSlugTouched(true); set('slug', slugify(e.target.value)); }} placeholder="olu-football" /></div></Row>
         <div style={{ display: 'flex', gap: 12 }}>
           <Row label="Rep (auto-set from customer)"><select className="form-select" value={f.rep_id || ''} onChange={(e) => { const rid = e.target.value; setF((p) => ({ ...p, rep_id: rid, csr_id: primaryCsrForRep(rid) || '' })); }}><option value="">—</option>{repOptions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Row>
@@ -6718,7 +6705,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
                   : <div style={{ height: 48, width: 48, borderRadius: 10, background: accent, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 22, flexShrink: 0 }}>{(s.name || '?')[0].toUpperCase()}</div>}
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 21, fontWeight: 800, letterSpacing: 0.2, lineHeight: 1.05, textTransform: 'uppercase' }}>{s.name}</div>
-                  <div style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.82)', marginTop: 3 }}>{custName(s.customer_id)} · Rep: {repName(s.rep_id)} · <span style={{ fontFamily: 'monospace' }}>/shop/{s.slug}</span></div>
+                  <div style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.82)', marginTop: 3 }}>{custName(s.customer_id)} · Rep: {repName(s.rep_id)}{s.store_code ? <> · Store # <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{s.store_code}</span></> : null} · <span style={{ fontFamily: 'monospace' }}>/shop/{s.slug}</span></div>
                   <div style={{ marginTop: 6 }}><StatusBadge status={s.status} /></div>
                 </div>
               </div>

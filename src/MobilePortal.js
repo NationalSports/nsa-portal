@@ -2,7 +2,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import BarcodeScanner from './BarcodeScanner';
 import { auTierDisc, dP, calcOrderTotals, isAU } from './pricing';
-import { isJobReady } from './businessLogic';
+import { isJobReady, mockAwareProductionStatus } from './lib/jobMockReadiness';
 import { isBoxCode, boxUnits, BOX_STATUS_META } from './boxTracking';
 import { SZ_ORD } from './constants';
 import { numericSizeKeys } from './lib/opsRecap';
@@ -1957,10 +1957,10 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     }
     if(subPage==='jobs'){
       const allJobs=[];
-      sos.filter(so=>inScope(so.customer_id,so.created_by)).forEach(so=>{const cc=custObj(so.customer_id);safeJobs(so).forEach(j=>{allJobs.push({...j,so,so_id:so.id,customer:cc?.name||cc?.alpha_tag||'—'})})});
+      sos.filter(so=>inScope(so.customer_id,so.created_by)).forEach(so=>{const cc=custObj(so.customer_id);safeJobs(so).forEach(j=>{allJobs.push({...j,prod_status:mockAwareProductionStatus(j,so),so,so_id:so.id,customer:cc?.name||cc?.alpha_tag||'—'})})});
       const STATUS_FILTERS=[
         {k:'active',l:'Active',f:j=>!['completed','shipped','draft'].includes(j.prod_status||'')},
-        {k:'ready',l:'Ready',f:j=>(j.prod_status==='hold'&&isJobReady(j,j.so))||j.prod_status==='ready'},
+        {k:'ready',l:'Ready',f:j=>(['hold','ready'].includes(j.prod_status)&&isJobReady(j,j.so))},
         {k:'staging',l:'In Line',f:j=>j.prod_status==='staging'},
         {k:'in_process',l:'In Process',f:j=>j.prod_status==='in_process'},
         {k:'hold',l:'On Hold',f:j=>j.prod_status==='hold'},
@@ -2010,10 +2010,10 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     }
     if(subPage==='production'){
       const allJobs=[];
-      sos.filter(so=>inScope(so.customer_id,so.created_by)).forEach(so=>{const cc=custObj(so.customer_id);safeJobs(so).forEach(j=>{allJobs.push({...j,so,so_id:so.id,customer:cc?.name||cc?.alpha_tag||'—'})})});
+      sos.filter(so=>inScope(so.customer_id,so.created_by)).forEach(so=>{const cc=custObj(so.customer_id);safeJobs(so).forEach(j=>{allJobs.push({...j,prod_status:mockAwareProductionStatus(j,so),so,so_id:so.id,customer:cc?.name||cc?.alpha_tag||'—'})})});
       // Kanban columns mirror the desktop production board (driven by prod_status + isJobReady).
       const cols=[
-        {id:'ready',label:'Ready for Prod',color:'#6366f1',filter:j=>(j.prod_status==='hold'&&isJobReady(j,j.so))||j.prod_status==='ready'},
+        {id:'ready',label:'Ready for Prod',color:'#6366f1',filter:j=>(['hold','ready'].includes(j.prod_status)&&isJobReady(j,j.so))},
         {id:'staging',label:'In Line',color:'#d97706',filter:j=>j.prod_status==='staging'},
         {id:'in_process',label:'In Process',color:'#2563eb',filter:j=>j.prod_status==='in_process'},
         {id:'completed',label:'Completed',color:'#166534',filter:j=>j.prod_status==='completed'},

@@ -330,3 +330,74 @@ test('clicking through an estimate, invoice, or art reminder does not snooze or 
   expect(appSource).toContain('const doSnooze=(t,days)=>');
   expect(appSource).toContain('snoozeTodoUntil(t,days)');
 });
+
+test('per-invoice follow-up todos are paused behind INVOICE_FOLLOWUP_TODOS on both surfaces', () => {
+  expect(appSource).toContain('const INVOICE_FOLLOWUP_TODOS=false;');
+  const gated = appSource.split("if(INVOICE_FOLLOWUP_TODOS)invs.filter(i=>opsOpenInvoice(i)").length - 1;
+  const all = appSource.split('invs.filter(i=>opsOpenInvoice(i)&&!').length - 1;
+  expect(gated).toBe(2);
+  expect(all).toBe(gated);
+});
+
+test('weekly overdue-invoice todo is keyed to the Friday that starts its week', () => {
+  const section = sectionBetween(appSource, '// Weekly overdue-invoice review', '// Invoice follow-up alerts');
+  const run = (now, role = 'rep') => {
+    const RealDate = Date;
+    global.Date = class extends RealDate { constructor(...a) { super(...(a.length ? a : [now])); } };
+    try {
+      return new Function('cu', `const todos=[];${section};return todos;`)({ id: 'R1', role });
+    } finally { global.Date = RealDate; }
+  };
+  // Wed 2026-09-23 → week began Fri 2026-09-18
+  const wed = run('2026-09-23T12:00:00');
+  expect(wed).toHaveLength(1);
+  expect(wed[0]).toMatchObject({ type: 'overdue_invoices', repId: 'R1', role: 'sales', dismissKey: 'overdue_invoices:R1:2026-09-18' });
+  // Friday itself starts a new week
+  expect(run('2026-09-25T09:00:00')[0].dismissKey).toBe('overdue_invoices:R1:2026-09-25');
+  expect(wed[0]).toMatchObject({ invRep: '_me_' });
+  // CSRs get one too, covering their reps' book (no repId → passes the CSR filter; opens all reps' overdue list)
+  const csr = run('2026-09-23T12:00:00', 'csr');
+  expect(csr).toHaveLength(1);
+  expect(csr[0]).toMatchObject({ role: 'all', invRep: 'all', dismissKey: 'overdue_invoices:R1:2026-09-18' });
+  expect(csr[0].repId).toBeUndefined();
+  // Not for production / warehouse users
+  expect(run('2026-09-23T12:00:00', 'production')).toHaveLength(0);
+});
+
+test('sent estimates get one follow-up to-do at 7 days — no going-cold / stale tiers', () => {
+  expect(appSource).toContain('const ESTIMATE_FOLLOWUP_DAYS=7;');
+  expect(appSource).not.toContain('Estimate going cold (');
+  expect(appSource).not.toContain('Stale estimate (');
+  expect(appSource.split('days>=ESTIMATE_FOLLOWUP_DAYS)todos.push({type:\'follow_up\'').length - 1).toBe(2);
+});
+
+test('FYI notices (art approved, items received, IF pulled) only show for 2 days', () => {
+  expect(appSource).toContain('const FYI_NOTICE_DAYS=2;');
+  expect(appSource.split("if(daysAgo<FYI_NOTICE_DAYS)todos.push({type:'art_approved'").length - 1).toBe(2);
+  expect(appSource.split("isFreshNotificationDate(_rcvdAt,new Date(),FYI_NOTICE_DAYS))todos.push({type:'items_received'").length - 1).toBe(2);
+  expect(appSource).toContain('if(daysAgo>=FYI_NOTICE_DAYS)return;');
+});
+
+describe('need-by date is entered by the rep, never defaulted', () => {
+  const classicSource = fs.readFileSync(path.join(__dirname, '..', 'OrderEditorClassic.js'), 'utf8');
+  const newEditorSource = fs.readFileSync(path.join(__dirname, '..', 'OrderEditor.js'), 'utf8');
+  test('no "today + 28 days" default on new or converted sales orders', () => {
+    expect(appSource).not.toContain('fourWeeks');
+    expect(appSource).not.toContain('getDate()+28');
+  });
+  test('creating or converting without a date opens the need-by prompt instead of creating the SO', () => {
+    const newSO = sectionBetween(appSource, 'const newSOFn=(c,needBy)=>{', 'const mk=');
+    expect(newSO).toContain("if(!needBy){setNeedByAsk({kind:'new',c,date:''});return}");
+    const convert = sectionBetween(appSource, 'const convertSO=async(est,needBy)=>{', '// Auto-heal');
+    expect(convert).toContain("if(!needBy){setNeedByAsk({kind:'convert',est,date:''});return}");
+    const modal = sectionBetween(appSource, '═══ NEED-BY DATE (global)', '═══ CREATE TODO MODAL (global)');
+    expect(modal).toContain('disabled={!_ok}');
+    expect(modal).toContain('convertSO(a.est,a.date)');
+    expect(modal).toContain('newSOFn(a.c,a.date)');
+  });
+  test('both order editors label it Need-by and refuse to clear it (same logic in classic and new)', () => {
+    const rule = "if(!e.target.value){nf('Need-by date is required — pick the date the customer needs it','error');return}sv('expected_date',e.target.value)";
+    expect(classicSource).toContain(rule);
+    expect(newEditorSource).toContain(rule);
+  });
+});

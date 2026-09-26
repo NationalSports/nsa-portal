@@ -317,7 +317,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
 
   const removeLine = async (line) => {
     if (!onRemoveLine || removingLine != null || submitting) return;
-    if (!window.confirm(`Remove ${line.style} ${line.color || ''} ${line.size} (${line.quantity}) from this PO?\n\nIt will not be sent to SanMar. The quantity will return to the sales order so it can be sourced elsewhere.`)) return;
+    if (!window.confirm(`Remove ${line.style} ${line.color || ''} ${line.size} (${line.quantity}) from this PO?\n\nIt will not be sent to SanMar. The sales rep for ${line.sourceSO} will be notified to adjust the order.`)) return;
     const sourceKey = apiLineSourceKey(line);
     setRemovingLine(sourceKey); setErrorMsg(''); setRemovalErr('');
     try {
@@ -760,7 +760,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                         {short && <div style={{ marginTop: 3, fontSize: 10, fontWeight: 800, color: '#c2410c' }}>{available <= 0 ? 'OUT OF STOCK' : `SHORT — ${available} available / ${l.quantity} needed`}</div>}
                       </td>
                       <td style={{ ...td, color: '#64748b', fontSize: 11 }}>{l.sourceSO}</td>
-                      {onRemoveLine && <td style={{ ...td, textAlign: 'right' }}>{short && <button className="btn btn-sm" disabled={removingLine != null || submitting} onClick={() => removeLine(l)} style={{ color: '#b91c1c', borderColor: '#fca5a5', fontSize: 10, whiteSpace: 'nowrap' }}>{removingLine === sourceKey ? 'Removing…' : 'Remove from PO'}</button>}</td>}
+                      {onRemoveLine && <td style={{ ...td, textAlign: 'right' }}>{short && <button className="btn btn-sm" disabled={removingLine != null || submitting} onClick={() => removeLine(l)} style={{ color: '#b91c1c', borderColor: '#fca5a5', fontSize: 10, whiteSpace: 'nowrap' }}>{removingLine === sourceKey ? 'Removing…' : 'Remove from order & PO'}</button>}</td>}
                     </tr>
                     {pickerLine === sourceKey && (
                       <tr style={{ background: '#f8fafc' }}>

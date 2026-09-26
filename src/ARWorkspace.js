@@ -10,6 +10,10 @@ import {
 } from './lib/financeEngine';
 import { buildBrandedEmailHtml, getBillingContacts, sendBrevoEmail } from './utils';
 
+// Per-rep "Past-due invoices" assigned TODO. Paused: the dashboard's weekly overdue-invoices to-do
+// replaces it. Flip to true (and re-enable the past-due-invoice-todos-daily cron) to restore.
+const PAST_DUE_REP_TODOS=false;
+
 const NAVY='#192853', BLUE='#3056c0', RED='#962c32', GOOD='#167354', AMBER='#b26b12';
 const INK='#1e293b', MUTED='#64748b', FAINT='#94a3b8', LINE='#e2e8f0', SURFACE='#f8fafc';
 const FD="'Barlow Condensed','Arial Narrow',sans-serif";
@@ -157,6 +161,11 @@ export default function ARWorkspace({ mode='admin', scopeRepId=null, initialCust
     setAssignedTodos(prev=>{
       let changed=false;
       let next=(prev||[]).map(t=>{
+        // Past-due invoice TODOs are paused (PAST_DUE_REP_TODOS): reps work collections from the
+        // single weekly "overdue invoices" dashboard to-do + the Friday A/R email instead.
+        if(!PAST_DUE_REP_TODOS&&t.status==='open'&&String(t.source||'').startsWith('past_due_current:')&&targetIds.has(t.assigned_to)){
+          changed=true;return{...t,status:'completed',completed_at:now,completed_by:cu.id,completion_note:'Paused — past-due invoices are now worked from the weekly overdue-invoices to-do.',updated_at:now};
+        }
         if(t.status==='open'&&String(t.source||'').startsWith('past_due_weekly:')&&targetIds.has(t.assigned_to)){
           changed=true;return{...t,status:'completed',completed_at:now,completed_by:cu.id,completion_note:'Superseded by the current live Receivables summary.',updated_at:now};
         }
@@ -174,7 +183,7 @@ export default function ARWorkspace({ mode='admin', scopeRepId=null, initialCust
       targetIds.forEach(repId=>{
         const p=pastByRep.get(repId),accounts=allAr.accountRows.filter(r=>r.repId===repId&&r.pastDue>0).length;
         const pastInvoiceCount=allAr.openInvoices.filter(i=>i.repId===repId&&i.daysPastDue>0).length;
-        sync(repId,'past_due_current',p?'Past-due invoices — '+accounts+' account'+(accounts===1?'':'s')+', '+moneyExact(p.pastDue):'',p?'Current past-due review: '+pastInvoiceCount+' invoice'+(pastInvoiceCount===1?'':'s')+' across '+accounts+' account'+(accounts===1?'':'s')+', totaling '+moneyExact(p.pastDue)+'. Open Reports → Finance → My Receivables to work the current account list.':'',1,!!p);
+        sync(repId,'past_due_current',p?'Past-due invoices — '+accounts+' account'+(accounts===1?'':'s')+', '+moneyExact(p.pastDue):'',p?'Current past-due review: '+pastInvoiceCount+' invoice'+(pastInvoiceCount===1?'':'s')+' across '+accounts+' account'+(accounts===1?'':'s')+', totaling '+moneyExact(p.pastDue)+'. Open Reports → Finance → My Receivables to work the current account list.':'',1,PAST_DUE_REP_TODOS&&!!p);
         const rows=infoByRep.get(repId)||[],issueCounts={};rows.forEach(r=>(r.issues||[]).forEach(x=>{issueCounts[x]=(issueCounts[x]||0)+1}));
         const detail=Object.entries(issueCounts).sort((a,b)=>b[1]-a[1]).map(([k,n])=>k+': '+n).join(' · ');
         sync(repId,'ar_data_quality',rows.length?'Complete account information — '+rows.length+' account'+(rows.length===1?'':'s'):'',rows.length?'Your live account-information checklist has '+rows.length+' account'+(rows.length===1?'':'s')+' needing attention. '+detail+'. Open Reports → Finance → My Receivables → Account information TODOs; fixing the customer record clears it from the list automatically.':'',2,rows.length>0);

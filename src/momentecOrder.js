@@ -37,11 +37,16 @@ export function buildMomentecOrderLines(batchPOs) {
         const sku = String(skuBySize[size] || '');
         if (!sku) warnings.push(`Line (${[style, color, size].filter(Boolean).join(' ')}) is missing a Momentec SKU`);
         lines.push({
-          key: `${style}|${color}|${size}`,
+          key: [bp.id || '', bp.so_id || '', Number.isInteger(it.item_idx) ? it.item_idx : '', style, color, size].join('|'),
           style, color, size, sku,
           quantity: qty,
           unitPrice: it.unit_cost || 0,
           sourceSO: bp.so_id,
+          sourcePO: bp.po_id || '',
+          sourceBatchId: bp.id || '',
+          sourceItemIdx: Number.isInteger(it.item_idx) ? it.item_idx : null,
+          sourceSku: it.sku || '',
+          sourceColor: it.color || '',
           name: it.name || '',
         });
       });
