@@ -1,5 +1,6 @@
 const { buildEmailBlockRegistry, checkEmailRecipients } = require('../../src/lib/emailRouting');
 const { applyRoutingOverrides } = require('./_emailRoutingOverrides');
+const { trackedSend, enabled: retryEnabled, TABLE: RETRY_TABLE } = require('./_emailFirewallRetry');
 const { sendViaGmail } = require('./_gmailSend');
 
 // Read all pages, including art history. A partial/failed read must never silently
@@ -15,6 +16,18 @@ async function loadEmailRegistry(admin) {
       if (data.length < 500) return rows;
     }
   }));
+  if (retryEnabled()) {
+    // The server also learns from its own retries while no staff browser is open.
+    const retryDocs = [];
+    for (let offset = 0; ; offset += 500) {
+      const { data, error } = await admin.from(RETRY_TABLE).select('id,original_message_id,rejection_events,updated_at')
+        .not('rejection_events', 'eq', '[]').order('id').range(offset, offset + 499);
+      if (error || !Array.isArray(data)) throw new Error('Could not check automatic retry history. Nothing was sent; try again.');
+      for (const row of data) retryDocs.push({ id: row.id, sent_history: (row.rejection_events || []).map(e => ({ messageId: row.original_message_id, delivery: 'failed', delivery_to: e.email, delivery_event: e.event, delivery_reason: e.reason, delivery_at: e.date || row.updated_at })) });
+      if (data.length < 500) break;
+    }
+    lists.push(retryDocs);
+  }
   return applyRoutingOverrides(buildEmailBlockRegistry(lists));
 }
 async function sendPortalEmail(admin, payload, registry) {
@@ -26,10 +39,11 @@ async function sendPortalEmail(admin, payload, registry) {
   if (route.dead.length) return { status: 422, error: 'Not sent: ' + route.dead.join(', ') + ' is an invalid mailbox. Correct the contact address before sending again.' };
   if (route.gmail.length) {
     if ((payload.attachment || []).some((a) => !a || a.url || !a.content)) return { status: 422, error: 'This recipient needs Gmail. Download the linked attachment and upload it as a file, or remove it and send again. Nothing was sent through Brevo.' };
-    return sendViaGmail(admin, payload);
+    return trackedSend(admin, payload, () => sendViaGmail(admin, payload));
   }
   const apiKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
   if (!apiKey) return { status: 503, error: 'BREVO_API_KEY not configured' };
+  return trackedSend(admin, payload, async () => {
   let response;
   try { response = await fetch('https://api.brevo.com/v3/smtp/email', {
     method: 'POST', headers: { 'accept': 'application/json', 'content-type': 'application/json', 'api-key': apiKey }, body: JSON.stringify(payload),
@@ -37,5 +51,6 @@ async function sendPortalEmail(admin, payload, registry) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) return { status: response.status, error: data.message || data.error || 'Brevo send failed' };
   return { status: response.status || 200, messageId: data.messageId, via: 'brevo' };
+  });
 }
 module.exports = { loadEmailRegistry, sendPortalEmail };

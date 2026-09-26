@@ -11,6 +11,7 @@
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 const { verifyUser } = require('./_shared');
+const { retryStatus } = require('./_emailFirewallRetry');
 const { checkGmailDelivery } = require('./_gmailDelivery');
 const { sendPortalEmail } = require('./_emailRouter');
 
@@ -57,6 +58,13 @@ exports.handler = async (event) => {
         headers: { 'accept': 'application/json', 'api-key': apiKey },
       });
       const data = await response.text();
+      if (response.ok) {
+        const automaticRetry = await retryStatus(v.admin, qs.messageId);
+        if (automaticRetry) {
+          try { return { statusCode: response.status, headers: JSON_HEADERS, body: JSON.stringify({ ...JSON.parse(data), automaticRetry }) }; }
+          catch (_) { /* preserve the provider response if it is not JSON */ }
+        }
+      }
       return { statusCode: response.status, headers: JSON_HEADERS, body: data };
     }
 

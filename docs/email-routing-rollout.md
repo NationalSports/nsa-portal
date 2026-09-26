@@ -1,6 +1,6 @@
 # District email routing rollout
 
-Interactive sends and automatic follow-ups now use `_emailRouter.js`. It reads all pages of estimate, sales-order, invoice and artwork send history. An unavailable history table stops the send instead of guessing. No database migration is required.
+Interactive sends and automatic follow-ups now use `_emailRouter.js`. It reads all pages of estimate, sales-order, invoice and artwork send history. An unavailable history table stops the send instead of guessing. The shared routing changes need no migration; the optional automatic firewall retry requires the migration described below.
 
 ## Behavior
 
@@ -42,3 +42,19 @@ Do not point the production worker at a deploy-preview URL. No production secret
 ## Live acceptance checks
 
 Coordinate one expected test with each affected district, confirm PDF receipt and replies reaching the rep, and inspect provider rejection details if it fails. Check Brevo sender-domain authentication and work with district IT on approved sender allowlisting. Do not use Gmail to bypass unsubscribes or spam complaints. Test a controlled invalid recipient to verify a returned DSN is reflected in the portal.
+
+
+## Automatic retry after a new firewall rejection
+
+1. Apply `supabase/migrations/20260926170009_email_firewall_retry.sql` before enabling the feature. It creates a service-role-only retry ledger with RLS and no browser access to stored message bodies or PDFs.
+2. Deploy this PR's Netlify functions, including the scheduled `email-firewall-retry` worker.
+3. Set **`EMAIL_AUTO_FIREWALL_RETRY_ENABLED=true` for the production Functions environment only**. Leave it disabled for deploy previews sharing a production database. The default is off; it must not be enabled before the migration.
+4. Verify a controlled rejection and inspect the send-history entry before general rollout.
+
+Only new sends captured after activation are eligible. The worker checks every five minutes (larger queues may take longer) for up to 48 hours. A confirmed permanent SMTP sender/firewall block gets **at most one Gmail attempt per rejected recipient**. Successful TO/CC recipients are excluded; BCC recipients are retried individually to preserve privacy. The original message, PDF and rep reply address are preserved. The existing Gmail setup determines whether the sender is sales@ or the rep's delegated mailbox.
+
+A newer matching portal send suppresses the old automatic retry. Delivered/opened recipients, invalid mailboxes, spam complaints, unknown suppression reasons, temporary failures, mixed failures requiring review and URL-only attachments are not automatically resent. Gmail failures and interrupted/uncertain sends stop for manual review; they are never automatically retried again. Reps see an automatic retry in send history and need not click Send again when it succeeds. Gmail acceptance still does not prove delivery.
+
+Original payloads are retained for no more than seven days by the enabled worker (successful retries/delivery can clear them earlier); status records expire after 30 days. Disabling the worker also disables its cleanup, so arrange explicit cleanup if the feature is retired. If the worker is interrupted after claiming a Gmail attempt, the durable record prevents a second send and becomes a review item after 20 minutes.
+
+Activation and controlled live customer delivery tests have not been performed by this code change.

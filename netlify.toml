@@ -375,3 +375,9 @@
 
 [functions."scheduled-email-send"]
   timeout = 26
+
+# One automatic Gmail retry after a confirmed permanent district sender block.
+# Dormant until the database migration and EMAIL_AUTO_FIREWALL_RETRY_ENABLED=true.
+[functions."email-firewall-retry"]
+  schedule = "*/5 * * * *"
+  timeout = 26
