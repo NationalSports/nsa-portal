@@ -1,5 +1,5 @@
 import { garmentSlotCandidates } from "./lib/jobMockCards";
-import { resolveLogoColorWay } from './lib/logoDetail';
+import { assignLogoArtwork, resolveLogoColorWay } from './lib/logoDetail';
 import GarmentMockCard, { LogoDetailTiles } from './GarmentMockCard';
 import { removeGarmentSlotMock } from './safeHelpers';
 import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jobMockReadiness';
@@ -7393,7 +7393,13 @@ export default function App(){
     finally{logoSaveLocks.current.delete(so.id)}
   };
   // Props for a mock card's logo detail pane (art slots only).
-  const logoDetailProps=(so,slot,garment)=>{if(slot.kind!=='art')return null;slot={...slot,cwId:resolveLogoColorWay(slot.artFile,slot.cwId,garment?.color,slot.side)};const b=logoDetailBackground(garment?.color,cwGarmentColor(slot.artFile,slot.cwId),slot.side);return{url:logoDetailUrl(slot.artFile,slot.cwId),needsColorWay:slot.cwId===undefined,colorWays:logoColorWayOptions(slot.artFile),bg:b.bg,bgKnown:b.known,bgSource:b.source,colorName:b.label,
+  const logoDetailProps=(so,slot,garment)=>{if(slot.kind!=='art')return null;slot={...slot,cwId:resolveLogoColorWay(slot.artFile,slot.cwId,garment?.color,slot.side)};const b=logoDetailBackground(garment?.color,cwGarmentColor(slot.artFile,slot.cwId),slot.side);return{url:logoDetailUrl(slot.artFile,slot.cwId),needsColorWay:slot.cwId===undefined,colorWayId:slot.cwId,colorWays:logoColorWayOptions(slot.artFile),bg:b.bg,bgKnown:b.known,bgSource:b.source,colorName:b.label,
+    onAssign:async choice=>{
+      if(logoSaveLocks.current.has(so.id))throw new Error('A logo is still saving. Wait and retry.');
+      logoSaveLocks.current.add(so.id);
+      try{const live=logoOrdersRef.current.find(s=>s.id===so.id)||so;const {order:updated}=assignLogoArtwork(live,{...choice,artId:slot.artId,garmentKey:garmentMockKey(garment),side:slot.side});const ok=await savSONow(updated);if(ok){logoOrdersRef.current=logoOrdersRef.current.map(s=>s.id===so.id?updated:s);nf('Artwork version assignment saved')}return ok;}
+      finally{logoSaveLocks.current.delete(so.id)}
+    },
     onUpload:(files,cwId=slot.cwId)=>saveLogoDetailFor(so,{...slot,cwId},{files}),onRemove:(url,cwId=slot.cwId)=>saveLogoDetailFor(so,{...slot,cwId},{removeUrl:url})}};
   // Result-checked FULL save: persist the whole SO (jobs + art) and return a truthful true/false promise so
   // reuse/forward mutations (applyPriorMock, prod-file completion, wizard release) can report failure instead
@@ -14610,9 +14616,9 @@ export default function App(){
                     {/* Logo detail — the logo alone on the garment color, for inks and small type */}
                     {!_giSrc&&(()=>{const _lds=garmentLogoDetails(gi,so,allArtFiles);if(!_lds.length)return null;
                       return<div style={{padding:12,background:'#fafbfc',borderBottom:'1px solid #e2e8f0',display:'flex',gap:10,flexWrap:'wrap',justifyContent:'center'}}>
-                        {_lds.map(l=><div key={l.url} style={{flex:'1 1 220px',maxWidth:340,border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden',background:'white'}}>
+                        {_lds.map(l=><div key={l.url+'|'+l.side+'|'+l.artName} style={{flex:'1 1 220px',maxWidth:340,border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden',background:'white'}}>
                           <div style={{background:logoDetailBg(gi.color,l.cwLabel,l.side),height:190,display:'flex',alignItems:'center',justifyContent:'center',padding:12,cursor:'zoom-in'}} onClick={()=>openFile(l.url)}><img src={l.url} alt="Logo detail" style={{maxHeight:166,maxWidth:'100%',objectFit:'contain'}}/></div>
-                          <div style={{padding:'5px 8px',fontSize:10,fontWeight:700,color:'#334155'}}>Logo detail — {l.artName}{l.cwLabel?' · CW: '+l.cwLabel:''}</div>
+                          <div style={{padding:'5px 8px',fontSize:10,fontWeight:700,color:'#334155'}}>Logo detail — {l.artName}{l.side?' · Side '+l.side:''}{l.cwLabel?' · Artwork version: '+l.cwLabel:''}{!logoDetailBackground(gi.color,l.cwLabel,l.side).known?' · Color unknown — neutral preview':''}</div>
                         </div>)}
                       </div>})()}
                     {/* Size grid */}
@@ -24939,7 +24945,7 @@ export default function App(){
         const _adLinkOf=g=>resolveMockLink(_adLinkArts,mockSkuOf(g),g.color);
         const _adKeys=new Set(itemDetails.map(g=>garmentMockKey(g)));
         // Keep each garment's editable design/side slots visible, even when its image is shared.
-        const _adFolded=g=>{const source=itemDetails.find(x=>garmentMockKey(x)===_adLinkOf(g));if(!source||source===g||_adLinkOf(source))return false;const ds=_perItemDecos[g.item_idx]||[],ss=_perItemDecos[source.item_idx]||[];return ds.length===1&&ss.length===1&&ds[0].kind==='art'&&ss[0].kind==='art'&&!ds[0].reversible&&!ss[0].reversible&&ds[0].artFile?.id===ss[0].artFile?.id&&ds[0].position===ss[0].position};
+        const _adFolded=g=>{const source=itemDetails.find(x=>garmentMockKey(x)===_adLinkOf(g));if(!source||source===g||_adLinkOf(source))return false;const ds=_perItemDecos[g.item_idx]||[],ss=_perItemDecos[source.item_idx]||[];return ds.length===1&&ss.length===1&&ds[0].kind==='art'&&ss[0].kind==='art'&&!ds[0].reversible&&!ss[0].reversible&&ds[0].artFile?.id===ss[0].artFile?.id&&ds[0].position===ss[0].position&&resolveLogoColorWay(ds[0].artFile,ds[0].colorWayId,g.color)!==undefined&&resolveLogoColorWay(ss[0].artFile,ss[0].colorWayId,source.color)!==undefined};
         const _adDeps=g=>itemDetails.filter(o=>o!==g&&_adFolded(o)&&_adLinkOf(o)===garmentMockKey(g));
         // Release instructions are for the whole job, so they show once above the garments. The
         // "ONE MOCKUP COVERS" line is dropped when the grouped cards already show that grouping.
@@ -25481,8 +25487,8 @@ export default function App(){
                   </div>
                   {/* Shared mock over several garment colors: the logo detail on each covered color way /
                       garment color, uploadable here since the covered garments have no card of their own. */}
-                  {_deps.length>0&&(()=>{const seen=new Set();const tiles=_grp.flatMap(g=>{const d=(_perItemDecos[g.item_idx]||[]).find(x=>x.kind==='art'&&x.artFile);if(!d)return[];const cw=resolveLogoColorWay(d.artFile,d.colorWayId,g.color);const b=logoDetailBackground(g.color,cwGarmentColor(d.artFile,cw));const url=logoDetailUrl(d.artFile,cw);const key=d.artFile.id+'|'+cw+'|'+b.bg;if(seen.has(key))return[];seen.add(key);
-                    return[{key,url,bg:b.bg,label:b.label||((g.color?g.color+' ':'')+g.sku),onUpload:url?null:files=>saveLogoDetailFor(so,{artId:d.artFile.id,cwId:cw},{files})}]});
+                  {_deps.length>0&&(()=>{const seen=new Set();const tiles=_grp.flatMap(g=>{const d=(_perItemDecos[g.item_idx]||[]).find(x=>x.kind==='art'&&x.artFile);if(!d)return[];const cw=resolveLogoColorWay(d.artFile,d.colorWayId,g.color);const b=logoDetailBackground(g.color,cwGarmentColor(d.artFile,cw));const url=logoDetailUrl(d.artFile,cw);const key=garmentMockKey(g)+'|'+d.artFile.id+'|'+cw;if(seen.has(key))return[];seen.add(key);
+                    return[{key,url,bg:b.bg,label:[mockSkuOf(g),g.color,!b.known?'Color unknown — neutral preview':''].filter(Boolean).join(' · '),onUpload:url?null:files=>saveLogoDetailFor(so,{artId:d.artFile.id,cwId:cw},{files})}]});
                     return tiles.length>1?<div style={{padding:'0 10px 10px'}}><LogoDetailTiles tiles={tiles}/></div>:null;})()}
                   {_deps.length>0&&<div style={{padding:10,display:'flex',gap:8,flexWrap:'wrap'}}>{_deps.map(dep=><button type="button" className="btn btn-sm" key={garmentMockKey(dep)} onClick={async()=>{const live=sos.find(x=>x.id===so.id)||so;await savArtFiles({...live,art_files:_adLinkArts.reduce((arts,a)=>applyMockLink(arts,a.id,garmentMockKey(dep),null),safeArt(live))})}}>Separate mock: {dep.sku} · {dep.color}</button>)}</div>}
                   {/* ─── Copy Mockup From Another Item ─── */}

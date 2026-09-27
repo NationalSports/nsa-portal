@@ -1,6 +1,6 @@
-import { safeArr, safeArt, safeItems, safeStr, jobItemArtSlots, jobArtFileIds, markArtFieldEdit } from '../safeHelpers';
+import { safeArr, safeArt, safeItems, safeJobs, safeStr, safeDecos, garmentMockKey, jobItemArtSlots, jobArtFileIds, markArtFieldEdit } from '../safeHelpers';
 import { pickCwAsset } from '../businessLogic';
-import { knownGarmentHex, exactGarmentHex } from './artGrid';
+import { knownGarmentHex } from './artGrid';
 
 // ── Logo detail ──
 // Every garment mock has a partner: the LOGO DETAIL, a close-up of the logo alone that the floor,
@@ -26,36 +26,72 @@ export const logoDetailUrl = (art, colorWayId) => {
   if (!art || colorWayId === undefined) return '';
   // No implicit first-colorway fallback: a logo from another garment is not approval evidence.
   if (!colorWayId) return safeArr(art.web_logos).find(_isDefaultLogo)?.url || art.web_logo_url || '';
+  if (safeArr(art.color_ways).find(c => c.id === colorWayId)?.requires_own_logo) return safeArr(art.web_logos).find(w => w.color_way_id === colorWayId)?.url || '';
   return pickCwAsset({ ...art, preview_url: '' }, { kind: 'web_logo', colorWayId });
 };
 
 // Explicit choices for unresolved garment slots; never guess an ink/color-way assignment.
 export const logoColorWayOptions = art => safeArr(art?.color_ways).filter(c => c?.id).map((c, i) => ({
-  id: c.id, label: c.garment_color || c.name || ('Color way ' + (i + 1)), url: logoDetailUrl(art, c.id),
+  id: c.id, label: c.garment_color || c.name || ('Color way ' + (i + 1)), colors: safeArr(c.inks).join(', '), url: logoDetailUrl(art, c.id),
 }));
+
+// Persist the artist's explicit choice on the actual decorations, not just the PNG.
+// All-garments is opt-in and never silently replaces a different assigned version.
+export function assignLogoArtwork(order, { artId, colorWayId, garmentKey, side, allGarments = false, newVersion }) {
+  const art = safeArt(order).find(a => a.id === artId);
+  if (!art) throw new Error('This artwork was removed. Reopen the job.');
+  let nextArt = art;
+  if (newVersion) {
+    const label = safeStr(newVersion.label).trim();
+    const inks = safeArr(newVersion.inks).map(x => safeStr(x).trim()).filter(Boolean);
+    if (!label || !inks.length || !newVersion.id) throw new Error('Enter an artwork version name and its ink/thread colors.');
+    const existing = safeArr(art.color_ways).find(c => c.id === newVersion.id);
+    const retry = existing && existing.garment_color === label && JSON.stringify(existing.inks) === JSON.stringify(inks);
+    if (!retry && safeArr(art.color_ways).some(c => c.id === newVersion.id || safeStr(c.garment_color).trim().toLowerCase() === label.toLowerCase())) throw new Error('That artwork version already exists. Choose it from the list.');
+    colorWayId = newVersion.id;
+    nextArt = retry ? art : markArtFieldEdit(art, 'color_ways', [...safeArr(art.color_ways), { id: colorWayId, garment_color: label, inks, requires_own_logo: true }]);
+  }
+  if (!safeArr(nextArt.color_ways).some(c => c.id === colorWayId)) throw new Error('This artwork version no longer exists. Reopen the job.');
+  let count = 0;
+  const changedItems = new Set();
+  const items = safeItems(order).map((item, itemIndex) => {
+    if (!allGarments && garmentMockKey(item) !== garmentKey) return item;
+    const decorations = safeDecos(item).map(d => {
+      if (d.kind !== 'art' || d.art_file_id !== artId || (side === 'B' && !d.reversible)) return d;
+      // Keep reversible sides independent, even for a bulk assignment.
+      const field = side === 'B' ? 'color_way_id_b' : 'color_way_id';
+      if (allGarments && d[field] && d[field] !== colorWayId) throw new Error('Another garment already uses a different artwork version. Assign garments individually instead.');
+      if (resolveLogoColorWay(art, d[field], item.color, side) !== colorWayId) changedItems.add(itemIndex);
+      count++;
+      return { ...d, [field]: colorWayId };
+    });
+    return { ...item, decorations };
+  });
+  if (!count) throw new Error('No matching garment decoration was found. Reopen the job.');
+  const protectedStates = new Set(['waiting_approval', 'production_files_needed', 'order_dtf_transfers', 'upload_emb_files', 'art_complete']);
+  if (safeJobs(order).some(j => protectedStates.has(j.art_status) && jobArtFileIds(j, safeItems(order)).has(artId) && safeArr(j.items).some(gi => changedItems.has(gi.item_idx)))) {
+    throw new Error('This artwork is already in review or approved. Recall/request changes on the affected job before changing its artwork version.');
+  }
+  return { order: { ...order, items, art_files: safeArt(order).map(a => a.id === artId ? nextArt : a) }, colorWayId };
+}
 
 // Background behind the transparent logo — the color of the garment it is printed on:
 //  1. the garment line's own color when it names a real color. A logo used on several garment
 //     colors therefore shows on EACH garment's color. Two-tone names use the first color
 //     ("Light Blue/White" → light blue); the B side of a reversible uses the second.
-//  2. else ("CUSTOM", blank, an unknown vendor name) the color way's garment color — but only
-//     when that label IS a color ("Navy"), never an ink description ("White ink on dark").
-//  3. else a neutral mid grey that keeps white AND dark inks readable. (The mock card also tries
-//     reading the shirt color off the mock image before settling for this.)
-// source: 'garment' | 'colorway' | 'unknown'.
+// Unknown garment colors stay explicitly unknown. Artwork-version names and shared mock
+// images are not evidence of this garment's color. Never recolor the logo pixels themselves.
+// source: 'garment' | 'unknown'.
 export const UNKNOWN_GARMENT_BG = '#94a3b8';
 const _sideColor = (color, side) => {
   const parts = safeStr(color).split('/').map(x => x.trim()).filter(Boolean);
-  return (side === 'B' && parts[1]) || parts[0] || '';
+  return side === 'B' ? parts[1] || '' : parts[0] || '';
 };
 export const logoDetailBackground = (color, cwColor, side) => {
   const own = _sideColor(color, side);
   const k = own && knownGarmentHex(own);
   if (k) return { bg: k, label: own, known: true, source: 'garment' };
-  const cw = safeStr(cwColor).trim();
-  const c = cw && (exactGarmentHex(cw) || exactGarmentHex(_sideColor(cw)));
-  if (c) return { bg: c, label: cw, known: true, source: 'colorway' };
-  return { bg: UNKNOWN_GARMENT_BG, label: '', known: false, source: 'unknown' };
+  return { bg: UNKNOWN_GARMENT_BG, label: own, known: false, source: 'unknown' };
 };
 export const logoDetailBg = (color, cwColor, side) => logoDetailBackground(color, cwColor, side).bg;
 // The garment color a color way is designed for ("Navy"), used when the line's own color is unknown.
