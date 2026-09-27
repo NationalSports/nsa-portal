@@ -69,15 +69,17 @@ export async function bundleProductionFiles(packet, { maxBytes = 100 * 1024 * 10
   const safePart = value => String(value || 'file').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-').slice(0, 100);
   await Promise.all(Array.from({ length: Math.min(4, entries.length) }, async () => {
     while (cursor < entries.length) {
-      const entry = entries[cursor++], url = safeUrl(entry.url);
+      const fileIndex=cursor++; const entry = entries[fileIndex], url = safeUrl(entry.url);
       if (!url) { failures.push(`${entry.name}: unsafe or missing URL`); continue; }
+      const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),30000);
       try {
-        const response = await fetchImpl(url, { credentials: 'omit' });
+        const response = await fetchImpl(url, { credentials: 'omit', signal:controller.signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if(Number(response.headers?.get('content-length'))>maxBytes-total)throw new Error('File exceeds the remaining archive size limit');
         const blob = await response.blob(); total += blob.size;
         if (total > maxBytes) throw new Error(`archive exceeds ${maxBytes} bytes`);
-        zip.file(`${safePart(entry.group)}/${safePart(entry.name)}`, blob);
-      } catch (error) { failures.push(`${entry.name}: ${error.message}`); }
+        zip.file(`${safePart(entry.group)}/${fileIndex+1}-${safePart(entry.name)}`, blob);
+      } catch (error) { failures.push(`${entry.name}: ${error.message}`); } finally { clearTimeout(timer); }
     }
   }));
   if (failures.length) throw new Error(`Could not bundle every production file; no archive was downloaded. ${failures.join('; ')}`);

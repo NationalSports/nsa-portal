@@ -40,7 +40,7 @@ export function packetForRun(packet,run) {
  return {...packet,garments,decorations:run.decorations,players:[],messages:[],notes:packet.notes.filter(n=>!n.targetId||gids.has(n.targetId)||ids.has(n.targetId)),totals:{...packet.totals,garments:garments.reduce((n,g)=>n+g.units,0),orders:0,players:0,playerUnits:0,unbatchedUnits:0}};
 }
 export function personalizationCsv(packet) {
- const cell=v=>'"'+String(v??'').replace(/"/g,'""')+'"';
+ const cell=v=>'"'+String(v??'').replace(/^[=+@\-\t\r]/,"'$&").replace(/"/g,'""')+'"';
  const rows=[['SO','Garment','Garment color','Size','Print text (exact)','Placement','Method','Font','Dimensions','Print/thread color','Quantity']];
  for(const d of packet.decorations.filter(d=>['names','numbers'].includes(d.kind)))for(const r of d.personalization.roster||[])rows.push([d.soId,d.sku,d.color,r.size,d.kind==='names'?r.name:r.number,d.position,d.method,d.personalization.font,d.dimensions,d.colors,r.qty]);
  return '\ufeff'+rows.map(row=>row.map(cell).join(',')).join('\r\n');
