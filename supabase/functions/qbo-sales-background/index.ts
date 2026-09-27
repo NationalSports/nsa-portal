@@ -385,10 +385,15 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
       // create would build them, applied to a fresh read under the invoice claim, and
       // read back; the invoice's payments post in this run only once QBO agrees.
       const knownItemIds=[String(salesItem.Id),...[...taxItems.values()].map((item:any)=>String(item.Id))];
-      // Same per-run cap as creates; the rest stay held (payments too) until a later run.
+      // Same per-run cap as creates. Past the cap the drift stays an open review (payments
+      // held), so an invoice can never sit out of step with QBO without anyone seeing it.
       const resyncLimit=Number(settings.invoice_batch_limit)||25;
       for(const [index,candidate] of [...resyncCandidates].sort((a,b)=>a.sourceId.localeCompare(b.sourceId)).entries()){
-        if(index>=resyncLimit){add('invoice',candidate.sourceId,'resync_invoice','deferred',String(candidate.qboId),{...candidate.drift,reason:'resync_batch_limit'});continue;}
+        if(index>=resyncLimit){
+          counters.invoices.manual_review++;
+          review('invoice',candidate.sourceId,'mapped_invoice_total_changed',{qbo_id:String(candidate.qboId),...candidate.drift,cc_fee:money(candidate.invoice.cc_fee),deferred:'resync_batch_limit'});
+          add('invoice',candidate.sourceId,'resync_invoice','deferred',String(candidate.qboId),{...candidate.drift,reason:'resync_batch_limit'});continue;
+        }
         const token=crypto.randomUUID();let locked=false;
         try{
           const {data}=await admin.rpc('acquire_qbo_invoice_sync_claim',{p_realm_id:REALM_ID,p_source_invoice_id:candidate.sourceId,p_claim_token:token,p_lease_seconds:300});

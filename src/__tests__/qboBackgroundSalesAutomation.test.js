@@ -338,6 +338,8 @@ describe('change sync wiring: reviewer follow-ups',()=>{
   test('resync honours the invoice batch limit and defers the rest',()=>{
     expect(edge).toContain("const resyncLimit=Number(settings.invoice_batch_limit)||25;");
     expect(edge).toContain("'resync_invoice','deferred'");
+    // Deferred drift must stay visible as an open review, never auto-resolve silently.
+    expect(edge).toMatch(/if\(index>=resyncLimit\)\{[\s\S]{0,120}review\('invoice',candidate\.sourceId,'mapped_invoice_total_changed'/);
   });
   test('line-build failures keep a specific code and the drift amounts',()=>{
     expect(edge).toContain('code:`resync_${safeError(error)}`');
