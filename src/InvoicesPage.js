@@ -1139,6 +1139,13 @@ export default function InvoicesPage(){
           return<div className="modal-overlay" onClick={()=>setInvEditModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:980,maxHeight:'92vh',display:'flex',flexDirection:'column'}}>
           <div className="modal-header"><h2>Edit Invoice — {em.inv.id}</h2><button className="modal-close" onClick={()=>setInvEditModal(null)}>x</button></div>
           <div className="modal-body" style={{overflow:'auto',flex:1}}>
+            {/* Already in QuickBooks: the hourly sync rewrites it from saved changes, except
+                the cases it deliberately leaves to accounting (see invoiceResyncUpdate). */}
+            {em.inv.qb_invoice_id&&<div style={{marginBottom:14,padding:'10px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,fontSize:12,color:'#1e3a8a'}}>
+              <strong>Already in QuickBooks as invoice #{em.inv.qb_invoice_id}.</strong> If you change the total, the hourly sync updates QuickBooks to match
+              {' '}— unless the invoice's month is closed in the books, the customer changed, or the new total is less than what's already been paid; then accounting gets an alert instead.
+              {' '}Changes that keep the same total (customer, date, memo) do NOT reach QuickBooks — tell accounting.
+            </div>}
             {/* Customer */}
             <div style={{marginBottom:14,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
               <label className="form-label" style={{fontWeight:700}}>Customer</label>

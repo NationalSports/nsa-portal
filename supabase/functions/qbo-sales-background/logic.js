@@ -160,6 +160,69 @@ export function cardFeeLineUpdate(invoice, qboInvoice, salesItemId) {
   };
 }
 
+// A new invoice is often still being corrected in its first minutes: INV-64006 was
+// deleted and re-created 17 minutes after the sync had already written it to QBO,
+// and INV-64005's tax was removed 3 hours after. Hold a new invoice until nobody has
+// touched it for SETTLE_HOURS. updated_at also moves on automatic saves, so the hold
+// is capped: SETTLE_CAP_HOURS after creation the invoice goes regardless.
+export const SETTLE_HOURS = 2;
+export const SETTLE_CAP_HOURS = 24;
+export function invoiceStillSettling(invoice, now = Date.now()) {
+  const created=Date.parse(invoice?.created_at), updated=Date.parse(invoice?.updated_at);
+  const stamps=[created,updated].filter(Number.isFinite);
+  if(!stamps.length)return false;
+  if(Number.isFinite(created)&&now-created>=SETTLE_CAP_HOURS*3600e3)return false;
+  return now-Math.max(...stamps)<SETTLE_HOURS*3600e3;
+}
+
+// First line description, shared by invoice create and resync so both read alike.
+export function invoiceLineDescription(invoice, salesOrder) {
+  return `Invoice ${invoice.id}${invoice.so_id?` for ${invoice.so_id}`:''}${salesOrder?.memo?` — ${salesOrder.memo}`:''}`;
+}
+
+// Rewrites a linked QBO invoice's lines to match a Portal invoice that was edited
+// after it was first written, using the same line builder as a fresh create.
+// Built from a FRESH read under the invoice claim; every case that is not
+// provably safe throws a coded error and stays a manual review:
+//  - the QBO invoice must carry this Portal invoice's number;
+//  - the QBO invoice must still belong to the Portal customer's verified QBO customer;
+//  - every existing line must be one the sync itself writes (its sales/tax items or
+//    its discount account) — a hand-built or legacy invoice is never rewritten;
+//  - a QBO invoice already at $0 (voided or zeroed there) is never revived;
+//  - the invoice date must be after the books' closing date;
+//  - the new total may not fall below what QBO has already applied to it (that
+//    would turn a payment into an overpayment);
+//  - QBO must not be computing tax on it (tax is carried as an explicit line).
+export function invoiceResyncUpdate({invoice, qboInvoice, qboCustomerId, lines, knownItemIds, discountAccountId, bookCloseDate}) {
+  const total=money(invoice?.total), qboTotal=money(qboInvoice?.TotalAmt), applied=money(qboTotal-money(qboInvoice?.Balance));
+  const fail=code=>Object.assign(new Error(code),{code,details:{portal_total:total,qbo_total:qboTotal,qbo_applied:applied}});
+  if(!qboInvoice?.Id||qboInvoice.SyncToken==null||!Array.isArray(lines)||!lines.length)throw fail('resync_invalid_input');
+  // The QBO invoice must carry this Portal invoice's own number. A split copies
+  // qb_invoice_id onto the new half; without this the two halves would take turns
+  // overwriting one QBO invoice every hour.
+  if(normalizeInvoiceNumber(qboInvoice.DocNumber)!==normalizeInvoiceNumber(invoice?.id))throw fail('resync_doc_number_mismatch');
+  if(!clean(qboCustomerId)||String(qboInvoice.CustomerRef?.value)!==String(qboCustomerId))throw fail('resync_customer_changed');
+  const known=new Set((knownItemIds||[]).map(String));
+  const foreign=(qboInvoice.Line||[]).some(line=>{
+    if(line?.DetailType==='SubTotalLineDetail')return false;
+    if(line?.DetailType==='SalesItemLineDetail')return !known.has(String(line.SalesItemLineDetail?.ItemRef?.value));
+    if(line?.DetailType==='DiscountLineDetail')return String(line.DiscountLineDetail?.DiscountAccountRef?.value)!==String(discountAccountId);
+    return true;
+  });
+  if(foreign)throw fail('resync_foreign_lines');
+  // A $0 QBO invoice was voided or zeroed there on purpose; rewriting its lines
+  // would quietly bring it back to life. Accounting decides.
+  if(!(qboTotal>0))throw fail('resync_qbo_zeroed');
+  const txnDate=parseDate(qboInvoice.TxnDate), closed=parseDate(bookCloseDate);
+  if(closed&&(!txnDate||txnDate<=closed))throw fail('resync_closed_period');
+  if(applied>total+0.005)throw fail('resync_below_applied');
+  if(money(qboInvoice.TxnTaxDetail?.TotalTax)!==0)throw fail('resync_taxed_invoice');
+  // Tax lives on explicit lines, never QBO's engine: pin every line non-taxable.
+  const pinned=lines.map(line=>line?.DetailType==='SalesItemLineDetail'
+    ?{...line,SalesItemLineDetail:{...line.SalesItemLineDetail,TaxCodeRef:{value:'NON'}}}:line);
+  return {Id:String(qboInvoice.Id),SyncToken:String(qboInvoice.SyncToken),sparse:true,Line:pinned,TxnTaxDetail:{TotalTax:0}};
+}
+
 export function taxPlan(invoice, customer, partnerTaxEnabled=true) {
   const tax=money(invoice?.tax); if(!(tax>0))return null;
   const state=clean(customer?.shipping_state||customer?.billing_state).toUpperCase();

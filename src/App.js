@@ -8670,6 +8670,10 @@ export default function App(){
     if(eSO?.id===soId){setESO(null);setESOC(null)}
   };
 
+  // The QBO sync creates and updates invoices but never voids or deletes one, so a void
+  // or delete here leaves the QuickBooks copy open. Name the invoice accounting must void.
+  const qboManualVoidNote=inv=>inv?.qb_invoice_id?'\n\n⚠ This invoice is already in QuickBooks as #'+inv.qb_invoice_id+
+    '. This does NOT change QuickBooks — ask accounting to void #'+inv.qb_invoice_id+' there.':'';
   const deleteInvoice = (invId) => {
     if(!canDelete)return nf('You do not have permission to delete','error');
     const histInv=histInvs.find(i=>(i.id===invId)||(i._hist_id===invId));
@@ -8687,7 +8691,7 @@ export default function App(){
       return;
     }
     if(inv.paid>0&&!window.confirm('This invoice has $'+inv.paid.toLocaleString()+' in payments recorded. Deleting will lose this payment history. Continue?'))return;
-    if(!window.confirm('Delete invoice '+invId+'?'))return;
+    if(!window.confirm('Delete invoice '+invId+'?'+qboManualVoidNote(inv)))return;
     // Remove from state
     setInvs(prev=>prev.filter(i=>i.id!==invId));
     // If invoice was linked to an SO, recalculate SO status (it might go back to ready_to_invoice)
@@ -8727,7 +8731,8 @@ export default function App(){
     // Say plainly that voiding is a bookkeeping action, not a refund — the money moved for
     // real (store/Stripe funds), and nothing here gives it back to whoever paid it.
     if(!window.confirm('Void invoice '+invId+'?\n\nIt stops counting as revenue and as a receivable.'+
-      (paid>0?'\n\nThe $'+paid.toLocaleString()+' in recorded payments STAYS on the invoice as history. Voiding does NOT refund anyone — issue any refund in the store/processor separately.':'')))return;
+      (paid>0?'\n\nThe $'+paid.toLocaleString()+' in recorded payments STAYS on the invoice as history. Voiding does NOT refund anyone — issue any refund in the store/processor separately.':'')+
+      qboManualVoidNote(inv)))return;
     const ts=new Date().toLocaleString();
     setInvs(prev=>prev.map(i=>i.id===invId?{...i,status:'void',updated_at:ts}:i));
     logChange('voided','Invoice',invId,inv.memo||'');
@@ -15771,8 +15776,10 @@ export default function App(){
       updated_at:new Date().toLocaleString()};
     // Create new invoice B
     const newId=nextInvId(invs);
+    // The new half is a new document: it must not inherit the original's QuickBooks
+    // link, or the sync would treat both halves as the same QBO invoice.
     const newInv={...inv,id:newId,line_items:itemsB,total:totalB,paid:paidB,status:statusB,
-      idempotency_key:null,
+      idempotency_key:null,qb_invoice_id:null,
       shipping:shipB,tax:taxB,memo:(splitMemo||inv.memo||'')+' (Split 2/2)',
       payments:inv.payments?inv.payments.map(p=>({...p,amount:Math.round(p.amount*pctB*100)/100,cc_fee:Math.round((p.cc_fee||0)*pctB*100)/100})):[],
       cc_fee:Math.round((inv.cc_fee||0)*pctB*100)/100,
