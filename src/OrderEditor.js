@@ -67,7 +67,7 @@ import { downloadSoPlayerReport, omgCodeFromMemo } from './lib/soPlayerReport';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { ART_PULLBACK_CLEARS, approveArtOnSO, sendArtBackOnSO } from './lib/artReview';
 import { artFamilyKey } from './lib/artSplitFamily';
-import { parseStitchCount, embStitchTierLabel } from './lib/embStitchParser';
+import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, embStitchTierLabel } from './lib/embStitchParser';
 import { _dbPersistNewPoLine } from './lib/dbEngine';
 import { applyFullPromoPricing, recoverGarmentCost as recoverGarmentCostShared } from './lib/promoPricing';
 import { fetchPaidPromoHistoryInvoices, mergePromoHistoryInvoices, promoHalfWindows, withEarnedPromoAllocation } from './lib/promoHistory';
@@ -3740,99 +3740,83 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // When a DST is uploaded to an approved embroidery art file, mark the job art_complete automatically
   // so the rep doesn't have to manually click "Mark Art Complete" after uploading.
   const _autoCompleteEmbAfterUpload=(newArts)=>{const curO=oRef.current;const updArt=newArts.map(a=>{if((a.deco_type||'')!=='embroidery'||a.status!=='approved'||a.prod_files_attached===true)return a;if(![...(a.files||[]),...(a.prod_files||[])].some(f=>isDstFile(f)&&!isStaleFile(f)))return a;return{...a,prod_files_attached:true}});if(!updArt.some((a,i)=>a!==newArts[i]))return;const updJobs=safeJobs(curO).map(j=>{if(j.art_status!=='upload_emb_files')return j;const ids=(j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');if(!ids.length)return j;const allReady=ids.every(id=>artProdFilesConfirmed(updArt.find(a=>a.id===id)));return allReady?{...j,art_status:'art_complete'}:j});const updated={...curO,art_files:updArt,jobs:updJobs,updated_at:new Date().toLocaleString()};saveSONow(updated,'Art complete','🧵 DST detected — embroidery job auto-marked complete!')};
-  // ── Embroidery stitch-count auto-read ──
-  // Read the stitch count off an embroidery digitizing proof PDF (Wilcom/Tajima/
-  // Melco "Design Information" export) using App.js's pdf.js text extractor, so the
-  // EM price tier comes from the real design instead of the flat 8000-stitch
-  // fallback in decoPricing.emP(). Text-layer proofs auto-fill; image-only proofs
-  // (no text) report "not found" so staff can type it. Never throws into the
-  // caller — a failed read just leaves the field for manual entry.
+  // Read explicit design dimensions and stitch count from embroidery proofs.
+  // Fill blanks only; invoice-protected stitch counts never change in the background.
+  const _embInvoicedRef=useRef(false);
+  _embInvoicedRef.current=(allInvoices||[]).some(inv=>inv&&inv.so_id===o.id);
   const _readStitchesFromPdfFile=async(file)=>{
     if(!extractPdfText||!file)return null;
-    try{const r=await extractPdfText(file);return parseStitchCount(r&&r.fullText);}catch(e){return null;}
+    try{const r=await extractPdfText(file);const text=r?.fullText||'';const stitches=parseStitchCount(text),dimensions=parseEmbroideryDimensions(text);return stitches||dimensions?{stitches,dimensions}:null;}catch(e){return null;}
   };
-  const _applyArtStitches=async(folderId,n,srcName,verb)=>{
-    // Read the live art_files at apply time (the extract await lets any in-flight
-    // upload save settle) and touch only this folder's stitches, mirroring how the
-    // upload handlers themselves splice oRef.current.art_files.
-    const next=(oRef.current.art_files||[]).map(a=>a.id===folderId?{...a,stitches:n}:a);
-    await saveArtFilesNow(next,'Stitches');
-    nf((verb||'Read')+' '+n.toLocaleString()+' stitches'+(srcName?' from '+srcName:''));
-  };
-  // PDFs already attached to the art folder (production files first, then source art). The proof
-  // is usually ALREADY on the job — uploaded before this feature existed, from the Art Dashboard,
-  // or alongside the DST — so the stitch count can be read off the stored URL instead of asking
-  // staff to re-pick a file they already gave us. Stale files (retired by an art update) are
-  // skipped so a redone design can't be priced off the old proof.
   const _artPdfEntries=art=>[...(art?.prod_files||[]),...(art?.files||[])]
     .filter(f=>f&&!isStaleFile(f)&&_isPdfUrl(typeof f==='string'?f:(f.url||''),f))
     .map(f=>({url:typeof f==='string'?f:(f.url||''),name:fileDisplayName(f)}))
-    .filter(f=>/^https?:\/\//i.test(f.url));
-  // Fetch a stored PDF and hand the bytes to the same pdf.js extractor a picked File goes through
-  // (Cloudinary serves delivery URLs CORS-open; a Blob has arrayBuffer() just like a File).
-  // Never throws — a blocked/failed fetch just reads as "no count found".
+    .filter((f,i,rows)=>/^https?:\/\//i.test(f.url)&&rows.findIndex(x=>x.url===f.url)===i);
+  const _applyArtStitches=async(folderId,specs,srcName,verb,sourceOrderId,sourceUrls=[])=>{
+    if(oRef.current.id!==sourceOrderId)return false;
+    const art=(oRef.current.art_files||[]).find(a=>a.id===folderId);
+    if(!art||art.archived||art.deco_type!=='embroidery')return false;
+    const activeUrls=_artPdfEntries(art).map(f=>f.url);
+    if(sourceUrls.some(url=>!activeUrls.includes(url)))return false;
+    const nextArt=fillEmbroiderySpecs(art,specs,{allowStitches:!_embInvoicedRef.current});
+    const changed=[];
+    if(nextArt.art_size!==art.art_size)changed.push(nextArt.art_size);
+    if(nextArt.stitches!==art.stitches)changed.push(nextArt.stitches.toLocaleString()+' stitches');
+    if(!changed.length){if(verb==='Read')nf('PDF read; existing values kept. Enter any corrections in Size or Stitches.');return true;}
+    const saved=await saveArtFilesNow((oRef.current.art_files||[]).map(a=>a.id===folderId?nextArt:a),'Embroidery proof specs');
+    if(!saved)return false;
+    nf((verb||'Read')+' '+changed.join(' · ')+(srcName?' from '+srcName:''));
+    return true;
+  };
   const _readStitchesFromPdfUrl=async(url)=>{
-    try{const r=await fetch(url,{mode:'cors'});if(!r.ok)return null;return await _readStitchesFromPdfFile(await r.blob());}catch(e){return null;}
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),20000);
+    try{const r=await fetch(url,{mode:'cors',signal:controller.signal});if(!r.ok)return null;return await _readStitchesFromPdfFile(await r.blob());}catch(e){return null;}finally{clearTimeout(timer);}
   };
-  // Try each attached PDF in turn; the first one carrying a stitch count wins.
   const _readStitchesFromAttached=async(folderId,verb)=>{
-    for(const p of _artPdfEntries((oRef.current.art_files||[]).find(a=>a.id===folderId))){
-      const n=await _readStitchesFromPdfUrl(p.url);
-      if(n){await _applyArtStitches(folderId,n,p.name,verb);return n}
-    }
-    return null;
+    const sourceOrderId=oRef.current.id;
+    const entries=_artPdfEntries((oRef.current.art_files||[]).find(a=>a.id===folderId));
+    const reads=[];
+    for(const p of entries){const specs=await _readStitchesFromPdfUrl(p.url);if(specs)reads.push({...specs,source:p});}
+    if(!reads.length)return null;
+    const dimensions=[...new Map(reads.filter(r=>r.dimensions).map(r=>[r.dimensions.artSize,r.dimensions])).values()];
+    const stitches=[...new Set(reads.map(r=>r.stitches).filter(Boolean))];
+    if(dimensions.length>1||stitches.length>1){if(verb==='Read')nf('Attached proofs have conflicting dimensions or stitches. Enter the correct values manually, or retire the older proof.','error');return {conflict:true};}
+    const specs={dimensions:dimensions[0]||null,stitches:stitches[0]||null};
+    await _applyArtStitches(folderId,specs,reads.map(r=>r.source.name).join(', '),verb,sourceOrderId,entries.map(p=>p.url));
+    return specs;
   };
-  // Folders whose attached PDFs were already tried and came up empty — the next click on
-  // "Read from PDF" goes straight to the file picker instead of re-reading the same dud proof.
   const _stitchPdfMissed=useRef(new Set());
-  // "Read from PDF": use the PDF already on the folder when there is one, else pick a file.
-  // The picker is only opened on the synchronous path — after an await the browser has lost the
-  // click's user activation and would block it.
+  const _embProofKey=art=>`${o.id}:${art.id}:${_artPdfEntries(art).map(p=>p.url).join('|')}`;
   const readStitchesFromPdf=async(folderId)=>{
     if(!extractPdfText){nf('PDF reading is unavailable here','error');return;}
-    const attached=_artPdfEntries((oRef.current.art_files||[]).find(a=>a.id===folderId));
-    if(attached.length&&!_stitchPdfMissed.current.has(folderId)){
-      nf('Reading stitch count…');
-      const n=await _readStitchesFromAttached(folderId,'Read');
-      if(n)return;
-      _stitchPdfMissed.current.add(folderId);
-      nf('No stitch count in '+attached.map(p=>p.name).join(', ')+' — click again to pick another PDF, or type it in','error');
-      return;
+    const art=(oRef.current.art_files||[]).find(a=>a.id===folderId);if(!art)return;
+    const attached=_artPdfEntries(art),key=_embProofKey(art);
+    if(attached.length&&!_stitchPdfMissed.current.has(key)){
+      nf('Reading dimensions and stitches…');
+      const specs=await _readStitchesFromAttached(folderId,'Read');
+      if(specs)return;
+      _stitchPdfMissed.current.add(key);
+      nf('No labeled dimensions or stitch count found — click again to choose another PDF, or enter them manually.','error');return;
     }
+    const sourceOrderId=oRef.current.id;
     const inp=document.createElement('input');inp.type='file';inp.accept='.pdf';
-    inp.onchange=async()=>{const f=inp.files&&inp.files[0];if(!f)return;nf('Reading stitch count…');
-      const n=await _readStitchesFromPdfFile(f);
-      if(n)await _applyArtStitches(folderId,n,f.name,'Read');
-      else nf('No stitch count found in '+f.name+' — enter it manually','error');};
-    inp.click();
+    inp.onchange=async()=>{const f=inp.files&&inp.files[0];if(!f)return;nf('Reading dimensions and stitches…');const specs=await _readStitchesFromPdfFile(f);
+      if(specs)await _applyArtStitches(folderId,specs,f.name,'Read',sourceOrderId);else nf('No labeled dimensions or stitch count found — enter them manually.','error');};inp.click();
   };
-  // Opportunistic auto-read after a production-file upload: only when the art is
-  // embroidery, a PDF was among the uploads, and no stitch count is set yet.
-  // Silent on a miss (image-only proof / no match) — the manual field/button remain.
   const maybeAutoReadStitches=async(arts,folderId,uploadedFiles)=>{
     if(!extractPdfText)return;
     const art=(arts||[]).find(a=>a.id===folderId);
-    if(!art||(art.deco_type||'')!=='embroidery'||art.stitches)return;
-    const pdf=(uploadedFiles||[]).find(f=>f&&/\.pdf$/i.test(f.name||''));
-    if(!pdf)return;
-    const n=await _readStitchesFromPdfFile(pdf);
-    if(n)await _applyArtStitches(folderId,n,pdf.name,'Auto-read');
+    if(!art||art.deco_type!=='embroidery'||(String(art.art_size||'').trim()&&(art.stitches||_embInvoicedRef.current)))return;
+    if(!(uploadedFiles||[]).some(f=>f&&/\.pdf$/i.test(f.name||'')))return;
+    // Resolve attached/current files rather than an obsolete upload after a folder change.
+    await _readStitchesFromAttached(folderId,'Auto-read');
   };
-  // Auto-read on open: any embroidery folder with no stitch count but a proof PDF already
-  // attached fills itself in, so a PDF that landed before this feature existed (or came in via
-  // the Art Dashboard) doesn't sit there waiting for someone to click the button. One attempt
-  // per folder per session, silent on a miss (image-only proof) — the field/button still work.
-  // Skipped once the SO has been invoiced: the stitch count moves the EM price tier, and an
-  // already-billed order must not silently re-price itself in the background.
   const _autoStitchTried=useRef(new Set());
   useEffect(()=>{
     if(!extractPdfText)return;
-    if((allInvoices||[]).some(inv=>inv&&inv.so_id===o.id))return;
-    const targets=(o.art_files||[]).filter(a=>a&&(a.deco_type||'')==='embroidery'&&!a.stitches
-      &&!_autoStitchTried.current.has(a.id)&&_artPdfEntries(a).length>0);
-    if(!targets.length)return;
-    let cancelled=false;
-    (async()=>{for(const a of targets){if(cancelled)break;_autoStitchTried.current.add(a.id);await _readStitchesFromAttached(a.id,'Auto-read')}})();
+    const targets=(o.art_files||[]).filter(a=>a&&!a.archived&&a.deco_type==='embroidery'&&(!String(a.art_size||'').trim()||(!a.stitches&&!_embInvoicedRef.current))&&!_autoStitchTried.current.has(_embProofKey(a))&&_artPdfEntries(a).length);
+    if(!targets.length)return;let cancelled=false;
+    (async()=>{for(const a of targets){if(cancelled)break;_autoStitchTried.current.add(_embProofKey(a));await _readStitchesFromAttached(a.id,'Auto-read');}})();
     return()=>{cancelled=true};
   },[o.art_files,o.id,allInvoices,extractPdfText]);
   // The customer whose library this order's art should be promoted into. Library art lives on
@@ -7234,7 +7218,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <Bg options={[{value:'screen_print',label:'Screen Print'},{value:'embroidery',label:'Embroidery'},{value:'dtf',label:'DTF'}]} value={art.deco_type} onChange={v=>uArt(i,'deco_type',v)}/></div>
                   {/* Size + default location */}
                   <div style={{display:'flex',gap:8,marginBottom:6,alignItems:'flex-end',flexWrap:'wrap'}}>
-                    <div style={{width:140}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size *</label><$Txt className="form-input" value={art.art_size||''} onChange={v=>uArt(i,'art_size',v)} placeholder='e.g. 12" x 4"' style={{fontSize:12}}/></div>
+                    <div style={{width:200}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size (W × H) *</label><$Txt className="form-input" value={art.art_size||''} onChange={v=>uArt(i,'art_size',v)} placeholder='e.g. 2.71" W x 2.25" H' style={{fontSize:12}}/></div>
                     {/* Default location — when this folder is placed on a garment, the deco's position
                         seeds from here instead of the generic front default. Blank = no default. */}
                     <div style={{width:150}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Default location</label><select className="form-select" value={art.location||''} onChange={e=>uArt(i,'location',e.target.value)} style={{fontSize:12}} title="Where this art usually goes — decorations default here when the folder is added to a garment"><option value="">— No default —</option>{POSITIONS.map(p=><option key={p} value={p}>{p==='Front'?'Center Chest':p}</option>)}</select></div>
@@ -7249,7 +7233,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     {(()=>{const lbl=embStitchTierLabel(art.stitches);return lbl
                       ?<span title="Embroidery price tier from the stitch count" style={{fontSize:10,fontWeight:700,color:'#6d28d9',background:'#ede9fe',border:'1px solid #ddd6fe',borderRadius:6,padding:'5px 8px'}}>{lbl} tier</span>
                       :<span style={{fontSize:10,color:'#94a3b8',padding:'5px 0'}}>unset → 5k–10k default</span>})()}
-                    <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>readStitchesFromPdf(art.id)} title="Read the stitch count from an embroidery proof PDF">📄 Read from PDF</button>
+                    <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>readStitchesFromPdf(art.id)} title="Fill missing dimensions and stitch count from the attached embroidery proof PDF">📄 Read from PDF</button>
                   </div>}
                   {/* Color Ways */}
                   <div style={{marginBottom:6}}>

@@ -9,7 +9,7 @@
  *
  * SAFE: pure function — no Supabase, no DOM, no network.
  */
-const { parseStitchCount, embStitchTierLabel } = require('../lib/embStitchParser');
+const { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, embStitchTierLabel } = require('../lib/embStitchParser');
 
 // Reconstructed from the DG631963 "Alemany A Flag" Wilcom ES-65 proof (has a
 // text layer). pdf.js row-grouping puts each label adjacent to its value, but
@@ -103,5 +103,49 @@ describe('embStitchTierLabel', () => {
     expect(embStitchTierLabel(0)).toBeNull();
     expect(embStitchTierLabel(null)).toBeNull();
     expect(embStitchTierLabel(undefined)).toBeNull();
+  });
+});
+
+describe('parseEmbroideryDimensions', () => {
+  test('reads the actual flattened Wilcom header', () => {
+    expect(parseEmbroideryDimensions('Wilcom ES-65 Designer Z: 1.00 SJM 1A H: 2.25 in W: 2.71 in')).toEqual({
+      width: 2.71, height: 2.25, unit: 'in', artSize: '2.71" W x 2.25" H',
+    });
+  });
+  test('accepts width/height in either order and across lines', () => {
+    expect(parseEmbroideryDimensions('Width: 68.834 mm\nHeight: 5.715 cm')).toEqual({
+      width: 68.83, height: 57.15, unit: 'mm', artSize: '68.83 mm W x 57.15 mm H',
+    });
+    expect(parseEmbroideryDimensions('Height 1 in   Width 2 in')).toMatchObject({ width: 2, height: 1, unit: 'in' });
+  });
+  test('permits identical repeated headers but rejects conflicting dimensions', () => {
+    expect(parseEmbroideryDimensions('H: 2.25 in W: 2.71 in\nH: 2.25 in W: 2.71 in')).not.toBeNull();
+    expect(parseEmbroideryDimensions('H: 2.25 in W: 2.71 in\nH: 2.50 in W: 2.71 in')).toBeNull();
+    expect(parseEmbroideryDimensions('H: 2 in W: 3 in Width: 4 in')).toBeNull();
+  });
+  test('ignores geometry, stitch extents, and unlabelled values', () => {
+    expect(parseEmbroideryDimensions('Left: 34.5 mm Right: 34.5 mm Up: 28.6 mm Down: 28.6 mm EndX: 0.00 in EndY: 0.00 in Max Stitch: 6.7 mm')).toBeNull();
+    expect(parseEmbroideryDimensions('Page width: 8.5 in, page height: 11 in')).toBeNull();
+    expect(parseEmbroideryDimensions('2.25 in x 2.71 in')).toBeNull();
+  });
+  test('rejects nonpositive dimensions', () => {
+    expect(parseEmbroideryDimensions('W: -2 in H: 3 in')).toBeNull();
+    expect(parseEmbroideryDimensions('W: 2 in H: 0 in')).toBeNull();
+  });
+  test('requires explicit units for both labelled dimensions', () => {
+    expect(parseEmbroideryDimensions('W: 2.71 in H: 2.25')).toBeNull();
+  });
+});
+
+describe('fillEmbroiderySpecs', () => {
+  test('fills only missing fields and preserves manual values', () => {
+    expect(fillEmbroiderySpecs({ id: 'a', art_size: '', stitches: null }, { artId: 'a', dimensions: { artSize: '2.71" W x 2.25" H' }, stitches: 7569 })).toEqual({ id: 'a', art_size: '2.71" W x 2.25" H', stitches: 7569 });
+    expect(fillEmbroiderySpecs({ id: 'a', art_size: 'manual', stitches: 9000 }, { artId: 'a', dimensions: { artSize: 'parsed' }, stitches: 7569 })).toEqual({ id: 'a', art_size: 'manual', stitches: 9000 });
+  });
+  test('ignores stale or deleted art extraction and can suppress stitch filling', () => {
+    const art = { id: 'new', art_size: '', stitches: null };
+    expect(fillEmbroiderySpecs(art, { artId: 'old', dimensions: { artSize: 'parsed' }, stitches: 7569 })).toBe(art);
+    expect(fillEmbroiderySpecs(art, { deleted: true, dimensions: { artSize: 'parsed' } })).toBe(art);
+    expect(fillEmbroiderySpecs(art, { artId: 'new', dimensions: { artSize: 'parsed' }, stitches: 7569 }, { allowStitches: false })).toEqual({ ...art, art_size: 'parsed' });
   });
 });
