@@ -68,6 +68,7 @@ async function dpoInventory(ctx) {
 async function attachDpoContext(ctx, packet, body = {}) {
   const dpoId = clean(body.dpo_id), dpoSoId = clean(body.dpo_so_id);
   if (!!dpoId !== !!dpoSoId) fail(400, 'Choose both a DPO and its sales order');
+  if (dpoId && body.revision_id) fail(400, 'Open the issued full packet to view its frozen production details');
   if (dpoSoId && ctx.soId && dpoSoId !== ctx.soId) fail(403, 'DPO is outside this recipient link');
   const { entries, indexedItems, summaries } = await dpoInventory(ctx);
   if (!dpoId) return packet ? { ...packet, dpos: summaries } : { dpos: summaries };
