@@ -134,7 +134,15 @@ export function LogoDetailTiles({ tiles, title = 'Logo detail on each garment co
 // The logo detail panel: the design's transparent logo PNG painted on the garment color, so the
 // close-up reads the way it will print. `logo` = { url, bg, colorName, onUpload, onRemove };
 // without onUpload it is read-only.
-function LogoDetailPane({ logo, busy, mockUrl = '' }) {
+function LogoDetailPane({ logo: sourceLogo, busy: parentBusy, mockUrl = '' }) {
+  const [saving, setSaving] = useState(false);
+  const uploadLock = useRef(false);
+  const busy = parentBusy || saving;
+  const [selectedColorWay, setSelectedColorWay] = useState('');
+  const selected = sourceLogo.needsColorWay && sourceLogo.colorWays?.find(c => c.id === selectedColorWay);
+  const logo = selected ? { ...sourceLogo, url: selected.url, needsColorWay: false,
+    onUpload: files => sourceLogo.onUpload(files, selected.id),
+    onRemove: sourceLogo.onRemove && (url => sourceLogo.onRemove(url, selected.id)) } : sourceLogo;
   const input = useRef(null);
   const [error, setError] = useState('');
   const [help, setHelp] = useState(false);
@@ -165,11 +173,15 @@ function LogoDetailPane({ logo, busy, mockUrl = '' }) {
     catch (e) { setError(e.message || 'Could not save the logo detail. Please try again.'); }
   };
   const upload = async files => {
-    if (!files.length || !logo.onUpload) return;
-    const f = files[0];
-    const bad = await logoFileProblem(f);
-    if (bad) { setError(bad); return; }
-    run(() => logo.onUpload([f]));
+    if (!files.length || !logo.onUpload || busy || uploadLock.current) return;
+    if (logo.needsColorWay) { setError('Choose a color way below before uploading the logo PNG.'); return; }
+    uploadLock.current = true; setSaving(true);
+    try {
+      const f = files[0];
+      const bad = await logoFileProblem(f);
+      if (bad) { setError(bad); return; }
+      await run(() => logo.onUpload([f]));
+    } finally { uploadLock.current = false; setSaving(false); }
   };
   const drop = logo.onUpload ? {
     onDragOver: e => { e.preventDefault(); setDrag(true); },
@@ -184,7 +196,7 @@ function LogoDetailPane({ logo, busy, mockUrl = '' }) {
     {help && <div className="logo-help" role="note"><ul>{LOGO_HELP.map(t => <li key={t}>{t}</li>)}</ul></div>}
     <div className={'panel-frame logo-frame bg-' + mode + (drag ? ' dragging' : '')} style={mode === 'garment' ? { background: bg } : undefined} {...drop}>
       {logo.url ? <button type="button" className="frame-open" onClick={() => openFile(logo.url)} aria-label="Open full size logo detail"><img src={logo.url} alt="Logo detail" /></button>
-        : <span className="logo-empty">{logo.onUpload ? <>Drop the transparent logo PNG here<br /><small>or use Upload logo PNG</small></> : 'No logo detail yet'}</span>}
+        : <span className="logo-empty">{logo.needsColorWay ? 'Choose a color way below to upload the logo PNG' : logo.onUpload ? <>Drop the transparent logo PNG here<br /><small>or use Upload logo PNG</small></> : 'No logo detail yet'}</span>}
     </div>
     {logo.url && <div className="bg-switch" role="group" aria-label="Logo background">
       {[['garment', bgName], ['checker', 'Checkered'], ['dark', 'Dark']].map(([k, lbl]) => <button key={k} type="button" aria-pressed={mode === k} onClick={() => setBgMode(k)}>{lbl}</button>)}
@@ -192,7 +204,14 @@ function LogoDetailPane({ logo, busy, mockUrl = '' }) {
     <div className="panel-meta">{mode === 'garment' ? bgNote : mode === 'checker' ? 'Checkered = transparent areas' : 'Shown on dark'}</div>
     {whiteWarning && <p className="logo-warning">White parts of this logo won't show on {bgName === 'Mock color' ? 'this garment' : bgName}. Check the color way — use Dark to see them.</p>}
     {error && <p role="alert" className="mock-error">{error}</p>}
-    {logo.onUpload && !logo.url && <p className="panel-hint">{logo.needsColorWay ? 'Choose a color way in Art Library → Apply to items first.' : 'Artist next step: upload the transparent logo PNG. Reps can still send the garment mock to the coach.'}</p>}
+    {sourceLogo.onUpload && sourceLogo.needsColorWay && sourceLogo.colorWays?.length > 0 && <label className="panel-hint">Color way for this logo
+      <select aria-label="Color way for this logo" value={selectedColorWay} disabled={busy} onChange={e => { setSelectedColorWay(e.target.value); setError(''); }}>
+        <option value="">Choose a color way…</option>
+        {sourceLogo.colorWays.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+      </select>
+      <span> The PNG is saved to this artwork color way.</span>
+    </label>}
+    {logo.onUpload && !logo.url && <p className="panel-hint">{logo.needsColorWay ? (sourceLogo.colorWays?.length ? 'Choose the color way this logo prints in, then upload your transparent PNG.' : 'Choose a color way in Art Library → Apply to items first.') : 'Artist next step: upload the transparent logo PNG. Reps can still send the garment mock to the coach.'}</p>}
     {logo.onUpload && <div className="panel-actions">
       <button type="button" disabled={busy || logo.needsColorWay} onClick={() => input.current.click()}>{logo.url ? 'Replace logo' : 'Upload logo PNG'}</button>
       {logo.url && logo.onRemove && <button type="button" className="mock-remove" disabled={busy} onClick={() => { if (window.confirm('Remove this logo detail?')) run(() => logo.onRemove(logo.url)); }}>Remove</button>}

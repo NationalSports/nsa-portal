@@ -2,7 +2,7 @@ import React, { useRef, useState } from 'react';
 import GarmentMockCard, { MockCoversTable, LogoDetailTiles } from './GarmentMockCard';
 import JobGarmentProgress, { garmentProgress, GarmentDecorationSpecs } from './JobGarmentProgress';
 import { jobMockCardGroups } from './lib/jobMockCards';
-import { logoDetailUrl, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail } from './lib/logoDetail';
+import { logoColorWayOptions, logoDetailUrl, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail } from './lib/logoDetail';
 import { safeArt, safeNum, safeSizes, garmentMockKey, mockSkuOf, slotMockFiles, adoptArtProofAsGarmentMock, removeGarmentSlotMock, resolveMockLink, mockLinkSourceFiles, applyMockLink } from './safeHelpers';
 import { fileUpload, openFile, _isImgUrl } from './utils';
 
@@ -48,17 +48,17 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
   const useFiles = (slot, files) => onSave(files.reduce((arts, file) => adoptArtProofAsGarmentMock(arts, slot.artId, slot.key,
     { ...(typeof file === 'string' ? { url: file } : file), art_file_id: slot.artId }), liveArts(slot.artId)), 'Garment mock');
   const logoFor = (slot, item) => { if (slot.kind !== 'art') return null; const b = logoDetailBackground(item.color, cwGarmentColor(slot.artFile, slot.cwId), slot.side); return {
-    url: logoDetailUrl(slot.artFile, slot.cwId), needsColorWay: slot.cwId===undefined, bg: b.bg, bgKnown: b.known, bgSource: b.source, colorName: b.label,
-    onUpload: files => run(async () => {
-      if (slot.cwId === undefined) throw new Error('Choose this garment’s color way in Art Library / Apply to items first.');
+    url: logoDetailUrl(slot.artFile, slot.cwId), needsColorWay: slot.cwId===undefined, colorWays: logoColorWayOptions(slot.artFile), bg: b.bg, bgKnown: b.known, bgSource: b.source, colorName: b.label,
+    onUpload: (files, colorWayId = slot.cwId) => run(async () => {
+      if (colorWayId === undefined) throw new Error('Choose this garment’s color way in Art Library / Apply to items first.');
       const url = await fileUpload(files[0], 'nsa-web-logos');
-      const ok = await onSave(setLogoDetail(liveArts(slot.artId), slot.artId, slot.cwId, { url, name: files[0].name }), 'Logo detail');
-      if (ok && onLibrarySync) await onLibrarySync({ artId: slot.artId, colorWayId: slot.cwId, url });
+      const ok = await onSave(setLogoDetail(liveArts(slot.artId), slot.artId, colorWayId, { url, name: files[0].name }), 'Logo detail');
+      if (ok && onLibrarySync) await onLibrarySync({ artId: slot.artId, colorWayId: colorWayId, url });
       return ok;
     }),
-    onRemove: url => run(async () => {
-      const ok = await onSave(removeLogoDetail(liveArts(slot.artId), slot.artId, url, slot.cwId), 'Logo detail removed');
-      if (ok && onLibrarySync) await onLibrarySync({ artId: slot.artId, colorWayId: slot.cwId, removeUrl: url });
+    onRemove: (url, colorWayId = slot.cwId) => run(async () => {
+      const ok = await onSave(removeLogoDetail(liveArts(slot.artId), slot.artId, url, colorWayId), 'Logo detail removed');
+      if (ok && onLibrarySync) await onLibrarySync({ artId: slot.artId, colorWayId: colorWayId, removeUrl: url });
       return ok;
     }),
   }; };

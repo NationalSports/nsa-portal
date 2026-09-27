@@ -29,6 +29,11 @@ export const logoDetailUrl = (art, colorWayId) => {
   return pickCwAsset({ ...art, preview_url: '' }, { kind: 'web_logo', colorWayId });
 };
 
+// Explicit choices for unresolved garment slots; never guess an ink/color-way assignment.
+export const logoColorWayOptions = art => safeArr(art?.color_ways).filter(c => c?.id).map((c, i) => ({
+  id: c.id, label: c.garment_color || c.name || ('Color way ' + (i + 1)), url: logoDetailUrl(art, c.id),
+}));
+
 // Background behind the transparent logo — the color of the garment it is printed on:
 //  1. the garment line's own color when it names a real color. A logo used on several garment
 //     colors therefore shows on EACH garment's color. Two-tone names use the first color
