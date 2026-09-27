@@ -1,6 +1,6 @@
 import { QboClient, createAdmin, type QboFailure } from './qbo.ts';
 import {
-  REALM_ID, allocateUnreflectedPayments, buildInvoiceLines, classifyInvoiceDuplicate,
+  REALM_ID, allocateUnreflectedPayments, buildInvoiceLines, cardFeeDriftEligible, cardFeeLineUpdate, classifyInvoiceDuplicate,
   classifySourceInvoice, clean, customerDisplayName, customerIdentityRisks, exactCustomerMatches, invoiceNumberForms,
   linkedInvoiceTotalDrift, looseCustomerMatches, money, normalizeName, parseDate, paymentIdentity, paymentReference,
   qboPaymentApplications, sha256, standardDueDate, taxPlan, writeAllowed,
@@ -81,7 +81,7 @@ async function status(admin:any){
 
 function initCounters(){return{
   customers:{examined:0,revalidated:0,linked_existing:0,created:0,manual_review:0,failed:0},
-  invoices:{examined:0,already_linked:0,exact_existing:0,created:0,excluded_zero:0,excluded_void:0,held_future:0,manual_review:0,failed:0},
+  invoices:{examined:0,already_linked:0,exact_existing:0,created:0,card_fee_added:0,excluded_zero:0,excluded_void:0,held_future:0,manual_review:0,failed:0},
   payments:{examined:0,already_reflected:0,created:0,partial:0,manual_review:0,failed:0},
 };}
 
@@ -256,6 +256,9 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
     // Invoices whose QBO total no longer matches the Portal. Their payments are held
     // too, so one invoice-level review explains the cause instead of two alerts.
     const invoiceTotalDrifted=new Set<string>();
+    // Drift that is exactly the invoice's recorded card fee is closed in the write
+    // phase by adding the fee line QBO is missing; every other drift is held.
+    const cardFeeCandidates:any[]=[];
     const customerById=new Map((snapshot.customers||[]).map((row:any)=>[String(row.id),row]));
     const today=new Date().toLocaleDateString('en-CA',{timeZone:'America/Los_Angeles'});
     for(const invoice of snapshot.invoices||[]){
@@ -271,8 +274,14 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
         if(!existing){counters.invoices.manual_review++;review('invoice',sourceId,'mapped_invoice_missing',{qbo_id:mappedId});add('invoice',sourceId,'revalidate','manual_review',mappedId,{reason:'mapped_invoice_missing'});continue;}
         const drift=linkedInvoiceTotalDrift(invoice,existing);
         if(drift){
-          counters.invoices.manual_review++;invoiceTotalDrifted.add(String(invoice.id));
-          review('invoice',sourceId,'mapped_invoice_total_changed',{qbo_id:mappedId,...drift});
+          invoiceTotalDrifted.add(String(invoice.id));
+          const feeDrift=cardFeeDriftEligible(invoice,drift);
+          if(feeDrift&&claim.writes_enabled&&writeAllowed(settings,'invoice',sourceId)){
+            cardFeeCandidates.push({invoice,sourceId,qboId:mappedId,fee:feeDrift.fee});
+            add('invoice',sourceId,'add_card_fee_line','queued_write',mappedId,{...drift,cc_fee:feeDrift.fee});continue;
+          }
+          counters.invoices.manual_review++;
+          review('invoice',sourceId,'mapped_invoice_total_changed',{qbo_id:mappedId,...drift,cc_fee:money(invoice.cc_fee)});
           add('invoice',sourceId,'revalidate','manual_review',mappedId,{reason:'mapped_invoice_total_changed',...drift});continue;
         }
         effectiveInvoiceMap.set(String(invoice.id),mappedId);counters.invoices.already_linked++;continue;
@@ -326,6 +335,30 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
           effectiveInvoiceMap.set(String(candidate.invoice.id),String(verified.Id));qboInvoiceById.set(String(verified.Id),verified);qboInvoices.push(verified);qboIds.invoices.push(String(verified.Id));counters.invoices[result==='created'?'created':'exact_existing']++;
           add('invoice',candidate.sourceId,candidate.duplicate.disposition,result,String(verified.Id),{api_readback:true,balance:money(verified.Balance),tax_total:money(verified.TxnTaxDetail?.TotalTax)});
         }catch(error){counters.invoices.failed++;terminal='needs_review';stopInvoices=true;review('invoice',candidate.sourceId,errorCode(error));add('invoice',candidate.sourceId,'write','failed',null,{error_code:errorCode(error)});}
+        finally{if(locked)await ignore(admin.rpc('release_qbo_invoice_sync_claim',{p_realm_id:REALM_ID,p_source_invoice_id:candidate.sourceId,p_claim_token:token}));}
+      }
+      // Card surcharges added after the invoice reached QBO. The update is built from
+      // a fresh read under the invoice claim and read back before anything relies on
+      // it; the invoice's payments post in this same run only once QBO agrees.
+      for(const candidate of cardFeeCandidates){
+        const token=crypto.randomUUID();let locked=false;
+        try{
+          const {data}=await admin.rpc('acquire_qbo_invoice_sync_claim',{p_realm_id:REALM_ID,p_source_invoice_id:candidate.sourceId,p_claim_token:token,p_lease_seconds:300});
+          if(data!==true)throw Object.assign(new Error('Invoice source is already being processed.'),{code:'source_busy'});locked=true;
+          const fresh=(await qbo.request(`/invoice/${candidate.qboId}`)).Invoice;
+          const update=cardFeeLineUpdate(candidate.invoice,fresh,String(salesItem.Id));
+          await qbo.request('/invoice',{method:'POST',body:JSON.stringify(update)});
+          const verified=(await qbo.request(`/invoice/${candidate.qboId}`)).Invoice;
+          if(money(verified?.TotalAmt)!==money(candidate.invoice.total)||money(verified?.TxnTaxDetail?.TotalTax)!==0)
+            throw Object.assign(new Error('QBO invoice failed card-fee read-back.'),{code:'card_fee_readback_mismatch',details:{cc_fee:candidate.fee,portal_total:money(candidate.invoice.total),qbo_total:money(verified?.TotalAmt)}});
+          qboInvoiceById.set(String(candidate.qboId),slimInvoice(verified));effectiveInvoiceMap.set(String(candidate.invoice.id),String(candidate.qboId));
+          invoiceTotalDrifted.delete(String(candidate.invoice.id));counters.invoices.card_fee_added++;
+          add('invoice',candidate.sourceId,'add_card_fee_line','updated',String(candidate.qboId),{api_readback:true,cc_fee:candidate.fee,qbo_total:money(verified.TotalAmt)});
+        }catch(error){
+          counters.invoices.manual_review++;
+          const evidence={qbo_id:String(candidate.qboId),cc_fee:candidate.fee,...errorDetails(error)};
+          review('invoice',candidate.sourceId,errorCode(error),evidence);add('invoice',candidate.sourceId,'add_card_fee_line','failed',String(candidate.qboId),{error_code:errorCode(error),...evidence});
+        }
         finally{if(locked)await ignore(admin.rpc('release_qbo_invoice_sync_claim',{p_realm_id:REALM_ID,p_source_invoice_id:candidate.sourceId,p_claim_token:token}));}
       }
     }

@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   allocateUnreflectedPayments, classifyInvoiceDuplicate, classifySourceInvoice,
+  cardFeeDriftEligible, cardFeeLineUpdate, CARD_FEE_DESCRIPTION,
   customerIdentityRisks, invoiceNumberForms, linkedInvoiceTotalDrift, normalizeInvoiceNumber,
   paymentIdentity, paymentReference, writeAllowed,
 } from '../../supabase/functions/qbo-sales-background/logic';
@@ -81,13 +82,12 @@ describe('linked invoice total drift',()=>{
       portal_total:469.22,qbo_total:456,difference:13.22,
     });
   });
-  test('cc_fee is never reported, because the sync snapshot does not carry it',()=>{
-    // The invoices projection in qbo_sales_source_snapshot_without_links has no
-    // cc_fee column, so reading it always yielded 0 -- claiming "no card fee" on
-    // the very invoices a card fee drifted.  An absent field beats a wrong one.
+  test('the drift itself stays amounts-only; the fee is read from the invoice by the caller',()=>{
+    // The snapshot did not carry cc_fee until 20260927160000, so a fee read
+    // inside this helper once reported $0 on every surcharge.  Keep the helper
+    // to the two totals and let callers attach the (now real) invoice fee.
     expect(linkedInvoiceTotalDrift({...invoice,cc_fee:13.22},{TotalAmt:456}))
       .not.toHaveProperty('cc_fee');
-    expect(read('supabase/functions/qbo-sales-background/logic.js')).not.toContain('cc_fee');
   });
   test('a voided invoice whose QBO counterpart was zeroed is not drift',()=>{
     // INV-63120/INV-63121: $930 each, voided in the Portal, zeroed in QBO on
@@ -113,7 +113,7 @@ describe('linked invoice total drift',()=>{
 describe('held records carry diagnosable evidence',()=>{
   const edge=read('supabase/functions/qbo-sales-background/index.ts');
   test('a drifted invoice is reviewed instead of silently staying linked',()=>{
-    expect(edge).toContain("review('invoice',sourceId,'mapped_invoice_total_changed',{qbo_id:mappedId,...drift})");
+    expect(edge).toContain("review('invoice',sourceId,'mapped_invoice_total_changed',{qbo_id:mappedId,...drift,cc_fee:money(invoice.cc_fee)})");
   });
   test('payments for a drifted invoice are suppressed so one alert explains the cause',()=>{
     expect(edge).toContain('if(invoiceTotalDrifted.has(String(invoice.id)))continue;');
@@ -185,5 +185,76 @@ describe('rollout and security contract',()=>{
     expect(edge).toMatch(/qbo\.request\('\/payment'.*qbo\.request\(`\/payment\/\$\{created\.Id\}`/s);
     expect(edge).toContain("postflight_verified:'qbo_requery'");
     expect(edge).toContain("money(verified.TotalAmt)!==candidate.amount");
+  });
+});
+
+describe('card-fee drift the sync may close itself',()=>{
+  // Truckee Little League, INV-63232: invoiced to QBO at $553.04, paid online 9/26
+  // with the 2.9% surcharge, Portal now $569.08, cc_fee $16.04.
+  const invoice={id:'INV-63232',total:569.08,cc_fee:16.04,status:'paid'};
+  const qbo={Id:'949',SyncToken:'2',TotalAmt:553.04,TxnTaxDetail:{TotalTax:0},Line:[
+    {Id:'1',DetailType:'SalesItemLineDetail',Amount:553.04,Description:'Invoice INV-63232 for SO-1207 — Sleeves',SalesItemLineDetail:{ItemRef:{value:'180'}}},
+    {DetailType:'SubTotalLineDetail',Amount:553.04,SubTotalLineDetail:{}},
+  ]};
+
+  test('eligible only when the drift is exactly the recorded fee',()=>{
+    expect(cardFeeDriftEligible(invoice,{difference:16.04})).toEqual({fee:16.04});
+    expect(cardFeeDriftEligible(invoice,{difference:16.05})).toBeNull();
+    // QBO above the Portal (INV-64006 shape) is never a fee to add.
+    expect(cardFeeDriftEligible(invoice,{difference:-16.04})).toBeNull();
+    expect(cardFeeDriftEligible({...invoice,cc_fee:0},{difference:16.04})).toBeNull();
+    expect(cardFeeDriftEligible(invoice,null)).toBeNull();
+  });
+
+  test('appends the fee line the books already use, keeping every existing line',()=>{
+    const update=cardFeeLineUpdate(invoice,qbo,'180');
+    expect(update).toMatchObject({Id:'949',SyncToken:'2',sparse:true,TxnTaxDetail:{TotalTax:0}});
+    expect(update.Line).toHaveLength(2); // original line kept, subtotal dropped, fee added
+    expect(update.Line[0].Id).toBe('1');
+    expect(update.Line[1]).toMatchObject({Amount:16.04,Description:CARD_FEE_DESCRIPTION,
+      SalesItemLineDetail:{Qty:1,UnitPrice:16.04,ItemRef:{value:'180'},TaxCodeRef:{value:'NON'}}});
+    expect(CARD_FEE_DESCRIPTION).toBe('Customer credit-card processing fee');
+  });
+
+  test('never adds a second fee line',()=>{
+    const fixed={...qbo,Line:[...qbo.Line,{DetailType:'SalesItemLineDetail',Amount:16.04,Description:'Customer credit-card processing fee'}]};
+    expect(()=>cardFeeLineUpdate(invoice,fixed,'180')).toThrow('card_fee_line_exists');
+  });
+
+  test('refuses when QBO moved since the drift was measured',()=>{
+    expect(()=>cardFeeLineUpdate(invoice,{...qbo,TotalAmt:560},'180')).toThrow('card_fee_amount_mismatch');
+  });
+
+  test('leaves a taxed invoice to a person',()=>{
+    expect(()=>cardFeeLineUpdate(invoice,{...qbo,TxnTaxDetail:{TotalTax:12.5}},'180')).toThrow('card_fee_taxed_invoice');
+  });
+
+  test('refusals carry the amounts, so the alert is diagnosable',()=>{
+    try{cardFeeLineUpdate(invoice,{...qbo,TotalAmt:560},'180');}catch(error){
+      expect(error.details).toEqual({cc_fee:16.04,portal_total:569.08,qbo_total:560});
+    }
+  });
+});
+
+describe('snapshot carries the invoice card fee',()=>{
+  const sql=read('supabase/migrations/20260927160000_qbo_sales_snapshot_invoice_cc_fee.sql');
+  test('cc_fee is projected on invoices and the function stays service-role only',()=>{
+    expect(sql).toContain("'deleted_at',i.deleted_at,'cc_fee',i.cc_fee");
+    expect(sql).toContain('revoke all on function public.qbo_sales_source_snapshot_without_links(timestamptz) from public, anon, authenticated');
+    expect(sql).toContain('grant execute on function public.qbo_sales_source_snapshot_without_links(timestamptz) to service_role');
+  });
+});
+
+describe('card-fee write is gated, fresh, and read back',()=>{
+  const edge=read('supabase/functions/qbo-sales-background/index.ts');
+  test('only queued when writes are enabled and allowed for this invoice',()=>{
+    expect(edge).toContain("if(feeDrift&&claim.writes_enabled&&writeAllowed(settings,'invoice',sourceId)){");
+  });
+  test('built from a fresh QBO read taken under the invoice claim',()=>{
+    expect(edge).toMatch(/acquire_qbo_invoice_sync_claim[\s\S]*const fresh=\(await qbo\.request\(`\/invoice\/\$\{candidate\.qboId\}`\)\)\.Invoice;\s*const update=cardFeeLineUpdate\(candidate\.invoice,fresh,String\(salesItem\.Id\)\);/);
+  });
+  test('payments are released only after QBO reads back the Portal total',()=>{
+    expect(edge).toContain("if(money(verified?.TotalAmt)!==money(candidate.invoice.total)||money(verified?.TxnTaxDetail?.TotalTax)!==0)");
+    expect(edge).toMatch(/card_fee_readback_mismatch[\s\S]*invoiceTotalDrifted\.delete\(String\(candidate\.invoice\.id\)\)/);
   });
 });

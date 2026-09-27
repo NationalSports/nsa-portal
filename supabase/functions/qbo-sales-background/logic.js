@@ -123,6 +123,43 @@ export function linkedInvoiceTotalDrift(invoice, qboInvoice) {
   return {portal_total:portalTotal, qbo_total:qboTotal, difference};
 }
 
+// The line the books already use for an online card surcharge (INV-63944 was
+// fixed by hand with exactly this line on the NSA Portal Sales item).
+export const CARD_FEE_DESCRIPTION = 'Customer credit-card processing fee';
+
+// A drift the sync may close itself: the Portal total rose by EXACTLY the card
+// fee recorded on the invoice. Anything else — a QBO total above the Portal, a
+// difference that is not the fee, no fee recorded — stays a manual review.
+export function cardFeeDriftEligible(invoice, drift) {
+  const fee=money(invoice?.cc_fee);
+  if(!drift||!(fee>0))return null;
+  if(Math.abs(money(drift.difference)-fee)>0.005)return null;
+  return {fee};
+}
+
+// Builds the sparse QBO update that appends the fee line, from a FRESH read of
+// the invoice taken under the invoice claim. Throws a coded error for every case
+// that must go back to a person, so nothing is written on a guess.
+export function cardFeeLineUpdate(invoice, qboInvoice, salesItemId) {
+  const fee=money(invoice?.cc_fee), lines=Array.isArray(qboInvoice?.Line)?qboInvoice.Line:[];
+  const fail=code=>Object.assign(new Error(code),{code,details:{cc_fee:fee,portal_total:money(invoice?.total),qbo_total:money(qboInvoice?.TotalAmt)}});
+  if(!(fee>0)||!salesItemId||!qboInvoice?.Id||qboInvoice.SyncToken==null)throw fail('card_fee_invalid_input');
+  // A fee line already present means someone fixed it by hand and the totals
+  // still disagree for another reason — adding a second one would double-charge.
+  if(lines.some(line=>clean(line?.Description).toLowerCase()===CARD_FEE_DESCRIPTION.toLowerCase()))throw fail('card_fee_line_exists');
+  if(Math.abs(money(Number(qboInvoice.TotalAmt)+fee)-money(invoice?.total))>0.005)throw fail('card_fee_amount_mismatch');
+  // Rewriting lines on a taxed invoice can make QBO recompute tax; only the
+  // untaxed shape the sync itself writes is handled here.
+  if(money(qboInvoice.TxnTaxDetail?.TotalTax)!==0)throw fail('card_fee_taxed_invoice');
+  return {
+    Id:String(qboInvoice.Id),SyncToken:String(qboInvoice.SyncToken),sparse:true,
+    Line:[...lines.filter(line=>line?.DetailType!=='SubTotalLineDetail'),
+      {DetailType:'SalesItemLineDetail',Amount:fee,Description:CARD_FEE_DESCRIPTION,
+        SalesItemLineDetail:{Qty:1,UnitPrice:fee,ItemRef:{value:String(salesItemId),name:'NSA Portal Sales'},TaxCodeRef:{value:'NON'}}}],
+    TxnTaxDetail:{TotalTax:0},
+  };
+}
+
 export function taxPlan(invoice, customer, partnerTaxEnabled=true) {
   const tax=money(invoice?.tax); if(!(tax>0))return null;
   const state=clean(customer?.shipping_state||customer?.billing_state).toUpperCase();
