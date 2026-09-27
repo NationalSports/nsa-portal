@@ -51,6 +51,13 @@ test('stale and duplicate choices fail before changing the order',()=>{
  expect(()=>assignLogoArtwork(fixture(),{artId:'a',newVersion:{id:'x',label:'Black',inks:['White']},allGarments:true})).toThrow(/already exists/);
  expect(()=>assignLogoArtwork(fixture(),{artId:'a',colorWayId:'black',garmentKey:'gone'})).toThrow(/No matching/);
 });
+test('retrying a new version after an optimistic failed save does not duplicate it',()=>{
+ const choice={artId:'a',garmentKey:'P0|White/Grey',newVersion:{id:'retry-id',label:'Light version',inks:['Navy']}};
+ const draft=assignLogoArtwork(fixture(),choice).order;
+ const retried=assignLogoArtwork(draft,choice).order;
+ expect(retried.art_files[0].color_ways).toHaveLength(2);
+ expect(retried.items[0].decorations[0].color_way_id).toBe('retry-id');
+});
 test.each(['waiting_approval','production_files_needed','art_complete'])('does not change artwork underneath %s approval',art_status=>{
  const order=fixture();order.jobs=[{...job,art_status}];
  expect(()=>assignLogoArtwork(order,{artId:'a',colorWayId:'black',allGarments:true})).toThrow(/Recall\/request changes/);

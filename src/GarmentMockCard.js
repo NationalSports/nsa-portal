@@ -140,10 +140,12 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy, mockUrl = '' }) {
   const busy = parentBusy || saving;
   const [selectedColorWay, setSelectedColorWay] = useState('');
   const [editingVersion, setEditingVersion] = useState(false);
+  const [assignmentUnconfirmed, setAssignmentUnconfirmed] = useState(false);
   const [allGarments, setAllGarments] = useState(false);
   const [versionName, setVersionName] = useState('');
   const [versionColors, setVersionColors] = useState('');
-  const choosingVersion = sourceLogo.needsColorWay || editingVersion;
+  const newVersionId = useRef(null);
+  const choosingVersion = sourceLogo.needsColorWay || editingVersion || assignmentUnconfirmed;
   const selected = sourceLogo.colorWays?.find(c => c.id === selectedColorWay);
   // A dropdown selection is only a draft. Never upload against an unpersisted assignment.
   const logo = sourceLogo;
@@ -158,12 +160,13 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy, mockUrl = '' }) {
   const assign = async () => {
     if (!sourceLogo.onAssign || busy || uploadLock.current) return;
     if (allGarments && !window.confirm('Use this same artwork version for all garments using this artwork on this order? Different assigned versions will not be overwritten. Reversible sides remain separate.')) return;
-    uploadLock.current = true; setSaving(true); setError('');
+    uploadLock.current = true; setSaving(true); setAssignmentUnconfirmed(true); setError('');
     try {
       const ok = await sourceLogo.onAssign({ colorWayId: selectedColorWay, allGarments,
-        ...(selectedColorWay === '__new' ? { newVersion: { id: 'cw' + crypto.randomUUID(), label: versionName, inks: versionColors.split(',') } } : {}) });
+        ...(selectedColorWay === '__new' ? { newVersion: { id: newVersionId.current || (newVersionId.current = 'cw' + crypto.randomUUID()), label: versionName, inks: versionColors.split(',') } } : {}) });
       if (ok !== true) { setError('Artwork assignment was not saved. Retry before uploading.'); return; }
-      setEditingVersion(false); setSelectedColorWay(''); setAllGarments(false); setVersionName(''); setVersionColors('');
+      setAssignmentUnconfirmed(false); setEditingVersion(false); setSelectedColorWay(''); setAllGarments(false); setVersionName(''); setVersionColors('');
+      newVersionId.current = null;
     } catch (e) { setError(e.message || 'Could not save the artwork assignment.'); }
     finally { uploadLock.current = false; setSaving(false); }
   };
@@ -239,7 +242,7 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy, mockUrl = '' }) {
       </>}
       <label className="artwork-version-shared"><input type="checkbox" checked={allGarments} disabled={busy} onChange={e => setAllGarments(e.target.checked)} />Same artwork for all garments using this design on this order{sourceLogo.side ? ' (Side ' + sourceLogo.side + ')' : ''}</label>
       <div className="panel-actions"><button type="button" className="mock-primary" disabled={busy || !selectedColorWay || (selectedColorWay === '__new' && (!versionName.trim() || !versionColors.trim()))} onClick={assign}>Save artwork choice</button>
-        {editingVersion && <button type="button" disabled={busy} onClick={() => { setEditingVersion(false); setSelectedColorWay(''); setAllGarments(false); }}>Cancel</button>}</div>
+        {editingVersion && !assignmentUnconfirmed && <button type="button" disabled={busy} onClick={() => { setEditingVersion(false); setSelectedColorWay(''); setAllGarments(false); }}>Cancel</button>}</div>
     </div>}
     {!choosingVersion && assigned && <p className="panel-hint">Artwork: <strong>{assigned.label}</strong>{assigned.colors && <> · Ink / thread: {assigned.colors}</>}</p>}
     {logo.onUpload && !logo.url && !choosingVersion && <p className="panel-hint">Artist next step: upload the transparent logo PNG. Saving artwork does not approve it.</p>}

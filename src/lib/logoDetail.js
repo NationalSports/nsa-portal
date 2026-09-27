@@ -45,9 +45,11 @@ export function assignLogoArtwork(order, { artId, colorWayId, garmentKey, side, 
     const label = safeStr(newVersion.label).trim();
     const inks = safeArr(newVersion.inks).map(x => safeStr(x).trim()).filter(Boolean);
     if (!label || !inks.length || !newVersion.id) throw new Error('Enter an artwork version name and its ink/thread colors.');
-    if (safeArr(art.color_ways).some(c => c.id === newVersion.id || safeStr(c.garment_color).trim().toLowerCase() === label.toLowerCase())) throw new Error('That artwork version already exists. Choose it from the list.');
+    const existing = safeArr(art.color_ways).find(c => c.id === newVersion.id);
+    const retry = existing && existing.garment_color === label && JSON.stringify(existing.inks) === JSON.stringify(inks);
+    if (!retry && safeArr(art.color_ways).some(c => c.id === newVersion.id || safeStr(c.garment_color).trim().toLowerCase() === label.toLowerCase())) throw new Error('That artwork version already exists. Choose it from the list.');
     colorWayId = newVersion.id;
-    nextArt = markArtFieldEdit(art, 'color_ways', [...safeArr(art.color_ways), { id: colorWayId, garment_color: label, inks, requires_own_logo: true }]);
+    nextArt = retry ? art : markArtFieldEdit(art, 'color_ways', [...safeArr(art.color_ways), { id: colorWayId, garment_color: label, inks, requires_own_logo: true }]);
   }
   if (!safeArr(nextArt.color_ways).some(c => c.id === colorWayId)) throw new Error('This artwork version no longer exists. Reopen the job.');
   let count = 0;

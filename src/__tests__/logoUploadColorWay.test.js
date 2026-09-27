@@ -5,7 +5,7 @@ jest.mock('../utils', () => ({ fileDisplayName: f => f.name || f.url, _isImgUrl:
 const options=[{id:'white',label:'White ink',colors:'White',url:''},{id:'gold',label:'Gold ink',colors:'Gold',url:''}];
 const setup=(ok=true)=>{
  const onUpload=jest.fn().mockResolvedValue(true),onAssign=jest.fn().mockResolvedValue(ok);
- function Fixture(){const [id,setId]=React.useState();return <GarmentMockCard label="Royal shirt" mocks={[]} candidates={[]} logo={{url:'',bg:'#224ddd',needsColorWay:!id,colorWayId:id,colorWays:options,onUpload,onAssign:async choice=>{const saved=await onAssign(choice);if(saved)setId(choice.colorWayId);return saved}}}/>}
+ function Fixture(){const [id,setId]=React.useState();return <GarmentMockCard label="Royal shirt" mocks={[]} candidates={[]} logo={{url:'',bg:'#224ddd',needsColorWay:!id,colorWayId:id,colorWays:options,onUpload,onAssign:async choice=>{setId(choice.colorWayId);return onAssign(choice)}}}/>}
  render(<Fixture/>);return {onUpload,onAssign};
 };
 test('unresolved and merely selected artwork blocks uploads until assignment is saved',()=>{
