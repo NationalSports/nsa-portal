@@ -9229,8 +9229,8 @@ export default function App(){
       const daysSince=inv2.email_sent_at?Math.floor((new Date()-new Date(inv2.email_sent_at))/(1000*60*60*24)):0;
       todos.push({type:'inv_followup',priority:1,msg:'⏰ Follow up on invoice '+inv2.id+' ('+daysSince+'d): $'+opsInvoiceBalance(inv2).toFixed(2),detail:tag2+' · Follow-up due '+new Date(inv2.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales',inv:inv2,date:inv2.email_sent_at||inv2.created_at});
     });
-    // Recently paid invoices → notification
-    invs.filter(i=>i.status==='paid').forEach(inv2=>{
+    // Recently paid invoices → notification (skip $0 invoices — nothing was actually collected)
+    invs.filter(i=>i.status==='paid'&&safeNum(i.total)>0).forEach(inv2=>{
       const lastPay=inv2.payments?.length>0?inv2.payments[inv2.payments.length-1]:null;
       const payDate=lastPay?.date?parseDate(lastPay.date):(inv2.updated_at?parseDate(inv2.updated_at):parseDate(inv2.date));
       if(!payDate)return;
@@ -13731,7 +13731,7 @@ export default function App(){
       const daysSince=inv2.email_sent_at?Math.floor((new Date()-new Date(inv2.email_sent_at))/(1000*60*60*24)):0;
       todos.push({type:'inv_followup',priority:1,msg:'Follow up on invoice '+inv2.id+' ('+daysSince+'d)',detail:tag2,action:'Follow Up',role:'sales',inv:inv2,date:inv2.email_sent_at||inv2.created_at});
     });
-    invs.filter(i=>i.status==='paid').forEach(inv2=>{
+    invs.filter(i=>i.status==='paid'&&safeNum(i.total)>0).forEach(inv2=>{
       const lastPay=inv2.payments?.length>0?inv2.payments[inv2.payments.length-1]:null;
       const payDate=lastPay?.date?parseDate(lastPay.date):(inv2.updated_at?parseDate(inv2.updated_at):parseDate(inv2.date));
       if(!payDate||!isFreshNotificationDate(payDate))return;
