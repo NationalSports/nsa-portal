@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   allocateUnreflectedPayments, classifyInvoiceDuplicate, classifySourceInvoice,
-  cardFeeDriftEligible, cardFeeLineUpdate, CARD_FEE_DESCRIPTION,
+  cardFeeDriftEligible, cardFeeLineUpdate, CARD_FEE_DESCRIPTION, invoiceResyncUpdate, invoiceStillSettling, buildInvoiceLines,
   customerIdentityRisks, invoiceNumberForms, linkedInvoiceTotalDrift, normalizeInvoiceNumber,
   paymentIdentity, paymentReference, writeAllowed,
 } from '../../supabase/functions/qbo-sales-background/logic';
@@ -256,5 +256,106 @@ describe('card-fee write is gated, fresh, and read back',()=>{
   test('payments are released only after QBO reads back the Portal total',()=>{
     expect(edge).toContain("if(money(verified?.TotalAmt)!==money(candidate.invoice.total)||money(verified?.TxnTaxDetail?.TotalTax)!==0)");
     expect(edge).toMatch(/card_fee_readback_mismatch[\s\S]*invoiceTotalDrifted\.delete\(String\(candidate\.invoice\.id\)\)/);
+  });
+});
+
+describe('invoice change sync: Portal edits after the QBO write',()=>{
+  // Encinitas Express Soccer, INV-64006: written to QBO #18641 at $56,534.77, then
+  // re-costed in the Portal to $55,785.82 and paid in full by EFT.
+  const invoice={id:'INV-64006',so_id:'SO-1405',customer_id:'c-enc',total:55785.82,tax:3834.5,shipping:2473.87,credit_amount:0,tax_rate:0.0775};
+  const plan={tax:3834.5,shipping:2473.87,state:'CA',reconciled:true,ratePct:'7.75',taxable:49477.45};
+  const lines=buildInvoiceLines({invoice,description:'Invoice INV-64006 for SO-1405 — Rec order 2026',salesItemId:'180',taxItemId:'1322',plan,discountAccountId:'77'});
+  const qbo={Id:'18641',SyncToken:'4',CustomerRef:{value:'555'},TxnDate:'2026-09-17',TotalAmt:56534.77,Balance:748.95,TxnTaxDetail:{TotalTax:0},Line:[
+    {DetailType:'SalesItemLineDetail',Amount:50141.70,SalesItemLineDetail:{ItemRef:{value:'180'}}},
+    {DetailType:'SalesItemLineDetail',Amount:2507.09,SalesItemLineDetail:{ItemRef:{value:'180'}}},
+    {DetailType:'SalesItemLineDetail',Amount:3885.98,SalesItemLineDetail:{ItemRef:{value:'1322'}}},
+    {DetailType:'SubTotalLineDetail',Amount:56534.77,SubTotalLineDetail:{}},
+  ]};
+  const args=over=>({invoice,qboInvoice:qbo,qboCustomerId:'555',lines,knownItemIds:['180','1322'],discountAccountId:'77',bookCloseDate:'2026-08-31',...over});
+
+  test('rebuilt lines carry the Portal amounts exactly',()=>{
+    expect(lines.map(line=>line.Amount)).toEqual([49477.45,2473.87,3834.5]);
+    expect(Math.round(lines.reduce((sum,line)=>sum+line.Amount,0)*100)/100).toBe(55785.82);
+  });
+  test('a safe edit becomes a full-line sparse update, every line pinned non-taxable',()=>{
+    const update=invoiceResyncUpdate(args());
+    expect(update).toMatchObject({Id:'18641',SyncToken:'4',sparse:true,TxnTaxDetail:{TotalTax:0}});
+    expect(update.Line).toHaveLength(3);
+    expect(update.Line.every(line=>line.SalesItemLineDetail.TaxCodeRef.value==='NON')).toBe(true);
+  });
+  test('never moves an invoice to another customer',()=>{
+    expect(()=>invoiceResyncUpdate(args({qboCustomerId:'999'}))).toThrow('resync_customer_changed');
+    expect(()=>invoiceResyncUpdate(args({qboCustomerId:null}))).toThrow('resync_customer_changed');
+  });
+  test('never rewrites a hand-built or legacy invoice',()=>{
+    const legacy={...qbo,Line:[...qbo.Line,{DetailType:'SalesItemLineDetail',Amount:10,SalesItemLineDetail:{ItemRef:{value:'42'}}}]};
+    expect(()=>invoiceResyncUpdate(args({qboInvoice:legacy}))).toThrow('resync_foreign_lines');
+    const described={...qbo,Line:[...qbo.Line,{DetailType:'DescriptionOnly',Description:'note'}]};
+    expect(()=>invoiceResyncUpdate(args({qboInvoice:described}))).toThrow('resync_foreign_lines');
+  });
+  test('the sync\'s own discount line is recognised; any other discount account is not',()=>{
+    const ours={...qbo,Line:[...qbo.Line,{DetailType:'DiscountLineDetail',Amount:5,DiscountLineDetail:{DiscountAccountRef:{value:'77'}}}]};
+    expect(()=>invoiceResyncUpdate(args({qboInvoice:ours}))).not.toThrow();
+    const theirs={...qbo,Line:[...qbo.Line,{DetailType:'DiscountLineDetail',Amount:5,DiscountLineDetail:{DiscountAccountRef:{value:'88'}}}]};
+    expect(()=>invoiceResyncUpdate(args({qboInvoice:theirs}))).toThrow('resync_foreign_lines');
+  });
+  test('never edits a closed accounting period',()=>{
+    expect(()=>invoiceResyncUpdate(args({bookCloseDate:'2026-09-30'}))).toThrow('resync_closed_period');
+    expect(()=>invoiceResyncUpdate(args({bookCloseDate:'2026-09-17'}))).toThrow('resync_closed_period');
+    expect(()=>invoiceResyncUpdate(args({bookCloseDate:null}))).not.toThrow();
+  });
+  test('never drops a total below money QBO already applied',()=>{
+    // $55,785.82 applied; lowering the invoice under that would make an overpayment.
+    const lower={...invoice,total:55000};
+    expect(()=>invoiceResyncUpdate(args({invoice:lower}))).toThrow('resync_below_applied');
+  });
+  test('leaves invoices QBO computes tax on to a person',()=>{
+    expect(()=>invoiceResyncUpdate(args({qboInvoice:{...qbo,TxnTaxDetail:{TotalTax:12}}}))).toThrow('resync_taxed_invoice');
+  });
+  test('refusals carry the amounts',()=>{
+    try{invoiceResyncUpdate(args({invoice:{...invoice,total:55000}}));}catch(error){
+      expect(error.details).toEqual({portal_total:55000,qbo_total:56534.77,qbo_applied:55785.82});
+    }
+  });
+});
+
+describe('new invoices settle before their first QBO write',()=>{
+  const now=Date.parse('2026-09-17T20:00:00Z');
+  test('held while touched within the last 2 hours',()=>{
+    // INV-64006 was re-created at 18:11 — at 20:00 it has not settled yet.
+    expect(invoiceStillSettling({created_at:'2026-09-17T18:11:03Z',updated_at:'2026-09-17T18:11:03Z'},now)).toBe(true);
+  });
+  test('released once untouched for 2 hours',()=>{
+    expect(invoiceStillSettling({created_at:'2026-09-17T17:00:00Z',updated_at:'2026-09-17T17:59:00Z'},now)).toBe(false);
+  });
+  test('a recent edit restarts the wait',()=>{
+    expect(invoiceStillSettling({created_at:'2026-09-17T10:00:00Z',updated_at:'2026-09-17T19:30:00Z'},now)).toBe(true);
+  });
+  test('never held more than 24 hours after creation, however often it is touched',()=>{
+    expect(invoiceStillSettling({created_at:'2026-09-16T19:00:00Z',updated_at:'2026-09-17T19:59:00Z'},now)).toBe(false);
+  });
+  test('missing timestamps never hold an invoice back',()=>{
+    expect(invoiceStillSettling({},now)).toBe(false);
+  });
+});
+
+describe('change sync and settle are wired into the run',()=>{
+  const edge=read('supabase/functions/qbo-sales-background/index.ts');
+  test('resync is queued only when writes are enabled and allowed, after the card-fee case',()=>{
+    expect(edge).toMatch(/add_card_fee_line','queued_write'[\s\S]*if\(claim\.writes_enabled&&writeAllowed\(settings,'invoice',sourceId\)\)\{\s*resyncCandidates\.push/);
+  });
+  test('built from a fresh read under the invoice claim, with the books closing date',()=>{
+    expect(edge).toMatch(/for\(const candidate of resyncCandidates\)[\s\S]*acquire_qbo_invoice_sync_claim[\s\S]*const fresh=\(await qbo\.request[\s\S]*invoiceResyncUpdate\(\{[^}]*bookCloseDate:preferences\?\.AccountingInfoPrefs\?\.BookCloseDate\}/);
+  });
+  test('payments are released only after a full read-back',()=>{
+    expect(edge).toContain("code:'resync_readback_mismatch'");
+    expect(edge).toMatch(/resync_readback_mismatch[\s\S]*invoiceTotalDrifted\.delete\(String\(candidate\.invoice\.id\)\);counters\.invoices\.resynced\+\+/);
+  });
+  test('create and resync share one description builder',()=>{
+    expect(edge).toContain('const description=invoiceLineDescription(candidate.invoice,so);');
+    expect(edge).toContain('description:invoiceLineDescription(candidate.invoice,snapshot.sales_orders?.[candidate.invoice.so_id])');
+  });
+  test('settling invoices are held silently, not raised as reviews',()=>{
+    expect(edge).toContain("if(invoiceStillSettling(invoice)){counters.invoices.held_settling++;add('invoice',sourceId,'classify','held_settling',null,");
   });
 });
