@@ -74,10 +74,10 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
       return x.slots.filter(sl => sl.kind === 'art').flatMap(slot => {
       const b = logoDetailBackground(x.item.color, cwGarmentColor(slot.artFile, slot.cwId), slot.side);
       const url = logoDetailUrl(slot.artFile, slot.cwId);
-      const key = slot.artId + '|' + slot.cwId + '|' + slot.side + '|' + b.bg;
+      const key = garmentMockKey(x.item) + '|' + slot.artId + '|' + slot.cwId + '|' + slot.side;
       if (seen.has(key)) return [];
       seen.add(key);
-      return [{ key, url, bg: b.bg, label: slot.label + ' · ' + (b.label || garmentLabel(x.item)) + (slot.side ? ' · Side '+slot.side : ''), onUpload: url ? null : logoFor(slot, x.item).onUpload }];
+      return [{ key, url, bg: b.bg, label: garmentLabel(x.item) + ' · ' + slot.label + (slot.side ? ' · Side '+slot.side : '') + (!b.known ? ' · Color unknown — neutral preview' : ''), onUpload: url ? null : logoFor(slot, x.item).onUpload }];
       });
     });
     return tiles.length > 1 ? tiles : [];

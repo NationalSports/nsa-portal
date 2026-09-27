@@ -14616,9 +14616,9 @@ export default function App(){
                     {/* Logo detail — the logo alone on the garment color, for inks and small type */}
                     {!_giSrc&&(()=>{const _lds=garmentLogoDetails(gi,so,allArtFiles);if(!_lds.length)return null;
                       return<div style={{padding:12,background:'#fafbfc',borderBottom:'1px solid #e2e8f0',display:'flex',gap:10,flexWrap:'wrap',justifyContent:'center'}}>
-                        {_lds.map(l=><div key={l.url} style={{flex:'1 1 220px',maxWidth:340,border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden',background:'white'}}>
+                        {_lds.map(l=><div key={l.url+'|'+l.side+'|'+l.artName} style={{flex:'1 1 220px',maxWidth:340,border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden',background:'white'}}>
                           <div style={{background:logoDetailBg(gi.color,l.cwLabel,l.side),height:190,display:'flex',alignItems:'center',justifyContent:'center',padding:12,cursor:'zoom-in'}} onClick={()=>openFile(l.url)}><img src={l.url} alt="Logo detail" style={{maxHeight:166,maxWidth:'100%',objectFit:'contain'}}/></div>
-                          <div style={{padding:'5px 8px',fontSize:10,fontWeight:700,color:'#334155'}}>Logo detail — {l.artName}{l.cwLabel?' · CW: '+l.cwLabel:''}</div>
+                          <div style={{padding:'5px 8px',fontSize:10,fontWeight:700,color:'#334155'}}>Logo detail — {l.artName}{l.side?' · Side '+l.side:''}{l.cwLabel?' · Artwork version: '+l.cwLabel:''}{!logoDetailBackground(gi.color,l.cwLabel,l.side).known?' · Color unknown — neutral preview':''}</div>
                         </div>)}
                       </div>})()}
                     {/* Size grid */}
@@ -25487,8 +25487,8 @@ export default function App(){
                   </div>
                   {/* Shared mock over several garment colors: the logo detail on each covered color way /
                       garment color, uploadable here since the covered garments have no card of their own. */}
-                  {_deps.length>0&&(()=>{const seen=new Set();const tiles=_grp.flatMap(g=>{const d=(_perItemDecos[g.item_idx]||[]).find(x=>x.kind==='art'&&x.artFile);if(!d)return[];const cw=resolveLogoColorWay(d.artFile,d.colorWayId,g.color);const b=logoDetailBackground(g.color,cwGarmentColor(d.artFile,cw));const url=logoDetailUrl(d.artFile,cw);const key=d.artFile.id+'|'+cw+'|'+b.bg;if(seen.has(key))return[];seen.add(key);
-                    return[{key,url,bg:b.bg,label:b.label||((g.color?g.color+' ':'')+g.sku),onUpload:url?null:files=>saveLogoDetailFor(so,{artId:d.artFile.id,cwId:cw},{files})}]});
+                  {_deps.length>0&&(()=>{const seen=new Set();const tiles=_grp.flatMap(g=>{const d=(_perItemDecos[g.item_idx]||[]).find(x=>x.kind==='art'&&x.artFile);if(!d)return[];const cw=resolveLogoColorWay(d.artFile,d.colorWayId,g.color);const b=logoDetailBackground(g.color,cwGarmentColor(d.artFile,cw));const url=logoDetailUrl(d.artFile,cw);const key=garmentMockKey(g)+'|'+d.artFile.id+'|'+cw;if(seen.has(key))return[];seen.add(key);
+                    return[{key,url,bg:b.bg,label:[mockSkuOf(g),g.color,!b.known?'Color unknown — neutral preview':''].filter(Boolean).join(' · '),onUpload:url?null:files=>saveLogoDetailFor(so,{artId:d.artFile.id,cwId:cw},{files})}]});
                     return tiles.length>1?<div style={{padding:'0 10px 10px'}}><LogoDetailTiles tiles={tiles}/></div>:null;})()}
                   {_deps.length>0&&<div style={{padding:10,display:'flex',gap:8,flexWrap:'wrap'}}>{_deps.map(dep=><button type="button" className="btn btn-sm" key={garmentMockKey(dep)} onClick={async()=>{const live=sos.find(x=>x.id===so.id)||so;await savArtFiles({...live,art_files:_adLinkArts.reduce((arts,a)=>applyMockLink(arts,a.id,garmentMockKey(dep),null),safeArt(live))})}}>Separate mock: {dep.sku} · {dep.color}</button>)}</div>}
                   {/* ─── Copy Mockup From Another Item ─── */}

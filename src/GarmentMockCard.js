@@ -71,25 +71,6 @@ async function logoHasWhite(url) {
   for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 128) { n++; if (_lum(d[i], d[i + 1], d[i + 2]) > 225) white++; }
   return n ? white / n > 0.05 : null;
 }
-// The garment color in a mock image: the biggest non-white color area (mock backgrounds are
-// white). Null when no single color clearly dominates — e.g. a white shirt on a white background.
-async function mockGarmentHex(url) {
-  const d = await readPixels(url, 80);
-  if (!d) return null;
-  const buckets = new Map(); let n = 0;
-  for (let i = 0; i < d.length; i += 4) {
-    if (d[i + 3] < 200) continue;
-    n++;
-    if (_lum(d[i], d[i + 1], d[i + 2]) > 235) continue;
-    const k = (d[i] >> 4) + ',' + (d[i + 1] >> 4) + ',' + (d[i + 2] >> 4);
-    const e = buckets.get(k) || { c: 0, r: 0, g: 0, b: 0 };
-    e.c++; e.r += d[i]; e.g += d[i + 1]; e.b += d[i + 2]; buckets.set(k, e);
-  }
-  const top = [...buckets.values()].sort((x, y) => y.c - x.c)[0];
-  if (!top || top.c < n * 0.15) return null;
-  const hx = v => Math.round(v / top.c).toString(16).padStart(2, '0');
-  return '#' + hx(top.r) + hx(top.g) + hx(top.b);
-}
 const _hexLum = hex => { const m = String(hex || '').replace('#', '').match(/.{2}/g); if (!m || m.length < 3) return 128; const [r, g, b] = m.map(x => parseInt(x, 16)); return 0.299 * r + 0.587 * g + 0.114 * b; };
 
 // Why a file can't be a logo detail, or '' when it can.
@@ -134,7 +115,7 @@ export function LogoDetailTiles({ tiles, title = 'Logo detail on each garment co
 // The logo detail panel: the design's transparent logo PNG painted on the garment color, so the
 // close-up reads the way it will print. `logo` = { url, bg, colorName, onUpload, onRemove };
 // without onUpload it is read-only.
-function LogoDetailPane({ logo: sourceLogo, busy: parentBusy, mockUrl = '' }) {
+function LogoDetailPane({ logo: sourceLogo, busy: parentBusy }) {
   const [saving, setSaving] = useState(false);
   const uploadLock = useRef(false);
   const busy = parentBusy || saving;
@@ -156,7 +137,6 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy, mockUrl = '' }) {
   const [drag, setDrag] = useState(false);
   const [bgMode, setBgMode] = useState(null);
   const [hasWhite, setHasWhite] = useState(null);
-  const [mockHex, setMockHex] = useState(null);
   const assign = async () => {
     if (!sourceLogo.onAssign || busy || uploadLock.current) return;
     if (allGarments && !window.confirm('Use this same artwork version for all garments using this artwork on this order? Different assigned versions will not be overwritten. Reversible sides remain separate.')) return;
@@ -171,22 +151,17 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy, mockUrl = '' }) {
     finally { uploadLock.current = false; setSaving(false); }
   };
   useEffect(() => { let live = true; setHasWhite(null); logoHasWhite(logo.url).then(v => { if (live) setHasWhite(v); }); return () => { live = false; }; }, [logo.url]);
-  // The garment line doesn't name its own color ("CUSTOM"): the mock IS that garment, so its
-  // shirt color beats the color way's label (one color way is often reused on several colors).
+  // A shared mock can depict a different garment. Its pixels and artwork-version label
+  // must never override the actual garment color (or disguise an unknown one).
   const fromGarment = logo.bgSource ? logo.bgSource === 'garment' : logo.bgKnown !== false;
-  const sampleMock = !fromGarment && !!mockUrl;
-  useEffect(() => { let live = true; setMockHex(null); if (sampleMock) mockGarmentHex(mockUrl).then(v => { if (live) setMockHex(v); }); return () => { live = false; }; }, [sampleMock, mockUrl]);
-  const fromMock = sampleMock && !!mockHex;
-  const bg = (fromMock && mockHex) || logo.bg || '#e5e7eb';
-  const bgName = fromMock ? 'Mock color' : logo.colorName || 'Garment';
-  const bgNote = fromMock ? 'Shown on the shirt color read from the mock'
-    : fromGarment ? (logo.colorName ? 'Shown on ' + logo.colorName : 'Shown on the garment color')
-    : logo.bgSource === 'colorway' || (logo.bgKnown && logo.colorName) ? 'Shown on ' + logo.colorName + ' (color way) — garment color not set on the line'
-    : 'Garment color unknown — shown on neutral grey';
+  const bg = logo.bg || '#94a3b8';
+  const bgName = fromGarment ? logo.colorName || 'Garment' : 'Neutral preview';
+  const bgNote = fromGarment ? (logo.colorName ? 'Shown on ' + logo.colorName : 'Shown on the garment color')
+    : 'Garment color ' + (logo.colorName ? '(' + logo.colorName + ') ' : '') + 'not recognized — neutral preview, not the garment color';
   // The detail shows how the logo PRINTS, so it stays on the garment color even when that hides
   // white ink — and says so, because white ink on a light garment is worth a second look.
   const mode = bgMode || 'garment';
-  const whiteWarning = mode === 'garment' && hasWhite === true && _hexLum(bg) > 200;
+  const whiteWarning = fromGarment && mode === 'garment' && hasWhite === true && _hexLum(bg) > 200;
   const run = async fn => {
     setError('');
     try { const ok = await fn(); if (ok === false) setError('Could not save the logo detail. Please try again.'); }

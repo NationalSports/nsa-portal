@@ -1,6 +1,6 @@
 import { safeArr, safeArt, safeItems, safeJobs, safeStr, safeDecos, garmentMockKey, jobItemArtSlots, jobArtFileIds, markArtFieldEdit } from '../safeHelpers';
 import { pickCwAsset } from '../businessLogic';
-import { knownGarmentHex, exactGarmentHex } from './artGrid';
+import { knownGarmentHex } from './artGrid';
 
 // ── Logo detail ──
 // Every garment mock has a partner: the LOGO DETAIL, a close-up of the logo alone that the floor,
@@ -79,24 +79,19 @@ export function assignLogoArtwork(order, { artId, colorWayId, garmentKey, side, 
 //  1. the garment line's own color when it names a real color. A logo used on several garment
 //     colors therefore shows on EACH garment's color. Two-tone names use the first color
 //     ("Light Blue/White" → light blue); the B side of a reversible uses the second.
-//  2. else ("CUSTOM", blank, an unknown vendor name) the color way's garment color — but only
-//     when that label IS a color ("Navy"), never an ink description ("White ink on dark").
-//  3. else a neutral mid grey that keeps white AND dark inks readable. (The mock card also tries
-//     reading the shirt color off the mock image before settling for this.)
-// source: 'garment' | 'colorway' | 'unknown'.
+// Unknown garment colors stay explicitly unknown. Artwork-version names and shared mock
+// images are not evidence of this garment's color. Never recolor the logo pixels themselves.
+// source: 'garment' | 'unknown'.
 export const UNKNOWN_GARMENT_BG = '#94a3b8';
 const _sideColor = (color, side) => {
   const parts = safeStr(color).split('/').map(x => x.trim()).filter(Boolean);
-  return (side === 'B' && parts[1]) || parts[0] || '';
+  return side === 'B' ? parts[1] || '' : parts[0] || '';
 };
 export const logoDetailBackground = (color, cwColor, side) => {
   const own = _sideColor(color, side);
   const k = own && knownGarmentHex(own);
   if (k) return { bg: k, label: own, known: true, source: 'garment' };
-  const cw = safeStr(cwColor).trim();
-  const c = cw && (exactGarmentHex(cw) || exactGarmentHex(_sideColor(cw)));
-  if (c) return { bg: c, label: cw, known: true, source: 'colorway' };
-  return { bg: UNKNOWN_GARMENT_BG, label: '', known: false, source: 'unknown' };
+  return { bg: UNKNOWN_GARMENT_BG, label: own, known: false, source: 'unknown' };
 };
 export const logoDetailBg = (color, cwColor, side) => logoDetailBackground(color, cwColor, side).bg;
 // The garment color a color way is designed for ("Navy"), used when the line's own color is unknown.

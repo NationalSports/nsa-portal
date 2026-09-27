@@ -2,11 +2,37 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 jest.mock('../utils',()=>({fileDisplayName:f=>f.name||f.url||'',_isImgUrl:()=>true,_cloudinaryPdfThumb:()=>null,openFile:jest.fn(),fileUpload:jest.fn()}));
-import { assignLogoArtwork, setLogoDetail, jobMissingLogoDetails, resolveLogoColorWay, logoDetailUrl, logoColorWayOptions } from '../lib/logoDetail';
+import { assignLogoArtwork, setLogoDetail, jobMissingLogoDetails, resolveLogoColorWay, logoDetailUrl, logoColorWayOptions, logoDetailBackground } from '../lib/logoDetail';
 import JobGarmentMocks from '../JobGarmentMocks';
 
 const fixture=()=>({id:'SO-test',jobs:[{id:'j',art_status:'art_in_progress'}],art_files:[{id:'a',name:'Bulldog',color_ways:[{id:'black',garment_color:'Black',inks:['Royal','White','Grey','Black']}]}],items:['White/Grey','Royal/White'].map((color,i)=>({sku:'P'+i,color,sizes:{M:2},decorations:[{kind:'art',art_file_id:'a',position:'Left Chest'}]}))});
 const job={art_file_id:'a',items:[{item_idx:0,deco_idxs:[0]},{item_idx:1,deco_idxs:[0]}]};
+test('sharing Black-named artwork never changes White/Grey or Royal/White garment backgrounds',()=>{
+ const original=fixture();
+ const next=assignLogoArtwork(original,{artId:'a',colorWayId:'black',allGarments:true}).order;
+ expect(next.items.map(i=>i.color)).toEqual(['White/Grey','Royal/White']);
+ expect(logoDetailBackground(next.items[0].color,'Black')).toMatchObject({label:'White',bg:'#ffffff',source:'garment'});
+ const royal=logoDetailBackground(next.items[1].color,'Black');
+ expect(royal).toMatchObject({label:'Royal',source:'garment'});
+ expect(royal.bg).not.toBe(logoDetailBackground('Black').bg);
+ expect(next.art_files[0].color_ways[0].inks).toEqual(['Royal','White','Grey','Black']);
+});
+test('reversible backgrounds use each side; unknown sides do not borrow artwork or side A colors',()=>{
+ expect(logoDetailBackground('Royal/White','Black','A').label).toBe('Royal');
+ expect(logoDetailBackground('Royal/White','Black','B')).toMatchObject({label:'White',bg:'#ffffff'});
+ expect(logoDetailBackground('Royal','Black','B')).toMatchObject({known:false,source:'unknown'});
+ expect(logoDetailBackground('Mystery','Black')).toMatchObject({known:false,source:'unknown'});
+});
+test('shared mock keeps a detail tile for every distinct garment, even when backgrounds match',()=>{
+ const order=assignLogoArtwork(fixture(),{artId:'a',colorWayId:'black',allGarments:true}).order;
+ order.items[1].color='White/Grey';
+ order.art_files[0].mock_links={'P1|White/Grey':'P0|White/Grey'};
+ order.art_files=setLogoDetail(order.art_files,'a','black','shared.png');
+ const html=renderToStaticMarkup(<JobGarmentMocks job={job} order={order} getOrder={()=>order} onSave={jest.fn()}/>);
+ expect(html).toContain('Logo detail on each garment color');
+ expect(html).toContain('P0 · White/Grey · Bulldog');
+ expect(html).toContain('P1 · White/Grey · Bulldog');
+});
 test('SO-2445 case: explicit same artwork survives JSON reload and satisfies both logo requirements',()=>{
  const original=fixture();
  expect(resolveLogoColorWay(original.art_files[0],null,'White/Grey')).toBeUndefined();
