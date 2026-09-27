@@ -15776,8 +15776,10 @@ export default function App(){
       updated_at:new Date().toLocaleString()};
     // Create new invoice B
     const newId=nextInvId(invs);
+    // The new half is a new document: it must not inherit the original's QuickBooks
+    // link, or the sync would treat both halves as the same QBO invoice.
     const newInv={...inv,id:newId,line_items:itemsB,total:totalB,paid:paidB,status:statusB,
-      idempotency_key:null,
+      idempotency_key:null,qb_invoice_id:null,
       shipping:shipB,tax:taxB,memo:(splitMemo||inv.memo||'')+' (Split 2/2)',
       payments:inv.payments?inv.payments.map(p=>({...p,amount:Math.round(p.amount*pctB*100)/100,cc_fee:Math.round((p.cc_fee||0)*pctB*100)/100})):[],
       cc_fee:Math.round((inv.cc_fee||0)*pctB*100)/100,

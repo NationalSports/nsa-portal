@@ -184,6 +184,7 @@ export function invoiceLineDescription(invoice, salesOrder) {
 // after it was first written, using the same line builder as a fresh create.
 // Built from a FRESH read under the invoice claim; every case that is not
 // provably safe throws a coded error and stays a manual review:
+//  - the QBO invoice must carry this Portal invoice's number;
 //  - the QBO invoice must still belong to the Portal customer's verified QBO customer;
 //  - every existing line must be one the sync itself writes (its sales/tax items or
 //    its discount account) — a hand-built or legacy invoice is never rewritten;
@@ -196,6 +197,10 @@ export function invoiceResyncUpdate({invoice, qboInvoice, qboCustomerId, lines, 
   const total=money(invoice?.total), qboTotal=money(qboInvoice?.TotalAmt), applied=money(qboTotal-money(qboInvoice?.Balance));
   const fail=code=>Object.assign(new Error(code),{code,details:{portal_total:total,qbo_total:qboTotal,qbo_applied:applied}});
   if(!qboInvoice?.Id||qboInvoice.SyncToken==null||!Array.isArray(lines)||!lines.length)throw fail('resync_invalid_input');
+  // The QBO invoice must carry this Portal invoice's own number. A split copies
+  // qb_invoice_id onto the new half; without this the two halves would take turns
+  // overwriting one QBO invoice every hour.
+  if(normalizeInvoiceNumber(qboInvoice.DocNumber)!==normalizeInvoiceNumber(invoice?.id))throw fail('resync_doc_number_mismatch');
   if(!clean(qboCustomerId)||String(qboInvoice.CustomerRef?.value)!==String(qboCustomerId))throw fail('resync_customer_changed');
   const known=new Set((knownItemIds||[]).map(String));
   const foreign=(qboInvoice.Line||[]).some(line=>{

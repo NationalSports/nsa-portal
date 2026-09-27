@@ -265,7 +265,7 @@ describe('invoice change sync: Portal edits after the QBO write',()=>{
   const invoice={id:'INV-64006',so_id:'SO-1405',customer_id:'c-enc',total:55785.82,tax:3834.5,shipping:2473.87,credit_amount:0,tax_rate:0.0775};
   const plan={tax:3834.5,shipping:2473.87,state:'CA',reconciled:true,ratePct:'7.75',taxable:49477.45};
   const lines=buildInvoiceLines({invoice,description:'Invoice INV-64006 for SO-1405 — Rec order 2026',salesItemId:'180',taxItemId:'1322',plan,discountAccountId:'77'});
-  const qbo={Id:'18641',SyncToken:'4',CustomerRef:{value:'555'},TxnDate:'2026-09-17',TotalAmt:56534.77,Balance:748.95,TxnTaxDetail:{TotalTax:0},Line:[
+  const qbo={Id:'18641',SyncToken:'4',DocNumber:'INV-64006',CustomerRef:{value:'555'},TxnDate:'2026-09-17',TotalAmt:56534.77,Balance:748.95,TxnTaxDetail:{TotalTax:0},Line:[
     {DetailType:'SalesItemLineDetail',Amount:50141.70,SalesItemLineDetail:{ItemRef:{value:'180'}}},
     {DetailType:'SalesItemLineDetail',Amount:2507.09,SalesItemLineDetail:{ItemRef:{value:'180'}}},
     {DetailType:'SalesItemLineDetail',Amount:3885.98,SalesItemLineDetail:{ItemRef:{value:'1322'}}},
@@ -282,6 +282,11 @@ describe('invoice change sync: Portal edits after the QBO write',()=>{
     expect(update).toMatchObject({Id:'18641',SyncToken:'4',sparse:true,TxnTaxDetail:{TotalTax:0}});
     expect(update.Line).toHaveLength(3);
     expect(update.Line.every(line=>line.SalesItemLineDetail.TaxCodeRef.value==='NON')).toBe(true);
+  });
+  test('never rewrites a QBO invoice that carries another Portal invoice\'s number',()=>{
+    // A split copied qb_invoice_id onto the new half: INV-64200 must not overwrite #18641.
+    expect(()=>invoiceResyncUpdate(args({invoice:{...invoice,id:'INV-64200'}}))).toThrow('resync_doc_number_mismatch');
+    expect(()=>invoiceResyncUpdate(args({qboInvoice:{...qbo,DocNumber:'NS-INV-64006'}}))).not.toThrow();
   });
   test('never moves an invoice to another customer',()=>{
     expect(()=>invoiceResyncUpdate(args({qboCustomerId:'999'}))).toThrow('resync_customer_changed');
@@ -317,9 +322,33 @@ describe('invoice change sync: Portal edits after the QBO write',()=>{
     expect(()=>invoiceResyncUpdate(args({qboInvoice:{...qbo,TxnTaxDetail:{TotalTax:12}}}))).toThrow('resync_taxed_invoice');
   });
   test('refusals carry the amounts',()=>{
+    expect.assertions(1);
     try{invoiceResyncUpdate(args({invoice:{...invoice,total:55000}}));}catch(error){
       expect(error.details).toEqual({portal_total:55000,qbo_total:56534.77,qbo_applied:55785.82});
     }
+  });
+});
+
+describe('change sync wiring: reviewer follow-ups',()=>{
+  const edge=read('supabase/functions/qbo-sales-background/index.ts');
+  test('payments of a settling invoice wait quietly instead of raising verified_invoice_missing',()=>{
+    expect(edge).toContain('settlingInvoices.add(String(invoice.id))');
+    expect(edge).toMatch(/if\(settlingInvoices\.has\(String\(invoice\.id\)\)\)continue;[\s\S]*verified_invoice_missing/);
+  });
+  test('resync honours the invoice batch limit and defers the rest',()=>{
+    expect(edge).toContain("const resyncLimit=Number(settings.invoice_batch_limit)||25;");
+    expect(edge).toContain("'resync_invoice','deferred'");
+  });
+  test('line-build failures keep a specific code and the drift amounts',()=>{
+    expect(edge).toContain('code:`resync_${safeError(error)}`');
+    expect(edge).toContain('const evidence={qbo_id:String(candidate.qboId),...candidate.drift,...errorDetails(error)};');
+  });
+  test('restamp stays inside the canary scope',()=>{
+    expect(edge).toContain("if(!clean(invoice.qb_invoice_id)&&claim.writes_enabled&&writeAllowed(settings,'invoice',sourceId)){");
+  });
+  test('a split invoice does not inherit the original\'s QuickBooks link',()=>{
+    const app=require('fs').readFileSync(require('path').join(__dirname,'..','App.js'),'utf8');
+    expect(app).toMatch(/const newInv=\{\.\.\.inv,id:newId,[^\n]*\n\s*idempotency_key:null,qb_invoice_id:null,/);
   });
 });
 
@@ -349,7 +378,7 @@ describe('change sync and settle are wired into the run',()=>{
     expect(edge).toMatch(/add_card_fee_line','queued_write'[\s\S]*if\(claim\.writes_enabled&&writeAllowed\(settings,'invoice',sourceId\)\)\{\s*resyncCandidates\.push/);
   });
   test('built from a fresh read under the invoice claim, with the books closing date',()=>{
-    expect(edge).toMatch(/for\(const candidate of resyncCandidates\)[\s\S]*acquire_qbo_invoice_sync_claim[\s\S]*const fresh=\(await qbo\.request[\s\S]*invoiceResyncUpdate\(\{[^}]*bookCloseDate:preferences\?\.AccountingInfoPrefs\?\.BookCloseDate\}/);
+    expect(edge).toMatch(/for\(const \[index,candidate\] of \[\.\.\.resyncCandidates\][\s\S]*acquire_qbo_invoice_sync_claim[\s\S]*const fresh=\(await qbo\.request[\s\S]*invoiceResyncUpdate\(\{[^}]*bookCloseDate:preferences\?\.AccountingInfoPrefs\?\.BookCloseDate\}/);
   });
   test('payments are released only after a full read-back',()=>{
     expect(edge).toContain("code:'resync_readback_mismatch'");
@@ -360,14 +389,14 @@ describe('change sync and settle are wired into the run',()=>{
     expect(edge).toContain('description:invoiceLineDescription(candidate.invoice,snapshot.sales_orders?.[candidate.invoice.so_id])');
   });
   test('settling invoices are held silently, not raised as reviews',()=>{
-    expect(edge).toContain("if(invoiceStillSettling(invoice)){counters.invoices.held_settling++;add('invoice',sourceId,'classify','held_settling',null,");
+    expect(edge).toContain("if(invoiceStillSettling(invoice)){settlingInvoices.add(String(invoice.id));counters.invoices.held_settling++;add('invoice',sourceId,'classify','held_settling',null,");
   });
 });
 
 describe('Portal QuickBooks number is restored from the verified link',()=>{
   const edge=read('supabase/functions/qbo-sales-background/index.ts');
   test('only fills a blank, only when writes are enabled, and never blocks the run',()=>{
-    expect(edge).toContain("if(!clean(invoice.qb_invoice_id)&&claim.writes_enabled){");
+    expect(edge).toContain("if(!clean(invoice.qb_invoice_id)&&claim.writes_enabled&&writeAllowed(settings,'invoice',sourceId)){");
     expect(edge).toContain(".update({qb_invoice_id:mappedId}).eq('id',invoice.id).is('qb_invoice_id',null)");
     expect(edge).toMatch(/restamp_portal_link[\s\S]{0,80}\}catch\{/);
   });
