@@ -41,3 +41,29 @@ test('original art specs preserve placement dimensions, stitch count and selecte
  p.messages=[{author:'Staff',soId:'SO-1',kind:'message',text:'Shared note',ts:'2026-09-26',attachments:[{name:'Proof.pdf',url:'https://example.com/proof.pdf'}]}];
  const html=packetPrintHtml(p);expect(html).toContain('VERIFY ASSIGNMENT');expect(html).toContain('(was S)');expect(html).toContain('Proof.pdf');expect(html).toContain('2026-09-26');
  });
+
+test('persistent row IDs retain synthesized IDs for legacy target resolution',()=>{
+ const f=fixture();f.salesOrders[0].items[0].id='db-item';f.salesOrders[0].items[0].line_id='line1';f.salesOrders[0].items[0].decorations=[{id:'db-deco',kind:'names',position:'Back Center',names:{M:['Taylor','JONES']}}];f.notes=[{id:'n',scope:'decoration',target_id:'SO-1:line1:deco:0',text:'Use matching names'}];
+ const p=buildProductionPacket(f);expect(p.garments[0]).toMatchObject({id:'garment:db-item',legacyIds:['SO-1:line1']});expect(p.decorations[0]).toMatchObject({id:'decoration:db-deco',legacyIds:['SO-1:line1:deco:0']});expect(p.notes[0].targetId).toBe('SO-1:line1:deco:0');expect(p.issues.join(' ')).toContain('no longer exists or is ambiguous');expect(p.issueDetails.every(i=>['garments','decorations','players','messages'].includes(i.section))).toBe(true);
+});
+test('personalization roster preserves overages and reports missing per-size roster entries',()=>{
+ const f=fixture();f.salesOrders[0].items[0].decorations=[{kind:'numbers',position:'Back',roster:{M:['8','9','10']}}];const p=buildProductionPacket(f);expect(p.decorations[0].personalization.roster).toHaveLength(3);expect(p.decorations[0].units).toBe(3);expect(p.issues.join(' ')).toMatch(/personalization quantity exceeds garment quantity/);expect(p.issueDetails.some(i=>i.section==='decorations'&&i.targetId===p.decorations[0].id&&i.soId==='SO-1')).toBe(true);
+});
+test('names without source font data are spec-incomplete while embroidery checks its own fields',()=>{
+ const f=fixture();f.salesOrders[0].items[0].decorations=[{kind:'names',position:'Back Center',names:{M:['Taylor','Jordan']}}];const p=buildProductionPacket(f);expect(p.decorations[0]).toMatchObject({specReady:false,missingSpecs:['font','dimensions','colors']});
+});
+test('packet revision lists production field deltas and ignores conversation changes',()=>{
+ const f=fixture();f.salesOrders[0].items[0].decorations=[{kind:'art',art_file_id:'a'}];f.salesOrders[0].art_files=[{id:'a',status:'approved',deco_type:'screen_print',art_size:'3x2',ink_colors:'Red',prod_files:[{url:'https://example.com/a.ai'}]}];const before=buildProductionPacket(f);f.salesOrders[0].art_files[0].art_size='4x2';f.messages=[{id:'m',soId:'SO-1',kind:'message',text:'FYI'}];const delta=packetChanges(before,buildProductionPacket(f)).join(' ');expect(delta).toContain('dimensions:');expect(delta).not.toContain('messages');
+});
+
+test('partial personalization compares only against explicitly declared counts',()=>{
+ const f=fixture();f.salesOrders[0].items[0].decorations=[{kind:'names',position:'Back Center',names:{M:['Taylor']}}];let p=buildProductionPacket(f);expect(p.issues.join(' ')).not.toMatch(/roster does not match/);
+ f.salesOrders[0].items[0].decorations[0].name_qty=2;p=buildProductionPacket(f);expect(p.issues.join(' ')).toMatch(/does not match declared quantity/);
+});
+test('personalization zero quantities, unknown placement, and method requirements are blockers on their decoration',()=>{
+ const f=fixture();f.salesOrders[0].items[0].decorations=[{id:'deco',kind:'numbers',position:'Back',num_method:'screen_print',num_size:'6"',num_font:'block',print_color:'White',roster:[{number:'8',size:'M',qty:0}]}];const p=buildProductionPacket(f);expect(p.decorations[0].personalization.roster[0].qty).toBe(0);expect(p.issues.join(' ')).toContain('zero quantity');expect(p.issueDetails.some(i=>i.section==='decorations'&&i.targetId==='decoration:deco')).toBe(true);
+ f.salesOrders[0].items[0].decorations[0].position='';f.salesOrders[0].items[0].decorations[0].placement='not-a-placement';const unknown=buildProductionPacket(f);expect(unknown.decorations[0].missingSpecs).toContain('known placement');
+});
+test('embroidery production readiness requires actual stitch count and production specifications',()=>{
+ const f=fixture();f.salesOrders[0].items[0].decorations=[{kind:'art',art_file_id:'a',position:'Left chest'}];f.salesOrders[0].art_files=[{id:'a',status:'approved',deco_type:'embroidery',art_size:'3x2',thread_colors:'Red',prod_files:[{url:'https://example.com/a.dst'}]}];const p=buildProductionPacket(f);expect(p.decorations[0].missingSpecs).toContain('stitch count');expect(p.issueDetails.some(i=>i.targetId===p.decorations[0].id)).toBe(true);
+});
