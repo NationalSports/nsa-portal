@@ -17,7 +17,8 @@ const belongsToDpo = (decoration, dp, item) => {
   if (method && dp.deco_type && !same(method, dp.deco_type)) return false;
   // An item may be assigned to several decorators. Without a vendor, type, or
   // explicit PO reference, we cannot identify which decoration belongs here.
-  if (!vendor && !method && !direct && (item.decorations || []).length > 1) return false;
+  // Candidate DPO counting below resolves unspecified names/numbers only when
+  // exactly one active DPO covers the item. Multiple candidates stay blocked.
   return true;
 };
 const pageAll = async makeQuery => {
