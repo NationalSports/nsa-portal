@@ -187,6 +187,7 @@ export function invoiceLineDescription(invoice, salesOrder) {
 //  - the QBO invoice must still belong to the Portal customer's verified QBO customer;
 //  - every existing line must be one the sync itself writes (its sales/tax items or
 //    its discount account) — a hand-built or legacy invoice is never rewritten;
+//  - a QBO invoice already at $0 (voided or zeroed there) is never revived;
 //  - the invoice date must be after the books' closing date;
 //  - the new total may not fall below what QBO has already applied to it (that
 //    would turn a payment into an overpayment);
@@ -204,6 +205,9 @@ export function invoiceResyncUpdate({invoice, qboInvoice, qboCustomerId, lines, 
     return true;
   });
   if(foreign)throw fail('resync_foreign_lines');
+  // A $0 QBO invoice was voided or zeroed there on purpose; rewriting its lines
+  // would quietly bring it back to life. Accounting decides.
+  if(!(qboTotal>0))throw fail('resync_qbo_zeroed');
   const txnDate=parseDate(qboInvoice.TxnDate), closed=parseDate(bookCloseDate);
   if(closed&&(!txnDate||txnDate<=closed))throw fail('resync_closed_period');
   if(applied>total+0.005)throw fail('resync_below_applied');

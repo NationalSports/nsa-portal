@@ -299,6 +299,10 @@ describe('invoice change sync: Portal edits after the QBO write',()=>{
     const theirs={...qbo,Line:[...qbo.Line,{DetailType:'DiscountLineDetail',Amount:5,DiscountLineDetail:{DiscountAccountRef:{value:'88'}}}]};
     expect(()=>invoiceResyncUpdate(args({qboInvoice:theirs}))).toThrow('resync_foreign_lines');
   });
+  test('never revives an invoice voided or zeroed in QBO',()=>{
+    const voided={...qbo,TotalAmt:0,Balance:0,Line:qbo.Line.map(line=>({...line,Amount:0}))};
+    expect(()=>invoiceResyncUpdate(args({qboInvoice:voided}))).toThrow('resync_qbo_zeroed');
+  });
   test('never edits a closed accounting period',()=>{
     expect(()=>invoiceResyncUpdate(args({bookCloseDate:'2026-09-30'}))).toThrow('resync_closed_period');
     expect(()=>invoiceResyncUpdate(args({bookCloseDate:'2026-09-17'}))).toThrow('resync_closed_period');
