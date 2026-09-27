@@ -85,6 +85,10 @@ test('DPO context cannot select another sales order outside token grant',async()
  const {ctx,packet}=dpoContextFixture();
  await expect(attachDpoContext(ctx,packet,{dpo_id:'dp-a',dpo_so_id:'SO-2'})).rejects.toMatchObject({status:403});
 });
+test('issued snapshot cannot be filtered using current DPO assignments',async()=>{
+ const {ctx,packet}=dpoContextFixture();
+ await expect(attachDpoContext(ctx,packet,{dpo_id:'dp-a',dpo_so_id:'SO-1',revision_id:'rev-1'})).rejects.toMatchObject({status:400});
+});
 test('ambiguous player rows are omitted instead of inflating DPO order totals',async()=>{
  const {ctx,packet}=dpoContextFixture();
  packet.garments.push({id:'garment:other',soId:'SO-1',sku:'TEE',color:'Navy',units:3,decorationIds:[]});
@@ -104,4 +108,21 @@ test('an unassigned decoration shared by two DPOs is omitted with a warning',asy
  const result=await attachDpoContext(ctx,packet,{dpo_id:'dp-a',dpo_so_id:'SO-1'});
  expect(result.decorations).toEqual([]);
  expect(result.dpo.warnings.some(w=>w.includes('multiple DPOs'))).toBe(true);
+});
+test('DPO readiness retains SO-wide holds but excludes the other decorator hold',async()=>{
+ const {ctx,packet}=dpoContextFixture();
+ packet.messages=[
+  {id:'hold-a',soId:'SO-1',kind:'action',text:'Please confirm timing',metadata:{dpoId:'dp-a'}},
+  {id:'hold-b',soId:'SO-1',kind:'action',text:'Other decorator hold',metadata:{dpoId:'dp-b'}},
+ ];
+ packet.issueDetails=[
+  {id:'i-a',text:'SO-1: unresolved action — Please confirm timing',section:'messages',targetId:'hold-a',soId:'SO-1'},
+  {id:'i-b',text:'SO-1: unresolved action — Other decorator hold',section:'messages',targetId:'hold-b',soId:'SO-1'},
+  {id:'i-deco',text:'SO-1 TEE: other decoration mock missing',section:'decorations',targetId:'decoration:deco-b',soId:'SO-1'},
+ ];
+ packet.issues=packet.issueDetails.map(i=>i.text);
+ const result=await attachDpoContext(ctx,packet,{dpo_id:'dp-a',dpo_so_id:'SO-1'});
+ expect(result.messages.map(m=>m.id)).toEqual(['hold-a']);
+ expect(result.issues).toEqual(['SO-1: unresolved action — Please confirm timing']);
+ expect(result.ready).toBe(false);
 });

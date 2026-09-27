@@ -107,15 +107,16 @@ async function run(event, body) {
   const action = body.action || 'view';
   if (!['view', 'message', 'workflow'].includes(action) && !staff) fail(403, 'Staff access required');
   if (action === 'view') {
+    if(body.revision_id && body.dpo_id) fail(400,'Open the full issued packet to view its preserved production snapshot.');
     const { packet: rawCurrent, internal } = await loadCurrent(ctx);
     const current = await attachDpoContext(ctx, rawCurrent, body);
     current.fingerprint = hash(JSON.stringify(productionContent(current)));
     const latest = await latestRevision(ctx);
     const revision = body.revision_id ? await revisionFor(ctx, body.revision_id) : null;
     const links = staff ? await all(() => admin.from('production_packet_links').select('id,label,so_id,created_at,expires_at,revoked_at').eq('store_id', storeId).order('id')) : undefined;
-    const latestSnapshot = latest ? await attachDpoContext(ctx, latest.snapshot, body) : null;
-    const snapshot = revision ? await attachDpoContext(ctx, revision.snapshot, body) : null;
-    return { packet: revision ? { ...snapshot, revisionId: revision.id, issuedAt: revision.created_at } : current, link: ctx.link ? {expiresAt:ctx.link.expires_at, label:ctx.link.label} : null, staff, internal, links, scopeSoId: ctx.soId, fetchedAt: new Date().toISOString(), latestRevision: latest && { id: latest.id, createdAt: latest.created_at, fingerprint: latest.fingerprint }, changedSinceIssue: latest ? packetChanges(latestSnapshot, current) : [], newerChanges: revision ? packetChanges(snapshot, current) : [] };
+    const latestSnapshot = latest?.snapshot || null;
+    const snapshot = revision?.snapshot || null;
+    return { packet: revision ? { ...snapshot, revisionId: revision.id, issuedAt: revision.created_at } : current, link: ctx.link ? {expiresAt:ctx.link.expires_at, label:ctx.link.label} : null, staff, internal, links, scopeSoId: ctx.soId, fetchedAt: new Date().toISOString(), latestRevision: latest && { id: latest.id, createdAt: latest.created_at, fingerprint: latest.fingerprint }, changedSinceIssue: latest ? packetChanges(latestSnapshot, rawCurrent) : [], newerChanges: revision ? packetChanges(snapshot, rawCurrent) : [] };
   }
   if (action === 'revoke') {
     await checked(admin.from('production_packet_links').update({ revoked_at: new Date().toISOString() }).eq('id', body.link_id).eq('store_id', storeId));
