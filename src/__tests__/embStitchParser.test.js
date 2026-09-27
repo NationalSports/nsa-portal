@@ -138,12 +138,16 @@ describe('parseEmbroideryDimensions', () => {
 });
 
 describe('fillEmbroiderySpecs', () => {
-  test('fills only missing fields and preserves manual values', () => {
+  test('fills missing fields and overrides manual values with proof values', () => {
     expect(fillEmbroiderySpecs({ id: 'a', art_size: '', stitches: null }, { artId: 'a', dimensions: { artSize: '2.71" W x 2.25" H' }, stitches: 7569 })).toEqual({ id: 'a', art_size: '2.71" W x 2.25" H', stitches: 7569 });
-    expect(fillEmbroiderySpecs({ id: 'a', art_size: 'manual', stitches: 9000 }, { artId: 'a', dimensions: { artSize: 'parsed' }, stitches: 7569 })).toEqual({ id: 'a', art_size: 'manual', stitches: 9000 });
+    expect(fillEmbroiderySpecs({ id: 'a', art_size: 'manual', stitches: 9000 }, { artId: 'a', dimensions: { artSize: 'parsed' }, stitches: 7569 })).toEqual({ id: 'a', art_size: 'parsed', stitches: 7569 });
+  });
+  test('keeps existing values when the proof has no readable specs', () => {
+    const art = { id: 'a', art_size: 'manual', stitches: 9000 };
+    expect(fillEmbroiderySpecs(art, { dimensions: null, stitches: null })).toEqual(art);
   });
   test('ignores stale or deleted art extraction and can suppress stitch filling', () => {
-    const art = { id: 'new', art_size: '', stitches: null };
+    const art = { id: 'new', art_size: 'manual', stitches: 9000 };
     expect(fillEmbroiderySpecs(art, { artId: 'old', dimensions: { artSize: 'parsed' }, stitches: 7569 })).toBe(art);
     expect(fillEmbroiderySpecs(art, { deleted: true, dimensions: { artSize: 'parsed' } })).toBe(art);
     expect(fillEmbroiderySpecs(art, { artId: 'new', dimensions: { artSize: 'parsed' }, stitches: 7569 }, { allowStitches: false })).toEqual({ ...art, art_size: 'parsed' });
