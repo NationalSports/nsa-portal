@@ -525,7 +525,7 @@ export default function InvoicesPage(){
                   customerSearchOpen:false
                 });
               }}>Edit Invoice</button>
-            <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
+            {safeNum(inv.total)>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
                 const contact=contacts[0];
                 const portalUrl=ic?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic.alpha_tag)+'&inv='+encodeURIComponent(inv.id):'';
@@ -542,7 +542,7 @@ export default function InvoicesPage(){
                 const msg=greetLine(Object.keys(checked).filter(em=>checked[em]),sendContacts)+'\n\nAttached below is your invoice'+(_job?' for "'+_job+'"':'')+', totalling '+emailMoney(inv.total)+(inv.due_date?', due on '+inv.due_date:'')+'.'+(portalUrl?'\n\nYou can also view it anytime through your portal:\n'+portalUrl:'')+'\n\nPlease let us know if you have any questions, and thank you for your business!\n\nNSA Team';
                 const smsText='Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+inv.total.toFixed(2)+' is ready. Due by '+(inv.due_date||'—')+'. View: '+(portalUrl||'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic?.alpha_tag||''));
                 setInvSendModalDirect({inv,sendContacts,checked,customEmail:'',customEmails:[],msg,review:false,portalUrl,smsEnabled:_smsUiEnabled&&!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7,followUp:seedFollowUp(inv)});
-              }}>Send Invoice</button>
+              }}>Send Invoice</button>}
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
                 printDoc(buildInvDocOpts());
@@ -727,7 +727,7 @@ export default function InvoicesPage(){
             {/* Send History */}
             <div style={{marginBottom:16}}>
               <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Send History</div>
-              {(inv.sent_history||[]).length===0&&!inv.email_sent_at?<div style={{fontSize:12,color:'#94a3b8',padding:'8px 12px',background:'#f8fafc',borderRadius:6}}>Not yet sent</div>
+              {(inv.sent_history||[]).length===0&&!inv.email_sent_at?<div style={{fontSize:12,color:'#94a3b8',padding:'8px 12px',background:'#f8fafc',borderRadius:6}}>{safeNum(inv.total)>0?'Not yet sent':'$0 invoice — no send needed'}</div>
               :(inv.sent_history||[]).length>0?(inv.sent_history||[]).map((h,hi)=><div key={hi} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'#eff6ff',borderRadius:6,border:'1px solid #bfdbfe',marginBottom:4}}>
                 <span style={{fontSize:16}}>✉️</span>
                 <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>Sent to coach</div>
