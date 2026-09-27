@@ -1,5 +1,5 @@
 import { garmentSlotCandidates } from "./lib/jobMockCards";
-import { resolveLogoColorWay } from './lib/logoDetail';
+import { assignLogoArtwork, resolveLogoColorWay } from './lib/logoDetail';
 import GarmentMockCard, { LogoDetailTiles } from './GarmentMockCard';
 import { removeGarmentSlotMock } from './safeHelpers';
 import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jobMockReadiness';
@@ -7393,7 +7393,13 @@ export default function App(){
     finally{logoSaveLocks.current.delete(so.id)}
   };
   // Props for a mock card's logo detail pane (art slots only).
-  const logoDetailProps=(so,slot,garment)=>{if(slot.kind!=='art')return null;slot={...slot,cwId:resolveLogoColorWay(slot.artFile,slot.cwId,garment?.color,slot.side)};const b=logoDetailBackground(garment?.color,cwGarmentColor(slot.artFile,slot.cwId),slot.side);return{url:logoDetailUrl(slot.artFile,slot.cwId),needsColorWay:slot.cwId===undefined,colorWays:logoColorWayOptions(slot.artFile),bg:b.bg,bgKnown:b.known,bgSource:b.source,colorName:b.label,
+  const logoDetailProps=(so,slot,garment)=>{if(slot.kind!=='art')return null;slot={...slot,cwId:resolveLogoColorWay(slot.artFile,slot.cwId,garment?.color,slot.side)};const b=logoDetailBackground(garment?.color,cwGarmentColor(slot.artFile,slot.cwId),slot.side);return{url:logoDetailUrl(slot.artFile,slot.cwId),needsColorWay:slot.cwId===undefined,colorWayId:slot.cwId,colorWays:logoColorWayOptions(slot.artFile),bg:b.bg,bgKnown:b.known,bgSource:b.source,colorName:b.label,
+    onAssign:async choice=>{
+      if(logoSaveLocks.current.has(so.id))throw new Error('A logo is still saving. Wait and retry.');
+      logoSaveLocks.current.add(so.id);
+      try{const live=logoOrdersRef.current.find(s=>s.id===so.id)||so;const {order:updated}=assignLogoArtwork(live,{...choice,artId:slot.artId,garmentKey:garmentMockKey(garment),side:slot.side});const ok=await savSONow(updated);if(ok){logoOrdersRef.current=logoOrdersRef.current.map(s=>s.id===so.id?updated:s);nf('Artwork version assignment saved')}return ok;}
+      finally{logoSaveLocks.current.delete(so.id)}
+    },
     onUpload:(files,cwId=slot.cwId)=>saveLogoDetailFor(so,{...slot,cwId},{files}),onRemove:(url,cwId=slot.cwId)=>saveLogoDetailFor(so,{...slot,cwId},{removeUrl:url})}};
   // Result-checked FULL save: persist the whole SO (jobs + art) and return a truthful true/false promise so
   // reuse/forward mutations (applyPriorMock, prod-file completion, wizard release) can report failure instead
@@ -24939,7 +24945,7 @@ export default function App(){
         const _adLinkOf=g=>resolveMockLink(_adLinkArts,mockSkuOf(g),g.color);
         const _adKeys=new Set(itemDetails.map(g=>garmentMockKey(g)));
         // Keep each garment's editable design/side slots visible, even when its image is shared.
-        const _adFolded=g=>{const source=itemDetails.find(x=>garmentMockKey(x)===_adLinkOf(g));if(!source||source===g||_adLinkOf(source))return false;const ds=_perItemDecos[g.item_idx]||[],ss=_perItemDecos[source.item_idx]||[];return ds.length===1&&ss.length===1&&ds[0].kind==='art'&&ss[0].kind==='art'&&!ds[0].reversible&&!ss[0].reversible&&ds[0].artFile?.id===ss[0].artFile?.id&&ds[0].position===ss[0].position};
+        const _adFolded=g=>{const source=itemDetails.find(x=>garmentMockKey(x)===_adLinkOf(g));if(!source||source===g||_adLinkOf(source))return false;const ds=_perItemDecos[g.item_idx]||[],ss=_perItemDecos[source.item_idx]||[];return ds.length===1&&ss.length===1&&ds[0].kind==='art'&&ss[0].kind==='art'&&!ds[0].reversible&&!ss[0].reversible&&ds[0].artFile?.id===ss[0].artFile?.id&&ds[0].position===ss[0].position&&resolveLogoColorWay(ds[0].artFile,ds[0].colorWayId,g.color)!==undefined&&resolveLogoColorWay(ss[0].artFile,ss[0].colorWayId,source.color)!==undefined};
         const _adDeps=g=>itemDetails.filter(o=>o!==g&&_adFolded(o)&&_adLinkOf(o)===garmentMockKey(g));
         // Release instructions are for the whole job, so they show once above the garments. The
         // "ONE MOCKUP COVERS" line is dropped when the grouped cards already show that grouping.

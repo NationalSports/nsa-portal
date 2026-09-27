@@ -2,7 +2,7 @@ import React, { useRef, useState } from 'react';
 import GarmentMockCard, { MockCoversTable, LogoDetailTiles } from './GarmentMockCard';
 import JobGarmentProgress, { garmentProgress, GarmentDecorationSpecs } from './JobGarmentProgress';
 import { jobMockCardGroups } from './lib/jobMockCards';
-import { logoColorWayOptions, logoDetailUrl, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail } from './lib/logoDetail';
+import { assignLogoArtwork, logoColorWayOptions, logoDetailUrl, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail } from './lib/logoDetail';
 import { safeArt, safeNum, safeSizes, garmentMockKey, mockSkuOf, slotMockFiles, adoptArtProofAsGarmentMock, removeGarmentSlotMock, resolveMockLink, mockLinkSourceFiles, applyMockLink } from './safeHelpers';
 import { fileUpload, openFile, _isImgUrl } from './utils';
 
@@ -13,7 +13,7 @@ const garmentLabel = item => [mockSkuOf(item), item.color].filter(Boolean).join(
 // Garment mocks for a job: one block per garment with its mock (+ logo detail) and its quantity /
 // received / shipped row. Garments linked to one shared mock collapse into ONE block — the source
 // garment's mock, then a single table listing every covered garment's SKU and sizes.
-export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSave, itemDetails = [], onViewItem, onSendToArtist, onLibrarySync }) {
+export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSave, onSaveOrder, itemDetails = [], onViewItem, onSendToArtist, onLibrarySync }) {
   const [busy, setBusy] = useState(false);
   const lock = useRef(false);
   const [error, setError] = useState('');
@@ -29,7 +29,7 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
     const source=groups.find(x=>garmentMockKey(x.item)===linkOf(g));
     if (!source || source===g || linkOf(source) || g.slots.length!==1 || source.slots.length!==1) return false;
     const a=g.slots[0],b=source.slots[0];
-    return a.kind==='art' && b.kind==='art' && !a.side && !b.side && a.artId===b.artId && a.sub===b.sub;
+    return a.kind==='art' && b.kind==='art' && a.cwId!==undefined && b.cwId!==undefined && !a.side && !b.side && a.artId===b.artId && a.sub===b.sub;
   };
   const dependentsOf = g => groups.filter(o => o !== g && canFold(o) && linkOf(o) === garmentMockKey(g.item));
   const separate = item => run(() => onSave(jobArts.reduce((all,a)=>applyMockLink(all,a.id,garmentMockKey(item),null),safeArt(getOrder())), 'Mock link removed'));
@@ -48,7 +48,11 @@ export default function JobGarmentMocks({ job, order, priorMocks, getOrder, onSa
   const useFiles = (slot, files) => onSave(files.reduce((arts, file) => adoptArtProofAsGarmentMock(arts, slot.artId, slot.key,
     { ...(typeof file === 'string' ? { url: file } : file), art_file_id: slot.artId }), liveArts(slot.artId)), 'Garment mock');
   const logoFor = (slot, item) => { if (slot.kind !== 'art') return null; const b = logoDetailBackground(item.color, cwGarmentColor(slot.artFile, slot.cwId), slot.side); return {
-    url: logoDetailUrl(slot.artFile, slot.cwId), needsColorWay: slot.cwId===undefined, colorWays: logoColorWayOptions(slot.artFile), bg: b.bg, bgKnown: b.known, bgSource: b.source, colorName: b.label,
+    url: logoDetailUrl(slot.artFile, slot.cwId), needsColorWay: slot.cwId===undefined, colorWayId: slot.cwId, colorWays: logoColorWayOptions(slot.artFile), bg: b.bg, bgKnown: b.known, bgSource: b.source, colorName: b.label,
+    onAssign: onSaveOrder && (choice => run(async () => {
+      const { order: updated } = assignLogoArtwork(getOrder(), { ...choice, artId: slot.artId, garmentKey: garmentMockKey(item), side: slot.side });
+      return onSaveOrder(updated, 'Artwork version assignment');
+    })),
     onUpload: (files, colorWayId = slot.cwId) => run(async () => {
       if (colorWayId === undefined) throw new Error('Choose this garment’s color way in Art Library / Apply to items first.');
       const url = await fileUpload(files[0], 'nsa-web-logos');

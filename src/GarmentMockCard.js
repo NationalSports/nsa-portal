@@ -139,10 +139,15 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy, mockUrl = '' }) {
   const uploadLock = useRef(false);
   const busy = parentBusy || saving;
   const [selectedColorWay, setSelectedColorWay] = useState('');
-  const selected = sourceLogo.needsColorWay && sourceLogo.colorWays?.find(c => c.id === selectedColorWay);
-  const logo = selected ? { ...sourceLogo, url: selected.url, needsColorWay: false,
-    onUpload: files => sourceLogo.onUpload(files, selected.id),
-    onRemove: sourceLogo.onRemove && (url => sourceLogo.onRemove(url, selected.id)) } : sourceLogo;
+  const [editingVersion, setEditingVersion] = useState(false);
+  const [allGarments, setAllGarments] = useState(false);
+  const [versionName, setVersionName] = useState('');
+  const [versionColors, setVersionColors] = useState('');
+  const choosingVersion = sourceLogo.needsColorWay || editingVersion;
+  const selected = sourceLogo.colorWays?.find(c => c.id === selectedColorWay);
+  // A dropdown selection is only a draft. Never upload against an unpersisted assignment.
+  const logo = sourceLogo;
+  const assigned = sourceLogo.colorWays?.find(c => c.id === sourceLogo.colorWayId);
   const input = useRef(null);
   const [error, setError] = useState('');
   const [help, setHelp] = useState(false);
@@ -150,6 +155,18 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy, mockUrl = '' }) {
   const [bgMode, setBgMode] = useState(null);
   const [hasWhite, setHasWhite] = useState(null);
   const [mockHex, setMockHex] = useState(null);
+  const assign = async () => {
+    if (!sourceLogo.onAssign || busy || uploadLock.current) return;
+    if (allGarments && !window.confirm('Use this same artwork version for all garments using this artwork on this order? Different assigned versions will not be overwritten. Reversible sides remain separate.')) return;
+    uploadLock.current = true; setSaving(true); setError('');
+    try {
+      const ok = await sourceLogo.onAssign({ colorWayId: selectedColorWay, allGarments,
+        ...(selectedColorWay === '__new' ? { newVersion: { id: 'cw' + crypto.randomUUID(), label: versionName, inks: versionColors.split(',') } } : {}) });
+      if (ok !== true) { setError('Artwork assignment was not saved. Retry before uploading.'); return; }
+      setEditingVersion(false); setSelectedColorWay(''); setAllGarments(false); setVersionName(''); setVersionColors('');
+    } catch (e) { setError(e.message || 'Could not save the artwork assignment.'); }
+    finally { uploadLock.current = false; setSaving(false); }
+  };
   useEffect(() => { let live = true; setHasWhite(null); logoHasWhite(logo.url).then(v => { if (live) setHasWhite(v); }); return () => { live = false; }; }, [logo.url]);
   // The garment line doesn't name its own color ("CUSTOM"): the mock IS that garment, so its
   // shirt color beats the color way's label (one color way is often reused on several colors).
@@ -174,6 +191,7 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy, mockUrl = '' }) {
   };
   const upload = async files => {
     if (!files.length || !logo.onUpload || busy || uploadLock.current) return;
+    if (choosingVersion) { setError('Save the artwork choice before uploading the logo PNG.'); return; }
     if (logo.needsColorWay) { setError('Choose a color way below before uploading the logo PNG.'); return; }
     uploadLock.current = true; setSaving(true);
     try {
@@ -196,7 +214,7 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy, mockUrl = '' }) {
     {help && <div className="logo-help" role="note"><ul>{LOGO_HELP.map(t => <li key={t}>{t}</li>)}</ul></div>}
     <div className={'panel-frame logo-frame bg-' + mode + (drag ? ' dragging' : '')} style={mode === 'garment' ? { background: bg } : undefined} {...drop}>
       {logo.url ? <button type="button" className="frame-open" onClick={() => openFile(logo.url)} aria-label="Open full size logo detail"><img src={logo.url} alt="Logo detail" /></button>
-        : <span className="logo-empty">{logo.needsColorWay ? 'Choose a color way below to upload the logo PNG' : logo.onUpload ? <>Drop the transparent logo PNG here<br /><small>or use Upload logo PNG</small></> : 'No logo detail yet'}</span>}
+        : <span className="logo-empty">{logo.needsColorWay ? 'Choose and save an artwork version below' : logo.onUpload ? <>Drop the transparent logo PNG here<br /><small>or use Upload logo PNG</small></> : 'No logo detail yet'}</span>}
     </div>
     {logo.url && <div className="bg-switch" role="group" aria-label="Logo background">
       {[['garment', bgName], ['checker', 'Checkered'], ['dark', 'Dark']].map(([k, lbl]) => <button key={k} type="button" aria-pressed={mode === k} onClick={() => setBgMode(k)}>{lbl}</button>)}
@@ -204,17 +222,32 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy, mockUrl = '' }) {
     <div className="panel-meta">{mode === 'garment' ? bgNote : mode === 'checker' ? 'Checkered = transparent areas' : 'Shown on dark'}</div>
     {whiteWarning && <p className="logo-warning">White parts of this logo won't show on {bgName === 'Mock color' ? 'this garment' : bgName}. Check the color way — use Dark to see them.</p>}
     {error && <p role="alert" className="mock-error">{error}</p>}
-    {sourceLogo.onUpload && sourceLogo.needsColorWay && sourceLogo.colorWays?.length > 0 && <label className="panel-hint">Color way for this logo
-      <select aria-label="Color way for this logo" value={selectedColorWay} disabled={busy} onChange={e => { setSelectedColorWay(e.target.value); setError(''); }}>
-        <option value="">Choose a color way…</option>
-        {sourceLogo.colorWays.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
-      </select>
-      <span> The PNG is saved to this artwork color way.</span>
-    </label>}
-    {logo.onUpload && !logo.url && <p className="panel-hint">{logo.needsColorWay ? (sourceLogo.colorWays?.length ? 'Choose the color way this logo prints in, then upload your transparent PNG.' : 'Choose a color way in Art Library → Apply to items first.') : 'Artist next step: upload the transparent logo PNG. Reps can still send the garment mock to the coach.'}</p>}
+    {sourceLogo.onAssign && choosingVersion && <div className="artwork-version-picker">
+      <label>Artwork version
+        <select aria-label="Artwork version" value={selectedColorWay} disabled={busy} onChange={e => { setSelectedColorWay(e.target.value); setError(''); }}>
+          <option value="">Choose artwork…</option>
+          {(sourceLogo.colorWays || []).map(c => <option key={c.id} value={c.id}>{c.label}{c.colors ? ' — ' + c.colors : ''}</option>)}
+          <option value="__new">Add a different artwork version…</option>
+        </select>
+      </label>
+      <p className="panel-hint">This is the artwork version name, not the garment color. The same artwork can be used on different garment colors.</p>
+      {selected && <p className="panel-hint">Ink / thread colors: {selected.colors || 'Not specified — check the artwork.'}</p>}
+      {selectedColorWay === '__new' && <>
+        <label>Version name<input aria-label="Artwork version name" value={versionName} disabled={busy} onChange={e => setVersionName(e.target.value)} placeholder="e.g. Full-color Bulldog" /></label>
+        <label>Ink / thread colors<input aria-label="Artwork version colors" value={versionColors} disabled={busy} onChange={e => setVersionColors(e.target.value)} placeholder="e.g. Royal, White, Grey, Black" /></label>
+        <p className="panel-hint">Creates a separate version on this order. Existing logos and production files are not copied to it.</p>
+      </>}
+      <label className="artwork-version-shared"><input type="checkbox" checked={allGarments} disabled={busy} onChange={e => setAllGarments(e.target.checked)} />Same artwork for all garments using this design on this order{sourceLogo.side ? ' (Side ' + sourceLogo.side + ')' : ''}</label>
+      <div className="panel-actions"><button type="button" className="mock-primary" disabled={busy || !selectedColorWay || (selectedColorWay === '__new' && (!versionName.trim() || !versionColors.trim()))} onClick={assign}>Save artwork choice</button>
+        {editingVersion && <button type="button" disabled={busy} onClick={() => { setEditingVersion(false); setSelectedColorWay(''); setAllGarments(false); }}>Cancel</button>}</div>
+    </div>}
+    {!choosingVersion && assigned && <p className="panel-hint">Artwork: <strong>{assigned.label}</strong>{assigned.colors && <> · Ink / thread: {assigned.colors}</>}</p>}
+    {logo.onUpload && !logo.url && !choosingVersion && <p className="panel-hint">Artist next step: upload the transparent logo PNG. Saving artwork does not approve it.</p>}
+    {logo.needsColorWay && !sourceLogo.onAssign && <p className="panel-hint">Choose the artwork version in Art Library → Apply to items first.</p>}
     {logo.onUpload && <div className="panel-actions">
-      <button type="button" disabled={busy || logo.needsColorWay} onClick={() => input.current.click()}>{logo.url ? 'Replace logo' : 'Upload logo PNG'}</button>
-      {logo.url && logo.onRemove && <button type="button" className="mock-remove" disabled={busy} onClick={() => { if (window.confirm('Remove this logo detail?')) run(() => logo.onRemove(logo.url)); }}>Remove</button>}
+      <button type="button" disabled={busy || choosingVersion} onClick={() => input.current.click()}>{logo.url ? 'Replace logo' : 'Upload logo PNG'}</button>
+      {!choosingVersion && sourceLogo.onAssign && <button type="button" onClick={() => { setSelectedColorWay(sourceLogo.colorWayId || ''); setEditingVersion(true); }} disabled={busy}>Change artwork version</button>}
+      {logo.url && logo.onRemove && <button type="button" className="mock-remove" disabled={busy || choosingVersion} onClick={() => { if (window.confirm('Remove this logo detail?')) run(() => logo.onRemove(logo.url)); }}>Remove</button>}
       <input ref={input} type="file" hidden accept=".png" onChange={e => { upload(Array.from(e.target.files)); e.target.value = ''; }} />
     </div>}
   </div>;
