@@ -359,3 +359,12 @@ describe('change sync and settle are wired into the run',()=>{
     expect(edge).toContain("if(invoiceStillSettling(invoice)){counters.invoices.held_settling++;add('invoice',sourceId,'classify','held_settling',null,");
   });
 });
+
+describe('Portal QuickBooks number is restored from the verified link',()=>{
+  const edge=read('supabase/functions/qbo-sales-background/index.ts');
+  test('only fills a blank, only when writes are enabled, and never blocks the run',()=>{
+    expect(edge).toContain("if(!clean(invoice.qb_invoice_id)&&claim.writes_enabled){");
+    expect(edge).toContain(".update({qb_invoice_id:mappedId}).eq('id',invoice.id).is('qb_invoice_id',null)");
+    expect(edge).toMatch(/restamp_portal_link[\s\S]{0,80}\}catch\{/);
+  });
+});

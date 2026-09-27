@@ -275,6 +275,16 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
         let existing=qboInvoiceById.get(mappedId);
         if(!existing){try{existing=slimInvoice((await qbo.request(`/invoice/${mappedId}`)).Invoice);if(existing?.Id)qboInvoiceById.set(mappedId,existing);}catch{/* classified below */}}
         if(!existing){counters.invoices.manual_review++;review('invoice',sourceId,'mapped_invoice_missing',{qbo_id:mappedId});add('invoice',sourceId,'revalidate','manual_review',mappedId,{reason:'mapped_invoice_missing'});continue;}
+        // A Portal tab opened before the sync stamped qb_invoice_id can save the invoice
+        // back without it (INV-64005 lost #18640 97 seconds after the stamp). The sync
+        // tracks the link durably, but the Portal's "already in QuickBooks" warning reads
+        // the column, so restore it from the verified link. Never overwrites a value.
+        if(!clean(invoice.qb_invoice_id)&&claim.writes_enabled){
+          try{
+            const restamp=await admin.from('invoices').update({qb_invoice_id:mappedId}).eq('id',invoice.id).is('qb_invoice_id',null).select('id');
+            if(!restamp.error&&restamp.data?.length)add('invoice',sourceId,'restamp_portal_link','updated',mappedId,{});
+          }catch{/* cosmetic for the Portal; never blocks the run */}
+        }
         const drift=linkedInvoiceTotalDrift(invoice,existing);
         if(drift){
           invoiceTotalDrifted.add(String(invoice.id));
