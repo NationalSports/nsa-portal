@@ -133,3 +133,8 @@ test('sole DPO preserves untyped names alongside artwork on the same garment',as
  const result=await attachDpoContext(ctx,packet,{dpo_id:'dp-a',dpo_so_id:'SO-1'});
  expect(result.decorations).toHaveLength(2);
 });
+test('one DPO can cover both print and embroidery despite its summary method',async()=>{
+ const {ctx,packet,rows}=dpoContextFixture();rows.sales_orders[0].deco_pos=rows.sales_orders[0].deco_pos.slice(0,1);
+ rows.so_item_decorations[1]={...rows.so_item_decorations[1],type:'embroidery',vendor:null,deco_po_id:null};
+ const result=await attachDpoContext(ctx,packet,{dpo_id:'dp-a',dpo_so_id:'SO-1'});expect(result.decorations).toHaveLength(2);
+});

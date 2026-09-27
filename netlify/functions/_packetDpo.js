@@ -93,7 +93,11 @@ async function attachDpoContext(ctx, packet, body = {}) {
     garmentIds.add(`garment:${item.id}`);
     const itemDecos = decos.filter(d => d.so_item_id === item.id).sort((a, b) => a.deco_index - b.deco_index);
     const itemIndex = Number(item.item_index == null ? sourcePosition : item.item_index);
+    const itemDpos=entries.filter(candidate=>candidate.soId===dpoSoId && list(candidate.dp.item_idxs).map(Number).includes(itemIndex));
     const matched = itemDecos.filter(d => {
+      // A single vendor PO can cover embroidery, printing and names together.
+      // Explicit item routing outranks the PO's summary method in that case.
+      if (!clean(d.deco_po_id) && itemDpos.length===1 && (d.fulfillment==='outside'||d.kind==='outside_deco') && (!clean(d.vendor)||same(d.vendor,entry.vendor))) return true;
       if (!belongsToDpo(d, entry.dp, { decorations: itemDecos })) return false;
       if (clean(d.deco_po_id)) return true;
       const candidates = entries.filter(candidate => candidate.soId === dpoSoId && list(candidate.dp.item_idxs).map(Number).includes(itemIndex) && belongsToDpo(d, candidate.dp, { decorations: itemDecos }));
