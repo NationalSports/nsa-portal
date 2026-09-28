@@ -129,3 +129,33 @@ test('recipient cannot write staff instructions and cross-SO message targets fai
   await expect(run(event({}), { token: 'b'.repeat(64), action: 'message', target_so_id: 'SO-1', target_id: 'garment:item-2', text: 'Wrong garment', photo: { type: 'image/png', content: 'iVBORw0KGgoAAAANSUhEUg==' } })).rejects.toMatchObject({ status: 400 });
   expect(admin.inserted).toHaveLength(0);
 });
+
+function dimensionFixture() {
+  const data=seed();
+  data.so_items[0].no_deco=false;
+  data.so_art_files=[{id:'art-1',so_id:'SO-1',name:'Basketball',art_size:'',art_sizes:{Front:'',Back:'4 in'},status:'approved',deco_type:'screen_print',_version:1}];
+  data.so_item_decorations=[{id:'deco-1',so_item_id:'item-1',deco_index:0,kind:'art',art_file_id:'art-1',position:'Front'}];
+  data.production_packet_links=[{id:'link-1',token_hash:require('crypto').createHash('sha256').update('c'.repeat(64)).digest('hex'),store_id:'store-1',so_id:'SO-1',expires_at:'2999-01-01T00:00:00.000Z',label:'Decorator'}];
+  return data;
+}
+test('recipient can save dimensions to the linked scoped art folder and live packet updates',async()=>{
+ const admin=database(dimensionFixture());getSupabaseAdmin.mockReturnValue(admin);
+ const base={token:'c'.repeat(64)};
+ const before=await run(event({}),{...base,action:'view'});
+ const target=before.packet.decorations[0];expect(target.artId).toBe('art-1');
+ await run(event({}),{...base,action:'dimensions',target_id:target.id,dimensions:'8 in wide',fingerprint:before.packet.fingerprint,art_id:'untrusted-other-art'});
+ expect(admin.tables.so_art_files[0]).toMatchObject({art_size:'8 in wide',art_sizes:{Front:'8 in wide',Back:'4 in'}});
+ const after=await run(event({}),{...base,action:'view'});
+ expect(after.packet.decorations[0].dimensions).toBe('8 in wide');
+ expect(after.packet.fingerprint).not.toBe(before.packet.fingerprint);
+ await expect(run(event({}),{...base,action:'dimensions',target_id:target.id,dimensions:'9 in',fingerprint:before.packet.fingerprint})).rejects.toMatchObject({status:409});
+});
+test('dimension writes reject unknown targets, historical packets, invalid values and revoked links',async()=>{
+ const admin=database(dimensionFixture());getSupabaseAdmin.mockReturnValue(admin);
+ const base={token:'c'.repeat(64)};const {packet}=await run(event({}),{...base,action:'view'});
+ const request={...base,action:'dimensions',target_id:packet.decorations[0].id,dimensions:'8 in',fingerprint:packet.fingerprint};
+ for(const patch of [{target_id:'outside-packet'},{revision_id:'issued'},{dimensions:''},{dimensions:'<script>8</script>'}])await expect(run(event({}),{...request,...patch})).rejects.toMatchObject({status:400});
+ admin.tables.production_packet_links[0].revoked_at=new Date().toISOString();
+ await expect(run(event({}),request)).rejects.toMatchObject({status:403});
+ expect(admin.tables.so_art_files[0].art_size).toBe('');
+});

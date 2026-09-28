@@ -1,3 +1,4 @@
+import {pantoneHex} from '../constants';
 import { safeUrl, groupPlayerOrders, humanizeProductionValue, isPersonalization, productionLabel } from './model';
 
 export const packetImageUrls = packet => [...new Set([packet.store?.logoUrl,...packet.decorations.flatMap(d=>[...d.mocks.map(f=>f.url), d.storePreview?.image, ...(!d.storePreview?.baked?[d.storePreview?.art]:[])])].map(safeUrl).filter(Boolean))];
@@ -9,6 +10,7 @@ const note = n => `<div class="instruction"><b>${esc(n.scope)}${n.soId ? ' · ' 
 const empty = value => esc(value || 'Not specified');
 const files = values => values.map(f => `<a href="${esc(f.url)}">${esc(f.name)}</a>`).join(' · ');
 
+const colorSwatches = value => value ? String(value).split(',').map(label=>{const hex=pantoneHex(label.trim());return `<span style="display:inline-block;margin-right:8px">${hex?`<span style="display:inline-block;width:12px;height:12px;border:1px solid #aaa;vertical-align:middle;margin-right:4px;background:${hex};print-color-adjust:exact;-webkit-print-color-adjust:exact"></span>`:''}${esc(label.trim())}</span>`;}).join('') : 'Not specified';
 function mockHtml(d) {
   if (d.mocks.length) return d.mocks.map(f => /\.(pdf)(\?|$)/i.test(f.url) ? `<p><a href="${esc(f.url)}">${esc(f.name)} (PDF proof)</a></p>` : `<img alt="${esc(d.sku)} production mock" crossorigin="anonymous" src="${esc(f.url)}">`).join('');
   if (!d.storePreview) return '<p class="draft">No garment mock available</p>';
@@ -18,7 +20,7 @@ function mockHtml(d) {
 function artCard(d,p) {
   const colorLabel=d.method==='embroidery'?'Thread colors':'Pantone / ink colors';
   const colorValue=d.method==='embroidery'?(d.threadColors||d.colors):(d.pantoneColors||d.colors);
-  return `<article class="deco"><div class="eyebrow">${esc(d.soId || 'Store orders · awaiting batch')} · ${esc(d.sku)} · ${esc(d.color)}</div><h3>${esc(d.name)} — ${esc(d.position)}</h3><div class="quantity"><b>${esc(d.units)} garments</b><span>${sizes(d.sizes)}</span></div><div class="mocks">${mockHtml(d)}</div><div class="details"><p>Method: ${empty(humanizeProductionValue(d.method))}<br>Dimensions: ${empty(d.dimensions)}<br>${colorLabel}: ${empty(colorValue)}${d.method==='embroidery'?`<br>Stitch count: ${empty(d.stitches?Number(d.stitches).toLocaleString():'')}`:''}</p><p>Decorator: ${empty(d.decorator)}<br>Artwork: ${d.approved ? 'Approved' : 'Review required'}<br>Production files: ${files(d.productionFiles)||'None attached'}</p></div>${p.notes.filter(n => n.targetId === d.id).map(note).join('')}</article>`;
+  return `<article class="deco"><div class="eyebrow">${esc(d.soId || 'Store orders · awaiting batch')} · ${esc(d.sku)} · ${esc(d.color)}</div><h3>${esc(d.name)} — ${esc(d.position)}</h3><div class="quantity"><b>${esc(d.units)} garments</b><span>${sizes(d.sizes)}</span></div><div class="mocks">${mockHtml(d)}</div><div class="details"><p>Method: ${empty(humanizeProductionValue(d.method))}<br>Dimensions: ${empty(d.dimensions)}<br>${colorLabel}: ${colorSwatches(colorValue)}${d.method==='embroidery'?`<br>Stitch count: ${empty(d.stitches?Number(d.stitches).toLocaleString():'')}`:''}</p><p>Decorator: ${empty(d.decorator)}<br>Artwork: ${d.approved ? 'Approved' : 'Review required'}<br>Production files: ${files(d.productionFiles)||'None attached'}</p></div>${p.notes.filter(n => n.targetId === d.id).map(note).join('')}</article>`;
 }
 
 function personalizationCard(d,p) {

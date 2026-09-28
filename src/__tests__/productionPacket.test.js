@@ -67,3 +67,11 @@ test('personalization zero quantities, unknown placement, and method requirement
 test('embroidery production readiness requires actual stitch count and production specifications',()=>{
  const f=fixture();f.salesOrders[0].items[0].decorations=[{kind:'art',art_file_id:'a',position:'Left chest'}];f.salesOrders[0].art_files=[{id:'a',status:'approved',deco_type:'embroidery',art_size:'3x2',thread_colors:'Red',prod_files:[{url:'https://example.com/a.dst'}]}];const p=buildProductionPacket(f);expect(p.decorations[0].missingSpecs).toContain('stitch count');expect(p.issueDetails.some(i=>i.targetId===p.decorations[0].id)).toBe(true);
 });
+test('printed Pantone swatches retain red and navy codes and escape unknown labels',()=>{
+ const f=fixture();f.salesOrders[0].items[0].decorations=[{kind:'art',art_file_id:'a',position:'Front'}];
+ f.salesOrders[0].art_files=[{id:'a',name:'Basketball',deco_type:'screen_print',ink_colors:'185C, 281C, <unknown>',prod_files:[]}];
+ const html=packetPrintHtml(buildProductionPacket(f));
+ expect(html).toContain('185C');expect(html).toContain('281C');
+ expect(html).toContain('background:#E4002B');expect(html).toContain('background:#002868');
+ expect(html).toContain('&lt;unknown&gt;');expect(html).not.toContain('<unknown>');
+});
