@@ -12044,8 +12044,20 @@ export default function App(){
     // PO lines store the vendor as EITHER the vendor's display name (e.g. "Momentec",
     // "SanMar") OR the vendor's id (e.g. "v1780447907300", "ns_100") depending on which
     // code path created the PO — so match against both keys, case/space-insensitively.
-    const vKeys=new Set([selV.id,selV.name].filter(Boolean).map(s=>String(s).trim().toLowerCase()));
-    const vMatch=v=>{const k=(v==null?'':String(v)).trim().toLowerCase();return !!k&&vKeys.has(k)};
+    // Decoration POs store the DECORATOR's name ("Silver Screen", "New Star Embroidery",
+    // hard-coded "Topstar"), not the vendor record's name ("Silver Screen Printing &
+    // Embroidery", "TopStar Digitizing"), so exact matching hid ~220 DPOs. Resolve each
+    // stored name to a vendor id: exact id/name (punctuation-insensitive) → deco vendor
+    // linked in Settings → Deco Vendors → the ONE vendor whose name starts with it
+    // (ambiguous prefixes like "All Star" resolve to nothing rather than guess).
+    const _vn=s=>(s==null?'':String(s)).toLowerCase().replace(/[^a-z0-9]/g,'');
+    const _vCache=new Map();
+    const _resolveV=raw=>{const k=_vn(raw);if(!k)return null;if(_vCache.has(k))return _vCache.get(k);
+      let id=(vend.find(v=>_vn(v.id)===k||_vn(v.name)===k)||{}).id||null;
+      if(!id){const dv=(decoVendors||[]).find(d=>_vn(d.id)===k||_vn(d.name)===k);if(dv?.vendor_id)id=dv.vendor_id}
+      if(!id&&k.length>=5){const hits=vend.filter(v=>_vn(v.name).startsWith(k));if(hits.length===1)id=hits[0].id}
+      _vCache.set(k,id);return id};
+    const vMatch=(...cands)=>cands.some(c=>c!=null&&c!==''&&_resolveV(c)===selV.id);
     const PO_NON=['status','po_id','received','shipments','cancelled','vendor','deco_vendor','created_at','expected_date','memo','notes','po_type','unit_cost','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping','api_order_id','api_ordered_at','vendor_keys','tracking_numbers'];
     const szSort=(a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b));
     const vPOs=[];
@@ -12064,7 +12076,7 @@ export default function App(){
         vPOs.push({po_id:po.po_id||`${so.id}-PO-${pli+1}`,status:st,so_id:so.id,so,customer:cName,itemSku:it.sku||'',itemName:it.name||'',totalOrd,totalRcvd,totalOpen,created_at:po.created_at||so.created_at||'',expected_date:po.expected_date||'',poTotal:totalOrd*uc,dropShip:!!po.drop_ship,source:'so',isBooking:soIsBooking});
       })});
       (so.deco_pos||[]).forEach(dp=>{
-        if(!vMatch(dp.vendor))return;
+        if(!vMatch(dp.deco_vendor_id,dp.vendor))return;
         const totalOrd=safeNum(dp.qty||0);const st=dp.status||'waiting';
         const actual=safeNum(dp._bill_cost||0);const expected=safeNum(dp.expected_cost||totalOrd*dp.unit_cost);
         const skus=(dp.item_idxs||[]).map(ii=>safeItems(so)[ii]?.sku).filter(Boolean);
@@ -35580,13 +35592,22 @@ export default function App(){
         <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Decoration Vendors</h3></div><div className="card-body">
           <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Manage your outside decoration vendors and their pricing. Prices auto-fill on Deco POs and outside decoration line items.</div>
           {decoVendors.map(v=><div key={v.id} style={{display:'flex',gap:8,alignItems:'center',padding:'8px 12px',borderRadius:6,marginBottom:4,background:v.is_active===false?'#f8f9fb':'#faf5ff',border:'1px solid '+(v.is_active===false?'#e2e8f0':'#ede9fe')}}>
-            <span style={{fontWeight:700,fontSize:13,color:v.is_active===false?'#94a3b8':'#7c3aed',flex:1}}>{v.name}{v.is_active===false&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:8}}>(inactive)</span>}</span>
+            <span style={{fontWeight:700,fontSize:13,color:v.is_active===false?'#94a3b8':'#7c3aed',flex:1}}>{v.name}{v.is_active===false&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:8}}>(inactive)</span>}{!v.vendor_id&&<span title="Its DPOs won't show on any vendor page — click Edit and pick a Linked Vendor" style={{fontSize:10,fontWeight:600,color:'#b45309',background:'#fef3c7',borderRadius:4,padding:'1px 6px',marginLeft:8}}>No vendor linked</span>}</span>
             <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{setDvEdit(v.id);setDvTab('embroidery');setDvAddr({contact_name:v.contact_name||'',phone:v.phone||'',address_line1:v.address_line1||'',address_line2:v.address_line2||'',city:v.city||'',state:v.state||'',zip:v.zip||''})}}>Edit</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:v.is_active===false?'#166534':'#dc2626'}} onClick={()=>saveDV({...v,is_active:!v.is_active,updated_at:new Date().toISOString()})}>{v.is_active===false?'Activate':'Deactivate'}</button>
           </div>)}
           <div style={{display:'flex',gap:8,marginTop:8}}>
             <input className="form-input" placeholder="New vendor name..." value={dvNewName} onChange={e=>setDvNewName(e.target.value)} style={{width:200,fontSize:12}}/>
-            <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',fontSize:11}} onClick={()=>{if(!dvNewName.trim())return;const id='dv_'+Date.now();saveDV({id,name:dvNewName.trim(),is_active:true,created_at:new Date().toISOString()});setDvNewName('')}}>+ Add Vendor</button>
+            <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',fontSize:11}} onClick={()=>{const nm=dvNewName.trim();if(!nm)return;const id='dv_'+Date.now();
+              // Every decorator needs a Vendors-page record too — DPOs, bills and the vendor
+              // PO list key off it. Link the matching vendor (same name ignoring punctuation,
+              // else the ONE vendor whose name starts with it) or create one, so the two
+              // lists can't drift apart (Mellado/Long Island DPOs had no vendor page).
+              const _n=x=>String(x||'').toLowerCase().replace(/[^a-z0-9]/g,'');const k=_n(nm);
+              let lv=vend.find(v=>_n(v.name)===k);
+              if(!lv&&k.length>=5){const hits=vend.filter(v=>_n(v.name).startsWith(k));if(hits.length===1)lv=hits[0]}
+              if(!lv){lv={id:'v'+Date.now(),name:nm,vendor_type:'upload',payment_terms:'net30',is_active:true,_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0};setVend(p=>[...p,lv]);nf('Also created vendor "'+nm+'" on the Vendors page')}
+              saveDV({id,name:nm,is_active:true,vendor_id:lv.id,created_at:new Date().toISOString()});setDvNewName('')}}>+ Add Vendor</button>
           </div>
         </div></div>
 
