@@ -35592,13 +35592,22 @@ export default function App(){
         <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Decoration Vendors</h3></div><div className="card-body">
           <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Manage your outside decoration vendors and their pricing. Prices auto-fill on Deco POs and outside decoration line items.</div>
           {decoVendors.map(v=><div key={v.id} style={{display:'flex',gap:8,alignItems:'center',padding:'8px 12px',borderRadius:6,marginBottom:4,background:v.is_active===false?'#f8f9fb':'#faf5ff',border:'1px solid '+(v.is_active===false?'#e2e8f0':'#ede9fe')}}>
-            <span style={{fontWeight:700,fontSize:13,color:v.is_active===false?'#94a3b8':'#7c3aed',flex:1}}>{v.name}{v.is_active===false&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:8}}>(inactive)</span>}</span>
+            <span style={{fontWeight:700,fontSize:13,color:v.is_active===false?'#94a3b8':'#7c3aed',flex:1}}>{v.name}{v.is_active===false&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:8}}>(inactive)</span>}{!v.vendor_id&&<span title="Its DPOs won't show on any vendor page — click Edit and pick a Linked Vendor" style={{fontSize:10,fontWeight:600,color:'#b45309',background:'#fef3c7',borderRadius:4,padding:'1px 6px',marginLeft:8}}>No vendor linked</span>}</span>
             <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{setDvEdit(v.id);setDvTab('embroidery');setDvAddr({contact_name:v.contact_name||'',phone:v.phone||'',address_line1:v.address_line1||'',address_line2:v.address_line2||'',city:v.city||'',state:v.state||'',zip:v.zip||''})}}>Edit</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:v.is_active===false?'#166534':'#dc2626'}} onClick={()=>saveDV({...v,is_active:!v.is_active,updated_at:new Date().toISOString()})}>{v.is_active===false?'Activate':'Deactivate'}</button>
           </div>)}
           <div style={{display:'flex',gap:8,marginTop:8}}>
             <input className="form-input" placeholder="New vendor name..." value={dvNewName} onChange={e=>setDvNewName(e.target.value)} style={{width:200,fontSize:12}}/>
-            <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',fontSize:11}} onClick={()=>{if(!dvNewName.trim())return;const id='dv_'+Date.now();saveDV({id,name:dvNewName.trim(),is_active:true,created_at:new Date().toISOString()});setDvNewName('')}}>+ Add Vendor</button>
+            <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',fontSize:11}} onClick={()=>{const nm=dvNewName.trim();if(!nm)return;const id='dv_'+Date.now();
+              // Every decorator needs a Vendors-page record too — DPOs, bills and the vendor
+              // PO list key off it. Link the matching vendor (same name ignoring punctuation,
+              // else the ONE vendor whose name starts with it) or create one, so the two
+              // lists can't drift apart (Mellado/Long Island DPOs had no vendor page).
+              const _n=x=>String(x||'').toLowerCase().replace(/[^a-z0-9]/g,'');const k=_n(nm);
+              let lv=vend.find(v=>_n(v.name)===k);
+              if(!lv&&k.length>=5){const hits=vend.filter(v=>_n(v.name).startsWith(k));if(hits.length===1)lv=hits[0]}
+              if(!lv){lv={id:'v'+Date.now(),name:nm,vendor_type:'upload',payment_terms:'net30',is_active:true,_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0};setVend(p=>[...p,lv]);nf('Also created vendor "'+nm+'" on the Vendors page')}
+              saveDV({id,name:nm,is_active:true,vendor_id:lv.id,created_at:new Date().toISOString()});setDvNewName('')}}>+ Add Vendor</button>
           </div>
         </div></div>
 
