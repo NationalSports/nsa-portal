@@ -208,7 +208,7 @@ export default function InvoicesPage(){
       const invShipSel=(inv.shipping_name||inv.shipping_address)?null:resolveOrderShipTo(so,ic);
       // Per-invoice override first, then the account rep, then the SO creator — the same order
       // commissionRepId() pays on, so the rep printed here is always the rep who earns it.
-      const repObj=REPS.find(r=>r.id===(inv.rep_id||ic?.primary_rep_id||so?.created_by))||null;
+      const repObj=REPS.find(r=>r.id===(inv.rep_id||so?.rep_id||ic?.primary_rep_id||so?.created_by))||null;
       const repIsOverride=!!(inv.rep_id&&inv.rep_id!==ic?.primary_rep_id);
       const acctRepName=REPS.find(r=>r.id===ic?.primary_rep_id)?.name||'none';
       const bal=invoiceDetailBalance(inv);
@@ -1405,7 +1405,7 @@ export default function InvoicesPage(){
                 const siBillName=siInv.billing_name||siCust?.name||'—';
                 const siBal=siInv.total-(siInv.paid||0);
                 const siShip=siInv.shipping||0;const siTax=siInv.tax||0;
-                const siRepObj=REPS.find(r=>r.id===(siCust?.primary_rep_id||siSo?.created_by))||null;
+                const siRepObj=REPS.find(r=>r.id===(siSo?.rep_id||siCust?.primary_rep_id||siSo?.created_by))||null;
                 const siPoNum=siInv.po_number||siInv._po_number||siSo?.po_number;
                 const siBillSub=siInv.billing_name?(siInv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+siCust?.name+'</span>':'';
                 const siBillAddr=siBillSub||(siCust?.billing_address_line1?siCust.billing_address_line1+(siCust.billing_city?'<br/>'+siCust.billing_city+(siCust.billing_state?' '+siCust.billing_state:'')+(siCust.billing_zip?' '+siCust.billing_zip:''):'')+'<br/>United States':'');
@@ -1504,7 +1504,7 @@ export default function InvoicesPage(){
       // Settled is settled: a row left at a stale 'partial' with nothing owed must not turn the
       // list red or land on the past-due email — same rule the detail page applies.
       const overdue=dd!==null&&dd<0&&i.status!=='paid'&&bal>0.005;
-      const so=sos.find(s=>s.id===i.so_id);const c=cust.find(x=>x.id===i.customer_id);const rep=i.rep_id||c?.primary_rep_id||so?.created_by||null;
+      const so=sos.find(s=>s.id===i.so_id);const c=cust.find(x=>x.id===i.customer_id);const rep=i.rep_id||so?.rep_id||c?.primary_rep_id||so?.created_by||null;
       return{...i,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_rep:rep,_cname:cust.find(c=>c.id===i.customer_id)?.name||'Unknown'}});
 
     // ── Store settlement proposals (OMG deposit funds + webstore Stripe) ──

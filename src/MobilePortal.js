@@ -357,7 +357,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       <div className="mp-detail-body">
         <div className="mp-info-grid">
           <div className="mp-info-item"><div className="mp-info-label">Customer</div><div className="mp-info-val">{cc?.name||'—'}</div></div>
-          <div className="mp-info-item"><div className="mp-info-label">Rep</div><div className="mp-info-val">{repName(cc?.primary_rep_id||so.created_by)}</div></div>
+          <div className="mp-info-item"><div className="mp-info-label">Rep</div><div className="mp-info-val">{repName(so.rep_id||cc?.primary_rep_id||so.created_by)}</div></div>
           <div className="mp-info-item"><div className="mp-info-label">Due Date</div><div className="mp-info-val" style={daysOut!=null&&daysOut<=3?{color:'#dc2626',fontWeight:700}:{}}>{fmtDate(so.expected_date)}{daysOut!=null?` (${daysOut}d)`:'  '}</div></div>
           <div className="mp-info-item"><div className="mp-info-label">Created</div><div className="mp-info-val">{fmtDate(so.created_at)}</div></div>
           <div className="mp-info-item"><div className="mp-info-label">Total Sale</div><div className="mp-info-val" style={{fontSize:18,fontWeight:800,color:'#16a34a'}}>{fmtMoney(saleTotal)}</div></div>
