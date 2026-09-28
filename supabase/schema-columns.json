@@ -402,6 +402,7 @@
    "production_notes",
    "promo_amount",
    "promo_applied",
+   "rep_id",
    "sent_history",
    "ship_on_date",
    "ship_preference",
