@@ -105,7 +105,7 @@ async function run(event, body) {
   const ctx = await authorize(event, body);
   const { admin, storeId, staff } = ctx;
   const action = body.action || 'view';
-  if (!['view', 'message', 'workflow'].includes(action) && !staff) fail(403, 'Staff access required');
+  if (!['view', 'message', 'workflow', 'dimensions'].includes(action) && !staff) fail(403, 'Staff access required');
   if (action === 'view') {
     if(body.revision_id && body.dpo_id) fail(400,'Open the full issued packet to view its preserved production snapshot.');
     const { packet: rawCurrent, internal } = await loadCurrent(ctx);
@@ -127,6 +127,29 @@ async function run(event, body) {
   packet.fingerprint = hash(JSON.stringify(productionContent(packet)));
   const assertSo = id => { if (!packet.salesOrders.some(s => s.id === id)) fail(403, 'Choose a sales order in this packet'); };
   const assertTarget = id => { if (id && ![...packet.garments, ...packet.decorations, ...packet.players].some(x => x.id === id)) fail(400, 'Item no longer exists in this packet'); };
+  if (action === 'dimensions') {
+    if (body.revision_id) fail(400, 'Issued packets cannot be edited. Open the live packet.');
+    if (body.fingerprint !== packet.fingerprint) fail(409, 'Production details changed. Refresh before saving dimensions.');
+    const target = packet.decorations.find(d => d.id === body.target_id);
+    if (!target?.soId || !target.artId || target.isPersonalization) fail(400, 'Choose artwork linked to an SO art folder.');
+    assertSo(target.soId);
+    const dimensions = clean(body.dimensions);
+    if (!dimensions || dimensions.length > 100 || !/[1-9]/.test(dimensions) || /[<>\r\n]/.test(dimensions)) fail(400, 'Enter dimensions such as 8 in wide or 8 in W x 10 in H (maximum 100 characters).');
+    const art = await checked(admin.from('so_art_files').select('*').eq('id', target.artId).eq('so_id', target.soId).maybeSingle());
+    if (!art || art.archived) fail(409, 'The linked artwork is no longer available. Refresh the packet.');
+    const patch = { art_size: dimensions };
+    // Preserve other placement sizes; update this placement's override when present.
+    if (art.art_sizes && typeof art.art_sizes === 'object') {
+      patch.art_sizes = { ...art.art_sizes };
+      for (const key of [target.position, target.dimensionKey]) if (key && Object.prototype.hasOwnProperty.call(patch.art_sizes, key)) patch.art_sizes[key] = dimensions;
+    }
+    let query = admin.from('so_art_files').update(patch).eq('id', art.id).eq('so_id', target.soId);
+    if (art._version != null) query = query.eq('_version', art._version);
+    query = art.art_size == null ? query.is('art_size', null) : query.eq('art_size', art.art_size);
+    const updated = await checked(query.select('id').maybeSingle());
+    if (!updated) fail(409, 'Artwork changed while saving. Refresh and try again.');
+    return { ok: true };
+  }
   if (action === 'create_link') {
     const label = clean(body.label).slice(0, 100);
     if (!label) fail(400, 'Name this recipient link');
