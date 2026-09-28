@@ -41,7 +41,7 @@ import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, pendingProdFileGroups, prodFileMethodOf, artStatusAfterProdConfirm, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, orderLineSizes, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine, estimateTermsFooter } from './constants';
 import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, replaceMockLinkGroup, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemArtSlots, jobItemDecosOfKind, jobRosterBlocks, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, jobItemRoster, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, placeRosterEntries, rosterDropSummary, autoSellFromCost, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
-import { invoiceTotalsRows } from './lib/invoiceDocTotals';
+import { invoiceTotalsRows, invoiceMismatchAlert } from './lib/invoiceDocTotals';
 import { pickUnits } from './itemFulfillment';
 import { EmailRouteNotice, Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor, TaxExemptModal } from './components';
 import { checkEmailRecipients, emailDeliveryLabel } from './lib/emailRouting';
@@ -9162,7 +9162,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(invSaved)nf('Invoice '+inv.id+' created for $'+invTotal.toFixed(2)+(invType==='final'?(_closeOnFinal?' — SO marked complete':' — SO left open, still in production'):''));
             else nf('Invoice '+inv.id+' created but NOT saved to the database — the SO was left open. The save will retry in the background; mark the SO complete once it saves.','error');
             // Show invoice review page instead of navigating away
-            setInvReview({...inv,_customer:cust,_so:o,_lineItems:lineItems,_shipAmt:invShipAmt,_taxAmt:invTaxAmt});
+            // _shipAmt is the invoice's own saved shipping, which already folds in any prior-shipping
+            // carry-over — printing invShipAmt alone dropped that charge off the page (INV-64148).
+            setInvReview({...inv,_customer:cust,_so:o,_lineItems:lineItems,_shipAmt:inv.shipping,_taxAmt:invTaxAmt});
             const contact=(cust?.contacts||[])[0];
             const invPortalUrl=cust?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cust.alpha_tag)+'&inv='+encodeURIComponent(inv.id):'';
             const _invJob=(o.memo||'').trim();
@@ -9463,6 +9465,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Lines with no SO match (hand-added, NetSuite import) still have to print, or the
             // document's subtotal won't reconcile to the invoice total.
             _extra.forEach(li=>{eSubTotal+=safeNum(li.amount);eRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$e(safeNum(li.rate)),style:'text-align:right'},{value:_$e(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
+            // A document that doesn't add up is flagged to the rep here — never printed on the PDF.
+            const _mismatch=invoiceMismatchAlert({subtotal:eSubTotal,shipping:shipAmt,tax:taxAmt,ccFee:safeNum(ir.cc_fee),credit:safeNum(ir.credit_amount),depositApplied:safeNum(ir.deposit_applied),total:ir.total},_$e);
+            if(_mismatch&&!window.confirm(_mismatch)){setInvSendingState(null);return}
             const brevoAttachments=[];
             try{
               const docHtml=buildDocHtml({title:irBillName,docNum:ir.id,docType:'INVOICE',date:ir.date,css:PRINT_CSS,

@@ -14,7 +14,7 @@ import { calculateCreditMemo, creditableBalance, creditedTotal, seedCreditMemoLi
 import { EmailRouteNotice, Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub, resolveOrderShipTo, billToIdFor } from './components';
 import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled, greetLine, withGreeting, emailMoney } from './utils';
 import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms } from './App';
-import { invoiceTotalsRows } from './lib/invoiceDocTotals';
+import { invoiceTotalsRows, invoiceMismatchAlert } from './lib/invoiceDocTotals';
 import { stripePaymentRepairCandidate } from './lib/invoicePaymentReconciliation';
 import { invoiceDetailBalance, invoicePaymentStatus, normalizeInvoiceForDetail } from './lib/invoiceDetail';
 
@@ -1397,7 +1397,6 @@ export default function InvoicesPage(){
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={()=>setInvSendModalDirect(null)}>Cancel</button>
               <button className="btn btn-primary" style={{background:'#2563eb'}} disabled={siRecipients.length===0} onClick={async()=>{
-                setInvSendModalDirect(null);
                 const toEmails=siRecipients;
                 const toEmail=toEmails[0];
                 const siInv=si.inv;const siSo=sos.find(s=>s.id===siInv.so_id);const siCust=cust.find(c=>c.id===siInv.customer_id);
@@ -1413,6 +1412,10 @@ export default function InvoicesPage(){
                 const siShipAddr=(siInv.shipping_name||siInv.shipping_address?(siInv.shipping_address||'').replace(/\n/g,'<br/>'):'')||orderShipToSub(siSo,siCust)||custShipAddrSub(siCust);
                 // Build rows from the invoice's own line items (honors per-line price overrides)
                 const {rows:siRows,subtotal:siSubTotal}=buildInvoicePdfRows(siInv,siSo,_$si);
+                // A document that doesn't add up is flagged to the rep here — never printed on the PDF.
+                const _siMismatch=invoiceMismatchAlert({subtotal:siSubTotal,shipping:siShip,tax:siTax,ccFee:safeNum(siInv.cc_fee),credit:safeNum(siInv.credit_amount),depositApplied:safeNum(siInv.deposit_applied),total:siInv.total},_$si);
+                if(_siMismatch&&!window.confirm(_siMismatch))return;
+                setInvSendModalDirect(null);
                 // Build PDF attachment
                 const brevoAttachments=[];
                 try{
