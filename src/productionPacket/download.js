@@ -104,7 +104,14 @@ export async function downloadPacketPdf(packet, { onlineUrl = '', generatedAt = 
     });
     await validatePacketImages(frame.contentDocument.images, { timeoutMs: imageTimeoutMs });
     const filename = `production-packet-${packet.revisionId || 'draft'}.pdf`;
-    const blob = await html2pdf().set({ margin: 0, filename, enableLinks: true, image: { type: 'jpeg', quality: .9 }, html2canvas: { scale: 1, useCORS: true, logging: false, backgroundColor: '#ffffff' }, jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' }, pagebreak: { mode: ['css', 'legacy'], avoid: ['tr', '.instruction', '.deco'] } }).from(frame.contentDocument.body).outputPdf('blob');
+    const worker = html2pdf().set({ margin: .5, filename, enableLinks: true, image: { type: 'jpeg', quality: .96 }, html2canvas: { scale: 2, useCORS: true, logging: false, backgroundColor: '#ffffff' }, jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' }, pagebreak: { mode: ['css', 'legacy'], avoid: ['tr', '.instruction', '.deco'] } }).from(frame.contentDocument.querySelector('.packet-document')).toPdf();
+    const pdf=await worker.get('pdf');
+    const pages=pdf.internal.getNumberOfPages();
+    for(let page=1;page<=pages;page++){
+      pdf.setPage(page);pdf.setFontSize(8);pdf.setTextColor(90,105,115);
+      pdf.text(`${draft?'DRAFT':'RELEASED'} · ${page} / ${pages}`,8.05,10.72,{align:'right'});
+    }
+    const blob=pdf.output('blob');
     const url = URL.createObjectURL(blob), anchor = document.createElement('a');
     anchor.href = url; anchor.download = filename; anchor.click();
     setTimeout(() => URL.revokeObjectURL(url), 60000);
