@@ -12044,8 +12044,20 @@ export default function App(){
     // PO lines store the vendor as EITHER the vendor's display name (e.g. "Momentec",
     // "SanMar") OR the vendor's id (e.g. "v1780447907300", "ns_100") depending on which
     // code path created the PO — so match against both keys, case/space-insensitively.
-    const vKeys=new Set([selV.id,selV.name].filter(Boolean).map(s=>String(s).trim().toLowerCase()));
-    const vMatch=v=>{const k=(v==null?'':String(v)).trim().toLowerCase();return !!k&&vKeys.has(k)};
+    // Decoration POs store the DECORATOR's name ("Silver Screen", "New Star Embroidery",
+    // hard-coded "Topstar"), not the vendor record's name ("Silver Screen Printing &
+    // Embroidery", "TopStar Digitizing"), so exact matching hid ~220 DPOs. Resolve each
+    // stored name to a vendor id: exact id/name (punctuation-insensitive) → deco vendor
+    // linked in Settings → Deco Vendors → the ONE vendor whose name starts with it
+    // (ambiguous prefixes like "All Star" resolve to nothing rather than guess).
+    const _vn=s=>(s==null?'':String(s)).toLowerCase().replace(/[^a-z0-9]/g,'');
+    const _vCache=new Map();
+    const _resolveV=raw=>{const k=_vn(raw);if(!k)return null;if(_vCache.has(k))return _vCache.get(k);
+      let id=(vend.find(v=>_vn(v.id)===k||_vn(v.name)===k)||{}).id||null;
+      if(!id){const dv=(decoVendors||[]).find(d=>_vn(d.id)===k||_vn(d.name)===k);if(dv?.vendor_id)id=dv.vendor_id}
+      if(!id&&k.length>=5){const hits=vend.filter(v=>_vn(v.name).startsWith(k));if(hits.length===1)id=hits[0].id}
+      _vCache.set(k,id);return id};
+    const vMatch=(...cands)=>cands.some(c=>c!=null&&c!==''&&_resolveV(c)===selV.id);
     const PO_NON=['status','po_id','received','shipments','cancelled','vendor','deco_vendor','created_at','expected_date','memo','notes','po_type','unit_cost','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping','api_order_id','api_ordered_at','vendor_keys','tracking_numbers'];
     const szSort=(a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b));
     const vPOs=[];
@@ -12064,7 +12076,7 @@ export default function App(){
         vPOs.push({po_id:po.po_id||`${so.id}-PO-${pli+1}`,status:st,so_id:so.id,so,customer:cName,itemSku:it.sku||'',itemName:it.name||'',totalOrd,totalRcvd,totalOpen,created_at:po.created_at||so.created_at||'',expected_date:po.expected_date||'',poTotal:totalOrd*uc,dropShip:!!po.drop_ship,source:'so',isBooking:soIsBooking});
       })});
       (so.deco_pos||[]).forEach(dp=>{
-        if(!vMatch(dp.vendor))return;
+        if(!vMatch(dp.deco_vendor_id,dp.vendor))return;
         const totalOrd=safeNum(dp.qty||0);const st=dp.status||'waiting';
         const actual=safeNum(dp._bill_cost||0);const expected=safeNum(dp.expected_cost||totalOrd*dp.unit_cost);
         const skus=(dp.item_idxs||[]).map(ii=>safeItems(so)[ii]?.sku).filter(Boolean);
