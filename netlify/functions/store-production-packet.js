@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { verifyUser, getSupabaseAdmin } = require('./_shared');
 const { buildProductionPacket, packetChanges, safeUrl } = require('../../src/productionPacket/model');
 const { uploadPhoto, photoBytes } = require('./_packetPhoto');
+const { recordShipment } = require('./_packetShipping');
 const { attachDpoContext } = require('./_packetDpo');
 const { productionContent, workflowMessage } = require('../../src/productionPacket/workflow');
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -47,12 +48,13 @@ async function loadCurrent(ctx) {
   const [store, orders, salesOrders, catalog, notes, shares] = await Promise.all([
     checked(admin.from('webstores').select('id,name,delivery_mode,store_art,logo_url,primary_color,accent_color').eq('id', storeId).single()),
     all(() => admin.from('webstore_orders').select('id,store_id,so_id,order_number,omg_order_number,status,backorder_of').eq('store_id', storeId).order('id')),
-    all(() => admin.from('sales_orders').select('id,webstore_id,status,expected_date,production_notes,deco_pos').eq('webstore_id', storeId).order('id')),
+    all(() => admin.from('sales_orders').select('id,webstore_id,status,expected_date,production_notes,deco_pos,_shipments,_version').eq('webstore_id', storeId).order('id')),
     all(() => admin.from('webstore_products').select('id,product_id,sku,display_name,size_skus,decorations,image_url,image_back_url').eq('store_id', storeId).order('id')),
     all(() => admin.from('production_packet_notes').select('*').eq('store_id', storeId).order('id')),
     all(() => admin.from('production_packet_message_shares').select('*').eq('store_id', storeId).order('message_id')),
   ]);
   if (soId && !salesOrders.some(s => s.id === soId)) fail(403, 'Sales order is outside this store');
+  ctx.soVersions = Object.fromEntries(salesOrders.map(s => [s.id,s._version]));
   const ids = salesOrders.map(s => s.id);
   const [items, arts, lines, allMessages, jobs] = await Promise.all([
     inBatches(admin, 'so_items', 'so_id', ids),
@@ -77,6 +79,7 @@ async function loadCurrent(ctx) {
     return { id: m.id, soId: m.so_id, text: m.text || '', author: authors.find(a => a.id === m.author_id)?.name || m.author || 'Decorator', ts: m.ts, threadId: shareById[m.thread_id] ? m.thread_id : null, source: share.source, kind: share.kind, targetId: share.target_id, ownerId: share.owner_id, metadata: share.metadata || {}, resolvedAt: share.resolved_at, attachments: (Array.isArray(m.attachments) ? m.attachments : []).map(f => ({ name: f.name || 'Attachment', url: safeUrl(f.url) })).filter(f => f.url) };
   }).sort((a, b) => (Date.parse(a.ts)||0) - (Date.parse(b.ts)||0) || a.id.localeCompare(b.id));
   const packet = buildProductionPacket({ store, orders, lines, salesOrders, catalog, notes, messages, soId });
+  packet.shipments = salesOrders.filter(s => !soId || s.id === soId).flatMap(s => (Array.isArray(s._shipments) ? s._shipments : []).map(r => ({id:r.id,soId:s.id,dpoId:r.dpo_id||'',dpoNumber:r.dpo_number||'',carrier:r.carrier||'',trackingNumber:r.tracking_number||'',trackingUrl:safeUrl(r.tracking_url),shipDate:r.ship_date||'',quantity:r.quantity||null,destination:r.fulfillment===false?'nsa':'customer',notes:r.source==='production_packet'?r.notes||'':''})));
   packet.fingerprint = hash(JSON.stringify(productionContent(packet)));
   const internal = ctx.staff ? {
     notes: salesOrders.filter(s => !soId || s.id === soId).flatMap(s => [
@@ -105,7 +108,7 @@ async function run(event, body) {
   const ctx = await authorize(event, body);
   const { admin, storeId, staff } = ctx;
   const action = body.action || 'view';
-  if (!['view', 'message', 'workflow', 'dimensions'].includes(action) && !staff) fail(403, 'Staff access required');
+  if (!['view', 'message', 'workflow', 'dimensions', 'shipment'].includes(action) && !staff) fail(403, 'Staff access required');
   if (action === 'view') {
     if(body.revision_id && body.dpo_id) fail(400,'Open the full issued packet to view its preserved production snapshot.');
     const { packet: rawCurrent, internal } = await loadCurrent(ctx);
@@ -127,6 +130,7 @@ async function run(event, body) {
   packet.fingerprint = hash(JSON.stringify(productionContent(packet)));
   const assertSo = id => { if (!packet.salesOrders.some(s => s.id === id)) fail(403, 'Choose a sales order in this packet'); };
   const assertTarget = id => { if (id && ![...packet.garments, ...packet.decorations, ...packet.players].some(x => x.id === id)) fail(400, 'Item no longer exists in this packet'); };
+  if (action === 'shipment') return recordShipment(ctx, body, packet);
   if (action === 'dimensions') {
     if (body.revision_id) fail(400, 'Issued packets cannot be edited. Open the live packet.');
     if (body.fingerprint !== packet.fingerprint) fail(409, 'Production details changed. Refresh before saving dimensions.');

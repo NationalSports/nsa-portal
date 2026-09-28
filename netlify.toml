@@ -401,3 +401,7 @@
     Referrer-Policy = "no-referrer"
     X-Robots-Tag = "noindex, nofollow"
     Cache-Control = "no-store"
+
+[functions."production-packet-shipment-sweep"]
+  schedule = "*/5 * * * *"
+  timeout = 26

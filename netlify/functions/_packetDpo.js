@@ -143,7 +143,7 @@ async function attachDpoContext(ctx, packet, body = {}) {
     substitutions: list(packet.changes.substitutions).filter(c => c.soId === dpoSoId && skus.has(c.from || c.sku)),
     sizeChanges: list(packet.changes.sizeChanges).filter(c => c.soId === dpoSoId && skus.has(c.sku)),
   };
-  return { ...packet, dpo, dpos: summaries, soId: dpoSoId,
+  return { ...packet, dpo, dpos: summaries, soId: dpoSoId, shipments: list(packet.shipments).filter(s => s.soId === dpoSoId && s.dpoId === dpoId),
     salesOrders: list(packet.salesOrders).filter(so => so.id === dpoSoId), garments, decorations, players, notes, messages, issues, issueDetails, ready: !issues.length, changes,
     totals: { ...packet.totals, garments: garments.reduce((sum, g) => sum + (Number(g.units) || 0), 0), playerUnits: players.reduce((sum, p) => sum + (Number(p.qty) || 0), 0), unbatchedUnits: 0,
       orders: new Set(players.filter(p => !p.extra).map(p => p.orderKey)).size, players: new Set(players.filter(p => !p.extra).map(p => `${p.orderId}:${p.player}`)).size },
