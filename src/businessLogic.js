@@ -1534,10 +1534,14 @@ function decorationShrinkConflicts(clientItems, dbItems, dbDecoCounts, deleteInt
 // retroactively moved already-paid commission lines with it. NULL/absent means "follow the account",
 // so every invoice that has never been overridden attributes exactly as it did before.
 //
+// `so.rep_id` (sales_orders.rep_id) is the same kind of override one level up, set from the SO
+// editor's Rep pencil: it moves ONE order (and its invoices, unless an invoice has its own override)
+// without touching the account. The customer's rep only changes from the customer record.
+//
 // Pass `inv` at every call site that has an invoice in hand. Call sites that only have a sales order
 // (uninvoiced pipeline) correctly pass nothing — an SO with no invoice has no override to honor.
 function commissionRepId(customer, so, inv) {
-  return (inv && inv.rep_id) || (customer && customer.primary_rep_id) || (so && so.created_by) || null;
+  return (inv && inv.rep_id) || (so && so.rep_id) || (customer && customer.primary_rep_id) || (so && so.created_by) || null;
 }
 
 // Who may be listed as the rep on an account/job and earn commission. Sales reps and admins

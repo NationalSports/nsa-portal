@@ -3970,7 +3970,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {label:'Vendor',value:vendor,sub:isDPO?(po.deco_type||'').replace(/_/g,' '):(vendorEmail||undefined)},
         {label:'Ship To',value:_shipTo.name,sub:_shipTo.sub},
         {label:'Sales Order',value:o.id,sub:(cust?.name||'')+(o.memo?' — '+o.memo:'')},
-        {label:'Expected Date',value:o.expected_date||'TBD',sub:'Rep: '+(REPS.find(r=>r.id===(cust?.primary_rep_id||o.created_by))?.name||'—')},
+        {label:'Expected Date',value:o.expected_date||'TBD',sub:'Rep: '+(REPS.find(r=>r.id===(o.rep_id||cust?.primary_rep_id||o.created_by))?.name||'—')},
       ],
       tables:[
         ...linesData.map(ld=>({
@@ -5119,11 +5119,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {isSO&&cust&&<div style={{display:'flex',alignItems:'center',gap:6,marginTop:2}}>
             <span style={{fontSize:11,color:'#64748b',fontWeight:600}}>Rep:</span>
             {editingRep
-              ?<><select className="form-select" style={{width:160,fontSize:11,padding:'1px 4px'}} defaultValue={cust.primary_rep_id||''} onChange={e=>{if(onChangeRep)onChangeRep(e.target.value);setEditingRep(false)}}>
-                <option value="">— None —</option>
+              ?<><select className="form-select" style={{width:160,fontSize:11,padding:'1px 4px'}} defaultValue={o.rep_id||''} onChange={e=>{sv('rep_id',e.target.value||null);setEditingRep(false)}}>
+                <option value="">Account rep ({REPS.find(r=>r.id===(cust.primary_rep_id||o.created_by))?.name||'none'})</option>
                 {REPS.filter(r=>r.is_active!==false&&isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
               </select><button style={{fontSize:10,background:'none',border:'none',cursor:'pointer',color:'#94a3b8'}} onClick={()=>setEditingRep(false)}>Cancel</button></>
-              :<><span style={{fontSize:11,color:'#1e293b'}}>{REPS.find(r=>r.id===cust.primary_rep_id)?.name||'—'}</span>
+              :<><span style={{fontSize:11,color:'#1e293b'}}>{REPS.find(r=>r.id===(o.rep_id||cust.primary_rep_id))?.name||'—'}{o.rep_id&&<span style={{fontSize:10,color:'#94a3b8'}} title="Set on this order only — the account's rep is unchanged"> (this order)</span>}</span>
               <button style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:10,padding:'0 2px'}} title="Change rep" onClick={()=>setEditingRep(true)}>✏️</button></>}
           </div>}
           {cust?.alpha_tag&&<div style={{fontSize:11,marginTop:2}}><a href={'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cust.alpha_tag)} target="_blank" rel="noreferrer" style={{color:'#7c3aed',textDecoration:'none',fontWeight:500}}>🔗 Customer Portal</a></div>}
@@ -5307,7 +5307,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {label:'Bill To',value:(ddBillSel&&ddBillSel.name)||cust?.name||'—',sub:ddBillAddr||''},
                   ...(ddShipAddr?[{label:'Ship To',value:(ddShipSel&&ddShipSel.name)||cust?.name||'—',sub:ddShipAddr}]:[]),
                   ...(isE?[]:[{label:'Expected',value:o.expected_date||'TBD'}]),
-                  {label:'Sales Rep',value:REPS.find(r2=>r2.id===(cust?.primary_rep_id||o.created_by))?.name||'—'},
+                  {label:'Sales Rep',value:REPS.find(r2=>r2.id===(o.rep_id||cust?.primary_rep_id||o.created_by))?.name||'—'},
                   {label:isE?'Estimate':'Sales Order',value:o.id},
                   {label:'Memo',value:o.memo||'—',...(isE?{flex:2}:{})},
                 ],
@@ -8495,7 +8495,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const shipAddrSub2=orderShipToSub(o,cust)||custShipAddrSub(cust);
       return buildDocHtml({title:cust?.name||'Customer',docNum:o.id,docType:isE?'ESTIMATE':'SALES ORDER',css:PRINT_CSS,
         headerRight:'<div class="ta">'+_$(total)+'</div>',
-        infoBoxes:[{label:'Bill To',value:(billSel&&billSel.name)||cust?.name||'—',sub:billAddr||''},...(shipAddrSub2?[{label:'Ship To',value:(shipSel&&shipSel.name)||cust?.name||'—',sub:shipAddrSub2}]:[]),...(isE?[]:[{label:'Expected',value:o.expected_date||'TBD'}]),{label:'Sales Rep',value:REPS.find(r=>r.id===(cust?.primary_rep_id||o.created_by))?.name||'—'},{label:isE?'Estimate':'Sales Order',value:o.id},{label:'Memo',value:o.memo||'—',...(isE?{flex:2}:{})}],
+        infoBoxes:[{label:'Bill To',value:(billSel&&billSel.name)||cust?.name||'—',sub:billAddr||''},...(shipAddrSub2?[{label:'Ship To',value:(shipSel&&shipSel.name)||cust?.name||'—',sub:shipAddrSub2}]:[]),...(isE?[]:[{label:'Expected',value:o.expected_date||'TBD'}]),{label:'Sales Rep',value:REPS.find(r=>r.id===(o.rep_id||cust?.primary_rep_id||o.created_by))?.name||'—'},{label:isE?'Estimate':'Sales Order',value:o.id},{label:'Memo',value:o.memo||'—',...(isE?{flex:2}:{})}],
         tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],rows:[...rows,
           {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$(subTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
           ...(shipAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$(shipAmt),style:'text-align:right;border:none'}]}]:[]),
@@ -14423,7 +14423,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
     {receivedConfirm&&(()=>{
       const rc=receivedConfirm;
       const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(rc.poId);
-      const buildLines=()=>{const lines=[];if(rc.custName)lines.push({text:rc.custName,cls:'team'});if(o?.memo)lines.push({text:o.memo,cls:'memo'});{const _r=REPS&&REPS.find(rr=>rr.id===(cust?.primary_rep_id||o?.created_by));if(_r&&_r.name)lines.push({text:'Rep: '+_r.name.split(' ')[0],cls:'rep'});}lines.push({text:rc.soId,cls:'so'});lines.push({text:'RECEIVED — '+rc.date,cls:'sub',style:'color:#166534;font-weight:800;'});rc.items.forEach(it=>{lines.push({text:(it.sku||'')+' '+(it.name||''),cls:'sku'});lines.push({text:(it.color||'')+' — '+it.qty+' units'});lines.push({text:Object.entries(it.sizes).map(([sz,v])=>sz+': '+v).join(' &nbsp; '),cls:'sz'})});if(rc.items.length>1)lines.push({text:'TOTAL: '+rc.totalQty+' units',cls:'sz'});return lines};
+      const buildLines=()=>{const lines=[];if(rc.custName)lines.push({text:rc.custName,cls:'team'});if(o?.memo)lines.push({text:o.memo,cls:'memo'});{const _r=REPS&&REPS.find(rr=>rr.id===(o?.rep_id||cust?.primary_rep_id||o?.created_by));if(_r&&_r.name)lines.push({text:'Rep: '+_r.name.split(' ')[0],cls:'rep'});}lines.push({text:rc.soId,cls:'so'});lines.push({text:'RECEIVED — '+rc.date,cls:'sub',style:'color:#166534;font-weight:800;'});rc.items.forEach(it=>{lines.push({text:(it.sku||'')+' '+(it.name||''),cls:'sku'});lines.push({text:(it.color||'')+' — '+it.qty+' units'});lines.push({text:Object.entries(it.sizes).map(([sz,v])=>sz+': '+v).join(' &nbsp; '),cls:'sz'})});if(rc.items.length>1)lines.push({text:'TOTAL: '+rc.totalQty+' units',cls:'sz'});return lines};
       return<div className="modal-overlay" onClick={()=>setReceivedConfirm(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
         <div className="modal-header"><h2>📦 Received — {rc.poId}</h2>
           <button className="modal-close" onClick={()=>setReceivedConfirm(null)}>x</button></div>
@@ -14490,7 +14490,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         const lines=[];
         if(cust?.name)lines.push({text:cust.name,cls:'team'});
         if(o?.memo)lines.push({text:o.memo,cls:'memo'});
-        {const _r=REPS&&REPS.find(rr=>rr.id===(cust?.primary_rep_id||o?.created_by));if(_r&&_r.name)lines.push({text:'Rep: '+_r.name.split(' ')[0],cls:'rep'});}
+        {const _r=REPS&&REPS.find(rr=>rr.id===(o?.rep_id||cust?.primary_rep_id||o?.created_by));if(_r&&_r.name)lines.push({text:'Rep: '+_r.name.split(' ')[0],cls:'rep'});}
         lines.push({text:o.id,cls:'so'});
         itemInfos.forEach(info=>{
           lines.push({text:(info.item.sku||'')+' '+(info.item.name||''),cls:'sku'});
@@ -14500,7 +14500,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         if(itemInfos.length>1)lines.push({text:'TOTAL: '+grandTotal+' units',cls:'sz'});
         return lines;
       };
-      const pickRepName=REPS&&REPS.find(rr=>rr.id===(cust?.primary_rep_id||o?.created_by))?.name?.split(' ')[0]||'';
+      const pickRepName=REPS&&REPS.find(rr=>rr.id===(o?.rep_id||cust?.primary_rep_id||o?.created_by))?.name?.split(' ')[0]||'';
       return<div className="modal-overlay" onClick={()=>setEditPick(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640}}>
       <div className="modal-header"><h2>Pick — {pickId}{itemInfos.length>1?<span style={{marginLeft:8,fontSize:12,padding:'2px 8px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>{itemInfos.length} items</span>:null}</h2>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
@@ -15132,7 +15132,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               {receiptLines.length>1&&<span style={{fontSize:9,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'1px 6px',borderRadius:8}}>{receiptLines.length} items in receipt</span>}
               <span style={{marginLeft:'auto',fontSize:9,color:'#64748b'}}>{isEditing?'▲ close':'✏️ edit'}</span>
               <button style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#64748b',textDecoration:'underline'}} onClick={e=>{e.stopPropagation();
-                const _shr=REPS&&REPS.find(rr=>rr.id===(cust?.primary_rep_id||o?.created_by));const _shRep=_shr&&_shr.name?'Rep: '+_shr.name.split(' ')[0]:'';
+                const _shr=REPS&&REPS.find(rr=>rr.id===(o?.rep_id||cust?.primary_rep_id||o?.created_by));const _shRep=_shr&&_shr.name?'Rep: '+_shr.name.split(' ')[0]:'';
                 printQrLabel({
                   id:po.po_id,
                   qrData:shQrData,
@@ -15313,7 +15313,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               const lines=[
                 {text:(cust?.name||o.id),cls:'team'},
                 ...(o?.memo?[{text:o.memo,cls:'memo'}]:[]),
-                ...((()=>{const _r=REPS&&REPS.find(rr=>rr.id===(cust?.primary_rep_id||o?.created_by));return _r&&_r.name?[{text:'Rep: '+_r.name.split(' ')[0],cls:'rep'}]:[]})()),
+                ...((()=>{const _r=REPS&&REPS.find(rr=>rr.id===(o?.rep_id||cust?.primary_rep_id||o?.created_by));return _r&&_r.name?[{text:'Rep: '+_r.name.split(' ')[0],cls:'rep'}]:[]})()),
                 {text:o.id,cls:'so'},
                 {text:(item?.sku||'')+' '+(item?.name||''),cls:'sku'},
                 {text:(item?.color||'')+' — '+totalOrdered+' ordered'+(totalReceived>0?' · '+totalReceived+' received':'')},

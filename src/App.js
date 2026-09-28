@@ -8774,7 +8774,7 @@ export default function App(){
       return soHasOpenShipWork(so);
     }).forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
-      const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
+      const rep=REPS.find(r=>r.id===(so.rep_id||c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
       const urgent=daysOut!=null&&daysOut<=3;
       // Calculate already-shipped units for this SO (shared by the no-deco item loop and the job
@@ -8902,7 +8902,7 @@ export default function App(){
     // warehouse. Auto-status only reaches 'complete' once jobs are actually shipped.
     sos.filter(so=>(so.ship_preference||'ship_as_ready')==='wait_complete'&&calcSOStatus(so,{ignoreOverride:true})!=='complete').forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
-      const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
+      const rep=REPS.find(r=>r.id===(so.rep_id||c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
       const urgent=daysOut!=null&&daysOut<=3;
       const allItemsDone=safeItems(so).every(it=>{const szKeys=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0));
@@ -9015,7 +9015,7 @@ export default function App(){
       if(m.author_id===cu?.id)return true;// own messages
       const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);
       const c=so?cust.find(x=>x.id===so.customer_id):null;
-      const msgRepId=c?.primary_rep_id||so?.created_by||null;
+      const msgRepId=so?.rep_id||c?.primary_rep_id||so?.created_by||null;
       if(_isAdminRole){
         if(adminRepFilter==='all')return true;
         const targetId=adminRepFilter==='me'?cu.id:adminRepFilter;
@@ -9033,7 +9033,7 @@ export default function App(){
     // Build to-do items from jobs and SOs
     const todos=[];
     sos.forEach(so=>{
-      const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
+      const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=so.rep_id||c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
         if((j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&['hold','ready',''].includes(j.prod_status||'')&&missingJobMocks(j,so).length){
           todos.push({type:'art',priority:1,msg:'🎨 Previous art — set up the mockup: '+j.art_name,detail:tag+' · '+so.id+' · No garment mockup yet — reuse an approved mock or send to the artist',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Set up art',role:'sales',date:j.updated_at||so.updated_at});
@@ -9258,7 +9258,7 @@ export default function App(){
     todos.push(..._emailFailedTodos({ests,sos,invs,cust}));
     // Attach repId, dismissKey, and fallback date to each todo
     todos.forEach(t=>{
-      if(t.so){const c=cust.find(x=>x.id===t.so.customer_id);t.repId=c?.primary_rep_id||t.so.created_by}
+      if(t.so){const c=cust.find(x=>x.id===t.so.customer_id);t.repId=t.so.rep_id||c?.primary_rep_id||t.so.created_by}
       else if(t.est){const c=cust.find(x=>x.id===t.est.customer_id);t.repId=c?.primary_rep_id||t.est.created_by}
       else if(t.inv){const c=cust.find(x=>x.id===t.inv.customer_id);t.repId=c?.primary_rep_id||t.inv.created_by}
       if(t.dismissKey){/* explicit stable key set at creation — keep it */}
@@ -9757,7 +9757,7 @@ export default function App(){
       const PERIODS=[['this_month','This Month',new Date(cY,cM,1),new Date(cY,cM+1,1)],['last_month','Last Month',new Date(cY,cM-1,1),new Date(cY,cM,1)],['last_3','Last 3 Months',new Date(cY,cM-2,1),new Date(cY,cM+1,1)],['ytd','Year to Date',new Date(cY,0,1),new Date(cY,cM+1,1)],['last_12','Last 12 Months',new Date(cY,cM-11,1),new Date(cY,cM+1,1)]];
       const per=PERIODS.find(p=>p[0]===dashSalesPeriod)||PERIODS[0];const pStart=per[2],pEnd=per[3];
       const inPeriod=(so)=>{const dt=_saleDate(so.created_at);return dt&&dt>=pStart&&dt<pEnd};
-      const repOf=(so)=>{const c=cust.find(x=>x.id===so.customer_id);return c?.primary_rep_id||so.created_by};
+      const repOf=(so)=>{const c=cust.find(x=>x.id===so.customer_id);return so.rep_id||c?.primary_rep_id||so.created_by};
       const repName=(id)=>(REPS.find(r=>r.id===id)?.name||'—').split(' ')[0];
       const _$=(n)=>'$'+Math.round(n).toLocaleString();const _$k=(n)=>n>=1000?'$'+(n/1000).toFixed(n>=10000?0:1)+'k':'$'+Math.round(n);
       const _lbl={fontSize:10,color:'#64748b',textTransform:'uppercase',fontWeight:700,letterSpacing:0.4};
@@ -10797,7 +10797,7 @@ export default function App(){
     {uiMode==='new'&&dashView==='csr'&&<>
     <div className="stats-row">
       <div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:'#dc2626'}}>{unreadMsgs.length}</div></div>
-      <div className="stat-card"><div className="stat-label">My Reps' SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{(()=>{const myReps=getRepsForCsr(cu.id);return sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return calcSOStatus(s)!=='complete'&&myReps.includes(c?.primary_rep_id||s.created_by)}).length})()}</div></div>
+      <div className="stat-card"><div className="stat-label">My Reps' SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{(()=>{const myReps=getRepsForCsr(cu.id);return sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return calcSOStatus(s)!=='complete'&&myReps.includes(s.rep_id||c?.primary_rep_id||s.created_by)}).length})()}</div></div>
       <div className="stat-card"><div className="stat-label">Assigned Tasks</div><div className="stat-value" style={{color:'#0891b2'}}>{myAssignedTodos.length}</div></div>
       <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{myTodos.filter(t=>t.type==='deadline').length}</div></div>
       <div className="stat-card"><div className="stat-label">Action Items</div><div className="stat-value" style={{color:'#d97706'}}>{myTodos.filter(t=>!t.isNotification&&(t.role==='csr'||t.role==='all'||t.type==='order'||t.type==='est_update_request'||t.type==='est_approved'||t.type==='deposit_needed')).length}</div></div>
@@ -11388,7 +11388,7 @@ export default function App(){
     {dashView==='csr'&&<>
     <div className="stats-row">
       <div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:'#dc2626'}}>{unreadMsgs.length}</div></div>
-      <div className="stat-card"><div className="stat-label">My Reps' SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{(()=>{const myReps=getRepsForCsr(cu.id);return sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return calcSOStatus(s)!=='complete'&&myReps.includes(c?.primary_rep_id||s.created_by)}).length})()}</div></div>
+      <div className="stat-card"><div className="stat-label">My Reps' SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{(()=>{const myReps=getRepsForCsr(cu.id);return sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return calcSOStatus(s)!=='complete'&&myReps.includes(s.rep_id||c?.primary_rep_id||s.created_by)}).length})()}</div></div>
       <div className="stat-card"><div className="stat-label">Assigned Tasks</div><div className="stat-value" style={{color:'#0891b2'}}>{myAssignedTodos.length}</div></div>
       <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{myTodos.filter(t=>t.type==='deadline').length}</div></div>
       <div className="stat-card"><div className="stat-label">Action Items</div><div className="stat-value" style={{color:'#d97706'}}>{myTodos.filter(t=>!t.isNotification&&(t.role==='csr'||t.role==='all'||t.type==='order'||t.type==='est_update_request'||t.type==='est_approved'||t.type==='deposit_needed')).length}</div></div>
@@ -11810,7 +11810,7 @@ export default function App(){
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
-      companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} onSaveCustomer={savC} onScheduleEmail={scheduleEmailSend} onChangeRep={newRepId=>{if(eSOC)changeDocRep(eSOC,newRepId,eSO.id)}} extractPdfText={extractPdfText}/></React.Suspense></ComponentErrorBoundary>
+      companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} onSaveCustomer={savC} onScheduleEmail={scheduleEmailSend} extractPdfText={extractPdfText}/></React.Suspense></ComponentErrorBoundary>
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status==='active')fSOs=fSOs.filter(s=>calcSOStatus(s)!=='complete');
@@ -11860,7 +11860,7 @@ export default function App(){
       </div>
 
     <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>SO</th><th>Created</th><th>Customer</th><th>Memo</th><th>Expected</th><th>Rep</th><th style={{textAlign:'right'}}>Total</th><th>Art</th><th>Items</th><th>Msgs</th><th>Ship</th><th>Status</th>{canDelete&&<th></th>}</tr></thead><tbody>
-    {fSOs.map(so=>{const c=cust.find(x=>x.id===so.customer_id);const ac=(so.art_files||[]).length;const aa=(so.art_files||[]).filter(f=>f.status==='approved').length;const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by));
+    {fSOs.map(so=>{const c=cust.find(x=>x.id===so.customer_id);const ac=(so.art_files||[]).length;const aa=(so.art_files||[]).filter(f=>f.status==='approved').length;const rep=REPS.find(r=>r.id===(so.rep_id||c?.primary_rep_id||so.created_by));
       // Item fulfillment progress (for Items column)
       const allItems=so.items||[];let totalSz=0,pickedSz=0,poSz=0,rcvdSz=0;
       allItems.forEach(it=>{Object.entries(it.sizes).filter(([,v])=>v>0).forEach(([sz,v])=>{totalSz+=v;
@@ -13213,7 +13213,7 @@ export default function App(){
     sos.forEach(so=>{if(so.status==='cancelled'||so.status==='deleted'||so.deleted_at)return;const c=cust.find(x=>x.id===so.customer_id);const _pid=c?.parent_id||c?.id||null;
       buildJobs(so).filter(j=>j.prod_status!=='draft').forEach(j=>{allJobs.push({...j,prod_status:mockAwareProductionStatus(j,so),so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
         parentId:_pid,grpKey:jobGroupKey(j,_pid),orderState:deriveJobItemStatus(j,so),..._jobInbound(j,so),
-        repId:c?.primary_rep_id||so.created_by,rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',
+        repId:so.rep_id||c?.primary_rep_id||so.created_by,rep:REPS.find(r=>r.id===(so.rep_id||c?.primary_rep_id||so.created_by))?.name||'—',
         expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null})})});
     // Apply filters
     let fj=allJobs;
@@ -13657,7 +13657,7 @@ export default function App(){
     if(!cu)return[];
     const todos=[];
     sos.forEach(so=>{
-      const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
+      const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=so.rep_id||c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
         if((j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&['hold','ready',''].includes(j.prod_status||'')&&missingJobMocks(j,so).length){
           todos.push({type:'art',priority:1,msg:'🎨 Previous art — set up the mockup: '+j.art_name,detail:tag+' · '+so.id+' · No garment mockup yet — reuse an approved mock or send to the artist',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Set up art',role:'sales',date:j.updated_at||so.updated_at});
@@ -13765,7 +13765,7 @@ export default function App(){
     todos.push(..._emailFailedTodos({ests,sos,invs,cust}));
     // Attach repId, dismissKey, and fallback date
     todos.forEach(t=>{
-      if(t.so){const c=cust.find(x=>x.id===t.so.customer_id);t.repId=c?.primary_rep_id||t.so.created_by}
+      if(t.so){const c=cust.find(x=>x.id===t.so.customer_id);t.repId=t.so.rep_id||c?.primary_rep_id||t.so.created_by}
       else if(t.est){const c=cust.find(x=>x.id===t.est.customer_id);t.repId=c?.primary_rep_id||t.est.created_by}
       else if(t.inv){const c=cust.find(x=>x.id===t.inv.customer_id);t.repId=c?.primary_rep_id||t.inv.created_by}
       if(t.dismissKey){/* explicit stable key set at creation — keep it */}
@@ -14013,7 +14013,7 @@ export default function App(){
       safeJobs(so).forEach(j=>{
         allJobs.push({...j,prod_status:mockAwareProductionStatus(j,so),so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
           parentId,grpKey:(j.link_group||isJobReady(j,so))?jobGroupKey(j,parentId):null,
-          rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—',
+          rep:REPS.find(r=>r.id===(so.rep_id||c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—',
           expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
         });
       });
@@ -14034,7 +14034,7 @@ export default function App(){
     // original order of each group's first appearance and leaving ungrouped jobs in place.
     const clusterLinked=(arr)=>{const seen=new Set();const out=[];arr.forEach(j=>{const g=j.grpKey;if(!g){out.push(j);return}if(seen.has(g))return;seen.add(g);arr.forEach(x=>{if(x.grpKey===g)out.push(x)})});return out;};
     const grpHue=k=>{let h=0;for(let i=0;i<(k||'').length;i++)h=(h*31+k.charCodeAt(i))>>>0;return GRP_HUES[h%GRP_HUES.length]};
-    const filtered=prodFilter==='all'?allJobs:allJobs.filter(j=>{const cc=cust.find(x=>x.id===j.so.customer_id);return(cc?.primary_rep_id||j.so.created_by)===prodFilter});
+    const filtered=prodFilter==='all'?allJobs:allJobs.filter(j=>{const cc=cust.find(x=>x.id===j.so.customer_id);return(j.so.rep_id||cc?.primary_rep_id||j.so.created_by)===prodFilter});
     const byDeco=prodDecoF==='all'?filtered:filtered.filter(j=>j.deco_type===prodDecoF);
     // Once an order is closed out (final invoice / "Close Sales Order" / promo close → SO
     // status='complete'), its decorated jobs are USUALLY done and out the door. The shop rarely
@@ -17865,7 +17865,7 @@ export default function App(){
           <WH id="prodThroughput" title="Production Throughput" icon="🏭"/>
           {rptWidgets.prodThroughput&&(()=>{
             const allJobs=[];sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
-              buildJobs(so).forEach(j=>allJobs.push({...j,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—'}))});
+              buildJobs(so).forEach(j=>allJobs.push({...j,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',rep:REPS.find(r=>r.id===(so.rep_id||c?.primary_rep_id||so.created_by))?.name||'—'}))});
             const hold=allJobs.filter(j=>j.prod_status==='hold').length;const staging=allJobs.filter(j=>j.prod_status==='staging').length;
             const inProcess=allJobs.filter(j=>j.prod_status==='in_process').length;const completed=allJobs.filter(j=>j.prod_status==='completed').length;
             const shipped=allJobs.filter(j=>j.prod_status==='shipped').length;
@@ -17972,7 +17972,7 @@ export default function App(){
         sos.forEach(so=>{
           const _st=calcSOStatus(so);if(_st==='booking'&&!bookingHasFloorWork(so))return;
           const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';
-          const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
+          const rep=REPS.find(r=>r.id===(so.rep_id||c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
           const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
           safeJobs(so).filter(j=>j.prod_status==='completed'&&(_st!=='complete'||jobRecentlyCompleted(j))).forEach(j=>{
             if(!decoInRange(j.completed_at||j.updated_at||so.updated_at))return;
@@ -23938,7 +23938,7 @@ export default function App(){
         if(jobAllRoutedOutside(so,j))return;// skip — every claimed deco moved to an outside decorator; the job retires on the order's next sync (SO-1009)
         if(j.art_status==='art_complete'&&_jobNeedsProdFiles(j,so))return;// handled in second pass as production_files_needed
         allArtJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
-          rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',repId:c?.primary_rep_id||so.created_by,
+          rep:REPS.find(r=>r.id===(so.rep_id||c?.primary_rep_id||so.created_by))?.name||'—',repId:so.rep_id||c?.primary_rep_id||so.created_by,
           expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
           artFile:safeArt(so).find(f=>f.id===j.art_file_id)});
       });
@@ -23952,7 +23952,7 @@ export default function App(){
           const afs=jobLiveArtIds(j,so).map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
           const af=afs.find(a=>!artProdFilesConfirmed(a))||afs[0];
           allArtJobs.push({...j,art_status:prodFilesStatusFor(af.deco_type),_overrideStatus:true,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
-            rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',repId:c?.primary_rep_id||so.created_by,
+            rep:REPS.find(r=>r.id===(so.rep_id||c?.primary_rep_id||so.created_by))?.name||'—',repId:so.rep_id||c?.primary_rep_id||so.created_by,
             expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
             artFile:af});
         }
@@ -26001,7 +26001,7 @@ export default function App(){
     sos.forEach(so=>{
       const _st=calcSOStatus(so);if(_st==='booking'&&!bookingHasFloorWork(so))return;
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
-      const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
+      const rep=REPS.find(r=>r.id===(so.rep_id||c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
       safeJobs(so).filter(j=>j.prod_status==='completed'&&(_st!=='complete'||jobRecentlyCompleted(j))).forEach(j=>{
         completedDecoJobs.push({so,soId:so.id,job:j,cName,alpha,rep,daysOut,
@@ -36467,7 +36467,7 @@ export default function App(){
     const npSell=npP(dcQty,dcTwoColor,true);const npCost=npP(dcQty,dcTwoColor,false);
 
     // ═══ MY DAY — the rep's daily operations recap (same five categories as the emailed rep-ops-digest) ═══
-    const _mdRepOf=(so)=>{const c=cust.find(x=>x.id===so.customer_id);return c?.primary_rep_id||so.created_by};
+    const _mdRepOf=(so)=>{const c=cust.find(x=>x.id===so.customer_id);return so.rep_id||c?.primary_rep_id||so.created_by};
     const _mdAdmin=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
     // Admins can scope My Day to a single rep (or All Reps) via the header dropdown; everyone else is locked to their own book.
     const _mdViewRep=_mdAdmin?(stMdRep==='me'?cu.id:stMdRep):cu.id;
