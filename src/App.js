@@ -7069,6 +7069,7 @@ export default function App(){
     const oldRepName=REPS.find(r=>r.id===oldRepId)?.name||'None';
     const newRepName=REPS.find(r=>r.id===newRepId)?.name||'Unknown';
     savC({...customer,primary_rep_id:newRepId});
+    setESOC(c=>c&&c.id===customer.id?{...c,primary_rep_id:newRepId}:c);
     const adminUser=REPS.find(r=>(r.role==='admin'||r.role==='super_admin')&&r.id!==cu.id);
     if(adminUser){
       const ts=new Date().toISOString();
