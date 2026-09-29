@@ -250,7 +250,7 @@ export default function GarmentMockCard({ label, sub, mocks, candidates, suggest
     try { const ok = await fn(); if (ok !== false) { setChoosing(false); setSelected(''); } else { setError('Could not save this mock. Please try again.'); } }
     catch (e) { setError('Could not save this mock. Please try again.'); }
   };
-  const status = !mocks.length ? 'Needs mock' : logo && !logo.url ? 'Needs logo detail' : 'Mock saved';
+  const status = logo?.blockedReason ? 'Missing decoration' : !mocks.length ? 'Needs mock' : logo && !logo.url ? 'Needs logo detail' : 'Mock saved';
   return <section className="garment-mock-card" aria-label={label + ' mock'} aria-busy={busy}>
     <header><div><strong>{label || 'Garment mock'}</strong>{sub && <small>{sub}</small>}</div><span className={status === 'Mock saved' ? 'mock-tag saved' : 'mock-tag'}>{status}</span></header>
     <div className={logo ? 'mock-panels two' : 'mock-panels'}>
