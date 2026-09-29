@@ -7379,7 +7379,10 @@ export default function App(){
     finally{logoSaveLocks.current.delete(so.id)}
   };
   // Props for a mock card's logo detail pane (art slots only).
-  const logoDetailProps=(so,slot,garment)=>{if(slot.kind!=='art')return null;slot={...slot,cwId:resolveLogoColorWay(slot.artFile,slot.cwId,garment?.color,slot.side)};const b=logoDetailBackground(garment?.color,cwGarmentColor(slot.artFile,slot.cwId),slot.side);return{url:logoDetailUrl(slot.artFile,slot.cwId),needsColorWay:slot.cwId===undefined,colorWayId:slot.cwId,colorWays:logoColorWayOptions(slot.artFile),bg:b.bg,bgKnown:b.known,bgSource:b.source,colorName:b.label,
+  const logoDetailProps=(so,slot,garment)=>{if(slot.kind!=='art')return null;
+    // No decoration on the SO line: nothing to assign or attach a logo to until the rep adds it.
+    if(slot.missingDeco){const b=logoDetailBackground(garment?.color,'',slot.side);return{url:'',needsColorWay:true,colorWays:[],bg:b.bg,bgKnown:b.known,bgSource:b.source,colorName:b.label,
+      blockedReason:'This garment has no '+(slot.artFile?.name||'artwork')+' decoration on the sales order. Ask the rep to add it to this line on the SO (with its artwork version), then reopen the job.'}}slot={...slot,cwId:resolveLogoColorWay(slot.artFile,slot.cwId,garment?.color,slot.side)};const b=logoDetailBackground(garment?.color,cwGarmentColor(slot.artFile,slot.cwId),slot.side);return{url:logoDetailUrl(slot.artFile,slot.cwId),needsColorWay:slot.cwId===undefined,colorWayId:slot.cwId,colorWays:logoColorWayOptions(slot.artFile),bg:b.bg,bgKnown:b.known,bgSource:b.source,colorName:b.label,
     onAssign:async choice=>{
       if(logoSaveLocks.current.has(so.id))throw new Error('A logo is still saving. Wait and retry.');
       logoSaveLocks.current.add(so.id);
@@ -24761,7 +24764,10 @@ export default function App(){
                   const gc=repGarmentColors[gk]||{};
                   const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
                   const repFallbackColors=colorList.length>0?colorList:(af?.color_ways||[]).length>0?(af.color_ways[0].inks||[]).filter(c=>c&&c.trim()):[];
-                  const effectiveArtDecos=artDecos.length>0?artDecos:repPosList.length>0?repPosList.map(pos=>({kind:'art',position:pos,type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:repFallbackColors,size:af?.art_size||'',artName:'',cwLabel:''})):af?[{kind:'art',position:j.deco_type==='embroidery'?'Front Left Chest':'Front Center',type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:repFallbackColors,size:af?.art_size||'',artName:af?.name||'',cwLabel:''}]:[];
+                  // A garment whose SO line has no decoration while the job's other garments do is missing its
+                  // decoration — show ONE card flagged as such, not a guessed card per job-wide position.
+                  const missingDeco=artDecos.length===0&&!!af&&Object.values(repPerItemDecos).some(ds=>ds.some(d=>d.kind==='art'));
+                  const effectiveArtDecos=artDecos.length>0?artDecos:missingDeco?[{kind:'art',position:'',type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:repFallbackColors,size:af?.art_size||'',artName:af?.name||'',cwLabel:'',missingDeco:true}]:repPosList.length>0?repPosList.map(pos=>({kind:'art',position:pos,type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:repFallbackColors,size:af?.art_size||'',artName:'',cwLabel:''})):af?[{kind:'art',position:j.deco_type==='embroidery'?'Front Left Chest':'Front Center',type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:repFallbackColors,size:af?.art_size||'',artName:af?.name||'',cwLabel:''}]:[];
                   // Production files for this item's art
                   const repItemPFs=artDecos.filter(d=>d.artFile).flatMap(d=>(d.artFile?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f)})));
                   // One mockup slot per decoration (reversible color ways + numbers/names each get a box).
@@ -24774,7 +24780,7 @@ export default function App(){
                   // and the send-for-approval check always line up.
                   mockSlotKeys(_repSkBase,[...effectiveArtDecos,...numDecos,...nameDecos]).forEach(sd=>{
                     if(sd.kind==='art'){const d=effectiveArtDecos[sd.idx];const cwLbl=sd.side==='B'?d.cwLabelB:d.cwLabel;
-                      _repSlots.push({key:sd.key,kind:'art',side:sd.side,primary:sd.primary,cwId:(sd.side==='B'?d.colorWayIdB:d.colorWayId)||null,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                      _repSlots.push({key:sd.key,kind:'art',side:sd.side,primary:sd.primary,missingDeco:!!d.missingDeco,cwId:(sd.side==='B'?d.colorWayIdB:d.colorWayId)||null,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
                     else if(sd.kind==='numbers'){const d=numDecos[sd.idx];
                       _repSlots.push({key:sd.key,kind:'numbers',primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
                     else{const d=nameDecos[sd.idx];
@@ -25426,7 +25432,9 @@ export default function App(){
                 const _editColors=_isEditingColors?(artJobDetailEditColors[_gk]||{}):{};
                 // Resolve colors: prefer CW-specific inks, then art file colorList, then first CW inks
                 const _fallbackColors=colorList.length>0?colorList:(af?.color_ways||[]).length>0?(af.color_ways[0].inks||[]).filter(c=>c&&c.trim()):[];
-                const _effectiveArtDecos=_artDecos.length>0?_artDecos:posList3.length>0?posList3.map(pos=>({kind:'art',position:pos,type:j.deco_type||'screen_print',reversible:false,underbase:false,artFile:af,colors:_fallbackColors,size:af?.art_size||'',artName:af?.name||'',cwLabel:''})):af?[{kind:'art',position:j.deco_type==='embroidery'?'Front Left Chest':'Front Center',type:j.deco_type||'screen_print',reversible:false,underbase:false,artFile:af,colors:_fallbackColors,size:af?.art_size||'',artName:af?.name||'',cwLabel:''}]:[];
+                // Same rule as the rep view: a garment missing its decoration gets ONE flagged card.
+                const _missingDeco=_artDecos.length===0&&!!af&&Object.values(_perItemDecos).some(ds=>ds.some(d=>d.kind==='art'));
+                const _effectiveArtDecos=_artDecos.length>0?_artDecos:_missingDeco?[{kind:'art',position:'',type:j.deco_type||'screen_print',reversible:false,underbase:false,artFile:af,colors:_fallbackColors,size:af?.art_size||'',artName:af?.name||'',cwLabel:'',missingDeco:true}]:posList3.length>0?posList3.map(pos=>({kind:'art',position:pos,type:j.deco_type||'screen_print',reversible:false,underbase:false,artFile:af,colors:_fallbackColors,size:af?.art_size||'',artName:af?.name||'',cwLabel:''})):af?[{kind:'art',position:j.deco_type==='embroidery'?'Front Left Chest':'Front Center',type:j.deco_type||'screen_print',reversible:false,underbase:false,artFile:af,colors:_fallbackColors,size:af?.art_size||'',artName:af?.name||'',cwLabel:''}]:[];
                 const _hasDecoData=_effectiveArtDecos.length>0||_numDecos.length>0||_nameDecos.length>0;
                 // Per-item size data
                 const _rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
@@ -25471,7 +25479,7 @@ export default function App(){
                       // check always line up.
                       mockSlotKeys(_skBase,[..._effectiveArtDecos,..._numDecos,..._nameDecos]).forEach(sd=>{
                         if(sd.kind==='art'){const d=_effectiveArtDecos[sd.idx];const cwLbl=sd.side==='B'?d.cwLabelB:d.cwLabel;
-                          _slots.push({key:sd.key,kind:'art',side:sd.side,primary:sd.primary,cwId:(sd.side==='B'?d.colorWayIdB:d.colorWayId)||null,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                          _slots.push({key:sd.key,kind:'art',side:sd.side,primary:sd.primary,missingDeco:!!d.missingDeco,cwId:(sd.side==='B'?d.colorWayIdB:d.colorWayId)||null,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
                         else if(sd.kind==='numbers'){const d=_numDecos[sd.idx];
                           _slots.push({key:sd.key,kind:'numbers',primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
                         else{const d=_nameDecos[sd.idx];
