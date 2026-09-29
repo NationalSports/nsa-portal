@@ -11708,7 +11708,7 @@ export default function App(){
   // commitment and its batch-queue mirror are updated together; the sales-order item stays
   // in place so purchasing can source it elsewhere. The order's sales rep is tagged on the
   // SO conversation after the durable save succeeds.
-  const removeQueuedApiLine=async(line)=>{
+  const removeQueuedApiLine=async(line,opts={})=>{
     const currentSos=_visFlushRefs.current.sos||sos;
     const so=currentSos.find(entry=>entry.id===line?.sourceSO);
     if(!so){nf('The source sales order for this line could not be found. Nothing was changed.','error');return false}
@@ -11725,8 +11725,8 @@ export default function App(){
     const vendorName=(_visFlushRefs.current.batchPOs||batchPOs||[]).find(bp=>bp.id===line?.sourceBatchId)?.vendor_name||'the vendor';
     const msg=buildOutOfStockRemovalMessage({line,sourceOrder:so,customer,actor:cu,vendorName});
     if(msg)setMsgs(prev=>[...prev,msg]);
-    const emailed=await emailRepOutOfStockRemoval(authFetch,{line,sourceOrder:so,vendorName});
-    nf('Removed '+line.style+' '+line.size+' from '+result.poId+'; '+(emailed.ok?so.id+'\'s sales rep was messaged and emailed.':'the rep was messaged on '+so.id+', but the email failed ('+emailed.error+'). Tell them directly.'),emailed.ok?undefined:'error');
+    const emailed=opts.deferEmail?{ok:true,deferred:true}:await emailRepOutOfStockRemoval(authFetch,{lines:[line],vendorName});
+    nf('Removed '+line.style+' '+line.size+' from '+result.poId+'; '+(emailed.ok?so.id+'\'s sales rep was messaged'+(emailed.deferred?'.':' and emailed.'):'the rep was messaged on '+so.id+', but the email failed ('+emailed.error+'). Tell them directly.'),emailed.ok?undefined:'error');
     return true;
   };
 

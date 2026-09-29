@@ -13,31 +13,38 @@ const esc = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (c
 }[c]));
 const clean = (value, max = 120) => String(value == null ? '' : value).trim().slice(0, max);
 
-function buildEmail({ so, customer, poId, vendorName, item, qty, removedBy }) {
+function buildEmail({ so, customer, poId, vendorName, items, removedBy }) {
   const orderUrl = `${APP_URL}/?pg=orders&so=${encodeURIComponent(so.id)}`;
   const account = customer?.name || so.customer_id || 'Unknown account';
   const vendor = vendorName || 'the vendor';
-  const subject = `Out of stock, removed from ${poId} — ${so.id}${item ? ' · ' + item : ''}`;
-  const qtyText = qty ? ` (qty ${qty})` : '';
+  const labels = items.map((it) => `${it.item || 'Item'}${it.qty ? ` (qty ${it.qty})` : ''}`);
+  const many = labels.length > 1;
+  const subject = `Out of stock, removed from ${poId} — ${so.id}${many ? ` · ${labels.length} items` : (items[0]?.item ? ' · ' + items[0].item : '')}`;
+  const lead = many
+    ? `${labels.length} items are OUT OF STOCK at ${vendor} and were removed from the order, so they will NOT be ordered.`
+    : `${labels[0]} is OUT OF STOCK at ${vendor} and was removed from the order, so it will NOT be ordered.`;
   const textContent = [
-    `${item || 'An item'}${qtyText} is OUT OF STOCK at ${vendor} and was removed from the order, so it will NOT be ordered.`,
+    lead,
     '',
-    `Item: ${item || '—'}${qtyText}`,
+    ...(many ? ['Items removed:', ...labels.map((l) => `  - ${l}`)] : [`Item: ${labels[0]}`]),
     `Sales order: ${so.id}`,
     `Former PO: ${poId}`,
     `Account: ${account}`,
     `Vendor: ${vendor}`,
     ...(removedBy ? [`Removed by: ${removedBy}`] : []),
     '',
-    'The item is still on the sales order. Please adjust it or source it elsewhere.',
+    `The ${many ? 'items are' : 'item is'} still on the sales order. Please adjust ${many ? 'them' : 'it'} or source ${many ? 'them' : 'it'} elsewhere.`,
     `Open the order: ${orderUrl}`,
   ].join('\n');
   const row = (label, value) => `<tr><td style="padding:6px 12px 6px 0;color:#64748b;font-weight:700;vertical-align:top">${esc(label)}</td><td style="padding:6px 0;color:#0f172a">${esc(value)}</td></tr>`;
+  const itemsHtml = many
+    ? `<tr><td style="padding:6px 12px 6px 0;color:#64748b;font-weight:700;vertical-align:top">Items removed</td><td style="padding:6px 0;color:#0f172a">${labels.map((l) => esc(l)).join('<br>')}</td></tr>`
+    : row('Item', labels[0]);
   const htmlContent = '<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5;color:#0f172a;max-width:640px">'
     + `<h2 style="margin:0 0 8px;color:#c2410c">Out of stock — removed from ${esc(poId)}</h2>`
-    + `<p style="margin:0 0 14px;color:#475569"><strong>${esc(item || 'An item')}${esc(qtyText)}</strong> is out of stock at ${esc(vendor)} and was removed from the order, so it will <strong>not</strong> be ordered. The item is still on your sales order — please adjust it or source it elsewhere.</p>`
+    + `<p style="margin:0 0 14px;color:#475569">${esc(lead).replace('OUT OF STOCK', '<strong>OUT OF STOCK</strong>')} The ${many ? 'items are' : 'item is'} still on your sales order — please adjust ${many ? 'them' : 'it'} or source ${many ? 'them' : 'it'} elsewhere.</p>`
     + '<table role="presentation" cellspacing="0" cellpadding="0" border="0">'
-    + row('Item', item ? item + qtyText : '—')
+    + itemsHtml
     + row('Sales order', so.id)
     + row('Former PO', poId)
     + row('Account', account)
@@ -59,8 +66,12 @@ exports.handler = async (event) => {
   const soId = clean(body.so_id);
   const poId = clean(body.po_id);
   if (!soId || !poId) return { statusCode: 400, headers: JSON_HEADERS, body: JSON.stringify({ error: 'so_id and po_id are required' }) };
-  const item = [body.style, body.color, body.size].map((v) => clean(v, 60)).filter(Boolean).join(' · ');
-  const qty = Math.max(0, Math.floor(Number(body.quantity) || 0));
+  // `items` = every line removed from this PO in one action; the single-line fields stay accepted.
+  const rawItems = Array.isArray(body.items) && body.items.length ? body.items : [body];
+  const items = rawItems.slice(0, 50).map((raw) => ({
+    item: [raw.style, raw.color, raw.size].map((v) => clean(v, 60)).filter(Boolean).join(' · '),
+    qty: Math.max(0, Math.floor(Number(raw.quantity) || 0)),
+  }));
   const vendorName = clean(body.vendor_name, 80);
 
   const apiKey = process.env.BREVO_API_KEY;
@@ -95,7 +106,7 @@ exports.handler = async (event) => {
     const toEmail = rep?.email || FALLBACK_EMAIL;
     const toName = rep?.email ? (rep.name || undefined) : 'Steve Peterson';
 
-    const email = buildEmail({ so, customer, poId, vendorName, item, qty, removedBy: member?.name || '' });
+    const email = buildEmail({ so, customer, poId, vendorName, items, removedBy: member?.name || '' });
     const response = await fetch('https://api.brevo.com/v3/smtp/email', {
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': apiKey },

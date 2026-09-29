@@ -7,7 +7,7 @@
 // (orders don't carry it). The lookup is correct-biased — it only fills a key on an
 // exact color+size match and never guesses, so an unmatched line stays blocked and
 // the rep falls back to manual ordering rather than risk shipping the wrong item.
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { buildSanMarPOPayload, buildSanMarPOSoap, buildSanMarLineItems, SANMAR_PO_ENDPOINTS } from './sanmarPO';
 import { sanmarSubmitPO, sanmarResolvePartIds, sanmarGetWarehouseStock, sanmarStyleVariants } from './vendorApis';
 import WarehouseChips, {
@@ -16,7 +16,8 @@ import WarehouseChips, {
 } from './WarehouseChips';
 import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
 import { NSA, NSA_WAREHOUSE, BATCH_VENDORS } from './constants';
-import { apiLineSourceKey } from './lib/apiOrderLines';
+import { apiLineSourceKey, removeShortLines, stockKeyAlreadyFetched } from './lib/apiOrderLines';
+import { authFetch } from './utils';
 import { collapseVendorLines, freeShipGap } from './lib/vendorOrderGuards';
 import { DuplicateMergeWarning, FreeShipNotice } from './VendorOrderGuardPanels';
 
@@ -240,13 +241,15 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     return out;
   }, [lines]);
   const whseFetchKey = useMemo(() => whseDescriptors.map(d => d.key + ':' + d.partId).sort().join(','), [whseDescriptors]);
+  const stockFetchedKeys = useRef(new Set());
   useEffect(() => {
     let cancelled = false;
     // Wait for partId resolution — the catalog-spelling lookup needs each line's partId.
     if (!whseFetchKey || resolving) return;
+    if (stockKeyAlreadyFetched(stockFetchedKeys.current, whseFetchKey)) return;
     setWhseByLine(null);
     sanmarGetWarehouseStock(whseDescriptors)
-      .then(m => { if (!cancelled) setWhseByLine(m || {}); })
+      .then(m => { if (!cancelled) { whseFetchKey.split(',').forEach(k => stockFetchedKeys.current.add(k)); setWhseByLine(m || {}); } })
       .catch(() => { if (!cancelled) setWhseByLine({}); });
     return () => { cancelled = true; };
   }, [whseFetchKey, resolving]);
@@ -327,6 +330,20 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
       setConfirmed(false);
     } catch (error) {
       setRemovalErr((error?.message || 'The line could not be removed from the source PO.') + ' Do not submit from this window; reload and verify the PO first.');
+    } finally { setRemovingLine(null); }
+  };
+
+  const shortLines = whseByLine === null ? [] : lines.filter(l => Object.prototype.hasOwnProperty.call(whseByLine, _whseKey(l)) && (lineWhseRows[_whseKey(l)] || []).reduce((sum, row) => sum + (Number(row.qty) || 0), 0) < l.quantity);
+  const removeAllShort = async () => {
+    if (!onRemoveLine || removingLine != null || submitting || !shortLines.length) return;
+    const list = shortLines.map(l => `• ${l.style} ${l.color || ''} ${l.size} (${l.quantity}) — ${l.sourceSO}`).join('\n');
+    if (!window.confirm(`Remove these ${shortLines.length} out-of-stock line(s) from their POs?\n\n${list}\n\nThey will not be sent to SanMar. Each sales rep will be messaged and emailed.`)) return;
+    setRemovingLine('__all__'); setErrorMsg(''); setRemovalErr('');
+    try {
+      const { removed, failed, error, emailed } = await removeShortLines({ lines: shortLines, onRemoveLine, authFetch, vendorName });
+      if (removed.length) { setRemovedLineKeys(prev => new Set([...prev, ...removed.map(apiLineSourceKey)])); setConfirmed(false); }
+      if (failed) setRemovalErr(`Removed ${removed.length} of ${shortLines.length}. ${failed.style} ${failed.size} could not be removed${error?.message ? ` (${error.message})` : ''}. Do not submit from this window; reload the sales order and verify the PO first.`);
+      else if (!emailed.ok) setErrorMsg(`All ${removed.length} lines were removed and the reps were messaged, but the email failed (${emailed.error}). Tell the rep directly.`);
     } finally { setRemovingLine(null); }
   };
 
@@ -687,6 +704,12 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
             </div>
           )}
 
+          {tab === 'lines' && onRemoveLine && !done && shortLines.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, padding: '8px 10px', background: '#fff7ed', border: '1px solid #fdba74', borderRadius: 6, fontSize: 12, color: '#9a3412' }}>
+              <span style={{ flex: 1 }}><strong>{shortLines.length} line{shortLines.length === 1 ? ' is' : 's are'} short at SanMar.</strong> Fix a wrong part by clicking its number, or remove them all — each sales rep is emailed what was removed.</span>
+              <button className="btn btn-sm" disabled={removingLine != null || submitting} onClick={removeAllShort} style={{ color: '#fff', background: '#b91c1c', borderColor: '#b91c1c', fontSize: 11, whiteSpace: 'nowrap' }}>{removingLine === '__all__' ? 'Removing…' : `Remove all ${shortLines.length} out-of-stock from order & PO`}</button>
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e2e8f0', marginBottom: 10 }}>
             <TabBtn active={tab === 'lines'} onClick={() => setTab('lines')}>Line Items ({lines.length})</TabBtn>
             <TabBtn active={tab === 'xml'} onClick={() => setTab('xml')}>SOAP XML</TabBtn>

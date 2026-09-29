@@ -3303,7 +3303,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }
     return _recordApiOrder(apiOrder,r,apiLines);
   };
-  const _removeApiOrderLine=async(line)=>{
+  const _removeApiOrderLine=async(line,opts={})=>{
     const current=oRef.current||o;
     const sourceOrder=line?.sourceSO===current.id?current:(apiRemovalOrderCache.current[line?.sourceSO]||(allOrders||[]).find(so=>so.id===line?.sourceSO));
     if(!sourceOrder){nf('The source sales order for this line could not be found. Nothing was changed.','error');return false}
@@ -3321,8 +3321,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const customer=(allCustomers||[]).find(c=>c.id===sourceOrder.customer_id)||null;
     const msg=buildOutOfStockRemovalMessage({line,sourceOrder,customer,actor:cu,vendorName:apiOrder?.vendorName});
     if(msg&&onMsg)onMsg(prev=>[...prev,msg]);
-    const emailed=await emailRepOutOfStockRemoval(authFetch,{line,sourceOrder,vendorName:apiOrder?.vendorName});
-    nf('Removed '+line.style+' '+line.size+' from '+result.poId+'; '+(emailed.ok?sourceOrder.id+'\'s sales rep was messaged and emailed.':'the rep was messaged on '+sourceOrder.id+', but the email failed ('+emailed.error+'). Tell them directly.'),emailed.ok?undefined:'error');
+    const emailed=opts.deferEmail?{ok:true,deferred:true}:await emailRepOutOfStockRemoval(authFetch,{lines:[line],vendorName:apiOrder?.vendorName});
+    nf('Removed '+line.style+' '+line.size+' from '+result.poId+'; '+(emailed.ok?sourceOrder.id+'\'s sales rep was messaged'+(emailed.deferred?'.':' and emailed.'):'the rep was messaged on '+sourceOrder.id+', but the email failed ('+emailed.error+'). Tell them directly.'),emailed.ok?undefined:'error');
     return true;
   };
   const uSz=(i,sz,v)=>{

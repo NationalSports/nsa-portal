@@ -41,6 +41,26 @@ describe('DuplicateMergeWarning', () => {
     expect(screen.getByText(/6 units will be ordered as ONE combined quantity/i)).toBeInTheDocument();
   });
 
+  test('two SEPARATE lines of one sales order are not called the NSA 4632 fault (SO-2700)', () => {
+    const separate = collapseVendorLines([
+      { style: 'NL3910', color: 'Black', size: 'XS', sku: '3177981', quantity: 1, sourceSO: 'SO-2700', sourceItemIdx: 4 },
+      { style: 'NL3910', color: 'Black', size: 'XS', sku: '3177981', quantity: 1, sourceSO: 'SO-2700', sourceItemIdx: 5 },
+    ], l => l.sku).duplicates;
+    render(<DuplicateMergeWarning duplicates={separate} acknowledged={false} onAcknowledge={() => {}} vendorName="SanMar" />);
+    expect(screen.queryByText(/NSA 4632 fault/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/ordering the combined quantity is correct/i)).toBeInTheDocument();
+  });
+
+  test('the SAME sales-order line queued twice is still the NSA 4632 fault', () => {
+    const repeated = collapseVendorLines([
+      { style: 'NL3910', color: 'Black', size: 'XS', sku: '3177981', quantity: 1, sourceSO: 'SO-2700', sourceItemIdx: 4 },
+      { style: 'NL3910', color: 'Black', size: 'XS', sku: '3177981', quantity: 1, sourceSO: 'SO-2700', sourceItemIdx: 4 },
+    ], l => l.sku).duplicates;
+    render(<DuplicateMergeWarning duplicates={repeated} acknowledged={false} onAcknowledge={() => {}} vendorName="SanMar" />);
+    expect(screen.getByText(/NSA 4632 fault/i)).toBeInTheDocument();
+    expect(screen.queryByText(/ordering the combined quantity is correct/i)).not.toBeInTheDocument();
+  });
+
   test('the acknowledgement checkbox reports back to the modal', () => {
     const onAck = jest.fn();
     render(<DuplicateMergeWarning duplicates={dupedQueue} acknowledged={false} onAcknowledge={onAck} vendorName="S&S" />);
