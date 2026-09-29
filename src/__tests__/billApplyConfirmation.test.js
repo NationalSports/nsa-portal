@@ -32,7 +32,7 @@ const context=(orders=[],inventory=[],batches=[])=>{
   const stageStart=source.indexOf('    const _billStages=');
   const stageEnd=source.indexOf('    // Apply parsed bill data',stageStart);
   vm.runInContext(source.slice(stageStart,stageEnd),c);
-  for(const name of ['_applyDecorationBillManually','_applyDecorationBillToSO','applyBillToSO','_confirmPortalBill','_applyBillsToPortal','_retryBillSave','_applyCreditToPortal']){
+  for(const name of ['_decoBillDup','_applyDecorationBillManually','_applyDecorationBillToSO','applyBillToSO','_confirmPortalBill','_applyBillsToPortal','_retryBillSave','_applyCreditToPortal']){
     vm.runInContext(fn(name)+'\nthis.'+name+'='+name,c);
   }
   return c;
@@ -148,4 +148,15 @@ test('polling that adopts the exact saved target is not mistaken for an interven
   });
   expect(await c._applyBillsToPortal([b])).toBe(1);expect(c._recordAppliedBills).toHaveBeenCalledTimes(1);
   expect(c.sos[0].deco_pos[0]._bill_cost).toBe(100);
+});
+
+test.each(['automatic','manual'])('%s decoration bill already on the deco PO is not recorded a second time',async mode=>{
+  const order=decoOrder();order.deco_pos[0]._bill_cost=100;order.deco_pos[0]._bill_details=[{doc:'B1',cost:100,freight:0}];
+  const c=context([order]);const b=decoBill();
+  if(mode==='manual')b.parsed._manualTarget={soId:'SO1',mode:'existing',decoPoId:'D1'};
+  await c._applyBillsToPortal([b]);
+  expect(c.sos[0].deco_pos[0]._bill_cost).toBe(100);expect(c.sos[0].deco_pos[0]._bill_details).toHaveLength(1);
+  expect(b.parsed._applied).toBeUndefined();expect(c._dbSaveSO).not.toHaveBeenCalled();expect(c._recordAppliedBills).not.toHaveBeenCalled();
+  await new Promise(r=>setTimeout(r,0));
+  expect(c.nf).toHaveBeenCalledWith(expect.stringContaining('already billed on deco PO DPO1'),'error');
 });
