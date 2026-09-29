@@ -62,6 +62,9 @@ export function buildSSOrderPayload({
   emailConfirmation = '',
   testOrder = true,             // safe default — S&S creates & cancels test orders (nothing ships)
   autoselectWarehouse = true,
+  // S&S's checkout "Freight Optimizer": 'fastest' ships each line from the quickest warehouse
+  // for the ship-to; S&S's default can send the whole PO from one far warehouse to cut boxes.
+  warehousePreference = 'fastest',
   residential = false,
 } = {}) {
   let lines = lineItems, warnings = [];
@@ -87,6 +90,7 @@ export function buildSSOrderPayload({
     emailConfirmation: emailConfirmation || '',
     testOrder: !!testOrder,
     autoselectWarehouse: !!autoselectWarehouse,
+    ...(autoselectWarehouse && warehousePreference ? { AutoSelectWarehouse_Preference: warehousePreference } : {}),
     rejectLineErrors: false,
     lines: merged.map(l => ({ identifier: l.sku, qty: l.quantity })),
   };
