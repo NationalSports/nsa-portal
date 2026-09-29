@@ -29,6 +29,23 @@ export const vendorLineLabel = (l) =>
   [l?.style || l?.sku, l?.color, l?.size].filter(Boolean).join(' ') || '(unlabelled line)';
 
 /**
+ * True when a merge contains the SAME sales-order line more than once — the NSA 4632 fault
+ * (the batch queue held every line twice). Two DIFFERENT lines on one order that happen to
+ * be the same item (SO-2700's two NL3910 Black XS lines, 2026-09-29) are real and are not
+ * flagged. A part without a known line position can't be told apart, so it stays flagged.
+ */
+export function mergeRepeatsOrderLine(d) {
+  const seen = new Set();
+  return (d?.parts || []).some((p) => {
+    const key = `${p.sourceSO || ''}|${p.sourceItemIdx == null ? '?' : p.sourceItemIdx}`;
+    const unknownOnSameSo = p.sourceItemIdx == null && [...seen].some(k => k.startsWith(`${p.sourceSO || ''}|`));
+    if (seen.has(key) || unknownOnSameSo) return true;
+    seen.add(key);
+    return false;
+  });
+}
+
+/**
  * Collapse order lines that share a vendor item number into one payload line.
  *
  * @param lines  portal order lines (already SKU-resolved)
@@ -50,7 +67,7 @@ export function collapseVendorLines(lines, keyOf) {
     const key = String(keyOf ? keyOf(l) : (l?.sku || '')).trim();
     const qty = qtyOf(l);
     if (!key || qty <= 0) return;
-    const part = { label: vendorLineLabel(l), quantity: qty, sourceSO: l?.sourceSO || '', sourcePO: l?.sourcePO || '' };
+    const part = { label: vendorLineLabel(l), quantity: qty, sourceSO: l?.sourceSO || '', sourcePO: l?.sourcePO || '', sourceItemIdx: Number.isInteger(l?.sourceItemIdx) ? l.sourceItemIdx : null };
     const hit = byKey.get(key);
     if (hit) { hit.quantity += qty; hit.parts.push(part); }
     else byKey.set(key, { ...l, key, quantity: qty, parts: [part] });

@@ -85,6 +85,7 @@ import { artFamilyKey } from './lib/artSplitFamily';
 import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, embStitchTierLabel } from './lib/embStitchParser';
 import { _dbPersistNewPoLine } from './lib/dbEngine';
 import { applyFullPromoPricing, recoverGarmentCost as recoverGarmentCostShared } from './lib/promoPricing';
+import { buildOutOfStockRemovalMessage, emailRepOutOfStockRemoval, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
 import { markTopstarEmailFailed, markTopstarEmailSent, topstarAttachmentName, topstarPoMatches } from './lib/topstarEmail';
 import { fetchPaidPromoHistoryInvoices, mergePromoHistoryInvoices, promoHalfWindows, withEarnedPromoAllocation } from './lib/promoHistory';
 
@@ -895,7 +896,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       onOpenPOConsumed&&onOpenPOConsumed();
     }},[openPOId]);
     const origRef=React.useRef(JSON.stringify(o));
-    const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showActionsDD,setShowActionsDD]=useState(false);const[showTaxExempt,setShowTaxExempt]=useState(false);const actionsRef=useRef(null);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=1000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[batchReadyPopup,setBatchReadyPopup]=useState(null);const[addShp,setAddShp]=useState(null);// Tracking tab: manual outbound shipment entry (null = form closed)
+    const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showActionsDD,setShowActionsDD]=useState(false);const[showTaxExempt,setShowTaxExempt]=useState(false);const actionsRef=useRef(null);const apiRemovalOrderCache=useRef({});const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=1000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[batchReadyPopup,setBatchReadyPopup]=useState(null);const[addShp,setAddShp]=useState(null);// Tracking tab: manual outbound shipment entry (null = form closed)
     const[shpEmailBusy,setShpEmailBusy]=useState(false);// Tracking tab: coach shipping-notice send in flight
     // Auto-open a send flow when navigated here from a dashboard follow-up "Send" button.
     // {kind:'doc'} opens the estimate/SO SendModal; {kind:'coach',jobId} opens Send-to-Coach for
@@ -3301,6 +3302,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return orderedNum;
     }
     return _recordApiOrder(apiOrder,r,apiLines);
+  };
+  const _removeApiOrderLine=async(line,opts={})=>{
+    const current=oRef.current||o;
+    const sourceOrder=line?.sourceSO===current.id?current:(apiRemovalOrderCache.current[line?.sourceSO]||(allOrders||[]).find(so=>so.id===line?.sourceSO));
+    if(!sourceOrder){nf('The source sales order for this line could not be found. Nothing was changed.','error');return false}
+    if(sourceOrder.id!==current.id&&!onSaveNow){nf('Open '+sourceOrder.id+' to remove this line from its PO. Nothing was changed.','error');return false}
+    const result=removeApiLineFromPoItems(safeItems(sourceOrder),line);
+    if(!result.removed){nf(result.reason||'This line could not be removed from the PO.','error');return false}
+    const updated={...sourceOrder,items:result.items,updated_at:new Date().toLocaleString()};
+    if(sourceOrder.id===current.id){setO(updated);oRef.current=updated}
+    let saved=true;
+    try{saved=onSaveNow?await onSaveNow(updated):(sourceOrder.id===current.id&&onSave(updated)!==false)}catch(_saveErr){saved=false;console.error('[removeApiOrderLine] durable save failed',_saveErr)}
+    if(!saved){if(sourceOrder.id===current.id){setO(current);oRef.current=current}nf('The PO removal could not be confirmed. Do not submit; reload the order and verify the PO.','error');return false}
+    apiRemovalOrderCache.current[sourceOrder.id]=updated;
+    if(line.sourceBatchId&&onBatchPO)onBatchPO(prev=>removeApiLineFromBatchPOs(prev,line));
+    if(sourceOrder.id===current.id)setPoFullPage(pf=>{if(!pf)return pf;let first=null;const allLines=[];result.items.forEach((it,lineIdx)=>{const poIdx=(it.po_lines||[]).findIndex(pl=>pl.po_id===result.poId);if(poIdx>=0){allLines.push({lineIdx,poIdx});if(!first)first={item:it,po:it.po_lines[poIdx]}}});return first?{...pf,item:first.item,po:first.po,soItems:result.items,allLines}:null});
+    const customer=(allCustomers||[]).find(c=>c.id===sourceOrder.customer_id)||null;
+    const msg=buildOutOfStockRemovalMessage({line,sourceOrder,customer,actor:cu,vendorName:apiOrder?.vendorName});
+    if(msg&&onMsg)onMsg(prev=>[...prev,msg]);
+    const emailed=opts.deferEmail?{ok:true,deferred:true}:await emailRepOutOfStockRemoval(authFetch,{lines:[line],vendorName:apiOrder?.vendorName});
+    nf('Removed '+line.style+' '+line.size+' from '+result.poId+'; '+(emailed.ok?sourceOrder.id+'\'s sales rep was messaged'+(emailed.deferred?'.':' and emailed.'):'the rep was messaged on '+sourceOrder.id+', but the email failed ('+emailed.error+'). Tell them directly.'),emailed.ok?undefined:'error');
+    return true;
   };
   const uSz=(i,sz,v)=>{
     const n=v===''?0:parseInt(v)||0;
@@ -11299,9 +11322,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div></div>;
       })()}
 
-      {apiOrder&&apiOrder.vendorKey==='sanmar'&&<SanMarPreviewModal {...apiOrder} decoVendors={(decoVendors||[]).map(dv=>{if(dv.address_line1)return dv;const _v=vendorList.find(v2=>v2.id===dv.vendor_id);return _v?{...dv,address_line1:_v.address_line1||'',address_line2:_v.address_line2||'',city:_v.city||'',state:_v.state||'',zip:_v.zip||''}:dv})} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted}/>}
-      {apiOrder&&apiOrder.vendorKey==='sss'&&<SSOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted}/>}
-      {apiOrder&&apiOrder.vendorKey==='momentec'&&<MomentecOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted}/>}
+      {apiOrder&&apiOrder.vendorKey==='sanmar'&&<SanMarPreviewModal {...apiOrder} decoVendors={(decoVendors||[]).map(dv=>{if(dv.address_line1)return dv;const _v=vendorList.find(v2=>v2.id===dv.vendor_id);return _v?{...dv,address_line1:_v.address_line1||'',address_line2:_v.address_line2||'',city:_v.city||'',state:_v.state||'',zip:_v.zip||''}:dv})} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted} onRemoveLine={_removeApiOrderLine}/>}
+      {apiOrder&&apiOrder.vendorKey==='sss'&&<SSOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted} onRemoveLine={_removeApiOrderLine}/>}
+      {apiOrder&&apiOrder.vendorKey==='momentec'&&<MomentecOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted} onRemoveLine={_removeApiOrderLine}/>}
 
         {showPick&&<div className="modal-overlay" onClick={()=>{setShowPick(false);setPickSel({})}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
       <div className="modal-header"><h2>{typeof showPick==='object'?'IF — '+pickId:'Create IF — Select Items'}</h2><button className="modal-close" onClick={()=>{setShowPick(false);setPickSel({})}}>x</button></div>

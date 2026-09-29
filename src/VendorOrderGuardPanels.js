@@ -6,6 +6,7 @@
 // in palette elsewhere, but a warning that stops money moving should look identical
 // wherever a rep meets it.
 import React from 'react';
+import { mergeRepeatsOrderLine } from './lib/vendorOrderGuards';
 
 /**
  * Amber gate shown when two or more portal lines collapse onto one vendor item number.
@@ -18,9 +19,11 @@ import React from 'react';
 export function DuplicateMergeWarning({ duplicates, acknowledged, onAcknowledge, vendorName = 'the vendor', disabled = false }) {
   if (!duplicates || !duplicates.length) return null;
   const combinedUnits = duplicates.reduce((s, d) => s + d.quantity, 0);
-  // Every duplicate coming from ONE sales order is the fingerprint of a duplicated batch
-  // queue rather than a legitimate cross-order merge — call that out by name.
-  const sameSoOnly = duplicates.filter(d => new Set(d.parts.map(p => p.sourceSO || '')).size === 1);
+  // The same sales-order LINE appearing twice is the fingerprint of a duplicated batch queue —
+  // call that out by name. Separate lines on one order that share an item are real, and the
+  // buyer can't be expected to know which is which, so say so instead of asking them.
+  const sameSoOnly = duplicates.filter(mergeRepeatsOrderLine);
+  const separateLines = duplicates.filter(d => !mergeRepeatsOrderLine(d) && new Set(d.parts.map(p => p.sourceSO || '')).size < d.parts.length);
   return (
     <div style={{ padding: 12, background: '#fffbeb', border: '2px solid #f59e0b', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#92400e' }}>
       <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 4 }}>
@@ -37,6 +40,12 @@ export function DuplicateMergeWarning({ duplicates, acknowledged, onAcknowledge,
           That usually means the batch queue holds the same line twice — the NSA 4632 fault, which
           double-ordered 53 units. Unless this order genuinely has two separate lines of that item
           (a second decoration, say), cancel, fix the batch queue, and start again.
+        </div>
+      )}
+      {!!separateLines.length && (
+        <div style={{ marginBottom: 8, padding: 8, background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 6, color: '#166534', fontWeight: 700 }}>
+          ✓ {separateLines.length === 1 ? 'One item' : `${separateLines.length} items`} below {separateLines.length === 1 ? 'is' : 'are'} on <em>separate</em> lines of the same sales order
+          ({[...new Set(separateLines.flatMap(d => d.parts.map(p => p.sourceSO)).filter(Boolean))].join(', ')}), not a repeated batch line — ordering the combined quantity is correct.
         </div>
       )}
       <div style={{ maxHeight: 210, overflow: 'auto', background: '#fff', border: '1px solid #fde68a', borderRadius: 6 }}>

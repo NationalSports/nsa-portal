@@ -6,14 +6,15 @@
 // otherwise resolved live from /v2/Style (momentecResolveSkus) — so it works for
 // items added any way. Credentials (logonId/password) are injected server-side by
 // momentec-proxy and never appear in this payload.
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { buildMomentecOrderPayload, buildMomentecOrderLines, buildMomentecShippingCostRequest } from './momentecOrder';
 import { momentecSubmitOrder, momentecResolveSkus, momentecOrderDetails, momentecShippingCost, momentecStyleV2 } from './vendorApis';
 import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
 import { DuplicateMergeWarning, FreeShipNotice } from './VendorOrderGuardPanels';
 import { freeShipGap } from './lib/vendorOrderGuards';
 import { NSA, NSA_WAREHOUSE, BATCH_VENDORS } from './constants';
-import { apiLineSourceKey } from './lib/apiOrderLines';
+import { apiLineSourceKey, removeShortLines, stockKeyAlreadyFetched } from './lib/apiOrderLines';
+import { authFetch } from './utils';
 
 // Momentec ships integrated orders to NSA's receiving dock (caller can override via shipTo).
 const NSA_SHIP_TO = {
@@ -95,10 +96,12 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
   // Momentec's style response includes exact per-SKU quantities. Fetch every style,
   // including lines whose SKU was already stamped, so zero-stock rows can be removed
   // before the live order is submitted. Missing/error responses stay unknown, never OOS.
+  const stockFetchedKeys = useRef(new Set());
   const stockStyleSig = useMemo(() => [...new Set(baseLines.map(l => String(l.style || '').split('.')[0].trim()).filter(Boolean))].sort().join(','), [baseLines]);
   useEffect(() => {
     let cancelled = false;
     if (!stockStyleSig) { setStockBySku({}); return; }
+    if (stockKeyAlreadyFetched(stockFetchedKeys.current, stockStyleSig)) return;
     setStockBySku(null);
     Promise.all(stockStyleSig.split(',').map(style => momentecStyleV2(style).catch(() => null))).then(styles => {
       if (cancelled) return;
@@ -106,6 +109,7 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
       styles.filter(Boolean).forEach(style => (style.colors || []).forEach(color => (color.sizes || []).forEach(size => {
         map[String(`${color.sku}.${size.sizeName}`).toUpperCase()] = Number(size.qty) || 0;
       })));
+      stockStyleSig.split(',').forEach(k => stockFetchedKeys.current.add(k));
       setStockBySku(map);
     });
     return () => { cancelled = true; };
@@ -156,6 +160,20 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
       setConfirmed(false);
     } catch (error) {
       setRemovalErr((error?.message || 'The line could not be removed from the source PO.') + ' Do not submit from this window; reload and verify the PO first.');
+    } finally { setRemovingLine(null); }
+  };
+
+  const shortLines = stockBySku === null ? [] : lines.filter(l => { const sku = String(l.sku || '').toUpperCase(); return !!l.sku && Object.prototype.hasOwnProperty.call(stockBySku, sku) && stockBySku[sku] < l.quantity; });
+  const removeAllShort = async () => {
+    if (!onRemoveLine || removingLine != null || submitting || !shortLines.length) return;
+    const list = shortLines.map(l => `• ${l.style} ${l.color || ''} ${l.size} (${l.quantity}) — ${l.sourceSO}`).join('\n');
+    if (!window.confirm(`Remove these ${shortLines.length} out-of-stock line(s) from their POs?\n\n${list}\n\nThey will not be sent to Momentec. Each sales rep will be messaged and emailed.`)) return;
+    setRemovingLine('__all__'); setErrorMsg(''); setRemovalErr('');
+    try {
+      const { removed, failed, error, emailed } = await removeShortLines({ lines: shortLines, onRemoveLine, authFetch, vendorName });
+      if (removed.length) { setRemovedLineKeys(prev => new Set([...prev, ...removed.map(apiLineSourceKey)])); setConfirmed(false); }
+      if (failed) setRemovalErr(`Removed ${removed.length} of ${shortLines.length}. ${failed.style} ${failed.size} could not be removed${error?.message ? ` (${error.message})` : ''}. Do not submit from this window; reload the sales order and verify the PO first.`);
+      else if (!emailed.ok) setErrorMsg(`All ${removed.length} lines were removed and the reps were messaged, but the email failed (${emailed.error}). Tell the rep directly.`);
     } finally { setRemovingLine(null); }
   };
 
@@ -345,6 +363,12 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
             presets={shipPresets}
           />
 
+          {tab === 'lines' && onRemoveLine && !done && shortLines.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, padding: '8px 10px', background: '#fff7ed', border: '1px solid #fdba74', borderRadius: 6, fontSize: 12, color: '#9a3412' }}>
+              <span style={{ flex: 1 }}><strong>{shortLines.length} line{shortLines.length === 1 ? ' is' : 's are'} short at Momentec.</strong> Remove them all — each sales rep is emailed what was removed.</span>
+              <button className="btn btn-sm" disabled={removingLine != null || submitting} onClick={removeAllShort} style={{ color: '#fff', background: '#b91c1c', borderColor: '#b91c1c', fontSize: 11, whiteSpace: 'nowrap' }}>{removingLine === '__all__' ? 'Removing…' : `Remove all ${shortLines.length} out-of-stock from order & PO`}</button>
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e2e8f0', marginBottom: 10 }}>
             <TabBtn active={tab === 'lines'} onClick={() => setTab('lines')}>Line Items ({lines.length})</TabBtn>
             <TabBtn active={tab === 'json'} onClick={() => setTab('json')}>Order JSON</TabBtn>
