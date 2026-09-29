@@ -41,7 +41,7 @@ import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, pendingProdFileGroups, prodFileMethodOf, artStatusAfterProdConfirm, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, orderLineSizes, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine, estimateTermsFooter } from './constants';
 import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, replaceMockLinkGroup, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemArtSlots, jobItemDecosOfKind, jobRosterBlocks, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, jobItemRoster, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, placeRosterEntries, rosterDropSummary, autoSellFromCost, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
-import { invoiceTotalsRows } from './lib/invoiceDocTotals';
+import { invoiceTotalsRows, invoiceMismatchAlert } from './lib/invoiceDocTotals';
 import { pickUnits } from './itemFulfillment';
 import { EmailRouteNotice, Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor, TaxExemptModal } from './components';
 import { checkEmailRecipients, emailDeliveryLabel } from './lib/emailRouting';
@@ -283,7 +283,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onEditMemo,memoEditorRef,memoEditing,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onManualShip,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onOpenIF,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,onOpenMethodicDashboard,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onEditMemo,memoEditorRef,memoEditing,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onManualShip,onDelete,onReleasePendingShip,pendingShipAvail,onNavInvoice,onNavBatch,onOpenIF,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,onOpenMethodicDashboard,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText}){
   // O(1) catalog lookup. Replaces a products.find() linear scan that ran once per size cell
   // (~11ms per render on a 10-line order, ~41ms at 40 lines) on every keystroke-driven render.
   const findProd=useMemo(()=>buildProductIndex(products),[products]);
@@ -5637,7 +5637,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <span style={{fontSize:11,fontWeight:700,color:'#1e40af'}}>📦 PRIOR SHIPPING CARRIED</span>
         <span style={{fontSize:12}}>From an earlier Manual Ship recorded when {cust?.name||'this customer'} had no open order.</span>
         <span style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>Billed on this order: ${safeNum(o.pending_ship_amount).toFixed(2)}</span>
-        {onReleasePendingShip&&<button className="btn btn-sm" style={{fontSize:10,color:'#dc2626',border:'1px solid #fca5a5',background:'white'}} onClick={()=>{if(window.confirm('Remove the $'+safeNum(o.pending_ship_amount).toFixed(2)+" prior shipping charge from this order? It returns to the customer's balance and will attach to their next order instead."))onReleasePendingShip(o)}}>Remove</button>}
+        {onReleasePendingShip&&<button className="btn btn-sm" style={{fontSize:10,color:'#dc2626',border:'1px solid #fca5a5',background:'white'}} onClick={()=>{if(window.confirm('Remove the $'+safeNum(o.pending_ship_amount).toFixed(2)+" prior shipping charge from this order? It returns to the customer's balance and will be offered on their next order instead."))onReleasePendingShip(o)}}>Remove</button>}
+      </div>}
+      {/* Unbilled prior shipping — shown to the rep only, never billed unless they add it */}
+      {isSO&&!o.pending_ship_applied&&safeNum(pendingShipAvail?.amount)>0&&<div style={{margin:'8px 0',padding:'10px 16px',background:'#fffbeb',borderRadius:8,border:'1px solid #fde68a',display:'flex',gap:16,alignItems:'center',flexWrap:'wrap'}}>
+        <span style={{fontSize:11,fontWeight:700,color:'#92400e'}}>📦 UNBILLED PRIOR SHIPPING</span>
+        <span style={{fontSize:12}}>{cust?.name||'This customer'} has ${safeNum(pendingShipAvail.amount).toFixed(2)} of shipping from an earlier Manual Ship{safeNum(pendingShipAvail.cost)>0?' (label cost $'+safeNum(pendingShipAvail.cost).toFixed(2)+')':''}. Not on this order — add it only if it should be billed here.</span>
+        {(allInvoices||[]).some(i=>i.so_id===o.id)
+          ?<span style={{fontSize:11,color:'#92400e'}}>This order is already invoiced — bill it on their next order.</span>
+          :<button className="btn btn-sm" style={{fontSize:10,color:'#92400e',border:'1px solid #fcd34d',background:'white'}} onClick={()=>{
+            if(!window.confirm('Add $'+safeNum(pendingShipAvail.amount).toFixed(2)+' of prior shipping to '+o.id+'? It will be billed on this order\'s invoice.'))return;
+            const _nc=Math.round((safeNum(o._shipping_cost||o._shipstation_cost||0)+safeNum(pendingShipAvail.cost))*100)/100;
+            const updated={...o,pending_ship_applied:true,pending_ship_amount:safeNum(pendingShipAvail.amount),...(_nc>0?{_shipping_cost:_nc,_shipstation_cost:_nc}:{}),updated_at:new Date().toLocaleString()};
+            setO(updated);onSave(updated)}}>Add to this order</button>}
       </div>}
       {/* SO STATUS — fully auto-calculated from items/jobs */}
       {isSO&&(()=>{
@@ -9163,7 +9175,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(invSaved)nf('Invoice '+inv.id+' created for $'+invTotal.toFixed(2)+(invType==='final'?(_closeOnFinal?' — SO marked complete':' — SO left open, still in production'):''));
             else nf('Invoice '+inv.id+' created but NOT saved to the database — the SO was left open. The save will retry in the background; mark the SO complete once it saves.','error');
             // Show invoice review page instead of navigating away
-            setInvReview({...inv,_customer:cust,_so:o,_lineItems:lineItems,_shipAmt:invShipAmt,_taxAmt:invTaxAmt});
+            // _shipAmt is the invoice's own saved shipping, which already folds in any prior-shipping
+            // carry-over — printing invShipAmt alone dropped that charge off the page (INV-64148).
+            setInvReview({...inv,_customer:cust,_so:o,_lineItems:lineItems,_shipAmt:inv.shipping,_taxAmt:invTaxAmt});
             const contact=(cust?.contacts||[])[0];
             const invPortalUrl=cust?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cust.alpha_tag)+'&inv='+encodeURIComponent(inv.id):'';
             const _invJob=(o.memo||'').trim();
@@ -9464,6 +9478,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Lines with no SO match (hand-added, NetSuite import) still have to print, or the
             // document's subtotal won't reconcile to the invoice total.
             _extra.forEach(li=>{eSubTotal+=safeNum(li.amount);eRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$e(safeNum(li.rate)),style:'text-align:right'},{value:_$e(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
+            // A document that doesn't add up is flagged to the rep here — never printed on the PDF.
+            const _mismatch=invoiceMismatchAlert({subtotal:eSubTotal,shipping:shipAmt,tax:taxAmt,ccFee:safeNum(ir.cc_fee),credit:safeNum(ir.credit_amount),depositApplied:safeNum(ir.deposit_applied),total:ir.total},_$e);
+            if(_mismatch&&!window.confirm(_mismatch)){setInvSendingState(null);return}
             const brevoAttachments=[];
             try{
               const docHtml=buildDocHtml({title:irBillName,docNum:ir.id,docType:'INVOICE',date:ir.date,css:PRINT_CSS,

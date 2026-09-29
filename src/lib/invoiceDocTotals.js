@@ -23,6 +23,19 @@ export const invoiceDocReconcile = ({ subtotal, shipping, tax, ccFee, credit, de
   return { expected, diff, ok: Math.abs(diff) <= 0.01 };
 };
 
+// The warning a rep sees BEFORE an invoice goes out whose printed lines don't add up to its
+// total — or null when it reconciles. It is never printed on the document itself: the PDF is
+// the customer's copy, and an internal "do not send" note on it went straight to a customer
+// (INV-64148). Each send path asks the rep with this text and stops unless they confirm.
+export const invoiceMismatchAlert = (parts, fmt) => {
+  const rec = invoiceDocReconcile(parts);
+  if (rec.ok) return null;
+  return '⚠ This invoice does not add up.\n\n'
+    + 'The lines, shipping, tax and adjustments printed on it total ' + fmt(rec.expected)
+    + ', but the invoice total is ' + fmt(n(parts.total)) + ' (off by ' + fmt(Math.abs(rec.diff)) + ').\n\n'
+    + 'The customer will see numbers that don\'t match. Fix the invoice first, or press OK to send it anyway.';
+};
+
 const blank = { value: '', style: 'border:none' };
 const row = (label, value, opts = {}) => ({
   ...(opts._class ? { _class: opts._class } : {}),
@@ -36,7 +49,6 @@ const row = (label, value, opts = {}) => ({
 // an applied credit or deposit, a payment) print only when they are actually carrying money,
 // so an ordinary invoice still reads as Subtotal / Total / Balance Due.
 export const invoiceTotalsRows = ({ subtotal, shipping, tax, ccFee, credit, depositApplied, total, paid, balance }, fmt) => {
-  const rec = invoiceDocReconcile({ subtotal, shipping, tax, ccFee, credit, depositApplied, total });
   const rows = [
     row('<strong>Subtotal</strong>', '<strong>' + fmt(n(subtotal)) + '</strong>',
       { _class: 'subtotal-row' }),
@@ -52,18 +64,6 @@ export const invoiceTotalsRows = ({ subtotal, shipping, tax, ccFee, credit, depo
     '<strong style="color:#065f46">-' + fmt(n(credit)) + '</strong>', { plain: true }));
   if (n(depositApplied) > 0) rows.push(row('<strong style="color:#065f46">Deposit Applied</strong>',
     '<strong style="color:#065f46">-' + fmt(n(depositApplied)) + '</strong>', { plain: true }));
-  // An invoice whose printed lines do not add up to its total is a bug in the document, not
-  // a number the customer should be left to reconcile. Say so on the page rather than
-  // printing a Total that silently contradicts the lines above it.
-  if (!rec.ok) rows.push({
-    _style: 'background:#fef2f2',
-    cells: [blank, blank,
-      { value: '<strong style="color:#dc2626">⚠ These amounts do not add up — do not send this invoice.</strong>'
-        + '<br/><span style="font-size:10px;color:#991b1b">Lines and adjustments total ' + fmt(rec.expected)
-        + ', but the invoice total is ' + fmt(n(total)) + '. Report this before sending.</span>' },
-      { value: '<strong style="color:#dc2626">Off by</strong>', style: 'text-align:right' },
-      { value: '<strong style="color:#dc2626">' + fmt(Math.abs(rec.diff)) + '</strong>', style: 'text-align:right' }],
-  });
   rows.push(row('<strong>Total</strong>', '<strong style="font-size:14px">' + fmt(n(total)) + '</strong>',
     { _class: 'totals-row' }));
   if (n(paid) > 0) rows.push(row('<span style="color:#166534">Paid</span>',

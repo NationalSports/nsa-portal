@@ -17,7 +17,7 @@
 //      printed a totals block that did not add up to the Total beneath it.
 // ═══════════════════════════════════════════════
 const { scopeSoItemsToInvoice } = require('../safeHelpers');
-const { invoiceTotalsRows, invoiceDocReconcile } = require('../lib/invoiceDocTotals');
+const { invoiceTotalsRows, invoiceDocReconcile, invoiceMismatchAlert } = require('../lib/invoiceDocTotals');
 
 const fmt = n => '$' + Number(n).toFixed(2);
 const text = rows => rows.map(r => r.cells.map(c => String(c.value)).join(' ')).join('\n');
@@ -115,11 +115,20 @@ describe('the totals block prints every component of the total', () => {
     expect(out).toContain('Total');
   });
 
-  test('a document that does not reconcile says so instead of printing a silent lie', () => {
+  test('a document that does not reconcile warns the rep, never the customer', () => {
     // INV-63754, as stored: $2,197.00 of lines under an $1,833.96 total.
-    const rows = invoiceTotalsRows({ subtotal: 2197, shipping: 87.33, tax: 125.63, total: 1833.96 }, fmt);
-    expect(text(rows)).toContain('do not add up');
-    expect(invoiceDocReconcile({ subtotal: 2197, shipping: 87.33, tax: 125.63, total: 1833.96 }).ok).toBe(false);
+    const parts = { subtotal: 2197, shipping: 87.33, tax: 125.63, total: 1833.96 };
+    expect(invoiceDocReconcile(parts).ok).toBe(false);
+    // The PDF is the customer's copy — INV-64148 went out with "do not send this invoice" on it.
+    expect(text(invoiceTotalsRows(parts, fmt))).not.toContain('do not add up');
+    expect(text(invoiceTotalsRows(parts, fmt))).not.toContain('Off by');
+    const alert = invoiceMismatchAlert(parts, fmt);
+    expect(alert).toContain('does not add up');
+    expect(alert).toContain('$576.00');
+  });
+
+  test('an invoice that reconciles raises no rep alert', () => {
+    expect(invoiceMismatchAlert({ subtotal: 237, shipping: 180.4, tax: 19.79, total: 437.19 }, fmt)).toBeNull();
   });
 
   test('a cent of rounding is not a mismatch', () => {
