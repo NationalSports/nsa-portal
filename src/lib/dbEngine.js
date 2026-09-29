@@ -957,7 +957,7 @@ const _artGapMsg=(table,dropped)=>_schemaGapMsg('Artwork',table,dropped);
 // copy must win on conflict. Overlaying the client's value let a stale tab silently un-confirm a
 // just-approved design (SO-1131, 2026-08-19: a warehouse tab reverted prod_files_attached true→
 // false 17 minutes after the rep's approval set it, alongside the so_jobs art_status clobber).
-const _ART_CONTENT_FIELDS=['name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','design_id','location','notes','archived'];
+const _ART_CONTENT_FIELDS=['name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','design_id','location','notes','archived','is_tbd'];
 const _ART_FILE_COLLECTIONS=['files','mockup_files','prod_files','sample_art','web_logos'];
 const _ART_EXPLICIT_SCALAR_FIELDS=new Set(['preview_url','web_logo_url']);
 const _artFileUrl=f=>typeof f==='string'?f:(f&&(f.url||f.name))||'';

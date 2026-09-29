@@ -9,7 +9,7 @@ import {useOrderCatalogResults,a4Visible} from './lib/orderCatalogSearch';
 import { poEligibleVendors } from './lib/vendorPoEligibility';
 import QuantityDraftInput from './QuantityDraftInput';
 import TextDraftInput from './TextDraftInput';
-import { replaceTbdArt, tbdArtName, tbdArtLabel } from './lib/orderArtSwap';
+import { replaceTbdArt, tbdArtName, tbdArtLabel, isTbdArt } from './lib/orderArtSwap';
 /* ═══════════════════════════════════════════════════════════════
    ORDER EDITOR — CLASSIC
    Rendered when the portal-wide UI toggle is on "classic", which is
@@ -3665,18 +3665,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const current=oRef.current;
     const deco=safeDecos(safeItems(current)[ii]||{})[di];
     const art=(current.art_files||[]).find(a=>a.id===deco?.art_file_id);
-    if(!deco||!(deco.art_file_id==='__tbd'||/^ART TBD\b/i.test(art?.name||'')))return;
+    if(!deco||!(deco.art_file_id==='__tbd'||isTbdArt(art)))return;
     const label=window.prompt('Identify this Art TBD for the art team:',tbdArtLabel(art?.name));
     if(label===null||!label.trim())return;
     if(art){
-      const arts=(current.art_files||[]).map(a=>a.id===art.id?markArtFieldEdit(a,'name',tbdArtName(a.name,label)):a);
+      const arts=(current.art_files||[]).map(a=>a.id===art.id?markArtFieldEdit(markArtFieldEdit(a,'name',tbdArtName(a.name,label)),'is_tbd',true):a);
       await saveSONow({...current,art_files:arts,updated_at:new Date().toLocaleString()},'Art TBD name');
       return;
     }
-    const n=(current.art_files||[]).filter(a=>/^ART TBD\b/i.test(a.name||'')).length+1;
+    const n=(current.art_files||[]).filter(isTbdArt).length+1;
     const id='af'+Date.now();
     const name=tbdArtName('ART TBD '+n,label);
-    const tbd={id,name,deco_type:deco.art_tbd_type||'screen_print',status:'waiting_for_art',ink_colors:Array.from({length:deco.tbd_colors||1},(_,i)=>'Color '+(i+1)).join('\n'),stitches:deco.tbd_stitches||8000,color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',uploaded:new Date().toLocaleDateString()};
+    const tbd={id,name,is_tbd:true,deco_type:deco.art_tbd_type||'screen_print',status:'waiting_for_art',ink_colors:Array.from({length:deco.tbd_colors||1},(_,i)=>'Color '+(i+1)).join('\n'),stitches:deco.tbd_stitches||8000,color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',uploaded:new Date().toLocaleDateString()};
     const updated={...current,art_files:[...(current.art_files||[]),tbd],items:safeItems(current).map((it,x)=>x===ii?{...it,decorations:safeDecos(it).map((d,i)=>i===di?{...d,art_file_id:id}:d)}:it),updated_at:new Date().toLocaleString()};
     await saveSONow(updated,'Art TBD name');
   };
@@ -5776,13 +5776,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     const icon=artF?(artF.deco_type==='screen_print'?'🎨':artF.deco_type==='embroidery'?'🧵':'🔥'):'🎨';
                     return<span key={di} style={{display:'inline-flex',alignItems:'center',gap:4,background:'#faf5ff',border:'1px solid #ede9fe',borderRadius:6,padding:'1px 6px 1px 1px'}}>
                       <span title={artF?.name||'No artwork selected'} style={{width:22,height:22,borderRadius:4,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:13,overflow:'hidden',background:_thumb?'white':(!d.art_file_id||d.art_file_id==='__tbd')?'#fef3c7':'#ede9fe',border:_thumb?'1px solid #e2e8f0':'none'}}>{_thumb?<img src={_thumb} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:icon}</span>
-                      <select className="form-select" style={{fontSize:11,padding:'1px 4px',height:24,maxWidth:160,border:!d.art_file_id?'1px solid #f59e0b':'1px solid #ddd6fe',background:'white'}} value={d.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){uDM(idx,di,{art_file_id:'__tbd',art_tbd_type:'screen_print',sell_override:null})}else if(v==='__new_tbd'){const tbdCount=af.filter(f=>f.name&&f.name.startsWith('ART TBD')).length;const newName='ART TBD '+(tbdCount+1);const newTbd={id:'af'+Date.now(),name:newName,deco_type:'screen_print',status:'waiting_for_art',color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',uploaded:new Date().toLocaleDateString()};setO(e2=>({...e2,art_files:[...(e2.art_files||[]),newTbd],items:safeItems(e2).map((it2,x)=>x===idx?{...it2,decorations:it2.decorations.map((d2,i)=>i===di?{...d2,art_file_id:newTbd.id}:d2)}:it2),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Created '+newName)}else{changeArtFileId(idx,di,v||null)}}}>
+                      <select className="form-select" style={{fontSize:11,padding:'1px 4px',height:24,maxWidth:160,border:!d.art_file_id?'1px solid #f59e0b':'1px solid #ddd6fe',background:'white'}} value={d.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){uDM(idx,di,{art_file_id:'__tbd',art_tbd_type:'screen_print',sell_override:null})}else if(v==='__new_tbd'){const tbdCount=af.filter(isTbdArt).length;const newName='ART TBD '+(tbdCount+1);const newTbd={id:'af'+Date.now(),name:newName,deco_type:'screen_print',status:'waiting_for_art',color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',uploaded:new Date().toLocaleDateString()};setO(e2=>({...e2,art_files:[...(e2.art_files||[]),newTbd],items:safeItems(e2).map((it2,x)=>x===idx?{...it2,decorations:it2.decorations.map((d2,i)=>i===di?{...d2,art_file_id:newTbd.id}:d2)}:it2),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Created '+newName)}else{changeArtFileId(idx,di,v||null)}}}>
                         <option value="">⚠️ Select artwork...</option>
                         <option value="__tbd">🎨 Art TBD</option>
                         <option value="__new_tbd">➕ New Art TBD...</option>
                         {af.filter(f=>f.id!=='__tbd').map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}
                       </select>
-                      {(d.art_file_id==='__tbd'||/^ART TBD\b/i.test(artF?.name||''))&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>renameTbdArt(idx,di)}>Rename</button>}
+                      {(d.art_file_id==='__tbd'||isTbdArt(artF))&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>renameTbdArt(idx,di)}>Rename</button>}
                       <select className="form-select" style={{fontSize:10,padding:'1px 3px',height:24,maxWidth:110,border:'1px solid #ddd6fe',color:'#7c3aed',fontWeight:600,background:'white'}} value={d.position||''} onChange={e=>uD(idx,di,'position',e.target.value)} title="Decoration position">{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
                     </span>;
                   });
@@ -6179,11 +6179,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     {artF.notes&&<div style={{fontSize:10,color:'#7c3aed'}}>{artF.notes}</div>}
                     <div style={{fontSize:10,marginTop:4,padding:'2px 6px',display:'inline-block',borderRadius:4,background:artF.status==='approved'?'#dcfce7':'#fef3c7',color:artF.status==='approved'?'#166534':'#92400e'}}>{artF.status}</div>
                   </div></div>}
-                  <select className="form-select" style={{width:200,fontSize:12,border:!deco.art_file_id?'2px solid #f59e0b':'1px solid #22c55e'}} value={deco.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){uDM(idx,di,{art_file_id:'__tbd',art_tbd_type:'screen_print',sell_override:null})}else if(v==='__new_tbd'){const tbdCount=af.filter(f=>f.name&&f.name.startsWith('ART TBD')).length;const newName='ART TBD '+(tbdCount+1);const newTbd={id:'af'+Date.now(),name:newName,deco_type:'screen_print',status:'waiting_for_art',color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',uploaded:new Date().toLocaleDateString()};setO(e=>({...e,art_files:[...(e.art_files||[]),newTbd],items:safeItems(e).map((it,x)=>x===idx?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,art_file_id:newTbd.id}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Created '+newName)}else{changeArtFileId(idx,di,v||null)}}}>
+                  <select className="form-select" style={{width:200,fontSize:12,border:!deco.art_file_id?'2px solid #f59e0b':'1px solid #22c55e'}} value={deco.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){uDM(idx,di,{art_file_id:'__tbd',art_tbd_type:'screen_print',sell_override:null})}else if(v==='__new_tbd'){const tbdCount=af.filter(isTbdArt).length;const newName='ART TBD '+(tbdCount+1);const newTbd={id:'af'+Date.now(),name:newName,deco_type:'screen_print',status:'waiting_for_art',color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',uploaded:new Date().toLocaleDateString()};setO(e=>({...e,art_files:[...(e.art_files||[]),newTbd],items:safeItems(e).map((it,x)=>x===idx?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,art_file_id:newTbd.id}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Created '+newName)}else{changeArtFileId(idx,di,v||null)}}}>
                     <option value="">⚠️ Select artwork...</option>
                     <option value="__tbd">🎨 Art TBD (pricing only)</option>
                     <option value="__new_tbd">➕ New Art TBD...</option>{af.filter(f=>f.id!=='__tbd').map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}</select>
-                  {(deco.art_file_id==='__tbd'||/^ART TBD\b/i.test(artF?.name||''))&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>renameTbdArt(idx,di)}>Rename</button>}
+                  {(deco.art_file_id==='__tbd'||isTbdArt(artF))&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>renameTbdArt(idx,di)}>Rename</button>}
                   {deco.art_file_id==='__tbd'&&<><select className="form-select" style={{width:130,fontSize:11,border:'1px solid #f59e0b'}} value={deco.art_tbd_type||'screen_print'} onChange={e=>uDM(idx,di,{art_tbd_type:e.target.value,sell_override:null})}>
                     <option value="screen_print">Screen Print</option><option value="embroidery">Embroidery</option><option value="heat_press">Heat Press</option><option value="dtf">DTF</option></select>
                   {(deco.art_tbd_type||'screen_print')==='screen_print'&&<select className="form-select" style={{width:90,fontSize:10}} value={deco.tbd_colors||1} onChange={e=>uDM(idx,di,{tbd_colors:parseInt(e.target.value),sell_override:null})}>
@@ -6194,7 +6194,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Art Needed</span></>}
                   <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
                   {deco.split_group&&(()=>{const ss=deco.split_sizes||{};const tot=Object.values(ss).reduce((a,v)=>a+safeNum(v),0);const ordd=sz=>{const i=SZ_ORD.indexOf(sz);return i===-1?99:i};const summ=Object.entries(ss).filter(([,v])=>safeNum(v)>0).sort((a,b)=>ordd(a[0])-ordd(b[0])).map(([sz,v])=>sz+' '+v).join(' · ');return<span onClick={()=>openSplitArt(idx)} title={'Split — '+(summ||'none yet')+' · click to edit'} style={{display:'inline-flex',alignItems:'center',gap:3,fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:5,background:'#f5f3ff',color:'#6d28d9',border:'1px solid #ddd6fe',cursor:'pointer',whiteSpace:'nowrap'}}>✂️ Split {tot}/{qty}</span>})()}
-                  {artF&&<>{(()=>{const afi=af.findIndex(f=>f.id===artF.id);const isTbd=artF.name&&artF.name.startsWith('ART TBD');
+                  {artF&&<>{(()=>{const afi=af.findIndex(f=>f.id===artF.id);const isTbd=isTbdArt(artF);
                       if(isTbd)return<><select className="form-select" style={{width:130,fontSize:11,border:'1px solid #f59e0b'}} value={artF.deco_type||'screen_print'} onChange={e=>{uArt(afi,'deco_type',e.target.value);uD(idx,di,'sell_override',null)}}><option value="screen_print">Screen Print</option><option value="embroidery">Embroidery</option><option value="heat_press">Heat Press</option><option value="dtf">DTF</option></select>
                         {artF.deco_type==='screen_print'&&<><select className="form-select" style={{width:90,fontSize:10}} value={artF.ink_colors?artF.ink_colors.split('\n').filter(l=>l.trim()).length:1} onChange={e=>{const n=parseInt(e.target.value);const inks=Array.from({length:n},(_,i)=>'Color '+(i+1)).join('\n');uArt(afi,'ink_colors',inks);uD(idx,di,'sell_override',null)}}>{[1,2,3,4,5].map(n=><option key={n} value={n}>{n} color{n>1?'s':''}</option>)}</select>
                         <label style={{fontSize:10,display:'flex',alignItems:'center',gap:3,padding:'2px 6px',background:deco.underbase?'#fef3c7':'transparent',borderRadius:4,cursor:'pointer'}}><input type="checkbox" checked={deco.underbase||false} onChange={e=>uDM(idx,di,{underbase:e.target.checked,sell_override:null})}/> Underbase</label></>}
@@ -6203,7 +6203,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         {(artF.deco_type==='dtf'||artF.deco_type==='heat_press')&&<select className="form-select" style={{width:140,fontSize:10}} value={artF.dtf_size||0} onChange={e=>{uArt(afi,'dtf_size',parseInt(e.target.value));uD(idx,di,'sell_override',null)}}>{DTF.map((t,ti)=><option key={ti} value={ti}>{t.label}</option>)}</select>}
                         <span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Art Needed</span></>;
                       return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:artF.deco_type==='screen_print'?'#dbeafe':artF.deco_type==='embroidery'?'#ede9fe':'#fef3c7',color:artF.deco_type==='screen_print'?'#1e40af':artF.deco_type==='embroidery'?'#6d28d9':'#92400e'}}>{artF.deco_type.replace('_',' ')}</span>})()}
-                    {(()=>{const afi=af.findIndex(f=>f.id===artF.id);const isTbd=artF.name&&artF.name.startsWith('ART TBD');
+                    {(()=>{const afi=af.findIndex(f=>f.id===artF.id);const isTbd=isTbdArt(artF);
                       if(isTbd)return null;
                       if((artF.color_ways||[]).length>0){
                         if(artF.color_ways.length===1&&!deco.color_way_id){setTimeout(()=>uD(idx,di,'color_way_id',artF.color_ways[0].id),0)}
@@ -6234,7 +6234,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       return null})()}
                     {artF.art_size&&<span style={{fontSize:11,color:'#94a3b8'}}>{artF.art_size}</span>}</>}
                   {/* Per-design status badge on the design's own row; Underbase is a garment-level toggle in the item bar */}
-                  {artF&&!(artF.name&&artF.name.startsWith('ART TBD'))&&(()=>{const st=artF.status==='uploaded'?'needs_approval':artF.status;return (st&&st!=='waiting_for_art')?<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:st==='approved'?'#dcfce7':'#fef3c7',color:st==='approved'?'#166534':'#92400e',fontWeight:600}}>{st==='approved'?'Approved':st==='needs_approval'?'Needs Approval':st.replace(/_/g,' ')}</span>:null})()}
+                  {artF&&!isTbdArt(artF)&&(()=>{const st=artF.status==='uploaded'?'needs_approval':artF.status;return (st&&st!=='waiting_for_art')?<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:st==='approved'?'#dcfce7':'#fef3c7',color:st==='approved'?'#166534':'#92400e',fontWeight:600}}>{st==='approved'?'Approved':st==='needs_approval'?'Needs Approval':st.replace(/_/g,' ')}</span>:null})()}
                   <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
                     <span style={{fontSize:11}}>Cost: <strong style={{color:'#dc2626'}}>${decoUnitCost.toFixed(2)}</strong>{dp._unpriced&&decoCostTotal<=0&&<span title={"The screen print matrix has no price for this run (qty x ink colors), so it is costing $0. Fill the cell in Settings > Pricing > Screen Print Pricing, then re-save this order."} style={{marginLeft:4,fontSize:9,fontWeight:700,padding:'1px 5px',borderRadius:4,background:'#fee2e2',color:'#991b1b'}}>UNPRICED</span>}{costArtQty[deco.art_file_id]>0&&<span title={"Combined run of "+costArtQty[deco.art_file_id]+" units across manually-linked jobs that share this screen — cost only; the sale price is unaffected."} style={{marginLeft:4,fontSize:9,fontWeight:700,color:'#166534'}}>🔗</span>}{_outsideEst&&<span title={"Cost from "+_outsideEst+"'s price list (outside decoration). A Deco PO / actual bill supersedes this estimate."} style={{marginLeft:4,fontSize:9,fontWeight:700,color:'#7c3aed'}}>🎨 {_outsideEst}</span>}</span>
                     <span style={{fontSize:11}}>Sell: <$In value={promoDecoSell} onChange={v=>uD(idx,di,'sell_override',item.is_promo&&o.promo_applied?rQ(v/1.25):v)} w={50}/></span>
@@ -7109,7 +7109,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </div>
                 {art.dtf_purchased&&<span title={'DTF purchased'+(art.dtf_purchased.po_id?' on '+art.dtf_purchased.po_id:'')+(art.dtf_purchased.vendor?' from '+art.dtf_purchased.vendor:'')+(art.dtf_purchased.date?' · '+art.dtf_purchased.date:'')} style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:700,flexShrink:0,background:'#fef3c7',color:'#b45309'}}>🖨️ DTF Purchased</span>}
                 <span style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:600,flexShrink:0,background:ART_FILE_SC[art.status]?.bg||ART_FILE_SC.waiting_for_art.bg,color:ART_FILE_SC[art.status]?.c||ART_FILE_SC.waiting_for_art.c}}>{art.status==='approved'?'Approved':art.status==='needs_approval'?'Needs Approval':'Waiting'}</span>
-                {/^ART TBD\b/i.test(art.name||'')&&<button className="btn btn-sm" style={{fontSize:10,flexShrink:0,background:"#ede9fe",color:"#6d28d9",border:"1px solid #c4b5fd",fontWeight:700}} onClick={e=>{e.stopPropagation();setReplaceTbdId(art.id);setShowPrevArt(true)}}>Change to previous art</button>}
+                {isTbdArt(art)&&<button className="btn btn-sm" style={{fontSize:10,flexShrink:0,background:"#ede9fe",color:"#6d28d9",border:"1px solid #c4b5fd",fontWeight:700}} onClick={e=>{e.stopPropagation();setReplaceTbdId(art.id);setShowPrevArt(true)}}>Change to previous art</button>}
                 <button className="btn btn-sm" style={{fontSize:10,flexShrink:0,background:'#4f46e5',color:'white',border:'none',fontWeight:700}} title="Pick which line items this art applies to, with location and color way per item" onClick={e=>{e.stopPropagation();openArtApply(art)}}>🎯 Apply to items</button>
                 <button className="btn btn-sm btn-secondary" style={{fontSize:10,flexShrink:0}} onClick={e=>{e.stopPropagation();rmArt(i)}}><Icon name="trash" size={10}/></button>
               </div>
@@ -7274,7 +7274,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _mergeFiles=(a=[],b=[])=>{const seen=new Set((a||[]).map(_fKey));const out=[...(a||[])];(b||[]).forEach(f=>{const k=_fKey(f);if(k&&!seen.has(k)){seen.add(k);out.push(f)}});return out};
       // ART TBD rows are system placeholders (a priced deco with no design yet) — there is
       // nothing to reuse, and they were polluting the picker as "ART TBD 1..4" cards.
-      const _pushArt=(art,meta)=>{if(art.archived)return;if((art.name||'').startsWith('ART TBD'))return;const k=_dedupKey(art,meta);
+      const _pushArt=(art,meta)=>{if(art.archived)return;if(isTbdArt(art))return;const k=_dedupKey(art,meta);
         if(_byKey.has(k)){const cur=_byKey.get(k);
           cur.prod_files=_mergeFiles(cur.prod_files,art.prod_files);
           cur.mockup_files=_mergeFiles(cur.mockup_files,art.mockup_files);

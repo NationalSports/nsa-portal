@@ -193,7 +193,8 @@ export const garmentLogoDetails = (gi, so, artFiles) => {
 // Placeholder names reps give art that doesn't exist yet ("ART TBD 1", "Untitled") repeat across a
 // customer's orders, so they never identify the same design.
 const _PLACEHOLDER_ART_NAME = /^(art\s*tbd\b.*|tbd\b.*|untitled.*|new art.*|art\s*\d*)$/i;
-const _realName = a => { const n = safeStr(a?.name).trim(); return n && !_PLACEHOLDER_ART_NAME.test(n) ? n.toLowerCase() : ''; };
+// A renamed TBD (is_tbd) carries the rep's label as its name, but is still a placeholder.
+const _realName = a => { const n = safeStr(a?.name).trim(); return n && !a?.is_tbd && !_PLACEHOLDER_ART_NAME.test(n) ? n.toLowerCase() : ''; };
 const _sameDesign = (lib, art) => !!lib && !!art && (lib.design_id && art.design_id ? lib.design_id === art.design_id : lib.id === art.id || (
   _realName(lib) !== '' &&
   safeStr(lib.name).trim().toLowerCase() === safeStr(art.name).trim().toLowerCase() &&
