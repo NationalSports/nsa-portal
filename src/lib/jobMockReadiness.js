@@ -20,12 +20,17 @@ export const isJobReady = (job, so) => {
 // Prior mocks are optional suggestions, never the predicate for whether a mock
 // is missing. Keep an actionable entry even when there is nothing to reuse.
 export const jobMockChecks = (job, so, priorMocks = {}) => {
-  const checks = garmentsNeedingMockCheck(job, so, priorMocks);
+  const suggestions = garmentsNeedingMockCheck(job, so, priorMocks);
+  const checks = [];
   safeArr(job?.items).forEach(gi => {
     const item = safeItems(so)[gi.item_idx];
+    // The approval/production gate requires a garment mock, not one mock per art
+    // file. A second design can offer prior images without making a garment that
+    // already has its approved mock "Waiting for mock" (SO-2586).
     if (!item || !missingJobMocks({ ...job, items: [gi] }, so).length) return;
     if (checks.some(c => c.sku === item.sku && c.color === (item.color || ''))) return;
-    checks.push({ sku: item.sku, color: item.color || '', name: item.name || '', artFiles: [] });
+    checks.push(suggestions.find(c => c.sku === item.sku && c.color === (item.color || ''))
+      || { sku: item.sku, color: item.color || '', name: item.name || '', artFiles: [] });
   });
   return checks;
 };
