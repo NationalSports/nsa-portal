@@ -216,6 +216,42 @@ describe('OMG deposit statement parser', () => {
     });
   });
 
+  // 09/29/26 statement BQ903SYWG: OMG now appends a per-order "Transactions"
+  // section whose lines look exactly like store rows. Reading them as stores
+  // gave "13 stores but 85 rows" and doubled every total.
+  describe('a statement with a Transactions section', () => {
+    const WITH_TRANSACTIONS = [
+      'National Sports Apparel LLC\tDeposit Statement',
+      'Orange, CA 92865\tBQ903SYWG',
+      'Statement Date\t09/29/26\tTotal Collected\t$2,963.19',
+      'Deposit Status\tpending\tOMG Fee Withheld\t($112.59)',
+      'Bank Account SUNFLOWER BANK NATIONAL ASSOCIATION – 7609\tProcessing Fee Withheld\t($90.87)',
+      'Stores Included\t3\tNet Amount\t$2,759.73',
+      'Stores',
+      'Work Order\tStore\tTotal Collected\tOMG Fee Processing Fee\tNet Deposit',
+      '4ESJH | Cal Poly Softball 2026\t$2,659.56\t($101.06)\t($79.83)\t$2,478.67',
+      'KB5455\tTURJX | Templeton Soccer 2026\t$329.49\t($12.51)\t($11.94)\t$305.04',
+      '',
+      'K3Q93 | Concordia University Baseball September 2026\t($25.86)\t$0.98\t$0.90\t($23.98)',
+      'Transactions',
+      'Create Transaction Report',
+      'Date\tType\tOrder Number Store\tPayment\tOMG Fee Processing Fee\tAmount',
+      '09/28/26\tPayment\t190788046\t4ESJH | Cal Poly Softball 2026\t$835.30\t($31.74)\t($24.52)\t$779.04',
+      '09/28/26\tPayment\t190798597\tTURJX | Templeton Soccer 2026\t$31.36\t($1.19)\t($1.21)\t$28.96',
+      '09/28/26\tRefund\t190143516\tK3Q93 | Concordia University Baseball Sep\t($25.86)\t$0.98\t$0.90\t($23.98)',
+    ].join('\n');
+
+    test('only the store table is read', () => {
+      const parsed = parseOmgDepositStatement(WITH_TRANSACTIONS);
+      expect(parsed.lines.map(row => row.storeCode)).toEqual(['4ESJH', 'TURJX', 'K3Q93']);
+      expect(parsed.problems).toEqual([]);
+    });
+
+    test('a dated transaction line is never a store row, even without the heading', () => {
+      expect(parseStoreRow('09/28/26\tPayment\t190788046\t4ESJH | Cal Poly Softball 2026\t$835.30\t($31.74)\t($24.52)\t$779.04', 1)).toBeNull();
+    });
+  });
+
   test('money and date helpers', () => {
     expect(parseMoney('$1,148.15')).toBe(1148.15);
     expect(parseMoney('($43.63)')).toBe(-43.63);
