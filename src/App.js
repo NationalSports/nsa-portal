@@ -29508,6 +29508,18 @@ export default function App(){
       }
     };
 
+    // Per-deco-PO double-bill guard, mirroring duplicateBillDetail on the garment po_line paths.
+    // _docAlreadyApplied is skipped while a bill's apply session is unfinished (retry/resume), and
+    // deco POs had no backstop, so one invoice could land on the same PO several times (SO-2072:
+    // doc 202734 recorded 3x). Matches on doc# only, and only against details of the same
+    // invoice/credit sign; deco details carry no sizes, and two invoices may share a tracking #.
+    const _decoBillDup=(dp,bill,decoCost)=>{
+      const same=(dp._bill_details||[]).filter(dt=>(safeNum(dt?.cost)<0)===(decoCost<0));
+      const dup=duplicateBillDetail(same,{doc:bill.doc_number});
+      if(dup)setTimeout(()=>nf('Skipped: doc '+bill.doc_number+' is already billed on deco PO '+(dp.po_id||dp.id),'error'),0);
+      return !!dup;
+    };
+
     // Apply a decoration bill manually when the user has picked an SO + target po_line (or "create new").
     // target = {soId, mode:'existing', itemIdx, poLineIdx}  OR  {soId, mode:'create', itemIdx, decoType}
     // target = {soId, mode:'existing', decoPoId}  OR  {soId, mode:'create'}
@@ -29521,6 +29533,8 @@ export default function App(){
         if(s.id!==t.soId)return s;
         let nextDecoPos=s.deco_pos||[];
         if(t.mode==='existing'&&t.decoPoId){
+          const target=nextDecoPos.find(dp=>dp.id===t.decoPoId);
+          if(target&&_decoBillDup(target,bill,decoCost))return s;
           nextDecoPos=nextDecoPos.map(dp=>{
             if(dp.id!==t.decoPoId)return dp;
             const trackNums=[...(dp.tracking_numbers||[])];
@@ -29565,6 +29579,7 @@ export default function App(){
         const nextDecoPos=(s.deco_pos||[]).map(dp=>{
           const matches=decoPoId?dp.id===decoPoId:(()=>{const pid=(dp.po_id||'').toLowerCase().replace(/\s+/g,'');return pid===poLc||pid.startsWith(poLc)})();
           if(!matches)return dp;
+          if(_decoBillDup(dp,bill,decoCost))return dp;
           hit=true;
           const trackNums=[...(dp.tracking_numbers||[])];
           if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);

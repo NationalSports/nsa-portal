@@ -80,4 +80,10 @@ describe('duplicateBillDetail (double-bill guard)', () => {
     expect(duplicateBillDetail(null, native)).toBeNull();
     expect(duplicateBillDetail([native], null)).toBeNull();
   });
+  it('catches a decoration invoice (no sizes) applied twice to the same deco PO by doc number', () => {
+    // SO-2072: Silver Screen doc 202734 landed 3x on one deco PO; deco details carry no sizes.
+    const deco = { doc: '202734', date: '08/27/2026', supplier: 'Silver Screen Printing', cost: 1157.68, freight: 0, tracking: '' };
+    expect(duplicateBillDetail([deco], { doc: '202734' })).toBe(deco);
+    expect(duplicateBillDetail([deco], { doc: '202735' })).toBeNull();
+  });
 });
