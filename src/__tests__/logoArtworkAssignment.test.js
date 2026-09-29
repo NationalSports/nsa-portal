@@ -56,6 +56,10 @@ test('bulk assignment refuses to overwrite a different assigned artwork version'
  expect(()=>assignLogoArtwork(order,{artId:'a',colorWayId:'black',allGarments:true})).toThrow(/different artwork/);
  expect(order.items[0].decorations[0].color_way_id).toBeUndefined();
 });
+test('bulk conflict names the garment already on another version and changes nothing',()=>{
+ const order=fixture();order.art_files[0].color_ways.push({id:'royal',garment_color:'Royal',inks:['White']});order.items[1].decorations[0].color_way_id='royal';
+ expect(()=>assignLogoArtwork(order,{artId:'a',colorWayId:'black',allGarments:true})).toThrow(/P1 Royal\/White \(Royal\)/);
+});
 test('reversible B assignments never change A or non-reversible garments',()=>{
  const order=fixture();order.items[0].decorations[0].reversible=true;
  const next=assignLogoArtwork(order,{artId:'a',colorWayId:'black',side:'B',allGarments:true}).order;
@@ -75,7 +79,7 @@ test('stale and duplicate choices fail before changing the order',()=>{
  expect(()=>assignLogoArtwork(fixture(),{artId:'a',colorWayId:'gone',allGarments:true})).toThrow(/no longer exists/);
  expect(()=>assignLogoArtwork(fixture(),{artId:'gone',colorWayId:'black',allGarments:true})).toThrow(/removed/);
  expect(()=>assignLogoArtwork(fixture(),{artId:'a',newVersion:{id:'x',label:'Black',inks:['White']},allGarments:true})).toThrow(/already exists/);
- expect(()=>assignLogoArtwork(fixture(),{artId:'a',colorWayId:'black',garmentKey:'gone'})).toThrow(/No matching/);
+ expect(()=>assignLogoArtwork(fixture(),{artId:'a',colorWayId:'black',garmentKey:'gone'})).toThrow(/nothing to assign/);
 });
 test('retrying a new version after an optimistic failed save does not duplicate it',()=>{
  const choice={artId:'a',garmentKey:'P0|White/Grey',newVersion:{id:'retry-id',label:'Light version',inks:['Navy']}};

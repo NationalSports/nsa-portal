@@ -54,20 +54,23 @@ export function assignLogoArtwork(order, { artId, colorWayId, garmentKey, side, 
   if (!safeArr(nextArt.color_ways).some(c => c.id === colorWayId)) throw new Error('This artwork version no longer exists. Reopen the job.');
   let count = 0;
   const changedItems = new Set();
+  const conflicts = [];
   const items = safeItems(order).map((item, itemIndex) => {
     if (!allGarments && garmentMockKey(item) !== garmentKey) return item;
     const decorations = safeDecos(item).map(d => {
       if (d.kind !== 'art' || d.art_file_id !== artId || (side === 'B' && !d.reversible)) return d;
       // Keep reversible sides independent, even for a bulk assignment.
       const field = side === 'B' ? 'color_way_id_b' : 'color_way_id';
-      if (allGarments && d[field] && d[field] !== colorWayId) throw new Error('Another garment already uses a different artwork version. Assign garments individually instead.');
+      if (allGarments && d[field] && d[field] !== colorWayId) { conflicts.push([item.sku, item.color].filter(Boolean).join(' ') + ' (' + _cwLabel(nextArt, d[field]) + ')'); return d; }
       if (resolveLogoColorWay(art, d[field], item.color, side) !== colorWayId) changedItems.add(itemIndex);
       count++;
       return { ...d, [field]: colorWayId };
     });
     return { ...item, decorations };
   });
-  if (!count) throw new Error('No matching garment decoration was found. Reopen the job.');
+  // Nothing is saved when some garments already use another version — say which, so the fix is obvious.
+  if (conflicts.length) throw new Error('Other garments on this order already use a different artwork version: ' + [...new Set(conflicts)].join(', ') + '. Nothing was changed. Uncheck "Same artwork for all" to set just this garment.');
+  if (!count) throw new Error('This garment has no ' + (art.name || 'artwork') + ' decoration on the sales order, so there is nothing to assign. Add the decoration to this garment\'s line on the SO, then reopen the job.');
   const protectedStates = new Set(['waiting_approval', 'production_files_needed', 'order_dtf_transfers', 'upload_emb_files', 'art_complete']);
   if (safeJobs(order).some(j => protectedStates.has(j.art_status) && jobArtFileIds(j, safeItems(order)).has(artId) && safeArr(j.items).some(gi => changedItems.has(gi.item_idx)))) {
     throw new Error('This artwork is already in review or approved. Recall/request changes on the affected job before changing its artwork version.');

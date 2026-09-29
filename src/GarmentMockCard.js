@@ -139,7 +139,7 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy }) {
   const [hasWhite, setHasWhite] = useState(null);
   const assign = async () => {
     if (!sourceLogo.onAssign || busy || uploadLock.current) return;
-    if (allGarments && !window.confirm('Use this same artwork version for all garments using this artwork on this order? Different assigned versions will not be overwritten. Reversible sides remain separate.')) return;
+    if (allGarments && !window.confirm('Use this same artwork version for all garments using this artwork on this order? If another garment already uses a different version, nothing is changed. Reversible sides remain separate.')) return;
     uploadLock.current = true; setSaving(true); setAssignmentUnconfirmed(true); setError('');
     try {
       const ok = await sourceLogo.onAssign({ colorWayId: selectedColorWay, allGarments,
@@ -192,7 +192,7 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy }) {
     {help && <div className="logo-help" role="note"><ul>{LOGO_HELP.map(t => <li key={t}>{t}</li>)}</ul></div>}
     <div className={'panel-frame logo-frame bg-' + mode + (drag ? ' dragging' : '')} style={mode === 'garment' ? { background: bg } : undefined} {...drop}>
       {logo.url ? <button type="button" className="frame-open" onClick={() => openFile(logo.url)} aria-label="Open full size logo detail"><img src={logo.url} alt="Logo detail" /></button>
-        : <span className="logo-empty">{logo.needsColorWay ? 'Choose and save an artwork version below' : logo.onUpload ? <>Drop the transparent logo PNG here<br /><small>or use Upload logo PNG</small></> : 'No logo detail yet'}</span>}
+        : <span className="logo-empty">{logo.blockedReason ? 'Decoration missing on the sales order' : logo.needsColorWay ? 'Choose and save an artwork version below' : logo.onUpload ? <>Drop the transparent logo PNG here<br /><small>or use Upload logo PNG</small></> : 'No logo detail yet'}</span>}
     </div>
     {logo.url && <div className="bg-switch" role="group" aria-label="Logo background">
       {[['garment', bgName], ['checker', 'Checkered'], ['dark', 'Dark']].map(([k, lbl]) => <button key={k} type="button" aria-pressed={mode === k} onClick={() => setBgMode(k)}>{lbl}</button>)}
@@ -221,7 +221,8 @@ function LogoDetailPane({ logo: sourceLogo, busy: parentBusy }) {
     </div>}
     {!choosingVersion && assigned && <p className="panel-hint">Artwork: <strong>{assigned.label}</strong>{assigned.colors && <> · Ink / thread: {assigned.colors}</>}</p>}
     {logo.onUpload && !logo.url && !choosingVersion && <p className="panel-hint">Artist next step: upload the transparent logo PNG. Saving artwork does not approve it.</p>}
-    {logo.needsColorWay && !sourceLogo.onAssign && <p className="panel-hint">Choose the artwork version in Art Library → Apply to items first.</p>}
+    {logo.blockedReason && <p role="alert" className="mock-error">{logo.blockedReason}</p>}
+    {logo.needsColorWay && !sourceLogo.onAssign && !logo.blockedReason && <p className="panel-hint">Choose the artwork version in Art Library → Apply to items first.</p>}
     {logo.onUpload && <div className="panel-actions">
       <button type="button" disabled={busy || choosingVersion} onClick={() => input.current.click()}>{logo.url ? 'Replace logo' : 'Upload logo PNG'}</button>
       {!choosingVersion && sourceLogo.onAssign && <button type="button" onClick={() => { setSelectedColorWay(sourceLogo.colorWayId || ''); setEditingVersion(true); }} disabled={busy}>Change artwork version</button>}
@@ -249,7 +250,7 @@ export default function GarmentMockCard({ label, sub, mocks, candidates, suggest
     try { const ok = await fn(); if (ok !== false) { setChoosing(false); setSelected(''); } else { setError('Could not save this mock. Please try again.'); } }
     catch (e) { setError('Could not save this mock. Please try again.'); }
   };
-  const status = !mocks.length ? 'Needs mock' : logo && !logo.url ? 'Needs logo detail' : 'Mock saved';
+  const status = logo?.blockedReason ? 'Missing decoration' : !mocks.length ? 'Needs mock' : logo && !logo.url ? 'Needs logo detail' : 'Mock saved';
   return <section className="garment-mock-card" aria-label={label + ' mock'} aria-busy={busy}>
     <header><div><strong>{label || 'Garment mock'}</strong>{sub && <small>{sub}</small>}</div><span className={status === 'Mock saved' ? 'mock-tag saved' : 'mock-tag'}>{status}</span></header>
     <div className={logo ? 'mock-panels two' : 'mock-panels'}>
