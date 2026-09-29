@@ -9579,14 +9579,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               +(invSendReview?buildReviewButtonHtml():'')
               +'</div>';
             const _invReviewText=invSendReview?(invSendMsg+'\n\n'+reviewTextBlock()):undefined;
-            const _toEmailsLc=new Set(toList.map(t=>(t.email||'').toLowerCase()));
-            const _invCc=getBillingContacts(ic,allCustomers).filter(a=>a.email&&!_toEmailsLc.has(a.email.toLowerCase())).map(a=>({email:a.email,name:a.name||''}));
+            // Recipients are exactly what the rep checked. Billing contacts are already listed (and
+            // pre-checked) above, so they are not force-CC'd here — unchecking one has to stick.
             const _today=new Date().toLocaleDateString('en-CA');
             const _scheduleFuture=invSendAt&&invSendAt>_today&&onScheduleEmail;
             const _emailSubject='Invoice '+ir.id+' — $'+ir.total.toFixed(2)+' from National Sports Apparel';
             let res;
             // The scheduled sender runs server-side through Brevo, which these districts block.
-            if(_scheduleFuture&&process.env.REACT_APP_ROUTED_SCHEDULED_EMAILS!=='true'&&checkEmailRecipients([...toList,..._invCc]).gmail.length){
+            if(_scheduleFuture&&process.env.REACT_APP_ROUTED_SCHEDULED_EMAILS!=='true'&&checkEmailRecipients(toList).gmail.length){
               res={ok:false,error:'This school blocks our normal email service, and scheduled sends can\'t go through Gmail. Clear the send date to send it now.'};
               nf(res.error,'error');setInvSendingState({error:res.error});
             }else if(_scheduleFuture){
@@ -9595,7 +9595,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const schedRes=await onScheduleEmail({
                 send_at:_sendAtIso,
                 to_emails:toList,
-                cc_emails:_invCc,
                 subject:_emailSubject,
                 html_content:emailHtml,
                 sender_name:cu.name||'National Sports Apparel',
@@ -9618,7 +9617,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             }else{
               res=await sendBrevoEmail({
                 to:toList,
-                cc:_invCc,
                 subject:_emailSubject,
                 htmlContent:emailHtml,
                 textContent:_invReviewText,
