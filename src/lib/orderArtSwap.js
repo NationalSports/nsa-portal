@@ -1,10 +1,21 @@
 import { previousArtReuseDesignId } from './previousArtSearch';
 
+// A TBD placeholder is either an "ART TBD n" row, or one a rep renamed (the name is then just
+// their label, e.g. "9in Basketball") and flagged is_tbd. A renamed one stops being a placeholder
+// once real art lands on it — files, mockups, production files or color ways.
+export function isTbdArt(art) {
+  if (!art) return false;
+  if (/^ART TBD\b/i.test(art.name || '')) return true;
+  if (!art.is_tbd) return false;
+  const has = k => Array.isArray(art[k]) && art[k].length > 0;
+  return !(has('files') || has('mockup_files') || has('prod_files') || has('color_ways'));
+}
+
 // Keep the placeholder's id when a rep chooses existing art. Every decoration already
 // assigned to the TBD group then continues to point at the replacement design.
 export function replaceTbdArt(order, tbdId, source) {
   const current = (order.art_files || []).find(a => a.id === tbdId);
-  if (!current || !source || !/^ART TBD\b/i.test(current.name || '')) return order;
+  if (!current || !source || !isTbdArt(current)) return order;
   const replacement = JSON.parse(JSON.stringify(source));
   delete replacement._so_id;
   delete replacement._so_memo;
@@ -16,6 +27,7 @@ export function replaceTbdArt(order, tbdId, source) {
   delete replacement.customer_id;
   delete replacement._artEditedFields;
   delete replacement._artDeletes;
+  delete replacement.is_tbd;
   replacement.id = tbdId;
   replacement.design_id = previousArtReuseDesignId(source, source._srcCustId);
   if (current._version != null) replacement._version = current._version;
@@ -69,10 +81,12 @@ export function replaceTbdArt(order, tbdId, source) {
   };
 }
 
+// A rep's identifier replaces the whole name — no "ART TBD n —" prefix. The art stays a
+// placeholder through its is_tbd flag (see isTbdArt), not its name.
 export function tbdArtName(currentName, label) {
-  const base = (/^(ART TBD(?: \d+)?)/i.exec(currentName || '') || [,'ART TBD'])[1];
   const clean = String(label || '').trim();
-  return clean ? base + ' — ' + clean : base;
+  if (clean) return clean;
+  return (/^(ART TBD(?: \d+)?)/i.exec(currentName || '') || [, currentName || 'ART TBD'])[1];
 }
 
 export function tbdArtLabel(currentName) {
