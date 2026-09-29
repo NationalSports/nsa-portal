@@ -7731,7 +7731,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const shipments=o._shipments||[];
       const legacyShipment=o._tracking_number&&!shipments.find(s=>s.tracking_number===o._tracking_number);
       const allOutbound=legacyShipment?[{id:'legacy',tracking_number:o._tracking_number,carrier:o._carrier||'',ship_date:o._ship_date||'',tracking_url:o._tracking_url||'',items:[],notes:'Legacy single-package shipment',created_by:o.created_by,created_at:o._ship_date||''},...shipments]:shipments;
-      const totalShippedUnits=allOutbound.reduce((a,s)=>(s.items||[]).reduce((a2,it)=>a2+Object.values(it.sizes||{}).reduce((a3,v)=>a3+v,0),0)+a,0);
+      const totalShippedUnits=allOutbound.filter(s=>s.fulfillment!==false&&s.shipment_scope!=='deco_transfer').reduce((a,s)=>(safeNum(s.quantity)||(s.items||[]).reduce((a2,it)=>a2+Object.values(it.sizes||{}).reduce((a3,v)=>a3+v,0),0))+a,0);
       // Shipping cost — use SO field, fallback to sum from shipment records
       const shipCostFromShipments=allOutbound.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
       const shipCost=safeNum(o._shipping_cost||o._shipstation_cost||0)||shipCostFromShipments;
@@ -7891,7 +7891,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>:
             <div style={{display:'grid',gap:12}}>
               {allOutbound.map((shp,si)=>{
-                const shpUnits=(shp.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
+                const shpUnits=safeNum(shp.quantity)||(shp.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
                 return<div key={shp.id||si} style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}>
                     <span style={{fontSize:11,fontWeight:800,color:'#166534',background:'#dcfce7',padding:'2px 8px',borderRadius:4}}>Box {si+1}</span>
@@ -7967,6 +7967,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         <td style={{padding:'4px 6px',textAlign:'center',fontWeight:700}}>{itQty}</td>
                       </tr>})}</tbody>
                   </table>}
+                  {shp.source==='production_packet'&&<div style={{fontSize:12,fontWeight:700,marginTop:6}}>{shp.dpo_number} · {shp.quantity} garments · {shp.fulfillment===false?'Returning to NSA':'Customer delivery'}</div>}
                   {shp.notes&&<div style={{fontSize:10,color:'#64748b',marginTop:4,fontStyle:'italic'}}>{shp.notes}</div>}
                 </div>})}
             </div>}

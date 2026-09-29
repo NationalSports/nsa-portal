@@ -202,10 +202,11 @@ async function loadPayload(admin, row) {
   throw new Error(`Unsupported notification kind: ${row.kind}`);
 }
 
-async function sendBrevoEmail(payload, idempotencyKey) {
+async function sendBrevoEmail(payload, idempotencyKey, timeoutMs) {
   const apiKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
   if (!apiKey) throw new Error('BREVO_API_KEY not configured');
   const response = await fetch(BREVO_ENDPOINT, {
+    ...(timeoutMs ? {signal: AbortSignal.timeout(timeoutMs)} : {}),
     method: 'POST',
     headers: {
       accept: 'application/json',
