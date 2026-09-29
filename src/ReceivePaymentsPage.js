@@ -101,6 +101,20 @@ export default function ReceivePaymentsPage() {
     setViewInvoice(inv); setPg('invoices');
   };
 
+  // What the database says is already applied from a receipt. The on-screen figure comes from
+  // loaded invoices, which can be missing rows (a timed-out load) or be stale (someone else just
+  // applied the same leftover) — so money is never applied or a receipt deleted on that alone.
+  const dbApplied = async rid => {
+    const [{ data: pays, error: e1 }, { data: rc, error: e2 }] = await Promise.all([
+      supabase.from('invoice_payments').select('amount').eq('receipt_id', rid),
+      supabase.from('payment_receipts').select('*').eq('id', rid).single(),
+    ]);
+    if (e1 || e2 || !rc) throw new Error((e1 || e2)?.message || 'payment not found');
+    const portal = (pays || []).reduce((a, r) => a + (Number(r.amount) || 0), 0);
+    const ns = (rc.ns_applications || []).reduce((a, r) => a + (Number(r.amount) || 0), 0);
+    return { applied: cents(portal + ns), receipt: rc };
+  };
+
   // ── Save: record a new receipt and/or apply money from one ──
   const save = async ({ mode, receipt, customer, amount, method, ref, dateIso, memo, alloc, openRows }) => {
     const rid = mode === 'apply' ? receipt.id : newReceiptId();
@@ -113,6 +127,14 @@ export default function ReceivePaymentsPage() {
     const nsPlanned = ns.map(p => ({ invoice_id: p.row.id, netsuite_internal_id: p.row.inv.netsuite_internal_id, amount: p.amount, date: payDate, by: who }));
     setSaving(true);
     try {
+      if (mode === 'apply') {
+        const { applied: dbA, receipt: fresh } = await dbApplied(rid);
+        const applied = Math.max(dbA, receiptSummary(fresh, invs).applied);
+        const leftNow = cents(Number(fresh.amount) - applied);
+        const want = cents(picks.reduce((a, p) => a + p.amount, 0));
+        if (want > leftNow + 0.005) { nf('Only ' + money(Math.max(0, leftNow)) + ' is left on this payment — it may have just been applied by someone else. Reload the page and try again.', 'error'); return false; }
+        receipt = fresh;
+      }
       // 1) The receipt row first — if this fails nothing else is touched.
       let rec;
       if (mode === 'new') {
@@ -173,6 +195,8 @@ export default function ReceivePaymentsPage() {
 
   const deleteReceipt = async x => {
     if (x.applications.length) return;
+    try { const { applied } = await dbApplied(x.r.id); if (applied > 0.005) { nf('This payment has already been applied to an invoice — reload the page', 'error'); return; } }
+    catch (e) { nf('Could not verify the payment — ' + e.message, 'error'); return; }
     if (!window.confirm('Delete this ' + money(x.r.amount) + ' payment? Nothing has been applied from it.')) return;
     const { error } = await supabase.from('payment_receipts').delete().eq('id', x.r.id);
     if (error) { nf('Could not delete — ' + error.message, 'error'); return; }
