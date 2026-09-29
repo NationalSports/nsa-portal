@@ -70,3 +70,19 @@ test('the warehouse S&S actually assigned is shown and passed to the PO record',
   expect(await screen.findByText(/Shipping from \(per S&S\)/)).toBeTruthy();
   expect(screen.getByText(/Reno, NV \(1-day transit\)/)).toBeTruthy();
 });
+
+test('a line S&S splits across two warehouses records both', async () => {
+  ssGetDaysInTransit.mockResolvedValue({ NV: 1, KS: 3 });
+  ssSubmitOrder.mockResolvedValue({ orderNumber: '1', raw: [], lineErrors: [], shipments: [
+    { orderNumber: '1', warehouseAbbr: 'NV', skus: [SKU] },
+    { orderNumber: '2', warehouseAbbr: 'KS', skus: [SKU] },
+  ] });
+  const onSubmitted = jest.fn().mockResolvedValue(true);
+  renderModal({ onSubmitted });
+  await waitFor(() => expect(screen.getByText(/📦 NV/)).toBeTruthy());
+  fireEvent.click(screen.getByRole('checkbox', { name: /real order/i }));
+  fireEvent.click(screen.getByText(/Place Order with S&S/));
+  await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+  expect(onSubmitted.mock.calls[0][1][0].warehouse).toBe('NV+KS');
+  expect(await screen.findByText(/split this PO into 2 orders/)).toBeTruthy();
+});

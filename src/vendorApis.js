@@ -1289,10 +1289,6 @@ const ssResolveSkus = async (descriptors) => {
 // ship-from before submitting. Read-only and best-effort — a failure returns {}
 // and the modal simply omits the column; it must never block an order.
 
-// S&S: GET /Products/{sku,…} — every product row carries a warehouses[] breakdown
-// (warehouseAbbr, qty, and S&S's own `closest` flag = nearest to the account's
-// default ship-to). Returns { SKUUPPER: [{ abbr, qty, closest }] }.
-// Chunked 25/call like ssGetProductStyles to keep URLs short and inside rate limits.
 // S&S: GET /DaysInTransit/{zip} — S&S's own delivery days from each warehouse to a ZIP.
 // This is the real "which warehouse is nearest" signal: the Products `closest` flag is
 // relative to the ACCOUNT's default address, not this order's ship-to, and the API gives
@@ -1313,6 +1309,10 @@ const ssGetDaysInTransit = async (zip) => {
   } catch (e) { console.warn('[S&S] days-in-transit lookup failed:', e.message); return {}; }
 };
 
+// S&S: GET /Products/{sku,…} — every product row carries a warehouses[] breakdown
+// (warehouseAbbr, qty, and S&S's own `closest` flag = nearest to the account's
+// default ship-to). Returns { SKUUPPER: [{ abbr, qty, closest }] }.
+// Chunked 25/call like ssGetProductStyles to keep URLs short and inside rate limits.
 const ssGetWarehouseStock = async (skus) => {
   const list = [...new Set((Array.isArray(skus) ? skus : []).map(s => String(s || '').trim().toUpperCase()).filter(Boolean))];
   const map = {};

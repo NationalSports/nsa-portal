@@ -162,11 +162,14 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   const withShippedFrom = (ls, r) => {
     const shipments = r?.shipments || [];
     if (!shipments.length) return ls;
+    // One SKU can be split across warehouses, so collect every warehouse it appears under.
     const bySku = {};
-    shipments.forEach(o => o.skus.forEach(sku => { bySku[sku] = o; }));
+    shipments.forEach(o => o.skus.forEach(sku => {
+      if (o.warehouseAbbr && !(bySku[sku] || []).includes(o.warehouseAbbr)) bySku[sku] = [...(bySku[sku] || []), o.warehouseAbbr];
+    }));
     return ls.map(l => {
-      const o = bySku[String(l.sku || '').toUpperCase()] || (shipments.length === 1 ? shipments[0] : null);
-      return o && o.warehouseAbbr ? { ...l, warehouse: o.warehouseAbbr, warehouse_id: o.warehouseAbbr, warehouse_basis: 'vendor' } : l;
+      const whs = bySku[String(l.sku || '').toUpperCase()] || (shipments.length === 1 && shipments[0].warehouseAbbr ? [shipments[0].warehouseAbbr] : []);
+      return whs.length ? { ...l, warehouse: whs.join('+'), warehouse_id: whs.join('+'), warehouse_basis: 'vendor' } : l;
     });
   };
 
