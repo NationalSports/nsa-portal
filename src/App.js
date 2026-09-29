@@ -81,7 +81,7 @@ import { webstoreCheckoutMoney } from './lib/webstoreSoMoney';
 import { acquireOmgCreationGuard, omgCollectedUnitPrice, omgInvoiceIdempotencyKey, webstoreInvoiceIdempotencyKey } from './lib/omgCreationGuard';
 import { matchedBillPoNumber, normalizeBillForReview, prepareQboBackfillBill } from './qbBillReview';
 import { resolvePoDisplayVendor } from './lib/poVendor';
-import { buildOutOfStockRemovalMessage, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
+import { buildOutOfStockRemovalMessage, emailRepOutOfStockRemoval, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
 // paint — so the first Excel import or PDF/SVG export has no download wait, while keeping them
@@ -11725,7 +11725,8 @@ export default function App(){
     const vendorName=(_visFlushRefs.current.batchPOs||batchPOs||[]).find(bp=>bp.id===line?.sourceBatchId)?.vendor_name||'the vendor';
     const msg=buildOutOfStockRemovalMessage({line,sourceOrder:so,customer,actor:cu,vendorName});
     if(msg)setMsgs(prev=>[...prev,msg]);
-    nf('Removed '+line.style+' '+line.size+' from '+result.poId+'; '+so.id+'\'s sales rep was notified.');
+    const emailed=await emailRepOutOfStockRemoval(authFetch,{line,sourceOrder:so,vendorName});
+    nf('Removed '+line.style+' '+line.size+' from '+result.poId+'; '+(emailed.ok?so.id+'\'s sales rep was messaged and emailed.':'the rep was messaged on '+so.id+', but the email failed ('+emailed.error+'). Tell them directly.'),emailed.ok?undefined:'error');
     return true;
   };
 

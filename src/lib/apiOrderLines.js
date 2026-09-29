@@ -48,6 +48,29 @@ export function buildOutOfStockRemovalMessage({ line, sourceOrder, customer, act
   };
 }
 
+// Email the source order's rep about a removed out-of-stock line (the SO message above only
+// shows on their Dashboard). Never throws: the removal itself is already saved, so a failed
+// email is reported to the caller instead of undoing anything.
+export async function emailRepOutOfStockRemoval(authFetch, { line, sourceOrder, vendorName }) {
+  if (!sourceOrder?.id || !line?.sourcePO) return { ok: false, error: 'Missing order or PO' };
+  try {
+    const response = await authFetch('/.netlify/functions/oos-removal-notify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        so_id: sourceOrder.id, po_id: line.sourcePO, vendor_name: vendorName || '',
+        style: line.sourceSku || line.style || '', color: line.sourceColor || line.color || '',
+        size: line.size || '', quantity: Number(line.quantity) || 0,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) return { ok: false, error: data.error || `HTTP ${response.status}` };
+    return { ok: true, notified: data.notified, usedFallback: !!data.usedFallback };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}
+
 const poHasHistory = po => {
   const anyPositive = value => value && Object.values(value).some(qty => Number(qty) > 0);
   return !!(po && (po.api_order_id || po.api_ordered_at || po.vendor_keys?.order_no

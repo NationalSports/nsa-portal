@@ -72,7 +72,7 @@ import { _dbPersistNewPoLine } from './lib/dbEngine';
 import { applyFullPromoPricing, recoverGarmentCost as recoverGarmentCostShared } from './lib/promoPricing';
 import { fetchPaidPromoHistoryInvoices, mergePromoHistoryInvoices, promoHalfWindows, withEarnedPromoAllocation } from './lib/promoHistory';
 import { itemVendorInvSource, vendorInvCacheKey } from './vendorInventory';
-import { apiVerificationForPoLine, buildOutOfStockRemovalMessage, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
+import { apiVerificationForPoLine, buildOutOfStockRemovalMessage, emailRepOutOfStockRemoval, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
 import { markTopstarEmailFailed, markTopstarEmailSent, topstarAttachmentName, topstarPoMatches } from './lib/topstarEmail';
 import './orderEditor.redesign.css';
 
@@ -3310,7 +3310,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const customer=(allCustomers||[]).find(c=>c.id===sourceOrder.customer_id)||null;
     const msg=buildOutOfStockRemovalMessage({line,sourceOrder,customer,actor:cu,vendorName:apiOrder?.vendorName});
     if(msg&&onMsg)onMsg(prev=>[...prev,msg]);
-    nf('Removed '+line.style+' '+line.size+' from '+result.poId+'; '+sourceOrder.id+'\'s sales rep was notified.');
+    const emailed=await emailRepOutOfStockRemoval(authFetch,{line,sourceOrder,vendorName:apiOrder?.vendorName});
+    nf('Removed '+line.style+' '+line.size+' from '+result.poId+'; '+(emailed.ok?sourceOrder.id+'\'s sales rep was messaged and emailed.':'the rep was messaged on '+sourceOrder.id+', but the email failed ('+emailed.error+'). Tell them directly.'),emailed.ok?undefined:'error');
     return true;
   };
   const uSz=(i,sz,v)=>{
