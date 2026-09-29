@@ -1293,6 +1293,26 @@ const ssResolveSkus = async (descriptors) => {
 // (warehouseAbbr, qty, and S&S's own `closest` flag = nearest to the account's
 // default ship-to). Returns { SKUUPPER: [{ abbr, qty, closest }] }.
 // Chunked 25/call like ssGetProductStyles to keep URLs short and inside rate limits.
+// S&S: GET /DaysInTransit/{zip} — S&S's own delivery days from each warehouse to a ZIP.
+// This is the real "which warehouse is nearest" signal: the Products `closest` flag is
+// relative to the ACCOUNT's default address, not this order's ship-to, and the API gives
+// no warehouse cities to measure from. Returns { ABBR: days } ({} when unknown).
+const ssGetDaysInTransit = async (zip) => {
+  const z = String(zip || '').trim().slice(0, 5);
+  if (!/^\d{5}$/.test(z)) return {};
+  try {
+    const data = await ssApiCall('/DaysInTransit/' + z);
+    const row = (Array.isArray(data) ? data : [data]).find(Boolean) || {};
+    const out = {};
+    (row.warehouses || row.Warehouses || []).forEach(w => {
+      const abbr = String(w?.warehouseAbbr || w?.WarehouseAbbr || '').trim().toUpperCase();
+      const days = Number(w?.daysInTransit ?? w?.DaysInTransit);
+      if (abbr && Number.isFinite(days)) out[abbr] = days;
+    });
+    return out;
+  } catch (e) { console.warn('[S&S] days-in-transit lookup failed:', e.message); return {}; }
+};
+
 const ssGetWarehouseStock = async (skus) => {
   const list = [...new Set((Array.isArray(skus) ? skus : []).map(s => String(s || '').trim().toUpperCase()).filter(Boolean))];
   const map = {};
@@ -1441,6 +1461,13 @@ const ssSubmitOrder = async (order) => {
     tax: money('tax', 'Tax'),
     total: money('total', 'Total'),
     shippingMethod: first.shippingMethod || first.ShippingMethod || '',
+    // S&S returns one order per warehouse when it splits a PO. Keep every one, with the
+    // warehouse that is actually shipping it and the SKUs on it.
+    shipments: arr.map(o => ({
+      orderNumber: o.orderNumber || o.OrderNumber || '',
+      warehouseAbbr: String(o.warehouseAbbr || o.WarehouseAbbr || '').trim().toUpperCase(),
+      skus: (o.lines || o.Lines || []).map(l => String(l.sku || l.Sku || '').trim().toUpperCase()).filter(Boolean),
+    })).filter(o => o.orderNumber || o.warehouseAbbr),
   };
 };
 
@@ -1947,4 +1974,4 @@ const testSportsLinkConnection = async () => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, sanmarStyleVariants, ssApiCall, ssGetProducts, ssGetProductStyles, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock, sanmarGetWarehouseStock, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecShippingCost, momentecOrderDetails, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, sanmarStyleVariants, ssApiCall, ssGetProducts, ssGetProductStyles, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock, ssGetDaysInTransit, sanmarGetWarehouseStock, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecShippingCost, momentecOrderDetails, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };

@@ -23,9 +23,10 @@ jest.mock('../vendorApis', () => ({
   ssSearchProducts: jest.fn(() => Promise.resolve([])),
   ssSubmitOrder: jest.fn(),
   ssGetWarehouseStock: jest.fn(() => Promise.resolve({})),
+  ssGetDaysInTransit: jest.fn(() => Promise.resolve({})),
 }));
 
-const { ssResolveSkus, ssGetWarehouseStock } = require('../vendorApis');
+const { ssResolveSkus, ssGetWarehouseStock, ssGetDaysInTransit } = require('../vendorApis');
 const SSOrderModal = require('../SSOrderModal').default;
 
 const SKU = 'B0012345';
@@ -51,6 +52,7 @@ const renderModal = (batchPOs) => render(
 beforeEach(() => {
   jest.clearAllMocks();
   ssGetWarehouseStock.mockResolvedValue({});
+  ssGetDaysInTransit.mockResolvedValue({});
   ssResolveSkus.mockResolvedValue({ resolved: { [LINE_KEY]: SKU }, candidates: {} });
 });
 

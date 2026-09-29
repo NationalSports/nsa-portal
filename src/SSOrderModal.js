@@ -4,7 +4,7 @@
 // Credentials are injected server-side by ss-proxy and never appear here.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { buildSSOrderPayload, buildSSOrderLines } from './ssOrder';
-import { ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock } from './vendorApis';
+import { ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock, ssGetDaysInTransit } from './vendorApis';
 import { reconcileVendorLines, freeShipGap } from './lib/vendorOrderGuards';
 import { DuplicateMergeWarning, UnacceptedLinesPanel, FreeShipNotice } from './VendorOrderGuardPanels';
 import WarehouseChips, { rankWarehouses, SS_WAREHOUSES } from './WarehouseChips';
@@ -72,6 +72,20 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   // Per-warehouse availability for the resolved SKUs — informational "ships from"
   // display only; a lookup failure just leaves the column blank, never blocks.
   const [whseBySku, setWhseBySku] = useState(null); // SKUUPPER -> [{abbr,qty,closest}], null = loading
+  // S&S delivery days from each warehouse to THIS ship-to ZIP ({ ABBR: days }). Ranks the
+  // expected ship-from by S&S's own transit data instead of the account-relative `closest` flag.
+  const [transitDays, setTransitDays] = useState({});
+  const shipZip = String(ship?.postalCode || ship?.zip || '').trim().slice(0, 5);
+  useEffect(() => {
+    let cancelled = false;
+    setTransitDays({});
+    if (!/^\d{5}$/.test(shipZip)) return undefined;
+    // Never let a transit-lookup problem touch the order screen: it only ranks the chips.
+    Promise.resolve().then(() => ssGetDaysInTransit(shipZip))
+      .then(m => { if (!cancelled) setTransitDays(m || {}); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [shipZip]);
 
   // Base lines (no network) — flatten the batch. Deliberately built WITHOUT the ship-to:
   // lines don't vary by destination, and rebuilding them per address keystroke re-fired the
@@ -143,6 +157,19 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   const live = !testMode;
   const canSubmit = !blocked && confirmed && !submitting && !done;
 
+  // Stamp each line with the warehouse S&S actually assigned (its response has one order per
+  // warehouse), so the PO records where the goods really ship from, not our prediction.
+  const withShippedFrom = (ls, r) => {
+    const shipments = r?.shipments || [];
+    if (!shipments.length) return ls;
+    const bySku = {};
+    shipments.forEach(o => o.skus.forEach(sku => { bySku[sku] = o; }));
+    return ls.map(l => {
+      const o = bySku[String(l.sku || '').toUpperCase()] || (shipments.length === 1 ? shipments[0] : null);
+      return o && o.warehouseAbbr ? { ...l, warehouse: o.warehouseAbbr, warehouse_id: o.warehouseAbbr, warehouse_basis: 'vendor' } : l;
+    });
+  };
+
   const doSubmit = async () => {
     if (!canSubmit) return;
     setSubmitState('submitting'); setErrorMsg('');
@@ -170,7 +197,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
     // order (the NSA 4536 failure) can't look like a clean success.
     if (live && onSubmitted) {
       try {
-        const recorded = await onSubmitted(r, lines);
+        const recorded = await onSubmitted(r, withShippedFrom(lines, r));
         if (!recorded) setBookErr('the recording step reported that nothing was written to the portal');
       } catch (e) {
         console.error('[S&S] order placed but post-order bookkeeping failed:', e);
@@ -262,6 +289,13 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                 {result?.shipping != null && <Stat label={'Freight' + (result.shippingMethod ? ` (${result.shippingMethod})` : '')} value={result.shipping > 0 ? '$' + result.shipping.toFixed(2) : 'Free'} />}
                 {result?.total != null && <Stat label="S&S Order Total" value={'$' + result.total.toFixed(2)} />}
               </div>
+              {(result?.shipments || []).some(o => o.warehouseAbbr) && (
+                <div style={{ marginTop: 10, fontSize: 12 }}>
+                  <strong>Shipping from (per S&S):</strong>{' '}
+                  {result.shipments.map(o => `${SS_WAREHOUSES[o.warehouseAbbr] || o.warehouseAbbr}${transitDays[o.warehouseAbbr] != null ? ` (${transitDays[o.warehouseAbbr]}-day transit)` : ''}${result.shipments.length > 1 && o.orderNumber ? ` — order ${o.orderNumber}` : ''}`).join(' · ')}
+                  {result.shipments.length > 1 && <div style={{ marginTop: 4, color: '#92400e', fontWeight: 700 }}>S&S split this PO into {result.shipments.length} orders (one per warehouse).</div>}
+                </div>
+              )}
               {bookErr && <div style={{ marginTop: 10, padding: 10, background: '#fffbeb', border: '2px solid #f59e0b', borderRadius: 8, color: '#92400e', fontWeight: 700 }}>
                 ⚠ S&S HAS this order, but the portal did NOT record it ({bookErr}).
                 Do NOT submit or re-order this batch — record the PO on the sales order manually and remove the queue entries, or the batch will look unordered and get double-ordered.
@@ -493,7 +527,13 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                         <WarehouseChips
                           loading={l.sku ? whseBySku === null : false}
                           entries={rankWarehouses(
-                            stockRows.map(w => ({ label: w.abbr, city: SS_WAREHOUSES[w.abbr], qty: w.qty, closest: w.closest })),
+                            stockRows.map(w => {
+                              const days = transitDays[w.abbr];
+                              const known = Object.keys(transitDays).length > 0;
+                              // With transit data, rank purely by S&S's delivery days; the `closest`
+                              // flag only stands in when the transit lookup failed.
+                              return { label: w.abbr, city: [SS_WAREHOUSES[w.abbr] || w.abbr, days != null ? `${days}-day transit` : ''].filter(Boolean).join(' · '), qty: w.qty, closest: known ? false : w.closest, ...(days != null ? { dist: days } : {}) };
+                            }),
                             l.quantity
                           ).filter(e => e.primary)}
                         />
@@ -508,7 +548,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
               {lines.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8' }}>No line items.</div>}
               {lines.length > 0 && (
                 <div style={{ padding: '6px 10px', fontSize: 11, color: '#64748b', background: '#f8fafc', borderTop: '1px solid #f1f5f9' }}>
-                  📦 = expected ship-from warehouse (S&S routes each line from the nearest warehouse with stock at submission — split shipments possible). Hover the chip for the city and current stock.
+                  📦 = expected ship-from warehouse: the one with stock and the fewest delivery days to this ship-to, per S&S's transit data. Orders are sent with S&S's "fastest" setting, so lines can split across warehouses. Hover the chip for transit days and current stock; after submitting, the warehouse S&S actually assigned is shown and saved on the PO.
                 </div>
               )}
             </div>
