@@ -4,7 +4,7 @@ import PriorArtReviewPanel from './PriorArtReviewPanel';
 import { logoDetailCustomerUpdates } from './lib/logoDetail';
 import { isJobReady, missingJobMocks, jobMockChecks } from './lib/jobMockReadiness';
 import { jobArtBadgeSt } from './lib/jobArtBadge';
-import { PRIOR_ART_REVIEW, startPriorArtReview, priorArtDecisionPending, confirmPriorArt, markPriorArtCoachSent } from './lib/priorArtReview';
+import { PRIOR_ART_REVIEW, startPriorArtReview, reviewChangedArtwork, priorArtDecisionPending, confirmPriorArt, markPriorArtCoachSent } from './lib/priorArtReview';
 import { splitPriorArtwork } from './lib/splitPriorArtwork';
 import { webstoreCheckoutMoney, webstoreDocMoneyRows } from './lib/webstoreSoMoney';
 import {useOrderCatalogResults,a4Visible} from './lib/orderCatalogSearch';
@@ -775,7 +775,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // onto volleyball garments that happened to be unwired). Matching lives in
     // prevArtAutoWireTargets so it stays unit-tested and can't drift from the UI.
     const targets=prevArtAutoWireTargets(safeItems(o),af,clone).map(({ii,di})=>({ii,di,item:safeItems(o)[ii]}));
-    if(!targets.length){nf('Added "'+_nm+'" from '+(art._so_id||'Library')+' — mockups not auto-applied'+_pfNote);return}
+    if(!targets.length){openArtApply(clone);nf('Added "'+_nm+'" from '+(art._so_id||'Library')+' — choose its garments and color ways'+_pfNote);return}
     // H4 tie-in: garments whose shade only fallback-matches this art's CWs still get pointed,
     // but the rep is told to confirm the color-way for them.
     const _lbl=t=>((t.item.color?t.item.color+' ':'')+(t.item.sku||t.item.name||('Item '+(t.ii+1))));
@@ -4296,6 +4296,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(!r.artChanged)return r.job;
       const _declared=(j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id]).filter(Boolean);
       const _hIds=(r.job._art_ids&&r.job._art_ids.length?r.job._art_ids:[r.job.art_file_id]).filter(Boolean);
+      const _newArt=_hIds.filter(id=>!_declared.includes(id)).map(id=>af.find(a=>a.id===id)).filter(Boolean);
+      const _review=reviewChangedArtwork(j,r.job,_newArt);
+      if(_review)return _review;
       // Pure EXPANSION — every old design is still here, the heal only ADDED a location. Keep the
       // existing designs' art_status: recomputing "worst" here dragged submitted jobs to needs_art
       // when the added location sat at 'uploaded', and that regressed status got SAVED (SO-1625).
