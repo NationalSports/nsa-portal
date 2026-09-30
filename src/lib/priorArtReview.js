@@ -21,6 +21,21 @@ export const startPriorArtReview = job => ({
   follow_up_last_sent_at: null,
 });
 
+// A released job can keep a stale art id after its original folder is removed.
+// When its live decorations are later pointed at replacement art, do not let the
+// source folder's approval advance this job past an open artist request. With no
+// open request, approved replacement art still needs a decision for this job.
+export const reviewChangedArtwork = (previousJob, healedJob, newlyLinkedArt = []) => {
+  const hasOpenRequest = (previousJob.art_requests || []).some(r => r.status === 'requested' || r.status === 'in_progress');
+  if (hasOpenRequest && ['art_requested', 'art_in_progress'].includes(previousJob.art_status)) {
+    return { ...healedJob, art_status: previousJob.art_status };
+  }
+  if (newlyLinkedArt.some(a => a?.status === 'approved')) {
+    return startPriorArtReview(healedJob);
+  }
+  return null;
+};
+
 export const priorArtDecisionPending = (job, artFiles = []) => {
   if (!job || job.sent_to_coach_at || job.art_reuse_confirmed) return false;
   if (job.art_status === PRIOR_ART_REVIEW) return true;
