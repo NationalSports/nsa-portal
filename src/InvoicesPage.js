@@ -55,6 +55,40 @@ export default function InvoicesPage(){
         :inv.id+' returned to the account rep'+(acctRep?' ('+acctRep.name+')':''));
     },[setInvs,REPS,cust,nf]);
 
+    // Partial pay links (invoice_pay_requests): ask the customer to pay PART of this invoice online.
+    // The request row is the server-side authority on the amount (stripe-payment / _shared.js).
+    const[payLinks,setPayLinks]=React.useState({invId:null,rows:[]});
+    const[payLinkModal,setPayLinkModal]=React.useState(null);// {inv,bal,amount,note,saving,link}
+    const loadPayLinks=React.useCallback(async invId=>{
+      if(!supabase||!invId)return;
+      const{data,error}=await supabase.from('invoice_pay_requests').select('*').eq('invoice_id',invId).order('created_at',{ascending:false});
+      if(!error)setPayLinks({invId,rows:data||[]});
+    },[]);
+    React.useEffect(()=>{if(viewInvoice&&!viewInvoice._hist&&viewInvoice.id)loadPayLinks(viewInvoice.id);},[viewInvoice?.id,loadPayLinks]);
+    const payLinkUrl=(c,invId,token)=>'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(c.alpha_tag)+'&inv='+encodeURIComponent(invId)+'&payreq='+encodeURIComponent(token);
+    const createPayLink=async()=>{
+      const m=payLinkModal;if(!m||m.saving)return;
+      if(!supabase){nf('Supabase not configured','error');return}
+      const amt=Math.round((Number(m.amount)||0)*100)/100;
+      if(!(amt>=0.5)){nf('Enter an amount of at least $0.50','error');return}
+      if(amt>m.bal+0.005){nf('That is more than the $'+m.bal.toFixed(2)+' open balance','error');return}
+      const c=cust.find(x=>x.id===m.inv.customer_id);
+      if(!c?.alpha_tag){nf('This customer has no portal tag, so a pay link can’t be built','error');return}
+      const bytes=new Uint8Array(18);window.crypto.getRandomValues(bytes);
+      const token='PR'+Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
+      setPayLinkModal(x=>({...x,saving:true}));
+      const{error}=await supabase.from('invoice_pay_requests').insert({id:token,invoice_id:m.inv.id,amount:amt,note:String(m.note||'').trim()||null,created_by:cu?.name||cu?.email||''});
+      if(error){nf('Pay link NOT created — '+error.message,'error');setPayLinkModal(x=>({...x,saving:false}));return}
+      setPayLinkModal(x=>({...x,saving:false,link:payLinkUrl(c,m.inv.id,token),amount:amt}));
+      loadPayLinks(m.inv.id);
+    };
+    const cancelPayLink=async row=>{
+      if(!window.confirm('Cancel this $'+Number(row.amount).toFixed(2)+' pay link? The customer won’t be able to use it.'))return;
+      const{error}=await supabase.from('invoice_pay_requests').update({status:'cancelled',cancelled_at:new Date().toISOString()}).eq('id',row.id).eq('status','open');
+      if(error){nf('Could not cancel — '+error.message,'error');return}
+      loadPayLinks(row.invoice_id);nf('Pay link cancelled');
+    };
+
     // Packing slip builder — what's actually going in the box for this invoice. Local to the
     // detail page (nothing else reads it), keyed by invoice id so a slip left open never shows
     // up over a different invoice.
@@ -480,6 +514,9 @@ export default function InvoicesPage(){
           <div className="card-body" style={{padding:'12px 24px',borderBottom:'1px solid #e2e8f0',display:'flex',gap:8,flexWrap:'wrap'}}>
             {inv.status!=='paid'&&<button className="btn btn-sm" style={{background:'#166534',color:'white',border:'none',fontSize:12,padding:'6px 14px'}}
               onClick={()=>setPayModal({inv:{...inv,_bal:bal},amount:bal,method:'check',ref:''})}>Record Payment</button>}
+            {!inv._hist&&inv.status!=='paid'&&inv.status!=='void'&&bal>0.5&&<button className="btn btn-sm" style={{background:'#eff6ff',color:'#1d4ed8',border:'1px solid #93c5fd',fontSize:12,padding:'6px 14px'}}
+              disabled={!ic?.alpha_tag} title={ic?.alpha_tag?'Send the customer a link to pay part of this invoice online':'This customer has no portal tag, so a pay link can’t be built'}
+              onClick={()=>setPayLinkModal({inv,bal,amount:'',note:'',saving:false,link:null})}>Partial Pay Link</button>}
             {inv.status==='paid'&&(inv.tax||0)>0&&!inv.tc_reported&&ic&&!ic.tax_exempt&&<button className="btn btn-sm" style={{background:'#1e40af',color:'white',border:'none',fontSize:12,padding:'6px 14px'}}
               onClick={()=>fileTaxCloud(inv)} title="Report this paid invoice to TaxCloud for state filing (1 manual call)">File to TaxCloud</button>}
             {inv.tc_reported&&<span style={{fontSize:12,padding:'6px 10px',color:'#166534',fontWeight:600}}>✓ Filed to TaxCloud{inv.tc_tax?' ($'+Number(inv.tc_tax).toLocaleString()+')':''}</span>}
@@ -686,6 +723,45 @@ export default function InvoicesPage(){
 
           </div>
         </div>
+
+        {payLinks.invId===inv.id&&payLinks.rows.length>0&&<div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>Pay Links</h2></div>
+          <div className="card-body" style={{padding:0}}><table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+            <thead><tr style={{background:'#f8fafc'}}><th style={{padding:'8px 12px',textAlign:'left'}}>Created</th><th style={{padding:'8px 12px',textAlign:'right'}}>Amount</th><th style={{padding:'8px 12px',textAlign:'left'}}>Status</th><th style={{padding:'8px 12px'}}></th></tr></thead>
+            <tbody>{payLinks.rows.map(r=><tr key={r.id} style={{borderBottom:'1px solid #f1f5f9'}}>
+              <td style={{padding:'8px 12px'}}>{r.created_at?new Date(r.created_at).toLocaleDateString():''}{r.created_by?' · '+r.created_by:''}{r.note?<div style={{fontSize:10,color:'#94a3b8'}}>{r.note}</div>:null}</td>
+              <td style={{padding:'8px 12px',textAlign:'right',fontWeight:600}}>${Number(r.amount).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+              <td style={{padding:'8px 12px',color:r.status==='paid'?'#166534':r.status==='open'?'#1d4ed8':'#94a3b8',fontWeight:600}}>{r.status==='paid'?'Paid'+(r.paid_at?' '+new Date(r.paid_at).toLocaleDateString():''):r.status==='open'?'Waiting on customer':'Cancelled'}</td>
+              <td style={{padding:'8px 12px',textAlign:'right',whiteSpace:'nowrap'}}>{r.status==='open'&&ic?.alpha_tag&&<><button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{navigator.clipboard?.writeText(payLinkUrl(ic,inv.id,r.id));nf('Pay link copied')}}>Copy link</button>
+                <button className="btn btn-sm btn-secondary" style={{fontSize:11,marginLeft:6,color:'#b91c1c'}} onClick={()=>cancelPayLink(r)}>Cancel</button></>}</td>
+            </tr>)}</tbody>
+          </table></div>
+        </div>}
+        {payLinkModal&&payLinkModal.inv.id===inv.id&&<div className="modal-overlay" onClick={()=>setPayLinkModal(null)}><div className="modal" style={{maxWidth:480}} onClick={e=>e.stopPropagation()}>
+          <div className="modal-header"><h2>Partial Pay Link — {inv.id}</h2><button className="modal-close" onClick={()=>setPayLinkModal(null)}>×</button></div>
+          <div className="modal-body">
+            {!payLinkModal.link?<>
+              <div style={{fontSize:12,color:'#64748b',marginBottom:10}}>Open balance <strong>${payLinkModal.bal.toFixed(2)}</strong>. The customer pays exactly this amount online; the rest stays open. Card payments add the processing fee on top; bank (ACH) has no fee.</div>
+              <label className="form-label">Amount to request</label>
+              <input className="form-input" type="number" min="0.5" step="0.01" autoFocus value={payLinkModal.amount} onChange={e=>setPayLinkModal(x=>({...x,amount:e.target.value}))} placeholder="2000.00"/>
+              <label className="form-label" style={{marginTop:10}}>Note to customer (optional)</label>
+              <input className="form-input" value={payLinkModal.note} onChange={e=>setPayLinkModal(x=>({...x,note:e.target.value}))} placeholder="e.g. First installment per our call"/>
+              {ic?.disable_cc_pay&&<div style={{marginTop:8,fontSize:11,color:'#92400e'}}>Heads up: online payments are turned off for this customer in the portal, but this link will still let them pay.</div>}
+            </>:<>
+              <div style={{fontSize:13,marginBottom:8}}>Link for <strong>${Number(payLinkModal.amount).toFixed(2)}</strong> is ready. Send it to the customer:</div>
+              <textarea className="form-input" readOnly rows={3} style={{fontSize:11}} value={payLinkModal.link} onFocus={e=>e.target.select()}/>
+            </>}
+          </div>
+          <div className="modal-footer">
+            {!payLinkModal.link?<>
+              <button className="btn btn-secondary" onClick={()=>setPayLinkModal(null)}>Cancel</button>
+              <button className="btn btn-primary" disabled={payLinkModal.saving} onClick={createPayLink}>{payLinkModal.saving?'Creating…':'Create link'}</button>
+            </>:<>
+              {(()=>{const to=(ic?.contacts||[]).find(ct=>ct.email)?.email||'';return<a className="btn btn-secondary" href={'mailto:'+encodeURIComponent(to)+'?subject='+encodeURIComponent('Payment link — '+inv.id)+'&body='+encodeURIComponent('Hi,\n\nHere is a secure link to pay $'+Number(payLinkModal.amount).toFixed(2)+' toward invoice '+inv.id+':\n\n'+payLinkModal.link+'\n\nThank you,\nNational Sports Apparel')}>Email it</a>})()}
+              <button className="btn btn-primary" onClick={()=>{navigator.clipboard?.writeText(payLinkModal.link);nf('Pay link copied')}}>Copy link</button>
+            </>}
+          </div>
+        </div></div>}
 
         {/* Payment History */}
         {(inv.payments||[]).length>0&&<div className="card" style={{marginBottom:16}}>

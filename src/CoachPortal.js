@@ -26,6 +26,9 @@ const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
 // via an iframe with ?embed=1 — the same pattern as /team-stores and /livelook.
 // When embedded, links to other surfaces must break OUT of the iframe (target=_top)
 // and point at the marketing domain; opened directly, they open in a new tab.
+// Partial pay link token (?payreq=) — on the portal's own URL, or on the parent /coach page's URL
+// when embedded (that page forwards only the portal tag, so it's recovered from the referrer).
+const _payReqToken = () => { try { const v = new URLSearchParams(window.location.search).get('payreq'); if (v) return v; const r = document.referrer || ''; const qi = r.indexOf('?'); return qi >= 0 ? new URLSearchParams(r.slice(qi)).get('payreq') : null; } catch { return null; } };
 const CP_EMBEDDED = (() => { try { return new URLSearchParams(window.location.search).get('embed') === '1'; } catch { return false; } })();
 const CP_MARKETING = 'https://nationalsportsapparel.com';
 const CP_LINK_TARGET = CP_EMBEDDED ? '_top' : '_blank';
@@ -833,7 +836,16 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[contactMsg,setContactMsg]=useState('');
   const[updateRequestText,setUpdateRequestText]=useState('');
   const[updateRequestSent,setUpdateRequestSent]=useState(false);
-  const[showPay,setShowPay]=useState(null);// null | 'all' | inv object
+  const[showPay,setShowPay]=useState(null);// null | 'all' | inv object | {payReq:true,inv}
+  // Partial pay link (?payreq=TOKEN): accounting asked for part of an invoice. Looked up server-side
+  // (stripe-payment get_pay_request) — the portal never trusts an amount from the URL.
+  const[payReq,setPayReq]=useState(null);// null | {ok,pay_request_id,invoice_id,amount,note} | {ok:false,error}
+  useEffect(()=>{
+    const token=_payReqToken();
+    if(!token)return;
+    fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'get_pay_request',pay_request_id:token})})
+      .then(r=>r.json()).then(d=>setPayReq(d&&d.ok?d:{ok:false,error:(d&&d.error)||'This payment link could not be loaded.'})).catch(()=>setPayReq({ok:false,error:'This payment link could not be loaded. Please try again.'}));
+  },[]);
   const[payLoading,setPayLoading]=useState(false);// loading state for pay button feedback
   const[paySuccess,setPaySuccess]=useState(null);// {amount,fee,invoices,intentId}
   const[receiptEmail,setReceiptEmail]=useState('');// email-receipt recipient (prefilled w/ contact)
@@ -1208,6 +1220,23 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       return;
     }
     // Update invoices locally and in parent (persists to Supabase/localStorage/QB)
+    // Partial pay link: apply exactly the requested amount (+ its card fee) — never the full balance.
+    if(result.payRequest&&result.invoices.length===1){
+      const reqAmt=Math.round((Number(result.payRequest.amount)||0)*100)/100,fee=Math.round((Number(result.fee)||0)*100)/100;
+      const reqUpdater=prev=>prev.map(inv=>{
+        if(inv.id!==result.invoices[0].id)return inv;
+        const newTotal=Math.round(((inv.total||0)+fee)*100)/100,newPaid=Math.round(((inv.paid||0)+reqAmt+fee)*100)/100;
+        const payment={amount:Math.round((reqAmt+fee)*100)/100,method:'cc',ref:'Stripe '+result.intentId,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),cc_fee:fee};
+        return{...inv,total:newTotal,paid:newPaid,status:newPaid>=newTotal-0.005?'paid':'partial',cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment],updated_at:new Date().toLocaleString()};
+      });
+      setInvs(reqUpdater);if(onUpdateInvs)onUpdateInvs(reqUpdater);
+      if(result.intentId)fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:result.intentId}),keepalive:true}).catch(()=>{});
+      setPayReq(p=>p&&p.ok?{...p,ok:false,error:null,paid:true}:p);
+      setReceiptEmail(contactEmail||'');setReceiptStatus(null);
+      setPaySuccess({amount:reqAmt,fee,invoices:result.invoices,intentId:result.intentId});
+      setShowPay(null);setInvView(null);setPayLoading(false);_scrollToConfirmation();
+      return;
+    }
     const paidInvIds=result.invoices.map(i=>i.id);
     // Surcharge rate must match what StripePaymentModal actually charged (portalSettings.ccFeePct,
     // default 2.9%). The old code referenced an undefined CC_FEE_PORTAL here, which threw the moment
@@ -1276,7 +1305,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           const ids=String(paymentIntent.metadata?.invoice_id||'').split(/[\s,]+/).map(s=>s.trim()).filter(Boolean);
           const matched=custInvs.filter(inv=>ids.includes(inv.id));
           const collected=(paymentIntent.amount||0)/100;
-          if(matched.length){
+          // A partial pay link must never be applied locally as the full balance — let the server
+          // (which knows the requested amount) settle it.
+          if(matched.length&&!_payReqToken()){
             const balTotal=matched.reduce((a,inv)=>a+Math.max(0,(inv.total||0)-(inv.paid||0)),0);
             handlePaymentSuccess({intentId:paymentIntent.id,amount:balTotal,fee:Math.max(0,Math.round((collected-balTotal)*100)/100),invoices:matched,status:'succeeded'});
           }else{
@@ -1299,14 +1330,17 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // own early return, so the modal must be rendered in every view that can launch it — not just the
   // main one. Previously it lived only in the main return, so tapping "Pay" from an opened invoice set
   // showPay but never mounted the modal: the button just span on "Opening secure checkout…" forever.
+  const _reqPay=showPay&&showPay.payReq&&payReq&&payReq.ok;
   const payModalEl = showPay ? <StripePaymentModal
-    invoices={showPay==='all'?openInvs:[showPay]}
+    invoices={showPay==='all'?openInvs:_reqPay?[showPay.inv]:[showPay]}
+    amountDue={_reqPay?payReq.amount:undefined}
+    payRequestId={_reqPay?payReq.pay_request_id:undefined}
     customerName={customer.name}
     customerEmail={contactEmail}
     alphaTag={customer.alpha_tag}
     feePct={typeof portalSettings?.ccFeePct==='number'?portalSettings.ccFeePct:undefined}
     paymentNote={portalSettings?.paymentNote||''}
-    onSuccess={handlePaymentSuccess}
+    onSuccess={r=>handlePaymentSuccess(_reqPay?{...r,payRequest:payReq}:r)}
     onClose={()=>{setShowPay(null);setPayLoading(false)}}
   /> : null;
 
@@ -2423,6 +2457,14 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           <div style={{display:'flex',justifyContent:'space-between',padding:'12px 0',borderTop:'2px solid #e2e8f0'}}>
             <span style={{fontWeight:800}}>Total</span><span style={{fontWeight:800,fontSize:18,color:'#dc2626'}}>${inv.total?.toLocaleString()}</span>
           </div>
+          {payReq&&payReq.ok&&payReq.invoice_id===inv.id&&bal>0&&<div style={{marginTop:16,padding:14,background:'#eff6ff',border:'2px solid #93c5fd',borderRadius:10}}>
+            <div style={{fontSize:13,fontWeight:800,color:'#1e3a8a'}}>NSA requested a payment of ${Number(payReq.amount).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} toward this invoice</div>
+            {payReq.note&&<div style={{fontSize:12,color:'#1e40af',marginTop:4}}>{payReq.note}</div>}
+            <button style={{width:'100%',marginTop:10,padding:'12px 18px',background:'#1d4ed8',color:'white',border:'none',borderRadius:8,fontSize:15,fontWeight:800,cursor:payLoading?'wait':'pointer'}} disabled={payLoading} onClick={()=>{setPayLoading(true);setShowPay({payReq:true,inv})}}>
+              💳 Pay ${Number(payReq.amount).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} now</button>
+            <div style={{fontSize:11,color:'#64748b',marginTop:6,textAlign:'center'}}>The remaining ${Math.max(0,bal-Number(payReq.amount)).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} stays open on the invoice.</div>
+          </div>}
+          {payReq&&!payReq.ok&&payReq.error&&!payReq.paid&&<div style={{marginTop:16,padding:12,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,fontSize:12,color:'#991b1b'}}>{payReq.error}</div>}
           {bal>0&&!ccDisabled&&<button style={{width:'100%',marginTop:16,padding:'14px 20px',background:payLoading?'#86efac':'#15803D',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:payLoading?'wait':'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10,opacity:payLoading?0.8:1,transition:'all 0.2s'}} disabled={payLoading} onClick={()=>{setPayLoading(true);setShowPay(inv)}}>
             {payLoading?<><span style={{display:'inline-block',width:18,height:18,border:'3px solid rgba(255,255,255,0.3)',borderTop:'3px solid white',borderRadius:'50%',animation:'spin 0.8s linear infinite'}}/>Opening secure checkout...</>:<>💳 Pay ${bal.toLocaleString()}</>}
           </button>}
