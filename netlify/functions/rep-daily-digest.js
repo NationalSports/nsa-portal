@@ -3,9 +3,11 @@
 // every new order on every store, with per-store and overall totals, plus a
 // recap of any of their stores that closed in that window. Reps with no
 // activity get no email. Rep-only (CSRs already get close alerts separately).
-// Also flags the rep's open stores closing within a week, with how many shoppers
-// filled a cart but haven't ordered (storefront tracking, webstore_events) — a
-// prompt to have the coach send a last-call reminder.
+// Also flags the rep's open stores that are closing — twice per store, not daily:
+// the first morning it is within a week of closing, and the day before it closes.
+// Each shows sales so far, how many shoppers filled a cart but haven't ordered
+// (storefront tracking, webstore_events), and the coach's email so the rep can
+// forward a last-call reminder.
 const { getSupabaseAdmin } = require('./_shared');
 
 const money = (n) => '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -74,6 +76,7 @@ exports.handler = async () => {
 
     await attachClosedStats(admin, closedStores || []);
     const closing = await loadClosingSoon(admin, new Date());
+    await attachClosedStats(admin, closing.map((c) => c.store)); // sales so far → c.store._stats
 
     // Group everything by rep.
     const byRep = {}; // repId -> { stores: {storeId:{store,orders}}, closed: [], closing: [] }
@@ -109,7 +112,10 @@ exports.handler = async () => {
           htmlContent: html,
         }),
       });
-      if (res.ok) sent++; else console.error('[rep-digest] brevo', rep.email, res.status, await res.text().catch(() => ''));
+      if (res.ok) {
+        sent++;
+        await markClosingNotified(admin, bundle.closing);
+      } else console.error('[rep-digest] brevo', rep.email, res.status, await res.text().catch(() => ''));
     }
     console.log(`[rep-digest] ${dayLabel}: ${repIds.length} reps with activity, ${sent} emailed`);
     return { statusCode: 200, body: `Emailed ${sent}` };
@@ -152,32 +158,97 @@ function closedStatsLine(st) {
     st.fund > 0 ? `${money(st.fund)} raised for the team` : ''].filter(Boolean).join(' · ');
 }
 
-// Open stores closing within the next 7 days, with their cart-vs-order gap.
-// Tracking data is best-effort: if it can't load, the stores still get listed.
+// PT calendar date (YYYY-MM-DD) of an instant, and the PT date `days` after a given one.
+const ptDate = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(d));
+const addDays = (ymd, days) => new Date(Date.parse(ymd + 'T12:00:00Z') + days * 86400000).toISOString().slice(0, 10);
+const calendarDaysBetween = (fromYmd, toYmd) => Math.round((Date.parse(toYmd + 'T12:00:00Z') - Date.parse(fromYmd + 'T12:00:00Z')) / 86400000);
+
+// Which closing alert (if any) a store gets today. Only two per close date:
+//   'tomorrow' — its close date (PT) is tomorrow; always sent.
+//   'week'     — first run with the store inside the 7-day window, i.e. the week-out
+//                notice hasn't been sent for this close_at yet.
+// Stores closing later today, or already week-noticed, get nothing.
+function closingNotice(store, now) {
+  const today = ptDate(now);
+  const closeDay = ptDate(store.close_at);
+  if (closeDay <= today) return null;
+  if (closeDay === addDays(today, 1)) return 'tomorrow';
+  const sentFor = store.closing_week_notice_close_at;
+  if (sentFor && new Date(sentFor).getTime() === new Date(store.close_at).getTime()) return null;
+  return 'week';
+}
+
+// Open stores closing within the next 7 days that are due an alert today, with their
+// cart-vs-order gap. Tracking data is best-effort: if it can't load, the stores still get listed.
 async function loadClosingSoon(admin, now) {
   const horizon = new Date(now.getTime() + 7 * 24 * 3600 * 1000);
-  const { data: stores, error } = await admin.from('webstores')
-    .select('id,name,slug,store_code,rep_id,close_at,status')
+  const query = (cols) => admin.from('webstores').select(cols)
     .eq('status', 'open').not('rep_id', 'is', null)
     .gt('close_at', now.toISOString()).lte('close_at', horizon.toISOString());
-  if (error || !stores || !stores.length) return [];
+  const baseCols = 'id,name,slug,store_code,rep_id,close_at,status,coach_contact_name,coach_contact_email';
+  let { data: rows, error } = await query(baseCols + ',closing_week_notice_close_at');
+  // Before migration 20260930170000 is applied the notice column doesn't exist — fall back
+  // to the old every-morning alert rather than dropping the section.
+  if (error) {
+    console.warn('[rep-digest] closing notice column unavailable, alerting daily:', error.message);
+    ({ data: rows, error } = await query(baseCols));
+    if (error) console.warn('[rep-digest] closing stores unavailable:', error.message);
+  }
+  const stores = (rows || []).map((store) => ({ store, notice: closingNotice(store, now) })).filter((x) => x.notice);
+  if (!stores.length) return [];
   const gap = {};
   try {
-    const { data } = await admin.rpc('webstore_cart_gap', { p_store_ids: stores.map((s) => s.id) });
+    const { data } = await admin.rpc('webstore_cart_gap', { p_store_ids: stores.map((x) => x.store.id) });
     (data || []).forEach((r) => { gap[r.store_id] = r; });
   } catch (e) { console.warn('[rep-digest] cart gap unavailable:', e && e.message); }
-  return stores.map((store) => {
+  const today = ptDate(now);
+  return stores.map(({ store, notice }) => {
     const g = gap[store.id] || {};
     const visitors = Number(g.visitors) || 0, cartAdders = Number(g.cart_adders) || 0, purchasers = Number(g.purchasers) || 0;
-    return { store, daysLeft: Math.max(0, Math.ceil((new Date(store.close_at) - now) / 86400000)), visitors, cartAdders, purchasers, notOrdered: Math.max(0, cartAdders - purchasers) };
+    return { store, notice, daysLeft: Math.max(0, calendarDaysBetween(today, ptDate(store.close_at))), visitors, cartAdders, purchasers, notOrdered: Math.max(0, cartAdders - purchasers) };
   }).sort((a, b) => a.daysLeft - b.daysLeft);
 }
 
+// Stamp the close date each alerted store was noticed for, so the week-out notice isn't
+// repeated tomorrow. Runs only after that rep's email actually sent. Best-effort.
+async function markClosingNotified(admin, closing) {
+  for (const c of closing) {
+    const { error } = await admin.from('webstores').update({ closing_week_notice_close_at: c.store.close_at }).eq('id', c.store.id);
+    if (error) console.warn('[rep-digest] could not mark closing notice', c.store.id, error.message);
+  }
+}
+
+const closeDayLabel = (iso) => new Intl.DateTimeFormat('en-US', { timeZone: TZ, weekday: 'long', month: 'short', day: 'numeric' }).format(new Date(iso));
+
+function closingWhen(c) {
+  if (c.notice === 'tomorrow' || c.daysLeft <= 1) return 'Closes tomorrow';
+  return `Closes in ${c.daysLeft} days`;
+}
+
 function closingLine(c) {
-  const when = c.daysLeft <= 1 ? 'closes within a day' : `closes in ${c.daysLeft} days`;
-  if (!c.visitors) return `${when} · no shopper visits recorded yet`;
-  return `${when} · ${c.cartAdders} shopper${c.cartAdders === 1 ? '' : 's'} added to cart, ${c.purchasers} ordered`
-    + (c.notOrdered > 0 ? ` · <strong style="color:#b91c1c">${c.notOrdered} still haven't ordered</strong>` : '');
+  if (!c.visitors) return 'No shopper visits recorded yet — worth a nudge from the coach to share the link.';
+  if (c.notOrdered > 0) return `<strong style="color:#b91c1c">${c.notOrdered} shopper${c.notOrdered === 1 ? '' : 's'} added to cart but haven't ordered</strong> — the easiest sales left.`;
+  return `${c.cartAdders} shopper${c.cartAdders === 1 ? '' : 's'} added to cart, all of them ordered.`;
+}
+
+// Pre-written last-call note the rep can send (or forward) to the coach.
+function coachMailto(c, portal, repFirst) {
+  const email = String(c.store.coach_contact_email || '').trim();
+  if (!/.+@.+\..+/.test(email)) return '';
+  const shopLink = `${portal}/shop/${c.store.slug}`;
+  const when = c.notice === 'tomorrow' || c.daysLeft <= 1 ? 'tomorrow' : `on ${closeDayLabel(c.store.close_at)}`;
+  const first = String(c.store.coach_contact_name || '').trim().split(/\s+/)[0];
+  const body = [
+    `Hi ${first || 'Coach'},`,
+    '',
+    `Quick heads-up: the ${c.store.name} closes ${when}.` + (c.notOrdered > 0 ? ` ${c.notOrdered} shopper${c.notOrdered === 1 ? ' has' : 's have'} items in their cart but haven't checked out yet.` : ''),
+    'Could you send a last-call reminder to your team and families? Here is the store link:',
+    shopLink,
+    '',
+    'Thanks!',
+    repFirst || '',
+  ].join('\n');
+  return `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(`Last call: ${c.store.name} closes ${when}`)}&body=${encodeURIComponent(body)}`;
 }
 
 // Store reference code (e.g. VR2G8) shown beside a store's name so it can be quoted/searched.
@@ -187,7 +258,10 @@ const codeTag = (store, color) => (store && store.store_code
 
 function digestSubject(storesArr, closed, dayLabel, closing = []) {
   const nOrders = storesArr.reduce((a, s) => a + s.orders.length, 0);
-  if (!nOrders && !closed.length && closing.length) return (closing.length === 1 ? `${closing[0].store.name} closes this week` : `${closing.length} of your stores close this week`) + ` (${dayLabel})`;
+  if (!nOrders && !closed.length && closing.length) {
+    const when = closing.every((c) => c.notice === 'tomorrow') ? 'tomorrow' : 'this week';
+    return (closing.length === 1 ? `${closing[0].store.name} closes ${when}` : `${closing.length} of your stores close ${when}`) + ` (${dayLabel})`;
+  }
   if (!nOrders && closed.length) return `Store activity — ${closed.length} store${closed.length === 1 ? '' : 's'} closed (${dayLabel})`;
   const sales = storesArr.reduce((a, s) => a + s.sales, 0);
   return `Your store activity — ${nOrders} order${nOrders === 1 ? '' : 's'}, ${money(sales)} (${dayLabel})`;
@@ -259,12 +333,38 @@ function buildDigestHtml({ rep, storesArr, closed, closing = [], dayLabel, porta
       }).join('')}
     </div>` : '';
 
-  const closingBlock = closing.length ? `<div style="margin:0 0 16px;border:1px solid #fde68a;background:#fffbeb;border-radius:10px;padding:12px 16px">
-      <div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;letter-spacing:.4px;text-transform:uppercase;color:#92400e;margin-bottom:4px">Closing this week</div>
-      <div style="font-size:12px;color:${SUB};margin-bottom:6px">Shoppers with carts who haven't ordered yet are the easiest sales left — a last-call note from the coach usually brings them back.</div>
-      ${closing.map((c) => `<div style="font-size:14px;color:${INK};padding:6px 0;border-top:1px solid #fde68a">
-        <a href="${portal}/?pg=webstores&store=${esc(c.store.id)}&tab=analytics" style="color:${INK};text-decoration:none"><strong>${esc(c.store.name)}</strong></a>${codeTag(c.store, SUB)}
-        <div style="font-size:12px;color:${SUB};margin-top:2px">${closingLine(c)}</div></div>`).join('')}
+  // Closing alert: one card per store — big stat tiles, the coach's email, and buttons.
+  const statCell = (label, value, color) => `<td align="center" width="25%" style="padding:10px 2px;background:#fff;border:1px solid #fde68a;border-radius:8px">
+      <div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:18px;color:${color || NAVY};line-height:1;white-space:nowrap">${esc(value)}</div>
+      <div style="font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:${SUB};margin-top:4px;font-weight:700">${esc(label)}</div></td>`;
+  const btn = (href, label, primary) => `<a href="${esc(href)}" style="display:inline-block;margin:6px 6px 0 0;font-size:12px;font-weight:700;text-decoration:none;border-radius:6px;padding:7px 12px;${primary ? `background:${NAVY};color:#fff;border:1px solid ${NAVY}` : `background:#fff;color:${INK};border:1px solid ${LINE}`}">${label}</a>`;
+  const closingCard = (c) => {
+    const st = c.store._stats || { orders: 0, sales: 0 };
+    const urgent = c.notice === 'tomorrow' || c.daysLeft <= 1;
+    const portalLink = `${portal}/?pg=webstores&store=${encodeURIComponent(c.store.id)}&tab=analytics`;
+    const shopLink = `${portal}/shop/${encodeURIComponent(c.store.slug || '')}`;
+    const mailto = coachMailto(c, portal, (rep.name || '').trim().split(/\s+/)[0]);
+    const coachEmail = String(c.store.coach_contact_email || '').trim();
+    const coachLine = coachEmail
+      ? `<div style="font-size:13px;color:${INK};margin-top:10px">Coach: ${c.store.coach_contact_name ? esc(c.store.coach_contact_name) + ' · ' : ''}<a href="mailto:${esc(coachEmail)}" style="color:${NAVY};font-weight:700">${esc(coachEmail)}</a></div>`
+      : `<div style="font-size:12px;color:${SUB};margin-top:10px">No coach email on file for this store.</div>`;
+    return `<div style="background:#fff;border:1px solid #fde68a;border-radius:10px;padding:12px 14px;margin-top:10px">
+        <div><span style="display:inline-block;font-size:10px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;border-radius:4px;padding:3px 7px;${urgent ? 'background:#fee2e2;color:#b91c1c' : 'background:#fef3c7;color:#92400e'}">${esc(closingWhen(c))}</span>
+          <span style="font-size:12px;color:${SUB}"> &nbsp;${esc(closeDayLabel(c.store.close_at))}</span></div>
+        <div style="margin-top:6px"><a href="${esc(portalLink)}" style="color:${INK};text-decoration:none;font-size:16px"><strong>${esc(c.store.name)}</strong></a>${codeTag(c.store, SUB)}</div>
+        <table width="100%" style="border-collapse:separate;border-spacing:4px 0;margin:10px 0 0;table-layout:fixed"><tr>
+          ${statCell('Orders', String(st.orders || 0))}${statCell('Sales', '$' + Math.round(Number(st.sales) || 0).toLocaleString('en-US'))}${statCell('Visitors', String(c.visitors))}${statCell("Carts left", String(c.notOrdered), c.notOrdered > 0 ? '#b91c1c' : NAVY)}
+        </tr></table>
+        <div style="font-size:12px;color:${SUB};margin-top:8px">${closingLine(c)}</div>
+        ${coachLine}
+        <div style="margin-top:4px">${mailto ? btn(mailto, '✉️ Email coach a last-call note', true) : ''}${btn(portalLink, 'Open in portal →')}${btn(shopLink, 'View storefront ↗')}</div>
+      </div>`;
+  };
+  const allTomorrow = closing.length && closing.every((c) => c.notice === 'tomorrow');
+  const closingBlock = closing.length ? `<div style="margin:0 0 16px;border:1px solid #fde68a;background:#fffbeb;border-radius:10px;padding:12px 14px 14px">
+      <div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;letter-spacing:.4px;text-transform:uppercase;color:#92400e;margin-bottom:4px">${allTomorrow ? 'Closing tomorrow — last call' : 'Closing soon'}</div>
+      <div style="font-size:12px;color:${SUB}">Shoppers with carts who haven't ordered yet are the easiest sales left — a last-call note from the coach usually brings them back.</div>
+      ${closing.map(closingCard).join('')}
     </div>` : '';
 
   const empty = (!storesArr.length) ? `<p style="margin:0;color:${SUB};font-size:14px">No new orders yesterday — but here's what changed ${closed.length ? 'below' : 'above'}.</p>` : '';
@@ -296,4 +396,4 @@ function buildDigestHtml({ rep, storesArr, closed, closing = [], dayLabel, porta
 }
 
 
-exports._test = { loadClosingSoon, closingLine, closedStatsLine, digestSubject, buildDigestHtml };
+exports._test = { loadClosingSoon, closingNotice, coachMailto, closingLine, closedStatsLine, digestSubject, buildDigestHtml };
