@@ -4,7 +4,9 @@ import {
   classifySourceInvoice, clean, customerDisplayName, invoiceLineDescription, invoiceResyncUpdate, invoiceStillSettling, customerIdentityRisks, exactCustomerMatches, invoiceNumberForms,
   linkedInvoiceTotalDrift, looseCustomerMatches, money, normalizeName, parseDate, paymentIdentity, paymentReference,
   qboPaymentApplications, sha256, standardDueDate, taxPlan, writeAllowed,
+  planReceiptPayment, receiptOwnership, receiptSourceId,
 } from './logic.js';
+import { writeReceiptPayment } from './receipts.ts';
 
 const CORS={
   'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'authorization, apikey, content-type, x-client-info',
@@ -430,6 +432,13 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
     // subtracted before any write, then the invoice and customer payments are
     // re-read inside the per-source lease immediately before posting.
     const sourcePaymentsByInvoice=new Map<string,any[]>();for(const payment of snapshot.payments||[]){const id=String(payment.invoice_id);sourcePaymentsByInvoice.set(id,[...(sourcePaymentsByInvoice.get(id)||[]),payment]);}
+    // Received checks (payment_receipts). With receipt_payments_enabled OFF every row below
+    // posts one QBO payment per invoice exactly as before. ON: rows of a grouped receipt are
+    // left to the receipt section after this loop (one QBO payment per check); only what that
+    // receipt payment has already applied is subtracted from the invoice's QBO paid total here.
+    const receiptEnabled=settings.receipt_payments_enabled===true;
+    const {grouped:groupedReceipts,rowsByReceipt}=receiptOwnership({enabled:receiptEnabled,receipts:snapshot.receipts||[],paymentReceiptIds:snapshot.payment_receipt_ids||{},payments:snapshot.payments||[],paymentLinks:snapshot.payment_links||{},receiptLinks:snapshot.receipt_links||{}});
+    const groupedRowIds=new Set<string>();for(const rid of groupedReceipts)for(const row of rowsByReceipt.get(rid)||[])groupedRowIds.add(String(row.id));
     const paymentCandidates:any[]=[];
     for(const invoice of snapshot.invoices||[]){
       if(invoice.deleted_at||clean(invoice.status).toLowerCase()==='void'||String(invoice.id)==='INV-63831')continue;
@@ -446,7 +455,9 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
       const sourceTotal=money(sourceRows.reduce((sum:number,row:any)=>sum+money(row.amount),0));
       if(sourceTotal!==money(invoice.paid)){counters.payments.manual_review++;review('payment',`invoice:${invoice.id}`,'portal_payment_total_mismatch',{invoice_paid:money(invoice.paid),payment_rows_total:sourceTotal});add('payment',`invoice:${invoice.id}`,'reconcile','manual_review',null,{reason:'portal_payment_total_mismatch'});continue;}
       if(qboPaid>money(invoice.paid)+.005){counters.payments.manual_review++;review('payment',`invoice:${invoice.id}`,'qbo_paid_exceeds_portal',{portal_paid:money(invoice.paid),qbo_paid:qboPaid});continue;}
-      const allocated=allocateUnreflectedPayments(sourceRows,qboPaid);
+      const legacyRows=sourceRows.filter((row:any)=>!groupedRowIds.has(String(row.id)));
+      const groupedReflected=money(sourceRows.filter((row:any)=>groupedRowIds.has(String(row.id))&&clean(snapshot.payment_links?.[paymentIdentity(row)]?.qbo_id)).reduce((sum:number,row:any)=>sum+money(row.amount),0));
+      const allocated=allocateUnreflectedPayments(legacyRows,Math.max(0,money(qboPaid-groupedReflected)));
       for(const row of allocated){counters.payments.examined++;const sourceId=paymentIdentity(row);
         if(snapshot.payment_links?.[sourceId]?.qbo_id){counters.payments.already_reflected++;continue;}
         if(!parseDate(row.date)){counters.payments.manual_review++;review('payment',sourceId,'invalid_payment_date');add('payment',sourceId,'classify','manual_review',null,{reason:'invalid_payment_date'});continue;}
@@ -485,6 +496,50 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
           const evidence={invoice_id:String(candidate.invoice.id),qbo_invoice_id:String(candidate.qboInvoiceId),amount:candidate.amount,...errorDetails(error)};
           review('payment',candidate.sourceId,errorCode(error),evidence);
           add('payment',candidate.sourceId,'write','failed',null,{error_code:errorCode(error),...evidence});
+        }
+        finally{if(locked)await ignore(admin.rpc('release_qbo_sales_source_claim',{p_realm_id:REALM_ID,p_source_type:'payment',p_source_id:candidate.sourceId,p_claim_token:token}));}
+      }
+    }
+
+    // Received checks → ONE QBO payment each (receipt_payments_enabled). The QBO payment is the
+    // whole check: a line per Portal invoice it pays, the rest unapplied on the customer (an
+    // overpayment kept for later, or a NetSuite invoice's share, named in the memo). Leftover
+    // applied later raises that same payment's lines. Each write works from the receipt's full
+    // TARGET, found by durable link or by the [RCPT-…] memo marker, so a run that dies between
+    // the QBO write and saving the links converges next run instead of applying twice.
+    const receiptCandidates:any[]=[];
+    if(receiptEnabled){
+      const invoicesById=new Map<string,any>((snapshot.invoices||[]).map((row:any)=>[String(row.id),row]));
+      const heldInvoiceIds=new Set<string>([...invoiceTotalDrifted,...settlingInvoices]);
+      for(const receipt of snapshot.receipts||[]){
+        if(!groupedReceipts.has(String(receipt.id)))continue;
+        const sourceId=receiptSourceId(receipt);
+        const plan:any=planReceiptPayment({receipt,rows:rowsByReceipt.get(String(receipt.id))||[],invoicesById,effectiveInvoiceMap,qboInvoiceById,effectiveCustomerMap,heldInvoiceIds,paymentLinks:snapshot.payment_links||{},receiptLinks:snapshot.receipt_links||{}});
+        counters.payments.examined++;
+        if(plan.action==='hold'){
+          if(!plan.quiet){counters.payments.manual_review++;review('payment',sourceId,plan.reason,{receipt_id:String(receipt.id),amount:money(receipt.amount),invoice_id:plan.invoice_id||null,applied:plan.applied??null});}
+          add('payment',sourceId,'classify_receipt',plan.quiet?'held':'manual_review',null,{reason:plan.reason,invoice_id:plan.invoice_id||null});continue;
+        }
+        if(plan.action==='linked'&&clean(receipt.qb_payment_id)===plan.qboPaymentId){counters.payments.already_reflected++;continue;}
+        receiptCandidates.push({sourceId,receipt,plan});
+        add('payment',sourceId,`receipt_${plan.action}`,writeAllowed(settings,'payment',sourceId)?'queued_write':'proposed',plan.qboPaymentId||null,{amount:plan.amount,applied:plan.applied,unapplied:plan.unapplied,netsuite:plan.netsuite,lines:plan.lines.map((l:any)=>({qbo_invoice_id:l.qboInvoiceId,invoices:l.invoiceIds,amount:l.amount}))});
+      }
+    }
+    if(claim.writes_enabled){
+      for(const candidate of phaseSelection(receiptCandidates,settings,'payment')){
+        if(!writeAllowed(settings,'payment',candidate.sourceId))continue;
+        const {receipt,plan}=candidate,token=crypto.randomUUID();let locked=false;
+        try{
+          const {data}=await admin.rpc('acquire_qbo_sales_source_claim',{p_realm_id:REALM_ID,p_source_type:'payment',p_source_id:candidate.sourceId,p_claim_token:token,p_run_id:runId,p_lease_seconds:300});if(data!==true)throw Object.assign(new Error('Receipt source is already being processed.'),{code:'source_busy'});locked=true;
+          const {paymentId,result}=await writeReceiptPayment({admin,qbo,receipt,plan,depositId:String(deposit.Id),runId,sourceId:candidate.sourceId,
+            persist:(mapKey:string,sourceId:string,qboId:string,evidence:any)=>persistLink(admin,{realm:REALM_ID,mapKey,sourceId,qboId,evidence})});
+          qboIds.payments.push(paymentId);counters.payments[result==='created'?'created':'already_reflected']++;
+          if(result==='created'&&plan.netsuite?.amount>0){review('payment',candidate.sourceId,'receipt_netsuite_share_left_unapplied',{qbo_id:paymentId,netsuite_amount:plan.netsuite.amount,netsuite_invoices:plan.netsuite.invoices});}
+          add('payment',candidate.sourceId,`receipt_${plan.action}`,result,paymentId,{api_readback:true,amount:plan.amount,applied:plan.applied,unapplied:plan.unapplied,netsuite:plan.netsuite});
+        }catch(error){
+          counters.payments.failed++;terminal='needs_review';
+          const evidence={receipt_id:String(receipt.id),amount:plan.amount,applied:plan.applied,...errorDetails(error)};
+          review('payment',candidate.sourceId,errorCode(error),evidence);add('payment',candidate.sourceId,`receipt_${plan.action}`,'failed',null,{error_code:errorCode(error),...evidence});
         }
         finally{if(locked)await ignore(admin.rpc('release_qbo_sales_source_claim',{p_realm_id:REALM_ID,p_source_type:'payment',p_source_id:candidate.sourceId,p_claim_token:token}));}
       }

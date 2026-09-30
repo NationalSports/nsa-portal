@@ -109,3 +109,10 @@ test('a payment that was applied cannot be deleted even if this screen thinks it
   expect(mockDb.payment_receipts).toHaveLength(1);
   expect(nf).toHaveBeenCalledWith(expect.stringMatching(/already been applied/), 'error');
 });
+
+test('a payment already posted to QuickBooks cannot be deleted', async () => {
+  mockDb.payment_receipts = [{ id: 'RCPT-Q', customer_id: 'C1', amount: 100, method: 'check', ref: '2', received_date: '09/01/2026', ns_applications: [], qb_payment_id: '812', created_at: '2026-09-01T00:00:00Z' }];
+  render(<Harness invs0={[]} hist0={[]} nf={jest.fn()} />);
+  await waitFor(() => expect(screen.getByText('Apply $100.00')).toBeTruthy());
+  expect(screen.queryByText('Delete')).toBeNull();
+});

@@ -403,3 +403,71 @@ describe('Portal QuickBooks number is restored from the verified link',()=>{
     expect(edge).toMatch(/restamp_portal_link[\s\S]{0,80}\}catch\{/);
   });
 });
+
+// ── Received checks → one QBO payment per check (payment_receipts) ──────────────────────────
+describe('received checks post as one QBO payment',()=>{
+  const {receiptOwnership,planReceiptPayment,compareReceiptPayment}=require('../../supabase/functions/qbo-sales-background/logic');
+  const edge=read('supabase/functions/qbo-sales-background/index.ts');
+  const migration=read('supabase/migrations/20260930120000_qbo_receipt_payments.sql');
+  const receipt={id:'R1',customer_id:'C1',amount:1000,received_date:'09/29/2026',ns_applications:[],created_at:'2026-09-01T00:00:00Z'};
+  const payments=[{id:1,invoice_id:'I1',amount:600},{id:2,invoice_id:'I2',amount:300},{id:9,invoice_id:'I1',amount:50}];
+  const ids={'1':'R1','2':'R1'};
+  const base={receipt,invoicesById:new Map([['I1',{id:'I1',status:'partial'}],['I2',{id:'I2',status:'open'}]]),effectiveInvoiceMap:new Map([['I1','11'],['I2','12']]),
+    qboInvoiceById:new Map([['11',{Id:'11',CustomerRef:{value:'Q1'}}],['12',{Id:'12',CustomerRef:{value:'Q1'}}]]),effectiveCustomerMap:new Map([['C1','Q1']])};
+
+  test('the switch is off by default and nothing changes while it is off',()=>{
+    expect(migration).toContain('receipt_payments_enabled boolean not null default false');
+    expect(edge).toContain("const receiptEnabled=settings.receipt_payments_enabled===true;");
+    const off=receiptOwnership({enabled:false,receipts:[receipt],paymentReceiptIds:ids,payments});
+    expect(off.grouped.size).toBe(0);
+  });
+  test('with the switch on, only receipts never posted per-invoice are grouped',()=>{
+    expect(receiptOwnership({enabled:true,receipts:[receipt],paymentReceiptIds:ids,payments}).grouped.has('R1')).toBe(true);
+    const legacy=receiptOwnership({enabled:true,receipts:[receipt],paymentReceiptIds:ids,payments,paymentLinks:{'payment:1':{qbo_id:'500'}}});
+    expect(legacy.grouped.has('R1')).toBe(false);
+  });
+  test('one line per QBO invoice, the rest unapplied',()=>{
+    const plan=planReceiptPayment({...base,rows:payments.slice(0,2)});
+    expect(plan).toMatchObject({action:'create',qboCustomerId:'Q1',applied:900,unapplied:100});
+    expect(plan.lines.map(l=>[l.qboInvoiceId,l.amount])).toEqual([['11',600],['12',300]]);
+  });
+  test('holds rather than guessing',()=>{
+    expect(planReceiptPayment({...base,rows:[],effectiveCustomerMap:new Map()}).reason).toBe('customer_not_verified'); // nothing applied and no QBO customer
+    expect(planReceiptPayment({...base,rows:payments.slice(0,2),heldInvoiceIds:new Set(['I2'])})).toMatchObject({action:'hold',quiet:true});
+    const otherCustomer=new Map([...base.qboInvoiceById,['12',{Id:'12',CustomerRef:{value:'Q2'}}]]);
+    expect(planReceiptPayment({...base,rows:payments.slice(0,2),qboInvoiceById:otherCustomer}).reason).toBe('receipt_spans_multiple_qbo_customers');
+    expect(planReceiptPayment({...base,rows:[{id:1,invoice_id:'I1',amount:1200}]}).reason).toBe('receipt_over_applied');
+    expect(planReceiptPayment({...base,rows:[],receipt:{...receipt,created_at:new Date().toISOString()}})).toMatchObject({action:'hold',reason:'receipt_settling',quiet:true});
+  });
+  test('a NetSuite share stays unapplied and is named, never guessed onto a QBO invoice',()=>{
+    const plan=planReceiptPayment({...base,rows:payments.slice(0,1),receipt:{...receipt,ns_applications:[{invoice_id:'INV60331',amount:300}]}});
+    expect(plan).toMatchObject({action:'create',applied:600,unapplied:400,netsuite:{amount:300,invoices:['INV60331']}});
+  });
+  test('an existing QBO payment is compared against the full target',()=>{
+    const pay=lines=>({Line:lines.map(([id,a])=>({Amount:a,LinkedTxn:[{TxnId:id,TxnType:'Invoice'}]}))});
+    const target=[{qboInvoiceId:'11',amount:600},{qboInvoiceId:'12',amount:300}];
+    expect(compareReceiptPayment(pay([['11',600],['12',300]]),target).state).toBe('match');
+    expect(compareReceiptPayment(pay([['11',600]]),target).state).toBe('raise');
+    expect(compareReceiptPayment(pay([['11',700]]),target).state).toBe('conflict');
+    expect(compareReceiptPayment(pay([['13',10]]),target).state).toBe('conflict');
+  });
+  test('grouped rows never also post per invoice',()=>{
+    expect(edge).toContain("const legacyRows=sourceRows.filter((row:any)=>!groupedRowIds.has(String(row.id)));");
+    expect(edge).toContain('allocateUnreflectedPayments(legacyRows,');
+  });
+});
+
+describe('received checks — accounting edge cases',()=>{
+  const {planReceiptPayment,compareReceiptPayment}=require('../../supabase/functions/qbo-sales-background/logic');
+  test('a district check on the parent account posts under the team that owns the invoices',()=>{
+    const plan=planReceiptPayment({receipt:{id:'R',customer_id:'DIST',amount:500,received_date:'09/29/2026',created_at:'2026-09-01T00:00:00Z'},rows:[{id:1,invoice_id:'I1',amount:500}],
+      invoicesById:new Map([['I1',{id:'I1'}]]),effectiveInvoiceMap:new Map([['I1','11']]),qboInvoiceById:new Map([['11',{Id:'11',CustomerRef:{value:'TEAM'}}]]),effectiveCustomerMap:new Map()});
+    expect(plan).toMatchObject({action:'create',qboCustomerId:'TEAM'});
+  });
+  test('hand-applied NetSuite share in QBO is kept, anything beyond it is a conflict',()=>{
+    const pay={Line:[{Amount:600,LinkedTxn:[{TxnId:'11',TxnType:'Invoice'}]},{Amount:300,LinkedTxn:[{TxnId:'99',TxnType:'Invoice'}]}]};
+    expect(compareReceiptPayment(pay,[{qboInvoiceId:'11',amount:600}],300)).toMatchObject({state:'match',foreignTotal:300});
+    expect(compareReceiptPayment(pay,[{qboInvoiceId:'11',amount:600}],0).state).toBe('conflict');
+    expect(compareReceiptPayment({Line:[{Amount:5,LinkedTxn:[{TxnId:'7',TxnType:'CreditMemo'}]}]},[],100).state).toBe('conflict');
+  });
+});
