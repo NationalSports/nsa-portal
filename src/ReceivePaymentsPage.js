@@ -195,7 +195,12 @@ export default function ReceivePaymentsPage() {
 
   const deleteReceipt = async x => {
     if (x.applications.length) return;
-    try { const { applied } = await dbApplied(x.r.id); if (applied > 0.005) { nf('This payment has already been applied to an invoice — reload the page', 'error'); return; } }
+    try {
+      const { applied, receipt: fresh } = await dbApplied(x.r.id);
+      if (applied > 0.005) { nf('This payment has already been applied to an invoice — reload the page', 'error'); return; }
+      // Once the QBO sync has posted it, deleting here would leave an orphan payment in QuickBooks.
+      if (fresh.qb_payment_id) { nf('This payment is already in QuickBooks (payment #' + fresh.qb_payment_id + ') — void it there first', 'error'); return; }
+    }
     catch (e) { nf('Could not verify the payment — ' + e.message, 'error'); return; }
     if (!window.confirm('Delete this ' + money(x.r.amount) + ' payment? Nothing has been applied from it.')) return;
     const { error } = await supabase.from('payment_receipts').delete().eq('id', x.r.id);
@@ -263,7 +268,7 @@ export default function ReceivePaymentsPage() {
                 <td style={{ ...td, ...num, fontWeight: 700, color: x.unapplied > 0.005 ? '#b45309' : '#cbd5e1' }}>{x.unapplied > 0.005 ? money(x.unapplied) : '—'}</td>
                 <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }} onClick={e => e.stopPropagation()}>
                   {x.unapplied > 0.005 && <button className="btn btn-sm" style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d', fontWeight: 700 }} onClick={() => setModal({ mode: 'apply', receipt: x.r })}>Apply {money(x.unapplied)}</button>}
-                  {!x.applications.length && <button className="btn btn-sm btn-secondary" style={{ marginLeft: 6, color: '#b91c1c' }} title="Delete — only possible while nothing has been applied" onClick={() => deleteReceipt(x)}>Delete</button>}
+                  {!x.applications.length && !x.r.qb_payment_id && <button className="btn btn-sm btn-secondary" style={{ marginLeft: 6, color: '#b91c1c' }} title="Delete — only possible while nothing has been applied" onClick={() => deleteReceipt(x)}>Delete</button>}
                 </td>
               </tr>
               {open[x.r.id] && <tr><td colSpan={7} style={{ background: '#f8fafc', padding: '8px 12px 12px 30px', borderBottom: '1px solid #e2e8f0' }}>
@@ -277,6 +282,7 @@ export default function ReceivePaymentsPage() {
                       <td style={td}>{a.date || '—'}</td>
                     </tr>)}</tbody>
                   </table>}
+                {x.r.qb_payment_id && <div style={{ fontSize: 11, color: '#166534', marginTop: 6 }}>In QuickBooks as payment #{x.r.qb_payment_id}</div>}
                 <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 6 }}>Recorded {x.r.created_at ? new Date(x.r.created_at).toLocaleString() : ''}{x.r.created_by ? ' by ' + x.r.created_by : ''} · {x.r.id}</div>
               </td></tr>}
             </React.Fragment>)}</tbody>
