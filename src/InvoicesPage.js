@@ -697,7 +697,11 @@ export default function InvoicesPage(){
             <h2 style={{margin:0,fontSize:14}}>Payment History</h2>
             <div style={{marginLeft:'auto',fontSize:12,color:'#475569'}}>
               Paid <strong style={{color:'#166534'}}>${safeNum(inv.paid).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</strong>
-              {' · '}Balance <strong style={{color:bal>0.005?'#b91c1c':'#166534'}}>${Math.max(0,bal).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</strong>
+              {/* A NetSuite row marked open with no exported balance has an UNKNOWN balance, not $0 —
+                  historicalInvoiceAr keeps it out of A/R for the same reason; don't show it as settled. */}
+              {' · '}Balance {inv._hist&&historicalInvoiceAr(inv).status==='unverified'
+                ?<strong style={{color:'#64748b'}} title="NetSuite didn't export a remaining balance for this invoice — check NetSuite">unknown</strong>
+                :<strong style={{color:bal>0.005?'#b91c1c':'#166534'}}>${Math.max(0,bal).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</strong>}
             </div>
           </div>
           {inv._hist&&!(inv.payments||[]).length?<div className="card-body" style={{fontSize:12,color:'#64748b'}}>
