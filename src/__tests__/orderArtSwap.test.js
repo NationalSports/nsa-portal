@@ -1,5 +1,5 @@
 /** @jest-environment node */
-import { replaceTbdArt, tbdArtName, tbdArtLabel } from '../lib/orderArtSwap';
+import { replaceTbdArt, tbdArtName, tbdArtLabel, isTbdArt } from '../lib/orderArtSwap';
 
 test('replacing a shared TBD group keeps all assigned decorations and clears stale color ways', () => {
   const order = {
@@ -20,10 +20,25 @@ test('replacing a shared TBD group keeps all assigned decorations and clears sta
   expect(order.art_files[0].name).toBe('ART TBD 1 — mascot');
 });
 
-test('a TBD identifier keeps the placeholder prefix', () => {
-  expect(tbdArtName('ART TBD 1', 'CSM crest')).toBe('ART TBD 1 — CSM crest');
+test('a TBD identifier becomes the whole name; the is_tbd flag keeps it a placeholder', () => {
+  expect(tbdArtName('ART TBD 1', 'CSM crest')).toBe('CSM crest');
+  expect(tbdArtName('CSM crest', ' 9in Basketball ')).toBe('9in Basketball');
+  expect(tbdArtName('ART TBD 2', '')).toBe('ART TBD 2');
   expect(tbdArtLabel('ART TBD 1 — CSM crest')).toBe('CSM crest');
-  expect(tbdArtName('ART TBD 1 — CSM crest', 'new ID')).toBe('ART TBD 1 — new ID');
+  expect(tbdArtLabel('9in Basketball')).toBe('9in Basketball');
+  expect(isTbdArt({ name: 'ART TBD 1' })).toBe(true);
+  expect(isTbdArt({ name: '9in Basketball', is_tbd: true })).toBe(true);
+  expect(isTbdArt({ name: '9in Basketball', is_tbd: true, mockup_files: [{ url: 'm.png' }] })).toBe(false);
+  expect(isTbdArt({ name: '9in Basketball', is_tbd: true, color_ways: [{ id: 'cw' }] })).toBe(false);
+  expect(isTbdArt({ name: '9in Basketball' })).toBe(false);
+  expect(isTbdArt(null)).toBe(false);
+});
+
+test('a renamed TBD can still be swapped for previous art, and the swap clears the flag', () => {
+  const order = { art_files: [{ id: 'tbd', name: '9in Basketball', is_tbd: true }], items: [], jobs: [] };
+  const next = replaceTbdArt(order, 'tbd', { id: 'prior', name: 'School Crest', is_tbd: true });
+  expect(next.art_files[0].name).toBe('School Crest');
+  expect(next.art_files[0].is_tbd).toBeUndefined();
 });
 
 test('a mixed-art job stays in Needs Art if its other design is still pending', () => {

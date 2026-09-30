@@ -1,10 +1,12 @@
 import { QboClient, createAdmin, type QboFailure } from './qbo.ts';
 import {
-  REALM_ID, allocateUnreflectedPayments, buildInvoiceLines, classifyInvoiceDuplicate,
-  classifySourceInvoice, clean, customerDisplayName, customerIdentityRisks, exactCustomerMatches, invoiceNumberForms,
+  REALM_ID, allocateUnreflectedPayments, buildInvoiceLines, cardFeeDriftEligible, cardFeeLineUpdate, classifyInvoiceDuplicate,
+  classifySourceInvoice, clean, customerDisplayName, invoiceLineDescription, invoiceResyncUpdate, invoiceStillSettling, customerIdentityRisks, exactCustomerMatches, invoiceNumberForms,
   linkedInvoiceTotalDrift, looseCustomerMatches, money, normalizeName, parseDate, paymentIdentity, paymentReference,
   qboPaymentApplications, sha256, standardDueDate, taxPlan, writeAllowed,
+  planReceiptPayment, receiptOwnership, receiptSourceId,
 } from './logic.js';
+import { writeReceiptPayment } from './receipts.ts';
 
 const CORS={
   'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'authorization, apikey, content-type, x-client-info',
@@ -81,7 +83,7 @@ async function status(admin:any){
 
 function initCounters(){return{
   customers:{examined:0,revalidated:0,linked_existing:0,created:0,manual_review:0,failed:0},
-  invoices:{examined:0,already_linked:0,exact_existing:0,created:0,excluded_zero:0,excluded_void:0,held_future:0,manual_review:0,failed:0},
+  invoices:{examined:0,already_linked:0,exact_existing:0,created:0,card_fee_added:0,resynced:0,held_settling:0,excluded_zero:0,excluded_void:0,held_future:0,manual_review:0,failed:0},
   payments:{examined:0,already_reflected:0,created:0,partial:0,manual_review:0,failed:0},
 };}
 
@@ -256,6 +258,14 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
     // Invoices whose QBO total no longer matches the Portal. Their payments are held
     // too, so one invoice-level review explains the cause instead of two alerts.
     const invoiceTotalDrifted=new Set<string>();
+    // Drift that is exactly the invoice's recorded card fee is closed in the write
+    // phase by adding the fee line QBO is missing; every other drift is held.
+    const cardFeeCandidates:any[]=[];
+    // Any other drift on a linked invoice is a Portal edit made after the QBO write;
+    // the write phase rebuilds the QBO lines when that is provably safe.
+    const resyncCandidates:any[]=[];
+    // New invoices still inside the settle window: their payments wait with them, quietly.
+    const settlingInvoices=new Set<string>();
     const customerById=new Map((snapshot.customers||[]).map((row:any)=>[String(row.id),row]));
     const today=new Date().toLocaleDateString('en-CA',{timeZone:'America/Los_Angeles'});
     for(const invoice of snapshot.invoices||[]){
@@ -269,10 +279,30 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
         let existing=qboInvoiceById.get(mappedId);
         if(!existing){try{existing=slimInvoice((await qbo.request(`/invoice/${mappedId}`)).Invoice);if(existing?.Id)qboInvoiceById.set(mappedId,existing);}catch{/* classified below */}}
         if(!existing){counters.invoices.manual_review++;review('invoice',sourceId,'mapped_invoice_missing',{qbo_id:mappedId});add('invoice',sourceId,'revalidate','manual_review',mappedId,{reason:'mapped_invoice_missing'});continue;}
+        // A Portal tab opened before the sync stamped qb_invoice_id can save the invoice
+        // back without it (INV-64005 lost #18640 97 seconds after the stamp). The sync
+        // tracks the link durably, but the Portal's "already in QuickBooks" warning reads
+        // the column, so restore it from the verified link. Never overwrites a value.
+        if(!clean(invoice.qb_invoice_id)&&claim.writes_enabled&&writeAllowed(settings,'invoice',sourceId)){
+          try{
+            const restamp=await admin.from('invoices').update({qb_invoice_id:mappedId}).eq('id',invoice.id).is('qb_invoice_id',null).select('id');
+            if(!restamp.error&&restamp.data?.length)add('invoice',sourceId,'restamp_portal_link','updated',mappedId,{});
+          }catch{/* cosmetic for the Portal; never blocks the run */}
+        }
         const drift=linkedInvoiceTotalDrift(invoice,existing);
         if(drift){
-          counters.invoices.manual_review++;invoiceTotalDrifted.add(String(invoice.id));
-          review('invoice',sourceId,'mapped_invoice_total_changed',{qbo_id:mappedId,...drift});
+          invoiceTotalDrifted.add(String(invoice.id));
+          const feeDrift=cardFeeDriftEligible(invoice,drift);
+          if(feeDrift&&claim.writes_enabled&&writeAllowed(settings,'invoice',sourceId)){
+            cardFeeCandidates.push({invoice,sourceId,qboId:mappedId,fee:feeDrift.fee});
+            add('invoice',sourceId,'add_card_fee_line','queued_write',mappedId,{...drift,cc_fee:feeDrift.fee});continue;
+          }
+          if(claim.writes_enabled&&writeAllowed(settings,'invoice',sourceId)){
+            resyncCandidates.push({invoice,sourceId,qboId:mappedId,drift});
+            add('invoice',sourceId,'resync_invoice','queued_write',mappedId,{...drift});continue;
+          }
+          counters.invoices.manual_review++;
+          review('invoice',sourceId,'mapped_invoice_total_changed',{qbo_id:mappedId,...drift,cc_fee:money(invoice.cc_fee)});
           add('invoice',sourceId,'revalidate','manual_review',mappedId,{reason:'mapped_invoice_total_changed',...drift});continue;
         }
         effectiveInvoiceMap.set(String(invoice.id),mappedId);counters.invoices.already_linked++;continue;
@@ -283,6 +313,7 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
         add('invoice',sourceId,'classify',base.action,null,{reason:base.reason||base.action,date:parseDate(invoice.date),total:money(invoice.total)});
         if(base.action==='manual_review')review('invoice',sourceId,base.reason||'manual_review');continue;
       }
+      if(invoiceStillSettling(invoice)){settlingInvoices.add(String(invoice.id));counters.invoices.held_settling++;add('invoice',sourceId,'classify','held_settling',null,{created_at:invoice.created_at,updated_at:invoice.updated_at});continue;}
       const customerId=String(invoice.customer_id),qboCustomerId=effectiveCustomerMap.get(customerId);
       if(!qboCustomerId){counters.invoices.manual_review++;review('invoice',sourceId,'customer_not_verified',{customer_id:customerId});add('invoice',sourceId,'classify','manual_review',null,{reason:'customer_not_verified'});continue;}
       let plan:any=null,taxItem:any=null;
@@ -311,7 +342,7 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
             if(!qboCustomer?.SalesTermRef?.value)throw new Error('QBO customer has no verified payment terms.');
             const dueDate=standardDueDate(candidate.date,qboCustomer.SalesTermRef?.name);
             const so=snapshot.sales_orders?.[candidate.invoice.so_id];
-            const description=`Invoice ${candidate.invoice.id}${candidate.invoice.so_id?` for ${candidate.invoice.so_id}`:''}${so?.memo?` — ${so.memo}`:''}`;
+            const description=invoiceLineDescription(candidate.invoice,so);
             const lines=buildInvoiceLines({invoice:candidate.invoice,description,salesItemId:String(salesItem.Id),taxItemId:candidate.taxItem?String(candidate.taxItem.Id):null,plan:candidate.plan,discountAccountId:String(discount.Id)});
             const payload:any={DocNumber:candidate.invoice.id,TxnDate:candidate.date,CustomerRef:{value:String(candidate.qboCustomerId)},ARAccountRef:{value:String(ar.Id)},SalesTermRef:qboCustomer.SalesTermRef,Line:lines,...(dueDate?{DueDate:dueDate}:{}),...(candidate.plan?{TxnTaxDetail:{TotalTax:0}}:{})};
             const created=(await qbo.request('/invoice',{method:'POST',body:JSON.stringify(payload)})).Invoice;if(!created?.Id)throw new Error('QBO invoice create returned no ID.');
@@ -328,6 +359,72 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
         }catch(error){counters.invoices.failed++;terminal='needs_review';stopInvoices=true;review('invoice',candidate.sourceId,errorCode(error));add('invoice',candidate.sourceId,'write','failed',null,{error_code:errorCode(error)});}
         finally{if(locked)await ignore(admin.rpc('release_qbo_invoice_sync_claim',{p_realm_id:REALM_ID,p_source_invoice_id:candidate.sourceId,p_claim_token:token}));}
       }
+      // Card surcharges added after the invoice reached QBO. The update is built from
+      // a fresh read under the invoice claim and read back before anything relies on
+      // it; the invoice's payments post in this same run only once QBO agrees.
+      for(const candidate of cardFeeCandidates){
+        const token=crypto.randomUUID();let locked=false;
+        try{
+          const {data}=await admin.rpc('acquire_qbo_invoice_sync_claim',{p_realm_id:REALM_ID,p_source_invoice_id:candidate.sourceId,p_claim_token:token,p_lease_seconds:300});
+          if(data!==true)throw Object.assign(new Error('Invoice source is already being processed.'),{code:'source_busy'});locked=true;
+          const fresh=(await qbo.request(`/invoice/${candidate.qboId}`)).Invoice;
+          const update=cardFeeLineUpdate(candidate.invoice,fresh,String(salesItem.Id));
+          await qbo.request('/invoice',{method:'POST',body:JSON.stringify(update)});
+          const verified=(await qbo.request(`/invoice/${candidate.qboId}`)).Invoice;
+          if(money(verified?.TotalAmt)!==money(candidate.invoice.total)||money(verified?.TxnTaxDetail?.TotalTax)!==0)
+            throw Object.assign(new Error('QBO invoice failed card-fee read-back.'),{code:'card_fee_readback_mismatch',details:{cc_fee:candidate.fee,portal_total:money(candidate.invoice.total),qbo_total:money(verified?.TotalAmt)}});
+          qboInvoiceById.set(String(candidate.qboId),slimInvoice(verified));effectiveInvoiceMap.set(String(candidate.invoice.id),String(candidate.qboId));
+          invoiceTotalDrifted.delete(String(candidate.invoice.id));counters.invoices.card_fee_added++;
+          add('invoice',candidate.sourceId,'add_card_fee_line','updated',String(candidate.qboId),{api_readback:true,cc_fee:candidate.fee,qbo_total:money(verified.TotalAmt)});
+        }catch(error){
+          counters.invoices.manual_review++;
+          const evidence={qbo_id:String(candidate.qboId),cc_fee:candidate.fee,...errorDetails(error)};
+          review('invoice',candidate.sourceId,errorCode(error),evidence);add('invoice',candidate.sourceId,'add_card_fee_line','failed',String(candidate.qboId),{error_code:errorCode(error),...evidence});
+        }
+        finally{if(locked)await ignore(admin.rpc('release_qbo_invoice_sync_claim',{p_realm_id:REALM_ID,p_source_invoice_id:candidate.sourceId,p_claim_token:token}));}
+      }
+      // Portal edits made after the QBO write. Lines are rebuilt exactly as a fresh
+      // create would build them, applied to a fresh read under the invoice claim, and
+      // read back; the invoice's payments post in this run only once QBO agrees.
+      const knownItemIds=[String(salesItem.Id),...[...taxItems.values()].map((item:any)=>String(item.Id))];
+      // Same per-run cap as creates. Past the cap the drift stays an open review (payments
+      // held), so an invoice can never sit out of step with QBO without anyone seeing it.
+      const resyncLimit=Number(settings.invoice_batch_limit)||25;
+      for(const [index,candidate] of [...resyncCandidates].sort((a,b)=>a.sourceId.localeCompare(b.sourceId)).entries()){
+        if(index>=resyncLimit){
+          counters.invoices.manual_review++;
+          review('invoice',candidate.sourceId,'mapped_invoice_total_changed',{qbo_id:String(candidate.qboId),...candidate.drift,cc_fee:money(candidate.invoice.cc_fee),deferred:'resync_batch_limit'});
+          add('invoice',candidate.sourceId,'resync_invoice','deferred',String(candidate.qboId),{...candidate.drift,reason:'resync_batch_limit'});continue;
+        }
+        const token=crypto.randomUUID();let locked=false;
+        try{
+          const {data}=await admin.rpc('acquire_qbo_invoice_sync_claim',{p_realm_id:REALM_ID,p_source_invoice_id:candidate.sourceId,p_claim_token:token,p_lease_seconds:300});
+          if(data!==true)throw Object.assign(new Error('Invoice source is already being processed.'),{code:'source_busy'});locked=true;
+          const customerId=String(candidate.invoice.customer_id),qboCustomerId=effectiveCustomerMap.get(customerId);
+          let plan:any=null,taxItem:any=null;
+          try{plan=taxPlan(candidate.invoice,customerById.get(customerId),partnerTaxEnabled);if(plan){taxItem=taxItems.get(plan.state);if(!taxItem)throw new Error('tax_item_missing');}}
+          catch(error){throw Object.assign(new Error(safeError(error)),{code:safeError(error)});}
+          let lines:any[];
+          try{lines=buildInvoiceLines({invoice:candidate.invoice,description:invoiceLineDescription(candidate.invoice,snapshot.sales_orders?.[candidate.invoice.so_id]),salesItemId:String(salesItem.Id),taxItemId:taxItem?String(taxItem.Id):null,plan,discountAccountId:String(discount.Id)});}
+          catch(error){throw Object.assign(new Error(safeError(error)),{code:`resync_${safeError(error)}`});}
+          const fresh=(await qbo.request(`/invoice/${candidate.qboId}`)).Invoice;
+          const update=invoiceResyncUpdate({invoice:candidate.invoice,qboInvoice:fresh,qboCustomerId,lines,knownItemIds,discountAccountId:String(discount.Id),bookCloseDate:preferences?.AccountingInfoPrefs?.BookCloseDate});
+          await qbo.request('/invoice',{method:'POST',body:JSON.stringify(update)});
+          const verified=(await qbo.request(`/invoice/${candidate.qboId}`)).Invoice;
+          const taxLine=plan?(verified?.Line||[]).find((line:any)=>line.DetailType==='SalesItemLineDetail'&&String(line.SalesItemLineDetail?.ItemRef?.value)===String(taxItem.Id)):null;
+          if(money(verified?.TotalAmt)!==money(candidate.invoice.total)||money(verified?.TxnTaxDetail?.TotalTax)!==0
+            ||String(verified?.CustomerRef?.value)!==String(qboCustomerId)||Number(verified?.Balance)<-.005||(plan&&(!taxLine||money(taxLine.Amount)!==money(plan.tax))))
+            throw Object.assign(new Error('QBO invoice failed resync read-back.'),{code:'resync_readback_mismatch',details:{portal_total:money(candidate.invoice.total),qbo_total:money(verified?.TotalAmt),qbo_tax:money(verified?.TxnTaxDetail?.TotalTax)}});
+          qboInvoiceById.set(String(candidate.qboId),slimInvoice(verified));effectiveInvoiceMap.set(String(candidate.invoice.id),String(candidate.qboId));
+          invoiceTotalDrifted.delete(String(candidate.invoice.id));counters.invoices.resynced++;
+          add('invoice',candidate.sourceId,'resync_invoice','updated',String(candidate.qboId),{api_readback:true,previous_total:money(fresh.TotalAmt),qbo_total:money(verified.TotalAmt),balance:money(verified.Balance)});
+        }catch(error){
+          counters.invoices.manual_review++;
+          const evidence={qbo_id:String(candidate.qboId),...candidate.drift,...errorDetails(error)};
+          review('invoice',candidate.sourceId,errorCode(error),evidence);add('invoice',candidate.sourceId,'resync_invoice','failed',String(candidate.qboId),{error_code:errorCode(error),...evidence});
+        }
+        finally{if(locked)await ignore(admin.rpc('release_qbo_invoice_sync_claim',{p_realm_id:REALM_ID,p_source_invoice_id:candidate.sourceId,p_claim_token:token}));}
+      }
     }
     await checkpoint('invoices_complete');
 
@@ -335,12 +432,21 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
     // subtracted before any write, then the invoice and customer payments are
     // re-read inside the per-source lease immediately before posting.
     const sourcePaymentsByInvoice=new Map<string,any[]>();for(const payment of snapshot.payments||[]){const id=String(payment.invoice_id);sourcePaymentsByInvoice.set(id,[...(sourcePaymentsByInvoice.get(id)||[]),payment]);}
+    // Received checks (payment_receipts). With receipt_payments_enabled OFF every row below
+    // posts one QBO payment per invoice exactly as before. ON: rows of a grouped receipt are
+    // left to the receipt section after this loop (one QBO payment per check); only what that
+    // receipt payment has already applied is subtracted from the invoice's QBO paid total here.
+    const receiptEnabled=settings.receipt_payments_enabled===true;
+    const {grouped:groupedReceipts,rowsByReceipt}=receiptOwnership({enabled:receiptEnabled,receipts:snapshot.receipts||[],paymentReceiptIds:snapshot.payment_receipt_ids||{},payments:snapshot.payments||[],paymentLinks:snapshot.payment_links||{},receiptLinks:snapshot.receipt_links||{}});
+    const groupedRowIds=new Set<string>();for(const rid of groupedReceipts)for(const row of rowsByReceipt.get(rid)||[])groupedRowIds.add(String(row.id));
     const paymentCandidates:any[]=[];
     for(const invoice of snapshot.invoices||[]){
       if(invoice.deleted_at||clean(invoice.status).toLowerCase()==='void'||String(invoice.id)==='INV-63831')continue;
       // The invoice-level drift review already names the cause; posting here would
       // only overpay the stale QBO balance and raise a second, vaguer alert.
       if(invoiceTotalDrifted.has(String(invoice.id)))continue;
+      // Held by the settle window; its payments post in the run that creates it.
+      if(settlingInvoices.has(String(invoice.id)))continue;
       const sourceRows=sourcePaymentsByInvoice.get(String(invoice.id))||[];if(!sourceRows.length&&money(invoice.paid)<=0)continue;
       const qboInvoiceId=effectiveInvoiceMap.get(String(invoice.id))||clean(invoice.qb_invoice_id);if(!qboInvoiceId){if(money(invoice.paid)>0){counters.payments.manual_review++;review('payment',`invoice:${invoice.id}`,'verified_invoice_missing');}continue;}
       const qboInvoice=qboInvoiceById.get(String(qboInvoiceId));if(!qboInvoice)continue;
@@ -349,7 +455,9 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
       const sourceTotal=money(sourceRows.reduce((sum:number,row:any)=>sum+money(row.amount),0));
       if(sourceTotal!==money(invoice.paid)){counters.payments.manual_review++;review('payment',`invoice:${invoice.id}`,'portal_payment_total_mismatch',{invoice_paid:money(invoice.paid),payment_rows_total:sourceTotal});add('payment',`invoice:${invoice.id}`,'reconcile','manual_review',null,{reason:'portal_payment_total_mismatch'});continue;}
       if(qboPaid>money(invoice.paid)+.005){counters.payments.manual_review++;review('payment',`invoice:${invoice.id}`,'qbo_paid_exceeds_portal',{portal_paid:money(invoice.paid),qbo_paid:qboPaid});continue;}
-      const allocated=allocateUnreflectedPayments(sourceRows,qboPaid);
+      const legacyRows=sourceRows.filter((row:any)=>!groupedRowIds.has(String(row.id)));
+      const groupedReflected=money(sourceRows.filter((row:any)=>groupedRowIds.has(String(row.id))&&clean(snapshot.payment_links?.[paymentIdentity(row)]?.qbo_id)).reduce((sum:number,row:any)=>sum+money(row.amount),0));
+      const allocated=allocateUnreflectedPayments(legacyRows,Math.max(0,money(qboPaid-groupedReflected)));
       for(const row of allocated){counters.payments.examined++;const sourceId=paymentIdentity(row);
         if(snapshot.payment_links?.[sourceId]?.qbo_id){counters.payments.already_reflected++;continue;}
         if(!parseDate(row.date)){counters.payments.manual_review++;review('payment',sourceId,'invalid_payment_date');add('payment',sourceId,'classify','manual_review',null,{reason:'invalid_payment_date'});continue;}
@@ -388,6 +496,50 @@ async function runSales(admin:any,{trigger,forceReadOnly=false}:any){
           const evidence={invoice_id:String(candidate.invoice.id),qbo_invoice_id:String(candidate.qboInvoiceId),amount:candidate.amount,...errorDetails(error)};
           review('payment',candidate.sourceId,errorCode(error),evidence);
           add('payment',candidate.sourceId,'write','failed',null,{error_code:errorCode(error),...evidence});
+        }
+        finally{if(locked)await ignore(admin.rpc('release_qbo_sales_source_claim',{p_realm_id:REALM_ID,p_source_type:'payment',p_source_id:candidate.sourceId,p_claim_token:token}));}
+      }
+    }
+
+    // Received checks → ONE QBO payment each (receipt_payments_enabled). The QBO payment is the
+    // whole check: a line per Portal invoice it pays, the rest unapplied on the customer (an
+    // overpayment kept for later, or a NetSuite invoice's share, named in the memo). Leftover
+    // applied later raises that same payment's lines. Each write works from the receipt's full
+    // TARGET, found by durable link or by the [RCPT-…] memo marker, so a run that dies between
+    // the QBO write and saving the links converges next run instead of applying twice.
+    const receiptCandidates:any[]=[];
+    if(receiptEnabled){
+      const invoicesById=new Map<string,any>((snapshot.invoices||[]).map((row:any)=>[String(row.id),row]));
+      const heldInvoiceIds=new Set<string>([...invoiceTotalDrifted,...settlingInvoices]);
+      for(const receipt of snapshot.receipts||[]){
+        if(!groupedReceipts.has(String(receipt.id)))continue;
+        const sourceId=receiptSourceId(receipt);
+        const plan:any=planReceiptPayment({receipt,rows:rowsByReceipt.get(String(receipt.id))||[],invoicesById,effectiveInvoiceMap,qboInvoiceById,effectiveCustomerMap,heldInvoiceIds,paymentLinks:snapshot.payment_links||{},receiptLinks:snapshot.receipt_links||{}});
+        counters.payments.examined++;
+        if(plan.action==='hold'){
+          if(!plan.quiet){counters.payments.manual_review++;review('payment',sourceId,plan.reason,{receipt_id:String(receipt.id),amount:money(receipt.amount),invoice_id:plan.invoice_id||null,applied:plan.applied??null});}
+          add('payment',sourceId,'classify_receipt',plan.quiet?'held':'manual_review',null,{reason:plan.reason,invoice_id:plan.invoice_id||null});continue;
+        }
+        if(plan.action==='linked'&&clean(receipt.qb_payment_id)===plan.qboPaymentId){counters.payments.already_reflected++;continue;}
+        receiptCandidates.push({sourceId,receipt,plan});
+        add('payment',sourceId,`receipt_${plan.action}`,writeAllowed(settings,'payment',sourceId)?'queued_write':'proposed',plan.qboPaymentId||null,{amount:plan.amount,applied:plan.applied,unapplied:plan.unapplied,netsuite:plan.netsuite,lines:plan.lines.map((l:any)=>({qbo_invoice_id:l.qboInvoiceId,invoices:l.invoiceIds,amount:l.amount}))});
+      }
+    }
+    if(claim.writes_enabled){
+      for(const candidate of phaseSelection(receiptCandidates,settings,'payment')){
+        if(!writeAllowed(settings,'payment',candidate.sourceId))continue;
+        const {receipt,plan}=candidate,token=crypto.randomUUID();let locked=false;
+        try{
+          const {data}=await admin.rpc('acquire_qbo_sales_source_claim',{p_realm_id:REALM_ID,p_source_type:'payment',p_source_id:candidate.sourceId,p_claim_token:token,p_run_id:runId,p_lease_seconds:300});if(data!==true)throw Object.assign(new Error('Receipt source is already being processed.'),{code:'source_busy'});locked=true;
+          const {paymentId,result}=await writeReceiptPayment({admin,qbo,receipt,plan,depositId:String(deposit.Id),runId,sourceId:candidate.sourceId,
+            persist:(mapKey:string,sourceId:string,qboId:string,evidence:any)=>persistLink(admin,{realm:REALM_ID,mapKey,sourceId,qboId,evidence})});
+          qboIds.payments.push(paymentId);counters.payments[result==='created'?'created':'already_reflected']++;
+          if(result==='created'&&plan.netsuite?.amount>0){review('payment',candidate.sourceId,'receipt_netsuite_share_left_unapplied',{qbo_id:paymentId,netsuite_amount:plan.netsuite.amount,netsuite_invoices:plan.netsuite.invoices});}
+          add('payment',candidate.sourceId,`receipt_${plan.action}`,result,paymentId,{api_readback:true,amount:plan.amount,applied:plan.applied,unapplied:plan.unapplied,netsuite:plan.netsuite});
+        }catch(error){
+          counters.payments.failed++;terminal='needs_review';
+          const evidence={receipt_id:String(receipt.id),amount:plan.amount,applied:plan.applied,...errorDetails(error)};
+          review('payment',candidate.sourceId,errorCode(error),evidence);add('payment',candidate.sourceId,`receipt_${plan.action}`,'failed',null,{error_code:errorCode(error),...evidence});
         }
         finally{if(locked)await ignore(admin.rpc('release_qbo_sales_source_claim',{p_realm_id:REALM_ID,p_source_type:'payment',p_source_id:candidate.sourceId,p_claim_token:token}));}
       }

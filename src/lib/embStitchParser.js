@@ -51,6 +51,49 @@ function parseStitchCount(text) {
   return null;
 }
 
+// Read only explicitly labelled design dimensions. Wilcom's W/H labels are
+// distinct from Left/Right/Up/Down, EndXY and page geometry measurements.
+function parseEmbroideryDimensions(text) {
+  if (typeof text !== 'string' || !text.trim()) return null;
+  const source = text.replace(/[“”]/g, '"').replace(/[’]/g, "'");
+  const values = { width: [], height: [] };
+  // A quote unit has no useful word boundary, so include it explicitly.
+  const re = /(^|[^a-z])((?:width|height)|[wh])\s*:?\s*(-?\d+(?:\.\d+)?)\s*(inches?|inch|in\.?|mm|millimeters?|cm|centimeters?|\")/gim;
+  let m;
+  while ((m = re.exec(source))) {
+    if (/\bpage\s*$/i.test(source.slice(Math.max(0, m.index - 12), m.index))) continue;
+    const key = /^(?:w|width)$/i.test(m[2]) ? 'width' : 'height';
+    const rawUnit = m[4].toLowerCase();
+    const unit = /^(?:inches?|in\.?|\")$/.test(rawUnit) ? 'in' : /^(?:mm|millimeters?)$/.test(rawUnit) ? 'mm' : 'cm';
+    if (!Number.isFinite(Number(m[3])) || Number(m[3]) <= 0) return null;
+    values[key].push({ value: Number(m[3]), unit });
+  }
+  if (!values.width.length || !values.height.length) return null;
+  const consistent = list => list.every(x => Math.abs(toMm(x.value, x.unit) - toMm(list[0].value, list[0].unit)) < 0.01);
+  if (!consistent(values.width) || !consistent(values.height)) return null;
+  const all = [...values.width, ...values.height];
+  const unit = all.some(x => x.unit === 'in') ? 'in' : all.some(x => x.unit === 'mm') ? 'mm' : 'cm';
+  const width = Math.round(convert(values.width[0].value, values.width[0].unit, unit) * 100) / 100;
+  const height = Math.round(convert(values.height[0].value, values.height[0].unit, unit) * 100) / 100;
+  const fmt = n => (Math.round(n * 100) / 100).toFixed(2);
+  return { width, height, unit, artSize: `${fmt(width)}${unit === 'in' ? '"' : ` ${unit}`} W x ${fmt(height)}${unit === 'in' ? '"' : ` ${unit}`} H` };
+}
+function toMm(n, unit) { return unit === 'in' ? n * 25.4 : unit === 'cm' ? n * 10 : n; }
+function convert(n, from, to) { const mm = toMm(n, from); return to === 'in' ? mm / 25.4 : to === 'cm' ? mm / 10 : mm; }
+
+// Return a shallow updated art record. Extraction may only fill blank fields;
+// identity metadata prevents delayed reads from updating a replacement/deleted row.
+function fillEmbroiderySpecs(art, specs, { allowStitches = true } = {}) {
+  if (!art || typeof art !== 'object' || !specs || typeof specs !== 'object' || specs.deleted) return art;
+  const sourceId = specs.artId ?? specs.art_id ?? specs.id;
+  if (sourceId != null && art.id != null && String(sourceId) !== String(art.id)) return art;
+  const next = { ...art };
+  const dimensions = specs.dimensions || specs;
+  if (!String(art.art_size || '').trim() && typeof dimensions.artSize === 'string' && dimensions.artSize.trim()) next.art_size = dimensions.artSize;
+  if (allowStitches && (art.stitches == null || art.stitches === '') && Number.isFinite(Number(specs.stitches)) && Number(specs.stitches) > 0) next.stitches = Number(specs.stitches);
+  return next;
+}
+
 // The EM.sb price tier a stitch count lands in, as a short human label. Kept here
 // (not in decoPricing) because it's UI sugar; the brackets mirror EM.sb defaults.
 function embStitchTierLabel(stitches) {
@@ -63,5 +106,5 @@ function embStitchTierLabel(stitches) {
   return '20k+';
 }
 
-export { parseStitchCount, embStitchTierLabel, MIN_STITCHES, MAX_STITCHES };
+export { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, embStitchTierLabel, MIN_STITCHES, MAX_STITCHES };
 export default parseStitchCount;

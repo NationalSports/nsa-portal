@@ -1,6 +1,10 @@
 const crypto = require('crypto');
 const { verifyUser, getSupabaseAdmin } = require('./_shared');
 const { buildProductionPacket, packetChanges, safeUrl } = require('../../src/productionPacket/model');
+const { uploadPhoto, photoBytes } = require('./_packetPhoto');
+const { recordShipment } = require('./_packetShipping');
+const { attachDpoContext } = require('./_packetDpo');
+const { productionContent, workflowMessage } = require('../../src/productionPacket/workflow');
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const fail = (status, message) => { const e = new Error(message); e.status = status; throw e; };
 const checked = async query => { const { data, error } = await query; if (error) throw new Error(error.message); return data; };
@@ -25,7 +29,7 @@ async function authorize(event, body) {
     if (!/^[a-f0-9]{64}$/.test(body.token)) fail(403, 'Link is invalid or expired');
     const admin = getSupabaseAdmin();
     const link = await checked(admin.from('production_packet_links').select('*').eq('token_hash', hash(body.token)).maybeSingle());
-    if (!link || link.revoked_at || Date.parse(link.expires_at) <= Date.now()) fail(403, 'Link is invalid or expired');
+    if (!link || link.revoked_at || !Number.isFinite(Date.parse(link.expires_at)) || Date.parse(link.expires_at) <= Date.now()) fail(403, 'Link is invalid or expired');
     return { admin, link, staff: false, storeId: link.store_id, soId: link.so_id || null };
   }
   const auth = await verifyUser(event);
@@ -37,19 +41,20 @@ async function authorize(event, body) {
     storeId = so?.webstore_id;
   }
   if (!storeId) fail(400, 'This order does not have a linked webstore');
-  return { admin, staff: true, storeId, soId: clean(body.scope_so_id) || null, actorId: auth.teamMemberId };
+  return { admin, staff: true, storeId, soId: clean(body.scope_so_id) || clean(body.so_id) || null, actorId: auth.teamMemberId };
 }
 async function loadCurrent(ctx) {
   const { admin, storeId, soId } = ctx;
   const [store, orders, salesOrders, catalog, notes, shares] = await Promise.all([
     checked(admin.from('webstores').select('id,name,delivery_mode,store_art,logo_url,primary_color,accent_color').eq('id', storeId).single()),
     all(() => admin.from('webstore_orders').select('id,store_id,so_id,order_number,omg_order_number,status,backorder_of').eq('store_id', storeId).order('id')),
-    all(() => admin.from('sales_orders').select('id,webstore_id,status,expected_date,production_notes,deco_pos').eq('webstore_id', storeId).order('id')),
+    all(() => admin.from('sales_orders').select('id,webstore_id,status,expected_date,production_notes,deco_pos,_shipments,_version').eq('webstore_id', storeId).order('id')),
     all(() => admin.from('webstore_products').select('id,product_id,sku,display_name,size_skus,decorations,image_url,image_back_url').eq('store_id', storeId).order('id')),
     all(() => admin.from('production_packet_notes').select('*').eq('store_id', storeId).order('id')),
     all(() => admin.from('production_packet_message_shares').select('*').eq('store_id', storeId).order('message_id')),
   ]);
   if (soId && !salesOrders.some(s => s.id === soId)) fail(403, 'Sales order is outside this store');
+  ctx.soVersions = Object.fromEntries(salesOrders.map(s => [s.id,s._version]));
   const ids = salesOrders.map(s => s.id);
   const [items, arts, lines, allMessages, jobs] = await Promise.all([
     inBatches(admin, 'so_items', 'so_id', ids),
@@ -71,10 +76,11 @@ async function loadCurrent(ctx) {
   const shareById = Object.fromEntries(shares.map(s => [s.message_id, s]));
   const messages = allMessages.filter(m => shareById[m.id]).map(m => {
     const share = shareById[m.id];
-    return { id: m.id, soId: m.so_id, text: m.text || '', author: authors.find(a => a.id === m.author_id)?.name || m.author || 'Decorator', ts: m.ts, threadId: shareById[m.thread_id] ? m.thread_id : null, source: share.source, kind: share.kind, targetId: share.target_id, ownerId: share.owner_id, resolvedAt: share.resolved_at, attachments: (Array.isArray(m.attachments) ? m.attachments : []).map(f => ({ name: f.name || 'Attachment', url: safeUrl(f.url) })).filter(f => f.url) };
-  }).sort((a, b) => a.id.localeCompare(b.id));
+    return { id: m.id, soId: m.so_id, text: m.text || '', author: authors.find(a => a.id === m.author_id)?.name || m.author || 'Decorator', ts: m.ts, threadId: shareById[m.thread_id] ? m.thread_id : null, source: share.source, kind: share.kind, targetId: share.target_id, ownerId: share.owner_id, metadata: share.metadata || {}, resolvedAt: share.resolved_at, attachments: (Array.isArray(m.attachments) ? m.attachments : []).map(f => ({ name: f.name || 'Attachment', url: safeUrl(f.url) })).filter(f => f.url) };
+  }).sort((a, b) => (Date.parse(a.ts)||0) - (Date.parse(b.ts)||0) || a.id.localeCompare(b.id));
   const packet = buildProductionPacket({ store, orders, lines, salesOrders, catalog, notes, messages, soId });
-  packet.fingerprint = hash(JSON.stringify(packet));
+  packet.shipments = salesOrders.filter(s => !soId || s.id === soId).flatMap(s => (Array.isArray(s._shipments) ? s._shipments : []).map(r => ({id:r.id,soId:s.id,dpoId:r.dpo_id||'',dpoNumber:r.dpo_number||'',carrier:r.carrier||'',trackingNumber:r.tracking_number||'',trackingUrl:safeUrl(r.tracking_url),shipDate:r.ship_date||'',quantity:r.quantity||null,destination:r.fulfillment===false?'nsa':'customer',notes:r.source==='production_packet'?r.notes||'':''})));
+  packet.fingerprint = hash(JSON.stringify(productionContent(packet)));
   const internal = ctx.staff ? {
     notes: salesOrders.filter(s => !soId || s.id === soId).flatMap(s => [
       ...(s.production_notes ? [{soId:s.id,scope:'so',text:s.production_notes}] : []),
@@ -102,21 +108,52 @@ async function run(event, body) {
   const ctx = await authorize(event, body);
   const { admin, storeId, staff } = ctx;
   const action = body.action || 'view';
-  if (!['view', 'message'].includes(action) && !staff) fail(403, 'Staff access required');
+  if (!['view', 'message', 'workflow', 'dimensions', 'shipment'].includes(action) && !staff) fail(403, 'Staff access required');
   if (action === 'view') {
-    const { packet: current, internal } = await loadCurrent(ctx);
+    if(body.revision_id && body.dpo_id) fail(400,'Open the full issued packet to view its preserved production snapshot.');
+    const { packet: rawCurrent, internal } = await loadCurrent(ctx);
+    const current = await attachDpoContext(ctx, rawCurrent, body);
+    current.fingerprint = hash(JSON.stringify(productionContent(current)));
     const latest = await latestRevision(ctx);
     const revision = body.revision_id ? await revisionFor(ctx, body.revision_id) : null;
     const links = staff ? await all(() => admin.from('production_packet_links').select('id,label,so_id,created_at,expires_at,revoked_at').eq('store_id', storeId).order('id')) : undefined;
-    return { packet: revision ? { ...revision.snapshot, revisionId: revision.id, issuedAt: revision.created_at } : current, staff, internal, links, scopeSoId: ctx.soId, fetchedAt: new Date().toISOString(), latestRevision: latest && { id: latest.id, createdAt: latest.created_at, fingerprint: latest.fingerprint }, changedSinceIssue: latest ? packetChanges(latest.snapshot, current) : [], newerChanges: revision ? packetChanges(revision.snapshot, current) : [] };
+    const latestSnapshot = latest?.snapshot || null;
+    const snapshot = revision?.snapshot || null;
+    return { packet: revision ? { ...snapshot, revisionId: revision.id, issuedAt: revision.created_at } : current, link: ctx.link ? {expiresAt:ctx.link.expires_at, label:ctx.link.label} : null, staff, internal, links, scopeSoId: ctx.soId, fetchedAt: new Date().toISOString(), latestRevision: latest && { id: latest.id, createdAt: latest.created_at, fingerprint: latest.fingerprint }, changedSinceIssue: latest ? packetChanges(latestSnapshot, rawCurrent) : [], newerChanges: revision ? packetChanges(snapshot, rawCurrent) : [] };
   }
   if (action === 'revoke') {
     await checked(admin.from('production_packet_links').update({ revoked_at: new Date().toISOString() }).eq('id', body.link_id).eq('store_id', storeId));
     return { ok: true };
   }
-  const { packet } = await loadCurrent(ctx);
+  const { packet: rawPacket } = await loadCurrent(ctx);
+  const packet = await attachDpoContext(ctx, rawPacket, body);
+  packet.fingerprint = hash(JSON.stringify(productionContent(packet)));
   const assertSo = id => { if (!packet.salesOrders.some(s => s.id === id)) fail(403, 'Choose a sales order in this packet'); };
   const assertTarget = id => { if (id && ![...packet.garments, ...packet.decorations, ...packet.players].some(x => x.id === id)) fail(400, 'Item no longer exists in this packet'); };
+  if (action === 'shipment') return recordShipment(ctx, body, packet);
+  if (action === 'dimensions') {
+    if (body.revision_id) fail(400, 'Issued packets cannot be edited. Open the live packet.');
+    if (body.fingerprint !== packet.fingerprint) fail(409, 'Production details changed. Refresh before saving dimensions.');
+    const target = packet.decorations.find(d => d.id === body.target_id);
+    if (!target?.soId || !target.artId || target.isPersonalization) fail(400, 'Choose artwork linked to an SO art folder.');
+    assertSo(target.soId);
+    const dimensions = clean(body.dimensions);
+    if (!dimensions || dimensions.length > 100 || !/[1-9]/.test(dimensions) || /[<>\r\n]/.test(dimensions)) fail(400, 'Enter dimensions such as 8 in wide or 8 in W x 10 in H (maximum 100 characters).');
+    const art = await checked(admin.from('so_art_files').select('*').eq('id', target.artId).eq('so_id', target.soId).maybeSingle());
+    if (!art || art.archived) fail(409, 'The linked artwork is no longer available. Refresh the packet.');
+    const patch = { art_size: dimensions };
+    // Preserve other placement sizes; update this placement's override when present.
+    if (art.art_sizes && typeof art.art_sizes === 'object') {
+      patch.art_sizes = { ...art.art_sizes };
+      for (const key of [target.position, target.dimensionKey]) if (key && Object.prototype.hasOwnProperty.call(patch.art_sizes, key)) patch.art_sizes[key] = dimensions;
+    }
+    let query = admin.from('so_art_files').update(patch).eq('id', art.id).eq('so_id', target.soId);
+    if (art._version != null) query = query.eq('_version', art._version);
+    query = art.art_size == null ? query.is('art_size', null) : query.eq('art_size', art.art_size);
+    const updated = await checked(query.select('id').maybeSingle());
+    if (!updated) fail(409, 'Artwork changed while saving. Refresh and try again.');
+    return { ok: true };
+  }
   if (action === 'create_link') {
     const label = clean(body.label).slice(0, 100);
     if (!label) fail(400, 'Name this recipient link');
@@ -125,6 +162,7 @@ async function run(event, body) {
     return { id: row.id, token };
   }
   if (action === 'issue') {
+    if (body.dpo_id) fail(400, 'Issue the full sales-order packet in staff view; DPO views use that release.');
     if (packet.fingerprint !== body.fingerprint) fail(409, 'Packet changed. Refresh and review before issuing.');
     if (!packet.ready) fail(409, 'Resolve production issues before issuing this packet');
     const latest = await latestRevision(ctx);
@@ -163,20 +201,29 @@ async function run(event, body) {
     else await checked(admin.from('production_packet_message_shares').update({ resolved_at: body.resolved === false ? null : new Date().toISOString() }).eq('message_id', message.id).eq('store_id', storeId));
     return { ok: true };
   }
-  if (action === 'message') {
+  if (action === 'message' || action === 'workflow') {
     const soId = clean(body.target_so_id); assertSo(soId);
-    const text = clean(body.text); if (!text || text.length > 10000) fail(400, 'Message must contain 1–10000 characters');
-    const kind = ['message', 'question', 'action'].includes(body.kind) ? body.kind : 'message';
+    let metadata = {};
+    let messageText = clean(body.text);
+    if(action === 'workflow') {
+      if (body.fingerprint !== packet.fingerprint) fail(409, 'Production details changed. Refresh and review before recording this update.');
+      try { const update = workflowMessage(body, packet); metadata = update.metadata; messageText = update.text; } catch(e) { fail(400,e.message); }
+    }
+    const text = messageText; if (!text || text.length > 10000) fail(400, 'Message must contain 1–10000 characters');
+    const kind = metadata.status === 'hold' ? 'action' : ['message', 'question', 'action'].includes(body.kind) ? body.kind : 'message';
     const targetId = clean(body.target_id); assertTarget(targetId);
     if (targetId && ![...packet.garments, ...packet.decorations, ...packet.players].some(r => r.id === targetId && r.soId === soId)) fail(400, 'Message item belongs to another SO');
     const parent = body.thread_id ? packet.messages.find(m => m.id === body.thread_id && m.soId === soId) : null;
     if (body.thread_id && !parent) fail(400, 'Reply target is not a shared message on this SO');
+    try { photoBytes(body.photo); } catch(e) { fail(400,e.message); }
+    const recent = packet.messages.filter(m=>m.source==='decorator' && Date.now()-Date.parse(m.ts)<60000);
+    if (!staff && recent.length>=15) fail(429,'Please wait a minute before sending another update.');
+    const photo = await uploadPhoto(admin,storeId,body.photo);
     const id = `packet-${crypto.randomUUID()}`;
-    await checked(admin.from('messages').insert({ id, so_id: soId, author_id: staff ? ctx.actorId : null, author: staff ? null : `Decorator: ${ctx.link.label}`, text, ts: new Date().toISOString(), dept: 'production', entity_type: 'so', entity_id: soId, thread_id: parent?.id || null }));
-    try {
-      await checked(admin.from('production_packet_message_shares').insert({ message_id: id, store_id: storeId, shared_by: staff ? ctx.actorId : null, link_id: ctx.link?.id || null, source: staff ? 'staff' : 'decorator', kind, target_id: targetId }));
+    try { await checked(admin.from('messages').insert({ id, so_id: soId, author_id: staff ? ctx.actorId : null, author: staff ? null : `Decorator: ${ctx.link.label}`, text, ts: new Date().toISOString(), dept: 'production', entity_type: 'so', entity_id: soId, thread_id: parent?.id || null, attachments: photo?[photo.attachment]:[] }));
+      await checked(admin.from('production_packet_message_shares').insert({ message_id: id, store_id: storeId, shared_by: staff ? ctx.actorId : null, link_id: ctx.link?.id || null, source: staff ? 'staff' : 'decorator', kind, target_id: targetId, metadata }));
     } catch (e) {
-      await checked(admin.from('messages').delete().eq('id', id));
+      await Promise.allSettled([checked(admin.from('messages').delete().eq('id', id)), ...(photo?[admin.storage.from('artwork').remove([photo.path])]:[])]);
       throw e;
     }
     return { ok: true, id };
@@ -187,7 +234,7 @@ exports.handler = async event => {
   const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers, body: JSON.stringify({ error: 'POST required' }) };
   try {
-    if ((event.body || '').length > 40000) fail(413, 'Request too large');
+    if ((event.body || '').length > 2900000) fail(413, 'Request too large');
     let body; try { body = JSON.parse(event.body || '{}'); } catch { fail(400, 'Invalid JSON'); }
     const result = await run(event, body);
     return { statusCode: 200, headers, body: JSON.stringify(result) };

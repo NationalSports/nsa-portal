@@ -48,6 +48,64 @@ export function buildOutOfStockRemovalMessage({ line, sourceOrder, customer, act
   };
 }
 
+// Email each affected order's rep about removed out-of-stock lines (the SO message above only
+// shows on their Dashboard). One email per SO+PO, listing every line removed from it. Never
+// throws: the removal itself is already saved, so a failed email is reported to the caller
+// instead of undoing anything.
+export async function emailRepOutOfStockRemoval(authFetch, { lines, vendorName }) {
+  const groups = new Map();
+  (lines || []).forEach(line => {
+    if (!line?.sourceSO || !line?.sourcePO) return;
+    const key = `${line.sourceSO}|${line.sourcePO}`;
+    if (!groups.has(key)) groups.set(key, { so_id: line.sourceSO, po_id: line.sourcePO, items: [] });
+    groups.get(key).items.push({
+      style: line.sourceSku || line.style || '', color: line.sourceColor || line.color || '',
+      size: line.size || '', quantity: Number(line.quantity) || 0,
+    });
+  });
+  if (!groups.size) return { ok: false, error: 'Missing order or PO' };
+  let notified = '';
+  for (const group of groups.values()) {
+    try {
+      const response = await authFetch('/.netlify/functions/oos-removal-notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...group, vendor_name: vendorName || '' }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) return { ok: false, error: data.error || `HTTP ${response.status}` };
+      notified = data.notified || notified;
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+  return { ok: true, notified };
+}
+
+// "Remove all out-of-stock" for the vendor order modals: removes each line in turn (stopping
+// at the first failure so nothing is left half-verified), then sends the rep ONE email per PO.
+export async function removeShortLines({ lines, onRemoveLine, authFetch, vendorName }) {
+  const removed = [];
+  let failed = null;
+  let error = null;
+  for (const line of lines) {
+    try {
+      if (await onRemoveLine(line, { deferEmail: true })) removed.push(line);
+      else { failed = line; break; }
+    } catch (err) { failed = line; error = err; break; }
+  }
+  const emailed = removed.length ? await emailRepOutOfStockRemoval(authFetch, { lines: removed, vendorName }) : { ok: true };
+  return { removed, failed, error, emailed };
+}
+
+// Stock lookups in the vendor order modals are keyed on the lines still on the order. Removing a
+// line shrinks that key, which would re-query the vendor for every remaining line although
+// nothing new needs checking. Only refetch when the new key includes something not yet fetched.
+export function stockKeyAlreadyFetched(fetchedKeys, nextSig) {
+  const next = String(nextSig || '').split(',').filter(Boolean);
+  return next.length > 0 && next.every(key => fetchedKeys.has(key));
+}
+
 const poHasHistory = po => {
   const anyPositive = value => value && Object.values(value).some(qty => Number(qty) > 0);
   return !!(po && (po.api_order_id || po.api_ordered_at || po.vendor_keys?.order_no

@@ -58,10 +58,10 @@ describe('logo detail helpers', () => {
     expect(logoDetailBg('Medium Grey Heather')).toBe('#9ca3af');
   });
 
-  test('a garment named CUSTOM uses its color way color; nothing known falls back to neutral grey', () => {
+  test('unknown garment colors never inherit an artwork version color', () => {
     const crest = { id: 'c', color_ways: [{ id: 'cwN', garment_color: 'Navy' }] };
     expect(cwGarmentColor(crest, 'cwN')).toBe('Navy');
-    expect(logoDetailBackground('CUSTOM', cwGarmentColor(crest, 'cwN'))).toEqual({ bg: '#1f2a44', label: 'Navy', known: true, source: 'colorway' });
+    expect(logoDetailBackground('CUSTOM', cwGarmentColor(crest, 'cwN'))).toEqual({ bg: '#94a3b8', label: 'CUSTOM', known: false, source: 'unknown' });
     expect(logoDetailBackground('CUSTOM', '')).toMatchObject({ known: false, bg: '#94a3b8' });
     // The line's own real color still wins over the color way (the WVC "Whiute" typo case).
     expect(logoDetailBackground('Medium Grey Heather', 'Whiute')).toMatchObject({ bg: '#9ca3af', label: 'Medium Grey Heather' });
@@ -76,7 +76,7 @@ describe('logo detail helpers', () => {
     expect(logoDetailBackground('Navy/White', '', 'B')).toMatchObject({ bg: '#ffffff', label: 'White' });
     // A color way label that describes INK is not a garment color.
     expect(logoDetailBackground('CUSTOM', 'White ink on dark')).toMatchObject({ source: 'unknown', bg: '#94a3b8' });
-    expect(logoDetailBackground('CUSTOM', 'Navy')).toMatchObject({ source: 'colorway', bg: '#1f2a44' });
+    expect(logoDetailBackground('CUSTOM', 'Navy')).toMatchObject({ source: 'unknown', bg: '#94a3b8' });
     // A real garment color always wins over the color way: one color way reused on several colors.
     expect(logoDetailBackground('Black', 'Navy')).toMatchObject({ source: 'garment', bg: '#111827' });
   });

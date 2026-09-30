@@ -123,6 +123,106 @@ export function linkedInvoiceTotalDrift(invoice, qboInvoice) {
   return {portal_total:portalTotal, qbo_total:qboTotal, difference};
 }
 
+// The line the books already use for an online card surcharge (INV-63944 was
+// fixed by hand with exactly this line on the NSA Portal Sales item).
+export const CARD_FEE_DESCRIPTION = 'Customer credit-card processing fee';
+
+// A drift the sync may close itself: the Portal total rose by EXACTLY the card
+// fee recorded on the invoice. Anything else — a QBO total above the Portal, a
+// difference that is not the fee, no fee recorded — stays a manual review.
+export function cardFeeDriftEligible(invoice, drift) {
+  const fee=money(invoice?.cc_fee);
+  if(!drift||!(fee>0))return null;
+  if(Math.abs(money(drift.difference)-fee)>0.005)return null;
+  return {fee};
+}
+
+// Builds the sparse QBO update that appends the fee line, from a FRESH read of
+// the invoice taken under the invoice claim. Throws a coded error for every case
+// that must go back to a person, so nothing is written on a guess.
+export function cardFeeLineUpdate(invoice, qboInvoice, salesItemId) {
+  const fee=money(invoice?.cc_fee), lines=Array.isArray(qboInvoice?.Line)?qboInvoice.Line:[];
+  const fail=code=>Object.assign(new Error(code),{code,details:{cc_fee:fee,portal_total:money(invoice?.total),qbo_total:money(qboInvoice?.TotalAmt)}});
+  if(!(fee>0)||!salesItemId||!qboInvoice?.Id||qboInvoice.SyncToken==null)throw fail('card_fee_invalid_input');
+  // A fee line already present means someone fixed it by hand and the totals
+  // still disagree for another reason — adding a second one would double-charge.
+  if(lines.some(line=>clean(line?.Description).toLowerCase()===CARD_FEE_DESCRIPTION.toLowerCase()))throw fail('card_fee_line_exists');
+  if(Math.abs(money(Number(qboInvoice.TotalAmt)+fee)-money(invoice?.total))>0.005)throw fail('card_fee_amount_mismatch');
+  // Rewriting lines on a taxed invoice can make QBO recompute tax; only the
+  // untaxed shape the sync itself writes is handled here.
+  if(money(qboInvoice.TxnTaxDetail?.TotalTax)!==0)throw fail('card_fee_taxed_invoice');
+  return {
+    Id:String(qboInvoice.Id),SyncToken:String(qboInvoice.SyncToken),sparse:true,
+    Line:[...lines.filter(line=>line?.DetailType!=='SubTotalLineDetail'),
+      {DetailType:'SalesItemLineDetail',Amount:fee,Description:CARD_FEE_DESCRIPTION,
+        SalesItemLineDetail:{Qty:1,UnitPrice:fee,ItemRef:{value:String(salesItemId),name:'NSA Portal Sales'},TaxCodeRef:{value:'NON'}}}],
+    TxnTaxDetail:{TotalTax:0},
+  };
+}
+
+// A new invoice is often still being corrected in its first minutes: INV-64006 was
+// deleted and re-created 17 minutes after the sync had already written it to QBO,
+// and INV-64005's tax was removed 3 hours after. Hold a new invoice until nobody has
+// touched it for SETTLE_HOURS. updated_at also moves on automatic saves, so the hold
+// is capped: SETTLE_CAP_HOURS after creation the invoice goes regardless.
+export const SETTLE_HOURS = 2;
+export const SETTLE_CAP_HOURS = 24;
+export function invoiceStillSettling(invoice, now = Date.now()) {
+  const created=Date.parse(invoice?.created_at), updated=Date.parse(invoice?.updated_at);
+  const stamps=[created,updated].filter(Number.isFinite);
+  if(!stamps.length)return false;
+  if(Number.isFinite(created)&&now-created>=SETTLE_CAP_HOURS*3600e3)return false;
+  return now-Math.max(...stamps)<SETTLE_HOURS*3600e3;
+}
+
+// First line description, shared by invoice create and resync so both read alike.
+export function invoiceLineDescription(invoice, salesOrder) {
+  return `Invoice ${invoice.id}${invoice.so_id?` for ${invoice.so_id}`:''}${salesOrder?.memo?` — ${salesOrder.memo}`:''}`;
+}
+
+// Rewrites a linked QBO invoice's lines to match a Portal invoice that was edited
+// after it was first written, using the same line builder as a fresh create.
+// Built from a FRESH read under the invoice claim; every case that is not
+// provably safe throws a coded error and stays a manual review:
+//  - the QBO invoice must carry this Portal invoice's number;
+//  - the QBO invoice must still belong to the Portal customer's verified QBO customer;
+//  - every existing line must be one the sync itself writes (its sales/tax items or
+//    its discount account) — a hand-built or legacy invoice is never rewritten;
+//  - a QBO invoice already at $0 (voided or zeroed there) is never revived;
+//  - the invoice date must be after the books' closing date;
+//  - the new total may not fall below what QBO has already applied to it (that
+//    would turn a payment into an overpayment);
+//  - QBO must not be computing tax on it (tax is carried as an explicit line).
+export function invoiceResyncUpdate({invoice, qboInvoice, qboCustomerId, lines, knownItemIds, discountAccountId, bookCloseDate}) {
+  const total=money(invoice?.total), qboTotal=money(qboInvoice?.TotalAmt), applied=money(qboTotal-money(qboInvoice?.Balance));
+  const fail=code=>Object.assign(new Error(code),{code,details:{portal_total:total,qbo_total:qboTotal,qbo_applied:applied}});
+  if(!qboInvoice?.Id||qboInvoice.SyncToken==null||!Array.isArray(lines)||!lines.length)throw fail('resync_invalid_input');
+  // The QBO invoice must carry this Portal invoice's own number. A split copies
+  // qb_invoice_id onto the new half; without this the two halves would take turns
+  // overwriting one QBO invoice every hour.
+  if(normalizeInvoiceNumber(qboInvoice.DocNumber)!==normalizeInvoiceNumber(invoice?.id))throw fail('resync_doc_number_mismatch');
+  if(!clean(qboCustomerId)||String(qboInvoice.CustomerRef?.value)!==String(qboCustomerId))throw fail('resync_customer_changed');
+  const known=new Set((knownItemIds||[]).map(String));
+  const foreign=(qboInvoice.Line||[]).some(line=>{
+    if(line?.DetailType==='SubTotalLineDetail')return false;
+    if(line?.DetailType==='SalesItemLineDetail')return !known.has(String(line.SalesItemLineDetail?.ItemRef?.value));
+    if(line?.DetailType==='DiscountLineDetail')return String(line.DiscountLineDetail?.DiscountAccountRef?.value)!==String(discountAccountId);
+    return true;
+  });
+  if(foreign)throw fail('resync_foreign_lines');
+  // A $0 QBO invoice was voided or zeroed there on purpose; rewriting its lines
+  // would quietly bring it back to life. Accounting decides.
+  if(!(qboTotal>0))throw fail('resync_qbo_zeroed');
+  const txnDate=parseDate(qboInvoice.TxnDate), closed=parseDate(bookCloseDate);
+  if(closed&&(!txnDate||txnDate<=closed))throw fail('resync_closed_period');
+  if(applied>total+0.005)throw fail('resync_below_applied');
+  if(money(qboInvoice.TxnTaxDetail?.TotalTax)!==0)throw fail('resync_taxed_invoice');
+  // Tax lives on explicit lines, never QBO's engine: pin every line non-taxable.
+  const pinned=lines.map(line=>line?.DetailType==='SalesItemLineDetail'
+    ?{...line,SalesItemLineDetail:{...line.SalesItemLineDetail,TaxCodeRef:{value:'NON'}}}:line);
+  return {Id:String(qboInvoice.Id),SyncToken:String(qboInvoice.SyncToken),sparse:true,Line:pinned,TxnTaxDetail:{TotalTax:0}};
+}
+
 export function taxPlan(invoice, customer, partnerTaxEnabled=true) {
   const tax=money(invoice?.tax); if(!(tax>0))return null;
   const state=clean(customer?.shipping_state||customer?.billing_state).toUpperCase();
@@ -183,4 +283,127 @@ export function writeAllowed(settings, entityType, sourceId) {
 export async function sha256(value) {
   const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(value)));
   return [...new Uint8Array(bytes)].map(byte=>byte.toString(16).padStart(2,'0')).join('');
+}
+
+// ── Received checks (payment_receipts) → ONE QBO payment per check ──────────────────────────
+// With settings.receipt_payments_enabled, a receipt posts as a single QBO Payment: one line per
+// invoice it pays and the rest left unapplied on the customer. Applying leftover later raises
+// that same payment's lines. Everything is expressed as a TARGET (the per-invoice amounts the
+// receipt should carry in QBO) so a run that dies after the QBO write but before the Portal
+// links are saved converges on the next run instead of applying twice.
+export const RECEIPT_SETTLE_MINUTES = 10;
+export const receiptSourceId = receipt => `receipt:${clean(receipt?.id)}`;
+export const receiptMarker = receipt => `[${clean(receipt?.id)}]`;
+export const receiptPaymentRef = receipt => clean(receipt?.ref).replace(/^#/, '').slice(0, 21) || clean(receipt?.id).slice(0, 21);
+
+// Which receipts the grouped path owns. A receipt is 'legacy' (its rows keep posting one QBO
+// payment per invoice, as before) when the switch is off, or when any of its rows already
+// posted that way — a check is never half one way and half the other.
+export function receiptOwnership({ enabled, receipts = [], paymentReceiptIds = {}, payments = [], paymentLinks = {}, receiptLinks = {} }) {
+  const grouped = new Set(), rowsByReceipt = new Map();
+  for (const p of payments) {
+    const rid = clean(paymentReceiptIds[String(p.id)]);
+    if (!rid) continue;
+    rowsByReceipt.set(rid, [...(rowsByReceipt.get(rid) || []), p]);
+  }
+  if (!enabled) return { grouped, rowsByReceipt };
+  for (const r of receipts) {
+    const rid = clean(r.id), rows = rowsByReceipt.get(rid) || [];
+    const receiptQbo = clean(receiptLinks[receiptSourceId(r)]?.qbo_id);
+    const perInvoice = rows.some(row => { const q = clean(paymentLinks[paymentIdentity(row)]?.qbo_id); return q && q !== receiptQbo; });
+    if (!perInvoice) grouped.add(rid);
+  }
+  return { grouped, rowsByReceipt };
+}
+
+// Decide what to do with one grouped receipt. Pure: every input comes from the snapshot/run.
+//   hold     — not postable yet or needs a person (quiet=true: just waiting, no review)
+//   create   — no QBO payment yet: create one with `lines`, TotalAmt = receipt amount
+//   update   — QBO payment exists but carries less than `lines` (leftover applied since)
+//   linked   — QBO already matches; only Portal links may be missing
+export function planReceiptPayment({ receipt, rows = [], invoicesById, effectiveInvoiceMap, qboInvoiceById, effectiveCustomerMap, heldInvoiceIds = new Set(), paymentLinks = {}, receiptLinks = {}, now = Date.now() }) {
+  const amount = money(receipt?.amount);
+  if (!(amount > 0)) return { action: 'hold', reason: 'receipt_amount_invalid' };
+  if (!parseDate(receipt.received_date)) return { action: 'hold', reason: 'invalid_payment_date' };
+  const created = Date.parse(receipt.created_at);
+  if (Number.isFinite(created) && now - created < RECEIPT_SETTLE_MINUTES * 60e3) return { action: 'hold', reason: 'receipt_settling', quiet: true };
+  // NetSuite-imported invoices have no QBO invoice the Portal knows, so that share of the check
+  // is left UNAPPLIED on the QBO payment (the payment still equals the bank deposit) and named
+  // in its memo for accounting to apply by hand.
+  const nsApps = (Array.isArray(receipt.ns_applications) ? receipt.ns_applications : []).filter(a => money(a?.amount) > 0);
+  const netsuite = { amount: money(nsApps.reduce((s, a) => s + money(a.amount), 0)), invoices: nsApps.map(a => clean(a.invoice_id)).filter(Boolean) };
+  // The QBO customer is whoever owns the invoices the check pays — a district check recorded on
+  // the parent account routinely pays its teams' (sub-account) invoices. With nothing applied
+  // yet it is the receipt's own customer.
+  const receiptCustomerId = clean(effectiveCustomerMap.get(String(receipt.customer_id)));
+  let qboCustomerId = '';
+  const byInvoice = new Map();
+  for (const row of rows) {
+    const a = money(row.amount);
+    if (!(a > 0)) continue;
+    const invoiceId = String(row.invoice_id), invoice = invoicesById.get(invoiceId);
+    // Not in this run's snapshot = edited after the run's cutoff; it will be next run.
+    if (!invoice) return { action: 'hold', reason: 'receipt_invoice_not_in_snapshot', invoice_id: invoiceId, quiet: true };
+    if (invoice.deleted_at || clean(invoice.status).toLowerCase() === 'void') return { action: 'hold', reason: 'receipt_invoice_unavailable', invoice_id: invoiceId };
+    if (heldInvoiceIds.has(invoiceId)) return { action: 'hold', reason: 'receipt_invoice_not_ready', invoice_id: invoiceId, quiet: true };
+    const qboInvoiceId = clean(effectiveInvoiceMap.get(invoiceId) || invoice.qb_invoice_id);
+    const qboInvoice = qboInvoiceId && qboInvoiceById.get(qboInvoiceId);
+    if (!qboInvoice) return { action: 'hold', reason: 'receipt_invoice_not_in_qbo', invoice_id: invoiceId, quiet: true };
+    const owner = clean(qboInvoice.CustomerRef?.value);
+    if (qboCustomerId && owner !== qboCustomerId) return { action: 'hold', reason: 'receipt_spans_multiple_qbo_customers', invoice_id: invoiceId };
+    qboCustomerId = owner;
+    const e = byInvoice.get(qboInvoiceId) || { qboInvoiceId, invoiceIds: new Set(), amount: 0, rows: [] };
+    e.invoiceIds.add(invoiceId); e.amount = money(e.amount + a); e.rows.push(row); byInvoice.set(qboInvoiceId, e);
+  }
+  if (!qboCustomerId) qboCustomerId = receiptCustomerId;
+  if (!qboCustomerId) return { action: 'hold', reason: 'customer_not_verified' };
+  const lines = [...byInvoice.values()].map(e => ({ qboInvoiceId: e.qboInvoiceId, invoiceIds: [...e.invoiceIds], amount: e.amount, rows: e.rows }))
+    .sort((a, b) => a.qboInvoiceId.localeCompare(b.qboInvoiceId));
+  const applied = money(lines.reduce((s, l) => s + l.amount, 0));
+  if (applied > amount + .005) return { action: 'hold', reason: 'receipt_over_applied', applied, amount };
+  const qboPaymentId = clean(receiptLinks[receiptSourceId(receipt)]?.qbo_id);
+  const unlinkedRows = rows.filter(row => money(row.amount) > 0 && !clean(paymentLinks[paymentIdentity(row)]?.qbo_id));
+  if (money(applied + netsuite.amount) > amount + .005) return { action: 'hold', reason: 'receipt_over_applied', applied, amount, netsuite: netsuite.amount };
+  const base = { qboCustomerId, lines, applied, unapplied: money(amount - applied), amount, unlinkedRows, netsuite };
+  if (!qboPaymentId) return { action: 'create', ...base };
+  return { action: unlinkedRows.length ? 'update' : 'linked', qboPaymentId, ...base };
+}
+
+// Invoice → amount this QBO payment applies, from its Line array.
+export function paymentLineTotals(payment) {
+  const out = new Map();
+  for (const line of payment?.Line || []) for (const link of line.LinkedTxn || [])
+    if (link.TxnType === 'Invoice') out.set(String(link.TxnId), money((out.get(String(link.TxnId)) || 0) + money(line.Amount)));
+  return out;
+}
+
+// Compare an existing QBO payment against the receipt's target lines.
+//   match — every invoice already carries exactly its target
+//   raise — some lines are short (or missing) and none exceed target → safe to raise to target
+//   conflict — QBO applies MORE to some invoice than the Portal does, or to an invoice the
+//              receipt doesn't pay: a person changed it in QBO; never overwrite that
+//   `allowForeign` = the check's NetSuite share. Accounting may apply that share to an invoice by
+//   hand in QBO; those lines (invoices the receipt doesn't pay, up to that amount) are kept as
+//   `foreignLines` and carried through any update. Any other linked transaction is a conflict.
+export function compareReceiptPayment(payment, lines, allowForeign = 0) {
+  const want = new Map(lines.map(l => [String(l.qboInvoiceId), money(l.amount)]));
+  const foreignLines = [];let foreignTotal = 0;
+  for (const line of payment?.Line || []) for (const link of line.LinkedTxn || []) {
+    if (link.TxnType !== 'Invoice') return { state: 'conflict', reason: 'non_invoice_line', txn_type: clean(link.TxnType) };
+    if (!want.has(String(link.TxnId))) { foreignLines.push({ Amount: money(line.Amount), LinkedTxn: [{ TxnId: String(link.TxnId), TxnType: 'Invoice' }] }); foreignTotal = money(foreignTotal + money(line.Amount)); }
+  }
+  if (foreignTotal > money(allowForeign) + .005) return { state: 'conflict', reason: 'foreign_invoice_lines', foreign_total: foreignTotal, allowed: money(allowForeign) };
+  const have = paymentLineTotals(payment);
+  for (const [id, amt] of want) if ((have.get(id) || 0) > amt + .005) return { state: 'conflict', reason: 'qbo_applies_more', invoice: id, qbo: have.get(id), portal: amt };
+  for (const [id, amt] of want) if (Math.abs((have.get(id) || 0) - amt) > .005) return { state: 'raise', foreignLines, foreignTotal };
+  return { state: 'match', foreignLines, foreignTotal };
+}
+
+export function receiptPrivateNote(receipt, plan) {
+  const ns = plan?.netsuite?.amount > 0 ? ` Includes $${plan.netsuite.amount.toFixed(2)} for NetSuite invoice(s) ${plan.netsuite.invoices.join(', ')} — left unapplied; apply in QBO.` : '';
+  return `Portal received payment ${receiptMarker(receipt)} ${clean(receipt.method)}${clean(receipt.ref) ? ' #' + clean(receipt.ref).replace(/^#/, '') : ''}.${ns}`.slice(0, 4000);
+}
+
+export function receiptPaymentLines(lines) {
+  return lines.map(l => ({ Amount: money(l.amount), LinkedTxn: [{ TxnId: String(l.qboInvoiceId), TxnType: 'Invoice' }] }));
 }

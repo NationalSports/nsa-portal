@@ -254,6 +254,7 @@ async function rosterTeamCustomerId(admin, teamId) {
 // webhook, or Stripe retries) can't double-apply the surcharge. The surcharge actually collected
 // (amount captured − open balance) is folded into the total, mirroring the in-app payment handler.
 async function reconcileInvoiceFromIntent(admin, pi) {
+  if (pi && pi.metadata && pi.metadata.pay_request_id) return reconcilePayRequestFromIntent(admin, pi);
   const ids = String((pi && pi.metadata && pi.metadata.invoice_id) || '')
     .split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
   if (!ids.length) return { reconciled: [] };
@@ -305,6 +306,50 @@ async function reconcileInvoiceFromIntent(admin, pi) {
     reconciled.push(r.id);
   }
   return { reconciled };
+}
+
+// Partial pay link (invoice_pay_requests): staff asked the customer to pay PART of one invoice.
+// The request — not the intent — is the authority on how much to apply, so the full-balance
+// underpayment guard above is replaced by: the payer must have paid at least the requested amount,
+// and the request must still fit the invoice's open balance. Applies exactly the request (plus any
+// card fee actually collected, folded into total like a full payment) and leaves the rest open.
+// Idempotent on the payment row: it is written FIRST (unique on invoice_id + ref), so a retry that
+// finds it has nothing left to do — a failure after it leaves a recorded-but-unapplied payment the
+// Stripe invoice monitor reports, never a double application.
+async function reconcilePayRequestFromIntent(admin, pi) {
+  const reqId = String(pi.metadata.pay_request_id || '').trim();
+  const { data: req, error: reqErr } = await admin.from('invoice_pay_requests').select('id,invoice_id,amount,status,payment_intent_id').eq('id', reqId).maybeSingle();
+  if (reqErr || !req) { console.error('[reconcilePayRequest] request lookup failed for', pi.id, reqErr && reqErr.message); return { reconciled: [], error: 'pay_request_not_found' }; }
+  if (String(pi.metadata.invoice_id || '').trim() !== String(req.invoice_id)) { console.error('[reconcilePayRequest] invoice mismatch on', pi.id); return { reconciled: [], error: 'pay_request_invoice_mismatch' }; }
+  if (req.status === 'paid' && req.payment_intent_id && req.payment_intent_id !== pi.id) { console.error('[reconcilePayRequest] request', reqId, 'already paid by', req.payment_intent_id, '— intent', pi.id, 'left for manual review'); return { reconciled: [], error: 'pay_request_already_paid' }; }
+  const ref = 'Stripe ' + pi.id;
+  const { data: already } = await admin.from('invoice_payments').select('id').eq('invoice_id', req.invoice_id).eq('ref', ref).limit(1);
+  if (already && already.length) return { reconciled: [], already: true };
+  const { data: inv, error: invErr } = await admin.from('invoices').select('id,total,paid,cc_fee,status').eq('id', req.invoice_id).maybeSingle();
+  if (invErr || !inv) return { reconciled: [], error: 'invoice_not_found' };
+  const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const requested = r2(req.amount);
+  const collected = r2((pi.amount_received != null ? pi.amount_received : (pi.amount || 0)) / 100);
+  const balance = r2((Number(inv.total) || 0) - (Number(inv.paid) || 0));
+  if (collected + 0.01 < requested) { console.error('[reconcilePayRequest] underpayment on', pi.id, collected, '<', requested); return { reconciled: [], underpaid: true, collected, requested }; }
+  if (requested > balance + 0.01) { console.error('[reconcilePayRequest] request', reqId, 'exceeds open balance', balance, '— left for manual review'); return { reconciled: [], error: 'pay_request_exceeds_balance', requested, balance }; }
+  const fee = Math.max(0, r2(collected - requested));
+  const payDate = new Date().toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', month: '2-digit', day: '2-digit', year: 'numeric' });
+  const { error: rowErr } = await admin.from('invoice_payments').insert({ invoice_id: inv.id, amount: r2(requested + fee), method: 'cc', ref, date: payDate, cc_fee: fee });
+  if (rowErr) {
+    if (rowErr.code === '23505') return { reconciled: [], already: true };
+    console.error('[reconcilePayRequest] payment row insert failed for', inv.id, ':', rowErr.message); return { reconciled: [], error: 'payment_row_failed' };
+  }
+  const newTotal = r2((Number(inv.total) || 0) + fee);
+  const newPaid = r2((Number(inv.paid) || 0) + requested + fee);
+  const status = newPaid >= newTotal - 0.005 ? 'paid' : 'partial';
+  // Compare-and-set on paid so a racing write can't be overwritten; the monitor flags a miss.
+  const { data: upd, error: updErr } = await admin.from('invoices')
+    .update({ total: newTotal, paid: newPaid, cc_fee: r2((Number(inv.cc_fee) || 0) + fee), status, updated_at: new Date().toISOString() })
+    .eq('id', inv.id).eq('paid', inv.paid).select('id');
+  if (updErr || !upd || !upd.length) { console.error('[reconcilePayRequest] invoice update did not apply for', inv.id, updErr && updErr.message); return { reconciled: [], error: 'invoice_update_failed' }; }
+  await admin.from('invoice_pay_requests').update({ status: 'paid', paid_at: new Date().toISOString(), payment_intent_id: pi.id }).eq('id', reqId);
+  return { reconciled: [inv.id], partial: status !== 'paid', applied: requested, fee };
 }
 
 // Sync an order's webstore_order_items to `lineItems` WITHOUT destroying fulfillment state.

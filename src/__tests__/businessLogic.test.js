@@ -1568,6 +1568,21 @@ describe('Commission attribution — commissionRepId() must always credit the ac
     expect(BL.commissionRepId(customer, so, { id: 'INV-63574' })).toBe(KEVIN);
   });
 
+  // ── Per-SO override (sales_orders.rep_id, migration 20260928170000) ──
+  test('an SO rep_id outranks the account owner for that order only', () => {
+    // SO-2424: Biola is Gayle's account; Chase takes this one order. The account stays Gayle's.
+    const customer = { primary_rep_id: MIKE };
+    expect(BL.commissionRepId(customer, { id: 'SO-2424', rep_id: KEVIN, created_by: STEVE })).toBe(KEVIN);
+    expect(BL.commissionRepId(customer, { id: 'SO-2425', created_by: STEVE })).toBe(MIKE);
+    expect(BL.commissionRepId(customer, { rep_id: null, created_by: STEVE })).toBe(MIKE);
+  });
+
+  test('an invoice rep_id still outranks the SO rep_id', () => {
+    const so = { rep_id: KEVIN, created_by: STEVE };
+    expect(BL.commissionRepId({ primary_rep_id: MIKE }, so, { rep_id: STEVE })).toBe(STEVE);
+    expect(BL.commissionRepId({ primary_rep_id: MIKE }, so, {})).toBe(KEVIN);
+  });
+
   test('an absent, null or empty rep_id falls through to the account owner', () => {
     const customer = { primary_rep_id: MIKE };
     const so = { created_by: STEVE };

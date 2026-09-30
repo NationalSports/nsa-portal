@@ -2,15 +2,16 @@
 // submit via the REST API (POST /v2/orders/). Defaults to a TEST order, which S&S
 // creates and cancels (nothing ships), so it's safe to validate before going live.
 // Credentials are injected server-side by ss-proxy and never appear here.
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { buildSSOrderPayload, buildSSOrderLines } from './ssOrder';
-import { ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock } from './vendorApis';
+import { ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock, ssGetDaysInTransit } from './vendorApis';
 import { reconcileVendorLines, freeShipGap } from './lib/vendorOrderGuards';
 import { DuplicateMergeWarning, UnacceptedLinesPanel, FreeShipNotice } from './VendorOrderGuardPanels';
 import WarehouseChips, { rankWarehouses, SS_WAREHOUSES } from './WarehouseChips';
 import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
 import { NSA, NSA_WAREHOUSE, BATCH_VENDORS } from './constants';
-import { apiLineSourceKey } from './lib/apiOrderLines';
+import { apiLineSourceKey, removeShortLines, stockKeyAlreadyFetched } from './lib/apiOrderLines';
+import { authFetch } from './utils';
 
 // S&S ships integrated orders to NSA's receiving dock (caller can override via shipTo).
 const NSA_SHIP_TO = {
@@ -71,6 +72,20 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   // Per-warehouse availability for the resolved SKUs — informational "ships from"
   // display only; a lookup failure just leaves the column blank, never blocks.
   const [whseBySku, setWhseBySku] = useState(null); // SKUUPPER -> [{abbr,qty,closest}], null = loading
+  // S&S delivery days from each warehouse to THIS ship-to ZIP ({ ABBR: days }). Ranks the
+  // expected ship-from by S&S's own transit data instead of the account-relative `closest` flag.
+  const [transitDays, setTransitDays] = useState({});
+  const shipZip = String(ship?.postalCode || ship?.zip || '').trim().slice(0, 5);
+  useEffect(() => {
+    let cancelled = false;
+    setTransitDays({});
+    if (!/^\d{5}$/.test(shipZip)) return undefined;
+    // Never let a transit-lookup problem touch the order screen: it only ranks the chips.
+    Promise.resolve().then(() => ssGetDaysInTransit(shipZip))
+      .then(m => { if (!cancelled) setTransitDays(m || {}); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [shipZip]);
 
   // Base lines (no network) — flatten the batch. Deliberately built WITHOUT the ship-to:
   // lines don't vary by destination, and rebuilding them per address keystroke re-fired the
@@ -112,13 +127,15 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   const unresolvedStyles = useMemo(() => [...new Set(lines.filter(l => !l.sku).map(l => String(l.style || '').toUpperCase().trim()))], [lines]);
 
   // Once SKUs are known, fetch each one's per-warehouse stock (one chunked call).
+  const stockFetchedKeys = useRef(new Set());
   const skuKey = useMemo(() => [...new Set(lines.map(l => String(l.sku || '').toUpperCase()).filter(Boolean))].sort().join(','), [lines]);
   useEffect(() => {
     let cancelled = false;
     if (resolving || !skuKey) return;
+    if (stockKeyAlreadyFetched(stockFetchedKeys.current, skuKey)) return;
     setWhseBySku(null);
     ssGetWarehouseStock(skuKey.split(','))
-      .then(m => { if (!cancelled) setWhseBySku(m || {}); })
+      .then(m => { if (!cancelled) { skuKey.split(',').forEach(k => stockFetchedKeys.current.add(k)); setWhseBySku(m || {}); } })
       .catch(() => { if (!cancelled) setWhseBySku({}); });
     return () => { cancelled = true; };
   }, [skuKey, resolving]);
@@ -139,6 +156,22 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   const submitting = submitState === 'submitting';
   const live = !testMode;
   const canSubmit = !blocked && confirmed && !submitting && !done;
+
+  // Stamp each line with the warehouse S&S actually assigned (its response has one order per
+  // warehouse), so the PO records where the goods really ship from, not our prediction.
+  const withShippedFrom = (ls, r) => {
+    const shipments = r?.shipments || [];
+    if (!shipments.length) return ls;
+    // One SKU can be split across warehouses, so collect every warehouse it appears under.
+    const bySku = {};
+    shipments.forEach(o => o.skus.forEach(sku => {
+      if (o.warehouseAbbr && !(bySku[sku] || []).includes(o.warehouseAbbr)) bySku[sku] = [...(bySku[sku] || []), o.warehouseAbbr];
+    }));
+    return ls.map(l => {
+      const whs = bySku[String(l.sku || '').toUpperCase()] || (shipments.length === 1 && shipments[0].warehouseAbbr ? [shipments[0].warehouseAbbr] : []);
+      return whs.length ? { ...l, warehouse: whs.join('+'), warehouse_id: whs.join('+'), warehouse_basis: 'vendor' } : l;
+    });
+  };
 
   const doSubmit = async () => {
     if (!canSubmit) return;
@@ -167,7 +200,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
     // order (the NSA 4536 failure) can't look like a clean success.
     if (live && onSubmitted) {
       try {
-        const recorded = await onSubmitted(r, lines);
+        const recorded = await onSubmitted(r, withShippedFrom(lines, r));
         if (!recorded) setBookErr('the recording step reported that nothing was written to the portal');
       } catch (e) {
         console.error('[S&S] order placed but post-order bookkeeping failed:', e);
@@ -225,6 +258,20 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
     } finally { setRemovingLine(null); }
   };
 
+  const shortLines = whseBySku === null ? [] : lines.filter(l => { const sku = String(l.sku || '').toUpperCase(); return !!l.sku && Object.prototype.hasOwnProperty.call(whseBySku, sku) && (whseBySku[sku] || []).reduce((sum, row) => sum + (Number(row.qty) || 0), 0) < l.quantity; });
+  const removeAllShort = async () => {
+    if (!onRemoveLine || removingLine != null || submitting || !shortLines.length) return;
+    const list = shortLines.map(l => `• ${l.style} ${l.color || ''} ${l.size} (${l.quantity}) — ${l.sourceSO}`).join('\n');
+    if (!window.confirm(`Remove these ${shortLines.length} out-of-stock line(s) from their POs?\n\n${list}\n\nThey will not be sent to S&S. Each sales rep will be messaged and emailed.`)) return;
+    setRemovingLine('__all__'); setErrorMsg(''); setRemovalErr('');
+    try {
+      const { removed, failed, error, emailed } = await removeShortLines({ lines: shortLines, onRemoveLine, authFetch, vendorName });
+      if (removed.length) { setRemovedLineKeys(prev => new Set([...prev, ...removed.map(apiLineSourceKey)])); setConfirmed(false); }
+      if (failed) setRemovalErr(`Removed ${removed.length} of ${shortLines.length}. ${failed.style} ${failed.size} could not be removed${error?.message ? ` (${error.message})` : ''}. Do not submit from this window; reload the sales order and verify the PO first.`);
+      else if (!emailed.ok) setErrorMsg(`All ${removed.length} lines were removed and the reps were messaged, but the email failed (${emailed.error}). Tell the rep directly.`);
+    } finally { setRemovingLine(null); }
+  };
+
   const safeClose = submitting ? undefined : onClose;
 
   return (
@@ -245,6 +292,13 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                 {result?.shipping != null && <Stat label={'Freight' + (result.shippingMethod ? ` (${result.shippingMethod})` : '')} value={result.shipping > 0 ? '$' + result.shipping.toFixed(2) : 'Free'} />}
                 {result?.total != null && <Stat label="S&S Order Total" value={'$' + result.total.toFixed(2)} />}
               </div>
+              {(result?.shipments || []).some(o => o.warehouseAbbr) && (
+                <div style={{ marginTop: 10, fontSize: 12 }}>
+                  <strong>Shipping from (per S&S):</strong>{' '}
+                  {result.shipments.map(o => `${SS_WAREHOUSES[o.warehouseAbbr] || o.warehouseAbbr}${transitDays[o.warehouseAbbr] != null ? ` (${transitDays[o.warehouseAbbr]}-day transit)` : ''}${result.shipments.length > 1 && o.orderNumber ? ` — order ${o.orderNumber}` : ''}`).join(' · ')}
+                  {result.shipments.length > 1 && <div style={{ marginTop: 4, color: '#92400e', fontWeight: 700 }}>S&S split this PO into {result.shipments.length} orders (one per warehouse).</div>}
+                </div>
+              )}
               {bookErr && <div style={{ marginTop: 10, padding: 10, background: '#fffbeb', border: '2px solid #f59e0b', borderRadius: 8, color: '#92400e', fontWeight: 700 }}>
                 ⚠ S&S HAS this order, but the portal did NOT record it ({bookErr}).
                 Do NOT submit or re-order this batch — record the PO on the sales order manually and remove the queue entries, or the batch will look unordered and get double-ordered.
@@ -424,6 +478,12 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
             presets={shipPresets}
           />
 
+          {tab === 'lines' && onRemoveLine && !done && shortLines.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, padding: '8px 10px', background: '#fff7ed', border: '1px solid #fdba74', borderRadius: 6, fontSize: 12, color: '#9a3412' }}>
+              <span style={{ flex: 1 }}><strong>{shortLines.length} line{shortLines.length === 1 ? ' is' : 's are'} short at S&S.</strong> Fix a wrong part by clicking its number, or remove them all — each sales rep is emailed what was removed.</span>
+              <button className="btn btn-sm" disabled={removingLine != null || submitting} onClick={removeAllShort} style={{ color: '#fff', background: '#b91c1c', borderColor: '#b91c1c', fontSize: 11, whiteSpace: 'nowrap' }}>{removingLine === '__all__' ? 'Removing…' : `Remove all ${shortLines.length} out-of-stock from order & PO`}</button>
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e2e8f0', marginBottom: 10 }}>
             <TabBtn active={tab === 'lines'} onClick={() => setTab('lines')}>Line Items ({lines.length})</TabBtn>
             <TabBtn active={tab === 'json'} onClick={() => setTab('json')}>Order JSON</TabBtn>
@@ -470,7 +530,13 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                         <WarehouseChips
                           loading={l.sku ? whseBySku === null : false}
                           entries={rankWarehouses(
-                            stockRows.map(w => ({ label: w.abbr, city: SS_WAREHOUSES[w.abbr], qty: w.qty, closest: w.closest })),
+                            stockRows.map(w => {
+                              const days = transitDays[w.abbr];
+                              const known = Object.keys(transitDays).length > 0;
+                              // With transit data, rank purely by S&S's delivery days; the `closest`
+                              // flag only stands in when the transit lookup failed.
+                              return { label: w.abbr, city: [SS_WAREHOUSES[w.abbr] || w.abbr, days != null ? `${days}-day transit` : ''].filter(Boolean).join(' · '), qty: w.qty, closest: known ? false : w.closest, ...(days != null ? { dist: days } : {}) };
+                            }),
                             l.quantity
                           ).filter(e => e.primary)}
                         />
@@ -485,7 +551,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
               {lines.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8' }}>No line items.</div>}
               {lines.length > 0 && (
                 <div style={{ padding: '6px 10px', fontSize: 11, color: '#64748b', background: '#f8fafc', borderTop: '1px solid #f1f5f9' }}>
-                  📦 = expected ship-from warehouse (S&S routes each line from the nearest warehouse with stock at submission — split shipments possible). Hover the chip for the city and current stock.
+                  📦 = expected ship-from warehouse: the one with stock and the fewest delivery days to this ship-to, per S&S's transit data. Orders are sent with S&S's "fastest" setting, so lines can split across warehouses. Hover the chip for transit days and current stock; after submitting, the warehouse S&S actually assigned is shown and saved on the PO.
                 </div>
               )}
             </div>

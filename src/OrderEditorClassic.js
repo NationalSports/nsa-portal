@@ -5,11 +5,11 @@ import { logoDetailCustomerUpdates } from './lib/logoDetail';
 import { isJobReady, missingJobMocks, jobMockChecks } from './lib/jobMockReadiness';
 import { jobArtBadgeSt } from './lib/jobArtBadge';
 import { webstoreCheckoutMoney, webstoreDocMoneyRows } from './lib/webstoreSoMoney';
-import {useOrderCatalogResults} from './lib/orderCatalogSearch';
+import {useOrderCatalogResults,a4Visible} from './lib/orderCatalogSearch';
 import { poEligibleVendors } from './lib/vendorPoEligibility';
 import QuantityDraftInput from './QuantityDraftInput';
 import TextDraftInput from './TextDraftInput';
-import { replaceTbdArt, tbdArtName, tbdArtLabel } from './lib/orderArtSwap';
+import { replaceTbdArt, tbdArtName, tbdArtLabel, isTbdArt } from './lib/orderArtSwap';
 /* ═══════════════════════════════════════════════════════════════
    ORDER EDITOR — CLASSIC
    Rendered when the portal-wide UI toggle is on "classic", which is
@@ -41,7 +41,7 @@ import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, pendingProdFileGroups, prodFileMethodOf, artStatusAfterProdConfirm, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, orderLineSizes, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine, estimateTermsFooter } from './constants';
 import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, replaceMockLinkGroup, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemArtSlots, jobItemDecosOfKind, jobRosterBlocks, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, jobItemRoster, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, placeRosterEntries, rosterDropSummary, autoSellFromCost, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
-import { invoiceTotalsRows } from './lib/invoiceDocTotals';
+import { invoiceTotalsRows, invoiceMismatchAlert } from './lib/invoiceDocTotals';
 import { pickUnits } from './itemFulfillment';
 import { EmailRouteNotice, Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor, TaxExemptModal } from './components';
 import { checkEmailRecipients, emailDeliveryLabel } from './lib/emailRouting';
@@ -82,9 +82,10 @@ import { stampSplitRuns } from './lib/splitJobPricing';
 import { allocateCustomSplit, openSizes, freeSplitSuffix, planJobMerge } from './lib/splitJobItems';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { artFamilyKey } from './lib/artSplitFamily';
-import { parseStitchCount, embStitchTierLabel } from './lib/embStitchParser';
+import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, embStitchTierLabel } from './lib/embStitchParser';
 import { _dbPersistNewPoLine } from './lib/dbEngine';
 import { applyFullPromoPricing, recoverGarmentCost as recoverGarmentCostShared } from './lib/promoPricing';
+import { buildOutOfStockRemovalMessage, emailRepOutOfStockRemoval, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
 import { markTopstarEmailFailed, markTopstarEmailSent, topstarAttachmentName, topstarPoMatches } from './lib/topstarEmail';
 import { fetchPaidPromoHistoryInvoices, mergePromoHistoryInvoices, promoHalfWindows, withEarnedPromoAllocation } from './lib/promoHistory';
 
@@ -283,7 +284,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onEditMemo,memoEditorRef,memoEditing,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onManualShip,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onOpenIF,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,onOpenMethodicDashboard,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onEditMemo,memoEditorRef,memoEditing,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onManualShip,onDelete,onReleasePendingShip,pendingShipAvail,onNavInvoice,onNavBatch,onOpenIF,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,onOpenMethodicDashboard,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText}){
   // O(1) catalog lookup. Replaces a products.find() linear scan that ran once per size cell
   // (~11ms per render on a 10-line order, ~41ms at 40 lines) on every keystroke-driven render.
   const findProd=useMemo(()=>buildProductIndex(products),[products]);
@@ -895,7 +896,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       onOpenPOConsumed&&onOpenPOConsumed();
     }},[openPOId]);
     const origRef=React.useRef(JSON.stringify(o));
-    const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showActionsDD,setShowActionsDD]=useState(false);const[showTaxExempt,setShowTaxExempt]=useState(false);const actionsRef=useRef(null);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=1000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[batchReadyPopup,setBatchReadyPopup]=useState(null);const[addShp,setAddShp]=useState(null);// Tracking tab: manual outbound shipment entry (null = form closed)
+    const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showActionsDD,setShowActionsDD]=useState(false);const[showTaxExempt,setShowTaxExempt]=useState(false);const actionsRef=useRef(null);const apiRemovalOrderCache=useRef({});const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=1000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[batchReadyPopup,setBatchReadyPopup]=useState(null);const[addShp,setAddShp]=useState(null);// Tracking tab: manual outbound shipment entry (null = form closed)
     const[shpEmailBusy,setShpEmailBusy]=useState(false);// Tracking tab: coach shipping-notice send in flight
     // Auto-open a send flow when navigated here from a dashboard follow-up "Send" button.
     // {kind:'doc'} opens the estimate/SO SendModal; {kind:'coach',jobId} opens Send-to-Coach for
@@ -2218,7 +2219,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         console.log('[S&S] Styles search for "'+query+'" →',styleMatches.length,'matches');
       }catch(e){console.warn('[S&S] Styles search failed:',e.message)}
       if(styleMatches.length>0){
-        const styleIDs=[...new Set(styleMatches.map(s=>s.styleID).filter(Boolean))].slice(0,5);
+        const styleIDs=[...new Set(styleMatches.map(s=>s.styleID).filter(Boolean))].slice(0,25);
         if(styleIDs.length){
           try{
             const data=await ssApiCall('/Products/?style='+encodeURIComponent(styleIDs.join(',')));
@@ -2713,8 +2714,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:nameWithBrand(p.name,p.brand),brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),_is_clearance:p.is_clearance||false,...(!clr&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1?{_sizeCosts:p._sizeCosts,...(au?{}:{_sizeSells:Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))})}:{}),sizes:{},qty_only:false,decorations:[],no_deco:true,is_footwear:isFw}]);setShowAdd(false);setPS('')};
   const multiCatalogItem=p=>{const au=isAU(p.brand);const isFw=(p.category||'').toLowerCase()==='footwear';const clr=p.is_clearance&&p.clearance_cost!=null;const cost=catalogRepCost(p);const sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(cost*(o.default_markup||1.65));const fwAvail=isFw?normalizeFootwearSizeList(p.available_sizes||[]):[];const fwHalves=fwAvail.some(s=>String(s).includes('.5'));const avail=isFw?(fwHalves?fwAvail:[...FOOTWEAR_DEFAULT_SIZES]):((p.available_sizes&&p.available_sizes.length)?orderLineSizes(p.available_sizes):['S','M','L','XL','2XL']);return{product_id:p.id,sku:p.sku,name:nameWithBrand(p.name,p.brand),brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),_is_clearance:p.is_clearance||false,...(!clr&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1?{_sizeCosts:p._sizeCosts,...(au?{}:{_sizeSells:Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))})}:{}),sizes:{},qty_only:false,decorations:[],no_deco:true,is_footwear:isFw,_multiInv:Object.fromEntries(avail.map(sz=>[sz,availInv(p,sz)]))}};
   const multiVendorItem=(style,color,source)=>{const isSM=source==='sm',isMT=source==='mt',isRS=source==='rs';const vendor=vendorList.find(v=>isRS?(v.api_provider==='richardson'||v.name==='Richardson'):isMT?(v.api_provider==='momentec'||v.name==='Momentec'):isSM?(v.api_provider==='sanmar'||v.name==='SanMar'):(v.api_provider==='ss_activewear'||v.name==='S&S Activewear'));const vId=vendor?.id||(isRS?'v5':isMT?'v8':isSM?'v3':'v4');const cost=color.customerPrice||color.piecePrice||0;const catMatch=products.find(p=>p.sku===style.sku&&(!color.colorName||p.color===color.colorName))||products.find(p=>p.sku===style.sku);const apiSizes=(color.sizes||[]).map(s=>s.sizeName).filter(Boolean);const catSizes=catMatch?.available_sizes||[];const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(Boolean):[];let avail=[...new Set([...apiSizes,...catSizes,...smSizes,...((isRS||apiSizes.length||catSizes.length||smSizes.length)?[]:['S','M','L','XL','2XL'])])].sort((a,b)=>szRank(a)-szRank(b));if(!avail.length)avail=isRS?['OSFA']:['S','M','L','XL','2XL'];const inv={};const sizeCost={};(color.sizes||[]).forEach(s=>{inv[s.sizeName]=(inv[s.sizeName]||0)+safeNum(s.qty);sizeCost[s.sizeName]=s.price||cost});const mk=o.default_markup||1.65;return{product_id:catMatch?.id||null,sku:style.sku,name:nameWithBrand(style.styleName,style.brandName),brand:style.brandName,vendor_id:vId,color:color.colorName,nsa_cost:cost,retail_price:catMatch?.retail_price||0,unit_sell:rQ(cost*mk),available_sizes:avail,sizes:{},qty_only:false,decorations:[],no_deco:true,is_custom:false,[isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live']:true,_colorImage:color.colorFrontImage||style.styleImage||'',_colorBackImage:color.colorBackImage||'',_sizeCosts:sizeCost,_sizeSells:Object.fromEntries(Object.entries(sizeCost).map(([sz,c])=>[sz,rQ(c*mk)])),_multiInv:inv,...(isMT&&style._mtId?{_mtId:style._mtId}:{}),...(isMT&&color.sku?{_mt_style:style.sku,_mt_color:color.colorCode||'',_mt_sku:color.sku,_mt_skus:Object.fromEntries((color.sizes||[]).map(s=>[s.sizeName,`${color.sku}.${s.sizeName}`]).filter(([sz])=>sz))}:{})}};
-  const multiCatalogResults=useCallback(q=>{const toks=(q||'').trim().toLowerCase().split(/\s+/).filter(Boolean);if((q||'').trim().length<2)return[];return products.filter(p=>!p.is_archived&&toks.every(t=>(p.sku||'').toLowerCase().includes(t)||(p.name||'').toLowerCase().includes(t)||(p.brand||'').toLowerCase().includes(t)||(p.color||'').toLowerCase().includes(t))).slice(0,18).map(p=>({key:'cat-'+p.id,sku:p.sku,label:(p.sku||'')+' · '+nameWithBrand(p.name,p.brand),sub:p.color||'',source:'catalog',sourceLabel:'CATALOG',item:multiCatalogItem(p)}))},[products,o.default_markup,cust,reservedInvMap]);
-  const multiVendorResults=useMemo(()=>[['ss',ssResults,'S&S'],['sm',smResults,'SANMAR'],['mt',mtResults,'MOMENTEC'],['rs',rsResults,'RICHARDSON']].flatMap(([source,styles,label])=>(styles||[]).flatMap((style,si)=>(style.colors||[]).slice(0,8).map((color,ci)=>({key:source+'-'+style.sku+'-'+(color.colorName||ci),sku:style.sku,label:style.sku+' · '+nameWithBrand(style.styleName,style.brandName),sub:(color.colorName||'')+' · '+safeNum(color.totalQty).toLocaleString()+' available',source,sourceLabel:label,item:multiVendorItem(style,color,source)})))).slice(0,40),[ssResults,smResults,mtResults,rsResults,o.default_markup,products,vendorList]);
+  const multiCatalogResults=useCallback(q=>{const toks=(q||'').trim().toLowerCase().split(/\s+/).filter(Boolean);if((q||'').trim().length<2)return[];return products.filter(p=>!p.is_archived&&toks.every(t=>(p.sku||'').toLowerCase().includes(t)||(p.name||'').toLowerCase().includes(t)||(p.brand||'').toLowerCase().includes(t)||(p.color||'').toLowerCase().includes(t))&&a4Visible(p,toks)).slice(0,30).map(p=>({key:'cat-'+p.id,sku:p.sku,label:(p.sku||'')+' · '+nameWithBrand(p.name,p.brand),sub:p.color||'',source:'catalog',sourceLabel:'CATALOG',item:multiCatalogItem(p)}))},[products,o.default_markup,cust,reservedInvMap]);
+  const multiVendorResults=useMemo(()=>[['ss',ssResults,'S&S'],['sm',smResults,'SANMAR'],['mt',mtResults,'MOMENTEC'],['rs',rsResults,'RICHARDSON']].flatMap(([source,styles,label])=>(styles||[]).flatMap((style,si)=>(style.colors||[]).slice(0,8).map((color,ci)=>({key:source+'-'+style.sku+'-'+(color.colorName||ci),sku:style.sku,label:style.sku+' · '+nameWithBrand(style.styleName,style.brandName),sub:(color.colorName||'')+' · '+safeNum(color.totalQty).toLocaleString()+' available',source,sourceLabel:label,item:multiVendorItem(style,color,source)})))).slice(0,150),[ssResults,smResults,mtResults,rsResults,o.default_markup,products,vendorList]);
   const applyMultiItems=(rows,draftArts)=>{const errors={};const populated=rows.map((r,i)=>({r,i})).filter(({r})=>r.item||(r.query||'').trim());if(!populated.length){nf('Add at least one item','error');return{errors:{0:'Choose a product and enter quantities.'}}}const usedDrafts=new Set();populated.forEach(({r,i})=>{if(!r.item){errors[i]='Select a product from the search results.';return}const qty=Object.values(r.sizes||{}).reduce((n,v)=>n+Math.max(0,parseInt(v)||0),0);if(!qty)errors[i]='Enter a quantity for at least one size.';if(!Number.isFinite(Number(r.unit_sell))||Number(r.unit_sell)<0)errors[i]='Enter a valid sell price.';if(r.artMode==='assign'){if(!r.arts.length)errors[i]='Choose existing art or create an Art TBD.';r.arts.forEach(a=>{if(!a.artId)errors[i]='Complete every art selection.';if(a.source==='draft')usedDrafts.add(a.artId)})}});draftArts.filter(d=>usedDrafts.has(d.key)).forEach(d=>{if(!d.name.trim()||!d.deco_type||!d.position){const hit=populated.find(({r})=>r.arts.some(a=>a.source==='draft'&&a.artId===d.key));if(hit)errors[hit.i]='Complete the name, decoration type, and position for each Art TBD.'}});if(Object.keys(errors).length)return{errors};const stamp=Date.now();const draftId=new Map();const newArts=draftArts.filter(d=>usedDrafts.has(d.key)).map((d,i)=>{const id='af'+stamp+'_'+i;draftId.set(d.key,id);return{id,design_id:'design_'+stamp.toString(36)+'_'+i,name:d.name.trim(),deco_type:d.deco_type,status:'waiting_for_art',color_ways:[],files:[],mockup_files:[],mock_links:{},prod_files:[],notes:d.notes||'',uploaded:new Date().toLocaleDateString()}});const built=populated.map(({r})=>{const decorations=r.artMode==='assign'?r.arts.map(a=>({kind:'art',position:a.position||(a.source==='draft'?draftArts.find(d=>d.key===a.artId)?.position:'Front Center')||'Front Center',art_file_id:a.source==='draft'?draftId.get(a.artId):a.artId,sell_override:null})):[];return{...r.item,unit_sell:rQ(Number(r.unit_sell)),sizes:Object.fromEntries(Object.entries(r.sizes).map(([sz,v])=>[sz,Math.max(0,parseInt(v)||0)]).filter(([,v])=>v>0)),decorations,no_deco:r.artMode==='none',...(r.artMode==='later'?{_decoration_later:true}:{})}});const merged=[];built.forEach(item=>{const artKey=JSON.stringify(item.decorations.map(d=>({id:d.art_file_id,position:d.position})).sort((a,b)=>(a.id+a.position).localeCompare(b.id+b.position)));const key=[item.sku,item.color,item.unit_sell,artKey,item.no_deco,item._decoration_later||false].join('|');const hit=merged.find(x=>x._multiMergeKey===key);if(hit)Object.entries(item.sizes).forEach(([sz,v])=>{hit.sizes[sz]=(hit.sizes[sz]||0)+v});else merged.push({...item,_multiMergeKey:key})});const clean=merged.map(({_multiMergeKey,_multiInv,...item})=>item);setO(e=>({...e,items:[...safeItems(e),...clean],art_files:[...safeArt(e),...newArts],updated_at:new Date().toLocaleString()}));setDirty(true);setMultiAddOpen(false);setMultiAddQuery('');nf('Added '+clean.length+' item line'+(clean.length===1?'':'s'));return{ok:true}};
   // Apply a reordering of line items. Jobs (jobs[].items[].item_idx) and decoration POs
   // (deco_pos[].item_idxs) reference items by array position, so remap every such reference to
@@ -3260,7 +3261,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const _recordApiOrder=(desc,r,apiLines)=>{const oid=r&&(r.orderId||r.orderNumber||r.transactionId);if(!desc||!oid)return false;
     // Phase A of order-aware matching: persist the vendor ack + the exact line keys we submitted
     // (their sku/partId, size/color, unit cost) as vendor_keys — pure capture, nothing reads it yet.
-    const _vkeys=apiLines&&apiLines.length?{order_no:String(oid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:Number(l.quantity)||0,unit_cost:Number(l.unitPrice)||0}))}:null;
+    const _vkeys=apiLines&&apiLines.length?{order_no:String(oid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:Number(l.quantity)||0,unit_cost:Number(l.unitPrice)||0,warehouse_id:l.warehouse_id||'',warehouse:l.warehouse||'',warehouse_qty:Number(l.warehouse_qty)||0,warehouse_basis:l.warehouse_basis||''}))}:null;
     // Granularity (owner 2026-07-23): each line carries only ITS item's vendor keys — a
     // style-matched subset when one exists, the full list as fallback so nothing is lost.
     const _vkN=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
@@ -3286,7 +3287,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const orderedNum=onOrderBatch?await onOrderBatch({vendorKey:apiOrder.vendorKey,groupKey:apiOrder.groupKey||null,skipSoId:apiOrder.skipSoId,apiResult:r,apiLines}):null;
       if(!orderedNum)return false;
       const _oid=r&&(r.orderId||r.orderNumber||r.transactionId);
-      const _vkeys=_oid&&apiLines&&apiLines.length?{order_no:String(_oid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:Number(l.quantity)||0,unit_cost:Number(l.unitPrice)||0}))}:null;
+      const _vkeys=_oid&&apiLines&&apiLines.length?{order_no:String(_oid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:Number(l.quantity)||0,unit_cost:Number(l.unitPrice)||0,warehouse_id:l.warehouse_id||'',warehouse:l.warehouse||'',warehouse_qty:Number(l.warehouse_qty)||0,warehouse_basis:l.warehouse_basis||''}))}:null;
       // Granularity (owner 2026-07-23): per-item vendor-key subset, full list as fallback.
       const _vkN2=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
       const _stampFor2=(itemSku)=>{if(!_oid)return{};const base={api_order_id:_oid,api_ordered_at:new Date().toLocaleString()};if(!_vkeys)return base;
@@ -3301,6 +3302,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return orderedNum;
     }
     return _recordApiOrder(apiOrder,r,apiLines);
+  };
+  const _removeApiOrderLine=async(line,opts={})=>{
+    const current=oRef.current||o;
+    const sourceOrder=line?.sourceSO===current.id?current:(apiRemovalOrderCache.current[line?.sourceSO]||(allOrders||[]).find(so=>so.id===line?.sourceSO));
+    if(!sourceOrder){nf('The source sales order for this line could not be found. Nothing was changed.','error');return false}
+    if(sourceOrder.id!==current.id&&!onSaveNow){nf('Open '+sourceOrder.id+' to remove this line from its PO. Nothing was changed.','error');return false}
+    const result=removeApiLineFromPoItems(safeItems(sourceOrder),line);
+    if(!result.removed){nf(result.reason||'This line could not be removed from the PO.','error');return false}
+    const updated={...sourceOrder,items:result.items,updated_at:new Date().toLocaleString()};
+    if(sourceOrder.id===current.id){setO(updated);oRef.current=updated}
+    let saved=true;
+    try{saved=onSaveNow?await onSaveNow(updated):(sourceOrder.id===current.id&&onSave(updated)!==false)}catch(_saveErr){saved=false;console.error('[removeApiOrderLine] durable save failed',_saveErr)}
+    if(!saved){if(sourceOrder.id===current.id){setO(current);oRef.current=current}nf('The PO removal could not be confirmed. Do not submit; reload the order and verify the PO.','error');return false}
+    apiRemovalOrderCache.current[sourceOrder.id]=updated;
+    if(line.sourceBatchId&&onBatchPO)onBatchPO(prev=>removeApiLineFromBatchPOs(prev,line));
+    if(sourceOrder.id===current.id)setPoFullPage(pf=>{if(!pf)return pf;let first=null;const allLines=[];result.items.forEach((it,lineIdx)=>{const poIdx=(it.po_lines||[]).findIndex(pl=>pl.po_id===result.poId);if(poIdx>=0){allLines.push({lineIdx,poIdx});if(!first)first={item:it,po:it.po_lines[poIdx]}}});return first?{...pf,item:first.item,po:first.po,soItems:result.items,allLines}:null});
+    const customer=(allCustomers||[]).find(c=>c.id===sourceOrder.customer_id)||null;
+    const msg=buildOutOfStockRemovalMessage({line,sourceOrder,customer,actor:cu,vendorName:apiOrder?.vendorName});
+    if(msg&&onMsg)onMsg(prev=>[...prev,msg]);
+    const emailed=opts.deferEmail?{ok:true,deferred:true}:await emailRepOutOfStockRemoval(authFetch,{lines:[line],vendorName:apiOrder?.vendorName});
+    nf('Removed '+line.style+' '+line.size+' from '+result.poId+'; '+(emailed.ok?sourceOrder.id+'\'s sales rep was messaged'+(emailed.deferred?'.':' and emailed.'):'the rep was messaged on '+sourceOrder.id+', but the email failed ('+emailed.error+'). Tell them directly.'),emailed.ok?undefined:'error');
+    return true;
   };
   const uSz=(i,sz,v)=>{
     const n=v===''?0:parseInt(v)||0;
@@ -3665,18 +3688,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const current=oRef.current;
     const deco=safeDecos(safeItems(current)[ii]||{})[di];
     const art=(current.art_files||[]).find(a=>a.id===deco?.art_file_id);
-    if(!deco||!(deco.art_file_id==='__tbd'||/^ART TBD\b/i.test(art?.name||'')))return;
+    if(!deco||!(deco.art_file_id==='__tbd'||isTbdArt(art)))return;
     const label=window.prompt('Identify this Art TBD for the art team:',tbdArtLabel(art?.name));
     if(label===null||!label.trim())return;
     if(art){
-      const arts=(current.art_files||[]).map(a=>a.id===art.id?markArtFieldEdit(a,'name',tbdArtName(a.name,label)):a);
+      const arts=(current.art_files||[]).map(a=>a.id===art.id?markArtFieldEdit(markArtFieldEdit(a,'name',tbdArtName(a.name,label)),'is_tbd',true):a);
       await saveSONow({...current,art_files:arts,updated_at:new Date().toLocaleString()},'Art TBD name');
       return;
     }
-    const n=(current.art_files||[]).filter(a=>/^ART TBD\b/i.test(a.name||'')).length+1;
+    const n=(current.art_files||[]).filter(isTbdArt).length+1;
     const id='af'+Date.now();
     const name=tbdArtName('ART TBD '+n,label);
-    const tbd={id,name,deco_type:deco.art_tbd_type||'screen_print',status:'waiting_for_art',ink_colors:Array.from({length:deco.tbd_colors||1},(_,i)=>'Color '+(i+1)).join('\n'),stitches:deco.tbd_stitches||8000,color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',uploaded:new Date().toLocaleDateString()};
+    const tbd={id,name,is_tbd:true,deco_type:deco.art_tbd_type||'screen_print',status:'waiting_for_art',ink_colors:Array.from({length:deco.tbd_colors||1},(_,i)=>'Color '+(i+1)).join('\n'),stitches:deco.tbd_stitches||8000,color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',uploaded:new Date().toLocaleDateString()};
     const updated={...current,art_files:[...(current.art_files||[]),tbd],items:safeItems(current).map((it,x)=>x===ii?{...it,decorations:safeDecos(it).map((d,i)=>i===di?{...d,art_file_id:id}:d)}:it),updated_at:new Date().toLocaleString()};
     await saveSONow(updated,'Art TBD name');
   };
@@ -3729,99 +3752,83 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // When a DST is uploaded to an approved embroidery art file, mark the job art_complete automatically
   // so the rep doesn't have to manually click "Mark Art Complete" after uploading.
   const _autoCompleteEmbAfterUpload=(newArts)=>{const curO=oRef.current;const updArt=newArts.map(a=>{if((a.deco_type||'')!=='embroidery'||a.status!=='approved'||a.prod_files_attached===true)return a;if(![...(a.files||[]),...(a.prod_files||[])].some(f=>isDstFile(f)&&!isStaleFile(f)))return a;return{...a,prod_files_attached:true}});if(!updArt.some((a,i)=>a!==newArts[i]))return;const updJobs=safeJobs(curO).map(j=>{if(j.art_status!=='upload_emb_files')return j;const ids=(j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');if(!ids.length)return j;const allReady=ids.every(id=>artProdFilesConfirmed(updArt.find(a=>a.id===id)));return allReady?{...j,art_status:'art_complete'}:j});const updated={...curO,art_files:updArt,jobs:updJobs,updated_at:new Date().toLocaleString()};saveSONow(updated,'Art complete','🧵 DST detected — embroidery job auto-marked complete!')};
-  // ── Embroidery stitch-count auto-read ──
-  // Read the stitch count off an embroidery digitizing proof PDF (Wilcom/Tajima/
-  // Melco "Design Information" export) using App.js's pdf.js text extractor, so the
-  // EM price tier comes from the real design instead of the flat 8000-stitch
-  // fallback in decoPricing.emP(). Text-layer proofs auto-fill; image-only proofs
-  // (no text) report "not found" so staff can type it. Never throws into the
-  // caller — a failed read just leaves the field for manual entry.
+  // Read explicit design dimensions and stitch count from embroidery proofs.
+  // Fill blanks only; invoice-protected stitch counts never change in the background.
+  const _embInvoicedRef=useRef(false);
+  _embInvoicedRef.current=(allInvoices||[]).some(inv=>inv&&inv.so_id===o.id);
   const _readStitchesFromPdfFile=async(file)=>{
     if(!extractPdfText||!file)return null;
-    try{const r=await extractPdfText(file);return parseStitchCount(r&&r.fullText);}catch(e){return null;}
+    try{const r=await extractPdfText(file);const text=r?.fullText||'';const stitches=parseStitchCount(text),dimensions=parseEmbroideryDimensions(text);return stitches||dimensions?{stitches,dimensions}:null;}catch(e){return null;}
   };
-  const _applyArtStitches=async(folderId,n,srcName,verb)=>{
-    // Read the live art_files at apply time (the extract await lets any in-flight
-    // upload save settle) and touch only this folder's stitches, mirroring how the
-    // upload handlers themselves splice oRef.current.art_files.
-    const next=(oRef.current.art_files||[]).map(a=>a.id===folderId?{...a,stitches:n}:a);
-    await saveArtFilesNow(next,'Stitches');
-    nf((verb||'Read')+' '+n.toLocaleString()+' stitches'+(srcName?' from '+srcName:''));
-  };
-  // PDFs already attached to the art folder (production files first, then source art). The proof
-  // is usually ALREADY on the job — uploaded before this feature existed, from the Art Dashboard,
-  // or alongside the DST — so the stitch count can be read off the stored URL instead of asking
-  // staff to re-pick a file they already gave us. Stale files (retired by an art update) are
-  // skipped so a redone design can't be priced off the old proof.
   const _artPdfEntries=art=>[...(art?.prod_files||[]),...(art?.files||[])]
     .filter(f=>f&&!isStaleFile(f)&&_isPdfUrl(typeof f==='string'?f:(f.url||''),f))
     .map(f=>({url:typeof f==='string'?f:(f.url||''),name:fileDisplayName(f)}))
-    .filter(f=>/^https?:\/\//i.test(f.url));
-  // Fetch a stored PDF and hand the bytes to the same pdf.js extractor a picked File goes through
-  // (Cloudinary serves delivery URLs CORS-open; a Blob has arrayBuffer() just like a File).
-  // Never throws — a blocked/failed fetch just reads as "no count found".
+    .filter((f,i,rows)=>/^https?:\/\//i.test(f.url)&&rows.findIndex(x=>x.url===f.url)===i);
+  const _applyArtStitches=async(folderId,specs,srcName,verb,sourceOrderId,sourceUrls=[])=>{
+    if(oRef.current.id!==sourceOrderId)return false;
+    const art=(oRef.current.art_files||[]).find(a=>a.id===folderId);
+    if(!art||art.archived||art.deco_type!=='embroidery')return false;
+    const activeUrls=_artPdfEntries(art).map(f=>f.url);
+    if(sourceUrls.some(url=>!activeUrls.includes(url)))return false;
+    const nextArt=fillEmbroiderySpecs(art,specs,{allowStitches:!_embInvoicedRef.current});
+    const changed=[];
+    if(nextArt.art_size!==art.art_size)changed.push(nextArt.art_size);
+    if(nextArt.stitches!==art.stitches)changed.push(nextArt.stitches.toLocaleString()+' stitches');
+    if(!changed.length){if(verb==='Read')nf('PDF read; existing values kept. Enter any corrections in Size or Stitches.');return true;}
+    const saved=await saveArtFilesNow((oRef.current.art_files||[]).map(a=>a.id===folderId?nextArt:a),'Embroidery proof specs');
+    if(!saved)return false;
+    nf((verb||'Read')+' '+changed.join(' · ')+(srcName?' from '+srcName:''));
+    return true;
+  };
   const _readStitchesFromPdfUrl=async(url)=>{
-    try{const r=await fetch(url,{mode:'cors'});if(!r.ok)return null;return await _readStitchesFromPdfFile(await r.blob());}catch(e){return null;}
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),20000);
+    try{const r=await fetch(url,{mode:'cors',signal:controller.signal});if(!r.ok)return null;return await _readStitchesFromPdfFile(await r.blob());}catch(e){return null;}finally{clearTimeout(timer);}
   };
-  // Try each attached PDF in turn; the first one carrying a stitch count wins.
   const _readStitchesFromAttached=async(folderId,verb)=>{
-    for(const p of _artPdfEntries((oRef.current.art_files||[]).find(a=>a.id===folderId))){
-      const n=await _readStitchesFromPdfUrl(p.url);
-      if(n){await _applyArtStitches(folderId,n,p.name,verb);return n}
-    }
-    return null;
+    const sourceOrderId=oRef.current.id;
+    const entries=_artPdfEntries((oRef.current.art_files||[]).find(a=>a.id===folderId));
+    const reads=[];
+    for(const p of entries){const specs=await _readStitchesFromPdfUrl(p.url);if(specs)reads.push({...specs,source:p});}
+    if(!reads.length)return null;
+    const dimensions=[...new Map(reads.filter(r=>r.dimensions).map(r=>[r.dimensions.artSize,r.dimensions])).values()];
+    const stitches=[...new Set(reads.map(r=>r.stitches).filter(Boolean))];
+    if(dimensions.length>1||stitches.length>1){if(verb==='Read')nf('Attached proofs have conflicting dimensions or stitches. Enter the correct values manually, or retire the older proof.','error');return {conflict:true};}
+    const specs={dimensions:dimensions[0]||null,stitches:stitches[0]||null};
+    await _applyArtStitches(folderId,specs,reads.map(r=>r.source.name).join(', '),verb,sourceOrderId,entries.map(p=>p.url));
+    return specs;
   };
-  // Folders whose attached PDFs were already tried and came up empty — the next click on
-  // "Read from PDF" goes straight to the file picker instead of re-reading the same dud proof.
   const _stitchPdfMissed=useRef(new Set());
-  // "Read from PDF": use the PDF already on the folder when there is one, else pick a file.
-  // The picker is only opened on the synchronous path — after an await the browser has lost the
-  // click's user activation and would block it.
+  const _embProofKey=art=>`${o.id}:${art.id}:${_artPdfEntries(art).map(p=>p.url).join('|')}`;
   const readStitchesFromPdf=async(folderId)=>{
     if(!extractPdfText){nf('PDF reading is unavailable here','error');return;}
-    const attached=_artPdfEntries((oRef.current.art_files||[]).find(a=>a.id===folderId));
-    if(attached.length&&!_stitchPdfMissed.current.has(folderId)){
-      nf('Reading stitch count…');
-      const n=await _readStitchesFromAttached(folderId,'Read');
-      if(n)return;
-      _stitchPdfMissed.current.add(folderId);
-      nf('No stitch count in '+attached.map(p=>p.name).join(', ')+' — click again to pick another PDF, or type it in','error');
-      return;
+    const art=(oRef.current.art_files||[]).find(a=>a.id===folderId);if(!art)return;
+    const attached=_artPdfEntries(art),key=_embProofKey(art);
+    if(attached.length&&!_stitchPdfMissed.current.has(key)){
+      nf('Reading dimensions and stitches…');
+      const specs=await _readStitchesFromAttached(folderId,'Read');
+      if(specs)return;
+      _stitchPdfMissed.current.add(key);
+      nf('No labeled dimensions or stitch count found — click again to choose another PDF, or enter them manually.','error');return;
     }
+    const sourceOrderId=oRef.current.id;
     const inp=document.createElement('input');inp.type='file';inp.accept='.pdf';
-    inp.onchange=async()=>{const f=inp.files&&inp.files[0];if(!f)return;nf('Reading stitch count…');
-      const n=await _readStitchesFromPdfFile(f);
-      if(n)await _applyArtStitches(folderId,n,f.name,'Read');
-      else nf('No stitch count found in '+f.name+' — enter it manually','error');};
-    inp.click();
+    inp.onchange=async()=>{const f=inp.files&&inp.files[0];if(!f)return;nf('Reading dimensions and stitches…');const specs=await _readStitchesFromPdfFile(f);
+      if(specs)await _applyArtStitches(folderId,specs,f.name,'Read',sourceOrderId);else nf('No labeled dimensions or stitch count found — enter them manually.','error');};inp.click();
   };
-  // Opportunistic auto-read after a production-file upload: only when the art is
-  // embroidery, a PDF was among the uploads, and no stitch count is set yet.
-  // Silent on a miss (image-only proof / no match) — the manual field/button remain.
   const maybeAutoReadStitches=async(arts,folderId,uploadedFiles)=>{
     if(!extractPdfText)return;
     const art=(arts||[]).find(a=>a.id===folderId);
-    if(!art||(art.deco_type||'')!=='embroidery'||art.stitches)return;
-    const pdf=(uploadedFiles||[]).find(f=>f&&/\.pdf$/i.test(f.name||''));
-    if(!pdf)return;
-    const n=await _readStitchesFromPdfFile(pdf);
-    if(n)await _applyArtStitches(folderId,n,pdf.name,'Auto-read');
+    if(!art||art.deco_type!=='embroidery'||(String(art.art_size||'').trim()&&(art.stitches||_embInvoicedRef.current)))return;
+    if(!(uploadedFiles||[]).some(f=>f&&/\.pdf$/i.test(f.name||'')))return;
+    // Resolve attached/current files rather than an obsolete upload after a folder change.
+    await _readStitchesFromAttached(folderId,'Auto-read');
   };
-  // Auto-read on open: any embroidery folder with no stitch count but a proof PDF already
-  // attached fills itself in, so a PDF that landed before this feature existed (or came in via
-  // the Art Dashboard) doesn't sit there waiting for someone to click the button. One attempt
-  // per folder per session, silent on a miss (image-only proof) — the field/button still work.
-  // Skipped once the SO has been invoiced: the stitch count moves the EM price tier, and an
-  // already-billed order must not silently re-price itself in the background.
   const _autoStitchTried=useRef(new Set());
   useEffect(()=>{
     if(!extractPdfText)return;
-    if((allInvoices||[]).some(inv=>inv&&inv.so_id===o.id))return;
-    const targets=(o.art_files||[]).filter(a=>a&&(a.deco_type||'')==='embroidery'&&!a.stitches
-      &&!_autoStitchTried.current.has(a.id)&&_artPdfEntries(a).length>0);
-    if(!targets.length)return;
-    let cancelled=false;
-    (async()=>{for(const a of targets){if(cancelled)break;_autoStitchTried.current.add(a.id);await _readStitchesFromAttached(a.id,'Auto-read')}})();
+    const targets=(o.art_files||[]).filter(a=>a&&!a.archived&&a.deco_type==='embroidery'&&(!String(a.art_size||'').trim()||(!a.stitches&&!_embInvoicedRef.current))&&!_autoStitchTried.current.has(_embProofKey(a))&&_artPdfEntries(a).length);
+    if(!targets.length)return;let cancelled=false;
+    (async()=>{for(const a of targets){if(cancelled)break;_autoStitchTried.current.add(_embProofKey(a));await _readStitchesFromAttached(a.id,'Auto-read');}})();
     return()=>{cancelled=true};
   },[o.art_files,o.id,allInvoices,extractPdfText]);
   // The customer whose library this order's art should be promoted into. Library art lives on
@@ -3986,7 +3993,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {label:'Vendor',value:vendor,sub:isDPO?(po.deco_type||'').replace(/_/g,' '):(vendorEmail||undefined)},
         {label:'Ship To',value:_shipTo.name,sub:_shipTo.sub},
         {label:'Sales Order',value:o.id,sub:(cust?.name||'')+(o.memo?' — '+o.memo:'')},
-        {label:'Expected Date',value:o.expected_date||'TBD',sub:'Rep: '+(REPS.find(r=>r.id===(cust?.primary_rep_id||o.created_by))?.name||'—')},
+        {label:'Expected Date',value:o.expected_date||'TBD',sub:'Rep: '+(REPS.find(r=>r.id===(o.rep_id||cust?.primary_rep_id||o.created_by))?.name||'—')},
       ],
       tables:[
         ...linesData.map(ld=>({
@@ -4873,7 +4880,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(!showAdd||!pS||pS.length<2||fp.length>0||!searchProductsProp){setServerProducts([]);return}
     serverSearchTimer.current=setTimeout(async()=>{
       try{
-        const res=await searchProductsProp(pS,{},0,12);
+        const res=await searchProductsProp(pS,{},0,40);
         if(res?.products?.length)setServerProducts(res.products);
         else setServerProducts([]);
       }catch(e){setServerProducts([])}
@@ -4883,7 +4890,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Momentec items are added through the live Momentec search below (one row per
   // style, real per-color dealer cost), so keep their per-colorway catalog rows
   // (one per color, MSRP-based cost) out of this local list to avoid duplicates.
-  const _serverFp=serverProducts.filter(p=>{if(!pS||pS.length<2)return false;const toks=pS.toLowerCase().split(/\s+/).filter(Boolean);if(!toks.length)return false;const sk=(p.sku||'').toLowerCase(),nm=(p.name||'').toLowerCase(),br=(p.brand||'').toLowerCase(),cl=(p.color||'').toLowerCase();return toks.every(t=>sk.includes(t)||nm.includes(t)||br.includes(t)||cl.includes(t));});
+  const _serverFp=serverProducts.filter(p=>{if(!pS||pS.length<2)return false;const toks=pS.toLowerCase().split(/\s+/).filter(Boolean);if(!toks.length)return false;const sk=(p.sku||'').toLowerCase(),nm=(p.name||'').toLowerCase(),br=(p.brand||'').toLowerCase(),cl=(p.color||'').toLowerCase();return toks.every(t=>sk.includes(t)||nm.includes(t)||br.includes(t)||cl.includes(t))&&a4Visible(p,toks);});
   // Richardson, S&S, SanMar and Momentec each have their own live API search block below, so keep their
   // catalog rows out of these results — matched by the product's real vendor (api_provider, via the
   // isXItem helpers), not inventory_source: S&S/SanMar rows carry mixed source tags (click/ua/nike) a
@@ -5135,11 +5142,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {isSO&&cust&&<div style={{display:'flex',alignItems:'center',gap:6,marginTop:2}}>
             <span style={{fontSize:11,color:'#64748b',fontWeight:600}}>Rep:</span>
             {editingRep
-              ?<><select className="form-select" style={{width:160,fontSize:11,padding:'1px 4px'}} defaultValue={cust.primary_rep_id||''} onChange={e=>{if(onChangeRep)onChangeRep(e.target.value);setEditingRep(false)}}>
-                <option value="">— None —</option>
+              ?<><select className="form-select" style={{width:160,fontSize:11,padding:'1px 4px'}} defaultValue={o.rep_id||''} onChange={e=>{sv('rep_id',e.target.value||null);setEditingRep(false)}}>
+                <option value="">Account rep ({REPS.find(r=>r.id===(cust.primary_rep_id||o.created_by))?.name||'none'})</option>
                 {REPS.filter(r=>r.is_active!==false&&isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
               </select><button style={{fontSize:10,background:'none',border:'none',cursor:'pointer',color:'#94a3b8'}} onClick={()=>setEditingRep(false)}>Cancel</button></>
-              :<><span style={{fontSize:11,color:'#1e293b'}}>{REPS.find(r=>r.id===cust.primary_rep_id)?.name||'—'}</span>
+              :<><span style={{fontSize:11,color:'#1e293b'}}>{REPS.find(r=>r.id===(o.rep_id||cust.primary_rep_id))?.name||'—'}{o.rep_id&&<span style={{fontSize:10,color:'#94a3b8'}} title="Set on this order only — the account's rep is unchanged"> (this order)</span>}</span>
               <button style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:10,padding:'0 2px'}} title="Change rep" onClick={()=>setEditingRep(true)}>✏️</button></>}
           </div>}
           {cust?.alpha_tag&&<div style={{fontSize:11,marginTop:2}}><a href={'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cust.alpha_tag)} target="_blank" rel="noreferrer" style={{color:'#7c3aed',textDecoration:'none',fontWeight:500}}>🔗 Customer Portal</a></div>}
@@ -5323,7 +5330,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {label:'Bill To',value:(ddBillSel&&ddBillSel.name)||cust?.name||'—',sub:ddBillAddr||''},
                   ...(ddShipAddr?[{label:'Ship To',value:(ddShipSel&&ddShipSel.name)||cust?.name||'—',sub:ddShipAddr}]:[]),
                   ...(isE?[]:[{label:'Expected',value:o.expected_date||'TBD'}]),
-                  {label:'Sales Rep',value:REPS.find(r2=>r2.id===(cust?.primary_rep_id||o.created_by))?.name||'—'},
+                  {label:'Sales Rep',value:REPS.find(r2=>r2.id===(o.rep_id||cust?.primary_rep_id||o.created_by))?.name||'—'},
                   {label:isE?'Estimate':'Sales Order',value:o.id},
                   {label:'Memo',value:o.memo||'—',...(isE?{flex:2}:{})},
                 ],
@@ -5653,7 +5660,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <span style={{fontSize:11,fontWeight:700,color:'#1e40af'}}>📦 PRIOR SHIPPING CARRIED</span>
         <span style={{fontSize:12}}>From an earlier Manual Ship recorded when {cust?.name||'this customer'} had no open order.</span>
         <span style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>Billed on this order: ${safeNum(o.pending_ship_amount).toFixed(2)}</span>
-        {onReleasePendingShip&&<button className="btn btn-sm" style={{fontSize:10,color:'#dc2626',border:'1px solid #fca5a5',background:'white'}} onClick={()=>{if(window.confirm('Remove the $'+safeNum(o.pending_ship_amount).toFixed(2)+" prior shipping charge from this order? It returns to the customer's balance and will attach to their next order instead."))onReleasePendingShip(o)}}>Remove</button>}
+        {onReleasePendingShip&&<button className="btn btn-sm" style={{fontSize:10,color:'#dc2626',border:'1px solid #fca5a5',background:'white'}} onClick={()=>{if(window.confirm('Remove the $'+safeNum(o.pending_ship_amount).toFixed(2)+" prior shipping charge from this order? It returns to the customer's balance and will be offered on their next order instead."))onReleasePendingShip(o)}}>Remove</button>}
+      </div>}
+      {/* Unbilled prior shipping — shown to the rep only, never billed unless they add it */}
+      {isSO&&!o.pending_ship_applied&&safeNum(pendingShipAvail?.amount)>0&&<div style={{margin:'8px 0',padding:'10px 16px',background:'#fffbeb',borderRadius:8,border:'1px solid #fde68a',display:'flex',gap:16,alignItems:'center',flexWrap:'wrap'}}>
+        <span style={{fontSize:11,fontWeight:700,color:'#92400e'}}>📦 UNBILLED PRIOR SHIPPING</span>
+        <span style={{fontSize:12}}>{cust?.name||'This customer'} has ${safeNum(pendingShipAvail.amount).toFixed(2)} of shipping from an earlier Manual Ship{safeNum(pendingShipAvail.cost)>0?' (label cost $'+safeNum(pendingShipAvail.cost).toFixed(2)+')':''}. Not on this order — add it only if it should be billed here.</span>
+        {(allInvoices||[]).some(i=>i.so_id===o.id)
+          ?<span style={{fontSize:11,color:'#92400e'}}>This order is already invoiced — bill it on their next order.</span>
+          :<button className="btn btn-sm" style={{fontSize:10,color:'#92400e',border:'1px solid #fcd34d',background:'white'}} onClick={()=>{
+            if(!window.confirm('Add $'+safeNum(pendingShipAvail.amount).toFixed(2)+' of prior shipping to '+o.id+'? It will be billed on this order\'s invoice.'))return;
+            const _nc=Math.round((safeNum(o._shipping_cost||o._shipstation_cost||0)+safeNum(pendingShipAvail.cost))*100)/100;
+            const updated={...o,pending_ship_applied:true,pending_ship_amount:safeNum(pendingShipAvail.amount),...(_nc>0?{_shipping_cost:_nc,_shipstation_cost:_nc}:{}),updated_at:new Date().toLocaleString()};
+            setO(updated);onSave(updated)}}>Add to this order</button>}
       </div>}
       {/* SO STATUS — fully auto-calculated from items/jobs */}
       {isSO&&(()=>{
@@ -5792,13 +5811,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     const icon=artF?(artF.deco_type==='screen_print'?'🎨':artF.deco_type==='embroidery'?'🧵':'🔥'):'🎨';
                     return<span key={di} style={{display:'inline-flex',alignItems:'center',gap:4,background:'#faf5ff',border:'1px solid #ede9fe',borderRadius:6,padding:'1px 6px 1px 1px'}}>
                       <span title={artF?.name||'No artwork selected'} style={{width:22,height:22,borderRadius:4,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:13,overflow:'hidden',background:_thumb?'white':(!d.art_file_id||d.art_file_id==='__tbd')?'#fef3c7':'#ede9fe',border:_thumb?'1px solid #e2e8f0':'none'}}>{_thumb?<img src={_thumb} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:icon}</span>
-                      <select className="form-select" style={{fontSize:11,padding:'1px 4px',height:24,maxWidth:160,border:!d.art_file_id?'1px solid #f59e0b':'1px solid #ddd6fe',background:'white'}} value={d.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){uDM(idx,di,{art_file_id:'__tbd',art_tbd_type:'screen_print',sell_override:null})}else if(v==='__new_tbd'){const tbdCount=af.filter(f=>f.name&&f.name.startsWith('ART TBD')).length;const newName='ART TBD '+(tbdCount+1);const newTbd={id:'af'+Date.now(),name:newName,deco_type:'screen_print',status:'waiting_for_art',color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',uploaded:new Date().toLocaleDateString()};setO(e2=>({...e2,art_files:[...(e2.art_files||[]),newTbd],items:safeItems(e2).map((it2,x)=>x===idx?{...it2,decorations:it2.decorations.map((d2,i)=>i===di?{...d2,art_file_id:newTbd.id}:d2)}:it2),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Created '+newName)}else{changeArtFileId(idx,di,v||null)}}}>
+                      <select className="form-select" style={{fontSize:11,padding:'1px 4px',height:24,maxWidth:160,border:!d.art_file_id?'1px solid #f59e0b':'1px solid #ddd6fe',background:'white'}} value={d.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){uDM(idx,di,{art_file_id:'__tbd',art_tbd_type:'screen_print',sell_override:null})}else if(v==='__new_tbd'){const tbdCount=af.filter(isTbdArt).length;const newName='ART TBD '+(tbdCount+1);const newTbd={id:'af'+Date.now(),name:newName,deco_type:'screen_print',status:'waiting_for_art',color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',uploaded:new Date().toLocaleDateString()};setO(e2=>({...e2,art_files:[...(e2.art_files||[]),newTbd],items:safeItems(e2).map((it2,x)=>x===idx?{...it2,decorations:it2.decorations.map((d2,i)=>i===di?{...d2,art_file_id:newTbd.id}:d2)}:it2),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Created '+newName)}else{changeArtFileId(idx,di,v||null)}}}>
                         <option value="">⚠️ Select artwork...</option>
                         <option value="__tbd">🎨 Art TBD</option>
                         <option value="__new_tbd">➕ New Art TBD...</option>
                         {af.filter(f=>f.id!=='__tbd').map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}
                       </select>
-                      {(d.art_file_id==='__tbd'||/^ART TBD\b/i.test(artF?.name||''))&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>renameTbdArt(idx,di)}>Rename</button>}
+                      {(d.art_file_id==='__tbd'||isTbdArt(artF))&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>renameTbdArt(idx,di)}>Rename</button>}
                       <select className="form-select" style={{fontSize:10,padding:'1px 3px',height:24,maxWidth:110,border:'1px solid #ddd6fe',color:'#7c3aed',fontWeight:600,background:'white'}} value={d.position||''} onChange={e=>uD(idx,di,'position',e.target.value)} title="Decoration position">{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
                     </span>;
                   });
@@ -6195,11 +6214,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     {artF.notes&&<div style={{fontSize:10,color:'#7c3aed'}}>{artF.notes}</div>}
                     <div style={{fontSize:10,marginTop:4,padding:'2px 6px',display:'inline-block',borderRadius:4,background:artF.status==='approved'?'#dcfce7':'#fef3c7',color:artF.status==='approved'?'#166534':'#92400e'}}>{artF.status}</div>
                   </div></div>}
-                  <select className="form-select" style={{width:200,fontSize:12,border:!deco.art_file_id?'2px solid #f59e0b':'1px solid #22c55e'}} value={deco.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){uDM(idx,di,{art_file_id:'__tbd',art_tbd_type:'screen_print',sell_override:null})}else if(v==='__new_tbd'){const tbdCount=af.filter(f=>f.name&&f.name.startsWith('ART TBD')).length;const newName='ART TBD '+(tbdCount+1);const newTbd={id:'af'+Date.now(),name:newName,deco_type:'screen_print',status:'waiting_for_art',color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',uploaded:new Date().toLocaleDateString()};setO(e=>({...e,art_files:[...(e.art_files||[]),newTbd],items:safeItems(e).map((it,x)=>x===idx?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,art_file_id:newTbd.id}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Created '+newName)}else{changeArtFileId(idx,di,v||null)}}}>
+                  <select className="form-select" style={{width:200,fontSize:12,border:!deco.art_file_id?'2px solid #f59e0b':'1px solid #22c55e'}} value={deco.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){uDM(idx,di,{art_file_id:'__tbd',art_tbd_type:'screen_print',sell_override:null})}else if(v==='__new_tbd'){const tbdCount=af.filter(isTbdArt).length;const newName='ART TBD '+(tbdCount+1);const newTbd={id:'af'+Date.now(),name:newName,deco_type:'screen_print',status:'waiting_for_art',color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',uploaded:new Date().toLocaleDateString()};setO(e=>({...e,art_files:[...(e.art_files||[]),newTbd],items:safeItems(e).map((it,x)=>x===idx?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,art_file_id:newTbd.id}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Created '+newName)}else{changeArtFileId(idx,di,v||null)}}}>
                     <option value="">⚠️ Select artwork...</option>
                     <option value="__tbd">🎨 Art TBD (pricing only)</option>
                     <option value="__new_tbd">➕ New Art TBD...</option>{af.filter(f=>f.id!=='__tbd').map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}</select>
-                  {(deco.art_file_id==='__tbd'||/^ART TBD\b/i.test(artF?.name||''))&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>renameTbdArt(idx,di)}>Rename</button>}
+                  {(deco.art_file_id==='__tbd'||isTbdArt(artF))&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>renameTbdArt(idx,di)}>Rename</button>}
                   {deco.art_file_id==='__tbd'&&<><select className="form-select" style={{width:130,fontSize:11,border:'1px solid #f59e0b'}} value={deco.art_tbd_type||'screen_print'} onChange={e=>uDM(idx,di,{art_tbd_type:e.target.value,sell_override:null})}>
                     <option value="screen_print">Screen Print</option><option value="embroidery">Embroidery</option><option value="heat_press">Heat Press</option><option value="dtf">DTF</option></select>
                   {(deco.art_tbd_type||'screen_print')==='screen_print'&&<select className="form-select" style={{width:90,fontSize:10}} value={deco.tbd_colors||1} onChange={e=>uDM(idx,di,{tbd_colors:parseInt(e.target.value),sell_override:null})}>
@@ -6210,7 +6229,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Art Needed</span></>}
                   <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
                   {deco.split_group&&(()=>{const ss=deco.split_sizes||{};const tot=Object.values(ss).reduce((a,v)=>a+safeNum(v),0);const ordd=sz=>{const i=SZ_ORD.indexOf(sz);return i===-1?99:i};const summ=Object.entries(ss).filter(([,v])=>safeNum(v)>0).sort((a,b)=>ordd(a[0])-ordd(b[0])).map(([sz,v])=>sz+' '+v).join(' · ');return<span onClick={()=>openSplitArt(idx)} title={'Split — '+(summ||'none yet')+' · click to edit'} style={{display:'inline-flex',alignItems:'center',gap:3,fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:5,background:'#f5f3ff',color:'#6d28d9',border:'1px solid #ddd6fe',cursor:'pointer',whiteSpace:'nowrap'}}>✂️ Split {tot}/{qty}</span>})()}
-                  {artF&&<>{(()=>{const afi=af.findIndex(f=>f.id===artF.id);const isTbd=artF.name&&artF.name.startsWith('ART TBD');
+                  {artF&&<>{(()=>{const afi=af.findIndex(f=>f.id===artF.id);const isTbd=isTbdArt(artF);
                       if(isTbd)return<><select className="form-select" style={{width:130,fontSize:11,border:'1px solid #f59e0b'}} value={artF.deco_type||'screen_print'} onChange={e=>{uArt(afi,'deco_type',e.target.value);uD(idx,di,'sell_override',null)}}><option value="screen_print">Screen Print</option><option value="embroidery">Embroidery</option><option value="heat_press">Heat Press</option><option value="dtf">DTF</option></select>
                         {artF.deco_type==='screen_print'&&<><select className="form-select" style={{width:90,fontSize:10}} value={artF.ink_colors?artF.ink_colors.split('\n').filter(l=>l.trim()).length:1} onChange={e=>{const n=parseInt(e.target.value);const inks=Array.from({length:n},(_,i)=>'Color '+(i+1)).join('\n');uArt(afi,'ink_colors',inks);uD(idx,di,'sell_override',null)}}>{[1,2,3,4,5].map(n=><option key={n} value={n}>{n} color{n>1?'s':''}</option>)}</select>
                         <label style={{fontSize:10,display:'flex',alignItems:'center',gap:3,padding:'2px 6px',background:deco.underbase?'#fef3c7':'transparent',borderRadius:4,cursor:'pointer'}}><input type="checkbox" checked={deco.underbase||false} onChange={e=>uDM(idx,di,{underbase:e.target.checked,sell_override:null})}/> Underbase</label></>}
@@ -6219,7 +6238,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         {(artF.deco_type==='dtf'||artF.deco_type==='heat_press')&&<select className="form-select" style={{width:140,fontSize:10}} value={artF.dtf_size||0} onChange={e=>{uArt(afi,'dtf_size',parseInt(e.target.value));uD(idx,di,'sell_override',null)}}>{DTF.map((t,ti)=><option key={ti} value={ti}>{t.label}</option>)}</select>}
                         <span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Art Needed</span></>;
                       return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:artF.deco_type==='screen_print'?'#dbeafe':artF.deco_type==='embroidery'?'#ede9fe':'#fef3c7',color:artF.deco_type==='screen_print'?'#1e40af':artF.deco_type==='embroidery'?'#6d28d9':'#92400e'}}>{artF.deco_type.replace('_',' ')}</span>})()}
-                    {(()=>{const afi=af.findIndex(f=>f.id===artF.id);const isTbd=artF.name&&artF.name.startsWith('ART TBD');
+                    {(()=>{const afi=af.findIndex(f=>f.id===artF.id);const isTbd=isTbdArt(artF);
                       if(isTbd)return null;
                       if((artF.color_ways||[]).length>0){
                         if(artF.color_ways.length===1&&!deco.color_way_id){setTimeout(()=>uD(idx,di,'color_way_id',artF.color_ways[0].id),0)}
@@ -6250,7 +6269,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       return null})()}
                     {artF.art_size&&<span style={{fontSize:11,color:'#94a3b8'}}>{artF.art_size}</span>}</>}
                   {/* Per-design status badge on the design's own row; Underbase is a garment-level toggle in the item bar */}
-                  {artF&&!(artF.name&&artF.name.startsWith('ART TBD'))&&(()=>{const st=artF.status==='uploaded'?'needs_approval':artF.status;return (st&&st!=='waiting_for_art')?<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:st==='approved'?'#dcfce7':'#fef3c7',color:st==='approved'?'#166534':'#92400e',fontWeight:600}}>{st==='approved'?'Approved':st==='needs_approval'?'Needs Approval':st.replace(/_/g,' ')}</span>:null})()}
+                  {artF&&!isTbdArt(artF)&&(()=>{const st=artF.status==='uploaded'?'needs_approval':artF.status;return (st&&st!=='waiting_for_art')?<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:st==='approved'?'#dcfce7':'#fef3c7',color:st==='approved'?'#166534':'#92400e',fontWeight:600}}>{st==='approved'?'Approved':st==='needs_approval'?'Needs Approval':st.replace(/_/g,' ')}</span>:null})()}
                   <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
                     <span style={{fontSize:11}}>Cost: <strong style={{color:'#dc2626'}}>${decoUnitCost.toFixed(2)}</strong>{dp._unpriced&&decoCostTotal<=0&&<span title={"The screen print matrix has no price for this run (qty x ink colors), so it is costing $0. Fill the cell in Settings > Pricing > Screen Print Pricing, then re-save this order."} style={{marginLeft:4,fontSize:9,fontWeight:700,padding:'1px 5px',borderRadius:4,background:'#fee2e2',color:'#991b1b'}}>UNPRICED</span>}{costArtQty[deco.art_file_id]>0&&<span title={"Combined run of "+costArtQty[deco.art_file_id]+" units across manually-linked jobs that share this screen — cost only; the sale price is unaffected."} style={{marginLeft:4,fontSize:9,fontWeight:700,color:'#166534'}}>🔗</span>}{_outsideEst&&<span title={"Cost from "+_outsideEst+"'s price list (outside decoration). A Deco PO / actual bill supersedes this estimate."} style={{marginLeft:4,fontSize:9,fontWeight:700,color:'#7c3aed'}}>🎨 {_outsideEst}</span>}</span>
                     <span style={{fontSize:11}}>Sell: <$In value={promoDecoSell} onChange={v=>uD(idx,di,'sell_override',item.is_promo&&o.promo_applied?rQ(v/1.25):v)} w={50}/></span>
@@ -6599,8 +6618,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <button className="btn btn-secondary" style={{background:'#ecfeff',color:'#0e7490',borderColor:'#a5f3fc'}} onClick={()=>setShowCustSupp(!showCustSupp)} disabled={!cust} title="Add a garment the customer is providing — $0 sell price, decoration charges apply"><Icon name="plus" size={14}/> Customer Item</button>
       <button className="btn btn-secondary" style={{marginLeft:'auto',background:'#7c3aed',color:'white',borderColor:'#6d28d9'}} onClick={()=>setAiBuild({step:'input',inputMode:'text',text:'',images:[],url:'',loading:false,error:null,parsed:[],warnings:[],build_id:null})} disabled={!cust} title="Use AI to parse a coach's order (text, image, or Google Sheets link) into line items">✨ Build with AI</button></div>
       :<div><div className="search-bar" style={{marginBottom:8}}><Icon name="search"/><input placeholder="Search SKU, name, brand... (searches S&S + SanMar live)" value={pS} onChange={e=>setPS(e.target.value)} autoFocus/></div>
-        <div style={{maxHeight:350,overflow:'auto'}}>
-          {allFp.slice(0,12).map(p=><div key={p.id} style={{padding:'10px 12px',borderBottom:'1px solid #f8fafc',cursor:'pointer',display:'flex',alignItems:'center',gap:10}} onClick={()=>addP(p)}>
+        <div style={{maxHeight:'65vh',overflow:'auto'}}>
+          {allFp.slice(0,40).map(p=><div key={p.id} style={{padding:'10px 12px',borderBottom:'1px solid #f8fafc',cursor:'pointer',display:'flex',alignItems:'center',gap:10}} onClick={()=>addP(p)}>
           <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:3}}>{p.sku}</span><span style={{fontWeight:600}}>{p.name}</span>{p.color&&<span style={{fontSize:11,color:'#64748b'}}>— {p.color}</span>}<span className="badge badge-blue">{p.brand}</span>
           {p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}
           {p.is_clearance&&p.clearance_cost!=null&&<span style={{fontSize:9,fontWeight:700,padding:'1px 5px',borderRadius:4,background:'#fef3c7',color:'#92400e'}}>CLEARANCE</span>}
@@ -6612,7 +6631,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {ssSearching&&<span style={{fontSize:10,color:'#a78bfa'}}>Searching...</span>}
               {!ssSearching&&ssResults.length>0&&<span style={{fontSize:10,color:'#8b5cf6'}}>{ssResults.length} style{ssResults.length!==1?'s':''}</span>}
             </div>
-            {ssResults.slice(0,10).map((ss,si)=>{const eKey='ss-'+si;const isExp=expandedStyle===eKey;return<div key={si}>
+            {ssResults.slice(0,25).map((ss,si)=>{const eKey='ss-'+si;const isExp=expandedStyle===eKey;return<div key={si}>
               <div style={{padding:'8px 12px',borderBottom:'1px solid #f5f3ff',cursor:'pointer',display:'flex',alignItems:'center',gap:10,background:isExp?'#ede9fe':si%2===0?'#faf8ff':'white'}} onClick={()=>setExpandedStyle(isExp?null:eKey)}>
                 {ss.styleImage?<img src={ss.styleImage} alt="" style={{width:32,height:32,objectFit:'contain',borderRadius:4,background:'#f8fafc'}} onError={e=>{e.target.style.display='none'}}/>:<div style={{width:32,height:32,borderRadius:4,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'#7c3aed',fontWeight:700,flexShrink:0}}>SS</div>}
                 <span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',background:'#ede9fe',padding:'2px 6px',borderRadius:3,fontSize:12}}>{ss.sku}</span>
@@ -6645,7 +6664,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {smSearching&&<span style={{fontSize:10,color:'#22d3ee'}}>Searching...</span>}
               {!smSearching&&smResults.length>0&&<span style={{fontSize:10,color:'#0891b2'}}>{smResults.length} style{smResults.length!==1?'s':''}</span>}
             </div>
-            {smResults.slice(0,10).map((sm,si)=>{const eKey='sm-'+si;const isExp=expandedStyle===eKey;return<div key={'sm'+si}>
+            {smResults.slice(0,25).map((sm,si)=>{const eKey='sm-'+si;const isExp=expandedStyle===eKey;return<div key={'sm'+si}>
               <div style={{padding:'8px 12px',borderBottom:'1px solid #ecfeff',cursor:'pointer',display:'flex',alignItems:'center',gap:10,background:isExp?'#cffafe':si%2===0?'#f0fdfa':'white'}} onClick={()=>setExpandedStyle(isExp?null:eKey)}>
                 {sm.styleImage?<img src={sm.styleImage} alt="" style={{width:32,height:32,objectFit:'contain',borderRadius:4,background:'#f8fafc'}} onError={e=>{e.target.style.display='none'}}/>:<div style={{width:32,height:32,borderRadius:4,background:'#cffafe',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'#0891b2',fontWeight:700,flexShrink:0}}>SM</div>}
                 <span style={{fontFamily:'monospace',fontWeight:700,color:'#0891b2',background:'#cffafe',padding:'2px 6px',borderRadius:3,fontSize:12}}>{sm.sku}</span>
@@ -6678,7 +6697,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {mtSearching&&<span style={{fontSize:10,color:'#d97706'}}>Searching...</span>}
               {!mtSearching&&mtResults.length>0&&<span style={{fontSize:10,color:'#b45309'}}>{mtResults.length} style{mtResults.length!==1?'s':''}</span>}
             </div>
-            {mtResults.slice(0,10).map((mt,mi)=>{const eKey='mt-'+mi;const isExp=expandedStyle===eKey;return<div key={'mt'+mi}>
+            {mtResults.slice(0,25).map((mt,mi)=>{const eKey='mt-'+mi;const isExp=expandedStyle===eKey;return<div key={'mt'+mi}>
               <div style={{padding:'8px 12px',borderBottom:'1px solid #fef3c7',cursor:'pointer',display:'flex',alignItems:'center',gap:10,background:isExp?'#fde68a':mi%2===0?'#fffbeb':'white'}} onClick={()=>setExpandedStyle(isExp?null:eKey)}>
                 <div style={{width:32,height:32,borderRadius:4,background:'#fde68a',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'#b45309',fontWeight:700,flexShrink:0}}>MT</div>
                 <span style={{fontFamily:'monospace',fontWeight:700,color:'#b45309',background:'#fde68a',padding:'2px 6px',borderRadius:3,fontSize:12}}>{mt.sku}</span>
@@ -6706,7 +6725,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {rsSearching&&<span style={{fontSize:10,color:'#f87171'}}>Searching...</span>}
               {!rsSearching&&rsResults.length>0&&<span style={{fontSize:10,color:'#dc2626'}}>{rsResults.length} style{rsResults.length!==1?'s':''}</span>}
             </div>
-            {rsResults.slice(0,10).map((rs,ri)=>{const eKey='rs-'+ri;const isExp=expandedStyle===eKey;return<div key={'rs'+ri}>
+            {rsResults.slice(0,25).map((rs,ri)=>{const eKey='rs-'+ri;const isExp=expandedStyle===eKey;return<div key={'rs'+ri}>
               <div style={{padding:'8px 12px',borderBottom:'1px solid #fef2f2',cursor:'pointer',display:'flex',alignItems:'center',gap:10,background:isExp?'#fecaca':ri%2===0?'#fff5f5':'white'}} onClick={()=>setExpandedStyle(isExp?null:eKey)}>
                 {rs.styleImage?<img src={rs.styleImage} alt="" style={{width:32,height:32,objectFit:'contain',borderRadius:4,background:'#f8fafc'}} onError={e=>{e.target.style.display='none'}}/>:<div style={{width:32,height:32,borderRadius:4,background:'#fecaca',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'#dc2626',fontWeight:700,flexShrink:0}}>RS</div>}
                 <span style={{fontFamily:'monospace',fontWeight:700,color:'#dc2626',background:'#fecaca',padding:'2px 6px',borderRadius:3,fontSize:12}}>{rs.sku}</span>
@@ -7125,7 +7144,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </div>
                 {art.dtf_purchased&&<span title={'DTF purchased'+(art.dtf_purchased.po_id?' on '+art.dtf_purchased.po_id:'')+(art.dtf_purchased.vendor?' from '+art.dtf_purchased.vendor:'')+(art.dtf_purchased.date?' · '+art.dtf_purchased.date:'')} style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:700,flexShrink:0,background:'#fef3c7',color:'#b45309'}}>🖨️ DTF Purchased</span>}
                 <span style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:600,flexShrink:0,background:ART_FILE_SC[art.status]?.bg||ART_FILE_SC.waiting_for_art.bg,color:ART_FILE_SC[art.status]?.c||ART_FILE_SC.waiting_for_art.c}}>{art.status==='approved'?'Approved':art.status==='needs_approval'?'Needs Approval':'Waiting'}</span>
-                {/^ART TBD\b/i.test(art.name||'')&&<button className="btn btn-sm" style={{fontSize:10,flexShrink:0,background:"#ede9fe",color:"#6d28d9",border:"1px solid #c4b5fd",fontWeight:700}} onClick={e=>{e.stopPropagation();setReplaceTbdId(art.id);setShowPrevArt(true)}}>Change to previous art</button>}
+                {isTbdArt(art)&&<button className="btn btn-sm" style={{fontSize:10,flexShrink:0,background:"#ede9fe",color:"#6d28d9",border:"1px solid #c4b5fd",fontWeight:700}} onClick={e=>{e.stopPropagation();setReplaceTbdId(art.id);setShowPrevArt(true)}}>Change to previous art</button>}
                 <button className="btn btn-sm" style={{fontSize:10,flexShrink:0,background:'#4f46e5',color:'white',border:'none',fontWeight:700}} title="Pick which line items this art applies to, with location and color way per item" onClick={e=>{e.stopPropagation();openArtApply(art)}}>🎯 Apply to items</button>
                 <button className="btn btn-sm btn-secondary" style={{fontSize:10,flexShrink:0}} onClick={e=>{e.stopPropagation();rmArt(i)}}><Icon name="trash" size={10}/></button>
               </div>
@@ -7153,7 +7172,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <Bg options={[{value:'screen_print',label:'Screen Print'},{value:'embroidery',label:'Embroidery'},{value:'dtf',label:'DTF'}]} value={art.deco_type} onChange={v=>uArt(i,'deco_type',v)}/></div>
                   {/* Size + default location */}
                   <div style={{display:'flex',gap:8,marginBottom:6,alignItems:'flex-end',flexWrap:'wrap'}}>
-                    <div style={{width:140}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size *</label><$Txt className="form-input" value={art.art_size||''} onChange={v=>uArt(i,'art_size',v)} placeholder='e.g. 12" x 4"' style={{fontSize:12}}/></div>
+                    <div style={{width:200}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size (W × H) *</label><$Txt className="form-input" value={art.art_size||''} onChange={v=>uArt(i,'art_size',v)} placeholder='e.g. 2.71" W x 2.25" H' style={{fontSize:12}}/></div>
                     {/* Default location — when this folder is placed on a garment, the deco's position
                         seeds from here instead of the generic front default. Blank = no default. */}
                     <div style={{width:150}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Default location</label><select className="form-select" value={art.location||''} onChange={e=>uArt(i,'location',e.target.value)} style={{fontSize:12}} title="Where this art usually goes — decorations default here when the folder is added to a garment"><option value="">— No default —</option>{POSITIONS.map(p=><option key={p} value={p}>{p==='Front'?'Center Chest':p}</option>)}</select></div>
@@ -7168,7 +7187,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     {(()=>{const lbl=embStitchTierLabel(art.stitches);return lbl
                       ?<span title="Embroidery price tier from the stitch count" style={{fontSize:10,fontWeight:700,color:'#6d28d9',background:'#ede9fe',border:'1px solid #ddd6fe',borderRadius:6,padding:'5px 8px'}}>{lbl} tier</span>
                       :<span style={{fontSize:10,color:'#94a3b8',padding:'5px 0'}}>unset → 5k–10k default</span>})()}
-                    <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>readStitchesFromPdf(art.id)} title="Read the stitch count from an embroidery proof PDF">📄 Read from PDF</button>
+                    <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>readStitchesFromPdf(art.id)} title="Fill missing dimensions and stitch count from the attached embroidery proof PDF">📄 Read from PDF</button>
                   </div>}
                   {/* Color Ways */}
                   <div style={{marginBottom:6}}>
@@ -7290,7 +7309,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _mergeFiles=(a=[],b=[])=>{const seen=new Set((a||[]).map(_fKey));const out=[...(a||[])];(b||[]).forEach(f=>{const k=_fKey(f);if(k&&!seen.has(k)){seen.add(k);out.push(f)}});return out};
       // ART TBD rows are system placeholders (a priced deco with no design yet) — there is
       // nothing to reuse, and they were polluting the picker as "ART TBD 1..4" cards.
-      const _pushArt=(art,meta)=>{if(art.archived)return;if((art.name||'').startsWith('ART TBD'))return;const k=_dedupKey(art,meta);
+      const _pushArt=(art,meta)=>{if(art.archived)return;if(isTbdArt(art))return;const k=_dedupKey(art,meta);
         if(_byKey.has(k)){const cur=_byKey.get(k);
           cur.prod_files=_mergeFiles(cur.prod_files,art.prod_files);
           cur.mockup_files=_mergeFiles(cur.mockup_files,art.mockup_files);
@@ -7747,7 +7766,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const shipments=o._shipments||[];
       const legacyShipment=o._tracking_number&&!shipments.find(s=>s.tracking_number===o._tracking_number);
       const allOutbound=legacyShipment?[{id:'legacy',tracking_number:o._tracking_number,carrier:o._carrier||'',ship_date:o._ship_date||'',tracking_url:o._tracking_url||'',items:[],notes:'Legacy single-package shipment',created_by:o.created_by,created_at:o._ship_date||''},...shipments]:shipments;
-      const totalShippedUnits=allOutbound.reduce((a,s)=>(s.items||[]).reduce((a2,it)=>a2+Object.values(it.sizes||{}).reduce((a3,v)=>a3+v,0),0)+a,0);
+      const totalShippedUnits=allOutbound.filter(s=>s.fulfillment!==false&&s.shipment_scope!=='deco_transfer').reduce((a,s)=>(safeNum(s.quantity)||(s.items||[]).reduce((a2,it)=>a2+Object.values(it.sizes||{}).reduce((a3,v)=>a3+v,0),0))+a,0);
       // Shipping cost — use SO field, fallback to sum from shipment records
       const shipCostFromShipments=allOutbound.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
       const shipCost=safeNum(o._shipping_cost||o._shipstation_cost||0)||shipCostFromShipments;
@@ -7907,7 +7926,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>:
             <div style={{display:'grid',gap:12}}>
               {allOutbound.map((shp,si)=>{
-                const shpUnits=(shp.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
+                const shpUnits=safeNum(shp.quantity)||(shp.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
                 return<div key={shp.id||si} style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}>
                     <span style={{fontSize:11,fontWeight:800,color:'#166534',background:'#dcfce7',padding:'2px 8px',borderRadius:4}}>Box {si+1}</span>
@@ -7983,6 +8002,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         <td style={{padding:'4px 6px',textAlign:'center',fontWeight:700}}>{itQty}</td>
                       </tr>})}</tbody>
                   </table>}
+                  {shp.source==='production_packet'&&<div style={{fontSize:12,fontWeight:700,marginTop:6}}>{shp.dpo_number} · {shp.quantity} garments · {shp.fulfillment===false?'Returning to NSA':'Customer delivery'}</div>}
                   {shp.notes&&<div style={{fontSize:10,color:'#64748b',marginTop:4,fontStyle:'italic'}}>{shp.notes}</div>}
                 </div>})}
             </div>}
@@ -8511,7 +8531,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const shipAddrSub2=orderShipToSub(o,cust)||custShipAddrSub(cust);
       return buildDocHtml({title:cust?.name||'Customer',docNum:o.id,docType:isE?'ESTIMATE':'SALES ORDER',css:PRINT_CSS,
         headerRight:'<div class="ta">'+_$(total)+'</div>',
-        infoBoxes:[{label:'Bill To',value:(billSel&&billSel.name)||cust?.name||'—',sub:billAddr||''},...(shipAddrSub2?[{label:'Ship To',value:(shipSel&&shipSel.name)||cust?.name||'—',sub:shipAddrSub2}]:[]),...(isE?[]:[{label:'Expected',value:o.expected_date||'TBD'}]),{label:'Sales Rep',value:REPS.find(r=>r.id===(cust?.primary_rep_id||o.created_by))?.name||'—'},{label:isE?'Estimate':'Sales Order',value:o.id},{label:'Memo',value:o.memo||'—',...(isE?{flex:2}:{})}],
+        infoBoxes:[{label:'Bill To',value:(billSel&&billSel.name)||cust?.name||'—',sub:billAddr||''},...(shipAddrSub2?[{label:'Ship To',value:(shipSel&&shipSel.name)||cust?.name||'—',sub:shipAddrSub2}]:[]),...(isE?[]:[{label:'Expected',value:o.expected_date||'TBD'}]),{label:'Sales Rep',value:REPS.find(r=>r.id===(o.rep_id||cust?.primary_rep_id||o.created_by))?.name||'—'},{label:isE?'Estimate':'Sales Order',value:o.id},{label:'Memo',value:o.memo||'—',...(isE?{flex:2}:{})}],
         tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],rows:[...rows,
           {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$(subTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
           ...(shipAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$(shipAmt),style:'text-align:right;border:none'}]}]:[]),
@@ -9178,7 +9198,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(invSaved)nf('Invoice '+inv.id+' created for $'+invTotal.toFixed(2)+(invType==='final'?(_closeOnFinal?' — SO marked complete':' — SO left open, still in production'):''));
             else nf('Invoice '+inv.id+' created but NOT saved to the database — the SO was left open. The save will retry in the background; mark the SO complete once it saves.','error');
             // Show invoice review page instead of navigating away
-            setInvReview({...inv,_customer:cust,_so:o,_lineItems:lineItems,_shipAmt:invShipAmt,_taxAmt:invTaxAmt});
+            // _shipAmt is the invoice's own saved shipping, which already folds in any prior-shipping
+            // carry-over — printing invShipAmt alone dropped that charge off the page (INV-64148).
+            setInvReview({...inv,_customer:cust,_so:o,_lineItems:lineItems,_shipAmt:inv.shipping,_taxAmt:invTaxAmt});
             const contact=(cust?.contacts||[])[0];
             const invPortalUrl=cust?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cust.alpha_tag)+'&inv='+encodeURIComponent(inv.id):'';
             const _invJob=(o.memo||'').trim();
@@ -9344,7 +9366,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div style={{display:'flex',gap:8}}>
             <button className="btn btn-secondary" onClick={printInvoice}>🖨️ Print Invoice</button>
             <button className="btn btn-secondary" onClick={downloadInvoice}>📥 Download PDF</button>
-            <button className="btn btn-primary" style={{background:'#2563eb'}} onClick={()=>{const _c=(cust?.contacts||[]).filter(c=>c.email);const _accts=getBillingContacts(cust,allCustomers).filter(a=>a.email);const _primary=_c.length>0?_c[0].email:null;const _sel=[...(_primary?[_primary]:[]),..._accts.map(a=>a.email).filter(e=>e!==_primary)];setInvSendTo(_sel);setInvSendCustomEmail('');setInvSendingState(null);setInvSendReview(false);setInvFollowUp(seedFollowUp(ir));setInvSendModal(true)}}>📧 Send to Coach</button>
+            {safeNum(ir.total)>0?<button className="btn btn-primary" style={{background:'#2563eb'}} onClick={()=>{const _c=(cust?.contacts||[]).filter(c=>c.email);const _accts=getBillingContacts(cust,allCustomers).filter(a=>a.email);const _primary=_c.length>0?_c[0].email:null;const _sel=[...(_primary?[_primary]:[]),..._accts.map(a=>a.email).filter(e=>e!==_primary)];setInvSendTo(_sel);setInvSendCustomEmail('');setInvSendingState(null);setInvSendReview(false);setInvFollowUp(seedFollowUp(ir));setInvSendModal(true)}}>📧 Send to Coach</button>
+            :<span style={{fontSize:12,color:'#94a3b8',alignSelf:'center'}}>$0 invoice — nothing to send</span>}
           </div>
         </div>
       </div></div>
@@ -9478,6 +9501,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Lines with no SO match (hand-added, NetSuite import) still have to print, or the
             // document's subtotal won't reconcile to the invoice total.
             _extra.forEach(li=>{eSubTotal+=safeNum(li.amount);eRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$e(safeNum(li.rate)),style:'text-align:right'},{value:_$e(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
+            // A document that doesn't add up is flagged to the rep here — never printed on the PDF.
+            const _mismatch=invoiceMismatchAlert({subtotal:eSubTotal,shipping:shipAmt,tax:taxAmt,ccFee:safeNum(ir.cc_fee),credit:safeNum(ir.credit_amount),depositApplied:safeNum(ir.deposit_applied),total:ir.total},_$e);
+            if(_mismatch&&!window.confirm(_mismatch)){setInvSendingState(null);return}
             const brevoAttachments=[];
             try{
               const docHtml=buildDocHtml({title:irBillName,docNum:ir.id,docType:'INVOICE',date:ir.date,css:PRINT_CSS,
@@ -9512,14 +9538,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               +(invSendReview?buildReviewButtonHtml():'')
               +'</div>';
             const _invReviewText=invSendReview?(invSendMsg+'\n\n'+reviewTextBlock()):undefined;
-            const _toEmailsLc=new Set(toList.map(t=>(t.email||'').toLowerCase()));
-            const _invCc=getBillingContacts(ic,allCustomers).filter(a=>a.email&&!_toEmailsLc.has(a.email.toLowerCase())).map(a=>({email:a.email,name:a.name||''}));
+            // Recipients are exactly what the rep checked. Billing contacts are already listed (and
+            // pre-checked) above, so they are not force-CC'd here — unchecking one has to stick.
             const _today=new Date().toLocaleDateString('en-CA');
             const _scheduleFuture=invSendAt&&invSendAt>_today&&onScheduleEmail;
             const _emailSubject='Invoice '+ir.id+' — $'+ir.total.toFixed(2)+' from National Sports Apparel';
             let res;
             // The scheduled sender runs server-side through Brevo, which these districts block.
-            if(_scheduleFuture&&process.env.REACT_APP_ROUTED_SCHEDULED_EMAILS!=='true'&&checkEmailRecipients([...toList,..._invCc]).gmail.length){
+            if(_scheduleFuture&&process.env.REACT_APP_ROUTED_SCHEDULED_EMAILS!=='true'&&checkEmailRecipients(toList).gmail.length){
               res={ok:false,error:'This school blocks our normal email service, and scheduled sends can\'t go through Gmail. Clear the send date to send it now.'};
               nf(res.error,'error');setInvSendingState({error:res.error});
             }else if(_scheduleFuture){
@@ -9528,7 +9554,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const schedRes=await onScheduleEmail({
                 send_at:_sendAtIso,
                 to_emails:toList,
-                cc_emails:_invCc,
                 subject:_emailSubject,
                 html_content:emailHtml,
                 sender_name:cu.name||'National Sports Apparel',
@@ -9551,7 +9576,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             }else{
               res=await sendBrevoEmail({
                 to:toList,
-                cc:_invCc,
                 subject:_emailSubject,
                 htmlContent:emailHtml,
                 textContent:_invReviewText,
@@ -11298,9 +11322,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div></div>;
       })()}
 
-      {apiOrder&&apiOrder.vendorKey==='sanmar'&&<SanMarPreviewModal {...apiOrder} decoVendors={(decoVendors||[]).map(dv=>{if(dv.address_line1)return dv;const _v=vendorList.find(v2=>v2.id===dv.vendor_id);return _v?{...dv,address_line1:_v.address_line1||'',address_line2:_v.address_line2||'',city:_v.city||'',state:_v.state||'',zip:_v.zip||''}:dv})} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted}/>}
-      {apiOrder&&apiOrder.vendorKey==='sss'&&<SSOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted}/>}
-      {apiOrder&&apiOrder.vendorKey==='momentec'&&<MomentecOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted}/>}
+      {apiOrder&&apiOrder.vendorKey==='sanmar'&&<SanMarPreviewModal {...apiOrder} decoVendors={(decoVendors||[]).map(dv=>{if(dv.address_line1)return dv;const _v=vendorList.find(v2=>v2.id===dv.vendor_id);return _v?{...dv,address_line1:_v.address_line1||'',address_line2:_v.address_line2||'',city:_v.city||'',state:_v.state||'',zip:_v.zip||''}:dv})} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted} onRemoveLine={_removeApiOrderLine}/>}
+      {apiOrder&&apiOrder.vendorKey==='sss'&&<SSOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted} onRemoveLine={_removeApiOrderLine}/>}
+      {apiOrder&&apiOrder.vendorKey==='momentec'&&<MomentecOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted} onRemoveLine={_removeApiOrderLine}/>}
 
         {showPick&&<div className="modal-overlay" onClick={()=>{setShowPick(false);setPickSel({})}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
       <div className="modal-header"><h2>{typeof showPick==='object'?'IF — '+pickId:'Create IF — Select Items'}</h2><button className="modal-close" onClick={()=>{setShowPick(false);setPickSel({})}}>x</button></div>
@@ -12105,7 +12129,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(j.items||[]).length>0&&dTot>1&&<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:10}} onClick={()=>setSplitModal({jIdx:ji,jobId:j.id,mode:null,selectedIdxs:[]})}>✂️ Split Job</button>}
             </div>
             {_mockReady&&j.art_status!=='waiting_approval'&&<section aria-label="Review saved mocks" style={{margin:'0 20px 16px',padding:14,background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:10}}><strong>Mocks ready — review next</strong><p style={{fontSize:12,color:'#475569'}}>Send the mocks to the coach, or approve the artwork if approval is already confirmed. Production files are checked next.</p><div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{_reviewActions}</div></section>}
-            <JobGarmentMocks key={j.id} job={j} order={o} priorMocks={priorMocks} getOrder={()=>oRef.current} itemDetails={itemDetails} onViewItem={_jumpToItem} onSave={saveArtFilesNow} onSendToArtist={note=>setArtReqModal({jIdx:ji,artist:_activeArtistId(j.assigned_artist||((j.art_requests||[]).slice(-1)[0]?.artist)),instructions:note,files:[]})} onLibrarySync={syncLogoLibrary} />
+            <JobGarmentMocks key={j.id} job={j} order={o} priorMocks={priorMocks} getOrder={()=>oRef.current} itemDetails={itemDetails} onViewItem={_jumpToItem} onSave={saveArtFilesNow} onSaveOrder={saveSONow} onSendToArtist={note=>setArtReqModal({jIdx:ji,artist:_activeArtistId(j.assigned_artist||((j.art_requests||[]).slice(-1)[0]?.artist)),instructions:note,files:[]})} onLibrarySync={syncLogoLibrary} />
             {/* ── Check Mock: previously-approved art reused on a different color/style ── */}
             {_needsMockCheck&&(()=>{
               const _gLabels=_mockCheckGarments.map(g=>(g.color?g.color+' ':'')+g.sku).join(', ');
@@ -14438,7 +14462,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
     {receivedConfirm&&(()=>{
       const rc=receivedConfirm;
       const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(rc.poId);
-      const buildLines=()=>{const lines=[];if(rc.custName)lines.push({text:rc.custName,cls:'team'});if(o?.memo)lines.push({text:o.memo,cls:'memo'});{const _r=REPS&&REPS.find(rr=>rr.id===(cust?.primary_rep_id||o?.created_by));if(_r&&_r.name)lines.push({text:'Rep: '+_r.name.split(' ')[0],cls:'rep'});}lines.push({text:rc.soId,cls:'so'});lines.push({text:'RECEIVED — '+rc.date,cls:'sub',style:'color:#166534;font-weight:800;'});rc.items.forEach(it=>{lines.push({text:(it.sku||'')+' '+(it.name||''),cls:'sku'});lines.push({text:(it.color||'')+' — '+it.qty+' units'});lines.push({text:Object.entries(it.sizes).map(([sz,v])=>sz+': '+v).join(' &nbsp; '),cls:'sz'})});if(rc.items.length>1)lines.push({text:'TOTAL: '+rc.totalQty+' units',cls:'sz'});return lines};
+      const buildLines=()=>{const lines=[];if(rc.custName)lines.push({text:rc.custName,cls:'team'});if(o?.memo)lines.push({text:o.memo,cls:'memo'});{const _r=REPS&&REPS.find(rr=>rr.id===(o?.rep_id||cust?.primary_rep_id||o?.created_by));if(_r&&_r.name)lines.push({text:'Rep: '+_r.name.split(' ')[0],cls:'rep'});}lines.push({text:rc.soId,cls:'so'});lines.push({text:'RECEIVED — '+rc.date,cls:'sub',style:'color:#166534;font-weight:800;'});rc.items.forEach(it=>{lines.push({text:(it.sku||'')+' '+(it.name||''),cls:'sku'});lines.push({text:(it.color||'')+' — '+it.qty+' units'});lines.push({text:Object.entries(it.sizes).map(([sz,v])=>sz+': '+v).join(' &nbsp; '),cls:'sz'})});if(rc.items.length>1)lines.push({text:'TOTAL: '+rc.totalQty+' units',cls:'sz'});return lines};
       return<div className="modal-overlay" onClick={()=>setReceivedConfirm(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
         <div className="modal-header"><h2>📦 Received — {rc.poId}</h2>
           <button className="modal-close" onClick={()=>setReceivedConfirm(null)}>x</button></div>
@@ -14505,7 +14529,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         const lines=[];
         if(cust?.name)lines.push({text:cust.name,cls:'team'});
         if(o?.memo)lines.push({text:o.memo,cls:'memo'});
-        {const _r=REPS&&REPS.find(rr=>rr.id===(cust?.primary_rep_id||o?.created_by));if(_r&&_r.name)lines.push({text:'Rep: '+_r.name.split(' ')[0],cls:'rep'});}
+        {const _r=REPS&&REPS.find(rr=>rr.id===(o?.rep_id||cust?.primary_rep_id||o?.created_by));if(_r&&_r.name)lines.push({text:'Rep: '+_r.name.split(' ')[0],cls:'rep'});}
         lines.push({text:o.id,cls:'so'});
         itemInfos.forEach(info=>{
           lines.push({text:(info.item.sku||'')+' '+(info.item.name||''),cls:'sku'});
@@ -14515,7 +14539,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         if(itemInfos.length>1)lines.push({text:'TOTAL: '+grandTotal+' units',cls:'sz'});
         return lines;
       };
-      const pickRepName=REPS&&REPS.find(rr=>rr.id===(cust?.primary_rep_id||o?.created_by))?.name?.split(' ')[0]||'';
+      const pickRepName=REPS&&REPS.find(rr=>rr.id===(o?.rep_id||cust?.primary_rep_id||o?.created_by))?.name?.split(' ')[0]||'';
       return<div className="modal-overlay" onClick={()=>setEditPick(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640}}>
       <div className="modal-header"><h2>Pick — {pickId}{itemInfos.length>1?<span style={{marginLeft:8,fontSize:12,padding:'2px 8px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>{itemInfos.length} items</span>:null}</h2>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
@@ -15147,7 +15171,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               {receiptLines.length>1&&<span style={{fontSize:9,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'1px 6px',borderRadius:8}}>{receiptLines.length} items in receipt</span>}
               <span style={{marginLeft:'auto',fontSize:9,color:'#64748b'}}>{isEditing?'▲ close':'✏️ edit'}</span>
               <button style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#64748b',textDecoration:'underline'}} onClick={e=>{e.stopPropagation();
-                const _shr=REPS&&REPS.find(rr=>rr.id===(cust?.primary_rep_id||o?.created_by));const _shRep=_shr&&_shr.name?'Rep: '+_shr.name.split(' ')[0]:'';
+                const _shr=REPS&&REPS.find(rr=>rr.id===(o?.rep_id||cust?.primary_rep_id||o?.created_by));const _shRep=_shr&&_shr.name?'Rep: '+_shr.name.split(' ')[0]:'';
                 printQrLabel({
                   id:po.po_id,
                   qrData:shQrData,
@@ -15328,7 +15352,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               const lines=[
                 {text:(cust?.name||o.id),cls:'team'},
                 ...(o?.memo?[{text:o.memo,cls:'memo'}]:[]),
-                ...((()=>{const _r=REPS&&REPS.find(rr=>rr.id===(cust?.primary_rep_id||o?.created_by));return _r&&_r.name?[{text:'Rep: '+_r.name.split(' ')[0],cls:'rep'}]:[]})()),
+                ...((()=>{const _r=REPS&&REPS.find(rr=>rr.id===(o?.rep_id||cust?.primary_rep_id||o?.created_by));return _r&&_r.name?[{text:'Rep: '+_r.name.split(' ')[0],cls:'rep'}]:[]})()),
                 {text:o.id,cls:'so'},
                 {text:(item?.sku||'')+' '+(item?.name||''),cls:'sku'},
                 {text:(item?.color||'')+' — '+totalOrdered+' ordered'+(totalReceived>0?' · '+totalReceived+' received':'')},

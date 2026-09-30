@@ -137,11 +137,20 @@ const parseStatementNo = lines => {
 
 const isOmgDepositStatement = text => /deposit\s*statement/i.test(String(text || ''));
 
+// Since late Sept 2026 OMG appends a "Transactions" section after the store
+// table: one line per order/refund, shaped exactly like a store row
+// ("09/28/26  Payment  190788046  4ESJH | Cal Poly Softball 2026  $835.30 ...").
+// Read as stores, they double every total. Rows are only read up to that
+// heading, and a line that opens with a date is never a store row either.
+const TRANSACTIONS_HEADING = /^transactions$/i;
+const STARTS_WITH_DATE = /^\d{1,2}\/\d{1,2}\/\d{2,4}\b/;
+
 // One store row. `|` separates the work-order cell from the store name, and the
 // last four dollar amounts are the four money columns.
 const parseStoreRow = (line, lineNo) => {
   const flat = cleanLine(line);
   if (!flat.includes('|')) return null;
+  if (STARTS_WITH_DATE.test(flat)) return null;
   const amounts = moneyOn(flat);
   if (amounts.length < 4) return null;
   const [collected, omgFee, processingFee, netDeposit] = amounts.slice(-4);
@@ -189,10 +198,11 @@ const parseOmgDepositStatement = text => {
   const netAmount = labelledAmount(allLines, /net\s*amount/i);
 
   const lines = [];
-  allLines.forEach((line, index) => {
-    const row = parseStoreRow(line, index + 1);
+  for (let index = 0; index < allLines.length; index += 1) {
+    if (TRANSACTIONS_HEADING.test(cleanLine(allLines[index]))) break;
+    const row = parseStoreRow(allLines[index], index + 1);
     if (row) lines.push(row);
-  });
+  }
 
   if (!statementDate) problems.push('Could not read the Statement Date');
   if (!lines.length) problems.push('No store rows were found');

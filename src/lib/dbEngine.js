@@ -689,7 +689,7 @@ const _dbLoad = async (opts={}) => {
       return{...so,items,art_files,firm_dates,jobs,..._decoPosGuard(so),_recoveryHydrated:!['sales_orders','so_items','so_item_decorations','so_item_po_lines','so_item_pick_lines','so_jobs','so_art_files','so_firm_dates'].some(_loadTableUntrusted),_itemsHydrated:_soItemsHydrated,_decosHydrated,_artHydrated:!_loadTableUntrusted('so_art_files'),_jobsHydrated:!_loadTableUntrusted('so_jobs'),_posHydrated:!_loadTableUntrusted('so_item_po_lines')&&!_loadTableUntrusted('so_items'),_hydratedPoIds,_picksHydrated:!_loadTableUntrusted('so_item_pick_lines')&&!_loadTableUntrusted('so_items'),_hydratedPickIds,_hydratedArtIds:_rawSoArt.map(a=>a.id).filter(Boolean)}});
     // Invoices: attach payments and items
     const invoices=invRaw.map(inv=>{
-      const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
+      const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date,...(p.receipt_id?{receipt_id:p.receipt_id}:{})}));
       const items=invItems.filter(i=>i.invoice_id===inv.id).map(i=>({sku:i.sku,name:i.name,qty:i.qty,unit_price:i.unit_price,total:i.total,description:i.description}));
       // Hydration flags so the save can tell a deliberate removal from items/payments that simply never loaded
       // (a timed-out invoice_items / invoice_payments query). _hydratedPayRefs lets payments be restore-merged by ref.
@@ -957,7 +957,7 @@ const _artGapMsg=(table,dropped)=>_schemaGapMsg('Artwork',table,dropped);
 // copy must win on conflict. Overlaying the client's value let a stale tab silently un-confirm a
 // just-approved design (SO-1131, 2026-08-19: a warehouse tab reverted prod_files_attached true→
 // false 17 minutes after the rep's approval set it, alongside the so_jobs art_status clobber).
-const _ART_CONTENT_FIELDS=['name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','design_id','location','notes','archived'];
+const _ART_CONTENT_FIELDS=['name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','design_id','location','notes','archived','is_tbd'];
 const _ART_FILE_COLLECTIONS=['files','mockup_files','prod_files','sample_art','web_logos'];
 const _ART_EXPLICIT_SCALAR_FIELDS=new Set(['preview_url','web_logo_url']);
 const _artFileUrl=f=>typeof f==='string'?f:(f&&(f.url||f.name))||'';
@@ -2690,7 +2690,7 @@ const _dbSaveInvoiceInner = async (inv) => {
           const ref=row.ref;
           if(ref&&_clientRefs.has(ref))return;// client still holds it — it re-saves its own copy
           if(_payHydrated&&ref&&_knownRefs.has(ref))return;// deliberately deleted from a clean load
-          _restore.push({amount:row.amount,method:row.method,ref:row.ref,date:row.date});
+          _restore.push({amount:row.amount,method:row.method,ref:row.ref,date:row.date,...(row.receipt_id?{receipt_id:row.receipt_id}:{})});
         });
         if(_restore.length){console.warn('[DB] Restored',_restore.length,'undeleted payment(s) for',inv.id,'(stale/foreign client state)');_payments=[...(payments||[]),..._restore];}
       }
@@ -2699,7 +2699,12 @@ const _dbSaveInvoiceInner = async (inv) => {
     if(_payments?.length){
       // cc_fee is coerced: the column is NOT NULL, and an undefined here would make PostgREST
       // reject the whole batch rather than default it.
-      const payRows=_payments.map((p,i)=>({invoice_id:inv.id,amount:p.amount,method:p.method,ref:p.ref||('pay_'+i),date:p.date,cc_fee:Number(p.cc_fee)||0}));
+      // receipt_id (the check a payment came from — Receive Payments page) is sent only when some
+      // payment on this invoice carries one, so invoices never touched by that page write exactly
+      // the columns they always have. Hydration and the restore-merge above both carry it, so a
+      // re-save never blanks it.
+      const _hasRcpt=_payments.some(p=>p.receipt_id);
+      const payRows=_payments.map((p,i)=>({invoice_id:inv.id,amount:p.amount,method:p.method,ref:p.ref||('pay_'+i),date:p.date,cc_fee:Number(p.cc_fee)||0,...(_hasRcpt?{receipt_id:p.receipt_id||null}:{})}));
       const{error:payErr}=await supabase.from('invoice_payments').upsert(payRows,{onConflict:'invoice_id,ref'});
       if(payErr){
         // FAIL CLOSED (2026-08-12, INV-1053). The old fallback here deleted every payment row on the

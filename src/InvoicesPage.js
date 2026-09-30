@@ -14,7 +14,7 @@ import { calculateCreditMemo, creditableBalance, creditedTotal, seedCreditMemoLi
 import { EmailRouteNotice, Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub, resolveOrderShipTo, billToIdFor } from './components';
 import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled, greetLine, withGreeting, emailMoney } from './utils';
 import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms } from './App';
-import { invoiceTotalsRows } from './lib/invoiceDocTotals';
+import { invoiceTotalsRows, invoiceMismatchAlert } from './lib/invoiceDocTotals';
 import { stripePaymentRepairCandidate } from './lib/invoicePaymentReconciliation';
 import { invoiceDetailBalance, invoicePaymentStatus, normalizeInvoiceForDetail } from './lib/invoiceDetail';
 
@@ -54,6 +54,40 @@ export default function InvoicesPage(){
         ?inv.id+' assigned to '+(REPS.find(r=>r.id===next)?.name||'rep')+' (this invoice only)'
         :inv.id+' returned to the account rep'+(acctRep?' ('+acctRep.name+')':''));
     },[setInvs,REPS,cust,nf]);
+
+    // Partial pay links (invoice_pay_requests): ask the customer to pay PART of this invoice online.
+    // The request row is the server-side authority on the amount (stripe-payment / _shared.js).
+    const[payLinks,setPayLinks]=React.useState({invId:null,rows:[]});
+    const[payLinkModal,setPayLinkModal]=React.useState(null);// {inv,bal,amount,note,saving,link}
+    const loadPayLinks=React.useCallback(async invId=>{
+      if(!supabase||!invId)return;
+      const{data,error}=await supabase.from('invoice_pay_requests').select('*').eq('invoice_id',invId).order('created_at',{ascending:false});
+      if(!error)setPayLinks({invId,rows:data||[]});
+    },[]);
+    React.useEffect(()=>{if(viewInvoice&&!viewInvoice._hist&&viewInvoice.id)loadPayLinks(viewInvoice.id);},[viewInvoice?.id,loadPayLinks]);
+    const payLinkUrl=(c,invId,token)=>'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(c.alpha_tag)+'&inv='+encodeURIComponent(invId)+'&payreq='+encodeURIComponent(token);
+    const createPayLink=async()=>{
+      const m=payLinkModal;if(!m||m.saving)return;
+      if(!supabase){nf('Supabase not configured','error');return}
+      const amt=Math.round((Number(m.amount)||0)*100)/100;
+      if(!(amt>=0.5)){nf('Enter an amount of at least $0.50','error');return}
+      if(amt>m.bal+0.005){nf('That is more than the $'+m.bal.toFixed(2)+' open balance','error');return}
+      const c=cust.find(x=>x.id===m.inv.customer_id);
+      if(!c?.alpha_tag){nf('This customer has no portal tag, so a pay link can’t be built','error');return}
+      const bytes=new Uint8Array(18);window.crypto.getRandomValues(bytes);
+      const token='PR'+Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
+      setPayLinkModal(x=>({...x,saving:true}));
+      const{error}=await supabase.from('invoice_pay_requests').insert({id:token,invoice_id:m.inv.id,amount:amt,note:String(m.note||'').trim()||null,created_by:cu?.name||cu?.email||''});
+      if(error){nf('Pay link NOT created — '+error.message,'error');setPayLinkModal(x=>({...x,saving:false}));return}
+      setPayLinkModal(x=>({...x,saving:false,link:payLinkUrl(c,m.inv.id,token),amount:amt}));
+      loadPayLinks(m.inv.id);
+    };
+    const cancelPayLink=async row=>{
+      if(!window.confirm('Cancel this $'+Number(row.amount).toFixed(2)+' pay link? The customer won’t be able to use it.'))return;
+      const{error}=await supabase.from('invoice_pay_requests').update({status:'cancelled',cancelled_at:new Date().toISOString()}).eq('id',row.id).eq('status','open');
+      if(error){nf('Could not cancel — '+error.message,'error');return}
+      loadPayLinks(row.invoice_id);nf('Pay link cancelled');
+    };
 
     // Packing slip builder — what's actually going in the box for this invoice. Local to the
     // detail page (nothing else reads it), keyed by invoice id so a slip left open never shows
@@ -208,7 +242,7 @@ export default function InvoicesPage(){
       const invShipSel=(inv.shipping_name||inv.shipping_address)?null:resolveOrderShipTo(so,ic);
       // Per-invoice override first, then the account rep, then the SO creator — the same order
       // commissionRepId() pays on, so the rep printed here is always the rep who earns it.
-      const repObj=REPS.find(r=>r.id===(inv.rep_id||ic?.primary_rep_id||so?.created_by))||null;
+      const repObj=REPS.find(r=>r.id===(inv.rep_id||so?.rep_id||ic?.primary_rep_id||so?.created_by))||null;
       const repIsOverride=!!(inv.rep_id&&inv.rep_id!==ic?.primary_rep_id);
       const acctRepName=REPS.find(r=>r.id===ic?.primary_rep_id)?.name||'none';
       const bal=invoiceDetailBalance(inv);
@@ -480,6 +514,9 @@ export default function InvoicesPage(){
           <div className="card-body" style={{padding:'12px 24px',borderBottom:'1px solid #e2e8f0',display:'flex',gap:8,flexWrap:'wrap'}}>
             {inv.status!=='paid'&&<button className="btn btn-sm" style={{background:'#166534',color:'white',border:'none',fontSize:12,padding:'6px 14px'}}
               onClick={()=>setPayModal({inv:{...inv,_bal:bal},amount:bal,method:'check',ref:''})}>Record Payment</button>}
+            {!inv._hist&&inv.status!=='paid'&&inv.status!=='void'&&bal>0.5&&<button className="btn btn-sm" style={{background:'#eff6ff',color:'#1d4ed8',border:'1px solid #93c5fd',fontSize:12,padding:'6px 14px'}}
+              disabled={!ic?.alpha_tag} title={ic?.alpha_tag?'Send the customer a link to pay part of this invoice online':'This customer has no portal tag, so a pay link can’t be built'}
+              onClick={()=>setPayLinkModal({inv,bal,amount:'',note:'',saving:false,link:null})}>Partial Pay Link</button>}
             {inv.status==='paid'&&(inv.tax||0)>0&&!inv.tc_reported&&ic&&!ic.tax_exempt&&<button className="btn btn-sm" style={{background:'#1e40af',color:'white',border:'none',fontSize:12,padding:'6px 14px'}}
               onClick={()=>fileTaxCloud(inv)} title="Report this paid invoice to TaxCloud for state filing (1 manual call)">File to TaxCloud</button>}
             {inv.tc_reported&&<span style={{fontSize:12,padding:'6px 10px',color:'#166534',fontWeight:600}}>✓ Filed to TaxCloud{inv.tc_tax?' ($'+Number(inv.tc_tax).toLocaleString()+')':''}</span>}
@@ -525,7 +562,7 @@ export default function InvoicesPage(){
                   customerSearchOpen:false
                 });
               }}>Edit Invoice</button>
-            <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
+            {safeNum(inv.total)>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
                 const contact=contacts[0];
                 const portalUrl=ic?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic.alpha_tag)+'&inv='+encodeURIComponent(inv.id):'';
@@ -542,7 +579,7 @@ export default function InvoicesPage(){
                 const msg=greetLine(Object.keys(checked).filter(em=>checked[em]),sendContacts)+'\n\nAttached below is your invoice'+(_job?' for "'+_job+'"':'')+', totalling '+emailMoney(inv.total)+(inv.due_date?', due on '+inv.due_date:'')+'.'+(portalUrl?'\n\nYou can also view it anytime through your portal:\n'+portalUrl:'')+'\n\nPlease let us know if you have any questions, and thank you for your business!\n\nNSA Team';
                 const smsText='Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+inv.total.toFixed(2)+' is ready. Due by '+(inv.due_date||'—')+'. View: '+(portalUrl||'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic?.alpha_tag||''));
                 setInvSendModalDirect({inv,sendContacts,checked,customEmail:'',customEmails:[],msg,review:false,portalUrl,smsEnabled:_smsUiEnabled&&!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7,followUp:seedFollowUp(inv)});
-              }}>Send Invoice</button>
+              }}>Send Invoice</button>}
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
                 printDoc(buildInvDocOpts());
@@ -687,10 +724,67 @@ export default function InvoicesPage(){
           </div>
         </div>
 
-        {/* Payment History */}
-        {(inv.payments||[]).length>0&&<div className="card" style={{marginBottom:16}}>
-          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>Payment History</h2></div>
-          <div className="card-body" style={{padding:0}}>
+        {payLinks.invId===inv.id&&payLinks.rows.length>0&&<div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>Pay Links</h2></div>
+          <div className="card-body" style={{padding:0}}><table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+            <thead><tr style={{background:'#f8fafc'}}><th style={{padding:'8px 12px',textAlign:'left'}}>Created</th><th style={{padding:'8px 12px',textAlign:'right'}}>Amount</th><th style={{padding:'8px 12px',textAlign:'left'}}>Status</th><th style={{padding:'8px 12px'}}></th></tr></thead>
+            <tbody>{payLinks.rows.map(r=><tr key={r.id} style={{borderBottom:'1px solid #f1f5f9'}}>
+              <td style={{padding:'8px 12px'}}>{r.created_at?new Date(r.created_at).toLocaleDateString():''}{r.created_by?' · '+r.created_by:''}{r.note?<div style={{fontSize:10,color:'#94a3b8'}}>{r.note}</div>:null}</td>
+              <td style={{padding:'8px 12px',textAlign:'right',fontWeight:600}}>${Number(r.amount).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+              <td style={{padding:'8px 12px',color:r.status==='paid'?'#166534':r.status==='open'?'#1d4ed8':'#94a3b8',fontWeight:600}}>{r.status==='paid'?'Paid'+(r.paid_at?' '+new Date(r.paid_at).toLocaleDateString():''):r.status==='open'?'Waiting on customer':'Cancelled'}</td>
+              <td style={{padding:'8px 12px',textAlign:'right',whiteSpace:'nowrap'}}>{r.status==='open'&&ic?.alpha_tag&&<><button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{navigator.clipboard?.writeText(payLinkUrl(ic,inv.id,r.id));nf('Pay link copied')}}>Copy link</button>
+                <button className="btn btn-sm btn-secondary" style={{fontSize:11,marginLeft:6,color:'#b91c1c'}} onClick={()=>cancelPayLink(r)}>Cancel</button></>}</td>
+            </tr>)}</tbody>
+          </table></div>
+        </div>}
+        {payLinkModal&&payLinkModal.inv.id===inv.id&&<div className="modal-overlay" onClick={()=>setPayLinkModal(null)}><div className="modal" style={{maxWidth:480}} onClick={e=>e.stopPropagation()}>
+          <div className="modal-header"><h2>Partial Pay Link — {inv.id}</h2><button className="modal-close" onClick={()=>setPayLinkModal(null)}>×</button></div>
+          <div className="modal-body">
+            {!payLinkModal.link?<>
+              <div style={{fontSize:12,color:'#64748b',marginBottom:10}}>Open balance <strong>${payLinkModal.bal.toFixed(2)}</strong>. The customer pays exactly this amount online; the rest stays open. Card payments add the processing fee on top; bank (ACH) has no fee.</div>
+              <label className="form-label">Amount to request</label>
+              <input className="form-input" type="number" min="0.5" step="0.01" autoFocus value={payLinkModal.amount} onChange={e=>setPayLinkModal(x=>({...x,amount:e.target.value}))} placeholder="2000.00"/>
+              <label className="form-label" style={{marginTop:10}}>Note to customer (optional)</label>
+              <input className="form-input" value={payLinkModal.note} onChange={e=>setPayLinkModal(x=>({...x,note:e.target.value}))} placeholder="e.g. First installment per our call"/>
+              {ic?.disable_cc_pay&&<div style={{marginTop:8,fontSize:11,color:'#92400e'}}>Heads up: online payments are turned off for this customer in the portal, but this link will still let them pay.</div>}
+            </>:<>
+              <div style={{fontSize:13,marginBottom:8}}>Link for <strong>${Number(payLinkModal.amount).toFixed(2)}</strong> is ready. Send it to the customer:</div>
+              <textarea className="form-input" readOnly rows={3} style={{fontSize:11}} value={payLinkModal.link} onFocus={e=>e.target.select()}/>
+            </>}
+          </div>
+          <div className="modal-footer">
+            {!payLinkModal.link?<>
+              <button className="btn btn-secondary" onClick={()=>setPayLinkModal(null)}>Cancel</button>
+              <button className="btn btn-primary" disabled={payLinkModal.saving} onClick={createPayLink}>{payLinkModal.saving?'Creating…':'Create link'}</button>
+            </>:<>
+              {(()=>{const to=(ic?.contacts||[]).find(ct=>ct.email)?.email||'';return<a className="btn btn-secondary" href={'mailto:'+encodeURIComponent(to)+'?subject='+encodeURIComponent('Payment link — '+inv.id)+'&body='+encodeURIComponent('Hi,\n\nHere is a secure link to pay $'+Number(payLinkModal.amount).toFixed(2)+' toward invoice '+inv.id+':\n\n'+payLinkModal.link+'\n\nThank you,\nNational Sports Apparel')}>Email it</a>})()}
+              <button className="btn btn-primary" onClick={()=>{navigator.clipboard?.writeText(payLinkModal.link);nf('Pay link copied')}}>Copy link</button>
+            </>}
+          </div>
+        </div></div>}
+
+        {/* Payment History — always shown, so "what's been paid on this?" has one answer on every
+            invoice. NetSuite-imported invoices carry only a remaining balance (no per-payment rows),
+            so they get the paid total and a pointer to NetSuite instead of an empty table. Deposits
+            and account credits reduce the invoice total rather than count as payments, so they're
+            listed separately beneath the table. */}
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header" style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+            <h2 style={{margin:0,fontSize:14}}>Payment History</h2>
+            <div style={{marginLeft:'auto',fontSize:12,color:'#475569'}}>
+              Paid <strong style={{color:'#166534'}}>${safeNum(inv.paid).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</strong>
+              {/* A NetSuite row marked open with no exported balance has an UNKNOWN balance, not $0 —
+                  historicalInvoiceAr keeps it out of A/R for the same reason; don't show it as settled. */}
+              {' · '}Balance {inv._hist&&historicalInvoiceAr(inv).status==='unverified'
+                ?<strong style={{color:'#64748b'}} title="NetSuite didn't export a remaining balance for this invoice — check NetSuite">unknown</strong>
+                :<strong style={{color:bal>0.005?'#b91c1c':'#166534'}}>${Math.max(0,bal).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</strong>}
+            </div>
+          </div>
+          {inv._hist&&!(inv.payments||[]).length?<div className="card-body" style={{fontSize:12,color:'#64748b'}}>
+            Imported from NetSuite — the portal keeps only this invoice's remaining balance, not each individual payment. Look up the invoice in NetSuite to see every payment.
+          </div>
+          :!(inv.payments||[]).length?<div className="card-body" style={{fontSize:12,color:'#64748b'}}>No payments recorded yet.</div>
+          :<div className="card-body" style={{padding:0}}>
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
               <thead><tr style={{background:'#f8fafc'}}><th style={{padding:'8px 12px',textAlign:'left'}}>Date</th><th style={{padding:'8px 12px',textAlign:'right'}}>Amount</th><th style={{padding:'8px 12px',textAlign:'left'}}>Method</th><th style={{padding:'8px 12px',textAlign:'left'}}>Reference</th><th style={{padding:'8px 12px',textAlign:'right'}}>CC Fee</th></tr></thead>
               <tbody>{(inv.payments||[]).map((p,pi)=><tr key={pi} style={{borderBottom:'1px solid #f1f5f9'}}>
@@ -701,8 +795,12 @@ export default function InvoicesPage(){
                 <td style={{padding:'8px 12px',textAlign:'right',color:'#d97706'}}>{p.cc_fee>0?'$'+p.cc_fee.toFixed(2):'—'}</td>
               </tr>)}</tbody>
             </table>
-          </div>
-        </div>}
+          </div>}
+          {(safeNum(inv.deposit_applied)>0||safeNum(inv.credit_amount)>0)&&<div style={{padding:'8px 12px',borderTop:'1px solid #f1f5f9',fontSize:11,color:'#475569'}}>
+            {safeNum(inv.deposit_applied)>0&&<div>Deposit applied: <strong>${safeNum(inv.deposit_applied).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</strong> <span style={{color:'#94a3b8'}}>(reduces the invoice total)</span></div>}
+            {safeNum(inv.credit_amount)>0&&<div>Account credit applied: <strong>${safeNum(inv.credit_amount).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</strong> <span style={{color:'#94a3b8'}}>(reduces the invoice total)</span></div>}
+          </div>}
+        </div>
 
         {/* Email status */}
         {inv.email_sent_at&&<div className="card" style={{marginBottom:16}}>
@@ -727,7 +825,7 @@ export default function InvoicesPage(){
             {/* Send History */}
             <div style={{marginBottom:16}}>
               <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Send History</div>
-              {(inv.sent_history||[]).length===0&&!inv.email_sent_at?<div style={{fontSize:12,color:'#94a3b8',padding:'8px 12px',background:'#f8fafc',borderRadius:6}}>Not yet sent</div>
+              {(inv.sent_history||[]).length===0&&!inv.email_sent_at?<div style={{fontSize:12,color:'#94a3b8',padding:'8px 12px',background:'#f8fafc',borderRadius:6}}>{safeNum(inv.total)>0?'Not yet sent':'$0 invoice — no send needed'}</div>
               :(inv.sent_history||[]).length>0?(inv.sent_history||[]).map((h,hi)=><div key={hi} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'#eff6ff',borderRadius:6,border:'1px solid #bfdbfe',marginBottom:4}}>
                 <span style={{fontSize:16}}>✉️</span>
                 <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>Sent to coach</div>
@@ -1139,6 +1237,13 @@ export default function InvoicesPage(){
           return<div className="modal-overlay" onClick={()=>setInvEditModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:980,maxHeight:'92vh',display:'flex',flexDirection:'column'}}>
           <div className="modal-header"><h2>Edit Invoice — {em.inv.id}</h2><button className="modal-close" onClick={()=>setInvEditModal(null)}>x</button></div>
           <div className="modal-body" style={{overflow:'auto',flex:1}}>
+            {/* Already in QuickBooks: the hourly sync rewrites it from saved changes, except
+                the cases it deliberately leaves to accounting (see invoiceResyncUpdate). */}
+            {em.inv.qb_invoice_id&&<div style={{marginBottom:14,padding:'10px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,fontSize:12,color:'#1e3a8a'}}>
+              <strong>Already in QuickBooks as invoice #{em.inv.qb_invoice_id}.</strong> If you change the total, the hourly sync updates QuickBooks to match
+              {' '}— unless the invoice's month is closed in the books, the customer changed, or the new total is less than what's already been paid; then accounting gets an alert instead.
+              {' '}Changes that keep the same total (customer, date, memo) do NOT reach QuickBooks — tell accounting.
+            </div>}
             {/* Customer */}
             <div style={{marginBottom:14,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
               <label className="form-label" style={{fontWeight:700}}>Customer</label>
@@ -1390,7 +1495,6 @@ export default function InvoicesPage(){
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={()=>setInvSendModalDirect(null)}>Cancel</button>
               <button className="btn btn-primary" style={{background:'#2563eb'}} disabled={siRecipients.length===0} onClick={async()=>{
-                setInvSendModalDirect(null);
                 const toEmails=siRecipients;
                 const toEmail=toEmails[0];
                 const siInv=si.inv;const siSo=sos.find(s=>s.id===siInv.so_id);const siCust=cust.find(c=>c.id===siInv.customer_id);
@@ -1398,7 +1502,7 @@ export default function InvoicesPage(){
                 const siBillName=siInv.billing_name||siCust?.name||'—';
                 const siBal=siInv.total-(siInv.paid||0);
                 const siShip=siInv.shipping||0;const siTax=siInv.tax||0;
-                const siRepObj=REPS.find(r=>r.id===(siCust?.primary_rep_id||siSo?.created_by))||null;
+                const siRepObj=REPS.find(r=>r.id===(siSo?.rep_id||siCust?.primary_rep_id||siSo?.created_by))||null;
                 const siPoNum=siInv.po_number||siInv._po_number||siSo?.po_number;
                 const siBillSub=siInv.billing_name?(siInv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+siCust?.name+'</span>':'';
                 const siBillAddr=siBillSub||(siCust?.billing_address_line1?siCust.billing_address_line1+(siCust.billing_city?'<br/>'+siCust.billing_city+(siCust.billing_state?' '+siCust.billing_state:'')+(siCust.billing_zip?' '+siCust.billing_zip:''):'')+'<br/>United States':'');
@@ -1406,6 +1510,10 @@ export default function InvoicesPage(){
                 const siShipAddr=(siInv.shipping_name||siInv.shipping_address?(siInv.shipping_address||'').replace(/\n/g,'<br/>'):'')||orderShipToSub(siSo,siCust)||custShipAddrSub(siCust);
                 // Build rows from the invoice's own line items (honors per-line price overrides)
                 const {rows:siRows,subtotal:siSubTotal}=buildInvoicePdfRows(siInv,siSo,_$si);
+                // A document that doesn't add up is flagged to the rep here — never printed on the PDF.
+                const _siMismatch=invoiceMismatchAlert({subtotal:siSubTotal,shipping:siShip,tax:siTax,ccFee:safeNum(siInv.cc_fee),credit:safeNum(siInv.credit_amount),depositApplied:safeNum(siInv.deposit_applied),total:siInv.total},_$si);
+                if(_siMismatch&&!window.confirm(_siMismatch))return;
+                setInvSendModalDirect(null);
                 // Build PDF attachment
                 const brevoAttachments=[];
                 try{
@@ -1497,7 +1605,7 @@ export default function InvoicesPage(){
       // Settled is settled: a row left at a stale 'partial' with nothing owed must not turn the
       // list red or land on the past-due email — same rule the detail page applies.
       const overdue=dd!==null&&dd<0&&i.status!=='paid'&&bal>0.005;
-      const so=sos.find(s=>s.id===i.so_id);const c=cust.find(x=>x.id===i.customer_id);const rep=i.rep_id||c?.primary_rep_id||so?.created_by||null;
+      const so=sos.find(s=>s.id===i.so_id);const c=cust.find(x=>x.id===i.customer_id);const rep=i.rep_id||so?.rep_id||c?.primary_rep_id||so?.created_by||null;
       return{...i,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_rep:rep,_cname:cust.find(c=>c.id===i.customer_id)?.name||'Unknown'}});
 
     // ── Store settlement proposals (OMG deposit funds + webstore Stripe) ──

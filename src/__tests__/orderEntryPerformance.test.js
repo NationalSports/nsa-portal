@@ -50,3 +50,12 @@ test('20,000-product catalog is untouched on empty searches and unrelated render
   expect(reads).toBe(20000);
   view.rerender(<Search query="shirt" tick={12} rows={[...products]}/>);expect(reads).toBe(40000);
 });
+
+test('A4 rows only show when a search word looks like their SKU',()=>{
+  const rows=[{sku:'N4014',name:'A4 Element 1/4 Zip Jacket',brand:'A4'},
+    {sku:'A2002',name:"Men's Quarter-Zip Pullover",brand:'Adidas'}];
+  expect(filterOrderCatalog(rows,'zip')).toEqual([rows[1]]);
+  expect(filterOrderCatalog(rows,'a4 jacket')).toEqual([]);
+  expect(filterOrderCatalog(rows,'n4014')).toEqual([rows[0]]);
+  expect(filterOrderCatalog(rows,'N40 zip')).toEqual([rows[0]]);
+});

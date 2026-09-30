@@ -541,7 +541,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
         const jobs=so.jobs||[];
         const subC=allCustomers.find(c=>c.id===so.customer_id);
-        const rep=REPS.find(r=>r.id===(subC?.primary_rep_id||so.created_by));
+        const rep=REPS.find(r=>r.id===(so.rep_id||subC?.primary_rep_id||so.created_by));
         const af=safeArt(so);const aq={};safeItems(so).forEach(it2=>{const sq2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it2.est_qty);safeDecos(it2).forEach(d=>{if(d.kind==='art'&&d.art_file_id){aq[d.art_file_id]=(aq[d.art_file_id]||0)+q2}})});
         let soRev=0;safeItems(so).forEach(it2=>{const sq2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it2.est_qty);if(!q2)return;soRev+=q2*safeNum(it2.unit_sell);safeDecos(it2).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?aq[d.art_file_id]:q2;const dp2=dP(d,q2,af,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?q2*2:q2);soRev+=eq*dp2.sell})});
         const soShip=so.shipping_type==='pct'?soRev*(so.shipping_value||0)/100:(so.shipping_value||0);const soTax=soRev*(subC?.tax_exempt?0:(subC?.tax_rate||0));const soGrand=soRev+soShip+soTax;
