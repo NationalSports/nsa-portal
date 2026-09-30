@@ -84,6 +84,18 @@ describe('normalizeDraft', () => {
     expect(d.confidence).toBe(1);
   });
 
+  test('keeps estimate lines, future opportunities and competitor mentions, dropping bad values', () => {
+    const d = normalizeDraft({
+      headline: 'H', summary: 'S',
+      line_items: [{ name: 'Polo', quantity: 30, sizes: { s: 4, M: '10', XL: -1 } }, { name: '' }],
+      opportunities: [{ text: 'Uniforms next spring', est_value: '8000', date: '2027-02-01' }, { text: 'Maybe hats', est_value: -5, date: 'soon' }],
+      competitors: [{ name: 'BSN', detail: 'quoted cheaper', price: '$28' }, { detail: 'no name' }],
+    });
+    expect(d.line_items).toEqual([{ name: 'Polo', brand: null, sku_guess: null, color: null, quantity: 30, sizes: { S: 4, M: 10 }, decoration: null }]);
+    expect(d.opportunities).toEqual([{ text: 'Uniforms next spring', est_value: 8000, date: '2027-02-01' }, { text: 'Maybe hats', est_value: null, date: null }]);
+    expect(d.competitors).toEqual([{ name: 'BSN', detail: 'quoted cheaper', price: '$28' }]);
+  });
+
   test('a draft with neither headline nor summary is rejected', () => {
     expect(() => normalizeDraft({ action_items: [] })).toThrow();
   });
