@@ -12499,7 +12499,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                           </div>})}
                         {numDecos.map((nd,ni)=><div key={'n'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
                           <span style={{fontSize:11,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 7px',borderRadius:3}}>Numbers{nd.front_and_back?' — Front + Back':''}</span>
-                          <span style={{fontSize:11,color:'#1e293b'}}>{(nd.num_method||'heat_transfer').replace(/_/g,' ')} · Size {nd.num_size||'—'}{nd.num_font?' · '+nd.num_font:''}{nd.print_color?' · '+nd.print_color:''}</span>
+                          <span style={{fontSize:11,color:'#1e293b'}}>{(nd.num_method||'heat_transfer').replace(/_/g,' ')} · {nd.front_and_back?<>Front {nd.num_size||'—'} · Back {nd.num_size_back||nd.num_size||'—'}</>:<>Size {nd.num_size||'—'}</>}{nd.num_font?' · '+nd.num_font:''}{nd.print_color?' · '+nd.print_color:''}</span>
                         </div>)}
                         {nameDecos.map((nd,ni)=><div key={'nm'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
                           <span style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 7px',borderRadius:3}}>Names{nd.front_and_back?' — Front + Back':''}</span>
@@ -12768,7 +12768,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                           return<div key={'n'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0'}}>
                             <div style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
                               <span style={{fontSize:11,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 7px',borderRadius:3}}>Numbers{nd.front_and_back?' — Front + Back':''}</span>
-                              <span style={{fontSize:11,color:'#1e293b'}}>{(nd.num_method||'heat_transfer').replace(/_/g,' ')} · Size {nd.num_size||'—'}{nd.num_font?' · '+nd.num_font:''}{nd.print_color?' · '+nd.print_color:''}</span>
+                              <span style={{fontSize:11,color:'#1e293b'}}>{(nd.num_method||'heat_transfer').replace(/_/g,' ')} · {nd.front_and_back?<>Front {nd.num_size||'—'} · Back {nd.num_size_back||nd.num_size||'—'}</>:<>Size {nd.num_size||'—'}</>}{nd.num_font?' · '+nd.num_font:''}{nd.print_color?' · '+nd.print_color:''}</span>
                             </div>
                             {_rosterRows.length>0&&<div style={{marginTop:6,paddingTop:6,borderTop:'1px dashed #bbf7d0'}}>
                               {_rosterRows.map(([sz,nums])=><div key={sz} style={{display:'flex',alignItems:'center',gap:8,marginBottom:3}}>
