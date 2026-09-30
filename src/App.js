@@ -1620,7 +1620,7 @@ const buildWorkOrderOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
       if(!total)continue;
       const personalization=[];
       if(nameD)personalization.push({k:'Back name',v:'Player name'});
-      if(nd&&nd.num_size)personalization.push({k:'Number height',v:nd.num_size});
+      if(nd&&nd.num_size)personalization.push({k:'Number height',v:nd.front_and_back?nd.num_size+' front / '+(nd.num_size_back||nd.num_size)+' back':nd.num_size});
       const nnColor=(nd&&nd.print_color)||(nameD&&nameD.print_color);if(nnColor)personalization.push({k:'Color',v:nnColor});
       const sku=d.it.sku||d.gi.sku;const color=d.it.color||d.gi.color||'';
       const garment=(sku||'')+(color?' · '+color:'');
@@ -24795,7 +24795,7 @@ export default function App(){
                     if(sd.kind==='art'){const d=effectiveArtDecos[sd.idx];const cwLbl=sd.side==='B'?d.cwLabelB:d.cwLabel;
                       _repSlots.push({key:sd.key,kind:'art',side:sd.side,primary:sd.primary,missingDeco:!!d.missingDeco,cwId:(sd.side==='B'?d.colorWayIdB:d.colorWayId)||null,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
                     else if(sd.kind==='numbers'){const d=numDecos[sd.idx];
-                      _repSlots.push({key:sd.key,kind:'numbers',primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                      _repSlots.push({key:sd.key,kind:'numbers',primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?(d.frontAndBack?('front '+d.numSize+' / back '+(d.numSizeBack||d.numSize)):('size '+d.numSize)):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
                     else{const d=nameDecos[sd.idx];
                       _repSlots.push({key:sd.key,kind:'names',primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}});
                   if(_repSlots.length===0&&af)_repSlots.push({key:_repSkBase,kind:'art',primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
@@ -25494,7 +25494,7 @@ export default function App(){
                         if(sd.kind==='art'){const d=_effectiveArtDecos[sd.idx];const cwLbl=sd.side==='B'?d.cwLabelB:d.cwLabel;
                           _slots.push({key:sd.key,kind:'art',side:sd.side,primary:sd.primary,missingDeco:!!d.missingDeco,cwId:(sd.side==='B'?d.colorWayIdB:d.colorWayId)||null,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
                         else if(sd.kind==='numbers'){const d=_numDecos[sd.idx];
-                          _slots.push({key:sd.key,kind:'numbers',primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                          _slots.push({key:sd.key,kind:'numbers',primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?(d.frontAndBack?('front '+d.numSize+' / back '+(d.numSizeBack||d.numSize)):('size '+d.numSize)):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
                         else{const d=_nameDecos[sd.idx];
                           _slots.push({key:sd.key,kind:'names',primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}});
                       if(_slots.length===0&&af)_slots.push({key:_skBase,kind:'art',primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
