@@ -18,6 +18,42 @@ writes unmapped codes (skip + report, the DB guard drops them anyway) and
 clamps the ~9,999,999 sentinel in CURRENT stock, not just future ATP.
 REPLACE the live skill on the Mac Mini (and any other machine running it)
 with this body wholesale — do not hand-merge.
+
+FIRST, THOUGH — CHECK THAT THE CRAWL IS ACTUALLY RUNNING. On 2026-08-25 the
+last `source='api-materials'` write in adidas_inventory was 2026-08-17 06:13Z:
+this sync had been silent for 8.5 days and nothing anywhere reported it. The
+prioritization work below is worthless if the run itself is not firing. The
+06:00Z runs are this skill on the Mac Mini (Claude desktop scheduled task); the
+daily 12:00Z writes are a DIFFERENT job — `ss-adidas-sync-cron` →
+`ss-adidas-sync-background` (S&S Activewear, source `ss_activewear`, 687 SKUs),
+which is healthy and covers a disjoint SKU set (0 sku+size overlap, so the two
+do not fight over rows). Seeing recent rows in the table does NOT mean this
+sync ran. Check per-source:
+
+    SELECT source, max(last_synced) FROM adidas_inventory GROUP BY source;
+
+Updated 2026-08-25 — crawl queue. Steps 1 and 5 rewritten so the daily/weekly
+cadence is COMPUTED, not judged. Step 1 now reads the `adidas_crawl_queue` view
+(migration 20260825120000) ordered by each SKU's OLDEST size row instead of
+applying `skip synced<24h` filters against its newest; Step 5 reads
+`adidas_crawl_coverage` so the weekly sweep is measurable. Diagnosis that
+prompted it, measured against production on 2026-08-25:
+  - pct_covered_7d = 7.1% (3,350 of 3,637 synced SKUs > 7 days stale). The
+    "weekly full sweep" this file has described since 2026-06-12 was not
+    happening, and nothing anywhere would have shown that.
+  - 361 SKUs had a future_delivery_date already in the past — the restock landed
+    or slipped and the portal was showing the pre-restock number.
+  - 2,223 SKUs had sizes lagging the rest of the SKU, concentrated in the
+    tall/extended run (ST 65%, 4XLT 67%, 2XS 58%), because Step 4.4 skips
+    unmapped size codes and LEAVES the previous row in place looking current.
+
+NOTE — stale claim corrected: the 2026-07-03 note below says anon can no longer
+write adidas_inventory / adidas_size_maps after "migration 00183". As of
+2026-08-25 the `adidas_inventory_anon_write` policy (cmd ALL, with_check true,
+role anon) is still present in production and anon writes DO succeed. The live
+skill still ships the anon key and its writes are landing. Left as-is rather than
+"fixed" — but do not treat the service-role instruction below as load-bearing
+without re-checking pg_policy first.
 -->
 ---
 name: adidas-inventory-sync
@@ -92,22 +128,51 @@ PRESERVE the in-flight batch in the queue, and tell the user to re-log-in / re-s
 account (0000270384). Do NOT drain the queue as errors. Resume from the preserved queue after
 the user restores the session. If no token at all, notify the user that manual login is needed and stop.
 
-## Step 1 — SKU list (re-query EVERY run — never a cached list)
+## Step 1 — SKU list: read the crawl queue (re-query EVERY run — never a cached list)
 
 The public coach catalog `/adidas` hides any product with NO `adidas_inventory` rows, so
-"never checked" looks like "not carried". Re-query `products` every run so catalog imports are
-picked up automatically:
+"never checked" looks like "not carried". The queue is a VIEW, so it re-derives itself every
+run and catalog imports are picked up automatically — never cache a SKU list.
 
 ```sql
-SELECT sku, category FROM products
-WHERE brand='Adidas' AND COALESCE(is_active,true) AND NOT COALESCE(is_archived,false)
-  AND COALESCE(inventory_source,'click') <> 'agron';  -- Agron accessories are synced by agron-inventory-sync (never on Cowork)
+SELECT sku, category, priority, reason, oldest_age_days, past_due_rows
+FROM adidas_crawl_queue
+ORDER BY priority, oldest_synced ASC NULLS FIRST
+LIMIT <daily budget — see Cadence below>;
 ```
 
-~4,000 SKUs today; only ~2,100 have inventory rows — close that gap.
-**Cadence:** every catalog SKU re-checked at least WEEKLY. A daily run may prioritize SKUs with
-existing stock / recent activity (skip synced<24h, footwear<7d, zero-stock<7d); the weekly
-sweep drops the time filters and covers everything.
+**Order by the SKU's OLDEST size row, never its newest.** This is the whole point of the view
+and the single most important line in this step. The sync writes per SIZE and SKIPS any size
+whose code is missing from the map (Step 4.4) — so a SKU routinely has fresh core sizes while
+its tail sizes (XS/2XS/3XL/4XL and the entire tall run) go unwritten for weeks. Sorting on the
+newest row — which is what `skip synced<24h` did — sees such a SKU as fresh and passes over it
+indefinitely. On 2026-08-25 that described 2,223 SKUs: IS9771 had its newest row at 08-16 and
+its oldest at 08-06, with 6 of its 10 sizes showing wrong numbers on the portal.
+
+Priority tiers are assigned by the view — do not re-derive them by hand:
+
+| P | `reason` | what it means |
+|---|---|---|
+| 1 | `inbound-eta-passed` | A size's `future_delivery_date` is now in the past: the restock either landed or slipped, so that stock number is known-suspect. Highest signal per API call — on IS9771 this flagged exactly the 6 rows that were actually wrong. ~360 SKUs, so it never starves the queue. |
+| 2 | `never-synced` | No `adidas_inventory` rows at all → the product is INVISIBLE on `/adidas`. |
+| 3 | `weekly-sweep-due` | Oldest size row older than 7 days. Working this tier oldest-first is what delivers the weekly full scan. |
+| 4 | `fresh` | Everything else, still oldest-first, to fill out the budget. |
+
+**Cadence — the weekly full scan is a rolling 7-day sweep, not a Sunday marathon.**
+Take `daily_budget_for_weekly_sweep` from `adidas_crawl_coverage` (≈622 SKUs/day against 4,354
+in scope) as the per-run budget and work the queue top-down. Because tier 3 is ordered
+oldest-first, every SKU is re-checked within 7 days by construction — there is no separate
+"weekly mode" to remember and no marathon run to lose to a token expiry halfway through. A run
+that dies early simply resumes at the top of the queue next time; nothing is lost. Observed
+capacity is ~1,200–1,300 SKUs in a single good run, so 622 is a comfortable budget.
+
+Do NOT reinstate the old skip filters (`skip synced<24h`, `footwear<7d`, `zero-stock<7d`). They
+are what produced a **7.1%** 7-day coverage rate: they gate on a SKU's newest row and leave the
+remaining ~3,000 SKUs in no particular order, so whichever the run happened to reach first won.
+
+**Check coverage at the end of every run** (Step 5): `pct_covered_7d` from
+`adidas_crawl_coverage` should climb toward 100 and stay there. It read 7.1% on 2026-08-25 —
+the documented weekly sweep had not run for weeks and nothing anywhere surfaced that.
 
 ## Step 2 — Catalog pre-filter + full-range discovery (batches of 50)
 
@@ -234,7 +299,7 @@ Report SKUs discovered/created each run for sanity-check (they go live on `/adid
 
 ## Step 5 — Health check (report-only) + report
 
-After upserting, report TWO signals:
+After upserting, report THREE signals:
 - `window._mapGaps` — apparel conversionIds whose maps came back incomplete vs the
   catalog-derived expected set (exclude conv `51` and true footwear cids
   `97,S1,S2,K1,8B,8E,AU,AQ,M7,TR,F4,BC`). Expected empty.
@@ -242,16 +307,32 @@ After upserting, report TWO signals:
   write time (their rows were SKIPPED, not written raw — see Step 4.4). The stronger signal —
   catches extended big-&-tall tails (`440/480/500/510/520`) no catalog example advertised.
   Names an example SKU.
+- **Coverage** — `SELECT * FROM adidas_crawl_coverage`. Watch `pct_covered_7d`: it is the only
+  thing that proves the weekly full scan is actually happening. It should climb toward 100 and
+  stay there. Also report `never_synced`, `eta_passed`, and `with_lagging_sizes` — all three
+  should trend DOWN run over run. If `pct_covered_7d` stalls or falls, the per-run budget is
+  below `daily_budget_for_weekly_sweep` and the sweep is silently slipping again.
 
-Either non-empty = a map regressed / new tail appeared → re-learn that conversionId from the
-named SKU and re-sync it — until then those sizes are simply MISSING from the portal (the DB
-guard drops raw-code writes), so don't leave the gap standing. A supervised
-`DELETE … WHERE size ~ '^[0-9]{3}$' AND EXISTS(labeled twin)` sweep remains the backstop for
-rows that predate the guard.
+Either map signal non-empty = a map regressed / new tail appeared → re-learn that conversionId
+from the named SKU and **re-sync that SKU before the run ends**.
+
+> ⚠️ A skipped size is NOT merely "missing from the portal". If the SKU was synced before, the
+> previous row **stays in `adidas_inventory` with its old `stock_qty` and its old `last_synced`**
+> — so the portal keeps showing a stale number with no indication it is stale, and it will go on
+> doing so for as long as the map stays incomplete. This is not hypothetical: on 2026-08-25,
+> 2,223 of 3,637 synced SKUs had sizes whose last write lagged the rest of the SKU, concentrated
+> almost entirely in the tall/extended run (`ST` 65% lagging, `4XLT` 67%, `2XS` 58%) — while the
+> core S/M/L/XL rows looked freshly synced. Deferring the re-learn to "next run" is what let
+> those rows rot for weeks. `has_lagging_sizes` in `adidas_crawl_queue` tracks the backlog, and
+> the queue's oldest-row ordering re-picks such SKUs automatically — but fixing the map in-run
+> is what stops new ones being created.
+
+A supervised `DELETE … WHERE size ~ '^[0-9]{3}$' AND EXISTS(labeled twin)` sweep remains the
+backstop for rows that predate the guard.
 
 Run-end report: SKUs synced, rows written, rows with date / with future_qty, errors,
-discovered/created rows, images/descriptions backfilled, not-found list, and the two health
-signals verbatim.
+discovered/created rows, images/descriptions backfilled, not-found list, the queue mix worked
+(counts by `reason`), and the three health signals verbatim.
 
 ## Notes
 - Dates normalize to `YYYY-MM-DD`.
