@@ -763,10 +763,28 @@ export default function InvoicesPage(){
           </div>
         </div></div>}
 
-        {/* Payment History */}
-        {(inv.payments||[]).length>0&&<div className="card" style={{marginBottom:16}}>
-          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>Payment History</h2></div>
-          <div className="card-body" style={{padding:0}}>
+        {/* Payment History — always shown, so "what's been paid on this?" has one answer on every
+            invoice. NetSuite-imported invoices carry only a remaining balance (no per-payment rows),
+            so they get the paid total and a pointer to NetSuite instead of an empty table. Deposits
+            and account credits reduce the invoice total rather than count as payments, so they're
+            listed separately beneath the table. */}
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header" style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+            <h2 style={{margin:0,fontSize:14}}>Payment History</h2>
+            <div style={{marginLeft:'auto',fontSize:12,color:'#475569'}}>
+              Paid <strong style={{color:'#166534'}}>${safeNum(inv.paid).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</strong>
+              {/* A NetSuite row marked open with no exported balance has an UNKNOWN balance, not $0 —
+                  historicalInvoiceAr keeps it out of A/R for the same reason; don't show it as settled. */}
+              {' · '}Balance {inv._hist&&historicalInvoiceAr(inv).status==='unverified'
+                ?<strong style={{color:'#64748b'}} title="NetSuite didn't export a remaining balance for this invoice — check NetSuite">unknown</strong>
+                :<strong style={{color:bal>0.005?'#b91c1c':'#166534'}}>${Math.max(0,bal).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</strong>}
+            </div>
+          </div>
+          {inv._hist&&!(inv.payments||[]).length?<div className="card-body" style={{fontSize:12,color:'#64748b'}}>
+            Imported from NetSuite — the portal keeps only this invoice's remaining balance, not each individual payment. Look up the invoice in NetSuite to see every payment.
+          </div>
+          :!(inv.payments||[]).length?<div className="card-body" style={{fontSize:12,color:'#64748b'}}>No payments recorded yet.</div>
+          :<div className="card-body" style={{padding:0}}>
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
               <thead><tr style={{background:'#f8fafc'}}><th style={{padding:'8px 12px',textAlign:'left'}}>Date</th><th style={{padding:'8px 12px',textAlign:'right'}}>Amount</th><th style={{padding:'8px 12px',textAlign:'left'}}>Method</th><th style={{padding:'8px 12px',textAlign:'left'}}>Reference</th><th style={{padding:'8px 12px',textAlign:'right'}}>CC Fee</th></tr></thead>
               <tbody>{(inv.payments||[]).map((p,pi)=><tr key={pi} style={{borderBottom:'1px solid #f1f5f9'}}>
@@ -777,8 +795,12 @@ export default function InvoicesPage(){
                 <td style={{padding:'8px 12px',textAlign:'right',color:'#d97706'}}>{p.cc_fee>0?'$'+p.cc_fee.toFixed(2):'—'}</td>
               </tr>)}</tbody>
             </table>
-          </div>
-        </div>}
+          </div>}
+          {(safeNum(inv.deposit_applied)>0||safeNum(inv.credit_amount)>0)&&<div style={{padding:'8px 12px',borderTop:'1px solid #f1f5f9',fontSize:11,color:'#475569'}}>
+            {safeNum(inv.deposit_applied)>0&&<div>Deposit applied: <strong>${safeNum(inv.deposit_applied).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</strong> <span style={{color:'#94a3b8'}}>(reduces the invoice total)</span></div>}
+            {safeNum(inv.credit_amount)>0&&<div>Account credit applied: <strong>${safeNum(inv.credit_amount).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</strong> <span style={{color:'#94a3b8'}}>(reduces the invoice total)</span></div>}
+          </div>}
+        </div>
 
         {/* Email status */}
         {inv.email_sent_at&&<div className="card" style={{marginBottom:16}}>
