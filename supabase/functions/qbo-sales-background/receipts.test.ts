@@ -97,3 +97,33 @@ Deno.test('a failed read-back saves no Portal links', async () => {
   await rejects(writeReceiptPayment(ctx(qbo, admin, plan, links)), 'receipt_payment_readback_failed');
   eq([links.length, admin.stamps.length], [0, 0]);
 });
+
+Deno.test('a later update keeps the NetSuite share accounting applied by hand in QBO', async () => {
+  // Accounting applied the $300 NetSuite share to QBO invoice 99 by hand; then leftover is applied in the Portal.
+  const existing = { Id: '77', SyncToken: '4', CustomerRef: { value: 'Q1' }, TotalAmt: 2000, TxnDate: '2026-09-29', DepositToAccountRef: { value: 'D1' }, PrivateNote: '[RCPT-ABC]',
+    Line: [{ Amount: 1000, LinkedTxn: [{ TxnId: '11', TxnType: 'Invoice' }] }, { Amount: 300, LinkedTxn: [{ TxnId: '99', TxnType: 'Invoice' }] }], UnappliedAmt: 700 };
+  const plan = snap([{ id: 1, invoice_id: 'INV-1', amount: 1000 }, { id: 3, invoice_id: 'INV-2', amount: 200 }], { receiptLinks: { 'receipt:RCPT-ABC': { qbo_id: '77' } }, paymentLinks: { 'payment:1': { qbo_id: '77' } } });
+  const qbo = fakeQbo({ invoices, payments: [existing] });
+  const out = await writeReceiptPayment(ctx(qbo, fakeAdmin(), plan, []));
+  eq(out.result, 'updated');
+  eq(qbo.posts[0].Line.map((l: any) => [l.LinkedTxn[0].TxnId, l.Amount]), [['11', 1000], ['12', 200], ['99', 300]]);
+  eq(qbo.pays.get('77').UnappliedAmt, 500);
+});
+
+Deno.test('hand-applied lines beyond the NetSuite share, or a credit memo line, still stop the write', async () => {
+  const base = { Id: '77', SyncToken: '4', CustomerRef: { value: 'Q1' }, TotalAmt: 2000, TxnDate: '2026-09-29', DepositToAccountRef: { value: 'D1' }, PrivateNote: '[RCPT-ABC]' };
+  const plan = snap([{ id: 1, invoice_id: 'INV-1', amount: 1000 }, { id: 3, invoice_id: 'INV-2', amount: 200 }], { receiptLinks: { 'receipt:RCPT-ABC': { qbo_id: '77' } } });
+  const tooMuch = { ...base, Line: [{ Amount: 1000, LinkedTxn: [{ TxnId: '11', TxnType: 'Invoice' }] }, { Amount: 400, LinkedTxn: [{ TxnId: '99', TxnType: 'Invoice' }] }] };
+  await rejects(writeReceiptPayment(ctx(fakeQbo({ invoices, payments: [tooMuch] }), fakeAdmin(), plan, [])), 'receipt_payment_qbo_edited');
+  const memo = { ...base, Line: [{ Amount: 1000, LinkedTxn: [{ TxnId: '11', TxnType: 'Invoice' }] }, { Amount: 50, LinkedTxn: [{ TxnId: '5', TxnType: 'CreditMemo' }] }] };
+  await rejects(writeReceiptPayment(ctx(fakeQbo({ invoices, payments: [memo] }), fakeAdmin(), plan, [])), 'receipt_payment_qbo_edited');
+});
+
+Deno.test('a district check recorded on the parent posts under the team that owns the invoices', () => {
+  const p = planReceiptPayment({
+    receipt: { ...receipt, customer_id: 'DISTRICT', ns_applications: [] }, rows: [{ id: 1, invoice_id: 'INV-1', amount: 1000 }],
+    invoicesById: new Map([['INV-1', { id: 'INV-1', status: 'open' }]]), effectiveInvoiceMap: new Map([['INV-1', '11']]),
+    qboInvoiceById: new Map([['11', { Id: '11', CustomerRef: { value: 'TEAM' } }]]), effectiveCustomerMap: new Map([['DISTRICT', 'QD']]), now: Date.parse('2026-09-30T00:00:00Z'),
+  });
+  eq([p.action, p.qboCustomerId], ['create', 'TEAM']);
+});

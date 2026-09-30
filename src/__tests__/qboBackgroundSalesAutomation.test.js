@@ -432,7 +432,7 @@ describe('received checks post as one QBO payment',()=>{
     expect(plan.lines.map(l=>[l.qboInvoiceId,l.amount])).toEqual([['11',600],['12',300]]);
   });
   test('holds rather than guessing',()=>{
-    expect(planReceiptPayment({...base,rows:payments.slice(0,2),effectiveCustomerMap:new Map()}).reason).toBe('customer_not_verified');
+    expect(planReceiptPayment({...base,rows:[],effectiveCustomerMap:new Map()}).reason).toBe('customer_not_verified'); // nothing applied and no QBO customer
     expect(planReceiptPayment({...base,rows:payments.slice(0,2),heldInvoiceIds:new Set(['I2'])})).toMatchObject({action:'hold',quiet:true});
     const otherCustomer=new Map([...base.qboInvoiceById,['12',{Id:'12',CustomerRef:{value:'Q2'}}]]);
     expect(planReceiptPayment({...base,rows:payments.slice(0,2),qboInvoiceById:otherCustomer}).reason).toBe('receipt_spans_multiple_qbo_customers');
@@ -454,5 +454,20 @@ describe('received checks post as one QBO payment',()=>{
   test('grouped rows never also post per invoice',()=>{
     expect(edge).toContain("const legacyRows=sourceRows.filter((row:any)=>!groupedRowIds.has(String(row.id)));");
     expect(edge).toContain('allocateUnreflectedPayments(legacyRows,');
+  });
+});
+
+describe('received checks — accounting edge cases',()=>{
+  const {planReceiptPayment,compareReceiptPayment}=require('../../supabase/functions/qbo-sales-background/logic');
+  test('a district check on the parent account posts under the team that owns the invoices',()=>{
+    const plan=planReceiptPayment({receipt:{id:'R',customer_id:'DIST',amount:500,received_date:'09/29/2026',created_at:'2026-09-01T00:00:00Z'},rows:[{id:1,invoice_id:'I1',amount:500}],
+      invoicesById:new Map([['I1',{id:'I1'}]]),effectiveInvoiceMap:new Map([['I1','11']]),qboInvoiceById:new Map([['11',{Id:'11',CustomerRef:{value:'TEAM'}}]]),effectiveCustomerMap:new Map()});
+    expect(plan).toMatchObject({action:'create',qboCustomerId:'TEAM'});
+  });
+  test('hand-applied NetSuite share in QBO is kept, anything beyond it is a conflict',()=>{
+    const pay={Line:[{Amount:600,LinkedTxn:[{TxnId:'11',TxnType:'Invoice'}]},{Amount:300,LinkedTxn:[{TxnId:'99',TxnType:'Invoice'}]}]};
+    expect(compareReceiptPayment(pay,[{qboInvoiceId:'11',amount:600}],300)).toMatchObject({state:'match',foreignTotal:300});
+    expect(compareReceiptPayment(pay,[{qboInvoiceId:'11',amount:600}],0).state).toBe('conflict');
+    expect(compareReceiptPayment({Line:[{Amount:5,LinkedTxn:[{TxnId:'7',TxnType:'CreditMemo'}]}]},[],100).state).toBe('conflict');
   });
 });

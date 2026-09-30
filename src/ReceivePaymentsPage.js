@@ -405,6 +405,9 @@ function ReceiveModal({ modal, saving, onClose, onSave, cust, invs, histInvs, me
           <span>Left on account: <strong style={{ color: left > 0.005 ? '#b45309' : '#64748b' }}>{money(Math.max(0, left))}</strong></span>
         </div>
         {left > 0.005 && !errs.length && available > 0 && <div style={{ marginTop: 6, fontSize: 11, color: '#92400e', textAlign: 'right' }}>{money(left)} will stay on {customer.name || 'the account'} as an unapplied payment you can apply later.</div>}
+        {(() => { const accts = new Set(openRows.filter(r => Number(alloc[r.key]) > 0 && !r._hist).map(r => String(r.customer_id))); return accts.size > 1 && <div style={{ marginTop: 8, padding: 8, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, fontSize: 11, color: '#92400e' }}>
+          These invoices are on {accts.size} different accounts. QuickBooks can only apply a payment to one customer, so if those accounts are separate customers in QuickBooks this payment will be held there for review. Record a separate payment per account if you can.
+        </div>; })()}
         {errs.length > 0 && <div style={{ marginTop: 8, padding: 8, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 11, color: '#b91c1c' }}>{errs.map((e, i) => <div key={i}>{e}</div>)}</div>}
       </>}
     </div>

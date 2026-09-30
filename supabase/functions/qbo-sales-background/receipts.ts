@@ -30,7 +30,8 @@ export async function writeReceiptPayment({admin,qbo,receipt,plan,depositId,runI
   }
   if(existing&&(!clean(existing.PrivateNote).includes(marker)||String(existing.CustomerRef?.value)!==plan.qboCustomerId||money(existing.TotalAmt)!==plan.amount))
     throw fail('receipt_payment_identity_changed','The linked QBO payment no longer matches this receipt.',{qbo_id:String(existing.Id),qbo_total:money(existing.TotalAmt),portal_amount:plan.amount});
-  const cmp:any=existing?compareReceiptPayment(existing,plan.lines):{state:'raise'};
+  const allowForeign=money(plan.netsuite?.amount||0);
+  const cmp:any=existing?compareReceiptPayment(existing,plan.lines,allowForeign):{state:'raise',foreignLines:[],foreignTotal:0};
   if(cmp.state==='conflict')throw fail('receipt_payment_qbo_edited','QBO applies more of this payment to an invoice than the Portal does.',cmp);
   if(cmp.state==='raise'){
     // Every dollar about to be added must fit the invoice's live QBO balance.
@@ -48,13 +49,15 @@ export async function writeReceiptPayment({admin,qbo,receipt,plan,depositId,runI
     const created=(await qbo.request('/payment',{method:'POST',body:JSON.stringify(payload)})).Payment;if(!created?.Id)throw new Error('QBO payment create returned no ID.');
     paymentId=String(created.Id);result='created';
   }else if(cmp.state==='raise'){
-    await qbo.request('/payment',{method:'POST',body:JSON.stringify({Id:String(existing.Id),SyncToken:existing.SyncToken,sparse:true,CustomerRef:existing.CustomerRef,TotalAmt:existing.TotalAmt,Line:receiptPaymentLines(plan.lines)})});
+    // Lines accounting added by hand in QBO (the NetSuite share) ride along unchanged.
+    await qbo.request('/payment',{method:'POST',body:JSON.stringify({Id:String(existing.Id),SyncToken:existing.SyncToken,sparse:true,CustomerRef:existing.CustomerRef,TotalAmt:existing.TotalAmt,Line:[...receiptPaymentLines(plan.lines),...cmp.foreignLines]})});
     result='updated';
   }
   const verified=(await qbo.request(`/payment/${paymentId}`)).Payment;
-  const unappliedOk=verified&&(verified.UnappliedAmt==null||Math.abs(money(verified.UnappliedAmt)-plan.unapplied)<=.005);
+  const after:any=verified?compareReceiptPayment(verified,plan.lines,allowForeign):{state:'missing'};
+  const unappliedOk=verified&&(verified.UnappliedAmt==null||Math.abs(money(verified.UnappliedAmt)-money(plan.unapplied-(after.foreignTotal||0)))<=.005);
   if(!verified||String(verified.CustomerRef?.value)!==plan.qboCustomerId||money(verified.TotalAmt)!==plan.amount||parseDate(verified.TxnDate)!==date
-    ||String(verified.DepositToAccountRef?.value)!==depositId||!clean(verified.PrivateNote).includes(marker)||compareReceiptPayment(verified,plan.lines).state!=='match'||!unappliedOk)
+    ||String(verified.DepositToAccountRef?.value)!==depositId||!clean(verified.PrivateNote).includes(marker)||after.state!=='match'||!unappliedOk)
     throw fail('receipt_payment_readback_failed','QBO receipt payment failed read-back.',{qbo_id:paymentId,qbo_total:money(verified?.TotalAmt),qbo_unapplied:verified?.UnappliedAmt??null,portal_unapplied:plan.unapplied});
   const evidence={result,api_readback:true,run_id:runId,receipt_id:String(receipt.id),amount:plan.amount,unapplied:plan.unapplied,date,deposit_account:depositId};
   await persist('qbReceiptMap',sourceId,paymentId,evidence);
