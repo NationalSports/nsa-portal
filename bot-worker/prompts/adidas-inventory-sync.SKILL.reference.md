@@ -198,6 +198,13 @@ Install once; cart rotation + UUID `request-id` + 401-aware stop + per-SKU self-
    sizes. Also drop stale phantom **labels** (a `6XL`/`7XL` row when a labeled tall twin
    exists), not only raw codes.
 
+The checked-in executable implementation is `scripts/adidas-cowork-sync.js`.
+Use it for scheduled runs so the written behavior above is testable and does not
+depend on an ad-hoc browser snippet. It defaults to the complete active CLICK
+catalog and supports `ADIDAS_SKUS=KD5431,KD5434` for targeted recovery. Every
+upsert is read back before the next SKU; never report success from the HTTP 2xx
+alone.
+
 Efficiency/safety: the next-inbound DATE is free for all sizes; extra calls driven only by
 out-of-stock dates. Never submit an order. On a call failure leave that size's
 `future_delivery_qty` null and continue. matCall = retry(≤6)+cart-rotation; on HTTP 401 set an
