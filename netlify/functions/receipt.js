@@ -44,7 +44,18 @@ async function loadReceipt(piId) {
       : (pi.status === 'processing' ? 'Bank account (ACH)' : 'Card');
   const created = charge && charge.created ? new Date(charge.created * 1000) : new Date((pi.created || Math.floor(Date.now() / 1000)) * 1000);
   const amountPaid = (pi.amount_received != null ? pi.amount_received : (pi.amount || 0)) / 100;
-  return { pi, invoices, customerName, method, date: created, amountPaid, processing: pi.status === 'processing' };
+  // Partial pay link: what is still owed AFTER this payment. Only these payments can leave a
+  // balance (normal portal payments always pay it all), so receipts for them are unchanged. If
+  // the payment isn't recorded on the invoice yet, subtract the request here.
+  let remaining = 0;
+  const reqId = pi.metadata && pi.metadata.pay_request_id;
+  if (reqId && invoices[0] && pi.status !== 'processing') {
+    const { data: rq } = await admin.from('invoice_pay_requests').select('amount').eq('id', reqId).maybeSingle();
+    const { data: row } = await admin.from('invoice_payments').select('id').eq('invoice_id', invoices[0].id).eq('ref', 'Stripe ' + pi.id).limit(1);
+    const bal = Math.max(0, (Number(invoices[0].total) || 0) - (Number(invoices[0].paid) || 0));
+    remaining = Math.max(0, Math.round((bal - (row && row.length ? 0 : Number(rq && rq.amount) || 0)) * 100) / 100);
+  }
+  return { pi, invoices, customerName, method, date: created, amountPaid, remaining, processing: pi.status === 'processing' };
 }
 
 function buildHtml(r, forEmail) {
@@ -75,7 +86,11 @@ function buildHtml(r, forEmail) {
       </table></div>`;
   }).join('');
   const paidAmt = r.amountPaid || grand;
-  const badge = r.processing
+  // A partial pay link (or any payment that leaves money owing) must not read as "paid in full".
+  const remaining = r.processing ? 0 : Number(r.remaining) || 0;
+  const badge = !r.processing && remaining > 0.005
+    ? `<span style="background:#dbeafe;color:#1e40af;padding:3px 12px;border-radius:999px;font-size:12px;font-weight:800">PARTIAL PAYMENT</span>`
+    : r.processing
     ? `<span style="background:#fef3c7;color:#92400e;padding:3px 12px;border-radius:999px;font-size:12px;font-weight:800">PAYMENT PROCESSING</span>`
     : `<span style="background:#dcfce7;color:#166534;padding:3px 12px;border-radius:999px;font-size:12px;font-weight:800">PAID</span>`;
   const body = `<div style="font-family:'Source Sans 3',-apple-system,Segoe UI,Roboto,sans-serif;color:#2A2F3E;max-width:600px;margin:0 auto">
@@ -94,6 +109,7 @@ function buildHtml(r, forEmail) {
     <div style="margin-top:18px;background:${r.processing ? '#fffbeb' : '#f0fdf4'};border:1px solid ${r.processing ? '#fde68a' : '#bbf7d0'};border-radius:10px;padding:14px 16px">
       <table width="100%" style="border-collapse:collapse;font-size:14px">
         <tr><td style="color:${r.processing ? '#92400e' : '#166534'};font-weight:700">${r.processing ? 'Amount submitted' : 'Amount paid'}</td><td style="text-align:right;font-weight:800;font-size:18px;color:${r.processing ? '#92400e' : '#166534'}">${money(paidAmt)}</td></tr>
+        ${remaining > 0.005 ? `<tr><td style="color:#1e40af;padding-top:4px;font-weight:700">Balance remaining</td><td style="text-align:right;padding-top:4px;font-weight:700;color:#1e40af">${money(remaining)}</td></tr>` : ''}
         <tr><td style="color:#475569;padding-top:4px">Payment method</td><td style="text-align:right;padding-top:4px">${esc(r.method)}</td></tr>
         <tr><td style="color:#475569">Date</td><td style="text-align:right">${dateStr}</td></tr>
       </table>

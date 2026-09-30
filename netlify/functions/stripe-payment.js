@@ -63,6 +63,21 @@ const listIntentRefunds = async (client, paymentIntentId, maxPages = 20) => {
 };
 exports.listIntentRefunds = listIntentRefunds;
 
+// Partial pay link (invoice_pay_requests). Looked up with the service role by its unguessable
+// token; only an OPEN request on an invoice that still owes at least the requested amount counts.
+async function loadOpenPayRequest(admin, token) {
+  const id = String(token || '').trim();
+  if (id.length < 24) return { error: 'This payment link is not valid.' };
+  const { data: req, error } = await admin.from('invoice_pay_requests').select('id,invoice_id,amount,status,note').eq('id', id).maybeSingle();
+  if (error) return { error: 'Payment link could not be checked. Please try again.' };
+  if (!req) return { error: 'This payment link is not valid.' };
+  if (req.status !== 'open') return { error: req.status === 'paid' ? 'This payment has already been made — thank you!' : 'This payment link is no longer active. Please contact NSA.', status: req.status };
+  const { data: inv } = await admin.from('invoices').select('id,total,paid,status,customer_id').eq('id', req.invoice_id).maybeSingle();
+  const balance = inv ? Math.round(((Number(inv.total) || 0) - (Number(inv.paid) || 0)) * 100) / 100 : 0;
+  if (!inv || balance + 0.01 < Number(req.amount)) return { error: 'This invoice no longer has that much open — please contact NSA for an updated link.' };
+  return { req, inv, balance };
+}
+
 // Hard ceiling on a single PaymentIntent — override with STRIPE_MAX_AMOUNT_CENTS.
 const MAX_AMOUNT_CENTS = parseInt(process.env.STRIPE_MAX_AMOUNT_CENTS || '', 10) || 5000000; // $50,000
 
@@ -125,6 +140,13 @@ exports.handler = async (event) => {
   try {
     const { action } = body;
 
+    if (action === 'get_pay_request') {
+      // PUBLIC: the portal shows "NSA requested $X toward INV-…". Returns only what the payer needs.
+      const r = await loadOpenPayRequest(getSupabaseAdmin(), body.pay_request_id);
+      if (r.error) return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: false, error: r.error, status: r.status || null }) };
+      return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, pay_request_id: r.req.id, invoice_id: r.req.invoice_id, amount: Number(r.req.amount), balance: r.balance, note: r.req.note || '' }) };
+    }
+
     if (action === 'create_intent') {
       // Create a PaymentIntent for invoice payment.
       // Public by necessity (coach portal + storefront pay without accounts), so the
@@ -140,11 +162,27 @@ exports.handler = async (event) => {
         return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: `Amount exceeds the $${Math.floor(MAX_AMOUNT_CENTS / 100).toLocaleString()} per-payment limit — please contact NSA to pay this invoice.` }) };
       }
 
+      // Partial pay link: the REQUEST sets the price. Fail closed — a request that can't be verified
+      // never falls back to the balance checks below.
+      let payRequest = null;
+      if (body.pay_request_id) {
+        const r = await loadOpenPayRequest(getSupabaseAdmin(), body.pay_request_id);
+        if (r.error) return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: r.error }) };
+        const reqCents = Math.round(Number(r.req.amount) * 100);
+        if (String(invoice_id || '').trim() !== String(r.req.invoice_id) || amount_cents < reqCents || amount_cents > Math.ceil(reqCents * 1.05) + 100) {
+          return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment amount does not match this payment link. Please reload the page and try again.' }) };
+        }
+        let inFlight = null;
+        try { inFlight = await findInFlightIntent(client, [String(r.req.invoice_id)]); } catch (e) { console.warn('[stripe-payment] in-flight check skipped:', e.message); }
+        if (inFlight) return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'A bank payment for this invoice is already processing. Please don’t pay again — contact NSA if you believe this is an error.' }) };
+        payRequest = r.req;
+      }
+
       // Best-effort invoice-balance validation. invoice_id may be a comma-joined list
       // (multi-invoice portal payments) or a webstore slug (no invoice rows — skipped;
       // webstore carts get verified when checkout moves server-side). Fail-open on DB
       // errors so a Supabase blip can't take payments down — the ceiling still applies.
-      try {
+      if (!payRequest) try {
         const ids = String(invoice_id || '').split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
         if (ids.length) {
           const admin = getSupabaseAdmin();
@@ -185,7 +223,7 @@ exports.handler = async (event) => {
       // payment_method_types) so a same-day retry can't reuse a key whose parameters now differ —
       // Stripe rejects that with "idempotent requests can only be used with the same parameters."
       const idemKey = body.idempotency_key || crypto.createHash('sha256')
-        .update(['nsa_pi_v2', body.method || '', invoice_id || '', Math.round(amount_cents), (customer_email || '').toLowerCase(), new Date().toISOString().slice(0, 10)].join('|'))
+        .update(['nsa_pi_v2', body.method || '', invoice_id || '', payRequest ? payRequest.id : '', Math.round(amount_cents), (customer_email || '').toLowerCase(), new Date().toISOString().slice(0, 10)].join('|'))
         .digest('hex');
 
       const intent = await client.paymentIntents.create({
@@ -201,6 +239,7 @@ exports.handler = async (event) => {
           customer_name: customer_name || '',
           alpha_tag: alpha_tag || '',
           source: 'nsa_coach_portal',
+          ...(payRequest ? { pay_request_id: payRequest.id } : {}),
         },
         ...(customer_email ? { receipt_email: customer_email } : {}),
         description: `NSA Invoice ${invoice_id || ''} — ${customer_name || 'Customer'}`,
@@ -246,6 +285,16 @@ exports.handler = async (event) => {
       const ids = String((intent0.metadata && intent0.metadata.invoice_id) || '').split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
       if (!ids.length || (intent0.metadata && intent0.metadata.webstore_order_id)) {
         return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'This payment cannot be re-priced.' }) };
+      }
+      if (intent0.metadata && intent0.metadata.pay_request_id) {
+        // A partial pay link re-prices only within its own request (bank drops the card fee).
+        const r = await loadOpenPayRequest(getSupabaseAdmin(), intent0.metadata.pay_request_id);
+        const reqCents = r.req ? Math.round(Number(r.req.amount) * 100) : 0;
+        if (r.error || amount_cents < reqCents || amount_cents > Math.ceil(reqCents * 1.05) + 100) {
+          return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment amount does not match this payment link.' }) };
+        }
+        const updatedReq = await client.paymentIntents.update(intent_id, { amount: Math.round(amount_cents) });
+        return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, amount: updatedReq.amount }) };
       }
       let balanceCents = null;
       try {

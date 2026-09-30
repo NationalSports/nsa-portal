@@ -702,7 +702,9 @@ function StripeCheckoutForm({amount,fee,method,defaultName,onSuccess,onCancel}){
 }
 
 
-function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct,paymentNote,createIntent,onSuccess,onClose}){
+// amountDue + payRequestId: a partial pay link — charge the amount accounting requested (the server
+// re-checks it against the request) instead of the invoices' full balance. Card fee applies to it.
+function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct,paymentNote,createIntent,onSuccess,onClose,amountDue,payRequestId}){
   const[payChoice,setPayChoice]=useState(null);// 'card' | 'bank' — picked before Stripe loads; locks the fee + method
   const[clientSecret,setClientSecret]=useState(null);
   const[stripeReady,setStripeReady]=useState(null);
@@ -711,7 +713,7 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
   const[serverSubtotal,setServerSubtotal]=useState(null);
   const[serverFee,setServerFee]=useState(null);
   const _feePct=typeof feePct==='number'?feePct:CC_FEE_PORTAL_DEFAULT;
-  const totalDue=invoices.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
+  const totalDue=Number.isFinite(Number(amountDue))&&amountDue!=null?Math.round(Number(amountDue)*100)/100:invoices.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
   const cardFee=Math.round(totalDue*_feePct*100)/100;
   const chosenFee=serverFee!=null?serverFee:(payChoice==='card'?cardFee:0);
   const checkoutSubtotal=serverSubtotal!=null?serverSubtotal:totalDue;
@@ -746,7 +748,7 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
         data=await createIntent({method:choice,subtotal:totalDue,fee,amountCents:Math.round((totalDue+fee)*100)});
       }else{
         const res=await fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({action:'create_intent',amount_cents:Math.round((totalDue+fee)*100),method:choice,customer_name:customerName,customer_email:customerEmail,invoice_id:invoiceIds,invoice_memo:invoices[0]?.memo||'',alpha_tag:alphaTag})});
+          body:JSON.stringify({action:'create_intent',amount_cents:Math.round((totalDue+fee)*100),method:choice,customer_name:customerName,customer_email:customerEmail,invoice_id:invoiceIds,invoice_memo:invoices[0]?.memo||'',alpha_tag:alphaTag,...(payRequestId?{pay_request_id:payRequestId}:{})})});
         data=await res.json();
         if(!res.ok)throw new Error(data.error||'Failed to create payment');
       }
@@ -780,7 +782,7 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
           <button className="btn btn-secondary" onClick={onClose}>Close</button>
         </div>}
         {!error&&!payChoice&&<div>
-          <div style={{fontSize:12,color:'#64748b'}}>Amount due</div>
+          <div style={{fontSize:12,color:'#64748b'}}>{payRequestId?'Payment requested':'Amount due'}</div>
           <div style={{fontSize:30,fontWeight:800,color:'#0f172a',marginBottom:16}}>${totalDue.toLocaleString(undefined,{minimumFractionDigits:2})}</div>
           <div style={{fontSize:13,fontWeight:700,color:'#334155',marginBottom:10}}>How would you like to pay?</div>
           <button style={choiceBtn} disabled={!stripeReady} onClick={()=>choosePay('bank')}>
