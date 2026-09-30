@@ -482,6 +482,36 @@ describe('_dbSaveInvoiceInner — payment write failures never destroy payment r
     expect(upsert.args[0][0].date).toBe('08/11/2026');
   });
 
+  // Receive Payments: a payment that came from a received check carries receipt_id. It must
+  // reach the DB, a sibling payment on the same invoice must not invent one, and invoices with
+  // no receipt payments must not send the column at all (so nothing changes for them).
+  test('receipt_id is written when a payment carries it and omitted when none do', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    const resp = () => ({
+      invoices: [{ error: null }],
+      invoice_payments: [{ data: [], error: null }, { error: null }, { data: [], error: null }],
+      invoice_items: [{ count: 0, error: null }],
+    });
+    __mockState.calls.length = 0;
+    __mockState.responses = resp();
+    let { _dbSaveInvoice } = require('../lib/dbEngine');
+    await _dbSaveInvoice({ id: 'INV-R1', payments: [
+      { amount: 500, method: 'check', ref: 'old', date: '08/01/2026', cc_fee: 0 },
+      { amount: 200, method: 'check', ref: 'Check #9 · RCPT-A', date: '09/01/2026', cc_fee: 0, receipt_id: 'RCPT-A' },
+    ] });
+    let rows = __mockState.calls.find(c => c.table === 'invoice_payments' && c.method === 'upsert').args[0];
+    expect(rows[0].receipt_id).toBeNull();
+    expect(rows[1].receipt_id).toBe('RCPT-A');
+
+    jest.resetModules(); withSupabaseEnv();
+    const m2 = require('@supabase/supabase-js').__mockState;
+    m2.calls.length = 0; m2.responses = resp();
+    ({ _dbSaveInvoice } = require('../lib/dbEngine'));
+    await _dbSaveInvoice(invWithPayment());
+    rows = m2.calls.find(c => c.table === 'invoice_payments' && c.method === 'upsert').args[0];
+    expect('receipt_id' in rows[0]).toBe(false);
+  });
+
   test('a failed upsert issues NO delete, falls back to inserting the missing row, and succeeds', async () => {
     const { __mockState } = require('@supabase/supabase-js');
     __mockState.calls.length = 0;
