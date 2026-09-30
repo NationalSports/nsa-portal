@@ -2549,6 +2549,8 @@ export default function App(){
     return loadState('prod',D_P).filter(p=>!_SAMPLE_PROD_IDS.has(p.id)&&!API_CATALOG_VENDOR_IDS.includes(p.vendor_id));
   });
   const[ests,setEsts]=useState(()=>_migrated.ests);const[sos,setSOs]=useState(()=>_migrated.sos);const[invs,setInvs]=useState(()=>_migrated.invs);
+  // Receive Payments deep-link: a "Receive Payment" button elsewhere hands the page a customer to open with.
+  const[rpPrefill,setRpPrefill]=useState(null);
   // NetSuite invoice history (customer_invoices table) — read-only; kept separate from portal invs state.
   const[histInvs,setHistInvs]=useState([]);
   // Did the NetSuite history actually LOAD? 'loading' | 'ok' | 'error' | 'denied'. customer_invoices is
@@ -11898,7 +11900,7 @@ export default function App(){
       onSavePendingShip={async(rec)=>{await _dbSavePendingShip(rec);const updated={...selC,pending_shipping:[...(selC.pending_shipping||[]).filter(r=>r.id!==rec.id),rec]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Pending shipping charge saved')}}
       onDeletePendingShip={async(id)=>{await _dbDeletePendingShip(id);const updated={...selC,pending_shipping:(selC.pending_shipping||[]).filter(r=>r.id!==id)};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Pending shipping charge removed')}}
       onRefreshCustomer={c=>{setSelC(c);setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onOpenWebstore={(id,tab)=>{try{const u=new URL(window.location);u.searchParams.set('store',id);if(tab)u.searchParams.set('tab',tab);else u.searchParams.delete('tab');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setPg('webstores')}} onOpenOmgStore={canAccess('omg')?(id=>{const st=omgStores.find(s=>s.id===id);if(st){setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}):null} onOmgStoreSaved={store=>setOmgStores(prev=>prev.some(s=>s.id===store.id)?prev.map(s=>s.id===store.id?{...s,...store}:s):[store,...prev])}
-      onReceivePayment={c=>{const portalOpen=(invs||[]).filter(i=>i.customer_id===c.id&&i.status!=='paid'&&safeNum(i.total)>safeNum(i.paid));const histOpen=(histInvs||[]).filter(i=>i.customer_id===c.id&&i.status!=='paid'&&i.status!=='void'&&safeNum(i.total)>0);if(portalOpen.length+histOpen.length===0){nf('No open invoices for this customer','error');return}setPg('invoices');setInvF(f=>({...f,search:c.name||'',status:'open',group:'list',aging:'all',rep:'all'}))}}
+      onReceivePayment={c=>{if(canReceivePayments(cu)){setRpPrefill({customerId:c.id});setPg('receive_payments');return}const portalOpen=(invs||[]).filter(i=>i.customer_id===c.id&&i.status!=='paid'&&safeNum(i.total)>safeNum(i.paid));const histOpen=(histInvs||[]).filter(i=>i.customer_id===c.id&&i.status!=='paid'&&i.status!=='void'&&safeNum(i.total)>0);if(portalOpen.length+histOpen.length===0){nf('No open invoices for this customer','error');return}setPg('invoices');setInvF(f=>({...f,search:c.name||'',status:'open',group:'list',aging:'all',rep:'all'}))}}
       nf={nf}
       onCopy={c=>{const{_version,created_at,updated_at,...rest}=c;const copy={...rest,id:'c'+Date.now(),name:c.name,alpha_tag:'',netsuite_internal_id:null,contacts:(c.contacts||[]).map(ct=>({...ct})),_oe:0,_os:0,_oi:0,_ob:0};setCM({open:true,c:copy})}}
       onArchive={c=>{const isActive=c.is_active!==false;if(!window.confirm((isActive?'Archive':'Unarchive')+' "'+c.name+'"?'))return;const updated={...c,is_active:!isActive};setCust(prev=>prev.map(x=>x.id===c.id?updated:x));setSelC(null);if(supabase){supabase.from('customers').update({is_active:!isActive}).eq('id',c.id)}nf(isActive?'Customer archived':'Customer unarchived')}}
@@ -38729,7 +38731,7 @@ export default function App(){
     cust,setCust,sos,setSOs,ests,setEsts,prod,setProd,vend,setVend,decoVendors,invs,setInvs,msgs,setMsgs,REPS,_truncatedTables,
     assignedTodos,setAssignedTodos,
     // session / navigation / notify
-    cu,nf,pg,setPg,setESO,setESOC,setESOTab,setSelC,
+    cu,nf,pg,setPg,setESO,setESOC,setESOTab,setSelC,rpPrefill,setRpPrefill,
     // QuickBooks page state + handlers
     connectQB,disconnectQB,qbApi,qbConfig,persistQbLink,setQBConfig,qbSyncing,setQbSyncing,qbTab,setQbTab,
     qbBillAmount,setQbBillAmount,qbBillDate,setQbBillDate,qbBillFile,setQbBillFile,qbBillMemo,setQbBillMemo,

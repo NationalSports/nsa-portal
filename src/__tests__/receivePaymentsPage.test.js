@@ -37,11 +37,12 @@ const PAY_METHODS = [{ id: 'check', label: 'Check', icon: '' }, { id: 'ach', lab
 const cust = [{ id: 'C1', name: 'Alpha Athletics', alpha_tag: 'ALPHA' }];
 
 let latest = {};
-function Harness({ invs0, hist0, nf }) {
+function Harness({ invs0, hist0, nf, prefill = null }) {
+  const [rpPrefill, setRpPrefill] = useState(prefill);
   const [invs, setInvs] = useState(invs0);
   const [histInvs, setHistInvs] = useState(hist0);
   latest = { invs, histInvs };
-  return <AppDataProvider value={{ cust, invs, setInvs, histInvs, setHistInvs, nf, cu: { id: 'A', name: 'Andrea' }, PAY_METHODS, setPg: jest.fn(), setViewInvoice: jest.fn() }}>
+  return <AppDataProvider value={{ cust, invs, setInvs, histInvs, setHistInvs, nf, cu: { id: 'A', name: 'Andrea' }, PAY_METHODS, setPg: jest.fn(), setViewInvoice: jest.fn(), rpPrefill, setRpPrefill }}>
     <ReceivePaymentsPage />
   </AppDataProvider>;
 }
@@ -115,4 +116,13 @@ test('a payment already posted to QuickBooks cannot be deleted', async () => {
   render(<Harness invs0={[]} hist0={[]} nf={jest.fn()} />);
   await waitFor(() => expect(screen.getByText('Apply $100.00')).toBeTruthy());
   expect(screen.queryByText('Delete')).toBeNull();
+});
+
+test('opened from a customer\'s Receive Payment button, the form starts on that customer', async () => {
+  const invs0 = [{ id: 'INV-7', customer_id: 'C1', date: '09/01/2026', total: 300, paid: 0, status: 'open', payments: [] }];
+  render(<Harness invs0={invs0} hist0={[]} nf={jest.fn()} prefill={{ customerId: 'C1' }} />);
+  await waitFor(() => expect(screen.getByText('Save payment · $0.00')).toBeTruthy());
+  expect(screen.getAllByText('Alpha Athletics').length).toBeGreaterThan(0);
+  expect(screen.getByText('INV-7')).toBeTruthy();
+  expect(screen.queryByPlaceholderText(/customer name/)).toBeNull();
 });
