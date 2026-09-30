@@ -42,7 +42,7 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, REP_PROD_FILE_DECOS, artistOwesProdFiles, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, REP_PROD_FILE_DECOS, artistOwesProdFiles, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, prodFileMethodOf, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, INVENTORY_ADJUST_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { isApiCatalogVendor, styleSkuOrFilter, buildStyleColorwayMap, lookupStyleColorway } from './lib/vendorColorwayImages';
 import { logoColorWayOptions, logoDetailUrl, logoDetailBg, logoDetailBackground, cwGarmentColor, setLogoDetail, removeLogoDetail, jobMissingLogoDetails, garmentLogoDetails, logoDetailCustomerUpdates, reusedLogoDetailNeeds } from './lib/logoDetail';
 import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, adoptArtProofAsGarmentMock, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobItemArtSlots, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, jobItemRoster, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
@@ -67,6 +67,7 @@ import { approveArtOnSO, sendArtBackOnSO, artApproveTarget } from './lib/artRevi
 import { approvalArtContext } from './lib/artApproval';
 import { closeOpenArtRequests, jobAwaitingArtist } from './lib/artRequests';
 import { completedJobInvoiceExplanation, getOrderInvoiceCoverage, hasResponsePoForPull, isOrderFullyInvoiced, isOrderFullyShipped, isFreshNotificationDate, picksForCurrentSku, pulledItemsHaveMovedInLine, shouldShowCompletedJobNotice, shouldShowMockupReviewNotice } from './lib/dashboardNotificationRules';
+import { PRIOR_ART_REVIEW, priorArtDecisionPending } from './lib/priorArtReview';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { AppDataProvider } from './AppContext';
 import PortalAssistant from './PortalAssistant';
@@ -9026,11 +9027,14 @@ export default function App(){
     sos.forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=so.rep_id||c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
+        if(j.art_status===PRIOR_ART_REVIEW){const _mockReady=j.art_reuse_confirmed&&skusMissingMockups(j,so).length===0;todos.push({type:'art',priority:1,msg:!j.art_reuse_confirmed?'🎨 Review previous artwork: '+j.art_name:_mockReady?'🎨 Send garment proof to coach: '+j.art_name:'🎨 Set garment mock: '+j.art_name,detail:tag+' · '+so.id+' · '+(!j.art_reuse_confirmed?'Decide if the previous art works for this garment':_mockReady?'Review the garment proof and send it to the coach':'Choose a mock for this garment, then send to coach'),so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:!j.art_reuse_confirmed?'Review art':_mockReady?'Send to coach':'Set mock',role:'sales',date:j.updated_at||so.updated_at})}
         if((j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&['hold','ready',''].includes(j.prod_status||'')&&missingJobMocks(j,so).length){
           todos.push({type:'art',priority:1,msg:'🎨 Previous art — set up the mockup: '+j.art_name,detail:tag+' · '+so.id+' · No garment mockup yet — reuse an approved mock or send to the artist',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Set up art',role:'sales',date:j.updated_at||so.updated_at});
         }
         if(j.art_status==='waiting_approval'){
-          if(shouldShowMockupReviewNotice(j,so)){
+          const _legacyPrior=priorArtDecisionPending(j,[...jobLiveArtIds(j,so)].map(id=>safeArt(so).find(a=>a.id===id)).filter(Boolean));
+          if(_legacyPrior){todos.push({type:'art',priority:1,msg:'🎨 Review previous artwork: '+j.art_name,detail:tag+' · '+so.id+' · Decide if this art works for the garment before choosing a mock',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Review art',role:'sales',date:j.updated_at||so.updated_at})}
+          else if(shouldShowMockupReviewNotice(j,so)){
             // Reused / previously-approved art is parked at waiting_approval so the rep confirms it
             // for THIS order (OrderEditor _newArtSt), but until a real garment mockup exists it can
             // neither be reviewed nor sent to the coach. skusMissingMockups is the SAME gate the
@@ -10154,7 +10158,7 @@ export default function App(){
               // garment mockup. The "set up the mockup" rows deliberately get no decision bar
               // (SO-1727 — there is no proof to approve yet), and neither does a row falling back
               // to raw design art (_pv.hasMock false), which must never read as sign-off (SO-1661).
-              const _canDecide=!!(_job&&_job.art_status==='waiting_approval'&&_canPv&&_pv.hasMock&&skusMissingMockups(_job,t.so).length===0);
+              const _canDecide=!!(_job&&_job.art_status==='waiting_approval'&&!priorArtDecisionPending(_job,_pv?.artFiles||[],skusMissingMockups(_job,t.so))&&_canPv&&_pv.hasMock&&skusMissingMockups(_job,t.so).length===0);
               const _decArt=_canDecide?jobLiveArtIds(_job,t.so).map(id=>safeArt(t.so).find(a=>a.id===id)):null;
               const _apTgt=_canDecide?artApproveTarget(_decArt,_decArt.find(Boolean)?.deco_type||_job.deco_type):null;
               const _decAct=_canDecide&&dashArtAct&&dashArtAct.key===_key?dashArtAct:null;
@@ -13283,7 +13287,7 @@ export default function App(){
       nf('🏭 '+j.id+' added to Production Board');
     };
 
-    const ART_STATUSES=[['needs_art','Needs Art'],['art_requested','Art Requested'],['art_in_progress','In Progress'],['waiting_approval','Waiting Approval'],['production_files_needed','Art Approved — Waiting'],['order_dtf_transfers','Order DTF Transfers'],['upload_emb_files','Upload EMB Files'],['art_complete','Art Complete']];
+    const ART_STATUSES=[['needs_art','Needs Art'],[PRIOR_ART_REVIEW,'Review Previous Art'],['art_requested','Art Requested'],['art_in_progress','In Progress'],['waiting_approval','Waiting Approval'],['production_files_needed','Art Approved — Waiting'],['order_dtf_transfers','Order DTF Transfers'],['upload_emb_files','Upload EMB Files'],['art_complete','Art Complete']];
     const ITEM_STATUSES=[['need_to_order','Need to Order'],['on_order','On Order'],['partially_received','Partially Received'],['waiting_if','Waiting IF Pull'],['items_received','Items Received'],['all_billed','All Billed']];
     const ITEM_CHIP_TIPS={need_to_order:'Genuinely still needs a PO — no purchase order or stock pick covers these garments yet. (A job whose garments are already fully on a PO shows under "On Order", not here.)',on_order:'Garments are ordered — every unit is committed to a PO (or reserved on a pick) but nothing has been received yet. Includes drop-ship jobs that never physically check in.',waiting_if:'Only thing left is the warehouse pull: every missing garment is reserved on a pick line (Inventory Fulfillment) — nothing to order or receive from vendors.',all_billed:'Every unit is covered by vendor bills and/or warehouse stock pulls — nothing left un-billed.'};
     const chipStyle=(active,sc)=>({fontSize:10,padding:'3px 10px',borderRadius:12,border:'1px solid '+(active?sc?.c||'#2563eb':'#e2e8f0'),
@@ -13651,10 +13655,12 @@ export default function App(){
     sos.forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=so.rep_id||c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
+        if(j.art_status===PRIOR_ART_REVIEW){const _mockReady=j.art_reuse_confirmed&&skusMissingMockups(j,so).length===0;todos.push({type:'art',priority:1,msg:(!j.art_reuse_confirmed?'Review previous artwork: ':_mockReady?'Send garment proof to coach: ':'Set garment mock: ')+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:!j.art_reuse_confirmed?'Review art':_mockReady?'Send to coach':'Set mock',role:'sales',date:j.updated_at||so.updated_at})}
         if((j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&['hold','ready',''].includes(j.prod_status||'')&&missingJobMocks(j,so).length){
           todos.push({type:'art',priority:1,msg:'🎨 Previous art — set up the mockup: '+j.art_name,detail:tag+' · '+so.id+' · No garment mockup yet — reuse an approved mock or send to the artist',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Set up art',role:'sales',date:j.updated_at||so.updated_at});
         }
         if(j.art_status==='waiting_approval'){
+          if(priorArtDecisionPending(j,[...jobLiveArtIds(j,so)].map(id=>safeArt(so).find(a=>a.id===id)).filter(Boolean)))todos.push({type:'art',priority:1,msg:'Review previous artwork: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Review art',role:'sales',date:j.updated_at||so.updated_at});
           if(j.sent_to_coach_at&&!j.coach_approved_at&&!DECO_OR_LATER_STATUSES.includes(j.prod_status)){const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(!j.follow_up_auto&&isDue)todos.push({type:'coach_followup',priority:1,msg:'Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
         if(j.coach_approved_at&&!DECO_OR_LATER_STATUSES.includes(j.prod_status)&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<FYI_NOTICE_DAYS)todos.push({type:'art_approved',priority:3,msg:'Coach approved art: '+j.art_name,detail:tag+' · '+so.id+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
         // M6 (same rule as the desktop dashboard generator): rejection visible until re-sent.
@@ -25769,33 +25775,33 @@ export default function App(){
 
             {/* ─── Per-design production-files confirmation (visible at every stage so art can confirm before coach approval) ─── */}
             {allArtFiles.length>0&&<div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
-              <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:8}}>🎯 Production Files by Design</div>
+              <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:8}}>🎯 Production Readiness by Design</div>
               <div style={{display:'flex',flexDirection:'column',gap:6}}>
-                {allArtFiles.map(a=>{const pf=(a.prod_files||[]).length;const checked=a.prod_files_attached===true;return(
+                {allArtFiles.map(a=>{const pf=(a.prod_files||[]).length;const checked=a.prod_files_attached===true;const isDtf=prodFileMethodOf(a,j.deco_type)==='dtf';return(
                   <label key={a.id} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',borderRadius:8,border:'1px solid '+(checked?'#86efac':'#e2e8f0'),background:checked?'#f0fdf4':'#fff',cursor:'pointer'}}>
                     <input type="checkbox" checked={checked} style={{width:16,height:16,cursor:'pointer',flexShrink:0}} onChange={e=>{
                       const _chk=e.target.checked;
                       const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
-                      const updArt=safeArt(liveSO).map(x=>x.id===a.id?{...x,prod_files_attached:_chk}:x);
+                      const updArt=safeArt(liveSO).map(x=>{if(x.id!==a.id)return x;const files=x.prod_files||[];const orderMarker={name:'DTF films ordered',dtf_order:true,at:new Date().toISOString(),by:cu?.name||'Rep'};return{...x,prod_files_attached:_chk,...(isDtf?{prod_files:_chk?(files.some(f=>f?.dtf_order)?files:[...files,orderMarker]):files.filter(f=>!f?.dtf_order)}:{})}});
                       savSO({...liveSO,art_files:updArt});
                       setArtJobDetailModal({...j,artFile:updArt.find(x=>x.id===j.art_file_id)});
-                      nf(_chk?'✅ Production files attached — '+(a.name||'design'):'Unmarked — '+(a.name||'design'));
+                      nf(isDtf?(_chk?'🎞️ DTF films marked ordered — ':'DTF order unmarked — ')+(a.name||'design'):_chk?'✅ Production files attached — '+(a.name||'design'):'Unmarked — '+(a.name||'design'));
                     }}/>
                     <span style={{fontSize:12,fontWeight:700,color:'#0f172a',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.name||'Unnamed'}</span>
-                    <span style={{fontSize:10,fontWeight:600,color:pf>0?'#166534':'#94a3b8',flexShrink:0}}>{pf>0?'📁 '+pf:'no file'}</span>
-                    <span style={{fontSize:11,fontWeight:700,color:checked?'#166534':'#92400e',flexShrink:0}}>{checked?'Attached':'Not marked'}</span>
+                    {!isDtf&&<span style={{fontSize:10,fontWeight:600,color:pf>0?'#166534':'#94a3b8',flexShrink:0}}>{pf>0?'📁 '+pf:'no file'}</span>}
+                    <span style={{fontSize:11,fontWeight:700,color:checked?'#166534':'#92400e',flexShrink:0}}>{isDtf?(checked?'Films ordered':'Not ordered'):(checked?'Attached':'Not marked')}</span>
                   </label>
                 )})}
               </div>
-              <div style={{fontSize:10,color:'#94a3b8',marginTop:6}}>Check off each design once its production file is attached. When all are checked, coach approval sends the job straight to production.</div>
+              <div style={{fontSize:10,color:'#94a3b8',marginTop:6}}>Confirm print separations and embroidery files when ready; mark DTF only after the transfer films are ordered. Coach approval sends the job to production once every step is complete.</div>
             </div>}
             {/* ─── Upload Zone: switches between art mockups and production files ───
                 Also shown on art_complete jobs whose designs were never explicitly confirmed
                 (checkbox unchecked) so a missing separation can still be uploaded. */}
             {(PROD_FILES_STATUSES.includes(j.art_status)||(j.art_status==='art_complete'&&allArtFiles.some(a=>!artProdFilesConfirmed(a))))?<div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
               <div style={{padding:'10px 14px',background:'linear-gradient(135deg,#dcfce7,#f0fdf4)',borderRadius:8,border:'2px solid #86efac',marginBottom:12}}>
-                <div style={{fontSize:13,fontWeight:700,color:'#166534'}}>✅ Art Approved — Upload Production Files</div>
-                <div style={{fontSize:11,color:'#15803d',marginTop:2}}>Mockups have been approved. Upload final production files (DST, AI, EPS, etc.) for this job.</div>
+                <div style={{fontSize:13,fontWeight:700,color:'#166534'}}>✅ Art Approved — Complete Production Steps</div>
+                <div style={{fontSize:11,color:'#15803d',marginTop:2}}>Mockups have been approved. Upload any required separations or embroidery files, and order DTF transfer films where needed.</div>
                 {j.coach_approval_comment&&<div style={{fontSize:11,color:'#166534',marginTop:6,padding:'6px 10px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6}}><strong>Coach's note:</strong> {j.coach_approval_comment}</div>}
               </div>
               {prodFilesL.length>0&&<div style={{marginBottom:10}}>
@@ -37767,7 +37773,7 @@ export default function App(){
   // with SEARCH_FIELDS in netlify/functions/portal-assistant.js.
   const _nlMoney=(n)=>'$'+(Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
   const _nlStatusLabel=(st)=>({booking:'Booking',need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items In',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[st]||st||'—');
-  const _nlArtLabel=(st)=>({needs_art:'Needs Art',waiting_approval:'Waiting Approval',production_files_needed:'Prod Files Needed',upload_emb_files:'Upload EMB',order_dtf_transfers:'Order DTF',art_complete:'Art Complete'}[st]||st||'—');
+  const _nlArtLabel=(st)=>({needs_art:'Needs Art',needs_art_review:'Review Previous Art',waiting_approval:'Waiting Approval',production_files_needed:'Prod Files Needed',upload_emb_files:'Upload EMB',order_dtf_transfers:'Order DTF',art_complete:'Art Complete'}[st]||st||'—');
   const _nlCell=(col,val)=>{
     if(['Order','Job','Invoice','Estimate','PO','SKU'].includes(col))return <span style={{fontWeight:700,color:'#1e40af'}}>{val}</span>;
     if(col==='Art')return <span style={{color:(val==='Needs Art'||val==='Needs art')?'#b45309':'#166534',fontWeight:600}}>{val}</span>;

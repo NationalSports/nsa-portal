@@ -23,7 +23,7 @@
 
 import { closeOpenArtRequests } from './artRequests';
 import {
-  markDstsStale, prodFilesStatusFor, artProdFilesConfirmed, artDstOnFile, pendingProdFileGroups,
+  markDstsStale, prodFilesStatusFor, artProdFilesConfirmed, artDstOnFile, pendingProdFileGroups, prodFileMethodOf,
 } from '../constants';
 
 // Where an approval lands. 'art_complete' ONLY when every live art file already carries a
@@ -79,7 +79,7 @@ export const ART_PULLBACK_CLEARS = {
 //
 // coach_rejected is cleared in the SAME write as the status: an approved job still flagged
 // rejected is the SO-1199 contradictory shape (rejections[] keeps the history either way).
-export function approveArtOnSO(so, { match, artIds, targetStatus, stampProd, updatedAt }) {
+export function approveArtOnSO(so, { match, artIds, targetStatus, stampProd, orderedDtfIds = [], by, at, updatedAt }) {
   const ids = artIds || [];
   const jobs = (so.jobs || []).map((jj, idx) => (match(jj, idx)
     ? {
@@ -90,10 +90,15 @@ export function approveArtOnSO(so, { match, artIds, targetStatus, stampProd, upd
     }
     : jj));
   const stampIds = stampProd === true ? ids : (Array.isArray(stampProd) ? stampProd : []);
+  const ordered = new Set(orderedDtfIds);
   const art_files = ids.length
-    ? (so.art_files || []).map((a) => (ids.includes(a.id)
-      ? { ...a, status: 'approved', ...(stampIds.includes(a.id) ? { prod_files_attached: true } : {}) }
-      : a))
+    ? (so.art_files || []).map((a) => {
+      if (!ids.includes(a.id)) return a;
+      const dtfOrdered = stampIds.includes(a.id) && ordered.has(a.id) && prodFileMethodOf(a) === 'dtf';
+      const hasOrder = (a.prod_files || []).some(f => f?.dtf_order);
+      return { ...a, status: 'approved', ...(stampIds.includes(a.id) ? { prod_files_attached: true } : {}),
+        ...(dtfOrdered && !hasOrder ? { prod_files: [...(a.prod_files || []), { name: 'DTF films ordered', dtf_order: true, at: at || new Date().toISOString(), by: by || 'Rep' }] } : {}) };
+    })
     : (so.art_files || []);
   return { ...so, jobs, art_files, ...(updatedAt ? { updated_at: updatedAt } : {}) };
 }

@@ -2175,7 +2175,10 @@ const _dbSaveSOInner = async (so) => {
     if(jobs?.length){
       // Deduplicate jobs by id to prevent "ON CONFLICT DO UPDATE cannot affect row a second time" error
       const _seenJobIds=new Set();const dedupedJobs=jobs.filter(j=>{if(!j.id||_seenJobIds.has(j.id))return false;_seenJobIds.add(j.id);return true});
-      const jobRows=dedupedJobs.map(j=>_fuDefaults({..._pick(j,_jobCols),so_id:so.id}));
+      // Every row in this bulk upsert must provide the new NOT NULL flag. A mixed
+      // order with one reviewed job and older jobs would otherwise send NULL for
+      // the older rows rather than using the database default.
+      const jobRows=dedupedJobs.map(j=>_fuDefaults({..._pick(j,_jobCols),so_id:so.id,art_reuse_confirmed:j.art_reuse_confirmed===true}));
       // Coach-decision guard (audit A9): this upsert is a blind whole-row write, so a stale client
       // (whose job snapshot predates a coach approve/reject via the guarded RPC) writes NULL over the
       // decision columns and silently reverts it. Never null a non-null coach column unless this save
@@ -2205,7 +2208,7 @@ const _dbSaveSOInner = async (so) => {
       // Forward and equal-rank moves always pass — approving from a stale tab is exactly what the
       // rep wants persisted. The three production-files stages share one rank: which of them a job
       // sits in is a per-deco routing detail, not review progress.
-      {const _ART_RANK={needs_art:0,art_requested:1,art_in_progress:2,waiting_approval:3,production_files_needed:4,order_dtf_transfers:4,upload_emb_files:4,art_complete:5};
+      {const _ART_RANK={needs_art:0,art_requested:1,art_in_progress:2,needs_art_review:2.5,waiting_approval:3,production_files_needed:4,order_dtf_transfers:4,upload_emb_files:4,art_complete:5};
       let _artKept=0;
       jobRows.forEach((row,i)=>{
         const j=dedupedJobs[i];if(j._coach_cleared||j._art_moved)return;

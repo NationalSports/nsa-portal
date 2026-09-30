@@ -682,7 +682,7 @@ export function inheritJobWorkflowFields(existing) {
  * (dtf/emb/screen) are one tier — an approved design awaiting its production files.
  */
 const ART_STATUS_RANK = {
-  needs_art: 0, art_requested: 1, art_in_progress: 2, waiting_approval: 3,
+  needs_art: 0, art_requested: 1, art_in_progress: 2, needs_art_review: 2.5, waiting_approval: 3,
   production_files_needed: 4, order_dtf_transfers: 4, upload_emb_files: 4, art_complete: 5,
 };
 const rankArtStatus = (s) => (ART_STATUS_RANK[s] != null ? ART_STATUS_RANK[s] : 0);

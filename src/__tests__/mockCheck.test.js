@@ -52,6 +52,16 @@ describe('skusMissingMockups — garment-aware reuse', () => {
     const { job, so } = makeCase(art);
     expect(skusMissingMockups(job, so)).toEqual([]);
   });
+
+  test('art copied from an earlier order needs an explicit garment mock despite general files', () => {
+    const art = { id: 'af-reused', reused_from_so: 'SO-1', deco_type: 'screen_print',
+      item_mockups: {}, mockup_files: [], files: [{ url: 'http://x/old-proof.png' }],
+      prod_files: [{ url: 'http://x/old-separation.png' }] };
+    const { job, so } = makeCase(art);
+    expect(skusMissingMockups(job, so)).toEqual(['A2009']);
+    art.item_mockups['A2009|White'] = [{ url: 'http://x/new-garment-mock.png' }];
+    expect(skusMissingMockups(job, so)).toEqual([]);
+  });
 });
 
 // SO-1727: previously-used art added to an order carries the digitizer's sew-out proof (in

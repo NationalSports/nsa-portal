@@ -168,6 +168,20 @@ describe('approveArtOnSO — a confirmation must not stamp designs it did not an
     expect(byId(out, 'af-tourney').status).toBe('approved');
   });
 
+  test('confirming a DTF order records films ordered only on that design', () => {
+    const out = approveArtOnSO(so(), {
+      match: job, artIds: ['af-pal', 'af-tourney'],
+      targetStatus: 'production_files_needed', stampProd: ['af-tourney'],
+      orderedDtfIds: ['af-tourney'], by: 'Rep', at: '2026-09-29T16:00:00.000Z',
+    });
+    expect(byId(out, 'af-tourney').prod_files).toEqual(expect.arrayContaining([
+      expect.objectContaining({ dtf_order: true, by: 'Rep', at: '2026-09-29T16:00:00.000Z' }),
+    ]));
+    expect(byId(out, 'af-pal').prod_files.some(f => f.dtf_order)).toBe(false);
+    expect(byId(out, 'af-pal').prod_files_attached).toBeUndefined();
+    expect(out.jobs[0].art_status).toBe('production_files_needed');
+  });
+
   test('stampProd true still stamps everything (single-method jobs unchanged)', () => {
     const out = approveArtOnSO(so(), {
       match: job, artIds: ['af-pal', 'af-tourney'], targetStatus: 'art_complete', stampProd: true,

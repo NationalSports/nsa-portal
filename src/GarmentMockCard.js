@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { fileDisplayName, _isImgUrl, _cloudinaryPdfThumb, openFile } from './utils';
 import { sizeProgressCell } from './JobGarmentProgress';
+import { cloudinaryPreviewUrl } from './lib/cloudinaryPreview';
 import './GarmentMockCard.css';
 
 const urlOf = f => typeof f === 'string' ? f : f?.url || '';
@@ -236,6 +237,8 @@ export default function GarmentMockCard({ label, sub, mocks, candidates, suggest
   const [choosing, setChoosing] = useState(false);
   const [selected, setSelected] = useState('');
   const [error, setError] = useState('');
+  const [loadedPreview, setLoadedPreview] = useState('');
+  const [previewError, setPreviewError] = useState(false);
   const [drag, setDrag] = useState(false);
   const input = useRef(null);
   const choosingExisting = choosing || mocks.length === 0;
@@ -244,7 +247,9 @@ export default function GarmentMockCard({ label, sub, mocks, candidates, suggest
   const files = choosingExisting && !showCandidate ? [] : pool;
   const file = files.find(f => urlOf(f) === selected) || files[0];
   const url = urlOf(file);
-  const thumb = f => _isImgUrl(urlOf(f)) ? urlOf(f) : _cloudinaryPdfThumb(urlOf(f));
+  const thumb = (f, width = 1600) => _isImgUrl(urlOf(f)) ? cloudinaryPreviewUrl(urlOf(f), width) : _cloudinaryPdfThumb(urlOf(f));
+  const previewUrl = file ? thumb(file) : '';
+  useEffect(() => { setLoadedPreview(''); setPreviewError(false); }, [previewUrl]);
   const run = async fn => {
     setError('');
     try { const ok = await fn(); if (ok !== false) { setChoosing(false); setSelected(''); } else { setError('Could not save this mock. Please try again.'); } }
@@ -258,11 +263,11 @@ export default function GarmentMockCard({ label, sub, mocks, candidates, suggest
         {logo && <div className="panel-label"><span>On the garment</span></div>}
         <div className={'panel-frame mock-preview' + (drag ? ' dragging' : '')} onDragOver={e => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)} onDrop={e => { e.preventDefault(); setDrag(false); if (!busy) onUpload(Array.from(e.dataTransfer.files)); }}>
           {file ? <button type="button" className="frame-open mock-open" onClick={() => openFile(url)} aria-label="Open full size mock">
-            {thumb(file) ? <img src={thumb(file)} alt={fileDisplayName(file)} /> : <span className="mock-document">PDF / image<br /><small>{fileDisplayName(file)}</small></span>}
+            {previewUrl ? <><img src={previewUrl} alt={fileDisplayName(file)} decoding="async" onLoad={() => setLoadedPreview(previewUrl)} onError={() => setPreviewError(true)} />{loadedPreview !== previewUrl && !previewError && <span className="mock-loading" role="status">Loading mock…</span>}{previewError && <span className="mock-loading" role="alert">Preview could not load · open full size ↗</span>}</> : <span className="mock-document">PDF / image<br /><small>{fileDisplayName(file)}</small></span>}
             <span className="mock-enlarge">Open full size ↗</span>
           </button> : <div className="mock-empty"><strong>Add a mock for this garment</strong><span>Use an image already attached, or upload one.</span><span>Drag and drop works here too.</span></div>}
         </div>
-        {files.length > 1 && <div className="mock-thumbnails" aria-label="Choose an image">{files.map((f, i) => <button type="button" key={urlOf(f)} disabled={busy} aria-label={'Select image ' + (i + 1) + ': ' + fileDisplayName(f)} aria-pressed={urlOf(f) === url} onClick={() => setSelected(urlOf(f))}>{thumb(f) ? <img src={thumb(f)} alt="" /> : <span>PDF</span>}</button>)}</div>}
+        {files.length > 1 && <div className="mock-thumbnails" aria-label="Choose an image">{files.map((f, i) => <button type="button" key={urlOf(f)} disabled={busy} aria-label={'Select image ' + (i + 1) + ': ' + fileDisplayName(f)} aria-pressed={urlOf(f) === url} onClick={() => setSelected(urlOf(f))}>{thumb(f, 240) ? <img src={thumb(f, 240)} alt="" loading="lazy" /> : <span>PDF</span>}</button>)}</div>}
         <div className="panel-meta" title={file ? fileDisplayName(file) : ''}>{file ? fileDisplayName(file) : 'No mock yet'}</div>
         {file && choosingExisting && <p className="panel-hint">Check the garment, color and placement, then use this mock.</p>}
         {file && choosingExisting && file.requires_mock_review && <p className="panel-hint">From {file.source_art_name}. Confirm this image also matches the artwork for this job.</p>}

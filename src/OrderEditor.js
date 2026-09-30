@@ -1,8 +1,11 @@
 import { canReviewJobMocks } from './lib/jobMockReadiness';
 import JobGarmentMocks from './JobGarmentMocks';
+import PriorArtReviewPanel from './PriorArtReviewPanel';
 import { logoDetailCustomerUpdates } from './lib/logoDetail';
 import { isJobReady, missingJobMocks, jobMockChecks } from './lib/jobMockReadiness';
 import { jobArtBadgeSt } from './lib/jobArtBadge';
+import { PRIOR_ART_REVIEW, startPriorArtReview, priorArtDecisionPending, confirmPriorArt, markPriorArtCoachSent } from './lib/priorArtReview';
+import { splitPriorArtwork } from './lib/splitPriorArtwork';
 import { webstoreCheckoutMoney, webstoreDocMoneyRows } from './lib/webstoreSoMoney';
 import {useOrderCatalogResults,a4Visible} from './lib/orderCatalogSearch';
 import { poEligibleVendors } from './lib/vendorPoEligibility';
@@ -293,7 +296,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // buildJobs pass. The approve / "mark complete" actions gate on artProdFilesConfirmed first and
   // open the artApproveGate prompt when nothing is confirmed — a vector .ai merely sitting in
   // prod_files is NOT a production separation and must never silently complete the job.
-  const _approveArtTo=async(jobId,artIds,targetStatus,stampProd)=>{
+  const _approveArtTo=async(jobId,artIds,targetStatus,stampProd,orderedDtfIds=[])=>{
     const curO=oRef.current;
     // Approving resolves any outstanding coach change-request — warn before overriding it, then clear
     // the flag so coach_rejected can't stay stranded=true on an approved/in-production job.
@@ -306,9 +309,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       nf('This job still has Art TBD — assign real artwork before approving it','error');return;
     }
     if(_jb&&_jb.coach_rejected){const _lr=(_jb.rejections||[]).slice(-1)[0];if(!window.confirm('⚠️ The coach requested changes on this artwork'+((_lr&&_lr.reason)?(':\n\n"'+_lr.reason+'"'):'.')+'\n\nApprove it anyway? This overrides the coach’s change request.'))return;}
-    const updated=approveArtOnSO({...curO,jobs:safeJobs(curO),art_files:safeArt(curO)},{match:jj=>jj.id===jobId,artIds,targetStatus,stampProd,updatedAt:new Date().toLocaleString()});
+    const updated=approveArtOnSO({...curO,jobs:safeJobs(curO),art_files:safeArt(curO)},{match:jj=>jj.id===jobId,artIds,targetStatus,stampProd,orderedDtfIds,by:cu?.name||'Rep',updatedAt:new Date().toLocaleString()});
     setArtRevisionNote('');
-    await saveSONow(updated,'Art approval','✅ Art approved — '+(targetStatus==='art_complete'?'production files confirmed, ready for production!':targetStatus==='order_dtf_transfers'?'order DTF transfers':targetStatus==='upload_emb_files'?'upload embroidery files':'sent to the artist for production separations'));
+    const _doneMsg=orderedDtfIds.length
+      ? targetStatus==='art_complete'?'DTF films ordered, ready for production!':'DTF films ordered; this job still needs '+(targetStatus==='upload_emb_files'?'embroidery files':'print separations')
+      : targetStatus==='art_complete'?'production steps confirmed, ready for production!':targetStatus==='order_dtf_transfers'?'order DTF transfers':targetStatus==='upload_emb_files'?'upload embroidery files':'sent to the artist for production separations';
+    await saveSONow(updated,'Art approval','✅ Art approved — '+_doneMsg);
   };
   const _activeProd=s=>s==='staging'||s==='in_process';
   // Jobs sharing any of the affected art files must not keep running a design that's being
@@ -647,6 +653,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // send modal never opens. applyPriorMock passes its saved order explicitly so the gate is
   // deterministic even if the post-save re-render hasn't committed oRef yet.
   const openCoachSend=(jIdx,oOverride)=>{const co=oOverride||oRef.current||o;const jb0=safeJobs(co)[jIdx];if(!jb0)return;
+    const _ownedArt=jobArtFileIds(jb0,safeItems(co));
+    if(priorArtDecisionPending(jb0,safeArt(co).filter(a=>_ownedArt.has(a.id)),skusMissingMockups(jb0,co))){nf('Review the previous artwork before sending it to the coach','error');return}
+    if(jb0.art_status===PRIOR_ART_REVIEW&&!jb0.art_reuse_confirmed){nf('Choose whether this artwork works for the new garment first','error');return}
     // Same per-garment mock gate as the Send-to-Coach button — this opener is also reached
     // from applyPriorMock, which may have mocked only one of the job's garments.
     const _mmO=skusMissingMockups(jb0,co);
@@ -684,7 +693,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // (the reused mock is saved either way; the job moves once the rest catches up).
     const _allApproved=jobArtIds.every(aid=>{const af2=updArt.find(a=>a.id===aid);return af2&&(af2.status==='approved'||af2.status==='art_complete')});
     const _allProd=jobArtIds.every(aid=>{const af2=updArt.find(a=>a.id===aid);return af2&&artProdFilesConfirmed(af2)});
-    const newJobStatus=sendToCoach?'waiting_approval':(_allApproved?(_allProd?'art_complete':prodFilesStatusFor(_actDeco)):null);
+    const _priorReview=jb?.art_status===PRIOR_ART_REVIEW;
+    if(_priorReview&&sendToCoach&&!jb.art_reuse_confirmed){nf('Review the previous artwork before sending it to the coach','error');return}
+    const newJobStatus=_priorReview?PRIOR_ART_REVIEW:sendToCoach?'waiting_approval':(_allApproved?(_allProd?'art_complete':prodFilesStatusFor(_actDeco)):null);
     // coach_rejected clears even when the job doesn't advance — the rep confirmed the
     // override above, and leaving the flag stranded is the SO-1199 class this path fixed.
     const updated={...o,art_files:updArt,...(jIdx>=0?{jobs:safeJobs(o).map((jj,i)=>i===jIdx?{...jj,...(newJobStatus?{art_status:newJobStatus}:{}),coach_rejected:false}:jj)}:{}),updated_at:new Date().toLocaleString()};
@@ -745,7 +756,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Keep non-image files (e.g. .ai production art legacy records stash in `files`) and any
     // explicitly-whitelisted mockup image; drop every other mockup image.
     const keep=arr=>(arr||[]).filter(f=>{const u=_u(f);if(!_isImgUrl(u,f))return true;return selUrls?selUrls.has(u):false});
-    const clone={...JSON.parse(JSON.stringify(art)),id:'af'+Date.now(),design_id:previousArtReuseDesignId(art,art._srcCustId),uploaded:new Date().toLocaleDateString()};
+    const clone={...JSON.parse(JSON.stringify(art)),id:'af'+Date.now(),design_id:previousArtReuseDesignId(art,art._srcCustId),reused_from_so:art._so_id||null,uploaded:new Date().toLocaleDateString()};
     delete clone._so_id;delete clone._so_memo;delete clone._srcCustId;delete clone._srcTeam;delete clone._sport;
     // Keep design_id so the reused logo stays linked to its design identity (LOGO-1).
     // REUSE-6: the source order's garment mock_links don't apply here (they reference that
@@ -789,7 +800,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(key===lastSyncRef.current)return;
       lastSyncRef.current=key;
       const extJobs=safeJobs(order);
-      const hasExternalJobChange=extJobs.some(ej=>{const lj=safeJobs(o).find(j=>j.id===ej.id);return lj&&(ej.art_status!==lj.art_status||ej.coach_approved_at!==lj.coach_approved_at||ej.coach_rejected!==lj.coach_rejected)});
+      const hasExternalJobChange=extJobs.some(ej=>{const lj=safeJobs(o).find(j=>j.id===ej.id);return lj&&(ej.art_status!==lj.art_status||ej.art_reuse_confirmed!==lj.art_reuse_confirmed||ej.coach_approved_at!==lj.coach_approved_at||ej.coach_rejected!==lj.coach_rejected)});
       const hasExternalArtChange=JSON.stringify(order.art_files||[])!==JSON.stringify(o.art_files||[])&&!dirty;
       // Detect external pick_line changes (e.g., warehouse pulled an IF on another tab)
       const hasExternalPickChange=safeItems(order).some((ei,idx)=>{const li=safeItems(o)[idx];if(!li)return!!ei.pick_lines?.length;const ePicks=safePicks(ei);const lPicks=safePicks(li);if(ePicks.length!==lPicks.length)return true;return ePicks.some((ep,pi)=>ep.status!==lPicks[pi]?.status||ep.pick_id!==lPicks[pi]?.pick_id)});
@@ -798,7 +809,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // editor) must never be dropped because the incoming snapshot hasn't caught up yet.
       const hasExternalPoChange=safeItems(order).some((ei,idx)=>{const li=safeItems(o)[idx];if(!li)return false;return(Array.isArray(ei.po_lines)?ei.po_lines.length:0)>(Array.isArray(li.po_lines)?li.po_lines.length:0)});
       if(!hasExternalJobChange&&!hasExternalArtChange&&!hasExternalPickChange&&!hasExternalPoChange)return;
-      setO(prev=>{const mergedJobs=safeJobs(prev).map(j=>{const ext=extJobs.find(ej=>ej.id===j.id);if(ext&&(ext.art_status!==j.art_status||ext.coach_approved_at!==j.coach_approved_at||ext.coach_rejected!==j.coach_rejected)){return{...j,art_status:ext.art_status,coach_approved_at:ext.coach_approved_at,coach_rejected:ext.coach_rejected,rejections:ext.rejections,sent_to_coach_at:ext.sent_to_coach_at}}return j});
+      setO(prev=>{const mergedJobs=safeJobs(prev).map(j=>{const ext=extJobs.find(ej=>ej.id===j.id);if(ext&&(ext.art_status!==j.art_status||ext.art_reuse_confirmed!==j.art_reuse_confirmed||ext.coach_approved_at!==j.coach_approved_at||ext.coach_rejected!==j.coach_rejected)){return{...j,art_status:ext.art_status,art_reuse_confirmed:ext.art_reuse_confirmed,coach_approved_at:ext.coach_approved_at,coach_rejected:ext.coach_rejected,rejections:ext.rejections,sent_to_coach_at:ext.sent_to_coach_at}}return j});
         // Merge pick_line changes from external source (warehouse pulls, new IFs from other tabs)
         // and union-add external po_lines (restored stale/foreign lines) onto their item.
         const mergedItems=(hasExternalPickChange||hasExternalPoChange)?safeItems(prev).map((it,idx)=>{
@@ -4512,15 +4523,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(existing)_matchedExistingById.set(id,existing);
       // Reused/pre-approved art must be CONFIRMED by the rep for THIS order before it reads as
       // approved. A brand-new job whose art is already approved (status carried in from another
-      // order) lands at 'waiting_approval' — not yet sent to coach — so the rep gets a one-click
-      // Approve / Send to Coach / send-back-to-artist choice instead of it silently going to
-      // "Art Approved". Existing jobs keep their human-advanced status via the merge below.
+      // order) lands at needs_art_review so the rep decides whether the design works
+      // for this garment before choosing a mock or sending it to the coach. Existing
+      // jobs keep their human-advanced status via the merge below.
       // EXCEPT store-pull SOs (OMG pull / webstore batch): there the sale IS the customer's
       // approval — createOmgSO and batchOrders stamp the art 'approved' by design — so the
       // re-confirm gate must not drag every store job back into the artist/coach pipeline
       // (it generated phantom "Mockup ready for review — Artist uploaded proof" to-dos, SO-1590).
       const _isStoreSO=!!(o.omg_store_id||o.webstore_id||o.source==='webstore');
-      const _newArtSt=(!existing&&!_isStoreSO&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete'))?'waiting_approval':j.art_status;
+      const _newArtSt=(!existing&&!_isStoreSO&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete'))?PRIOR_ART_REVIEW:j.art_status;
       // Preserve human-advanced states; 'needs_art' is the auto-computed default and
       // must be re-derived so a fixed art file immediately unlocks to art_complete.
       // (_healUnresolvedArt below still downgrades a preserved completed-ish status
@@ -8649,42 +8660,44 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _grps=(g.groups&&g.groups.length)?g.groups:[{method:prodFileMethodOf({deco_type:g.deco},g.deco),deco:g.deco||'screen_print',ids:g.artIds||[],arts:[]}];
       const _multi=_grps.length>1;const _ans=g.answers||{};
       const _sepWordOf=(deco)=>{const m=prodFileMethodOf({deco_type:deco},deco);return m==='embroidery'?'embroidery (DST) file':m==='dtf'?'DTF transfer':'print-ready color separation'};
-      const _apply=(confirmIds)=>{
+      const _apply=(confirmIds,orderedDtfIds)=>{
         /* Approving IS the sign-off on the CURRENT art, so a live .dst counts as its production
            file even before the file's status flips to 'approved' — the same rule the Approve
            Artwork button uses to decide whether to open this gate at all. */
         const _ok=a=>artProdFilesConfirmed(a)||artDstOnFile(a);
         const _live=(g.jobArtIds||g.artIds||[]).map(id=>safeArt(oRef.current).find(a=>a.id===id)).filter(Boolean);
         const _target=_live.length?artStatusAfterProdConfirm(_live,confirmIds,g.jobDeco||g.deco,_ok):(confirmIds.length?'art_complete':prodFilesStatusFor(g.jobDeco||g.deco));
-        _approveArtTo(g.jobId,g.artIds,_target,confirmIds.length?confirmIds:false);
+        _approveArtTo(g.jobId,g.artIds,_target,confirmIds.length?confirmIds:false,orderedDtfIds);
         setArtApproveGate(null);
       };
       /* One group answers straight through (unchanged UX). With several, the answers collect here
          and everything applies in ONE save once the last method is answered. */
       const _answer=(m,val)=>{const nx={..._ans,[m]:val};
-        if(_grps.every(x=>nx[x.method]!==undefined)){_apply(_grps.filter(x=>nx[x.method]).reduce((acc,x)=>acc.concat(x.ids),[]))}
+        if(_grps.every(x=>nx[x.method]!==undefined)){_apply(_grps.filter(x=>nx[x.method]).reduce((acc,x)=>acc.concat(x.ids),[]),_grps.filter(x=>x.method==='dtf'&&nx[x.method]).flatMap(x=>x.ids))}
         else{setArtApproveGate({...g,answers:nx})}};
       return<div className="modal-overlay" onClick={()=>setArtApproveGate(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
-        <div className="modal-header"><h2>🏭 Production File Check</h2><button className="modal-close" onClick={()=>setArtApproveGate(null)}>×</button></div>
+        <div className="modal-header"><h2>🏭 Production Readiness Check</h2><button className="modal-close" onClick={()=>setArtApproveGate(null)}>×</button></div>
         <div className="modal-body">
-          {_multi&&<div style={{fontSize:13,color:'#334155',lineHeight:1.55,marginBottom:14}}>This job carries <strong>{_grps.length} decoration methods</strong>, and each one needs its OWN production file. Answer for each design below — confirming one never confirms the others.</div>}
+          {_multi&&<div style={{fontSize:13,color:'#334155',lineHeight:1.55,marginBottom:14}}>This job carries <strong>{_grps.length} decoration methods</strong>, each with its own production step. Confirm each design below — completing one never completes the others.</div>}
           {_grps.map((grp,gx)=>{const _w=_sepWordOf(grp.deco);
             const _nm=(grp.arts||[]).map(a=>(a&&a.name)||'Unnamed').join(', ')||g.artName||'this design';
             const _a=_ans[grp.method];
             return<div key={grp.method+'-'+gx} style={_multi?{marginBottom:14,paddingBottom:12,borderBottom:gx<_grps.length-1?'1px solid #e2e8f0':'none'}:{}}>
             <div style={{fontSize:13,color:'#334155',lineHeight:1.55,marginBottom:_multi?8:14}}>
-              {_multi
-                ?<><strong>{_nm}</strong> — is the {_w} attached? A vector <strong>.ai</strong> or mockup is <em>not</em> one.</>
-                :<>No production separation is confirmed for <strong>{_nm}</strong>. A file in the production folder isn't automatically the separation — a vector <strong>.ai</strong> or mockup is <em>not</em> a {_w}. How do you want to proceed?</>}
+              {grp.method==='dtf'
+                ?<><strong>{_nm}</strong> — have the DTF transfer films been ordered for this design? An artwork file or mockup does not mean the films were ordered.</>
+                :_multi
+                  ?<><strong>{_nm}</strong> — is the {_w} attached? A vector <strong>.ai</strong> or mockup is <em>not</em> one.</>
+                  :<>No production file is confirmed for <strong>{_nm}</strong>. A file in the production folder isn't automatically the {_w} — a vector <strong>.ai</strong> or mockup is <em>not</em> one. How do you want to proceed?</>}
             </div>
             <div style={{display:'flex',flexDirection:'column',gap:10}}>
               <button type="button" onClick={()=>_answer(grp.method,true)} style={{textAlign:'left',padding:'12px 16px',background:_a===true?'#dcfce7':'#f0fdf4',border:'2px solid '+(_a===true?'#16a34a':'#86efac'),borderRadius:10,cursor:'pointer'}}>
-                <div style={{fontSize:14,fontWeight:800,color:'#166534'}}>{_a===true?'✓ ':'✅ '}The production file is attached</div>
-                <div style={{fontSize:11.5,color:'#15803d',marginTop:3}}>I've added the {_w}. Confirm it{_multi?' for this design.':' and send the job straight to production.'}</div>
+                <div style={{fontSize:14,fontWeight:800,color:'#166534'}}>{_a===true?'✓ ':'✅ '}{grp.method==='dtf'?'DTF films are ordered':'The production file is attached'}</div>
+                <div style={{fontSize:11.5,color:'#15803d',marginTop:3}}>{grp.method==='dtf'?'I have placed the transfer order. Confirm it for this design.':'I have added the '+_w+'. Confirm it'+(_multi?' for this design.':' and send the job straight to production.')}</div>
               </button>
               <button type="button" onClick={()=>_answer(grp.method,false)} style={{textAlign:'left',padding:'12px 16px',background:_a===false?'#dbeafe':'#eff6ff',border:'2px solid '+(_a===false?'#2563eb':'#93c5fd'),borderRadius:10,cursor:'pointer'}}>
-                <div style={{fontSize:14,fontWeight:800,color:'#1e40af'}}>{_a===false?'✓ ':'🎨 '}Send to artist for the production file</div>
-                <div style={{fontSize:11.5,color:'#2563eb',marginTop:3}}>Approve the art, but the artist still needs to create the {_w} before it can go to production.</div>
+                <div style={{fontSize:14,fontWeight:800,color:'#1e40af'}}>{_a===false?'✓ ':grp.method==='dtf'?'🎞️ ':grp.method==='embroidery'?'🧵 ':'🎨 '}{grp.method==='dtf'?'Order DTF films next':grp.method==='embroidery'?'Upload embroidery files next':'Send to artist for the production file'}</div>
+                <div style={{fontSize:11.5,color:'#2563eb',marginTop:3}}>{grp.method==='dtf'?'Approve the art and leave this design in Order DTF Transfers until the films are ordered.':grp.method==='embroidery'?'Approve the art and leave this design waiting for the DST and PDF upload.':'Approve the art, but the artist still needs to create the '+_w+' before it can go to production.'}</div>
               </button>
             </div>
           </div>})}
@@ -11772,17 +11785,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const suffix=freeSplitSuffix(jobs,j.id,'B');
         if(!suffix){nf('No free split id for '+j.id,'error');return}
         const splitId=j.id+'-'+suffix;
+        // A SKU split is a separate art decision. Give the new job its own copy of
+        // the design and its production files, while leaving the original job's
+        // garment mocks and approval record intact. No old mock is selected here.
+        const {copiedArt,updatedItems:splitOrderItems,keepArtIds,artCopies}=splitPriorArtwork(o,splitItems,keepItems);
         // Separate press runs → separate qty-tier pricing (see splitByReceived note).
-        const splitJob2={...j,..._artFields(j),id:splitId,key:j.key+'__split__'+suffix,split_from:j.id,items:splitItems,
+        const splitJobBase={...j,..._artFields(j),id:splitId,key:j.key+'__split__'+suffix,split_from:j.id,items:splitItems,art_file_id:copiedArt[0]?.id||j.art_file_id,_art_ids:copiedArt.length?copiedArt.map(a=>a.id):j._art_ids,
           total_units:splitUnits,fulfilled_units:splitFul,priced_separately:true,price_override:null,
           prod_status:'hold',created_at:new Date().toLocaleDateString()};
-        const remainJob={...j,items:keepItems,total_units:keepUnits,fulfilled_units:keepFul,priced_separately:true,price_override:null};
+        // A different garment is a fresh art decision. Keep the design reference, but do
+        // not carry the source job's approval or coach-send history into the new job.
+        const splitJob2=(artCopies.size>0&&(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='waiting_approval'))
+          ?startPriorArtReview(splitJobBase):splitJobBase;
+        const remainJob={...j,items:keepItems,art_file_id:[...keepArtIds][0]||j.art_file_id,_art_ids:keepArtIds.size?[...keepArtIds]:j._art_ids,total_units:keepUnits,fulfilled_units:keepFul,priced_separately:true,price_override:null};
         const newJobs2=[...jobs];newJobs2.splice(jIdx,1,remainJob,splitJob2);
         // Re-derive both halves from live picks/receipts — the stored gi.fulfilled can lag the
         // PO (e.g. a unit un-received just before the split), and split jobs are preserved
         // verbatim by the job sync, so a stale snapshot here never self-heals (SO-1069).
-        const recalcedJobs=recalcJobFulfillment({...o,jobs:newJobs2},safeItems(o));
-        const updated=stampSplitRuns({...o,jobs:recalcedJobs,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Split by SKU! '+splitId+' with '+splitItems.length+' garment(s)');
+        const recalcedJobs=recalcJobFulfillment({...o,jobs:newJobs2,items:splitOrderItems,art_files:[...safeArt(o),...copiedArt]},splitOrderItems);
+        const updated=stampSplitRuns({...o,items:splitOrderItems,art_files:[...safeArt(o),...copiedArt],jobs:recalcedJobs,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Split by SKU! '+splitId+' with '+splitItems.length+' garment(s)');
       };
       // Combine job items sharing the same item_idx+sku — sums units/fulfilled and merges per-size maps.
       // Used when merging jobs back together so a previously size-split item rejoins as a single line.
@@ -12003,6 +12024,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // to show the art job's "Waiting for Production Files" banner and a Mark Art Complete
         // button that stamped the OTHER job's art).
         const _jobLiveArt=(()=>{const ids=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd'));(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;const _dis=jobItemDecoIdxs(gi);safeDecos(it).forEach((d,di)=>{if(_dis&&!_dis.includes(di))return;if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')ids.add(d.art_file_id)})});return[...ids].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(a=>a&&!a.archived)})();
+        const _priorDecisionPending=priorArtDecisionPending(j,_jobLiveArt,missingJobMocks(j,o));
+        const _priorArtFlow=j.art_status===PRIOR_ART_REVIEW||_priorDecisionPending;
+        const _priorMockReady=_priorArtFlow&&j.art_reuse_confirmed&&canReviewJobMocks({...j,art_status:'waiting_approval'},o);
         const _unconfirmedProd=j.art_status==='art_complete'&&_jobLiveArt.length>0&&_jobLiveArt.some(a=>!artProdFilesConfirmed(a));
 
         const _mockReady=canReviewJobMocks(j,o);
@@ -12033,7 +12057,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{flex:1}}>
                 <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                   <span style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{j.id}</span>
-                  {_mockReady?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#e0f2fe',color:'#075985'}}>Mocks ready — review next</span>:_needsMockCheck?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef9c3',color:'#854d0e',border:'1px solid #fde047'}} title="Reused art — confirm a mock for this garment before it's production-ready">🔍 Check Mock</span>:(()=>{const fSt=artF?jobArtBadgeSt(j,artF):null;return fSt?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:(ART_FILE_SC[fSt]||SC[fSt])?.bg||'#f1f5f9',color:(ART_FILE_SC[fSt]||SC[fSt])?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||ART_LABELS[fSt]||fSt}</span>:null})()}
+                  {_priorArtFlow?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#e0e7ff',color:'#3730a3'}}>{!j.art_reuse_confirmed?'Needs art review':_priorMockReady?'Ready to send to coach':'Set garment mock'}</span>:_mockReady?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#e0f2fe',color:'#075985'}}>Mocks ready — review next</span>:_needsMockCheck?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef9c3',color:'#854d0e',border:'1px solid #fde047'}} title="Reused art — confirm a mock for this garment before it's production-ready">🔍 Check Mock</span>:(()=>{const fSt=artF?jobArtBadgeSt(j,artF):null;return fSt?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:(ART_FILE_SC[fSt]||SC[fSt])?.bg||'#f1f5f9',color:(ART_FILE_SC[fSt]||SC[fSt])?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||ART_LABELS[fSt]||fSt}</span>:null})()}
                   {(()=>{const _is=jItemStatus(j);return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[_is]?.bg,color:SC[_is]?.c}}>{itemLabels[_is]}</span>})()}
                   <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}}>{_needsMockCheck&&['hold','ready'].includes(j.prod_status)?'Waiting for mock':prodLabels[j.prod_status]}</span>
                 </div>
@@ -12203,8 +12227,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 }}>🎨 Set up job</button>}
                 {(j.items||[]).length>0&&dTot>1&&<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:10}} onClick={()=>setSplitModal({jIdx:ji,jobId:j.id,mode:null,selectedIdxs:[]})}>✂️ Split Job</button>}
             </div>
-            {_mockReady&&j.art_status!=='waiting_approval'&&<section aria-label="Review saved mocks" style={{margin:'0 20px 16px',padding:14,background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:10}}><strong>Mocks ready — review next</strong><p style={{fontSize:12,color:'#475569'}}>Send the mocks to the coach, or approve the artwork if approval is already confirmed. Production files are checked next.</p><div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{_reviewActions}</div></section>}
-            <JobGarmentMocks key={j.id} job={j} order={o} priorMocks={priorMocks} getOrder={()=>oRef.current} itemDetails={itemDetails} onViewItem={_jumpToItem} onSave={saveArtFilesNow} onSaveOrder={saveSONow} onSendToArtist={note=>setArtReqModal({jIdx:ji,artist:_activeArtistId(j.assigned_artist||((j.art_requests||[]).slice(-1)[0]?.artist)),instructions:note,files:[]})} onLibrarySync={syncLogoLibrary} />
+            {_priorArtFlow&&<PriorArtReviewPanel artFiles={_jobLiveArt} garments={itemDetails} priorMocks={priorMocks} accepted={!!j.art_reuse_confirmed} mockReady={_priorMockReady} onConfirm={async()=>{const cur=oRef.current;const updated={...cur,jobs:safeJobs(cur).map(jj=>jj.id===j.id?confirmPriorArt(jj):jj),updated_at:new Date().toLocaleString()};await saveSONow(updated,'Previous art decision','Art selected — now choose a mock for this garment')}} onRequestUpdate={reason=>setArtReqModal({jIdx:ji,artist:_activeArtistId(j.assigned_artist||((j.art_requests||[]).slice(-1)[0]?.artist)),instructions:reason,files:[]})} onSendToCoach={()=>openCoachSend(ji)} />}
+            {_mockReady&&!_priorArtFlow&&j.art_status!=='waiting_approval'&&<section aria-label="Review saved mocks" style={{margin:'0 20px 16px',padding:14,background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:10}}><strong>Mocks ready — review next</strong><p style={{fontSize:12,color:'#475569'}}>Send the mocks to the coach, or approve the artwork if approval is already confirmed. Production files are checked next.</p><div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{_reviewActions}</div></section>}
+            {(!_priorArtFlow||j.art_reuse_confirmed)&&<JobGarmentMocks key={j.id} job={j} order={o} priorMocks={priorMocks} getOrder={()=>oRef.current} itemDetails={itemDetails} onViewItem={_jumpToItem} onSave={saveArtFilesNow} onSaveOrder={saveSONow} onSendToArtist={note=>setArtReqModal({jIdx:ji,artist:_activeArtistId(j.assigned_artist||((j.art_requests||[]).slice(-1)[0]?.artist)),instructions:note,files:[]})} onLibrarySync={syncLogoLibrary} />}
             {/* ── Check Mock: previously-approved art reused on a different color/style ── */}
             {_needsMockCheck&&(()=>{
               const _gLabels=_mockCheckGarments.map(g=>(g.color?g.color+' ':'')+g.sku).join(', ');
@@ -12314,7 +12339,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
               <div style={{fontSize:12,color:'#1e3a8a',marginTop:4}}>The mockup will be sent to you for approval when ready.</div>
             </div>}
-            {j.art_status==='waiting_approval'&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const _jobArtIds=jobArtFileIds(j,safeItems(o));const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);const _mf=_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[]));const _im=_filterDisplayable(_jobArtFiles.flatMap(af3=>Object.values(af3?.item_mockups||{}).flat()));const _seen=new Set();/* reused library art often has NO mocks anywhere — the digitizer's sew-out JPG/PDF in prod_files is the only proof, so fall back to it (mirrors the Changes-Requested banner + per-item generalMocks) */const _mAll=[..._mf,..._im];const _mPool=_mAll.length>0?_mAll:_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.prod_files||[]));const mockups=_mPool.filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});const _stca=j.sent_to_coach_at?new Date(j.sent_to_coach_at):null;
+            {j.art_status==='waiting_approval'&&!_priorArtFlow&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const _jobArtIds=jobArtFileIds(j,safeItems(o));const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);const _mf=_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[]));const _im=_filterDisplayable(_jobArtFiles.flatMap(af3=>Object.values(af3?.item_mockups||{}).flat()));const _seen=new Set();/* reused library art often has NO mocks anywhere — the digitizer's sew-out JPG/PDF in prod_files is the only proof, so fall back to it (mirrors the Changes-Requested banner + per-item generalMocks) */const _mAll=[..._mf,..._im];const _mPool=_mAll.length>0?_mAll:_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.prod_files||[]));const mockups=_mPool.filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});const _stca=j.sent_to_coach_at?new Date(j.sent_to_coach_at):null;
               // Reused / previously-approved art parks here (waiting_approval) but has no garment
               // mockup for THIS order yet — so it can't be approved or sent to the coach, it needs
               // SETTING UP first. Same gate the Send-to-Coach button and the review-art to-do use
@@ -12675,7 +12700,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
               on the next coach round (SO-1638). No-op when a live DST already exists, so a genuine redo stays retired. */const _rv=reviveSoleStaleDst(a);return _rv.prod_files.length>0?{...a,..._rv,status:'approved',prod_files_attached:true}:{...a,..._rv,status:'approved',prod_files_attached:true,prod_files:[{name:'Embroidery files sent to printer',emb_sent:true,at:new Date().toISOString(),by:_by}]}});const _st=_nextSt(ids);const updJobs=safeJobs(curO).map((jj,i2)=>i2===ji?{...jj,art_status:_st}:jj);const updated={...curO,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};saveSONow(updated,'Production files','🧵 Embroidery production files marked complete'+(_st==='art_complete'?'':_stillOwes(_st)))};
               const _orderDtf=(ids)=>{const curO=oRef.current;const marker={name:'DTF films ordered',dtf_order:true,at:new Date().toISOString(),by:cu?.name||'Rep'};const updArt2=(curO.art_files||[]).map(a=>ids.includes(a.id)?{...a,status:'approved',prod_files_attached:true,prod_files:[...(a.prod_files||[]),marker]}:a);const _st=_nextSt(ids);const updJobs=safeJobs(curO).map((jj,i2)=>i2===ji?{...jj,art_status:_st}:jj);const updated={...curO,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};saveSONow(updated,'DTF films','🎞️ DTF films marked ordered'+(_st==='art_complete'?' — art complete':_stillOwes(_st)))};
               return<div style={{margin:'0 20px',display:'flex',flexDirection:'column',gap:8}}>
-              {_multi&&<div style={{padding:'8px 14px',background:'#fff7ed',border:'2px solid #fdba74',borderRadius:8,fontSize:12,color:'#9a3412',fontWeight:700}}>⚠️ This job has {_blocks.length} decoration methods still waiting on production files — each design needs its OWN file. Finishing one does not finish the others.</div>}
+              {_multi&&<div style={{padding:'8px 14px',background:'#fff7ed',border:'2px solid #fdba74',borderRadius:8,fontSize:12,color:'#9a3412',fontWeight:700}}>⚠️ This job has {_blocks.length} decoration methods with separate production steps. Finish each design before moving the job to production.</div>}
               {_blocks.map((g,gx)=>{
                 const _emb=g.method==='embroidery';const _dtf=g.method==='dtf';const _ids=g.ids;
                 const _names=(g.arts||[]).map(a=>(a&&a.name)||'Unnamed').join(', ');
@@ -12694,7 +12719,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
               </div>
               {_multi&&_names&&<div style={{fontSize:11,fontWeight:700,color:'#854d0e',marginTop:3}}>🎨 {_names}</div>}
               <div style={{fontSize:12,color:'#713f12',marginTop:4}}>{_msg}</div>
-              {_pfCount>0&&<div style={{fontSize:11,color:'#15803d',fontWeight:700,marginTop:6}}>🏭 {_pfCount} production file{_pfCount!==1?'s':''} attached{_multi?' to this design':''}</div>}
+              {!_dtf&&_pfCount>0&&<div style={{fontSize:11,color:'#15803d',fontWeight:700,marginTop:6}}>🏭 {_pfCount} production file{_pfCount!==1?'s':''} attached{_multi?' to this design':''}</div>}
               {_dst&&_pfCount===0&&<div style={{fontSize:11,color:'#15803d',fontWeight:700,marginTop:6}}>🧵 DST detected on the art file — production files ready</div>}
               {_staleDst&&<div style={{fontSize:11,color:'#92400e',fontWeight:700,marginTop:6}}>🧵 A retired DST is attached (superseded by an earlier update) — mark complete to use it, or upload the new one</div>}
               {_emb&&<div style={{display:'flex',gap:8,marginTop:10,flexWrap:'wrap'}}>
@@ -12890,7 +12915,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
             {/* Status controls */}
             <div style={{padding:'10px 20px',borderTop:'1px solid #f1f5f9',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
               <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Art:</div>
-              <select className="form-select" style={{width:150,fontSize:11}} value={j.art_status} onChange={e=>{const ns=e.target.value;const artIds=j._art_ids||[j.art_file_id].filter(Boolean);if(ns==='art_complete'&&missingJobMocks(j,o).length){nf(missingMockupsMsg(missingJobMocks(j,o)),'error');return}if(ns==='art_complete'){/* STRICT gate: explicit prod_files_attached confirmation (or an embroidery .dst) — a stray PDF sitting in prod_files must not satisfy the manual dropdown when every button path requires confirmation. */const missingProd=artIds.some(aid=>{const af2=af.find(a=>a.id===aid);return af2&&!artProdFilesConfirmed(af2)});if(missingProd){nf('Confirm production files for all art first (checkbox, or a .dst for embroidery)','error');return}if(!window.confirm('Force this job to Art Complete? This skips the coach-approval flow — only continue if the artwork is approved and the production files are final.'))return}if(ns==='waiting_approval'){const missing=skusMissingMockups(j,o);if(missing.length>0){nf('Cannot move to Waiting Approval — mockups missing for: '+missing.join(', '),'error');return}}const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;/* A manual forward move supersedes an unaddressed coach rejection in the SAME write — never leave art_status ahead with coach_rejected stranded true (the SO-1199 shape). */const _fwd=ns==='waiting_approval'||ns==='art_complete'||PROD_FILES_STATUSES.includes(ns);const upd={...jj,art_status:ns,...(_fwd&&jj.coach_rejected?{coach_rejected:false}:{})};/* warehouse must explicitly Move to Deco — no auto-transition. A forward move (incl. waiting_approval) closes the artist's open request — otherwise the job reads as both "Needs Approval" and an open request (SO-1625). */if(_fwd&&upd.art_requests)upd.art_requests=closeOpenArtRequests(upd.art_requests);return upd});const afSt=ns==='waiting_approval'?'needs_approval':(PROD_FILES_STATUSES.includes(ns)||ns==='art_complete')?'approved':(ns==='needs_art'||ns==='art_requested')?'waiting_for_art':ns==='art_in_progress'?'waiting_for_art':null;/* The dropdown never stamps prod_files_attached — the strict gate above already required confirmation (checkbox or .dst), and a manual pick must not manufacture it (H3). */const updArt2=afSt?af.map(a=>artIds.includes(a.id)?{...a,status:afSt}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false)}}>
+              <select className="form-select" style={{width:150,fontSize:11}} value={j.art_status} onChange={e=>{const ns=e.target.value;const artIds=j._art_ids||[j.art_file_id].filter(Boolean);if(_priorArtFlow&&(ns==='waiting_approval'||ns==='art_complete'||PROD_FILES_STATUSES.includes(ns))){nf('Complete the previous-art review and send the garment mock to the coach first','error');return}if(ns==='art_complete'&&missingJobMocks(j,o).length){nf(missingMockupsMsg(missingJobMocks(j,o)),'error');return}if(ns==='art_complete'){/* STRICT gate: explicit prod_files_attached confirmation (or an embroidery .dst) — a stray PDF sitting in prod_files must not satisfy the manual dropdown when every button path requires confirmation. */const missingProd=artIds.some(aid=>{const af2=af.find(a=>a.id===aid);return af2&&!artProdFilesConfirmed(af2)});if(missingProd){nf('Confirm production files for all art first (checkbox, or a .dst for embroidery)','error');return}if(!window.confirm('Force this job to Art Complete? This skips the coach-approval flow — only continue if the artwork is approved and the production files are final.'))return}if(ns==='waiting_approval'){const missing=skusMissingMockups(j,o);if(missing.length>0){nf('Cannot move to Waiting Approval — mockups missing for: '+missing.join(', '),'error');return}}const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;/* A manual forward move supersedes an unaddressed coach rejection in the SAME write — never leave art_status ahead with coach_rejected stranded true (the SO-1199 shape). */const _fwd=ns==='waiting_approval'||ns==='art_complete'||PROD_FILES_STATUSES.includes(ns);const upd={...jj,art_status:ns,...(_fwd&&jj.coach_rejected?{coach_rejected:false}:{})};/* warehouse must explicitly Move to Deco — no auto-transition. A forward move (incl. waiting_approval) closes the artist's open request — otherwise the job reads as both "Needs Approval" and an open request (SO-1625). */if(_fwd&&upd.art_requests)upd.art_requests=closeOpenArtRequests(upd.art_requests);return upd});const afSt=ns==='waiting_approval'?'needs_approval':(PROD_FILES_STATUSES.includes(ns)||ns==='art_complete')?'approved':(ns==='needs_art'||ns==='art_requested')?'waiting_for_art':ns==='art_in_progress'?'waiting_for_art':null;/* The dropdown never stamps prod_files_attached — the strict gate above already required confirmation (checkbox or .dst), and a manual pick must not manufacture it (H3). */const updArt2=afSt?af.map(a=>artIds.includes(a.id)?{...a,status:afSt}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false)}}>
                 {Object.entries(artLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>
               {(()=>{const _artIds3=j._art_ids||[j.art_file_id].filter(Boolean);const isTbd=_artIds3.length===0||(_artIds3.length===1&&_artIds3[0]==='__tbd');const hasActiveReqs=(j.art_requests||[]).some(r=>r.status!=='recalled');const hasAnyReqs=(j.art_requests||[]).length>0;if(isTbd&&!hasAnyReqs)return null;const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
                 return<>{hasActiveReqs&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:activeReq?'#fef3c7':'#dcfce7',color:activeReq?'#92400e':'#166534',marginRight:4,animation:activeReq?'pulse 2s infinite':'none'}}>
@@ -13146,7 +13171,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
           const _wasInProd2=_activeProd(j2job?.prod_status);
           const sibs2=_artSiblingsInProd(artIds2,j2job?.id);
           if(_wasInProd2&&onStopJobClock&&j2job)onStopJobClock(o.id,j2job.id);// re-hold below — stop any running decorator clock (L10)
-          let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,art_hidden:false,...ART_PULLBACK_CLEARS,...(_wasInProd2?{prod_status:'hold'}:{})}:jj);
+          let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status===PRIOR_ART_REVIEW||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,art_hidden:false,art_reuse_confirmed:false,...ART_PULLBACK_CLEARS,...(_wasInProd2?{prod_status:'hold'}:{})}:jj);
           updatedJobs=_holdArtSiblings(updatedJobs,artIds2,j2job?.id);
           // Store rep files as sample_art and reset art file status so it re-enters artist queue.
           // prod_files_attached must not survive an update — the old separations are for the old art,
@@ -13308,7 +13333,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
           const _sentMocks=[..._sentArtFiles.flatMap(a=>a.mockup_files||a.files||[]),..._sentArtFiles.flatMap(a=>Object.values(a.item_mockups||{}).flat())].map(f=>typeof f==='string'?f:((f&&(f.url||f.name))||'')).filter(u=>{if(!u||_smSeen.has(u))return false;_smSeen.add(u);return true});
           const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'art_approval',methods:actions,to:allTargets.join(', '),messageId:actions._messageId||null,mocks:_sentMocks,...(!_confirmedSend?{draft:true}:{})};
           const _artAutoCols=_artAuto?{follow_up_auto:true,follow_up_interval_days:cam.followUp.intervalDays||0,follow_up_message:cam.followUp.message||'',follow_up_to:allTargets.join(', '),follow_up_max:cam.followUp.max||4,follow_up_count:0,follow_up_last_sent_at:null}:{follow_up_auto:false,follow_up_interval_days:null,follow_up_message:null,follow_up_to:null,follow_up_max:null,follow_up_count:0,follow_up_last_sent_at:null};
-          const updJobs3=safeJobs(curO).map((jj,i)=>i===coachApprovalModal.jIdx?{...jj,...(_confirmedSend?{sent_to_coach_at:new Date().toISOString(),follow_up_at:fuAt,..._artAutoCols}:{}),sent_history:[...(jj.sent_history||[]),histEntry]}:jj);
+          const updJobs3=safeJobs(curO).map((jj,i)=>i===coachApprovalModal.jIdx?{...(_confirmedSend?markPriorArtCoachSent(jj):jj),...(_confirmedSend?{sent_to_coach_at:new Date().toISOString(),follow_up_at:fuAt,..._artAutoCols}:{}),sent_history:[...(jj.sent_history||[]),histEntry]}:jj);
           const updated3={...curO,jobs:updJobs3,updated_at:new Date().toLocaleString()};
           setCoachApprovalModal(null);
           await saveSONow(updated3,'Send to coach',null);
@@ -14050,7 +14075,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
               <td style={{fontWeight:700}}>{jFul}/{jTot}
                 <div style={{width:50,background:'#e2e8f0',borderRadius:3,height:4,marginTop:2}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>0?'#f59e0b':'#e2e8f0',width:pct+'%'}}/></div></td>
               <td>{(()=>{const _is=jItemStatus(j);return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[_is]?.bg,color:SC[_is]?.c}}>{itemLabels[_is]}</span>})()}</td>
-              <td>{(()=>{if(_cm)return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef9c3',color:'#854d0e',border:'1px solid #fde047'}} title="Reused art — confirm a mock for this garment">🔍 Check Mock</span>;const sentCust=j.art_status==='waiting_approval'&&j.sent_to_coach_at;const aLbl=sentCust?'Sent to Customer':(artLabels[j.art_status]||j.art_status);const aSt=sentCust?{bg:'#ede9fe',c:'#6d28d9'}:SC[j.art_status];return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:aSt?.bg,color:aSt?.c}}>{aLbl}</span>})()}</td>
+              <td>{(()=>{if(j.art_status===PRIOR_ART_REVIEW)return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#e0e7ff',color:'#3730a3'}}>{!j.art_reuse_confirmed?'Needs Art Review':skusMissingMockups(j,o).length?'Set Garment Mock':'Ready to Send'}</span>;if(_cm)return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef9c3',color:'#854d0e',border:'1px solid #fde047'}} title="Reused art — confirm a mock for this garment">🔍 Check Mock</span>;const sentCust=j.art_status==='waiting_approval'&&j.sent_to_coach_at;const aLbl=sentCust?'Sent to Customer':(artLabels[j.art_status]||j.art_status);const aSt=sentCust?{bg:'#ede9fe',c:'#6d28d9'}:SC[j.art_status];return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:aSt?.bg,color:aSt?.c}}>{aLbl}</span>})()}</td>
               <td>{(()=>{if(_cm&&['hold','ready'].includes(j.prod_status))return <span style={{color:'#854d0e',fontWeight:700}}>Waiting for mock</span>;const readyForProd=j.prod_status==='hold'&&canProduce;const pSt=readyForProd?{bg:'#dcfce7',c:'#166534'}:(SC[j.prod_status]||{bg:'#f1f5f9',c:'#475569'});return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:pSt.bg,color:pSt.c}}>{readyForProd?'Ready for Prod':(prodLabels[j.prod_status]||j.prod_status)}</span>})()}</td>
               <td style={{whiteSpace:'nowrap'}}>
 
@@ -14345,7 +14370,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           const _wasInProd3=_activeProd(j?.prod_status);
           const sibs3=_artSiblingsInProd(artIds3,j?.id);
           if(_wasInProd3&&onStopJobClock&&j)onStopJobClock(o.id,j.id);// re-hold below — stop any running decorator clock (L10)
-          let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,art_hidden:false,...ART_PULLBACK_CLEARS,...(_wasInProd3?{prod_status:'hold'}:{})}:jj);
+          let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status===PRIOR_ART_REVIEW||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,art_hidden:false,art_reuse_confirmed:false,...ART_PULLBACK_CLEARS,...(_wasInProd3?{prod_status:'hold'}:{})}:jj);
           updatedJobs=_holdArtSiblings(updatedJobs,artIds3,j?.id);
           // Store rep files as sample_art and reset art file status so it re-enters artist queue.
           // prod_files_attached must not survive an update — the old separations are for the old art,
