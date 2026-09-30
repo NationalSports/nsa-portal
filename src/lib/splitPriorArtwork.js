@@ -2,7 +2,7 @@ import { jobItemDecoIdxs, safeArt, safeDecos, safeItems } from '../safeHelpers';
 
 // A garment split gets a design copy with no selected garment mock. The source
 // job's art and mock history stay intact, and only the selected line is rewired.
-export function splitPriorArtwork(order, splitItems, keepItems, isImage, stamp = Date.now()) {
+export function splitPriorArtwork(order, splitItems, keepItems, stamp = Date.now()) {
   const items = safeItems(order);
   const artIdsFor = group => {
     const ids = new Set();
@@ -22,11 +22,15 @@ export function splitPriorArtwork(order, splitItems, keepItems, isImage, stamp =
     const nextId = 'af' + stamp + '-split-' + i;
     artCopies.set(id, nextId);
     const copy = JSON.parse(JSON.stringify(source));
-    const nonImage = file => !isImage(typeof file === 'string' ? file : file?.url || '', file);
     return {
       ...copy, id: nextId, reused_from_so: order.id,
-      mockup_files: (copy.mockup_files || []).filter(nonImage),
-      files: (copy.files || []).filter(nonImage),
+      mockup_files: [],
+      // Keep artwork previews in files for the review panel. Reused art cannot
+      // pass the new garment's mock gate from this general file bucket.
+      files: copy.files || [],
+      // A film order belongs to the source job. Keep actual artwork files for
+      // reference, but require a fresh order confirmation for the split job.
+      prod_files: (copy.prod_files || []).filter(file => !file?.dtf_order),
       item_mockups: {}, mock_links: {}, prod_files_attached: false,
       uploaded: new Date().toLocaleDateString(),
     };

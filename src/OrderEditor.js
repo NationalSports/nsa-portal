@@ -11788,7 +11788,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // A SKU split is a separate art decision. Give the new job its own copy of
         // the design and its production files, while leaving the original job's
         // garment mocks and approval record intact. No old mock is selected here.
-        const {copiedArt,updatedItems:splitOrderItems,keepArtIds,artCopies}=splitPriorArtwork(o,splitItems,keepItems,_isImgUrl);
+        const {copiedArt,updatedItems:splitOrderItems,keepArtIds,artCopies}=splitPriorArtwork(o,splitItems,keepItems);
         // Separate press runs → separate qty-tier pricing (see splitByReceived note).
         const splitJobBase={...j,..._artFields(j),id:splitId,key:j.key+'__split__'+suffix,split_from:j.id,items:splitItems,art_file_id:copiedArt[0]?.id||j.art_file_id,_art_ids:copiedArt.length?copiedArt.map(a=>a.id):j._art_ids,
           total_units:splitUnits,fulfilled_units:splitFul,priced_separately:true,price_override:null,
