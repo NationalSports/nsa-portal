@@ -32,4 +32,6 @@ create policy invoice_pay_requests_staff_all on public.invoice_pay_requests
   for all to authenticated using (public.is_team_member()) with check (public.is_team_member());
 revoke all on public.invoice_pay_requests from anon;
 grant select, insert, update on public.invoice_pay_requests to authenticated;
+-- Requests are cancelled, never deleted — they are the record of what the customer was asked to pay.
+revoke delete on public.invoice_pay_requests from authenticated;
 grant all on public.invoice_pay_requests to service_role;

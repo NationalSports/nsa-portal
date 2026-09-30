@@ -1332,7 +1332,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // showPay but never mounted the modal: the button just span on "Opening secure checkout…" forever.
   const _reqPay=showPay&&showPay.payReq&&payReq&&payReq.ok;
   const payModalEl = showPay ? <StripePaymentModal
-    invoices={showPay==='all'?openInvs:_reqPay?[showPay.inv]:[showPay]}
+    invoices={showPay==='all'?openInvs:showPay.payReq?[showPay.inv]:[showPay]}
     amountDue={_reqPay?payReq.amount:undefined}
     payRequestId={_reqPay?payReq.pay_request_id:undefined}
     customerName={customer.name}
