@@ -20,7 +20,7 @@ const td = { padding: '7px 10px', fontSize: 12, borderBottom: '1px solid #f1f5f9
 const num = { textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
 
 export default function ReceivePaymentsPage() {
-  const { cust, invs, setInvs, histInvs, setHistInvs, nf, cu, PAY_METHODS, setPg, setViewInvoice } = useAppData();
+  const { cust, invs, setInvs, histInvs, setHistInvs, nf, cu, PAY_METHODS, setPg, setViewInvoice, rpPrefill, setRpPrefill } = useAppData();
   const [receipts, setReceipts] = useState([]);
   const [loadState, setLoadState] = useState('loading'); // loading | ok | error
   const [loadErr, setLoadErr] = useState('');
@@ -42,6 +42,12 @@ export default function ReceivePaymentsPage() {
     setReceipts(data || []); setLoadState('ok');
   };
   useEffect(() => { load(); }, []);
+  // Opened from a customer's "Receive Payment" button: start a payment for that customer.
+  useEffect(() => {
+    if (loadState !== 'ok' || !rpPrefill || !rpPrefill.customerId) return;
+    setModal({ mode: 'new', customerId: rpPrefill.customerId });
+    if (setRpPrefill) setRpPrefill(null);
+  }, [loadState, rpPrefill]);
 
   const rows = useMemo(() => receipts.map(r => ({ r, ...receiptSummary(r, invs) })), [receipts, invs]);
 
@@ -316,7 +322,7 @@ export default function ReceivePaymentsPage() {
 function ReceiveModal({ modal, saving, onClose, onSave, cust, invs, histInvs, methods, methodLabel, summaryFor }) {
   const applying = modal.mode === 'apply';
   const receipt = modal.receipt;
-  const [customer, setCustomer] = useState(() => applying ? (cust || []).find(c => String(c.id) === String(receipt.customer_id)) || { id: receipt.customer_id, name: receipt.customer_id } : null);
+  const [customer, setCustomer] = useState(() => applying ? (cust || []).find(c => String(c.id) === String(receipt.customer_id)) || { id: receipt.customer_id, name: receipt.customer_id } : (modal.customerId ? (cust || []).find(c => String(c.id) === String(modal.customerId)) || null : null));
   const [custQ, setCustQ] = useState('');
   const [family, setFamily] = useState(true);
   const [amount, setAmount] = useState(applying ? summaryFor(receipt).unapplied : '');
