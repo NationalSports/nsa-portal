@@ -4,6 +4,7 @@ const { buildProductionPacket, packetChanges, safeUrl } = require('../../src/pro
 const { uploadPhoto, photoBytes } = require('./_packetPhoto');
 const { recordShipment } = require('./_packetShipping');
 const { attachDpoContext } = require('./_packetDpo');
+const { scopedSalesOrders, scopeRows, storeEq } = require('./_packetScope');
 const { productionContent, workflowMessage } = require('../../src/productionPacket/workflow');
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const fail = (status, message) => { const e = new Error(message); e.status = status; throw e; };
@@ -19,9 +20,9 @@ async function all(makeQuery) {
     if (rows.length >= 50000) fail(413, 'Store is too large for one packet; select a sales order');
   }
 }
-async function inBatches(admin, table, column, ids, columns = '*') {
+async function inBatches(admin, table, column, ids, columns = '*', orderBy = 'id') {
   const rows = [];
-  for (let i = 0; i < ids.length; i += 100) rows.push(...await all(() => admin.from(table).select(columns).in(column, ids.slice(i, i + 100)).order('id')));
+  for (let i = 0; i < ids.length; i += 100) rows.push(...await all(() => admin.from(table).select(columns).in(column, ids.slice(i, i + 100)).order(orderBy)));
   return rows;
 }
 async function authorize(event, body) {
@@ -36,24 +37,35 @@ async function authorize(event, body) {
   if (!auth.ok) fail(auth.status || 401, auth.error);
   const admin = auth.admin || getSupabaseAdmin();
   let storeId = clean(body.store_id);
-  if (!storeId && body.so_id) {
-    const so = await checked(admin.from('sales_orders').select('webstore_id').eq('id', body.so_id).maybeSingle());
-    storeId = so?.webstore_id;
+  if (!storeId) {
+    // No store named: open the SO's store packet, or — for an order that never came
+    // from a webstore — a packet scoped to that one sales order.
+    const soRef = clean(body.so_id) || clean(body.scope_so_id);
+    if (!soRef) fail(400, 'Choose a store or sales order');
+    const so = await checked(admin.from('sales_orders').select('id,webstore_id,deleted_at').eq('id', soRef).maybeSingle());
+    if (!so || so.deleted_at) fail(404, 'Sales order not found');
+    storeId = so.webstore_id || null;
   }
-  if (!storeId) fail(400, 'This order does not have a linked webstore');
   return { admin, staff: true, storeId, soId: clean(body.scope_so_id) || clean(body.so_id) || null, actorId: auth.teamMemberId };
 }
 async function loadCurrent(ctx) {
   const { admin, storeId, soId } = ctx;
-  const [store, orders, salesOrders, catalog, notes, shares] = await Promise.all([
-    checked(admin.from('webstores').select('id,name,delivery_mode,store_art,logo_url,primary_color,accent_color').eq('id', storeId).single()),
-    all(() => admin.from('webstore_orders').select('id,store_id,so_id,order_number,omg_order_number,status,backorder_of').eq('store_id', storeId).order('id')),
-    all(() => admin.from('sales_orders').select('id,webstore_id,status,expected_date,production_notes,deco_pos,_shipments,_version').eq('webstore_id', storeId).order('id')),
-    all(() => admin.from('webstore_products').select('id,product_id,sku,display_name,size_skus,decorations,image_url,image_back_url').eq('store_id', storeId).order('id')),
-    all(() => admin.from('production_packet_notes').select('*').eq('store_id', storeId).order('id')),
-    all(() => admin.from('production_packet_message_shares').select('*').eq('store_id', storeId).order('message_id')),
+  const none = Promise.resolve([]);
+  const [storeRow, orders, salesOrders, catalog, notes, storeShares] = await Promise.all([
+    storeId ? checked(admin.from('webstores').select('id,name,delivery_mode,store_art,logo_url,primary_color,accent_color').eq('id', storeId).single()) : null,
+    storeId ? all(() => admin.from('webstore_orders').select('id,store_id,so_id,order_number,omg_order_number,status,backorder_of').eq('store_id', storeId).order('id')) : none,
+    all(() => scopedSalesOrders(ctx, 'id,webstore_id,customer_id,status,expected_date,production_notes,deco_pos,_shipments,_version').order('id')),
+    storeId ? all(() => admin.from('webstore_products').select('id,product_id,sku,display_name,size_skus,decorations,image_url,image_back_url').eq('store_id', storeId).order('id')) : none,
+    all(() => scopeRows(admin.from('production_packet_notes').select('*'), ctx).order('id')),
+    storeId ? all(() => admin.from('production_packet_message_shares').select('*').eq('store_id', storeId).order('message_id')) : none,
   ]);
-  if (soId && !salesOrders.some(s => s.id === soId)) fail(403, 'Sales order is outside this store');
+  if (soId && !salesOrders.some(s => s.id === soId)) fail(403, storeId ? 'Sales order is outside this store' : 'Sales order not found');
+  // An order-only packet has no store: it is titled with the customer and carries no store art.
+  let store = storeRow;
+  if (!store) {
+    const cust = salesOrders[0]?.customer_id ? await checked(admin.from('customers').select('name,logo_url').eq('id', salesOrders[0].customer_id).maybeSingle()) : null;
+    store = { id: null, name: cust?.name || soId, logo_url: cust?.logo_url || null, delivery_mode: '', store_art: [] };
+  }
   ctx.soVersions = Object.fromEntries(salesOrders.map(s => [s.id,s._version]));
   const ids = salesOrders.map(s => s.id);
   const [items, arts, lines, allMessages, jobs] = await Promise.all([
@@ -71,6 +83,7 @@ async function loadCurrent(ctx) {
     so.jobs = jobs.filter(j => j.so_id === so.id);
     so.art_files = arts.filter(a => a.so_id === so.id);
   });
+  const shares = storeId ? storeShares : (await inBatches(admin, 'production_packet_message_shares', 'message_id', allMessages.map(m => m.id), '*', 'message_id')).filter(s => !s.store_id);
   const authorIds = [...new Set(allMessages.map(m => m.author_id).filter(Boolean))];
   const authors = await inBatches(admin, 'team_members', 'id', authorIds, 'id,name');
   const shareById = Object.fromEntries(shares.map(s => [s.message_id, s]));
@@ -95,12 +108,12 @@ async function loadCurrent(ctx) {
   return { packet, internal };
 }
 async function latestRevision(ctx) {
-  let q = ctx.admin.from('production_packet_revisions').select('id,created_at,fingerprint,snapshot').eq('store_id', ctx.storeId);
+  let q = scopeRows(ctx.admin.from('production_packet_revisions').select('id,created_at,fingerprint,snapshot'), ctx);
   q = ctx.soId ? q.eq('so_id', ctx.soId) : q.is('so_id', null);
   return checked(q.order('created_at', { ascending: false }).limit(1).maybeSingle());
 }
 async function revisionFor(ctx, revisionId) {
-  const row = await checked(ctx.admin.from('production_packet_revisions').select('*').eq('id', revisionId).eq('store_id', ctx.storeId).maybeSingle());
+  const row = await checked(storeEq(ctx.admin.from('production_packet_revisions').select('*').eq('id', revisionId), ctx).maybeSingle());
   if (!row || (row.so_id || null) !== ctx.soId) fail(404, 'Revision not found for this scope');
   return row;
 }
@@ -116,13 +129,13 @@ async function run(event, body) {
     current.fingerprint = hash(JSON.stringify(productionContent(current)));
     const latest = await latestRevision(ctx);
     const revision = body.revision_id ? await revisionFor(ctx, body.revision_id) : null;
-    const links = staff ? await all(() => admin.from('production_packet_links').select('id,label,so_id,created_at,expires_at,revoked_at').eq('store_id', storeId).order('id')) : undefined;
+    const links = staff ? await all(() => scopeRows(admin.from('production_packet_links').select('id,label,so_id,created_at,expires_at,revoked_at'), ctx).order('id')) : undefined;
     const latestSnapshot = latest?.snapshot || null;
     const snapshot = revision?.snapshot || null;
     return { packet: revision ? { ...snapshot, revisionId: revision.id, issuedAt: revision.created_at } : current, link: ctx.link ? {expiresAt:ctx.link.expires_at, label:ctx.link.label} : null, staff, internal, links, scopeSoId: ctx.soId, fetchedAt: new Date().toISOString(), latestRevision: latest && { id: latest.id, createdAt: latest.created_at, fingerprint: latest.fingerprint }, changedSinceIssue: latest ? packetChanges(latestSnapshot, rawCurrent) : [], newerChanges: revision ? packetChanges(snapshot, rawCurrent) : [] };
   }
   if (action === 'revoke') {
-    await checked(admin.from('production_packet_links').update({ revoked_at: new Date().toISOString() }).eq('id', body.link_id).eq('store_id', storeId));
+    await checked(scopeRows(admin.from('production_packet_links').update({ revoked_at: new Date().toISOString() }).eq('id', body.link_id), ctx));
     return { ok: true };
   }
   const { packet: rawPacket } = await loadCurrent(ctx);
@@ -174,7 +187,8 @@ async function run(event, body) {
     const text = clean(body.text); if (!text || text.length > 10000) fail(400, 'Instruction must contain 1–10000 characters');
     const scope = body.scope || 'store';
     if (!['store', 'so', 'garment', 'decoration', 'player'].includes(scope)) fail(400, 'Unknown instruction scope');
-    const soId = clean(body.target_so_id) || null;
+    // An order-only packet has no store, so its "whole packet" instructions live on the SO.
+    const soId = clean(body.target_so_id) || (storeId ? null : ctx.soId);
     if (scope !== 'store' && !soId) fail(400, 'Choose an SO for this instruction');
     if (soId) assertSo(soId);
     const targetId = clean(body.target_id);
@@ -186,7 +200,7 @@ async function run(event, body) {
     return { ok: true };
   }
   if (action === 'archive_note') {
-    await checked(admin.from('production_packet_notes').update({ resolved_at: new Date().toISOString() }).eq('id', body.note_id).eq('store_id', storeId)); return { ok: true };
+    await checked(scopeRows(admin.from('production_packet_notes').update({ resolved_at: new Date().toISOString() }).eq('id', body.note_id), ctx)); return { ok: true };
   }
   if (action === 'share_message') {
     const message = await checked(admin.from('messages').select('id,so_id').eq('id', body.message_id).single());
@@ -197,8 +211,8 @@ async function run(event, body) {
   if (action === 'resolve_message' || action === 'unshare_message') {
     const message = packet.messages.find(m => m.id === body.message_id);
     if (!message) fail(404, 'Shared message not found');
-    if (action === 'unshare_message') await checked(admin.from('production_packet_message_shares').delete().eq('message_id', message.id).eq('store_id', storeId));
-    else await checked(admin.from('production_packet_message_shares').update({ resolved_at: body.resolved === false ? null : new Date().toISOString() }).eq('message_id', message.id).eq('store_id', storeId));
+    if (action === 'unshare_message') await checked(storeEq(admin.from('production_packet_message_shares').delete().eq('message_id', message.id), ctx));
+    else await checked(storeEq(admin.from('production_packet_message_shares').update({ resolved_at: body.resolved === false ? null : new Date().toISOString() }).eq('message_id', message.id), ctx));
     return { ok: true };
   }
   if (action === 'message' || action === 'workflow') {
@@ -218,7 +232,7 @@ async function run(event, body) {
     try { photoBytes(body.photo); } catch(e) { fail(400,e.message); }
     const recent = packet.messages.filter(m=>m.source==='decorator' && Date.now()-Date.parse(m.ts)<60000);
     if (!staff && recent.length>=15) fail(429,'Please wait a minute before sending another update.');
-    const photo = await uploadPhoto(admin,storeId,body.photo);
+    const photo = await uploadPhoto(admin,storeId||`so-${ctx.soId}`,body.photo);
     const id = `packet-${crypto.randomUUID()}`;
     try { await checked(admin.from('messages').insert({ id, so_id: soId, author_id: staff ? ctx.actorId : null, author: staff ? null : `Decorator: ${ctx.link.label}`, text, ts: new Date().toISOString(), dept: 'production', entity_type: 'so', entity_id: soId, thread_id: parent?.id || null, attachments: photo?[photo.attachment]:[] }));
       await checked(admin.from('production_packet_message_shares').insert({ message_id: id, store_id: storeId, shared_by: staff ? ctx.actorId : null, link_id: ctx.link?.id || null, source: staff ? 'staff' : 'decorator', kind, target_id: targetId, metadata }));

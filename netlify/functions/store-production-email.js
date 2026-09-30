@@ -1,5 +1,6 @@
 const { _internals: packet } = require('./store-production-packet');
 const { resolveDpos, attachDpoContext, dpoPdf } = require('./_packetDpo');
+const { scopedSalesOrders } = require('./_packetScope');
 exports.handler = async event => {
   const headers = {'Content-Type':'application/json','Cache-Control':'no-store','Referrer-Policy':'no-referrer'};
   const respond = (statusCode,body) => ({statusCode,headers,body:JSON.stringify(body)});
@@ -10,8 +11,8 @@ exports.handler = async event => {
     // A valid recipient token is the access grant; its stored scope is authoritative.
     const ctx = await packet.authorize(event,{token:body.token,store_id:body.store_id,scope_so_id:body.scope_so_id});
     if(body.action==='options') return respond(200,await attachDpoContext(ctx,null,{}));
-    const orders = await packet.all(() => ctx.admin.from('sales_orders').select('id,webstore_id,status,deco_pos').eq('webstore_id',ctx.storeId).order('id'));
-    if(ctx.soId && !orders.some(o=>o.id===ctx.soId)) return respond(403,{error:'Sales order is outside this store'});
+    const orders = await packet.all(() => scopedSalesOrders(ctx,'id,webstore_id,status,deco_pos').order('id'));
+    if(ctx.soId && !orders.some(o=>o.id===ctx.soId)) return respond(403,{error:ctx.storeId?'Sales order is outside this store':'Sales order not found'});
     const decorators = await packet.all(() => ctx.admin.from('deco_vendors').select('id,name,vendor_id').order('id'));
     const vendors = await packet.all(() => ctx.admin.from('vendors').select('id,name,contact_email').order('id'));
     const entries = resolveDpos(orders.filter(o=>!ctx.soId||o.id===ctx.soId),decorators,vendors);

@@ -1,4 +1,5 @@
 import { buildInvoicedQtyMap, itemMockFiles, safeItems, safeNum, safeSizes, soLineKey } from '../safeHelpers';
+import { isOutsideArtJob } from './outsideArt';
 
 const IN_LINE_OR_LATER = new Set(['staging', 'in_process', 'completed', 'shipped']);
 
@@ -124,7 +125,7 @@ export const shouldShowCompletedJobNotice = (job, so, invoices) => {
 // soFulfillment counters from lib/opsRecap). One job shipping while another PO is still inbound is
 // not a shipped order yet.
 export const isOrderFullyShipped = (jobs, ff) => {
-  const live = (jobs || []).filter((job) => job && job.prod_status !== 'draft');
+  const live = (jobs || []).filter((job) => job && job.prod_status !== 'draft' && !isOutsideArtJob(job));
   if (!live.length || !ff) return false;
   if (!live.every((job) => job.prod_status === 'shipped')) return false;
   return ff.totalSz > 0 && ff.fulfilledSz >= ff.totalSz;
@@ -135,7 +136,7 @@ export const isOrderFullyShipped = (jobs, ff) => {
 export const pulledItemsHaveMovedInLine = (jobs, itemIndexes) => {
   const indexes = itemIndexes instanceof Set ? itemIndexes : new Set(itemIndexes || []);
   if (!indexes.size) return false;
-  const related = (jobs || []).filter((job) => job && job.prod_status !== 'draft'
+  const related = (jobs || []).filter((job) => job && job.prod_status !== 'draft' && !isOutsideArtJob(job)
     && (job.items || []).some((item) => indexes.has(item.item_idx)));
   return related.length > 0 && related.every((job) => isInLineOrLater(job.prod_status));
 };

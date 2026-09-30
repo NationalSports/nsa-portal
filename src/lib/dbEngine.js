@@ -24,6 +24,7 @@ import { matchingClientLine, resolveOutgoingLineIds } from './orderLineIdentity'
 import { rowsByKey } from './rowLookup';
 import { _pick, _pickSoItem, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, _vendCols, _firmDateCols, _omgStoreCols } from '../constants';
 import { itemEditReconciles, itemsWithWipedQty, decorationShrinkConflicts, unaccountedDroppedItems, jobAllRoutedOutside } from '../businessLogic';
+import { isOutsideArtJob, wantsOutsideArt } from './outsideArt';
 import { soItemKey } from '../safeHelpers';
 import { authFetch } from '../utils';
 import { consolidateOmgProductRows } from './storeSkuGrouping';
@@ -2383,7 +2384,17 @@ const _dbSaveSOInner = async (so) => {
               (_itRows||[]).forEach(r=>{if(r.item_index!=null)_dbO.items[r.item_index]={decorations:[],po_lines:[]}});
               _decoRows.forEach(d=>{const it=_dbO.items[_idxById[d.so_item_id]];if(it&&d.deco_index!=null)it.decorations[d.deco_index]=d});
               (_poRows||[]).forEach(p=>{const it=_dbO.items[_idxById[p.so_item_id]];const meta=p?.sizes&&typeof p.sizes==='object'?p.sizes:{};if(it)it.po_lines.push({...p,po_type:meta.po_type,deco_type:meta.deco_type})});
-              const _routed=_blocked.filter(r=>jobAllRoutedOutside(_dbO,{items:Array.isArray(r.items)?r.items:[]}));
+              // An opt-in outside-art job (lib/outsideArt) is ALWAYS routed outside — that is its point —
+              // so it retires here only once the DB shows no claimed design still asking for the art flow.
+              // outside_art is read in its own query, only when such a job is at stake, so the routing
+              // check below never depends on that column; a failed read keeps those jobs protected.
+              if(_blocked.some(isOutsideArtJob)){
+                const{data:_oaRows,error:_oae}=await supabase.from('so_item_decorations').select('so_item_id,deco_index,outside_art').in('so_item_id',(_itRows||[]).map(r=>r.id));
+                if(_oae)_blocked.filter(isOutsideArtJob).forEach(r=>{r._keepOutsideArt=true});
+                else (_oaRows||[]).forEach(d=>{const it=_dbO.items[_idxById[d.so_item_id]];const dd=it&&it.decorations[d.deco_index];if(dd)dd.outside_art=d.outside_art});
+              }
+              const _artStillWanted=r=>r._keepOutsideArt||isOutsideArtJob(r)&&(Array.isArray(r.items)?r.items:[]).some(gi=>(Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:[gi.deco_idx]).some(di=>wantsOutsideArt(_dbO.items[gi.item_idx]?.decorations?.[di])));
+              const _routed=_blocked.filter(r=>!_artStillWanted(r)&&jobAllRoutedOutside(_dbO,{items:Array.isArray(r.items)?r.items:[]}));
               if(_routed.length){
                 const _routedIds=new Set(_routed.map(r=>r.id));
                 _blocked=_blocked.filter(r=>!_routedIds.has(r.id));

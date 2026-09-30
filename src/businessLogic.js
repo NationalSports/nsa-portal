@@ -5,6 +5,7 @@
 // ═══════════════════════════════════════════════
 
 const { matchingClientLine, lineIntentKey } = require('./lib/orderLineIdentity');
+const { productionJobs, isOutsideArtJob, buildOutsideArtJobs } = require('./lib/outsideArt');
 
 // ── Safe Accessors ──
 const safe = (v, def) => v != null ? v : def;
@@ -393,7 +394,7 @@ function calcSOStatus(ord) {
     });
   });
   if (totalSz === 0) return 'need_order';
-  const boardJobs = safeJobs(ord);
+  const boardJobs = productionJobs(safeJobs(ord));// outside-art jobs are art-only — never production (lib/outsideArt)
   const hasJobs = boardJobs.length > 0;
   const allJobsShipped = hasJobs && boardJobs.every(j => j.prod_status === 'shipped');
   const allJobsDone = hasJobs && boardJobs.every(j => j.prod_status === 'completed' || j.prod_status === 'shipped');
@@ -1909,6 +1910,8 @@ function calcRepPayout({ netCommission, extraCommission, draw, loanBalance, loan
 }
 
 module.exports = {
+  // Re-exported so the editor-callback tests (which run syncJobs' body with businessLogic in scope) resolve them.
+  isOutsideArtJob, buildOutsideArtJobs,
   // Safe accessors
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs, manualPoCostTotal,
   // Attribution

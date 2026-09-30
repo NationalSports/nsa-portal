@@ -35,7 +35,8 @@ const picksOf = (it) => (it && (it.pick_lines || it.picks)) || [];
 const posOf = (it) => (it && (it.po_lines || it.pos)) || [];
 // Draft jobs are parked ideas, not production state — excluded everywhere (mirrors
 // components.calcSOStatus's boardJobs filter).
-const jobsOf = (so) => ((so && Array.isArray(so.jobs) ? so.jobs : [])).filter((j) => j && j.prod_status !== 'draft');
+const { isOutsideArtJob } = require('./outsideArt');
+const jobsOf = (so) => ((so && Array.isArray(so.jobs) ? so.jobs : [])).filter((j) => j && j.prod_status !== 'draft' && !isOutsideArtJob(j));
 
 // ── Fulfillment counters (faithful subset of components.calcSOStatus) ──
 // qty_only items hold their quantity in est_qty (sizes is empty); POs/picks track
@@ -157,7 +158,7 @@ function pulledGroups(so, inWin) {
 // (needs the invoices table), so callers should also exclude SOs that already
 // have a non-void invoice.
 function isReadyToInvoice(so, ff) {
-  if (!so || so.status === 'complete' || so.promo_applied) return false;
+  if (!so || so.status === 'complete' || so.promo_applied || so.no_invoice_needed) return false;
   if (isShippedOut(so, ff)) return false;
   if (ff.totalSz <= 0) return false;
   const jobs = jobsOf(so);
@@ -174,7 +175,7 @@ function isReadyToInvoice(so, ff) {
 // half lives at the call site (needs the invoices table), so callers must also
 // exclude SOs that already have a non-void invoice.
 function isShippedNotInvoiced(so, ff) {
-  if (!so || so.promo_applied || so.source === 'webstore') return false;
+  if (!so || so.promo_applied || so.no_invoice_needed || so.source === 'webstore') return false;
   return isShippedOut(so, ff);
 }
 

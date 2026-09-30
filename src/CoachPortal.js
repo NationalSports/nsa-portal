@@ -1,5 +1,6 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
+import { isOutsideArtJob } from './lib/outsideArt';
 import { SZ_ORD, sizeBreakdownStr, pantoneHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, artDstOnFile, estimateTermsFooter } from './constants';
 import { statusChipLabel } from './lib/teamshopOrderStatus';
 import { ptDateLabel } from './lib/storeClock';
@@ -2290,7 +2291,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             </div>;
           })()}
 
-          {j.prod_status!=='hold'&&<div style={{..._card,padding:'14px 16px',display:'flex',alignItems:'center',gap:10}}>
+          {j.prod_status!=='hold'&&!isOutsideArtJob(j)&&<div style={{..._card,padding:'14px 16px',display:'flex',alignItems:'center',gap:10}}>
             <span style={_eyebrow}>Production</span>{_rule(26)}
             <span style={{fontFamily:_DISP,fontWeight:700,fontSize:16,letterSpacing:'0.6px',textTransform:'uppercase',color:_NV,marginLeft:'auto'}}>{prodLabelsP[j.prod_status]||j.prod_status}</span>
           </div>}

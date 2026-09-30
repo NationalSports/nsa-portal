@@ -1,4 +1,5 @@
 import { garmentSlotCandidates } from "./lib/jobMockCards";
+import { isOutsideArtJob } from './lib/outsideArt';
 import { assignLogoArtwork, resolveLogoColorWay } from './lib/logoDetail';
 import GarmentMockCard, { LogoDetailTiles } from './GarmentMockCard';
 import { removeGarmentSlotMock } from './safeHelpers';
@@ -6922,7 +6923,7 @@ export default function App(){
     const soDone=(so)=>{
       if(!so||so.deleted_at)return false;
       if(so._shipped===true||so._shipping_status==='shipped')return true;
-      const js=safeJobs(so).filter(j=>j.prod_status!=='draft');
+      const js=safeJobs(so).filter(j=>j.prod_status!=='draft'&&!isOutsideArtJob(j));
       return js.length>0&&js.every(j=>j.prod_status==='completed'||j.prod_status==='shipped');
     };
     const doneIds=new Set(sos.filter(soDone).map(so=>so.id));
@@ -8745,7 +8746,7 @@ export default function App(){
   // floor (SO-1383): the Prod Board shows the job as "Waiting on warehouse" while no warehouse
   // tab can ever see it to release, ship, or deliver it. Untouched future-season bookings
   // (no ready jobs, nothing released) stay hidden as before.
-  const bookingHasFloorWork=(so)=>safeJobs(so).some(j=>isJobReady(j,so)||(j.prod_status&&j.prod_status!=='hold'&&j.prod_status!=='draft'));
+  const bookingHasFloorWork=(so)=>safeJobs(so).some(j=>isJobReady(j,so)||(j.prod_status&&j.prod_status!=='hold'&&j.prod_status!=='draft'&&!isOutsideArtJob(j)));
 
   // Shared data builder for warehouse + deco + dashboard pages
   function buildWarehouseData(){
@@ -8842,7 +8843,7 @@ export default function App(){
       const shipPref=so.ship_preference||'ship_as_ready';
       const shipDateReady=shipPref!=='ship_on_date'||!so.ship_on_date||(new Date(so.ship_on_date)<=new Date());
       const deliverDateReady=shipPref!=='deliver_on_date'||!so.deliver_on_date||(new Date(so.deliver_on_date)<=new Date());
-      const allJobs=safeJobs(so);
+      const allJobs=safeJobs(so).filter(j=>!isOutsideArtJob(j));// art-only outside jobs are never floor work
       // Resolve a job's split-family root by walking split_from (guarded against cycles). Two jobs
       // in the same family share a root; they're batches of the same decoration, not separate decos.
       const _jobById={};allJobs.forEach(j2=>{if(j2&&j2.id)_jobById[j2.id]=j2});
@@ -8860,7 +8861,7 @@ export default function App(){
             // Same for deco-level art splits: jobsShareGarments treats same-split_group slices of a
             // line as disjoint garments, so one design's finished batch ships without the other's.
             const jRoot=_splitRoot(j);
-            const siblingJobs=allJobs.filter(j2=>j2.id!==j.id&&j2.prod_status!=='draft'&&_splitRoot(j2)!==jRoot&&jobsShareGarments(j,j2));
+            const siblingJobs=allJobs.filter(j2=>j2.id!==j.id&&j2.prod_status!=='draft'&&!isOutsideArtJob(j2)&&_splitRoot(j2)!==jRoot&&jobsShareGarments(j,j2));
             const allSiblingsDone=siblingJobs.every(j2=>j2.prod_status==='completed'||j2.prod_status==='shipped');
             if(!allSiblingsDone){
               // Sibling jobs still in progress — this item stays in production queue, not ready to ship
@@ -8902,8 +8903,8 @@ export default function App(){
       const allItemsDone=safeItems(so).every(it=>{const szKeys=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0));
         const tot=szKeys.reduce((a,s)=>a+(it.sizes[s]||0),0);if(tot===0)return true;
         const pulled=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>szKeys.reduce((a2,s)=>a2+(pk[s]||0),a),0);return pulled>=tot});
-      const allJobsDone=safeJobs(so).filter(j=>j.prod_status!=='draft').every(j=>j.prod_status==='completed'||j.prod_status==='shipped');
-      if(allItemsDone&&allJobsDone&&(safeItems(so).length>0||safeJobs(so).filter(j=>j.prod_status!=='draft').length>0)){
+      const allJobsDone=safeJobs(so).filter(j=>j.prod_status!=='draft'&&!isOutsideArtJob(j)).every(j=>j.prod_status==='completed'||j.prod_status==='shipped');
+      if(allItemsDone&&allJobsDone&&(safeItems(so).length>0||safeJobs(so).filter(j=>j.prod_status!=='draft'&&!isOutsideArtJob(j)).length>0)){
         const totalUnits=safeItems(so).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
         // A wait-complete order becomes shippable only once its last piece finishes — newest job completion or pull across the order.
         let wcReadyAt=null;const _bumpWc=(d)=>{if(d&&(!wcReadyAt||new Date(d).getTime()>new Date(wcReadyAt).getTime()))wcReadyAt=d};
@@ -9683,7 +9684,7 @@ export default function App(){
 
     // Shared data builders
     const{pullTasks,shipTasks,decoTasks}=buildWarehouseData();
-    const activeJobs=[];sos.forEach(so=>{safeJobs(so).forEach(j=>{if(!['completed','shipped'].includes(j.prod_status))activeJobs.push({...j,prod_status:mockAwareProductionStatus(j,so),so,cName:cust.find(x=>x.id===so.customer_id)?.name})})});
+    const activeJobs=[];sos.forEach(so=>{safeJobs(so).forEach(j=>{if(!['completed','shipped'].includes(j.prod_status)&&!isOutsideArtJob(j))activeJobs.push({...j,prod_status:mockAwareProductionStatus(j,so),so,cName:cust.find(x=>x.id===so.customer_id)?.name})})});
 
     // Notification timestamps — friendly "when the action happened" (e.g. items received, invoice paid).
     const _fmtNotifDT=(d)=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const now=new Date();
@@ -10066,7 +10067,7 @@ export default function App(){
       orders={sos}
       invoices={invs}
       historicalInvoices={histInvs}
-      jobs={sos.flatMap(so=>safeJobs(so).map(job=>({...job,_soId:so.id})))}
+      jobs={sos.flatMap(so=>safeJobs(so).filter(job=>!isOutsideArtJob(job)).map(job=>({...job,_soId:so.id})))}
       actionCount={_dashPriorityItems.length}
       unreadCount={unreadMsgs.length}
       priorityItems={_dashPriorityItems.slice(0,5)}
@@ -13209,7 +13210,7 @@ export default function App(){
     // Skip cancelled and soft-deleted orders — their jobs aren't real production work. Same guard the
     // rest of the app uses (sales reports, orders list) so the Jobs page doesn't surface dead orders.
     sos.forEach(so=>{if(so.status==='cancelled'||so.status==='deleted'||so.deleted_at)return;const c=cust.find(x=>x.id===so.customer_id);const _pid=c?.parent_id||c?.id||null;
-      buildJobs(so).filter(j=>j.prod_status!=='draft').forEach(j=>{allJobs.push({...j,prod_status:mockAwareProductionStatus(j,so),so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
+      buildJobs(so).filter(j=>j.prod_status!=='draft'&&!isOutsideArtJob(j)).forEach(j=>{allJobs.push({...j,prod_status:mockAwareProductionStatus(j,so),so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
         parentId:_pid,grpKey:jobGroupKey(j,_pid),orderState:deriveJobItemStatus(j,so),..._jobInbound(j,so),
         repId:so.rep_id||c?.primary_rep_id||so.created_by,rep:REPS.find(r=>r.id===(so.rep_id||c?.primary_rep_id||so.created_by))?.name||'—',
         expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null})})});
@@ -14010,7 +14011,7 @@ export default function App(){
     sos.forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);
       const parentId=c?.parent_id||c?.id||null;
-      safeJobs(so).forEach(j=>{
+      safeJobs(so).filter(j=>!isOutsideArtJob(j)).forEach(j=>{
         allJobs.push({...j,prod_status:mockAwareProductionStatus(j,so),so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
           parentId,grpKey:(j.link_group||isJobReady(j,so))?jobGroupKey(j,parentId):null,
           rep:REPS.find(r=>r.id===(so.rep_id||c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—',
@@ -17865,7 +17866,7 @@ export default function App(){
           <WH id="prodThroughput" title="Production Throughput" icon="🏭"/>
           {rptWidgets.prodThroughput&&(()=>{
             const allJobs=[];sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
-              buildJobs(so).forEach(j=>allJobs.push({...j,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',rep:REPS.find(r=>r.id===(so.rep_id||c?.primary_rep_id||so.created_by))?.name||'—'}))});
+              buildJobs(so).filter(j=>!isOutsideArtJob(j)).forEach(j=>allJobs.push({...j,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',rep:REPS.find(r=>r.id===(so.rep_id||c?.primary_rep_id||so.created_by))?.name||'—'}))});
             const hold=allJobs.filter(j=>j.prod_status==='hold').length;const staging=allJobs.filter(j=>j.prod_status==='staging').length;
             const inProcess=allJobs.filter(j=>j.prod_status==='in_process').length;const completed=allJobs.filter(j=>j.prod_status==='completed').length;
             const shipped=allJobs.filter(j=>j.prod_status==='shipped').length;
@@ -21916,7 +21917,7 @@ export default function App(){
                           });
                           const hasShipments=updatedShipments.length>0;
                           const firstShp=updatedShipments[0];
-                          const allStillShipped=hasShipments&&revertedJobs.filter(jj=>jj.prod_status!=='draft').every(jj=>jj.prod_status==='shipped');
+                          const allStillShipped=hasShipments&&revertedJobs.filter(jj=>jj.prod_status!=='draft'&&!isOutsideArtJob(jj)).every(jj=>jj.prod_status==='shipped');
                           savSO({...so2,jobs:revertedJobs,_shipments:updatedShipments,
                             _shipped:allStillShipped,_shipping_status:hasShipments?(allStillShipped?'shipped':'partial'):null,
                             _tracking_number:firstShp?.tracking_number||'',_carrier:firstShp?.carrier||'',
@@ -22357,7 +22358,7 @@ export default function App(){
                         const jobShipped=jobShippedUnits(jj,soJobs,shippedSizes);
                         return jobShipped>=jj.total_units?{...jj,prod_status:'shipped'}:jj;
                       });
-                      const allJobsShipped=updatedJobs.filter(jj=>jj.prod_status!=='draft').every(jj=>jj.prod_status==='shipped');
+                      const allJobsShipped=updatedJobs.filter(jj=>jj.prod_status!=='draft'&&!isOutsideArtJob(jj)).every(jj=>jj.prod_status==='shipped');
                       // Compute total shipping cost from this SO's shipments only
                       const boxShipCost=soShipments.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
                       const existingShipCost=safeNum(so._shipping_cost||so._shipstation_cost||0);
@@ -22478,7 +22479,7 @@ export default function App(){
                     });
                     const jobsChanged=updatedJobs.some((jj,ji)=>jj!==origJobs[ji]);
                     if(soItems.length===0&&!jobsChanged)return;// nothing to clear on this SO
-                    const allJobsShipped=updatedJobs.filter(jj=>jj.prod_status!=='draft').every(jj=>jj.prod_status==='shipped');
+                    const allJobsShipped=updatedJobs.filter(jj=>jj.prod_status!=='draft'&&!isOutsideArtJob(jj)).every(jj=>jj.prod_status==='shipped');
                     savSO({...so,jobs:updatedJobs,_shipments:allShipments,
                       _shipped:allJobsShipped,_shipping_status:allJobsShipped?'shipped':'partial',
                       _ship_date:shipDate,updated_at:nowStr});
@@ -22854,7 +22855,7 @@ export default function App(){
                   {custSos.map(so=>{
                     const st=calcSOStatus(so);
                     const itemCount=safeItems(so).length;
-                    const jobCount=safeJobs(so).filter(j=>j.prod_status!=='draft').length;
+                    const jobCount=safeJobs(so).filter(j=>j.prod_status!=='draft'&&!isOutsideArtJob(j)).length;
                     return<div key={so.id} style={{padding:'8px 12px',background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0',cursor:'pointer'}}
                       onClick={()=>{
                         const c2=manualShipModal.custFilter;
@@ -22956,7 +22957,7 @@ export default function App(){
 
             {/* Jobs to mark as shipped */}
             {(manualShipModal.shipToMode||'customer')==='customer'&&(()=>{
-              const jobs=safeJobs(manualShipModal.so).filter(j=>j.prod_status!=='draft'&&j.prod_status!=='shipped');
+              const jobs=safeJobs(manualShipModal.so).filter(j=>j.prod_status!=='draft'&&!isOutsideArtJob(j)&&j.prod_status!=='shipped');
               if(jobs.length===0)return null;
               return<div style={{marginBottom:12}}>
                 <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Mark jobs as shipped (optional)</div>
@@ -23219,7 +23220,7 @@ export default function App(){
                   };
                   const allShipments=[...(so._shipments||[]),shipment];
                   const updatedJobs=jobsAfterShipment(so,allShipments,Object.entries(manualShipModal.markShipped||{}).filter(([,checked])=>checked).map(([id])=>id),_mode==='customer');
-                  const allJobsShipped=updatedJobs.filter(jj=>jj.prod_status!=='draft').every(jj=>jj.prod_status==='shipped');
+                  const allJobsShipped=updatedJobs.filter(jj=>jj.prod_status!=='draft'&&!isOutsideArtJob(jj)).every(jj=>jj.prod_status==='shipped');
                   const allItemsShipped=unshippedOrderItems({...so,_shipments:allShipments}).length===0;
                   const fullyShipped=allJobsShipped&&allItemsShipped;
                   const totalShipCost=nextShippingCost(so,cost);
@@ -23935,7 +23936,7 @@ export default function App(){
         // If art_status is 'needs_art', only show if there's an actively pending request (not just completed/recalled)
         if(j.art_status==='needs_art'&&!hasActiveArtReq&&!hasArtist)return;// skip — recalled or not yet requested
         if(!hasNonRecalledReq&&!hasArtist&&!hasArtActivity)return;// skip — art not yet requested for this job
-        if(jobAllRoutedOutside(so,j))return;// skip — every claimed deco moved to an outside decorator; the job retires on the order's next sync (SO-1009)
+        if(!isOutsideArtJob(j)&&jobAllRoutedOutside(so,j))return;// skip — every claimed deco moved to an outside decorator; the job retires on the order's next sync (SO-1009)
         if(j.art_status==='art_complete'&&_jobNeedsProdFiles(j,so))return;// handled in second pass as production_files_needed
         allArtJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
           rep:REPS.find(r=>r.id===(so.rep_id||c?.primary_rep_id||so.created_by))?.name||'—',repId:so.rep_id||c?.primary_rep_id||so.created_by,
@@ -23947,7 +23948,7 @@ export default function App(){
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
       buildJobs(so).forEach(j=>{
         if(j.art_status!=='art_complete')return;
-        if(jobAllRoutedOutside(so,j))return;// outside decorator produces it — no prod-files step here (SO-1009)
+        if(!isOutsideArtJob(j)&&jobAllRoutedOutside(so,j))return;// outside decorator produces it — no prod-files step here (SO-1009)
         if(_jobNeedsProdFiles(j,so)){
           const afs=jobLiveArtIds(j,so).map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
           const af=afs.find(a=>!artProdFilesConfirmed(a))||afs[0];

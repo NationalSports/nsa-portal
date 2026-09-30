@@ -52,6 +52,14 @@ describe('isShippedNotInvoiced', () => {
     expect(isShippedNotInvoiced(web, ff(web))).toBe(false);
   });
 
+  test('orders marked no invoice needed (e.g. created in error) leave both invoice funnels', () => {
+    const shipped = mkSo({ _shipped: true, no_invoice_needed: true });
+    expect(isShippedNotInvoiced(shipped, ff(shipped))).toBe(false);
+    const done = mkSo({ jobs: [{ id: 'j1', prod_status: 'completed' }], picks: [] });
+    expect(isReadyToInvoice(done, ff(done))).toBe(true);
+    expect(isReadyToInvoice({ ...done, no_invoice_needed: true }, ff(done))).toBe(false);
+  });
+
   test('covers exactly the gap isReadyToInvoice leaves: shipped ⇒ not ready-to-invoice', () => {
     const so = mkSo({ _shipped: true, jobs: [{ id: 'j1', prod_status: 'shipped' }] });
     expect(isReadyToInvoice(so, ff(so))).toBe(false); // vanishes from Ready to Invoice…
