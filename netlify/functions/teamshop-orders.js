@@ -38,7 +38,9 @@ const ok = (body) => ({ statusCode: 200, headers: corsHeaders(), body: JSON.stri
 // Pure — exported for tests. jobs = the so_jobs rows for ONE so_id (any shape
 // with a prod_status field); hasShipment = whether any webstore_shipments row
 // exists for the order.
-const { isOutsideArtJob } = require('../../src/lib/outsideArt');
+// Mirror of src/lib/outsideArt isOutsideArtJob (ESM; this function runs unbundled). Only prod_status
+// is selected here, and an outside-art job always carries prod_status 'outside'.
+const isOutsideArtJob = (j) => !!j && j.prod_status === 'outside';
 function summarizeProdStage(jobs, hasShipment) {
   if (hasShipment) return 'shipped';
   // Outside-art jobs are art-only (src/lib/outsideArt) — never a production stage.

@@ -35,7 +35,9 @@ const picksOf = (it) => (it && (it.pick_lines || it.picks)) || [];
 const posOf = (it) => (it && (it.po_lines || it.pos)) || [];
 // Draft jobs are parked ideas, not production state — excluded everywhere (mirrors
 // components.calcSOStatus's boardJobs filter).
-const { isOutsideArtJob } = require('./outsideArt');
+// Mirror of lib/outsideArt isOutsideArtJob (that module is ESM; this file must stay plain CommonJS
+// for the unbundled rep digests). Opt-in outside-art jobs are art-only, never production state.
+const isOutsideArtJob = (j) => !!j && (j.prod_status === 'outside' || String(j.key || '').startsWith('outside_art:'));
 const jobsOf = (so) => ((so && Array.isArray(so.jobs) ? so.jobs : [])).filter((j) => j && j.prod_status !== 'draft' && !isOutsideArtJob(j));
 
 // ── Fulfillment counters (faithful subset of components.calcSOStatus) ──

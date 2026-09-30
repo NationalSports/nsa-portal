@@ -12,21 +12,23 @@
 //     of that pipeline's frozen/split/merge rules ever see it
 //
 // Old outside decorations have no outside_art stamp, so existing orders and jobs are
-// untouched. Plain CommonJS so the Netlify digests can require it too.
+// untouched. ES module like lib/orderLineIdentity (CommonJS businessLogic requires it). The
+// unbundled Netlify digests can't load ESM, so opsRecap and teamshop-orders inline the
+// prod_status==='outside' half of isOutsideArtJob — keep those two copies in sync.
 
-const OUTSIDE_ART_KEY_PREFIX = 'outside_art:';
-const OUTSIDE_ART_PROD_STATUS = 'outside';
+export const OUTSIDE_ART_KEY_PREFIX = 'outside_art:';
+export const OUTSIDE_ART_PROD_STATUS = 'outside';
 
-const isOutsideArtJob = (j) => !!j && (j.prod_status === OUTSIDE_ART_PROD_STATUS || String(j.key || '').startsWith(OUTSIDE_ART_KEY_PREFIX));
+export const isOutsideArtJob = (j) => !!j && (j.prod_status === OUTSIDE_ART_PROD_STATUS || String(j.key || '').startsWith(OUTSIDE_ART_KEY_PREFIX));
 
 // The jobs our floor actually produces. Use this anywhere jobs drive production boards,
 // order status, shipping, invoicing or digests.
-const productionJobs = (jobs) => (Array.isArray(jobs) ? jobs : []).filter((j) => !isOutsideArtJob(j));
+export const productionJobs = (jobs) => (Array.isArray(jobs) ? jobs : []).filter((j) => !isOutsideArtJob(j));
 
-const isRoutedOutside = (d) => !!d && (d.fulfillment === 'outside' || !!d.deco_po_id);
+export const isRoutedOutside = (d) => !!d && (d.fulfillment === 'outside' || !!d.deco_po_id);
 
 // Only designs (kind 'art') go through the art flow, and only when the rep opted in.
-const wantsOutsideArt = (d) => !!d && d.kind === 'art' && d.outside_art === true && isRoutedOutside(d);
+export const wantsOutsideArt = (d) => !!d && d.kind === 'art' && d.outside_art === true && isRoutedOutside(d);
 
 const arr = (v) => (Array.isArray(v) ? v : []);
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
@@ -37,7 +39,7 @@ const itemUnits = (it) => {
 };
 
 // The outside decorator a job's garments go to (display only — not persisted on the job).
-const outsideArtVendor = (o, j) => {
+export const outsideArtVendor = (o, j) => {
   for (const gi of arr(j && j.items)) {
     const it = arr(o && o.items)[gi.item_idx];
     for (const di of arr(gi.deco_idxs)) { const d = arr(it && it.decorations)[di]; if (d && d.vendor) return d.vendor; }
@@ -52,7 +54,7 @@ const outsideArtVendor = (o, j) => {
 //   artStatusOf(artFile, fallbackDecoType) — constants.artStatusForFile
 //   reservedIds — every job id already used on the order, so new ids never collide
 //   isStoreOrder — store pulls are pre-approved by the sale (same rule as in-house jobs)
-function buildOutsideArtJobs(o, prevJobs, { artStatusOf, reservedIds, isStoreOrder = false } = {}) {
+export function buildOutsideArtJobs(o, prevJobs, { artStatusOf, reservedIds, isStoreOrder = false } = {}) {
   const arts = arr(o && o.art_files);
   const groups = new Map();
   arr(o && o.items).forEach((it, ii) => {
@@ -111,14 +113,3 @@ function buildOutsideArtJobs(o, prevJobs, { artStatusOf, reservedIds, isStoreOrd
     };
   });
 }
-
-module.exports = {
-  OUTSIDE_ART_KEY_PREFIX,
-  OUTSIDE_ART_PROD_STATUS,
-  isOutsideArtJob,
-  productionJobs,
-  wantsOutsideArt,
-  isRoutedOutside,
-  outsideArtVendor,
-  buildOutsideArtJobs,
-};
