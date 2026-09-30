@@ -26590,6 +26590,13 @@ export default function App(){
   // _docAlreadyApplied can answer cross-machine: a doc applied on ANY machine is a duplicate here,
   // even if this browser never saw it. Keys: 'd|<credit>|<doc#>' and 's|<credit>|<SI/S&S order#>', lowercased.
   const _billApplySession=React.useRef(null);
+  // QuickBooks bill sends from this browser run one at a time: 'manual' (Push
+  // button) or 'auto' (auto-send after a Portal push). _qbAutoQueue holds rows
+  // that arrive while an auto run is in flight; _qbCfgRef lets that async run
+  // read the current switch instead of the render it started in.
+  const _qbBillPushBusy=React.useRef(false);
+  const _qbAutoQueue=React.useRef([]);
+  const _qbCfgRef=React.useRef(qbConfig);_qbCfgRef.current=qbConfig;
   if(!_billApplySession.current)_billApplySession.current=createBillApplySession(billAttemptJournal(localStorage));
   const _billApplyData=React.useRef(null);
   _billApplyData.current={sos,submittedBatches,invPOs};
@@ -28280,7 +28287,7 @@ export default function App(){
         }
         if(!autoOn||!autoBills.length)return 0;
         autoBills.forEach(b=>{b.parsed._auto_pushed=true});
-        const pushed=await _applyBillsToPortal(autoBills);
+        const pushed=await _applyBillsToPortalThenQB(autoBills);
         if(pushed)nf('⚡ '+pushed+' bill(s) auto-pushed to the portal (high-confidence match, no exceptions) — spot-check in Bill History','success');
         const autoFailed=autoBills.filter(b=>b.portalStatus==='error').length;
         if(autoFailed)nf(autoFailed+' auto-push(es) failed — left in review with the error on the card','error');
@@ -30452,7 +30459,7 @@ export default function App(){
     // loud (the card stays parked); success resolves the card with the given disposition.
     const _pushParkedBill=async(sb,disposition,note,opts)=>{
       const billObj={id:sb.id,file:sb.file,parsed:sb.parsed,uploadedAt:sb.uploadedAt,uploadedTs:sb.uploadedTs,selected:true};
-      const applied=await _applyBillsToPortal([billObj]);
+      const applied=await _applyBillsToPortalThenQB([billObj]);
       if(applied>0){
         const resolution={disposition,note:note||'',by:(cu?.name||cu?.email||''),at:new Date().toISOString()};
         setSavedBills(prev=>{
@@ -30987,7 +30994,7 @@ export default function App(){
     // Retry only a retained, prepared attempt — never save an arbitrary current SO
     // for a no-match/no-op error. All target writes and bookkeeping use the same gate.
     const _retryBillSave=async(b)=>{
-      const applied=await _applyBillsToPortal([b],{retry:true});
+      const applied=await _applyBillsToPortalThenQB([b],{retry:true});
       nf(applied?'Saved — '+(b.parsed?.doc_number||'bill')+' is now recorded as applied':b.portalMsg,applied?'success':'error');
       return !!applied;
     };
@@ -31006,13 +31013,13 @@ export default function App(){
         selected.forEach(b=>{const errs=_validateBillForPush(b.parsed);if(errs.length)problemBills.push({bill:b,errs});else cleanBills.push(b)});
         if(problemBills.length){setBillPushModal({cleanBills,problemBills});return;}
       }
-      _applyBillsToPortal(selected).then(applied=>nf(applied+' bill(s) pushed to portal'));
+      _applyBillsToPortalThenQB(selected).then(applied=>nf(applied+' bill(s) pushed to portal'));
     };
 
     // Problems-modal action: push the exact-match bills and move the flagged ones to "Look at later".
     const _pushCleanParkProblems=async()=>{
       const m=billPushModal;if(!m)return;
-      const applied=m.cleanBills.length?await _applyBillsToPortal(m.cleanBills):0;
+      const applied=m.cleanBills.length?await _applyBillsToPortalThenQB(m.cleanBills):0;
       if(m.problemBills.length)_parkBillsForLater(m.problemBills.map(p=>p.bill));
       setBillPushModal(null);
       const parts=[];
@@ -31025,45 +31032,16 @@ export default function App(){
     const _pushAllOverride=async()=>{
       const m=billPushModal;if(!m)return;
       const all=[...m.cleanBills,...m.problemBills.map(p=>p.bill)];
-      const applied=await _applyBillsToPortal(all);
+      const applied=await _applyBillsToPortalThenQB(all);
       setBillPushModal(null);
       nf(applied+' bill(s) pushed to portal (override)');
     };
 
-    // Push bills to QuickBooks — SAME pile as the Portal button (Matched = matched + clean),
-    // so the two buttons always show the same number. Bills already in QB are skipped.
-    const pushBillsToQB=async()=>{
-      if(qbConfig.preflight?.status!=='success'||String(qbConfig.preflight?.realm_id||'')!==String(qbConfig.realm_id||'')){nf('Run the read-only live QBO preflight before sending any parsed bill','error');return}
-      const batchSeen=new Set();
-      const selectedEntries=billImport.parsed.map((row,index)=>({row,index}))
-        .filter(({row})=>{
-          if(!_billIsReadyForQB(row)||!qbBillNeedsSync(row.qbStatus))return false;
-          const key=_qboBillBatchKey(row);
-          if(key&&batchSeen.has(key))return false;
-          if(key)batchSeen.add(key);
-          return true;
-        });
-      if(!selectedEntries.length){nf('No matched bills to push','error');return}
-      const canaryMode=qbConfig.initialMigrationApproved!==true;
-      const completedCanaries=new Set((qbConfig._qbCanaryBillIds||[]).map(String));
-      const canaryRemaining=Math.max(0,3-completedCanaries.size);
-      if(canaryMode&&!canaryRemaining){nf('Three QBO canary bills are complete. Review them in QuickBooks and approve the migration before any production batch.','error');return}
-      // Before approval, send exactly one explicitly confirmed canary per click
-      // and no more than three total. After approval, use resumable batches of 20.
-      // Posting transactions stay sequential in both modes.
-      const batchLimit=canaryMode?1:100;
-      const batch=selectedEntries.slice(0,batchLimit);
-      if(canaryMode){
-        const preview=batch.map(({row})=>{
-          const bill=row.parsed||{};
-          return '• '+(bill.doc_number||row.id||'no document #')+' — '+(bill.supplier||'unknown vendor')+' — $'+safeNum(bill.doc_total).toFixed(2);
-        }).join('\n');
-        if(!window.confirm('TEST MODE — send only these '+batch.length+' bill(s) to the live QBO company?\n\n'+preview+'\n\nIf a required SKU item is missing, this test creates or repairs only that QBO NonInventory item using 40000 Sales and 51300 Purchases, with no quantity on hand or inventory value.\n\nThe full push stays locked until you review the QBO records and approve it.'))return;
-      }
-      const selectedIndexes=new Set(batch.map(entry=>entry.index));
-      const remainingAfterBatch=Math.max(0,selectedEntries.length-batch.length);
-      setBillImport(x=>({...x,uploading:true}));
-
+    // One QuickBooks bill run over the given rows — vendor/item/account lookup,
+    // duplicate check, create + stored-figure check, Portal apply when needed,
+    // server receipts. Shared by the Push button and auto-send so there is one
+    // money path. updateRow(i,row,patch) reflects each row's result on screen.
+    const _sendBillRowsToQB=async(rows,{canaryMode=false,portalAlreadyApplied=false,updateRow})=>{
       let qbAccounts=[],existingQBVendors=[],existingQBItems=[],existingQBBills=[];
       try{
         [qbAccounts,existingQBVendors,existingQBItems,existingQBBills]=await Promise.all([
@@ -31073,8 +31051,7 @@ export default function App(){
           loadAllQBEntities(qbApi,'Bill','Id, DocNumber, VendorRef, TotalAmt, TxnDate',500),
         ]);
       }catch(e){
-        nf('Could not run the QuickBooks bill preflight — '+(e.message||'connection error'),'error');
-        setBillImport(x=>({...x,uploading:false}));return;
+        return {loadError:e,success:0,failed:0,receiptGap:0};
       }
 
       const billsByDoc=new Map();
@@ -31085,15 +31062,14 @@ export default function App(){
         billsByDoc.get(key).push(qbBill);
       });
       const setRowResult=(bi,b,status,message,extra={})=>{
-        setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:status,qbMsg:message,...extra}:p)}));
+        updateRow(bi,b,{qbStatus:status,qbMsg:message,...extra});
         return {[b.id]:{qbStatus:status,qbMsg:message,portalStatus:b.portalStatus||null,portalMsg:b.portalMsg||'',...extra}};
       };
 
       let success=0,failed=0;
       const qbResults={};
-      for(let bi=0;bi<billImport.parsed.length;bi++){
-        if(!selectedIndexes.has(bi))continue;
-        const b=billImport.parsed[bi];
+      for(let bi=0;bi<rows.length;bi++){
+        const b=rows[bi];
         const bill=b.parsed||{};
         try{
           if(!_billHasTarget(bill))throw new Error('Bill is not linked to a portal PO/SO; no QBO bill was sent.');
@@ -31256,7 +31232,10 @@ export default function App(){
           // portal ledger even though it has never reached QBO. Treat that as
           // an already-complete portal side, rather than applying its quantity
           // and cost again and manufacturing an over-bill warning.
-          const portalWasAlreadyApplied=!_billApplySession.current.hasPending(billingAttemptKey(b))&&portalBillAlreadyApplied(bill,_docAlreadyApplied);
+          // Auto-send rows were applied by this browser's Portal push moments ago
+          // (portalStatus success); the ledger closure here can predate that write,
+          // so never let a stale lookup re-apply them.
+          const portalWasAlreadyApplied=portalAlreadyApplied||(!_billApplySession.current.hasPending(billingAttemptKey(b))&&portalBillAlreadyApplied(bill,_docAlreadyApplied));
           let portalApplied=portalWasAlreadyApplied;
           let portalWarning='';
           if(!portalApplied){
@@ -31265,7 +31244,7 @@ export default function App(){
           }
           if(portalApplied&&!portalWarning){
             b.portalStatus='success';
-            b.portalMsg=portalWasAlreadyApplied?'Already applied to Portal; QBO backfill verified':'Applied to Portal after QBO verification';
+            b.portalMsg=portalAlreadyApplied?'Applied to Portal; QuickBooks bill sent automatically':portalWasAlreadyApplied?'Already applied to Portal; QBO backfill verified':'Applied to Portal after QBO verification';
           }else if(portalWarning){
             b.portalStatus='error';
             b.portalMsg=portalWarning;
@@ -31295,8 +31274,7 @@ export default function App(){
         }
       }
 
-      setBillImport(x=>({...x,uploading:false}));
-      const sourceRows=new Map((billImport.parsed||[]).map(row=>[row.id,row]));
+      const sourceRows=new Map(rows.map(row=>[row.id,row]));
       const receiptOutcome=await _recordQboBillReceipts(Object.entries(qbResults).map(([id,result])=>{
         const source=sourceRows.get(id);const p=source?.parsed||{};
         if(!result.qbBillId||!source)return null;
@@ -31324,7 +31302,94 @@ export default function App(){
         _lsSet('nsa_saved_bills',JSON.stringify(updated));
         return updated;
       });
-      const receiptGap=Math.max(0,receiptOutcome.total-receiptOutcome.saved);
+      return {success,failed,receiptGap:Math.max(0,receiptOutcome.total-receiptOutcome.saved)};
+    };
+    // AUTO-SEND TO QUICKBOOKS (owner 2026-09-30: "make bills go to QuickBooks
+    // automatically" — 330+ applied bills piled up because the QBO push was a
+    // separate manual step). Switch: qbConfig.autoPushBillsToQB, off by default.
+    // Right after THIS browser applies bills to the Portal (⚡ auto-push or a
+    // human push), send those same bills to QuickBooks through the shared
+    // _sendBillRowsToQB path, shaped exactly like the Bill History backfill
+    // (account lines, Portal side never applied again). Only bills this browser
+    // just applied are sent, so the Portal ledger's one-writer guarantee carries
+    // over. Anything skipped (switch off, migration still locked, no preflight,
+    // a manual push already running, a failure) stays in the "not in QuickBooks
+    // yet" banner for the normal button.
+    const _autoSendBillsToQB=async(bills)=>{
+      try{
+        const cfg=_qbCfgRef.current||{};
+        if(cfg.autoPushBillsToQB!==true||!qbOperator||!cfg.connected||cfg.initialMigrationApproved!==true)return;
+        if(cfg.preflight?.status!=='success'||String(cfg.preflight?.realm_id||'')!==String(cfg.realm_id||''))return;
+        const applied=(bills||[]).filter(b=>b&&!b._qbBackfill&&b.portalStatus==='success'&&qbBillNeedsSync(b.qbStatus));
+        const rows=buildQboBackfillRows(applied,p=>prepareQboBackfillBill(p,rematchBill)).filter(_billIsReadyForQB);
+        if(!rows.length)return;
+        if(_qbBillPushBusy.current==='manual')return;
+        _qbAutoQueue.current.push(...rows);
+        if(_qbBillPushBusy.current)return;// the run in flight picks these up
+        _qbBillPushBusy.current='auto';
+        let sent=0,bad=0;
+        try{
+          while(_qbAutoQueue.current.length){
+            const next=_qbAutoQueue.current.splice(0,100);
+            const out=await _sendBillRowsToQB(next,{portalAlreadyApplied:true,
+              updateRow:(i,row,patch)=>setBillImport(x=>({...x,parsed:x.parsed.map(p=>p.id===row.id?{...p,...patch}:p)}))});
+            if(out.loadError){bad+=next.length+_qbAutoQueue.current.length;console.warn('auto-send to QuickBooks',out.loadError);break}
+            sent+=out.success;bad+=out.failed;
+          }
+        }finally{_qbAutoQueue.current=[];_qbBillPushBusy.current=false}
+        if(sent)nf(sent+' bill(s) sent to QuickBooks automatically','success');
+        if(bad)nf(bad+' bill(s) could not be sent to QuickBooks automatically — they stay in the "not in QuickBooks yet" list','error');
+      }catch(e){console.warn('auto-send to QuickBooks',e)}
+    };
+    // Portal push, then (switch on) the same bills to QuickBooks. Not awaited:
+    // the Portal result is reported as soon as it lands.
+    const _applyBillsToPortalThenQB=async(bills,opts)=>{
+      const applied=await _applyBillsToPortal(bills,opts);
+      if(applied)_autoSendBillsToQB(bills);
+      return applied;
+    };
+
+    // Push bills to QuickBooks — SAME pile as the Portal button (Matched = matched + clean),
+    // so the two buttons always show the same number. Bills already in QB are skipped.
+    const pushBillsToQB=async()=>{
+      if(qbConfig.preflight?.status!=='success'||String(qbConfig.preflight?.realm_id||'')!==String(qbConfig.realm_id||'')){nf('Run the read-only live QBO preflight before sending any parsed bill','error');return}
+      const batchSeen=new Set();
+      const selectedEntries=billImport.parsed.map((row,index)=>({row,index}))
+        .filter(({row})=>{
+          if(!_billIsReadyForQB(row)||!qbBillNeedsSync(row.qbStatus))return false;
+          const key=_qboBillBatchKey(row);
+          if(key&&batchSeen.has(key))return false;
+          if(key)batchSeen.add(key);
+          return true;
+        });
+      if(!selectedEntries.length){nf('No matched bills to push','error');return}
+      const canaryMode=qbConfig.initialMigrationApproved!==true;
+      const completedCanaries=new Set((qbConfig._qbCanaryBillIds||[]).map(String));
+      const canaryRemaining=Math.max(0,3-completedCanaries.size);
+      if(canaryMode&&!canaryRemaining){nf('Three QBO canary bills are complete. Review them in QuickBooks and approve the migration before any production batch.','error');return}
+      // Before approval, send exactly one explicitly confirmed canary per click
+      // and no more than three total. After approval, use resumable batches of 20.
+      // Posting transactions stay sequential in both modes.
+      const batchLimit=canaryMode?1:100;
+      const batch=selectedEntries.slice(0,batchLimit);
+      if(canaryMode){
+        const preview=batch.map(({row})=>{
+          const bill=row.parsed||{};
+          return '• '+(bill.doc_number||row.id||'no document #')+' — '+(bill.supplier||'unknown vendor')+' — $'+safeNum(bill.doc_total).toFixed(2);
+        }).join('\n');
+        if(!window.confirm('TEST MODE — send only these '+batch.length+' bill(s) to the live QBO company?\n\n'+preview+'\n\nIf a required SKU item is missing, this test creates or repairs only that QBO NonInventory item using 40000 Sales and 51300 Purchases, with no quantity on hand or inventory value.\n\nThe full push stays locked until you review the QBO records and approve it.'))return;
+      }
+      const remainingAfterBatch=Math.max(0,selectedEntries.length-batch.length);
+      if(_qbBillPushBusy.current){nf('QuickBooks is already receiving bills from this browser — try again in a moment','error');return}
+      _qbBillPushBusy.current='manual';
+      setBillImport(x=>({...x,uploading:true}));
+      let out;
+      try{
+        out=await _sendBillRowsToQB(batch.map(entry=>entry.row),{canaryMode,
+          updateRow:(i,row,patch)=>{const idx=batch[i].index;setBillImport(x=>({...x,parsed:x.parsed.map((p,j)=>j===idx?{...p,...patch}:p)}))}});
+      }finally{_qbBillPushBusy.current=false;setBillImport(x=>({...x,uploading:false}))}
+      if(out.loadError){nf('Could not run the QuickBooks bill preflight — '+(out.loadError.message||'connection error'),'error');return}
+      const {success,failed,receiptGap}=out;
       nf((canaryMode?'TEST: ':'')+success+' bill(s) completed in this batch'+(failed?' · '+failed+' need review':'')+(remainingAfterBatch?(canaryMode?' · full push remains locked for review':' · '+remainingAfterBatch+' ready for the next batch'):'')+(receiptGap?' · '+receiptGap+' QBO receipt(s) saved on this browser only — server ledger write failed':''),receiptGap?'error':undefined);
     };
     // Import sub-tabs visible per role. Admins see everything; reps and CSRs
@@ -32295,6 +32360,23 @@ export default function App(){
                 style={{display:'inline-flex',alignItems:'center',gap:7,marginLeft:'auto',background:'#fff',border:'1px solid '+RED,color:RED,fontFamily:FD,fontWeight:800,textTransform:'uppercase',letterSpacing:.4,fontSize:12,padding:'10px 16px',borderRadius:6,cursor:'pointer',whiteSpace:'nowrap'}}>
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke={RED} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z M12 9v4 M12 17h.01"/></svg>
                 Connect QB</button>)}
+          {qbOperator&&qbConfig.connected&&(()=>{
+            // Auto-send switch (shared in qb_config, off by default). Locked until the
+            // initial-migration canaries are approved — the same gate as batch pushes.
+            const on=qbConfig.autoPushBillsToQB===true;
+            const locked=qbConfig.initialMigrationApproved!==true;
+            return <button disabled={locked&&!on}
+              title={locked&&!on?'Approve the QuickBooks migration (QuickBooks page) before turning this on'
+                :on?'On: bills pushed to the Portal from this page (⚡ auto or by hand) are sent to QuickBooks right after. Click to turn off.'
+                :'Off: bills pushed to the Portal still need the QuickBooks backfill button. Click to send them to QuickBooks automatically.'}
+              onClick={()=>{
+                if(!on&&!window.confirm('Send bills to QuickBooks automatically?\n\nFrom now on, every bill pushed to the Portal (⚡ auto-push or by hand) is also created in QuickBooks right after, as account lines under its vendor — the same way the backfill sends them. This applies to everyone with QuickBooks access.'))return;
+                setQBConfig(prev=>({...prev,autoPushBillsToQB:!on}));
+                nf(on?'Auto-send to QuickBooks is off':'Auto-send to QuickBooks is on');
+              }}
+              style={{display:'inline-flex',alignItems:'center',gap:7,background:on?'#E7F2EC':'#fff',border:'1px solid '+(on?'#bfdfd0':MGRAY),color:on?'#166534':TXTL,fontFamily:FD,fontWeight:800,textTransform:'uppercase',letterSpacing:.4,fontSize:12,padding:'9px 15px',borderRadius:6,whiteSpace:'nowrap',cursor:locked&&!on?'not-allowed':'pointer',opacity:locked&&!on?0.6:1}}>
+              Auto-send to QB: {on?'On':'Off'}</button>;
+          })()}
         </div>
         {/* Pull options — the invoiced-from/to window + per-vendor pulls, hidden until asked for */}
         {billImport.pullOptsOpen&&<div style={{marginBottom:14,padding:'11px 16px',background:'#f8fafc',border:'1px solid '+LGRAY,borderRadius:8,display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
