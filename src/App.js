@@ -32182,7 +32182,17 @@ export default function App(){
         const secHead=o=><div style={{display:'flex',alignItems:'center',gap:12,margin:o.mt?'26px 0 14px':'0 0 14px',flexWrap:'wrap'}}><span style={{width:9,height:9,borderRadius:'50%',background:o.dot,flex:'0 0 auto'}}/><h3 style={{fontFamily:FD,fontWeight:800,fontSize:18,textTransform:'uppercase',letterSpacing:.5,color:NAVY,margin:0}}>{o.title}{o.count!=null&&<span style={{color:TXTL}}> ({o.count})</span>}</h3><span style={{width:46,height:3,background:RED,transform:'skewX(-12deg)',flex:'0 0 auto'}}/>{o.right?<span style={{marginLeft:'auto'}}>{o.right}</span>:o.note?<span style={{marginLeft:'auto',fontFamily:FD,fontSize:13,letterSpacing:.5,textTransform:'uppercase',color:TXTL}}>{o.note}</span>:null}</div>;
         const swStyle=a=>({display:'inline-flex',alignItems:'center',border:'none',background:a?NAVY:'#fff',color:a?'#fff':TXTL,padding:'11px 22px',fontFamily:FD,fontWeight:700,fontSize:15,letterSpacing:.5,textTransform:'uppercase',transform:'skewX(-6deg)',cursor:'pointer',boxShadow:a?'0 8px 20px rgba(25,40,83,.22)':'inset 0 0 0 1px '+LGRAY});
         const _bv=(billView==='sportsinc'||billView==='upload')?'upload':'import';// legacy 'sportsinc' deep-links land on the intake tab; 'later' (and anything else) folds into Bills
-        return <div className="nsa-bills" style={{fontFamily:"'Source Sans 3','Segoe UI',system-ui,sans-serif",color:TXT}}>
+        // Bills applied in the Portal but not yet in QuickBooks. The Portal push (manual or ⚡ auto)
+        // never posts to QBO — that's a separate step — so auto-pushed bills skip the Matched strip's
+        // QB button entirely and silently pile up (330 between 9/8 and 9/29). Computed once here and
+        // shared by the top-of-page banner and the Bill History load button.
+        const _qbBackfill=qbOperator?buildQboBackfillRows(qboBackfillHistory(savedBills,serverBills),p=>prepareQboBackfillBill(p,rematchBill)):[];
+        const _qbBackfillTotal=_qbBackfill.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
+        const _loadQbBackfill=()=>{
+          if(billImport.step==='review'&&billImport.parsed.some(b=>!b._qbBackfill&&_billTriage(b))&&!window.confirm('Loading the QuickBooks backfill replaces the bills currently in review. Bills still in review are not lost from Sports Inc / S&S — the next Pull Bills brings them back. Continue?'))return;
+          setBillImport({step:'review',files:[],parsed:_qbBackfill,uploading:false,showRaw:{}});nf(_qbBackfill.length+' bill(s) loaded for QuickBooks backfill — '+nsaMoney(_qbBackfillTotal)+' · the Portal side will not be applied again');window.scrollTo({top:0,behavior:'smooth'});
+        };
+        return <div className="nsa-bills"style={{fontFamily:"'Source Sans 3','Segoe UI',system-ui,sans-serif",color:TXT}}>
         <style>{`@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700;1,800&family=Source+Sans+3:wght@400;600;700&display=swap');.nsa-bills h2{font-family:${FD};font-weight:800;text-transform:uppercase;letter-spacing:.4px;color:${NAVY};}`}</style>
         {/* Two tabs — the working list vs the manual-PDF intake (owner: "these should be on
             separate tabs. no mixing"). Everything money-facing lives on Bills; Upload & Match is
@@ -32192,6 +32202,21 @@ export default function App(){
             const n=id==='upload'?grabN:0;
             return <button key={id} onClick={()=>setBillView(id)} style={swStyle(_bv===id)}><span style={{display:'inline-flex',alignItems:'center',gap:8,transform:'skewX(6deg)'}}>{label}{n?<span style={{fontSize:12,opacity:.7}}>{n}</span>:null}</span></button>;})}
         </div>;})()}
+        {/* ⚠ NOT IN QUICKBOOKS YET — pushing a bill to the Portal (by hand or ⚡ auto) does not post
+            it to QBO; that's a separate step. Keep the backlog on top of the page so it can't
+            quietly pile up again. Hidden while the backfill itself is loaded (its panel shows the
+            live count) and when nothing is waiting. */}
+        {qbOperator&&_qbBackfill.length>0&&!(billImport.step==='review'&&billImport.parsed.some(b=>b._qbBackfill))&&(()=>{
+          const ts=_qbBackfill.map(b=>b.uploadedTs||Date.parse(b.applied_at||b.uploadedAt||'')).filter(t=>Number.isFinite(t)&&t>0);
+          const oldestDays=ts.length?Math.floor((Date.now()-Math.min(...ts))/86400000):null;
+          return<div role="status" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap',marginBottom:18,padding:'14px 20px',background:GOLD_BG,border:'1px solid '+GOLD,borderRadius:8}}>
+            <div style={{flex:'1 1 320px'}}>
+              <div style={{fontFamily:FD,fontWeight:800,fontSize:18,color:GOLD_D,textTransform:'uppercase',letterSpacing:.4}}>⚠ {_qbBackfill.length} bill{_qbBackfill.length===1?'':'s'} not in QuickBooks yet · {nsaMoney(_qbBackfillTotal)}</div>
+              <div style={{fontSize:12,color:TXT,marginTop:3}}>These are applied in the Portal but were never sent to QBO{oldestDays!=null&&oldestDays>0?' — oldest is '+oldestDays+' day'+(oldestDays===1?'':'s')+' old':''}. Pushing to the Portal (including ⚡ auto-push) does not send a bill to QuickBooks.</div>
+            </div>
+            {skBtn({bg:NAVY,fg:'#fff',fs:13,pad:'10px 20px',title:qbConfig.connected?'Load these bills, then press "Push next batch to QuickBooks" on the panel that appears':'Connect QuickBooks first',disabled:!qbConfig.connected||billImport.uploading,onClick:_loadQbBackfill,children:'Load for QuickBooks →'})}
+          </div>;
+        })()}
         {/* ⚡ TODAY'S AUTO-MATCHED (owner 2026-07-23: "i want to see what was auto matched") —
             everything the machine pushed today, from the applied ledger (resolution.auto_pushed),
             visible on BOTH sub-tabs the moment you land. Expandable, dismiss-free, read-only. */}
@@ -33949,17 +33974,12 @@ export default function App(){
                 {chip('all','All',scoped.length,'#475569')}
               </div>;})()}
             <button className="btn btn-sm btn-secondary" style={{fontSize:10,fontWeight:700}} title="CSV of every pushed bill in the current scope — vendor, invoice #, SI doc #, PO, amount, Portal/QB — for archiving at Sports Inc" onClick={_dlArchiveCsv}>⬇ Download for SI archive</button>
-            {qbOperator&&(()=>{
-              // Old ledger rows can have a valid DPO/PO number but no browser-local
-              // matchedPO wrapper. Resolve those through the current live PO matcher
-              // before deciding whether the QBO backfill row is sendable.
-              const backfill=buildQboBackfillRows(qboBackfillHistory(savedBills,serverBills),p=>prepareQboBackfillBill(p,rematchBill));
-              const backfillTotal=backfill.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
-              return backfill.length>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,fontWeight:700,color:'#1e40af',borderColor:'#93c5fd'}}
+            {/* Old ledger rows can have a valid DPO/PO number but no browser-local matchedPO
+                wrapper — _qbBackfill (top of this tab) resolves those through the live PO matcher. */}
+            {qbOperator&&_qbBackfill.length>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,fontWeight:700,color:'#1e40af',borderColor:'#93c5fd'}}
                 title="Load every bill that is applied in the Portal but not yet in QuickBooks. They post as account lines (Purchases / Freight / Sports Inc fee) under each bill's own vendor; the Portal side is not applied again."
-                onClick={()=>{setBillImport({step:'review',files:[],parsed:backfill,uploading:false,showRaw:{}});nf(backfill.length+' bill(s) loaded for QuickBooks backfill — '+nsaMoney(backfillTotal)+' · the Portal side will not be applied again');window.scrollTo({top:0,behavior:'smooth'})}}>
-                Load {backfill.length} for QuickBooks backfill · {nsaMoney(backfillTotal)}</button>;
-            })()}
+                onClick={_loadQbBackfill}>
+                Load {_qbBackfill.length} for QuickBooks backfill · {nsaMoney(_qbBackfillTotal)}</button>}
             <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{if(window.confirm('Clear all saved bill history?')){setSavedBills([]);localStorage.removeItem('nsa_saved_bills')}}}>Clear History</button>
           </div>
           <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
