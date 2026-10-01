@@ -6,6 +6,7 @@
 // workspace_items reminder (the same notes/reminders panel on the dashboard).
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon, SearchSelect } from './components';
+import { rememberEmailSender } from './utils/rememberEmailSender';
 
 const callFn=async(supabase,fn,body)=>{
   const{data:{session}}=await supabase.auth.getSession();
@@ -114,11 +115,21 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
     patch.link_source=(patch.customer_id||patch.so_id||patch.estimate_id)?'manual':null;
     setBusy('tags');
     const{error}=await supabase.from('rep_email_insights').update(patch).eq('id',t.id);
-    setBusy('');
-    if(error){notify?.('Could not save tags: '+error.message,'error');return}
+    if(error){setBusy('');notify?.('Could not save tags: '+error.message,'error');return}
     setRows(prev=>prev.map(r=>r.id===t.id?{...r,...patch}:r));
+    if(t.rememberSender&&t.customer_id){
+      const sender=rows.find(r=>r.id===t.id);
+      try{
+        await rememberEmailSender(supabase,{customerId:t.customer_id,email:sender?.sender_email,name:sender?.sender_name});
+      }catch(e){
+        setBusy('');
+        notify?.('Email tagged, but contact was not saved: '+e.message+' You can retry Save.','error');
+        return;
+      }
+    }
+    setBusy('');
     setTagEdit(null);
-    notify?.('Tags saved');
+    notify?.(t.rememberSender&&t.customer_id?'Tags saved. Sender saved to account contacts for future matching.':'Tags saved');
   };
   const pickTagCustomer=cid=>setTagEdit(t=>{
     const fam=familyIds(cid);
@@ -225,6 +236,10 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
                 {(ests||[]).filter(o=>familyIds(tagEdit.customer_id).has(o.customer_id)).slice().sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||''))).slice(0,100).map(o=><option key={o.id} value={o.id}>{docLabel(o)}</option>)}
               </select>
             </div>}
+            {tagEdit.customer_id&&r.sender_email&&<label style={{display:'flex',alignItems:'flex-start',gap:8,fontSize:12,color:'#334155'}}>
+              <input type="checkbox" checked={!!tagEdit.rememberSender} disabled={busy==='tags'} onChange={e=>setTagEdit(t=>({...t,rememberSender:e.target.checked}))}/>
+              <span>Remember this sender and add as a contact<br/><span style={{color:'#64748b'}}>{r.sender_email} → {custName(tagEdit.customer_id)}. Helps match future emails; senders on multiple accounts may still need tagging.</span></span>
+            </label>}
             <div style={{display:'flex',gap:6}}>
               <button className="btn btn-sm btn-primary" disabled={busy==='tags'} onClick={saveTags}>{busy==='tags'?'Saving…':'Save tags'}</button>
               {(tagEdit.customer_id||tagEdit.so_id||tagEdit.estimate_id)&&<button className="btn btn-sm btn-secondary" onClick={()=>setTagEdit(t=>({...t,customer_id:'',so_id:'',estimate_id:''}))}>Clear</button>}
@@ -238,7 +253,7 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
               {r.estimate_id&&<span style={{...chip,fontSize:11,padding:'2px 6px'}}>{r.estimate_id}</span>}
               <span style={{color:'#94a3b8'}}>{r.link_source==='manual'?'tagged by you':'auto-tagged'}</span>
             </>:<span style={{color:'#94a3b8'}}>Not tagged to an account</span>}
-            <button style={{border:'none',background:'none',color:'#2563eb',cursor:'pointer',fontSize:11,fontWeight:700,padding:0}} onClick={()=>setTagEdit({id:r.id,customer_id:r.customer_id||'',so_id:r.so_id||'',estimate_id:r.estimate_id||''})}>{cname||r.so_id||r.estimate_id?'Edit tags':'Tag account / order'}</button>
+            <button style={{border:'none',background:'none',color:'#2563eb',cursor:'pointer',fontSize:11,fontWeight:700,padding:0}} onClick={()=>setTagEdit({id:r.id,customer_id:r.customer_id||'',so_id:r.so_id||'',estimate_id:r.estimate_id||'',rememberSender:false})}>{cname||r.so_id||r.estimate_id?'Edit tags':'Tag account / order'}</button>
           </div>}
           {(r.tasks?.length>0||r.deadlines?.length>0)&&<div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:2}}>
             {(r.tasks||[]).map((t,i)=>{const key=r.id+':t'+i;return(
