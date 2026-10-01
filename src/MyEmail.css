@@ -1,4 +1,4 @@
-.customer-email{max-width:1120px;margin:0 auto;padding:8px 4px 32px;color:#172b4d}
+.customer-email{max-width:1120px;margin:0 auto;padding:32px 4px 32px;color:#172b4d}
 .customer-email-heading{display:flex;justify-content:space-between;margin:4px 0 20px}
 .customer-email-eyebrow{font-size:11px;letter-spacing:1.4px;font-weight:800;color:#2563eb}
 .customer-email-heading h2{font-size:28px;letter-spacing:-.7px;margin:6px 0}
@@ -22,3 +22,5 @@
 .customer-email-actions{justify-content:flex-end;flex-wrap:wrap;padding-top:8px}
 .customer-email-actions a{margin-right:auto}
 @media(max-width:600px){.customer-email-tools{flex-direction:column}.customer-email-card>.card-body{padding:15px!important}.customer-email-heading h2{font-size:24px}.customer-email-tabs .btn{padding:8px 11px}.customer-email-actions .btn{min-height:36px}}
+
+.customer-email .btn{font-size:12px;min-height:34px;padding:7px 12px}

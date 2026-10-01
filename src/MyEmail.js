@@ -215,7 +215,7 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
       </div>
     </div>
 
-    <div className="customer-email-status" role="status">{busy==='sync'?'Checking recent messages and finding customer conversations…':syncResult?`${syncResult.analyzed||0} customer emails added · ${syncResult.skipped||0} non-customer messages filtered${syncResult.remaining?' · '+syncResult.remaining+' messages still to check — select Check now to continue.':''}`:'Customer conversations only. Internal emails and supplier bills stay out of this view.'}</div>
+    <div className="customer-email-status" role="status">{busy==='sync'?'Checking recent messages and finding customer conversations…':syncResult?`${syncResult.analyzed||0} customer email${syncResult.analyzed===1?'':'s'} added · ${syncResult.skipped||0} non-customer messages filtered${syncResult.remaining?' · '+syncResult.remaining+' messages still to check — select Check now to continue.':''}`:'Customer conversations only. Internal emails and supplier bills stay out of this view.'}</div>
     <div className="customer-email-tools">
       <input aria-label="Search customer emails" placeholder="Search customer, sender, or subject…" value={search} onChange={e=>setSearch(e.target.value)}/>
       <select aria-label="Email date range" value={period} onChange={e=>setPeriod(e.target.value)}><option value="all">All imported dates</option><option value="today">Today</option><option value="week">Last 7 days</option></select>
