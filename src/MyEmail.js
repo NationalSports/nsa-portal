@@ -1,6 +1,6 @@
 /* eslint-disable */
 // "My Email": the rep's own Gmail, triaged by AI.
-// netlify/functions/rep-gmail-sync.js reads the rep's Primary inbox and stores
+// netlify/functions/rep-gmail-sync.js reads the rep's inbox and stores
 // a summary + suggested tasks/deadlines per email in rep_email_insights. This
 // page shows the important ones; one tap turns a task or deadline into a
 // workspace_items reminder (the same notes/reminders panel on the dashboard).
@@ -179,7 +179,7 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
             {status.last_error&&<div style={{color:'#b91c1c',marginTop:2}}>{status.last_error}</div>}
           </div>
           :<div style={{fontSize:12,color:'#64748b'}}>
-            Connect your Google account and AI will read new mail in your Primary inbox, flag what matters, and pull out tasks and deadlines. Only summaries are saved — never full emails. Nothing is sent without you.
+            Connect your Google account and AI will read new mail in your inbox (excluding promotions, social mail, and forums), flag what matters, and pull out tasks and deadlines. Only summaries are saved — never full emails. Nothing is sent without you.
             {status.configured===false&&<div style={{color:'#b45309',marginTop:2}}>Google sign-in isn't set up on the server yet.</div>}
           </div>}
         </div>

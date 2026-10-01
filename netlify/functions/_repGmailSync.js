@@ -1,4 +1,4 @@
-// "My Email": read each connected rep's new Primary-inbox mail, ask Claude
+// "My Email": read each connected rep's new inbox mail, ask Claude
 // which messages matter, and store the summary / tasks / deadlines in
 // rep_email_insights. Only a short snippet is kept — never the full body.
 //
@@ -209,19 +209,32 @@ async function syncLink(admin, link, deadline) {
   try {
     const token = await accessTokenForLink(admin, link);
     const since = link.gmail_cursor_ms ? `after:${Math.floor(Number(link.gmail_cursor_ms) / 1000)}` : FIRST_SYNC_QUERY;
-    const q = encodeURIComponent(`in:inbox category:primary -from:me ${since}`);
-    const listed = await gmailFetch(token, `/messages?q=${q}&maxResults=50`);
-    const ids = (listed.messages || []).map((m) => m.id);
+    // Some mailboxes have no Primary category. Exclude bulk categories instead
+    // of requiring a category label that would silently hide all their mail.
+    const q = encodeURIComponent(`in:inbox -from:me -category:promotions -category:social -category:forums ${since}`);
+    const ids = [];
+    let pageToken = null;
+    do {
+      // Never move the cursor after an incomplete listing: that would skip older mail.
+      if (Date.now() > deadline) throw new Error('Inbox listing took too long. Please check again.');
+      const listed = await gmailFetch(token, `/messages?q=${q}&maxResults=500${pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : ''}`);
+      ids.push(...(listed.messages || []).map((m) => m.id));
+      pageToken = listed.nextPageToken || null;
+    } while (pageToken);
     if (!ids.length) {
       await admin.from('rep_google_links').update({ last_synced_at: new Date().toISOString(), last_error: null }).eq('team_member_id', link.team_member_id);
       return result;
     }
-    const { data: seen } = await admin
-      .from('rep_email_insights')
-      .select('gmail_message_id')
-      .eq('team_member_id', link.team_member_id)
-      .in('gmail_message_id', ids);
-    const seenSet = new Set((seen || []).map((r) => r.gmail_message_id));
+    const seenSet = new Set();
+    for (let offset = 0; offset < ids.length; offset += 200) {
+      const { data: seen, error } = await admin
+        .from('rep_email_insights')
+        .select('gmail_message_id')
+        .eq('team_member_id', link.team_member_id)
+        .in('gmail_message_id', ids.slice(offset, offset + 200));
+      if (error) throw new Error(`Reading imported email failed: ${error.message}`);
+      for (const row of seen || []) seenSet.add(row.gmail_message_id);
+    }
     // Gmail lists newest first; work oldest first so the cursor only moves forward.
     const todo = ids.filter((id) => !seenSet.has(id)).reverse().slice(0, MAX_PER_REP);
 

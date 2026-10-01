@@ -325,7 +325,7 @@
   schedule = "*/5 * * * *"
   timeout = 26
 
-# "My Email": reads each rep's connected Gmail (Primary inbox), stores AI
+# "My Email": reads each rep's connected Gmail inbox, stores AI
 # summaries/tasks/deadlines in rep_email_insights. Read-only against Gmail.
 # See netlify/functions/rep-gmail-sync.js.
 [functions."rep-gmail-sync"]
