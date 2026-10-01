@@ -1,3 +1,5 @@
+import { PRIOR_ART_REVIEW, startPriorArtReview, reviewChangedArtwork } from './priorArtReview';
+
 // Outside-decoration art flow (opt-in).
 //
 // A decoration routed to an OUTSIDE decorator normally gets no job at all — the vendor
@@ -75,26 +77,52 @@ export function buildOutsideArtJobs(o, prevJobs, { artStatusOf, reservedIds, isS
       row.deco_idxs.push(di);
     });
   });
-  const prevByKey = new Map(arr(prevJobs).filter(isOutsideArtJob).map((j) => [j.key, j]));
-  const used = new Set(reservedIds || []);
+  const previous = arr(prevJobs).filter(isOutsideArtJob);
+  const prevByKey = new Map(previous.map(j => [j.key, j]));
+  // Match replacements only when the complete decoration claim is unchanged and
+  // unambiguous. A split or merge must never copy one job's approval to another.
+  const claims = rows => JSON.stringify(arr(rows).flatMap(row =>
+    arr(row.deco_idxs).length ? row.deco_idxs.map(di => [row.line_id || `index:${row.item_idx}:${row.sku}:${row.color}`, di])
+      : [[row.line_id || `index:${row.item_idx}:${row.sku}:${row.color}`, row.deco_idx]]
+  ).map(x => JSON.stringify(x)).sort());
+  const unmatchedGroups = [...groups.values()].filter(g => !prevByKey.has(g.key));
+  const retired = previous.filter(j => !groups.has(j.key));
+  const replacementFor = g => {
+    const signature = claims([...g.rows.values()]);
+    const matches = retired.filter(j => claims(j.items) === signature);
+    return matches.length === 1 && unmatchedGroups.filter(other => claims([...other.rows.values()]) === signature).length === 1 ? matches[0] : null;
+  };
+  const reserved = new Set([...(reservedIds || []), ...arr(prevJobs).map(j => j.id).filter(Boolean)]);
+  const owned = new Set(previous.map(j => j.id));
+  const used = new Set([...(reservedIds || []).filter(id => !owned.has(id)), ...arr(prevJobs).filter(j => !isOutsideArtJob(j)).map(j => j.id)]);
   const soNum = String((o && o.id) || '').replace('SO-', '') || '0';
   let n = 1;
-  const mint = () => { let id; do { id = 'JOB-' + soNum + '-X' + String(n++).padStart(2, '0'); } while (used.has(id)); used.add(id); return id; };
+  const mint = () => { let id; do { id = 'JOB-' + soNum + '-X' + String(n++).padStart(2, '0'); } while (reserved.has(id) || used.has(id)); used.add(id); return id; };
   return [...groups.values()].map((g) => {
-    const ex = prevByKey.get(g.key) || null;
+    const ex = prevByKey.get(g.key) || replacementFor(g);
+    const changedArt = !!ex && ex.key !== g.key;
     const artF = g.artFileId ? arts.find((a) => a.id === g.artFileId) : null;
     const derived = artF && artStatusOf ? artStatusOf(artF, g.decoType) : 'needs_art';
     // Same rules as the in-house builder: a brand-new job whose design is ALREADY approved
     // (reused art) waits for the rep to confirm it for this order; human-advanced states are
     // kept; an unassigned / missing design always reads needs_art.
-    const fresh = !ex && !isStoreOrder && derived !== 'needs_art' && derived !== 'waiting_approval' ? 'waiting_approval' : derived;
+    const fresh = !ex && !isStoreOrder && derived !== 'needs_art' && derived !== 'waiting_approval' ? PRIOR_ART_REVIEW : derived;
     const artStatus = !artF ? 'needs_art' : (ex && ex.art_status && ex.art_status !== 'needs_art' ? ex.art_status : fresh);
     let id = ex && ex.id;
     if (id && !used.has(id)) used.add(id); else if (!id || used.has(id)) id = mint();
     const items = [...g.rows.values()];
     const deco = (artF && artF.deco_type) || g.decoType || 'screen_print';
+    let workflow = ex || {};
+    let nextArtStatus = artStatus;
+    if (changedArt) {
+      const reset = { ...startPriorArtReview(ex), art_status: fresh,
+        art_requests: ex.art_requests || [], art_messages: ex.art_messages || [],
+        _coach_cleared: true, _art_moved: true };
+      workflow = reviewChangedArtwork(ex, reset, artF ? [artF] : []) || reset;
+      nextArtStatus = workflow.art_status;
+    }
     return {
-      ...(ex || {}),
+      ...workflow,
       id,
       key: g.key,
       art_file_id: g.artFileId,
@@ -106,7 +134,7 @@ export function buildOutsideArtJobs(o, prevJobs, { artStatusOf, reservedIds, isS
       items,
       total_units: items.reduce((a, r) => a + r.units, 0),
       fulfilled_units: 0,
-      art_status: artStatus,
+      art_status: nextArtStatus,
       item_status: (ex && ex.item_status) || 'need_to_order',
       prod_status: OUTSIDE_ART_PROD_STATUS,
       created_at: (ex && ex.created_at) || new Date().toLocaleDateString(),

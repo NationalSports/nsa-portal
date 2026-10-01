@@ -56,3 +56,8 @@ export const noInvoiceLabel = (order) => {
   const r = String(order.no_invoice_reason || '').trim();
   return r ? `NO INVOICE · ${r}` : 'NO INVOICE';
 };
+
+// Undo the billing decision independently of whether fulfillment is already complete.
+export function undoCreatedInError(order, fulfillmentStatus) {
+  return { ...clearNoInvoice(order), status: fulfillmentStatus, _status_reverted: true };
+}

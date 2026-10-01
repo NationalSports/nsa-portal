@@ -37,7 +37,7 @@ import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPaste
 import { CustModal } from './modals';
 import { applyTaxExempt, clearTaxExempt, taxExemptInfo, taxExemptLabel } from './lib/taxExempt';
 import { isOutsideArtJob, productionJobs, buildOutsideArtJobs, outsideArtVendor, isRoutedOutside } from './lib/outsideArt';
-import { NO_INVOICE_REASONS, CREATED_IN_ERROR_REASON, applyNoInvoice, clearNoInvoice, closeCreatedInError, isCreatedInError, noInvoiceLabel } from './lib/noInvoice';
+import { NO_INVOICE_REASONS, CREATED_IN_ERROR_REASON, applyNoInvoice, clearNoInvoice, closeCreatedInError, undoCreatedInError, isCreatedInError, noInvoiceLabel } from './lib/noInvoice';
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
@@ -5421,6 +5421,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // ignoreOverride): calcSOStatus's no-deco and promo branches read ord.status
               // themselves, so a closed blanks order would otherwise keep answering 'complete'
               // and Reopen would refuse an order that should land on Ready to Invoice.
+              // Undo the billing exclusion even when fulfillment already calculates as complete.
+              if(isCreatedInError(o)){
+                if(!window.confirm('Undo Created in Error for '+o.id+'? This restores normal invoicing eligibility and keeps the actual fulfillment status.'))return;
+                const updated={...undoCreatedInError(o,calcSOStatus({...o,status:null},{ignoreOverride:true})),updated_at:new Date().toLocaleString()};
+                setO(updated);onSave(updated);
+                if(onSOReopened)onSOReopened(o,updated.status);
+                nf(o.id+' — Created in Error undone; normal invoicing eligibility restored');return;
+              }
               const _auto=calcSOStatus({...o,status:null},{ignoreOverride:true});
               const _lbl=SO_STATUS_LABELS[_auto]||_auto;
               if(_auto==='complete'){nf(o.id+' calculates as Complete on its own — every job is shipped and every unit fulfilled. Reopen a job or add the remaining items before reopening the order.','error');return}

@@ -35,7 +35,7 @@ test('workflow fields and id carry over; human-advanced art status is kept', () 
 
 test('reused approved art waits for the rep to confirm, except on store pulls', () => {
   const approved = so({}, { art_files: [{ id: 'a1', name: 'Crest', status: 'approved', deco_type: 'embroidery', prod_files_attached: true }] });
-  expect(build(approved)[0].art_status).toBe('waiting_approval');
+  expect(build(approved)[0].art_status).toBe('needs_art_review');
   expect(build(approved, [], { isStoreOrder: true })[0].art_status).toBe('art_complete');
 });
 
@@ -53,4 +53,49 @@ test('an order whose only jobs are outside-art still reaches ready to invoice / 
   const { calcSOStatus } = require('../businessLogic');
   const base = { items: [{ sizes: { M: 2 }, decorations: [{ kind: 'art', fulfillment: 'outside', outside_art: true }], po_lines: [{ M: 2, received: { M: 2 } }] }] };
   expect(calcSOStatus({ ...base, jobs: [] })).toBe(calcSOStatus({ ...base, jobs: [{ id: 'X', key: 'outside_art:art_a', prod_status: 'outside' }] }));
+});
+
+const requested = o => build(o).map(j => ({ ...j, art_status: 'art_requested', assigned_artist: 'artist', _version: 4, art_requests: [{ id: 'request', status: 'requested' }] }));
+
+test('new designs cannot steal existing IDs even when inserted before existing garments', () => {
+  const original = so();
+  const previous = requested(original);
+  const added = { ...original.items[0], decorations: [{ ...original.items[0].decorations[0], art_file_id: 'new' }] };
+  const next = build({ ...original, items: [added, ...original.items] }, previous);
+  expect(next.find(j => j.art_file_id === 'a1')).toMatchObject({ id: previous[0].id, art_requests: previous[0].art_requests });
+  expect(next.find(j => j.art_file_id === 'new').id).not.toBe(previous[0].id);
+  expect(build({ ...original, items: [added, ...original.items] }, next)).toEqual(next);
+});
+
+test('replacing requested artwork preserves job identity and artist request', () => {
+  const original = so();
+  const previous = requested(original);
+  const replacement = so({ art_file_id: 'new' }, { art_files: [{ id: 'new', name: 'New art', status: 'approved' }] });
+  const [next] = build(replacement, previous);
+  expect(next).toMatchObject({ id: previous[0].id, art_file_id: 'new', assigned_artist: 'artist', art_status: 'art_requested', art_requests: previous[0].art_requests, _version: 4, _coach_cleared: true });
+  expect(build(replacement, [next])[0]).toEqual(next);
+});
+
+test('replacement approval requires a new review and clears old coach approval', () => {
+  const previous = build(so()).map(j => ({ ...j, art_status: 'art_complete', coach_approved_at: 'old', sent_to_coach_at: 'old', art_reuse_confirmed: true }));
+  const [next] = build(so({ art_file_id: 'new' }, { art_files: [{ id: 'new', status: 'approved' }] }), previous);
+  expect(next).toMatchObject({ id: previous[0].id, art_status: 'needs_art_review', coach_approved_at: null, sent_to_coach_at: null, art_reuse_confirmed: false, _coach_cleared: true });
+});
+
+test('a partial art replacement does not copy the surviving job workflow', () => {
+  const original = so();
+  const previous = requested(original);
+  const items = original.items.map((it, i) => i ? it : { ...it, decorations: [{ ...it.decorations[0], art_file_id: 'new' }] });
+  const next = build({ ...original, items }, previous);
+  expect(next.find(j => j.art_file_id === 'a1').id).toBe(previous[0].id);
+  expect(next.find(j => j.art_file_id === 'new').art_requests).toBeUndefined();
+  expect(new Set(next.map(j => j.id)).size).toBe(2);
+});
+
+test('replacement matching follows stable line IDs across garment reordering', () => {
+  const original = so();
+  original.items.forEach((it, i) => { it.line_id = 'line-' + i; });
+  const previous = requested(original);
+  const items = [...original.items].reverse().map(it => ({ ...it, decorations: [{ ...it.decorations[0], art_file_id: 'new' }] }));
+  expect(build({ ...original, items, art_files: [{ id: 'new', status: 'approved' }] }, previous)[0]).toMatchObject({ id: previous[0].id, art_status: 'art_requested' });
 });
