@@ -1131,6 +1131,19 @@ const _dbSaveEstimateInner = async (est) => {
       if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:est.id,prevCount:oldItemIds.length,newCount:0,reason:'client has 0 items but DB has items (zero-wipe guard — likely stale/raced state)'});
       return _preserveBlockedDocument('estimates',est);
     }
+    // EST-2771 lost two saved lines; a hydrated five-line copy reproduces that loss.
+    // Hydration and
+    // an adopted version prove neither that the draft contains the latest items nor
+    // that the rep removed the missing ones. Apply the same explicit-removal check
+    // as sales orders before trusting hydration, including for background saves.
+    // Both editors already stamp _deletedItemKeys on Remove and garment replacement.
+    const _unremovedEstItems=unaccountedDroppedItems(items,_oldEstItems,est._deletedItemKeys);
+    if(_unremovedEstItems.length){
+      const labels=_unremovedEstItems.map(k=>k.split('|').filter(Boolean).join(' ')||'(custom line)').join(', ');
+      if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:est.id,prevCount:oldItemIds.length,newCount:_clientEstItemCount,reason:'estimate save would drop unremoved DB item(s) ['+labels+']'});
+      if(!_bgSync&&_dbNotify)_dbNotify('Save blocked — '+est.id+' would lose '+labels+'. Your draft has been preserved for review.','error');
+      return _preserveBlockedDocument('estimates',est);
+    }
     if(_bgSync&&oldItemIds.length>0&&_clientEstItemCount<oldItemIds.length&&!(est._itemsHydrated||_everHydratedItems.has(est.id))){
       console.warn('[DB] SAFETY: background sync would shrink',est.id,'items ('+_clientEstItemCount+'<'+oldItemIds.length+') — items not hydrated, preserving DB items, skipping child writes');
       if(_dataLossAlert)_dataLossAlert({kind:'bg_shrink_blocked',soId:est.id,prevCount:oldItemIds.length,newCount:_clientEstItemCount,reason:'background estimate save would shrink items'});
