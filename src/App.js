@@ -1,5 +1,6 @@
 import { garmentSlotCandidates } from "./lib/jobMockCards";
 import { assignLogoArtwork, resolveLogoColorWay } from './lib/logoDetail';
+import { invoiceFollowUpDate } from './lib/invoiceFollowUp';
 import GarmentMockCard, { LogoDetailTiles } from './GarmentMockCard';
 import { removeGarmentSlotMock } from './safeHelpers';
 import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jobMockReadiness';
@@ -9232,10 +9233,10 @@ export default function App(){
       todos.push({type:'overdue_invoices',priority:1,msg:'📬 Weekly overdue invoices',detail:(_isCsr?'Work through your reps\' past-due list':'Work through your past-due list')+' (same as Friday\'s A/R email) · week of '+(_fri.getMonth()+1)+'/'+_fri.getDate(),action:'Review overdue',role:_isCsr?'all':'sales',repId:_isCsr?undefined:cu.id,invRep:_isCsr?'all':'_me_',date:_fri.toISOString(),dismissKey:'overdue_invoices:'+cu.id+':'+_wk});
     }
     // Invoice follow-up alerts (uses follow_up_at when set; auto ones are handled by the server sweep)
-    if(INVOICE_FOLLOWUP_TODOS)invs.filter(i=>opsOpenInvoice(i)&&!['cancelled','canceled'].includes(String(i.status||'').toLowerCase())&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
+    if(INVOICE_FOLLOWUP_TODOS)invs.filter(i=>opsOpenInvoice(i)&&!['cancelled','canceled'].includes(String(i.status||'').toLowerCase())&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=invoiceFollowUpDate(i)).forEach(inv2=>{
       const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
       const daysSince=inv2.email_sent_at?Math.floor((new Date()-new Date(inv2.email_sent_at))/(1000*60*60*24)):0;
-      todos.push({type:'inv_followup',priority:1,msg:'⏰ Follow up on invoice '+inv2.id+' ('+daysSince+'d): $'+opsInvoiceBalance(inv2).toFixed(2),detail:tag2+' · Follow-up due '+new Date(inv2.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales',inv:inv2,date:inv2.email_sent_at||inv2.created_at});
+      todos.push({type:'inv_followup',priority:1,msg:'⏰ Follow up on invoice '+inv2.id+' ('+daysSince+'d): $'+opsInvoiceBalance(inv2).toFixed(2),detail:tag2+' · Follow-up due '+invoiceFollowUpDate(inv2).toLocaleDateString(),action:'Follow Up',role:'sales',inv:inv2,date:inv2.email_sent_at||inv2.created_at});
     });
     // Recently paid invoices → notification (skip $0 invoices — nothing was actually collected)
     invs.filter(i=>i.status==='paid').filter(i=>safeNum(i.total)>0).forEach(inv2=>{
@@ -13749,7 +13750,7 @@ export default function App(){
       const days=opsQuoteAgeDays(e);
       if(days!=null&&days>=ESTIMATE_FOLLOWUP_DAYS)todos.push({type:'follow_up',priority:2,msg:'Follow up on estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
     });
-    if(INVOICE_FOLLOWUP_TODOS)invs.filter(i=>opsOpenInvoice(i)&&!['cancelled','canceled'].includes(String(i.status||'').toLowerCase())&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
+    if(INVOICE_FOLLOWUP_TODOS)invs.filter(i=>opsOpenInvoice(i)&&!['cancelled','canceled'].includes(String(i.status||'').toLowerCase())&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=invoiceFollowUpDate(i)).forEach(inv2=>{
       const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
       const daysSince=inv2.email_sent_at?Math.floor((new Date()-new Date(inv2.email_sent_at))/(1000*60*60*24)):0;
       todos.push({type:'inv_followup',priority:1,msg:'Follow up on invoice '+inv2.id+' ('+daysSince+'d)',detail:tag2,action:'Follow Up',role:'sales',inv:inv2,date:inv2.email_sent_at||inv2.created_at});

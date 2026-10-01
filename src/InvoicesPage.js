@@ -18,6 +18,7 @@ import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoic
 import { invoiceTotalsRows, invoiceMismatchAlert } from './lib/invoiceDocTotals';
 import { stripePaymentRepairCandidate } from './lib/invoicePaymentReconciliation';
 import { invoiceDetailBalance, invoicePaymentStatus, normalizeInvoiceForDetail } from './lib/invoiceDetail';
+import { invoiceFollowUpBaseMs, invoiceFollowUpDate } from './lib/invoiceFollowUp';
 
 // The sent_history entry Brevo told us never arrived (hard bounce / blocked / spam).
 // Read from history rather than the client-only _delivery_* fields so the failure is
@@ -496,7 +497,7 @@ export default function InvoicesPage(){
               {inv.email_status==='sent'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#fef3c7',color:'#92400e',fontWeight:600}}>{emailDeliveryLabel((inv.sent_history||[]).slice(-1)[0])||'✉️ Sent'}</span>}
               {inv.email_status==='opened'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>👁️ Opened {inv.email_opened_at||''}</span>}
               {inv.email_status==='failed'&&<span title={_deliveryFailure(inv)?.delivery_reason||'The email provider rejected this address.'} style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#fee2e2',color:'#b91c1c',fontWeight:700}}>⚠️ Not delivered — pay link never arrived</span>}
-              {inv.follow_up_at&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:new Date(inv.follow_up_at)<new Date()?'#fef2f2':'#fffbeb',color:new Date(inv.follow_up_at)<new Date()?'#dc2626':'#92400e',fontWeight:600}}>⏰ Follow-up {new Date(inv.follow_up_at).toLocaleDateString()}{new Date(inv.follow_up_at)<new Date()?' (overdue)':''}</span>}
+              {inv.follow_up_at&&(()=>{const _fu=invoiceFollowUpDate(inv);const _od=_fu<new Date();return<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:_od?'#fef2f2':'#fffbeb',color:_od?'#dc2626':'#92400e',fontWeight:600}}>⏰ Follow-up {_fu.toLocaleDateString()}{_od?' (overdue)':''}</span>})()}
             </div>
             {(inv.sent_history||[]).length>0?(inv.sent_history||[]).map((h,hi)=><div key={hi} style={{fontSize:11,color:'#64748b',display:'flex',alignItems:'center',gap:6,marginBottom:2}}>
               <span style={{color:'#2563eb'}}>✉️</span>
@@ -847,11 +848,11 @@ export default function InvoicesPage(){
                 <div style={{fontSize:11,color:'#64748b'}}>{[f.delivery_to||f.to,f.delivery_reason||f.delivery_event,f.delivery_at?new Date(f.delivery_at).toLocaleString():null].filter(Boolean).join(' · ')||'Rejected by the recipient mail server'}</div>
                 <div style={{fontSize:11,color:'#b91c1c',marginTop:2}}>Check the address, then resend — or send the portal pay link from your own email.</div></div>
               </div>})()}
-              {inv.follow_up_at&&<div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:new Date(inv.follow_up_at)<new Date()?'#fef2f2':'#fffbeb',borderRadius:6,border:'1px solid '+(new Date(inv.follow_up_at)<new Date()?'#fecaca':'#fde68a'),marginTop:4}}>
+              {inv.follow_up_at&&(()=>{const _fu=invoiceFollowUpDate(inv);const _od=_fu<new Date();return<div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:_od?'#fef2f2':'#fffbeb',borderRadius:6,border:'1px solid '+(_od?'#fecaca':'#fde68a'),marginTop:4}}>
                 <span style={{fontSize:16}}>⏰</span>
-                <div><div style={{fontSize:13,fontWeight:600,color:new Date(inv.follow_up_at)<new Date()?'#dc2626':'#92400e'}}>Follow-up {new Date(inv.follow_up_at)<new Date()?'overdue':'scheduled'}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>{new Date(inv.follow_up_at).toLocaleDateString()}</div></div>
-              </div>}
+                <div><div style={{fontSize:13,fontWeight:600,color:_od?'#dc2626':'#92400e'}}>Follow-up {_od?'overdue':'scheduled'}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{_fu.toLocaleDateString()}</div></div>
+              </div>})()}
             </div>
             {/* Coach Activity */}
             {(()=>{const coachEvents=[];
@@ -1565,7 +1566,9 @@ export default function InvoicesPage(){
                 // Automated follow-ups (server sweep) take priority; else fall back to the manual todo reminder.
                 // Never arm auto-sends off a failed initial email — the customer hasn't heard from us yet.
                 const _siAuto=si.followUp&&si.followUp.auto&&res.ok;
-                const fuAt=_siAuto?new Date(Date.now()+((si.followUp.firstDays||3)*86400000)).toISOString():(si.followUpDays?new Date(Date.now()+si.followUpDays*86400000).toISOString():null);
+                // Count from the later of now and the invoice date — a future-dated invoice isn't due for follow-up yet.
+                const _siFuBase=invoiceFollowUpBaseMs(siInv,Date.now());
+                const fuAt=_siAuto?new Date(_siFuBase+((si.followUp.firstDays||3)*86400000)).toISOString():(si.followUpDays?new Date(_siFuBase+si.followUpDays*86400000).toISOString():null);
                 const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'invoice',methods:['email',...(si.smsEnabled?['sms']:[])],to:toEmails.join(', '),messageId:res.messageId||null};
                 const _siAutoCols=_siAuto?{follow_up_auto:true,follow_up_interval_days:si.followUp.intervalDays||0,follow_up_message:si.followUp.message||'',follow_up_to:toEmails.join(', '),follow_up_max:si.followUp.max||4,follow_up_count:0,follow_up_last_sent_at:null}:{follow_up_auto:false,follow_up_interval_days:null,follow_up_message:null,follow_up_to:null,follow_up_max:null,follow_up_count:0,follow_up_last_sent_at:null};
                 setInvs(prev=>prev.map(i=>i.id===si.inv.id?{...i,email_status:'sent',email_sent_at:new Date().toLocaleString(),follow_up_at:fuAt,sent_history:[...(i.sent_history||[]),histEntry],..._siAutoCols}:i));

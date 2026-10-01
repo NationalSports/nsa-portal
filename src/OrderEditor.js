@@ -77,6 +77,7 @@ import { fetchPaidPromoHistoryInvoices, mergePromoHistoryInvoices, promoHalfWind
 import { itemVendorInvSource, vendorInvCacheKey } from './vendorInventory';
 import { apiVerificationForPoLine, buildOutOfStockRemovalMessage, emailRepOutOfStockRemoval, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
 import { markTopstarEmailFailed, markTopstarEmailSent, topstarAttachmentName, topstarPoMatches } from './lib/topstarEmail';
+import { invoiceFollowUpBaseMs } from './lib/invoiceFollowUp';
 import './orderEditor.redesign.css';
 
 // A garment mockup sits on WHITE. It's a photo of a shirt, so a checkerboard behind it
@@ -9680,8 +9681,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Base the first follow-up on the ACTUAL initial-send time — for a future-dated invoice the
             // email goes out on invSendAt, so counting from now could fire a follow-up before it.
             const _invAuto=invFollowUp&&invFollowUp.auto;
-            const _invFuBase=_scheduleFuture?new Date(invSendAt+'T09:00:00').getTime():Date.now();
-            const invFuAt=_invAuto?new Date(_invFuBase+((invFollowUp.firstDays||3)*86400000)).toISOString():(invFollowUpDays?new Date(Date.now()+invFollowUpDays*86400000).toISOString():null);
+            // Never before the invoice's own date either — a future-dated invoice isn't due for follow-up yet.
+            const _invFuBase=invoiceFollowUpBaseMs(ir,_scheduleFuture?new Date(invSendAt+'T09:00:00').getTime():Date.now());
+            const invFuAt=_invAuto?new Date(_invFuBase+((invFollowUp.firstDays||3)*86400000)).toISOString():(invFollowUpDays?new Date(_invFuBase+invFollowUpDays*86400000).toISOString():null);
             const invHist={sent_at:invNow,sent_by:cu.name||cu.id,to:toEmail,type:'invoice',methods:['email',...(invSmsEnabled?['sms']:[])],messageId:res.messageId||null,...(_scheduleFuture?{scheduled_for:invSendAt,scheduled_id:res.scheduledId}:{})};
             const _invAutoCols=_invAuto?{follow_up_auto:true,follow_up_interval_days:invFollowUp.intervalDays||0,follow_up_message:invFollowUp.message||'',follow_up_to:toEmail,follow_up_max:invFollowUp.max||4,follow_up_count:0,follow_up_last_sent_at:null}:{follow_up_auto:false,follow_up_interval_days:null,follow_up_message:null,follow_up_to:null,follow_up_max:null,follow_up_count:0,follow_up_last_sent_at:null};
             onInv(prev=>prev.map(i=>i.id===ir.id?{...i,email_status:_scheduleFuture?'scheduled':'sent',email_sent_at:invNow,...(_scheduleFuture?{scheduled_send_at:invSendAt}:{}),follow_up_at:invFuAt,sent_history:[...(i.sent_history||[]),invHist],..._invAutoCols}:i));
