@@ -110,10 +110,10 @@ const invoiceReminderBranch = (source, scopeStart, scopeEnd) => {
 
 const runInvoiceReminderBranch = (branch, invoices) => {
   const factory = new Function(
-    'invs', 'opsOpenInvoice', 'opsInvoiceBalance', 'safeNum', 'cust',
+    'invs', 'opsOpenInvoice', 'opsInvoiceBalance', 'safeNum', 'cust', 'invoiceFollowUpDate',
     `const todos=[];${branch};return todos;`,
   );
-  return factory(invoices, opsOpenInvoice, opsInvoiceBalance, (value) => Number(value) || 0, [{ id: 'C-1', name: 'Acme' }]);
+  return factory(invoices, opsOpenInvoice, opsInvoiceBalance, (value) => Number(value) || 0, [{ id: 'C-1', name: 'Acme' }], require('../lib/invoiceFollowUp').invoiceFollowUpDate);
 };
 
 const attachTodosBranch = (source, scopeStart, scopeEnd) => {
