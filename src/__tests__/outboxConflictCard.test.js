@@ -1,7 +1,7 @@
 // Conflict-card UI test: mounts the full <App/> (same harness as appSmoke) and drives the
 // outbox conflict card through the live stale-rejection path — dbEngine's _emitOutboxConflict
 // callback — asserting the card renders, "Discard my edit" clears both the card and the durable
-// outbox entry, and offline "Apply my edit anyway" preserves the draft for review.
+// outbox entry, and offline "Review changes" preserves the draft for review.
 // Supabase is null here, which is fine: the card, the callback, and the outbox store are all
 // backend-independent by design (that's what makes the content durable).
 
@@ -51,7 +51,7 @@ test('a stale rejection surfaces the conflict card immediately', () => {
   render(<App />);
   emitConflict();
   expect(screen.getByText(/EST-9001 — Big Team LLC/)).toBeTruthy();
-  expect(screen.getByText(/Apply my edit anyway/)).toBeTruthy();
+  expect(screen.getByText(/Review changes/)).toBeTruthy();
   expect(screen.getByText(/Discard my edit/)).toBeTruthy();
   // the content is durably stored, not just in component state
   expect(_outboxList().map(e => e.id)).toContain('EST-9001');
@@ -70,9 +70,9 @@ test('Discard clears the card AND the durable outbox entry', () => {
 test('Apply-anyway preserves the conflict and durable draft when cloud is unavailable', async () => {
   render(<App />);
   emitConflict();
-  await act(async () => { fireEvent.click(screen.getByText(/Apply my edit anyway/)); });
+  await act(async () => { fireEvent.click(screen.getByText(/Review changes/)); });
   // No authoritative revision means no overwrite or acknowledgement.
-  expect(screen.queryByText(/Apply my edit anyway/)).toBeTruthy();
+  expect(screen.queryByText(/Review changes/)).toBeTruthy();
   // The durable entry survives until a save actually succeeds.
   expect(_outboxList()[0].payload.memo).toBe('the rejected edit');
   expect(_outboxList().map(e => e.id)).toContain('EST-9001');
@@ -84,7 +84,7 @@ test('Apply-anyway preserves the conflict and durable draft when cloud is unavai
 test('another rep’s conflict is retained without appearing in an admin’s personal banner', () => {
   render(<App />);
   act(()=>_emitOutboxConflict('estimates',{id:'EST-other-rep',created_by:'other-rep',memo:'Their preserved edit',_version:3}));
-  expect(screen.queryByText(/Apply my edit anyway/)).toBeNull();
+  expect(screen.queryByText(/Review changes/)).toBeNull();
   expect(_outboxList().map(entry=>entry.id)).toContain('EST-other-rep');
   emitConflict();
   expect(screen.getByText(/1 unsaved edit from this browser/)).toBeTruthy();
