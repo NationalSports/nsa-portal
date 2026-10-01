@@ -1,5 +1,6 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { isOutsideArtJob } from './lib/outsideArt';
 import { _pick, ART_FILE_SC, SZ_ORD, sizeBreakdownStr, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale, isProdArtFile } from './constants';
 import { mockSkuOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback, poLineFulfilledQty, scopeSoItemsToInvoice } from './safeHelpers';
 import { invoiceTotalsRows } from './lib/invoiceDocTotals';
@@ -327,7 +328,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   // Every production job across this customer's (and sub-accounts') SOs — derived with
   // buildJobs, the same read the Jobs board uses, so auto jobs not yet saved to so.jobs[]
   // show too. Same dead-order and draft guards as the Jobs board.
-  const custJobs=[];custSOs.forEach(so=>{if(so.status==='cancelled'||so.status==='deleted'||so.deleted_at)return;buildJobs(so).filter(j=>j.prod_status!=='draft').forEach(j=>custJobs.push({...j,so}))});
+  const custJobs=[];custSOs.forEach(so=>{if(so.status==='cancelled'||so.status==='deleted'||so.deleted_at)return;buildJobs(so).filter(j=>j.prod_status!=='draft'&&!isOutsideArtJob(j)).forEach(j=>custJobs.push({...j,so}))});
   const _jobDone=j=>j.prod_status==='completed'||j.prod_status==='shipped';
   const openJobCount=custJobs.filter(j=>!_jobDone(j)).length;
   const custEsts=(ests||[]).filter(e=>ids.includes(e.customer_id));

@@ -1,4 +1,5 @@
 const { jsPDF } = require('jspdf');
+const { scopedSalesOrders } = require('./_packetScope');
 const list = value => Array.isArray(value) ? value : [];
 const clean = value => String(value || '').trim();
 const fail = (status, message) => { const error = new Error(message); error.status = status; throw error; };
@@ -44,7 +45,7 @@ function resolveDpos(orders, decorators, vendors) {
 async function dpoInventory(ctx) {
   if (ctx._dpoInventory) return ctx._dpoInventory;
   ctx._dpoInventory = (async () => {
-  const orders = await pageAll(() => ctx.admin.from('sales_orders').select('id,webstore_id,status,deco_pos').eq('webstore_id', ctx.storeId).order('id'));
+  const orders = await pageAll(() => scopedSalesOrders(ctx, 'id,webstore_id,status,deco_pos').order('id'));
   const scopedOrders = orders.filter(so => isActiveSo(so) && (!ctx.soId || so.id === ctx.soId));
   const [decorators, vendors] = await Promise.all([
     pageAll(() => ctx.admin.from('deco_vendors').select('id,name,vendor_id').order('id')),

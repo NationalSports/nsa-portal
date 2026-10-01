@@ -128,3 +128,19 @@ test('changing one item preserves remaining submitted items', () => {
   const original = job('JOB-1', 'A', [row(0, 'TEE', 5), row(1, 'HOOD', 7)]);
   expect(stable.detachChangedArtRow(original, 0)).toMatchObject({ id: 'JOB-1', total_units: 7, art_status: 'art_requested', art_requests: original.art_requests, items: [row(1, 'HOOD', 7)] });
 });
+
+describe.each(['OrderEditor.js', 'OrderEditorClassic.js'])('%s outside-art identity', file => {
+  test('sync keeps requests with their design when another design is added or artwork replaced', () => {
+    const sync = syncFor(file);
+    const outsideItem = aid => item(aid, { M: 2 }, [deco(aid, { fulfillment: 'outside', outside_art: true })]);
+    const original = { id: 'SO-OUT', items: [outsideItem('A')], art_files: [art('A'), art('B')], jobs: [] };
+    const previous = sync(original).map(j => ({ ...j, art_status: 'art_requested', assigned_artist: 'artist', art_requests: [{ id: 'AR-OUT', status: 'requested' }] }));
+    const added = sync({ ...original, items: [outsideItem('B'), ...original.items], jobs: previous });
+    expect(added.find(j => j.art_file_id === 'A')).toMatchObject({ id: previous[0].id, art_requests: previous[0].art_requests });
+    expect(added.find(j => j.art_file_id === 'B').id).not.toBe(previous[0].id);
+    const changedItem = { ...original.items[0], decorations: [deco('B', { fulfillment: 'outside', outside_art: true })] };
+    const replacement = sync({ ...original, items: [changedItem], jobs: previous });
+    expect(replacement).toHaveLength(1);
+    expect(replacement[0]).toMatchObject({ id: previous[0].id, art_file_id: 'B', art_status: 'art_requested', art_requests: previous[0].art_requests });
+  });
+});

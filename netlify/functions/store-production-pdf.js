@@ -36,7 +36,7 @@ exports.handler = async event => {
   const printPacket = compactPacketImages(packet);
   const origin = getTrustedSiteBaseUrl(event);
   // Token goes in the fragment so hosting logs and Referer headers do not receive it.
-  const onlineUrl = origin ? `${origin}/production-packet${body.token ? '#token='+body.token : '?store='+encodeURIComponent(ctx.storeId)+(ctx.soId?'&scope='+encodeURIComponent(ctx.soId):'')}` : '';
+  const onlineUrl = origin ? `${origin}/production-packet${body.token ? '#token='+body.token : (ctx.storeId?'?store='+encodeURIComponent(ctx.storeId)+(ctx.soId?'&scope='+encodeURIComponent(ctx.soId):''):'?so='+encodeURIComponent(ctx.soId))}` : '';
   const qrDataUrl = onlineUrl ? await QRCode.toDataURL(onlineUrl, {width:240,margin:1}) : '';
   browser = await puppeteer.launch({ args:chromium.args, defaultViewport:chromium.defaultViewport, executablePath:await chromium.executablePath(), headless:chromium.headless });
   const page = await browser.newPage();

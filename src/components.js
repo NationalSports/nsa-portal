@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, poLineFulfilledQty } from './safeHelpers';
+import { productionJobs } from './lib/outsideArt';
 import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC, isServiceLine } from './constants';
 import { TAX_EXEMPT_REASONS, TAX_EXEMPT_OTHER, composeTaxExemptReason, canSaveTaxExempt, taxExemptInfo } from './lib/taxExempt';
 // html2pdf is loaded on demand (see buildPdfAttachment below) to keep it out of the eager bundle.
@@ -586,7 +587,7 @@ function calcSOStatus(ord,opts){
   });
   if(totalSz===0)return'need_order';
   // Check jobs on the board (exclude drafts from status calculation)
-  const boardJobs=safeJobs(ord).filter(j=>j.prod_status!=='draft');
+  const boardJobs=productionJobs(safeJobs(ord)).filter(j=>j.prod_status!=='draft');// outside-art jobs are art-only (lib/outsideArt)
   const hasJobs=boardJobs.length>0;
   const allJobsShipped=hasJobs&&boardJobs.every(j=>j.prod_status==='shipped');
   const allJobsDone=hasJobs&&boardJobs.every(j=>j.prod_status==='completed'||j.prod_status==='shipped');

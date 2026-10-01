@@ -18,9 +18,10 @@
 
 // Draft jobs aren't on the board, so they aren't owed work. An order with no jobs at all
 // (fully outsourced decoration) has nothing to wait on and closes as it always did.
+import { isOutsideArtJob } from './outsideArt';
 export const unfinishedProdJobs = (ord) => {
   const jobs = Array.isArray(ord?.jobs) ? ord.jobs : [];
-  return jobs.filter((j) => j && j.prod_status !== 'draft' && j.prod_status !== 'completed' && j.prod_status !== 'shipped');
+  return jobs.filter((j) => j && j.prod_status !== 'draft' && !isOutsideArtJob(j) && j.prod_status !== 'completed' && j.prod_status !== 'shipped');
 };
 
 const PROD_LABELS = { hold: 'Ready for Prod', ready: 'Ready for Prod', staging: 'In Line', in_process: 'In Process' };

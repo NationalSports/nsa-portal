@@ -1,5 +1,6 @@
 /* eslint-disable */
 import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { isOutsideArtJob } from './lib/outsideArt';
 import BarcodeScanner from './BarcodeScanner';
 import { auTierDisc, dP, calcOrderTotals, isAU } from './pricing';
 import { isJobReady, mockAwareProductionStatus } from './lib/jobMockReadiness';
@@ -1957,7 +1958,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     }
     if(subPage==='jobs'){
       const allJobs=[];
-      sos.filter(so=>inScope(so.customer_id,so.created_by)).forEach(so=>{const cc=custObj(so.customer_id);safeJobs(so).forEach(j=>{allJobs.push({...j,prod_status:mockAwareProductionStatus(j,so),so,so_id:so.id,customer:cc?.name||cc?.alpha_tag||'—'})})});
+      sos.filter(so=>inScope(so.customer_id,so.created_by)).forEach(so=>{const cc=custObj(so.customer_id);safeJobs(so).filter(j=>!isOutsideArtJob(j)).forEach(j=>{allJobs.push({...j,prod_status:mockAwareProductionStatus(j,so),so,so_id:so.id,customer:cc?.name||cc?.alpha_tag||'—'})})});
       const STATUS_FILTERS=[
         {k:'active',l:'Active',f:j=>!['completed','shipped','draft'].includes(j.prod_status||'')},
         {k:'ready',l:'Ready',f:j=>(['hold','ready'].includes(j.prod_status)&&isJobReady(j,j.so))},
@@ -2010,7 +2011,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     }
     if(subPage==='production'){
       const allJobs=[];
-      sos.filter(so=>inScope(so.customer_id,so.created_by)).forEach(so=>{const cc=custObj(so.customer_id);safeJobs(so).forEach(j=>{allJobs.push({...j,prod_status:mockAwareProductionStatus(j,so),so,so_id:so.id,customer:cc?.name||cc?.alpha_tag||'—'})})});
+      sos.filter(so=>inScope(so.customer_id,so.created_by)).forEach(so=>{const cc=custObj(so.customer_id);safeJobs(so).filter(j=>!isOutsideArtJob(j)).forEach(j=>{allJobs.push({...j,prod_status:mockAwareProductionStatus(j,so),so,so_id:so.id,customer:cc?.name||cc?.alpha_tag||'—'})})});
       // Kanban columns mirror the desktop production board (driven by prod_status + isJobReady).
       const cols=[
         {id:'ready',label:'Ready for Prod',color:'#6366f1',filter:j=>(['hold','ready'].includes(j.prod_status)&&isJobReady(j,j.so))},
