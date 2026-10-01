@@ -7,6 +7,7 @@ function fixture({authorized=true,owned=true,signature='<table><tr><td>Steve Sig
   return {eq:(key,owner)=>{assert.equal(key,'team_member_id');assert.equal(owner,'owner');return {maybeSingle:async()=>({data:owned?{id:'insight1',gmail_message_id:'message1'}:null})}}};
  }})})};
  const exports={};vm.runInNewContext(fs.readFileSync(require.resolve('../../netlify/functions/rep-gmail-reply'),'utf8'),{exports,Buffer,process:{env:{GOOGLE_TOKEN_ENC_KEY:'test-key'}},require:id=>{
+  if(id==='./_repEmailSignature')return require('../../netlify/functions/_repEmailSignature');
   if(id==='crypto')return require('node:crypto');
   if(id==='./_shared')return {corsHeaders:()=>({}),verifyUser:async()=>authorized?{ok:true,admin,teamMemberId:'owner'}:{ok:false,status:401,error:'Unauthorized'}};
   if(id==='./_repGoogle')return {accessTokenForLink:async()=> 'test-token'};
@@ -31,4 +32,11 @@ test('draft escapes reply text, includes signature and preserves threading; only
 test('cannot send arbitrary drafts; missing signature blocks draft creation',async()=>{
  const f=fixture();assert.equal((await f.run({action:'send',draftId:'other',proof:'fake'})).status,400);assert.equal(f.calls.length,0);
  const g=fixture({signature:''});assert.equal((await g.run({action:'draft',text:'Hello'})).status,400);assert.ok(!g.calls.some(c=>c.path==='/drafts'));
+});
+
+test('Steve screenshot signature is used only for Steve when Gmail has none',()=>{
+ const {signatureFor}=require('../../netlify/functions/_repEmailSignature');
+ assert.match(signatureFor('steve@nationalsportsapparel.com',''),/714.791.8973/);
+ assert.equal(signatureFor('other@example.com',''),'');
+ assert.equal(signatureFor('steve@nationalsportsapparel.com','<b>Gmail</b>'),'<b>Gmail</b>');
 });

@@ -1,3 +1,4 @@
+const { signatureFor } = require('./_repEmailSignature');
 const crypto = require('crypto');
 const { corsHeaders, verifyUser } = require('./_shared');
 const { accessTokenForLink } = require('./_repGoogle');
@@ -32,7 +33,7 @@ exports.handler = async event => {
     const to=address(h['reply-to']||h.from);
     if(!/^[^\s@<>;,\r\n]+@[^\s@<>;,\r\n]+\.[^\s@<>;,\r\n]+$/.test(to))return json(400,{error:'Open Gmail to reply to this sender'});
     const alias=await gmailFetch(token,'/settings/sendAs/'+encodeURIComponent(link.google_email));
-    const signature=alias.signature||'';
+    const signature=signatureFor(link.google_email,alias.signature);
     const subject=/^re:/i.test(h.subject||'')?h.subject:'Re: '+(h.subject||'');
     if(body.action==='prepare')return json(200,{to,from:link.google_email,subject,signature,originalText:parsed.text_body||parsed.snippet||''});
     if(typeof body.text!=='string'||!body.text.trim()||body.text.length>20000)return json(400,{error:'Write a reply of up to 20,000 characters'});
