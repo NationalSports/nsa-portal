@@ -72,3 +72,45 @@ test('scheduled worker processes due mailboxes through the same sync implementat
   assert.equal((await handler()).statusCode, 200);
   assert.deepEqual(seen, ['a', 'b']);
 });
+function syncFixture(failSecondPage = false) {
+  const saved = [], patches = [], queries = [];
+  const module = { exports: {} };
+  const admin = { from: () => ({
+    select: () => ({ eq: () => ({ in: async () => ({ data: [] }), maybeSingle: async () => ({ data: { name: 'Steve' } }) }) }),
+    upsert: async row => { saved.push(row); return {}; },
+    update: patch => ({ eq: async () => { patches.push(patch); return {}; } }),
+  }) };
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'netlify/functions/_repGmailSync.js'), 'utf8'), {
+    module, Date, console: { error: () => {} }, process: { env: { ANTHROPIC_API_KEY: 'mock' } },
+    fetch: async () => ({ ok: true, json: async () => ({ content: [{ type: 'text', text: '{"important":true,"summary":"Reply to coach","tasks":[],"deadlines":[]}' }] }) }),
+    require: id => {
+      if (id === './_repGoogle') return { accessTokenForLink: async () => 'mock-token' };
+      if (id === './_gmailAi') return {
+        gmailFetch: async (token, url) => {
+          queries.push(url);
+          if (!url.includes('pageToken=')) return { messages: Array.from({length:50}, (_,i) => ({id:String(60-i)})), nextPageToken: 'next/page' };
+          if (failSecondPage) throw new Error('Gmail unavailable');
+          return { messages: Array.from({length:10}, (_,i) => ({id:String(10-i)})) };
+        },
+        getMessage: async (token, id) => id,
+        parseMessage: id => ({ gmail_message_id: id, received_at: new Date(1790800000000 + Number(id)*1000).toISOString(), to_emails: [], cc_emails: [], subject: 'Coach question' }),
+      };
+      throw new Error(id);
+    },
+  });
+  return { run: () => module.exports.syncLink(admin, { team_member_id: 'steve', google_email: 'steve@example.com' }, Date.now()+20000), saved, patches, queries };
+}
+test('uncategorized inbox mail is included and all pages are listed before oldest-first import', async () => {
+  const f = syncFixture(); const result = await f.run();
+  assert.equal(result.error, null); assert.equal(result.analyzed, 6);
+  assert.deepEqual(f.saved.map(r => r.gmail_message_id), ['1','2','3','4','5','6']);
+  const query = new URL('https://gmail.test'+f.queries[0]).searchParams.get('q');
+  assert.doesNotMatch(query, /category:primary/);
+  assert.match(query, /in:inbox.*-category:promotions.*-category:social.*-category:forums/);
+  assert.match(f.queries[1], /pageToken=next%2Fpage/);
+});
+test('partial listing failure does not advance the cursor or import an incomplete batch', async () => {
+  const f = syncFixture(true); assert.equal((await f.run()).error, 'Gmail unavailable');
+  assert.equal(f.saved.length, 0);
+  assert.ok(f.patches.every(p => !Object.hasOwn(p, 'gmail_cursor_ms')));
+});
