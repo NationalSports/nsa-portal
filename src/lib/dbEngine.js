@@ -14,6 +14,7 @@
 // bottom are new. Behavior contracts are pinned by
 // src/__tests__/dbEngine.characterization.test.js.
 // ═══════════════════════════════════════════════════════════════════════
+import {loadRecoveryDocument} from './loadRecoveryDocument';
 import { protectDocumentDraft, currentDraftOwner, draftJournal } from './draftJournal';
 import { savedDocumentMatchesDraft, reconcileSavedDocumentDrafts } from './savedDraftComparison';
 import { createSaveRetryCoordinator } from './saveRetryCoordinator';
@@ -1087,6 +1088,7 @@ const _dbSaveEstimateInner = async (est) => {
     const{items,art_files,...estRow}=est;
     let {data:estimateToken,error:estimateTokenError}=await supabase.rpc('estimate_save_token',{p_estimate_id:est.id});
     if(estimateTokenError)throw new Error('Cannot prepare estimate save: '+estimateTokenError.message);
+    if(est._reviewedSaveToken!=null&&est._reviewedSaveToken!==estimateToken)return _preserveBlockedDocument('estimates',est);
     const {data:estimateArt,error:estimateArtError}=await supabase.from('estimate_art_files').select('*').eq('estimate_id',est.id);
     if(estimateArtError)throw new Error('Cannot verify estimate artwork: '+estimateArtError.message);
     const resolvedArt=Array.isArray(art_files)?_resolveArtRows(art_files,estimateArt,est.id):[];
@@ -1249,6 +1251,10 @@ const _dbSaveEstimateInner = async (est) => {
     let _serverVersioned=false;// true when save_estimate returned the post-save version (base is exact, no bump needed)
     {
       const _rpcItems=resolveOutgoingLineIds(items||[],_oldEstItems).map((item,idx)=>{const{decorations,...itemData}=item;return{..._pick(itemData,_itemCols),item_index:idx,decorations:(decorations||[]).map(d=>_pick(_sanitizeDeco(d),_decoCols))}});
+      if(_rpcItems.some(item=>!item.line_id)){
+        if(_dbNotify)_dbNotify('This estimate has duplicate product lines that need matching. Your draft is preserved. Choose Review changes in the recovery banner.','error');
+        return _preserveBlockedDocument('estimates',est);
+      }
       const _estPayload=_fuDefaults(_pick(estRow,_estCols));
       // Optimistic concurrency (server-side): pass the _version this edit is based on so the DB rejects a
       // stale clobber — the multi-tab / realtime-echo fight that silently wiped sizes, deleted items, and
@@ -1319,6 +1325,7 @@ const _dbSaveEstimateInner = async (est) => {
       if(_rpcErr){
         const _m=_rpcErr.message||String(_rpcErr);
         if(_isAuthError(_rpcErr))return _handleAuthSaveFailure(est.id,_rpcErr);
+        if(/ESTIMATE_(LINE_ID_AMBIGUOUS|DUPLICATE_LINE_ID)/.test(_m))return _preserveBlockedDocument('estimates',est);
         const _friendly=_m.includes('CUSTOMER_MISSING')
           ?"This customer isn't saved yet. Re-select or re-create the customer, then save."
           :_m.includes('ESTIMATE_ID_EXISTS')
@@ -1371,7 +1378,7 @@ const _dbSaveEstimateInner = async (est) => {
     return true;
   }catch(e){console.error('[DB] save estimate:',e);if(_isAuthError(e))return _handleAuthSaveFailure(est.id,e);_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save failed: '+e.message,'error');return false}});
 };
-const _dbSaveEstimate = (est) => _saveDocument('estimates',est,_dbSaveEstimateInner);
+const _dbSaveEstimate = (est,opts) => _saveDocument('estimates',est,opts?.exactAttempt?snapshot=>_dbSaveEstimateInner(snapshot):_dbSaveEstimateInner);
 // Resolve which current item a preserved child row (PO/pick line) should re-attach to after the
 // order's structure changed. The row's original position wins when its SKU still matches; otherwise
 // fall back to SKU matching across all items — removing/reordering a line shifts every item_index
@@ -1456,6 +1463,7 @@ const _dbSaveSOInner = async (so) => {
     const{items,art_files,firm_dates,jobs,...soRow}=so;
     let {data:saveToken,error:tokenError}=await supabase.rpc('sales_order_save_token',{p_so_id:so.id});
     if(tokenError)throw new Error('Cannot prepare atomic sales-order save: '+tokenError.message);
+    if(so._reviewedSaveToken!=null&&so._reviewedSaveToken!==saveToken)return _preserveBlockedDocument('sales_orders',so);
     const savePlan={header:null,items:null,art_upserts:[],art_deletes:[],job_upserts:[],job_deletes:[],firm_dates:null};
     const afterCommit=[];
 
@@ -3578,6 +3586,17 @@ const _queuedEntitySave=(id,data,saveFn)=>new Promise((resolve,reject)=>{
 });
 // Queue immutable document attempts. Neither a later React mutation nor a
 // delayed acknowledgement may change which content this attempt represents.
+export const _loadRecoveryDocument=(table,id)=>loadRecoveryDocument(supabase,table,id);
+export const _saveReviewedDocument=async(table,payload,owner)=>{
+  if(owner!=null&&String(owner)!==currentDraftOwner())return false;
+  if(!['estimates','sales_orders'].includes(table)||payload._reviewedSaveToken==null)return false;
+  if(payload._draftRecovery&&payload._draftRecovery.owner!==currentDraftOwner())return false;
+  _clearDocumentConflictCooldown(payload.id);
+  // Dispatch directly, even when the React snapshot already equals this draft.
+  const result=await (table==='estimates'?_dbSaveEstimate(payload,{exactAttempt:true}):_dbSaveSO(payload,{exactAttempt:true}));
+  if(result===true)delete payload._reviewedSaveToken;
+  return result===true;
+};
 const _activeDocumentSaves=new Map();
 const _hasActiveDocumentSave=id=>(_activeDocumentSaves.get(id)||0)>0;
 const _saveDocument=(table,entity,saveFn,addOnly=false)=>{

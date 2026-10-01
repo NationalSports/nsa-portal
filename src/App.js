@@ -1,3 +1,5 @@
+import DocumentRecoveryReview from './DocumentRecoveryReview';
+import {_loadRecoveryDocument, _saveReviewedDocument} from './lib/dbEngine';
 import { garmentSlotCandidates } from "./lib/jobMockCards";
 import { isOutsideArtJob } from './lib/outsideArt';
 import { assignLogoArtwork, resolveLogoColorWay } from './lib/logoDetail';
@@ -2595,6 +2597,7 @@ export default function App(){
   // discard); never auto-applied. Populated at boot by the _outboxGate rehydrate AND live by the
   // stale-rejection path (dbEngine calls back here the moment the server refuses a stale write).
   const[outboxConflicts,setOutboxConflicts]=useState([]);
+  const[recoveryReview,setRecoveryReview]=useState(null);
   _setOnOutboxConflict((en)=>{setOutboxConflicts(prev=>{const key=en.table+':'+en.id;return[...prev.filter(x=>x.table+':'+x.id!==key),en]})});
   const[cacheFull,setCacheFull]=useState(_lsQuotaWarned);_setOnCacheFullChange(setCacheFull);
   // A new build is deployed and this tab will reload when the rep goes idle — the banner's
@@ -39052,7 +39055,23 @@ export default function App(){
         </div>}
       </div>}
       {memoCommand&&memoCommand.ownerId===String(cu?.id)&&<OrderMemoDialog inlineTarget={memoCommand.id===eSO?.id?memoInlineTarget:null} key={String(cu?.id)+':'+memoCommand.id} initial={memoCommand} owner={cu?.id} saveCommand={_dbSaveMemoCommand} onSaved={(id,memo)=>{if(memoOwnerRef.current===memoCommand.ownerId)memoSaved(id,memo);}} onClose={()=>{if(memoOwnerRef.current===memoCommand.ownerId)setMemoCommand(current=>current===memoCommand?null:current);}} onPendingChange={pending=>{const key='memo:'+memoCommand.id;if(pending)_dbSavePendingIds.add(key);else _dbSavePendingIds.delete(key);}}/>}
-      <DraftRecoveryPanel owner={cu?.id} isVisible={isMySaveNotice} onReview={(payload,table)=>{if(table===MEMO_DRAFT_TABLE){if(dirtyRef.current||_dbSavePendingIds.has(payload.id)||_dbSaveFailedIds.has(payload.id)){nf('Save or review the open order changes before recovering its memo.','error');return;}if(!memoCommandsReady){nf('Memo saving is not available yet. Your recovery copy is kept.','error');return;}setMemoCommand({...payload,ownerId:String(cu.id)});return;}const entry={table,id:payload.id,payload,baseVersion:payload._obBaseVersion??payload._version??null,ts:Date.now()};setOutboxConflicts(prev=>[...prev.filter(x=>x.table!==table||x.id!==payload.id),entry])}}/>
+      <DraftRecoveryPanel owner={cu?.id} isVisible={isMySaveNotice} onReview={(payload,table)=>{if(table===MEMO_DRAFT_TABLE){if(dirtyRef.current||_dbSavePendingIds.has(payload.id)||_dbSaveFailedIds.has(payload.id)){nf('Save or review the open order changes before recovering its memo.','error');return;}if(!memoCommandsReady){nf('Memo saving is not available yet. Your recovery copy is kept.','error');return;}setMemoCommand({...payload,ownerId:String(cu.id)});return;}const entry={table,id:payload.id,payload,baseVersion:payload._obBaseVersion??payload._version??null,ts:Date.now()};if(table==='estimates'||table==='sales_orders'){setRecoveryReview({...entry,owner:cu?.id});return;}setOutboxConflicts(prev=>[...prev.filter(x=>x.table!==table||x.id!==payload.id),entry])}}/>
+      {recoveryReview&&recoveryReview.owner===cu?.id&&<DocumentRecoveryReview
+        key={String(cu?.id)+':'+recoveryReview.table+':'+recoveryReview.id}
+        entry={recoveryReview} owner={cu?.id} load={_loadRecoveryDocument} save={_saveReviewedDocument}
+        canSave={()=>!eEst&&!eSO&&!dirtyRef.current&&!_hasActiveDocumentSave(recoveryReview.id)}
+        onClose={()=>setRecoveryReview(null)}
+        onSaved={payload=>{
+          // Cloud acknowledgement comes before local state; update the diff baseline
+          // together so the confirmed recovery cannot schedule a second blind save.
+          const table=recoveryReview.table;
+          const snapKey=table==='estimates'?'ests':'sos';
+          const replace=rows=>rows.some(row=>row.id===payload.id)?rows.map(row=>row.id===payload.id?payload:row):[...rows,payload];
+          _dbSnap.current[snapKey]=replace(_dbSnap.current[snapKey]||[]);
+          (table==='estimates'?setEsts:setSOs)(replace);
+          setOutboxConflicts(previous=>previous.filter(entry=>entry.table!==table||entry.id!==payload.id));
+          setRecoveryReview(null);nf(payload.id+' recovery save confirmed.','success');
+        }}/>}
       {visibleOutboxConflicts.length>0&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b',fontSize:12,fontWeight:600}}>
         <div style={{padding:'8px 16px',display:'flex',alignItems:'center',gap:8}}>
           <span style={{fontSize:14}}>&#9888;</span>
@@ -39066,6 +39085,7 @@ export default function App(){
               <span style={{fontWeight:700,color:'#991b1b'}}>{label}</span>
               <span style={{flex:1,color:'#7f1d1d',minWidth:200}}>your unsaved edit from {new Date(en.ts).toLocaleString()}; saving needs review{en.baseVersion!=null?'':' (no version info — comparing was not possible)'}</span>
               <button onClick={async()=>{
+                if(en.table==='estimates'||en.table==='sales_orders'){setRecoveryReview({...en,owner:cu?.id});return;}
                 const setters={estimates:setEsts,sales_orders:setSOs,invoices:setInvs,customers:setCust,products:setProd,messages:setMsgs};
                 const set=setters[en.table];if(!set||!supabase)return;
                 let cloud;
@@ -39087,7 +39107,7 @@ export default function App(){
                 _dbSaveFailedIds.add(en.id);_persistFailedIds();
                 setOutboxConflicts(prev=>prev.filter(x=>x.table+':'+x.id!==key));
                 nf('Your edit for '+en.id+' was restored and is re-saving — it will replace the newer cloud copy.','success');
-              }} style={{background:'#991b1b',border:'none',color:'#fff',cursor:'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Apply my edit anyway</button>
+              }} style={{background:'#991b1b',border:'none',color:'#fff',cursor:'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap'}}>{en.table==='estimates'||en.table==='sales_orders'?'Review changes':'Apply my edit anyway'}</button>
               <button onClick={async()=>{
                 if(!window.confirm('Discard your unsaved edit for '+en.id+'?\n\nThe newer cloud copy stays. This cannot be undone.'))return;
                 if(en.payload?._draftRecovery){try{await draftJournal.acknowledge(en.payload._draftRecovery)}catch{nf('Could not clear the recovery copy. Your draft is still available.','error');return}}

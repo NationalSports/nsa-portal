@@ -4,7 +4,18 @@
 const rootMetadata = new Set(['_version', '_obBaseVersion', '_retry', '_draftRecovery',
   'updated_at', 'created_at', '_itemsHydrated', '_decosHydrated', '_artHydrated',
   '_recoveryHydrated', '_jobsHydrated', '_posHydrated', '_picksHydrated', '_hydratedArtIds',
-  '_hydratedPoIds', '_hydratedPickIds']);
+  '_hydratedPoIds', '_hydratedPickIds', '_reviewedSaveToken']);
+
+// Only these known, nonpersisted item fields are omitted. Unknown fields and
+// nested costs, shipping, quantities and decoration intent remain significant.
+const itemDisplayFields = new Set(['_sizeCosts', '_sizeSells', '_colorImage', '_colorBackImage', '_ss_live']);
+export function recoveryContent(payload) {
+  if (!payload) return payload;
+  return Object.fromEntries(Object.entries(payload).filter(([key]) => !rootMetadata.has(key)).map(([key, value]) => [key,
+    key === 'items' && Array.isArray(value)
+      ? value.map(item => Object.fromEntries(Object.entries(item).filter(([field]) => !itemDisplayFields.has(field))))
+      : value]));
+}
 
 function equal(a, b, entityVersion = false) {
   if (a === b || (a == null && b == null)) return true;
@@ -28,6 +39,8 @@ export function savedDocumentMatchesDraft(payload, row) {
   if (!payload?.id || payload.id !== row?.id) return false;
   // Incomplete child loads cannot establish that an edit is already saved.
   if (Object.keys(row).some(key => key.endsWith('Hydrated') && row[key] === false)) return false;
+  payload = recoveryContent(payload);
+  row = recoveryContent(row);
   return Object.keys(payload).every(key => {
     if (rootMetadata.has(key)) return true;
     if (key === 'jobs' || key === 'art_files') return sameEntities(payload[key], row[key]);

@@ -87,3 +87,61 @@ test('an ordinary item addition still saves',async()=>{
   expect(await engine._dbSaveEstimate(draft([...dbItems,{sku:'NEW',color:'Black',sizes:{M:3},decorations:[]}]))).toBe(true);
   expect(saveCalls(state)[0].args[0].p_items).toHaveLength(8);
 });
+
+test('ambiguous legacy duplicate lines are parked for matching without sending or retrying a doomed RPC',async()=>{
+  const {state,engine}=setup();
+  const existing=[{...dbItems[0],line_id:'a'},{...dbItems[0],id:201,line_id:'b',item_index:1}];
+  state.responses.estimate_items=[{data:existing,error:null}];
+  const conflict=jest.fn();engine._setOnOutboxConflict(conflict);
+  expect(await engine._dbSaveEstimate(draft(existing.map(({line_id,...item})=>item)))).toBe(false);
+  expect(saveCalls(state)).toHaveLength(0);expect(conflict).toHaveBeenCalled();
+  expect(engine._dbSaveFailedIds.has('EST-2771')).toBe(false);
+});
+test('a changed cloud token blocks reviewed estimate recovery before any write',async()=>{
+  const {state,engine}=setup();
+  expect(await engine._saveReviewedDocument('estimates',draft(dbItems,{_reviewedSaveToken:'outdated-review'}))).toBe(false);
+  expect(saveCalls(state)).toHaveLength(0);
+});
+test('reviewed estimate recovery directly saves even without a React diff or retry snapshot',async()=>{
+  const {state,engine}=setup();
+  const payload=draft(dbItems,{_reviewedSaveToken:'test-save-token'});
+  expect(await engine._saveReviewedDocument('estimates',payload)).toBe(true);
+  expect(saveCalls(state)).toHaveLength(1);
+  expect(payload._reviewedSaveToken).toBeUndefined();
+});
+test('a changed cloud token blocks reviewed sales-order recovery before any write',async()=>{
+  const {state,engine}=setup();
+  expect(await engine._saveReviewedDocument('sales_orders',{id:'SO-review',customer_id:'customer',items:dbItems,_reviewedSaveToken:'outdated-review'})).toBe(false);
+  expect(state.calls.filter(call=>call.method==='save_sales_order_atomic'||['insert','update','upsert','delete'].includes(call.method))).toHaveLength(0);
+});
+test('recovery from a different account cannot dispatch',async()=>{
+  const {state,engine}=setup();
+  expect(await engine._saveReviewedDocument('estimates',draft(dbItems,{_reviewedSaveToken:'test-save-token'}),'another-owner')).toBe(false);
+  expect(state.calls).toHaveLength(0);
+});
+test('a later queued estimate save cannot substitute for the reviewed attempt',async()=>{
+  const {state,engine}=setup();
+  let release;const blocker=engine._queuedEntitySave('EST-2771',{},()=>new Promise(resolve=>{release=resolve;}));
+  const reviewed=engine._saveReviewedDocument('estimates',draft(dbItems,{memo:'reviewed',_reviewedSaveToken:'test-save-token'}));
+  const later=engine._dbSaveEstimate(draft(dbItems,{memo:'later edit'}));
+  release(true);await blocker;
+  expect(await reviewed).toBe(true);await later;
+  expect(saveCalls(state).map(call=>call.args[0].p_estimate.memo)).toEqual(['reviewed','later edit']);
+});
+test('failed review retains the durable copy; confirmed recovery clears only its exact old-session receipt',async()=>{
+  global.indexedDB=require('fake-indexeddb').indexedDB;
+  global.structuredClone=value=>JSON.parse(JSON.stringify(value));
+  const {engine}=setup();
+  const {createDraftJournal,draftJournal}=require('../lib/draftJournal');
+  const old=createDraftJournal({factory:global.indexedDB,session:'old-review-session'});
+  localStorage.setItem('nsa_user',JSON.stringify({id:'review-owner'}));
+  const payload=draft(dbItems,{memo:'durable reviewed edit'});
+  try{
+    const receipt=await old.stage('review-owner','estimates',payload);
+    const recovery={key:receipt.key,owner:receipt.owner,revision:receipt.revision};
+    expect(await engine._saveReviewedDocument('estimates',{...payload,_draftRecovery:recovery,_reviewedSaveToken:'old-token'},'review-owner')).toBe(false);
+    expect((await old.list('review-owner')).some(row=>row.key===receipt.key&&row.revision===receipt.revision)).toBe(true);
+    expect(await engine._saveReviewedDocument('estimates',{...payload,_draftRecovery:recovery,_reviewedSaveToken:'test-save-token'},'review-owner')).toBe(true);
+    expect(await old.list('review-owner')).toEqual([]);
+  }finally{await old.close();await draftJournal.close();}
+});
