@@ -52,7 +52,7 @@ import { stampEstimateDraftLineIds } from './lib/orderLineIdentity';
 import { searchSalesOrders } from './lib/searchSalesOrders';
 import GlobalSearch from './GlobalSearch';
 import { checkUpsTracking } from './lib/upsTracking';
-import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills, portalBillAlreadyApplied,buildQboBackfillRows,buildQboCanaryRecoveryRow,qboBackfillHistory} from './appliedBillsLedger';
+import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills, portalBillAlreadyApplied,billHoldKey,collapseParkedHolds,buildQboBackfillRows,buildQboCanaryRecoveryRow,qboBackfillHistory} from './appliedBillsLedger';
 import { createBillApplySession, billAttemptJournal, billingAttemptKey, sameBillingSnapshot } from './billApplySession';
 import { canViewAiInbox, resolveAccessUser } from './lib/pageAccess';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
@@ -26238,8 +26238,13 @@ export default function App(){
   // through a per-render ref, same pattern as _billImportRef.
   const _pullAllBillsRef=useRef(null);
   const _autoPullFired=useRef(false);
+  // True once the server's Set-aside holds are merged into savedBills. The daily
+  // auto-pull waits for it: pulling before the holds arrive meant every set-aside
+  // bill looked new, came back into To Review, and was set aside again (a new hold
+  // row each time — 5,624 rows for ~500 bills by 2026-09-30).
+  const[billHoldsReady,setBillHoldsReady]=useState(false);
   useEffect(()=>{
-    if(pg!=='import'||impTab!=='bills'||_autoPullFired.current||!supabase)return;
+    if(pg!=='import'||impTab!=='bills'||_autoPullFired.current||!supabase||!billHoldsReady)return;
     const today=new Date().toISOString().slice(0,10);
     try{if(localStorage.getItem('nsa_bill_autopull_day')===today)return}catch(e){}
     const t=setTimeout(()=>{
@@ -26252,7 +26257,7 @@ export default function App(){
       _pullAllBillsRef.current();
     },900);// let the screen paint first
     return()=>clearTimeout(t);
-  },[pg,impTab]);// eslint-disable-line react-hooks/exhaustive-deps
+  },[pg,impTab,billHoldsReady]);// eslint-disable-line react-hooks/exhaustive-deps
   // Auto-push (owner rule, 2026-07-21): the ⚡ clean class pushes itself at pull time —
   // same gates and same money path as the human button. Default ON; toggle in the review
   // toolbar persists per device. 'off' is the stored sentinel so a cleared store = ON.
@@ -26284,6 +26289,7 @@ export default function App(){
     }catch(e){console.warn('ss order alias learn',e)}
   };
   const[savedBills,setSavedBills]=useState(()=>{try{const s=localStorage.getItem('nsa_saved_bills');return s?JSON.parse(s):[]}catch{return[]}});
+  const _savedBillsRef=useRef(savedBills);_savedBillsRef.current=savedBills;// live view for pulls that await the network
   // Server bill ledger rows (applied_bills) — the system of record for pushed bills. Bill History
   // renders the union of these + savedBills, so pushed history survives cleared localStorage and
   // the local cache cap. Loaded by loadAppliedLedger alongside the dedup key Set.
@@ -26560,13 +26566,30 @@ export default function App(){
       // suppressed). 'pushed' holds are intentionally not loaded: an applied bill is already caught
       // cross-machine by _docAlreadyApplied (via the SO's _bill_details), so re-loading them would
       // just bloat savedBills. Held rows are never capped away below, so the dedup set is complete.
-      const{data,error}=await supabase.from('supplier_bill_holds').select('*').in('status',['parked','resolved']).order('held_at',{ascending:false}).limit(2000);
-      if(error)throw error;
-      if(!data||!data.length)return;
+      // Every held row, newest first, a page at a time — a fixed 2000-row cap
+      // silently dropped older holds, so their bills pulled back in as new.
+      const data=[];
+      for(let from=0;from<50000;from+=1000){
+        const{data:page,error}=await supabase.from('supplier_bill_holds').select('*').in('status',['parked','resolved']).order('held_at',{ascending:false}).range(from,from+999);
+        if(error)throw error;
+        data.push(...(page||[]));
+        if(!page||page.length<1000)break;
+      }
+      // One Set-aside entry per bill: the newest parked row wins; older parked
+      // copies of the same document are dropped here and from the local cache.
+      const{keep:parkedKeep,drop:dropIds}=collapseParkedHolds(data);
+      const holdKey=billHoldKey;
       setSavedBills(prev=>{
-        const byId={};prev.forEach(sb=>{byId[sb.id]=sb});
+        const byId={};prev.forEach(sb=>{
+          if(dropIds.has(sb.id))return;
+          // A local parked copy of a bill the server holds under another id is a duplicate too.
+          const k=sb.reviewLater?holdKey(sb.parsed):null;
+          if(k&&parkedKeep.has(k)&&parkedKeep.get(k)!==sb.id)return;
+          byId[sb.id]=sb;
+        });
         const heldIds=new Set();
         data.forEach(h=>{
+          if(dropIds.has(h.id))return;
           const parked=h.status==='parked';
           const ts=h.held_at?Date.parse(h.held_at):0;
           const base=byId[h.id]||{id:h.id,file:h.file||(h.parsed?.doc_number?'Doc #'+h.parsed.doc_number:'Bill'),uploadedAt:h.held_at?new Date(h.held_at).toLocaleString():'',uploadedTs:ts||0,qbStatus:null};
@@ -26581,6 +26604,7 @@ export default function App(){
         const merged=[...held,...rest].slice(0,Math.max(300,held.length));
         _lsSet('nsa_saved_bills',JSON.stringify(merged));return merged;
       });
+      setBillHoldsReady(true);
     }catch(e){_billHoldsLoaded.current=false;/* let a later import visit retry; localStorage still backs the queue meanwhile */}
   };
   // Runtime key format mirrors the applied_bills unique key: the credit bit is
@@ -28738,6 +28762,9 @@ export default function App(){
     // dedup. The two halves can't collide: S&S reaches Sports Inc only as scanned docs,
     // which triage to Grab/Outside and are never auto-routed here (see _siTriage).
     const pullAllBills=async()=>{
+      // Set-aside bills are recognised by the holds loaded from the server; pulling before
+      // they arrive brings every set-aside bill back into To Review.
+      if(!billHoldsReady&&!window.confirm('Set-aside bills are still loading. Pulling now may bring set-aside bills back into To Review. Pull anyway?'))return;
       const f=ssPullFrom||'',t=ssPullTo||'';
       // ssList = the fresh review list when the S&S pull replaced it; undefined when the pull
       // errored/found nothing (list untouched → the state read inside _siSendToReview is valid).
@@ -30101,7 +30128,7 @@ export default function App(){
       const sdn=String(pull.si_doc_number||'').trim().toLowerCase();
       if(!dn&&!sdn)return false;
       const credit=!!pull.is_credit;
-      return savedBills.some(sb=>{
+      return (_savedBillsRef.current||[]).some(sb=>{
         if(!sb.reviewLater&&!sb.resolution)return false;
         const q=sb.parsed||{};
         if(!!q.is_credit!==credit)return false;// invoice never suppresses its credit (shared #), or vice-versa

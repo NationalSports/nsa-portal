@@ -262,3 +262,28 @@ export const mergeServerBills = (savedBills, serverRows) => {
   const ts = (sb) => sb.uploadedTs || Date.parse(sb.uploadedAt || '') || 0;
   return [...local, ...extras].sort((a, b) => ts(b) - ts(a));
 };
+
+// Set-aside (supplier_bill_holds) identity: the same document — vendor doc# and
+// SI/S&S order#, invoice vs credit — is one bill however many times it was set
+// aside. Null when the bill carries neither number (those stay per-row).
+export const billHoldKey = (parsed) => {
+  const p = parsed || {};
+  const dn = String(p.doc_number == null ? '' : p.doc_number).trim().toLowerCase();
+  const sdn = String(p.si_doc_number == null ? '' : p.si_doc_number).trim().toLowerCase();
+  if (!dn && !sdn) return null;
+  return (p.is_credit ? '1' : '0') + '|' + dn + '|' + sdn;
+};
+
+// Given hold rows newest-first, keep the first (newest) parked row per bill and
+// list the older parked copies to drop. Resolved rows are left alone.
+export const collapseParkedHolds = (rows) => {
+  const keep = new Map();
+  const drop = new Set();
+  (rows || []).forEach((h) => {
+    if (!h || h.status !== 'parked') return;
+    const k = billHoldKey(h.parsed || { doc_number: h.doc_number, si_doc_number: h.si_doc_number });
+    if (!k) return;
+    if (keep.has(k)) drop.add(h.id); else keep.set(k, h.id);
+  });
+  return { keep, drop };
+};
