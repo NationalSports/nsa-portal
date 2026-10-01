@@ -118,10 +118,19 @@ describe('Commissions NetSuite payout actions', () => {
 
     await openKevinPage();
     let downloaded;
+    let exportedBlob;
+    window.URL.createObjectURL = jest.fn(blob => { exportedBlob = blob; return 'blob:test'; });
     click.mockImplementation(function captureName() { downloaded = this.download; });
     fireEvent.click(screen.getByRole('button', { name: /Export CSV/i }));
     expect(click).toHaveBeenCalled();
     expect(downloaded).toBe('commissions-2026-09-kevin-mccormack.csv');
+    const exportedCsv = await new Promise(resolve => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.readAsText(exportedBlob);
+    });
+    expect(exportedCsv).toContain('NS-100');
+    expect(exportedCsv).toContain('4665.86');
     fireEvent.click(screen.getByRole('button', { name: /Send report & mark paid/i }));
     fireEvent.click(screen.getByRole('button', { name: 'Send & mark paid' }));
     await waitFor(() => expect(mockSendBrevoEmail).toHaveBeenCalled());
