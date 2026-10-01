@@ -329,6 +329,10 @@
 # summaries/tasks/deadlines in rep_email_insights. Read-only against Gmail.
 # See netlify/functions/rep-gmail-sync.js.
 [functions."rep-gmail-sync"]
+  timeout = 26
+
+# Scheduled functions cannot serve HTTP requests. Keep this separate from Check now.
+[functions."rep-gmail-scheduled"]
   schedule = "*/10 * * * *"
   timeout = 26
 

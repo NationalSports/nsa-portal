@@ -21,7 +21,7 @@ const fmtWhen=v=>{const d=new Date(v||0);return Number.isNaN(d.getTime())?'':d.t
 const fmtDay=v=>{if(!v)return'';const d=new Date(v+'T12:00:00');return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})};
 
 const CALLBACK_MESSAGES={
-  connected:['Google connected. Your inbox will be checked every 10 minutes.','success'],
+  connected:['Google connected. Select Check now to check your inbox.','success'],
   denied:['Google access was not granted.','error'],
   no_refresh_token:['Google did not return offline access. Disconnect and try again.','error'],
   state_mismatch:['Google sign-in expired or was started in another tab. Try again.','error'],
@@ -198,7 +198,7 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
 
     {loading?<div style={{padding:24,color:'#64748b',fontSize:13}}>Loading…</div>
     :visible.length===0?<div className="card"><div className="card-body" style={{color:'#64748b',fontSize:13}}>
-      {filter==='important'?(status?.connected?'Nothing important waiting. New email is checked every 10 minutes.':'Connect Google to get started.'):'No email here yet.'}
+      {filter==='important'?(status?.connected?'Nothing important waiting. Select Check now to check for new email.':'Connect Google to get started.'):'No email here yet.'}
     </div></div>
     :visible.map(r=>{
       const cname=custName(r.customer_id);
