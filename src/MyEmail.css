@@ -1,0 +1,24 @@
+.customer-email{max-width:1120px;margin:0 auto;padding:8px 4px 32px;color:#172b4d}
+.customer-email-heading{display:flex;justify-content:space-between;margin:4px 0 20px}
+.customer-email-eyebrow{font-size:11px;letter-spacing:1.4px;font-weight:800;color:#2563eb}
+.customer-email-heading h2{font-size:28px;letter-spacing:-.7px;margin:6px 0}
+.customer-email-heading p{margin:0;color:#64748b;font-size:14px}
+.customer-email-status{padding:12px 16px;background:#edf4ff;border:1px solid #dce8fb;border-radius:10px;color:#36567a;font-size:13px;margin-bottom:16px;line-height:1.5}
+.customer-email-tools{display:flex;gap:12px;margin-bottom:14px}
+.customer-email-tools input,.customer-email-tools select{border:1px solid #cbd5e1;border-radius:9px;padding:11px 13px;background:white;font-size:14px;color:#334155}
+.customer-email-tools input{flex:1;min-width:0}
+.customer-email-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}
+.customer-email-tabs .btn{padding:9px 14px;border-radius:20px}
+.customer-email-card{border:1px solid #e1e7ef!important;border-radius:14px!important;box-shadow:0 2px 5px #12243b06;margin-bottom:14px!important}
+.customer-email-card>.card-body{padding:20px!important;gap:10px!important}
+.customer-email-card>.card-body>div:first-child{font-size:15px}
+.customer-email-card>.card-body>div:nth-child(2){font-size:16px!important;line-height:1.4}
+.customer-email-card>.card-body>div:nth-child(3){font-size:14px!important;line-height:1.6}
+.customer-email-followups{border-top:1px solid #eef2f6;padding-top:12px;margin-top:2px}
+.customer-email-followups summary{cursor:pointer;color:#275ea8;font-size:13px;font-weight:700;padding:3px 0}
+.customer-email-followups summary:focus-visible{outline:2px solid #2563eb;outline-offset:3px}
+.customer-email-followups>div>span{width:100%;padding:9px 12px!important;line-height:1.5;flex-wrap:wrap}
+.customer-email-followups button{margin-left:auto;min-height:30px}
+.customer-email-actions{justify-content:flex-end;flex-wrap:wrap;padding-top:8px}
+.customer-email-actions a{margin-right:auto}
+@media(max-width:600px){.customer-email-tools{flex-direction:column}.customer-email-card>.card-body{padding:15px!important}.customer-email-heading h2{font-size:24px}.customer-email-tabs .btn{padding:8px 11px}.customer-email-actions .btn{min-height:36px}}

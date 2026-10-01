@@ -76,7 +76,7 @@ function syncFixture(failSecondPage = false) {
   const saved = [], patches = [], queries = [];
   const module = { exports: {} };
   const admin = { from: () => ({
-    select: () => ({ eq: () => ({ in: async () => ({ data: [] }), maybeSingle: async () => ({ data: { name: 'Steve' } }) }) }),
+    select: () => ({ then: resolve => resolve({data:[]}), eq: () => ({ in: async () => ({ data: [] }), maybeSingle: async () => ({ data: { name: 'Steve' } }) }) }),
     upsert: async row => { saved.push(row); return {}; },
     update: patch => ({ eq: async () => { patches.push(patch); return {}; } }),
   }) };
@@ -84,6 +84,7 @@ function syncFixture(failSecondPage = false) {
     module, Date, console: { error: () => {} }, process: { env: { ANTHROPIC_API_KEY: 'mock' } },
     fetch: async () => ({ ok: true, json: async () => ({ content: [{ type: 'text', text: '{"important":true,"summary":"Reply to coach","tasks":[],"deadlines":[]}' }] }) }),
     require: id => {
+      if (id === './_customerEmailFilter') return require('../../netlify/functions/_customerEmailFilter');
       if (id === './_repGoogle') return { accessTokenForLink: async () => 'mock-token' };
       if (id === './_gmailAi') return {
         gmailFetch: async (token, url) => {
@@ -100,14 +101,16 @@ function syncFixture(failSecondPage = false) {
   });
   return { run: () => module.exports.syncLink(admin, { team_member_id: 'steve', google_email: 'steve@example.com' }, Date.now()+20000), saved, patches, queries };
 }
-test('uncategorized inbox mail is included and all pages are listed before oldest-first import', async () => {
+test('uncategorized inbox mail is included and all pages are listed before newest-first import', async () => {
   const f = syncFixture(); const result = await f.run();
   assert.equal(result.error, null); assert.equal(result.analyzed, 6);
-  assert.deepEqual(f.saved.map(r => r.gmail_message_id), ['1','2','3','4','5','6']);
+  assert.deepEqual(f.saved.map(r => r.gmail_message_id), ['60','59','58','57','56','55']);
   const query = new URL('https://gmail.test'+f.queries[0]).searchParams.get('q');
   assert.doesNotMatch(query, /category:primary/);
   assert.match(query, /in:inbox.*-category:promotions.*-category:social.*-category:forums/);
   assert.match(f.queries[1], /pageToken=next%2Fpage/);
+  assert.equal(result.remaining,54);
+  assert.equal(f.patches.at(-1).gmail_cursor_ms,null);
 });
 test('partial listing failure does not advance the cursor or import an incomplete batch', async () => {
   const f = syncFixture(true); assert.equal((await f.run()).error, 'Gmail unavailable');

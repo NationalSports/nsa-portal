@@ -6,6 +6,7 @@
 // workspace_items reminder (the same notes/reminders panel on the dashboard).
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon, SearchSelect } from './components';
+import './MyEmail.css';
 import { rememberEmailSender } from './utils/rememberEmailSender';
 
 const callFn=async(supabase,fn,body)=>{
@@ -38,6 +39,9 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
   const[rows,setRows]=useState([]);
   const[loading,setLoading]=useState(true);
   const[filter,setFilter]=useState('important');
+  const[search,setSearch]=useState('');
+  const[period,setPeriod]=useState('all');
+  const[syncResult,setSyncResult]=useState(null);
   const[busy,setBusy]=useState('');
   const[added,setAdded]=useState({});
   const[tagEdit,setTagEdit]=useState(null);// {id, customer_id, so_id, estimate_id}
@@ -96,7 +100,8 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
     setBusy('sync');
     try{
       const d=await callFn(supabase,'rep-gmail-sync',{});
-      notify?.(d.analyzed?('Checked '+d.analyzed+' new email'+(d.analyzed===1?'':'s')+' ('+d.important+' important)'):'No new email');
+      setSyncResult(d);
+      notify?.(d.analyzed?('Added '+d.analyzed+' customer email'+(d.analyzed===1?'':'s')):d.remaining?'More messages remain. Check again to continue.':'No new customer messages in this check.');
       await Promise.all([loadRows(),loadStatus()]);
     }catch(e){notify?.('Check failed: '+e.message,'error');await loadStatus()}
     setBusy('');
@@ -165,24 +170,32 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
     setBusy('');
   };
 
-  const visible=useMemo(()=>rows.filter(r=>{
-    if(filter==='important')return r.important&&r.status==='new';
-    if(filter==='done')return r.status!=='new';
-    return true;
-  }),[rows,filter]);
-  const importantCount=rows.filter(r=>r.important&&r.status==='new').length;
+  const customerRows=rows.filter(r=>r.status!=='dismissed'&&!/@nationalsportsapparel\.com$/i.test(r.sender_email||'')&&r.sender_email!=='nsashipping1@gmail.com');
+  const visible=customerRows.filter(r=>{
+    if(filter==='important'&&!(r.important&&r.status==='new'))return false;
+    if(filter==='done'&&r.status!=='done')return false;
+    if(filter==='unlinked'&&(r.customer_id||r.status!=='new'))return false;
+    if(filter==='all'&&r.status!=='new')return false;
+    if(period==='today'&&new Date(r.received_at).toDateString()!==new Date().toDateString())return false;
+    if(period==='week'&&Date.parse(r.received_at)<Date.now()-7*86400000)return false;
+    const text=[r.sender_name,r.sender_email,r.subject,r.summary,custName(r.customer_id)].join(' ').toLowerCase();
+    return !search.trim()||text.includes(search.trim().toLowerCase());
+  });
+  const importantCount=customerRows.filter(r=>r.important&&r.status==='new').length;
+  const unlinkedCount=customerRows.filter(r=>!r.customer_id&&r.status==='new').length;
 
   const gmailLink=r=>'https://mail.google.com/mail/u/'+encodeURIComponent(status?.google_email||'0')+'/#all/'+encodeURIComponent(r.gmail_thread_id||r.gmail_message_id);
 
   const chip={display:'inline-flex',alignItems:'center',gap:6,padding:'4px 8px',borderRadius:6,background:'#f8fafc',border:'1px solid #e2e8f0',fontSize:12,color:'#1e293b'};
   const addBtn=(done)=>({border:'none',borderRadius:4,padding:'2px 8px',fontSize:11,fontWeight:700,cursor:done?'default':'pointer',background:done?'#dcfce7':'#dbeafe',color:done?'#166534':'#1e40af'});
 
-  return(<div>
+  return(<div className="customer-email">
+    <header className="customer-email-heading"><div><span className="customer-email-eyebrow">YOUR CUSTOMER WORKSPACE</span><h2>Customer inbox</h2><p>Conversations with coaches, schools, and customers. Newest first.</p></div></header>
     <div className="card" style={{marginBottom:12}}>
       <div className="card-body" style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
         <Icon name="mail" size={18}/>
         <div style={{flex:1,minWidth:220}}>
-          <div style={{fontWeight:800,color:'#1e293b'}}>My Email</div>
+          <div style={{fontWeight:800,color:'#1e293b'}}>Your connected inbox</div>
           {!status?<div style={{fontSize:12,color:'#64748b'}}>Checking connection…</div>
           :status.error?<div style={{fontSize:12,color:'#b91c1c'}}>{status.error}</div>
           :status.connected?<div style={{fontSize:12,color:'#64748b'}}>
@@ -190,7 +203,7 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
             {status.last_error&&<div style={{color:'#b91c1c',marginTop:2}}>{status.last_error}</div>}
           </div>
           :<div style={{fontSize:12,color:'#64748b'}}>
-            Connect your Google account and AI will read new mail in your inbox (excluding promotions, social mail, and forums), flag what matters, and pull out tasks and deadlines. Only summaries are saved — never full emails. Nothing is sent without you.
+            Connect Google to find customer conversations and follow-ups. Internal team emails, supplier messages, and vendor bills are filtered out. Only summaries are saved — never full emails. Nothing is sent without you.
             {status.configured===false&&<div style={{color:'#b45309',marginTop:2}}>Google sign-in isn't set up on the server yet.</div>}
           </div>}
         </div>
@@ -202,18 +215,23 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
       </div>
     </div>
 
-    <div style={{display:'flex',gap:6,marginBottom:10}}>
-      {[['important','Important'+(importantCount?' ('+importantCount+')':'')],['all','All'],['done','Done']].map(([id,label])=>
-        <button key={id} className={'btn btn-sm '+(filter===id?'btn-primary':'btn-secondary')} onClick={()=>setFilter(id)}>{label}</button>)}
+    <div className="customer-email-status" role="status">{busy==='sync'?'Checking recent messages and finding customer conversations…':syncResult?`${syncResult.analyzed||0} customer emails added · ${syncResult.skipped||0} non-customer messages filtered${syncResult.remaining?' · '+syncResult.remaining+' messages still to check — select Check now to continue.':''}`:'Customer conversations only. Internal emails and supplier bills stay out of this view.'}</div>
+    <div className="customer-email-tools">
+      <input aria-label="Search customer emails" placeholder="Search customer, sender, or subject…" value={search} onChange={e=>setSearch(e.target.value)}/>
+      <select aria-label="Email date range" value={period} onChange={e=>setPeriod(e.target.value)}><option value="all">All imported dates</option><option value="today">Today</option><option value="week">Last 7 days</option></select>
+    </div>
+    <div className="customer-email-tabs">
+      {[['important','Needs attention ('+importantCount+')'],['all','All customers'],['unlinked','Needs account ('+unlinkedCount+')'],['done','Done']].map(([id,label])=>
+        <button key={id} className={'btn btn-sm '+(filter===id?'btn-primary':'btn-secondary')} aria-pressed={filter===id} onClick={()=>setFilter(id)}>{label}</button>)}
     </div>
 
     {loading?<div style={{padding:24,color:'#64748b',fontSize:13}}>Loading…</div>
     :visible.length===0?<div className="card"><div className="card-body" style={{color:'#64748b',fontSize:13}}>
-      {filter==='important'?(status?.connected?'Nothing important waiting. Select Check now to check for new email.':'Connect Google to get started.'):'No email here yet.'}
+      <strong>{search||period!=='all'?'No conversations match these filters.':filter==='important'?'You’re caught up on imported follow-ups.':'No customer conversations in this view yet.'}</strong><p>{status?.connected?'Select Check now for recent customer mail, or try All customers.':'Connect Google to get started.'}</p>
     </div></div>
     :visible.map(r=>{
       const cname=custName(r.customer_id);
-      return(<div key={r.id} className="card" style={{marginBottom:8,opacity:r.status==='new'?1:0.7}}>
+      return(<div key={r.id} className="card customer-email-card" style={{marginBottom:8,opacity:r.status==='new'?1:0.7}}>
         <div className="card-body" style={{display:'grid',gap:6}}>
           <div style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
             {r.important&&<span style={{width:8,height:8,borderRadius:4,background:'#2563eb',display:'inline-block'}} title="Important"/>}
@@ -222,7 +240,7 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
           </div>
           <div style={{fontSize:13,fontWeight:600,color:'#334155'}}>{r.subject||'(no subject)'}</div>
           {r.summary?<div style={{fontSize:13,color:'#1e293b'}}>{r.summary}</div>:<div style={{fontSize:12,color:'#64748b'}}>{r.snippet}</div>}
-          {r.importance_reason&&<div style={{fontSize:11,color:'#64748b'}}>Why: {r.importance_reason}</div>}
+
           {tagEdit?.id===r.id?<div style={{display:'grid',gap:6,padding:8,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6}}>
             <div style={{fontSize:11,fontWeight:700,color:'#64748b'}}>ACCOUNT</div>
             <SearchSelect options={custOptions} value={tagEdit.customer_id||null} onChange={pickTagCustomer} placeholder="Pick an account…" limit={50}/>
@@ -255,7 +273,7 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
             </>:<span style={{color:'#94a3b8'}}>Not tagged to an account</span>}
             <button style={{border:'none',background:'none',color:'#2563eb',cursor:'pointer',fontSize:11,fontWeight:700,padding:0}} onClick={()=>setTagEdit({id:r.id,customer_id:r.customer_id||'',so_id:r.so_id||'',estimate_id:r.estimate_id||'',rememberSender:false})}>{cname||r.so_id||r.estimate_id?'Edit tags':'Tag account / order'}</button>
           </div>}
-          {(r.tasks?.length>0||r.deadlines?.length>0)&&<div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:2}}>
+          {(r.tasks?.length>0||r.deadlines?.length>0)&&<details className="customer-email-followups"><summary>Suggested follow-ups ({(r.tasks?.length||0)+(r.deadlines?.length||0)})</summary><div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:10}}>
             {(r.tasks||[]).map((t,i)=>{const key=r.id+':t'+i;return(
               <span key={key} style={chip}>
                 <b style={{fontSize:10,color:'#64748b'}}>TASK</b>{t.title}{t.due_date&&<span style={{color:'#64748b'}}>· {fmtDay(t.due_date)}</span>}
@@ -266,12 +284,12 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
                 <b style={{fontSize:10,color:'#9a3412'}}>DEADLINE</b>{d.label}<span style={{color:'#64748b'}}>· {fmtDay(d.date)}</span>
                 <button style={addBtn(added[key])} disabled={added[key]||busy===key} onClick={()=>addReminder(r,key,{title:d.label,date:d.date,label:'deadline'})}>{added[key]?'Added':'+ Reminder'}</button>
               </span>)})}
-          </div>}
-          <div style={{display:'flex',gap:6,marginTop:4}}>
+          </div></details>}
+          <div className="customer-email-actions" style={{display:'flex',gap:6,marginTop:4}}>
             <a className="btn btn-sm btn-secondary" href={gmailLink(r)} target="_blank" rel="noopener noreferrer">Open in Gmail</a>
             {r.status==='new'?<>
               <button className="btn btn-sm btn-secondary" onClick={()=>setRowStatus(r,'done')}>Done</button>
-              {r.important&&<button className="btn btn-sm btn-secondary" onClick={()=>setRowStatus(r,'dismissed')}>Not important</button>}
+              {r.important&&<button className="btn btn-sm btn-secondary" onClick={()=>setRowStatus(r,'dismissed')}>Hide from inbox</button>}
             </>:<button className="btn btn-sm btn-secondary" onClick={()=>setRowStatus(r,'new')}>Move back</button>}
           </div>
         </div>
