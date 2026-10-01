@@ -408,7 +408,7 @@ function buildAvailabilityReport(store, label, lines, stockByPid, orderById, mad
       ${chip(ordersTotal - shortOrders.length, 'Orders OK')}
       ${chip(shortOrders.length, 'Orders short', shortOrders.length > 0)}
     </div>
-    ${untrackedUnits ? `<div class="meta" style="margin-top:8px">${untrackedUnits} made-to-order unit${untrackedUnits === 1 ? '' : 's'} (no stock record) counted as available.</div>` : ''}
+    ${untrackedUnits ? `<div class="meta" style="margin-top:8px">${untrackedUnits} unit${untrackedUnits === 1 ? '' : 's'} not stock-checked (made-to-order or stock not verified). Confirm availability before ordering.</div>` : ''}
     ${shortRows.length ? `<h3>Not available <span class="ct">${shortRows.length} item${shortRows.length === 1 ? '' : 's'}</span></h3>${itemTable(shortRows)}` : ''}
     ${shortOrders.length ? `<h3>Whose items are short <span class="ct">${shortOrders.length} order${shortOrders.length === 1 ? '' : 's'}</span></h3>${shortOrders.map(orderBlock).join('')}` : '<h3>Whose items are short</h3><div class="ok">✓ Every order can be filled in full.</div>'}
     <h3>Available <span class="ct">${okRows.length} item${okRows.length === 1 ? '' : 's'}</span></h3>${okRows.length ? itemTable(okRows) : '<div class="meta">No fully-available stock items.</div>'}
@@ -763,27 +763,37 @@ export function arrivedVendorQty(sizeEta, sizeIncoming, size, today = todayIso()
 // `arrived` = units the vendor said would land on/before today that our snapshot
 // still shows as 0 (see arrivedVendorQty); `arrivedEta` / `syncedAt` let callers
 // say WHY they're counting them.
+// Presence of a catalog row is not evidence of inventory. Check the requested
+// size explicitly; a recorded zero is known, while null/missing is unknown.
+const hasStockSize = (sizes, size) => sizes?.[size] != null;
+export function needsSkuStock(i, stockByPid) {
+  const st = i.product_id ? stockByPid[i.product_id] : null;
+  return !hasStockSize(st?.vendor_size_stock, i.size || 'OS');
+}
 export function lineStock(i, stockByPid, stockBySku, madeToOrder) {
   const size = i.size || 'OS';
-  if (i._skuOv) {
-    const vst = stockBySku[i._effSku];
-    const base = i.product_id ? stockByPid[i.product_id] : null;
-    // known: we have real stock numbers to SHOW even when the item is untracked
-    // (tracking off = never blocked/short, but availability is still informative).
-    return { ours: 0, vendor: vst ? (Number(vst.sizes[size]) || 0) : 0, arrived: vst ? arrivedVendorQty(vst.sizeEta, vst.sizeIncoming, size) : 0, arrivedEta: vst ? String((vst.sizeEta || {})[size] || '') : '', syncedAt: (vst && vst.syncedAt) || null, tracked: !!vst && !madeToOrder.has(i.product_id), known: !!vst, onOrder: !!(vst && vst.eta), name: base && base.name };
-  }
   const st = i.product_id ? stockByPid[i.product_id] : null;
-  // No product stock record, but the unified vendor inventory knows the SKU
-  // (API/catalog-synced vendors — S&S adidas, UA, CLICK, …): read vendor stock by
-  // SKU so these lines get a real availability picture instead of being skipped.
-  // Tracked only for sizes the feed actually lists — a missing size stays "no
-  // record" (never a phantom shortfall; some synced rows are '_na' placeholders).
-  if (!st && i.sku && stockBySku[i.sku]) {
-    const vst = stockBySku[i.sku];
-    const has = vst.sizes[size] != null;
-    return { ours: 0, vendor: has ? (Number(vst.sizes[size]) || 0) : 0, arrived: has ? arrivedVendorQty(vst.sizeEta, vst.sizeIncoming, size) : 0, arrivedEta: has ? String((vst.sizeEta || {})[size] || '') : '', syncedAt: vst.syncedAt || null, tracked: has && !madeToOrder.has(i.product_id), known: has, onOrder: !!vst.eta, name: i.name };
-  }
-  return { ours: Number(((st && st.size_stock) || {})[size]) || 0, vendor: Number(((st && st.vendor_size_stock) || {})[size]) || 0, arrived: st ? arrivedVendorQty(st.vendor_size_eta, st.vendor_size_incoming, size) : 0, arrivedEta: String(((st && st.vendor_size_eta) || {})[size] || ''), syncedAt: (st && st.vendor_synced_at) || null, tracked: !!st && !madeToOrder.has(i.product_id), known: !!st, onOrder: !!(st && (st.on_order_qty || st.vendor_eta)), name: st && st.name };
+  const vst = stockBySku[i._skuOv ? i._effSku : i.sku];
+  const productVendorKnown = !i._skuOv && hasStockSize(st?.vendor_size_stock, size);
+  const fallbackKnown = hasStockSize(vst?.sizes, size);
+  const oursKnown = !i._skuOv && hasStockSize(st?.size_stock, size);
+  const known = productVendorKnown || fallbackKnown || oursKnown;
+  // Prefer the product's source-scoped inventory, using SKU stock only when that
+  // size is missing. Warehouse stock remains independent of the vendor fallback.
+  const vendor = productVendorKnown ? st.vendor_size_stock[size] : fallbackKnown ? vst.sizes[size] : 0;
+  const eta = productVendorKnown ? st.vendor_size_eta : fallbackKnown ? vst.sizeEta : null;
+  const incoming = productVendorKnown ? st.vendor_size_incoming : fallbackKnown ? vst.sizeIncoming : null;
+  return {
+    ours: oursKnown ? Number(st.size_stock[size]) || 0 : 0,
+    vendor: Number(vendor) || 0,
+    arrived: arrivedVendorQty(eta, incoming, size),
+    arrivedEta: String(eta?.[size] || ''),
+    syncedAt: (productVendorKnown ? st.vendor_synced_at : fallbackKnown ? vst.syncedAt : null) || null,
+    tracked: known && !madeToOrder.has(i.product_id),
+    known,
+    onOrder: !!((!i._skuOv && st?.on_order_qty) || (productVendorKnown ? st.vendor_eta : fallbackKnown && vst.eta)),
+    name: st?.name || i.name,
+  };
 }
 // Aggregation key: overridden sizes pool stock separately from the base SKU.
 const lineStockKey = (i) => (i.product_id || i.sku || 'x') + (i._skuOv ? '§' + i._effSku : '') + '|' + (i.size || 'OS');
@@ -851,7 +861,7 @@ function buildStockReport(store, label, lines, stockByPid, madeToOrder = new Set
       ${chip(sum((r) => r.poVendor), 'Order from Adidas', sum((r) => r.poVendor) > 0)}
       ${chip(sum((r) => r.backorder), 'Backordered', sum((r) => r.backorder) > 0)}
     </div>
-    ${untracked.length ? `<div class="meta" style="margin-top:8px">${untracked.reduce((a, r) => a + r.need, 0)} made-to-order unit(s) (no stock record) are not counted as shortfalls.</div>` : ''}
+    ${untracked.length ? `<div class="meta" style="margin-top:8px">${untracked.reduce((a, r) => a + r.need, 0)} unit(s) are not stock-checked (made-to-order or stock not verified). Confirm availability before ordering.</div>` : ''}
     ${sum((r) => r.arrived || 0) ? `<div class="meta" style="margin-top:8px">Adidas counts include ${sum((r) => r.arrived || 0)} unit(s) from deliveries dated on or before today that our last stock sync hadn't picked up yet — re-run the Adidas sync to confirm.</div>` : ''}
     ${needSrc.length
       ? `<h3>Need to source <span class="ct">${needSrc.length} line${needSrc.length === 1 ? '' : 's'}</span></h3>
@@ -3485,7 +3495,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const lines = annotateEffSkus(activeWebstoreLines((detail?.orderItems || []).filter((i) => openIds.has(i.order_id)), orderById), skuMap);
     const stockByPid = {};
     (detail?.catalog || []).forEach((c) => { const _s = detail.invSrcByPid?.[c.product_id]; if (c.product_id && detail.stockByWp?.[c.id] && _s && _s !== 'manual') stockByPid[c.product_id] = detail.stockByWp[c.id]; });
-    const stockBySku = await fetchOverrideSkuStock(lines);
+    const stockBySku = {
+      ...(await fetchSkuStock(lines.filter((i) => !i._skuOv && i.sku && needsSkuStock(i, stockByPid)).map((i) => i.sku))),
+      ...(await fetchOverrideSkuStock(lines)),
+    };
     return { open, openIds, lines, stockByPid, stockBySku, orderById };
   }, [detail]);
 
@@ -3533,7 +3546,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     }
     lines = lines.map((l) => { const p = productBySku[l._effSku]; return p ? { ...l, product_id: l.product_id || p.id, name: l.name || p.name, color: l.color || p.color, _reportImage: p.image_front_url || '' } : l; });
     lines = await attachAdidasTagSkus(supabase, lines);
-    const stockBySku = await fetchSkuStock(lines.filter((l) => l._effSku && (l._wasSku || !l.product_id || !stockByPid[l.product_id])).map((l) => l._effSku));
+    const stockBySku = await fetchSkuStock(lines.filter((l) => l._effSku && (l._wasSku || l._skuOv || needsSkuStock(l, stockByPid))).map((l) => l._effSku));
     return { valid, lines, audit, stockByPid, stockBySku, orderById, roster: detail?.roster || [] };
   }, [detail]);
 
@@ -3670,13 +3683,13 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const stockByPid = {};
     (detail.catalog || []).forEach((c) => { const _s = detail.invSrcByPid?.[c.product_id]; if (c.product_id && detail.stockByWp?.[c.id] && _s && _s !== 'manual') stockByPid[c.product_id] = detail.stockByWp[c.id]; });
     // Override SKUs, plus lines the store stock map can't cover (no linked product,
-    // or a linked product with no stock record): check those against the unified
+    // or a linked product with no vendor record for the requested size): check those against the unified
     // vendor inventory by SKU — the same synced source manual order entry reads —
     // so API-carried items (S&S adidas, UA, …) get a real pre-batch stock check
     // instead of silently skipping it. Bare styles with no colorway ('AT105') have
     // no inventory row and stay unchecked, same as before.
     const stockBySku = {
-      ...(await fetchSkuStock(lines.filter((i) => !i._skuOv && i.sku && !(i.product_id && stockByPid[i.product_id])).map((i) => i.sku))),
+      ...(await fetchSkuStock(lines.filter((i) => !i._skuOv && i.sku && needsSkuStock(i, stockByPid)).map((i) => i.sku))),
       ...(await fetchOverrideSkuStock(lines)),
     };
     // Items marked made-to-order (Inventory tracking → off) are decorated/custom and
@@ -4656,7 +4669,7 @@ function SoConfirmModal({ orders = [], shortagesFor, stockRowsFor, decoRowsFor, 
                   <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                     {okRows > 0 && chip(okRows + ' covered', '#166534', '#f0fdf4', '#bbf7d0')}
                     {shortRows > 0 && chip(shortRows + ' short', '#b45309', '#fffbeb', '#fde68a')}
-                    {unknownRows > 0 && chip(unknownRows + ' no record', '#475569', '#f1f5f9', '#e2e8f0')}
+                    {unknownRows > 0 && chip(unknownRows + ' unverified', '#475569', '#f1f5f9', '#e2e8f0')}
                     <span style={{ color: '#94a3b8', fontSize: 12 }}>{showStock ? '▾' : '▸'}</span>
                   </span>
                 </button>
@@ -4669,7 +4682,7 @@ function SoConfirmModal({ orders = [], shortagesFor, stockRowsFor, decoRowsFor, 
                         <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#475569' }}>{r.name}</span>
                         <span style={{ fontWeight: 700, color: '#334155', whiteSpace: 'nowrap' }}>{r.size} × {r.need}</span>
                         {!r.known
-                          ? chip('no stock record', '#475569', '#f1f5f9', '#e2e8f0')
+                          ? chip('stock not verified', '#475569', '#f1f5f9', '#e2e8f0')
                           : short
                             ? chip('short ' + r.backorder + ' (' + r.ours + ' ours + ' + r.vendorAvail + ' vendor)', '#b45309', '#fffbeb', '#fde68a')
                             : chip((r.ours >= r.need ? r.ours + ' ours' : r.ours + ' ours + ' + r.vendorAvail + ' vendor') + (r.tracked ? '' : ' · untracked'), '#166534', '#f0fdf4', '#bbf7d0')}

@@ -83,9 +83,10 @@ describe('aggStock — the shortfall math the batch modal and stock report share
     expect(r.poVendor).toBe(17);
     expect(r.backorder).toBe(3);
   });
-  test('a size with neither stock nor a landed delivery is still short', () => {
+  test('a size missing from the feed is unverified, not a confirmed shortfall', () => {
     const [r] = aggStock([line('2XL5', 2)], stockByPid);
     expect(r.vendorAvail).toBe(0);
-    expect(r.backorder).toBe(2);
+    expect(r.backorder).toBe(0);
+    expect(r.known).toBe(false);
   });
 });
