@@ -211,7 +211,8 @@ async function syncLink(admin, link, deadline) {
   const result = { team_member_id: link.team_member_id, analyzed: 0, important: 0, checked: 0, skipped: 0, remaining: 0, error: null };
   try {
     const token = await accessTokenForLink(admin, link);
-    const since = link.gmail_cursor_ms ? `after:${Math.floor(Number(link.gmail_cursor_ms) / 1000)}` : FIRST_SYNC_QUERY;
+    const initialFloor = Date.parse(link.created_at || '') - 3 * 86400000;
+    const since = link.gmail_cursor_ms ? `after:${Math.floor(Number(link.gmail_cursor_ms) / 1000)}` : Number.isFinite(initialFloor) ? `after:${Math.floor(initialFloor / 1000)}` : FIRST_SYNC_QUERY;
     // Some mailboxes have no Primary category. Exclude bulk categories instead
     // of requiring a category label that would silently hide all their mail.
     const q = encodeURIComponent(`in:inbox -from:me -category:promotions -category:social -category:forums ${since}`);
@@ -229,14 +230,15 @@ async function syncLink(admin, link, deadline) {
       return result;
     }
     const seenSet = new Set();
+    let newestSeen = 0;
     for (let offset = 0; offset < ids.length; offset += 200) {
       const { data: seen, error } = await admin
         .from('rep_email_insights')
-        .select('gmail_message_id')
+        .select('gmail_message_id,received_at')
         .eq('team_member_id', link.team_member_id)
         .in('gmail_message_id', ids.slice(offset, offset + 200));
       if (error) throw new Error(`Reading imported email failed: ${error.message}`);
-      for (const row of seen || []) seenSet.add(row.gmail_message_id);
+      for (const row of seen || []) { seenSet.add(row.gmail_message_id); newestSeen = Math.max(newestSeen, Date.parse(row.received_at || '') || 0); }
     }
     // Import newest first, but keep the old cursor until every unseen message is handled.
     // Advancing it after a partial newest-first batch would permanently lose the backlog.
@@ -250,7 +252,7 @@ async function syncLink(admin, link, deadline) {
     let aiCalls = 0;
 
     const { data: rep } = await admin.from('team_members').select('name').eq('id', link.team_member_id).maybeSingle();
-    let cursor = Number(link.gmail_cursor_ms || 0);
+    let cursor = Math.max(Number(link.gmail_cursor_ms || 0), newestSeen);
     for (const id of todo) {
       if (Date.now() > deadline || aiCalls >= MAX_PER_REP || result.checked >= 50) break;
       const parsed = parseMessage(await getMessage(token, id));
