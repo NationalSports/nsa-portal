@@ -75,8 +75,8 @@ describe('supplier-bill apply paths (App.js)', () => {
   });
 
   it('treats a portal-ledger duplicate as an already-applied QBO backfill', () => {
-    expect(APP.includes('const portalWasAlreadyApplied=!_billApplySession.current.hasPending(billingAttemptKey(b))&&portalBillAlreadyApplied(bill,_docAlreadyApplied)')).toBe(true);
-    expect(APP).toContain("b.portalMsg=portalWasAlreadyApplied?'Already applied to Portal; QBO backfill verified':'Applied to Portal after QBO verification'");
+    expect(APP.includes('const portalWasAlreadyApplied=portalAlreadyApplied||(!_billApplySession.current.hasPending(billingAttemptKey(b))&&portalBillAlreadyApplied(bill,_docAlreadyApplied))')).toBe(true);
+    expect(APP).toContain("portalWasAlreadyApplied?'Already applied to Portal; QBO backfill verified':'Applied to Portal after QBO verification'");
     expect(APP.includes('portalApplied=!!(await _applyBillsToPortal([b]))')).toBe(true);
   });
 
