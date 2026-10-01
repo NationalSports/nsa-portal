@@ -7,6 +7,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon, SearchSelect } from './components';
 import './MyEmail.css';
+import CustomerEmailReply from './CustomerEmailReply';
 import { rememberEmailSender } from './utils/rememberEmailSender';
 
 const callFn=async(supabase,fn,body)=>{
@@ -39,6 +40,8 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
   const[rows,setRows]=useState([]);
   const[loading,setLoading]=useState(true);
   const[filter,setFilter]=useState('important');
+  const[replyId,setReplyId]=useState(null);
+  const replyCall=useCallback((fn,body)=>callFn(supabase,fn,body),[supabase]);
   const[search,setSearch]=useState('');
   const[period,setPeriod]=useState('all');
   const[syncResult,setSyncResult]=useState(null);
@@ -285,7 +288,9 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
                 <button style={addBtn(added[key])} disabled={added[key]||busy===key} onClick={()=>addReminder(r,key,{title:d.label,date:d.date,label:'deadline'})}>{added[key]?'Added':'+ Reminder'}</button>
               </span>)})}
           </div></details>}
+          {replyId===r.id&&<CustomerEmailReply row={r} call={replyCall} onClose={()=>setReplyId(null)}/>}
           <div className="customer-email-actions" style={{display:'flex',gap:6,marginTop:4}}>
+            <button className="btn btn-sm btn-primary" disabled={!!replyId} onClick={()=>setReplyId(r.id)}>Reply</button>
             <a className="btn btn-sm btn-secondary" href={gmailLink(r)} target="_blank" rel="noopener noreferrer">Open in Gmail</a>
             {r.status==='new'?<>
               <button className="btn btn-sm btn-secondary" onClick={()=>setRowStatus(r,'done')}>Done</button>
