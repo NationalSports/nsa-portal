@@ -13,6 +13,6 @@ exports.handler = async (event) => {
   const { data: link, error } = await auth.admin.from('rep_google_links').select('*').eq('team_member_id', auth.teamMemberId).maybeSingle();
   if (error) return json(500, { error: error.message });
   if (!link) return json(400, { error: 'Connect Google first' });
-  const result = await syncLink(auth.admin, link, deadline);
+  const result = await syncLink(auth.admin, link, deadline, event);
   return json(result.error ? 500 : 200, { ok: !result.error, ...result });
 };

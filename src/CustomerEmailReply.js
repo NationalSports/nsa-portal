@@ -1,6 +1,6 @@
 import React,{useEffect,useState} from 'react';
-export default function CustomerEmailReply({row,call,onClose}){
- const [context,setContext]=useState(null),[text,setText]=useState(''),[draft,setDraft]=useState(null),[savedText,setSavedText]=useState(null),[busy,setBusy]=useState('load'),[error,setError]=useState(''),[sent,setSent]=useState(false);
+export default function CustomerEmailReply({row,call,onClose,initialText=''}){
+ const [context,setContext]=useState(null),[text,setText]=useState(initialText),[draft,setDraft]=useState(null),[savedText,setSavedText]=useState(null),[busy,setBusy]=useState('load'),[error,setError]=useState(''),[sent,setSent]=useState(false);
  useEffect(()=>{let alive=true;call('rep-gmail-reply',{action:'prepare',insightId:row.id}).then(d=>{if(alive)setContext(d)}).catch(e=>{if(alive)setError(e.message)}).finally(()=>{if(alive)setBusy('')});return()=>{alive=false}},[row.id,call]);
  const save=async()=>{
   setBusy('draft');setError('');

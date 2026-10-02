@@ -3,7 +3,7 @@ const { getSupabaseAdmin } = require('./_shared');
 const { syncLink } = require('./_repGmailSync');
 const SCHEDULE_MIN_GAP_MS = 5 * 60 * 1000;
 
-exports.handler = async () => {
+exports.handler = async (event) => {
   const deadline = Date.now() + 20000;
   const admin = getSupabaseAdmin();
   const freshCutoff = new Date(Date.now() - SCHEDULE_MIN_GAP_MS).toISOString();
@@ -19,7 +19,7 @@ exports.handler = async () => {
   let synced = 0;
   for (const link of links || []) {
     if (Date.now() > deadline) break;
-    await syncLink(admin, link, deadline);
+    await syncLink(admin, link, deadline, event);
     synced += 1;
   }
   console.log('[rep-gmail-scheduled] mailboxes:', synced);

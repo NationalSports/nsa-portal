@@ -6,6 +6,7 @@
 // separate Netlify scheduled worker.
 // Nothing is sent, labelled or modified in Gmail; this only reads.
 const { gmailFetch, getMessage, parseMessage } = require('./_gmailAi');
+const { queueWork, PILOT } = require('./_repEmailWork');
 const { exclusionReason } = require('./_customerEmailFilter');
 const { accessTokenForLink } = require('./_repGoogle');
 
@@ -207,7 +208,7 @@ async function autoTags(admin, parsed, { repId, repEmail }) {
   };
 }
 
-async function syncLink(admin, link, deadline) {
+async function syncLink(admin, link, deadline, event) {
   const result = { team_member_id: link.team_member_id, analyzed: 0, important: 0, checked: 0, skipped: 0, remaining: 0, error: null };
   try {
     const token = await accessTokenForLink(admin, link);
@@ -294,6 +295,12 @@ async function syncLink(admin, link, deadline) {
         deadlines: analysis.customer_message === false ? [] : analysis.deadlines,
       }, { onConflict: 'team_member_id,gmail_message_id', ignoreDuplicates: true });
       if (error) throw new Error(`Saving insight failed: ${error.message}`);
+      if (event && link.team_member_id === PILOT && analysis.customer_message !== false && analysis.important && /quote|estimat|order|stock|siz|apparel|uniform|sweat|shirt|hat|pant|jacket/i.test([parsed.subject,analysis.summary].join(' '))) {
+        try {
+          const {data: saved} = await admin.from('rep_email_insights').select('*').eq('team_member_id',link.team_member_id).eq('gmail_message_id',id).single();
+          if(saved)await queueWork(admin,saved,event);
+        } catch(e) { result.preparation_error='Some email preparation could not start. Use Prepare on the email to retry.'; console.error('[email-preparation]',e.message); }
+      }
       result.checked += 1;
       result.remaining -= 1;
       if (analysis.customer_message === false) result.skipped += 1;

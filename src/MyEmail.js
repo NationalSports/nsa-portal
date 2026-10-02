@@ -8,6 +8,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Icon, SearchSelect } from './components';
 import './MyEmail.css';
 import CustomerEmailReply from './CustomerEmailReply';
+import CustomerEmailWork from './CustomerEmailWork';
 import { rememberEmailSender } from './utils/rememberEmailSender';
 
 const callFn=async(supabase,fn,body)=>{
@@ -32,7 +33,7 @@ const CALLBACK_MESSAGES={
   error:['Google sign-in failed. Try again.','error'],
 };
 
-export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyProp}){
+export default function MyEmail({supabase,cu,customers,sos,ests,products,vendors,searchProducts,onOpenEstimate,notify:notifyProp}){
   // App's notify is recreated every render; read it through a ref so loaders stay stable.
   const notifyRef=useRef(notifyProp);notifyRef.current=notifyProp;
   const notify=useCallback((...a)=>notifyRef.current?.(...a),[]);
@@ -41,6 +42,16 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
   const[loading,setLoading]=useState(true);
   const[filter,setFilter]=useState('important');
   const[replyId,setReplyId]=useState(null);
+  const[replySeed,setReplySeed]=useState('');
+  const[workRows,setWorkRows]=useState([]);
+  const pilot=cu?.id==='00000000-0000-0000-0000-000000000001';
+  const syncLock=useRef(false);
+  const loadWork=useCallback(async()=>{
+    if(!supabase||!cu?.id||!pilot)return;
+    const{data,error}=await supabase.from('rep_email_work').select('*').eq('team_member_id',cu.id).order('updated_at',{ascending:false}).limit(200);
+    if(!error)setWorkRows(data||[]);
+  },[supabase,cu?.id,pilot]);
+  useEffect(()=>{loadWork();const timer=setInterval(loadWork,5000);return()=>clearInterval(timer)},[loadWork]);
   const replyCall=useCallback((fn,body)=>callFn(supabase,fn,body),[supabase]);
   const[search,setSearch]=useState('');
   const[period,setPeriod]=useState('all');
@@ -66,13 +77,23 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
 
   const loadRows=useCallback(async()=>{
     if(!supabase||!cu?.id){setLoading(false);return}
-    const{data,error}=await supabase.from('rep_email_insights').select('*').eq('team_member_id',cu.id).order('received_at',{ascending:false}).limit(200);
+    const{data,error}=await supabase.from('rep_email_insights').select('*').eq('team_member_id',cu.id).neq('status','dismissed').order('received_at',{ascending:false}).limit(200);
     if(error)notify?.('My Email could not load: '+error.message,'error');
     else setRows(data||[]);
     setLoading(false);
   },[supabase,cu?.id,notify]);
 
   useEffect(()=>{loadStatus();loadRows()},[loadStatus,loadRows]);
+
+  useEffect(()=>{
+    if(!pilot||!status?.connected)return;
+    const tick=async()=>{
+      if(document.visibilityState!=='visible'||syncLock.current)return;
+      syncLock.current=true;
+      try{const d=await callFn(supabase,'rep-gmail-sync',{});setSyncResult(d);await Promise.all([loadRows(),loadStatus(),loadWork()])}catch(e){setSyncResult({error:e.message})}finally{syncLock.current=false}
+    };
+    const timer=setInterval(tick,60000);return()=>clearInterval(timer);
+  },[pilot,status?.connected,supabase,loadRows,loadStatus,loadWork]);
 
   // Google redirects back to /?pg=my_email&google=<result>; show it once, then tidy the URL.
   useEffect(()=>{
@@ -100,6 +121,7 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
     setBusy('');
   };
   const checkNow=async()=>{
+    if(syncLock.current)return;syncLock.current=true;
     setBusy('sync');
     try{
       const d=await callFn(supabase,'rep-gmail-sync',{});
@@ -107,7 +129,7 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
       notify?.(d.analyzed?('Added '+d.analyzed+' customer email'+(d.analyzed===1?'':'s')):d.remaining?'More messages remain. Check again to continue.':'No new customer messages in this check.');
       await Promise.all([loadRows(),loadStatus()]);
     }catch(e){notify?.('Check failed: '+e.message,'error');await loadStatus()}
-    setBusy('');
+    setBusy('');syncLock.current=false;
   };
 
   const setRowStatus=async(row,next)=>{
@@ -193,6 +215,9 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
   const addBtn=(done)=>({border:'none',borderRadius:4,padding:'2px 8px',fontSize:11,fontWeight:700,cursor:done?'default':'pointer',background:done?'#dcfce7':'#dbeafe',color:done?'#166534':'#1e40af'});
 
   return(<div className="customer-email">
+    {pilot&&status?.connected&&<p className="email-work-notice">Your pilot checks for new mail every minute while this page is visible and prepares customer requests in the background. Review all drafts before sending.</p>}
+    {syncResult?.error&&<p role="alert" className="email-work-error">Automatic email check failed: {syncResult.error}</p>}
+    {syncResult?.preparation_error&&<p role="alert" className="email-work-error">{syncResult.preparation_error}</p>}
     <header className="customer-email-heading"><div><span className="customer-email-eyebrow">YOUR CUSTOMER WORKSPACE</span><h2>Customer inbox</h2><p>Conversations with coaches, schools, and customers. Newest first.</p></div></header>
     <div className="card" style={{marginBottom:12}}>
       <div className="card-body" style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
@@ -288,9 +313,10 @@ export default function MyEmail({supabase,cu,customers,sos,ests,notify:notifyPro
                 <button style={addBtn(added[key])} disabled={added[key]||busy===key} onClick={()=>addReminder(r,key,{title:d.label,date:d.date,label:'deadline'})}>{added[key]?'Added':'+ Reminder'}</button>
               </span>)})}
           </div></details>}
-          {replyId===r.id&&<CustomerEmailReply row={r} call={replyCall} onClose={()=>setReplyId(null)}/>}
+          {pilot&&<CustomerEmailWork row={r} work={workRows.find(w=>w.gmail_thread_id===(r.gmail_thread_id||r.gmail_message_id))} call={replyCall} onRefresh={loadWork} products={products} vendors={vendors} searchProducts={searchProducts} onOpenEstimate={onOpenEstimate} onReply={text=>{if(replyId){notify('Close the current reply before opening a suggested reply.');return;}setReplySeed(text);setReplyId(r.id)}}/>}
+          {replyId===r.id&&<CustomerEmailReply key={r.id} row={r} initialText={replySeed} call={replyCall} onClose={()=>setReplyId(null)}/>}
           <div className="customer-email-actions" style={{display:'flex',gap:6,marginTop:4}}>
-            <button className="btn btn-sm btn-primary" disabled={!!replyId} onClick={()=>setReplyId(r.id)}>Reply</button>
+            <button className="btn btn-sm btn-primary" disabled={!!replyId} onClick={()=>{setReplySeed('');setReplyId(r.id)}}>Reply</button>
             <a className="btn btn-sm btn-secondary" href={gmailLink(r)} target="_blank" rel="noopener noreferrer">Open in Gmail</a>
             {r.status==='new'?<>
               <button className="btn btn-sm btn-secondary" onClick={()=>setRowStatus(r,'done')}>Done</button>

@@ -84,6 +84,7 @@ function syncFixture(failSecondPage = false) {
     module, Date, console: { error: () => {} }, process: { env: { ANTHROPIC_API_KEY: 'mock' } },
     fetch: async () => ({ ok: true, json: async () => ({ content: [{ type: 'text', text: '{"important":true,"summary":"Reply to coach","tasks":[],"deadlines":[]}' }] }) }),
     require: id => {
+      if (id === './_repEmailWork') return { PILOT: 'pilot-only', queueWork: async () => null };
       if (id === './_customerEmailFilter') return require('../../netlify/functions/_customerEmailFilter');
       if (id === './_repGoogle') return { accessTokenForLink: async () => 'mock-token' };
       if (id === './_gmailAi') return {
