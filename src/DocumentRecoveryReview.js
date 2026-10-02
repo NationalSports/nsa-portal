@@ -2,7 +2,7 @@ import React,{useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {prepareRecoveryDraft,recoveryDifferences} from './lib/recoveryReview';
 
 const show=value=>value==null?'—':typeof value==='object'?JSON.stringify(value):String(value);
-export default function DocumentRecoveryReview({entry,owner,load,save,onSaved,onClose,canSave=()=>true}) {
+export default function DocumentRecoveryReview({entry,owner,load,save,onSaved,onClose,canSave=()=>true,onPreserveEditor}) {
   const [loaded,setLoaded]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false),[choices,setChoices]=useState({});
   const active=useRef(true),running=useRef(false);
   useEffect(()=>{active.current=true;return()=>{active.current=false;};},[]);
@@ -20,7 +20,7 @@ export default function DocumentRecoveryReview({entry,owner,load,save,onSaved,on
   const differences=useMemo(()=>prepared?recoveryDifferences(prepared.payload,loaded.row):[],[prepared,loaded]);
   const apply=async()=>{
     if(running.current||!prepared?.valid)return;
-    if(!canSave()){setError('Save your open document edits and close the editor before recovering this draft.');return;}
+    if(!canSave()){setError(onPreserveEditor?'Preserve the latest editor changes below before saving this recovery.':'Another editor or save is open. Keep its changes safe and close it before recovering this draft.');return;}
     running.current=true;setBusy(true);setError('');
     try{
       const ok=await save(entry.table,prepared.payload,String(owner));
@@ -36,7 +36,17 @@ export default function DocumentRecoveryReview({entry,owner,load,save,onSaved,on
       <div className="modal-body">
         <p>Compare this browser draft with the current saved document. Saving uses the reviewed draft; a newer cloud change stops the save and keeps your backup.</p>
         {error&&<p role="alert">{error}</p>}
-        {busy&&<p role="status">{loaded?'Saving — waiting for confirmation…':'Loading saved document…'}</p>}
+        {busy&&<p role="status">Please wait — keeping your recovery copy until this step is confirmed…</p>}
+        {onPreserveEditor&&<div>
+          <p>This document is still open. Preserve its latest changes, including revised sizes, and close the editor to compare them with the saved document. This does not save over the cloud copy.</p>
+          <button disabled={busy} onClick={async()=>{
+            if(running.current)return;
+            running.current=true;setBusy(true);setError('');
+            try{await onPreserveEditor();}
+            catch(e){if(active.current)setError('The editor has been kept open. '+e.message);}
+            finally{running.current=false;if(active.current)setBusy(false);}
+          }}>Preserve latest edits and review</button>
+        </div>}
         {loaded&&<>
           <p><strong>Draft: {prepared.payload.items.length} item lines. Saved: {loaded.row.items?.length||0} item lines.</strong></p>
           {!!matchRows.length&&<fieldset><legend>Match duplicate product lines</legend><p>Select the saved line that each draft line belongs to. Quantities below describe the saved lines.</p>
@@ -53,7 +63,7 @@ export default function DocumentRecoveryReview({entry,owner,load,save,onSaved,on
           </tbody></table>:<p>No content differences found.</p>}
         </>}
       </div>
-      <div className="modal-footer"><button disabled={busy} onClick={refresh}>Reload comparison</button><button disabled={busy||!prepared?.valid} onClick={apply}>Save reviewed draft</button></div>
+      <div className="modal-footer"><button disabled={busy} onClick={refresh}>Reload comparison</button><button disabled={busy||!prepared?.valid||!!onPreserveEditor} onClick={apply}>Save reviewed draft</button></div>
     </div>
   </div>;
 }
