@@ -29,6 +29,8 @@ import { replaceTbdArt, tbdArtName, tbdArtLabel, isTbdArt } from './lib/orderArt
    ═══════════════════════════════════════════════════════════════ */
 /* eslint-disable */
 import { canAcknowledgeSave } from './lib/saveAcknowledgement';
+import * as ALL_SCHOOL_JOBS from './lib/allSchoolJobs';
+const { isAllSchoolRecipeOrder } = ALL_SCHOOL_JOBS;
 import { lineIntentKey, newOrderLineId } from './lib/orderLineIdentity';
 import { liveSoInvoices, soInvoiceBalance, invoiceBalanceSnapshot } from './lib/soInvoiceBalance';
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
@@ -4190,6 +4192,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // decorations no longer exist on any line (the orphan-preservation branch below). Auto-sync
   // never passes it, so the bad-save safety net still holds between explicit user syncs.
   const syncJobs=useCallback((opts)=>{
+    // Purchased recipes own these jobs; legacy item regrouping loses sport/art identity.
+    if(isAllSchoolRecipeOrder(o))return safeJobs(o);
     // A partial load cannot establish that an item, decoration, or submitted job disappeared.
     if(o._itemsHydrated===false||o._decosHydrated===false||o._jobsHydrated===false||o._artHydrated===false)return safeJobs(o);
     // Heal a narrowly identifiable legacy split corruption before rebuilding: assigning art could
@@ -13904,7 +13908,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
       return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <h2>Production Jobs ({activeJobs.length}{hasDrafts?' + '+draftJobs.length+' drafts':''})</h2>
         <div style={{display:'flex',gap:6}}>
-          <button className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={refreshJobs} title="Rebuild jobs from current line items & decorations — picks up newly added items. Keeps merges, splits & submitted art.">🔄 Sync Jobs</button>
+          {isAllSchoolRecipeOrder(o)?<span style={{fontSize:11,color:'#475569',maxWidth:360}}>All School jobs follow the purchased designs. Create a separate order for added items or rework.</span>:<button className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={refreshJobs} title="Rebuild jobs from current line items & decorations — picks up newly added items. Keeps merges, splits & submitted art.">🔄 Sync Jobs</button>}
           {jobs.some(j=>j.art_status==='needs_art')&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={openJobWizard}>Submit to Art</button>}
           {jobs.length>1&&!mergeMode&&<button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={()=>setMergeMode({selected:[]})}>Merge Jobs</button>}
           {mergeMode&&(()=>{const _ms=mergeMode.selected.map(i=>jobs[i]).filter(Boolean);const _he=_ms.some(j=>j.deco_type==='embroidery'),_hs=_ms.some(j=>j.deco_type==='screen_print');const _cross=_he&&_hs;const _sameG=!_cross||(_ms.length>=2&&(()=>{const ss=_ms.map(j=>new Set((j.items||[]).map(it=>it.item_idx)));const f=ss[0]||new Set();return ss.every(s=>s.size===f.size&&[...f].every(i=>s.has(i)));})());const _mOk=mergeMode.selected.length>=2&&(!_cross||_sameG);return<><button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} disabled={!_mOk} onClick={()=>{
