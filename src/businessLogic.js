@@ -432,10 +432,13 @@ function calcSOStatus(ord) {
 // in-house, and that run still needs its own production job. Returns { [item_idx]: Set<deco_type|'*'> };
 // a covering PO with no deco_type can't be matched by type, so it's recorded as '*' (wildcard) and
 // suppresses every decoration on that item — preserving the legacy all-or-nothing behavior.
+// Transfer/patch purchases and art-file services buy inputs for our floor; they do
+// not send garments to a decorator. Legacy POs without a mode still send garments.
+const isGarmentDecoPO = (dp) => !!dp && dp.po_mode !== 'dtf_purchase' && !dp.topstar_service;
 const outsourcedDecoTypes = (o) => {
   const map = {};
   const add = (ix, t) => { (map[ix] || (map[ix] = new Set())).add(t || '*'); };
-  safeArr(o?.deco_pos).forEach(dp => safeArr(dp?.item_idxs).forEach(ix => add(ix, dp?.deco_type)));
+  safeArr(o?.deco_pos).filter(isGarmentDecoPO).forEach(dp => safeArr(dp?.item_idxs).forEach(ix => add(ix, dp?.deco_type)));
   safeItems(o).forEach((it, ii) => safePOs(it).forEach(pl => { if (pl && pl.po_type === 'outside_deco') add(ii, pl.deco_type); }));
   // A deco PO carries ONE deco_type but covers whole items, whose decorations may be of several
   // types. When a covering PO's type matches NONE of an item's concretely-typed decorations, the PO
@@ -1922,7 +1925,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
-  poCommitted, unfulfilledSizes, poOverCommit, billOverageQty, billLineNeed, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, unfulfilledSizes, poOverCommit, billOverageQty, billLineNeed, calcSOStatus, buildJobs, isGarmentDecoPO, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Size reductions that run into POs / picks
   planSizeCut, absorbedSizes,
   // Portal Assistant confirmed writes (shared by both editors + App.js previews)

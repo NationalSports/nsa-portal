@@ -74,7 +74,7 @@ import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, dedup
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
-import { jobScreenKey, jobGroupKey, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit, unfulfilledSizes, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantRemoveLineApply, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
+import { jobScreenKey, jobGroupKey, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, isGarmentDecoPO, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit, unfulfilledSizes, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantRemoveLineApply, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets } from './lib/artIdentity';
 import { previousArtSport, previousArtSourceKey, previousArtReuseDesignId, filterPreviousArt } from './lib/previousArtSearch';
@@ -2650,7 +2650,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(safePicks(it).length>0)return false;
       // Otherwise it ships direct iff it's on a drop-ship PO or is decorated out of house.
       const dropShip=safePOs(it).some(po=>po&&po.drop_ship===true);
-      const outOfHouse=safeDecos(it).some(d=>d&&d.kind==='outside_deco')||(it.po_lines||[]).some(pl=>pl&&pl.po_type==='outside_deco')||(o.deco_pos||[]).some(dp=>(dp.item_idxs||[]).includes(idx));
+      const outOfHouse=safeDecos(it).some(d=>d&&d.kind==='outside_deco')||(it.po_lines||[]).some(pl=>pl&&pl.po_type==='outside_deco')||(o.deco_pos||[]).some(dp=>isGarmentDecoPO(dp)&&(dp.item_idxs||[]).includes(idx));
       return dropShip||outOfHouse;
     });
   },[isSO,o]);
@@ -3598,12 +3598,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // The order's outside garment decorator: first from item-level "Outside" routing, else from an
   // existing deco PO. Skip Topstar digitizing/vector POs — that's an art-file service, not a
   // decorator, so it must never be inferred as the vendor blanks drop-ship to.
-  const _orderOutsideVendor=()=>{for(const it of safeItems(o)){for(const d of safeDecos(it)){if(d.kind==='art'&&d.fulfillment==='outside'&&d.vendor)return d.vendor}}return (o.deco_pos||[]).find(dp=>dp&&!dp.topstar_service)?.vendor||''};
+  const _orderOutsideVendor=()=>{for(const it of safeItems(o)){for(const d of safeDecos(it)){if(d.kind==='art'&&d.fulfillment==='outside'&&d.vendor)return d.vendor}}return (o.deco_pos||[]).find(dp=>isGarmentDecoPO(dp))?.vendor||''};
   // Item deco routing (by SO line index). Outside = any art deco flagged "Outside", or the item
   // already sits on a garment deco PO (Topstar digitizing is an art service, not a decorator).
   const _itemOutsideDeco=ii=>{const it=safeItems(o)[ii];if(!it)return false;
     if(safeDecos(it).some(d=>d&&d.kind==='art'&&d.fulfillment==='outside'))return true;
-    return (o.deco_pos||[]).some(dp=>dp&&!dp.topstar_service&&(dp.item_idxs||[]).includes(ii))};
+    return (o.deco_pos||[]).some(dp=>isGarmentDecoPO(dp)&&(dp.item_idxs||[]).includes(ii))};
   // In-house deco = the item carries decoration work and none of it is routed outside. NOTE the
   // item-level TOGGLE only cascades to art decos, but names/numbers are outsourceable in their own
   // right (isDecoOutsourced is kind-agnostic, and syncJobs honours fulfillment:'outside' on them) —
@@ -3633,7 +3633,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // decos only, exactly as the per-item toggle does) or already sits on a garment deco PO.
   const _markDecoRows=()=>safeItems(o).map((it,i)=>{
     const artDecos=safeDecos(it).filter(d=>d&&d.kind==='art');
-    const dp=isSO?(o.deco_pos||[]).find(p=>p&&!p.topstar_service&&(p.item_idxs||[]).includes(i)):null;
+    const dp=isSO?(o.deco_pos||[]).find(p=>isGarmentDecoPO(p)&&(p.item_idxs||[]).includes(i)):null;
     return{it,i,artDecos,dp,markable:artDecos.length>0||!!dp,outside:!!dp||artDecos.some(d=>d.fulfillment==='outside')}});
   const openMarkDeco=()=>{const sel={};_markDecoRows().forEach(r=>{if(r.markable)sel[r.i]=true});setMarkDeco({sel,vendor:_orderOutsideVendor()||''})};
   // Apply the picked routing to every selected line in ONE state update. Deco-PO-covered lines can't
@@ -6609,7 +6609,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addTwillDeco(idx)}>🧵 + Twill</button>
             {/* Routing (item-level): In-house ⇄ Outside soft toggle. Shown on estimates AND SOs (it's a
                 planning flag, carried through conversion). Deco-PO creation/linking stays SO-only below. */}
-            {(()=>{const artDecos=safeDecos(item).filter(d=>d.kind==='art');const _dp=isSO?(o.deco_pos||[]).find(dp=>(dp.item_idxs||[]).includes(idx)):null;if(artDecos.length===0&&!_dp)return null;const _outside=!!_dp||artDecos.some(d=>d.fulfillment==='outside');return<>
+            {(()=>{const artDecos=safeDecos(item).filter(d=>d.kind==='art');const _dp=isSO?(o.deco_pos||[]).find(dp=>isGarmentDecoPO(dp)&&(dp.item_idxs||[]).includes(idx)):null;if(artDecos.length===0&&!_dp)return null;const _outside=!!_dp||artDecos.some(d=>d.fulfillment==='outside');return<>
               <span style={{display:'inline-flex',border:'1px solid #cbd5e1',borderRadius:6,overflow:'hidden'}}>
                 <button className="btn btn-sm" onClick={()=>setItemFulfillment(idx,null)} disabled={!!_dp} title={_dp?'On a Deco PO — remove it from the PO to set back in-house':'Produced in-house'} style={{fontSize:11,fontWeight:700,padding:'4px 9px',border:'none',borderRadius:0,cursor:_dp?'not-allowed':'pointer',background:!_outside?'#3b82f6':'#fff',color:!_outside?'#fff':'#64748b'}}>🏭 In-house</button>
                 <button className="btn btn-sm" onClick={()=>{const exV=_orderOutsideVendor();if(exV)setItemFulfillment(idx,'outside',exV);else setPickDecoFor(idx)}} title="Send this item's art to an outside decorator" style={{fontSize:11,fontWeight:700,padding:'4px 9px',border:'none',borderLeft:'1px solid #e2e8f0',borderRadius:0,cursor:'pointer',background:_outside?'#7c3aed':'#fff',color:_outside?'#fff':'#64748b'}}>🎨 Outside</button>
@@ -9981,7 +9981,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // them as if they were new — that read as a valid selection and then bounced off the
         // "already on this PO" guard with nothing the rep could do about it.
         const _onLinkDpo=idx=>!!linkDpo&&(linkDpo.item_idxs||[]).includes(idx);
-        const _onAnyDpo=idx=>(o.deco_pos||[]).some(dp=>dp&&!dp.topstar_service&&(dp.item_idxs||[]).includes(idx));
+        const _onAnyDpo=idx=>(o.deco_pos||[]).some(dp=>isGarmentDecoPO(dp)&&(dp.item_idxs||[]).includes(idx));
         // Default coverage: joining an existing DPO pre-checks the items that are flagged Outside
         // and not yet on ANY deco PO (the "⚠ needs PO" ones — exactly what you'd be folding in).
         // A brand-new PO keeps the old basis: the flagged-Outside items, else everything.
@@ -10504,7 +10504,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // about. A second PO stays possible only for genuinely different work: pick the other deco
       // type and the lock lifts. The PO being joined doesn't count against itself.
       const _podEffType=podLink?(podLink.deco_type||podType):podType;
-      const _podDupOf=idx=>(o.deco_pos||[]).find(dp=>dp&&!dp.topstar_service&&dp.po_mode!=='dtf_purchase'&&(!podLink||dp.id!==podLink.id)&&(dp.deco_type||'')===_podEffType&&(dp.item_idxs||[]).includes(idx))||null;
+      const _podDupOf=idx=>(o.deco_pos||[]).find(dp=>isGarmentDecoPO(dp)&&(!podLink||dp.id!==podLink.id)&&(dp.deco_type||'')===_podEffType&&(dp.item_idxs||[]).includes(idx))||null;
       const podSelIdxs=podItems.filter(it=>podChecked(it._idx)&&!_podDupOf(it._idx)).map(it=>it._idx);
       const _podSelSet=new Set(podSelIdxs);
       const podQty=podItems.reduce((a,it)=>a+(_podSelSet.has(it._idx)?_soQty(it):0),0);
@@ -10657,7 +10657,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               Silver Screen DPO was opened because the first one wasn't visible from this form). */}
           {(()=>{
             const _grpIdxs=new Set(poItems.flatMap(it=>(it.members||[it]).map(m=>m._idx)));
-            const relDecos=(o.deco_pos||[]).filter(dp=>dp&&!dp.topstar_service&&(dp.item_idxs||[]).some(ix=>_grpIdxs.has(ix)));
+            const relDecos=(o.deco_pos||[]).filter(dp=>isGarmentDecoPO(dp)&&(dp.item_idxs||[]).some(ix=>_grpIdxs.has(ix)));
             if(relDecos.length===0)return null;
             return<div style={{padding:'8px 12px',background:'#faf5ff',border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12}}>
               <div style={{fontSize:10,fontWeight:700,color:'#7c3aed',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>🎨 Decoration PO{relDecos.length>1?'s':''} on these items</div>
@@ -10729,7 +10729,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{const ov={};podItems.forEach(it=>{ov[it._idx]=!_podDupOf(it._idx)});setPodOverrides(ov);
                   podItems.forEach(it=>{if(!_podDupOf(it._idx)&&safeDecos(it).some(d=>d&&d.kind==='art'))setItemFulfillment(it._idx,'outside',poDecoInline.vendor,true)})}}>Select All</button>
                 <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{const ov={};podItems.forEach(it=>{ov[it._idx]=false});setPodOverrides(ov);
-                  podItems.forEach(it=>{const _cov=(o.deco_pos||[]).some(dp=>dp&&!dp.topstar_service&&(dp.item_idxs||[]).includes(it._idx));
+                  podItems.forEach(it=>{const _cov=(o.deco_pos||[]).some(dp=>isGarmentDecoPO(dp)&&(dp.item_idxs||[]).includes(it._idx));
                     if(!_cov&&safeDecos(it).some(d=>d&&d.kind==='art'))setItemFulfillment(it._idx,null,undefined,true)})}}>Deselect All</button>
               </div>
               <div style={{maxHeight:170,overflow:'auto',marginBottom:8}}>
@@ -10737,7 +10737,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   const _onLink=!!podLink&&(podLink.item_idxs||[]).includes(it._idx);// already on the PO being joined — permanently covered
                   const _dup=_onLink?null:_podDupOf(it._idx);// on another DPO for the SAME work — locked out (no duplicates)
                   const _hasArt=safeDecos(it).some(d=>d&&d.kind==='art');
-                  const _onAnyDpo=(o.deco_pos||[]).some(dp=>dp&&!dp.topstar_service&&(dp.item_idxs||[]).includes(it._idx));
+                  const _onAnyDpo=(o.deco_pos||[]).some(dp=>isGarmentDecoPO(dp)&&(dp.item_idxs||[]).includes(it._idx));
                   return<div key={i} style={{padding:'5px 10px',border:'1px solid #ede9fe',borderRadius:6,marginBottom:4,background:'white',display:'flex',alignItems:'center',gap:8,fontSize:12}}>
                     {/* The checkbox IS the item's routing toggle — same setItemFulfillment as the
                         line-item 🎨 Outside / 🏭 In-house buttons, so both entrances write the same
@@ -10754,7 +10754,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     {_itemInHouseDeco(it._idx)&&<span title="Routed In-house — decorated at Emerson, so it doesn't belong on an outside decorator's PO" style={{fontSize:9,fontWeight:700,color:'#1e40af',background:'#dbeafe',borderRadius:4,padding:'1px 6px',whiteSpace:'nowrap'}}>🏭 in-house</span>}
                     {/* Deco POs already covering this item, so the rep can tell "needs a second PO for
                         different work" (embroidery + screen print on one garment) from "already handled". */}
-                    {(o.deco_pos||[]).filter(dp=>dp&&!dp.topstar_service&&(dp.item_idxs||[]).includes(it._idx)).map(dp=>{const _isLink=podLink&&podLink.id===dp.id;
+                    {(o.deco_pos||[]).filter(dp=>isGarmentDecoPO(dp)&&(dp.item_idxs||[]).includes(it._idx)).map(dp=>{const _isLink=podLink&&podLink.id===dp.id;
                       return<span key={dp.id||dp.po_id} title={_isLink?'Already on '+dp.po_id+' — the PO you\'re adding to; checking it here changes nothing':'Already covered by '+dp.po_id+' ('+String(dp.deco_type||'').replace(/_/g,' ')+') — only add it again for DIFFERENT work'} style={{fontSize:9,fontWeight:700,color:_isLink?'#166534':'#6d28d9',background:_isLink?'#dcfce7':'#ede9fe',borderRadius:4,padding:'1px 6px',whiteSpace:'nowrap'}}>▣ {dp.po_id}</span>})}
                     {onPo&&<span style={{fontSize:9,fontWeight:700,color:'#1e40af',background:'#dbeafe',borderRadius:4,padding:'1px 6px',whiteSpace:'nowrap'}}>on PO</span>}
                     <span style={{color:'#64748b',fontSize:11}}>{it.color}</span>
