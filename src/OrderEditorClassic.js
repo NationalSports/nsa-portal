@@ -66,6 +66,7 @@ import MultiItemAddModal from './MultiItemAddModal';
 import FulfillmentReconcileModal from './FulfillmentReconcileModal';
 import { applySoFixes, pinSourceSku, unpinSourceSku } from './lib/fulfillmentReconcile';
 import { decoPoTotals, decoPoDrift } from './lib/decoPoUnits';
+import { reviseDecoPO, decoPoEditTotals } from './lib/decoPoEdit';
 import { downloadSoPlayerReport, omgCodeFromMemo } from './lib/soPlayerReport';
 // Lazy so the uniform designer only loads when a rep opens it.
 const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
@@ -15629,10 +15630,12 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         const _rowRate=ii=>dp.item_costs&&dp.item_costs[ii]!=null?safeNum(dp.item_costs[ii]):_rate;
         const _hasPerItem=!!(dp.item_costs&&Object.keys(dp.item_costs).length>0);
         const _saveDp=(updatedDp,msg)=>{
-          const updated={...o,deco_pos:(o.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?updatedDp:x),updated_at:new Date().toLocaleString()};
+          let updated;
+          try{updated=reviseDecoPO(oRef.current||o,dp,updatedDp,{actor:cu?.name||'Rep',artStatusForFile,activeProd:_activeProd})}catch(err){nf(err.message,'error');return false}
           setO(updated);onSave(updated);
           setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p);
           if(msg)nf(msg);
+          return true;
         };
         // Commit a per-item rate override, pruning empties and re-deriving expected_cost.
         const _setRowCost=(ii,val)=>{
@@ -15654,7 +15657,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         // Same helper the reconciliation panel writes with, so the two can never
         // disagree about what "Sync" would set.
         const {liveQty,liveExpected}=decoPoTotals(dp,soItems);
-        const qtyDrift=coveredRows.length>0&&liveQty!==safeNum(dp.qty);
+        const qtyDrift=dp.po_mode!=='dtf_purchase'&&coveredRows.length>0&&liveQty!==safeNum(dp.qty);
         const decoInstr=coveredRows.flatMap(r=>r.decos.map(d=>({sku:r.it.sku,position:d.position,deco_type:d.deco_type,vendor:d.vendor,notes:d.notes})));
         const _trackUrl=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
         const _addTrack=()=>{const tn=decoTrackAdd.trim();if(!tn)return;
@@ -15664,6 +15667,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         const DECO_TYPES=['embroidery','screen_print','dtf','heat_transfer','sublimation','vinyl','vector'];
         const _vendorOpts=(()=>{const base=DECO_VENDORS.filter(v=>v!=='Other');if(dp.vendor&&!base.includes(dp.vendor))base.unshift(dp.vendor);return[...base,'Other']})();
         const editingPo=decoEditPo&&decoEditPo.decoPoId===dpKey;
+        const _draftTotals=editingPo?decoPoEditTotals(dp,decoEditPo,soItems):null;
         // Price-list rate for the vendor/type currently picked in the edit panel (if priced).
         const _draftVendorName=editingPo?(decoEditPo.vendor==='Other'?decoEditPo.customVendor.trim():decoEditPo.vendor):null;
         const _draftDv=_draftVendorName?decoVendors.find(v=>v.name===_draftVendorName):null;
@@ -15760,7 +15764,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                 </div>
               </div>})()}
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:20,flexWrap:'wrap'}}>
-              {!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>setDecoEditPo({decoPoId:dpKey,po_id:dp.po_id||'',vendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?dp.vendor:'Other',customVendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?'':(dp.vendor||''),deco_type:dp.deco_type||'embroidery',status:dp.status||'waiting',expected_date:dp.expected_date||'',unit_cost:dp.unit_cost!=null?String(dp.unit_cost):'',drop_ship:true,notes:dp.notes||''})}>✎ Edit PO</button>}
+              {!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>setDecoEditPo({decoPoId:dpKey,po_id:dp.po_id||'',vendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?dp.vendor:'Other',customVendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?'':(dp.vendor||''),deco_type:dp.deco_type||'embroidery',status:dp.status||'waiting',expected_date:dp.expected_date||'',unit_cost:dp.unit_cost!=null?String(dp.unit_cost):'',po_mode:dp.topstar_service?dp.po_mode:(dp.po_mode||'send_items'),qty:String(dp.qty||0),art_file_ids:[...(dp.art_file_ids||[])],drop_ship:!!dp.drop_ship,notes:dp.notes||''})}>✎ Edit PO</button>}
               {isTopstar&&['planned','sending','email_failed'].includes(dp.status)&&!editingPo&&<button className="btn btn-sm btn-primary" disabled={topstarSending} style={{fontSize:11,background:'#0891b2',borderColor:'#0891b2'}} onClick={()=>sendTopstarPO(dp)} title="Email this digitizing/vector PO to Topstar now and mark it ordered">{topstarSending?'Sending…':dp.status==='planned'?'🧵 Send to Topstar':'↻ Retry Topstar Email'}</button>}
               {(()=>{// Silver Screen: create the job on their account portal with one click.
                 if(!_isSilverScreenDp(dp)||editingPo)return null;
@@ -15853,9 +15857,27 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                     {_draftListRate!==null&&Math.abs((parseFloat(decoEditPo.unit_cost)||0)-_draftListRate)>0.004&&<button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,marginTop:6}} onClick={()=>setDecoEditPo(d=>({...d,unit_cost:_draftListRate.toFixed(2)}))}>Price list: ${_draftListRate.toFixed(2)}/unit — apply</button>}
                   </div>
                 </div>
+                {!isTopstar&&<div style={{marginBottom:12}}>
+                  <label className="form-label">PO Purpose</label>
+                  <select className="form-select" value={decoEditPo.po_mode} onChange={e=>setDecoEditPo(d=>({...d,po_mode:e.target.value}))}>
+                    <option value="send_items">Outside decoration — vendor decorates garments</option>
+                    <option value="dtf_purchase">Materials purchase — patches / transfers applied in-house</option>
+                  </select>
+                  <div style={{fontSize:11,color:'#64748b',marginTop:5}}>Changing purpose updates garment routing. Saving here does not submit or resend an order to the vendor.</div>
+                  {decoEditPo.po_mode==='dtf_purchase'&&<>
+                    <label className="form-label" style={{marginTop:10}}>Purchase Quantity</label>
+                    <input className="form-input" type="number" min="0" step="1" value={decoEditPo.qty} onChange={e=>setDecoEditPo(d=>({...d,qty:e.target.value}))}/>
+                    <div style={{fontSize:11,color:'#64748b',marginTop:5}}>Materials can be purchased in a different quantity than the garments.</div>
+                    <label className="form-label" style={{marginTop:10}}>Art Purchased</label>
+                    {(o.art_files||[]).map(a=><label key={a.id} style={{display:'flex',alignItems:'center',gap:7,fontSize:12,marginBottom:5}}>
+                      <input type="checkbox" checked={decoEditPo.art_file_ids.includes(a.id)} onChange={e=>{const checked=e.target.checked;setDecoEditPo(d=>({...d,art_file_ids:checked?[...d.art_file_ids,a.id]:d.art_file_ids.filter(id=>id!==a.id)}))}}/>{a.name||a.id}
+                    </label>)}
+                  </>}
+                  {decoEditPo.po_mode==='send_items'&&<label style={{display:'flex',alignItems:'center',gap:7,fontSize:12,marginTop:10}}><input type="checkbox" checked={decoEditPo.drop_ship} onChange={e=>setDecoEditPo(d=>({...d,drop_ship:e.target.checked}))}/>Decorator ships directly to customer</label>}
+                </div>}
                 <div style={{marginBottom:12}}><label className="form-label">Notes / Instructions for Decorator</label><textarea className="form-input" rows={3} value={decoEditPo.notes} onChange={e=>setDecoEditPo(d=>({...d,notes:e.target.value}))} placeholder="Thread colors, PMS colors, placement notes..." style={{resize:'vertical'}}/></div>
                 <div style={{display:'flex',alignItems:'center',gap:16,paddingTop:10,borderTop:'1px dashed #e2e8f0',fontSize:13,flexWrap:'wrap'}}>
-                  <span style={{color:'#64748b'}}>{safeNum(dp.qty)} units × ${(parseFloat(decoEditPo.unit_cost)||0).toFixed(2)}/unit = <strong style={{color:'#166534'}}>${(Math.round(safeNum(dp.qty)*(parseFloat(decoEditPo.unit_cost)||0)*100)/100).toFixed(2)} expected</strong></span>
+                  <span style={{color:'#64748b'}}>{_draftTotals.qty||0} units · <strong style={{color:'#166534'}}>${(Number.isFinite(_draftTotals.expected_cost)?_draftTotals.expected_cost:0).toFixed(2)} expected</strong>{_hasPerItem?' (includes per-item rates)':''}</span>
                   <div style={{marginLeft:'auto',display:'flex',gap:8}}>
                     <button className="btn btn-sm btn-secondary" onClick={()=>setDecoEditPo(null)}>Cancel</button>
                     <button className="btn btn-sm btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
@@ -15865,11 +15887,9 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                       if(!finalVendor){nf('Pick a vendor (or type a name under Other)','error');return}
                       const uc=Math.round((parseFloat(decoEditPo.unit_cost)||0)*100)/100;
                       const dv=decoVendors.find(v=>v.name===finalVendor);
-                      // Recompute expected from per-item rates (uc is the fallback for un-overridden items).
-                      const _exp=_hasPerItem?Math.round((dp.item_idxs||[]).reduce((a,k)=>{const it=soItems[k];if(!it)return a;const q=Object.values(safeSizes(it)).reduce((s,x)=>s+safeNum(x),0);const r=dp.item_costs&&dp.item_costs[k]!=null?safeNum(dp.item_costs[k]):uc;return a+q*r},0)*100)/100:Math.round(safeNum(dp.qty)*uc*100)/100;
-                      const updatedDp={...dp,po_id:newPoId,vendor:finalVendor,deco_vendor_id:dv?dv.id:(finalVendor===dp.vendor?(dp.deco_vendor_id||null):null),deco_type:decoEditPo.deco_type,status:decoEditPo.status,expected_date:decoEditPo.expected_date,unit_cost:uc,expected_cost:_exp,drop_ship:decoEditPo.drop_ship||undefined,notes:decoEditPo.notes};
-                      _saveDp(updatedDp,'✎ Updated '+newPoId);
-                      setDecoEditPo(null);
+                      const purchase=decoEditPo.po_mode==='dtf_purchase';
+                      const updatedDp={...dp,po_mode:decoEditPo.po_mode,qty:_draftTotals.qty,art_file_ids:decoEditPo.art_file_ids,item_costs:dp.item_costs,po_id:newPoId,vendor:finalVendor,deco_vendor_id:dv?dv.id:(finalVendor===dp.vendor?(dp.deco_vendor_id||null):null),deco_type:decoEditPo.deco_type,status:decoEditPo.status,expected_date:decoEditPo.expected_date,unit_cost:uc,expected_cost:_draftTotals.expected_cost,drop_ship:!purchase&&decoEditPo.drop_ship||undefined,notes:decoEditPo.notes};
+                      if(_saveDp(updatedDp,'✎ Updated '+newPoId))setDecoEditPo(null);
                     }}>Save Details</button>
                   </div>
                 </div>
@@ -15892,12 +15912,12 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                   <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setDecoEditItems(null)}>Cancel</button>
                   <button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
                     const itemIdxs=editableItems.filter(it=>decoEditItems.sel[it._idx]).map(it=>it._idx);
-                    if(itemIdxs.length===0){nf('Pick at least one item for this PO','error');return}
+                    if(itemIdxs.length===0&&dp.po_mode!=='dtf_purchase'){nf('Pick at least one item for this PO','error');return}
                     // Drop per-item rate overrides for items no longer on the PO.
                     const prunedCosts=dp.item_costs?Object.fromEntries(Object.entries(dp.item_costs).filter(([k])=>itemIdxs.includes(Number(k)))):null;
-                    const updatedDp={...dp,item_idxs:itemIdxs,qty:newQty,expected_cost:newExpected,item_costs:prunedCosts&&Object.keys(prunedCosts).length?prunedCosts:undefined};
-                    _saveDp(updatedDp,'🎨 '+(dp.po_id||'Deco PO')+' now covers '+itemIdxs.length+' item'+(itemIdxs.length!==1?'s':'')+' ('+newQty+' units · expected $'+newExpected.toFixed(2)+')');
-                    setDecoEditItems(null);
+                    const updatedDp={...dp,item_idxs:itemIdxs,qty:dp.po_mode==='dtf_purchase'?dp.qty:newQty,expected_cost:dp.po_mode==='dtf_purchase'?dp.expected_cost:newExpected,item_costs:prunedCosts&&Object.keys(prunedCosts).length?prunedCosts:undefined};
+                    const saved=_saveDp(updatedDp,'🎨 '+(dp.po_id||'Deco PO')+' now covers '+itemIdxs.length+' item'+(itemIdxs.length!==1?'s':'')+' ('+newQty+' units · expected $'+newExpected.toFixed(2)+')');
+                    if(saved)setDecoEditItems(null);
                   }}>Save Items</button>
                 </div>}
               </div>
