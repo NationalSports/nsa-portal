@@ -9,7 +9,7 @@ exports.handler=async event=>{
  if(auth.teamMemberId!==PILOT)return json(403,{error:'Email preparation is currently enabled for Steve’s pilot only.'});
  if(Buffer.byteLength(event.body||'')>50000)return json(413,{error:'Request is too large'});
  let body;try{body=JSON.parse(event.body||'{}')}catch{return json(400,{error:'Invalid JSON'})}
- if(!['prepare','save','stock','create_estimate','search_products'].includes(body.action))return json(400,{error:'Unknown action'});
+ if(!['prepare','save','stock','create_estimate','search_products','create_revision'].includes(body.action))return json(400,{error:'Unknown action'});
  try{
  const {admin,teamMemberId}=auth;
  const {data:row,error:re}=await admin.from('rep_email_insights').select('*').eq('id',body.insightId).eq('team_member_id',teamMemberId).maybeSingle();if(re)throw re;if(!row)return json(404,{error:'Email not found'});
@@ -22,8 +22,13 @@ exports.handler=async event=>{
  if(body.action==='prepare')return json(200,{work:await queueWork(admin,row,event,{force:body.retry===true})});
  const {data:work,error}=await admin.from(TABLE).select('*').eq('team_member_id',teamMemberId).eq('gmail_thread_id',row.gmail_thread_id||row.gmail_message_id).maybeSingle();if(error)throw error;if(!work)return json(404,{error:'Prepare this email first'});
  if(work.customer_id!==row.customer_id)return json(409,{error:'Account changed. Prepare again to recalculate pricing.'});
+ if(body.action==='create_estimate'&&work.prepared?.estimate_revision)return json(409,{error:'Review the existing estimate revision. Do not create a new estimate from these email lines.'});
  if(body.action==='create_estimate'&&work.estimate_id)return json(200,{estimateId:work.estimate_id});
  if(work.status!=='ready'||body.revision!==work.revision)return json(409,{error:'This request changed. Reload the prepared work and review it again.'});
+ if(body.action==='create_revision'){
+  const {data:id,error:ce}=await admin.rpc('create_rep_email_revision',{p_work_id:work.id,p_owner:teamMemberId,p_revision:work.revision});if(ce)throw ce;return json(200,{estimateId:id});
+ }
+ if(work.prepared?.estimate_revision)return json(409,{error:'Re-read the conversation to refresh this revision.'});
  if(body.action==='create_estimate'){
   const {data:id,error:ce}=await admin.rpc('create_rep_email_estimate',{p_work_id:work.id,p_owner:teamMemberId,p_revision:work.revision});if(ce)throw ce;
   return json(200,{estimateId:id});

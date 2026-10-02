@@ -1,4 +1,5 @@
 import React,{useEffect,useState,useRef} from 'react';
+import CustomerEmailRevision from './CustomerEmailRevision';
 import {ProductPicker} from './components';
 import {fetchVendorSizeInventory,vendorInvSource} from './vendorInventory';
 const when=v=>v?new Date(v).toLocaleString(): 'time unknown';
@@ -33,7 +34,7 @@ export default function CustomerEmailWork({row,work,call,onRefresh,onReply,onOpe
  const draft=work?.prepared,working=work&&['queued','processing'].includes(work.status),stale=working&&Date.now()-Date.parse(work.updated_at)>10*60000;
  const ready=work?.status==='ready',accountChanged=!!work&&work.customer_id!==row.customer_id;
  return <section className="email-work" aria-label="AI prepared work">
-  <div className="email-work-heading"><div><strong>{ready?'Prepared for your review':working?'Preparing in the background…':'Let AI prepare the work'}</strong><small>{ready?`${draft?.lines?.length||0} draft item(s) · ${draft?.missing?.length||0} details to review`: 'Estimate details, stock, and a suggested reply. Nothing is sent automatically.'}</small></div>
+  <div className="email-work-heading"><div><strong>{ready?'Prepared for your review':working?'Preparing in the background…':'Let AI prepare the work'}</strong><small>{ready&&draft?.estimate_revision?'Existing estimate change · review required':ready?`${draft?.lines?.length||0} draft item(s) · ${draft?.missing?.length||0} details to review`: 'Estimate details, stock, and a suggested reply. Nothing is sent automatically.'}</small></div>
    {!work?<button className="btn btn-sm btn-primary" disabled={!!busy} onClick={prepare}>AI prepare estimate</button>:<button className="btn btn-sm btn-secondary" onClick={()=>setExpanded(v=>!v)}>{expanded?'Collapse':'Review work'}</button>}
   </div>
   {error&&<p role="alert" className="email-work-error">{error}</p>}
@@ -41,7 +42,8 @@ export default function CustomerEmailWork({row,work,call,onRefresh,onReply,onOpe
    {accountChanged&&<p>Account changed. <button className="btn btn-sm btn-secondary" disabled={!!busy} onClick={prepare}>Recalculate for this account</button></p>}
    {(work?.status==='failed'||stale)&&<p role="alert">{work.error||'Preparation is taking longer than expected.'} <button className="btn btn-sm btn-secondary" disabled={!!busy} onClick={prepare}>Retry preparation</button></p>}
    {working&&!stale&&<p role="status">You can leave this page. The prepared work will be saved here when ready.</p>}
-   {ready&&<>
+   {ready&&draft?.estimate_revision&&<CustomerEmailRevision revision={draft.estimate_revision} busy={busy} accountChanged={accountChanged} action={action} onOpenEstimate={onOpenEstimate}/>}
+   {ready&&!draft?.estimate_revision&&<>
     <p>{draft.notes}</p>
     {work.source_insight_id!==row.id&&<p className="email-work-notice">This is the shared draft for this conversation, including the latest imported email.</p>}
     {work.estimate_id&&<p className="email-work-notice">Linked to {work.estimate_id}. Follow-ups update this preparation; your saved estimate is never overwritten. Apply revisions in the estimate editor.</p>}

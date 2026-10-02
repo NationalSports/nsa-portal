@@ -40,3 +40,33 @@ test('finished background preparation populates fields without needing a page re
  expect(node.querySelector('input[type="number"]').value).toBe('15');
  act(()=>root.unmount());
 });
+
+test('removal review shows shared-calculator totals and creates only after explicit review',async()=>{
+ const node=document.createElement('div'),root=createRoot(node),call=jest.fn().mockResolvedValue({estimateId:'EST-REV'}),open=jest.fn();
+ const backpack={id:1,name:'Adidas Defender 5 Backpack',sku:'5159394',color:'Black/Black',unit_sell:34.75,sizes:{OSFA:15}};
+ const s={estimate:{id:'EST-2618',status:'open',shipping_type:'pct',shipping_value:5},customer:{tax_rate:0.09625},items:[backpack,{id:2,name:'Polo',unit_sell:32.5,sizes:{M:5}}],art:[{id:'art1',deco_type:'embroidery'}],decorations:[{estimate_item_id:2,kind:'art',art_file_id:'art1',sell_override:9}]};
+ const work={revision:'v1',status:'ready',customer_id:'c',source_insight_id:'email',prepared:{lines:[],estimate_revision:{kind:'remove_items',state:'ready',estimate_id:'EST-2618',reason:'Review first',snapshot:s,removed:[backpack]}}};
+ act(()=>root.render(<CustomerEmailWork row={{id:'email',customer_id:'c'}} work={work} call={call} onRefresh={async()=>{}} onOpenEstimate={open}/>));
+ act(()=>node.querySelector('button').click());
+ expect(node.textContent).toContain('Remove: Adidas Defender 5 Backpack');
+ expect(node.textContent).toContain('$237.85');
+ expect(node.textContent).not.toContain('Create draft estimate');
+ expect(call).not.toHaveBeenCalled();
+ await act(async()=>[...node.querySelectorAll('button')].find(b=>b.textContent==='Create reviewed revision draft').click());
+ expect(call).toHaveBeenCalledWith('rep-email-work',{action:'create_revision',insightId:'email',revision:'v1'});
+ expect(open).toHaveBeenCalledWith('EST-REV');
+ expect(s.items).toHaveLength(2);
+ act(()=>root.unmount());
+});
+test('converted and already removed proposals cannot create a revision or suggest a reply',()=>{
+ for(const state of ['blocked','already_removed']){
+  const node=document.createElement('div'),root=createRoot(node);
+  const work={status:'ready',customer_id:'c',prepared:{estimate_revision:{state,estimate_id:'EST-2618',reason:'Review original'}}};
+  act(()=>root.render(<CustomerEmailWork row={{id:'email',customer_id:'c'}} work={work}/>));
+  act(()=>node.querySelector('button').click());
+  expect(node.textContent).not.toContain('Create reviewed revision draft');
+  expect(node.textContent).not.toContain('Create draft estimate');
+  expect(node.textContent).not.toContain('Review suggested reply');
+  act(()=>root.unmount());
+ }
+});
