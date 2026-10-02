@@ -36,6 +36,7 @@ Apply these additive migrations **before deploying the updated purchase proxies 
 2. `20261002183729_all_school_order_conversion.sql`
 3. `20261002184054_all_school_purchasing_runtime.sql`
 4. `20261002184500_all_school_dtf_batches.sql`
+5. `20261002223226_all_school_permissions_hardening.sql`
 
 The new supplier guards fail closed without their database tables/functions. The column parity baseline acknowledges the two pending sales-order snapshot columns; it does not imply the live database has been migrated.
 
@@ -56,3 +57,13 @@ The screenshots use fixture products and branding to demonstrate layout; they do
 - [Desktop storefront](all-school-preview/desktop.jpg)
 - [Mobile storefront](all-school-preview/mobile.jpg)
 - [Store administration](all-school-preview/admin.jpg)
+
+## Production migration verification — October 2, 2026
+
+The four feature migrations and permission hardening were applied to NationalSports production (`hpslkvngulqirmbstlfx`) through the Supabase migration tool. Each application used a 3-second lock timeout and a 30-second statement timeout. The foundation's internal transaction boundaries were consolidated so its entire SQL ran in one transaction. No existing orders were edited and no external supplier/shipping actions were executed.
+
+Verified: all six All School tables have RLS; client roles cannot write directly; the artwork bucket is private; conversion and supplier submission RPCs are backend-only; staff RPCs check `is_team_member()`. Repeated-digit demand for three garments numbered “11” returns six ones, and number “0” is retained. Both per-store automation enablement counts are zero and the DTF send-candidate list is empty.
+
+Supabase generated remote migration timestamps on application. Match by migration name before future CLI deployment; do not rerun the feature SQL solely because its repository timestamp differs from the remote history. The security advisor's remaining All School notices cover the intentionally backend-only scan table and three staff-authorized RPCs, whose authorization checks were reviewed.
+
+The frontend/functions PR remains unmerged. Live carrier quotes, supplier delivery, and an end-to-end paid school order still require configured integrations and rollout verification.
