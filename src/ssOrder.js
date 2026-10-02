@@ -65,6 +65,7 @@ export function buildSSOrderPayload({
   // S&S's checkout "Freight Optimizer": 'fastest' ships each line from the quickest warehouse
   // for the ship-to; S&S's default can send the whole PO from one far warehouse to cut boxes.
   warehousePreference = 'fastest',
+  warehouse = '',              // restrict auto-selection to a stocked nearby DC
   residential = false,
 } = {}) {
   let lines = lineItems, warnings = [];
@@ -91,6 +92,7 @@ export function buildSSOrderPayload({
     testOrder: !!testOrder,
     autoselectWarehouse: !!autoselectWarehouse,
     ...(autoselectWarehouse && warehousePreference ? { AutoSelectWarehouse_Preference: warehousePreference } : {}),
+    ...(autoselectWarehouse && warehouse ? { autoselectWarehouse_Warehouses: warehouse } : {}),
     rejectLineErrors: false,
     lines: merged.map(l => ({ identifier: l.sku, qty: l.quantity })),
   };

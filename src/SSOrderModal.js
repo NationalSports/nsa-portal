@@ -7,7 +7,8 @@ import { buildSSOrderPayload, buildSSOrderLines } from './ssOrder';
 import { ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock, ssGetDaysInTransit } from './vendorApis';
 import { reconcileVendorLines, freeShipGap } from './lib/vendorOrderGuards';
 import { DuplicateMergeWarning, UnacceptedLinesPanel, FreeShipNotice } from './VendorOrderGuardPanels';
-import WarehouseChips, { rankWarehouses, SS_WAREHOUSES } from './WarehouseChips';
+import WarehouseChips, { SS_WAREHOUSES } from './WarehouseChips';
+import { planSSWarehouses } from './lib/ssWarehouseRouting';
 import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
 import { NSA, NSA_WAREHOUSE, BATCH_VENDORS } from './constants';
 import { apiLineSourceKey, removeShortLines, stockKeyAlreadyFetched } from './lib/apiOrderLines';
@@ -122,7 +123,9 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   // warnings + the order that will be submitted.
   const lines = useMemo(() => baseLines.map(l => (l.sku ? l : { ...l, sku: manualSku[l.key] || resolvedSkus[l.key] || '' })), [baseLines, resolvedSkus, manualSku]);
   const warnings = useMemo(() => lines.filter(l => !l.sku).map(l => `Line (${[l.style, l.color, l.size].filter(Boolean).join(' ')}) has no matched S&S SKU`), [lines]);
-  const built = useMemo(() => buildSSOrderPayload({ poNumber, lineItems: lines, shipTo: ship, testOrder: testMode }), [poNumber, lines, ship, testMode]);
+  const routing = useMemo(() => planSSWarehouses(lines, whseBySku, transitDays, ship), [lines, whseBySku, transitDays, ship]);
+  const built = useMemo(() => buildSSOrderPayload({ poNumber, lineItems: lines, shipTo: ship, testOrder: testMode, warehouse: routing.warehouse }), [poNumber, lines, ship, testMode, routing.warehouse]);
+  useEffect(() => { setConfirmed(false); }, [routing.warehouse]);
   const totals = built.summary;
   const unresolvedStyles = useMemo(() => [...new Set(lines.filter(l => !l.sku).map(l => String(l.style || '').toUpperCase().trim()))], [lines]);
 
@@ -529,16 +532,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                       <td style={td}>
                         <WarehouseChips
                           loading={l.sku ? whseBySku === null : false}
-                          entries={rankWarehouses(
-                            stockRows.map(w => {
-                              const days = transitDays[w.abbr];
-                              const known = Object.keys(transitDays).length > 0;
-                              // With transit data, rank purely by S&S's delivery days; the `closest`
-                              // flag only stands in when the transit lookup failed.
-                              return { label: w.abbr, city: [SS_WAREHOUSES[w.abbr] || w.abbr, days != null ? `${days}-day transit` : ''].filter(Boolean).join(' · '), qty: w.qty, closest: known ? false : w.closest, ...(days != null ? { dist: days } : {}) };
-                            }),
-                            l.quantity
-                          ).filter(e => e.primary)}
+                          entries={routing.expectedBySku[sku] || []}
                         />
                         {short && <div style={{ marginTop: 3, fontSize: 10, fontWeight: 800, color: '#c2410c' }}>{available <= 0 ? 'OUT OF STOCK' : `SHORT — ${available} available / ${l.quantity} needed`}</div>}
                       </td>
@@ -551,7 +545,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
               {lines.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8' }}>No line items.</div>}
               {lines.length > 0 && (
                 <div style={{ padding: '6px 10px', fontSize: 11, color: '#64748b', background: '#f8fafc', borderTop: '1px solid #f1f5f9' }}>
-                  📦 = expected ship-from warehouse: the one with stock and the fewest delivery days to this ship-to, per S&S's transit data. Orders are sent with S&S's "fastest" setting, so lines can split across warehouses. Hover the chip for transit days and current stock; after submitting, the warehouse S&S actually assigned is shown and saved on the PO.
+                  📦 = expected ship-from warehouse. {routing.warehouse ? `This order requests ${SS_WAREHOUSES[routing.warehouse] || routing.warehouse} for all lines: it is nearby and has enough stock for every size. If stock changes, S&S may return unfilled lines for review.` : 'S&S selects the fastest stocked warehouses; this order may split. Proximity breaks transit-time ties, rather than stock quantity.'} Hover the chip for transit days and current stock; after submitting, the warehouse S&S actually assigned is shown and saved on the PO.
                 </div>
               )}
             </div>

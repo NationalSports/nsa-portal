@@ -1,15 +1,17 @@
 // Per-warehouse stock chips for the vendor order-review modals (S&S / SanMar).
 // Shows where a line's goods will likely ship from: each warehouse with stock,
-// sorted by quantity, the expected ship-from highlighted. Vendors route at
+// sorted by proximity, the expected ship-from highlighted. Vendors route at
 // submission time (nearest warehouse with stock, split shipments possible), so
 // this is informational — it never blocks or alters the order.
 import React from 'react';
+import { lookup as lookupZip } from 'zipcodes';
 
 // S&S warehouse abbreviations → city (tooltip only; an unknown abbr still renders).
 export const SS_WAREHOUSES = {
   IL: 'Lockport, IL',
   KS: 'Olathe, KS',
   NV: 'Reno, NV',
+  CN: 'Fresno, CA',
   TX: 'Fort Worth, TX',
   GA: 'McDonough, GA',
   NJ: 'Robbinsville, NJ',
@@ -38,9 +40,11 @@ export const SANMAR_WAREHOUSES = Object.fromEntries(
 // Vendors route to the warehouse NEAREST the ship-to, so "which warehouse will
 // this ship from" is a distance question, not a most-stock question. These
 // coordinates are approximate (city centers / state centroids) and used only to
-// order warehouses by proximity — never to compute anything the order depends on.
+// order warehouses by proximity when transit times tie or are unavailable.
 const WH_COORDS = {
   seattle: [47.45, -122.30], issaquah: [47.53, -122.03], kent: [47.38, -122.23],
+  fresno: [36.74, -119.79], lockport: [41.59, -88.06], olathe: [38.88, -94.82],
+  'fort worth': [32.75, -97.33], mcdonough: [33.45, -84.15],
   cincinnati: [39.10, -84.51], dallas: [32.78, -96.80], reno: [39.53, -119.81],
   robbinsville: [40.21, -74.62], jacksonville: [30.33, -81.66],
   minneapolis: [44.98, -93.27], phoenix: [33.45, -112.07], richmond: [37.54, -77.44],
@@ -65,9 +69,16 @@ const US_STATE_COORDS = {
   WV: [38.6, -80.6], WI: [44.6, -89.7], WY: [43.0, -107.6],
 };
 
-// Ship-to → [lat, lon] (state resolution). Returns null for a non-US/blank state,
-// which makes every distance unknown and leaves ranking on its stock fallback.
+// Prefer the delivery ZIP; a state centroid can put Southern California closer
+// to Reno than Phoenix. Fall back to the state only when ZIP data is unavailable.
 export function shipToCoords(shipTo) {
+  const country = String(shipTo?.country || 'US').toUpperCase();
+  if (!['US', 'USA', 'UNITED STATES'].includes(country)) return null;
+  const zip = String(shipTo?.postalCode || shipTo?.zip || '').trim().slice(0, 5);
+  const location = /^\d{5}$/.test(zip) ? lookupZip(zip) : null;
+  if (location && Number.isFinite(location.latitude) && Number.isFinite(location.longitude)) {
+    return [location.latitude, location.longitude];
+  }
   const st = String(shipTo?.region || shipTo?.state || '').trim().toUpperCase();
   return US_STATE_COORDS[st] || null;
 }
@@ -134,8 +145,11 @@ export default function WarehouseChips({ entries, loading }) {
 }
 
 // Proximity key for a row: a vendor-flagged `closest` wins outright, then our own
-// computed `dist` (miles), then unknown. Rows with no distance info at all fall
-// back to stock order, which is how S&S rows (closest flag only) behave.
+// computed `dist` (miles or transit days), then unknown. Physical distance
+// breaks equal transit times; quantity is only a fallback when proximity is unknown.
+const distanceTie = (r) => Number.isFinite(r.distanceMiles) ? r.distanceMiles : Infinity;
+const compareNear = (a, b) => proximity(a) - proximity(b) || distanceTie(a) - distanceTie(b) || b.qty - a.qty || warehouseKey(a).localeCompare(warehouseKey(b));
+
 const proximity = (r) => (r.closest ? -1 : (typeof r.dist === 'number' ? r.dist : Infinity));
 
 // Pick the expected ship-from for ONE line: the nearest warehouse that can cover
@@ -147,12 +161,12 @@ export function rankWarehouses(rows, lineQty, forceKey = null) {
   const list = (rows || []).filter(r => r && r.label);
   if (!list.length) return [];
   const need = Number(lineQty) || 0;
-  const byNear = [...list].sort((a, b) => proximity(a) - proximity(b) || b.qty - a.qty);
+  const byNear = [...list].sort((a, b) => compareNear(a, b));
   let primary = (forceKey != null && list.find(r => warehouseKey(r) === forceKey))
     || byNear.find(r => r.qty >= need)
     || byNear.slice().sort((a, b) => b.qty - a.qty)[0];
   return [...list]
-    .sort((a, b) => (b === primary) - (a === primary) || proximity(a) - proximity(b) || b.qty - a.qty)
+    .sort((a, b) => (b === primary) - (a === primary) || compareNear(a, b))
     .map(r => ({ ...r, primary: r === primary && r.qty > 0 }));
 }
 
@@ -180,5 +194,5 @@ export function pickConsolidatedWarehouse(linesRows) {
     if (!coversAll) candidates.delete(key);
   }
   if (!candidates.size) return null;
-  return [...candidates.entries()].sort((a, b) => proximity(a[1]) - proximity(b[1]))[0][0];
+  return [...candidates.entries()].sort((a, b) => compareNear(a[1], b[1]))[0][0];
 }

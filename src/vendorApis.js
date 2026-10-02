@@ -1283,8 +1283,8 @@ const ssResolveSkus = async (descriptors) => {
 };
 
 // ─── Per-warehouse availability (order-modal "ships from" display) ───
-// Neither vendor lets an integrated order pick its warehouse: both route each line
-// from the warehouse nearest the ship-to that has stock (splitting when needed).
+// S&S can restrict auto-selection to selected warehouses; SanMar selection
+// depends on the integration account configuration.
 // These lookups surface that per-warehouse picture so the rep can see the likely
 // ship-from before submitting. Read-only and best-effort — a failure returns {}
 // and the modal simply omits the column; it must never block an order.
