@@ -19,6 +19,7 @@ const stripe = require('stripe');
 const { createClient } = require('@supabase/supabase-js');
 const { planShipmentLineUpdates } = require('./_webstoreShipment');
 const { sendOrderConfirmation, bumpCouponUse } = require('./_webstoreEmail');
+const { quoteShipping } = require('./_webstoreShipping');
 const { SO_DONE } = require('./backorder-ready-sweep'); // one definition of "SO finished"
 const {
   staffRecipientIds,
@@ -73,6 +74,47 @@ const PUBLIC_INVENTORY_FIELDS = 'sku,size,stock_qty,future_delivery_date,future_
 const safeText = (value, max) => String(value || '').trim().slice(0, max);
 const uniqueTextList = (values, maxItems, maxLength) => [...new Set((Array.isArray(values) ? values : [])
   .map((value) => safeText(value, maxLength)).filter(Boolean))].slice(0, maxItems);
+
+function publicAllSchoolSettings(settings) {
+  const raw = settings && typeof settings === 'object' ? settings : {};
+  const shipping = raw.shipping && typeof raw.shipping === 'object' ? raw.shipping : {};
+  const pick = (source, keys) => Object.fromEntries(keys.filter((key) => source[key] != null).map((key) => [key, source[key]]));
+  return {
+    ...pick(raw, ['target_ship_days', 'hero_heading', 'hero_subheading', 'hero_title', 'hero_subtitle']),
+    programs: (Array.isArray(raw.programs) ? raw.programs : []).slice(0, 100).map((program) =>
+      pick(program && typeof program === 'object' ? program : {}, ['id', 'name', 'label', 'slug', 'sport', 'color', 'description', 'image_url'])),
+    shipping: { mode: shipping.mode === 'ups_live' ? 'ups_live' : 'flat', service_code: shipping.service_code || null },
+  };
+}
+
+function publicStoreRow(row) {
+  if (!row) return null;
+  // Never return the complete all_school_settings JSON: vendor contacts,
+  // purchasing thresholds, and automation controls belong to staff only.
+  const store = Object.fromEntries(PUBLIC_STORE_FIELDS.split(',').filter((key) => row[key] !== undefined).map((key) => [key, row[key]]));
+  store.org_type = row.org_type || null;
+  if (row.org_type === 'all_school') store.all_school_settings = publicAllSchoolSettings(row.all_school_settings);
+  return store;
+}
+
+async function enrichSchoolProducts(sb, storeId, products) {
+  const ids = [...new Set(products.map((p) => p.webstore_product_id).filter(Boolean))];
+  if (!ids.length) return products;
+  const result = await sb.from('webstore_products').select('id,school_program_ids,school_shared,personalization_template').eq('store_id', storeId).in('id', ids);
+  // A legacy store remains usable before the additive school migration lands.
+  // Every other database error must surface rather than hiding a broken read.
+  if (result.error) {
+    if (['42703', 'PGRST204'].includes(result.error.code)) return products;
+    throw result.error;
+  }
+  const byId = new Map((result.data || []).map((p) => [p.id, p]));
+  return products.map((product) => {
+    const school = byId.get(product.webstore_product_id);
+    const template = school && school.personalization_template && typeof school.personalization_template === 'object' ? school.personalization_template : {};
+    return { ...product, school_program_ids: uniqueTextList(school && school.school_program_ids, 100, 80), school_shared: !school || school.school_shared !== false,
+      personalization_template: { max_length: Math.min(40, Math.max(1, Number(template.max_length) || 40)), uppercase: template.uppercase === true } };
+  });
+}
 
 async function drainView(queryFactory, maxRows) {
   const rows = [];
@@ -132,7 +174,7 @@ async function publicStorefrontProducts(sb, body) {
     if (productIds.length) query = query.in('product_id', productIds);
     return query;
   }, 3000);
-  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ rows }) };
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ rows: await enrichSchoolProducts(sb, storeId, rows) }) };
 }
 
 async function publicStorefront(sb, body) {
@@ -141,14 +183,15 @@ async function publicStorefront(sb, body) {
   // This handler uses the service role and returns only PUBLIC_STORE_FIELDS.
   // Reading the base row lets newly added curated fields ship without widening
   // the separately secured directory-search view.
-  const { data: stores, error: storeError } = await sb.from('webstores').select(PUBLIC_STORE_FIELDS).eq('slug', slug).limit(1);
+  const { data: stores, error: storeError } = await sb.from('webstores').select('*').eq('slug', slug).limit(1);
   if (storeError) throw storeError;
-  const store = (stores || [])[0];
+  const store = publicStoreRow((stores || [])[0]);
   if (!store || store.status === 'archived') return bad(404, 'Store not found');
-  const products = await drainView(
+  let products = await drainView(
     () => sb.from('webstore_storefront_products').select('*').eq('store_id', store.id).order('sort_order'),
     3000,
   );
+  if (store.org_type === 'all_school') products = await enrichSchoolProducts(sb, store.id, products);
   const bundleIds = products.filter((p) => p.kind === 'bundle').map((p) => p.webstore_product_id);
   let bundleItems = [];
   if (bundleIds.length) {
@@ -256,6 +299,35 @@ async function priceCart(sb, store, cart) {
     if (biErr) return { error: 'Could not load bundle items: ' + biErr.message };
     bundleItems = bi || [];
   }
+  let recipeCatalog = wprods || [];
+  let recipeTransfers = [];
+  let recipeArts = [];
+  if (store.org_type === 'all_school') {
+    const result = await sb.from('webstore_transfers').select('*').eq('store_id', store.id);
+    if (result.error) return { error: 'Could not verify transfer production details. Please try again.' };
+    recipeTransfers = result.data || [];
+    if (store.customer_id) {
+      const customer = await sb.from('customers').select('id,parent_id,art_files').eq('id', store.customer_id).limit(1);
+      if (customer.error) return { error: 'Could not verify the school artwork library. Please try again.' };
+      const row = (customer.data || [])[0];
+      recipeArts = Array.isArray(row && row.art_files) ? row.art_files : [];
+      if (row && row.parent_id) {
+        const parent = await sb.from('customers').select('art_files').eq('id', row.parent_id).limit(1);
+        if (parent.error) return { error: 'Could not verify the school artwork library. Please try again.' };
+        const parentArts = (parent.data || [])[0]?.art_files;
+        recipeArts = [...recipeArts, ...(Array.isArray(parentArts) ? parentArts : [])];
+      }
+    }
+  }
+  if (store.org_type === 'all_school' && bundleItems.length) {
+    const componentIds = [...new Set(bundleItems.map((c) => c.product_id).filter(Boolean))];
+    if (componentIds.length) {
+      const result = await sb.from('webstore_products').select('*').eq('store_id', store.id).in('product_id', componentIds).limit(1001);
+      if (result.error) return { error: 'Could not verify package production details. Please try again.' };
+      if ((result.data || []).length > 1000) return { error: 'There are too many component offerings to verify safely. Please contact the store to link this package to exact offerings.' };
+      recipeCatalog = [...recipeCatalog, ...(result.data || [])];
+    }
+  }
 
   const lines = [];
   let subtotal = 0, fundraise = 0, feeBase = 0;
@@ -278,8 +350,8 @@ async function priceCart(sb, store, cart) {
         if ((cc.product_id || null) !== (c.product_id || null)) return null;
         if (c.size_required !== false && !(cc.size || '').trim()) return undefined;
         const pname = c.takes_name ? String(cc.player_name || '').trim().slice(0, 40) : '';
-        const pnum = c.takes_number ? String(cc.player_number || '').trim().slice(0, 4) : '';
-        if (c.takes_number && !pnum) return undefined;
+        const pnum = c.takes_number ? String(cc.player_number == null ? '' : cc.player_number).trim().slice(0, 4) : '';
+        if (c.takes_number && !pnum && store.org_type !== 'all_school') return undefined;
         if (c.takes_name && pname) nameExtra += r2(c.name_upcharge);
         // Component quantity is catalog-authoritative (webstore_bundle_items.qty, e.g.
         // a "2 jerseys" pack), NOT client-supplied — a package still checks out as one
@@ -288,20 +360,42 @@ async function priceCart(sb, store, cart) {
         // order_item.qty). Money is unaffected: components are stored at $0 and the parent
         // holds the whole package price at qty 1.
         const cq = Math.max(1, parseInt(c.qty, 10) || 1);
-        return { webstore_product_id: c.webstore_product_id || null, product_id: c.product_id, sku: c.sku, size: (cc.size || '').trim() || null, player_name: pname || null, player_number: pnum || null, name: cc.name || null, image: cc.image || null, qty: cq };
+        let recipe;
+        if (store.org_type === 'all_school') {
+          const matches = [...new Map(recipeCatalog.filter((p) => p.product_id === c.product_id).map((p) => [p.id, p])).values()];
+          const catalogItem = c.webstore_product_id ? matches.find((p) => p.id === c.webstore_product_id) : matches.length === 1 ? matches[0] : null;
+          if (!catalogItem) return null;
+          // Package personalization/transfer choices are catalog-authoritative
+          // too. Preserve these overrides rather than losing paid name work
+          // when the standalone component offering has personalization off.
+          const componentDefinition = { ...catalogItem, takes_name: c.takes_name === true, takes_number: c.takes_number === true, name_upcharge: c.name_upcharge };
+          if (c.transfer_code) { componentDefinition.transfer_code = c.transfer_code; componentDefinition.transfer_codes = [c.transfer_code]; }
+          if (c.num_transfer_size || c.num_transfer_color) {
+            componentDefinition.num_transfer_size = c.num_transfer_size; componentDefinition.num_transfer_color = c.num_transfer_color;
+            componentDefinition.num_transfer_sets = [`${c.num_transfer_size || ''}|${c.num_transfer_color || ''}`];
+          }
+          recipe = productionRecipe(componentDefinition, recipeTransfers, recipeArts);
+          if (pname && personalizationNameError(catalogItem, cc.player_name)) return { recipe_error: personalizationNameError(catalogItem, cc.player_name) };
+        }
+        return { webstore_product_id: c.webstore_product_id || (recipe && recipe.webstore_product_id) || null, product_id: c.product_id, sku: c.sku, size: (cc.size || '').trim() || null, player_name: pname || null, player_number: pnum || null, name: recipe ? recipe.display_name || c.name || c.sku : cc.name || null, image: recipe ? recipe.image_url || null : cc.image || null, qty: cq, ...(recipe ? { production_recipe: recipe } : {}) };
       });
       if (outComps.some((c) => c === null)) return { error: 'Package contents changed — please re-add it to your cart.' };
       if (outComps.some((c) => c === undefined)) return { error: 'A package in your cart is missing a size or number — please re-add it.' };
+      if (outComps.some((c) => c.recipe_error)) return { error: outComps.find((c) => c.recipe_error).recipe_error };
       const lineUnit = r2(unitPrice + fundAmt + nameExtra + addOns.extra);
       subtotal += r2(unitPrice + nameExtra + addOns.extra);
       fundraise += fundAmt;
       feeBase += r2(unitPrice + addOns.extra);
-      lines.push({ kind: 'bundle', wp, qty: 1, unit_price: unitPrice, fundraise: fundAmt, name_extra: r2(nameExtra), option_extra: addOns.extra, option_selections: addOns.selections, line_total: lineUnit, components: outComps, name: wp.display_name, image: wp.image_url });
+      lines.push({ kind: 'bundle', wp, qty: 1, unit_price: unitPrice, fundraise: fundAmt, name_extra: r2(nameExtra), option_extra: addOns.extra, option_selections: addOns.selections, line_total: lineUnit, components: outComps, name: wp.display_name, image: wp.image_url, ...(store.org_type === 'all_school' ? { production_recipe: productionRecipe(wp, recipeTransfers, recipeArts) } : {}) });
     } else {
       const qty = Math.min(100, Math.max(1, parseInt(l.qty, 10) || 1));
+      if (store.org_type === 'all_school' && wp.takes_name) {
+        const nameError = personalizationNameError(wp, l.player_name);
+        if (nameError) return { error: nameError };
+      }
       const pname = wp.takes_name ? String(l.player_name || '').trim().slice(0, 40) : '';
-      const pnum = wp.takes_number ? String(l.player_number || '').trim().slice(0, 4) : '';
-      if (wp.takes_number && !pnum) return { error: 'An item in your cart is missing a jersey number — please re-add it.' };
+      const pnum = wp.takes_number ? String(l.player_number == null ? '' : l.player_number).trim().slice(0, 4) : '';
+      if (wp.takes_number && !pnum && store.org_type !== 'all_school') return { error: 'An item in your cart is missing a jersey number — please re-add it.' };
       const nameExtra = pname ? r2(wp.name_upcharge) : 0;
       const size = (l.size || '').trim() || null;
       const sizeExtra = size ? r2(Number((upMap[wp.id] || {})[size]) || 0) : 0;
@@ -309,7 +403,7 @@ async function priceCart(sb, store, cart) {
       subtotal += r2((unit + nameExtra) * qty);
       fundraise += r2(fundAmt * qty);
       feeBase += r2(unit * qty);
-      lines.push({ kind: 'single', wp, qty, size, unit_price: unit, fundraise: fundAmt, name_extra: nameExtra, option_extra: addOns.extra, option_selections: addOns.selections, line_total: r2((unit + fundAmt + nameExtra) * qty), player_name: pname || null, player_number: pnum || null, name: wp.display_name, color: l.color ? String(l.color).slice(0, 60) : null, variant_label: wp.variant_label || null, image: wp.image_url });
+      lines.push({ kind: 'single', wp, qty, size, unit_price: unit, fundraise: fundAmt, name_extra: nameExtra, option_extra: addOns.extra, option_selections: addOns.selections, line_total: r2((unit + fundAmt + nameExtra) * qty), player_name: pname || null, player_number: pnum || null, name: wp.display_name, color: l.color ? String(l.color).slice(0, 60) : null, variant_label: wp.variant_label || null, image: wp.image_url, ...(store.org_type === 'all_school' ? { production_recipe: productionRecipe(wp, recipeTransfers, recipeArts) } : {}) });
     }
   }
   return { lines, subtotal: r2(subtotal), fundraise: r2(fundraise), feeBase: r2(feeBase) };
@@ -531,7 +625,41 @@ async function loadCoupon(sb, store, code) {
   return { coupon: c };
 }
 
-function buildOrderItems(lines, orderPlayer, randomUUID = require('crypto').randomUUID) {
+function personalizationNameError(wp, value) {
+  const name = String(value || '').trim();
+  if (!name) return null;
+  const template = wp.personalization_template && typeof wp.personalization_template === 'object' ? wp.personalization_template : {};
+  const maxLength = Math.min(40, Math.max(1, Number(template.max_length) || 40));
+  if (name.length > maxLength) return `The printed name must be ${maxLength} characters or fewer. Please update it in your cart.`;
+  if (!/^[\p{L}\p{M}0-9 .’'\-]+$/u.test(name)) return 'The printed name can use letters, numbers, spaces, periods, apostrophes, and hyphens. Please update it in your cart.';
+  if (template.uppercase === true && name !== name.toUpperCase()) return 'This item prints names in uppercase. Please enter the printed name in uppercase in your cart.';
+  return null;
+}
+
+function productionRecipe(wp, transfers = [], arts = []) {
+  const keys = ['product_id', 'sku', 'display_name', 'color', 'variant_label', 'transfer_code', 'num_transfer_size', 'num_transfer_color', 'name_upcharge', 'image_url', 'image_back_url', 'weight_oz'];
+  const transferKeys = ['id', 'kind', 'code', 'name', 'label', 'image_url', 'color', 'size', 'tsize', 'digit', 'production_file', 'dimensions', 'type', 'decoration_type', 'supplier', 'supplier_id', 'application', 'application_method', 'application_instructions', 'unit_cost', 'artwork_version', 'art_file_id', 'width_in', 'height_in', 'prod_files'];
+  const designCodes = new Set([...(Array.isArray(wp.transfer_codes) ? wp.transfer_codes : []), wp.transfer_code].filter(Boolean));
+  const numberSets = (Array.isArray(wp.num_transfer_sets) && wp.num_transfer_sets.length ? wp.num_transfer_sets : [`${wp.num_transfer_size || ''}|${wp.num_transfer_color || ''}`]);
+  const transferInventory = transfers.filter((t) => designCodes.has(t.code)
+    || (wp.takes_number && t.kind === 'number' && numberSets.includes(`${t.tsize || t.size || ''}|${t.color || ''}`)))
+    .map((t) => Object.fromEntries(transferKeys.filter((key) => t[key] != null).map((key) => [key, t[key]])));
+  return JSON.parse(JSON.stringify({
+    version: 1, webstore_product_id: wp.id,
+    mock_approval: { approved: !!wp.production_approved_at && !!wp.image_url, approved_at: wp.production_approved_at || null, approved_by: wp.production_approved_by || null, basis: 'approved_store_setup' },
+    ...Object.fromEntries(keys.map((key) => [key, wp[key] == null ? null : wp[key]])),
+    decorations: Array.isArray(wp.decorations) ? wp.decorations : [],
+    transfer_codes: [...designCodes],
+    num_transfer_sets: Array.isArray(wp.num_transfer_sets) ? wp.num_transfer_sets : [],
+    extra_image_urls: Array.isArray(wp.extra_image_urls) ? wp.extra_image_urls : [],
+    takes_name: wp.takes_name === true, takes_number: wp.takes_number === true,
+    personalization_template: wp.personalization_template && typeof wp.personalization_template === 'object' ? wp.personalization_template : {},
+    transfer_inventory: transferInventory,
+    art_files: [...new Map(arts.slice().reverse().filter((art) => art && (Array.isArray(wp.decorations) ? wp.decorations : []).some((d) => d && [d.art_id, d.art_file_id, d.custom_font_art_id].includes(art.id))).map((art) => [art.id, art])).values()],
+  }));
+}
+
+function buildOrderItems(lines, orderPlayer, randomUUID = require('crypto').randomUUID, snapshotRecipes = false) {
   const items = [];
   for (const l of lines) {
     if (l.kind === 'bundle') {
@@ -539,10 +667,10 @@ function buildOrderItems(lines, orderPlayer, randomUUID = require('crypto').rand
       // Every parent-level upcharge belongs on the paid parent row. Components
       // remain $0 fulfillment rows, so excluding option_extra here made the
       // persisted item total disagree with the amount charged at checkout.
-      items.push({ product_id: null, sku: null, size: null, qty: 1, unit_price: r2((Number(l.unit_price) || 0) + (Number(l.name_extra) || 0) + (Number(l.option_extra) || 0)), unit_fundraise: r2(l.fundraise), player_name: null, player_number: null, add_on_selections: l.option_selections || [], bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: true, name: l.name || null, image_url: l.image || null, line_status: 'pending' });
-      l.components.forEach((c) => items.push({ product_id: c.product_id, sku: c.sku, size: c.size, qty: Math.max(1, parseInt(c.qty, 10) || 1), unit_price: 0, unit_fundraise: 0, player_name: c.player_name || orderPlayer, player_number: c.player_number, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: false, name: c.name, image_url: c.image, line_status: 'pending' }));
+      items.push({ product_id: null, sku: null, size: null, qty: 1, unit_price: r2((Number(l.unit_price) || 0) + (Number(l.name_extra) || 0) + (Number(l.option_extra) || 0)), unit_fundraise: r2(l.fundraise), player_name: null, player_number: null, add_on_selections: l.option_selections || [], bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: true, name: l.name || null, image_url: l.image || null, line_status: 'pending', ...(snapshotRecipes ? { production_recipe: l.production_recipe || productionRecipe(l.wp) } : {}) });
+      l.components.forEach((c) => items.push({ product_id: c.product_id, sku: c.sku, size: c.size, qty: Math.max(1, parseInt(c.qty, 10) || 1), unit_price: 0, unit_fundraise: 0, player_name: c.player_name || orderPlayer, player_number: c.player_number, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: false, name: c.name, image_url: c.image, line_status: 'pending', ...(snapshotRecipes ? { production_recipe: c.production_recipe } : {}) }));
     } else {
-      items.push({ product_id: l.wp.product_id, sku: l.wp.sku, size: l.size, qty: l.qty, unit_price: r2((Number(l.unit_price) || 0) + (Number(l.name_extra) || 0)), unit_fundraise: r2(l.fundraise), player_name: l.player_name || orderPlayer, player_number: l.player_number, add_on_selections: l.option_selections || [], name: l.name || null, color: l.color, variant_label: l.variant_label || null, image_url: l.image || null, line_status: 'pending' });
+      items.push({ product_id: l.wp.product_id, sku: l.wp.sku, size: l.size, qty: l.qty, unit_price: r2((Number(l.unit_price) || 0) + (Number(l.name_extra) || 0)), unit_fundraise: r2(l.fundraise), player_name: l.player_name || orderPlayer, player_number: l.player_number, add_on_selections: l.option_selections || [], name: l.name || null, color: l.color, variant_label: l.variant_label || null, image_url: l.image || null, line_status: 'pending', ...(snapshotRecipes ? { production_recipe: l.production_recipe || productionRecipe(l.wp) } : {}) });
     }
   }
   return items;
@@ -776,7 +904,9 @@ async function placeOrder(sb, body) {
   const coupon = coup.coupon;
 
   const cartTotal = r2(priced.subtotal + priced.fundraise);
-  const shipping = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
+  const shippingResult = await quoteShipping(sb, store, priced.lines, ship, coupon && coupon.kind === 'free_shipping');
+  if (shippingResult.error) return bad(503, shippingResult.error, { code: shippingResult.code });
+  const shipping = shippingResult.amount;
   const discount = couponDiscount(coupon, cartTotal, shipping);
   const processing = procFee(store, priced.feeBase);
   const preTax = Math.max(0, r2(cartTotal + shipping + processing - discount));
@@ -815,7 +945,7 @@ async function placeOrder(sb, body) {
   // customer_id), read by the RPC's org_type join back to webstores. Team stores
   // (org_type 'team'/null) get neither field — batchOrders' `.is('so_id', null)`
   // query is untouched, so nothing here can affect the staff batch flow.
-  const isClubStore = store.org_type === 'club';
+  const immediateStore = ['club', 'all_school'].includes(store.org_type);
   const orderRow = {
     store_id: store.id, status: mode === 'paid' ? 'pending_payment' : 'unpaid', payment_mode: mode, order_kind: 'individual',
     buyer_name: String(buyer.name).trim().slice(0, 120), buyer_email: String(buyer.email).trim().slice(0, 160), buyer_phone: buyer.phone ? String(buyer.phone).slice(0, 40) : null,
@@ -826,7 +956,9 @@ async function placeOrder(sb, body) {
     tax_rate: Number(taxRes.rate) || 0,
     tax_source: taxRes.source || 'unknown',
     coupon_code: coupon ? coupon.code : null, discount_amt: discount,
-    ...(isClubStore ? { order_source: 'club', customer_id: store.customer_id || null } : {}),
+    ...(immediateStore ? { order_source: store.org_type, customer_id: store.customer_id || null } : {}),
+    ...(store.org_type === 'all_school' ? { target_ship_days: Math.max(1, Math.min(90, Math.round(Number(store.all_school_settings?.target_ship_days) || 14))) } : {}),
+    ...(shippingResult.quote ? { shipping_quote: shippingResult.quote } : {}),
   };
 
   // Order-level "who this is for" name (checkout's Player name field). Used as the
@@ -835,7 +967,7 @@ async function placeOrder(sb, body) {
   // the actual player. It never drives decoration — that's the item's takes_name.
   const orderPlayer = String((buyer && buyer.player_name) || '').trim().slice(0, 60) || null;
   // No order_id yet — the transaction (or legacy path) injects it.
-  const items = buildOrderItems(priced.lines, orderPlayer);
+  const items = buildOrderItems(priced.lines, orderPlayer, undefined, store.org_type === 'all_school');
 
   // A number is one-per-player across the store. Within one checkout the same
   // number legitimately repeats across a single player's bundle components
@@ -1036,14 +1168,16 @@ async function quoteTotals(sb, body) {
   const coup = await loadCoupon(sb, store, couponCode);
   const coupon = coup.coupon;
   const cartTotal = r2(priced.subtotal + priced.fundraise);
-  const shipping = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
+  const shippingResult = await quoteShipping(sb, store, priced.lines, ship, coupon && coupon.kind === 'free_shipping');
+  if (shippingResult.error) return bad(503, shippingResult.error, { code: shippingResult.code });
+  const shipping = shippingResult.amount;
   const discount = couponDiscount(coupon, cartTotal, shipping);
   const processing = procFee(store, priced.feeBase);
   const preTax = Math.max(0, r2(cartTotal + shipping + processing - discount));
   const taxRes = await calcTax(store, ship || {}, taxableBaseAfterDiscount(priced.feeBase, discount, cartTotal, shipping, coupon), billing);
   if (taxRes.error) return bad(503, taxRes.error, { code: 'tax_unavailable' });
   const total = r2(preTax + taxRes.tax);
-  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ totals: { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, processing, discount, tax: taxRes.tax, tax_state: taxRes.state, tax_rate: taxRes.rate, tax_source: taxRes.source, total } }) };
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ totals: { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, processing, discount, tax: taxRes.tax, tax_state: taxRes.state, tax_rate: taxRes.rate, tax_source: taxRes.source, total }, shipping_quote: shippingResult.quote }) };
 }
 
 async function finalize(sb, body) {
@@ -1085,10 +1219,11 @@ async function finalize(sb, body) {
   // Best-effort and STRICTLY guarded: this call must never fail the checkout
   // response — the RPC is idempotent (so_id replay + paid re-guard), and the
   // stripe-webhook fallback below picks it up if this never lands.
-  if (order.order_source === 'club' && !order.so_id) {
+  if (['club', 'all_school'].includes(order.order_source) && !order.so_id) {
     try {
-      const { data: convData, error: convErr } = await sb.rpc('create_club_sales_order', { p_order_id: order.id });
-      if (convErr) console.error('[webstore-checkout] club conversion failed (order stays paid; stripe-webhook will retry):', convErr.message);
+      const conversionRpc = order.order_source === 'all_school' ? 'create_all_school_sales_order' : 'create_club_sales_order';
+      const { data: convData, error: convErr } = await sb.rpc(conversionRpc, { p_order_id: order.id });
+      if (convErr) console.error('[webstore-checkout] ' + order.order_source + ' conversion failed (order stays paid; stripe-webhook will retry):', convErr.message);
       else if (convData && convData.so_id) {
         // Best-effort auto-PO generation (00202, club-enabled) — idempotent
         // (client_ref + needs-row marker); a failure never fails the checkout,
@@ -1096,7 +1231,7 @@ async function finalize(sb, body) {
         await require('./teamshop-auto-po').generateForSoSafe(sb, convData.so_id, 'webstore-checkout', 'webstore-checkout');
       }
     } catch (e) {
-      console.error('[webstore-checkout] club conversion error:', e.message);
+      console.error('[webstore-checkout] ' + order.order_source + ' conversion error:', e.message);
     }
   }
 
@@ -1140,6 +1275,7 @@ const PUBLIC_ORDER_FIELDS = [
   'discount_amt', 'tax', 'tax_state', 'tax_rate', 'tax_source', 'total', 'payment_mode', 'coupon_code', 'created_at',
   'shipped_at', 'tracking_number', 'carrier',
   'omg_order_number', 'order_number', 'status_token',
+  'order_source', 'target_ship_days', 'ship_target_at',
 ].join(',');
 const PUBLIC_ORDER_ITEM_FIELDS = [
   'id', 'order_id', 'product_id', 'bundle_product_id', 'bundle_ref',
@@ -1198,7 +1334,7 @@ async function trackOrder(sb, body) {
   const order = orders && orders[0];
   if (!order) return bad(404, 'Order not found');
   const [{ data: sRows }, { data: itemRows }, { data: shipmentRows }, messages] = await Promise.all([
-    sb.from('webstores').select('name,slug,logo_url,primary_color,accent_color').eq('id', order.store_id).limit(1),
+    sb.from('webstores').select('name,slug,logo_url,primary_color,accent_color,org_type,all_school_settings').eq('id', order.store_id).limit(1),
     sb.from('webstore_order_items').select(PUBLIC_ORDER_ITEM_FIELDS).eq('order_id', order.id),
     sb.from('webstore_shipments').select('id,tracking_number,carrier,service,ship_date,items,created_at').eq('order_id', order.id).is('voided_at', null).order('created_at', { ascending: true }),
     loadThread(sb, order.id),
@@ -1222,7 +1358,7 @@ async function trackOrder(sb, body) {
       else console.error('[webstore-checkout] shipment tracker repair failed:', repair.id, repairError.message);
     }
   }
-  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, store: (sRows && sRows[0]) || null, items: items || [], shipments: shipments || [], messages }) };
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, store: publicStoreRow((sRows && sRows[0]) || null), items: items || [], shipments: shipments || [], messages }) };
 }
 
 // Load one order's customer↔staff thread, sanitized for the public portal. Only
@@ -1382,6 +1518,8 @@ module.exports.couponDiscount = couponDiscount;
 module.exports.escapeIlikeLiteral = escapeIlikeLiteral;
 module.exports.loadCoupon = loadCoupon;
 module.exports.buildOrderItems = buildOrderItems;
+module.exports.productionRecipe = productionRecipe;
+module.exports.personalizationNameError = personalizationNameError;
 module.exports.storeOrderWindowError = storeOrderWindowError;
 module.exports._availForSize = _availForSize;
 module.exports.effFund = effFund;
@@ -1393,6 +1531,9 @@ module.exports.getOrder = getOrder;
 module.exports.trackOrder = trackOrder;
 module.exports.updateShip = updateShip;
 module.exports.publicSettings = publicSettings;
+module.exports.quoteTotals = quoteTotals;
+module.exports.publicStoreRow = publicStoreRow;
+module.exports.publicAllSchoolSettings = publicAllSchoolSettings;
 module.exports.PUBLIC_ORDER_FIELDS = PUBLIC_ORDER_FIELDS;
 module.exports.PUBLIC_ORDER_ITEM_FIELDS = PUBLIC_ORDER_ITEM_FIELDS;
 

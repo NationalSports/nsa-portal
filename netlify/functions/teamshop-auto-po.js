@@ -289,8 +289,12 @@ async function generateForSo(admin, soId, actor) {
     .select('id,order_source').eq('so_id', so).limit(1);
   if (ordRes.error) return { ok: false, error: ordRes.error.message };
   const ord = ordRes.data && ordRes.data[0];
-  if (!ord || !['teamshop', 'club'].includes(ord.order_source)) return { ok: false, error: 'Not a converted Team Shop / club store order.' };
+  if (!ord || !['teamshop', 'club', 'all_school'].includes(ord.order_source)) return { ok: false, error: 'Not a converted Team Shop / club / All School store order.' };
   const isClub = ord.order_source === 'club';
+  // All School accumulates needs across orders under its per-store gates. It
+  // must never enter the legacy per-order PO/auto-email path below. The durable
+  // all-school-purchasing worker claims and allocates these needs separately.
+  const isAllSchool = ord.order_source === 'all_school';
 
   const itemsRes = await admin.from('so_items')
     .select('id,item_index,product_id,sku,sizes,is_custom').eq('so_id', so).order('item_index');
@@ -327,7 +331,9 @@ async function generateForSo(admin, soId, actor) {
   const { needs, vendorGroups } = computeNeeds({
     soItems,
     products: prodRes.data || [],
-    inventory: invRes.error ? [] : (invRes.data || []),
+    // All School stock is reserved across orders atomically by its planner;
+    // this per-SO allocator cannot reserve the same warehouse units twice.
+    inventory: isAllSchool || invRes.error ? [] : (invRes.data || []),
     settings: settingsRes.data || [],
     vendorStock: vsRes.error ? [] : (vsRes.data || []),
   });
@@ -343,7 +349,7 @@ async function generateForSo(admin, soId, actor) {
   const created = [];
   const poIdByVendor = {};
   const autoSubmits = [];
-  for (const [vendor, g] of Object.entries(isClub ? {} : vendorGroups)) {
+  for (const [vendor, g] of Object.entries(isClub || isAllSchool ? {} : vendorGroups)) {
     const clientRef = 'tsauto:' + so + ':' + vendor;
     const rpc = await admin.rpc('create_purchase_order', {
       p_client_ref: clientRef,
@@ -407,6 +413,7 @@ async function generateForSo(admin, soId, actor) {
     // club rows never leak into the teamshop manual-ordering queue (which
     // filters on no_vendor_mapping); the Backorders tab is their one home.
     ...(isClub && n.qty_needed > 0 ? { skip_reason: 'club_review' } : {}),
+    ...(isAllSchool && n.qty_needed > 0 && n.vendor ? { skip_reason: 'all_school_pending' } : {}),
     so_id: so,
     po_id: (n.vendor && n.qty_needed > 0 && poIdByVendor[n.vendor]) || null,
   }));
@@ -423,6 +430,7 @@ async function generateForSo(admin, soId, actor) {
     pos: created,
     needs_rows: rows.length,
     ...(isClub ? { club: true, note: 'club order — backorder needs recorded, no auto-PO (stock is often already inbound on standing vendor POs)' } : {}),
+    ...(isAllSchool ? { all_school: true, note: 'All School needs recorded; per-store purchasing worker controls batching and submission.' } : {}),
     unmapped: needs.filter((n) => n.skip_reason === 'no_vendor_mapping').length,
     ...(autoSubmits.length ? { auto_submits: autoSubmits, auto_submitted: autoSubmits.filter((a) => a.submitted).length } : {}),
     ...(notes.length ? { notes } : {}),
@@ -437,6 +445,13 @@ async function generateForSoSafe(admin, soId, actor, tag) {
     const r = await generateForSo(admin, soId, actor);
     if (r && r.ok === false && r.enabled !== false) {
       console.error('[' + tag + '] auto-PO generation failed for ' + soId + ' (sweep from the Auto POs tab):', r.error);
+    }
+    // DTF requests use their own per-store supplier lane and run independently
+    // of garment purchasing being enabled. The helper verifies All School
+    // source identity, so legacy Team Shop / club ordering remains unchanged.
+    if (r && r.ok && (r.all_school || r.replayed)) {
+      try { await require('./_allSchoolDtf').recordAllSchoolDtfForSo(admin, soId); }
+      catch (dtfError) { console.error('[' + tag + '] All School DTF request recording failed:', dtfError.message || String(dtfError)); }
     }
     return r;
   } catch (e) {

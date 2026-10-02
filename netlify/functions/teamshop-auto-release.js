@@ -51,7 +51,7 @@
 // staff-authenticated POST { action:'run' }.
 const { corsHeaders, getSupabaseAdmin, verifyUser } = require('./_shared');
 
-const SOURCES = ['teamshop', 'club'];
+const SOURCES = ['teamshop', 'club', 'all_school'];
 const RELEASE_LIMIT = 200;
 const AUTO_ACTOR = 'auto-release';
 
@@ -269,6 +269,10 @@ async function runRelease(admin, actor) {
   });
   const makeArtLookup = (soId) => (id) => {
     const key = String(id);
+    if (soIdMap[soId] === 'all_school') {
+      const frozen = items.filter(it => it.so_id === soId).flatMap(it => it.recipe_snapshot?.art_files || []);
+      return frozen.find(af => String(af.id) === key) || null;
+    }
     if (soArtByKey[soId + ' ' + key]) return soArtByKey[soId + ' ' + key];
     const cust = custBySo[soId];
     return (cust && custArtByCust[cust] && custArtByCust[cust][key]) || null;
@@ -277,7 +281,7 @@ async function runRelease(admin, actor) {
   // ── Fulfillment context: so_items + pick/po lines ──
   const items = await safe('so_items', async () => {
     const r = await admin.from('so_items')
-      .select('id, so_id, item_index, sizes, est_qty').in('so_id', candidateSoIds);
+      .select('id, so_id, item_index, sizes, est_qty, recipe_snapshot, source_webstore_item_ids').in('so_id', candidateSoIds);
     if (r.error) throw r.error; return r.data || [];
   }, []);
   const itemBySoIdx = {};
@@ -316,6 +320,13 @@ async function runRelease(admin, actor) {
         pulledFor: (itemId, sz) => pulledBy[itemId + ' ' + sz] || 0,
         receivedFor: (itemId, sz) => receivedBy[itemId + ' ' + sz] || 0,
       };
+      if (soIdMap[job.so_id] === 'all_school') {
+        const material = await admin.rpc('all_school_materials_ready', { p_so_id: job.so_id, p_job_id: job.id });
+        if (material.error || material.data?.ready !== true) {
+          summary.skipped.push({so_id:job.so_id,job_id:job.id,reason:material.error?.message || material.data?.reason || 'decoration_materials'});
+          continue;
+        }
+      }
       const verdict = jobReleasable(job, makeArtLookup(job.so_id), ctx);
       if (!verdict.ready) { summary.skipped.push({ so_id: job.so_id, job_id: job.id, reason: verdict.reason }); continue; }
 

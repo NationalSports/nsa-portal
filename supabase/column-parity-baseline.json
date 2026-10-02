@@ -5,13 +5,13 @@
    "list": "_decoCols",
    "table": "estimate_item_decorations",
    "column": "split_runs",
-   "note": "migration 20260727200000 pending — split-run pricing cannot persist until applied"
+   "note": "migration 20260727200000 pending \u2014 split-run pricing cannot persist until applied"
   },
   {
    "list": "_decoCols",
    "table": "so_item_decorations",
    "column": "split_runs",
-   "note": "migration 20260727200000 pending — split-run pricing cannot persist until applied"
+   "note": "migration 20260727200000 pending \u2014 split-run pricing cannot persist until applied"
   },
   {
    "list": "_jobCols",
@@ -35,13 +35,25 @@
    "list": "_decoCols",
    "table": "so_item_decorations",
    "column": "outside_art",
-   "note": "migration 20261001091000 pending — opt-in outside art flow cannot persist until applied"
+   "note": "migration 20261001091000 pending \u2014 opt-in outside art flow cannot persist until applied"
   },
   {
    "list": "_decoCols",
    "table": "estimate_item_decorations",
    "column": "outside_art",
-   "note": "migration 20261001091000 pending — opt-in outside art flow cannot persist until applied"
+   "note": "migration 20261001091000 pending \u2014 opt-in outside art flow cannot persist until applied"
+  },
+  {
+   "list": "_soItemCols",
+   "table": "so_items",
+   "column": "recipe_snapshot",
+   "note": "migration 20261002183605 pending \u2014 apply All School foundation before deploying the source-managed order flow"
+  },
+  {
+   "list": "_soItemCols",
+   "table": "so_items",
+   "column": "source_webstore_item_ids",
+   "note": "migration 20261002183605 pending \u2014 apply All School foundation before deploying the source-managed order flow"
   }
  ]
 }
