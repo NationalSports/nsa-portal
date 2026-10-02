@@ -11,7 +11,7 @@ export default function CustomerEmailWork({row,work,call,onRefresh,onReply,onOpe
  const editRevision=useRef(null),dirtyRef=useRef(false);
  const [expanded,setExpanded]=useState(false),[busy,setBusy]=useState(''),[error,setError]=useState(''),[edits,setEdits]=useState([]),[dirty,setDirty]=useState(false),[live,setLive]=useState({}),[catalogQuery,setCatalogQuery]=useState({}),[catalogResults,setCatalogResults]=useState({});
  dirtyRef.current=dirty;
- useEffect(()=>{if(dirtyRef.current)return;editRevision.current=work?.revision;setEdits((work?.prepared?.lines||[]).map(l=>({...l,product_id:l.product?.id||'',sizesText:sizesText(l.sizes)})));setDirty(false);setLive({});},[work?.revision]);
+ useEffect(()=>{if(dirtyRef.current)return;editRevision.current=work?.revision;setEdits((work?.prepared?.lines||[]).map(l=>({...l,product_id:l.product?.id||'',sizesText:sizesText(l.sizes)})));setDirty(false);setLive({});},[work?.revision,work?.status]);
  const action=async(name,extra={})=>{setBusy(name);setError('');try{const d=await call('rep-email-work',{action:name,insightId:row.id,revision:name==='save'?editRevision.current:work?.revision,...extra});if(name==='save'){dirtyRef.current=false;setDirty(false);}await onRefresh();return d}catch(e){setError(e.message);return null}finally{setBusy('')}};
  const prepare=async()=>{setExpanded(true);await action('prepare',{retry:!!work})};
  const change=(i,patch)=>{setEdits(a=>a.map((l,j)=>j===i?{...l,...patch}:l));setDirty(true);setLive({});};

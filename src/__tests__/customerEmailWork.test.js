@@ -28,3 +28,15 @@ test('new background revisions preserve unsaved edits and save against original 
  expect(call).toHaveBeenCalledWith('rep-email-work',expect.objectContaining({action:'save',revision:'v1',lines:[expect.objectContaining({quantity:'20'})]}));
  act(()=>root.unmount());
 });
+
+test('finished background preparation populates fields without needing a page reload',()=>{
+ const node=document.createElement('div'),root=createRoot(node);
+ const base={revision:'same-job',customer_id:'c',source_insight_id:'email'};
+ const render=w=>root.render(<CustomerEmailWork row={{id:'email',customer_id:'c'}} work={w} products={[]} vendors={[]}/>);
+ act(()=>render({...base,status:'processing',prepared:{}}));
+ act(()=>node.querySelector('button').click());
+ act(()=>render({...base,status:'ready',prepared:{lines:[{name:'Backpack',quantity:15,sizes:{},product:null}],missing:[]}}));
+ expect(node.textContent).toContain('1. Backpack');
+ expect(node.querySelector('input[type="number"]').value).toBe('15');
+ act(()=>root.unmount());
+});
