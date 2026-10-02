@@ -66,6 +66,7 @@ import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedA
 import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd, quoteAgeDays as opsQuoteAgeDays, numericSizeKeys as opsNumericSizeKeys } from './lib/opsRecap';
 import { parseNetSuitePdf, parseNetSuitePdfMulti } from './lib/netsuitePdfParser';
 import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/recordRoute';
+import { invoiceFiltersFromSearch } from './lib/receivablesLinks';
 import { consolidateArtFamilies, artFamilyIds, artFamilyIdsIn } from './lib/artSplitFamily';
 import { approveArtOnSO, sendArtBackOnSO, artApproveTarget } from './lib/artReview';
 import { approvalArtContext } from './lib/artApproval';
@@ -5155,7 +5156,7 @@ export default function App(){
       // Webstores handler), st (ops recap "Open My Day"), comm/month (commission report)
       // are all transient params (read once, then stripped) and never appear on a normal
       // in-app refresh, so blocking on them is safe and only affects fresh email opens.
-      if(p.get('so')||p.get('est')||p.get('cust')||p.get('inv')||p.get('vend')||p.get('prod')||p.get('po')||p.get('if')||p.get('catreq')||p.get('scan')||p.get('quote')||p.get('store')||p.get('order')||p.get('st')||p.get('comm')||p.get('month')){_resumeDone.current=true;return;}
+      if((p.get('pg')==='invoices'&&p.get('aging')==='overdue')||p.get('so')||p.get('est')||p.get('cust')||p.get('inv')||p.get('vend')||p.get('prod')||p.get('po')||p.get('if')||p.get('catreq')||p.get('scan')||p.get('quote')||p.get('store')||p.get('order')||p.get('st')||p.get('comm')||p.get('month')){_resumeDone.current=true;return;}
       const raw=localStorage.getItem('nsa_resume');if(!raw){_resumeDone.current=true;return;}
       const r=JSON.parse(raw);if(!r||!r.id){_resumeDone.current=true;return;}
       // Wait for the relevant collection to populate before resolving (mirrors the deep-link handler).
@@ -15696,7 +15697,7 @@ export default function App(){
   // INVOICES PAGE
   const CC_FEE_PCT=0.029;// 2.9% credit card surcharge
   const PAY_METHODS=[{id:'check',label:'Check',icon:'📝'},{id:'ach',label:'ACH/Wire',icon:'🏦'},{id:'venmo',label:'Venmo',icon:'💜'},{id:'zelle',label:'Zelle',icon:'⚡'},{id:'cash',label:'Cash',icon:'💵'},{id:'cc',label:'Credit Card (+2.9%)',icon:'💳'},{id:'store',label:'Store Funds',icon:'🏫'}];
-  const[invF,setInvF]=useState({search:'',status:'open',group:'customer',aging:'all',rep:_initRepF});
+  const[invF,setInvF]=useState(()=>invoiceFiltersFromSearch(window.location.search,_initRepF));
   const[invSort,setInvSort]=useState({f:'due_date',d:'asc'});
   const[invEdit,setInvEdit]=useState(null);
   const[payModal,setPayModal]=useState(null);

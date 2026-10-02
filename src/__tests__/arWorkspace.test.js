@@ -1,7 +1,9 @@
 import React from 'react';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within, waitFor } from '@testing-library/react';
 import ARWorkspace from '../ARWorkspace';
 import { AppDataProvider } from '../AppContext';
+import { sendBrevoEmail } from '../utils';
+jest.mock('../utils',()=>({...jest.requireActual('../utils'),sendBrevoEmail:jest.fn()}));
 
 jest.mock('../lib/supabase', () => ({ supabase: null }));
 
@@ -179,9 +181,12 @@ describe('ARWorkspace',()=>{
     expect(row.textContent).toContain('$1,000');
     expect(row.textContent).toContain('$250');
     expect(row.textContent).toContain('$750');
+    const open=jest.spyOn(window,'open').mockImplementation(()=>null);
     fireEvent.click(within(row).getByText('Open order'));
-    expect(api.setESO).toHaveBeenCalledWith(expect.objectContaining({id:'SO-READY'}));
-    expect(api.setPg).toHaveBeenCalledWith('orders');
+    expect(open).toHaveBeenCalledWith(window.location.origin+'/?pg=orders&so=SO-READY','_blank','noopener,noreferrer');
+    expect(api.setESO).not.toHaveBeenCalled();
+    expect(api.setPg).not.toHaveBeenCalled();
+    open.mockRestore();
     const todoUpdater=api.setAssignedTodos.mock.calls.find(call=>typeof call[0]==='function')[0];
     const todos=todoUpdater([]);
     expect(todos).toHaveLength(1);
@@ -205,4 +210,35 @@ describe('ARWorkspace',()=>{
     expect(invoiceTodos[0]).toMatchObject({title:'Invoice ready order — SO-READY',priority:2,due_date:'2026-08-04',status:'open'});
     expect(invoiceTodos[0].description).toContain('$1,000.00 including estimated tax left to invoice');
   });
+});
+
+const readyOrder=(id,customerId,repId)=>({id,customer_id:customerId,created_by:repId,status:'complete',created_at:'2026-07-01',items:[{sizes:{M:10},unit_sell:100,nsa_cost:50,no_deco:true,decos:[],pick_lines:[{status:'pulled',M:10}]}]});
+
+test('manager filters ready orders and sends a separate email to the selected rep with clickable orders',async()=>{
+  sendBrevoEmail.mockResolvedValue({ok:true});
+  renderWorkspace(reps[2],{},{sos:[readyOrder('SO-ONE','C1','R1'),readyOrder('SO-TWO','C2','R2')],invs:[]});
+  expect(screen.getByText('Select rep to email').disabled).toBe(true);
+  fireEvent.change(screen.getByLabelText('Filter ready-to-invoice orders by rep'),{target:{value:'R1'}});
+  expect(screen.queryByText('SO-TWO')).toBeNull();
+  expect(screen.getByText('SO-ONE')).toBeTruthy();
+  // Text search changes visibility, not the rep-specific email scope.
+  fireEvent.change(screen.getByLabelText('Search ready-to-invoice orders'),{target:{value:'no match'}});
+  fireEvent.click(screen.getByText('Email Rep One'));
+  await waitFor(()=>expect(sendBrevoEmail).toHaveBeenCalled());
+  const payload=sendBrevoEmail.mock.calls.at(-1)[0];
+  expect(payload.to).toEqual([{email:reps[0].email,name:'Rep One'}]);
+  expect(payload.htmlContent).toContain('so=SO-ONE');
+  expect(payload.htmlContent).not.toContain('SO-TWO');
+  await waitFor(()=>expect(screen.getByText('Email Rep One').disabled).toBe(false));
+  fireEvent.change(screen.getByLabelText('Filter ready-to-invoice orders by rep'),{target:{value:'R2'}});
+  fireEvent.click(screen.getByText('Email Rep Two'));
+  await waitFor(()=>expect(sendBrevoEmail.mock.calls.at(-1)[0].to).toEqual([{email:reps[1].email,name:'Rep Two'}]));
+  expect(sendBrevoEmail.mock.calls.at(-1)[0].htmlContent).toContain('so=SO-TWO');
+  expect(sendBrevoEmail.mock.calls.at(-1)[0].htmlContent).not.toContain('SO-ONE');
+});
+
+test('rep email controls are unavailable to non-manager users',()=>{
+  renderWorkspace(reps[0],{},{sos:[readyOrder('SO-ONE','C1','R1')],invs:[]});
+  expect(screen.queryByLabelText('Filter ready-to-invoice orders by rep')).toBeNull();
+  expect(screen.queryByText('Email Rep One')).toBeNull();
 });
