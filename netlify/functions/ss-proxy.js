@@ -22,6 +22,7 @@
 // Rate limit: 60 requests per minute (check X-Rate-Limit-Remaining header)
 
 const { verifyUser } = require('./_shared');
+const { reserveSubmission, finishSubmission, blockedResponse, uncertainMessage } = require('./_vendorSubmissionGuard');
 
 exports.handler = async (event) => {
   // Staff-only: this proxy injects the company S&S Activewear credentials.
@@ -41,6 +42,33 @@ exports.handler = async (event) => {
   // Forward the write verbs S&S uses (POST orders, PUT/DELETE CrossRef); anything else is a GET.
   const _m = String(event.httpMethod || 'GET').toUpperCase();
   const method = ['POST', 'PUT', 'DELETE'].includes(_m) ? _m : 'GET';
+
+  let reservation;
+  let body = event.body;
+  // S&S paths are case-insensitive. Guard every write to the order endpoint,
+  // including query strings/trailing slashes; GET order-history remains read-only.
+  let route;
+  try { route = decodeURIComponent(path.split('?')[0]); }
+  catch { return blockedResponse(Object.assign(new Error('Invalid vendor API path.'), { statusCode: 400 })); }
+  const orderWrite = method !== 'GET' && /^\/orders\/?$/i.test(route);
+  if (method !== 'GET' && !orderWrite && !(['PUT','DELETE'].includes(method) && /^\/CrossRef(?:\/[a-z0-9_-]+)?\/?$/i.test(route))) {
+    return blockedResponse(Object.assign(new Error('Unsupported vendor write endpoint.'), { statusCode: 400 }));
+  }
+  if (orderWrite) {
+    if (method !== 'POST') return blockedResponse(Object.assign(new Error('Only POST order submissions are supported.'), { statusCode: 400 }));
+    let payload;
+    try { payload = JSON.parse(body || '{}'); }
+    catch { return blockedResponse(Object.assign(new Error('Order requires JSON.'), { statusCode: 400 })); }
+    if (payload.testOrder !== true) {
+      try {
+        reservation = await reserveSubmission({ vendor: 'sss', poNumber: payload.poNumber,
+          lines: payload._portalSources, vendorLines: (payload.lines || []).map(l => ({ sku: l.identifier, qty: l.qty })),
+          actor: v.userId, admin: v.admin });
+      } catch (error) { return blockedResponse(error); }
+    }
+    delete payload._portalSources;
+    body = JSON.stringify(payload);
+  }
 
   // Force JSON response format (Accept header alone is unreliable for some endpoints). EXCEPTION:
   // the CrossRef PUT/DELETE are bodyless and take only `identifier` on the querystring — their
@@ -66,10 +94,21 @@ exports.handler = async (event) => {
     const response = await fetch(url, {
       method,
       headers,
-      ...(event.body ? { body: event.body } : {}),
+      ...(body ? { body } : {}),
     });
 
     const data = await response.text();
+    if (reservation) {
+      let parsed; try { parsed = JSON.parse(data); } catch { parsed = null; }
+      const orders = Array.isArray(parsed) ? parsed : parsed?.Orders || parsed?.orders || [parsed];
+      const orderIds = (Array.isArray(orders) ? orders : []).map(o => o?.orderNumber || o?.OrderNumber).filter(Boolean);
+      if (orderIds.length) {
+        await finishSubmission(reservation, 'accepted', { orderIds, response: parsed });
+      } else {
+        await finishSubmission(reservation, 'uncertain', { httpStatus: response.status, response: parsed });
+        return blockedResponse(Object.assign(new Error(uncertainMessage), { statusCode: 502 }));
+      }
+    }
     const rateLimitRemaining = response.headers.get('X-Rate-Limit-Remaining');
 
     return {
@@ -81,7 +120,8 @@ exports.handler = async (event) => {
       body: data,
     };
   } catch (error) {
+    await finishSubmission(reservation, 'uncertain', { error: error.message });
     return { statusCode: 500, headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ error: `S&S Activewear API call failed: ${error.message}` }) };
+      body: JSON.stringify({ error: reservation ? uncertainMessage : `S&S Activewear API call failed: ${error.message}` }) };
   }
 };

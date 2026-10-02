@@ -42,6 +42,7 @@ export function buildSSOrderLines(batchPOs) {
           sourceItemIdx: Number.isInteger(it.item_idx) ? it.item_idx : null,
           sourceSku: it.sku || '',
           sourceColor: it.color || '',
+          sourceSize: size,
           name: it.name || '',
         });
       });

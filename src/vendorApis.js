@@ -1455,7 +1455,7 @@ const ssSubmitOrder = async (order) => {
   // needs to see. Read both casings like the rest of this path does.
   const money = (...keys) => { for (const k of keys) { const v = Number(first[k]); if (first[k] != null && first[k] !== '' && !Number.isNaN(v)) return v; } return null; };
   return {
-    orderNumber, invoiceNumber: first.invoiceNumber || first.InvoiceNumber, poNumber: first.poNumber, lineErrors, raw: data,
+    orderNumber, requestPoNumber: order.poNumber, invoiceNumber: first.invoiceNumber || first.InvoiceNumber, poNumber: first.poNumber, lineErrors, raw: data,
     subtotal: money('subtotal', 'Subtotal', 'subTotal', 'SubTotal'),
     shipping: money('shipping', 'Shipping'),
     tax: money('tax', 'Tax'),

@@ -182,7 +182,7 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
     setSubmitState('submitting'); setErrorMsg('');
     let r;
     try {
-      r = await momentecSubmitOrder(built.order, env);
+      r = await momentecSubmitOrder({ ...built.order, _portalSources: lines }, env);
     } catch (e) {
       setErrorMsg(e.message || 'Submit failed — try again or order manually on momentecbrands.com.');
       setSubmitState('error');
