@@ -45,7 +45,7 @@ const NSA_SHIP_TO = {
   country: 'US',
 };
 
-export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', env = 'prod', shipTo, shipWarning = '', shipToDecoId = null, initialDpoNumber = '', decoVendors = [], onClose, onSubmitted, onRemoveLine }) {
+export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', env = 'prod', shipTo, shipWarning = '', shipToDecoId = null, initialDpoNumber = '', decoVendors = [], onClose, onBeforeSubmit, onSubmitError, onSubmitted, onRemoveLine }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'xml'
   const [copied, setCopied] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
@@ -378,9 +378,24 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     setSubmitState('submitting');
     setErrorMsg('');
     let r;
+    let vendorRequestStarted = false;
     try {
+      if (onBeforeSubmit && await onBeforeSubmit({ vendor: 'SanMar', payload, lines: submitLines, live: env === 'prod' }) === false) {
+        setErrorMsg('The purchase could not be reserved. Reload this batch before submitting.');
+        setSubmitState('idle');
+        return;
+      }
+      vendorRequestStarted = true;
       r = await sanmarSubmitPO(payload, env);
     } catch (e) {
+      if (vendorRequestStarted && onSubmitError) {
+        try { await onSubmitError(e); }
+        catch (_) {
+          setErrorMsg('The supplier request outcome could not be recorded. Verify this PO before another submission.');
+          setSubmitState('error');
+          return;
+        }
+      }
       setErrorMsg(e.message || 'Submit failed — try again or place the order manually on sanmar.com.');
       setSubmitState('error');
       return;
@@ -436,11 +451,11 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                 Do NOT submit or re-order this batch. Verify the SanMar transaction and the PO record first; if the marker is missing, record the vendor order number on the sales order manually.
               </div>}
             </div>
-          ) : submitState === 'error' ? (
+          ) : errorMsg ? (
             <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#991b1b' }}>
-              <strong>✗ SanMar did not accept the order — nothing was placed.</strong>
+              <strong>SanMar submission needs review.</strong>
               <div style={{ marginTop: 4, fontFamily: 'monospace' }}>{errorMsg}</div>
-              <div style={{ marginTop: 6 }}>Fix the issue and retry, or place this order manually on sanmar.com.</div>
+              <div style={{ marginTop: 6 }}>Verify the supplier PO and its portal record before submitting this purchase again.</div>
             </div>
           ) : isLive ? (
             <div style={{ padding: 10, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, marginBottom: 12, fontSize: 12 }}>

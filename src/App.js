@@ -1,4 +1,5 @@
 import DocumentRecoveryReview from './DocumentRecoveryReview';
+import { validateAllSchoolBatch, allSchoolWarehouseDestination, allSchoolSourceLines } from './lib/allSchoolBatchGuard';
 import {_loadRecoveryDocument, _saveReviewedDocument} from './lib/dbEngine';
 import { garmentSlotCandidates } from "./lib/jobMockCards";
 import { isOutsideArtJob } from './lib/outsideArt';
@@ -1990,6 +1991,7 @@ function dP(d,q,artFiles,cq){
   if(d.kind==='numbers'||d.type==='number_press'){
     // Tackle twill numbers: flat price from TWN (num_size × two_color), not the qty-tiered npP.
     if(d.num_method==='tackle_twill'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||Math.max(0,safeNum(d.num_qty))||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:twnP(d.num_size,d.two_color,true)),cost:twnP(d.num_size,d.two_color,false),_nq:fnq}}
+    if(d.cost_each!=null&&['dtf','heat_press'].includes(d.num_method)){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const fnq=(nq||Math.max(0,safeNum(d.num_qty)||q))*(d.front_and_back?2:1)*(d.reversible?2:1);return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:safeNum(d.sell_each)),cost:safeNum(d.cost_each),_nq:fnq}}
     const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||Math.max(0,safeNum(d.num_qty))||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:npP(useQty||1,d.two_color,true)),cost:npP(useQty||1,d.two_color,false),_nq:fnq}};
   // sell_override honors an explicit 0 (nullish, matches decoPricing.js — keep in sync).
   // Names bill per NAME, not per garment: return the true per-name rate and hand the
@@ -1998,7 +2000,7 @@ function dP(d,q,artFiles,cq){
   // as "24 x $0.25" and the quarter-rounding then billed $6 of sell and $6 of cost for
   // $5 of work at $3 of cost (EST-2126). Deco walks already read _nq, so the line TOTAL
   // is unchanged everywhere nc*se/q happened to land on an exact quarter.
-  if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||Math.max(0,safeNum(d.name_qty))||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each||3);return{sell:d.sell_suppressed?0:se,cost:co,_nq:(useNc||q)*(d.reversible?2:1)}};
+  if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||Math.max(0,safeNum(d.name_qty))||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each!=null?d.cost_each:3);return{sell:d.sell_suppressed?0:se,cost:co,_nq:(useNc||q)*(d.reversible?2:1)}};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}}
   // Tackle-twill chest/logo: flat per-garment price from the TWA menu (index on d.dtf_size).
   if(d.kind==='twill')return{sell:d.sell_override!=null?d.sell_override:twaP(d.dtf_size,true),cost:twaP(d.dtf_size,false)};
@@ -2614,6 +2616,7 @@ export default function App(){
   React.useEffect(()=>{_setInvBaseProvider((id)=>{const s=_dbSnap.current.prod;return(s&&s.find(x=>x.id===id))||null})},[]);
   // Batch PO system
   const[batchPOs,setBatchPOs]=useState(()=>loadState('batch_pos',[]));// pending queue
+  const allSchoolBatchClaims=useRef(new Map()); // durable claim made before a supplier API request
   const[submittedBatches,setSubmittedBatches]=useState(()=>loadState('submitted_batches',[]));// submitted batches for scan lookup
   const[batchCounter,setBatchCounter]=useState(()=>loadState('batch_counter',4501));// sequential PO numbers: NSA 4501, NSA 4502...
   const[batchVendorCounters,setBatchVendorCounters]=useState(()=>loadState('batch_vendor_counters',{}));// vendorKey → assigned NSA counter value
@@ -11591,6 +11594,31 @@ export default function App(){
   // skipSoId: the SO open in OrderEditor promotes its own lines through the editor's copy
   // (which may be newer than App state), so its savSO here is skipped.
   // Resolves to the batch PO number, or null if the vendor has nothing queued.
+  const claimAllSchoolBatch=async({groupKey,positions,poNumber,payload=null,lines=[],live=true})=>{
+    const allocations=(positions||[]).filter(bp=>bp.all_school_allocation_id);
+    if(!live||!allocations.length)return true;
+    if(payload){const checked=validateAllSchoolBatch({positions,lines,payload});if(!checked.ok){nf(checked.reason,'error');return false}}
+    if(allocations.some(bp=>bp.all_school_submission_state&&bp.all_school_submission_state!=='queued')){
+      nf('This batch has an All School submission in progress or awaiting vendor reconciliation. Reload and verify the vendor order before submitting.','error');return false;
+    }
+    if(!supabase){nf('A live database connection is required to claim All School purchases.','error');return false}
+    const token=window.crypto.randomUUID();
+    const{data,error}=await supabase.rpc('claim_all_school_regular_batch',{p_vendor_key:allocations[0].vendor_key,p_allocation_ids:allocations.map(bp=>bp.all_school_allocation_id),p_token:token,p_po_number:poNumber,p_source_lines:payload?lines:allSchoolSourceLines(allocations),p_ship_to:allSchoolWarehouseDestination()});
+    if(error||!data?.claimed){nf('Batch claim failed: '+(error?.message||data?.reason||'queue changed')+'. Reload before ordering.','error');return false}
+    const number=data.po_number||poNumber;
+    // Payload is the modal's exact object sent after this callback returns.
+    if(payload?.PO){payload.PO.orderNumber=number;payload.PO.shipment.shipReferences=number}
+    else if(payload)payload.poNumber=number;
+    if(payload)payload._allSchoolSubmissionToken=token;
+    if(payload&&!payload.PO)payload.rejectLineErrors=true;
+    allSchoolBatchClaims.current.set(groupKey,{token,poNumber:number});
+    return true;
+  };
+  const markAllSchoolBatchUnknown=async(groupKey,error)=>{
+    const claim=allSchoolBatchClaims.current.get(groupKey);if(!claim||!supabase)return;
+    await supabase.rpc('finish_all_school_regular_batch',{p_token:claim.token,p_po_number:claim.poNumber,p_state:'unknown',p_api_order_id:null,p_vendor_lines:[]});
+    nf('The vendor result is uncertain. All School quantities are held for reconciliation; do not re-order this batch. '+(error?.message||''),'error');
+  };
   const orderVendorBatch=async({vendorKey:vk,shipToDecoId=null,groupKey:gk=null,skipSoId=null,apiResult=null,apiLines=null})=>{
     const _gk=gk||(vk+(shipToDecoId?':'+shipToDecoId:''));
     // Re-entry guard: a double-click (or a manual Order racing a vendor-API modal's deferred
@@ -11613,6 +11641,11 @@ export default function App(){
     const _batchPOsNow=_visFlushRefs.current.batchPOs||batchPOs;
     const _sosNow=_visFlushRefs.current.sos||sos;
     const pos=(_batchPOsNow||[]).filter(bp=>(bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:''))===_gk);
+    const hasAllSchool=pos.some(bp=>bp.all_school_allocation_id);
+    if(hasAllSchool&&!allSchoolBatchClaims.current.has(_gk)){
+      if(apiResult){nf('The vendor accepted this order without a durable All School claim. Hold the batch and reconcile it before re-ordering.','error');return null}
+      if(!await claimAllSchoolBatch({groupKey:_gk,positions:pos,poNumber:'NSA '+(batchVendorCounters[_gk]??batchCounter)}))return null;
+    }
     if(pos.length===0){
       // Same rule as the guard above: with a vendor-accepted order in hand, an empty queue
       // means we can't record it — never swallow that.
@@ -11626,7 +11659,8 @@ export default function App(){
     const vgName=BATCH_VENDORS[vk]?.name||pos[0].vendor_name||vk;
     const total=pos.reduce((a,bp)=>a+(bp.total_cost||0),0);
     const totalUnits=pos.reduce((a,bp)=>a+(bp.items||[]).reduce((sm,it)=>sm+(it.qty||0),0),0);
-    let poNum='NSA '+(batchVendorCounters[_gk]??batchCounter);
+    const allSchoolClaim=allSchoolBatchClaims.current.get(_gk);
+    let poNum=allSchoolClaim?.poNumber||('NSA '+(batchVendorCounters[_gk]??batchCounter));
     // Claim the number server-side (atomic). The local counter is derived from the LWW
     // submitted_batches app_state blob, so two clients in the same sync window can mint the
     // same number — the "NSA 4513 x3" duplicate. claim_batch_po_number inserts the number into
@@ -11634,7 +11668,7 @@ export default function App(){
     // number and the rep is told the batch was renumbered (they may have typed the preview
     // number on the vendor's site). Falls back to the local number when the RPC isn't deployed
     // yet, so deploy order can't block ordering.
-    if(supabase){
+    if(supabase&&!allSchoolClaim){
       const _reqStr=(String(poNum).match(/\d{3,6}/)||[])[0];
       const _req=_reqStr?parseInt(_reqStr,10):null;
       try{
@@ -11657,6 +11691,11 @@ export default function App(){
     // PO line (and the batch history) so the badge can flag it as a real API-placed order
     // rather than just a queued/manually-ordered batch. No-op for the manual "Order" button.
     const apiOid=apiResult&&(apiResult.orderId||apiResult.orderNumber||apiResult.transactionId);
+    if(allSchoolClaim&&supabase){
+      const{data,error}=await supabase.rpc('finish_all_school_regular_batch',{p_token:allSchoolClaim.token,p_po_number:poNum,p_state:'submitted',p_api_order_id:apiOid?String(apiOid):null,p_vendor_lines:apiLines||[]});
+      if(error||!data?.ok){nf('The order was placed, but its durable All School allocations could not be promoted. Do not re-order; reconcile '+poNum+'.','error');return null}
+      allSchoolBatchClaims.current.delete(_gk);
+    }
     // Phase A of order-aware matching (SPORTSLINK_ORDER_AWARE_MATCHING.md): alongside the ack id,
     // persist the exact line keys we SUBMITTED to the vendor (their sku/partId, size/color codes,
     // unit cost) as vendor_keys on the po_line. Pure capture — nothing reads it yet; it accumulates
@@ -11729,6 +11768,7 @@ export default function App(){
   // in place so purchasing can source it elsewhere. The order's sales rep is tagged on the
   // SO conversation after the durable save succeeds.
   const removeQueuedApiLine=async(line,opts={})=>{
+    if(String(line?.sourceBatchId||'').startsWith('ASBPO ')){nf('All School quantities have durable purchasing allocations. Resolve the shortage through the store before changing this supplier preview.','error');return false}
     const currentSos=_visFlushRefs.current.sos||sos;
     const so=currentSos.find(entry=>entry.id===line?.sourceSO);
     if(!so){nf('The source sales order for this line could not be found. Nothing was changed.','error');return false}
@@ -15431,8 +15471,8 @@ export default function App(){
                 </div>
                 <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
                   <div style={{textAlign:'right'}}><div style={{fontWeight:800,fontSize:14,color:'#0f172a'}}>${bp.total_cost.toFixed(2)}</div>{bp.created_by_name&&<div style={{fontSize:10,color:'#94a3b8'}}>by {bp.created_by_name.split(' ')[0]}</div>}</div>
-                  <button className="btn btn-sm" style={{color:'#7c3aed',borderColor:'#ddd6fe',padding:'3px 10px',fontSize:11}} onClick={()=>setEditingBatchId(isEditing?null:bp.id)}>{isEditing?'Close':'Edit'}</button>
-                  <button className="btn btn-sm" title="Remove from queue" style={{color:'#dc2626',borderColor:'#fca5a5',padding:'3px 9px',fontSize:11}} onClick={()=>{if(!window.confirm('Remove this batch PO from queue?'))return;
+                  <button className="btn btn-sm" style={{color:'#7c3aed',borderColor:'#ddd6fe',padding:'3px 10px',fontSize:11}} disabled={!!bp.all_school_allocation_id} onClick={()=>setEditingBatchId(isEditing?null:bp.id)}>{isEditing?'Close':'Edit'}</button>
+                  <button className="btn btn-sm" title="Remove from queue" disabled={!!bp.all_school_allocation_id} style={{color:'#dc2626',borderColor:'#fca5a5',padding:'3px 9px',fontSize:11}} onClick={()=>{if(!window.confirm('Remove this batch PO from queue?'))return;
                     const so=sos.find(s=>s.id===bp.so_id);
                     if(so){const updatedItems=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}));savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()})}
                     setBatchPOs(prev=>prev.filter(p=>p.id!==bp.id))}}>✕</button>
@@ -15440,7 +15480,7 @@ export default function App(){
               </div>
               {!isEditing&&<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
                 {bp.items.map((it,i)=>{const _sw=_bSwatch(it.color);const _img=(prod.find(p=>p.sku===it.sku)||{}).image_url;return<div key={i} style={{display:'flex',gap:10,fontSize:13,padding:'8px 11px',paddingRight:28,background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0',position:'relative'}}>
-                  <button title={'Remove '+it.sku+' from batch'} onClick={()=>{if(!window.confirm('Remove '+it.sku+' from this batch?'))return;const newItems=bp.items.filter((_,ii)=>ii!==i);const so=sos.find(s=>s.id===bp.so_id);if(newItems.length===0){if(so){const ui=safeItems(so).map(soIt=>({...soIt,po_lines:(soIt.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}));savSO({...so,items:ui,updated_at:new Date().toLocaleString()})}setBatchPOs(prev=>prev.filter(p=>p.id!==bp.id));nf('Batch entry removed');}else{if(so&&it.item_idx!=null){const ui=safeItems(so).map((soIt,soIdx)=>{if(soIdx!==it.item_idx)return soIt;return{...soIt,po_lines:(soIt.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}});savSO({...so,items:_carryBatchPoMetadata(ui,bp),updated_at:new Date().toLocaleString()})}const newTotal=newItems.reduce((a,it2)=>a+it2.qty*(it2.unit_cost||0),0)+safeNum(bp.manual_cost);setBatchPOs(prev=>prev.map(b=>b.id===bp.id?{...b,items:newItems,total_cost:newTotal}:b));nf('Removed '+it.sku+' from batch');}}} style={{position:'absolute',top:5,right:5,background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',fontSize:13,lineHeight:1,padding:'1px 3px',borderRadius:3}} onMouseEnter={e=>e.currentTarget.style.color='#dc2626'} onMouseLeave={e=>e.currentTarget.style.color='#cbd5e1'}>✕</button>
+                  <button disabled={!!bp.all_school_allocation_id} title={'Remove '+it.sku+' from batch'} onClick={()=>{if(!window.confirm('Remove '+it.sku+' from this batch?'))return;const newItems=bp.items.filter((_,ii)=>ii!==i);const so=sos.find(s=>s.id===bp.so_id);if(newItems.length===0){if(so){const ui=safeItems(so).map(soIt=>({...soIt,po_lines:(soIt.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}));savSO({...so,items:ui,updated_at:new Date().toLocaleString()})}setBatchPOs(prev=>prev.filter(p=>p.id!==bp.id));nf('Batch entry removed');}else{if(so&&it.item_idx!=null){const ui=safeItems(so).map((soIt,soIdx)=>{if(soIdx!==it.item_idx)return soIt;return{...soIt,po_lines:(soIt.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}});savSO({...so,items:_carryBatchPoMetadata(ui,bp),updated_at:new Date().toLocaleString()})}const newTotal=newItems.reduce((a,it2)=>a+it2.qty*(it2.unit_cost||0),0)+safeNum(bp.manual_cost);setBatchPOs(prev=>prev.map(b=>b.id===bp.id?{...b,items:newItems,total_cost:newTotal}:b));nf('Removed '+it.sku+' from batch');}}} style={{position:'absolute',top:5,right:5,background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',fontSize:13,lineHeight:1,padding:'1px 3px',borderRadius:3}} onMouseEnter={e=>e.currentTarget.style.color='#dc2626'} onMouseLeave={e=>e.currentTarget.style.color='#cbd5e1'}>✕</button>
                   {_img?<img src={_img} alt="" style={{width:42,height:42,objectFit:'contain',background:'white',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>:<div style={{width:42,height:42,borderRadius:4,background:'#eef2f7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>👕</div>}
                   <div style={{minWidth:0}}>
                     <div style={{display:'flex',alignItems:'center',gap:7,flexWrap:'wrap',marginBottom:6}}>
@@ -15513,7 +15553,7 @@ export default function App(){
               </div>
               <div style={{display:'flex',flexDirection:'column',gap:6}}>
                 <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard?.writeText(nextPO);nf('Copied '+nextPO)}}>{'📋'} Copy PO#</button>
-                <button className="btn btn-sm btn-secondary" onClick={()=>{if(!window.confirm('Clear all '+vg.pos.length+' POs?'))return;
+                <button className="btn btn-sm btn-secondary" onClick={()=>{if(vg.pos.some(bp=>bp.all_school_allocation_id)){nf('This group includes durable All School allocations. Resolve them through the source store before clearing the group.','error');return}if(!window.confirm('Clear all '+vg.pos.length+' POs?'))return;
                   const bpIds=new Set(vg.pos.map(p=>p.id));const soIds=new Set(vg.pos.map(p=>p.so_id));
                   soIds.forEach(sid=>{const so=sos.find(s=>s.id===sid);if(!so)return;const items2=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>!bpIds.has(pl.batch_queue_id))}));savSO({...so,items:items2,updated_at:new Date().toLocaleString()})});
                   setBatchPOs(prev=>prev.filter(p=>(p.vendor_key+(p.ship_to_deco_id?':'+p.ship_to_deco_id:''))!==gk))}}>Clear</button>
@@ -15530,7 +15570,7 @@ export default function App(){
                 setPg('batch_pos');
               }}>Manual Order · {nextPO}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
             {vg.vendor_key==='sanmar'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>{const _d=_apiDest(vg);setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipToDecoId:vg.ship_to_deco_id||null,shipTo:vg.ship_to_deco_id?undefined:(_d.shipTo||undefined),shipWarning:_d.warning,onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,shipToDecoId:vg.ship_to_deco_id||null,apiResult:r,apiLines})})}}>
+              onClick={()=>{const _d=_apiDest(vg);setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipToDecoId:vg.ship_to_deco_id||null,shipTo:vg.ship_to_deco_id?undefined:(_d.shipTo||undefined),shipWarning:_d.warning,onBeforeSubmit:args=>claimAllSchoolBatch({groupKey:gk,positions:vg.pos,poNumber:nextPO,...args}),onSubmitError:e=>markAllSchoolBatchUnknown(gk,e),onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,shipToDecoId:vg.ship_to_deco_id||null,apiResult:r,apiLines})})}}>
               🚀 Submit SanMar Order (API)
             </button>}
             {vg.vendor_key==='sss'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
@@ -15540,12 +15580,12 @@ export default function App(){
                 // the same way the bot-cart and SanMar flows do, then hand SSOrderModal a shipTo
                 // in its shape. Non-deco batches pass no shipTo → default (NSA warehouse).
                 const _d=_apiDest(vg);
-                setSSOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipTo:_d.shipTo||undefined,shipWarning:_d.warning,onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})});
+                setSSOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipTo:_d.shipTo||undefined,shipWarning:_d.warning,onBeforeSubmit:args=>claimAllSchoolBatch({groupKey:gk,positions:vg.pos,poNumber:nextPO,...args}),onSubmitError:e=>markAllSchoolBatchUnknown(gk,e),onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})});
               }}>
               🚀 Order via S&S API
             </button>}
             {vg.vendor_key==='momentec'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #fdba74',background:'white',color:'#c2410c',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>{const _d=_apiDest(vg);setMomentecOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipTo:_d.shipTo||undefined,shipWarning:_d.warning,onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})})}}>
+              onClick={()=>{const _d=_apiDest(vg);setMomentecOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipTo:_d.shipTo||undefined,shipWarning:_d.warning,onBeforeSubmit:args=>claimAllSchoolBatch({groupKey:gk,positions:vg.pos,poNumber:nextPO,...args}),onSubmitError:e=>markAllSchoolBatchUnknown(gk,e),onRemoveLine:removeQueuedApiLine,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})})}}>
               🚀 Order via Momentec API
             </button>}
             <div style={{fontSize:10,color:'#64748b',marginTop:6,textAlign:'center'}}>

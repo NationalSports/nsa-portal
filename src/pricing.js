@@ -1,5 +1,5 @@
 /* eslint-disable */
-import { EXTRA_SIZES, SZ_NORM, CATEGORIES } from './constants';
+import { EXTRA_SIZES, CATEGORIES } from './constants';
 import { safeNum, safeJobs, manualPoCostTotal } from './safeHelpers';
 // Outsourced gate — same switch Costs tab / syncJobs use. Keep cost walks from counting
 // in-house decoCostAt on decorations already covered by a deco PO (SO-1397 double-count).
@@ -10,6 +10,7 @@ import { isDecoOutsourced, outsourcedDecoTypes, decoConcreteType, decoIsOutsourc
 // overrides on top and re-exports the same public API it always had, so every
 // importer (App.js, OrderEditor.js, ...) is unchanged.
 import * as DECO from './lib/decoPricing';
+import * as SIZE_NAMES from './lib/sizeNames.shared';
 
 // ── Utility helpers ──
 export const rQ=DECO.rQ;
@@ -21,22 +22,7 @@ export const auTierDisc=DECO.auTierDisc;
 export const isAdidasPriced=DECO.isAdidasPriced;
 export const isAU=DECO.isAU;
 export const auCostMult=DECO.auCostMult;
-// Gender/audience qualifiers that OMG (and some vendors) prepend to a size
-// label — e.g. "Mens S", "Women's Large", "Youth M". The size itself is the
-// same garment size, so strip the qualifier and normalize the bare size.
-// Adult/unisex labels collapse to the plain size (S/M/L…); youth-class labels
-// map to the Y-prefixed size (S→YS, M→YM…) to match the catalog/vendor feeds.
-// Without this, "Mens S" never matched a vendor's "S", so genuinely in-stock
-// OMG items read as out of stock.
-const _ADULT_QUAL=/^(?:MEN|MENS|MEN'S|WOMEN|WOMENS|WOMEN'S|LADIES|LADIES'|LADY|ADULT|UNISEX)\s+(.+)$/;
-const _YOUTH_QUAL=/^(?:YOUTH|YTH|BOYS|BOY'S|GIRLS|GIRL'S|JUNIOR|JUNIORS|JR)\s+(.+)$/;
-const _YOUTH_SZ={'XS':'YXS','S':'YS','SMALL':'YS','SM':'YS','M':'YM','MEDIUM':'YM','MD':'YM','L':'YL','LARGE':'YL','LG':'YL','XL':'YXL','XLARGE':'YXL','X-LARGE':'YXL'};
-// A fit range that names itself one-size — headwear catalogs label Richardson caps
-// "MD-LG (ONE SIZE FITS MOST)". SanMar lists the same cap as the bare 'OSFA', so the
-// parenthetical is what carries the meaning and the fit range is decoration. Checked
-// LAST, so any label the exact maps already know keeps its own answer.
-const _ONE_SIZE_PHRASE=/\bONE\s*SIZE\b|\bOSFA\b|\bOSFM\b/;
-export const normSzName=s=>{if(!s)return s;const u=String(s).toUpperCase().trim();if(SZ_NORM[u])return SZ_NORM[u];let m=u.match(_ADULT_QUAL);if(m){const r=m[1].trim();return SZ_NORM[r]||r}m=u.match(_YOUTH_QUAL);if(m){const r=m[1].trim();return _YOUTH_SZ[r]||SZ_NORM[r]||r}if(_ONE_SIZE_PHRASE.test(u))return'OSFA';return u};
+export const { normSzName } = SIZE_NAMES;
 export const showSz=(s,inv)=>{const c=['S','M','L','XL','2XL'];if(c.includes(s))return true;return!EXTRA_SIZES.includes(s)||(inv||0)>0};
 
 // ── Deco vendor price lookup ──

@@ -5,6 +5,7 @@ import * as business from '../businessLogic';
 import * as constants from '../constants';
 import * as matching from '../lib/syncJobsMatch';
 import * as stable from '../lib/stableJobAssignments';
+import * as allSchool from '../lib/allSchoolJobs';
 import snapshot from './fixtures/stableArtJobCase.json';
 
 const art = (id, deco_type = 'screen_print') => ({ id, name: id, deco_type, status: 'uploaded' });
@@ -17,7 +18,7 @@ const job = (id, aid, rows, extra = {}) => ({ id, key: 'released_screen_print_' 
   assigned_artist: 'artist', items: rows, total_units: rows.reduce((n, r) => n + r.units, 0), fulfilled_units: 0, ...extra });
 
 // Execute the actual editor callback, including all preservation and rebuild passes.
-const deps = { ...helpers, ...business, ...constants, ...matching, ...stable };
+const deps = { ...helpers, ...business, ...constants, ...matching, ...stable, ...allSchool };
 delete deps.default;
 const syncFor = file => {
   const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');

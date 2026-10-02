@@ -5,6 +5,7 @@
 // ═══════════════════════════════════════════════
 
 const { matchingClientLine, lineIntentKey } = require('./lib/orderLineIdentity');
+const { isAllSchoolRecipeOrder } = require('./lib/allSchoolJobs');
 const { productionJobs, isOutsideArtJob, buildOutsideArtJobs } = require('./lib/outsideArt');
 
 // ── Safe Accessors ──
@@ -101,6 +102,7 @@ function dP(d, q, artFiles, cq) {
     if (d.num_method === 'sublimated') { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const useQty = nq || Math.max(0, safeNum(d.num_qty)) || 0; const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); return { sell: safeNum(d.sell_override) || 0, cost: 0, _nq: useQty * mult } }
     // Tackle twill numbers: flat price from TWN (num_size × two_color), not the qty-tiered npP.
     if (d.num_method === 'tackle_twill') { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const useQty = nq > 0 ? nq : Math.max(0, safeNum(d.num_qty) || q); const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); const fnq = useQty * mult; return { sell: d.sell_override != null ? d.sell_override : twnP(d.num_size, d.two_color, true), cost: twnP(d.num_size, d.two_color, false), _nq: fnq } }
+    if (d.cost_each != null && ['dtf', 'heat_press'].includes(d.num_method)) { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const fnq = (nq || Math.max(0, safeNum(d.num_qty) || q)) * (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); return { sell: d.sell_override != null ? d.sell_override : safeNum(d.sell_each), cost: safeNum(d.cost_each), _nq: fnq } }
     const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const hasAssigned = nq > 0; const useQty = hasAssigned ? nq : Math.max(0, safeNum(d.num_qty) || q); const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); const fnq = useQty * mult;
     // Price the per-number volume break at the doubled application count (fnq), not the garment qty.
     return { sell: d.sell_override != null ? d.sell_override : npP(fnq || 1, d.two_color, true), cost: npP(fnq || 1, d.two_color, false), _nq: fnq } };
@@ -111,7 +113,7 @@ function dP(d, q, artFiles, cq) {
   // as "24 x $0.25" and the quarter-rounding then billed $6 of sell and $6 of cost for
   // $5 of work at $3 of cost (EST-2126). Deco walks already read _nq, so the line TOTAL
   // is unchanged everywhere nc*se/q happened to land on an exact quarter.
-  if (d.kind === 'names') { const nc = d.names ? Object.values(d.names).flat().filter(v => v && v.trim()).length : 0; const se = safeNum(d.sell_override != null ? d.sell_override : (d.sell_each || 6)); const co = safeNum(d.cost_each || 3); return { sell: se, cost: co, _nq: (nc || q) * (d.reversible ? 2 : 1) } };
+  if (d.kind === 'names') { const nc = d.names ? Object.values(d.names).flat().filter(v => v && v.trim()).length : 0; const se = safeNum(d.sell_override != null ? d.sell_override : (d.sell_each || 6)); const co = safeNum(d.cost_each != null ? d.cost_each : 3); return { sell: se, cost: co, _nq: (nc || q) * (d.reversible ? 2 : 1) } };
   if (d.type === 'dtf') { const t = DTF[d.dtf_size || 0]; return { sell: d.sell_override != null ? d.sell_override : t.sell, cost: t.cost } }
   // Tackle-twill chest/logo: flat per-garment price from the TWA menu (index on d.dtf_size).
   if (d.kind === 'twill') return { sell: d.sell_override != null ? d.sell_override : twaP(d.dtf_size, true), cost: twaP(d.dtf_size, false) };
@@ -606,6 +608,7 @@ function normalizeWebLogos(webLogos, colorWays) {
 // allocation), and outsourced decorations never enter a bucket (syncJobs), so those still
 // separate. The job's deco_type is the primary method (art first); deco_types lists all of them.
 const buildJobs = (o) => {
+  if (isAllSchoolRecipeOrder(o)) return safeJobs(o);
   if (o?.jobs && o.jobs.length > 0) return o.jobs;
   // Build decoration entries per item, grouped by deco type
   const itemSigs = [];
