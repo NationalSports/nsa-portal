@@ -5,7 +5,7 @@
 // store funds + invoice) is prompted separately when the SO's final job finishes — see the
 // settle-on-finish to-dos in App.js.
 const { getSupabaseAdmin } = require('./_shared');
-const { notifyStoreClosed } = require('./_webstoreClose');
+const { notifyStoreClosed, settleProcessedCloseTodos } = require('./_webstoreClose');
 
 exports.handler = async () => {
   let admin;
@@ -13,6 +13,11 @@ exports.handler = async () => {
   catch (e) { console.error('[close-sweep]', e.message); return { statusCode: 500, body: 'Not configured' }; }
 
   const nowIso = new Date().toISOString();
+  // Clear close-out to-dos whose stores have since been fully batched onto SOs.
+  // Runs every sweep, independent of whether any store is due to close.
+  let settled = 0;
+  try { settled = (await settleProcessedCloseTodos(admin)).completed; }
+  catch (e) { console.error('[close-sweep] settle to-dos failed:', e.message); }
   try {
     // Open, real (non-OMG) stores whose close date has passed.
     const { data: dueOpen, error } = await admin.from('webstores')
@@ -28,7 +33,7 @@ exports.handler = async () => {
     if (retryError) { console.error('[close-sweep] retry query failed:', retryError.message); return { statusCode: 500, body: retryError.message }; }
     const due = [...(dueOpen || []), ...(dueRetry || [])]
       .filter((store, index, all) => store.approval_status !== 'rejected' && all.findIndex((candidate) => candidate.id === store.id) === index);
-    if (!due.length) return { statusCode: 200, body: 'No stores due to close or retry' };
+    if (!due.length) return { statusCode: 200, body: `No stores due to close or retry; completed ${settled} processed close-out to-do(s)` };
 
     let closed = 0, retried = 0, notified = 0;
     for (const store of due) {
@@ -43,8 +48,8 @@ exports.handler = async () => {
         if (r && r.notified) notified++;
       } catch (e) { console.error('[close-sweep] notify failed for', store.id, e.message); }
     }
-    console.log(`[close-sweep] closed ${closed}, retried ${retried}, notified ${notified} of ${due.length} due`);
-    return { statusCode: 200, body: `Closed ${closed}, retried ${retried}, notified ${notified}` };
+    console.log(`[close-sweep] closed ${closed}, retried ${retried}, notified ${notified} of ${due.length} due; settled ${settled} to-dos`);
+    return { statusCode: 200, body: `Closed ${closed}, retried ${retried}, notified ${notified}, completed ${settled} processed close-out to-do(s)` };
   } catch (e) {
     console.error('[close-sweep]', e);
     return { statusCode: 500, body: e.message };
