@@ -50,10 +50,10 @@ test('expected ship-from uses S&S transit days to the ship-to ZIP, not the accou
   expect(ssGetDaysInTransit).toHaveBeenCalledWith('92865');
 });
 
-test('falls back to the closest flag when the transit lookup returns nothing', async () => {
+test('falls back to delivery ZIP proximity when transit lookup returns nothing', async () => {
   ssGetDaysInTransit.mockResolvedValue({});
   renderModal();
-  await waitFor(() => expect(screen.getByText(/📦 KS/)).toBeTruthy());
+  await waitFor(() => expect(screen.getByText(/📦 NV/)).toBeTruthy());
 });
 
 test('the warehouse S&S actually assigned is shown and passed to the PO record', async () => {
@@ -85,4 +85,26 @@ test('a line S&S splits across two warehouses records both', async () => {
   await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
   expect(onSubmitted.mock.calls[0][1][0].warehouse).toBe('NV+KS');
   expect(await screen.findByText(/split this PO into 2 orders/)).toBeTruthy();
+});
+
+test('PO 60340 keeps all six sizes at one nearby DC when transit times tie', async () => {
+  const sizes = { S: 10, M: 19, L: 29, XL: 11, '2XL': 4, '3XL': 2 };
+  const skus = ['B06560583', 'B06560584', 'B06560585', 'B06560586', 'B06560587', 'B06560588'];
+  ssResolveSkus.mockResolvedValue({ resolved: Object.fromEntries(Object.keys(sizes).map((size, i) => [`8000|Sport Grey|${size}`, skus[i]])), candidates: {} });
+  ssGetDaysInTransit.mockResolvedValue({ NV: 1, CN: 1, KS: 3 });
+  ssGetWarehouseStock.mockResolvedValue(Object.fromEntries(skus.map((sku, i) => [sku, [
+    { abbr: 'NV', qty: [2063, 10560, 15438, 11290, 702, 1051][i] },
+    { abbr: 'CN', qty: [5633, 7423, 11653, 6493, 4581, 1877][i] },
+    { abbr: 'KS', qty: 25000 },
+  ]])));
+  ssSubmitOrder.mockResolvedValue({ orderNumber: '555', raw: [], lineErrors: [] });
+  renderModal({ poNumber: 'PO 60340 WVCA', batchPOs: [{ so_id: 'SO-2572', items: [{ sku: '8000', color: 'Sport Grey', unit_cost: 3.05, sizes }] }], shipTo: { ...SHIP_TO, city: 'Bonita', postalCode: '91911' } });
+  await waitFor(() => expect(screen.getAllByText(/📦 CN/)).toHaveLength(6));
+  expect(screen.queryByText(/📦 NV/)).toBeNull();
+  expect(screen.getByText(/requests Fresno, CA for all lines/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('checkbox', { name: /real order/i }));
+  fireEvent.click(screen.getByText(/Place Order with S&S/));
+  await waitFor(() => expect(ssSubmitOrder).toHaveBeenCalled());
+  expect(ssSubmitOrder.mock.calls[0][0]).toMatchObject({ autoselectWarehouse: true, autoselectWarehouse_Warehouses: 'CN' });
+  expect(ssSubmitOrder.mock.calls[0][0].lines.reduce((n, l) => n + l.qty, 0)).toBe(75);
 });
