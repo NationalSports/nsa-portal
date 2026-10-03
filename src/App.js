@@ -1,3 +1,4 @@
+import ClipboardImagePaste from './ClipboardImagePaste';
 import DocumentRecoveryReview from './DocumentRecoveryReview';
 import {_loadRecoveryDocument, _saveReviewedDocument} from './lib/dbEngine';
 import { garmentSlotCandidates } from "./lib/jobMockCards";
@@ -37612,6 +37613,8 @@ export default function App(){
                   <p style={{margin:0,fontSize:12,color:'#94a3b8'}}>Supports PNG and JPG files</p>
                 </>}
               </div>
+
+              <ClipboardImagePaste onUpload={handleVecUpload} disabled={vecProcessing}/>
 
               {vecFile&&<ImageExportOptions file={vecFile} disabled={vecProcessing} onApply={url=>{setVecFile({...vecFile,url});setVecSvg('');setVecCredits(null);nf('Image ready. Vectorize to create SVG, or download PNG in the optional editor.');}}/>}
 
