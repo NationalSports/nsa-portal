@@ -2762,10 +2762,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             {(()=>{const jobs=waitingArtJobs;const upcoming=upcomingArtJobs;return(
             <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:16,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'16px 22px'}}>
-                <div className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Designs to Review{jobs.length>0?' ('+jobs.length+')':''}</div>
+                <div className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Order Designs to Review{jobs.length>0?' ('+jobs.length+')':''}</div>
                 <button onClick={()=>setPage('art')} className="nsa-disp" style={{background:'none',border:'none',cursor:'pointer',color:tAccentText,fontWeight:700,fontSize:13,textTransform:'uppercase'}}>Art Locker →</button>
               </div>
-              {jobs.length===0?<div style={{padding:'0 22px 18px',color:'#5A6075',fontSize:13}}>{upcoming.length>0?'Nothing to approve yet — the designs below are still being drawn.':'No proofs waiting on you right now.'}</div>:
+              {jobs.length===0?<div style={{padding:'0 22px 18px',color:'#5A6075',fontSize:13}}>{upcoming.length>0?'The order designs below are still being drawn.':'No sales-order proofs waiting on you right now.'}</div>:
                jobs.map((j,ix)=>{const so=j.so;
                 return<div key={so.id+'|'+j.id} className="nsa-card" style={{display:'flex',alignItems:'center',gap:12,padding:'12px 22px',borderTop:'1px solid #EEF1F6',cursor:'pointer'}} onClick={()=>{setSoView(so);setJobView({job:j,so});setComment('')}}>
                   <div className="nsa-disp" style={{width:46,height:54,flexShrink:0,borderRadius:12,background:`linear-gradient(150deg, ${tPrimary} 0%, ${tNavyMid} 100%)`,display:'flex',alignItems:'center',justifyContent:'center',color:'rgba(255,255,255,.85)',fontWeight:800,fontSize:16}}>{String(ix+1).padStart(2,'0')}</div>
