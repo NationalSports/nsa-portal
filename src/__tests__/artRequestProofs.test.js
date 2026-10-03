@@ -12,13 +12,14 @@ test('rep explicitly shares completed artwork and sees customer status', async (
 });
 test('customer must explain changes; approval sends reviewed version without estimate approval', async () => {
   const proof = { version: 2, status: 'pending', files: row.result_files };
-  global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ requests: [{ ...row, portal_proofs: [proof] }] }) });
+  global.fetch = jest.fn().mockResolvedValueOnce({ ok: true, json: async () => ({ requests: [{ ...row, portal_proofs: [proof] }] }) }).mockResolvedValueOnce({ok:true,json:async()=>({proof:{...proof,status:'changes_requested',comment:'Make the outline blue'}})});
   render(<CustomerArtProofs alphaTag="QA" estimateId="EST-1" />);
   await screen.findByText('Mascot');
   expect(screen.getByText('Request changes').disabled).toBe(true);
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Make the outline blue' } });
   fireEvent.click(screen.getByText('Request changes'));
-  await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(3));
+  await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(screen.queryByText('Request changes')).toBeNull());
   const sent = JSON.parse(global.fetch.mock.calls[1][1].body);
   expect(sent).toEqual({ action: 'decide', alphaTag: 'QA', id: 'r1', version: 2, decision: 'reject', comment: 'Make the outline blue' });
 });

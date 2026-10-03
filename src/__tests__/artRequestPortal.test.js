@@ -26,3 +26,13 @@ test('valid decision uses server-checked portal and reviewed version',async()=>{
   expect((await invoke({alphaTag:'QA',action:'decide',id:'r1',version:3,decision:'approve',comment:''})).statusCode).toBe(200);
   expect(db.rpc).toHaveBeenCalledWith('decide_standalone_art_proof',{p_id:'r1',p_alpha_tag:'QA',p_version:3,p_decision:'approve',p_comment:''});
 });
+
+test('malformed JSON values receive 400 rather than crashing',async()=>{
+  for(const value of [null,[],true,42]) expect((await invoke(value)).statusCode).toBe(400);
+});
+test('decision response never exposes staff identity',async()=>{
+  const db=setup([{data:[{id:'c1'}]},{data:[]},{data:{id:'r1'}}]);
+  db.rpc.mockResolvedValue({data:{version:1,status:'approved',shared_by:'private-staff-id'}});
+  const res=await invoke({alphaTag:'QA',action:'decide',id:'r1',version:1,decision:'approve',comment:''});
+  expect(res.statusCode).toBe(200);expect(res.body).not.toContain('private-staff-id');
+});

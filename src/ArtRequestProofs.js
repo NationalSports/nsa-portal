@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 const labels = { pending: 'Waiting for customer approval', approved: 'Customer approved', changes_requested: 'Customer requested changes' };
 export function ProofHistory({ proofs = [] }) {
-  return proofs.map(p => <div key={p.version} style={{ marginTop: 10 }}><strong>Proof {p.version} · {labels[p.status] || p.status}</strong>{p.comment && <p>{p.comment}</p>}</div>);
+  return proofs.map(p => <div key={p.version} style={{ marginTop: 10 }}><strong>Proof {p.version} · {labels[p.status] || p.status}</strong>{p.shared_at && <div>Shared {new Date(p.shared_at).toLocaleString()}</div>}{p.decided_at && <div>Reviewed {new Date(p.decided_at).toLocaleString()}</div>}{p.comment && <p>{p.comment}</p>}{(p.files || []).map((f, i) => { const url = typeof f === 'string' ? f : f?.url; return /^https?:\/\//i.test(url || '') ? <a key={i} href={url} target="_blank" rel="noreferrer" style={{display:'block'}}>Proof {p.version}: {f.name || 'View artwork'}</a> : null; })}</div>);
 }
 export function ShareArtProof({ row, service, onChanged, portalTag }) {
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
@@ -29,7 +29,7 @@ function CustomerProof({ row, alphaTag, onChanged }) {
   const [comment, setComment] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const decide = async decision => {
     setBusy(true); setError('');
-    try { await portalCall({ action: 'decide', alphaTag, id: row.id, version: proof.version, decision, comment }); await onChanged(); }
+    try { const data = await portalCall({ action: 'decide', alphaTag, id: row.id, version: proof.version, decision, comment }); onChanged(row.id, data.proof); }
     catch (e) { setError(e.message); } finally { setBusy(false); }
   };
   return <article style={{ border: '1px solid #cbd5e1', borderRadius: 12, padding: 16, marginTop: 12, background: '#fff' }}>
@@ -47,9 +47,9 @@ function CustomerProof({ row, alphaTag, onChanged }) {
 }
 export default function CustomerArtProofs({ alphaTag, estimateId }) {
   const [rows, setRows] = useState([]), [error, setError] = useState('');
-  const load = async () => { const data = await portalCall({ action: 'list', alphaTag }); setRows(data.requests || []); setError(''); };
-  useEffect(() => { let alive = true; portalCall({ action: 'list', alphaTag }).then(data => { if (alive) setRows(data.requests || []); }).catch(e => { if (alive) setError(e.message); }); return () => { alive = false; }; }, [alphaTag]);
+  const decided = (id, proof) => setRows(current => current.map(row => row.id === id ? { ...row, portal_proofs: row.portal_proofs.map(p => p.version === proof.version ? proof : p) } : row));
+  useEffect(() => { let alive = true; setRows([]); setError(''); portalCall({ action: 'list', alphaTag }).then(data => { if (alive) setRows(data.requests || []); }).catch(e => { if (alive) setError(e.message); }); return () => { alive = false; }; }, [alphaTag]);
   const visible = rows.filter(r => !estimateId || r.estimate_id === estimateId);
   if (!visible.length && !error) return null;
-  return <section aria-label="Artwork approvals" style={{ marginBottom: 24 }}><h2>Artwork approvals</h2><p>Review artwork shared by your rep. Approving artwork does not approve an estimate, place an order, or authorize production.</p>{error && <p role="alert">{error}</p>}{visible.map(row => <CustomerProof key={row.id} row={row} alphaTag={alphaTag} onChanged={load} />)}</section>;
+  return <section aria-label="Artwork approvals" style={{ marginBottom: 24 }}><h2>Artwork approvals</h2><p>Review artwork shared by your rep. Approving artwork does not approve an estimate, place an order, or authorize production.</p>{error && <p role="alert">{error}</p>}{visible.map(row => <CustomerProof key={row.id} row={row} alphaTag={alphaTag} onChanged={decided} />)}</section>;
 }
