@@ -1,3 +1,5 @@
+import { createArtService, filterArtRequests, isOpenArtRequest } from './lib/standaloneArtRequests';
+import ArtRequestCard from './StandaloneArtQueue';
 import DocumentRecoveryReview from './DocumentRecoveryReview';
 import {_loadRecoveryDocument, _saveReviewedDocument} from './lib/dbEngine';
 import { garmentSlotCandidates } from "./lib/jobMockCards";
@@ -7730,6 +7732,13 @@ export default function App(){
     // the same request follows the line instead of creating an SO-side duplicate.
     const[_soSaved]=await Promise.all([_dbSaveSO(so),_dbSaveEstimate(convertedEst)]);
     if(_soSaved!==false){
+      try{
+        const refreshed=await createArtService(supabase).syncConversion(est.id,so.id);
+        const art_files=(refreshed.art_files||[]).map(_loadArtRow);
+        Object.assign(so,refreshed,{art_files});
+        setSOs(prev=>prev.map(s=>s.id===so.id?{...s,...refreshed,art_files}:s));
+        setESO(prev=>prev?.id===so.id?{...prev,...refreshed,art_files}:prev);
+      }catch(artError){nf('Order created, but completed art requests could not sync: '+artError.message+'. Open Art Library and retry Sync estimate artwork.','warn')}
       try{const{methodicApi}=await import('./methodic/methodicApi');await methodicApi('relink_estimate',{estimate_id:est.id,sales_order_id:so.id});window.dispatchEvent(new CustomEvent('methodic-updated',{detail:{salesOrderId:so.id,estimateId:est.id}}))}
       catch(methodicError){console.error('[convertSO] Methodic relink failed:',methodicError);nf('Sales order created, but Methodic work could not be relinked yet. Open the Methodic queue and retry.','warn')}
     }
@@ -11753,7 +11762,7 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor recoveryEditorRef={recoveryEditorRef} ui={uiMode} key={eEst.id} supabase={supabase} order={eEst} mode="estimate" autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} customer={eEstC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={e=>{const e2=savE(e);if(e2)setEEst(e2)}} onSaveNow={e=>savENow(e)} onEmergencySave={e=>savENow(e,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} onNavBatch={()=>{setEEst(null);setPg('batch_pos')}} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onOpenIF={openIF} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor onArtRequestResult={adoptStandaloneArtResult} recoveryEditorRef={recoveryEditorRef} ui={uiMode} key={eEst.id} supabase={supabase} order={eEst} mode="estimate" autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} customer={eEstC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={e=>{const e2=savE(e);if(e2)setEEst(e2)}} onSaveNow={e=>savENow(e)} onEmergencySave={e=>savENow(e,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} onNavBatch={()=>{setEEst(null);setPg('batch_pos')}} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onOpenIF={openIF} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -11894,7 +11903,7 @@ export default function App(){
   };
   // CUSTOMERS
   function rCust(){
-    if(selC)return<ComponentErrorBoundary name="CustDetail"><React.Suspense fallback={<LazyFallback/>}><CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={(c,product,seed)=>newE(c,product,seed)} sos={sos} msgs={msgs} onMsg={setMsgs} onInv={setInvs} companyInfo={companyInfo} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} onOpenInv={inv=>{setViewInvoice(inv);setPg('invoices')}} ests={ests} invs={invs} onSaveSO={savSO} onSaveEst={savE} onSaveArtFiles={savArtFiles} REPS={REPS} prod={prod} histStatus={histInvsStatus} onRetryHist={_retryHistInvoices}
+    if(selC)return<ComponentErrorBoundary name="CustDetail"><React.Suspense fallback={<LazyFallback/>}><CustDetail supabase={supabase} customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={(c,product,seed)=>newE(c,product,seed)} sos={sos} msgs={msgs} onMsg={setMsgs} onInv={setInvs} companyInfo={companyInfo} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} onOpenInv={inv=>{setViewInvoice(inv);setPg('invoices')}} ests={ests} invs={invs} onSaveSO={savSO} onSaveEst={savE} onSaveArtFiles={savArtFiles} REPS={REPS} prod={prod} histStatus={histInvsStatus} onRetryHist={_retryHistInvoices}
       onMarkRead={ids=>{const s=new Set(ids);setMsgs(msgs.map(m=>s.has(m.id)?{...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]}:m))}}
       onSavePromoProgram={async(prog)=>{await _dbSavePromoProgram(prog);const isFamily=c=>c.id===prog.customer_id||c.parent_id===prog.customer_id;const upd=c=>({...c,promo_programs:[...(c.promo_programs||[]).filter(p=>p.id!==prog.id),prog]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s);nf('Promo program saved')}}
       onDeletePromoProgram={async(id)=>{await _dbDeletePromoProgram(id);const upd=c=>({...c,promo_programs:(c.promo_programs||[]).filter(p=>p.id!==id)});setCust(prev=>prev.map(c=>(c.promo_programs||[]).some(p=>p.id===id)?upd(c):c));setSelC(s=>s&&(s.promo_programs||[]).some(p=>p.id===id)?upd(s):s);nf('Promo program removed')}}
@@ -13539,6 +13548,38 @@ export default function App(){
   };
 
   // PRODUCTION BOARD
+  // Requests on estimates and library art exist independently of production jobs.
+  const[standaloneArtRequests,setStandaloneArtRequests]=useState([]);
+  const[standaloneArtError,setStandaloneArtError]=useState('');
+  const[standaloneArtLoading,setStandaloneArtLoading]=useState(false);
+  const[standaloneArtRevision,setStandaloneArtRevision]=useState(0);
+  useEffect(()=>{
+    if(pg!=='art'||!supabase)return;
+    let stopped=false,loading=false;
+    const refresh=async()=>{
+      if(loading)return;loading=true;setStandaloneArtLoading(true);
+      try{const rows=await createArtService(supabase).list();if(!stopped){setStandaloneArtRequests(rows);setStandaloneArtError('')}}
+      catch(e){if(!stopped)setStandaloneArtError('Art requests could not load: '+e.message)}
+      finally{loading=false;if(!stopped)setStandaloneArtLoading(false)}
+    };
+    refresh();const timer=setInterval(refresh,30000);
+    window.addEventListener('standalone-art-updated',refresh);
+    return()=>{stopped=true;clearInterval(timer);window.removeEventListener('standalone-art-updated',refresh)};
+  },[pg,standaloneArtRevision]);
+  const adoptStandaloneArtResult=result=>{
+    if(result?.request)setStandaloneArtRequests(prev=>prev.map(r=>r.id===result.request.id?result.request:r));
+    if(result?.customer){setCust(prev=>prev.map(c=>c.id===result.customer.id?{...c,...result.customer}:c));setSelC(prev=>prev?.id===result.customer.id?{...prev,...result.customer}:prev)}
+    if(result?.estimate)setEsts(prev=>prev.map(e=>e.id===result.estimate.id?{...e,...result.estimate,art_files:(result.estimate.art_files||[]).map(_loadArtRow)}:e));
+    if(result?.orders?.length)setSOs(prev=>prev.map(o=>{const update=result.orders.find(x=>x.id===o.id);return update?{...o,...update,art_files:(update.art_files||[]).map(_loadArtRow)}:o}));
+  };
+  const openStandaloneArtSource=(_art,request)=>{
+    const so=sos.find(s=>s.id===(request.linked_so_id||request.so_id));
+    if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setESOTab('art');setPg('orders');return}
+    const estimate=ests.find(e=>e.id===request.estimate_id);
+    if(estimate){setEEst(estimate);setEEstC(cust.find(c=>c.id===estimate.customer_id));setPg('estimates');return}
+    const customer=cust.find(c=>c.id===request.customer_id);
+    if(customer){setSelC(customer);setPg('customers')}else nf('Source customer is not loaded. Refresh and try again.','error');
+  };
   // Artist Dashboard state
   const[artFilter,setArtFilter]=useState((cu?.role==='rep'||cu?.role==='admin'||cu?.role==='super_admin')?cu.id:'all');const[artSearch,setArtSearch]=useState('');
   const[artCompletedOpen,setArtCompletedOpen]=useState(false);// toggle completed jobs dropdown
@@ -24190,6 +24231,8 @@ export default function App(){
     const inProductionCol={id:'in_production',label:'In Production',color:'#2563eb',bg:'#eff6ff',desc:'Art done — being decorated'};
     const sortByDaysOut=(a,b)=>{if(a.daysOut!=null&&b.daysOut!=null)return a.daysOut-b.daysOut;if(a.daysOut!=null)return -1;if(b.daysOut!=null)return 1;return 0};
     const sortedInProductionJobs=[...inProductionJobs].sort(sortByDaysOut);
+    const standaloneVisible=filterArtRequests(standaloneArtRequests,{cu,filter:artFilter,search:artSearch,reps:REPS,customers:cust,orders:sos});
+    const standaloneWaiting=standaloneVisible.filter(isOpenArtRequest);
     const artistCounts={};artistCols.forEach(c=>{artistCounts[c.id]=artistJobs.filter(j=>getArtFileStatus(j)===c.id).length});
 
     // Card renderer shared between both views
@@ -24394,6 +24437,8 @@ export default function App(){
         </div>
       </div>}
 
+      {standaloneArtError&&<div role="alert" className="card" style={{padding:12,color:'#b91c1c'}}>{standaloneArtError} <button className="btn btn-sm" onClick={()=>setStandaloneArtRevision(v=>v+1)}>Retry loading requests</button></div>}
+      {standaloneArtLoading&&<div role="status" style={{fontSize:12,padding:8}}>Refreshing art requests…</div>}
       {/* ═══ ARTIST WORKBOARD ═══ */}
       <>
         {/* Reused (previous) art skips the artist, so its web logo PNG is requested here instead:
@@ -24402,30 +24447,43 @@ export default function App(){
         {(()=>{const _need=reusedLogoDetailNeeds(filtered,sos,cust);if(!_need.length)return null;
           return<details className="card" style={{marginBottom:10,border:'1px solid #fcd34d',background:'#fffbeb'}} open={_need.length<=8}>
             <summary style={{padding:'10px 14px',cursor:'pointer',fontSize:13,fontWeight:800,color:'#92400e'}}>🖼️ Web logos needed — reused art ({_need.length})
-              <span style={{fontWeight:500,fontSize:11,color:'#a16207',marginLeft:8}}>Previous art used again on an order has no transparent logo PNG for this color way yet. Upload it here.</span></summary>
-            <div style={{padding:'0 10px 10px'}}><LogoDetailTiles title="Upload the logo exactly as each color way prints — transparent PNG" tiles={_need.map(n=>({key:n.key,url:'',bg:logoDetailBg(n.garmentColor,cwGarmentColor(n.art,n.colorWayId),n.side),
+              <span style={{fontWeight:500,fontSize:11,color:'#a16207',marginLeft:8}}>Add a transparent PNG of the logo by itself, with the ink colors used for the selected artwork color way. It is saved on this order; you can also update reusable Art Library artwork for stores and future orders.</span></summary>
+            <div style={{padding:'0 10px 10px'}}>
+              <div style={{fontSize:11,color:'#78350f',padding:'0 4px 8px'}}>Choose the artwork color way before uploading when it is missing. Use a PNG with transparency (no garment, mockup, or solid background); each color way may need its own version.</div>
+              <LogoDetailTiles title="Logo PNG needed — one per artwork color way" tiles={_need.map(n=>({key:n.key,url:'',bg:logoDetailBg(n.garmentColor,cwGarmentColor(n.art,n.colorWayId),n.side),needsColorWay:n.colorWayId===undefined,colorWays:logoColorWayOptions(n.art),
               label:n.label+' — '+(n.job.customer||n.so.customer_id||'')+' · '+n.so.id,
+              onChooseColorWay:async colorWayId=>{
+                const gi=(n.job.items||[]).find(item=>{const orderItem=(n.so.items||[])[item.item_idx];return orderItem?.color===n.garmentColor&&jobItemArtSlots(item,orderItem).some(({d})=>d.art_file_id===n.art.id&&(n.side==='B'?d.reversible&&resolveLogoColorWay(n.art,d.color_way_id_b,orderItem.color,'B')===undefined:resolveLogoColorWay(n.art,d.color_way_id,orderItem.color,'A')===undefined));});
+                if(!gi)throw new Error('Could not find the matching order line. Reopen the order and choose its artwork color way there.');
+                const live=logoOrdersRef.current.find(order=>order.id===n.so.id)||n.so;
+                const {order:updated}=assignLogoArtwork(live,{artId:n.art.id,colorWayId,garmentKey:garmentMockKey(gi),side:n.side});
+                const ok=await savSONow(updated);if(ok){logoOrdersRef.current=logoOrdersRef.current.map(order=>order.id===n.so.id?updated:order);nf('Artwork color way saved — upload its transparent logo PNG next');}
+                return ok;
+              },
               onUpload:files=>saveLogoDetailFor(n.so,{artId:n.art.id,cwId:n.colorWayId},{files})}))}/></div>
           </details>;})()}
         <div className="stats-row">
-          {artistCols.map(c=><div key={c.id} className="stat-card"><div className="stat-label">{c.label}</div><div className="stat-value" style={{color:c.color}}>{artistCounts[c.id]}</div></div>)}
+          {artistCols.map(c=><div key={c.id} className="stat-card"><div className="stat-label">{c.label}</div><div className="stat-value" style={{color:c.color}}>{artistCounts[c.id]+(c.id==='waiting_for_art'?standaloneWaiting.length:0)}</div></div>)}
           <div className="stat-card"><div className="stat-label">{inProductionCol.label}</div><div className="stat-value" style={{color:inProductionCol.color}}>{inProductionJobs.length}</div></div>
-          <div className="stat-card"><div className="stat-label">Active</div><div className="stat-value">{artistJobs.length+inProductionJobs.length}</div></div>
+          <div className="stat-card"><div className="stat-label">Active</div><div className="stat-value">{artistJobs.length+inProductionJobs.length+standaloneWaiting.length}</div></div>
         </div>
         <div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:10,alignItems:'flex-start'}}>
           {artistCols.map(col=>{
             const colJobs=artistJobs.filter(j=>getArtFileStatus(j)===col.id).sort(sortByDaysOut);
+            const requestCards=col.id==='waiting_for_art'?standaloneWaiting:[];
             return<div key={col.id} style={{background:col.bg,borderRadius:10,padding:8,minHeight:200}}>
               <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8,padding:'4px 6px'}}>
                 <div style={{width:10,height:10,borderRadius:5,background:col.color}}/>
                 <span style={{fontSize:12,fontWeight:800,color:col.color}}>{col.label}</span>
-                <span style={{marginLeft:'auto',fontSize:11,fontWeight:700,color:col.color,background:'white',borderRadius:10,padding:'1px 8px'}}>{colJobs.length}</span>
+                <span style={{marginLeft:'auto',fontSize:11,fontWeight:700,color:col.color,background:'white',borderRadius:10,padding:'1px 8px'}}>{colJobs.length+requestCards.length}</span>
               </div>
-              {colJobs.length===0&&<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:11}}>No jobs</div>}
+              {colJobs.length===0&&requestCards.length===0&&<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:11}}>No jobs</div>}
+              {requestCards.map(request=><div key={request.id} style={{marginBottom:8}}><ArtRequestCard request={request} supabase={supabase} onChanged={adoptStandaloneArtResult} onOpenSource={openStandaloneArtSource}/></div>)}
               {colJobs.map(j=>renderArtCard(j,'artist',col))}
             </div>})}
         </div>
 
+        {standaloneVisible.some(r=>!isOpenArtRequest(r))&&<details className="card" style={{marginTop:12,padding:12}}><summary style={{cursor:'pointer',fontWeight:700}}>Completed / cancelled art requests ({standaloneVisible.filter(r=>!isOpenArtRequest(r)).length})</summary><div style={{display:'grid',gap:8,marginTop:10}}>{standaloneVisible.filter(r=>!isOpenArtRequest(r)).map(request=><ArtRequestCard key={request.id} request={request} supabase={supabase} onOpenSource={openStandaloneArtSource}/>)}</div></details>}
         {/* ═══ IN PRODUCTION — collapsible section (art done, being decorated) ═══ */}
         <div style={{marginTop:16}}>
           <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',background:inProductionCol.bg,borderRadius:artInProductionOpen?'10px 10px 0 0':'10px',border:'1px solid #bfdbfe',cursor:'pointer'}} onClick={()=>setArtInProductionOpen(v=>!v)}>
