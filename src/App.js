@@ -11626,7 +11626,10 @@ export default function App(){
     const vgName=BATCH_VENDORS[vk]?.name||pos[0].vendor_name||vk;
     const total=pos.reduce((a,bp)=>a+(bp.total_cost||0),0);
     const totalUnits=pos.reduce((a,bp)=>a+(bp.items||[]).reduce((sm,it)=>sm+(it.qty||0),0),0);
-    let poNum='NSA '+(batchVendorCounters[_gk]??batchCounter);
+    let poNum=apiResult?.requestPoNumber||'NSA '+(batchVendorCounters[_gk]??batchCounter);
+    // Live API calls reserve the reviewed number in the supplier proxy BEFORE sending.
+    // Never claim/renumber it again after the vendor has accepted. Manual orders retain
+    // the existing number-claim flow.
     // Claim the number server-side (atomic). The local counter is derived from the LWW
     // submitted_batches app_state blob, so two clients in the same sync window can mint the
     // same number — the "NSA 4513 x3" duplicate. claim_batch_po_number inserts the number into
@@ -11634,7 +11637,7 @@ export default function App(){
     // number and the rep is told the batch was renumbered (they may have typed the preview
     // number on the vendor's site). Falls back to the local number when the RPC isn't deployed
     // yet, so deploy order can't block ordering.
-    if(supabase){
+    if(supabase&&!apiResult){
       const _reqStr=(String(poNum).match(/\d{3,6}/)||[])[0];
       const _req=_reqStr?parseInt(_reqStr,10):null;
       try{

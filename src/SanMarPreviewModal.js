@@ -379,7 +379,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     setErrorMsg('');
     let r;
     try {
-      r = await sanmarSubmitPO(payload, env);
+      r = await sanmarSubmitPO({ ...payload, _portalSources: submitLines }, env);
     } catch (e) {
       setErrorMsg(e.message || 'Submit failed — try again or place the order manually on sanmar.com.');
       setSubmitState('error');

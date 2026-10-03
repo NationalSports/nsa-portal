@@ -92,6 +92,7 @@ export function buildSanMarLineItems(batchPOs) {
           sourceItemIdx: Number.isInteger(it.item_idx) ? it.item_idx : null,
           sourceSku: it.sku || '',
           sourceColor: it.color || '',
+          sourceSize: size,
           productName: it.name || '',
         });
       });
