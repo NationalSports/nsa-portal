@@ -1,5 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { fileUpload } from './utils';
+import { ProofHistory } from './ArtRequestProofs';
 import { createArtService } from './lib/standaloneArtRequests';
 
 const TYPE_LABELS = { web_logo: 'Web logo', vectorize: 'Vectorize artwork', create_logo: 'Create logo' };
@@ -82,6 +83,7 @@ export function ArtRequestCard({ request, supabase, onChanged, onOpenSource }) {
       {request.assigned_artist && <span><b>Artist</b> · {request.assigned_artist_name || request.assigned_artist}</span>}
       {request.requested_by_name && <span><b>Requested by</b> · {request.requested_by_name}</span>}
     </div>
+    <ProofHistory proofs={request.portal_proofs} />
     {request.instructions && <div style={{ whiteSpace: 'pre-wrap', fontSize: 12, color: '#334155', background: '#f8fafc', borderRadius: 7, padding: 9 }}><div style={labelStyle}>Instructions</div><div style={{ marginTop: 4 }}>{request.instructions}</div></div>}
     {(request.reference_files || []).length > 0 && <div><div style={labelStyle}>Reference files</div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>{request.reference_files.map(fileLink)}</div></div>}
     {request.source_art && onOpenSource && <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11 }}><span style={{ color: '#64748b' }}>Source artwork available</span><button type="button" className="btn btn-sm btn-secondary" disabled={busy} onClick={() => onOpenSource?.(request.source_art, request)}>View source</button></div>}

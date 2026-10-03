@@ -56,6 +56,11 @@ export function createArtService(supabase) {
         if (page.length < 500) return rows;
       }
     },
+    async shareProof(id) {
+      ready();
+      const data = await result(supabase.rpc('share_standalone_art_proof', { p_id: id }));
+      changed(); return data;
+    },
     async syncConversion(estimateId, soId) {
       ready();
       return result(supabase.rpc('sync_standalone_art_conversion', { p_estimate_id: estimateId, p_so_id: soId }));

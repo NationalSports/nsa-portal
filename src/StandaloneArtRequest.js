@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import './StandaloneArtRequest.css';
+import { ShareArtProof } from './ArtRequestProofs';
 import { fileUpload } from './utils';
 import { createArtService } from './lib/standaloneArtRequests';
 
@@ -78,7 +79,7 @@ export default function StandaloneArtRequest({supabase,customer,order,mode='cust
           {error&&<div className="standalone-art-request-error" role="alert">{error}</div>}
           <footer><button type="button" onClick={()=>setOpen(false)}>Close</button><button type="submit" disabled={busy}>{busy?'Saving…':'Submit request'}</button></footer>
         </fieldset></form>
-        <div className="standalone-art-request-history"><h3>Request history</h3>{soId&&estimateId&&onSynced&&<button type="button" disabled={busy} onClick={syncEstimate}>Sync estimate artwork</button>}{rows.length?rows.map(row=><article key={row.id}><div><b>{row.art_name||'Artwork'} · {row.request_type?.replace('_',' ')}</b><span>{statusLabel(row.status)}</span></div><small>{row.instructions||'No instructions'}{row.assigned_artist?` · ${row.assigned_artist}`:''}</small>{row.result_files?.length>0&&<div>{row.result_files.map((f,i)=><a key={i} href={fileUrl(f)} target="_blank" rel="noreferrer">{fileName(f)}</a>)}</div>}{['requested','in_progress'].includes(row.status)&&<button type="button" disabled={busy} onClick={()=>cancel(row)}>Cancel request</button>}</article>):<p>No requests yet.</p>}</div>
+        <div className="standalone-art-request-history"><h3>Request history</h3>{soId&&estimateId&&onSynced&&<button type="button" disabled={busy} onClick={syncEstimate}>Sync estimate artwork</button>}{rows.length?rows.map(row=><article key={row.id}><div><b>{row.art_name||'Artwork'} · {row.request_type?.replace('_',' ')}</b><span>{statusLabel(row.status)}</span></div><small>{row.instructions||'No instructions'}{row.assigned_artist?` · ${row.assigned_artist}`:''}</small>{row.result_files?.length>0&&<div>{row.result_files.map((f,i)=><a key={i} href={fileUrl(f)} target="_blank" rel="noreferrer">{fileName(f)}</a>)}</div>}<ShareArtProof row={row} service={service} onChanged={load} portalTag={customer?.alpha_tag} />{['requested','in_progress'].includes(row.status)&&<button type="button" disabled={busy} onClick={()=>cancel(row)}>Cancel request</button>}</article>):<p>No requests yet.</p>}</div>
       </div>
     </section></div>,document.body)}
   </>;

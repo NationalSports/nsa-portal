@@ -1,4 +1,5 @@
 /* eslint-disable */
+import CustomerArtProofs from './ArtRequestProofs';
 import React, { useState, useEffect, useRef } from 'react';
 import { isOutsideArtJob } from './lib/outsideArt';
 import { SZ_ORD, sizeBreakdownStr, pantoneHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, artDstOnFile, estimateTermsFooter } from './constants';
@@ -1418,6 +1419,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>
         </div>
         <div style={{padding:'22px 28px'}}>
+          <CustomerArtProofs alphaTag={customer.alpha_tag} estimateId={est.id} />
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:16,flexWrap:'wrap',padding:'4px 0 18px',borderBottom:'1px solid #EEF1F6',marginBottom:18}}>
             <div>
               <div className="nsa-disp" style={{fontSize:12,letterSpacing:'1px',textTransform:'uppercase',color:'#5A6075'}}>Estimated Total</div>
@@ -2663,6 +2665,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     <div style={{height:8,position:'sticky',top:84,zIndex:49,boxShadow:'0 2px 6px rgba(0,0,0,.12)',background:`repeating-linear-gradient(90deg, ${tAccent} 0 30%, ${tPrimary} 30% 32%, ${tAccent} 32% 70%, ${tPrimary} 70% 72%, ${tAccent} 72% 100%)`}}/>
     {/* ── MAIN ── */}
     <div className="cp-main" id={MAIN_ID} role="main" style={{maxWidth:1240,margin:'0 auto',padding:'36px 24px 110px'}}>
+      <CustomerArtProofs alphaTag={customer.alpha_tag} />
         <div className="cp-page">
         <div className="cp-grid">
 
