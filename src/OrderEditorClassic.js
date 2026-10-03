@@ -3792,7 +3792,7 @@ function OrderEditor({order,mode,recoveryEditorRef,customer:ic,allCustomers,prod
   // so the rep doesn't have to manually click "Mark Art Complete" after uploading.
   const _autoCompleteEmbAfterUpload=(newArts)=>{const curO=oRef.current;const updArt=newArts.map(a=>{if((a.deco_type||'')!=='embroidery'||a.status!=='approved'||a.prod_files_attached===true)return a;if(![...(a.files||[]),...(a.prod_files||[])].some(f=>isDstFile(f)&&!isStaleFile(f)))return a;return{...a,prod_files_attached:true}});if(!updArt.some((a,i)=>a!==newArts[i]))return;const updJobs=safeJobs(curO).map(j=>{if(j.art_status!=='upload_emb_files')return j;const ids=(j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');if(!ids.length)return j;const allReady=ids.every(id=>artProdFilesConfirmed(updArt.find(a=>a.id===id)));return allReady?{...j,art_status:'art_complete'}:j});const updated={...curO,art_files:updArt,jobs:updJobs,updated_at:new Date().toLocaleString()};saveSONow(updated,'Art complete','🧵 DST detected — embroidery job auto-marked complete!')};
   // Read explicit design dimensions and stitch count from embroidery proofs.
-  // Fill blanks only; invoice-protected stitch counts never change in the background.
+  // Proof values override manual entries; invoiced stitch counts remain protected.
   const _embInvoicedRef=useRef(false);
   _embInvoicedRef.current=(allInvoices||[]).some(inv=>inv&&inv.so_id===o.id);
   const _readStitchesFromPdfFile=async(file)=>{
@@ -3813,7 +3813,7 @@ function OrderEditor({order,mode,recoveryEditorRef,customer:ic,allCustomers,prod
     const changed=[];
     if(nextArt.art_size!==art.art_size)changed.push(nextArt.art_size);
     if(nextArt.stitches!==art.stitches)changed.push(nextArt.stitches.toLocaleString()+' stitches');
-    if(!changed.length){if(verb==='Read')nf('PDF read; existing values kept. Enter any corrections in Size or Stitches.');return true;}
+    if(!changed.length){if(verb==='Read')nf('PDF read; no changes needed. Stitch counts on invoiced orders are protected.');return true;}
     const saved=await saveArtFilesNow((oRef.current.art_files||[]).map(a=>a.id===folderId?nextArt:a),'Embroidery proof specs');
     if(!saved)return false;
     nf((verb||'Read')+' '+changed.join(' · ')+(srcName?' from '+srcName:''));
@@ -3857,7 +3857,7 @@ function OrderEditor({order,mode,recoveryEditorRef,customer:ic,allCustomers,prod
   const maybeAutoReadStitches=async(arts,folderId,uploadedFiles)=>{
     if(!extractPdfText)return;
     const art=(arts||[]).find(a=>a.id===folderId);
-    if(!art||art.deco_type!=='embroidery'||(String(art.art_size||'').trim()&&(art.stitches||_embInvoicedRef.current)))return;
+    if(!art||art.deco_type!=='embroidery')return;
     if(!(uploadedFiles||[]).some(f=>f&&/\.pdf$/i.test(f.name||'')))return;
     // Resolve attached/current files rather than an obsolete upload after a folder change.
     await _readStitchesFromAttached(folderId,'Auto-read');
@@ -3865,7 +3865,7 @@ function OrderEditor({order,mode,recoveryEditorRef,customer:ic,allCustomers,prod
   const _autoStitchTried=useRef(new Set());
   useEffect(()=>{
     if(!extractPdfText)return;
-    const targets=(o.art_files||[]).filter(a=>a&&!a.archived&&a.deco_type==='embroidery'&&(!String(a.art_size||'').trim()||(!a.stitches&&!_embInvoicedRef.current))&&!_autoStitchTried.current.has(_embProofKey(a))&&_artPdfEntries(a).length);
+    const targets=(o.art_files||[]).filter(a=>a&&!a.archived&&a.deco_type==='embroidery'&&!_autoStitchTried.current.has(_embProofKey(a))&&_artPdfEntries(a).length);
     if(!targets.length)return;let cancelled=false;
     (async()=>{for(const a of targets){if(cancelled)break;_autoStitchTried.current.add(_embProofKey(a));await _readStitchesFromAttached(a.id,'Auto-read');}})();
     return()=>{cancelled=true};
@@ -7242,7 +7242,7 @@ function OrderEditor({order,mode,recoveryEditorRef,customer:ic,allCustomers,prod
                     {(()=>{const lbl=embStitchTierLabel(art.stitches);return lbl
                       ?<span title="Embroidery price tier from the stitch count" style={{fontSize:10,fontWeight:700,color:'#6d28d9',background:'#ede9fe',border:'1px solid #ddd6fe',borderRadius:6,padding:'5px 8px'}}>{lbl} tier</span>
                       :<span style={{fontSize:10,color:'#94a3b8',padding:'5px 0'}}>unset → 5k–10k default</span>})()}
-                    <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>readStitchesFromPdf(art.id)} title="Fill missing dimensions and stitch count from the attached embroidery proof PDF">📄 Read from PDF</button>
+                    <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>readStitchesFromPdf(art.id)} title="Replace dimensions and stitch count with values from the attached embroidery proof PDF">📄 Read from PDF</button>
                   </div>}
                   {/* Color Ways */}
                   <div style={{marginBottom:6}}>
