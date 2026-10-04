@@ -18,6 +18,7 @@ const BASE_URL = 'https://www.momentecbrands.com';
 // storefront above. Onboarding/test orders go to STAGE; production to prod. env
 // defaults to 'stage' so an accidental call can't place a real production order.
 const { verifyUser } = require('./_shared');
+const { reserveSubmission, finishSubmission, blockedResponse, uncertainMessage } = require('./_vendorSubmissionGuard');
 const V2_HOSTS = {
   stage: 'https://stage-api.momentecbrands.com',
   prod:  'https://api.momentecbrands.com',
@@ -42,6 +43,15 @@ exports.handler = async (event) => {
     if (!Array.isArray(payload.items) || payload.items.length === 0) {
       return { statusCode: 400, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Momentec order payload missing items.' }) };
     }
+    let reservation;
+    if (env === 'prod') {
+      try {
+        reservation = await reserveSubmission({ vendor: 'momentec', poNumber: payload.poNum,
+          lines: payload._portalSources, vendorLines: payload.items.map(l => ({ sku: l.sku, qty: l.quantity })),
+          actor: v.userId, admin: v.admin });
+      } catch (error) { return blockedResponse(error); }
+    }
+    delete payload._portalSources;
     // Inject credentials server-side — never trust client-supplied creds.
     payload.credentials = { logonId, password };
     try {
@@ -54,13 +64,16 @@ exports.handler = async (event) => {
       const text = await resp.text();
       let json; try { json = JSON.parse(text); } catch { json = null; }
       if (resp.ok && json && json.orderId) {
-        return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ok: true, env, orderId: json.orderId }) };
+        await finishSubmission(reservation, 'accepted', { orderId: json.orderId, requestPoNumber: payload.poNum });
+        return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ok: true, env, orderId: json.orderId, requestPoNumber: payload.poNum }) };
       }
+      await finishSubmission(reservation, 'uncertain', { httpStatus: resp.status, error: json?.message || json?.error });
       console.error('[Momentec] order failed:', resp.status, text.slice(0, 800));
       return { statusCode: resp.ok ? 400 : resp.status, headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ error: (json && (json.message || json.error)) || `Momentec order failed (${resp.status})`, raw: text.slice(0, 800) }) };
+        body: JSON.stringify({ error: reservation ? uncertainMessage : (json && (json.message || json.error)) || `Momentec order failed (${resp.status})`, raw: text.slice(0, 800) }) };
     } catch (error) {
-      return { statusCode: 500, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: `Momentec order call failed: ${error.message}` }) };
+      await finishSubmission(reservation, 'uncertain', { error: error.message });
+      return { statusCode: 500, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: reservation ? uncertainMessage : `Momentec order call failed: ${error.message}` }) };
     }
   }
 
@@ -83,6 +96,15 @@ exports.handler = async (event) => {
     if (!Array.isArray(payload.asgOrderSubmitProducts) || payload.asgOrderSubmitProducts.length === 0) {
       return { statusCode: 400, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Momentec shipping-cost payload missing asgOrderSubmitProducts.' }) };
     }
+    let reservation;
+    if (env === 'prod') {
+      try {
+        reservation = await reserveSubmission({ vendor: 'momentec', poNumber: payload.poNum,
+          lines: payload._portalSources, vendorLines: payload.items.map(l => ({ sku: l.sku, qty: l.quantity })),
+          actor: v.userId, admin: v.admin });
+      } catch (error) { return blockedResponse(error); }
+    }
+    delete payload._portalSources;
     // Inject credentials server-side — never trust client-supplied creds.
     payload.logonId = logonId;
     payload.password = password;

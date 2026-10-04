@@ -181,7 +181,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
     setSubmitState('submitting'); setErrorMsg('');
     let r;
     try {
-      r = await ssSubmitOrder(built.order);
+      r = await ssSubmitOrder({ ...built.order, _portalSources: lines });
     } catch (e) {
       setErrorMsg(e.message || 'Submit failed — try again or order manually on ssactivewear.com.');
       setSubmitState('error');

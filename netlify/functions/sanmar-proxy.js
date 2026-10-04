@@ -315,6 +315,8 @@ function parseElement(xml) {
   return hasChildren ? result : {};
 }
 
+const { reserveSubmission, finishSubmission, blockedResponse, uncertainMessage } = require('./_vendorSubmissionGuard');
+
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json' };
 
@@ -358,6 +360,15 @@ exports.handler = async (event) => {
       return { statusCode: 400, headers,
         body: JSON.stringify({ error: `Line ${missingPart.lineNumber} is missing a partId (SanMar Unique_Key). Resolve all partIds before submitting.` }) };
     }
+    let reservation;
+    if (env === 'prod') {
+      try {
+        reservation = await reserveSubmission({ vendor: 'sanmar', poNumber: payload.PO.orderNumber,
+          lines: payload._portalSources, vendorLines: payload.PO.lineItems.map(l => ({ sku: l.partId, qty: l.quantity })),
+          actor: auth.userId, admin: auth.admin });
+      } catch (error) { return blockedResponse(error); }
+    }
+    delete payload._portalSources;
     const envelope = buildSendPOEnvelope(payload, username, password);
     try {
       console.log(`[SanMar] sendPO → ${poUrl} (env: ${env}, order: ${payload.PO.orderNumber}, lines: ${payload.PO.lineItems.length}, user: ${username})`);
@@ -378,13 +389,16 @@ exports.handler = async (event) => {
         || (svcDesc ? `[${svcCode || '?'}] ${svcDesc.trim()}` : null)
         || (parsed.error ? parsed.faultString : null);
       if (transactionId) {
-        return { statusCode: 200, headers, body: JSON.stringify({ ok: true, env, transactionId, orderNumber: payload.PO.orderNumber }) };
+        await finishSubmission(reservation, 'accepted', { transactionId, orderNumber: payload.PO.orderNumber });
+        return { statusCode: 200, headers, body: JSON.stringify({ ok: true, env, transactionId, orderNumber: payload.PO.orderNumber, requestPoNumber: payload.PO.orderNumber }) };
       }
+      await finishSubmission(reservation, 'uncertain', { httpStatus: resp.status, error: errorMessage });
       console.error(`[SanMar] sendPO failed:`, errorMessage, xml.slice(0, 800));
       return { statusCode: resp.ok ? 400 : resp.status, headers,
-        body: JSON.stringify({ error: errorMessage || `SanMar sendPO failed (${resp.status})`, raw: xml.slice(0, 800) }) };
+        body: JSON.stringify({ error: reservation ? uncertainMessage : errorMessage || `SanMar sendPO failed (${resp.status})`, raw: xml.slice(0, 800) }) };
     } catch (error) {
-      return { statusCode: 500, headers, body: JSON.stringify({ error: `SanMar sendPO call failed: ${error.message}` }) };
+      await finishSubmission(reservation, 'uncertain', { error: error.message });
+      return { statusCode: 500, headers, body: JSON.stringify({ error: reservation ? uncertainMessage : `SanMar sendPO call failed: ${error.message}` }) };
     }
   }
 
