@@ -16,8 +16,38 @@ test('active durable allocations prevent old tabs from skipping the purchase cla
 });
 
 test('dedicated external reference cannot be replayed without its token', async () => {
-  const db = client([{ data: [] }, { data: [{ id: 'dedicated' }] }]);
+  const db = client([{ data: [] }, { data: [] }, { data: [{ id: 'dedicated' }] }]);
   expect((await guardAllSchoolVendorRequest({ vendor: 'SanMar', poNumber: 'NSA 1234' }, db)).ok).toBe(false);
+});
+
+// Filter real rows to cover the reference/state mismatch of combined batches.
+function rowClient(tables) {
+  return { from: table => {
+    let rows = tables[table] || [];
+    const query = {
+      select: () => query,
+      eq: (field, value) => { rows = rows.filter(row => row[field] === value); return query; },
+      in: (field, values) => { rows = rows.filter(row => values.includes(row[field])); return query; },
+      not: (field, operator, value) => { rows = rows.filter(row => row[field] != null); return query; },
+      limit: async count => ({ data: rows.slice(0, count) }),
+    };
+    return query;
+  } };
+}
+
+test.each(['submitted', 'released'])('completed %s combined batch cannot be resent from an old tab', async state => {
+  const db = rowClient({
+    all_school_batch_allocations: [{ id: 'allocation', state, vendor_key: 'sss', submitted_po_number: 'NSA 9999', vendor_request_started_at: '2026-10-06T00:00:00Z' }],
+    purchase_orders: [{ id: 'dedicated', vendor: 'S&S Activewear', po_number: 'PO 1234', all_school_store_id: 'school' }],
+  });
+  expect((await guardAllSchoolVendorRequest({ vendor: 'S&S Activewear', poNumber: 'NSA 9999' }, db)).ok).toBe(false);
+  expect((await guardAllSchoolVendorRequest({ vendor: 'S&S Activewear', poNumber: 'NSA 10000' }, db)).ok).toBe(true);
+  expect((await guardAllSchoolVendorRequest({ vendor: 'SanMar', poNumber: 'NSA 9999' }, db)).ok).toBe(true);
+});
+
+test('completed-batch verification errors fail closed', async () => {
+  const db = client([{ data: [] }, { error: { message: 'lookup unavailable' } }]);
+  expect((await guardAllSchoolVendorRequest({ vendor: 'S&S Activewear', poNumber: 'NSA 9999' }, db)).statusCode).toBe(503);
 });
 
 test('ordinary supplier purchases continue when neither queue nor external reference is school-managed', async () => {
