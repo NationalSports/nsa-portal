@@ -1,3 +1,4 @@
+import { frozenPurchasedMocks } from './frozenMockData';
 import { resolveWebstoreReportLines, reportBlockingIssues } from '../lib/soPlayerReport';
 import { resolveSizeSkuSource } from '../lib/sizeSkuOverrides';
 import { placementById } from '../lib/artPlacements';
@@ -57,11 +58,13 @@ export function buildProductionPacket({ store, orders = [], lines = [], salesOrd
       if (item.qty_only && qty(item.est_qty) && !units) addIssue(`${so.id} ${item.sku}: quantity-only garment needs a size allocation`);
       if (!units) return;
       const decos = arr(item.decorations);
+      const frozenMocks = frozenPurchasedMocks(item, sourceLines, safeUrl);
+      const frozenApproved = frozenMocks.length > 0 && frozenMocks.every(m => m.approved) && frozenMocks.reduce((n,m) => n + m.qty, 0) === units;
       const slots = mockSlotKeys(garmentMockKey(item), decos).map(slot => ({ ...slot, artFile: arr(so.art_files).find(a => a.id === (decos[slot.di]?.art_file_id || arr(so.jobs).find(j=>arr(j.items).some(ji=>ji.item_idx===(item.item_index ?? index) && (!Array.isArray(ji.deco_idxs)||ji.deco_idxs.includes(slot.di))))?.art_file_id) && !a.archived) }));
-      const garment = { id, legacyIds: id === legacyId ? [] : [legacyId], soId: so.id, sku: text(item.sku), name: text(item.name || item.custom_desc || item.sku), color: text(item.color), sizes, units, image: safeUrl(item.image_front_url), decorationIds: [], undecorated: !!item.no_deco };
+      const garment = { id, legacyIds: id === legacyId ? [] : [legacyId], soId: so.id, sku: text(item.sku), name: text(item.name || item.custom_desc || item.sku), color: text(item.color), sizes, units, image: item.recipe_snapshot ? safeUrl(item.recipe_snapshot.image_url) : safeUrl(item.image_front_url), ...(item.recipe_snapshot ? {frozenMocks} : {}), decorationIds: [], undecorated: !!item.no_deco };
       if (!item.no_deco && !decos.length) addIssue(`${so.id} ${item.sku}: confirm blank garment or assign decoration`);
       decos.forEach((d, di) => {
-        const art = arr(so.art_files).find(a => a.id === d.art_file_id && !a.archived);
+        const art = arr(so.art_files).find(a => a.id === (d.art_file_id || (item.recipe_snapshot ? slots.find(slot => slot.di === di)?.artFile?.id : null)) && !a.archived);
         const mocks = files(slots.filter(s => s.di === di).flatMap(s => slotMockFiles(s, slots, item)));
         const cw = arr(art?.color_ways).find(c => c.id === d.color_way_id);
         const cwB = arr(art?.color_ways).find(c => c.id === d.color_way_id_b);
@@ -92,10 +95,11 @@ export function buildProductionPacket({ store, orders = [], lines = [], salesOrd
         }
         garment.decorationIds.push(did);
         const approved = ['approved', 'art_complete'].includes(art?.status);
+        if (item.recipe_snapshot && !frozenApproved && !(mocks.length && approved)) addIssue(`${so.id} ${item.sku}: purchased setup requires an approved production mock`, 'decorations', did, so.id);
         if (d.kind === 'art' && (!art || !approved)) addIssue(`${so.id} ${item.sku} ${d.position || ''}: artwork is not approved`, 'decorations', did, so.id);
         // Names and numbers are production applications, not artwork. They do not
         // require a separate garment-art mock and must not block an otherwise ready packet.
-        if (!personalization && !mocks.length) addIssue(`${so.id} ${item.sku} ${d.position || d.kind}: garment mock missing`, 'decorations', did, so.id);
+        if (!personalization && !mocks.length && !frozenApproved) addIssue(`${so.id} ${item.sku} ${d.position || d.kind}: garment mock missing`, 'decorations', did, so.id);
         // Complicated splits must be reviewed instead of silently printing the full garment count.
         const applicable = personalization && roster.length ? roster.reduce((out,r)=>({...out,[r.size]:(out[r.size]||0)+r.qty}),{}) : d.split_group ? sizeMap(d.split_sizes) : sizes;
         if (d.split_group && (!total(applicable) || Object.entries(applicable).some(([sz,n]) => n > (sizes[sz] || 0)))) addIssue(`${so.id} ${item.sku}: split decoration allocation is missing or exceeds garment sizes`, 'decorations', did, so.id);
@@ -120,7 +124,7 @@ export function buildProductionPacket({ store, orders = [], lines = [], salesOrd
         const uniqueMissingSpecs = [...new Set(missingSpecs)];
         const specReady = uniqueMissingSpecs.length === 0;
         if (!specReady) addIssue(`${so.id} ${item.sku}: ${productionLabel(d)} specs missing ${uniqueMissingSpecs.join(', ')}`, 'decorations', did, so.id);
-        decorations.push({ id: did, legacyIds: [legacyDid], garmentId: id, soId: so.id, artId: art?.id || null, dimensionKey: text(d.position || d.placement), sku: garment.sku, color: garment.color, name: text(art?.name || productionLabel(d)), kind: text(d.kind), isPersonalization: personalization, method: text(method), position, dimensions: text(art?.art_size || d.num_size || d.dtf_size), colors: d.reversible ? `Side A: ${arr(cw?.inks).join(', ')} / Side B: ${arr(cwB?.inks).join(', ')}` : arr(cw?.inks).join(', ') || text(art?.ink_colors || art?.thread_colors || d.print_color), ...artSpecs(art,d,cw), decorator: text(d.vendor), units: personalizedUnits == null ? total(applicable) : personalizedUnits, sizes: applicable, approved: personalization ? null : approved, mocks, productionFiles: files(art?.prod_files), specReady, missingSpecs: uniqueMissingSpecs, personalization: { font: text(d.num_font), roster, names: text(d.names_list) } });
+        decorations.push({ id: did, legacyIds: [legacyDid], garmentId: id, soId: so.id, artId: art?.id || null, dimensionKey: text(d.position || d.placement), sku: garment.sku, color: garment.color, name: text(art?.name || productionLabel(d)), kind: text(d.kind), isPersonalization: personalization, method: text(method), position, dimensions: text(art?.art_size || d.num_size || d.dtf_size), colors: d.reversible ? `Side A: ${arr(cw?.inks).join(', ')} / Side B: ${arr(cwB?.inks).join(', ')}` : arr(cw?.inks).join(', ') || text(art?.ink_colors || art?.thread_colors || d.print_color), ...artSpecs(art,d,cw), decorator: text(d.vendor), units: personalizedUnits == null ? total(applicable) : personalizedUnits, sizes: applicable, approved: personalization ? null : approved, mocks, ...(item.recipe_snapshot ? {frozenMocks} : {}), productionFiles: files(art?.prod_files), specReady, missingSpecs: uniqueMissingSpecs, personalization: { font: text(d.num_font), roster, names: text(d.names_list) } });
       });
       garments.push(garment);
     });
@@ -129,18 +133,20 @@ export function buildProductionPacket({ store, orders = [], lines = [], salesOrd
   const draftGroups = new Map();
   reconciled.lines.filter(l => !l._sourceSoId).forEach(l => {
     const matches = catalog.filter(c => (l.product_id && c.product_id === l.product_id) || c.sku === l.sku);
-    const c = matches.length === 1 ? matches[0] : {};
-    const ds = arr(l.decorations).length ? l.decorations : arr(c.decorations);
-    const key = JSON.stringify([c.id || l.product_id || l.sku, l._effSku || l.sku, l.color, ds]);
-    if (!draftGroups.has(key)) draftGroups.set(key, { c, ds, l, sizes: {} });
+    const c = l.production_recipe || (matches.length === 1 ? matches[0] : {});
+    const ds = l.production_recipe ? arr(c.decorations) : arr(l.decorations).length ? l.decorations : arr(c.decorations);
+    const key = JSON.stringify([c.id || l.product_id || l.sku, l._effSku || l.sku, l.color, ds, l.production_recipe || null]);
+    if (!draftGroups.has(key)) draftGroups.set(key, { c, ds, l, sizes: {}, sourceLines: [] });
     const group = draftGroups.get(key), size = l._size || l.size || 'OS';
     group.sizes[size] = (group.sizes[size] || 0) + qty(l.qty);
+    group.sourceLines.push(l);
   });
-  draftGroups.forEach(({c,ds,l,sizes}, key) => {
+  draftGroups.forEach(({c,ds,l,sizes,sourceLines: boughtLines}, key) => {
     const id = `store:${encodeURIComponent(text(c.id||l.product_id||l.sku))}:${encodeURIComponent(text(l._effSku||l.sku))}:${encodeURIComponent(text(l.color))}:${[...draftGroups.keys()].indexOf(key)}`, units = total(sizes);
-    const g = {id,soId:'',unbatched:true,sku:text(l._effSku||l.sku),name:text(l.name||c.display_name||l.sku),color:text(l.color),sizes,units,image:safeUrl(l.image_url||c.image_url),decorationIds:[],undecorated:false};
+    const frozenMocks = l.production_recipe ? frozenPurchasedMocks({recipe_snapshot:l.production_recipe,source_webstore_item_ids:boughtLines.map(x=>x.id)},boughtLines,safeUrl) : [];
+    const g = {id,soId:'',unbatched:true,sku:text(l._effSku||l.sku),name:text(l.name||c.display_name||l.sku),color:text(l.color),sizes,units,image:safeUrl(l.production_recipe?c.image_url:(l.image_url||c.image_url)),...(l.production_recipe?{frozenMocks}:{}),decorationIds:[],undecorated:false};
     ds.forEach((d,di)=>{
-      const art=arr(store.store_art).find(a=>a.id===(d.art_id||d.art_file_id)&&!a.archived);
+      const art=arr(l.production_recipe?c.art_files:store.store_art).find(a=>a.id===(d.art_id||d.art_file_id)&&!a.archived);
       const pick=d.cw_by_color?.[g.color.trim().toLowerCase()];
       const cw=arr(art?.color_ways).find(w=>w.id===(pick?.color_way_id||d.color_way_id));
       const pl=placementById(d.placement), bounded=(v,f)=>Number.isFinite(Number(v))?Math.max(0,Math.min(100,Number(v))):f;
@@ -148,9 +154,9 @@ export function buildProductionPacket({ store, orders = [], lines = [], salesOrd
       const did=`${id}:deco:${di}`;g.decorationIds.push(did);
       const mockItem={sku:g.sku,color:g.color};
       const mockDecos=ds.map(x=>({...x,kind:x.kind||'art',position:x.position||x.placement}));
-      const slots=mockSlotKeys(garmentMockKey(mockItem),mockDecos).map(slot=>({...slot,artFile:arr(store.store_art).find(a=>a.id===(ds[slot.di]?.art_id||ds[slot.di]?.art_file_id)&&!a.archived)}));
+      const slots=mockSlotKeys(garmentMockKey(mockItem),mockDecos).map(slot=>({...slot,artFile:arr(l.production_recipe?c.art_files:store.store_art).find(a=>a.id===(ds[slot.di]?.art_id||ds[slot.di]?.art_file_id)&&!a.archived)}));
       const kind=text(d.kind||'art'), personalization=isPersonalization(kind), method=kind==='names'?(d.name_method||'heat_press'):kind==='numbers'?(d.num_method||'heat_transfer'):(d.deco_type||d.type||art?.deco_type);
-      decorations.push({id:did,legacyIds:[],garmentId:id,soId:'',unbatched:true,sku:g.sku,color:g.color,name:text(art?.name||productionLabel(kind)),kind,isPersonalization:personalization,method:text(method),position:text(d.position||pl.label),dimensions:text(art?.art_size||d.num_size||d.dtf_size),colors:arr(cw?.inks).join(', ')||text(d.print_color),...artSpecs(art,d,cw),decorator:'',units,sizes,approved:personalization?null:['approved','art_complete'].includes(art?.status),mocks:files(slots.filter(slot=>slot.di===di).flatMap(slot=>slotMockFiles(slot,slots,mockItem))),storePreview:personalization?null:preview,productionFiles:files(art?.prod_files),personalization:{font:text(d.num_font),roster:[],names:''}});
+      decorations.push({id:did,legacyIds:[],garmentId:id,soId:'',unbatched:true,sku:g.sku,color:g.color,name:text(art?.name||productionLabel(kind)),kind,isPersonalization:personalization,method:text(method),position:text(d.position||pl.label),dimensions:text(art?.art_size||d.num_size||d.dtf_size),colors:arr(cw?.inks).join(', ')||text(d.print_color),...artSpecs(art,d,cw),decorator:'',units,sizes,approved:personalization?null:['approved','art_complete'].includes(art?.status),mocks:files(slots.filter(slot=>slot.di===di).flatMap(slot=>slotMockFiles(slot,slots,mockItem))),...(l.production_recipe?{frozenMocks}:{}),storePreview:personalization?null:preview,productionFiles:files(art?.prod_files),personalization:{font:text(d.num_font),roster:[],names:''}});
     });
     garments.push(g);
   });
@@ -183,7 +189,7 @@ export function packetChanges(previous, current) {
       if (!old) out.push(`Added ${key}: ${label(row)}`);
       else if (JSON.stringify(old) !== JSON.stringify(row)) {
         const changes = [];
-        const fields = key === 'garments' ? ['sku', 'name', 'color', 'sizes', 'units'] : key === 'decorations' ? ['name', 'method', 'position', 'dimensions', 'colors', 'threadColors', 'pantoneColors', 'stitches', 'units', 'sizes', 'approved', 'productionFiles', 'personalization'] : key === 'players' ? ['player', 'number', 'sku', 'name', 'color', 'size', 'qty', 'verify'] : ['text', 'scope', 'targetId'];
+        const fields = key === 'garments' ? ['sku', 'name', 'color', 'sizes', 'units', 'frozenMocks'] : key === 'decorations' ? ['name', 'method', 'position', 'dimensions', 'colors', 'threadColors', 'pantoneColors', 'stitches', 'units', 'sizes', 'approved', 'productionFiles', 'personalization', 'frozenMocks'] : key === 'players' ? ['player', 'number', 'sku', 'name', 'color', 'size', 'qty', 'verify'] : ['text', 'scope', 'targetId'];
         fields.forEach(field => { if (JSON.stringify(old[field]) !== JSON.stringify(row[field])) changes.push(`${field}: ${JSON.stringify(old[field] ?? '')} → ${JSON.stringify(row[field] ?? '')}`); });
         if(changes.length)out.push(`Updated ${key}: ${label(row)} (${changes.join('; ')})`);
       }

@@ -25,6 +25,14 @@ test('existing valid garment mock retains approval and readiness', () => {
   expect(mockAwareProductionStatus(job,so)).toBe('ready');
   expect(jobMockChecks(job,so)).toEqual([]);
 });
+test('SO-2586: a second design with other-garment proofs does not reopen a mocked garment', () => {
+  const {job,so}=fixture();
+  addMock(so);
+  so.art_files[1].item_mockups['OTHER|Black']=[{url:'other-garment.jpg'}];
+  expect(missingJobMocks(job,so)).toEqual([]);
+  expect(jobMockChecks(job,so)).toEqual([]);
+  expect(isJobReady(job,so)).toBe(true);
+});
 test('wrong garment mock offers reuse without granting readiness', () => {
   const {job,so}=fixture();so.art_files[0].item_mockups['OTHER|White']=[{url:'old.jpg'}];
   expect(isJobReady(job,so)).toBe(false);

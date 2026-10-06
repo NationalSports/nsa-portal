@@ -28,8 +28,8 @@ const { corsHeaders, getSupabaseAdmin, verifyUser } = require('./_shared');
 const bad = (status, error, extra) => ({ statusCode: status, headers: corsHeaders(), body: JSON.stringify({ error, ...(extra || {}) }) });
 const ok = (body) => ({ statusCode: 200, headers: corsHeaders(), body: JSON.stringify(body) });
 
-const RPC_BY_SOURCE = { teamshop: 'create_teamshop_sales_order', club: 'create_club_sales_order' };
-const RPC_ARG_BY_SOURCE = { teamshop: 'p_webstore_order_id', club: 'p_order_id' };
+const RPC_BY_SOURCE = { teamshop: 'create_teamshop_sales_order', club: 'create_club_sales_order', all_school: 'create_all_school_sales_order' };
+const RPC_ARG_BY_SOURCE = { teamshop: 'p_webstore_order_id', club: 'p_order_id', all_school: 'p_order_id' };
 const RETRYABLE_STATUSES = ['paid', 'po_verified'];
 
 async function retryConvert(admin, body) {
@@ -41,7 +41,7 @@ async function retryConvert(admin, body) {
   if (error) return bad(500, error.message);
   const order = data && data[0];
   if (!order) return bad(404, 'Order not found');
-  if (!RPC_BY_SOURCE[order.order_source]) return bad(409, 'Not a Team Shop or Club order.');
+  if (!RPC_BY_SOURCE[order.order_source]) return bad(409, 'Not a Team Shop, Club, or All School order.');
   if (order.so_id) return ok({ ok: true, so_id: order.so_id, replayed: true });
   if (!RETRYABLE_STATUSES.includes(order.status)) return bad(409, `Order is not ready to convert (status: ${order.status}).`);
 
@@ -60,7 +60,7 @@ async function retryConvert(admin, body) {
   // at any other call site either (traced: stripe-webhook's club branch does
   // not call generateForSoSafe), so this doesn't either.
   const soId = rpc.data && rpc.data.so_id;
-  if (soId && order.order_source === 'teamshop') {
+  if (soId && ['teamshop','all_school'].includes(order.order_source)) {
     try {
       await require('./teamshop-auto-po').generateForSoSafe(admin, soId, 'teamshop-retry-convert', 'teamshop-retry-convert');
     } catch (e) {

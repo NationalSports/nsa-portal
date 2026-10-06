@@ -150,8 +150,8 @@ exports.handler = async (event) => {
           const { data: _cs } = await sb.from('webstore_orders')
             .select('id,order_source,so_id,status').eq('stripe_pi_id', pi.id).limit(1);
           const _cso = _cs && _cs[0];
-          if (_cso && _cso.order_source === 'club' && !_cso.so_id && _cso.status === 'paid') {
-            const { data: convData, error: convErr } = await sb.rpc('create_club_sales_order', { p_order_id: _cso.id });
+          if (_cso && ['club','all_school'].includes(_cso.order_source) && !_cso.so_id && _cso.status === 'paid') {
+            const { data: convData, error: convErr } = await sb.rpc(_cso.order_source === 'all_school' ? 'create_all_school_sales_order' : 'create_club_sales_order', { p_order_id: _cso.id });
             if (convErr) {
               console.error('[stripe-webhook] club conversion failed (Stripe will retry; RPC is so_id-replay idempotent):', convErr.message);
               hardFailure = true;

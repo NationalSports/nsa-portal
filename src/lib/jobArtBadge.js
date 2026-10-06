@@ -7,6 +7,7 @@ export const jobArtBadgeSt=(jb,artFile)=>{
   // Waiting-for-Art job for column/sort purposes — see getArtFileStatus, which is unchanged).
   if(jb.coach_rejected&&(jb.art_status==='art_requested'||jb.art_status==='art_in_progress'))return'changes_requested';
   if(jb.art_status==='art_requested'||jb.art_status==='art_in_progress')return'waiting_for_art';
+  if(jb.art_status==='needs_art_review')return'needs_art_review';
   if(jb.art_status==='waiting_approval')return'needs_approval';
   if(PROD_FILES_STATUSES.includes(jb.art_status))return'approved';
   if(jb.art_status==='art_complete')return'art_complete';

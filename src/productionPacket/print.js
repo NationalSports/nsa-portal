@@ -1,8 +1,13 @@
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import FrozenMocks from './FrozenMocks';
+import { garmentFrame } from '../lib/garmentFrame';
 import {quantityEntries} from './quantities';
 import {pantoneHex} from '../constants';
 import { safeUrl, groupPlayerOrders, humanizeProductionValue, isPersonalization, productionLabel } from './model';
 
-export const packetImageUrls = packet => [...new Set([packet.store?.logoUrl,...packet.decorations.flatMap(d=>[...d.mocks.map(f=>f.url), d.storePreview?.image, ...(!d.storePreview?.baked?[d.storePreview?.art]:[])])].map(safeUrl).filter(Boolean))];
+const frozenUrls = mock => [garmentFrame(mock.imageFront,mock.decorations).src,garmentFrame(mock.imageBack,mock.decorations).src,...mock.decorations.filter(d=>!d.baked).map(d=>d.art_url)];
+export const packetImageUrls = packet => [...new Set([packet.store?.logoUrl,...packet.decorations.flatMap(d=>[...(d.frozenMocks||[]).flatMap(frozenUrls), ...d.mocks.map(f=>f.url), d.storePreview?.image, ...(!d.storePreview?.baked?[d.storePreview?.art]:[])])].map(safeUrl).filter(Boolean))];
 const esc = v => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const sizes = values => quantityEntries(values).map(([s, n]) => `${esc(s)}: <b>${esc(n)}</b>`).join(' · ');
 const quantityPanel = (d,label='Garments') => `<div class="quantity-panel"><div class="quantity-total"><span>Total ${esc(label)}</span><b>${esc(d.units)}</b></div><div class="size-boxes">${quantityEntries(d.sizes).map(([size,n])=>`<div class="size-box"><span>${esc(size)}</span><b>${esc(n)}</b></div>`).join('')}</div></div>`;
@@ -14,6 +19,7 @@ const files = values => values.map(f => `<a href="${esc(f.url)}">${esc(f.name)}<
 
 const colorSwatches = value => value ? String(value).split(',').map(label=>{const hex=pantoneHex(label.trim());return `<span style="display:inline-block;margin-right:8px">${hex?`<span style="display:inline-block;width:12px;height:12px;border:1px solid #aaa;vertical-align:middle;margin-right:4px;background:${hex};print-color-adjust:exact;-webkit-print-color-adjust:exact"></span>`:''}${esc(label.trim())}</span>`;}).join('') : 'Not specified';
 function mockHtml(d) {
+  if (d.frozenMocks?.length && (d.frozenMocks.every(m=>m.approved) || !d.mocks.length)) return renderToStaticMarkup(React.createElement(FrozenMocks,{mocks:d.frozenMocks})).replaceAll('loading="lazy"','loading="eager"');
   if (d.mocks.length) return d.mocks.map(f => /\.(pdf)(\?|$)/i.test(f.url) ? `<p><a href="${esc(f.url)}">${esc(f.name)} (PDF proof)</a></p>` : `<img alt="${esc(d.sku)} production mock" crossorigin="anonymous" src="${esc(f.url)}">`).join('');
   if (!d.storePreview) return '<p class="draft">No garment mock available</p>';
   return `<div class="store-preview">${d.storePreview.image?`<img class="garment" crossorigin="anonymous" src="${esc(d.storePreview.image)}" alt="Garment">`:''}${!d.storePreview.baked&&d.storePreview.art?`<img class="${d.storePreview.image?'overlay':'art-only'}" style="${d.storePreview.image?`left:${d.storePreview.x}%;top:${d.storePreview.y}%;width:${d.storePreview.w}%`:''}" crossorigin="anonymous" src="${esc(d.storePreview.art)}" alt="Store artwork">`:''}</div><p>Store reference · production mock approval pending</p>`;
@@ -28,7 +34,7 @@ function artCard(d,p) {
 function personalizationCard(d,p) {
   const roster=d.personalization.roster||[];
   const rosterTable=roster.length?table(['Size',d.kind==='names'?'Print name':'Number','Qty'],roster.map(r=>row([esc(r.size||'—'),`<b>${esc(r.name||r.number||'—')}</b>`,esc(r.qty)]))):'<p>No per-player roster is saved; use the application quantity above.</p>';
-  return `<article class="deco personal"><div class="eyebrow">Personalization · ${esc(d.soId || 'Store orders · awaiting batch')} · ${esc(d.sku)} · ${esc(d.color)}</div><h3>${esc(productionLabel(d))} — ${esc(d.position)}</h3>${quantityPanel(d,'Applications')}<div class="details"><p>Method: ${empty(humanizeProductionValue(d.method))}<br>Application dimensions: ${empty(d.dimensions)}<br>Font: ${empty(d.personalization.font)}<br>Print / thread color: ${empty(d.colors)}</p><p>Decorator: ${empty(d.decorator)}<br>Roster: ${roster.length ? `${roster.reduce((n,r)=>n+r.qty,0)} entries` : "Not supplied"}</p></div><h4>Personalization roster</h4>${rosterTable}${p.notes.filter(n => n.targetId === d.id).map(note).join('')}</article>`;
+  return `<article class="deco personal"><div class="eyebrow">Personalization · ${esc(d.soId || 'Store orders · awaiting batch')} · ${esc(d.sku)} · ${esc(d.color)}</div><h3>${esc(productionLabel(d))} — ${esc(d.position)}</h3>${quantityPanel(d,'Applications')}${d.frozenMocks?.length?mockHtml(d):''}<div class="details"><p>Method: ${empty(humanizeProductionValue(d.method))}<br>Application dimensions: ${empty(d.dimensions)}<br>Font: ${empty(d.personalization.font)}<br>Print / thread color: ${empty(d.colors)}</p><p>Decorator: ${empty(d.decorator)}<br>Roster: ${roster.length ? `${roster.reduce((n,r)=>n+r.qty,0)} entries` : "Not supplied"}</p></div><h4>Personalization roster</h4>${rosterTable}${p.notes.filter(n => n.targetId === d.id).map(note).join('')}</article>`;
 }
 
 export function packetPrintHtml(packet, { onlineUrl = '', qrDataUrl = '', draft = true, generatedAt = new Date().toISOString(), decorationIds, garmentIds, salesOrderIds } = {}) {

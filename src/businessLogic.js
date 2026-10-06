@@ -5,6 +5,8 @@
 // ═══════════════════════════════════════════════
 
 const { matchingClientLine, lineIntentKey } = require('./lib/orderLineIdentity');
+const { isAllSchoolRecipeOrder } = require('./lib/allSchoolJobs');
+const { productionJobs, isOutsideArtJob, buildOutsideArtJobs } = require('./lib/outsideArt');
 
 // ── Safe Accessors ──
 const safe = (v, def) => v != null ? v : def;
@@ -100,6 +102,7 @@ function dP(d, q, artFiles, cq) {
     if (d.num_method === 'sublimated') { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const useQty = nq || Math.max(0, safeNum(d.num_qty)) || 0; const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); return { sell: safeNum(d.sell_override) || 0, cost: 0, _nq: useQty * mult } }
     // Tackle twill numbers: flat price from TWN (num_size × two_color), not the qty-tiered npP.
     if (d.num_method === 'tackle_twill') { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const useQty = nq > 0 ? nq : Math.max(0, safeNum(d.num_qty) || q); const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); const fnq = useQty * mult; return { sell: d.sell_override != null ? d.sell_override : twnP(d.num_size, d.two_color, true), cost: twnP(d.num_size, d.two_color, false), _nq: fnq } }
+    if (d.cost_each != null && ['dtf', 'heat_press'].includes(d.num_method)) { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const fnq = (nq || Math.max(0, safeNum(d.num_qty) || q)) * (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); return { sell: d.sell_override != null ? d.sell_override : safeNum(d.sell_each), cost: safeNum(d.cost_each), _nq: fnq } }
     const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const hasAssigned = nq > 0; const useQty = hasAssigned ? nq : Math.max(0, safeNum(d.num_qty) || q); const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); const fnq = useQty * mult;
     // Price the per-number volume break at the doubled application count (fnq), not the garment qty.
     return { sell: d.sell_override != null ? d.sell_override : npP(fnq || 1, d.two_color, true), cost: npP(fnq || 1, d.two_color, false), _nq: fnq } };
@@ -110,7 +113,7 @@ function dP(d, q, artFiles, cq) {
   // as "24 x $0.25" and the quarter-rounding then billed $6 of sell and $6 of cost for
   // $5 of work at $3 of cost (EST-2126). Deco walks already read _nq, so the line TOTAL
   // is unchanged everywhere nc*se/q happened to land on an exact quarter.
-  if (d.kind === 'names') { const nc = d.names ? Object.values(d.names).flat().filter(v => v && v.trim()).length : 0; const se = safeNum(d.sell_override != null ? d.sell_override : (d.sell_each || 6)); const co = safeNum(d.cost_each || 3); return { sell: se, cost: co, _nq: (nc || q) * (d.reversible ? 2 : 1) } };
+  if (d.kind === 'names') { const nc = d.names ? Object.values(d.names).flat().filter(v => v && v.trim()).length : 0; const se = safeNum(d.sell_override != null ? d.sell_override : (d.sell_each || 6)); const co = safeNum(d.cost_each != null ? d.cost_each : 3); return { sell: se, cost: co, _nq: (nc || q) * (d.reversible ? 2 : 1) } };
   if (d.type === 'dtf') { const t = DTF[d.dtf_size || 0]; return { sell: d.sell_override != null ? d.sell_override : t.sell, cost: t.cost } }
   // Tackle-twill chest/logo: flat per-garment price from the TWA menu (index on d.dtf_size).
   if (d.kind === 'twill') return { sell: d.sell_override != null ? d.sell_override : twaP(d.dtf_size, true), cost: twaP(d.dtf_size, false) };
@@ -393,7 +396,7 @@ function calcSOStatus(ord) {
     });
   });
   if (totalSz === 0) return 'need_order';
-  const boardJobs = safeJobs(ord);
+  const boardJobs = productionJobs(safeJobs(ord));// outside-art jobs are art-only — never production (lib/outsideArt)
   const hasJobs = boardJobs.length > 0;
   const allJobsShipped = hasJobs && boardJobs.every(j => j.prod_status === 'shipped');
   const allJobsDone = hasJobs && boardJobs.every(j => j.prod_status === 'completed' || j.prod_status === 'shipped');
@@ -431,10 +434,13 @@ function calcSOStatus(ord) {
 // in-house, and that run still needs its own production job. Returns { [item_idx]: Set<deco_type|'*'> };
 // a covering PO with no deco_type can't be matched by type, so it's recorded as '*' (wildcard) and
 // suppresses every decoration on that item — preserving the legacy all-or-nothing behavior.
+// Transfer/patch purchases and art-file services buy inputs for our floor; they do
+// not send garments to a decorator. Legacy POs without a mode still send garments.
+const isGarmentDecoPO = (dp) => !!dp && dp.po_mode !== 'dtf_purchase' && !dp.topstar_service;
 const outsourcedDecoTypes = (o) => {
   const map = {};
   const add = (ix, t) => { (map[ix] || (map[ix] = new Set())).add(t || '*'); };
-  safeArr(o?.deco_pos).forEach(dp => safeArr(dp?.item_idxs).forEach(ix => add(ix, dp?.deco_type)));
+  safeArr(o?.deco_pos).filter(isGarmentDecoPO).forEach(dp => safeArr(dp?.item_idxs).forEach(ix => add(ix, dp?.deco_type)));
   safeItems(o).forEach((it, ii) => safePOs(it).forEach(pl => { if (pl && pl.po_type === 'outside_deco') add(ii, pl.deco_type); }));
   // A deco PO carries ONE deco_type but covers whole items, whose decorations may be of several
   // types. When a covering PO's type matches NONE of an item's concretely-typed decorations, the PO
@@ -602,6 +608,7 @@ function normalizeWebLogos(webLogos, colorWays) {
 // allocation), and outsourced decorations never enter a bucket (syncJobs), so those still
 // separate. The job's deco_type is the primary method (art first); deco_types lists all of them.
 const buildJobs = (o) => {
+  if (isAllSchoolRecipeOrder(o)) return safeJobs(o);
   if (o?.jobs && o.jobs.length > 0) return o.jobs;
   // Build decoration entries per item, grouped by deco type
   const itemSigs = [];
@@ -1909,6 +1916,8 @@ function calcRepPayout({ netCommission, extraCommission, draw, loanBalance, loan
 }
 
 module.exports = {
+  // Re-exported so the editor-callback tests (which run syncJobs' body with businessLogic in scope) resolve them.
+  isOutsideArtJob, buildOutsideArtJobs,
   // Safe accessors
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs, manualPoCostTotal,
   // Attribution
@@ -1919,7 +1928,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
-  poCommitted, unfulfilledSizes, poOverCommit, billOverageQty, billLineNeed, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, unfulfilledSizes, poOverCommit, billOverageQty, billLineNeed, calcSOStatus, buildJobs, isGarmentDecoPO, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Size reductions that run into POs / picks
   planSizeCut, absorbedSizes,
   // Portal Assistant confirmed writes (shared by both editors + App.js previews)

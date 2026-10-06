@@ -1,5 +1,6 @@
 /* eslint-disable */
 // Safe accessor helpers — used throughout App.js, OrderEditor, CustDetail, etc.
+import { isOutsideArtJob } from './lib/outsideArt';
 export const safe = (v, def) => v != null ? v : def;
 export const safeArr = (v) => Array.isArray(v) ? v : [];
 export const safeObj = (v) => v && typeof v === 'object' && !Array.isArray(v) ? v : {};
@@ -480,7 +481,7 @@ export const unshippedPulledUnits = (so) => {
 // A closed SO is normally hidden from the warehouse queues; these are the two ways one can still
 // owe a shipment — a job that has not shipped, or pulled units no shipment record covers.
 export const soHasOpenShipWork = (so) =>
-  safeJobs(so).some((j) => j.prod_status !== 'shipped' && j.prod_status !== 'draft')
+  safeJobs(so).some((j) => j.prod_status !== 'shipped' && j.prod_status !== 'draft' && !isOutsideArtJob(j))
   || unshippedPulledUnits(so) > 0;
 
 // How many of THIS job's units have shipped? Crediting a job with its line's whole
@@ -1583,6 +1584,9 @@ export const skusMissingMockups = (job, so) => {
     // mock approved on a different color/style (reused art) would silently satisfy the
     // gate. garmentsNeedingMockCheck surfaces those so the rep can confirm or redo.
     const general = artFiles.flatMap(a => {
+      // A general file from another order is reference art, never confirmation
+      // that the new garment has a usable mock.
+      if (a?.reused_from_so) return [];
       if (Object.prototype.hasOwnProperty.call(a?.item_mockups || {}, garmentMockKey(mLine))) return [];
       const hasPerItem = Object.values(a?.item_mockups || {}).some(v => safeArr(v).length > 0);
       if (hasPerItem) return [];
@@ -1594,6 +1598,7 @@ export const skusMissingMockups = (job, so) => {
     // mockup_files/item_mockups. Keep embroidery stricter: a digitizer sew-out is often a
     // recolor and must not stand in for a garment mockup (SO-1661).
     const hasScreenPrintProof = artFiles.some(a => {
+      if (a?.reused_from_so) return false;
       if (Object.prototype.hasOwnProperty.call(a?.item_mockups || {}, garmentMockKey(mLine))) return false;
       const method = String(a?.deco_type || job?.deco_type || '').toLowerCase();
       if (!/screen[\s_-]*print/.test(method) || a?.proof_dismissed) return false;

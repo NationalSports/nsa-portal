@@ -14,6 +14,7 @@
 // bottom are new. Behavior contracts are pinned by
 // src/__tests__/dbEngine.characterization.test.js.
 // ═══════════════════════════════════════════════════════════════════════
+import {loadRecoveryDocument} from './loadRecoveryDocument';
 import { protectDocumentDraft, currentDraftOwner, draftJournal } from './draftJournal';
 import { savedDocumentMatchesDraft, reconcileSavedDocumentDrafts } from './savedDraftComparison';
 import { createSaveRetryCoordinator } from './saveRetryCoordinator';
@@ -24,6 +25,7 @@ import { matchingClientLine, resolveOutgoingLineIds } from './orderLineIdentity'
 import { rowsByKey } from './rowLookup';
 import { _pick, _pickSoItem, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, _vendCols, _firmDateCols, _omgStoreCols } from '../constants';
 import { itemEditReconciles, itemsWithWipedQty, decorationShrinkConflicts, unaccountedDroppedItems, jobAllRoutedOutside } from '../businessLogic';
+import { isOutsideArtJob, wantsOutsideArt } from './outsideArt';
 import { soItemKey } from '../safeHelpers';
 import { authFetch } from '../utils';
 import { consolidateOmgProductRows } from './storeSkuGrouping';
@@ -1086,6 +1088,7 @@ const _dbSaveEstimateInner = async (est) => {
     const{items,art_files,...estRow}=est;
     let {data:estimateToken,error:estimateTokenError}=await supabase.rpc('estimate_save_token',{p_estimate_id:est.id});
     if(estimateTokenError)throw new Error('Cannot prepare estimate save: '+estimateTokenError.message);
+    if(est._reviewedSaveToken!=null&&est._reviewedSaveToken!==estimateToken)return _preserveBlockedDocument('estimates',est);
     const {data:estimateArt,error:estimateArtError}=await supabase.from('estimate_art_files').select('*').eq('estimate_id',est.id);
     if(estimateArtError)throw new Error('Cannot verify estimate artwork: '+estimateArtError.message);
     const resolvedArt=Array.isArray(art_files)?_resolveArtRows(art_files,estimateArt,est.id):[];
@@ -1128,6 +1131,19 @@ const _dbSaveEstimateInner = async (est) => {
     if(oldItemIds.length>0&&_clientEstItemCount===0){
       console.error('[DB] SAFETY: Blocking estimate zero-wipe for',est.id,'— client has 0 items but DB has',oldItemIds.length);
       if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:est.id,prevCount:oldItemIds.length,newCount:0,reason:'client has 0 items but DB has items (zero-wipe guard — likely stale/raced state)'});
+      return _preserveBlockedDocument('estimates',est);
+    }
+    // EST-2771 lost two saved lines; a hydrated five-line copy reproduces that loss.
+    // Hydration and
+    // an adopted version prove neither that the draft contains the latest items nor
+    // that the rep removed the missing ones. Apply the same explicit-removal check
+    // as sales orders before trusting hydration, including for background saves.
+    // Both editors already stamp _deletedItemKeys on Remove and garment replacement.
+    const _unremovedEstItems=unaccountedDroppedItems(items,_oldEstItems,est._deletedItemKeys);
+    if(_unremovedEstItems.length){
+      const labels=_unremovedEstItems.map(k=>k.split('|').filter(Boolean).join(' ')||'(custom line)').join(', ');
+      if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:est.id,prevCount:oldItemIds.length,newCount:_clientEstItemCount,reason:'estimate save would drop unremoved DB item(s) ['+labels+']'});
+      if(!_bgSync&&_dbNotify)_dbNotify('Save blocked — '+est.id+' would lose '+labels+'. Your draft has been preserved for review.','error');
       return _preserveBlockedDocument('estimates',est);
     }
     if(_bgSync&&oldItemIds.length>0&&_clientEstItemCount<oldItemIds.length&&!(est._itemsHydrated||_everHydratedItems.has(est.id))){
@@ -1235,6 +1251,10 @@ const _dbSaveEstimateInner = async (est) => {
     let _serverVersioned=false;// true when save_estimate returned the post-save version (base is exact, no bump needed)
     {
       const _rpcItems=resolveOutgoingLineIds(items||[],_oldEstItems).map((item,idx)=>{const{decorations,...itemData}=item;return{..._pick(itemData,_itemCols),item_index:idx,decorations:(decorations||[]).map(d=>_pick(_sanitizeDeco(d),_decoCols))}});
+      if(_rpcItems.some(item=>!item.line_id)){
+        if(_dbNotify)_dbNotify('This estimate has duplicate product lines that need matching. Your draft is preserved. Choose Review changes in the recovery banner.','error');
+        return _preserveBlockedDocument('estimates',est);
+      }
       const _estPayload=_fuDefaults(_pick(estRow,_estCols));
       // Optimistic concurrency (server-side): pass the _version this edit is based on so the DB rejects a
       // stale clobber — the multi-tab / realtime-echo fight that silently wiped sizes, deleted items, and
@@ -1305,6 +1325,7 @@ const _dbSaveEstimateInner = async (est) => {
       if(_rpcErr){
         const _m=_rpcErr.message||String(_rpcErr);
         if(_isAuthError(_rpcErr))return _handleAuthSaveFailure(est.id,_rpcErr);
+        if(/ESTIMATE_(LINE_ID_AMBIGUOUS|DUPLICATE_LINE_ID)/.test(_m))return _preserveBlockedDocument('estimates',est);
         const _friendly=_m.includes('CUSTOMER_MISSING')
           ?"This customer isn't saved yet. Re-select or re-create the customer, then save."
           :_m.includes('ESTIMATE_ID_EXISTS')
@@ -1357,7 +1378,7 @@ const _dbSaveEstimateInner = async (est) => {
     return true;
   }catch(e){console.error('[DB] save estimate:',e);if(_isAuthError(e))return _handleAuthSaveFailure(est.id,e);_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save failed: '+e.message,'error');return false}});
 };
-const _dbSaveEstimate = (est) => _saveDocument('estimates',est,_dbSaveEstimateInner);
+const _dbSaveEstimate = (est,opts) => _saveDocument('estimates',est,opts?.exactAttempt?snapshot=>_dbSaveEstimateInner(snapshot):_dbSaveEstimateInner);
 // Resolve which current item a preserved child row (PO/pick line) should re-attach to after the
 // order's structure changed. The row's original position wins when its SKU still matches; otherwise
 // fall back to SKU matching across all items — removing/reordering a line shifts every item_index
@@ -1442,6 +1463,7 @@ const _dbSaveSOInner = async (so) => {
     const{items,art_files,firm_dates,jobs,...soRow}=so;
     let {data:saveToken,error:tokenError}=await supabase.rpc('sales_order_save_token',{p_so_id:so.id});
     if(tokenError)throw new Error('Cannot prepare atomic sales-order save: '+tokenError.message);
+    if(so._reviewedSaveToken!=null&&so._reviewedSaveToken!==saveToken)return _preserveBlockedDocument('sales_orders',so);
     const savePlan={header:null,items:null,art_upserts:[],art_deletes:[],job_upserts:[],job_deletes:[],firm_dates:null};
     const afterCommit=[];
 
@@ -2175,7 +2197,10 @@ const _dbSaveSOInner = async (so) => {
     if(jobs?.length){
       // Deduplicate jobs by id to prevent "ON CONFLICT DO UPDATE cannot affect row a second time" error
       const _seenJobIds=new Set();const dedupedJobs=jobs.filter(j=>{if(!j.id||_seenJobIds.has(j.id))return false;_seenJobIds.add(j.id);return true});
-      const jobRows=dedupedJobs.map(j=>_fuDefaults({..._pick(j,_jobCols),so_id:so.id}));
+      // Every row in this bulk upsert must provide the new NOT NULL flag. A mixed
+      // order with one reviewed job and older jobs would otherwise send NULL for
+      // the older rows rather than using the database default.
+      const jobRows=dedupedJobs.map(j=>_fuDefaults({..._pick(j,_jobCols),so_id:so.id,art_reuse_confirmed:j.art_reuse_confirmed===true}));
       // Coach-decision guard (audit A9): this upsert is a blind whole-row write, so a stale client
       // (whose job snapshot predates a coach approve/reject via the guarded RPC) writes NULL over the
       // decision columns and silently reverts it. Never null a non-null coach column unless this save
@@ -2205,7 +2230,7 @@ const _dbSaveSOInner = async (so) => {
       // Forward and equal-rank moves always pass — approving from a stale tab is exactly what the
       // rep wants persisted. The three production-files stages share one rank: which of them a job
       // sits in is a per-deco routing detail, not review progress.
-      {const _ART_RANK={needs_art:0,art_requested:1,art_in_progress:2,waiting_approval:3,production_files_needed:4,order_dtf_transfers:4,upload_emb_files:4,art_complete:5};
+      {const _ART_RANK={needs_art:0,art_requested:1,art_in_progress:2,needs_art_review:2.5,waiting_approval:3,production_files_needed:4,order_dtf_transfers:4,upload_emb_files:4,art_complete:5};
       let _artKept=0;
       jobRows.forEach((row,i)=>{
         const j=dedupedJobs[i];if(j._coach_cleared||j._art_moved)return;
@@ -2380,7 +2405,17 @@ const _dbSaveSOInner = async (so) => {
               (_itRows||[]).forEach(r=>{if(r.item_index!=null)_dbO.items[r.item_index]={decorations:[],po_lines:[]}});
               _decoRows.forEach(d=>{const it=_dbO.items[_idxById[d.so_item_id]];if(it&&d.deco_index!=null)it.decorations[d.deco_index]=d});
               (_poRows||[]).forEach(p=>{const it=_dbO.items[_idxById[p.so_item_id]];const meta=p?.sizes&&typeof p.sizes==='object'?p.sizes:{};if(it)it.po_lines.push({...p,po_type:meta.po_type,deco_type:meta.deco_type})});
-              const _routed=_blocked.filter(r=>jobAllRoutedOutside(_dbO,{items:Array.isArray(r.items)?r.items:[]}));
+              // An opt-in outside-art job (lib/outsideArt) is ALWAYS routed outside — that is its point —
+              // so it retires here only once the DB shows no claimed design still asking for the art flow.
+              // outside_art is read in its own query, only when such a job is at stake, so the routing
+              // check below never depends on that column; a failed read keeps those jobs protected.
+              if(_blocked.some(isOutsideArtJob)){
+                const{data:_oaRows,error:_oae}=await supabase.from('so_item_decorations').select('so_item_id,deco_index,outside_art').in('so_item_id',(_itRows||[]).map(r=>r.id));
+                if(_oae)_blocked.filter(isOutsideArtJob).forEach(r=>{r._keepOutsideArt=true});
+                else (_oaRows||[]).forEach(d=>{const it=_dbO.items[_idxById[d.so_item_id]];const dd=it&&it.decorations[d.deco_index];if(dd)dd.outside_art=d.outside_art});
+              }
+              const _artStillWanted=r=>r._keepOutsideArt||isOutsideArtJob(r)&&(Array.isArray(r.items)?r.items:[]).some(gi=>(Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:[gi.deco_idx]).some(di=>wantsOutsideArt(_dbO.items[gi.item_idx]?.decorations?.[di])));
+              const _routed=_blocked.filter(r=>!_artStillWanted(r)&&jobAllRoutedOutside(_dbO,{items:Array.isArray(r.items)?r.items:[]}));
               if(_routed.length){
                 const _routedIds=new Set(_routed.map(r=>r.id));
                 _blocked=_blocked.filter(r=>!_routedIds.has(r.id));
@@ -3551,6 +3586,17 @@ const _queuedEntitySave=(id,data,saveFn)=>new Promise((resolve,reject)=>{
 });
 // Queue immutable document attempts. Neither a later React mutation nor a
 // delayed acknowledgement may change which content this attempt represents.
+export const _loadRecoveryDocument=(table,id)=>loadRecoveryDocument(supabase,table,id);
+export const _saveReviewedDocument=async(table,payload,owner)=>{
+  if(owner!=null&&String(owner)!==currentDraftOwner())return false;
+  if(!['estimates','sales_orders'].includes(table)||payload._reviewedSaveToken==null)return false;
+  if(payload._draftRecovery&&payload._draftRecovery.owner!==currentDraftOwner())return false;
+  _clearDocumentConflictCooldown(payload.id);
+  // Dispatch directly, even when the React snapshot already equals this draft.
+  const result=await (table==='estimates'?_dbSaveEstimate(payload,{exactAttempt:true}):_dbSaveSO(payload,{exactAttempt:true}));
+  if(result===true)delete payload._reviewedSaveToken;
+  return result===true;
+};
 const _activeDocumentSaves=new Map();
 const _hasActiveDocumentSave=id=>(_activeDocumentSaves.get(id)||0)>0;
 const _saveDocument=(table,entity,saveFn,addOnly=false)=>{

@@ -187,7 +187,7 @@ exports.handler = async () => {
   try {
     const { data: rows } = await admin
       .from('invoices')
-      .select(`id, customer_id, memo, status, deleted_at, created_by, ${FU_COLS}`)
+      .select(`id, customer_id, memo, status, deleted_at, created_by, date, ${FU_COLS}`)
       .eq('follow_up_auto', true).lte('follow_up_at', nowIso).limit(500);
     const list = rows || [];
     const custs = await custMap(admin, list.map((r) => r.customer_id));
@@ -197,6 +197,15 @@ exports.handler = async () => {
       if (overBudget()) { results.deferred += list.length - i; break; }
       if (r.deleted_at || r.status === 'paid' || r.status === 'void' || r.status === 'cancelled') { await stop('invoices', r.id); continue; }
       if ((r.follow_up_count || 0) >= (r.follow_up_max || DEFAULT_MAX)) { await stop('invoices', r.id); continue; }
+      // Future-dated invoice (sent early): no follow-up before the invoice date. Re-arm for that
+      // morning (16:00 UTC ≈ 9am Pacific) instead of nagging about a bill that isn't out yet.
+      const invDay = /^\d{4}-\d{2}-\d{2}/.test(String(r.date || '')) ? String(r.date).slice(0, 10) : null;
+      if (invDay && new Date(invDay + 'T16:00:00Z').getTime() > Date.now()) {
+        const { error } = await admin.from('invoices').update({ follow_up_at: invDay + 'T16:00:00.000Z' })
+          .eq('id', r.id).eq('follow_up_at', r.follow_up_at);
+        if (error) { results.errors++; console.error(`[followup-sweep] defer invoices/${r.id}:`, error.message); }
+        continue;
+      }
       const to = parseRecipients(r.follow_up_to);
       if (!to.length) { await stop('invoices', r.id); continue; }
       if (!(await claim('invoices', r))) continue;

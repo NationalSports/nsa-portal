@@ -8,6 +8,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import { isPromoOnlyOrder } from '../pricing';
+import { isOutsideArtJob } from './outsideArt';
 
 const N = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 
@@ -734,7 +735,7 @@ export function staleOrdersReport({
     const openToInvoice = Math.max(0, orderValue - invoiced);
     if (orderValue <= 0 || openToInvoice < 1) continue;
 
-    const jobs = Array.isArray(so.jobs) ? so.jobs.filter((j) => j && j.prod_status !== 'draft') : [];
+    const jobs = Array.isArray(so.jobs) ? so.jobs.filter((j) => j && j.prod_status !== 'draft' && !isOutsideArtJob(j)) : [];
     const doneJobs = jobs.filter((j) => j.prod_status === 'completed' || j.prod_status === 'shipped').length;
     const shippedJobs = jobs.filter((j) => j.prod_status === 'shipped').length;
     const allJobsDone = jobs.length > 0 && doneJobs === jobs.length;

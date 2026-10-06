@@ -14,6 +14,7 @@
 // Response: JSON (parsed from SOAP XML response)
 
 const { verifyUserOrInternal } = require('./_shared');
+const { guardAllSchoolVendorRequest } = require('./_allSchoolVendorGuard');
 
 const WSDL_MAP = {
   product:          'https://ws.sanmar.com:8080/SanMarWebService/SanMarProductInfoServicePort',
@@ -358,10 +359,15 @@ exports.handler = async (event) => {
       return { statusCode: 400, headers,
         body: JSON.stringify({ error: `Line ${missingPart.lineNumber} is missing a partId (SanMar Unique_Key). Resolve all partIds before submitting.` }) };
     }
+    if (env === 'prod') {
+      const guard = await guardAllSchoolVendorRequest({ vendor: 'SanMar', poNumber: payload.PO.orderNumber, token: payload._allSchoolSubmissionToken });
+      if (!guard.ok) return { statusCode: guard.statusCode, headers, body: JSON.stringify({ error: guard.error }) };
+    }
     const envelope = buildSendPOEnvelope(payload, username, password);
     try {
       console.log(`[SanMar] sendPO → ${poUrl} (env: ${env}, order: ${payload.PO.orderNumber}, lines: ${payload.PO.lineItems.length}, user: ${username})`);
       const resp = await fetch(poUrl, {
+        signal: AbortSignal.timeout(15000),
         method: 'POST',
         headers: { 'Content-Type': 'text/xml;charset=UTF-8', 'SOAPAction': '""' },
         body: envelope,
@@ -451,6 +457,7 @@ exports.handler = async (event) => {
 
   const doRequest = async (body) => {
     const response = await fetch(baseUrl, {
+      signal: AbortSignal.timeout(15000),
       method: 'POST',
       headers: { 'Content-Type': 'text/xml;charset=UTF-8', 'SOAPAction': '""' },
       body,

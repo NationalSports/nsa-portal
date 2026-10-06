@@ -37,7 +37,7 @@ describe.each(editors)('$name Change SKU options', ({ source }) => {
 });
 
 test('the durable invoice identity field is persisted by an additive constrained migration', () => {
-  expect(constants).toMatch(/export const _soItemCols=\[[^;]*'invoice_line_keys'\]/);
+  expect(constants).toMatch(/export const _soItemCols=\[[^;]*'invoice_line_keys'[^;]*\]/);
   expect(migration).toMatch(/alter table public\.so_items[\s\S]*add column if not exists invoice_line_keys jsonb not null default '\[\]'::jsonb/i);
   expect(migration).toMatch(/check \(jsonb_typeof\(invoice_line_keys\) = 'array'\)/i);
   expect(migration).toMatch(/where so_id = 'SO-2245'[\s\S]*and item_index = 1[\s\S]*and sku = 'LH0083'[\s\S]*jsonb_build_array\('A1005\|White\|1'\)/i);

@@ -1,5 +1,8 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { isOutsideArtJob } from './lib/outsideArt';
+import StandaloneArtRequest from './StandaloneArtRequest';
+import './StandaloneArtRequest.css';
 import { _pick, ART_FILE_SC, SZ_ORD, sizeBreakdownStr, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale, isProdArtFile } from './constants';
 import { mockSkuOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback, poLineFulfilledQty, scopeSoItemsToInvoice } from './safeHelpers';
 import { invoiceTotalsRows } from './lib/invoiceDocTotals';
@@ -136,7 +139,7 @@ function CwMultiPrompt({title,cws=[],initialNames=[],initialDefault=false,onAppl
 
 // CUSTOMER DETAIL
 
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,onMsg,onInv,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,onOmgStoreSaved,companyInfo,nf,histStatus,onRetryHist,onNewNote}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,onMsg,onInv,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,onOmgStoreSaved,companyInfo,nf,histStatus,onRetryHist,supabase:requestSupabase,onNewNote}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[yF,setYF]=useState('all');const[rR,setRR]=useState('thisyear');
   const[histRetrying,setHistRetrying]=useState(false);// NetSuite-history retry in flight (banner below)
   const[jSF,setJSF]=useState('open');// Jobs tab status filter: open | done | all
@@ -328,7 +331,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   // Every production job across this customer's (and sub-accounts') SOs — derived with
   // buildJobs, the same read the Jobs board uses, so auto jobs not yet saved to so.jobs[]
   // show too. Same dead-order and draft guards as the Jobs board.
-  const custJobs=[];custSOs.forEach(so=>{if(so.status==='cancelled'||so.status==='deleted'||so.deleted_at)return;buildJobs(so).filter(j=>j.prod_status!=='draft').forEach(j=>custJobs.push({...j,so}))});
+  const custJobs=[];custSOs.forEach(so=>{if(so.status==='cancelled'||so.status==='deleted'||so.deleted_at)return;buildJobs(so).filter(j=>j.prod_status!=='draft'&&!isOutsideArtJob(j)).forEach(j=>custJobs.push({...j,so}))});
   const _jobDone=j=>j.prod_status==='completed'||j.prod_status==='shipped';
   const openJobCount=custJobs.filter(j=>!_jobDone(j)).length;
   const custEsts=(ests||[]).filter(e=>ids.includes(e.customer_id));
@@ -1369,7 +1372,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       </div>
       {/* Unified art list */}
       {(()=>{
-        const renderArtCard=(art,i)=>{const isEditable=art._ownIdx>=0;
+        const renderArtCard=(art,i)=>{const isEditable=art._ownIdx>=0;const linkedOrder=art._src==='so'?custSOs.find(x=>x.id===art._so_id):art._src==='est'?custEsts.find(x=>x.id===art._est_id):null;const requestMode=art._src==='so'?'so':art._src==='est'?'estimate':'customer';const requestCustomer=(allCustomers||[]).find(c=>c.id===art._srcCustId)||customer;
           const _subLabel=isP&&!art._appliesToAll?(art._srcCustIds||[]).map(id=>teamName(id)).filter(Boolean).join(', '):'';
           return<div key={art.id+'-'+art._src+'-'+i} style={{background:'#f8fafc',borderRadius:8,border:art._st==='approved'?'2px solid #22c55e':art._st==='needs_approval'?'2px solid #f59e0b':'1px solid #e2e8f0',overflow:'hidden'}}>
             {/* Summary row */}
@@ -1392,7 +1395,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
                   {art._usedOnSOs.length>0&&<span style={{fontSize:10,color:'#64748b'}}>{art._usedOnSOs.length} order(s)</span>}
                 </div>
               </div>
-              {isEditable&&<button title="Edit details — name, type, size, status, delete" onClick={e=>{e.stopPropagation();setCustArtDetail({...art,_usedOnSOs:art._usedOnSOs,_allMockups:art._allMockups,_allProd:art._allProd})}} style={{display:'flex',alignItems:'center',gap:3,fontSize:9,fontWeight:700,padding:'2px 7px',borderRadius:4,border:'1px solid #cbd5e1',background:'white',color:'#64748b',cursor:'pointer',whiteSpace:'nowrap'}}>Edit details</button>}
+              {isEditable&&<button title="Edit details — name, type, size, status, delete" onClick={e=>{e.stopPropagation();setCustArtDetail({...art,_usedOnSOs:art._usedOnSOs,_allMockups:art._allMockups,_allProd:art._allProd})}} style={{display:'flex',alignItems:'center',gap:3,fontSize:9,fontWeight:700,padding:'2px 7px',borderRadius:4,border:'1px solid #cbd5e1',background:'white',color:'#64748b',cursor:'pointer',whiteSpace:'nowrap'}}>Edit details</button>}{<StandaloneArtRequest supabase={requestSupabase||supabase} customer={requestCustomer} order={linkedOrder} mode={requestMode} art={art} cu={cu} reps={REPS||[]}/>}
             </div>
           </div>};
         if(filtered.length===0)return<div className="empty">{custArtFilter==='all'?'No artwork found. Click "Add Art" to create art groups.':'No artwork with this status.'}</div>;

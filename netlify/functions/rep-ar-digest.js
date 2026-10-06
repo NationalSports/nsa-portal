@@ -24,6 +24,7 @@
 // all-reps send only runs from the scheduler, which carries no httpMethod):
 //   GET /.netlify/functions/rep-ar-digest?test=<email>[&rep=<id|name>][&key=<k>]
 const { getSupabaseAdmin } = require('./_shared');
+const { pastDueInvoicesUrl } = require('../../src/lib/receivablesLinks');
 const { isOpenInvoice, invoiceBalance, invoiceDaysPastDue, agingBucket, AGING_BUCKETS, groupOverdueInvoicesByAccount } = require('../../src/lib/opsRecap');
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -291,7 +292,7 @@ function buildArHtml({ rep, rows, dateLabel, portal, custName, testNote, ccFor }
   const moreRow = moreInvoices ? `<tr><td colspan="2" style="padding:14px 0 0">
       <div style="background:${CREAM};border:1px solid ${LINE};border-radius:8px;padding:11px 13px;font-size:13px;color:${INK}">
         <b>+ ${moreInvoices} more overdue invoice${moreInvoices === 1 ? '' : 's'}</b> across ${moreAccounts} smaller account${moreAccounts === 1 ? '' : 's'}, totalling <b style="color:${RED}">${money(moreAmount)}</b>.
-        <div style="font-size:12px;color:${SUB};margin-top:3px">Trimmed so your mail app doesn't clip this email — the totals above still include them. <a href="${portal}/?pg=reports" style="color:${ACCENT};font-weight:700;text-decoration:none">See the full list →</a></div>
+        <div style="font-size:12px;color:${SUB};margin-top:3px">Trimmed so your mail app doesn't clip this email — the totals above still include them. <a href="${esc(pastDueInvoicesUrl(portal, rep.id))}" style="color:${ACCENT};font-weight:700;text-decoration:none">See the full list →</a></div>
       </div></td></tr>` : '';
 
   const rowsHtml = shownGroups.map((group) => {

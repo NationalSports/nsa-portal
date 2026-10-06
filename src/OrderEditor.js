@@ -1,8 +1,16 @@
+import { _loadArtRow } from './constants';
+import {useRecoveryHandoff} from './lib/useRecoveryHandoff';
+import StandaloneArtRequest from './StandaloneArtRequest';
+import './StandaloneArtRequest.css';
+import {_hasActiveDocumentSave} from './lib/dbEngine';
 import { canReviewJobMocks } from './lib/jobMockReadiness';
 import JobGarmentMocks from './JobGarmentMocks';
+import PriorArtReviewPanel from './PriorArtReviewPanel';
 import { logoDetailCustomerUpdates } from './lib/logoDetail';
 import { isJobReady, missingJobMocks, jobMockChecks } from './lib/jobMockReadiness';
 import { jobArtBadgeSt } from './lib/jobArtBadge';
+import { PRIOR_ART_REVIEW, startPriorArtReview, reviewChangedArtwork, priorArtDecisionPending, confirmPriorArt, markPriorArtCoachSent } from './lib/priorArtReview';
+import { splitPriorArtwork } from './lib/splitPriorArtwork';
 import { webstoreCheckoutMoney, webstoreDocMoneyRows } from './lib/webstoreSoMoney';
 import {useOrderCatalogResults,a4Visible} from './lib/orderCatalogSearch';
 import { poEligibleVendors } from './lib/vendorPoEligibility';
@@ -13,6 +21,8 @@ import { replaceTbdArt, tbdArtName, tbdArtLabel, isTbdArt } from './lib/orderArt
 import { openProductionPacket } from './productionPacket/api';
 import ShareMessageButton from './productionPacket/ShareMessageButton';
 import { canAcknowledgeSave } from './lib/saveAcknowledgement';
+import * as ALL_SCHOOL_JOBS from './lib/allSchoolJobs';
+const { isAllSchoolRecipeOrder } = ALL_SCHOOL_JOBS;
 import { lineIntentKey, newOrderLineId } from './lib/orderLineIdentity';
 import { liveSoInvoices, soInvoiceBalance, invoiceBalanceSnapshot } from './lib/soInvoiceBalance';
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
@@ -33,7 +43,8 @@ import { unfinishedProdSummary } from './lib/orderCloseGuard';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { CustModal } from './modals';
 import { applyTaxExempt, clearTaxExempt, taxExemptInfo, taxExemptLabel } from './lib/taxExempt';
-import { NO_INVOICE_REASONS, applyNoInvoice, clearNoInvoice, noInvoiceLabel } from './lib/noInvoice';
+import { isOutsideArtJob, productionJobs, buildOutsideArtJobs, outsideArtVendor, isRoutedOutside } from './lib/outsideArt';
+import { NO_INVOICE_REASONS, CREATED_IN_ERROR_REASON, applyNoInvoice, clearNoInvoice, closeCreatedInError, undoCreatedInError, isCreatedInError, noInvoiceLabel } from './lib/noInvoice';
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
@@ -47,6 +58,7 @@ import MultiItemAddModal from './MultiItemAddModal';
 import FulfillmentReconcileModal from './FulfillmentReconcileModal';
 import { applySoFixes, pinSourceSku, unpinSourceSku } from './lib/fulfillmentReconcile';
 import { decoPoTotals, decoPoDrift } from './lib/decoPoUnits';
+import { reviseDecoPO, decoPoEditTotals } from './lib/decoPoEdit';
 // Lazy so the uniform designer only loads when a rep opens it.
 const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
 import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, TWA, TWN, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced, linkedArtCostQty, decoCostAt, decoCostResolved, outsideDecoEstAt, outsideDecoSell } from './pricing';
@@ -55,7 +67,7 @@ import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoI
 import { sanmarPricingSnapshot } from './lib/sanmarPricing';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
-import { jobScreenKey, jobGroupKey, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit, unfulfilledSizes, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantRemoveLineApply, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
+import { jobScreenKey, jobGroupKey, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, isGarmentDecoPO, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit, unfulfilledSizes, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantRemoveLineApply, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets } from './lib/artIdentity';
 import { previousArtSport, previousArtSourceKey, previousArtReuseDesignId, filterPreviousArt } from './lib/previousArtSearch';
@@ -74,6 +86,7 @@ import { fetchPaidPromoHistoryInvoices, mergePromoHistoryInvoices, promoHalfWind
 import { itemVendorInvSource, vendorInvCacheKey } from './vendorInventory';
 import { apiVerificationForPoLine, buildOutOfStockRemovalMessage, emailRepOutOfStockRemoval, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
 import { markTopstarEmailFailed, markTopstarEmailSent, topstarAttachmentName, topstarPoMatches } from './lib/topstarEmail';
+import { invoiceFollowUpBaseMs } from './lib/invoiceFollowUp';
 import './orderEditor.redesign.css';
 
 // A garment mockup sits on WHITE. It's a photo of a shirt, so a checkerboard behind it
@@ -273,7 +286,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onEditMemo,memoEditorRef,memoEditing,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onManualShip,onDelete,onReleasePendingShip,pendingShipAvail,onNavInvoice,onNavBatch,onOpenIF,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,onOpenMethodicDashboard,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText,ui='new'}){
+function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onEditMemo,memoEditorRef,memoEditing,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onManualShip,onDelete,onReleasePendingShip,pendingShipAvail,onNavInvoice,onNavBatch,onOpenIF,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,onOpenMethodicDashboard,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText,ui='new'}){
   // O(1) catalog lookup. Replaces a products.find() linear scan that ran once per size cell
   // (~11ms per render on a 10-line order, ~41ms at 40 lines) on every keystroke-driven render.
   const findProd=useMemo(()=>buildProductIndex(products),[products]);
@@ -286,14 +299,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const notifyDecoReady=(prevJobs,nextJobs)=>{const r=jobsNowReadyForDeco(prevJobs,nextJobs).filter(j=>!missingJobMocks(j,o).length);if(r.length&&nf)nf('🎽 Ready for decoration: '+r.map(j=>j.art_name||j.id).join(', ')+' — all items in & art complete!')};
   // One-click hand-off from the PO receive views: staging = "In Line" on the production board.
   // Mirrors the jobs-tab Production select (no assignment prompt — production assigns on the board).
-  const moveJobToDeco=(jobId)=>{const jj=safeJobs(o).find(x=>x.id===jobId);if(jj&&missingJobMocks(jj,o).length){nf(missingMockupsMsg(missingJobMocks(jj,o)),'error');return}const updJobs=safeJobs(o).map(x=>x.id===jobId?{...x,prod_status:'staging'}:x);const updated={...o,jobs:updJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf('🎽 '+(jj?.art_name||jobId)+' moved to In Line for decoration')};
+  const moveJobToDeco=(jobId)=>{const jj=safeJobs(o).find(x=>x.id===jobId);if(isOutsideArtJob(jj)){nf('This is an art-only job for an outside decorator — it never goes on our production floor.','error');return}if(jj&&missingJobMocks(jj,o).length){nf(missingMockupsMsg(missingJobMocks(jj,o)),'error');return}const updJobs=safeJobs(o).map(x=>x.id===jobId?{...x,prod_status:'staging'}:x);const updated={...o,jobs:updJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf('🎽 '+(jj?.art_name||jobId)+' moved to In Line for decoration')};
   // Approve a job's art, routing it to either 'art_complete' (a production separation is CONFIRMED)
   // or its production-files stage (the artist still owes the separation). stampProd marks the
   // per-design prod_files_attached flag so a confirmed job stays out of the seps stage on the next
   // buildJobs pass. The approve / "mark complete" actions gate on artProdFilesConfirmed first and
   // open the artApproveGate prompt when nothing is confirmed — a vector .ai merely sitting in
   // prod_files is NOT a production separation and must never silently complete the job.
-  const _approveArtTo=async(jobId,artIds,targetStatus,stampProd)=>{
+  const _approveArtTo=async(jobId,artIds,targetStatus,stampProd,orderedDtfIds=[])=>{
     const curO=oRef.current;
     // Approving resolves any outstanding coach change-request — warn before overriding it, then clear
     // the flag so coach_rejected can't stay stranded=true on an approved/in-production job.
@@ -306,9 +319,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       nf('This job still has Art TBD — assign real artwork before approving it','error');return;
     }
     if(_jb&&_jb.coach_rejected){const _lr=(_jb.rejections||[]).slice(-1)[0];if(!window.confirm('⚠️ The coach requested changes on this artwork'+((_lr&&_lr.reason)?(':\n\n"'+_lr.reason+'"'):'.')+'\n\nApprove it anyway? This overrides the coach’s change request.'))return;}
-    const updated=approveArtOnSO({...curO,jobs:safeJobs(curO),art_files:safeArt(curO)},{match:jj=>jj.id===jobId,artIds,targetStatus,stampProd,updatedAt:new Date().toLocaleString()});
+    const updated=approveArtOnSO({...curO,jobs:safeJobs(curO),art_files:safeArt(curO)},{match:jj=>jj.id===jobId,artIds,targetStatus,stampProd,orderedDtfIds,by:cu?.name||'Rep',updatedAt:new Date().toLocaleString()});
     setArtRevisionNote('');
-    await saveSONow(updated,'Art approval','✅ Art approved — '+(targetStatus==='art_complete'?'production files confirmed, ready for production!':targetStatus==='order_dtf_transfers'?'order DTF transfers':targetStatus==='upload_emb_files'?'upload embroidery files':'sent to the artist for production separations'));
+    const _doneMsg=orderedDtfIds.length
+      ? targetStatus==='art_complete'?'DTF films ordered, ready for production!':'DTF films ordered; this job still needs '+(targetStatus==='upload_emb_files'?'embroidery files':'print separations')
+      : targetStatus==='art_complete'?'production steps confirmed, ready for production!':targetStatus==='order_dtf_transfers'?'order DTF transfers':targetStatus==='upload_emb_files'?'upload embroidery files':'sent to the artist for production separations';
+    await saveSONow(updated,'Art approval','✅ Art approved — '+_doneMsg);
   };
   const _activeProd=s=>s==='staging'||s==='in_process';
   // Jobs sharing any of the affected art files must not keep running a design that's being
@@ -647,6 +663,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // send modal never opens. applyPriorMock passes its saved order explicitly so the gate is
   // deterministic even if the post-save re-render hasn't committed oRef yet.
   const openCoachSend=(jIdx,oOverride)=>{const co=oOverride||oRef.current||o;const jb0=safeJobs(co)[jIdx];if(!jb0)return;
+    const _ownedArt=jobArtFileIds(jb0,safeItems(co));
+    if(priorArtDecisionPending(jb0,safeArt(co).filter(a=>_ownedArt.has(a.id)),skusMissingMockups(jb0,co))){nf('Review the previous artwork before sending it to the coach','error');return}
+    if(jb0.art_status===PRIOR_ART_REVIEW&&!jb0.art_reuse_confirmed){nf('Choose whether this artwork works for the new garment first','error');return}
     // Same per-garment mock gate as the Send-to-Coach button — this opener is also reached
     // from applyPriorMock, which may have mocked only one of the job's garments.
     const _mmO=skusMissingMockups(jb0,co);
@@ -684,7 +703,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // (the reused mock is saved either way; the job moves once the rest catches up).
     const _allApproved=jobArtIds.every(aid=>{const af2=updArt.find(a=>a.id===aid);return af2&&(af2.status==='approved'||af2.status==='art_complete')});
     const _allProd=jobArtIds.every(aid=>{const af2=updArt.find(a=>a.id===aid);return af2&&artProdFilesConfirmed(af2)});
-    const newJobStatus=sendToCoach?'waiting_approval':(_allApproved?(_allProd?'art_complete':prodFilesStatusFor(_actDeco)):null);
+    const _priorReview=jb?.art_status===PRIOR_ART_REVIEW;
+    if(_priorReview&&sendToCoach&&!jb.art_reuse_confirmed){nf('Review the previous artwork before sending it to the coach','error');return}
+    const newJobStatus=_priorReview?PRIOR_ART_REVIEW:sendToCoach?'waiting_approval':(_allApproved?(_allProd?'art_complete':prodFilesStatusFor(_actDeco)):null);
     // coach_rejected clears even when the job doesn't advance — the rep confirmed the
     // override above, and leaving the flag stranded is the SO-1199 class this path fixed.
     const updated={...o,art_files:updArt,...(jIdx>=0?{jobs:safeJobs(o).map((jj,i)=>i===jIdx?{...jj,...(newJobStatus?{art_status:newJobStatus}:{}),coach_rejected:false}:jj)}:{}),updated_at:new Date().toLocaleString()};
@@ -745,7 +766,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Keep non-image files (e.g. .ai production art legacy records stash in `files`) and any
     // explicitly-whitelisted mockup image; drop every other mockup image.
     const keep=arr=>(arr||[]).filter(f=>{const u=_u(f);if(!_isImgUrl(u,f))return true;return selUrls?selUrls.has(u):false});
-    const clone={...JSON.parse(JSON.stringify(art)),id:'af'+Date.now(),design_id:previousArtReuseDesignId(art,art._srcCustId),uploaded:new Date().toLocaleDateString()};
+    const clone={...JSON.parse(JSON.stringify(art)),id:'af'+Date.now(),design_id:previousArtReuseDesignId(art,art._srcCustId),reused_from_so:art._so_id||null,uploaded:new Date().toLocaleDateString()};
     delete clone._so_id;delete clone._so_memo;delete clone._srcCustId;delete clone._srcTeam;delete clone._sport;
     // Keep design_id so the reused logo stays linked to its design identity (LOGO-1).
     // REUSE-6: the source order's garment mock_links don't apply here (they reference that
@@ -764,7 +785,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // onto volleyball garments that happened to be unwired). Matching lives in
     // prevArtAutoWireTargets so it stays unit-tested and can't drift from the UI.
     const targets=prevArtAutoWireTargets(safeItems(o),af,clone).map(({ii,di})=>({ii,di,item:safeItems(o)[ii]}));
-    if(!targets.length){nf('Added "'+_nm+'" from '+(art._so_id||'Library')+' — mockups not auto-applied'+_pfNote);return}
+    if(!targets.length){openArtApply(clone);nf('Added "'+_nm+'" from '+(art._so_id||'Library')+' — choose its garments and color ways'+_pfNote);return}
     // H4 tie-in: garments whose shade only fallback-matches this art's CWs still get pointed,
     // but the rep is told to confirm the color-way for them.
     const _lbl=t=>((t.item.color?t.item.color+' ':'')+(t.item.sku||t.item.name||('Item '+(t.ii+1))));
@@ -789,7 +810,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(key===lastSyncRef.current)return;
       lastSyncRef.current=key;
       const extJobs=safeJobs(order);
-      const hasExternalJobChange=extJobs.some(ej=>{const lj=safeJobs(o).find(j=>j.id===ej.id);return lj&&(ej.art_status!==lj.art_status||ej.coach_approved_at!==lj.coach_approved_at||ej.coach_rejected!==lj.coach_rejected)});
+      const hasExternalJobChange=extJobs.some(ej=>{const lj=safeJobs(o).find(j=>j.id===ej.id);return lj&&(ej.art_status!==lj.art_status||ej.art_reuse_confirmed!==lj.art_reuse_confirmed||ej.coach_approved_at!==lj.coach_approved_at||ej.coach_rejected!==lj.coach_rejected)});
       const hasExternalArtChange=JSON.stringify(order.art_files||[])!==JSON.stringify(o.art_files||[])&&!dirty;
       // Detect external pick_line changes (e.g., warehouse pulled an IF on another tab)
       const hasExternalPickChange=safeItems(order).some((ei,idx)=>{const li=safeItems(o)[idx];if(!li)return!!ei.pick_lines?.length;const ePicks=safePicks(ei);const lPicks=safePicks(li);if(ePicks.length!==lPicks.length)return true;return ePicks.some((ep,pi)=>ep.status!==lPicks[pi]?.status||ep.pick_id!==lPicks[pi]?.pick_id)});
@@ -798,7 +819,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // editor) must never be dropped because the incoming snapshot hasn't caught up yet.
       const hasExternalPoChange=safeItems(order).some((ei,idx)=>{const li=safeItems(o)[idx];if(!li)return false;return(Array.isArray(ei.po_lines)?ei.po_lines.length:0)>(Array.isArray(li.po_lines)?li.po_lines.length:0)});
       if(!hasExternalJobChange&&!hasExternalArtChange&&!hasExternalPickChange&&!hasExternalPoChange)return;
-      setO(prev=>{const mergedJobs=safeJobs(prev).map(j=>{const ext=extJobs.find(ej=>ej.id===j.id);if(ext&&(ext.art_status!==j.art_status||ext.coach_approved_at!==j.coach_approved_at||ext.coach_rejected!==j.coach_rejected)){return{...j,art_status:ext.art_status,coach_approved_at:ext.coach_approved_at,coach_rejected:ext.coach_rejected,rejections:ext.rejections,sent_to_coach_at:ext.sent_to_coach_at}}return j});
+      setO(prev=>{const mergedJobs=safeJobs(prev).map(j=>{const ext=extJobs.find(ej=>ej.id===j.id);if(ext&&(ext.art_status!==j.art_status||ext.art_reuse_confirmed!==j.art_reuse_confirmed||ext.coach_approved_at!==j.coach_approved_at||ext.coach_rejected!==j.coach_rejected)){return{...j,art_status:ext.art_status,art_reuse_confirmed:ext.art_reuse_confirmed,coach_approved_at:ext.coach_approved_at,coach_rejected:ext.coach_rejected,rejections:ext.rejections,sent_to_coach_at:ext.sent_to_coach_at}}return j});
         // Merge pick_line changes from external source (warehouse pulls, new IFs from other tabs)
         // and union-add external po_lines (restored stale/foreign lines) onto their item.
         const mergedItems=(hasExternalPickChange||hasExternalPoChange)?safeItems(prev).map((it,idx)=>{
@@ -2021,8 +2042,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(active?.dataset?.sizingDraft==='true'&&typeof active.blur==='function')active.blur();
     return Object.keys(sizingDraftRef.current).length===0;
   };
+  const recoveryPaused=useRecoveryHandoff(recoveryEditorRef,{
+    id:order.id,table:mode==='estimate'?'estimates':'sales_orders',owner:cu?.id,
+    revision:()=>orderEditRevision.current,isSaving:()=>_hasActiveDocumentSave(order.id),
+    capture:()=>{
+      if(!_flushActiveSizingDraft())return null;
+      let cur=oRef.current;
+      const m=memoInputRef.current,p=poInputRef.current;
+      if(m&&m.value!==(cur.memo||''))cur={...cur,memo:m.value};
+      if(p&&p.value!==(cur.po_number||''))cur={...cur,po_number:p.value};
+      return cur;
+    },
+  });
   React.useEffect(()=>{
     const doAutoSave=(emergency=false)=>{
+      if(recoveryPaused.current)return;
       // Never persist the old quantity while a size cell still owns a newer draft. Emergency
       // unload/version-reload saves first force the focused cell through its synchronous blur
       // commit; the regular 30s autosave simply waits for the rep to finish the edit.
@@ -2623,7 +2657,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(safePicks(it).length>0)return false;
       // Otherwise it ships direct iff it's on a drop-ship PO or is decorated out of house.
       const dropShip=safePOs(it).some(po=>po&&po.drop_ship===true);
-      const outOfHouse=safeDecos(it).some(d=>d&&d.kind==='outside_deco')||(it.po_lines||[]).some(pl=>pl&&pl.po_type==='outside_deco')||(o.deco_pos||[]).some(dp=>(dp.item_idxs||[]).includes(idx));
+      const outOfHouse=safeDecos(it).some(d=>d&&d.kind==='outside_deco')||(it.po_lines||[]).some(pl=>pl&&pl.po_type==='outside_deco')||(o.deco_pos||[]).some(dp=>isGarmentDecoPO(dp)&&(dp.item_idxs||[]).includes(idx));
       return dropShip||outOfHouse;
     });
   },[isSO,o]);
@@ -3570,21 +3604,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const per=dt?_decoVendorPrice(decoVendorPricing,dvRow.id,dt,{qty:cq,colors:inks,stitches:safeNum(a&&a.stitches)||safeNum(d.tbd_stitches)||undefined,underbase:sp&&garmentNeedsUnderbase(it.color),fleece:sp&&/fleece|hood|sweat|crew|jogger/i.test(g),mesh:sp&&/\bmesh\b/i.test(g)}):null;
             const sell=outsideDecoSell(per);if(sell>0){nd.sell_override=sell;nd.sell_each=sell;nd._outside_sell=true}}
           return nd;}
-        const nd={...d,fulfillment:undefined,vendor:undefined};if(d._outside_sell){delete nd.sell_override;delete nd.sell_each;delete nd._outside_sell}return nd;
+        const nd={...d,fulfillment:undefined,vendor:undefined,outside_art:false};if(d._outside_sell){delete nd.sell_override;delete nd.sell_each;delete nd._outside_sell}return nd;
       })};
     }),updated_at:new Date().toLocaleString()};
   });setDirty(true);const _wsSO=!!(o.webstore_id||o.source==='webstore');if(!quiet)nf(val==='outside'?('🎨 Outside'+(vendor?' · '+vendor:'')+' — produced by a decorator'+(_wsSO?', deco charge stays $0 (included in the store price).':vendor?', charge set to a 36% margin.':'.')+(isSO?' Add a Deco PO to bundle & cost it.':' Carries to the sales order, where you bundle the Deco PO.')):'🏭 In-house')};
   const setItemFulfillment=(ii,val,vendor,quiet)=>setItemsFulfillment([ii],val,vendor,quiet);
+  // Optional art flow for an outside-decorated item: stamps outside_art on its outside-routed designs so
+  // each one gets an art-only job (Request Art → mockup → approval → production files). See lib/outsideArt.
+  const setItemOutsideArt=(ii,on)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x!==ii?it:{...it,decorations:safeDecos(it).map(d=>d.kind==='art'&&isRoutedOutside(d)?{...d,outside_art:!!on}:d)}),updated_at:new Date().toLocaleString()}));setDirty(true);
+    nf(on?'🎨 Art flow on — this outside design goes through Request Art, mockup and customer approval like in-house art':'Art flow off — the decorator works from the art as-is')};
   // The order's chosen outside decorator, inferred from any item already flagged outside (or a deco PO).
   // The order's outside garment decorator: first from item-level "Outside" routing, else from an
   // existing deco PO. Skip Topstar digitizing/vector POs — that's an art-file service, not a
   // decorator, so it must never be inferred as the vendor blanks drop-ship to.
-  const _orderOutsideVendor=()=>{for(const it of safeItems(o)){for(const d of safeDecos(it)){if(d.kind==='art'&&d.fulfillment==='outside'&&d.vendor)return d.vendor}}return (o.deco_pos||[]).find(dp=>dp&&!dp.topstar_service)?.vendor||''};
+  const _orderOutsideVendor=()=>{for(const it of safeItems(o)){for(const d of safeDecos(it)){if(d.kind==='art'&&d.fulfillment==='outside'&&d.vendor)return d.vendor}}return (o.deco_pos||[]).find(dp=>isGarmentDecoPO(dp))?.vendor||''};
   // Item deco routing (by SO line index). Outside = any art deco flagged "Outside", or the item
   // already sits on a garment deco PO (Topstar digitizing is an art service, not a decorator).
   const _itemOutsideDeco=ii=>{const it=safeItems(o)[ii];if(!it)return false;
     if(safeDecos(it).some(d=>d&&d.kind==='art'&&d.fulfillment==='outside'))return true;
-    return (o.deco_pos||[]).some(dp=>dp&&!dp.topstar_service&&(dp.item_idxs||[]).includes(ii))};
+    return (o.deco_pos||[]).some(dp=>isGarmentDecoPO(dp)&&(dp.item_idxs||[]).includes(ii))};
   // In-house deco = the item carries decoration work and none of it is routed outside. NOTE the
   // item-level TOGGLE only cascades to art decos, but names/numbers are outsourceable in their own
   // right (isDecoOutsourced is kind-agnostic, and syncJobs honours fulfillment:'outside' on them) —
@@ -3594,12 +3632,27 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // costs an extra hop; under-calling it strands the goods.
   const _itemInHouseDeco=ii=>{const it=safeItems(o)[ii];if(!it)return false;
     return safeDecos(it).length>0&&!_itemOutsideDeco(ii)};
+  // Close an SO that was created by mistake: never invoiced, off every open-order list, but
+  // kept (POs, costs and history stay) — the route for an error order that can't be deleted.
+  const closeAsCreatedInError=()=>{
+    const _live=liveSoInvoices(allInvoices,o.id);
+    if(_live.length){nf(o.id+' has invoice'+(_live.length===1?' ':'s ')+_live.map(i=>i.id).join(', ')+' — void '+(_live.length===1?'it':'them')+' first, then close the order as created in error.','error');return}
+    const note=window.prompt('Close '+o.id+' as created in error?\n\nIt will NOT be invoiced and drops off Ready to Invoice, Shipped-not-invoiced and the rep invoice TODOs. POs and costs stay on the order. Undo any time with Actions → Reopen Sales Order.\n\nOptional — what went wrong?','');
+    if(note==null)return;
+    const updated={...closeCreatedInError(o,{note,by:cu?.id}),updated_at:new Date().toLocaleString()};
+    setO(updated);onSave(updated);nf(o.id+' closed — created in error, will not be invoiced');
+  };
+  // Deco PO guard for the opt-in outside art flow: a design still in the art flow (not approved /
+  // production files not confirmed) shouldn't go to the decorator unnoticed. Warn, never block.
+  const confirmOutsideArtReady=(idxs)=>{const pend=safeJobs(o).filter(j=>isOutsideArtJob(j)&&j.art_status!=='art_complete'&&(j.items||[]).some(gi=>(idxs||[]).includes(gi.item_idx)));
+    if(!pend.length)return true;
+    return window.confirm('Art isn\'t finished for this decorator yet:\n\n'+pend.map(j=>'• '+j.art_name+' — '+String(j.art_status||'').replace(/_/g,' ')).join('\n')+'\n\nThese designs are using the art flow. Create the Deco PO anyway?')};
   // ── Mark Deco module ── bulk in-house ⇄ outside marking so a 13-line order isn't 13 toggle
   // clicks. A line is MARKABLE when it carries art decoration (the routing flag cascades to art
   // decos only, exactly as the per-item toggle does) or already sits on a garment deco PO.
   const _markDecoRows=()=>safeItems(o).map((it,i)=>{
     const artDecos=safeDecos(it).filter(d=>d&&d.kind==='art');
-    const dp=isSO?(o.deco_pos||[]).find(p=>p&&!p.topstar_service&&(p.item_idxs||[]).includes(i)):null;
+    const dp=isSO?(o.deco_pos||[]).find(p=>isGarmentDecoPO(p)&&(p.item_idxs||[]).includes(i)):null;
     return{it,i,artDecos,dp,markable:artDecos.length>0||!!dp,outside:!!dp||artDecos.some(d=>d.fulfillment==='outside')}});
   const openMarkDeco=()=>{const sel={};_markDecoRows().forEach(r=>{if(r.markable)sel[r.i]=true});setMarkDeco({sel,vendor:_orderOutsideVendor()||''})};
   // Apply the picked routing to every selected line in ONE state update. Deco-PO-covered lines can't
@@ -4151,6 +4204,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // decorations no longer exist on any line (the orphan-preservation branch below). Auto-sync
   // never passes it, so the bad-save safety net still holds between explicit user syncs.
   const syncJobs=useCallback((opts)=>{
+    // Purchased recipes own these jobs; legacy item regrouping loses sport/art identity.
+    if(isAllSchoolRecipeOrder(o))return safeJobs(o);
     // A partial load cannot establish that an item, decoration, or submitted job disappeared.
     if(o._itemsHydrated===false||o._decosHydrated===false||o._jobsHydrated===false||o._artHydrated===false)return safeJobs(o);
     // Heal a narrowly identifiable legacy split corruption before rebuilding: assigning art could
@@ -4161,7 +4216,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // or two SKU substitutions collapsing into one line can shift released rows onto another
     // garment; refreshing first launders that wrong garment into the snapshot, splits the real line,
     // and strands its active art request on the old grouping.
-    const _sourceJobs=reparentOrphanSplitJobs(safeJobs(o).map(j=>(j&&
+    // Opt-in outside-art jobs (lib/outsideArt) are set aside here and rebuilt separately at the
+    // return, so none of this pipeline's frozen/split/merge rules ever touch them.
+    const _sourceJobs=reparentOrphanSplitJobs(safeJobs(o).filter(j=>!isOutsideArtJob(j)).map(j=>(j&&
       (j._released||j.key?.startsWith('released_')||j._merged||j.split_from))
       ?remapFrozenJobDecoIndexes(remapFrozenJobItemIndexes(j,safeItems(o)),safeItems(o)):j));
     // Outsourced-deco map (item_idx -> Set of outsourced deco types, or '*'). Computed up front
@@ -4285,6 +4342,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(!r.artChanged)return r.job;
       const _declared=(j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id]).filter(Boolean);
       const _hIds=(r.job._art_ids&&r.job._art_ids.length?r.job._art_ids:[r.job.art_file_id]).filter(Boolean);
+      const _newArt=_hIds.filter(id=>!_declared.includes(id)).map(id=>af.find(a=>a.id===id)).filter(Boolean);
+      const _review=reviewChangedArtwork(j,r.job,_newArt);
+      if(_review)return _review;
       // Pure EXPANSION — every old design is still here, the heal only ADDED a location. Keep the
       // existing designs' art_status: recomputing "worst" here dragged submitted jobs to needs_art
       // when the added location sat at 'uploaded', and that regressed status got SAVED (SO-1625).
@@ -4512,15 +4572,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(existing)_matchedExistingById.set(id,existing);
       // Reused/pre-approved art must be CONFIRMED by the rep for THIS order before it reads as
       // approved. A brand-new job whose art is already approved (status carried in from another
-      // order) lands at 'waiting_approval' — not yet sent to coach — so the rep gets a one-click
-      // Approve / Send to Coach / send-back-to-artist choice instead of it silently going to
-      // "Art Approved". Existing jobs keep their human-advanced status via the merge below.
+      // order) lands at needs_art_review so the rep decides whether the design works
+      // for this garment before choosing a mock or sending it to the coach. Existing
+      // jobs keep their human-advanced status via the merge below.
       // EXCEPT store-pull SOs (OMG pull / webstore batch): there the sale IS the customer's
       // approval — createOmgSO and batchOrders stamp the art 'approved' by design — so the
       // re-confirm gate must not drag every store job back into the artist/coach pipeline
       // (it generated phantom "Mockup ready for review — Artist uploaded proof" to-dos, SO-1590).
       const _isStoreSO=!!(o.omg_store_id||o.webstore_id||o.source==='webstore');
-      const _newArtSt=(!existing&&!_isStoreSO&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete'))?'waiting_approval':j.art_status;
+      const _newArtSt=(!existing&&!_isStoreSO&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete'))?PRIOR_ART_REVIEW:j.art_status;
       // Preserve human-advanced states; 'needs_art' is the auto-computed default and
       // must be re-derived so a fixed art file immediately unlocks to art_complete.
       // (_healUnresolvedArt below still downgrades a preserved completed-ish status
@@ -4803,7 +4863,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // can't compound it (1→2→4→…). Keep the first occurrence.
     const _synced=[..._kept,...orphanedSubmitted];
     const _seenIds=new Set();
-    return _synced.filter(j=>{if(!j||!j.id)return!!j;if(_seenIds.has(j.id))return false;_seenIds.add(j.id);return true});
+    const _inHouse=_synced.filter(j=>{if(!j||!j.id)return!!j;if(_seenIds.has(j.id))return false;_seenIds.add(j.id);return true});
+    return[..._inHouse,...buildOutsideArtJobs(o,safeJobs(o),{artStatusOf:artStatusForFile,reservedIds:[..._reserved,..._inHouse.map(j=>j&&j.id)].filter(Boolean),isStoreOrder:!!(o.omg_store_id||o.webstore_id||o.source==='webstore')})];
   },[o,af]);// eslint-disable-line
 
   // Auto-sync jobs whenever decorations or items change (does NOT mark dirty — auto-sync is not a user edit).
@@ -5122,7 +5183,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </span>;})}
               </span>;})()}
             {isSO&&o.omg_store_id&&onNavOmgStore&&<span style={{color:'#1E7A46',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={onNavOmgStore} title="Open the linked OMG store">🏪 OMG Store</span>}
-            {isSO&&o.webstore_id&&<button className="btn btn-sm" onClick={()=>openProductionPacket(o.webstore_id)}>Production packet</button>}
+            {isSO&&<button className="btn btn-sm" title={o.webstore_id?'Open the production packet for this webstore':'Open the production packet (garments, art, quantities, names) to share with a decorator'} onClick={()=>openProductionPacket(o.webstore_id||null,o.id)}>Production packet</button>}
             {isSO&&o.webstore_id&&!o.omg_store_id&&onNavWebstore&&<span style={{color:'#1E7A46',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={onNavWebstore} title="Open the webstore this batch was pulled from">🛒 Webstore</span>}
             {/* Player report rebuilt from the CURRENT SO items — swapped items print as what
                 we're actually buying, so this is the copy that goes to Silver Screen. */}
@@ -5384,6 +5445,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // ignoreOverride): calcSOStatus's no-deco and promo branches read ord.status
               // themselves, so a closed blanks order would otherwise keep answering 'complete'
               // and Reopen would refuse an order that should land on Ready to Invoice.
+              // Undo the billing exclusion even when fulfillment already calculates as complete.
+              if(isCreatedInError(o)){
+                if(!window.confirm('Undo Created in Error for '+o.id+'? This restores normal invoicing eligibility and keeps the actual fulfillment status.'))return;
+                const updated={...undoCreatedInError(o,calcSOStatus({...o,status:null},{ignoreOverride:true})),updated_at:new Date().toLocaleString()};
+                setO(updated);onSave(updated);
+                if(onSOReopened)onSOReopened(o,updated.status);
+                nf(o.id+' — Created in Error undone; normal invoicing eligibility restored');return;
+              }
               const _auto=calcSOStatus({...o,status:null},{ignoreOverride:true});
               const _lbl=SO_STATUS_LABELS[_auto]||_auto;
               if(_auto==='complete'){nf(o.id+' calculates as Complete on its own — every job is shipped and every unit fulfilled. Reopen a job or add the remaining items before reopening the order.','error');return}
@@ -5392,7 +5461,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // header-decision guard must let the save pull 'complete' back open rather than
               // treating it as a stale tab clobbering the close (same marker the invoice-delete
               // reopen and "Reset to Auto" stamp). Session-only, consumed by the save that carries it.
-              const updated={...o,status:_auto,_status_reverted:true,updated_at:new Date().toLocaleString()};
+              const updated={...(isCreatedInError(o)?clearNoInvoice(o):o),status:_auto,_status_reverted:true,updated_at:new Date().toLocaleString()};
               setO(updated);onSave(updated);
               // Tells the app the reopen was deliberate: the fully-invoiced auto-closer would
               // otherwise slam a reopened ready_to_invoice order straight back to complete.
@@ -5491,7 +5560,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const answer=window.prompt('Why does '+o.id+' not need a portal invoice?\n\n'+NO_INVOICE_REASONS.map((r,i)=>(i+1)+'. '+r).join('\n')+'\n\nType a number, or your own reason:');
               if(answer==null)return;const n=parseInt(answer,10);const text=(String(n)===answer.trim()&&n>=1&&n<=NO_INVOICE_REASONS.length)?NO_INVOICE_REASONS[n-1]:answer.trim();
               if(!text){nf('A reason is required to mark an order as not needing an invoice','error');return}
+              if(text===CREATED_IN_ERROR_REASON){closeAsCreatedInError();return}
               setO(cur=>({...applyNoInvoice(cur,{reason:text,by:cu?.id}),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Marked no invoice needed — removed from the Ready-to-invoice list')}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🚫 {o.no_invoice_needed?'No Invoice Needed — put back on list':'Mark No Invoice Needed…'}</button>}
+            {isSO&&!o.no_invoice_needed&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#b91c1c',textAlign:'left'}} title="This order was a mistake: close it without an invoice. POs and costs stay; reopen any time." onClick={()=>{setShowActionsDD(false);closeAsCreatedInError()}} onMouseEnter={e=>e.currentTarget.style.background='#fef2f2'} onMouseLeave={e=>e.currentTarget.style.background='none'}>⛔ Close — Created in Error (no invoice)</button>}
 
             {/* Credit — show when customer has credits available */}
             {cust&&!o.credit_applied&&(()=>{const _credits=(cust.credits||[]);const _bal=_credits.reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0);return _bal>0})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#065f46',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
@@ -5552,6 +5623,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // A partial-promo order has a real customer-pays balance that still needs an invoice; the Create
           // Invoice modal already bills the promo-adjusted amount (see isPromoOrder handling there).
           if(o.promo_applied&&(promoTotals?safeNum(promoTotals.customerPays):0)<=0.005)return null;
+          if(o.no_invoice_needed&&!_hasAnyInv)return null;// marked no invoice (the NO INVOICE badge says why) — nothing to bill
           if(_hasAnyInv&&!o.promo_applied&&!o.credit_applied&&_remainingDollars>0.005)return<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>_openCreateInv(o.status==='complete'?'final':'full')}><Icon name="dollar" size={14}/> Invoice Remaining ${_remainingDollars.toFixed(2)}</button>;
           if(o.status==='complete'&&_hasAnyInv&&!_hasRemaining)return<span style={{padding:'6px 10px',fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,border:'1px solid #86efac'}}>✓ Sales Order Closed</span>;
           if(!_hasAnyInv)return<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>_openCreateInv('final')}><Icon name="dollar" size={14}/> Create Invoice</button>;
@@ -6576,7 +6648,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button data-tour-id="oe-item-add-art" className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> Add Art</button>
             {/* Routing (item-level): In-house ⇄ Outside soft toggle. Shown on estimates AND SOs (it's a
                 planning flag, carried through conversion). Deco-PO creation/linking stays SO-only below. */}
-            {(()=>{const artDecos=safeDecos(item).filter(d=>d.kind==='art');const _dp=isSO?(o.deco_pos||[]).find(dp=>(dp.item_idxs||[]).includes(idx)):null;if(artDecos.length===0&&!_dp)return null;const _outside=!!_dp||artDecos.some(d=>d.fulfillment==='outside');return<>
+            {(()=>{const artDecos=safeDecos(item).filter(d=>d.kind==='art');const _dp=isSO?(o.deco_pos||[]).find(dp=>isGarmentDecoPO(dp)&&(dp.item_idxs||[]).includes(idx)):null;if(artDecos.length===0&&!_dp)return null;const _outside=!!_dp||artDecos.some(d=>d.fulfillment==='outside');return<>
               <span style={{display:'inline-flex',border:'1px solid #cbd5e1',borderRadius:6,overflow:'hidden'}}>
                 <button className="btn btn-sm" onClick={()=>setItemFulfillment(idx,null)} disabled={!!_dp} title={_dp?'On a Deco PO — remove it from the PO to set back in-house':'Produced in-house'} style={{fontSize:11,fontWeight:700,padding:'4px 9px',border:'none',borderRadius:0,cursor:_dp?'not-allowed':'pointer',background:!_outside?'#3b82f6':'#fff',color:!_outside?'#fff':'#64748b'}}>🏭 In-house</button>
                 <button className="btn btn-sm" onClick={()=>{const exV=_orderOutsideVendor();if(exV)setItemFulfillment(idx,'outside',exV);else setPickDecoFor(idx)}} title="Send this item's art to an outside decorator" style={{fontSize:11,fontWeight:700,padding:'4px 9px',border:'none',borderLeft:'1px solid #e2e8f0',borderRadius:0,cursor:'pointer',background:_outside?'#7c3aed':'#fff',color:_outside?'#fff':'#64748b'}}>🎨 Outside</button>
@@ -6586,6 +6658,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 ? <span onClick={()=>setPoFullPage({decoPo:_dp,soId:o.id,soItems:safeItems(o)})} title="On a Deco PO — click to open it (edit items / per-item costing)" style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,background:'#ede9fe',color:'#6d28d9',border:'1px solid #ddd6fe',cursor:'pointer',whiteSpace:'nowrap'}}>▣ {_dp.po_id||'on Deco PO'}{_dp.vendor?' · '+_dp.vendor:''}</span>
                 : <span onClick={()=>{const v=_orderOutsideVendor();if(v){setDpoDropShip(true);setDpoMode(null);setLinkDpoId(null);setShowPO('deco:'+v)}else setShowPO('select')}} title="Marked outside but not yet on a Deco PO — click to create / bundle one" style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',cursor:'pointer',whiteSpace:'nowrap'}}>⚠ needs PO</span>)}
               {!isSO&&_outside&&<span title="Routed to an outside decorator — a Deco PO is created when this estimate becomes a sales order" style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,background:'#f5f3ff',color:'#6d28d9',border:'1px solid #ddd6fe',whiteSpace:'nowrap'}}>🎨 Outside deco{_orderOutsideVendor()?' · '+_orderOutsideVendor():''}</span>}
+              {_outside&&artDecos.some(isRoutedOutside)&&(()=>{const _on=artDecos.some(d=>d.outside_art===true);return<label title="Optional: send this outside design through the art flow (Request Art, mockup, customer approval, production files) before it goes to the decorator" style={{fontSize:10,fontWeight:700,display:'inline-flex',alignItems:'center',gap:4,color:_on?'#6d28d9':'#64748b',cursor:'pointer',whiteSpace:'nowrap'}}><input type="checkbox" checked={_on} onChange={e=>setItemOutsideArt(idx,e.target.checked)}/>Use art flow</label>})()}
             </>})()}
             <span style={{width:1,height:18,background:'#EEF1F6',margin:'0 2px'}}/>
             {/* Lesser-used per-item toggles live behind "Other actions" to keep the row short */}
@@ -7171,7 +7244,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // On failure (e.g. an expired session whose writes RLS now rejects) keep the editor dirty and warn the
         // rep NOT to reload — her entries are still in memory and will save once she's signed back in.
         if(onSaveArtFiles){const ok=await onSaveArtFiles(updated);if(ok){setDirty(false);setSaved(true);nf('Art saved')}else{nf('⚠️ Artwork did NOT save. Your session may have expired — sign in again and click Save. Do NOT reload: your entries are still here.','error')}}
-        else{onSave(updated);setDirty(false);setSaved(true);nf('Art saved')}}} style={{background:'#166534',borderColor:'#166534'}}>Save</button>}<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={()=>{setReplaceTbdId(null);setShowPrevArt(true)}}>🗂 Previous Artwork</button><button className="oe2-cta" style={{fontSize:13,padding:'8px 16px'}} onClick={addArt}><span><Icon name="plus" size={12}/> New Art Group</span></button></div></div>
+        else{onSave(updated);setDirty(false);setSaved(true);nf('Art saved')}}} style={{background:'#166534',borderColor:'#166534'}}>Save</button>}<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={()=>{setReplaceTbdId(null);setShowPrevArt(true)}}>🗂 Previous Artwork</button><StandaloneArtRequest supabase={supabase} customer={cust||ic} order={o} mode={isE?'estimate':'so'} cu={cu} reps={REPS||[]} beforeCreate={()=>saveSONow(oRef.current,'Art request',null)} onSynced={result=>{const updated={...oRef.current,...result,art_files:(result.art_files||[]).map(_loadArtRow)};oRef.current=updated;setO(updated);onArtRequestResult?.({orders:[result]})}}/><button className="oe2-cta" style={{fontSize:13,padding:'8px 16px'}} onClick={addArt}><span><Icon name="plus" size={12}/> New Art Group</span></button></div></div>
       <div className="card-body">{af.length===0?<div className="empty">No art uploaded. Create art groups and add files.</div>:
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
           {af.map((art,i)=>{const usedIn=safeItems(o).reduce((a,it)=>a+safeDecos(it).filter(d=>d.art_file_id===art.id).length,0);
@@ -7204,7 +7277,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {art.dtf_purchased&&<span title={'DTF purchased'+(art.dtf_purchased.po_id?' on '+art.dtf_purchased.po_id:'')+(art.dtf_purchased.vendor?' from '+art.dtf_purchased.vendor:'')+(art.dtf_purchased.date?' · '+art.dtf_purchased.date:'')} style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:700,flexShrink:0,background:'#fef3c7',color:'#b45309'}}>🖨️ DTF Purchased</span>}
                 <span className="oe-eb" style={{fontSize:10,padding:'4px 10px',borderRadius:20,flexShrink:0,background:ART_FILE_SC[art.status]?.bg||ART_FILE_SC.waiting_for_art.bg,color:ART_FILE_SC[art.status]?.c||ART_FILE_SC.waiting_for_art.c}}>{art.status==='approved'?'Approved':art.status==='needs_approval'?'Needs Approval':'Waiting'}</span>
                 {isTbdArt(art)&&<button className="btn btn-sm" style={{fontSize:10,flexShrink:0,background:"#ede9fe",color:"#6d28d9",border:"1px solid #c4b5fd",fontWeight:700}} onClick={e=>{e.stopPropagation();setReplaceTbdId(art.id);setShowPrevArt(true)}}>Change to previous art</button>}
-                <button className="btn btn-sm" style={{fontSize:10,flexShrink:0,background:'#4f46e5',color:'white',border:'none',fontWeight:700}} title="Pick which line items this art applies to, with location and color way per item" onClick={e=>{e.stopPropagation();openArtApply(art)}}>🎯 Apply to items</button>
+                <StandaloneArtRequest supabase={supabase} customer={cust||ic} order={o} mode={isE?'estimate':'so'} art={art} cu={cu} reps={REPS||[]} beforeCreate={()=>saveSONow(oRef.current,'Art request',null)} onSynced={result=>{const updated={...oRef.current,...result,art_files:(result.art_files||[]).map(_loadArtRow)};oRef.current=updated;setO(updated);onArtRequestResult?.({orders:[result]})}}/><button className="btn btn-sm" style={{fontSize:10,flexShrink:0,background:'#4f46e5',color:'white',border:'none',fontWeight:700}} title="Pick which line items this art applies to, with location and color way per item" onClick={e=>{e.stopPropagation();openArtApply(art)}}>🎯 Apply to items</button>
                 <button className="btn btn-sm btn-secondary" style={{fontSize:10,flexShrink:0}} onClick={e=>{e.stopPropagation();rmArt(i)}}><Icon name="trash" size={10}/></button>
               </div>
               {/* Collapsible body */}
@@ -7614,7 +7687,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
               <div style={{display:'flex',gap:6,alignItems:'center'}}>
                 <span style={{fontSize:10,color:'#94a3b8'}}>{m.ts}</span>
-                {isSO&&o.webstore_id&&<ShareMessageButton soId={o.id} messageId={m.id} notify={nf}/>}
+                {isSO&&<ShareMessageButton soId={o.id} messageId={m.id} notify={nf}/>}
                 {!indent&&<button style={{fontSize:9,padding:'1px 6px',borderRadius:6,border:'1px solid #e2e8f0',background:replyTo===m.id?'#3b82f6':'white',color:replyTo===m.id?'white':'#64748b',cursor:'pointer'}} onClick={(e)=>{e.stopPropagation();const on=replyTo!==m.id;setReplyTo(on?m.id:null);/* Replying auto-tags the author so they get the ping without retyping the name. */if(on&&author&&!isMe)tagMember(author)}}>Reply{replies.length>0?` (${replies.length})`:''}</button>}
               </div>
             </div>
@@ -8031,7 +8104,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         return jobShipped>=safeNum(jj.total_units)?jj:{...jj,prod_status:'completed'};
                       });
                       const hasShipments=updated.length>0;const firstShp2=updated[0];
-                      const allStillShipped=hasShipments&&revertedJobs.filter(jj=>jj.prod_status!=='draft').every(jj=>jj.prod_status==='shipped');
+                      const allStillShipped=hasShipments&&revertedJobs.filter(jj=>jj.prod_status!=='draft'&&!isOutsideArtJob(jj)).every(jj=>jj.prod_status==='shipped');
                       const updatedSO={...o,jobs:revertedJobs,_shipments:updated,_shipped:allStillShipped,
                         _shipping_status:hasShipments?(allStillShipped?'shipped':'partial'):null,
                         _tracking_number:firstShp2?.tracking_number||'',_carrier:firstShp2?.carrier||'',
@@ -8649,42 +8722,44 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _grps=(g.groups&&g.groups.length)?g.groups:[{method:prodFileMethodOf({deco_type:g.deco},g.deco),deco:g.deco||'screen_print',ids:g.artIds||[],arts:[]}];
       const _multi=_grps.length>1;const _ans=g.answers||{};
       const _sepWordOf=(deco)=>{const m=prodFileMethodOf({deco_type:deco},deco);return m==='embroidery'?'embroidery (DST) file':m==='dtf'?'DTF transfer':'print-ready color separation'};
-      const _apply=(confirmIds)=>{
+      const _apply=(confirmIds,orderedDtfIds)=>{
         /* Approving IS the sign-off on the CURRENT art, so a live .dst counts as its production
            file even before the file's status flips to 'approved' — the same rule the Approve
            Artwork button uses to decide whether to open this gate at all. */
         const _ok=a=>artProdFilesConfirmed(a)||artDstOnFile(a);
         const _live=(g.jobArtIds||g.artIds||[]).map(id=>safeArt(oRef.current).find(a=>a.id===id)).filter(Boolean);
         const _target=_live.length?artStatusAfterProdConfirm(_live,confirmIds,g.jobDeco||g.deco,_ok):(confirmIds.length?'art_complete':prodFilesStatusFor(g.jobDeco||g.deco));
-        _approveArtTo(g.jobId,g.artIds,_target,confirmIds.length?confirmIds:false);
+        _approveArtTo(g.jobId,g.artIds,_target,confirmIds.length?confirmIds:false,orderedDtfIds);
         setArtApproveGate(null);
       };
       /* One group answers straight through (unchanged UX). With several, the answers collect here
          and everything applies in ONE save once the last method is answered. */
       const _answer=(m,val)=>{const nx={..._ans,[m]:val};
-        if(_grps.every(x=>nx[x.method]!==undefined)){_apply(_grps.filter(x=>nx[x.method]).reduce((acc,x)=>acc.concat(x.ids),[]))}
+        if(_grps.every(x=>nx[x.method]!==undefined)){_apply(_grps.filter(x=>nx[x.method]).reduce((acc,x)=>acc.concat(x.ids),[]),_grps.filter(x=>x.method==='dtf'&&nx[x.method]).flatMap(x=>x.ids))}
         else{setArtApproveGate({...g,answers:nx})}};
       return<div className="modal-overlay" onClick={()=>setArtApproveGate(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
-        <div className="modal-header"><h2>🏭 Production File Check</h2><button className="modal-close" onClick={()=>setArtApproveGate(null)}>×</button></div>
+        <div className="modal-header"><h2>🏭 Production Readiness Check</h2><button className="modal-close" onClick={()=>setArtApproveGate(null)}>×</button></div>
         <div className="modal-body">
-          {_multi&&<div style={{fontSize:13,color:'#334155',lineHeight:1.55,marginBottom:14}}>This job carries <strong>{_grps.length} decoration methods</strong>, and each one needs its OWN production file. Answer for each design below — confirming one never confirms the others.</div>}
+          {_multi&&<div style={{fontSize:13,color:'#334155',lineHeight:1.55,marginBottom:14}}>This job carries <strong>{_grps.length} decoration methods</strong>, each with its own production step. Confirm each design below — completing one never completes the others.</div>}
           {_grps.map((grp,gx)=>{const _w=_sepWordOf(grp.deco);
             const _nm=(grp.arts||[]).map(a=>(a&&a.name)||'Unnamed').join(', ')||g.artName||'this design';
             const _a=_ans[grp.method];
             return<div key={grp.method+'-'+gx} style={_multi?{marginBottom:14,paddingBottom:12,borderBottom:gx<_grps.length-1?'1px solid #e2e8f0':'none'}:{}}>
             <div style={{fontSize:13,color:'#334155',lineHeight:1.55,marginBottom:_multi?8:14}}>
-              {_multi
-                ?<><strong>{_nm}</strong> — is the {_w} attached? A vector <strong>.ai</strong> or mockup is <em>not</em> one.</>
-                :<>No production separation is confirmed for <strong>{_nm}</strong>. A file in the production folder isn't automatically the separation — a vector <strong>.ai</strong> or mockup is <em>not</em> a {_w}. How do you want to proceed?</>}
+              {grp.method==='dtf'
+                ?<><strong>{_nm}</strong> — have the DTF transfer films been ordered for this design? An artwork file or mockup does not mean the films were ordered.</>
+                :_multi
+                  ?<><strong>{_nm}</strong> — is the {_w} attached? A vector <strong>.ai</strong> or mockup is <em>not</em> one.</>
+                  :<>No production file is confirmed for <strong>{_nm}</strong>. A file in the production folder isn't automatically the {_w} — a vector <strong>.ai</strong> or mockup is <em>not</em> one. How do you want to proceed?</>}
             </div>
             <div style={{display:'flex',flexDirection:'column',gap:10}}>
               <button type="button" onClick={()=>_answer(grp.method,true)} style={{textAlign:'left',padding:'12px 16px',background:_a===true?'#dcfce7':'#f0fdf4',border:'2px solid '+(_a===true?'#16a34a':'#86efac'),borderRadius:10,cursor:'pointer'}}>
-                <div style={{fontSize:14,fontWeight:800,color:'#166534'}}>{_a===true?'✓ ':'✅ '}The production file is attached</div>
-                <div style={{fontSize:11.5,color:'#15803d',marginTop:3}}>I've added the {_w}. Confirm it{_multi?' for this design.':' and send the job straight to production.'}</div>
+                <div style={{fontSize:14,fontWeight:800,color:'#166534'}}>{_a===true?'✓ ':'✅ '}{grp.method==='dtf'?'DTF films are ordered':'The production file is attached'}</div>
+                <div style={{fontSize:11.5,color:'#15803d',marginTop:3}}>{grp.method==='dtf'?'I have placed the transfer order. Confirm it for this design.':'I have added the '+_w+'. Confirm it'+(_multi?' for this design.':' and send the job straight to production.')}</div>
               </button>
               <button type="button" onClick={()=>_answer(grp.method,false)} style={{textAlign:'left',padding:'12px 16px',background:_a===false?'#dbeafe':'#eff6ff',border:'2px solid '+(_a===false?'#2563eb':'#93c5fd'),borderRadius:10,cursor:'pointer'}}>
-                <div style={{fontSize:14,fontWeight:800,color:'#1e40af'}}>{_a===false?'✓ ':'🎨 '}Send to artist for the production file</div>
-                <div style={{fontSize:11.5,color:'#2563eb',marginTop:3}}>Approve the art, but the artist still needs to create the {_w} before it can go to production.</div>
+                <div style={{fontSize:14,fontWeight:800,color:'#1e40af'}}>{_a===false?'✓ ':grp.method==='dtf'?'🎞️ ':grp.method==='embroidery'?'🧵 ':'🎨 '}{grp.method==='dtf'?'Order DTF films next':grp.method==='embroidery'?'Upload embroidery files next':'Send to artist for the production file'}</div>
+                <div style={{fontSize:11.5,color:'#2563eb',marginTop:3}}>{grp.method==='dtf'?'Approve the art and leave this design in Order DTF Transfers until the films are ordered.':grp.method==='embroidery'?'Approve the art and leave this design waiting for the DST and PDF upload.':'Approve the art, but the artist still needs to create the '+_w+' before it can go to production.'}</div>
               </button>
             </div>
           </div>})}
@@ -9664,8 +9739,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Base the first follow-up on the ACTUAL initial-send time — for a future-dated invoice the
             // email goes out on invSendAt, so counting from now could fire a follow-up before it.
             const _invAuto=invFollowUp&&invFollowUp.auto;
-            const _invFuBase=_scheduleFuture?new Date(invSendAt+'T09:00:00').getTime():Date.now();
-            const invFuAt=_invAuto?new Date(_invFuBase+((invFollowUp.firstDays||3)*86400000)).toISOString():(invFollowUpDays?new Date(Date.now()+invFollowUpDays*86400000).toISOString():null);
+            // Never before the invoice's own date either — a future-dated invoice isn't due for follow-up yet.
+            const _invFuBase=invoiceFollowUpBaseMs(ir,_scheduleFuture?new Date(invSendAt+'T09:00:00').getTime():Date.now());
+            const invFuAt=_invAuto?new Date(_invFuBase+((invFollowUp.firstDays||3)*86400000)).toISOString():(invFollowUpDays?new Date(_invFuBase+invFollowUpDays*86400000).toISOString():null);
             const invHist={sent_at:invNow,sent_by:cu.name||cu.id,to:toEmail,type:'invoice',methods:['email',...(invSmsEnabled?['sms']:[])],messageId:res.messageId||null,...(_scheduleFuture?{scheduled_for:invSendAt,scheduled_id:res.scheduledId}:{})};
             const _invAutoCols=_invAuto?{follow_up_auto:true,follow_up_interval_days:invFollowUp.intervalDays||0,follow_up_message:invFollowUp.message||'',follow_up_to:toEmail,follow_up_max:invFollowUp.max||4,follow_up_count:0,follow_up_last_sent_at:null}:{follow_up_auto:false,follow_up_interval_days:null,follow_up_message:null,follow_up_to:null,follow_up_max:null,follow_up_count:0,follow_up_last_sent_at:null};
             onInv(prev=>prev.map(i=>i.id===ir.id?{...i,email_status:_scheduleFuture?'scheduled':'sent',email_sent_at:invNow,...(_scheduleFuture?{scheduled_send_at:invSendAt}:{}),follow_up_at:invFuAt,sent_history:[...(i.sent_history||[]),invHist],..._invAutoCols}:i));
@@ -10001,7 +10077,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // them as if they were new — that read as a valid selection and then bounced off the
         // "already on this PO" guard with nothing the rep could do about it.
         const _onLinkDpo=idx=>!!linkDpo&&(linkDpo.item_idxs||[]).includes(idx);
-        const _onAnyDpo=idx=>(o.deco_pos||[]).some(dp=>dp&&!dp.topstar_service&&(dp.item_idxs||[]).includes(idx));
+        const _onAnyDpo=idx=>(o.deco_pos||[]).some(dp=>isGarmentDecoPO(dp)&&(dp.item_idxs||[]).includes(idx));
         // Default coverage: joining an existing DPO pre-checks the items that are flagged Outside
         // and not yet on ANY deco PO (the "⚠ needs PO" ones — exactly what you'd be folding in).
         // A brand-new PO keeps the old basis: the flagged-Outside items, else everything.
@@ -10178,6 +10254,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             }}>➕ Add to {linkDpo.po_id}</button>:<button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={async()=>{
               if(_poCreatingRef.current)return;
               if(preexistingPO&&!preexistingPOId.trim()){nf('Please enter a PO number','error');return}
+              if(_dpoMode!=='dtf'&&!confirmOutsideArtReady(allItems.filter((it,vi)=>document.getElementById('dpo-sel-'+vi)?.checked).map(it=>it._idx)))return;
               _poCreatingRef.current=true;setTimeout(()=>{_poCreatingRef.current=false},1500);
               // The form shows no number before Create — stamp the reserved draw, never the local seed.
               let effectivePoId=preexistingPO?preexistingPOId.trim():'';
@@ -10252,6 +10329,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const itemIdxs=[];const selectedItems=[];let totalQty=0;
               allItems.forEach((it,vi)=>{if(document.getElementById('dpo-sel-'+vi)?.checked){itemIdxs.push(it._idx);selectedItems.push(it);totalQty+=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)}});
               if(itemIdxs.length===0){nf('Pick at least one item for this PO','error');return}
+              if(!confirmOutsideArtReady(itemIdxs))return;
               const unitCost=parseFloat(document.getElementById('dpo-unit-cost')?.value)||0;
               const expectedCost=Math.round(totalQty*unitCost*100)/100;
               _poCreatingRef.current=true;setTimeout(()=>{_poCreatingRef.current=false},1500);
@@ -10524,7 +10602,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // about. A second PO stays possible only for genuinely different work: pick the other deco
       // type and the lock lifts. The PO being joined doesn't count against itself.
       const _podEffType=podLink?(podLink.deco_type||podType):podType;
-      const _podDupOf=idx=>(o.deco_pos||[]).find(dp=>dp&&!dp.topstar_service&&dp.po_mode!=='dtf_purchase'&&(!podLink||dp.id!==podLink.id)&&(dp.deco_type||'')===_podEffType&&(dp.item_idxs||[]).includes(idx))||null;
+      const _podDupOf=idx=>(o.deco_pos||[]).find(dp=>isGarmentDecoPO(dp)&&(!podLink||dp.id!==podLink.id)&&(dp.deco_type||'')===_podEffType&&(dp.item_idxs||[]).includes(idx))||null;
       const podSelIdxs=podItems.filter(it=>podChecked(it._idx)&&!_podDupOf(it._idx)).map(it=>it._idx);
       const _podSelSet=new Set(podSelIdxs);
       const podQty=podItems.reduce((a,it)=>a+(_podSelSet.has(it._idx)?_soQty(it):0),0);
@@ -10677,7 +10755,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               Silver Screen DPO was opened because the first one wasn't visible from this form). */}
           {(()=>{
             const _grpIdxs=new Set(poItems.flatMap(it=>(it.members||[it]).map(m=>m._idx)));
-            const relDecos=(o.deco_pos||[]).filter(dp=>dp&&!dp.topstar_service&&(dp.item_idxs||[]).some(ix=>_grpIdxs.has(ix)));
+            const relDecos=(o.deco_pos||[]).filter(dp=>isGarmentDecoPO(dp)&&(dp.item_idxs||[]).some(ix=>_grpIdxs.has(ix)));
             if(relDecos.length===0)return null;
             return<div style={{padding:'8px 12px',background:'#faf5ff',border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12}}>
               <div style={{fontSize:10,fontWeight:700,color:'#7c3aed',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>🎨 Decoration PO{relDecos.length>1?'s':''} on these items</div>
@@ -10749,7 +10827,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{const ov={};podItems.forEach(it=>{ov[it._idx]=!_podDupOf(it._idx)});setPodOverrides(ov);
                   podItems.forEach(it=>{if(!_podDupOf(it._idx)&&safeDecos(it).some(d=>d&&d.kind==='art'))setItemFulfillment(it._idx,'outside',poDecoInline.vendor,true)})}}>Select All</button>
                 <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{const ov={};podItems.forEach(it=>{ov[it._idx]=false});setPodOverrides(ov);
-                  podItems.forEach(it=>{const _cov=(o.deco_pos||[]).some(dp=>dp&&!dp.topstar_service&&(dp.item_idxs||[]).includes(it._idx));
+                  podItems.forEach(it=>{const _cov=(o.deco_pos||[]).some(dp=>isGarmentDecoPO(dp)&&(dp.item_idxs||[]).includes(it._idx));
                     if(!_cov&&safeDecos(it).some(d=>d&&d.kind==='art'))setItemFulfillment(it._idx,null,undefined,true)})}}>Deselect All</button>
               </div>
               <div style={{maxHeight:170,overflow:'auto',marginBottom:8}}>
@@ -10757,7 +10835,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   const _onLink=!!podLink&&(podLink.item_idxs||[]).includes(it._idx);// already on the PO being joined — permanently covered
                   const _dup=_onLink?null:_podDupOf(it._idx);// on another DPO for the SAME work — locked out (no duplicates)
                   const _hasArt=safeDecos(it).some(d=>d&&d.kind==='art');
-                  const _onAnyDpo=(o.deco_pos||[]).some(dp=>dp&&!dp.topstar_service&&(dp.item_idxs||[]).includes(it._idx));
+                  const _onAnyDpo=(o.deco_pos||[]).some(dp=>isGarmentDecoPO(dp)&&(dp.item_idxs||[]).includes(it._idx));
                   return<div key={i} style={{padding:'5px 10px',border:'1px solid #ede9fe',borderRadius:6,marginBottom:4,background:'white',display:'flex',alignItems:'center',gap:8,fontSize:12}}>
                     {/* The checkbox IS the item's routing toggle — same setItemFulfillment as the
                         line-item 🎨 Outside / 🏭 In-house buttons, so both entrances write the same
@@ -10774,7 +10852,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     {_itemInHouseDeco(it._idx)&&<span title="Routed In-house — decorated at Emerson, so it doesn't belong on an outside decorator's PO" style={{fontSize:9,fontWeight:700,color:'#1e40af',background:'#dbeafe',borderRadius:4,padding:'1px 6px',whiteSpace:'nowrap'}}>🏭 in-house</span>}
                     {/* Deco POs already covering this item, so the rep can tell "needs a second PO for
                         different work" (embroidery + screen print on one garment) from "already handled". */}
-                    {(o.deco_pos||[]).filter(dp=>dp&&!dp.topstar_service&&(dp.item_idxs||[]).includes(it._idx)).map(dp=>{const _isLink=podLink&&podLink.id===dp.id;
+                    {(o.deco_pos||[]).filter(dp=>isGarmentDecoPO(dp)&&(dp.item_idxs||[]).includes(it._idx)).map(dp=>{const _isLink=podLink&&podLink.id===dp.id;
                       return<span key={dp.id||dp.po_id} title={_isLink?'Already on '+dp.po_id+' — the PO you\'re adding to; checking it here changes nothing':'Already covered by '+dp.po_id+' ('+String(dp.deco_type||'').replace(/_/g,' ')+') — only add it again for DIFFERENT work'} style={{fontSize:9,fontWeight:700,color:_isLink?'#166534':'#6d28d9',background:_isLink?'#dcfce7':'#ede9fe',borderRadius:4,padding:'1px 6px',whiteSpace:'nowrap'}}>▣ {dp.po_id}</span>})}
                     {onPo&&<span style={{fontSize:9,fontWeight:700,color:'#1e40af',background:'#dbeafe',borderRadius:4,padding:'1px 6px',whiteSpace:'nowrap'}}>on PO</span>}
                     <span style={{color:'#64748b',fontSize:11}}>{it.color}</span>
@@ -11772,17 +11850,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const suffix=freeSplitSuffix(jobs,j.id,'B');
         if(!suffix){nf('No free split id for '+j.id,'error');return}
         const splitId=j.id+'-'+suffix;
+        // A SKU split is a separate art decision. Give the new job its own copy of
+        // the design and its production files, while leaving the original job's
+        // garment mocks and approval record intact. No old mock is selected here.
+        const {copiedArt,updatedItems:splitOrderItems,keepArtIds,artCopies}=splitPriorArtwork(o,splitItems,keepItems);
         // Separate press runs → separate qty-tier pricing (see splitByReceived note).
-        const splitJob2={...j,..._artFields(j),id:splitId,key:j.key+'__split__'+suffix,split_from:j.id,items:splitItems,
+        const splitJobBase={...j,..._artFields(j),id:splitId,key:j.key+'__split__'+suffix,split_from:j.id,items:splitItems,art_file_id:copiedArt[0]?.id||j.art_file_id,_art_ids:copiedArt.length?copiedArt.map(a=>a.id):j._art_ids,
           total_units:splitUnits,fulfilled_units:splitFul,priced_separately:true,price_override:null,
           prod_status:'hold',created_at:new Date().toLocaleDateString()};
-        const remainJob={...j,items:keepItems,total_units:keepUnits,fulfilled_units:keepFul,priced_separately:true,price_override:null};
+        // A different garment is a fresh art decision. Keep the design reference, but do
+        // not carry the source job's approval or coach-send history into the new job.
+        const splitJob2=(artCopies.size>0&&(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='waiting_approval'))
+          ?startPriorArtReview(splitJobBase):splitJobBase;
+        const remainJob={...j,items:keepItems,art_file_id:[...keepArtIds][0]||j.art_file_id,_art_ids:keepArtIds.size?[...keepArtIds]:j._art_ids,total_units:keepUnits,fulfilled_units:keepFul,priced_separately:true,price_override:null};
         const newJobs2=[...jobs];newJobs2.splice(jIdx,1,remainJob,splitJob2);
         // Re-derive both halves from live picks/receipts — the stored gi.fulfilled can lag the
         // PO (e.g. a unit un-received just before the split), and split jobs are preserved
         // verbatim by the job sync, so a stale snapshot here never self-heals (SO-1069).
-        const recalcedJobs=recalcJobFulfillment({...o,jobs:newJobs2},safeItems(o));
-        const updated=stampSplitRuns({...o,jobs:recalcedJobs,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Split by SKU! '+splitId+' with '+splitItems.length+' garment(s)');
+        const recalcedJobs=recalcJobFulfillment({...o,jobs:newJobs2,items:splitOrderItems,art_files:[...safeArt(o),...copiedArt]},splitOrderItems);
+        const updated=stampSplitRuns({...o,items:splitOrderItems,art_files:[...safeArt(o),...copiedArt],jobs:recalcedJobs,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Split by SKU! '+splitId+' with '+splitItems.length+' garment(s)');
       };
       // Combine job items sharing the same item_idx+sku — sums units/fulfilled and merges per-size maps.
       // Used when merging jobs back together so a previously size-split item rejoins as a single line.
@@ -12003,6 +12089,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // to show the art job's "Waiting for Production Files" banner and a Mark Art Complete
         // button that stamped the OTHER job's art).
         const _jobLiveArt=(()=>{const ids=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd'));(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;const _dis=jobItemDecoIdxs(gi);safeDecos(it).forEach((d,di)=>{if(_dis&&!_dis.includes(di))return;if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')ids.add(d.art_file_id)})});return[...ids].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(a=>a&&!a.archived)})();
+        const _priorDecisionPending=priorArtDecisionPending(j,_jobLiveArt,missingJobMocks(j,o));
+        const _priorArtFlow=j.art_status===PRIOR_ART_REVIEW||_priorDecisionPending;
+        const _priorMockReady=_priorArtFlow&&j.art_reuse_confirmed&&canReviewJobMocks({...j,art_status:'waiting_approval'},o);
         const _unconfirmedProd=j.art_status==='art_complete'&&_jobLiveArt.length>0&&_jobLiveArt.some(a=>!artProdFilesConfirmed(a));
 
         const _mockReady=canReviewJobMocks(j,o);
@@ -12033,7 +12122,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{flex:1}}>
                 <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                   <span style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{j.id}</span>
-                  {_mockReady?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#e0f2fe',color:'#075985'}}>Mocks ready — review next</span>:_needsMockCheck?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef9c3',color:'#854d0e',border:'1px solid #fde047'}} title="Reused art — confirm a mock for this garment before it's production-ready">🔍 Check Mock</span>:(()=>{const fSt=artF?jobArtBadgeSt(j,artF):null;return fSt?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:(ART_FILE_SC[fSt]||SC[fSt])?.bg||'#f1f5f9',color:(ART_FILE_SC[fSt]||SC[fSt])?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||ART_LABELS[fSt]||fSt}</span>:null})()}
+                  {_priorArtFlow?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#e0e7ff',color:'#3730a3'}}>{!j.art_reuse_confirmed?'Needs art review':_priorMockReady?'Ready to send to coach':'Set garment mock'}</span>:_mockReady?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#e0f2fe',color:'#075985'}}>Mocks ready — review next</span>:_needsMockCheck?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef9c3',color:'#854d0e',border:'1px solid #fde047'}} title="Reused art — confirm a mock for this garment before it's production-ready">🔍 Check Mock</span>:(()=>{const fSt=artF?jobArtBadgeSt(j,artF):null;return fSt?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:(ART_FILE_SC[fSt]||SC[fSt])?.bg||'#f1f5f9',color:(ART_FILE_SC[fSt]||SC[fSt])?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||ART_LABELS[fSt]||fSt}</span>:null})()}
                   {(()=>{const _is=jItemStatus(j);return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[_is]?.bg,color:SC[_is]?.c}}>{itemLabels[_is]}</span>})()}
                   <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}}>{_needsMockCheck&&['hold','ready'].includes(j.prod_status)?'Waiting for mock':prodLabels[j.prod_status]}</span>
                 </div>
@@ -12201,10 +12290,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   setSelJob(null);
                   setJobWizard({groups:[group],scopeJobId:j.id});
                 }}>🎨 Set up job</button>}
-                {(j.items||[]).length>0&&dTot>1&&<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:10}} onClick={()=>setSplitModal({jIdx:ji,jobId:j.id,mode:null,selectedIdxs:[]})}>✂️ Split Job</button>}
+                {(j.items||[]).length>0&&dTot>1&&!isOutsideArtJob(j)&&<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:10}} onClick={()=>setSplitModal({jIdx:ji,jobId:j.id,mode:null,selectedIdxs:[]})}>✂️ Split Job</button>}
             </div>
-            {_mockReady&&j.art_status!=='waiting_approval'&&<section aria-label="Review saved mocks" style={{margin:'0 20px 16px',padding:14,background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:10}}><strong>Mocks ready — review next</strong><p style={{fontSize:12,color:'#475569'}}>Send the mocks to the coach, or approve the artwork if approval is already confirmed. Production files are checked next.</p><div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{_reviewActions}</div></section>}
-            <JobGarmentMocks key={j.id} job={j} order={o} priorMocks={priorMocks} getOrder={()=>oRef.current} itemDetails={itemDetails} onViewItem={_jumpToItem} onSave={saveArtFilesNow} onSaveOrder={saveSONow} onSendToArtist={note=>setArtReqModal({jIdx:ji,artist:_activeArtistId(j.assigned_artist||((j.art_requests||[]).slice(-1)[0]?.artist)),instructions:note,files:[]})} onLibrarySync={syncLogoLibrary} />
+            {_priorArtFlow&&<PriorArtReviewPanel artFiles={_jobLiveArt} garments={itemDetails} priorMocks={priorMocks} accepted={!!j.art_reuse_confirmed} mockReady={_priorMockReady} onConfirm={async()=>{const cur=oRef.current;const updated={...cur,jobs:safeJobs(cur).map(jj=>jj.id===j.id?confirmPriorArt(jj):jj),updated_at:new Date().toLocaleString()};await saveSONow(updated,'Previous art decision','Art selected — now choose a mock for this garment')}} onRequestUpdate={reason=>setArtReqModal({jIdx:ji,artist:_activeArtistId(j.assigned_artist||((j.art_requests||[]).slice(-1)[0]?.artist)),instructions:reason,files:[]})} onSendToCoach={()=>openCoachSend(ji)} />}
+            {_mockReady&&!_priorArtFlow&&j.art_status!=='waiting_approval'&&<section aria-label="Review saved mocks" style={{margin:'0 20px 16px',padding:14,background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:10}}><strong>Mocks ready — review next</strong><p style={{fontSize:12,color:'#475569'}}>Send the mocks to the coach, or approve the artwork if approval is already confirmed. Production files are checked next.</p><div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{_reviewActions}</div></section>}
+            {(!_priorArtFlow||j.art_reuse_confirmed)&&<JobGarmentMocks key={j.id} job={j} order={o} priorMocks={priorMocks} getOrder={()=>oRef.current} itemDetails={itemDetails} onViewItem={_jumpToItem} onSave={saveArtFilesNow} onSaveOrder={saveSONow} onSendToArtist={note=>setArtReqModal({jIdx:ji,artist:_activeArtistId(j.assigned_artist||((j.art_requests||[]).slice(-1)[0]?.artist)),instructions:note,files:[]})} onLibrarySync={syncLogoLibrary} />}
             {/* ── Check Mock: previously-approved art reused on a different color/style ── */}
             {_needsMockCheck&&(()=>{
               const _gLabels=_mockCheckGarments.map(g=>(g.color?g.color+' ':'')+g.sku).join(', ');
@@ -12314,7 +12404,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
               <div style={{fontSize:12,color:'#1e3a8a',marginTop:4}}>The mockup will be sent to you for approval when ready.</div>
             </div>}
-            {j.art_status==='waiting_approval'&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const _jobArtIds=jobArtFileIds(j,safeItems(o));const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);const _mf=_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[]));const _im=_filterDisplayable(_jobArtFiles.flatMap(af3=>Object.values(af3?.item_mockups||{}).flat()));const _seen=new Set();/* reused library art often has NO mocks anywhere — the digitizer's sew-out JPG/PDF in prod_files is the only proof, so fall back to it (mirrors the Changes-Requested banner + per-item generalMocks) */const _mAll=[..._mf,..._im];const _mPool=_mAll.length>0?_mAll:_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.prod_files||[]));const mockups=_mPool.filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});const _stca=j.sent_to_coach_at?new Date(j.sent_to_coach_at):null;
+            {j.art_status==='waiting_approval'&&!_priorArtFlow&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const _jobArtIds=jobArtFileIds(j,safeItems(o));const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);const _mf=_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[]));const _im=_filterDisplayable(_jobArtFiles.flatMap(af3=>Object.values(af3?.item_mockups||{}).flat()));const _seen=new Set();/* reused library art often has NO mocks anywhere — the digitizer's sew-out JPG/PDF in prod_files is the only proof, so fall back to it (mirrors the Changes-Requested banner + per-item generalMocks) */const _mAll=[..._mf,..._im];const _mPool=_mAll.length>0?_mAll:_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.prod_files||[]));const mockups=_mPool.filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});const _stca=j.sent_to_coach_at?new Date(j.sent_to_coach_at):null;
               // Reused / previously-approved art parks here (waiting_approval) but has no garment
               // mockup for THIS order yet — so it can't be approved or sent to the coach, it needs
               // SETTING UP first. Same gate the Send-to-Coach button and the review-art to-do use
@@ -12574,7 +12664,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                           </div>})}
                         {numDecos.map((nd,ni)=><div key={'n'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
                           <span style={{fontSize:11,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 7px',borderRadius:3}}>Numbers{nd.front_and_back?' — Front + Back':''}</span>
-                          <span style={{fontSize:11,color:'#1e293b'}}>{(nd.num_method||'heat_transfer').replace(/_/g,' ')} · Size {nd.num_size||'—'}{nd.num_font?' · '+nd.num_font:''}{nd.print_color?' · '+nd.print_color:''}</span>
+                          <span style={{fontSize:11,color:'#1e293b'}}>{(nd.num_method||'heat_transfer').replace(/_/g,' ')} · {nd.front_and_back?<>Front {nd.num_size||'—'} · Back {nd.num_size_back||nd.num_size||'—'}</>:<>Size {nd.num_size||'—'}</>}{nd.num_font?' · '+nd.num_font:''}{nd.print_color?' · '+nd.print_color:''}</span>
                         </div>)}
                         {nameDecos.map((nd,ni)=><div key={'nm'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
                           <span style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 7px',borderRadius:3}}>Names{nd.front_and_back?' — Front + Back':''}</span>
@@ -12675,7 +12765,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
               on the next coach round (SO-1638). No-op when a live DST already exists, so a genuine redo stays retired. */const _rv=reviveSoleStaleDst(a);return _rv.prod_files.length>0?{...a,..._rv,status:'approved',prod_files_attached:true}:{...a,..._rv,status:'approved',prod_files_attached:true,prod_files:[{name:'Embroidery files sent to printer',emb_sent:true,at:new Date().toISOString(),by:_by}]}});const _st=_nextSt(ids);const updJobs=safeJobs(curO).map((jj,i2)=>i2===ji?{...jj,art_status:_st}:jj);const updated={...curO,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};saveSONow(updated,'Production files','🧵 Embroidery production files marked complete'+(_st==='art_complete'?'':_stillOwes(_st)))};
               const _orderDtf=(ids)=>{const curO=oRef.current;const marker={name:'DTF films ordered',dtf_order:true,at:new Date().toISOString(),by:cu?.name||'Rep'};const updArt2=(curO.art_files||[]).map(a=>ids.includes(a.id)?{...a,status:'approved',prod_files_attached:true,prod_files:[...(a.prod_files||[]),marker]}:a);const _st=_nextSt(ids);const updJobs=safeJobs(curO).map((jj,i2)=>i2===ji?{...jj,art_status:_st}:jj);const updated={...curO,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};saveSONow(updated,'DTF films','🎞️ DTF films marked ordered'+(_st==='art_complete'?' — art complete':_stillOwes(_st)))};
               return<div style={{margin:'0 20px',display:'flex',flexDirection:'column',gap:8}}>
-              {_multi&&<div style={{padding:'8px 14px',background:'#fff7ed',border:'2px solid #fdba74',borderRadius:8,fontSize:12,color:'#9a3412',fontWeight:700}}>⚠️ This job has {_blocks.length} decoration methods still waiting on production files — each design needs its OWN file. Finishing one does not finish the others.</div>}
+              {_multi&&<div style={{padding:'8px 14px',background:'#fff7ed',border:'2px solid #fdba74',borderRadius:8,fontSize:12,color:'#9a3412',fontWeight:700}}>⚠️ This job has {_blocks.length} decoration methods with separate production steps. Finish each design before moving the job to production.</div>}
               {_blocks.map((g,gx)=>{
                 const _emb=g.method==='embroidery';const _dtf=g.method==='dtf';const _ids=g.ids;
                 const _names=(g.arts||[]).map(a=>(a&&a.name)||'Unnamed').join(', ');
@@ -12694,7 +12784,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
               </div>
               {_multi&&_names&&<div style={{fontSize:11,fontWeight:700,color:'#854d0e',marginTop:3}}>🎨 {_names}</div>}
               <div style={{fontSize:12,color:'#713f12',marginTop:4}}>{_msg}</div>
-              {_pfCount>0&&<div style={{fontSize:11,color:'#15803d',fontWeight:700,marginTop:6}}>🏭 {_pfCount} production file{_pfCount!==1?'s':''} attached{_multi?' to this design':''}</div>}
+              {!_dtf&&_pfCount>0&&<div style={{fontSize:11,color:'#15803d',fontWeight:700,marginTop:6}}>🏭 {_pfCount} production file{_pfCount!==1?'s':''} attached{_multi?' to this design':''}</div>}
               {_dst&&_pfCount===0&&<div style={{fontSize:11,color:'#15803d',fontWeight:700,marginTop:6}}>🧵 DST detected on the art file — production files ready</div>}
               {_staleDst&&<div style={{fontSize:11,color:'#92400e',fontWeight:700,marginTop:6}}>🧵 A retired DST is attached (superseded by an earlier update) — mark complete to use it, or upload the new one</div>}
               {_emb&&<div style={{display:'flex',gap:8,marginTop:10,flexWrap:'wrap'}}>
@@ -12843,7 +12933,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                           return<div key={'n'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0'}}>
                             <div style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
                               <span style={{fontSize:11,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 7px',borderRadius:3}}>Numbers{nd.front_and_back?' — Front + Back':''}</span>
-                              <span style={{fontSize:11,color:'#1e293b'}}>{(nd.num_method||'heat_transfer').replace(/_/g,' ')} · Size {nd.num_size||'—'}{nd.num_font?' · '+nd.num_font:''}{nd.print_color?' · '+nd.print_color:''}</span>
+                              <span style={{fontSize:11,color:'#1e293b'}}>{(nd.num_method||'heat_transfer').replace(/_/g,' ')} · {nd.front_and_back?<>Front {nd.num_size||'—'} · Back {nd.num_size_back||nd.num_size||'—'}</>:<>Size {nd.num_size||'—'}</>}{nd.num_font?' · '+nd.num_font:''}{nd.print_color?' · '+nd.print_color:''}</span>
                             </div>
                             {_rosterRows.length>0&&<div style={{marginTop:6,paddingTop:6,borderTop:'1px dashed #bbf7d0'}}>
                               {_rosterRows.map(([sz,nums])=><div key={sz} style={{display:'flex',alignItems:'center',gap:8,marginBottom:3}}>
@@ -12890,7 +12980,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
             {/* Status controls */}
             <div style={{padding:'10px 20px',borderTop:'1px solid #f1f5f9',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
               <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Art:</div>
-              <select className="form-select" style={{width:150,fontSize:11}} value={j.art_status} onChange={e=>{const ns=e.target.value;const artIds=j._art_ids||[j.art_file_id].filter(Boolean);if(ns==='art_complete'&&missingJobMocks(j,o).length){nf(missingMockupsMsg(missingJobMocks(j,o)),'error');return}if(ns==='art_complete'){/* STRICT gate: explicit prod_files_attached confirmation (or an embroidery .dst) — a stray PDF sitting in prod_files must not satisfy the manual dropdown when every button path requires confirmation. */const missingProd=artIds.some(aid=>{const af2=af.find(a=>a.id===aid);return af2&&!artProdFilesConfirmed(af2)});if(missingProd){nf('Confirm production files for all art first (checkbox, or a .dst for embroidery)','error');return}if(!window.confirm('Force this job to Art Complete? This skips the coach-approval flow — only continue if the artwork is approved and the production files are final.'))return}if(ns==='waiting_approval'){const missing=skusMissingMockups(j,o);if(missing.length>0){nf('Cannot move to Waiting Approval — mockups missing for: '+missing.join(', '),'error');return}}const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;/* A manual forward move supersedes an unaddressed coach rejection in the SAME write — never leave art_status ahead with coach_rejected stranded true (the SO-1199 shape). */const _fwd=ns==='waiting_approval'||ns==='art_complete'||PROD_FILES_STATUSES.includes(ns);const upd={...jj,art_status:ns,...(_fwd&&jj.coach_rejected?{coach_rejected:false}:{})};/* warehouse must explicitly Move to Deco — no auto-transition. A forward move (incl. waiting_approval) closes the artist's open request — otherwise the job reads as both "Needs Approval" and an open request (SO-1625). */if(_fwd&&upd.art_requests)upd.art_requests=closeOpenArtRequests(upd.art_requests);return upd});const afSt=ns==='waiting_approval'?'needs_approval':(PROD_FILES_STATUSES.includes(ns)||ns==='art_complete')?'approved':(ns==='needs_art'||ns==='art_requested')?'waiting_for_art':ns==='art_in_progress'?'waiting_for_art':null;/* The dropdown never stamps prod_files_attached — the strict gate above already required confirmation (checkbox or .dst), and a manual pick must not manufacture it (H3). */const updArt2=afSt?af.map(a=>artIds.includes(a.id)?{...a,status:afSt}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false)}}>
+              <select className="form-select" style={{width:150,fontSize:11}} value={j.art_status} onChange={e=>{const ns=e.target.value;const artIds=j._art_ids||[j.art_file_id].filter(Boolean);if(_priorArtFlow&&(ns==='waiting_approval'||ns==='art_complete'||PROD_FILES_STATUSES.includes(ns))){nf('Complete the previous-art review and send the garment mock to the coach first','error');return}if(ns==='art_complete'&&missingJobMocks(j,o).length){nf(missingMockupsMsg(missingJobMocks(j,o)),'error');return}if(ns==='art_complete'){/* STRICT gate: explicit prod_files_attached confirmation (or an embroidery .dst) — a stray PDF sitting in prod_files must not satisfy the manual dropdown when every button path requires confirmation. */const missingProd=artIds.some(aid=>{const af2=af.find(a=>a.id===aid);return af2&&!artProdFilesConfirmed(af2)});if(missingProd){nf('Confirm production files for all art first (checkbox, or a .dst for embroidery)','error');return}if(!window.confirm('Force this job to Art Complete? This skips the coach-approval flow — only continue if the artwork is approved and the production files are final.'))return}if(ns==='waiting_approval'){const missing=skusMissingMockups(j,o);if(missing.length>0){nf('Cannot move to Waiting Approval — mockups missing for: '+missing.join(', '),'error');return}}const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;/* A manual forward move supersedes an unaddressed coach rejection in the SAME write — never leave art_status ahead with coach_rejected stranded true (the SO-1199 shape). */const _fwd=ns==='waiting_approval'||ns==='art_complete'||PROD_FILES_STATUSES.includes(ns);const upd={...jj,art_status:ns,...(_fwd&&jj.coach_rejected?{coach_rejected:false}:{})};/* warehouse must explicitly Move to Deco — no auto-transition. A forward move (incl. waiting_approval) closes the artist's open request — otherwise the job reads as both "Needs Approval" and an open request (SO-1625). */if(_fwd&&upd.art_requests)upd.art_requests=closeOpenArtRequests(upd.art_requests);return upd});const afSt=ns==='waiting_approval'?'needs_approval':(PROD_FILES_STATUSES.includes(ns)||ns==='art_complete')?'approved':(ns==='needs_art'||ns==='art_requested')?'waiting_for_art':ns==='art_in_progress'?'waiting_for_art':null;/* The dropdown never stamps prod_files_attached — the strict gate above already required confirmation (checkbox or .dst), and a manual pick must not manufacture it (H3). */const updArt2=afSt?af.map(a=>artIds.includes(a.id)?{...a,status:afSt}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false)}}>
                 {Object.entries(artLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>
               {(()=>{const _artIds3=j._art_ids||[j.art_file_id].filter(Boolean);const isTbd=_artIds3.length===0||(_artIds3.length===1&&_artIds3[0]==='__tbd');const hasActiveReqs=(j.art_requests||[]).some(r=>r.status!=='recalled');const hasAnyReqs=(j.art_requests||[]).length>0;if(isTbd&&!hasAnyReqs)return null;const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
                 return<>{hasActiveReqs&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:activeReq?'#fef3c7':'#dcfce7',color:activeReq?'#92400e':'#166534',marginRight:4,animation:activeReq?'pulse 2s infinite':'none'}}>
@@ -12913,7 +13003,8 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
                 <option value="">Unassigned</option>
                 {REPS.filter(r=>r.role==='art'||r.role==='artist').filter(r=>r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
               <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Production:</div>
-              {j.prod_status==='hold'&&!canProduce&&!canOverride?<span style={{fontSize:11,color:'#94a3b8'}}>Waiting items/art</span>
+              {isOutsideArtJob(j)?<span title="Art-only job: the design goes through the art flow here; the outside decorator produces the garments (Deco PO)" style={{fontSize:11,fontWeight:700,color:'#6d28d9',background:'#f5f3ff',border:'1px solid #ddd6fe',borderRadius:6,padding:'2px 8px'}}>🎨 Outside decorator{outsideArtVendor(o,j)?' · '+outsideArtVendor(o,j):''} — art only</span>
+              :j.prod_status==='hold'&&!canProduce&&!canOverride?<span style={{fontSize:11,color:'#94a3b8'}}>Waiting items/art</span>
               :<><select className="form-select" style={{width:150,fontSize:11}} value={j.prod_status} onChange={e=>{const v=e.target.value;
                 if(['ready','staging','in_process'].includes(v)&&missingJobMocks(j,o).length){nf(missingMockupsMsg(missingJobMocks(j,o)),'error');return}
                 // Leaving staging/in_process for a non-running status bypasses the board's applyJobMove —
@@ -13146,7 +13237,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
           const _wasInProd2=_activeProd(j2job?.prod_status);
           const sibs2=_artSiblingsInProd(artIds2,j2job?.id);
           if(_wasInProd2&&onStopJobClock&&j2job)onStopJobClock(o.id,j2job.id);// re-hold below — stop any running decorator clock (L10)
-          let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,art_hidden:false,...ART_PULLBACK_CLEARS,...(_wasInProd2?{prod_status:'hold'}:{})}:jj);
+          let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status===PRIOR_ART_REVIEW||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,art_hidden:false,art_reuse_confirmed:false,...ART_PULLBACK_CLEARS,...(_wasInProd2?{prod_status:'hold'}:{})}:jj);
           updatedJobs=_holdArtSiblings(updatedJobs,artIds2,j2job?.id);
           // Store rep files as sample_art and reset art file status so it re-enters artist queue.
           // prod_files_attached must not survive an update — the old separations are for the old art,
@@ -13308,7 +13399,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
           const _sentMocks=[..._sentArtFiles.flatMap(a=>a.mockup_files||a.files||[]),..._sentArtFiles.flatMap(a=>Object.values(a.item_mockups||{}).flat())].map(f=>typeof f==='string'?f:((f&&(f.url||f.name))||'')).filter(u=>{if(!u||_smSeen.has(u))return false;_smSeen.add(u);return true});
           const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'art_approval',methods:actions,to:allTargets.join(', '),messageId:actions._messageId||null,mocks:_sentMocks,...(!_confirmedSend?{draft:true}:{})};
           const _artAutoCols=_artAuto?{follow_up_auto:true,follow_up_interval_days:cam.followUp.intervalDays||0,follow_up_message:cam.followUp.message||'',follow_up_to:allTargets.join(', '),follow_up_max:cam.followUp.max||4,follow_up_count:0,follow_up_last_sent_at:null}:{follow_up_auto:false,follow_up_interval_days:null,follow_up_message:null,follow_up_to:null,follow_up_max:null,follow_up_count:0,follow_up_last_sent_at:null};
-          const updJobs3=safeJobs(curO).map((jj,i)=>i===coachApprovalModal.jIdx?{...jj,...(_confirmedSend?{sent_to_coach_at:new Date().toISOString(),follow_up_at:fuAt,..._artAutoCols}:{}),sent_history:[...(jj.sent_history||[]),histEntry]}:jj);
+          const updJobs3=safeJobs(curO).map((jj,i)=>i===coachApprovalModal.jIdx?{...(_confirmedSend?markPriorArtCoachSent(jj):jj),...(_confirmedSend?{sent_to_coach_at:new Date().toISOString(),follow_up_at:fuAt,..._artAutoCols}:{}),sent_history:[...(jj.sent_history||[]),histEntry]}:jj);
           const updated3={...curO,jobs:updJobs3,updated_at:new Date().toLocaleString()};
           setCoachApprovalModal(null);
           await saveSONow(updated3,'Send to coach',null);
@@ -13563,18 +13654,21 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
           const jobId=g._existingJobId||(o.id.replace('SO-','JOB-')+'-'+(baseIdNum<10?'0':'')+baseIdNum);
           // Suffix the job key so syncJobs doesn't merge unsubmitted items with
           // the released signature (which would otherwise re-pollute this job).
-          const jobKey='released_'+g.deco_type+'_'+jobId;
+          // An opt-in outside-art job (lib/outsideArt) set up through the wizard keeps its identity —
+          // same key, 'outside' status, never released to the floor — so only its art fields change.
+          const _exOutside=g._existingJobId?safeJobs(o).find(x=>x.id===g._existingJobId&&isOutsideArtJob(x)):null;
+          const jobKey=_exOutside?_exOutside.key:'released_'+g.deco_type+'_'+jobId;
           newJobs.push({
             id:jobId,
             key:jobKey,
             art_file_id:artIds[0]||null,_art_ids:artIds,
             art_name:g.name,deco_type:g.deco_type,positions,
             art_status:artStatus,item_status:'need_to_order',
-            prod_status:activateAll?'hold':'draft',
+            prod_status:_exOutside?'outside':activateAll?'hold':'draft',
             ship_method:o.ship_preference==='rep_delivery'?'rep_delivery':'ship_customer',
             total_units:totalUnits,fulfilled_units:0,split_from:null,
             // Mark as released so syncJobs preserves it and skips its items
-            _released:activateAll?true:false,
+            _released:activateAll&&!_exOutside?true:false,
             ...(g._merged?{_merged:true}:{}),
             created_at:new Date().toLocaleDateString(),
             ...(g.quickMock&&activateAll?{sent_to_coach_at:new Date().toISOString(),quick_mock:true}:{}),
@@ -13931,7 +14025,7 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
       return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <h2>Production Jobs ({activeJobs.length}{hasDrafts?' + '+draftJobs.length+' drafts':''})</h2>
         <div style={{display:'flex',gap:6}}>
-          <button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={refreshJobs} title="Rebuild jobs from current line items & decorations — picks up newly added items. Keeps merges, splits & submitted art.">⟳ Sync Jobs</button>
+          {isAllSchoolRecipeOrder(o)?<span style={{fontSize:12,color:'#475569',maxWidth:420}}>All School jobs follow the purchased designs. Create a separate order for added items or rework.</span>:<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={refreshJobs} title="Rebuild jobs from current line items & decorations — picks up newly added items. Keeps merges, splits & submitted art.">⟳ Sync Jobs</button>}
           {jobs.length>1&&!mergeMode&&<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={()=>setMergeMode({selected:[]})}>⇥ Merge Jobs</button>}
           {jobs.some(j=>j.art_status==='needs_art')&&<button className="oe2-cta" style={{fontSize:12,padding:'7px 14px'}} onClick={openJobWizard}><span>Submit to Art</span></button>}
           {mergeMode&&(()=>{const _ms=mergeMode.selected.map(i=>jobs[i]).filter(Boolean);const _he=_ms.some(j=>j.deco_type==='embroidery'),_hs=_ms.some(j=>j.deco_type==='screen_print');const _cross=_he&&_hs;const _sameG=!_cross||(_ms.length>=2&&(()=>{const ss=_ms.map(j=>new Set((j.items||[]).map(it=>it.item_idx)));const f=ss[0]||new Set();return ss.every(s=>s.size===f.size&&[...f].every(i=>s.has(i)));})());const _mOk=mergeMode.selected.length>=2&&(!_cross||_sameG);return<><button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} disabled={!_mOk} onClick={()=>{
@@ -14019,14 +14113,14 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
             const pct=jTot>0?Math.round(jFul/jTot*100):0;
             // Gate the Split button on the live total too — a job drifted down to a stored 1 hid
             // the button on a genuinely splittable job (and vice versa offered it on a 1-unit job).
-            const canSplit=(j.items||[]).length>0&&jTot>1;
+            const canSplit=(j.items||[]).length>0&&jTot>1&&!isOutsideArtJob(j);
             // Reused art still needing its mock confirmed for this garment — show "Check Mock"
             // instead of an "approved / complete" status in the list (mirrors the job detail).
             const _cm=(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&jobMockChecks(j,o,priorMocks).length>0;
             const isMergeSel=mergeMode&&mergeMode.selected.includes(ji);
             return<React.Fragment key={j.id}>
-              <tr id={'so-job-'+ji} style={{background:isMergeSel?'#dbeafe':j.prod_status==='completed'||j.prod_status==='shipped'?'#f0fdf4':undefined,cursor:'pointer',transition:'box-shadow 0.3s'}} onClick={()=>mergeMode?setMergeMode({selected:isMergeSel?mergeMode.selected.filter(x=>x!==ji):[...mergeMode.selected,ji]}):setSelJob(ji)}>
-              {mergeMode&&<td onClick={e=>e.stopPropagation()}><input type="checkbox" checked={!!isMergeSel} onChange={()=>setMergeMode({selected:isMergeSel?mergeMode.selected.filter(x=>x!==ji):[...mergeMode.selected,ji]})}/></td>}
+              <tr id={'so-job-'+ji} style={{background:isMergeSel?'#dbeafe':j.prod_status==='completed'||j.prod_status==='shipped'?'#f0fdf4':undefined,cursor:'pointer',transition:'box-shadow 0.3s'}} onClick={()=>mergeMode?(isOutsideArtJob(j)?null:setMergeMode({selected:isMergeSel?mergeMode.selected.filter(x=>x!==ji):[...mergeMode.selected,ji]})):setSelJob(ji)}>
+              {mergeMode&&<td onClick={e=>e.stopPropagation()}>{!isOutsideArtJob(j)&&<input type="checkbox" checked={!!isMergeSel} onChange={()=>setMergeMode({selected:isMergeSel?mergeMode.selected.filter(x=>x!==ji):[...mergeMode.selected,ji]})}/>}</td>}
               <td><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span>
                 {j.split_from&&<div style={{fontSize:9,color:'#7c3aed'}}>split from {j.split_from}</div>}
                 {j.counted_at&&<div style={{fontSize:9,color:'#166534'}}>✅ counted</div>}</td>
@@ -14050,8 +14144,8 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
               <td style={{fontWeight:700}}>{jFul}/{jTot}
                 <div style={{width:50,background:'#e2e8f0',borderRadius:3,height:4,marginTop:2}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>0?'#f59e0b':'#e2e8f0',width:pct+'%'}}/></div></td>
               <td>{(()=>{const _is=jItemStatus(j);return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[_is]?.bg,color:SC[_is]?.c}}>{itemLabels[_is]}</span>})()}</td>
-              <td>{(()=>{if(_cm)return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef9c3',color:'#854d0e',border:'1px solid #fde047'}} title="Reused art — confirm a mock for this garment">🔍 Check Mock</span>;const sentCust=j.art_status==='waiting_approval'&&j.sent_to_coach_at;const aLbl=sentCust?'Sent to Customer':(artLabels[j.art_status]||j.art_status);const aSt=sentCust?{bg:'#ede9fe',c:'#6d28d9'}:SC[j.art_status];return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:aSt?.bg,color:aSt?.c}}>{aLbl}</span>})()}</td>
-              <td>{(()=>{if(_cm&&['hold','ready'].includes(j.prod_status))return <span style={{color:'#854d0e',fontWeight:700}}>Waiting for mock</span>;const readyForProd=j.prod_status==='hold'&&canProduce;const pSt=readyForProd?{bg:'#dcfce7',c:'#166534'}:(SC[j.prod_status]||{bg:'#f1f5f9',c:'#475569'});return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:pSt.bg,color:pSt.c}}>{readyForProd?'Ready for Prod':(prodLabels[j.prod_status]||j.prod_status)}</span>})()}</td>
+              <td>{(()=>{if(j.art_status===PRIOR_ART_REVIEW)return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#e0e7ff',color:'#3730a3'}}>{!j.art_reuse_confirmed?'Needs Art Review':skusMissingMockups(j,o).length?'Set Garment Mock':'Ready to Send'}</span>;if(_cm)return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef9c3',color:'#854d0e',border:'1px solid #fde047'}} title="Reused art — confirm a mock for this garment">🔍 Check Mock</span>;const sentCust=j.art_status==='waiting_approval'&&j.sent_to_coach_at;const aLbl=sentCust?'Sent to Customer':(artLabels[j.art_status]||j.art_status);const aSt=sentCust?{bg:'#ede9fe',c:'#6d28d9'}:SC[j.art_status];return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:aSt?.bg,color:aSt?.c}}>{aLbl}</span>})()}</td>
+              <td>{(()=>{if(isOutsideArtJob(j))return <span title="Art-only job — the outside decorator produces the garments" style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#f5f3ff',color:'#6d28d9'}}>🎨 Outside{outsideArtVendor(o,j)?' · '+outsideArtVendor(o,j):''}</span>;if(_cm&&['hold','ready'].includes(j.prod_status))return <span style={{color:'#854d0e',fontWeight:700}}>Waiting for mock</span>;const readyForProd=j.prod_status==='hold'&&canProduce;const pSt=readyForProd?{bg:'#dcfce7',c:'#166534'}:(SC[j.prod_status]||{bg:'#f1f5f9',c:'#475569'});return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:pSt.bg,color:pSt.c}}>{readyForProd?'Ready for Prod':(prodLabels[j.prod_status]||j.prod_status)}</span>})()}</td>
               <td style={{whiteSpace:'nowrap'}}>
 
                 {(()=>{const _artIds4=j._art_ids||[j.art_file_id].filter(Boolean);if(_artIds4.length===0||(_artIds4.length===1&&_artIds4[0]==='__tbd'))return null;const hasActiveReqs=(j.art_requests||[]).some(r=>r.status!=='recalled');const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
@@ -14345,7 +14439,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           const _wasInProd3=_activeProd(j?.prod_status);
           const sibs3=_artSiblingsInProd(artIds3,j?.id);
           if(_wasInProd3&&onStopJobClock&&j)onStopJobClock(o.id,j.id);// re-hold below — stop any running decorator clock (L10)
-          let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,art_hidden:false,...ART_PULLBACK_CLEARS,...(_wasInProd3?{prod_status:'hold'}:{})}:jj);
+          let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status===PRIOR_ART_REVIEW||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,art_hidden:false,art_reuse_confirmed:false,...ART_PULLBACK_CLEARS,...(_wasInProd3?{prod_status:'hold'}:{})}:jj);
           updatedJobs=_holdArtSiblings(updatedJobs,artIds3,j?.id);
           // Store rep files as sample_art and reset art file status so it re-enters artist queue.
           // prod_files_attached must not survive an update — the old separations are for the old art,
@@ -15657,10 +15751,12 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         const _rowRate=ii=>dp.item_costs&&dp.item_costs[ii]!=null?safeNum(dp.item_costs[ii]):_rate;
         const _hasPerItem=!!(dp.item_costs&&Object.keys(dp.item_costs).length>0);
         const _saveDp=(updatedDp,msg)=>{
-          const updated={...o,deco_pos:(o.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?updatedDp:x),updated_at:new Date().toLocaleString()};
+          let updated;
+          try{updated=reviseDecoPO(oRef.current||o,dp,updatedDp,{actor:cu?.name||'Rep',artStatusForFile,activeProd:_activeProd})}catch(err){nf(err.message,'error');return false}
           setO(updated);onSave(updated);
           setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p);
           if(msg)nf(msg);
+          return true;
         };
         // Commit a per-item rate override, pruning empties and re-deriving expected_cost.
         const _setRowCost=(ii,val)=>{
@@ -15682,7 +15778,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         // Same helper the reconciliation panel writes with, so the two can never
         // disagree about what "Sync" would set.
         const {liveQty,liveExpected}=decoPoTotals(dp,soItems);
-        const qtyDrift=coveredRows.length>0&&liveQty!==safeNum(dp.qty);
+        const qtyDrift=dp.po_mode!=='dtf_purchase'&&coveredRows.length>0&&liveQty!==safeNum(dp.qty);
         const decoInstr=coveredRows.flatMap(r=>r.decos.map(d=>({sku:r.it.sku,position:d.position,deco_type:d.deco_type,vendor:d.vendor,notes:d.notes})));
         const _trackUrl=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
         const _addTrack=()=>{const tn=decoTrackAdd.trim();if(!tn)return;
@@ -15692,6 +15788,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         const DECO_TYPES=['embroidery','screen_print','dtf','heat_transfer','sublimation','vinyl','vector'];
         const _vendorOpts=(()=>{const base=DECO_VENDORS.filter(v=>v!=='Other');if(dp.vendor&&!base.includes(dp.vendor))base.unshift(dp.vendor);return[...base,'Other']})();
         const editingPo=decoEditPo&&decoEditPo.decoPoId===dpKey;
+        const _draftTotals=editingPo?decoPoEditTotals(dp,decoEditPo,soItems):null;
         // Price-list rate for the vendor/type currently picked in the edit panel (if priced).
         const _draftVendorName=editingPo?(decoEditPo.vendor==='Other'?decoEditPo.customVendor.trim():decoEditPo.vendor):null;
         const _draftDv=_draftVendorName?decoVendors.find(v=>v.name===_draftVendorName):null;
@@ -15788,7 +15885,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                 </div>
               </div>})()}
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:20,flexWrap:'wrap'}}>
-              {!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>setDecoEditPo({decoPoId:dpKey,po_id:dp.po_id||'',vendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?dp.vendor:'Other',customVendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?'':(dp.vendor||''),deco_type:dp.deco_type||'embroidery',status:dp.status||'waiting',expected_date:dp.expected_date||'',unit_cost:dp.unit_cost!=null?String(dp.unit_cost):'',drop_ship:true,notes:dp.notes||''})}>✎ Edit PO</button>}
+              {!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>setDecoEditPo({decoPoId:dpKey,po_id:dp.po_id||'',vendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?dp.vendor:'Other',customVendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?'':(dp.vendor||''),deco_type:dp.deco_type||'embroidery',status:dp.status||'waiting',expected_date:dp.expected_date||'',unit_cost:dp.unit_cost!=null?String(dp.unit_cost):'',po_mode:dp.topstar_service?dp.po_mode:(dp.po_mode||'send_items'),qty:String(dp.qty||0),art_file_ids:[...(dp.art_file_ids||[])],drop_ship:!!dp.drop_ship,notes:dp.notes||''})}>✎ Edit PO</button>}
               {isTopstar&&['planned','sending','email_failed'].includes(dp.status)&&!editingPo&&<button className="btn btn-sm btn-primary" disabled={topstarSending} style={{fontSize:11,background:'#0891b2',borderColor:'#0891b2'}} onClick={()=>sendTopstarPO(dp)} title="Email this digitizing/vector PO to Topstar now and mark it ordered">{topstarSending?'Sending…':dp.status==='planned'?'🧵 Send to Topstar':'↻ Retry Topstar Email'}</button>}
               {(()=>{// Silver Screen: create the job on their account portal with one click.
                 if(!_isSilverScreenDp(dp)||editingPo)return null;
@@ -15881,9 +15978,27 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                     {_draftListRate!==null&&Math.abs((parseFloat(decoEditPo.unit_cost)||0)-_draftListRate)>0.004&&<button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,marginTop:6}} onClick={()=>setDecoEditPo(d=>({...d,unit_cost:_draftListRate.toFixed(2)}))}>Price list: ${_draftListRate.toFixed(2)}/unit — apply</button>}
                   </div>
                 </div>
+                {!isTopstar&&<div style={{marginBottom:12}}>
+                  <label className="form-label">PO Purpose</label>
+                  <select className="form-select" value={decoEditPo.po_mode} onChange={e=>setDecoEditPo(d=>({...d,po_mode:e.target.value}))}>
+                    <option value="send_items">Outside decoration — vendor decorates garments</option>
+                    <option value="dtf_purchase">Materials purchase — patches / transfers applied in-house</option>
+                  </select>
+                  <div style={{fontSize:11,color:'#64748b',marginTop:5}}>Changing purpose updates garment routing. Saving here does not submit or resend an order to the vendor.</div>
+                  {decoEditPo.po_mode==='dtf_purchase'&&<>
+                    <label className="form-label" style={{marginTop:10}}>Purchase Quantity</label>
+                    <input className="form-input" type="number" min="0" step="1" value={decoEditPo.qty} onChange={e=>setDecoEditPo(d=>({...d,qty:e.target.value}))}/>
+                    <div style={{fontSize:11,color:'#64748b',marginTop:5}}>Materials can be purchased in a different quantity than the garments.</div>
+                    <label className="form-label" style={{marginTop:10}}>Art Purchased</label>
+                    {(o.art_files||[]).map(a=><label key={a.id} style={{display:'flex',alignItems:'center',gap:7,fontSize:12,marginBottom:5}}>
+                      <input type="checkbox" checked={decoEditPo.art_file_ids.includes(a.id)} onChange={e=>{const checked=e.target.checked;setDecoEditPo(d=>({...d,art_file_ids:checked?[...d.art_file_ids,a.id]:d.art_file_ids.filter(id=>id!==a.id)}))}}/>{a.name||a.id}
+                    </label>)}
+                  </>}
+                  {decoEditPo.po_mode==='send_items'&&<label style={{display:'flex',alignItems:'center',gap:7,fontSize:12,marginTop:10}}><input type="checkbox" checked={decoEditPo.drop_ship} onChange={e=>setDecoEditPo(d=>({...d,drop_ship:e.target.checked}))}/>Decorator ships directly to customer</label>}
+                </div>}
                 <div style={{marginBottom:12}}><label className="form-label">Notes / Instructions for Decorator</label><textarea className="form-input" rows={3} value={decoEditPo.notes} onChange={e=>setDecoEditPo(d=>({...d,notes:e.target.value}))} placeholder="Thread colors, PMS colors, placement notes..." style={{resize:'vertical'}}/></div>
                 <div style={{display:'flex',alignItems:'center',gap:16,paddingTop:10,borderTop:'1px dashed #e2e8f0',fontSize:13,flexWrap:'wrap'}}>
-                  <span style={{color:'#64748b'}}>{safeNum(dp.qty)} units × ${(parseFloat(decoEditPo.unit_cost)||0).toFixed(2)}/unit = <strong style={{color:'#166534'}}>${(Math.round(safeNum(dp.qty)*(parseFloat(decoEditPo.unit_cost)||0)*100)/100).toFixed(2)} expected</strong></span>
+                  <span style={{color:'#64748b'}}>{_draftTotals.qty||0} units · <strong style={{color:'#166534'}}>${(Number.isFinite(_draftTotals.expected_cost)?_draftTotals.expected_cost:0).toFixed(2)} expected</strong>{_hasPerItem?' (includes per-item rates)':''}</span>
                   <div style={{marginLeft:'auto',display:'flex',gap:8}}>
                     <button className="btn btn-sm btn-secondary" onClick={()=>setDecoEditPo(null)}>Cancel</button>
                     <button className="btn btn-sm btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
@@ -15893,11 +16008,9 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                       if(!finalVendor){nf('Pick a vendor (or type a name under Other)','error');return}
                       const uc=Math.round((parseFloat(decoEditPo.unit_cost)||0)*100)/100;
                       const dv=decoVendors.find(v=>v.name===finalVendor);
-                      // Recompute expected from per-item rates (uc is the fallback for un-overridden items).
-                      const _exp=_hasPerItem?Math.round((dp.item_idxs||[]).reduce((a,k)=>{const it=soItems[k];if(!it)return a;const q=Object.values(safeSizes(it)).reduce((s,x)=>s+safeNum(x),0);const r=dp.item_costs&&dp.item_costs[k]!=null?safeNum(dp.item_costs[k]):uc;return a+q*r},0)*100)/100:Math.round(safeNum(dp.qty)*uc*100)/100;
-                      const updatedDp={...dp,po_id:newPoId,vendor:finalVendor,deco_vendor_id:dv?dv.id:(finalVendor===dp.vendor?(dp.deco_vendor_id||null):null),deco_type:decoEditPo.deco_type,status:decoEditPo.status,expected_date:decoEditPo.expected_date,unit_cost:uc,expected_cost:_exp,drop_ship:decoEditPo.drop_ship||undefined,notes:decoEditPo.notes};
-                      _saveDp(updatedDp,'✎ Updated '+newPoId);
-                      setDecoEditPo(null);
+                      const purchase=decoEditPo.po_mode==='dtf_purchase';
+                      const updatedDp={...dp,po_mode:decoEditPo.po_mode,qty:_draftTotals.qty,art_file_ids:decoEditPo.art_file_ids,item_costs:dp.item_costs,po_id:newPoId,vendor:finalVendor,deco_vendor_id:dv?dv.id:(finalVendor===dp.vendor?(dp.deco_vendor_id||null):null),deco_type:decoEditPo.deco_type,status:decoEditPo.status,expected_date:decoEditPo.expected_date,unit_cost:uc,expected_cost:_draftTotals.expected_cost,drop_ship:!purchase&&decoEditPo.drop_ship||undefined,notes:decoEditPo.notes};
+                      if(_saveDp(updatedDp,'✎ Updated '+newPoId))setDecoEditPo(null);
                     }}>Save Details</button>
                   </div>
                 </div>
@@ -15920,12 +16033,12 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                   <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setDecoEditItems(null)}>Cancel</button>
                   <button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
                     const itemIdxs=editableItems.filter(it=>decoEditItems.sel[it._idx]).map(it=>it._idx);
-                    if(itemIdxs.length===0){nf('Pick at least one item for this PO','error');return}
+                    if(itemIdxs.length===0&&dp.po_mode!=='dtf_purchase'){nf('Pick at least one item for this PO','error');return}
                     // Drop per-item rate overrides for items no longer on the PO.
                     const prunedCosts=dp.item_costs?Object.fromEntries(Object.entries(dp.item_costs).filter(([k])=>itemIdxs.includes(Number(k)))):null;
-                    const updatedDp={...dp,item_idxs:itemIdxs,qty:newQty,expected_cost:newExpected,item_costs:prunedCosts&&Object.keys(prunedCosts).length?prunedCosts:undefined};
-                    _saveDp(updatedDp,'🎨 '+(dp.po_id||'Deco PO')+' now covers '+itemIdxs.length+' item'+(itemIdxs.length!==1?'s':'')+' ('+newQty+' units · expected $'+newExpected.toFixed(2)+')');
-                    setDecoEditItems(null);
+                    const updatedDp={...dp,item_idxs:itemIdxs,qty:dp.po_mode==='dtf_purchase'?dp.qty:newQty,expected_cost:dp.po_mode==='dtf_purchase'?dp.expected_cost:newExpected,item_costs:prunedCosts&&Object.keys(prunedCosts).length?prunedCosts:undefined};
+                    const saved=_saveDp(updatedDp,'🎨 '+(dp.po_id||'Deco PO')+' now covers '+itemIdxs.length+' item'+(itemIdxs.length!==1?'s':'')+' ('+newQty+' units · expected $'+newExpected.toFixed(2)+')');
+                    if(saved)setDecoEditItems(null);
                   }}>Save Items</button>
                 </div>}
               </div>

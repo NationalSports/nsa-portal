@@ -1,5 +1,7 @@
 /* eslint-disable */
+import CustomerArtProofs from './ArtRequestProofs';
 import React, { useState, useEffect, useRef } from 'react';
+import { isOutsideArtJob } from './lib/outsideArt';
 import { SZ_ORD, sizeBreakdownStr, pantoneHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, artDstOnFile, estimateTermsFooter } from './constants';
 import { statusChipLabel } from './lib/teamshopOrderStatus';
 import { ptDateLabel } from './lib/storeClock';
@@ -1417,6 +1419,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>
         </div>
         <div style={{padding:'22px 28px'}}>
+          <CustomerArtProofs alphaTag={customer.alpha_tag} estimateId={est.id} />
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:16,flexWrap:'wrap',padding:'4px 0 18px',borderBottom:'1px solid #EEF1F6',marginBottom:18}}>
             <div>
               <div className="nsa-disp" style={{fontSize:12,letterSpacing:'1px',textTransform:'uppercase',color:'#5A6075'}}>Estimated Total</div>
@@ -2290,7 +2293,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             </div>;
           })()}
 
-          {j.prod_status!=='hold'&&<div style={{..._card,padding:'14px 16px',display:'flex',alignItems:'center',gap:10}}>
+          {j.prod_status!=='hold'&&!isOutsideArtJob(j)&&<div style={{..._card,padding:'14px 16px',display:'flex',alignItems:'center',gap:10}}>
             <span style={_eyebrow}>Production</span>{_rule(26)}
             <span style={{fontFamily:_DISP,fontWeight:700,fontSize:16,letterSpacing:'0.6px',textTransform:'uppercase',color:_NV,marginLeft:'auto'}}>{prodLabelsP[j.prod_status]||j.prod_status}</span>
           </div>}
@@ -2662,6 +2665,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     <div style={{height:8,position:'sticky',top:84,zIndex:49,boxShadow:'0 2px 6px rgba(0,0,0,.12)',background:`repeating-linear-gradient(90deg, ${tAccent} 0 30%, ${tPrimary} 30% 32%, ${tAccent} 32% 70%, ${tPrimary} 70% 72%, ${tAccent} 72% 100%)`}}/>
     {/* ── MAIN ── */}
     <div className="cp-main" id={MAIN_ID} role="main" style={{maxWidth:1240,margin:'0 auto',padding:'36px 24px 110px'}}>
+      <CustomerArtProofs alphaTag={customer.alpha_tag} />
         <div className="cp-page">
         <div className="cp-grid">
 
@@ -2758,10 +2762,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             {(()=>{const jobs=waitingArtJobs;const upcoming=upcomingArtJobs;return(
             <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:16,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'16px 22px'}}>
-                <div className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Designs to Review{jobs.length>0?' ('+jobs.length+')':''}</div>
+                <div className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Order Designs to Review{jobs.length>0?' ('+jobs.length+')':''}</div>
                 <button onClick={()=>setPage('art')} className="nsa-disp" style={{background:'none',border:'none',cursor:'pointer',color:tAccentText,fontWeight:700,fontSize:13,textTransform:'uppercase'}}>Art Locker →</button>
               </div>
-              {jobs.length===0?<div style={{padding:'0 22px 18px',color:'#5A6075',fontSize:13}}>{upcoming.length>0?'Nothing to approve yet — the designs below are still being drawn.':'No proofs waiting on you right now.'}</div>:
+              {jobs.length===0?<div style={{padding:'0 22px 18px',color:'#5A6075',fontSize:13}}>{upcoming.length>0?'The order designs below are still being drawn.':'No sales-order proofs waiting on you right now.'}</div>:
                jobs.map((j,ix)=>{const so=j.so;
                 return<div key={so.id+'|'+j.id} className="nsa-card" style={{display:'flex',alignItems:'center',gap:12,padding:'12px 22px',borderTop:'1px solid #EEF1F6',cursor:'pointer'}} onClick={()=>{setSoView(so);setJobView({job:j,so});setComment('')}}>
                   <div className="nsa-disp" style={{width:46,height:54,flexShrink:0,borderRadius:12,background:`linear-gradient(150deg, ${tPrimary} 0%, ${tNavyMid} 100%)`,display:'flex',alignItems:'center',justifyContent:'center',color:'rgba(255,255,255,.85)',fontWeight:800,fontSize:16}}>{String(ix+1).padStart(2,'0')}</div>

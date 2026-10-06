@@ -64,7 +64,7 @@
   # _baggingShip + webstore-shipment-record share the shipping-label origin addresses
   # with the portal's label buttons (src/lib/shipFrom.js).
   # followup-sweep shares the "which schools block Brevo" rules with the portal (src/lib/emailRouting.js).
-  included_files = ["src/lib/opsRecap.js", "src/lib/decoPricing.js", "src/lib/teamshopFaq.js", "src/lib/teamshopOrderStatus.js", "src/lib/billAnomalies.js", "src/lib/shipFrom.js", "src/lib/emailRouting.js"]
+  included_files = ["src/lib/opsRecap.js", "src/lib/decoPricing.js", "src/lib/teamshopFaq.js", "src/lib/teamshopOrderStatus.js", "src/lib/billAnomalies.js", "src/lib/shipFrom.js", "src/lib/emailRouting.js", "src/lib/sanmarPO.shared.js", "src/lib/ssOrder.shared.js", "src/lib/vendorOrderGuards.shared.js", "src/lib/vendorColorMatch.shared.js", "src/lib/vendorResolvers.shared.js", "src/lib/sizeNames.shared.js"]
 
 # New-hire onboarding reminders — daily at 16:07 UTC (~8-9 AM PT). Nudges hires
 # who were invited but haven't finished (capped at 3 reminders, 3 days apart).
@@ -425,4 +425,18 @@
 
 [functions."production-packet-shipment-sweep"]
   schedule = "*/5 * * * *"
+  timeout = 26
+
+# All School workers only send when explicitly enabled in their per-store settings.
+[functions."all-school-purchasing"]
+  timeout = 26
+[functions."all-school-dtf"]
+  timeout = 26
+# Scheduled functions cannot be called over HTTP. Keep staff queue actions on
+# the authenticated routes above and run the same workers through cron wrappers.
+[functions."all-school-purchasing-scheduled"]
+  schedule = "*/15 * * * *"
+  timeout = 26
+[functions."all-school-dtf-scheduled"]
+  schedule = "*/15 * * * *"
   timeout = 26

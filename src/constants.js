@@ -4,6 +4,7 @@
 // Namespace import: src/lib/shipFrom.js is CommonJS (shared with the Netlify
 // functions), and webpack cannot resolve named imports out of one.
 import * as SHIPFROM from './lib/shipFrom';
+import * as SIZE_NAMES from './lib/sizeNames.shared';
 const { shipFromLocation } = SHIPFROM;
 
 export const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
@@ -17,7 +18,7 @@ export const _soCols=['id','customer_id','estimate_id','memo','status','created_
 export const _itemCols=['line_id','product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','notes','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','_promo_credit','_promo_partial_qty','is_free_promo','_pre_free_promo_sell','est_qty','qty_only','size_availability','is_footwear','customer_supplied'];
 // Sales-order-only item fields. Keep these separate from _itemCols because that base list also
 // feeds estimate_items writes, while invoice reconciliation history has no meaning on an estimate.
-export const _soItemCols=['invoice_line_keys'];
+export const _soItemCols=['invoice_line_keys','recipe_snapshot','source_webstore_item_ids'];
 // PostgREST builds one column set for an entire bulk insert. If an existing line carries
 // invoice_line_keys while a newly-added line omits it, the missing value becomes explicit NULL for
 // that row; the database default is not used and the NOT NULL constraint rejects the whole batch.
@@ -44,7 +45,7 @@ export const isTopstarLine=(it)=>!!(it&&(it._topstar||it.sku==='DIGITIZING'));
 export const isArtworkLine=(it)=>!!(it&&/^artwork$/i.test((it.sku||'').trim()));
 // Billed-back service lines with no item-level vendor PO: covered by definition in status math.
 export const isServiceLine=(it)=>isTopstarLine(it)||isArtworkLine(it);
-export const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty','name_method','color_way_id','color_way_id_b','split_group','split_sizes','split_runs','fulfillment','deco_po_id','web_url','placement','side','color_label','transfer_code','_cost_locked'];
+export const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty','name_method','color_way_id','color_way_id_b','split_group','split_sizes','split_runs','fulfillment','deco_po_id','outside_art','web_url','placement','side','color_label','transfer_code','_cost_locked'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
 export const _itemExtraCols=new Set(['is_promo','_pre_promo_sell','_promo_credit','_promo_partial_qty','is_free_promo','_pre_free_promo_sell','est_qty','qty_only','size_availability','notes','is_footwear','customer_supplied']);
 export const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','approved_by','approved_at','credit_applied','credit_amount','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at','tax_exempt','tax_exempt_reason','tax_exempt_by','tax_exempt_at']);
@@ -54,12 +55,12 @@ export const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inboun
 // _cost_locked and names_list are intentionally NOT in this strip-on-retry set (same rule as deco_pos
 // above): both columns exist in the live DB, and decorations persist via DELETE+INSERT — stripping them
 // on a retry caused by an unrelated column would silently wipe locked pricing / name lists on every save.
-export const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','name_method','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id','color_way_id_b','split_group','split_sizes','split_runs','fulfillment','deco_po_id','web_url','placement','side','color_label','transfer_code']);
+export const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','name_method','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id','color_way_id_b','split_group','split_sizes','split_runs','fulfillment','deco_po_id','outside_art','web_url','placement','side','color_label','transfer_code']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 export const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
 export const _msgCols=['id','so_id','author_id','text','ts','dept','tagged_members','entity_type','entity_id','thread_id','attachments'];
 export const _msgExtraCols=new Set(['tagged_members','entity_type','entity_id','thread_id','attachments']);
-export const _artCols=['id','name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','files','mockup_files','item_mockups','mock_links','design_id','sample_art','prod_files','prod_files_attached','preview_url','web_logos','web_logo_url','location','notes','status','archived','uploaded','is_tbd'];
+export const _artCols=['id','name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','files','mockup_files','item_mockups','mock_links','design_id','sample_art','prod_files','prod_files_attached','preview_url','web_logos','web_logo_url','location','notes','status','archived','uploaded','is_tbd','reused_from_so'];
 // Maps a DB art-file row (estimate_art_files / so_art_files) to the client shape. Single shared mapper
 // so every column in _artCols round-trips: a column saved but missing from this map silently reverts on
 // reload — and worse, postgrest bulk upserts send the UNION of keys across all rows (PostgREST substitutes
@@ -67,15 +68,15 @@ export const _artCols=['id','name','deco_type','ink_colors','thread_colors','sti
 // doesn't send), so one loaded row in a mixed batch can wipe the DB value to NULL — or 400 the whole batch
 // on a NOT NULL column like mock_links (the SO-1459 blank-order bug; _sanitizeArtRow force-fills it).
 // artRowRoundTrip.test.js guards this.
-export const _loadArtRow=a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,stitches:a.stitches??null,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},mock_links:a.mock_links||{},design_id:a.design_id||null,sample_art:a.sample_art||[],prod_files:a.prod_files||[],prod_files_attached:a.prod_files_attached||false,preview_url:a.preview_url||'',web_logos:a.web_logos||[],web_logo_url:a.web_logo_url||'',location:a.location||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,is_tbd:a.is_tbd||false,_version:a._version});
+export const _loadArtRow=a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,stitches:a.stitches??null,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},mock_links:a.mock_links||{},design_id:a.design_id||null,sample_art:a.sample_art||[],prod_files:a.prod_files||[],prod_files_attached:a.prod_files_attached||false,preview_url:a.preview_url||'',web_logos:a.web_logos||[],web_logo_url:a.web_logo_url||'',location:a.location||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,is_tbd:a.is_tbd||false,reused_from_so:a.reused_from_so||null,_version:a._version});
 // Columns that may not exist in art file tables — stripped on retry (incl. mock_links/design_id
 // until migration 00152 is applied, so the app keeps saving art if the columns aren't there yet)
-export const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups','mock_links','design_id','color_ways','preview_url','web_logos','web_logo_url','sample_art','stitches','location','archived','prod_files_attached','is_tbd']);
+export const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups','mock_links','design_id','color_ways','preview_url','web_logos','web_logo_url','sample_art','stitches','location','archived','prod_files_attached','is_tbd','reused_from_so']);
 // Columns that may not exist in so_jobs — stripped on retry
-export const _jobExtraCols=new Set(['completed_at','_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group','split_open','priced_separately','price_override','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at']);
+export const _jobExtraCols=new Set(['completed_at','_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group','split_open','priced_separately','price_override','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at','art_reuse_confirmed']);
 // `_draft` is deliberately absent: it is a session-only flag marking an uncommitted job (see
 // splitJobPricing), has no so_jobs column, and sending it made PostgREST reject the whole batch.
-export const _jobCols=['id','key','art_file_id','_art_ids','art_name','deco_type','deco_types','positions','art_status','item_status','prod_status','total_units','fulfilled_units','completed_at','split_from','split_open','priced_separately','price_override','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','_merged','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
+export const _jobCols=['id','key','art_file_id','_art_ids','art_name','deco_type','deco_types','positions','art_status','item_status','prod_status','total_units','fulfilled_units','completed_at','split_from','split_open','priced_separately','price_override','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','_merged','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at','art_reuse_confirmed'];
 export const _custCols=['id','parent_id','name','alpha_tag','search_tags','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','shipping_attention','adidas_ua_tier','catalog_markup','uniform_discount_percent','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses','art_files','pantone_colors','thread_colors','logo_url','school_colors','netsuite_internal_id','disable_cc_pay'];
 
 // Pantone color lookup
@@ -386,7 +387,7 @@ export const estimateTermsFooter=(cust,ci=NSA)=>{
 const _NSA_WH=shipFromLocation('warehouse');
 export const NSA_WAREHOUSE={street1:_NSA_WH.street1,street2:_NSA_WH.street2,city:_NSA_WH.city,state:_NSA_WH.state,zip:_NSA_WH.zip};
 
-export const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art_in_progress:'In Progress',waiting_approval:'Waiting Approval',production_files_needed:'Art Approved — Waiting',order_dtf_transfers:'Order DTF Transfers',upload_emb_files:'Upload EMB Files',art_complete:'Art Complete'};
+export const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art_in_progress:'In Progress',needs_art_review:'Needs Art Review',waiting_approval:'Waiting Approval',production_files_needed:'Art Approved — Waiting',order_dtf_transfers:'Order DTF Transfers',upload_emb_files:'Upload EMB Files',art_complete:'Art Complete'};
 // Post-approval production-file stage. Screen print etc. stay 'production_files_needed' (artist uploads seps);
 // embroidery/DTF get rep-owned statuses so they read clearly and filter on their own.
 export const PROD_FILES_STATUSES=['production_files_needed','order_dtf_transfers','upload_emb_files'];
@@ -688,30 +689,7 @@ export const sizeBreakdownStr=(sizes,isFootwear)=>Object.entries(isFootwear?norm
   .filter(([,v])=>Number(v)>0)
   .sort((a,b)=>_szCompare(a[0],b[0]))
   .map(([sz,v])=>v+(isFootwear?'/':' ')+sz).join(', ');
-export const SZ_NORM={'XXS':'XXS','2XS':'XXS','XS':'XS','XSMALL':'XS','X-SMALL':'XS','SM':'S','SML':'S','SMALL':'S','MD':'M','MED':'M','MEDIUM':'M','LG':'L','LRG':'L','LARGE':'L',
-  'XLG':'XL','XLARGE':'XL','X-LARGE':'XL','XXL':'2XL','2X':'2XL','2XLARGE':'2XL','2X-LARGE':'2XL',
-  'XXXL':'3XL','3X':'3XL','3XLARGE':'3XL','3X-LARGE':'3XL','XXXXL':'4XL','4X':'4XL','4XLARGE':'4XL','4X-LARGE':'4XL',
-  '5X':'5XL','6X':'6XL','ST':'ST','MT':'MT','LT':'LT','XLT':'XLT','2XLT':'2XLT','3XLT':'3XLT','4XLT':'4XLT','5XLT':'5XLT',
-  'MENS SMALL':'S','MENS MEDIUM':'M','MENS LARGE':'L','MENS XL':'XL','MENS XXL':'2XL',
-  'WOMENS SMALL':'S','WOMENS MEDIUM':'M','WOMENS LARGE':'L','WOMENS XL':'XL',
-  'YOUTH SMALL':'YS','YOUTH MEDIUM':'YM','YOUTH LARGE':'YL','YOUTH XL':'YXL',
-  'YSM':'YS','YMD':'YM','YLG':'YL',  // Under Armour youth labels
-  'BOYS SMALL':'YS','BOYS MEDIUM':'YM','BOYS LARGE':'YL','GIRLS SMALL':'YS','GIRLS MEDIUM':'YM','GIRLS LARGE':'YL',
-  'NONE':'OSFA','ONE SIZE':'OSFA','OS':'OSFA','O/S':'OSFA','OSFM':'OSFA','N/A':'OSFA',  // OSFM = One Size Fits Most (UA)
-  // Spelled-out one-size labels reps type on orders. SanMar (and most vendors) return the
-  // bare token 'OSFA', so without these an order line reading "One Size Fits All" never
-  // matched the catalog and stayed without a SanMar Part ID / Unique_Key (blocked PO — STC21).
-  'ONE SIZE FITS ALL':'OSFA','ONE SIZE FITS MOST':'OSFA','ONESIZE':'OSFA','ONE SIZE FIT ALL':'OSFA',
-  // Toddler labels. SanMar returns '2T'…'6T'; orders often carry the spelled-out
-  // "<n> Toddler" form, which never matched (PC450TD "4 Toddler" → no Part ID).
-  '2 TODDLER':'2T','3 TODDLER':'3T','4 TODDLER':'4T','5 TODDLER':'5T','6 TODDLER':'6T',
-  'TODDLER 2':'2T','TODDLER 3':'3T','TODDLER 4':'4T','TODDLER 5':'5T','TODDLER 6':'6T',
-  // Sports Inc's EDI feed truncates spelled-out sizes to 5 chars (seen on Augusta): MEDIUM->MEDIU,
-  // EXTRA LARGE->EXTRA, DOUBLE->DOUBL, TRIPLE->TRIPL, ONE SIZE->ONE S. Recover them so billed sizes
-  // align to the order instead of falsely reading as 0 ordered. (EXTRA = Extra LARGE on this book;
-  // an Augusta extra-small would truncate the same way and gets caught by the order/over-bill check.)
-  'MEDIU':'M','EXTRA':'XL','DOUBL':'2XL','TRIPL':'3XL','ONE S':'OSFA',
-  'LGT':'LT','XXLT':'2XLT'};   // round-2: Under Armour tall labels (Large Tall, 2XL Tall)
+export const { SZ_NORM } = SIZE_NAMES;   // round-2: Under Armour tall labels (Large Tall, 2XL Tall)
 
 // Statuses where offering "ship this order" makes sense: production has started, so there are
 // goods to put in a box. Includes 'complete' on purpose — a closed order can still owe a shipment
@@ -732,7 +710,7 @@ export const SC={
   // Job production statuses
   draft:{bg:'#fef9c3',c:'#a16207'},ready:{bg:'#dcfce7',c:'#166534'},staging:{bg:'#fef3c7',c:'#92400e'},in_process:{bg:'#dbeafe',c:'#1e40af'},completed:{bg:'#dcfce7',c:'#166534'},shipped:{bg:'#ede9fe',c:'#6d28d9'},
   // Job art statuses
-  needs_art:{bg:'#fef2f2',c:'#dc2626'},art_requested:{bg:'#fce7f3',c:'#be185d'},art_in_progress:{bg:'#dbeafe',c:'#1e40af'},waiting_approval:{bg:'#fef3c7',c:'#92400e'},production_files_needed:{bg:'#fef9c3',c:'#854d0e'},order_dtf_transfers:{bg:'#cffafe',c:'#155e75'},upload_emb_files:{bg:'#ede9fe',c:'#6d28d9'},art_complete:{bg:'#dcfce7',c:'#166534'},
+  needs_art:{bg:'#fef2f2',c:'#dc2626'},art_requested:{bg:'#fce7f3',c:'#be185d'},art_in_progress:{bg:'#dbeafe',c:'#1e40af'},needs_art_review:{bg:'#e0e7ff',c:'#3730a3'},waiting_approval:{bg:'#fef3c7',c:'#92400e'},production_files_needed:{bg:'#fef9c3',c:'#854d0e'},order_dtf_transfers:{bg:'#cffafe',c:'#155e75'},upload_emb_files:{bg:'#ede9fe',c:'#6d28d9'},art_complete:{bg:'#dcfce7',c:'#166534'},
   // Art file statuses
   waiting_for_art:{bg:'#fef2f2',c:'#dc2626'},needs_approval:{bg:'#fef3c7',c:'#92400e'},
   // Legacy

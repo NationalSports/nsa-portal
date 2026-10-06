@@ -4,10 +4,11 @@
 // Credentials are injected server-side by ss-proxy and never appear here.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { buildSSOrderPayload, buildSSOrderLines } from './ssOrder';
-import { ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock, ssGetDaysInTransit } from './vendorApis';
-import { reconcileVendorLines, freeShipGap } from './lib/vendorOrderGuards';
+import { ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetOrders, ssGetWarehouseStock, ssGetDaysInTransit } from './vendorApis';
+import { reconcileVendorLines, exactVendorLineQuantities, freeShipGap } from './lib/vendorOrderGuards';
 import { DuplicateMergeWarning, UnacceptedLinesPanel, FreeShipNotice } from './VendorOrderGuardPanels';
-import WarehouseChips, { rankWarehouses, SS_WAREHOUSES } from './WarehouseChips';
+import WarehouseChips, { SS_WAREHOUSES } from './WarehouseChips';
+import { planSSWarehouses } from './lib/ssWarehouseRouting';
 import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
 import { NSA, NSA_WAREHOUSE, BATCH_VENDORS } from './constants';
 import { apiLineSourceKey, removeShortLines, stockKeyAlreadyFetched } from './lib/apiOrderLines';
@@ -24,7 +25,7 @@ const NSA_SHIP_TO = {
   postalCode: NSA_WAREHOUSE.zip,
 };
 
-export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Activewear', shipTo, shipWarning = '', shipPresets = [], onClose, onSubmitted, onLearnSkus, onRemoveLine }) {
+export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Activewear', shipTo, shipWarning = '', shipPresets = [], onClose, onBeforeSubmit, onSubmitError, onSubmitted, onLearnSkus, onRemoveLine }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'json'
   const [confirmed, setConfirmed] = useState(false);
   // Live-only (owner 2026-07-31): the test-order mode was removed once S&S orders were
@@ -122,7 +123,9 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   // warnings + the order that will be submitted.
   const lines = useMemo(() => baseLines.map(l => (l.sku ? l : { ...l, sku: manualSku[l.key] || resolvedSkus[l.key] || '' })), [baseLines, resolvedSkus, manualSku]);
   const warnings = useMemo(() => lines.filter(l => !l.sku).map(l => `Line (${[l.style, l.color, l.size].filter(Boolean).join(' ')}) has no matched S&S SKU`), [lines]);
-  const built = useMemo(() => buildSSOrderPayload({ poNumber, lineItems: lines, shipTo: ship, testOrder: testMode }), [poNumber, lines, ship, testMode]);
+  const routing = useMemo(() => planSSWarehouses(lines, whseBySku, transitDays, ship), [lines, whseBySku, transitDays, ship]);
+  const built = useMemo(() => buildSSOrderPayload({ poNumber, lineItems: lines, shipTo: ship, testOrder: testMode, warehouse: routing.warehouse }), [poNumber, lines, ship, testMode, routing.warehouse]);
+  useEffect(() => { setConfirmed(false); }, [routing.warehouse]);
   const totals = built.summary;
   const unresolvedStyles = useMemo(() => [...new Set(lines.filter(l => !l.sku).map(l => String(l.style || '').toUpperCase().trim()))], [lines]);
 
@@ -177,9 +180,41 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
     if (!canSubmit) return;
     setSubmitState('submitting'); setErrorMsg('');
     let r;
+    let vendorRequestStarted = false;
     try {
+      if (onBeforeSubmit && await onBeforeSubmit({ vendor: 'S&S Activewear', payload: built.order, lines, live }) === false) {
+        setErrorMsg('The purchase could not be reserved. Reload this batch before submitting.');
+        setSubmitState('idle');
+        return;
+      }
+      vendorRequestStarted = true;
       r = await ssSubmitOrder(built.order);
+      if (built.order._allSchoolSubmissionToken) {
+        const readback = await ssGetOrders({ poNumber: built.order.poNumber });
+        const rows = Array.isArray(readback) ? readback : (readback?.Orders || readback?.orders || []);
+        const accepted = rows.filter(row => String(row.poNumber || row.PoNumber || row.PONumber || '').trim() === built.order.poNumber);
+        const sentOrders = Array.isArray(r.raw) ? r.raw : (r.raw?.Orders || r.raw?.orders || [r.raw]);
+        const orderId = row => String(row?.orderNumber || row?.OrderNumber || '').trim();
+        const expectedIds = sentOrders.map(orderId).filter(Boolean).sort();
+        const actualIds = accepted.map(orderId).filter(Boolean).sort();
+        if (!expectedIds.length || JSON.stringify(expectedIds) !== JSON.stringify(actualIds)) {
+          throw new Error('S&S readback did not match the placed order IDs. Verify this PO before another submission.');
+        }
+        const checked = reconcileVendorLines(built.merged || [], { raw: accepted, lineErrors: r.lineErrors || [] }, line => line.sku);
+        if (!checked.verified || !exactVendorLineQuantities(built.merged || [], accepted, line => line.sku)) {
+          throw new Error('S&S acceptance could not be verified in full. Verify this PO before another submission.');
+        }
+        r = { ...r, raw: accepted, confirmation: 'supplier-readback' };
+      }
     } catch (e) {
+      if (vendorRequestStarted && onSubmitError) {
+        try { await onSubmitError(e); }
+        catch (_) {
+          setErrorMsg('The supplier request outcome could not be recorded. Verify this PO before another submission.');
+          setSubmitState('error');
+          return;
+        }
+      }
       setErrorMsg(e.message || 'Submit failed — try again or order manually on ssactivewear.com.');
       setSubmitState('error');
       return;
@@ -304,11 +339,11 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                 Do NOT submit or re-order this batch — record the PO on the sales order manually and remove the queue entries, or the batch will look unordered and get double-ordered.
               </div>}
             </div>
-          ) : submitState === 'error' ? (
+          ) : errorMsg ? (
             <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#991b1b' }}>
-              <strong>✗ S&S did not accept the order — nothing was placed.</strong>
+              <strong>S&S submission needs review.</strong>
               <div style={{ marginTop: 4, fontFamily: 'monospace' }}>{errorMsg}</div>
-              <div style={{ marginTop: 6 }}>Fix the issue and retry, or place this order manually on ssactivewear.com.</div>
+              <div style={{ marginTop: 6 }}>Verify the supplier PO and its portal record before submitting this purchase again.</div>
             </div>
           ) : live ? (
             <div style={{ padding: 10, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
@@ -529,16 +564,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                       <td style={td}>
                         <WarehouseChips
                           loading={l.sku ? whseBySku === null : false}
-                          entries={rankWarehouses(
-                            stockRows.map(w => {
-                              const days = transitDays[w.abbr];
-                              const known = Object.keys(transitDays).length > 0;
-                              // With transit data, rank purely by S&S's delivery days; the `closest`
-                              // flag only stands in when the transit lookup failed.
-                              return { label: w.abbr, city: [SS_WAREHOUSES[w.abbr] || w.abbr, days != null ? `${days}-day transit` : ''].filter(Boolean).join(' · '), qty: w.qty, closest: known ? false : w.closest, ...(days != null ? { dist: days } : {}) };
-                            }),
-                            l.quantity
-                          ).filter(e => e.primary)}
+                          entries={routing.expectedBySku[sku] || []}
                         />
                         {short && <div style={{ marginTop: 3, fontSize: 10, fontWeight: 800, color: '#c2410c' }}>{available <= 0 ? 'OUT OF STOCK' : `SHORT — ${available} available / ${l.quantity} needed`}</div>}
                       </td>
@@ -551,7 +577,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
               {lines.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8' }}>No line items.</div>}
               {lines.length > 0 && (
                 <div style={{ padding: '6px 10px', fontSize: 11, color: '#64748b', background: '#f8fafc', borderTop: '1px solid #f1f5f9' }}>
-                  📦 = expected ship-from warehouse: the one with stock and the fewest delivery days to this ship-to, per S&S's transit data. Orders are sent with S&S's "fastest" setting, so lines can split across warehouses. Hover the chip for transit days and current stock; after submitting, the warehouse S&S actually assigned is shown and saved on the PO.
+                  📦 = expected ship-from warehouse. {routing.warehouse ? `This order requests ${SS_WAREHOUSES[routing.warehouse] || routing.warehouse} for all lines: it is nearby and has enough stock for every size. If stock changes, S&S may return unfilled lines for review.` : 'S&S selects the fastest stocked warehouses; this order may split. Proximity breaks transit-time ties, rather than stock quantity.'} Hover the chip for transit days and current stock; after submitting, the warehouse S&S actually assigned is shown and saved on the PO.
                 </div>
               )}
             </div>

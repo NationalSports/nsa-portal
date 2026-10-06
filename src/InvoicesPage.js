@@ -7,6 +7,7 @@ import React from 'react';
 import { useAppData } from './AppContext';
 import { D_V, PRINT_CSS, orderedSizeKeys } from './constants';
 import { supabase, _dbSaveInvoice, _dbCreateInvoiceCreditMemo, _fetchHistInvoiceLines } from './lib/dbEngine';
+import { canReceivePayments } from './lib/receivePaymentsAccess';
 import { safeArt, safeDecos, safeItems, safeNum, safePicks, safeSizes, soLineKey } from './safeHelpers';
 import { isCommissionRep } from './businessLogic';
 import { applyHistoricalInvoicePayment, historicalInvoiceAr } from './lib/historicalInvoiceAr';
@@ -17,6 +18,7 @@ import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoic
 import { invoiceTotalsRows, invoiceMismatchAlert } from './lib/invoiceDocTotals';
 import { stripePaymentRepairCandidate } from './lib/invoicePaymentReconciliation';
 import { invoiceDetailBalance, invoicePaymentStatus, normalizeInvoiceForDetail } from './lib/invoiceDetail';
+import { invoiceFollowUpBaseMs, invoiceFollowUpDate } from './lib/invoiceFollowUp';
 
 // The sent_history entry Brevo told us never arrived (hard bounce / blocked / spam).
 // Read from history rather than the client-only _delivery_* fields so the failure is
@@ -35,7 +37,7 @@ function AutoRunOnce({run}){
 }
 
 export default function InvoicesPage(){
-  const {CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,voidInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setCust,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
+  const {setRpPrefill,CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,voidInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setCust,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
 
     // Move ONE invoice to another rep (invoices.rep_id). Clearing it ('') returns the invoice to
     // the account rep. This replaced changeDocRep() here: that wrote customers.primary_rep_id, so
@@ -495,7 +497,7 @@ export default function InvoicesPage(){
               {inv.email_status==='sent'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#fef3c7',color:'#92400e',fontWeight:600}}>{emailDeliveryLabel((inv.sent_history||[]).slice(-1)[0])||'✉️ Sent'}</span>}
               {inv.email_status==='opened'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>👁️ Opened {inv.email_opened_at||''}</span>}
               {inv.email_status==='failed'&&<span title={_deliveryFailure(inv)?.delivery_reason||'The email provider rejected this address.'} style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#fee2e2',color:'#b91c1c',fontWeight:700}}>⚠️ Not delivered — pay link never arrived</span>}
-              {inv.follow_up_at&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:new Date(inv.follow_up_at)<new Date()?'#fef2f2':'#fffbeb',color:new Date(inv.follow_up_at)<new Date()?'#dc2626':'#92400e',fontWeight:600}}>⏰ Follow-up {new Date(inv.follow_up_at).toLocaleDateString()}{new Date(inv.follow_up_at)<new Date()?' (overdue)':''}</span>}
+              {inv.follow_up_at&&(()=>{const _fu=invoiceFollowUpDate(inv);const _od=_fu<new Date();return<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:_od?'#fef2f2':'#fffbeb',color:_od?'#dc2626':'#92400e',fontWeight:600}}>⏰ Follow-up {_fu.toLocaleDateString()}{_od?' (overdue)':''}</span>})()}
             </div>
             {(inv.sent_history||[]).length>0?(inv.sent_history||[]).map((h,hi)=><div key={hi} style={{fontSize:11,color:'#64748b',display:'flex',alignItems:'center',gap:6,marginBottom:2}}>
               <span style={{color:'#2563eb'}}>✉️</span>
@@ -846,11 +848,11 @@ export default function InvoicesPage(){
                 <div style={{fontSize:11,color:'#64748b'}}>{[f.delivery_to||f.to,f.delivery_reason||f.delivery_event,f.delivery_at?new Date(f.delivery_at).toLocaleString():null].filter(Boolean).join(' · ')||'Rejected by the recipient mail server'}</div>
                 <div style={{fontSize:11,color:'#b91c1c',marginTop:2}}>Check the address, then resend — or send the portal pay link from your own email.</div></div>
               </div>})()}
-              {inv.follow_up_at&&<div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:new Date(inv.follow_up_at)<new Date()?'#fef2f2':'#fffbeb',borderRadius:6,border:'1px solid '+(new Date(inv.follow_up_at)<new Date()?'#fecaca':'#fde68a'),marginTop:4}}>
+              {inv.follow_up_at&&(()=>{const _fu=invoiceFollowUpDate(inv);const _od=_fu<new Date();return<div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:_od?'#fef2f2':'#fffbeb',borderRadius:6,border:'1px solid '+(_od?'#fecaca':'#fde68a'),marginTop:4}}>
                 <span style={{fontSize:16}}>⏰</span>
-                <div><div style={{fontSize:13,fontWeight:600,color:new Date(inv.follow_up_at)<new Date()?'#dc2626':'#92400e'}}>Follow-up {new Date(inv.follow_up_at)<new Date()?'overdue':'scheduled'}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>{new Date(inv.follow_up_at).toLocaleDateString()}</div></div>
-              </div>}
+                <div><div style={{fontSize:13,fontWeight:600,color:_od?'#dc2626':'#92400e'}}>Follow-up {_od?'overdue':'scheduled'}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{_fu.toLocaleDateString()}</div></div>
+              </div>})()}
             </div>
             {/* Coach Activity */}
             {(()=>{const coachEvents=[];
@@ -1564,7 +1566,9 @@ export default function InvoicesPage(){
                 // Automated follow-ups (server sweep) take priority; else fall back to the manual todo reminder.
                 // Never arm auto-sends off a failed initial email — the customer hasn't heard from us yet.
                 const _siAuto=si.followUp&&si.followUp.auto&&res.ok;
-                const fuAt=_siAuto?new Date(Date.now()+((si.followUp.firstDays||3)*86400000)).toISOString():(si.followUpDays?new Date(Date.now()+si.followUpDays*86400000).toISOString():null);
+                // Count from the later of now and the invoice date — a future-dated invoice isn't due for follow-up yet.
+                const _siFuBase=invoiceFollowUpBaseMs(siInv,Date.now());
+                const fuAt=_siAuto?new Date(_siFuBase+((si.followUp.firstDays||3)*86400000)).toISOString():(si.followUpDays?new Date(_siFuBase+si.followUpDays*86400000).toISOString():null);
                 const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'invoice',methods:['email',...(si.smsEnabled?['sms']:[])],to:toEmails.join(', '),messageId:res.messageId||null};
                 const _siAutoCols=_siAuto?{follow_up_auto:true,follow_up_interval_days:si.followUp.intervalDays||0,follow_up_message:si.followUp.message||'',follow_up_to:toEmails.join(', '),follow_up_max:si.followUp.max||4,follow_up_count:0,follow_up_last_sent_at:null}:{follow_up_auto:false,follow_up_interval_days:null,follow_up_message:null,follow_up_to:null,follow_up_max:null,follow_up_count:0,follow_up_last_sent_at:null};
                 setInvs(prev=>prev.map(i=>i.id===si.inv.id?{...i,email_status:'sent',email_sent_at:new Date().toLocaleString(),follow_up_at:fuAt,sent_history:[...(i.sent_history||[]),histEntry],..._siAutoCols}:i));
@@ -2001,7 +2005,7 @@ export default function InvoicesPage(){
             <div><h2 style={{margin:0}}>{g.customer?.name||'Unknown Customer'}</h2>
               <span style={{fontSize:11,color:'#64748b'}}>{g.customer?.alpha_tag} · {g.invoices.length} invoice{g.invoices.length!==1?'s':''}</span></div>
             <div style={{display:'flex',alignItems:'center',gap:12}}>
-              {(()=>{const openInvs=g.invoices.filter(i=>i.status!=='paid'&&i.status!=='void'&&i._bal>0);return openInvs.length>0&&<button className="btn btn-sm" style={{background:'#dcfce7',color:'#166534',border:'1px solid #86efac',fontSize:11,fontWeight:600,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();const sorted=[...openInvs].sort((a,b)=>(b._age||0)-(a._age||0));const inv=sorted[0];setPayModal({inv,amount:inv._bal,method:'check',ref:''})}} title={'Record a payment ('+openInvs.length+' open invoice'+(openInvs.length===1?'':'s')+')'}>💰 Receive Payment</button>})()}
+              {(()=>{const openInvs=g.invoices.filter(i=>i.status!=='paid'&&i.status!=='void'&&i._bal>0);return openInvs.length>0&&<button className="btn btn-sm" style={{background:'#dcfce7',color:'#166534',border:'1px solid #86efac',fontSize:11,fontWeight:600,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();if(canReceivePayments(cu)&&setRpPrefill&&g.customer){setRpPrefill({customerId:g.customer.id});setPg('receive_payments');return}const sorted=[...openInvs].sort((a,b)=>(b._age||0)-(a._age||0));const inv=sorted[0];setPayModal({inv,amount:inv._bal,method:'check',ref:''})}} title={'Record a payment ('+openInvs.length+' open invoice'+(openInvs.length===1?'':'s')+')'}>💰 Receive Payment</button>})()}
               {overdueAmt>0&&g.customer&&<button className="btn btn-sm" style={{background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',fontSize:11,fontWeight:600,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();const overdueInvs=g.invoices.filter(i=>i._overdue&&i._bal>0);if(overdueInvs.length===0)return;const ownContacts=(g.customer.contacts||[]).filter(ct=>ct.email);const inheritedBilling=getBillingContacts(g.customer,cust).filter(a=>a._inherited_from&&a.email&&!ownContacts.find(o=>o.email===a.email));const allContacts=[...ownContacts.map(ct=>({email:ct.email,name:ct.name||'',role:ct.role||''})),...inheritedBilling.map(a=>({email:a.email,name:a.name||'',role:a.role||'',_inherited_from:a._inherited_from}))];const billingEmails=new Set(getBillingContacts(g.customer,cust).map(b=>b.email));const checked={};allContacts.forEach(ct=>{checked[ct.email]=billingEmails.has(ct.email)});if(Object.values(checked).every(v=>!v)&&allContacts.length>0)checked[allContacts[0].email]=true;const greetName=getBillingContacts(g.customer,cust)[0]?.name||(g.customer.contacts||[])[0]?.name||'Coach';const customerObj={customer:g.customer,invoices:overdueInvs,contacts:allContacts,checked,customEmail:'',customEmails:[],total:overdueInvs.reduce((a,i)=>a+i._bal,0)};setPdBulkModal({customers:[customerObj],options:{includeStatement:true,includePayLink:true},senderKey:cu?.email?'rep':'accounting',message:'Hi '+greetName+',\n\nA gentle reminder that we have invoice(s) on your account that have moved past their due date. Please find your account statement below — you can review and pay open balances anytime through your customer portal.\n\nLet us know if you have any questions, or if any of these have already been paid and just need to be reconciled on our end.\n\nThank you,\nNSA Team',sending:false,progress:{done:0,total:0,sent:0,failed:0}})}}>📧 Email Past-Due</button>}
               <div style={{textAlign:'right'}}>
                 <div style={{fontSize:18,fontWeight:800,color:'#0f172a'}}>${openBal.toLocaleString()} <span style={{fontSize:11,fontWeight:400,color:'#64748b'}}>open</span></div>

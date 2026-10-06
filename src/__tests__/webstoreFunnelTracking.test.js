@@ -242,20 +242,46 @@ describe('fundraising owed is the same everywhere', () => {
 
 describe('rep digest: closing-this-week alert', () => {
   test('flags carts that have not ordered', () => {
-    const line = digest.closingLine({ daysLeft: 3, visitors: 90, cartAdders: 40, purchasers: 12, notOrdered: 28 });
-    expect(line).toMatch(/closes in 3 days/);
-    expect(line).toMatch(/28 still haven't ordered/);
-    expect(digest.closingLine({ daysLeft: 1, visitors: 0 })).toMatch(/within a day · no shopper visits/);
+    expect(digest.closingLine({ daysLeft: 3, visitors: 90, cartAdders: 40, purchasers: 12, notOrdered: 28 })).toMatch(/28 shoppers added to cart but haven't ordered/);
+    expect(digest.closingLine({ daysLeft: 1, visitors: 0 })).toMatch(/No shopper visits/);
   });
 
   test('a rep with only closing stores still gets a useful subject and email', () => {
-    const closing = [{ store: { id: 's1', name: 'Lincoln <Soccer>', rep_id: 'r' }, daysLeft: 2, visitors: 10, cartAdders: 5, purchasers: 1, notOrdered: 4 }];
+    const closing = [{ store: { id: 's1', name: 'Lincoln <Soccer>', slug: 'lincoln', rep_id: 'r', close_at: '2026-10-05T06:59:00Z', coach_contact_email: 'coach@school.edu', _stats: { orders: 12, items: 30, sales: 845.5, fund: 0 } }, notice: 'week', daysLeft: 2, visitors: 10, cartAdders: 5, purchasers: 1, notOrdered: 4 }];
     expect(digest.digestSubject([], [], 'Monday', closing)).toBe('Lincoln <Soccer> closes this week (Monday)');
     expect(digest.digestSubject([], [], 'Monday', [...closing, ...closing])).toBe('2 of your stores close this week (Monday)');
-    const html = digest.buildDigestHtml({ rep: { name: 'Sam' }, storesArr: [], closed: [], closing, dayLabel: 'Monday', portal: 'https://p' });
-    expect(html).toContain('Closing this week');
+    expect(digest.digestSubject([], [], 'Monday', [{ ...closing[0], notice: 'tomorrow' }])).toBe('Lincoln <Soccer> closes tomorrow (Monday)');
+    const html = digest.buildDigestHtml({ rep: { name: 'Sam Smith' }, storesArr: [], closed: [], closing, dayLabel: 'Monday', portal: 'https://p' });
+    expect(html).toContain('Closing soon');
     expect(html).toContain('Lincoln &lt;Soccer&gt;');
-    expect(html).toContain('4 still haven\'t ordered');
+    expect(html).toContain('4 shoppers added to cart but haven\'t ordered');
+    expect(html).toContain('$846');
+    expect(html).toContain('mailto:coach@school.edu');
+    expect(html).toContain('Last%20call');
+    expect(html).toContain('https://p/?pg=webstores&amp;store=s1&amp;tab=analytics');
+    expect(html).toContain('https://p/shop/lincoln');
+  });
+
+  test('coach note is only offered with a real email, and signs with the rep name', () => {
+    const c = { store: { id: 's1', name: 'Tennis', slug: 't', close_at: '2026-10-05T06:59:00Z', coach_contact_email: 'a@b.co' }, notice: 'tomorrow', daysLeft: 1, notOrdered: 2 };
+    const m = decodeURIComponent(digest.coachMailto(c, 'https://p', 'Steve'));
+    expect(m).toContain('closes tomorrow');
+    expect(m).toContain('2 shoppers have items in their cart');
+    expect(m).toContain('https://p/shop/t');
+    expect(m).toMatch(/Steve$/);
+    expect(digest.coachMailto({ ...c, store: { ...c.store, coach_contact_email: '' } }, 'https://p', 'Steve')).toBe('');
+  });
+
+  test('alerts only the first morning inside the week, and the day before close', () => {
+    const close = '2026-10-05T06:59:00Z'; // Sun Oct 4, 11:59 PM PT
+    const at = (iso) => new Date(iso);
+    const store = { close_at: close, closing_week_notice_close_at: null };
+    expect(digest.closingNotice(store, at('2026-09-29T09:11:00Z'))).toBe('week');
+    expect(digest.closingNotice({ ...store, closing_week_notice_close_at: close }, at('2026-09-30T09:11:00Z'))).toBeNull();
+    expect(digest.closingNotice({ ...store, closing_week_notice_close_at: close }, at('2026-10-03T09:11:00Z'))).toBe('tomorrow');
+    expect(digest.closingNotice({ ...store, closing_week_notice_close_at: close }, at('2026-10-04T09:11:00Z'))).toBeNull();
+    // Close date moved → a fresh week notice for the new date.
+    expect(digest.closingNotice({ ...store, closing_week_notice_close_at: '2026-09-28T06:59:00Z' }, at('2026-09-30T09:11:00Z'))).toBe('week');
   });
 
   test('closed stores link to the portal Orders tab and show whole-store totals', () => {
@@ -271,11 +297,14 @@ describe('rep digest: closing-this-week alert', () => {
 
   test('loads open stores closing within 7 days and survives a tracking error', async () => {
     const now = new Date('2026-09-23T12:00:00Z');
-    const q = { select: () => q, eq: () => q, not: () => q, gt: () => q, lte: () => Promise.resolve({ data: [{ id: 's1', name: 'A', rep_id: 'r', close_at: '2026-09-26T12:00:00Z', status: 'open' }] }) };
+    const q = { select: () => q, eq: () => q, not: () => q, gt: () => q, lte: () => Promise.resolve({ data: [
+      { id: 's1', name: 'A', rep_id: 'r', close_at: '2026-09-26T12:00:00Z', status: 'open' },
+      { id: 's2', name: 'B', rep_id: 'r', close_at: '2026-09-27T12:00:00Z', status: 'open', closing_week_notice_close_at: '2026-09-27T12:00:00Z' },
+    ] }) };
     const admin = { from: () => q, rpc: () => Promise.reject(new Error('boom')) };
     const out = await digest.loadClosingSoon(admin, now);
-    expect(out).toHaveLength(1);
-    expect(out[0]).toMatchObject({ daysLeft: 3, visitors: 0, notOrdered: 0 });
+    expect(out).toHaveLength(1); // s2 already got its week-out notice
+    expect(out[0]).toMatchObject({ notice: 'week', daysLeft: 3, visitors: 0, notOrdered: 0 });
   });
 });
 

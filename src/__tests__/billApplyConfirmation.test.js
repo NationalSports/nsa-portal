@@ -22,6 +22,7 @@ const context=(orders=[],inventory=[],batches=[])=>{
     _liveBillPushHoldReasons:()=>[],_soPoAutoMappings:()=>null,_docAlreadyApplied:()=>false,
     _applyBillByMappings:()=>false,_applyBillToBatchSOs:()=>{},_alignSize:x=>x,_learnAliasesFromBill:()=>{},duplicateBillDetail,
     _siMarkDoc:jest.fn(),resolveMappedSoItemIndex:(items,mp)=>items.findIndex(i=>i.id===mp.item_id),
+    _autoSendBillsToQB:jest.fn(),portalAlreadyApplied:false,
   };
   c.setSOs=update=>{c.sos=typeof update==='function'?update(c.sos):update};
   c.setInvPOs=update=>{c.invPOs=typeof update==='function'?update(c.invPOs):update};
@@ -32,7 +33,7 @@ const context=(orders=[],inventory=[],batches=[])=>{
   const stageStart=source.indexOf('    const _billStages=');
   const stageEnd=source.indexOf('    // Apply parsed bill data',stageStart);
   vm.runInContext(source.slice(stageStart,stageEnd),c);
-  for(const name of ['_decoBillDup','_applyDecorationBillManually','_applyDecorationBillToSO','applyBillToSO','_confirmPortalBill','_applyBillsToPortal','_retryBillSave','_applyCreditToPortal']){
+  for(const name of ['_decoBillDup','_applyDecorationBillManually','_applyDecorationBillToSO','applyBillToSO','_confirmPortalBill','_applyBillsToPortal','_applyBillsToPortalThenQB','_retryBillSave','_applyCreditToPortal']){
     vm.runInContext(fn(name)+'\nthis.'+name+'='+name,c);
   }
   return c;
@@ -159,4 +160,13 @@ test.each(['automatic','manual'])('%s decoration bill already on the deco PO is 
   expect(b.parsed._applied).toBeUndefined();expect(c._dbSaveSO).not.toHaveBeenCalled();expect(c._recordAppliedBills).not.toHaveBeenCalled();
   await new Promise(r=>setTimeout(r,0));
   expect(c.nf).toHaveBeenCalledWith(expect.stringContaining('already billed on deco PO DPO1'),'error');
+});
+
+test('actual QBO completion block never re-applies a bill auto-send just applied to the Portal',async()=>{
+  const c=context([{id:'SO1',items:[],deco_pos:[]}]);c.b=decoBill();c.bill=c.b.parsed;c.qboBillId='MOCK';c.portalAlreadyApplied=true;
+  c._applyBillsToPortal=jest.fn(async()=>1);
+  const start=source.indexOf('          const portalWasAlreadyApplied=');const end=source.indexOf('          const action=created?',start);
+  await vm.runInContext('(async()=>{'+source.slice(start,end)+'})()',c);
+  expect(c._applyBillsToPortal).not.toHaveBeenCalled();expect(c._dbSaveSO).not.toHaveBeenCalled();
+  expect(c.b.portalStatus).toBe('success');expect(c.b.portalMsg).toBe('Applied to Portal; QuickBooks bill sent automatically');
 });

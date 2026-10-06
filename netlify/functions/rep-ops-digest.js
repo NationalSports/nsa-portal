@@ -181,7 +181,7 @@ exports.handler = async (event) => {
     // invoiced" money-recovery bucket must see orders closed without invoicing;
     // webstore/promo orders never invoice, so they don't widen the set).
     const headers = await loadAll(admin, 'sales_orders',
-      'id,customer_id,created_by,status,expected_date,updated_at,memo,deleted_at,_shipping_status,_ship_date,ship_preference,delivered,source,promo_applied');
+      'id,customer_id,created_by,status,expected_date,updated_at,memo,deleted_at,_shipping_status,_ship_date,ship_preference,delivered,source,promo_applied,no_invoice_needed');
     const orders = headers.filter((o) => !o.deleted_at && !DEAD_STATUS.has(o.status) &&
       (o.status !== 'complete' || inWin(o._ship_date) || inWin(o.updated_at) ||
         (!invoicedSoIds.has(o.id) && !o.promo_applied && o.source !== 'webstore')));
