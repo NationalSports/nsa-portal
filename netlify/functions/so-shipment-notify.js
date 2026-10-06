@@ -19,6 +19,7 @@
 //
 // Layout lives in _soShipmentEmail.js (pure, unit-tested); this file is the IO.
 
+const { queueRepShipmentEmail } = require('./_repShipmentNotice');
 const { verifyUser } = require('./_shared');
 const { buildSoShipmentEmail, buildShipmentLines, boxContents, remainingUnits, carrierLabel, garmentMockKey, repBannerHtml, withRepBanner } = require('./_soShipmentEmail');
 
@@ -113,7 +114,7 @@ async function sendShipmentNotice(admin, opts = {}) {
   const j = jj;
   try {
     const { data: so, error: soErr } = await admin.from('sales_orders')
-      .select('id,customer_id,ship_to_id,_shipments,_carrier,_ship_date,_tracking_number,_tracking_url,deliver_on_date,deleted_at')
+      .select('id,customer_id,rep_id,ship_to_id,_shipments,_carrier,_ship_date,_tracking_number,_tracking_url,deliver_on_date,deleted_at')
       .eq('id', soId).maybeSingle();
     if (soErr) return j(500, { error: soErr.message });
     if (!so || so.deleted_at) return j(404, { error: 'Sales order not found' });
@@ -198,8 +199,8 @@ async function sendShipmentNotice(admin, opts = {}) {
     const [itemsRes, artRes, repRes] = await Promise.all([
       admin.from('so_items').select('id,sku,name,brand,color,sizes,item_index').eq('so_id', so.id).order('item_index'),
       admin.from('so_art_files').select('id,item_mockups,mockup_files,files,archived').eq('so_id', so.id),
-      customer.primary_rep_id
-        ? admin.from('team_members').select('id,name,email,phone').eq('id', customer.primary_rep_id).maybeSingle()
+      (so.rep_id || customer.primary_rep_id)
+        ? admin.from('team_members').select('id,name,email,phone').eq('id', so.rep_id || customer.primary_rep_id).maybeSingle()
         : Promise.resolve({ data: null }),
     ]);
     if (itemsRes.error) return j(500, { error: itemsRes.error.message });
@@ -445,14 +446,13 @@ async function sendShipmentNotice(admin, opts = {}) {
         ],
       });
       try {
-        const { res: cr, result: cresult } = await brevo({
+        const copy = await queueRepShipmentEmail(admin, { soId: so.id, shipmentIds: selected.map(s => String(s.id)), kind: 'coach-copy', payload: {
           sender: repNoticeSender,
           to: [{ email: repEmail, name: rep.name || '' }],
           subject: `Sent to ${recipient.name || recipient.email}: ${subject}`,
           htmlContent: withRepBanner(html, banner),
-        });
-        repCopy = cr.ok ? 'sent' : 'failed';
-        if (!cr.ok) console.error('[so-shipment-notify] rep copy failed', cr.status, cresult && (cresult.message || cresult.code));
+        } });
+        repCopy = copy.status;
       } catch (e) {
         repCopy = 'failed';
         console.error('[so-shipment-notify] rep copy failed', e.message);

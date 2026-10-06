@@ -419,3 +419,8 @@
 [functions."all-school-dtf-scheduled"]
   schedule = "*/15 * * * *"
   timeout = 26
+
+# Retry rep-only warehouse notices and rep copies independently of coach sends.
+[functions."so-rep-shipment-sweep"]
+  schedule = "*/5 * * * *"
+  timeout = 26

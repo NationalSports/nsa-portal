@@ -1,3 +1,4 @@
+/** @jest-environment node */
 /* so-shipment-notify: the coach shipping-notice endpoint.
  *
  * _shared is mocked so the handler never needs Supabase credentials — what
@@ -63,14 +64,20 @@ let missingTables;
 // no-op and awaiting the builder yields that table's rows. Writes are recorded.
 function fakeAdmin() {
   return {
+    async rpc() {
+      const pending=(rows.so_rep_shipment_outbox||[]).filter(r=>r.status==='pending');
+      pending.forEach(r=>{r.status='processing';r.attempts=(r.attempts||0)+1});
+      return {data:pending,error:null};
+    },
     from(table) {
       const missing = missingTables.has(table);
       const err = missing ? { code: '42P01', message: `relation "public.${table}" does not exist` } : null;
       const q = {
         _write: null,
         select: () => q, eq: () => q, in: () => q, order: () => q, limit: () => q,
-        update(vals) { q._write = { op: 'update', vals }; return q; },
-        upsert(vals, opts) { q._write = { op: 'upsert', vals, opts }; return q; },
+        update(vals) { if(table==='so_rep_shipment_outbox') Object.assign(rows[table][0],vals); q._write = { op: 'update', vals }; return q; },
+        upsert(vals, opts) { if(table==='so_rep_shipment_outbox') {rows[table]=rows[table]||[];if(!rows[table].some(r=>r.id===vals.id))rows[table].push({...vals,status:'pending',attempts:0})} q._write = { op: 'upsert', vals, opts }; return q; },
+        single: async () => ({data:(rows[table]||[])[0],error:err}),
         maybeSingle: async () => ({ data: err ? null : ((rows[table] || [])[0] || null), error: err }),
         then: (res, rej) => Promise.resolve(
           err ? { data: null, error: err }
@@ -211,7 +218,8 @@ describe('the ledger', () => {
   test('records the send in so_shipment_notices and touches nothing on sales_orders', async () => {
     const res = await call({ soId: 'NSA-18402' });
     expect(res.body.historyRecorded).toBe(true);
-    expect(writes).toHaveLength(1);
+    expect(writes.filter(w=>w.table==='so_shipment_notices')).toHaveLength(1);
+    expect(writes.some(w=>w.table==='sales_orders')).toBe(false);
     expect(writes[0].table).toBe('so_shipment_notices');
     expect(writes[0].op).toBe('upsert');
     expect(writes[0].opts).toEqual({ onConflict: 'so_id,shipment_sig' });
@@ -433,7 +441,8 @@ describe("the rep's copy", () => {
       .mockImplementationOnce(async () => ({ ok: false, status: 500, json: async () => ({ message: 'down' }) }));
     const res = await call({ soId: 'NSA-18402' });
     expect(res.status).toBe(200);
-    expect(res.body.repCopy).toBe('failed');
+    expect(res.body.repCopy).toBe('queued');
+    expect(rows.so_rep_shipment_outbox[0]).toMatchObject({status:'pending',attempts:1});
     expect(writes.find((w) => w.table === 'so_shipment_notices').vals.sent_to).toBe('coach@bolsa.org');
   });
 
