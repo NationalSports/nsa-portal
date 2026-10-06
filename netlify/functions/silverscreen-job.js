@@ -20,9 +20,51 @@
 // Screen even before the field map is confirmed. POST { action:'discover' } returns
 // the parsed form schema; { dry_run:true } on create returns exactly what would be
 // posted without posting.
-const { corsHeaders, verifyUser } = require('./_shared');
+const { corsHeaders, verifyUser, getSupabaseAdmin } = require('./_shared');
 
 const BASE = 'https://portal.silverscreenprinting.com';
+
+// Send Silver Screen the number that is actually ON the garment.
+//
+// We buy adidas Team goods through S&S under S&S style numbers (AT101-50), and S&S
+// ships them without re-tagging — the piece that lands at the decorator carries
+// adidas' own article number (JX4452). Sending our purchase style meant their
+// packing slip never matched the tag, so nobody could confirm a piece was right
+// (Trinity Lyle, 2026-08-25). We swap in the adidas article and keep the S&S style
+// alongside it, so the paperwork matches the tag AND still ties back to our PO.
+//
+// rank = 1 is the article we are most likely shipping (the one we hold most of in
+// stock). Styles with no adidas counterpart catalogued, and non-adidas goods, keep
+// their own SKU untouched. A lookup failure is never fatal: the job still goes out
+// with S&S numbers, exactly as it did before, and the reason lands in the diag.
+async function applyAdidasArticles(body, diag) {
+  const rows = [...(body.items || []), ...(body.deco_instructions || [])];
+  const skus = [...new Set(rows.map((r) => String(r && r.sku || '').trim()).filter(Boolean))];
+  if (!skus.length) return;
+
+  let map = new Map();
+  try {
+    const sb = getSupabaseAdmin();
+    const { data, error } = await sb.from('adidas_ss_sku_xref')
+      .select('ss_sku, adidas_article').eq('rank', 1).in('ss_sku', skus);
+    if (error) throw new Error(error.message);
+    for (const r of data || []) if (r.adidas_article) map.set(r.ss_sku, r.adidas_article);
+  } catch (e) {
+    diag.skuXref = 'adidas article lookup failed (' + (e && e.message || e) + ') — sent S&S style numbers';
+    return;
+  }
+  if (!map.size) return;
+
+  const swapped = [];
+  for (const r of rows) {
+    const article = map.get(String(r && r.sku || '').trim());
+    if (!article || article === r.sku) continue;
+    r.ss_sku = r.sku;   // kept for the job sheet's cross-reference
+    r.sku = article;
+    swapped.push(r.ss_sku + '→' + article);
+  }
+  if (swapped.length) diag.skuXref = 'adidas articles applied: ' + [...new Set(swapped)].join(', ');
+}
 
 function makeJar() {
   const jar = {};
@@ -219,11 +261,18 @@ function buildJobSheet(p) {
   }
   lines.push('', 'Items:');
   let total = 0;
+  let anyXref = false;
   for (const it of p.items || []) {
     const sizes = Object.entries(it.sizes || {}).map(([sz, q]) => sz + ':' + q).join(' ');
     total += Number(it.qty) || 0;
-    lines.push('  ' + [it.sku, it.name, it.color].filter(Boolean).join(' — ') + ' — ' + sizes + ' (' + (it.qty || 0) + ')');
+    // it.sku is the adidas article on the tag; it.ss_sku is the S&S style we bought
+    // under, shown so the line still ties back to our PO and their invoice.
+    if (it.ss_sku) anyXref = true;
+    const sku = it.sku + (it.ss_sku ? ' (S&S ' + it.ss_sku + ')' : '');
+    lines.push('  ' + [sku, it.name, it.color].filter(Boolean).join(' — ') + ' — ' + sizes + ' (' + (it.qty || 0) + ')');
   }
+  if (anyXref) lines.push('', 'SKUs above are the adidas article numbers printed on the garment tags; '
+    + 'the S&S style we ordered under is in brackets. Both describe the same piece.');
   lines.push('', 'Total pieces: ' + total);
   return lines.join('\n');
 }
@@ -606,6 +655,12 @@ exports.handler = async (event) => {
     if (!body.po || !body.po.po_id) return { statusCode: 400, headers, body: JSON.stringify({ error: 'Missing po.po_id' }) };
     if (!Array.isArray(body.items) || body.items.length === 0) return { statusCode: 400, headers, body: JSON.stringify({ error: 'No items to send' }) };
 
+    // Swap our S&S purchase styles for the adidas article numbers printed on the
+    // tags BEFORE anything is built from body — the job sheet, the product lines and
+    // the decoration notes all read body.items, and they must not disagree.
+    const xrefDiag = {};
+    await applyAdidasArticles(body, xrefDiag);
+
     const filled = fillForm(form, body);
     if (!filled.sheetIncluded && !filled.knownMapped) {
       // Neither the known field map nor a notes/textarea target matched — this isn't the
@@ -617,7 +672,7 @@ exports.handler = async (event) => {
     }
 
     if (body.dry_run) {
-      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, dry_run: true, action: form.action, assigned: filled.assigned, unmapped: filled.unmapped, would_post: Object.fromEntries(filled.params), job_sheet: filled.sheet }) };
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, dry_run: true, action: form.action, assigned: filled.assigned, unmapped: filled.unmapped, would_post: Object.fromEntries(filled.params), job_sheet: filled.sheet, sku_xref: xrefDiag.skuXref || 'no adidas articles applied' }) };
     }
 
     const resp = await ssFetch(jar, form.action, {
@@ -673,12 +728,14 @@ exports.handler = async (event) => {
         + (sheetDiag.shipTo ? ' | ship-to: ' + sheetDiag.shipTo : '') + (sheetDiag.products ? ' | products: ' + sheetDiag.products : '')
         + (sheetDiag.sizes ? ' | sizes: ' + sheetDiag.sizes : '') + (sheetDiag.sizesInfo ? ' | sizes: ' + sheetDiag.sizesInfo : '')
         + (sheetDiag.vas ? ' | vas: ' + sheetDiag.vas : '') + ']' : '';
+      const xrefStr = xrefDiag.skuXref ? ' [' + xrefDiag.skuXref + ']' : '';
       return {
         statusCode: 200, headers,
         body: JSON.stringify({ ok: true, order_id: idMatch ? idMatch[1] : '', order_url: loc.startsWith('http') ? loc : BASE + loc,
           sheet_posted: sheetPosted, ship_to_set: shipToSet, products_added: productsAdded, sheet_diag: sheetDiag,
+          sku_xref: xrefDiag.skuXref || '',
           assigned: filled.assigned, unmapped: filled.unmapped,
-          ...(todo.length ? { warning: 'Job ' + (idMatch ? '#' + idMatch[1] + ' ' : '') + 'created, but finish it on the Silver Screen portal — ' + todo.join('; ') + '.' + diagStr } : {}) })
+          ...(todo.length ? { warning: 'Job ' + (idMatch ? '#' + idMatch[1] + ' ' : '') + 'created, but finish it on the Silver Screen portal — ' + todo.join('; ') + '.' + diagStr + xrefStr } : {}) })
       };
     }
 
