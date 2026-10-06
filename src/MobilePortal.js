@@ -12,6 +12,7 @@ import { SZ_ORD } from './constants';
 import { numericSizeKeys } from './lib/opsRecap';
 import { calcSOStatus } from './components';
 import { orderProgress } from './lib/orderProgress';
+import { fetchStockForItems, stockCacheKey, normStockSize, shortSizes, SOURCE_LABEL } from './lib/mobileStock';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 
 // ─── Inline Icon (same SVG paths as main app) ───
@@ -88,7 +89,7 @@ const _msubFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveSOPOBatch,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxMerge,onBoxLabel,receipt,onReceiptDone,onPrintLabels,onNoteContactsAdded}){
+export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveSOPOBatch,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxMerge,onBoxLabel,receipt,onReceiptDone,onPrintLabels,onNoteContactsAdded,onConvertEstimate}){
   const isOps=cu.role==='warehouse'||cu.role==='production';// ops roles: no sales/financial reporting
   const _caTop=canAccess||(()=>true);// page-access check usable anywhere in the component
   const[tab,setTab]=useState(()=>_mtabFromUrl()||'home');
@@ -101,6 +102,11 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const[showSearch,setShowSearch]=useState(false);
   const[detail,setDetail]=useState(null);
   const[custTab,setCustTab]=useState({id:null,tab:'overview'});// account page tab, per account
+  // Vendor stock for lines in the quote builder, keyed by stockCacheKey (null = no feed for that style).
+  const[stockMap,setStockMap]=useState({});
+  const[convertAsk,setConvertAsk]=useState(null);// {est, date, busy} — in-hands date for estimate → sales order
+  const[convertedFrom,setConvertedFrom]=useState(null);// estimate id just converted; opens its new order once it appears
+  const[payLink,setPayLink]=useState(null);// {inv, url, qr} — pay-link sheet with QR code
   // Hamburger drawer
   const[drawerOpen,setDrawerOpen]=useState(false);
   // Filters & sorts (lifted to top level)
@@ -269,6 +275,29 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     return()=>{cancelled=true;clearTimeout(t);};
   },[newEstProdQ,searchProducts]);
 
+  // AI Notes drafts waiting for this rep's review (Today card). Quietly 0 before AI Notes is set up.
+  const[notesToReview,setNotesToReview]=useState(0);
+  useEffect(()=>{
+    if(!canNotes||!supabase||!cu?.id)return;let off=false;
+    supabase.from('meetings').select('id',{count:'exact',head:true}).eq('team_member_id',cu.id).eq('status','ready')
+      .then(({count,error})=>{if(!off)setNotesToReview(error?0:(count||0))},()=>{});
+    return()=>{off=true};
+  },[cu?.id,tab]);// eslint-disable-line react-hooks/exhaustive-deps
+  // After converting an estimate, open the new sales order as soon as it shows up.
+  useEffect(()=>{
+    if(!convertedFrom)return;
+    const so=sos.find(s=>s.estimate_id===convertedFrom);
+    if(so){setConvertedFrom(null);setDetail({type:'order',data:so});}
+  },[convertedFrom,sos]);
+  // Look up vendor stock for builder lines we haven't checked yet.
+  const _stockAsked=useRef(new Set());
+  useEffect(()=>{
+    const todo=(newEst?.items||[]).filter(it=>{const k=stockCacheKey(it);return k&&!_stockAsked.current.has(k)});
+    if(!todo.length)return;
+    todo.forEach(it=>_stockAsked.current.add(stockCacheKey(it)));
+    fetchStockForItems(todo).then(res=>setStockMap(m=>({...m,...res}))).catch(()=>{todo.forEach(it=>_stockAsked.current.delete(stockCacheKey(it)))});
+  },[newEst?.items]);// eslint-disable-line react-hooks/exhaustive-deps
+
   // Merge portal invoices with NetSuite-imported history (customer_invoices), normalized
   // to the portal invoice shape. History is read-only; status 'void' maps to 'cancelled'
   // so it stays out of open/AR views. Paid history has no true paid_date, so we fall back
@@ -411,6 +440,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           {soInvs.length>0&&<div className="mp-info-item"><div className="mp-info-label">Balance due</div><div className="mp-info-val" style={{fontSize:18,fontWeight:800,color:soBal>0.005?'#dc2626':'#16a34a'}}>{soBal>0.005?fmtMoney(soBal):'Paid'}</div><div style={{fontSize:11,color:'#64748b',marginTop:2}}>{fmtMoney(soInvs.reduce((a,i)=>a+(+i.total||0),0))} invoiced</div></div>}
         </div>
         <OrderProgress so={so}/>
+        {soInvs.filter(i=>!i._hist&&invBalance(i)>0.005).map(i=><button key={i.id} onClick={()=>openPayLink(i)} style={{width:'100%',marginTop:10,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'12px',background:'#16a34a',color:'white',borderRadius:10,fontWeight:700,fontSize:14,border:'none',cursor:'pointer',minHeight:44}}>💳 Pay link / QR · {i.id} · {fmtMoney(invBalance(i))}</button>)}
         {so.memo&&<div className="mp-memo">{so.memo}</div>}
         <div style={{display:'flex',gap:8,marginTop:12,marginBottom:4}}>
           {onSaveSO&&<button onClick={()=>startAddToSO(so)} style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#1e40af',color:'white',borderRadius:10,fontWeight:700,fontSize:13,border:'none',cursor:'pointer',minHeight:44}}>
@@ -583,6 +613,13 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           <div className="mp-info-item"><div className="mp-info-label">Total</div><div className="mp-info-val">{fmtMoney(est.total)}</div></div>
         </div>
         {est.memo&&<div className="mp-memo">{est.memo}</div>}
+        {(()=>{const editable=['draft','open','pending','sent'].includes(est.status||'draft');const btn={flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'12px 10px',borderRadius:10,fontWeight:700,fontSize:14,cursor:'pointer',minHeight:44};
+          if(!onSaveEstimate||(!editable&&est.status!=='approved'))return null;
+          return<div style={{display:'flex',gap:8,marginBottom:8}}>
+            {editable&&<button onClick={()=>startEditEstimate(est)} style={{...btn,background:'white',color:'#1e293b',border:'1px solid #e2e8f0'}}>✏️ Edit</button>}
+            {editable&&<button onClick={()=>{if(window.confirm('Mark '+est.id+' approved? Do this when the customer has said yes.'))markEstimateApproved(est)}} style={{...btn,background:'#dcfce7',color:'#166534',border:'1px solid #bbf7d0'}}>✓ Mark approved</button>}
+            {est.status==='approved'&&onConvertEstimate&&<button onClick={()=>setConvertAsk({est,date:'',busy:false})} style={{...btn,background:'#7c3aed',color:'white',border:'none'}}>→ Create sales order</button>}
+          </div>})()}
         {/* Send Estimate button */}
         <div style={{display:'flex',gap:8,marginBottom:16}}>
           <button onClick={()=>setSendEstModal(est)} style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'12px 16px',background:'#1e40af',color:'white',borderRadius:10,fontWeight:700,fontSize:14,border:'none',cursor:'pointer',minHeight:44}}>
@@ -754,6 +791,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           <button onClick={()=>setSendInvModal(inv)} style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'12px 16px',background:'#1e40af',color:'white',borderRadius:10,fontWeight:700,fontSize:14,border:'none',cursor:'pointer',minHeight:44}}>
             <MIcon name="mail" size={16}/> Send Invoice
           </button>
+          {invBalance(inv)>0.005&&<button onClick={()=>openPayLink(inv)} style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'12px 16px',background:'#16a34a',color:'white',borderRadius:10,fontWeight:700,fontSize:14,border:'none',cursor:'pointer',minHeight:44}}>💳 Pay link / QR</button>}
         </div>}
         {inv.so_id&&<div className="mp-list-card" onClick={()=>{const so=sos.find(s=>s.id===inv.so_id);if(so)setDetail({type:'order',data:so})}}>
           <div style={{fontSize:12,color:'#64748b'}}>Linked Order</div>
@@ -940,15 +978,50 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const saveNewEstimate=()=>{
     if(!newEst||!onSaveEstimate)return;
     const cc=newEst.customer_id?custObj(newEst.customer_id):null;
+    if(newEst._editId){
+      // Editing a saved estimate: keep everything else on it (art, shipping, promo, status) and
+      // replace only what the phone edits: memo and lines.
+      const orig=ests.find(e=>e.id===newEst._editId);
+      if(!orig){if(nf)nf('That estimate is no longer loaded. Reopen it and try again.','error');return}
+      const upd={...orig,memo:newEst.memo,items:newEst.items,art_files:newEst.art_files||orig.art_files||[],updated_at:new Date().toLocaleString()};
+      upd.total=calcOrderTotals(upd,cc?.tax_rate||0).grand;
+      const saved=onSaveEstimate(upd);
+      if(!saved)return;// save was refused; the reason is already on screen
+      setNewEst(null);
+      if(nf)nf(upd.id+' saved');
+      setDetail({type:'estimate',data:saved&&saved.id?saved:upd});
+      return;
+    }
     const mk=cc?.catalog_markup||1.65;
     const est={id:nextEstId(),customer_id:newEst.customer_id,memo:newEst.memo,status:'draft',created_by:cu.id,
       created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,
       shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:newEst.art_files||[],items:newEst.items};
     est.total=calcOrderTotals(est,cc?.tax_rate||0).grand;
     const saved=onSaveEstimate(est);
+    if(!saved)return;
     setNewEst(null);
-    if(nf)nf(saved.id+' created');
-    setDetail({type:'estimate',data:saved});
+    if(nf)nf((saved.id||est.id)+' created');
+    setDetail({type:'estimate',data:saved.id?saved:est});
+  };
+  // Open a saved estimate in the builder. Blocked while its lines are still loading so a
+  // half-loaded estimate can't be saved back without its decorations.
+  const startEditEstimate=(est)=>{
+    if(est._itemsHydrated===false||est._decosHydrated===false){if(nf)nf('This estimate is still loading. Try again in a moment.','error');return}
+    setNewEst({customer_id:est.customer_id,memo:est.memo||'',items:JSON.parse(JSON.stringify(est.items||[])),art_files:est.art_files||[],_editId:est.id});
+    setNewEstStep('details');setNewEstCustQ('');setNewEstProdQ('');setCatResults(null);setNewEstEditItem(null);
+  };
+  const markEstimateApproved=(est)=>{
+    if(!onSaveEstimate)return;
+    const saved=onSaveEstimate({...est,status:'approved',updated_at:new Date().toLocaleString()});
+    if(!saved)return;
+    if(nf)nf(est.id+' marked approved');
+    setDetail({type:'estimate',data:saved.id?saved:{...est,status:'approved'}});
+  };
+  const runConvert=async()=>{
+    const a=convertAsk;if(!a||a.busy||!a.date||!onConvertEstimate)return;
+    setConvertAsk({...a,busy:true});
+    try{await onConvertEstimate(a.est,a.date);setConvertedFrom(a.est.id);setConvertAsk(null);}
+    catch(e){if(nf)nf('Could not create the order: '+(e.message||e),'error');setConvertAsk({...a,busy:false});}
   };
 
   const renderNewEstimate=()=>{
@@ -988,7 +1061,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       return<div className="mp-detail">
         <div className="mp-detail-header">
           <button className="mp-back-btn" onClick={()=>{if(soMode){if(newEst.items.length>0&&!window.confirm('Discard added items?'))return;setNewEst(null)}else if(newEst.items.length===0)setNewEstStep('customer');else if(!window.confirm('Discard this estimate?'))return;else setNewEst(null)}}><MIcon name="back" size={22}/></button>
-          <div style={{flex:1}}><div className="mp-detail-id">{soMode?'Add Items':'New Estimate'}</div><div className="mp-detail-sub">{soMode?newEst._soId:(cc?.name||'No Customer')}</div></div>
+          <div style={{flex:1}}><div className="mp-detail-id">{soMode?'Add Items':newEst._editId?'Edit '+newEst._editId:'New Estimate'}</div><div className="mp-detail-sub">{soMode?newEst._soId:(cc?.name||'No Customer')}</div></div>
           {newEst.items.length>0&&<button style={{background:'#16a34a',color:'white',border:'none',borderRadius:8,padding:'8px 16px',fontWeight:700,fontSize:13,cursor:'pointer'}} onClick={onSave}>Save</button>}
         </div>
         <div className="mp-detail-body">
@@ -1023,6 +1096,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
                         <div key={sz} className="mp-size-chip"><span className="mp-size-label">{sz}</span><span className="mp-size-qty">{v}</span></div>)}
                     </div>}
                     {qty===0&&<div style={{fontSize:12,color:'#d97706',marginTop:4}}>Tap to set sizes</div>}
+                    {(()=>{const st=stockMap[stockCacheKey(it)];if(!st)return null;const short=shortSizes(it,st);
+                      return<div style={{fontSize:11,fontWeight:700,marginTop:4,color:short.length?'#b45309':'#166534'}}>{short.length?'⚠ Vendor short on '+short.join(', '):qty>0?'✓ In stock at '+(SOURCE_LABEL[st.source]||'vendor'):'Stock available, tap to see sizes'}</div>})()}
                     {(it.decorations||[]).length>0&&<div style={{display:'flex',gap:4,marginTop:4,flexWrap:'wrap'}}>
                       {(it.decorations||[]).map((d,di)=>{const dk=DECO_KINDS.find(x=>x.k===d.kind);return<span key={di} style={{fontSize:10,fontWeight:700,padding:'2px 6px',borderRadius:6,background:dk?.color+'20',color:dk?.color}}>{d.position} · {dk?.label}</span>})}
                     </div>}
@@ -1072,12 +1147,23 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           <button style={{background:'#1e40af',color:'white',border:'none',borderRadius:8,padding:'8px 16px',fontWeight:700,fontSize:13,cursor:'pointer'}} onClick={()=>{setNewEstStep('details');setNewEstEditItem(null)}}>Done</button>
         </div>
         <div className="mp-detail-body">
-          <div style={{fontSize:13,fontWeight:600,color:'#334155',marginBottom:12}}>Enter quantity per size:</div>
+          <div style={{fontSize:13,fontWeight:600,color:'#334155',marginBottom:item&&stockMap[stockCacheKey(item)]?4:12}}>Enter quantity per size:</div>
+          {(()=>{const st=item?stockMap[stockCacheKey(item)]:null;const k=item?stockCacheKey(item):'';
+            if(st)return<div style={{fontSize:11,color:'#64748b',marginBottom:10}}>Stock at {SOURCE_LABEL[st.source]||'vendor'}{st.lastSynced?' · updated '+fmtDate(st.lastSynced):''}</div>;
+            if(k&&k in stockMap)return<div style={{fontSize:11,color:'#94a3b8',marginBottom:10}}>No vendor stock feed for this style. Check stock on desktop.</div>;
+            return null})()}
           <div style={{display:'flex',gap:8,overflowX:'auto',WebkitOverflowScrolling:'touch',paddingBottom:4}}>
-            {sizes.map(sz=><div key={sz} style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'8px 10px',textAlign:'center',minWidth:80,flexShrink:0}}>
+            {sizes.map(sz=><div key={sz} style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'8px 10px',textAlign:'center',width:88,boxSizing:'border-box',flexShrink:0}}>
               <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:4}}>{sz}</div>
               <input type="number" inputMode="numeric" min="0" value={item.sizes?.[sz]||''} onChange={e=>updateSize(sz,e.target.value)} placeholder="0"
                 style={{width:'100%',textAlign:'center',border:'1px solid #e2e8f0',borderRadius:6,padding:'10px 4px',fontSize:18,fontWeight:700,boxSizing:'border-box',minHeight:44}}/>
+              {(()=>{const st=stockMap[stockCacheKey(item)];const s2=st?.sizes[normStockSize(sz)];if(!st)return null;
+                if(!s2)return<div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>no data</div>;
+                const want=Number(item.sizes?.[sz])||0;const short=want>s2.qty;
+                return<div style={{marginTop:4,lineHeight:1.2}}>
+                  <div style={{fontSize:11,fontWeight:700,color:short?'#dc2626':s2.qty>0?'#166534':'#94a3b8'}}>{s2.qty.toLocaleString()} in stock</div>
+                  {(short||s2.qty===0)&&s2.futureDate&&<div style={{fontSize:10,color:'#64748b'}}>+{s2.futureQty||''} {fmtDate(String(s2.futureDate).length===10?s2.futureDate+'T12:00:00':s2.futureDate)}</div>}
+                </div>})()}
             </div>)}
           </div>
           <div style={{marginTop:16,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
@@ -1230,13 +1316,6 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   if(newEst)return renderNewEstimate();
 
   // ─── RENDER DETAIL ROUTER ───
-  if(detail){
-    if(detail.type==='order')return renderOrderDetail(detail.data);
-    if(detail.type==='estimate')return renderEstDetail(detail.data);
-    if(detail.type==='customer')return renderCustDetail(detail.data);
-    if(detail.type==='invoice')return renderInvDetail(detail.data);
-    if(detail.type==='message')return renderMsgDetail(detail.data);
-  }
 
   // ─── HOME TAB ───
   // Warehouse staff get a quick-navigation grid (like the More page) instead of the
@@ -1272,6 +1351,32 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       </div>
     </div>;
   };
+  // "Today": what needs the rep now: overdue / due-today to-dos, AI notes to review,
+  // orders due this week, and quotes that have gone quiet. Rows tap through to the item.
+  const renderToday=()=>{
+    const today=new Date().toISOString().slice(0,10);
+    const wk=new Date(Date.now()+7*864e5).toISOString().slice(0,10);
+    const ymd=v=>{if(!v)return'';const s2=String(v);if(/^\d{4}-\d{2}-\d{2}/.test(s2))return s2.slice(0,10);const d=new Date(s2);return isNaN(d)?'':d.toISOString().slice(0,10)};
+    const dueTodos=myAssignedTodos.filter(t=>t.due_date&&ymd(t.due_date)<=today).sort((a,b)=>ymd(a.due_date).localeCompare(ymd(b.due_date)));
+    const dueSOs=sos.filter(s2=>inScope(s2.customer_id,s2.created_by)&&!['completed','complete','shipped','cancelled'].includes(s2.status||'')&&s2.expected_date&&ymd(s2.expected_date)<=wk).sort((a,b)=>ymd(a.expected_date).localeCompare(ymd(b.expected_date)));
+    const quiet=new Date(Date.now()-5*864e5).toISOString().slice(0,10);
+    const followUps=ests.filter(e=>inScope(e.customer_id,e.created_by)&&['sent','open'].includes(e.status||'')&&ymd(e.updated_at||e.created_at)&&ymd(e.updated_at||e.created_at)<=quiet).sort((a,b)=>ymd(a.updated_at||a.created_at).localeCompare(ymd(b.updated_at||b.created_at)));
+    if(!dueTodos.length&&!dueSOs.length&&!followUps.length&&!notesToReview)return null;
+    const row=(key,icon,label,sub,color,onClick)=><div key={key} onClick={onClick} style={{display:'flex',gap:10,alignItems:'center',padding:'9px 0',borderTop:'1px solid #f1f5f9',cursor:onClick?'pointer':'default'}}>
+      <span style={{fontSize:16,width:22,textAlign:'center'}}>{icon}</span>
+      <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:700,color:'#0f172a',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{label}</div>{sub&&<div style={{fontSize:11,color:color||'#64748b'}}>{sub}</div>}</div>
+      {onClick&&<span style={{color:'#cbd5e1',fontSize:16}}>›</span>}
+    </div>;
+    const cname=id=>{const c2=custObj(id);return c2?.alpha_tag||c2?.name||''};
+    return<div className="mp-item-card" style={{marginBottom:12}}>
+      <div style={{fontSize:15,fontWeight:800,color:'#0f172a',marginBottom:4}}>Today</div>
+      {notesToReview>0&&row('notes','🎙️',notesToReview+' AI note'+(notesToReview===1?'':'s')+' to review','Nothing is saved to the account until you approve','#b45309',()=>openNotes())}
+      {dueTodos.slice(0,4).map(t=>row('t'+t.id,'☑️',t.title,(ymd(t.due_date)<today?'Overdue · was due ':'Due today · ')+fmtDate(ymd(t.due_date)+'T12:00:00')+(t.customer_id?' · '+cname(t.customer_id):''),ymd(t.due_date)<today?'#dc2626':'#b45309',t.customer_id&&custObj(t.customer_id)?()=>setDetail({type:'customer',data:custObj(t.customer_id)}):null))}
+      {dueSOs.slice(0,4).map(s2=>row('s'+s2.id,'📦',s2.id+' · '+(cname(s2.customer_id)||'—'),(ymd(s2.expected_date)<today?'Past in-hands date ':'In-hands ')+fmtDate(ymd(s2.expected_date)+'T12:00:00')+' · '+(orderProgress(s2,calcSOStatus(s2))?.headline||''),ymd(s2.expected_date)<today?'#dc2626':'#64748b',()=>setDetail({type:'order',data:s2})))}
+      {followUps.slice(0,3).map(e=>row('e'+e.id,'📨','Follow up: '+e.id+' · '+(cname(e.customer_id)||'—'),'Quote '+(e.status==='sent'?'sent':'open')+' since '+fmtDate(ymd(e.updated_at||e.created_at)+'T12:00:00')+' · '+fmtMoney(e.total),'#64748b',()=>setDetail({type:'estimate',data:e})))}
+      {(dueTodos.length>4||dueSOs.length>4||followUps.length>3)&&<div style={{fontSize:11,color:'#94a3b8',paddingTop:6}}>{[dueTodos.length>4&&dueTodos.length+' to-dos',dueSOs.length>4&&dueSOs.length+' orders due',followUps.length>3&&followUps.length+' quotes to follow up'].filter(Boolean).join(' · ')}</div>}
+    </div>;
+  };
   const renderHome=()=>{
     if(cu.role==='warehouse')return renderWhHome();
     const priColors={1:'#dc2626',2:'#d97706',3:'#64748b'};
@@ -1291,6 +1396,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       {canNotes&&<button onClick={()=>openNotes({mode:'dictated'})} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:10,padding:'14px',borderRadius:12,border:'none',background:'#dc2626',color:'white',fontWeight:800,fontSize:15,cursor:'pointer',margin:'4px 0 12px',minHeight:52}}>
         <span style={{fontSize:18}}>🎙️</span> Voice note after a visit
       </button>}
+      {!isOps&&renderToday()}
       {/* Quick stats */}
       <div className="mp-stats-grid">
         <div className="mp-stat-card" onClick={()=>setTab('orders')}>
@@ -2591,6 +2697,61 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     </>;
   };
 
+  // ─── CONVERT ESTIMATE → SALES ORDER (asks the in-hands date first, like desktop) ───
+  const renderConvertSheet=()=>{
+    if(!convertAsk)return null;const a=convertAsk;const cc=custObj(a.est.customer_id);
+    return<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.5)',zIndex:1000,display:'flex',alignItems:'flex-end'}} onClick={()=>!a.busy&&setConvertAsk(null)}>
+      <div onClick={e=>e.stopPropagation()} style={{background:'white',width:'100%',borderRadius:'16px 16px 0 0',padding:'18px 16px',paddingBottom:'calc(18px + env(safe-area-inset-bottom, 0px))',boxSizing:'border-box'}}>
+        <div style={{fontSize:17,fontWeight:800,color:'#0f172a'}}>Create sales order</div>
+        <div style={{fontSize:13,color:'#64748b',margin:'4px 0 14px'}}>{a.est.id} · {cc?.name||'No customer'} · {fmtMoney(a.est.total)}</div>
+        <label style={{fontSize:12,fontWeight:700,color:'#475569'}}>In-hands date (when the customer needs it)</label>
+        <input type="date" value={a.date} min={new Date().toISOString().slice(0,10)} onChange={e=>setConvertAsk({...a,date:e.target.value})} style={{width:'100%',boxSizing:'border-box',marginTop:6,padding:'12px',fontSize:16,border:'1px solid #cbd5e1',borderRadius:10}}/>
+        <div style={{display:'flex',gap:8,marginTop:16}}>
+          <button disabled={a.busy} onClick={()=>setConvertAsk(null)} style={{flex:1,padding:'14px',borderRadius:10,border:'1px solid #e2e8f0',background:'white',fontWeight:700,fontSize:15}}>Cancel</button>
+          <button disabled={a.busy||!a.date} onClick={runConvert} style={{flex:2,padding:'14px',borderRadius:10,border:'none',background:a.date?'#7c3aed':'#c4b5fd',color:'white',fontWeight:800,fontSize:15}}>{a.busy?'Creating…':'Create order'}</button>
+        </div>
+      </div>
+    </div>;
+  };
+
+  // ─── PAY LINK + QR (the coach portal invoice page pays the open balance by card) ───
+  const invBalance=(i)=>i.status==='paid'?0:Math.max(0,(+i.total||0)-(+i.paid||0));
+  const openPayLink=async(inv)=>{
+    const cc=custObj(inv.customer_id);
+    if(!cc?.alpha_tag){if(nf)nf('This customer has no portal tag yet, so a pay link can’t be built. Add one on desktop.','error');return}
+    const url='https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cc.alpha_tag)+'&inv='+encodeURIComponent(inv.id);
+    setPayLink({inv,url,qr:null});
+    try{const QR=(await import('qrcode')).default;const qr=await QR.toDataURL(url,{margin:1,width:480,errorCorrectionLevel:'M'});setPayLink(p=>p&&p.url===url?{...p,qr}:p)}catch(e){/* link still works without the code */}
+  };
+  const renderPayLinkSheet=()=>{
+    if(!payLink)return null;const{inv,url,qr}=payLink;const cc=custObj(inv.customer_id);const bal=invBalance(inv);
+    const contact=(cc?.contacts||[]).find(c=>c.role==='Billing')||(cc?.contacts||[]).find(c=>c.phone||c.email)||null;
+    const msg='Hi'+(contact?.name?' '+contact.name.split(' ')[0]:'')+', here is the link to pay invoice '+inv.id+' ('+fmtMoney(bal)+') for '+(cc?.name||'your order')+': '+url+'\n\nThank you!\nNational Sports Apparel';
+    const btn={flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'12px 6px',borderRadius:10,border:'1px solid #e2e8f0',background:'white',color:'#1e293b',fontWeight:700,fontSize:13,textDecoration:'none',minHeight:46};
+    const share=async()=>{try{if(navigator.share){await navigator.share({title:'Invoice '+inv.id,text:msg});return}}catch(e){return}try{await navigator.clipboard.writeText(url);if(nf)nf('Link copied')}catch(e){window.prompt('Copy this link:',url)}};
+    return<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.5)',zIndex:1000,display:'flex',alignItems:'flex-end'}} onClick={()=>setPayLink(null)}>
+      <div onClick={e=>e.stopPropagation()} style={{background:'white',width:'100%',borderRadius:'16px 16px 0 0',padding:'18px 16px',paddingBottom:'calc(18px + env(safe-area-inset-bottom, 0px))',boxSizing:'border-box',textAlign:'center'}}>
+        <div style={{fontSize:17,fontWeight:800,color:'#0f172a'}}>Pay {fmtMoney(bal)}</div>
+        <div style={{fontSize:13,color:'#64748b',marginTop:2}}>Invoice {inv.id} · {cc?.name||''}</div>
+        <div style={{margin:'14px auto',width:220,height:220,display:'flex',alignItems:'center',justifyContent:'center',border:'1px solid #e2e8f0',borderRadius:12,background:'#fff'}}>
+          {qr?<img src={qr} alt={'QR code to pay invoice '+inv.id} style={{width:204,height:204}}/>:<span style={{fontSize:12,color:'#94a3b8'}}>Making code…</span>}
+        </div>
+        <div style={{fontSize:12,color:'#475569',marginBottom:14}}>Have the coach scan this with their phone camera to pay by card.</div>
+        <div style={{display:'flex',gap:8}}>
+          <a style={btn} href={'sms:'+(contact?.phone||'')+'?&body='+encodeURIComponent(msg)}>💬 Text</a>
+          <a style={btn} href={'mailto:'+(contact?.email||cc?.email||'')+'?subject='+encodeURIComponent('Invoice '+inv.id+' from National Sports Apparel')+'&body='+encodeURIComponent(msg)}>✉️ Email</a>
+          <button style={btn} onClick={share}>🔗 Share</button>
+        </div>
+        <button onClick={()=>setPayLink(null)} style={{marginTop:12,width:'100%',padding:'12px',border:'none',background:'none',color:'#64748b',fontWeight:700,fontSize:14}}>Done</button>
+      </div>
+    </div>;
+  };
+
+  // Detail pages are full-screen, but the sheets above (send, compose, convert, pay link)
+  // still have to draw over them.
+  const _detailView=!detail?null:detail.type==='order'?renderOrderDetail(detail.data):detail.type==='estimate'?renderEstDetail(detail.data):detail.type==='customer'?renderCustDetail(detail.data):detail.type==='invoice'?renderInvDetail(detail.data):detail.type==='message'?renderMsgDetail(detail.data):null;
+  if(_detailView)return<>{_detailView}{renderSendEstModal()}{renderSendInvModal()}{renderComposeSheet()}{renderConvertSheet()}{renderPayLinkSheet()}</>;
+
   // ─── MAIN RENDER ───
   return<div className="mp-app">
     {renderDrawer()}
@@ -2598,6 +2759,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     {renderSendEstModal()}
     {renderSendInvModal()}
     {renderComposeSheet()}
+    {renderConvertSheet()}
+    {renderPayLinkSheet()}
     {/* Box Action sheet — scanning a BX plate (camera or ?scan= deep link) lands here */}
     {mpBox&&(()=>{
       const bx=mpBox.box;
