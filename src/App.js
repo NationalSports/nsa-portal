@@ -1,5 +1,6 @@
 import { createArtService, filterArtRequests, isOpenArtRequest } from './lib/standaloneArtRequests';
 import ArtRequestCard from './StandaloneArtQueue';
+import ClipboardImagePaste from './ClipboardImagePaste';
 import DocumentRecoveryReview from './DocumentRecoveryReview';
 import {_loadRecoveryDocument, _saveReviewedDocument} from './lib/dbEngine';
 import { garmentSlotCandidates } from "./lib/jobMockCards";
@@ -9,6 +10,7 @@ import { invoiceFollowUpDate } from './lib/invoiceFollowUp';
 import GarmentMockCard, { LogoDetailTiles } from './GarmentMockCard';
 import { removeGarmentSlotMock } from './safeHelpers';
 import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jobMockReadiness';
+import ImageExportOptions, {PngExport} from './ImageExportOptions';
 import {createHistoryStore} from './lib/documentHistory';
 import { setEmailBlockRegistry, deliveryFailureAdvice } from './lib/emailRouting';
 import {createCoalescedReload} from './lib/coalescedReload';
@@ -37670,6 +37672,10 @@ export default function App(){
                 </>}
               </div>
 
+              <ClipboardImagePaste onUpload={handleVecUpload} disabled={vecProcessing}/>
+
+              {vecFile&&<ImageExportOptions file={vecFile} disabled={vecProcessing} onApply={url=>{setVecFile({...vecFile,url});setVecSvg('');setVecCredits(null);nf('Image ready. Vectorize to create SVG, or download PNG in the optional editor.');}}/>}
+
               {/* Settings */}
               {vecFile&&<div style={{marginTop:16,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
                 <p style={{margin:'0 0 8px',fontSize:12,fontWeight:600,color:'#475569'}}>Vectorization Settings</p>
@@ -37760,6 +37766,7 @@ export default function App(){
                 <span>Format: SVG</span>
                 {vecCredits&&<span>Credits used: {vecCredits}</span>}
               </div>
+              <PngExport url={'data:image/svg+xml;charset=utf-8,'+encodeURIComponent(vecSvg)} name={vecFile?.name||'image'}/>
               {/* SVG code preview */}
               <details style={{marginTop:12}}>
                 <summary style={{fontSize:12,color:'#64748b',cursor:'pointer'}}>View SVG Code</summary>
@@ -37773,11 +37780,13 @@ export default function App(){
   }
 
   function handleVecUpload(file){
+    if(vecProcessing)return;
     const ext=file.name.split('.').pop().toLowerCase();
     if(ext!=='png'&&ext!=='jpg'&&ext!=='jpeg'){nf('Please upload a PNG or JPG file','error');return}
     const reader=new FileReader();
     reader.onload=ev=>{
-      setVecFile({name:file.name,url:ev.target.result,file});
+      setVecFile({name:file.name,url:ev.target.result,originalUrl:ev.target.result,file});
+      setVecCredits(null);
       setVecSvg('');
     };
     reader.readAsDataURL(file);
@@ -37790,7 +37799,7 @@ export default function App(){
       // Vectorizer.AI API via Netlify proxy
       try{
         // Resize/compress image client-side
-        const resizeImage=(dataUrl,maxDim=1500)=>new Promise(resolve=>{
+        const resizeImage=(dataUrl,maxDim=1500)=>new Promise((resolve,reject)=>{
           const img=new Image();
           img.onload=()=>{
             const scale=Math.min(1,maxDim/Math.max(img.width,img.height));
@@ -37798,15 +37807,16 @@ export default function App(){
             c.width=Math.round(img.width*scale);c.height=Math.round(img.height*scale);
             const ctx=c.getContext('2d');ctx.drawImage(img,0,0,c.width,c.height);
             let out=c.toDataURL('image/png');
-            if(out.length>3.5*1024*1024){
-              for(const q of [0.9,0.8,0.7,0.6]){
-                out=c.toDataURL('image/jpeg',q);
-                if(out.length<3.5*1024*1024)break;
-              }
+            // Keep PNG alpha when reducing payload size; JPEG would discard transparency.
+            while(out.length>3.5*1024*1024 && c.width>128 && c.height>128){
+              c.width=Math.max(1,Math.round(c.width*0.8));c.height=Math.max(1,Math.round(c.height*0.8));
+              ctx.drawImage(img,0,0,c.width,c.height);out=c.toDataURL('image/png');
             }
+            if(out.length>3.5*1024*1024){reject(new Error('Image is too large. Please resize it.'));return;}
             console.log('[Vectorizer] Image prepared:',c.width+'x'+c.height,'payload:',Math.round(out.length/1024)+'KB');
             resolve(out.split(',')[1]);
           };
+          img.onerror=()=>reject(new Error('Failed to load image'));
           img.src=dataUrl;
         });
         const base64=await resizeImage(vecFile.url);
