@@ -1,4 +1,5 @@
 export const WEBSTORE_DELIVERY_WINDOWS = Object.freeze([
+  { value: '2-2', label: '2 weeks' },
   { value: '2-3', label: '2–3 weeks' },
   { value: '3-4', label: '3–4 weeks' },
   { value: '4-5', label: '4–5 weeks' },
@@ -73,4 +74,15 @@ export function estimatedDeliveryDate(closeAt, value) {
 export function salesOrderDueDate(closeAt, value) {
   const closeDate = pacificCloseDate(closeAt);
   return closeDate ? addUtcDays(closeDate, deliveryWindowEndWeeks(value) * 7).toISOString().slice(0, 10) : '';
+}
+
+// All School has an order-relative dispatch promise; regular stores retain
+// their existing close-relative delivery estimate.
+export function storeShippingPromise(store) {
+  if (store.org_type === 'all_school') {
+    const days = Math.max(1, Number(store.all_school_settings?.target_ship_days) || 14);
+    const interval = days % 7 === 0 ? `${days / 7} week${days === 7 ? '' : 's'}` : `${days} day${days === 1 ? '' : 's'}`;
+    return `Ships to your home in about ${interval} after payment. Transit time is additional.`;
+  }
+  return `Estimated delivery: ${deliveryWindowLabel(store.delivery_window_weeks)} after the store closes.`;
 }

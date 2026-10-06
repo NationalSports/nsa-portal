@@ -1,3 +1,4 @@
+import { schoolLaunchError } from './allSchool/launchReadiness';
 import DecorationAllocations from './allSchool/DecorationAllocations';
 import AllSchoolDtfQueue from './allSchool/AllSchoolDtfQueue';
 import { buildTransferMaps, transferUsage, unresolvedTransferLines } from './allSchool/transferDemand';
@@ -44,7 +45,7 @@ import { allocateMoneyCents } from './lib/bundleMoney';
 import { buildCondensedPlayerRows, orderNetCollected, originalOrderTotal, netFundraise } from './lib/webstoreOrderMoney';
 import { loadFunnel, sumFunnel, FunnelCard, DeviceCard, InterestCard, SourceCard, SoldOutCard } from './webstoreFunnel';
 import { sanmarPricingSnapshot, sanmarStyleFromSku } from './lib/sanmarPricing';
-import { WEBSTORE_DELIVERY_WINDOWS, deliveryWindowLabel, normalizeDeliveryWindow, salesOrderDueDate } from './lib/webstoreDeliveryWindow';
+import { WEBSTORE_DELIVERY_WINDOWS, deliveryWindowLabel, normalizeDeliveryWindow, salesOrderDueDate, storeShippingPromise } from './lib/webstoreDeliveryWindow';
 
 // The proxy already explains an OMG outage in words ("their report service did not
 // respond"); a bare status code tells staff nothing they can act on. Fall back to the
@@ -1275,7 +1276,7 @@ function flyerHtml(store, items = []) {
     </div>` : (pkg ? '' : `
     <div style="padding:22px 40px 120px">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px"><h2 style="font-weight:800;font-size:28px;text-transform:uppercase;margin:0;color:${ink}">How To Order</h2><div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div></div>
-      <div style="display:flex;flex-direction:column;gap:16px">${[['Visit the store','Scan the QR code or visit the link below to open the store.'],['Pick sizes & gear','Browse all items and choose sizes for each player.'],['Check out',`Place your order${closeDate?' before '+closeDate:''}. Gear ships to the team about ${deliveryWindowLabel(store.delivery_window_weeks)} after the store closes.`]].map(([t,b],i)=>`<div style="display:flex;align-items:flex-start;gap:12px"><div style="flex:0 0 auto;width:28px;height:28px;border-radius:50%;background:${primary};color:#fff;text-align:center;line-height:28px;font-weight:800;font-size:15px">${i+1}</div><div><div style="font-weight:700;font-size:16px;text-transform:uppercase;color:${ink}">${t}</div><div style="font-size:13.5px;color:${sub};margin-top:2px;font-family:Arial,sans-serif">${b}</div></div></div>`).join('')}</div>
+      <div style="display:flex;flex-direction:column;gap:16px">${[['Visit the store','Scan the QR code or visit the link below to open the store.'],['Pick sizes & gear','Browse all items and choose sizes for each player.'],['Check out',`Place your order${closeDate?' before '+closeDate:''}. ${storeShippingPromise(store)}`]].map(([t,b],i)=>`<div style="display:flex;align-items:flex-start;gap:12px"><div style="flex:0 0 auto;width:28px;height:28px;border-radius:50%;background:${primary};color:#fff;text-align:center;line-height:28px;font-weight:800;font-size:15px">${i+1}</div><div><div style="font-weight:700;font-size:16px;text-transform:uppercase;color:${ink}">${t}</div><div style="font-size:13.5px;color:${sub};margin-top:2px;font-family:Arial,sans-serif">${b}</div></div></div>`).join('')}</div>
     </div>`)}
     <div style="position:absolute;bottom:0;left:0;right:0">
       <div style="background:${cream};border-top:1px solid ${line};padding:9px 40px;display:flex;justify-content:space-between;align-items:center">
@@ -1479,7 +1480,7 @@ async function generateFlyerPdfBase64(store, items = []) {
     doc.setFillColor(ar,ag,ab); doc.rect(40+doc.getTextWidth('HOW TO ORDER')+12,y-5,W-40-doc.getTextWidth('HOW TO ORDER')-52,3,'F');
     y += 22;
     const closeDate2 = _fmtDate(store.close_at);
-    [['1','Visit the store','Scan the QR code or visit the link below to open the store.'],['2','Pick sizes & gear','Browse all items and choose sizes for each player.'],['3','Check out',`Place your order${closeDate2?' before '+closeDate2:''}. Gear ships to the team about ${deliveryWindowLabel(store.delivery_window_weeks)} after close.`]].forEach(([num,title,body])=>{
+    [['1','Visit the store','Scan the QR code or visit the link below to open the store.'],['2','Pick sizes & gear','Browse all items and choose sizes for each player.'],['3','Check out',`Place your order${closeDate2?' before '+closeDate2:''}. ${storeShippingPromise(store)}`]].forEach(([num,title,body])=>{
       doc.setFillColor(pr,pg,pb); doc.circle(54,y+6,9,'F');
       doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(255,255,255); doc.text(num,54,y+10,{align:'center'});
       doc.setTextColor(...INK); doc.setFontSize(13); doc.text(title.toUpperCase(),70,y+10);
@@ -2308,6 +2309,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // Templates are reusable starting points, never live stores: launching one would put
     // it in the public team-stores directory and make it purchasable.
     if (store.is_template && status === 'open') { flash("Templates can't be launched — use Start Store on the Templates tab to spin up a real store from it"); return; }
+    if (status === 'open' && store.org_type === 'all_school') {
+      const { data: offerings, error: loadError } = await supabase.from('webstore_products').select('*').eq('store_id', store.id);
+      const blocked = loadError ? 'Could not verify artwork readiness. Please retry.' : schoolLaunchError(offerings);
+      if (blocked) { flash(blocked); return false; }
+    }
     const patch = { status, updated_at: new Date().toISOString() };
     // Manual close: stamp close_at with the actual close moment (when unset or still in
     // the future) so the record reflects when the store really stopped selling.
@@ -2316,7 +2322,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const coachEmail = (opts.coachEmail || '').trim();
     if (status === 'open' && opts.emailCoach && coachEmail && coachEmail !== (store.coach_contact_email || '')) patch.coach_contact_email = coachEmail;
     const { data, error } = await supabase.from('webstores').update(patch).eq('id', store.id).select().single();
-    if (error) { flash('Could not update status: ' + error.message); return; }
+    if (error) { flash('Could not update status: ' + error.message); return false; }
     setStores((prev) => prev.map((s) => (s.id === store.id ? data : s)));
     if (sel?.id === store.id) setSel(data);
     // Email the coach only when the launch dialog opted in (with a recipient).
@@ -2324,6 +2330,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // On a manual close, create the rep to-do + breakdown email (the sweep handles auto-closes).
     else if (store.status !== 'closed' && status === 'closed') notifyStoreClosed(data);
     else flash(status === 'open' ? "Store launched — it's live" : `Store ${status}`);
+    return true;
   }, [sel, flash, notifyCoachPublished, notifyStoreClosed]);
 
   // Change close date/time from the list row dropdown, without opening the full store
@@ -5842,7 +5849,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
     const open = pick([`Welcome to the official ${team} store!`, `The ${team} store is open!`, `Gear up — the official ${team} store is here.`]);
     const body = pick([`Everything here has been hand-picked and approved by your coaching staff, so you can order with confidence.`, `Every item is pre-approved by your coaches — no guesswork, just official gear.`, `It's all coach-approved, so the whole ${noun.toLowerCase()} looks the part.`]);
     const weeks = deliveryWindowLabel(f.delivery_window_weeks);
-    const close = pick([`Orders are ${deliver} about ${weeks} after the store closes${closeOn}, so get yours in before the window shuts.`, `Once we close${closeOn}, orders go to production and arrive ${deliver} in roughly ${weeks} — don't miss it.`, `Place your order before the store closes${closeOn}; everything is ${deliver} about ${weeks} later.`]);
+    const close = orgType === 'all_school' ? `Order any time. Gear ships to your home in about ${normalizeAllSchoolSettings(f.all_school_settings).target_ship_days} days after payment; transit time is additional.` : pick([`Orders are ${deliver} about ${weeks} after the store closes${closeOn}, so get yours in before the window shuts.`, `Once we close${closeOn}, orders go to production and arrive ${deliver} in roughly ${weeks} — don't miss it.`, `Place your order before the store closes${closeOn}; everything is ${deliver} about ${weeks} later.`]);
     return `${open} ${body} ${close}`;
   };
   // Sales reps: anyone who carries accounts. The owners (admins) are the primary rep
@@ -5910,6 +5917,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
     payload.delivery_window_weeks = normalizeDeliveryWindow(payload.delivery_window_weeks);
     payload.org_type = orgType;
     if (orgType === 'all_school') {
+      payload.delivery_mode = 'ship_home';
       payload.all_school_settings = normalizeAllSchoolSettings(payload.all_school_settings);
       const schoolError = validateAllSchoolSettings(payload.all_school_settings);
       if (schoolError) { setBusy(false); return setError(schoolError); }
@@ -5962,7 +5970,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
           <button key={k} type="button" onClick={() => setPage(k)} style={{ border: 'none', background: 'none', cursor: 'pointer', padding: '8px 2px', marginRight: 18, fontSize: 13, fontWeight: 800, fontFamily: DISPLAY, textTransform: 'uppercase', letterSpacing: '.04em', color: page === k ? '#191919' : '#9aa1ad', borderBottom: page === k ? '2px solid #191919' : '2px solid transparent', marginBottom: -1 }}>{lbl}</button>
         ))}
       </div>
-      {page === 'operations' && orgType === 'all_school' && <AllSchoolSettings value={f.all_school_settings} onChange={(value) => set('all_school_settings', value)} />}
+      {page === 'operations' && orgType === 'all_school' && <AllSchoolSettings repId={f.rep_id} value={f.all_school_settings} onChange={(value) => set('all_school_settings', value)} />}
       {page === 'setup' && (
       <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -6072,10 +6080,11 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
 
       <Section title="Delivery">
         <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>Applies to the whole store (set by you, not chosen by shoppers).</div>
-        <Row label="Delivery method"><select className="form-select" value={f.delivery_mode} onChange={(e) => set('delivery_mode', e.target.value)}>
+        <Row label="Delivery method"><select className="form-select" value={orgType === 'all_school' ? 'ship_home' : f.delivery_mode} onChange={(e) => set('delivery_mode', e.target.value)}>
           <option value="ship_home">Ship to home — collect each buyer's home address</option>
-          <option value="deliver_club">{`Deliver to ${noun.toLowerCase()} — ships to the ${noun.toLowerCase()}'s default address`}</option>
+          {orgType !== 'all_school' && <option value="deliver_club">{`Deliver to ${noun.toLowerCase()} — ships to the ${noun.toLowerCase()}'s default address`}</option>}
         </select></Row>
+        {orgType === 'all_school' && <Row label="Estimated time from payment to shipment (days)"><input className="form-input" type="number" min="1" max="90" step="1" value={normalizeAllSchoolSettings(f.all_school_settings).target_ship_days} onChange={(e) => set('all_school_settings', { ...normalizeAllSchoolSettings(f.all_school_settings), target_ship_days: Number(e.target.value) })} /><div style={{ fontSize: 12, color: '#64748b' }}>Default: 14 days (2 weeks). Shipping transit time is additional.</div></Row>}
         {orgType !== 'all_school' && <Row label="Estimated delivery after store closes"><select className="form-select" value={normalizeDeliveryWindow(f.delivery_window_weeks)} onChange={(e) => set('delivery_window_weeks', e.target.value)}>
           {WEBSTORE_DELIVERY_WINDOWS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select></Row>}
@@ -6764,7 +6773,8 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
           <button data-tour-id="ws-detail-settings" className="btn btn-sm btn-primary" onClick={onEdit}>⚙ Settings</button>
         </div>
       </div>
-      {launchOpen && <LaunchStoreModal store={s} onClose={() => setLaunchOpen(false)} onLaunch={(opts) => { onSetStatus(s, 'open', opts); setLaunchOpen(false); }} />}
+      {s.org_type === 'all_school' && s.status !== 'open' && <div className="card" style={{ padding: 14, marginBottom: 12 }}><b>Artwork readiness</b><p style={{ marginBottom: 0 }}>{loading ? 'Checking catalog…' : schoolLaunchError(catalog) || 'All active offerings have approved production setups and are ready to launch.'}</p></div>}
+      {launchOpen && <LaunchStoreModal store={s} onClose={() => setLaunchOpen(false)} onLaunch={async (opts) => { if (await onSetStatus(s, 'open', opts) !== false) setLaunchOpen(false); }} />}
       {emailLinkOpen && <EmailStoreLinkModal store={s} onClose={() => setEmailLinkOpen(false)} onSend={(email) => onEmailDirector(email)} />}
 
       {(() => {
@@ -13277,7 +13287,7 @@ function InventoryTab({ store, catalog, bundleItems, stockByWp, transfers, order
   const maps = buildTransferMaps(catalog, bundleItems);
   const itemsByOrder = {}; orderItems.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
   const orderDone = (o) => { const its = (itemsByOrder[o.id] || []).filter((i) => !i.is_bundle_parent); return its.length > 0 && its.every((i) => ['shipped', 'complete'].includes(i.line_status)); };
-  const active = orders.filter((o) => o.status !== 'cancelled' && o.status !== 'pending_payment');
+  const active = orders.filter((o) => !['cancelled', 'pending_payment', 'refunded', 'shipped', 'complete'].includes(o.status));
   const onOrderIds = new Set(active.filter((o) => !o.transfers_pulled).map((o) => o.id));
   const inProcIds = new Set(active.filter((o) => o.transfers_pulled && !orderDone(o)).map((o) => o.id));
   const onOrderUse = transferUsage(orderItems.filter((i) => onOrderIds.has(i.order_id)), maps);
@@ -13290,7 +13300,8 @@ function InventoryTab({ store, catalog, bundleItems, stockByWp, transfers, order
   const ordered = [...catalog].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
 
   // Available = physical on hand − pending (unpulled) demand.
-  const Avail = ({ t }) => { const r = (t.on_hand || 0) - (onOrderUse[t.code] || 0); return <span style={{ fontWeight: 700, color: r < 0 ? '#b91c1c' : r < 10 ? '#92400e' : '#166534' }}>{r}</span>; };
+  const Avail = ({ t }) => { const r = (t.on_hand || 0) - (onOrderUse[t.code] || 0); return <span style={{ fontWeight: 700, color: r < 0 ? '#b91c1c' : r < (t.low_stock_threshold ?? 10) ? '#92400e' : '#166534' }}>{r}</span>; };
+  const lowStock = transfers.filter((t) => (Number(t.on_hand) || 0) - (onOrderUse[t.code] || 0) < (t.low_stock_threshold ?? 10));
   const InProc = ({ t }) => { const v = inProcUse[t.code] || 0; return <span style={{ color: v ? '#6d28d9' : '#cbd5e1', fontWeight: v ? 600 : 400 }}>{v}</span>; };
   const OnOrder = ({ t }) => { const v = onOrderUse[t.code] || 0; return <span style={{ color: v ? '#92400e' : '#cbd5e1', fontWeight: v ? 600 : 400 }}>{v}</span>; };
   const NumCell = ({ t, field }) => <input defaultValue={t[field] || 0} type="number" key={t[field]} onBlur={(e) => { const v = Number(e.target.value) || 0; if (v !== (t[field] || 0)) onUpdateTransfer(t.id, { [field]: v }); }} style={{ width: 64, padding: '4px 6px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 13 }} />;
@@ -13304,6 +13315,7 @@ function InventoryTab({ store, catalog, bundleItems, stockByWp, transfers, order
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      {store?.org_type === 'all_school' && lowStock.length > 0 && <div role="alert" className="card" style={{ padding: 16, color: '#92400e' }}><b>Low decoration stock — {lowStock.length} item(s)</b><ul>{lowStock.map((t) => <li key={t.id}>{t.label || t.code}: {(Number(t.on_hand) || 0) - (onOrderUse[t.code] || 0)} available · alert below {t.low_stock_threshold ?? 10} · {Number(t.incoming) || 0} incoming{t.incoming_eta ? ` (ETA ${t.incoming_eta})` : ''}</li>)}</ul><span style={{ fontSize: 12 }}>Review replenishment before accepting more demand. Edit thresholds under Art &amp; print specs.</span></div>}
       {store?.org_type === 'all_school' && <DecorationAllocations storeId={store.id} transfers={transfers} />}
       {/* Garment stock */}
       <div>
@@ -14991,7 +15003,7 @@ function SettingsTab({ store: s }) {
     ['Login required', s.require_login ? 'Yes (club members only)' : 'No (public)'],
     ['Decoration', s.decoration_mode === 'outsourced' ? 'Decorated elsewhere (mockups only)' : 'In-house (production art required)'],
     ['Delivery', dlv],
-    ['Estimated delivery', `${deliveryWindowLabel(s.delivery_window_weeks)} after store closes`],
+    ['Shipping estimate', storeShippingPromise(s)],
     ['Numbers', s.number_enabled ? `Enabled (${s.number_min}–${s.number_max}${s.number_unique ? ', unique required' : ''})` : 'Off'],
     ['SO creation', s.so_creation],
     ['Fundraising', `Per-item${s.fundraise_show_parents ? ', shown to families' : ', hidden from families'}`],
