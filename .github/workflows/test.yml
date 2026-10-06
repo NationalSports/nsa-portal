@@ -33,6 +33,9 @@ jobs:
       - name: Payable snapshot reliability tests
         run: node --test tests/qbo-payable-snapshot.test.cjs tests/qbo-payable-canary.test.cjs tests/qbo-payable-po-canary.test.cjs tests/qbo-payable-po-canary-handler.test.cjs
 
+      - name: Background runtime compatibility tests
+        run: node --test tests/netlify-background-runtime.test.cjs
+
       - name: Email report
         if: always() && (github.event_name == 'schedule' || failure())
         continue-on-error: true

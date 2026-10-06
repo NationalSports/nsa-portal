@@ -6,7 +6,7 @@ jest.mock('../../netlify/functions/_qboServerReview', () => ({ runReview: jest.f
 const { verifyQBOUser, getSupabaseAdmin } = require('../../netlify/functions/_shared');
 const { getValidAccessToken, qbRequest } = require('../../netlify/functions/_qb');
 const { runReview } = require('../../netlify/functions/_qboServerReview');
-const { handler } = require('../../netlify/functions/qbo-review-background');
+const { handler } = require('../../netlify/functions/_background-workers/qbo-review-background');
 const original = { ...process.env };
 beforeEach(() => {
   jest.resetAllMocks();

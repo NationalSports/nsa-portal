@@ -1,8 +1,8 @@
 // Nightly OMG profit sync (Netlify background function; 15-minute budget).
 // Pulls every mapped store by its stable OMG sale id/code, writes monthly and
 // daily audit totals, then idempotently closes the prior commission month.
-const { getSupabaseAdmin, verifyUserOrInternal } = require('./_shared');
-const { aggregateStoreOrders, commissionCloseout, monthStart, previousMonthStart } = require('./_omgProfit');
+const { getSupabaseAdmin, verifyUserOrInternal } = require('../_shared');
+const { aggregateStoreOrders, commissionCloseout, monthStart, previousMonthStart } = require('../_omgProfit');
 
 const API_BASE = (process.env.OMG_API_BASE_URL || 'https://app.ordermygear.com/v1').replace(/\/+$/, '');
 const API_KEY = process.env.OMG_API_KEY || '';

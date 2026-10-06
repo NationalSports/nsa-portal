@@ -1,10 +1,10 @@
-const {verifyQBOUser,getSupabaseAdmin}=require('./_shared');
-const {getValidAccessToken,qbRequest}=require('./_qb');
-const {reviewEnabled}=require('./_qboReviewConfig');
-const {runPayableReview}=require('./_qboPayableServerReview');
-const {payableReviewStore}=require('./_qboPayableReviewStore');
-const {snapshotStore}=require('./_qboPayableSnapshotStore');
-const {acquireSnapshot,hash}=require('./_qboPayableSnapshot');
+const {verifyQBOUser,getSupabaseAdmin}=require('../_shared');
+const {getValidAccessToken,qbRequest}=require('../_qb');
+const {reviewEnabled}=require('../_qboReviewConfig');
+const {runPayableReview}=require('../_qboPayableServerReview');
+const {payableReviewStore}=require('../_qboPayableReviewStore');
+const {snapshotStore}=require('../_qboPayableSnapshotStore');
+const {acquireSnapshot,hash}=require('../_qboPayableSnapshot');
 
 exports.handler=async event=>{
   if(event.httpMethod!=='POST')return{statusCode:405};
