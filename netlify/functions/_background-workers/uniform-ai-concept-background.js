@@ -2,7 +2,7 @@
 // Netlify recognizes the -background suffix and allows this function to keep
 // working after the request function has returned a job id to the browser.
 
-const { safeEqualStr } = require('./_shared');
+const { safeEqualStr } = require('../_shared');
 const {
   downloadJson,
   ensureBucket,
@@ -10,8 +10,8 @@ const {
   uploadJson,
   uploadObject,
   validJobId,
-} = require('./_uniform-ai-concept-store');
-const { _runtime } = require('./uniform-ai-concept');
+} = require('../_uniform-ai-concept-store');
+const { _runtime } = require('../uniform-ai-concept');
 
 async function saveFailure(sb, jobId, error) {
   try {

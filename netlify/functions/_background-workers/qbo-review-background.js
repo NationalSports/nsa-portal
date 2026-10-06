@@ -1,7 +1,7 @@
-const { verifyQBOUser, getSupabaseAdmin } = require('./_shared');
-const { getValidAccessToken, qbRequest } = require('./_qb');
-const { runReview, reviewStore } = require('./_qboServerReview');
-const { reviewEnabled } = require('./_qboReviewConfig');
+const { verifyQBOUser, getSupabaseAdmin } = require('../_shared');
+const { getValidAccessToken, qbRequest } = require('../_qb');
+const { runReview, reviewStore } = require('../_qboServerReview');
+const { reviewEnabled } = require('../_qboReviewConfig');
 
 exports.handler = async event => {
   if (event.httpMethod !== 'POST') return { statusCode: 405 };

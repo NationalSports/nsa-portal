@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const sync = require('../../netlify/functions/_omg-order-sync-background')._test;
+const sync = require('../../netlify/functions/_background-workers/omg-order-sync-background')._test;
 
 describe('OMG operational order sync', () => {
   test('uses OMG documented relationship filter for each mapped sale', () => {
@@ -64,7 +64,7 @@ describe('OMG operational order sync', () => {
   });
 
   test('production wiring stays isolated from accounting tables', () => {
-    const fn = fs.readFileSync(path.join(__dirname, '../../netlify/functions/_omg-order-sync-background.js'), 'utf8');
+    const fn = fs.readFileSync(path.join(__dirname, '../../netlify/functions/_background-workers/omg-order-sync-background.js'), 'utf8');
     const cron = fs.readFileSync(path.join(__dirname, '../../netlify/functions/omg-order-sync-cron.js'), 'utf8');
     const config = fs.readFileSync(path.join(__dirname, '../../netlify.toml'), 'utf8');
     const app = fs.readFileSync(path.join(__dirname, '../App.js'), 'utf8');

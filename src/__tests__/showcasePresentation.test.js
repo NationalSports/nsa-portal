@@ -332,7 +332,7 @@ describe('Showcase public/staff response boundaries', () => {
       safeEqualStr: jest.fn(),
       getTrustedSiteBaseUrl: jest.fn(),
     }));
-    const { isJobCurrent } = require('../../netlify/functions/showcase-image-background');
+    const { isJobCurrent } = require('../../netlify/functions/_background-workers/showcase-image-background');
     const filters = [];
     const chain = {
       select() { return chain; },

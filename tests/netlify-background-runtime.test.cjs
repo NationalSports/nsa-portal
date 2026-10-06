@@ -3,11 +3,11 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-const workers = ['omg-order-sync-background', 'omg-profit-sync-background', 'momentec-sync-background', 'momentec-image-verify-background', 'onboarding-finalize-background'];
+const workers = ['momentec-image-verify-background', 'momentec-sync-background', 'omg-order-sync-background', 'omg-profit-sync-background', 'onboarding-finalize-background', 'qbo-payable-review-background', 'qbo-review-background', 'richardson-sync-background', 'sanmar-brands-sync-background', 'sanmar-flat-images-background', 'sanmar-nike-sync-background', 'showcase-image-background', 'sportslink-sync-background', 'ss-adidas-sync-background', 'ss-brands-sync-background', 'ss-orders-sync-background', 'ss-ua-sync-background', 'uniform-ai-concept-background'];
 
 for (const name of workers) {
   test(`${name} preserves the legacy request on the modern background runtime`, async () => {
-    const worker = require(`../netlify/functions/_${name}.js`);
+    const worker = require(`../netlify/functions/_background-workers/${name}.js`);
     const original = worker.handler;
     const events = [];
     // Replace only the worker's I/O boundary; exercise the actual entry and SDK.

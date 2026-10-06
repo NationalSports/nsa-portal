@@ -83,7 +83,7 @@ function canonicalBrand(name) {
 
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 const arr = (v) => (Array.isArray(v) ? v : v != null ? [v] : []);
-const { inventoryKey: invKey, stockByColorSize } = require('./_sanmarInventory');
+const { inventoryKey: invKey, stockByColorSize } = require('../_sanmarInventory');
 // Inventory ↔ product-color join key. SanMar returns two-tone colors with inconsistent
 // spacing between the getInventoryLevels feed ("True Royal/ White") and the product feed
 // ("True Royal/White"), so a plain lowercase compare missed EVERY slash color and wrote 0
