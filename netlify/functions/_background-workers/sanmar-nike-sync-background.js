@@ -46,7 +46,7 @@ function mapCategory(title) {
 }
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 const arr = (v) => (Array.isArray(v) ? v : v != null ? [v] : []);
-const { inventoryKey, stockByColorSize } = require('./_sanmarInventory');
+const { inventoryKey, stockByColorSize } = require('../_sanmarInventory');
 
 exports.handler = async () => {
   const site = (process.env.URL || '').replace(/\/+$/, '');

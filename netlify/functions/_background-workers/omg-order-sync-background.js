@@ -2,7 +2,7 @@
 // relationship filter to fetch each mapped sale independently. It updates
 // display-only order metadata and never writes profit snapshots, monthly
 // closeouts, or commission records.
-const { getSupabaseAdmin, verifyUserOrInternal } = require('./_shared');
+const { getSupabaseAdmin, verifyUserOrInternal } = require('../_shared');
 
 const API_BASE = (process.env.OMG_API_BASE_URL || 'https://app.ordermygear.com/v1').replace(/\/+$/, '');
 const API_KEY = process.env.OMG_API_KEY || '';

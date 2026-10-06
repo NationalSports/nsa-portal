@@ -340,7 +340,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const openInvCount=openPortalInvs.length;
   const openBalance=Math.round(openPortalInvs.reduce((a,i)=>a+safeNum(i.total)-safeNum(i.paid),0));
   const _30dAgo=new Date(Date.now()-30*24*60*60*1000).toISOString().slice(0,10);
-  const recentEsts=custEsts.filter(e=>e.status!=='approved'&&e.status!=='converted'&&(e.created_at||'').slice(0,10)>=_30dAgo);
+  const recentEsts=custEsts.filter(e=>e.status!=='approved'&&e.status!=='converted'&&_fmtDate(e.created_at||e.date)>=_30dAgo);
   const fo=orders.filter(o=>{if(oF!=='all'&&o.type!==oF)return false;if(sF==='open')return['sent','draft','open','need_order','waiting_receive','needs_pull'].includes(o.status)||calcSOStatus(o)!=='complete';if(sF==='closed')return['approved','paid','complete'].includes(o.status)||calcSOStatus(o)==='complete';return true});
   const gn=id=>allCustomers.find(x=>x.id===id)?.alpha_tag||'';
   const teamName=id=>{const c=allCustomers.find(x=>x.id===id);if(!c)return'';const parent=c.parent_id?allCustomers.find(x=>x.id===c.parent_id):null;if(parent?.name&&c.name?.startsWith(parent.name))return c.name.slice(parent.name.length).trim().replace(/^[-—–]\s*/,'')||c.name;return c.name||c.alpha_tag||''};

@@ -4144,7 +4144,11 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     // on the one surface reps discount from (EST-2526 showed 43.7% on a true 40.9%; 365 of 366
     // open estimates quote shipping). A quote now reports product+deco margin; SOs are unchanged.
     const marginRev=rev+(isE?0:ship)+fundraiseRev;
-    return{rev,cost,ship,priorShip,tax,taxRate,omgFee,omgRevFee,omgTaxRev,omgCostFees,fundraiseRev,storeTax,isWebstoreSO:_wm.isWebstore,actualShipCost,inboundFreight,manualPoCost,grand:rev+ship+priorShip+tax+storeTax,margin:marginRev-cost,pct:marginRev>0?((marginRev-cost)/marginRev*100):0}},[o,artQty,cust,costArtQty,outsourcedByItemCost]); // eslint-disable-line
+    // OMG invoices bill product only (createAndSettleOmgInvoice): the processing fee and tax
+    // parents paid at checkout ride in the store remit, never on an invoice. Leave them out of
+    // the billable subtotal or every OMG SO shows a phantom "Invoice Remaining" for that sum.
+    const billRev=o.omg_store_id?rev-omgRevFee-omgTaxRev:rev;
+    return{rev,billRev,cost,ship,priorShip,tax,taxRate,omgFee,omgRevFee,omgTaxRev,omgCostFees,fundraiseRev,storeTax,isWebstoreSO:_wm.isWebstore,actualShipCost,inboundFreight,manualPoCost,grand:rev+ship+priorShip+tax+storeTax,margin:marginRev-cost,pct:marginRev>0?((marginRev-cost)/marginRev*100):0}},[o,artQty,cust,costArtQty,outsourcedByItemCost]); // eslint-disable-line
 
   // Promo totals — separate calc to not disturb existing totals
   const promoTotals=useMemo(()=>{
@@ -5602,7 +5606,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           // surface "Create Invoice" alongside "Close Sales Order" so the user can bill the remainder.
           const _liveInvs=liveSoInvoices(allInvoices,o.id);
           const _hasAnyInv=_liveInvs.length>0;
-          const _remainingDollars=soInvoiceBalance({subtotal:totals.rev,shipping:totals.ship+totals.priorShip,tax:totals.tax+totals.storeTax,invoices:_liveInvs}).total;
+          const _remainingDollars=soInvoiceBalance({subtotal:totals.billRev,shipping:totals.ship+totals.priorShip,tax:totals.tax+totals.storeTax,invoices:_liveInvs}).total;
           const _invMap=_hasAnyInv?buildInvoicedQtyMap(o,_liveInvs):new Map();
           const _hasRemaining=safeItems(o).some((it,idx)=>{
             const tot=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)||safeNum(it.est_qty);
@@ -9033,7 +9037,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       const balanceSettlement=_priorInvs.length>0&&!isPromoOrder&&!o.credit_applied&&(invType==='full'||invType==='final');
       let balanceAdjustment=0;
       if(balanceSettlement){
-        const balance=soInvoiceBalance({subtotal:totals.rev,shipping:totals.ship+totals.priorShip,tax:totals.tax+totals.storeTax,invoices:_priorInvs});
+        const balance=soInvoiceBalance({subtotal:totals.billRev,shipping:totals.ship+totals.priorShip,tax:totals.tax+totals.storeTax,invoices:_priorInvs});
         balanceAdjustment=Math.round((balance.subtotal-selTotals.subtotal)*100)/100;
         selTotals={...selTotals,subtotal:balance.subtotal};
         invShip=balance.shipping;invTax=balance.tax;_priorShipBill=0;

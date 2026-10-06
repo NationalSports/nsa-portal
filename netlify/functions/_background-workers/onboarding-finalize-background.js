@@ -11,10 +11,10 @@
 // Env: ONBOARDING_HR_EMAIL (default steve@nationalsportsapparel.com),
 //      BREVO_API_KEY, plus the GOOGLE_SA_* / EMPLOYEE_FORMS_FOLDER_ID set used
 //      by _googleDrive.js (Drive copy is skipped if those are absent).
-const { getSupabaseAdmin } = require('./_shared');
-const { buildPacketFiles, zipFiles, safeName, hireLegalName } = require('./_onboardingPacket');
-const { brandedEmail } = require('./_onboardingEmail');
-const drive = require('./_googleDrive');
+const { getSupabaseAdmin } = require('../_shared');
+const { buildPacketFiles, zipFiles, safeName, hireLegalName } = require('../_onboardingPacket');
+const { brandedEmail } = require('../_onboardingEmail');
+const drive = require('../_googleDrive');
 
 const HR_EMAIL = () => process.env.ONBOARDING_HR_EMAIL || 'steve@nationalsportsapparel.com';
 
