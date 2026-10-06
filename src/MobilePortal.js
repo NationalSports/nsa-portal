@@ -3071,7 +3071,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     {/* Header */}
     <div className="mp-header">
       <button className="mp-header-btn" onClick={()=>setDrawerOpen(true)} style={{marginRight:8}}><MIcon name="menu" size={22}/></button>
-      <div style={{flex:1,fontWeight:700,fontSize:16}}>{tab==='home'?'Home':tab==='orders'?'Orders':tab==='messages'?'Messages':tab==='customers'?'Customers':moreSubPage||'More'}</div>
+      <div style={{flex:1,fontWeight:700,fontSize:16}}>{tab==='home'?'Home':tab==='orders'?'Orders':tab==='messages'?'Messages':tab==='customers'?'Customers':({app:'App & notifications',notes:'AI Notes',estimates:'Estimates',invoices:'Invoices',inventory:'Inventory',jobs:'Jobs',production:'Production',warehouse:'Warehouse',reports:'Reports'}[moreSubPage]||moreSubPage||'More')}</div>
       <div style={{display:'flex',gap:4,alignItems:'center'}}>
         {unreadForMeCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,fontWeight:800,minWidth:18,textAlign:'center'}}>{unreadForMeCount}</span>}
         {_caTop('warehouse')&&<button className="mp-header-btn" onClick={()=>setMpScanOpen(true)} title="Scan barcode / QR" style={{color:'#16a34a'}}><MIcon name="scan" size={20}/></button>}
