@@ -89,6 +89,7 @@ export async function logoFileProblem(f) {
 export function LogoDetailTiles({ tiles, title = 'Logo detail on each garment color' }) {
   const [error, setError] = useState('');
   const [busyKey, setBusyKey] = useState('');
+  const [colorWays, setColorWays] = useState({});
   if (!tiles || !tiles.length) return null;
   const upload = async (t, files) => {
     if (!files.length || !t.onUpload) return;
@@ -101,13 +102,26 @@ export function LogoDetailTiles({ tiles, title = 'Logo detail on each garment co
   };
   return <div className="mock-covers" aria-label={title}>
     <h5>{title}</h5>
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>{tiles.map(t => <div key={t.key} style={{ width: 150, textAlign: 'center' }}>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>{tiles.map(t => <div key={t.key} style={{ width: 170, textAlign: 'center' }}>
       <div style={{ height: 90, borderRadius: 8, border: '1px solid #dbe2ea', background: t.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 8 }}>
         {t.url ? <img src={t.url} alt="" onClick={() => openFile(t.url)} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', cursor: 'zoom-in' }} />
+        : t.needsColorWay ? <span style={{ fontSize: 11, color: '#92400e', background: '#fffbeb', borderRadius: 6, padding: 6, fontWeight: 700 }}>Choose artwork color way first</span>
         : t.onUpload ? <label className="tile-upload">{busyKey === t.key ? 'Saving…' : 'Upload logo PNG'}<input type="file" hidden accept=".png" disabled={!!busyKey} onChange={e => { upload(t, Array.from(e.target.files)); e.target.value = ''; }} /></label>
           : <span className="tile-upload">Needs logo detail</span>}
       </div>
       <div style={{ fontSize: 10.5, color: '#475569', marginTop: 4 }}>{t.label}</div>
+      {t.needsColorWay && <div style={{ marginTop: 6, display: 'grid', gap: 5 }}>
+        <select aria-label={'Artwork color way for ' + t.label} value={colorWays[t.key] || ''} disabled={!!busyKey} onChange={e => setColorWays(v => ({ ...v, [t.key]: e.target.value }))} style={{ width: '100%', fontSize: 11 }}>
+          <option value="">Choose color way…</option>
+          {(t.colorWays || []).map(c => <option key={c.id} value={c.id}>{c.label}{c.colors ? ' — ' + c.colors : ''}</option>)}
+        </select>
+        <button type="button" disabled={!!busyKey || !colorWays[t.key]} onClick={async () => {
+          setError(''); setBusyKey(t.key);
+          try { if (await t.onChooseColorWay(colorWays[t.key]) !== true) setError('Could not save the artwork color way. Please try again.'); }
+          catch (e) { setError(e.message || 'Could not save the artwork color way. Please try again.'); }
+          finally { setBusyKey(''); }
+        }}>{busyKey === t.key ? 'Saving…' : 'Save color way'}</button>
+      </div>}
     </div>)}</div>
     {error && <p role="alert" className="mock-error" style={{ marginTop: 6 }}>{error}</p>}
   </div>;
