@@ -408,8 +408,14 @@
 
 # All School workers only send when explicitly enabled in their per-store settings.
 [functions."all-school-purchasing"]
-  schedule = "*/15 * * * *"
   timeout = 26
 [functions."all-school-dtf"]
+  timeout = 26
+# Scheduled functions cannot be called over HTTP. Keep staff queue actions on
+# the authenticated routes above and run the same workers through cron wrappers.
+[functions."all-school-purchasing-scheduled"]
+  schedule = "*/15 * * * *"
+  timeout = 26
+[functions."all-school-dtf-scheduled"]
   schedule = "*/15 * * * *"
   timeout = 26
