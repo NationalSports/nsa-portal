@@ -2,13 +2,16 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { isOutsideArtJob } from './lib/outsideArt';
 import BarcodeScanner from './BarcodeScanner';
-import MeetingNotes from './MeetingNotes';
+import MeetingNotes, { AccountNotes } from './MeetingNotes';
+import { linesToEstimateItems, noteEstimateLines } from './estimateLines';
 import { supabase } from './lib/supabase';
 import { auTierDisc, dP, calcOrderTotals, isAU } from './pricing';
 import { isJobReady, mockAwareProductionStatus } from './lib/jobMockReadiness';
 import { isBoxCode, boxUnits, BOX_STATUS_META } from './boxTracking';
 import { SZ_ORD } from './constants';
 import { numericSizeKeys } from './lib/opsRecap';
+import { calcSOStatus } from './components';
+import { orderProgress } from './lib/orderProgress';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 
 // ─── Inline Icon (same SVG paths as main app) ───
@@ -37,6 +40,39 @@ const fmtDate=(d)=>{if(!d)return'—';try{return new Date(d).toLocaleDateString(
 const fmtMoney=(n)=>{if(n==null)return'$0';return'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})};
 const timeAgo=(d)=>{if(!d)return'';const ms=Date.now()-new Date(d).getTime();const m=ms/60000;if(m<1)return'just now';if(m<60)return Math.floor(m)+'m';if(m<1440)return Math.floor(m/60)+'h';return Math.floor(m/1440)+'d'};
 const PROD_LABELS={ready:'Ready',hold:'On Hold',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped',draft:'Draft'};
+
+// Where an order is: Ordered → Blanks in → Production → Shipped → Done (src/lib/orderProgress.js).
+// compact = a thin bar + one line for lists; full = steps, blanks/art chips and tracking links.
+const OrderProgress=({so,compact})=>{
+  const p=orderProgress(so,calcSOStatus(so));
+  if(!p||p.cancelled)return null;
+  const col=(st)=>st==='done'?'#16a34a':st==='current'?'#2563eb':'#e2e8f0';
+  const artNote=p.art.needsApproval?p.art.needsApproval+' art waiting for approval':p.art.waitingForArt?'waiting for art':'';
+  if(compact)return<div style={{marginTop:8}}>
+    <div style={{display:'flex',gap:3}}>{p.steps.map((s,i)=><div key={i} style={{flex:1,height:5,borderRadius:3,background:col(s.state)}}/>)}</div>
+    <div style={{fontSize:11,color:'#475569',marginTop:4,fontWeight:600}}>{p.headline}{artNote?<span style={{color:'#b45309'}}> · {artNote}</span>:null}</div>
+  </div>;
+  const chip=(bg,fg,txt)=><span style={{fontSize:11,fontWeight:700,padding:'3px 9px',borderRadius:8,background:bg,color:fg}}>{txt}</span>;
+  return<div className="mp-item-card" style={{marginTop:12}}>
+    <div style={{fontSize:15,fontWeight:800,color:'#0f172a'}}>{p.headline}</div>
+    <div style={{display:'flex',alignItems:'flex-start',marginTop:12}}>
+      {p.steps.map((s,i)=><div key={i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',position:'relative'}}>
+        {i>0&&<div style={{position:'absolute',top:9,right:'50%',width:'100%',height:3,background:s.state==='todo'?'#e2e8f0':'#16a34a'}}/>}
+        <div style={{position:'relative',width:20,height:20,borderRadius:10,boxSizing:'border-box',background:s.state==='done'?'#16a34a':'#fff',border:'3px solid '+col(s.state),display:'flex',alignItems:'center',justifyContent:'center',color:'#fff',fontSize:11,fontWeight:800}}>{s.state==='done'?'✓':''}</div>
+        <div style={{fontSize:10,fontWeight:700,marginTop:4,color:s.state==='todo'?'#94a3b8':'#0f172a',textAlign:'center'}}>{s.label}</div>
+      </div>)}
+    </div>
+    {(p.blanks.ordered>0||p.art.total>0)&&<div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:12}}>
+      {p.blanks.ordered>0&&chip(p.blanks.received>=p.blanks.ordered?'#dcfce7':'#fef3c7',p.blanks.received>=p.blanks.ordered?'#166534':'#92400e','📦 '+p.blanks.received+'/'+p.blanks.ordered+' blanks in')}
+      {p.art.total>0&&(artNote?chip('#fef3c7','#92400e','🎨 '+artNote):chip('#dcfce7','#166534','🎨 Art approved'))}
+    </div>}
+    {p.tracking.length>0&&<div style={{marginTop:12,display:'grid',gap:6}}>
+      {p.tracking.map((t,i)=><a key={i} href={t.url} target="_blank" rel="noopener noreferrer" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,padding:'8px 10px',borderRadius:8,border:'1px solid #bfdbfe',background:'#eff6ff',color:'#1e40af',fontSize:12,fontWeight:700,textDecoration:'none',minHeight:40}}>
+        <span>🚚 {t.carrier?t.carrier+' ':''}{t.number}</span><span style={{color:'#64748b',fontWeight:600}}>{t.date?fmtDate(t.date)+' · ':''}Track →</span>
+      </a>)}
+    </div>}
+  </div>;
+};
 const DECO_KINDS=[{k:'art',label:'Art / Print',color:'#3b82f6'},{k:'numbers',label:'Numbers',color:'#22c55e'},{k:'names',label:'Names',color:'#f59e0b'},{k:'outside_deco',label:'Outside Deco',color:'#7c3aed'}];
 const prodLabel=(j)=>PROD_LABELS[j.prod_status]||(j.prod_status||'pending').replace(/_/g,' ');
 
@@ -64,6 +100,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const[q,setQ]=useState('');
   const[showSearch,setShowSearch]=useState(false);
   const[detail,setDetail]=useState(null);
+  const[custTab,setCustTab]=useState({id:null,tab:'overview'});// account page tab, per account
   // Hamburger drawer
   const[drawerOpen,setDrawerOpen]=useState(false);
   // Filters & sorts (lifted to top level)
@@ -355,6 +392,9 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     const totalQty=items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((s,v)=>s+v,0),0);
     const saleTotal=so.total>0?so.total:calcOrderTotals(so,cc?.tax_rate||0).grand;
     const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
+    // Invoices billed against this order and what is still owed on them.
+    const soInvs=invs.filter(i=>i.so_id===so.id&&!['cancelled','void','deleted'].includes(i.status));
+    const soBal=soInvs.filter(i=>i.status!=='paid').reduce((a,i)=>a+Math.max(0,(+i.total||0)-(+i.paid||0)),0);
     return<div className="mp-detail">
       <div className="mp-detail-header">
         <button className="mp-back-btn" onClick={()=>setDetail(null)}><MIcon name="back" size={22}/></button>
@@ -368,7 +408,9 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           <div className="mp-info-item"><div className="mp-info-label">Due Date</div><div className="mp-info-val" style={daysOut!=null&&daysOut<=3?{color:'#dc2626',fontWeight:700}:{}}>{fmtDate(so.expected_date)}{daysOut!=null?` (${daysOut}d)`:'  '}</div></div>
           <div className="mp-info-item"><div className="mp-info-label">Created</div><div className="mp-info-val">{fmtDate(so.created_at)}</div></div>
           <div className="mp-info-item"><div className="mp-info-label">Total Sale</div><div className="mp-info-val" style={{fontSize:18,fontWeight:800,color:'#16a34a'}}>{fmtMoney(saleTotal)}</div></div>
+          {soInvs.length>0&&<div className="mp-info-item"><div className="mp-info-label">Balance due</div><div className="mp-info-val" style={{fontSize:18,fontWeight:800,color:soBal>0.005?'#dc2626':'#16a34a'}}>{soBal>0.005?fmtMoney(soBal):'Paid'}</div><div style={{fontSize:11,color:'#64748b',marginTop:2}}>{fmtMoney(soInvs.reduce((a,i)=>a+(+i.total||0),0))} invoiced</div></div>}
         </div>
+        <OrderProgress so={so}/>
         {so.memo&&<div className="mp-memo">{so.memo}</div>}
         <div style={{display:'flex',gap:8,marginTop:12,marginBottom:4}}>
           {onSaveSO&&<button onClick={()=>startAddToSO(so)} style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#1e40af',color:'white',borderRadius:10,fontWeight:700,fontSize:13,border:'none',cursor:'pointer',minHeight:44}}>
@@ -566,58 +608,128 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   };
 
   // ─── DETAIL VIEW (CUSTOMER) ───
+  // The rep's account page on the phone: a brief up top (balance, open orders,
+  // open quotes, last order), quick actions, then Overview / Orders / Quotes /
+  // People / Notes. A school's sub-teams roll up into the parent's numbers.
   const renderCustDetail=(cc)=>{
-    const custSOs=sos.filter(s=>s.customer_id===cc.id).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
-    const custEsts=ests.filter(e=>e.customer_id===cc.id).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
-    const custInvs=invs.filter(i=>i.customer_id===cc.id).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+    const kids=cust.filter(c=>c.parent_id===cc.id);
+    const parent=cc.parent_id?custObj(cc.parent_id):null;
+    const fam=new Set([cc.id,...kids.map(k=>k.id)]);
+    const teamName=(id)=>id===cc.id?null:(custObj(id)?.alpha_tag||custObj(id)?.name||null);
+    const byNewest=(a,b)=>(b.created_at||'').localeCompare(a.created_at||'');
+    const custSOs=sos.filter(s=>fam.has(s.customer_id)).sort(byNewest);
+    const custEsts=ests.filter(e=>fam.has(e.customer_id)).sort(byNewest);
+    const custInvs=invs.filter(i=>fam.has(i.customer_id)).sort(byNewest);
+    const openSOs=custSOs.filter(s=>!['completed','shipped','cancelled'].includes(s.status||''));
+    const nextDue=openSOs.map(s=>s.expected_date).filter(Boolean).sort()[0]||null;
+    const openEsts=custEsts.filter(e=>['draft','pending','sent'].includes(e.status||'draft'));
+    const openEstTotal=openEsts.reduce((a,e)=>a+(+e.total||0),0);
+    const openInvs=custInvs.filter(i=>i.status!=='paid'&&i.status!=='cancelled').map(i=>({...i,_bal:Math.max(0,(+i.total||0)-(+i.paid||0))})).filter(i=>i._bal>0.005);
+    const balance=openInvs.reduce((a,i)=>a+i._bal,0);
+    const lastOrder=custSOs.find(s=>(s.status||'')!=='cancelled');
+    const todos=(assignedTodos||[]).filter(t=>t.status==='open'&&fam.has(t.customer_id)).sort((a,b)=>(a.due_date||'9').localeCompare(b.due_date||'9'));
+    const contacts=[...(cc.contacts||[]).map(p=>({...p,_team:null})),...kids.flatMap(k=>(k.contacts||[]).map(p=>({...p,_team:k.alpha_tag||k.name})))].filter(p=>p&&(p.name||p.email||p.phone));
+    const mainEmail=(cc.contacts||[]).find(p=>p.email)?.email||cc.email||'';
+    const tab=custTab.id===cc.id?custTab.tab:'overview';
+    const setT=(t)=>setCustTab({id:cc.id,tab:t});
+    const tile=(label,val,sub,color)=><div className="mp-info-item"><div className="mp-info-label">{label}</div><div className="mp-info-val" style={{fontSize:17,fontWeight:800,color:color||'#0f172a'}}>{val}</div>{sub&&<div style={{fontSize:11,color:'#64748b',marginTop:2}}>{sub}</div>}</div>;
+    const act={flex:1,minWidth:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:3,padding:'10px 4px',borderRadius:10,fontWeight:700,fontSize:12,textDecoration:'none',border:'1px solid #e2e8f0',background:'white',color:'#1e293b',cursor:'pointer',minHeight:58};
+    const pill={display:'inline-flex',alignItems:'center',justifyContent:'center',minWidth:44,minHeight:36,padding:'0 10px',borderRadius:8,border:'1px solid #e2e8f0',background:'#f8fafc',color:'#1e40af',fontWeight:700,fontSize:12,textDecoration:'none'};
+    const team=(id)=>{const n=teamName(id);return n?<span style={{fontSize:10,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#f1f5f9',color:'#475569',marginLeft:6}}>{n}</span>:null};
+    const soCard=(so)=><div key={so.id} className="mp-list-card" onClick={()=>setDetail({type:'order',data:so})}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
+        <div style={{minWidth:0}}><div style={{fontWeight:700,color:'#1e40af'}}>{so.id}{team(so.customer_id)}</div><div style={{fontSize:12,color:'#64748b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{so.memo||'—'}</div></div>
+        <div style={{textAlign:'right',flexShrink:0}}><span style={statusBadge(so.status||'new')}>{(so.status||'new').replace(/_/g,' ')}</span>
+        <div style={{fontSize:11,color:'#94a3b8',marginTop:4}}>{so.expected_date?'In-hands '+fmtDate(so.expected_date):fmtDate(so.created_at)}</div></div>
+      </div>
+      {!['cancelled'].includes(so.status||'')&&<OrderProgress so={so} compact/>}
+    </div>;
     return<div className="mp-detail">
       <div className="mp-detail-header">
         <button className="mp-back-btn" onClick={()=>setDetail(null)}><MIcon name="back" size={22}/></button>
-        <div style={{flex:1}}><div className="mp-detail-id">{cc.name}</div>{cc.alpha_tag&&<div className="mp-detail-sub">{cc.alpha_tag}</div>}</div>
+        <div style={{flex:1,minWidth:0}}><div className="mp-detail-id">{cc.name}</div><div className="mp-detail-sub">{[cc.alpha_tag,repName(cc.primary_rep_id),kids.length?kids.length+' team'+(kids.length===1?'':'s'):null].filter(Boolean).join(' · ')}</div></div>
       </div>
       <div className="mp-detail-body">
+        {parent&&<div className="mp-list-card" style={{padding:'8px 12px',fontSize:12,color:'#475569'}} onClick={()=>setDetail({type:'customer',data:parent})}>Part of <b style={{color:'#1e40af'}}>{parent.name}</b> →</div>}
         <div className="mp-info-grid">
-          <div className="mp-info-item"><div className="mp-info-label">Rep</div><div className="mp-info-val">{repName(cc.primary_rep_id)}</div></div>
-          <div className="mp-info-item"><div className="mp-info-label">Phone</div><div className="mp-info-val">{cc.phone?<a href={'tel:'+cc.phone} style={{color:'#1e40af',textDecoration:'none',fontWeight:700}}>{cc.phone}</a>:'—'}</div></div>
-          <div className="mp-info-item"><div className="mp-info-label">Email</div><div className="mp-info-val" style={{fontSize:12,wordBreak:'break-all'}}>{cc.email||'—'}</div></div>
-          <div className="mp-info-item"><div className="mp-info-label">Orders</div><div className="mp-info-val">{custSOs.length}</div></div>
+          {tile('Balance due',fmtMoney(balance),openInvs.length?openInvs.length+' open invoice'+(openInvs.length===1?'':'s'):'All paid',balance>0?'#dc2626':'#16a34a')}
+          {tile('Open orders',openSOs.length,nextDue?'Next in-hands '+fmtDate(nextDue):null)}
+          {tile('Open quotes',openEsts.length,openEsts.length?fmtMoney(openEstTotal):null)}
+          {tile('Last order',lastOrder?fmtDate(lastOrder.created_at):'—',lastOrder?timeAgo(lastOrder.created_at)+' ago':'No orders yet')}
         </div>
-        {/* Action buttons */}
-        <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12,marginBottom:12}}>
-          {(()=>{const acct=(cc.contacts||[]).find(c=>c.role==='Billing')||(cc.contacts||[])[0];const email=acct?.email||cc.email;
-            return email?<a href={'mailto:'+email+'?subject=Account Statement — '+encodeURIComponent(cc.name)+'&body='+encodeURIComponent('Hi '+(acct?.name||'')+',\n\nPlease find your current account statement with all open invoices and aging details.\n\nPlease let us know if you have any questions.\n\nThank you,\nNSA Team')} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#1e40af',color:'white',borderRadius:10,fontWeight:700,fontSize:13,textDecoration:'none',border:'none',cursor:'pointer'}}><MIcon name="mail" size={16}/> Email Statement</a>:null})()}
-          {cc.alpha_tag&&<button onClick={()=>window.open('https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cc.alpha_tag),'_blank')} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#7c3aed',color:'white',borderRadius:10,fontWeight:700,fontSize:13,border:'none',cursor:'pointer'}}><MIcon name="monitor" size={16}/> Coaches Portal</button>}
-          {cc.phone&&<a href={'tel:'+cc.phone} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#16a34a',color:'white',borderRadius:10,fontWeight:700,fontSize:13,textDecoration:'none',border:'none',cursor:'pointer'}}><MIcon name="phone" size={16}/> Call</a>}
+        <div style={{display:'flex',gap:8,margin:'12px 0'}}>
+          {canNotes&&<button style={{...act,background:'#1e40af',color:'white',border:'none'}} onClick={()=>openNotes({customerId:cc.id,mode:'dictated'})}><span style={{fontSize:18}}>🎙️</span>Voice note</button>}
+          {onSaveEstimate&&<button style={act} onClick={()=>{setNewEst({customer_id:cc.id,memo:'',items:[],art_files:[]});setNewEstStep('details');setNewEstCustQ('');setNewEstProdQ('');setCatResults(null);setNewEstEditItem(null)}}><MIcon name="file" size={18}/>New quote</button>}
+          {cc.phone&&<a style={act} href={'tel:'+cc.phone}><MIcon name="phone" size={18}/>Call</a>}
+          {mainEmail&&<a style={act} href={'mailto:'+mainEmail}><MIcon name="mail" size={18}/>Email</a>}
         </div>
-        {cc.notes&&<div className="mp-memo">{typeof cc.notes==='string'?cc.notes:JSON.stringify(cc.notes)}</div>}
-        {custSOs.length>0&&<>
-          <div className="mp-section-title">Recent Orders</div>
-          {custSOs.slice(0,5).map(so=><div key={so.id} className="mp-list-card" onClick={()=>setDetail({type:'order',data:so})}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-              <div><div style={{fontWeight:700,color:'#1e40af'}}>{so.id}</div><div style={{fontSize:12,color:'#64748b'}}>{so.memo||'—'}</div></div>
-              <div style={{textAlign:'right'}}><span style={statusBadge(so.status||'new')}>{so.status||'new'}</span>
-              <div style={{fontSize:11,color:'#94a3b8',marginTop:4}}>{fmtDate(so.created_at)}</div></div>
+        <div className="mp-filter-row">
+          {[['overview','Overview'],['orders','Orders'],['quotes','Quotes'],['people','People'],...(canNotes?[['notes','Notes']]:[])].map(([k,l])=>
+            <button key={k} className={'mp-filter-btn'+(tab===k?' active':'')} style={{flex:'1 0 auto',padding:'6px 8px'}} onClick={()=>setT(k)}>{l}</button>)}
+        </div>
+
+        {tab==='overview'&&<>
+          {todos.length>0&&<>
+            <div className="mp-section-title">To-dos ({todos.length})</div>
+            {todos.slice(0,4).map(t=><div key={t.id} className="mp-list-card" style={{padding:'8px 12px'}}>
+              <div style={{fontSize:13,fontWeight:600,color:'#0f172a'}}>{t.title}</div>
+              <div style={{fontSize:11,color:t.due_date&&t.due_date<new Date().toISOString().slice(0,10)?'#dc2626':'#64748b'}}>{t.due_date?'Due '+fmtDate(String(t.due_date).length===10?t.due_date+'T12:00:00':t.due_date):'No due date'}{team(t.customer_id)}</div>
+            </div>)}
+          </>}
+          {openSOs.length>0&&<>
+            <div className="mp-section-title">Open orders</div>
+            {openSOs.slice(0,3).map(soCard)}
+            {openSOs.length>3&&<button className="mp-filter-btn" style={{width:'100%'}} onClick={()=>setT('orders')}>All {custSOs.length} orders</button>}
+          </>}
+          {openInvs.length>0&&<>
+            <div className="mp-section-title">Open invoices</div>
+            {openInvs.slice(0,5).map(i=><div key={i.id} className="mp-list-card" onClick={()=>setDetail({type:'invoice',data:i})}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <div><div style={{fontWeight:700,color:'#1e40af'}}>{i.id}{team(i.customer_id)}</div><div style={{fontSize:12,color:'#64748b'}}>{fmtDate(i.created_at)}{i.due_date?' · due '+fmtDate(i.due_date):''}</div></div>
+                <div style={{fontWeight:800,color:'#dc2626'}}>{fmtMoney(i._bal)}</div>
+              </div>
+            </div>)}
+          </>}
+          {kids.length>0&&<>
+            <div className="mp-section-title">Teams ({kids.length})</div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8}}>
+              {kids.map(k=><button key={k.id} className="mp-filter-btn" onClick={()=>setDetail({type:'customer',data:k})}>{k.alpha_tag||k.name}</button>)}
             </div>
-          </div>)}
+          </>}
+          <div className="mp-section-title">Account</div>
+          <div className="mp-info-grid">
+            <div className="mp-info-item"><div className="mp-info-label">Phone</div><div className="mp-info-val">{cc.phone?<a href={'tel:'+cc.phone} style={{color:'#1e40af',textDecoration:'none',fontWeight:700}}>{cc.phone}</a>:'—'}</div></div>
+            <div className="mp-info-item"><div className="mp-info-label">Email</div><div className="mp-info-val" style={{fontSize:12,wordBreak:'break-all'}}>{cc.email||'—'}</div></div>
+          </div>
+          {cc.notes&&<div className="mp-memo">{typeof cc.notes==='string'?cc.notes:JSON.stringify(cc.notes)}</div>}
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12}}>
+            {(()=>{const acct=(cc.contacts||[]).find(c=>c.role==='Billing')||(cc.contacts||[])[0];const email=acct?.email||cc.email;
+              return email?<a href={'mailto:'+email+'?subject=Account Statement — '+encodeURIComponent(cc.name)+'&body='+encodeURIComponent('Hi '+(acct?.name||'')+',\n\nPlease find your current account statement with all open invoices and aging details.\n\nPlease let us know if you have any questions.\n\nThank you,\nNSA Team')} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#1e40af',color:'white',borderRadius:10,fontWeight:700,fontSize:13,textDecoration:'none',border:'none',cursor:'pointer'}}><MIcon name="mail" size={16}/> Email Statement</a>:null})()}
+            {cc.alpha_tag&&<button onClick={()=>window.open('https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cc.alpha_tag),'_blank')} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#7c3aed',color:'white',borderRadius:10,fontWeight:700,fontSize:13,border:'none',cursor:'pointer'}}><MIcon name="monitor" size={16}/> Coaches Portal</button>}
+          </div>
         </>}
-        {custEsts.length>0&&<>
-          <div className="mp-section-title">Recent Estimates</div>
-          {custEsts.slice(0,3).map(e=><div key={e.id} className="mp-list-card" onClick={()=>setDetail({type:'estimate',data:e})}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-              <div><div style={{fontWeight:700,color:'#1e40af'}}>{e.id}</div></div>
-              <span style={statusBadge(e.status||'draft')}>{e.status||'draft'}</span>
-            </div>
-          </div>)}
-        </>}
-        {custInvs.length>0&&<>
-          <div className="mp-section-title">Recent Invoices</div>
-          {custInvs.slice(0,3).map(i=><div key={i.id} className="mp-list-card" onClick={()=>setDetail({type:'invoice',data:i})}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-              <div><div style={{fontWeight:700,color:'#1e40af'}}>{i.id}</div><div style={{fontSize:12,color:'#64748b'}}>{fmtMoney(i.total)}</div></div>
-              <span style={statusBadge(i.status||'open')}>{i.status||'open'}</span>
-            </div>
-          </div>)}
-        </>}
+
+        {tab==='orders'&&(custSOs.length?custSOs.map(soCard):<div style={{padding:16,textAlign:'center',color:'#94a3b8',fontSize:13}}>No orders yet</div>)}
+
+        {tab==='quotes'&&(custEsts.length?custEsts.map(e=><div key={e.id} className="mp-list-card" onClick={()=>setDetail({type:'estimate',data:e})}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
+            <div style={{minWidth:0}}><div style={{fontWeight:700,color:'#1e40af'}}>{e.id}{team(e.customer_id)}</div><div style={{fontSize:12,color:'#64748b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{e.memo||'—'} · {fmtDate(e.created_at)}</div></div>
+            <div style={{textAlign:'right',flexShrink:0}}><span style={statusBadge(e.status||'draft')}>{e.status||'draft'}</span><div style={{fontSize:12,fontWeight:700,marginTop:4}}>{fmtMoney(e.total)}</div></div>
+          </div>
+        </div>):<div style={{padding:16,textAlign:'center',color:'#94a3b8',fontSize:13}}>No quotes yet</div>)}
+
+        {tab==='people'&&(contacts.length?contacts.map((p,i)=><div key={i} className="mp-list-card" style={{cursor:'default'}}>
+          <div style={{fontWeight:700,fontSize:14,color:'#0f172a'}}>{p.name||p.email}{p._team?<span style={{fontSize:10,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#f1f5f9',color:'#475569',marginLeft:6}}>{p._team}</span>:null}</div>
+          {(p.role||p.sport)&&<div style={{fontSize:12,color:'#64748b'}}>{[p.role,p.sport].filter(Boolean).join(' · ')}</div>}
+          <div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
+            {p.phone&&<a style={pill} href={'tel:'+p.phone}>Call</a>}
+            {p.phone&&<a style={pill} href={'sms:'+p.phone}>Text</a>}
+            {p.email&&<a style={pill} href={'mailto:'+p.email}>Email</a>}
+            {!p.phone&&!p.email&&<span style={{fontSize:12,color:'#94a3b8'}}>No phone or email saved</span>}
+          </div>
+        </div>):<div style={{padding:16,textAlign:'center',color:'#94a3b8',fontSize:13}}>No contacts yet. Record a voice note after a visit and new people you mention can be added.</div>)}
+
+        {tab==='notes'&&canNotes&&<AccountNotes supabase={supabase} customer={cc} allCustomers={cust} reps={REPS} onNewNote={(c,mode)=>openNotes({customerId:c.id,mode})} onStartEstimate={startEstimateFromNote}/>}
       </div>
     </div>;
   };
@@ -793,6 +905,13 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     setNewEstProdQ('');setCatResults(null);
     setNewEstEditItem(newEst.items.length); // open size editor for new item
     setNewEstStep('sizes');
+  };
+  // AI Notes "Start estimate": open the estimate builder with the note's garments.
+  const startEstimateFromNote=(note)=>{
+    const cc=note?.customer_id?custObj(note.customer_id):null;
+    if(!cc){if(nf)nf('Pick the account for this note first','error');return}
+    setNewEst({customer_id:cc.id,memo:String(note.final?.headline||note.title||'').slice(0,180),items:linesToEstimateItems(cc,noteEstimateLines(note),prod),art_files:[]});
+    setNewEstStep('details');setNewEstCustQ('');setNewEstProdQ('');setCatResults(null);setNewEstEditItem(null);
   };
   // ─── ADD ITEMS TO AN EXISTING SALES ORDER ───
   // Reuses the estimate item/size/decoration builder, seeded to append onto a saved SO. New items are
@@ -1282,6 +1401,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
               <div style={{fontSize:11,color:'#94a3b8'}}>{fmtDate(so.expected_date)}</div>
             </div>
           </div>
+          {so.status!=='cancelled'&&<OrderProgress so={so} compact/>}
         </div>})}
     </div>;
   };
@@ -2066,7 +2186,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         <button className="mp-back-btn" onClick={()=>setSubPage(null)}><MIcon name="back" size={20}/></button>
         <div className="mp-page-title" style={{margin:0,flex:1}}>AI Notes</div>
       </div>
-      <MeetingNotes supabase={supabase} cu={cu} customers={cust} reps={REPS} notify={nf} initialMode={noteInit?.mode} initialCustomerId={noteInit?.customerId} onConsumedInitial={()=>setNoteInit(null)} onContactsAdded={onNoteContactsAdded}/>
+      <MeetingNotes supabase={supabase} cu={cu} customers={cust} reps={REPS} notify={nf} initialMode={noteInit?.mode} initialCustomerId={noteInit?.customerId} onConsumedInitial={()=>setNoteInit(null)} onContactsAdded={onNoteContactsAdded} onStartEstimate={startEstimateFromNote}/>
     </div>;
     if(subPage==='warehouse')return renderWarehouse();
     if(subPage==='reports'){

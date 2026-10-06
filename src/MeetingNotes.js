@@ -7,7 +7,7 @@
 // page's Notes tab.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SearchSelect } from './components';
-import { createMeetingRecorder, createChunkUploader, recorderSupported } from './meetingRecorder';
+import { createMeetingRecorder, createChunkUploader, recorderSupported, fileChunks, isAudioFile, MAX_UPLOAD_BYTES } from './meetingRecorder';
 
 const MAX_RECORD_MS = 90 * 60 * 1000;
 
@@ -24,9 +24,13 @@ const fmtWhen=v=>{const d=new Date(v||0);return Number.isNaN(d.getTime())?'':d.t
 const fmtDay=v=>{if(!v)return'';const d=new Date(v+'T12:00:00');return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})};
 const fmtClock=ms=>{const s=Math.floor(ms/1000);const h=Math.floor(s/3600);const m=Math.floor((s%3600)/60);const ss=String(s%60).padStart(2,'0');return(h?h+':'+String(m).padStart(2,'0'):m)+':'+ss};
 const MODE_LABEL={dictated:'Voice memo',recorded:'Meeting',pasted:'Pasted'};
+const fmtMB=b=>(b/1048576).toFixed(b<10485760?1:0)+' MB';
 const STATUS_LABEL={recording:'Not finished',processing:'Working on it…',ready:'Ready to review',approved:'Saved',failed:"Couldn't process",discarded:'Discarded'};
 const STAGE_LABEL={lead:'Lead',contacted:'Contacted',quoted:'Quoted',won:'Won',reorder_due:'Reorder due'};
 const lines=v=>(Array.isArray(v)?v:[]).join('\n');
+const fmtMoney=v=>'$'+Number(v).toLocaleString('en-US',{maximumFractionDigits:0});
+const sizeText=sz=>Object.entries(sz||{}).filter(([,n])=>n>0).map(([k,n])=>k+' '+n).join(', ');
+const itemLines=arr=>(arr||[]).map(l=>[l.quantity?l.quantity+'×':'',l.brand,l.name,l.sku_guess?'('+l.sku_guess+')':'',l.color?'· '+l.color:'',sizeText(l.sizes)?'· '+sizeText(l.sizes):'',l.decoration?'· '+l.decoration:''].filter(Boolean).join(' '));
 const unlines=v=>String(v||'').split('\n').map(s=>s.trim()).filter(Boolean);
 
 const box={background:'#fff',border:'1px solid #e2e8f0',borderRadius:8,padding:12};
@@ -48,6 +52,9 @@ function Capture({supabase,customers,mode,initialCustomerId,notify,onDone,onCanc
   const[up,setUp]=useState({uploaded:0,pending:0,retrying:false});
   const[text,setText]=useState('');
   const[busy,setBusy]=useState(false);
+  const[file,setFile]=useState(null);// upload mode: a recording the rep already has
+  const[who,setWho]=useState('');// upload mode: 'recorded' (with others) | 'dictated' (just me)
+  const[consentOk,setConsentOk]=useState(false);
   const recRef=useRef(null);const upRef=useRef(null);const meetingRef=useRef(null);
 
   // Keep the clock ticking and stop at the 90-minute cap.
@@ -58,11 +65,12 @@ function Capture({supabase,customers,mode,initialCustomerId,notify,onDone,onCanc
   },[phase]);// eslint-disable-line
   // Leaving mid-recording loses whatever hasn't uploaded yet.
   useEffect(()=>{
-    if(!['recording','paused','interrupted','finishing'].includes(phase))return;
+    if(!['recording','paused','interrupted','finishing','uploading'].includes(phase))return;
     const h=e=>{e.preventDefault();e.returnValue='';};
     window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h);
   },[phase]);
-  useEffect(()=>()=>{try{recRef.current?.cancel()}catch{}},[]);
+  const aliveRef=useRef(true);
+  useEffect(()=>()=>{aliveRef.current=false;try{recRef.current?.cancel()}catch{}try{upRef.current?.cancel()}catch{}},[]);
 
   const begin=async(consent)=>{
     setConsentOpen(false);setPhase('starting');
@@ -70,6 +78,7 @@ function Capture({supabase,customers,mode,initialCustomerId,notify,onDone,onCanc
     try{
       const d=await callFn(supabase,{action:'create',mode,customer_id:customerId||null,consent:!!consent});
       meeting=d.meeting;meetingRef.current=meeting;
+      if(!aliveRef.current){callFn(supabase,{action:'discard',id:meeting.id}).catch(()=>{});return}// left while it was starting
       upRef.current=createChunkUploader({supabase,folder:d.folder,onProgress:setUp});
       recRef.current=createMeetingRecorder({
         onChunk:(blob,meta)=>upRef.current.add(blob,meta),
@@ -107,10 +116,12 @@ function Capture({supabase,customers,mode,initialCustomerId,notify,onDone,onCanc
     }catch(e){setPhase('error');setReason('Could not finish: '+(e.message||e)+'. Your audio is saved. Open the note from the list to finish it.')}
   };
   const cancel=async()=>{
-    if(meetingRef.current&&['recording','paused','interrupted','starting'].includes(phase)){
+    if(meetingRef.current&&['recording','paused','interrupted','starting','uploading'].includes(phase)){
       if(!window.confirm('Throw away this recording?'))return;
       try{recRef.current?.cancel()}catch{}
+      try{upRef.current?.cancel()}catch{}
       callFn(supabase,{action:'discard',id:meetingRef.current.id}).catch(()=>{});
+      meetingRef.current=null;
     }
     onCancel?.();
   };
@@ -120,9 +131,41 @@ function Capture({supabase,customers,mode,initialCustomerId,notify,onDone,onCanc
     catch(e){notify?.(e.message||'Could not process','error')}
     setBusy(false);
   };
+  const pickFile=f=>{
+    if(!f){setFile(null);return}
+    if(!isAudioFile(f)){notify?.('That is not an audio or video file.','error');return}
+    if(f.size>MAX_UPLOAD_BYTES){notify?.('That file is '+fmtMB(f.size)+'. The limit is '+fmtMB(MAX_UPLOAD_BYTES)+'. Share just the audio, or trim the recording.','error');return}
+    setFile(f);
+  };
+  const submitUpload=async()=>{
+    if(!file||!who||(who==='recorded'&&!consentOk))return;
+    setPhase('uploading');setReason('');
+    let meeting=null;
+    try{
+      const d=await callFn(supabase,{action:'create',mode:who,customer_id:customerId||null,consent:who==='recorded'&&consentOk});
+      meeting=d.meeting;meetingRef.current=meeting;
+      if(!aliveRef.current){callFn(supabase,{action:'discard',id:meeting.id}).catch(()=>{});return}// left while it was starting
+      const parts=fileChunks(file);
+      setUp({uploaded:0,pending:parts.length,retrying:false,total:parts.length});
+      upRef.current=createChunkUploader({supabase,folder:d.folder,onProgress:p=>setUp({...p,total:parts.length})});
+      parts.forEach(p=>upRef.current.add(p.blob,p.meta));
+      await upRef.current.flush();
+      if(meetingRef.current!==meeting)return;// discarded mid-upload
+      await callFn(supabase,{action:'finalize',id:meeting.id,duration_sec:null});
+      notify?.('Uploaded. Your notes will show up here in a few minutes.','success');
+      onDone?.(meeting.id);
+    }catch(e){
+      setPhase('error');
+      setReason('Could not upload: '+(e.message||e)+(meeting?'. Whatever uploaded is kept. Open the note from the list to finish or discard it.':''));
+    }
+  };
 
-  const live=['recording','paused','interrupted','finishing'].includes(phase);
-  const title=mode==='recorded'?'Record a meeting':mode==='dictated'?'Voice memo':'Paste text';
+  const live=['recording','paused','interrupted','finishing','uploading'].includes(phase);
+  const title=mode==='upload'?'Upload a recording':mode==='recorded'?'Record a meeting':mode==='dictated'?'Voice memo':'Paste text';
+  const choice=(v,label,sub)=><label style={{display:'flex',gap:8,alignItems:'flex-start',padding:'8px 10px',borderRadius:8,border:'1px solid '+(who===v?'#2563eb':'#e2e8f0'),background:who===v?'#eff6ff':'#fff',cursor:'pointer'}}>
+    <input type="radio" name="nsa-note-who" checked={who===v} onChange={()=>setWho(v)} style={{marginTop:3,width:16,height:16}}/>
+    <span><span style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{label}</span><br/><span style={{fontSize:12,color:'#64748b'}}>{sub}</span></span>
+  </label>;
   return(<div style={{display:'grid',gap:12,maxWidth:560}}>
     <div style={{display:'flex',alignItems:'center',gap:8}}>
       <div style={{fontWeight:800,fontSize:16,color:'#0f172a'}}>{title}</div>
@@ -134,7 +177,35 @@ function Capture({supabase,customers,mode,initialCustomerId,notify,onDone,onCanc
       :<SearchSelect options={custOptions} value={customerId} onChange={setCustomerId} placeholder="Pick a school or team (optional now)" limit={50}/>}
     </div>
 
-    {mode==='pasted'?<div style={box}>
+    {mode==='upload'?<div style={{...box,display:'grid',gap:10}}>
+      {phase==='uploading'?<div style={{textAlign:'center',padding:'12px 0'}}>
+        <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>Uploading {file?.name}</div>
+        <div style={{height:10,borderRadius:5,background:'#e2e8f0',overflow:'hidden',margin:'10px 0 6px'}}><div style={{height:'100%',width:Math.round((up.uploaded/(up.total||1))*100)+'%',background:'#2563eb',transition:'width .3s'}}/></div>
+        <div style={{fontSize:12,color:'#64748b'}}>{Math.round((up.uploaded/(up.total||1))*100)}%{up.retrying?' · waiting for signal…':''} · keep this screen open</div>
+      </div>
+      :phase==='error'?<div style={{fontSize:13,color:'#b91c1c'}}>{reason}</div>
+      :<>
+        <div>
+          <label style={lbl}>Recording file</label>
+          <input type="file" accept="audio/*,video/mp4,video/quicktime,.m4a,.mp3,.wav,.aac,.mp4,.mov,.webm,.ogg,.caf" onChange={e=>pickFile(e.target.files&&e.target.files[0])} style={{fontSize:14,maxWidth:'100%'}}/>
+          <div style={{fontSize:12,color:'#64748b',marginTop:4}}>{file?file.name+' · '+fmtMB(file.size):'iPhone Voice Memos (share → Save to Files), Zoom or phone-call recordings. Up to '+fmtMB(MAX_UPLOAD_BYTES)+'.'}</div>
+        </div>
+        <div style={{display:'grid',gap:6}}>
+          <span style={lbl}>Who is on the recording?</span>
+          {choice('recorded','A meeting or call with others','Notes will label who said what.')}
+          {choice('dictated','Just me','A voice memo you recorded yourself.')}
+        </div>
+        {who==='recorded'&&<label style={{display:'flex',gap:8,alignItems:'flex-start',fontSize:13,color:'#1e293b'}}>
+          <input type="checkbox" checked={consentOk} onChange={e=>setConsentOk(e.target.checked)} style={{marginTop:2,width:18,height:18}}/>
+          Everyone on this recording knew it was being recorded.
+        </label>}
+        <div style={{fontSize:12,color:'#64748b'}}>The audio is deleted after transcription. Only the notes are kept.</div>
+        <div style={{display:'flex',justifyContent:'flex-end'}}>
+          <button className="btn btn-primary" disabled={!file||!who||(who==='recorded'&&!consentOk)} onClick={submitUpload}>Upload & make notes</button>
+        </div>
+      </>}
+    </div>
+    :mode==='pasted'?<div style={box}>
       <label style={lbl}>Paste an email, text thread, or call transcript</label>
       <textarea style={{...inp,minHeight:220}} value={text} onChange={e=>setText(e.target.value)} placeholder="Paste here…"/>
       <div style={{display:'flex',justifyContent:'flex-end',marginTop:8}}>
@@ -234,6 +305,7 @@ function Review({supabase,cu,meeting,customers,notify,onClose,onApproved}){
         people_mentioned:people.map(p=>({name:p.name,role:p.role,add:p.add&&!known.has(String(p.name||'').trim().toLowerCase())})),
         sports:d.sports||[],suggested_stage:d.suggested_stage||null,accept_stage:acceptStage,
         next_action_date:nextDate||null,follow_up_email:email,confidence:d.confidence,
+        line_items:d.line_items||[],opportunities:d.opportunities||[],competitors:d.competitors||[],
       };
       const speaker_map={};letters.forEach(l=>{const v=String(speakers[l]||'').trim();if(v)speaker_map[l]=v});
       const res=await callFn(supabase,{action:'approve',id:meeting.id,customer_id:customerId,final,speaker_map});
@@ -303,6 +375,10 @@ function Review({supabase,cu,meeting,customers,notify,onClose,onApproved}){
       </div>)})}
     </div>)}
 
+    {(d.line_items||[]).length>0&&section('Items to quote',<div style={{display:'grid',gap:4}}>
+      {itemLines(d.line_items).map((t,i)=><div key={i} style={{fontSize:13,color:'#1e293b'}}>• {t}</div>)}
+      <div style={{fontSize:12,color:'#64748b'}}>After you save, tap Start estimate on the note to turn these into a draft quote.</div>
+    </div>)}
     {section('Details',<div style={{display:'grid',gap:8}}>
       <div><label style={lbl}>Products discussed (one per line)</label><textarea style={{...inp,minHeight:60}} value={sec.products} onChange={e=>setSec(s=>({...s,products:e.target.value}))}/></div>
       <div><label style={lbl}>Pricing & budget</label><input style={inp} value={sec.pricing} onChange={e=>setSec(s=>({...s,pricing:e.target.value}))}/></div>
@@ -340,7 +416,7 @@ function Review({supabase,cu,meeting,customers,notify,onClose,onApproved}){
 }
 
 // Read-only view of an approved note.
-function NoteView({note,customers,reps,onOpenCustomer}){
+function NoteView({note,customers,reps,onOpenCustomer,onStartEstimate}){
   const f=note.final||{};const s=f.sections||{};
   const cust=(customers||[]).find(c=>c.id===note.customer_id);
   const who=(reps||[]).find(r=>r.id===note.team_member_id)?.name;
@@ -356,11 +432,15 @@ function NoteView({note,customers,reps,onOpenCustomer}){
     {list('Decisions',s.decisions)}
     {list('Concerns',s.concerns)}
     {list('People',(f.people_mentioned||[]).map(p=>p.name+(p.role?' · '+p.role:'')))}
+    {list('Items to quote',itemLines(f.line_items))}
+    {list('Future opportunities',(f.opportunities||[]).map(o=>o.text+(o.est_value?' · ~'+fmtMoney(o.est_value):'')+(o.date?' · follow up '+fmtDay(o.date):'')))}
+    {list('Competitors mentioned',(f.competitors||[]).map(c=>c.name+(c.detail?': '+c.detail:'')+(c.price?' ('+c.price+')':'')))}
+    {onStartEstimate&&note.customer_id&&<div><button className="btn btn-sm btn-primary" onClick={()=>onStartEstimate(note)}>📝 Start estimate{(f.line_items||[]).length?' ('+f.line_items.length+' item'+(f.line_items.length===1?'':'s')+')':''}</button></div>}
   </div>);
 }
 
 // ─── Page ────────────────────────────────────────────────────────────────────
-export default function MeetingNotes({supabase,cu,customers,reps,notify:notifyProp,initialCustomerId,initialMode,onConsumedInitial,onContactsAdded,onOpenCustomer}){
+export default function MeetingNotes({supabase,cu,customers,reps,notify:notifyProp,initialCustomerId,initialMode,onConsumedInitial,onContactsAdded,onOpenCustomer,onStartEstimate}){
   const notifyRef=useRef(notifyProp);notifyRef.current=notifyProp;
   const notify=useCallback((...a)=>notifyRef.current?.(...a),[]);
   const[rows,setRows]=useState([]);
@@ -423,6 +503,7 @@ export default function MeetingNotes({supabase,cu,customers,reps,notify:notifyPr
     <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:14}}>
       <button style={big} onClick={()=>setCapture({mode:'dictated'})}><span style={{fontSize:22}}>🎙️</span>Voice memo<span style={{fontSize:11,fontWeight:500,color:'#64748b'}}>Just you, after a visit</span></button>
       <button style={big} onClick={()=>setCapture({mode:'recorded'})}><span style={{fontSize:22}}>👥</span>Record meeting<span style={{fontSize:11,fontWeight:500,color:'#64748b'}}>Everyone in the room</span></button>
+      <button style={big} onClick={()=>setCapture({mode:'upload'})}><span style={{fontSize:22}}>⬆️</span>Upload recording<span style={{fontSize:11,fontWeight:500,color:'#64748b'}}>Voice Memos, Zoom, calls</span></button>
       <button style={big} onClick={()=>setCapture({mode:'pasted'})}><span style={{fontSize:22}}>📋</span>Paste text<span style={{fontSize:11,fontWeight:500,color:'#64748b'}}>Email, texts, transcript</span></button>
     </div>
     {loading?<div style={{padding:20,color:'#64748b',fontSize:13}}>Loading…</div>:<>
@@ -449,14 +530,14 @@ export default function MeetingNotes({supabase,cu,customers,reps,notify:notifyPr
           </div>
           <span style={{fontSize:12,color:'#64748b'}}>{openId===r.id?'▲':'▼'}</span>
         </div>
-        {openId===r.id&&<div style={{marginTop:8}}><NoteView note={r} customers={customers} reps={reps} onOpenCustomer={onOpenCustomer}/></div>}
+        {openId===r.id&&<div style={{marginTop:8}}><NoteView note={r} customers={customers} reps={reps} onOpenCustomer={onOpenCustomer} onStartEstimate={onStartEstimate}/></div>}
       </div></div>)}
     </>}
   </div>);
 }
 
 // Account page "Notes" tab: approved notes for this account and its teams.
-export function AccountNotes({supabase,customer,allCustomers,reps,onNewNote}){
+export function AccountNotes({supabase,customer,allCustomers,reps,onNewNote,onStartEstimate}){
   const[rows,setRows]=useState(null);
   const[openId,setOpenId]=useState(null);
   const ids=useMemo(()=>{const all=allCustomers||[];return[customer.id,...all.filter(c=>c.parent_id===customer.id).map(c=>c.id)]},[customer.id,allCustomers]);
@@ -466,10 +547,11 @@ export function AccountNotes({supabase,customer,allCustomers,reps,onNewNote}){
       .then(({data,error})=>{if(!off)setRows(error?[]:(data||[]))});
     return()=>{off=true};
   },[supabase,ids.join(',')]);// eslint-disable-line
-  return(<div className="card"><div className="card-header"><h2>Notes</h2>
-    <div style={{display:'flex',gap:6}}>
+  return(<div className="card"><div className="card-header" style={{flexWrap:'wrap',gap:8}}><h2>Notes</h2>
+    <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
       <button className="btn btn-sm btn-primary" onClick={()=>onNewNote?.(customer,'dictated')}>🎙️ Voice memo</button>
       <button className="btn btn-sm btn-secondary" onClick={()=>onNewNote?.(customer,'recorded')}>👥 Meeting</button>
+      <button className="btn btn-sm btn-secondary" onClick={()=>onNewNote?.(customer,'upload')}>⬆️ Upload</button>
       <button className="btn btn-sm btn-secondary" onClick={()=>onNewNote?.(customer,'pasted')}>📋 Paste</button>
     </div></div>
     <div className="card-body">
@@ -483,7 +565,7 @@ export function AccountNotes({supabase,customer,allCustomers,reps,onNewNote}){
           </div>
           <span style={{fontSize:12,color:'#64748b'}}>{openId===r.id?'▲':'▼'}</span>
         </div>
-        {openId===r.id&&<div style={{marginTop:6}}><NoteView note={r} customers={allCustomers} reps={reps}/></div>}
+        {openId===r.id&&<div style={{marginTop:6}}><NoteView note={r} customers={allCustomers} reps={reps} onStartEstimate={onStartEstimate}/></div>}
       </div>)}
     </div>
   </div>);

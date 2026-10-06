@@ -6,7 +6,7 @@
  */
 const { normalizeDraft } = require('../../netlify/functions/_meetingAi');
 const { groupSegments, normalizeFinal, writeApproval, processMeeting } = require('../../netlify/functions/_meetingPipeline');
-import { createMeetingRecorder, createChunkUploader, extForMime } from '../meetingRecorder';
+import { createMeetingRecorder, createChunkUploader, extForMime, extForFile, fileChunks, isAudioFile } from '../meetingRecorder';
 
 // Minimal chainable Supabase stand-in over in-memory tables + storage.
 function fakeAdmin(init = {}) {
@@ -272,6 +272,35 @@ describe('meeting recorder', () => {
     await up.flush();
     expect(attempts).toEqual(['tm1/m1/s0-c0000.mp4', 'tm1/m1/s0-c0000.mp4', 'tm1/m1/s0-c0001.mp4']);
     expect(up.uploaded).toBe(2);
+    expect(up.pending).toBe(0);
+  });
+
+  test('an uploaded file is cut into one segment whose chunks join back into the original bytes', async () => {
+    const bytes = new Uint8Array(25).map((_, i) => i);
+    const file = new File([bytes], 'Coach Smith visit.M4A', { type: 'audio/x-m4a' });
+    expect(extForFile(file)).toBe('m4a');
+    expect(extForFile(new File(['x'], 'memo', { type: 'audio/mpeg' }))).toBe('mp3');
+    expect(isAudioFile(file)).toBe(true);
+    expect(isAudioFile(new File(['x'], 'roster.pdf', { type: 'application/pdf' }))).toBe(false);
+    const parts = fileChunks(file, 10);
+    expect(parts.map((p) => p.meta)).toEqual([0, 1, 2].map((index) => ({ segment: 0, index, ext: 'm4a', mime: 'audio/x-m4a' })));
+    const files = parts.map((p, i) => ({ name: `s0-c000${i}.m4a` }));
+    expect(groupSegments(files)).toEqual([expect.objectContaining({ index: 0, ext: 'm4a', gaps: 0 })]);
+    const readBytes = (blob) => new Promise((resolve) => { const r = new FileReader(); r.onload = () => resolve(new Uint8Array(r.result)); r.readAsArrayBuffer(blob); });
+    const joined = await readBytes(new Blob(parts.map((p) => p.blob)));
+    expect(Array.from(joined)).toEqual(Array.from(bytes));
+  });
+
+  test('cancel stops the uploader after the chunk in flight', async () => {
+    const attempts = [];
+    let up;
+    const supabase = { storage: { from: () => ({ upload: async (path) => { attempts.push(path); up.cancel(); return { error: null }; } }) } };
+    up = createChunkUploader({ supabase, folder: 'tm1/m1', retryBaseMs: 1 });
+    up.add('a', { segment: 0, index: 0, ext: 'm4a', mime: 'audio/mp4' });
+    up.add('b', { segment: 0, index: 1, ext: 'm4a', mime: 'audio/mp4' });
+    await up.flush();
+    expect(attempts).toEqual(['tm1/m1/s0-c0000.m4a']);
+    up.add('c', { segment: 0, index: 2, ext: 'm4a', mime: 'audio/mp4' });
     expect(up.pending).toBe(0);
   });
 });

@@ -36,6 +36,7 @@ import AiInbox from './AiInbox';
 import AiTasks from './AiTasks';
 import MyEmail, { MyEmailDigest } from './MyEmail';
 import MeetingNotes from './MeetingNotes';
+import { linesToEstimateItems, noteEstimateLines } from './estimateLines';
 import DashboardCalendar from './DashboardCalendar';
 import DashboardInbox from './DashboardInbox';
 import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, decoShipToPresets, botProgress } from './lib/botTasks';
@@ -7568,26 +7569,21 @@ export default function App(){
     if(!c){nf('Match this email to a customer first','error');return}
     const lines=message?.analysis?.lines||[];
     if(!lines.length){nf('The AI did not find any estimate line items','error');return}
-    const mk=c.catalog_markup||1.65;
-    const items=lines.map(line=>{
-      const sku=String(line.sku_guess||'').trim();
-      const product=line.product_id?prod.find(p=>p.id===line.product_id):prod.find(p=>String(p.sku||'').toLowerCase()===sku.toLowerCase());
-      const brand=product?.brand||line.brand||'';
-      const au=isAU(brand)&&!String(product?.id||'').startsWith('ssa-');
-      const cost=product?.is_clearance&&product?.clearance_cost!=null?product.clearance_cost:(product?.nsa_cost||0);
-      const retail=product?.retail_price||0;
-      const sell=au?rQ(retail*(1-auTierDisc(c.adidas_ua_tier||'B',product?.pricing_group,product?.category))):rQ(cost*mk);
-      const sizes=line.sizes&&Object.keys(line.sizes).length?line.sizes:{};
-      // No "CUSTOM" placeholder — an unmatched line lands with a blank SKU so the rep has to
-      // enter the real style number; the order editor won't save a line without one.
-      return{product_id:product?.id||null,sku:product?.sku||sku,name:product?.name||line.name||'',brand,color:product?.color||line.color||'',vendor_id:product?.vendor_id||null,pricing_group:product?.pricing_group||null,nsa_cost:cost,retail_price:retail,unit_sell:sell,available_sizes:Object.keys(sizes).length?Object.keys(sizes):(product?.available_sizes||['S','M','L','XL','2XL']),sizes,decorations:[],is_custom:!product,notes:line.notes||'',pick_lines:[],po_lines:[]}
-    });
+    const items=linesToEstimateItems(c,lines,prod);
     const memo=(message.subject||'Email estimate request').replace(/^\s*(?:re|fwd?):\s*/i,'').slice(0,180);
     const created=newE(c,null,items,memo);
     const linked={...created,source_inbox_message_id:message.id};
     setEEst(linked);
     if(supabase)supabase.from('ai_inbox_messages').update({status:'estimate_created',updated_at:new Date().toISOString()}).eq('id',message.id).then(()=>{});
     nf('Draft estimate created from the sales email. Review pricing and stock before creating the Gmail draft.');
+  };
+  // AI Notes "Start estimate": the garments the note picked up become draft lines.
+  const createEstimateFromNote=(note)=>{
+    const c=cust.find(x=>x.id===note?.customer_id);
+    if(!c){nf('Pick the account for this note first','error');return}
+    const items=linesToEstimateItems(c,noteEstimateLines(note),prod);
+    newE(c,null,items,String(note.final?.headline||note.title||'Estimate from AI note').slice(0,180));
+    nf(items.length?'Draft estimate started with '+items.length+' line'+(items.length===1?'':'s')+' from the note. Check styles, sizes and pricing.':'Blank estimate started for '+c.name+'. The note did not name specific items.');
   };
   // Create a blank Sales Order directly (skipping the estimate stage). Reps still pick a
   // customer from inside the editor — same default shape as a freshly converted SO.
@@ -11981,7 +11977,7 @@ export default function App(){
   };
   // CUSTOMERS
   function rCust(){
-    if(selC)return<ComponentErrorBoundary name="CustDetail"><React.Suspense fallback={<LazyFallback/>}><CustDetail supabase={supabase} customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={(c,product,seed)=>newE(c,product,seed)} sos={sos} msgs={msgs} onMsg={setMsgs} onInv={setInvs} companyInfo={companyInfo} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} onOpenInv={inv=>{setViewInvoice(inv);setPg('invoices')}} ests={ests} invs={invs} onSaveSO={savSO} onSaveEst={savE} onSaveArtFiles={savArtFiles} REPS={REPS} prod={prod} histStatus={histInvsStatus} onRetryHist={_retryHistInvoices} onNewNote={(c2,mode)=>{setNoteStart({customerId:c2.id,mode:mode||'dictated'});setPg('meeting_notes')}}
+    if(selC)return<ComponentErrorBoundary name="CustDetail"><React.Suspense fallback={<LazyFallback/>}><CustDetail supabase={supabase} customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={(c,product,seed)=>newE(c,product,seed)} sos={sos} msgs={msgs} onMsg={setMsgs} onInv={setInvs} companyInfo={companyInfo} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} onOpenInv={inv=>{setViewInvoice(inv);setPg('invoices')}} ests={ests} invs={invs} onSaveSO={savSO} onSaveEst={savE} onSaveArtFiles={savArtFiles} REPS={REPS} prod={prod} histStatus={histInvsStatus} onRetryHist={_retryHistInvoices} onNewNote={(c2,mode)=>{setNoteStart({customerId:c2.id,mode:mode||'dictated'});setPg('meeting_notes')}} onEstimateFromNote={createEstimateFromNote}
       onMarkRead={ids=>{const s=new Set(ids);setMsgs(msgs.map(m=>s.has(m.id)?{...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]}:m))}}
       onSavePromoProgram={async(prog)=>{await _dbSavePromoProgram(prog);const isFamily=c=>c.id===prog.customer_id||c.parent_id===prog.customer_id;const upd=c=>({...c,promo_programs:[...(c.promo_programs||[]).filter(p=>p.id!==prog.id),prog]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s);nf('Promo program saved')}}
       onDeletePromoProgram={async(id)=>{await _dbDeletePromoProgram(id);const upd=c=>({...c,promo_programs:(c.promo_programs||[]).filter(p=>p.id!==id)});setCust(prev=>prev.map(c=>(c.promo_programs||[]).some(p=>p.id===id)?upd(c):c));setSelC(s=>s&&(s.promo_programs||[]).some(p=>p.id===id)?upd(s):s);nf('Promo program removed')}}
@@ -39292,7 +39288,7 @@ export default function App(){
       setEsts(prev=>[...prev.filter(x=>x.id!==id),est]);setEEst(est);setEEstC(cust.find(c=>c.id===est.customer_id)||null);setPg('estimates');
     }} notify={nf}/></div>}
     {pg==='dashboard'&&['admin','super_admin','gm','rep','csr'].includes(cu?.role)&&<button type="button" className="nsa-note-fab" onClick={()=>{setNoteStart({mode:'dictated'});setPg('meeting_notes')}} aria-label="Record a voice note" title="Voice note (AI Notes)">🎙️</button>}
-    {pg==='meeting_notes'&&<div className="content"><MeetingNotes supabase={supabase} cu={cu} customers={cust} reps={REPS} notify={nf} initialCustomerId={noteStart?.customerId} initialMode={noteStart?.mode} onConsumedInitial={()=>setNoteStart(null)} onContactsAdded={_addNoteContacts} onOpenCustomer={c2=>{setSelC(c2);setPg('customers')}}/></div>}
+    {pg==='meeting_notes'&&<div className="content"><MeetingNotes supabase={supabase} cu={cu} customers={cust} reps={REPS} notify={nf} initialCustomerId={noteStart?.customerId} initialMode={noteStart?.mode} onConsumedInitial={()=>setNoteStart(null)} onContactsAdded={_addNoteContacts} onOpenCustomer={c2=>{setSelC(c2);setPg('customers')}} onStartEstimate={createEstimateFromNote}/></div>}
     {/* ═══ NEED-BY DATE (global) — asked before a sales order is created or converted ═══ */}
     {needByAsk&&(()=>{const _t=new Date();const _today=_t.getFullYear()+'-'+String(_t.getMonth()+1).padStart(2,'0')+'-'+String(_t.getDate()).padStart(2,'0');const _ok=!!needByAsk.date;
       const _go=()=>{if(!_ok)return;const a=needByAsk;setNeedByAsk(null);if(a.kind==='convert')convertSO(a.est,a.date);else newSOFn(a.c,a.date)};

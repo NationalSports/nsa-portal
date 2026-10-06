@@ -385,6 +385,13 @@
   schedule = "17 * * * *"
   timeout = 26
 
+# AI Notes end-of-day recap — 5:45 PM PT. Cron is UTC, so it fires at 00:45 and
+# 01:45 UTC and the function only sends on the run that is 5 PM in Pacific time
+# (PDT or PST). Emails from hello@ (MEETING_RECAP_FROM). See meeting-notes-recap.js.
+[functions."meeting-notes-recap"]
+  schedule = "45 0,1 * * *"
+  timeout = 26
+
 [functions."meeting-notes"]
   timeout = 26
 

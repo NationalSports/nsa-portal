@@ -60,10 +60,22 @@ Steps 1-3, 5 and 7 are built (web app, desktop + mobile portal); not live until 
   **Notes** tab. No separate `activities` table yet (step 4, timeline backfill, is still to do).
 - Approved notes are readable by all active staff (account history); drafts only by the rep + admins/GMs.
 - Stage suggestions are stored on the note (`final.accepted_stage`) but not applied to customers yet.
+- Added Oct 6:
+  - **Upload a recording** (Voice Memos, Zoom, call recorders, up to 150 MB). The file is cut into
+    8 MB chunks stored as one segment; processing joins them back byte-for-byte, so the rest of the
+    pipeline is unchanged. Meetings with others still require the consent checkbox.
+  - The draft also extracts `line_items` (garments to quote), `opportunities` (future orders, est. $)
+    and `competitors`; approval keeps them. **Start estimate** on a saved note opens a draft estimate
+    with those lines (shared mapping in `src/estimateLines.js`, also used by the AI inbox).
+  - **End-of-day recap email** (`meeting-notes-recap`, 5:45 PM PT) from hello@nationalsportsapparel.com
+    (`MEETING_RECAP_FROM` overrides) to each rep who used AI Notes that day: saved notes with to-dos,
+    items and the follow-up email text, plus drafts still waiting for review. One per rep per day
+    (`meeting_recaps`).
 - Not built yet: step 4 (timeline + backfill), step 6 (PWA install), step 8 (push, manager feed).
 - Setup to go live: apply the migration; set `ASSEMBLYAI_API_KEY` in Netlify (enable zero data
   retention on the AssemblyAI account); `ANTHROPIC_API_KEY` is already used by the portal;
-  optional `MEETING_NOTES_MODEL`.
+  optional `MEETING_NOTES_MODEL`. The recap uses the existing `BREVO_API_KEY`; hello@ must be an
+  allowed sender in Brevo (it is if the whole domain is authenticated there).
 
 ## Overview and goals
 

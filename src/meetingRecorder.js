@@ -152,6 +152,36 @@ export function createMeetingRecorder({ onChunk, onState, chunkMs = 30000 } = {}
   };
 }
 
+// A recording the rep already has (Voice Memos, Zoom, a call recorder app).
+// It is cut into byte ranges stored as one segment; the server joins a
+// segment's chunks back together, so the file arrives exactly as it was.
+export const MAX_UPLOAD_BYTES = 150 * 1024 * 1024;
+export const UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024; // the bucket allows 20 MB per object
+const FILE_EXTS = ['m4a', 'mp3', 'mp4', 'wav', 'aac', 'webm', 'ogg', 'oga', 'opus', 'mov', 'flac', 'amr', '3gp', 'caf', 'mpeg', 'mpga'];
+
+export function extForFile(file) {
+  const m = /\.([a-z0-9]{1,5})$/i.exec(String((file && file.name) || ''));
+  const ext = m && m[1].toLowerCase();
+  return ext && FILE_EXTS.includes(ext) ? ext : extForMime(file && file.type);
+}
+
+export function isAudioFile(file) {
+  if (!file) return false;
+  if (/^(audio|video)\//i.test(String(file.type || ''))) return true;
+  const m = /\.([a-z0-9]{1,5})$/i.exec(String(file.name || ''));
+  return !!(m && FILE_EXTS.includes(m[1].toLowerCase()));
+}
+
+export function fileChunks(file, chunkBytes = UPLOAD_CHUNK_BYTES) {
+  const ext = extForFile(file);
+  const mime = file.type || 'application/octet-stream';
+  const out = [];
+  for (let start = 0, index = 0; start < file.size; start += chunkBytes, index += 1) {
+    out.push({ blob: file.slice(start, start + chunkBytes, mime), meta: { segment: 0, index, ext, mime } });
+  }
+  return out;
+}
+
 // Uploads chunks in order with retries. A dropped connection just waits and
 // retries; nothing is lost while the page stays open.
 export function createChunkUploader({ supabase, bucket = 'meeting-audio', folder, onProgress, retryBaseMs = 1000 }) {
@@ -159,6 +189,7 @@ export function createChunkUploader({ supabase, bucket = 'meeting-audio', folder
   let uploaded = 0;
   let running = false;
   let failures = 0;
+  let cancelled = false;
   let idleWaiters = [];
 
   const report = () => onProgress && onProgress({ uploaded, pending: queue.length, retrying: failures > 0 });
@@ -167,7 +198,7 @@ export function createChunkUploader({ supabase, bucket = 'meeting-audio', folder
   const pump = async () => {
     if (running) return;
     running = true;
-    while (queue.length) {
+    while (queue.length && !cancelled) {
       const job = queue[0];
       const path = `${folder}/s${job.segment}-c${pad(job.index)}.${job.ext}`;
       const { error } = await supabase.storage.from(bucket).upload(path, job.blob, { contentType: job.mime, upsert: false });
@@ -189,10 +220,12 @@ export function createChunkUploader({ supabase, bucket = 'meeting-audio', folder
   };
 
   return {
-    add(blob, meta) { queue.push({ blob, ...meta }); report(); pump(); },
+    add(blob, meta) { if (cancelled) return; queue.push({ blob, ...meta }); report(); pump(); },
     get pending() { return queue.length; },
     get uploaded() { return uploaded; },
     // Resolves when every queued chunk has uploaded.
     flush() { return queue.length || running ? new Promise((r) => { idleWaiters.push(r); pump(); }) : Promise.resolve(); },
+    // Stop after the chunk in flight (the note was discarded).
+    cancel() { cancelled = true; queue.length = 0; },
   };
 }

@@ -139,7 +139,7 @@ function CwMultiPrompt({title,cws=[],initialNames=[],initialDefault=false,onAppl
 
 // CUSTOMER DETAIL
 
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,onMsg,onInv,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,onOmgStoreSaved,companyInfo,nf,histStatus,onRetryHist,supabase:requestSupabase,onNewNote}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,onMsg,onInv,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,onOmgStoreSaved,companyInfo,nf,histStatus,onRetryHist,supabase:requestSupabase,onNewNote,onEstimateFromNote}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[yF,setYF]=useState('all');const[rR,setRR]=useState('thisyear');
   const[histRetrying,setHistRetrying]=useState(false);// NetSuite-history retry in flight (banner below)
   const[jSF,setJSF]=useState('open');// Jobs tab status filter: open | done | all
@@ -757,7 +757,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   </div></div>}
 
   {/* CONTACTS TAB — editable */}
-  {tab==='notes'&&<AccountNotes supabase={supabase} customer={customer} allCustomers={allCustomers} reps={REPS} onNewNote={onNewNote}/>}
+  {tab==='notes'&&<AccountNotes supabase={supabase} customer={customer} allCustomers={allCustomers} reps={REPS} onNewNote={onNewNote} onStartEstimate={onEstimateFromNote}/>}
   {tab==='contacts'&&(()=>{
     const inheritedAccts=getBillingContacts(customer,allCustomers).filter(a=>a._inherited_from);
     const inheritedADs=getAthleticDirectorContacts(customer,allCustomers).filter(a=>a._inherited_from);

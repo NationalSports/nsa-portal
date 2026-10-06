@@ -63,6 +63,16 @@ create table if not exists public.ai_jobs (
   created_at timestamptz not null default now()
 );
 
+-- One end-of-day recap email per rep per PT day (meeting-notes-recap). The row
+-- is claimed before sending so an overlapping run can't email twice.
+create table if not exists public.meeting_recaps (
+  team_member_id text not null references public.team_members(id) on delete cascade,
+  day date not null,
+  note_count integer not null default 0,
+  sent_at timestamptz not null default now(),
+  primary key (team_member_id, day)
+);
+
 alter table public.customer_contacts add column if not exists source text;
 alter table public.customer_contacts add column if not exists sport text;
 alter table public.customer_contacts add column if not exists created_at timestamptz default now();
@@ -70,10 +80,12 @@ alter table public.customer_contacts add column if not exists created_at timesta
 alter table public.meetings enable row level security;
 alter table public.meeting_transcripts enable row level security;
 alter table public.ai_jobs enable row level security;
+alter table public.meeting_recaps enable row level security;
 
 revoke all on table public.meetings from anon, authenticated;
 revoke all on table public.meeting_transcripts from anon, authenticated;
 revoke all on table public.ai_jobs from anon, authenticated;
+revoke all on table public.meeting_recaps from anon, authenticated;
 grant select on table public.meetings to authenticated;
 grant select on table public.meeting_transcripts to authenticated;
 
