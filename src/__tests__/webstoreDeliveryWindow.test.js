@@ -6,11 +6,13 @@ import {
   estimatedDeliveryRangeLabel,
   normalizeDeliveryWindow,
   salesOrderDueDate,
+  storeShippingPromise,
 } from '../lib/webstoreDeliveryWindow';
 
 describe('webstore delivery window', () => {
-  test('offers exactly the four staff-selectable windows with week labels', () => {
+  test('offers staff-selectable windows including exactly two weeks with week labels', () => {
     expect(WEBSTORE_DELIVERY_WINDOWS).toEqual([
+      { value: '2-2', label: '2 weeks' },
       { value: '2-3', label: '2–3 weeks' },
       { value: '3-4', label: '3–4 weeks' },
       { value: '4-5', label: '4–5 weeks' },
@@ -42,4 +44,17 @@ describe('webstore delivery window', () => {
     expect(estimatedDeliveryRangeLabel(closes, '2-3')).toBe('late Sep to early Oct');
     expect(estimatedDeliveryRangeLabel(null, '5-6')).toBe('');
   });
+});
+
+test('exact two-week option preserves regular default and close-relative due date', () => {
+  expect(normalizeDeliveryWindow('2-2')).toBe('2-2');
+  expect(deliveryWindowLabel('2-2')).toBe('2 weeks');
+  expect(normalizeDeliveryWindow(undefined)).toBe('4-5');
+  expect(salesOrderDueDate('2026-10-06T23:59:00-07:00', '2-2')).toBe('2026-10-20');
+});
+
+test('24/7 promises default to two weeks from payment and honor overrides', () => {
+  expect(storeShippingPromise({ org_type: 'all_school' })).toMatch(/2 weeks after payment/);
+  expect(storeShippingPromise({ org_type: 'all_school', all_school_settings: { target_ship_days: 21 } })).toMatch(/3 weeks after payment/);
+  expect(storeShippingPromise({ org_type: 'team' })).toMatch(/4–5 weeks after the store closes/);
 });

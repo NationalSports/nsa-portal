@@ -215,45 +215,12 @@ async function loadExpectedDates(admin, needs) {
 // throttled to once per week per row. Availability mirrors the UI exactly:
 // Avail = on_hand − committed (demand from placed, not-yet-pulled orders) —
 // raw on_hand alone misses the store that "has 20" with 18 already promised.
-// Email-only: with no alert address configured this is a no-op (the transfers
-// page already shows the amber state in-app).
-const LOW_STOCK_THRESHOLD = 10; // mirrors the transfers UI amber rule (Avail < 10)
+// Email goes to each store’s assigned active rep. Missing recipients remain
+// unstamped so fixing the assignment makes the next sweep eligible.
+const LOW_STOCK_THRESHOLD = 10;
+const escapeStockHtml = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-// PINNED COPIES of src/Webstores.js buildTransferMaps/transferUsage (the
-// client's product→transfer-consumption mapping) — keep in sync with the
-// originals; they can't be imported here (that file is JSX/browser code).
-function buildTransferMaps(catalog, bundleItems) {
-  const designsByPid = {}, numSetsByPid = {}, takesNumByPid = {};
-  const process = (c) => {
-    if (!c.product_id) return;
-    const codes = (c.transfer_codes && c.transfer_codes.length) ? c.transfer_codes : (c.transfer_code ? [c.transfer_code] : []);
-    if (codes.length) designsByPid[c.product_id] = codes;
-    if (c.takes_number) {
-      takesNumByPid[c.product_id] = true;
-      const sets = (c.num_transfer_sets && c.num_transfer_sets.length)
-        ? c.num_transfer_sets.map((s) => { const [size, color] = s.split('|'); return { size, color }; })
-        : (c.num_transfer_size ? [{ size: c.num_transfer_size, color: c.num_transfer_color }] : []);
-      if (sets.length) numSetsByPid[c.product_id] = sets;
-    }
-  };
-  (catalog || []).forEach(process);
-  (bundleItems || []).forEach(process);
-  return { designsByPid, numSetsByPid, takesNumByPid };
-}
-function transferUsage(lines, maps) {
-  const used = {};
-  (lines || []).forEach((i) => {
-    if (i.is_bundle_parent) return;
-    const units = i.qty || 1;
-    (maps.designsByPid[i.product_id] || []).forEach((d) => { used[d] = (used[d] || 0) + units; });
-    if (maps.takesNumByPid[i.product_id] && i.player_number) {
-      (maps.numSetsByPid[i.product_id] || []).forEach((set) => {
-        String(i.player_number).replace(/[^0-9]/g, '').split('').forEach((dg) => { const code = `${dg}|${set.size || ''}|${set.color || ''}`; used[code] = (used[code] || 0) + units; });
-      });
-    }
-  });
-  return used;
-}
+const { buildTransferMaps, transferUsage } = require('../../src/allSchool/transferDemand.shared');
 
 // Committed (placed, not-yet-pulled) transfer demand per code across the given
 // open stores. Best-effort: any read failure returns {} — the check then
@@ -264,10 +231,10 @@ async function loadCommittedTransferUse(admin, storeIds) {
       .select('id, store_id, status, transfers_pulled').in('store_id', storeIds).limit(5000);
     if (ordRes.error) return {};
     const openOrders = (ordRes.data || []).filter((o) =>
-      o.status !== 'cancelled' && o.status !== 'pending_payment' && !o.transfers_pulled);
+      !['cancelled', 'pending_payment', 'refunded', 'shipped', 'complete'].includes(o.status) && !o.transfers_pulled);
     if (!openOrders.length) return {};
     const itemsRes = await admin.from('webstore_order_items')
-      .select('order_id, product_id, qty, player_number, is_bundle_parent')
+      .select('order_id, product_id, webstore_product_id, bundle_webstore_product_id, production_recipe, qty, cancelled_qty, refunded_qty, line_status, player_number, is_bundle_parent')
       .in('order_id', openOrders.map((o) => o.id)).limit(10000);
     if (itemsRes.error) return {};
     const catRes = await admin.from('webstore_products')
@@ -275,10 +242,18 @@ async function loadCommittedTransferUse(admin, storeIds) {
       .in('store_id', storeIds).limit(10000);
     const catalog = (catRes.error ? [] : catRes.data) || [];
     const biRes = catalog.length ? await admin.from('webstore_bundle_items')
-      .select('bundle_id, product_id, transfer_code, transfer_codes, takes_number, num_transfer_size, num_transfer_color, num_transfer_sets')
+      .select('bundle_id, webstore_product_id, product_id, transfer_code, transfer_codes, takes_number, num_transfer_size, num_transfer_color, num_transfer_sets')
       .in('bundle_id', catalog.map((c) => c.id)).limit(10000) : { data: [] };
-    const maps = buildTransferMaps(catalog, (biRes.error ? [] : biRes.data) || []);
-    return transferUsage(itemsRes.data || [], maps);
+    const committed = {};
+    for (const storeId of storeIds) {
+      const storeCatalog = catalog.filter((c) => c.store_id === storeId);
+      const catalogIds = new Set(storeCatalog.map((c) => c.id));
+      const orderIds = new Set(openOrders.filter((o) => o.store_id === storeId).map((o) => o.id));
+      const maps = buildTransferMaps(storeCatalog, (biRes.data || []).filter((b) => catalogIds.has(b.bundle_id)));
+      const usage = transferUsage((itemsRes.data || []).filter((i) => orderIds.has(i.order_id)), maps);
+      Object.entries(usage).forEach(([code, qty]) => { committed[`${storeId}|${code}`] = qty; });
+    }
+    return committed;
   } catch (_) { return {}; }
 }
 
@@ -286,31 +261,31 @@ function buildLowStockHtml(groups) {
   const cell = 'padding:6px 10px;border-bottom:1px solid #e2e8f0;font-size:13px';
   const blocks = groups.map((g) => {
     const rows = g.rows.map((t) => `<tr>
-      <td style="${cell}">${t.label || t.code}</td>
-      <td style="${cell}">${t.kind === 'number' ? ('#' + (t.digit != null ? t.digit : '') + ' ' + (t.tsize || '') + ' ' + (t.color || '')).trim() : 'design'}</td>
+      <td style="${cell}">${escapeStockHtml(t.label || t.code)}</td>
+      <td style="${cell}">${escapeStockHtml(t.kind === 'number' ? ('#' + (t.digit != null ? t.digit : '') + ' ' + (t.tsize || '') + ' ' + (t.color || '')).trim() : 'design')}</td>
       <td style="${cell};text-align:right">${Number(t.on_hand) || 0}</td>
-      <td style="${cell};text-align:right">${t._avail != null ? t._avail : (Number(t.on_hand) || 0)}</td>
+      <td style="${cell};text-align:right">${t._avail != null ? t._avail : (Number(t.on_hand) || 0)}</td><td style="${cell};text-align:right">${t.low_stock_threshold ?? LOW_STOCK_THRESHOLD}</td><td style="${cell};text-align:right">${Number(t.incoming) || 0}</td>
     </tr>`).join('');
-    return `<h3 style="font-size:14px;margin:18px 0 6px">${g.store_name}</h3>
+    return `<h3 style="font-size:14px;margin:18px 0 6px">${escapeStockHtml(g.store_name)}</h3>
     <table style="border-collapse:collapse;width:100%"><thead><tr>
       <th style="${cell};text-align:left">Transfer</th><th style="${cell};text-align:left">Variant</th>
-      <th style="${cell};text-align:right">On hand</th><th style="${cell};text-align:right">Available</th>
+      <th style="${cell};text-align:right">On hand</th><th style="${cell};text-align:right">Available</th><th style="${cell};text-align:right">Alert below</th><th style="${cell};text-align:right">Incoming</th>
     </tr></thead><tbody>${rows}</tbody></table>`;
   }).join('');
   return `<div style="font-family:Arial,sans-serif;max-width:640px">
-    <h2 style="font-size:16px">Heat transfers running low</h2>
-    <p style="font-size:13px">These transfers have fewer than ${LOW_STOCK_THRESHOLD} AVAILABLE (on hand minus what placed, not-yet-pulled orders already need) with nothing on order from the supplier. Reorder before club orders pull into a shortfall.</p>
+    <h2 style="font-size:16px">Decoration stock running low</h2>
+    <p style="font-size:13px">These transfers have fewer than their configured reorder threshold AVAILABLE (on hand minus pending order demand). Incoming stock has not yet arrived. Reorder before club orders pull into a shortfall.</p>
     ${blocks}
     <p style="font-size:11px;color:#94a3b8;margin-top:18px">NSA backorder sweep — throttled to one alert per transfer per week.</p>
   </div>`;
 }
 
-async function checkTransferLowStock(admin, toEmail) {
+async function checkTransferLowStock(admin) {
   // NO on_hand prefilter — availability (on_hand − committed) is only
   // computable after loading committed demand, and a transfer with plenty on
   // hand can still be critically short once open orders are counted.
   const res = await admin.from('webstore_transfers')
-    .select('id, store_id, code, label, kind, tsize, color, digit, on_hand, incoming, low_stock_notified_at')
+    .select('id, store_id, code, label, kind, tsize, color, digit, on_hand, incoming, low_stock_threshold, low_stock_notified_at')
     .limit(5000);
   if (res.error) {
     if (isMissingRelation(res.error)) return 0;
@@ -318,13 +293,12 @@ async function checkTransferLowStock(admin, toEmail) {
   }
   const cutoff = Date.now() - 7 * 24 * 3600 * 1000;
   let rows = (res.data || [])
-    .filter((t) => !(Number(t.incoming) > 0))
     .filter((t) => !t.low_stock_notified_at || new Date(t.low_stock_notified_at).getTime() < cutoff);
   if (!rows.length) return 0;
 
   // Open stores only — a closed store's leftover transfer stock isn't actionable.
   const storeIds = [...new Set(rows.map((t) => t.store_id).filter(Boolean))];
-  const stRes = await admin.from('webstores').select('id, name, status').in('id', storeIds);
+  const stRes = await admin.from('webstores').select('id, name, status, org_type, rep_id').in('id', storeIds);
   const stores = {};
   ((stRes.error ? [] : stRes.data) || []).forEach((w) => { stores[w.id] = w; });
   rows = rows.filter((t) => { const w = stores[t.store_id]; return w && w.status === 'open'; });
@@ -334,8 +308,9 @@ async function checkTransferLowStock(admin, toEmail) {
   // column). Committed load failures degrade to the raw on_hand rule.
   const committed = await loadCommittedTransferUse(admin, [...new Set(rows.map((t) => t.store_id))]);
   rows = rows
-    .map((t) => ({ ...t, _avail: (Number(t.on_hand) || 0) - (Number(committed[t.code]) || 0) }))
-    .filter((t) => t._avail < LOW_STOCK_THRESHOLD);
+    .map((t) => ({ ...t, _avail: (Number(t.on_hand) || 0) - (Number(committed[`${t.store_id}|${t.code}`]) || 0) }))
+    .filter((t) => t._avail < (t.low_stock_threshold ?? LOW_STOCK_THRESHOLD))
+    .filter((t) => stores[t.store_id].org_type === 'all_school' || !(Number(t.incoming) > 0));
   if (!rows.length) return 0;
 
   const byStore = new Map();
@@ -344,25 +319,30 @@ async function checkTransferLowStock(admin, toEmail) {
     byStore.get(t.store_id).rows.push(t);
   }
 
+  const repIds = [...new Set(rows.map((t) => stores[t.store_id].rep_id).filter(Boolean))];
+  const reps = repIds.length ? await admin.from('team_members').select('id,email,is_active').in('id', repIds) : { data: [] };
+  if (reps.error) throw new Error('Could not load low-stock alert recipients: ' + reps.error.message);
+  const repEmails = Object.fromEntries((reps.data || []).filter((r) => r.is_active !== false && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r.email || '')).map((r) => [r.id, r.email]));
   const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
-  if (!brevoKey) { console.error('[backorder-ready-sweep] BREVO_API_KEY missing — cannot email low-stock alert'); return 0; }
-  const sendRes = await fetch('https://api.brevo.com/v3/smtp/email', {
-    method: 'POST',
-    headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
-    body: JSON.stringify({
-      sender: { name: 'NSA Production', email: 'noreply@nationalsportsapparel.com' },
-      to: [{ email: toEmail }],
-      subject: `Heat transfers running low — ${rows.length} item${rows.length === 1 ? '' : 's'} to reorder`,
-      htmlContent: buildLowStockHtml([...byStore.values()]),
-    }),
-  });
-  if (!sendRes.ok) { console.error('[backorder-ready-sweep] Brevo low-stock send failed:', sendRes.status, await sendRes.text().catch(() => '')); return 0; }
-
-  const nowIso = new Date().toISOString();
-  for (const t of rows) {
-    await admin.from('webstore_transfers').update({ low_stock_notified_at: nowIso }).eq('id', t.id);
+  if (!brevoKey) throw new Error('BREVO_API_KEY missing — cannot email low-stock alerts');
+  let sent = 0;
+  for (const [storeId, group] of byStore) {
+    const toEmail = repEmails[stores[storeId].rep_id];
+    if (!toEmail) { console.error('[backorder-ready-sweep] No active rep email for store', storeId); continue; }
+    const sendRes = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
+      body: JSON.stringify({ sender: { name: 'NSA Production', email: 'noreply@nationalsportsapparel.com' },
+        to: [{ email: toEmail }], subject: `Low decoration stock — ${group.store_name}`,
+        htmlContent: buildLowStockHtml([group]) }),
+    });
+    if (!sendRes.ok) { console.error('[backorder-ready-sweep] Low-stock email failed:', sendRes.status); continue; }
+    for (const t of group.rows) {
+      const stamped = await admin.from('webstore_transfers').update({ low_stock_notified_at: new Date().toISOString() }).eq('id', t.id);
+      if (stamped.error) throw new Error('Could not save low-stock notification stamp: ' + stamped.error.message);
+    }
+    sent += group.rows.length;
   }
-  return rows.length;
+  return sent;
 }
 
 // ── The sweep ────────────────────────────────────────────────────────────────
@@ -376,19 +356,18 @@ async function runSweep(admin, actor) {
     if (!setRes.error && setRes.data) alertEmail = (setRes.data.backorder_alert_email || '').trim() || null;
   } catch (_) { /* settings are optional */ }
 
+  try { summary.transfer_low = await checkTransferLowStock(admin); }
+  catch (e) { summary.errors.push('low-stock: ' + (e.message || String(e))); }
+
   const loaded = await loadOpenNeeds(admin);
   if (loaded.error) {
-    if (isMissingRelation(loaded.error)) return { ok: true, enabled: false, note: 'auto-PO migration (00202/00236) not applied' };
+    if (isMissingRelation(loaded.error)) return { ...summary, enabled: false, note: 'auto-PO migration (00202/00236) not applied' };
     return { ok: false, error: loaded.error.message };
   }
   const { needs, soInfo } = loaded;
   summary.open = needs.length;
   if (loaded.truncated) summary.errors.push('open needs hit the 5000-row fetch cap — FIFO ordering may be incomplete this pass');
   if (!needs.length) {
-    if (alertEmail) {
-      try { summary.transfer_low = await checkTransferLowStock(admin, alertEmail); }
-      catch (e) { summary.errors.push('low-stock: ' + (e.message || String(e))); }
-    }
     return summary;
   }
 
@@ -458,10 +437,6 @@ async function runSweep(admin, actor) {
     }
   }
 
-  if (alertEmail) {
-    try { summary.transfer_low = await checkTransferLowStock(admin, alertEmail); }
-    catch (e) { summary.errors.push('low-stock: ' + (e.message || String(e))); }
-  }
 
   console.log(`[backorder-ready-sweep] actor=${actor} open=${summary.open} ready=${summary.ready_rows} alerted=${summary.alerted} emailed=${summary.emailed} transfer_low=${summary.transfer_low} errors=${summary.errors.length}`);
   return summary;
@@ -471,6 +446,9 @@ async function runSweep(admin, actor) {
 async function listBackorders(admin) {
   // Full fetch, THEN sort by order date, THEN trim for display — trimming at
   // the query (created_at-ordered) could cut the oldest-ordered rows.
+  try { summary.transfer_low = await checkTransferLowStock(admin); }
+  catch (e) { summary.errors.push('low-stock: ' + (e.message || String(e))); }
+
   const loaded = await loadOpenNeeds(admin);
   if (loaded.error) {
     if (isMissingRelation(loaded.error)) return ok({ ok: true, enabled: false, rows: [] });

@@ -3,8 +3,10 @@ import { supabase } from '../lib/supabase';
 import { normalizeAllSchoolSettings } from './adminHelpers';
 const grid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 12 };
 const Field = ({ label, children }) => <label style={{ display: 'grid', gap: 6, fontSize: 12, fontWeight: 700 }}>{label}{children}</label>;
-export default function AllSchoolSettings({ value, onChange }) {
+export default function AllSchoolSettings({ value, onChange, repId }) {
   const s = normalizeAllSchoolSettings(value);
+  const [repEmail, setRepEmail] = useState('');
+  useEffect(() => { let live = true; setRepEmail(''); if (repId) supabase.from('team_members').select('email,is_active').eq('id', repId).maybeSingle().then(({ data }) => { if (live) setRepEmail(data?.is_active !== false ? data?.email || '' : ''); }); return () => { live = false; }; }, [repId]);
   const [suppliers, setSuppliers] = useState([]);
   useEffect(() => { let live = true; supabase.from('teamshop_auto_po_settings').select('vendor').eq('deco_type', 'dtf').then(({ data }) => { if (live) setSuppliers(data || []); }); return () => { live = false; }; }, []);
   const change = (section, key, val) => onChange({ ...s, [section]: { ...s[section], [key]: val } });
@@ -13,8 +15,9 @@ export default function AllSchoolSettings({ value, onChange }) {
   return <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 14, padding: 18, margin: '14px 0' }}>
     <h3 style={{ margin: '0 0 8px', fontSize: 17 }}>All School operations</h3>
     <p style={{ fontSize: 12, color: '#64748b', margin: '0 0 14px' }}>An always-open school store with separate sport collections. Purchasing stays separate until the weekly cutoff; compatible regular batches may receive additions.</p>
-    <Field label="Target days from payment to shipment"><input className="form-input" type="number" min="1" max="90" value={s.target_ship_days} onChange={(e) => onChange({ ...s, target_ship_days: Number(e.target.value) })} /></Field>
-    <h4>Garment purchasing</h4>
+    <Field label="Displayed shipping estimate: days from payment to shipment (14 = 2 weeks)"><input className="form-input" type="number" min="1" max="90" value={s.target_ship_days} onChange={(e) => onChange({ ...s, target_ship_days: Number(e.target.value) })} /></Field>
+    <p style={{ fontSize: 12, color: '#64748b' }}>Shown to shoppers; transit time is additional. This is the same estimate as Delivery settings.</p>
+    <h4>Garment purchasing cutoff</h4>
     {tick('purchasing', 'enabled', 'Enable automated garment purchasing for this store')}
     <div style={grid}>
       <Field label="Purchasing rule"><select className="form-select" value={s.purchasing.mode} onChange={(e) => change('purchasing', 'mode', e.target.value)}><option value="manual">Manual</option><option value="minimum">Minimum only</option><option value="weekly">Weekly only</option><option value="minimum_weekly">Minimum + weekly</option></select></Field>
@@ -34,6 +37,8 @@ export default function AllSchoolSettings({ value, onChange }) {
       {number('shipping', 'length_in', 'Package length (in)', 1)}{number('shipping', 'width_in', 'Package width (in)', 1)}{number('shipping', 'height_in', 'Package height (in)', 1)}
     </div>
     <p style={{ fontSize: 12, color: '#64748b' }}>Live rates include catalog item weights plus packaging. If a rate cannot be obtained, checkout asks the buyer to retry. Final label cost can change with packed dimensions.</p>
+    <h4>Low-stock alerts</h4><p style={{ fontSize: 12, color: '#64748b' }}>Set a reorder threshold for each decoration in Inventory. Available stock excludes paid-order demand. Incoming stock is shown separately. Alerts remain visible in Inventory; email goes to the store’s assigned rep.</p>
+    <p style={{ fontSize: 12, color: repEmail ? '#166534' : '#b45309' }}>{repEmail ? `Low-stock emails: ${repEmail}` : 'Assign a rep with an active staff email to receive low-stock emails. Inventory warnings remain available.'}</p>
     <h4>DTF supplier</h4>
     <Field label="Default supplier (individual artwork may override)"><select className="form-select" value={s.dtf.supplier_id || ''} onChange={(e) => change('dtf', 'supplier_id', e.target.value || null)}><option value="">Choose per artwork</option>{s.dtf.supplier_id && !suppliers.some((v) => v.vendor === s.dtf.supplier_id) && <option value={s.dtf.supplier_id}>{s.dtf.supplier_id}</option>}{suppliers.map((v) => <option key={v.vendor} value={v.vendor}>{v.vendor}</option>)}</select></Field>
     {tick('dtf', 'auto_send', 'Automatically send production-ready DTF requests to the selected supplier')}
