@@ -253,7 +253,7 @@ describe('24/7 low-stock routing', () => {
       ] }],
       'team_members.select': [{ data: [{ id: 'r1', email: 'alpha@example.com' }, { id: 'r2', email: 'beta@example.com' }] }],
       'webstore_orders.select': [{ data: [{ id: 'o1', store_id: 's1', status: 'paid' }] }],
-      'webstore_order_items.select': [{ data: [{ order_id: 'o1', product_id: 'blank', webstore_product_id: 'wp1', qty: 18 }] }],
+      'webstore_order_items.select': [{ data: [{ order_id: 'o1', product_id: 'blank', production_recipe: { version: 1, webstore_product_id: 'wp1', transfer_codes: ['LOGO'] }, qty: 18 }] }],
       'webstore_products.select': [{ data: [
         { id: 'wp1', store_id: 's1', product_id: 'blank', transfer_codes: ['LOGO'] },
         { id: 'wp2', store_id: 's1', product_id: 'blank', transfer_codes: ['DIFFERENT'] },

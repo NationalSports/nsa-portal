@@ -211,7 +211,7 @@ async function loadExpectedDates(admin, needs) {
 
 // ── Transfer low-stock check (00238) ─────────────────────────────────────────
 // Heat-transfer AVAILABILITY below the transfers UI's amber threshold with
-// nothing incoming, on OPEN stores only — emailed on the same ops channel,
+// on OPEN stores only — emailed to the assigned rep,
 // throttled to once per week per row. Availability mirrors the UI exactly:
 // Avail = on_hand − committed (demand from placed, not-yet-pulled orders) —
 // raw on_hand alone misses the store that "has 20" with 18 already promised.
@@ -223,27 +223,28 @@ const escapeStockHtml = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&'
 const { buildTransferMaps, transferUsage } = require('../../src/allSchool/transferDemand.shared');
 
 // Committed (placed, not-yet-pulled) transfer demand per code across the given
-// open stores. Best-effort: any read failure returns {} — the check then
-// degrades to the raw on_hand rule rather than skipping entirely.
+// open stores. Failed reads must not masquerade as zero committed demand.
 async function loadCommittedTransferUse(admin, storeIds) {
   try {
     const ordRes = await admin.from('webstore_orders')
       .select('id, store_id, status, transfers_pulled').in('store_id', storeIds).limit(5000);
-    if (ordRes.error) return {};
+    if (ordRes.error) throw new Error(ordRes.error.message);
     const openOrders = (ordRes.data || []).filter((o) =>
       !['cancelled', 'pending_payment', 'refunded', 'shipped', 'complete'].includes(o.status) && !o.transfers_pulled);
     if (!openOrders.length) return {};
     const itemsRes = await admin.from('webstore_order_items')
-      .select('order_id, product_id, webstore_product_id, bundle_webstore_product_id, production_recipe, qty, cancelled_qty, refunded_qty, line_status, player_number, is_bundle_parent')
+      .select('order_id, product_id, production_recipe, qty, cancelled_qty, refunded_qty, line_status, player_number, is_bundle_parent')
       .in('order_id', openOrders.map((o) => o.id)).limit(10000);
-    if (itemsRes.error) return {};
+    if (itemsRes.error) throw new Error(itemsRes.error.message);
     const catRes = await admin.from('webstore_products')
       .select('id, store_id, product_id, transfer_code, transfer_codes, takes_number, num_transfer_size, num_transfer_color, num_transfer_sets')
       .in('store_id', storeIds).limit(10000);
-    const catalog = (catRes.error ? [] : catRes.data) || [];
+    if (catRes.error) throw new Error(catRes.error.message);
+    const catalog = catRes.data || [];
     const biRes = catalog.length ? await admin.from('webstore_bundle_items')
-      .select('bundle_id, webstore_product_id, product_id, transfer_code, transfer_codes, takes_number, num_transfer_size, num_transfer_color, num_transfer_sets')
+      .select('bundle_id, webstore_product_id, product_id, transfer_code, takes_number, num_transfer_size, num_transfer_color')
       .in('bundle_id', catalog.map((c) => c.id)).limit(10000) : { data: [] };
+    if (biRes.error) throw new Error(biRes.error.message);
     const committed = {};
     for (const storeId of storeIds) {
       const storeCatalog = catalog.filter((c) => c.store_id === storeId);
@@ -254,7 +255,7 @@ async function loadCommittedTransferUse(admin, storeIds) {
       Object.entries(usage).forEach(([code, qty]) => { committed[`${storeId}|${code}`] = qty; });
     }
     return committed;
-  } catch (_) { return {}; }
+  } catch (e) { throw new Error('Could not verify committed decoration demand: ' + e.message); }
 }
 
 function buildLowStockHtml(groups) {
@@ -305,7 +306,7 @@ async function checkTransferLowStock(admin) {
   if (!rows.length) return 0;
 
   // Availability = on_hand − committed (UI parity: the transfers page's Avail
-  // column). Committed load failures degrade to the raw on_hand rule.
+  // column). Read failures are reported for retry, never treated as zero demand.
   const committed = await loadCommittedTransferUse(admin, [...new Set(rows.map((t) => t.store_id))]);
   rows = rows
     .map((t) => ({ ...t, _avail: (Number(t.on_hand) || 0) - (Number(committed[`${t.store_id}|${t.code}`]) || 0) }))
@@ -349,7 +350,7 @@ async function checkTransferLowStock(admin) {
 async function runSweep(admin, actor) {
   const summary = { ok: true, open: 0, ready_rows: 0, alerted: 0, emailed: false, transfer_low: 0, errors: [] };
 
-  // Alert channel (shared by the backorder digest and the low-stock alert).
+  // Existing backorder digest channel. Low-stock alerts use assigned reps.
   let alertEmail = null;
   try {
     const setRes = await admin.from('teamshop_settings').select('backorder_alert_email').eq('id', 'global').maybeSingle();
