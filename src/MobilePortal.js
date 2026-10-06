@@ -12,6 +12,7 @@ import { SZ_ORD } from './constants';
 import { numericSizeKeys } from './lib/opsRecap';
 import { calcSOStatus } from './components';
 import { orderProgress } from './lib/orderProgress';
+import { coachInvoiceUrl, createPartialPayLink } from './lib/payLinks';
 import { fetchStockForItems, stockCacheKey, normStockSize, shortSizes, SOURCE_LABEL } from './lib/mobileStock';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 
@@ -38,6 +39,7 @@ const statusBadge=(status)=>{
 
 // ─── FORMAT HELPERS ───
 const fmtDate=(d)=>{if(!d)return'—';try{return new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric'})}catch{return'—'}};
+const fmtMoney2=(n)=>'$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtMoney=(n)=>{if(n==null)return'$0';return'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})};
 const timeAgo=(d)=>{if(!d)return'';const ms=Date.now()-new Date(d).getTime();const m=ms/60000;if(m<1)return'just now';if(m<60)return Math.floor(m)+'m';if(m<1440)return Math.floor(m/60)+'h';return Math.floor(m/1440)+'d'};
 const PROD_LABELS={ready:'Ready',hold:'On Hold',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped',draft:'Draft'};
@@ -440,7 +442,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           {soInvs.length>0&&<div className="mp-info-item"><div className="mp-info-label">Balance due</div><div className="mp-info-val" style={{fontSize:18,fontWeight:800,color:soBal>0.005?'#dc2626':'#16a34a'}}>{soBal>0.005?fmtMoney(soBal):'Paid'}</div><div style={{fontSize:11,color:'#64748b',marginTop:2}}>{fmtMoney(soInvs.reduce((a,i)=>a+(+i.total||0),0))} invoiced</div></div>}
         </div>
         <OrderProgress so={so}/>
-        {soInvs.filter(i=>!i._hist&&invBalance(i)>0.005).map(i=><button key={i.id} onClick={()=>openPayLink(i)} style={{width:'100%',marginTop:10,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'12px',background:'#16a34a',color:'white',borderRadius:10,fontWeight:700,fontSize:14,border:'none',cursor:'pointer',minHeight:44}}>💳 Pay link / QR · {i.id} · {fmtMoney(invBalance(i))}</button>)}
+        {soInvs.filter(i=>!i._hist&&invBalance(i)>0.005).map(i=><button key={i.id} onClick={()=>openPayLink(i)} style={{width:'100%',marginTop:10,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'12px',background:'#16a34a',color:'white',borderRadius:10,fontWeight:700,fontSize:14,border:'none',cursor:'pointer',minHeight:44}}>💳 Get paid · {i.id} · {fmtMoney(invBalance(i))} due</button>)}
         {so.memo&&<div className="mp-memo">{so.memo}</div>}
         <div style={{display:'flex',gap:8,marginTop:12,marginBottom:4}}>
           {onSaveSO&&<button onClick={()=>startAddToSO(so)} style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#1e40af',color:'white',borderRadius:10,fontWeight:700,fontSize:13,border:'none',cursor:'pointer',minHeight:44}}>
@@ -791,7 +793,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           <button onClick={()=>setSendInvModal(inv)} style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'12px 16px',background:'#1e40af',color:'white',borderRadius:10,fontWeight:700,fontSize:14,border:'none',cursor:'pointer',minHeight:44}}>
             <MIcon name="mail" size={16}/> Send Invoice
           </button>
-          {invBalance(inv)>0.005&&<button onClick={()=>openPayLink(inv)} style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'12px 16px',background:'#16a34a',color:'white',borderRadius:10,fontWeight:700,fontSize:14,border:'none',cursor:'pointer',minHeight:44}}>💳 Pay link / QR</button>}
+          {invBalance(inv)>0.005&&<button onClick={()=>openPayLink(inv)} style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'12px 16px',background:'#16a34a',color:'white',borderRadius:10,fontWeight:700,fontSize:14,border:'none',cursor:'pointer',minHeight:44}}>💳 Get paid · QR / link</button>}
         </div>}
         {inv.so_id&&<div className="mp-list-card" onClick={()=>{const so=sos.find(s=>s.id===inv.so_id);if(so)setDetail({type:'order',data:so})}}>
           <div style={{fontSize:12,color:'#64748b'}}>Linked Order</div>
@@ -2714,33 +2716,105 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     </div>;
   };
 
-  // ─── PAY LINK + QR (the coach portal invoice page pays the open balance by card) ───
+  // ─── GET PAID: full or part-payment link, as a QR to scan, a QR image, a text or an email ───
+  // Full balance = the coach-portal invoice page. A part payment creates an invoice_pay_requests
+  // row (src/lib/payLinks.js, same as desktop) whose amount the server enforces.
   const invBalance=(i)=>i.status==='paid'?0:Math.max(0,(+i.total||0)-(+i.paid||0));
-  const openPayLink=async(inv)=>{
+  const makeQR=async(url)=>{try{const QR=(await import('qrcode')).default;const qr=await QR.toDataURL(url,{margin:2,width:600,errorCorrectionLevel:'M'});setPayLink(p=>p&&p.url===url?{...p,qr}:p)}catch(e){/* the link still works without the code */}};
+  const openPayLink=(inv)=>{
     const cc=custObj(inv.customer_id);
     if(!cc?.alpha_tag){if(nf)nf('This customer has no portal tag yet, so a pay link can’t be built. Add one on desktop.','error');return}
-    const url='https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cc.alpha_tag)+'&inv='+encodeURIComponent(inv.id);
-    setPayLink({inv,url,qr:null});
-    try{const QR=(await import('qrcode')).default;const qr=await QR.toDataURL(url,{margin:1,width:480,errorCorrectionLevel:'M'});setPayLink(p=>p&&p.url===url?{...p,qr}:p)}catch(e){/* link still works without the code */}
+    const people=(cc.contacts||[]).filter(c=>c&&(c.phone||c.email));
+    const who=Math.max(0,people.findIndex(c=>c.role==='Billing'));
+    const url=coachInvoiceUrl(cc.alpha_tag,inv.id);
+    setPayLink({inv,mode:'full',amount:'',note:'',saving:false,url,linkAmount:invBalance(inv),qr:null,who,big:false});
+    makeQR(url);
+  };
+  const setPayMode=(mode)=>{
+    setPayLink(p=>{if(!p||p.mode===mode)return p;
+      if(mode==='full'){const url=coachInvoiceUrl(custObj(p.inv.customer_id).alpha_tag,p.inv.id);makeQR(url);return{...p,mode,url,linkAmount:invBalance(p.inv),qr:null}}
+      return{...p,mode,url:null,qr:null,linkAmount:null}});
+  };
+  const createPartLink=async()=>{
+    const p=payLink;if(!p||p.saving)return;
+    setPayLink({...p,saving:true});
+    const r=await createPartialPayLink(supabase,{inv:p.inv,balance:invBalance(p.inv),amount:p.amount,note:p.note,customer:custObj(p.inv.customer_id),createdBy:cu?.name||cu?.email||''});
+    if(r.error){if(nf)nf(r.error,'error');setPayLink(x=>x&&{...x,saving:false});return}
+    setPayLink(x=>x&&{...x,saving:false,url:r.link,linkAmount:r.amount,qr:null});
+    makeQR(r.link);
   };
   const renderPayLinkSheet=()=>{
-    if(!payLink)return null;const{inv,url,qr}=payLink;const cc=custObj(inv.customer_id);const bal=invBalance(inv);
-    const contact=(cc?.contacts||[]).find(c=>c.role==='Billing')||(cc?.contacts||[]).find(c=>c.phone||c.email)||null;
-    const msg='Hi'+(contact?.name?' '+contact.name.split(' ')[0]:'')+', here is the link to pay invoice '+inv.id+' ('+fmtMoney(bal)+') for '+(cc?.name||'your order')+': '+url+'\n\nThank you!\nNational Sports Apparel';
-    const btn={flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'12px 6px',borderRadius:10,border:'1px solid #e2e8f0',background:'white',color:'#1e293b',fontWeight:700,fontSize:13,textDecoration:'none',minHeight:46};
-    const share=async()=>{try{if(navigator.share){await navigator.share({title:'Invoice '+inv.id,text:msg});return}}catch(e){return}try{await navigator.clipboard.writeText(url);if(nf)nf('Link copied')}catch(e){window.prompt('Copy this link:',url)}};
-    return<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.5)',zIndex:1000,display:'flex',alignItems:'flex-end'}} onClick={()=>setPayLink(null)}>
-      <div onClick={e=>e.stopPropagation()} style={{background:'white',width:'100%',borderRadius:'16px 16px 0 0',padding:'18px 16px',paddingBottom:'calc(18px + env(safe-area-inset-bottom, 0px))',boxSizing:'border-box',textAlign:'center'}}>
-        <div style={{fontSize:17,fontWeight:800,color:'#0f172a'}}>Pay {fmtMoney(bal)}</div>
-        <div style={{fontSize:13,color:'#64748b',marginTop:2}}>Invoice {inv.id} · {cc?.name||''}</div>
-        <div style={{margin:'14px auto',width:220,height:220,display:'flex',alignItems:'center',justifyContent:'center',border:'1px solid #e2e8f0',borderRadius:12,background:'#fff'}}>
-          {qr?<img src={qr} alt={'QR code to pay invoice '+inv.id} style={{width:204,height:204}}/>:<span style={{fontSize:12,color:'#94a3b8'}}>Making code…</span>}
+    if(!payLink)return null;
+    const p=payLink;const{inv}=p;const cc=custObj(inv.customer_id);const bal=invBalance(inv);
+    const people=(cc?.contacts||[]).filter(c=>c&&(c.phone||c.email));
+    const to=people[p.who]||null;
+    const ready=!!p.url;
+    const amtTxt=fmtMoney2(p.linkAmount||0);
+    const msg='Hi'+(to?.name?' '+to.name.split(' ')[0]:'')+', here is the link to pay '+amtTxt+(p.mode==='part'?' toward':' for')+' invoice '+inv.id+' ('+(cc?.name||'your order')+'): '+(p.url||'')+'\n\nThank you!\nNational Sports Apparel';
+    const set=(patch)=>setPayLink(x=>x&&{...x,...patch});
+    const seg=(m,label)=><button onClick={()=>setPayMode(m)} style={{flex:1,padding:'10px 6px',borderRadius:9,border:'none',background:p.mode===m?'white':'transparent',boxShadow:p.mode===m?'0 1px 3px rgba(15,23,42,.15)':'none',fontWeight:800,fontSize:14,color:p.mode===m?'#0f172a':'#64748b'}}>{label}</button>;
+    const act={display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:4,padding:'10px 4px',borderRadius:12,border:'1px solid #e2e8f0',background:'white',color:'#0f172a',fontWeight:700,fontSize:12,textDecoration:'none',minHeight:62,cursor:'pointer'};
+    const off=!ready?{opacity:.4,pointerEvents:'none'}:{};
+    const qrFile=async()=>{const b=await (await fetch(p.qr)).blob();return new File([b],'pay-'+inv.id+'.png',{type:'image/png'})};
+    const shareQR=async()=>{
+      if(!p.qr)return;
+      try{const f=await qrFile();if(navigator.canShare&&navigator.canShare({files:[f]})){await navigator.share({files:[f],title:'Pay invoice '+inv.id,text:msg});return}}catch(e){if(e&&e.name==='AbortError')return}
+      const a=document.createElement('a');a.href=p.qr;a.download='pay-'+inv.id+'.png';a.click();if(nf)nf('QR code saved. Attach it to a text or email.');
+    };
+    const copy=async()=>{try{await navigator.clipboard.writeText(p.url);if(nf)nf('Link copied')}catch(e){window.prompt('Copy this link:',p.url)}};
+    const quick=(pct)=>set({amount:(Math.round(bal*pct*100)/100).toFixed(2)});
+    if(p.big&&p.qr)return<div onClick={()=>set({big:false})} style={{position:'fixed',inset:0,background:'white',zIndex:1001,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:24,boxSizing:'border-box',textAlign:'center'}}>
+      <div style={{fontSize:15,fontWeight:700,color:'#64748b'}}>National Sports Apparel</div>
+      <div style={{fontSize:30,fontWeight:900,color:'#0f172a',margin:'4px 0 2px'}}>Scan to pay {amtTxt}</div>
+      <div style={{fontSize:14,color:'#64748b',marginBottom:18}}>Invoice {inv.id} · {cc?.name}</div>
+      <img src={p.qr} alt={'QR code to pay invoice '+inv.id} style={{width:'86vw',maxWidth:420,height:'auto',imageRendering:'pixelated'}}/>
+      <div style={{fontSize:13,color:'#94a3b8',marginTop:18}}>Open the phone camera and point it at the code · tap to close</div>
+    </div>;
+    return<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.55)',zIndex:1000,display:'flex',alignItems:'flex-end'}} onClick={()=>!p.saving&&setPayLink(null)}>
+      <div onClick={e=>e.stopPropagation()} style={{background:'#f8fafc',width:'100%',maxHeight:'94vh',overflowY:'auto',borderRadius:'18px 18px 0 0',padding:'10px 16px',paddingBottom:'calc(16px + env(safe-area-inset-bottom, 0px))',boxSizing:'border-box'}}>
+        <div style={{width:40,height:4,borderRadius:2,background:'#cbd5e1',margin:'0 auto 12px'}}/>
+        <div style={{display:'flex',alignItems:'flex-start',gap:10}}>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:19,fontWeight:900,color:'#0f172a'}}>Get paid</div>
+            <div style={{fontSize:13,color:'#64748b'}}>Invoice {inv.id} · {cc?.name||''}</div>
+          </div>
+          <div style={{textAlign:'right'}}><div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',letterSpacing:.4}}>Balance</div><div style={{fontSize:19,fontWeight:900,color:'#dc2626'}}>{fmtMoney2(bal)}</div></div>
         </div>
-        <div style={{fontSize:12,color:'#475569',marginBottom:14}}>Have the coach scan this with their phone camera to pay by card.</div>
-        <div style={{display:'flex',gap:8}}>
-          <a style={btn} href={'sms:'+(contact?.phone||'')+'?&body='+encodeURIComponent(msg)}>💬 Text</a>
-          <a style={btn} href={'mailto:'+(contact?.email||cc?.email||'')+'?subject='+encodeURIComponent('Invoice '+inv.id+' from National Sports Apparel')+'&body='+encodeURIComponent(msg)}>✉️ Email</a>
-          <button style={btn} onClick={share}>🔗 Share</button>
+        <div style={{display:'flex',gap:4,background:'#e2e8f0',borderRadius:11,padding:3,margin:'14px 0 12px'}}>{seg('full','Full balance')}{seg('part','Part payment')}</div>
+        {p.mode==='part'&&!ready&&<div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:12,marginBottom:12}}>
+          <label style={{fontSize:12,fontWeight:700,color:'#475569'}}>Amount to collect now</label>
+          <div style={{display:'flex',alignItems:'center',gap:6,marginTop:6,border:'1px solid #cbd5e1',borderRadius:10,padding:'4px 12px',background:'white'}}>
+            <span style={{fontSize:24,fontWeight:800,color:'#94a3b8'}}>$</span>
+            <input type="number" inputMode="decimal" min="0.5" step="0.01" autoFocus value={p.amount} onChange={e=>set({amount:e.target.value})} placeholder="0.00" style={{flex:1,border:'none',outline:'none',fontSize:26,fontWeight:800,padding:'6px 0',minWidth:0,background:'transparent'}}/>
+          </div>
+          <div style={{display:'flex',gap:6,marginTop:8}}>
+            {[['25%',.25],['50%',.5],['75%',.75]].map(([l,v])=><button key={l} onClick={()=>quick(v)} style={{flex:1,padding:'8px 0',borderRadius:8,border:'1px solid #e2e8f0',background:'#f8fafc',fontWeight:700,fontSize:13,color:'#1e40af'}}>{l} · {fmtMoney(bal*v)}</button>)}
+          </div>
+          <input value={p.note} onChange={e=>set({note:e.target.value})} placeholder="Note for the coach (optional), e.g. Deposit per our call" style={{width:'100%',boxSizing:'border-box',marginTop:10,padding:'10px 12px',border:'1px solid #e2e8f0',borderRadius:10,fontSize:14}}/>
+          <button disabled={p.saving||!(Number(p.amount)>=0.5)} onClick={createPartLink} style={{width:'100%',marginTop:10,padding:'14px',borderRadius:10,border:'none',background:Number(p.amount)>=0.5?'#16a34a':'#86efac',color:'white',fontWeight:800,fontSize:15}}>{p.saving?'Creating link…':'Create '+(Number(p.amount)>=0.5?fmtMoney2(Number(p.amount))+' ':'')+'pay link'}</button>
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:6}}>The coach can only pay this amount with this link; the rest stays open. Cancel a link from the invoice on desktop.</div>
+        </div>}
+        {ready&&<div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:14,padding:14,textAlign:'center',marginBottom:12}}>
+          <div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>Scan to pay <span style={{color:'#16a34a'}}>{amtTxt}</span>{p.mode==='part'&&<span style={{color:'#64748b',fontWeight:600}}> of {fmtMoney2(bal)}</span>}</div>
+          <button onClick={()=>p.qr&&set({big:true})} aria-label="Show the QR code full screen" style={{display:'block',margin:'10px auto 6px',padding:0,border:'none',background:'none',cursor:'zoom-in'}}>
+            {p.qr?<img src={p.qr} alt={'QR code to pay invoice '+inv.id} style={{width:196,height:196,imageRendering:'pixelated'}}/>:<div style={{width:196,height:196,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,color:'#94a3b8'}}>Making code…</div>}
+          </button>
+          <div style={{fontSize:12,color:'#64748b'}}>Tap the code to show it full screen to the coach</div>
+          <div style={{display:'flex',gap:5,justifyContent:'center',flexWrap:'wrap',marginTop:10}}>{['Card','Apple Pay','Google Pay','Bank (ACH)'].map(m=><span key={m} style={{fontSize:11,fontWeight:700,padding:'3px 8px',borderRadius:10,background:'#f1f5f9',color:'#475569'}}>{m}</span>)}</div>
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:4}}>Card payments include a processing fee.</div>
+          {p.mode==='part'&&<button onClick={()=>set({url:null,qr:null,linkAmount:null,amount:''})} style={{marginTop:8,border:'none',background:'none',color:'#1e40af',fontWeight:700,fontSize:12}}>Make another amount</button>}
+        </div>}
+        {people.length>0&&<div style={{marginBottom:10,...off}}>
+          <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6}}>Send to</div>
+          <div style={{display:'flex',gap:6,overflowX:'auto',paddingBottom:2}}>
+            {people.map((c,i)=><button key={i} onClick={()=>set({who:i})} style={{flexShrink:0,padding:'7px 12px',borderRadius:20,border:'1px solid '+(p.who===i?'#1e40af':'#e2e8f0'),background:p.who===i?'#dbeafe':'white',color:p.who===i?'#1e40af':'#334155',fontWeight:700,fontSize:13}}>{c.name||c.email||c.phone}{c.role?<span style={{fontWeight:500,color:'#64748b'}}> · {c.role}</span>:null}</button>)}
+          </div>
+        </div>}
+        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,...off}}>
+          <a style={act} href={'sms:'+(to?.phone||'')+'?&body='+encodeURIComponent(msg)}><span style={{fontSize:20}}>💬</span>Text link</a>
+          <button style={act} onClick={shareQR}><span style={{fontSize:20}}>🖼️</span>Send QR</button>
+          <a style={act} href={'mailto:'+(to?.email||cc?.email||'')+'?subject='+encodeURIComponent('Pay invoice '+inv.id+' · National Sports Apparel')+'&body='+encodeURIComponent(msg)}><span style={{fontSize:20}}>✉️</span>Email</a>
+          <button style={act} onClick={copy}><span style={{fontSize:20}}>🔗</span>Copy link</button>
         </div>
         <button onClick={()=>setPayLink(null)} style={{marginTop:12,width:'100%',padding:'12px',border:'none',background:'none',color:'#64748b',fontWeight:700,fontSize:14}}>Done</button>
       </div>

@@ -6,8 +6,9 @@
 import React from 'react';
 import { render, fireEvent, screen, waitFor, within } from '@testing-library/react';
 
+const mockInserts = [];
 jest.mock('../lib/supabase', () => {
-  const q = () => { const o = { select: () => o, eq: () => o, neq: () => o, in: () => o, order: () => o, limit: () => Promise.resolve({ data: [], error: null }), then: (r) => Promise.resolve({ data: [], count: 0, error: null }).then(r) }; return o; };
+  const q = (table) => { const o = { select: () => o, eq: () => o, neq: () => o, in: () => o, order: () => o, insert: (row) => { mockInserts.push([table, row]); return o; }, limit: () => Promise.resolve({ data: [], error: null }), then: (r) => Promise.resolve({ data: [], count: 0, error: null }).then(r) }; return o; };
   return { supabase: { from: q, channel: () => ({ on() { return this; }, subscribe() { return this; } }), removeChannel: () => {}, auth: { getSession: async () => ({ data: { session: null } }) } } };
 });
 jest.mock('../lib/webstorePublicData', () => ({ fetchPublicInventory: jest.fn() }));
@@ -96,26 +97,62 @@ test('Send Estimate opens its sheet over the estimate page', () => {
   expect(screen.getAllByText(/EST-1/).length).toBeGreaterThan(1);
 });
 
-test('pay link sheet shows the open balance, a QR code and a text message with the link', async () => {
-  const props = baseProps();
-  props.sos[0].items = [];
-  open(props, 'home');
+test('an order with no invoice has no Get paid button', () => {
+  open(baseProps(), 'home');
   fireEvent.click(screen.getByText(/SO-1 · LHS/));
-  // no invoice on this order → no pay button; open the invoice from search instead
-  expect(screen.queryByText(/Pay link \/ QR/)).toBeNull();
+  expect(screen.queryByText(/Get paid/)).toBeNull();
 });
 
-test('invoice page: pay link with QR for the open balance', async () => {
+test('Get paid: full balance link with a QR, a text to the billing contact, and full-screen QR', async () => {
   const props = baseProps();
   props.invs[0].so_id = 'SO-1';
   open(props, 'home');
   fireEvent.click(screen.getByText(/SO-1 · LHS/));
-  fireEvent.click(screen.getByText(/Pay link \/ QR · INV-1/));
-  expect(screen.getByText('Pay $400')).toBeTruthy();
-  const text = screen.getByText('💬 Text').closest('a').getAttribute('href');
+  fireEvent.click(screen.getByText(/Get paid · INV-1/));
+  expect(screen.getByText('$400.00', { selector: 'div' })).toBeTruthy();
+  const text = screen.getByText('Text link').closest('a').getAttribute('href');
   expect(text).toMatch(/^sms:4085550101\?&body=/);
+  expect(decodeURIComponent(text)).toContain('pay $400.00 for invoice INV-1');
   expect(decodeURIComponent(text)).toContain('coach?portal=LHS&inv=INV-1');
-  await waitFor(() => expect(screen.getByAltText('QR code to pay invoice INV-1').getAttribute('src')).toMatch(/^data:image\/png/));
+  const qr = await waitFor(() => screen.getByAltText('QR code to pay invoice INV-1'));
+  fireEvent.click(qr);
+  expect(screen.getByText('Scan to pay $400.00')).toBeTruthy();
+});
+
+test('Get paid: a part payment creates a pay request for that amount and links to it', async () => {
+  const props = baseProps();
+  props.invs[0].so_id = 'SO-1';
+  if (!window.crypto) Object.defineProperty(window, 'crypto', { value: require('crypto').webcrypto, configurable: true });
+  mockInserts.length = 0;
+  open(props, 'home');
+  fireEvent.click(screen.getByText(/SO-1 · LHS/));
+  fireEvent.click(screen.getByText(/Get paid · INV-1/));
+  fireEvent.click(screen.getByText('Part payment'));
+  expect(screen.queryByAltText('QR code to pay invoice INV-1')).toBeNull();
+  fireEvent.click(screen.getByText(/^50% ·/));
+  expect(screen.getByDisplayValue('200.00')).toBeTruthy();
+  fireEvent.change(screen.getByDisplayValue('200.00'), { target: { value: '150' } });
+  fireEvent.click(screen.getByText('Create $150.00 pay link'));
+  await waitFor(() => expect(mockInserts).toEqual([['invoice_pay_requests', expect.objectContaining({ invoice_id: 'INV-1', amount: 150, created_by: 'Steve Peterson' })]]));
+  const token = mockInserts[0][1].id;
+  const text = await waitFor(() => screen.getByText('Text link').closest('a').getAttribute('href'));
+  expect(decodeURIComponent(text)).toContain('pay $150.00 toward invoice INV-1');
+  expect(decodeURIComponent(text)).toContain('&payreq=' + token);
+  expect(screen.getByText(/of \$400.00/)).toBeTruthy();
+});
+
+test('Get paid: more than the balance is refused and nothing is created', async () => {
+  const props = baseProps();
+  props.invs[0].so_id = 'SO-1';
+  mockInserts.length = 0;
+  open(props, 'home');
+  fireEvent.click(screen.getByText(/SO-1 · LHS/));
+  fireEvent.click(screen.getByText(/Get paid · INV-1/));
+  fireEvent.click(screen.getByText('Part payment'));
+  fireEvent.change(screen.getByPlaceholderText('0.00'), { target: { value: '450' } });
+  fireEvent.click(screen.getByText('Create $450.00 pay link'));
+  await waitFor(() => expect(props.nf).toHaveBeenCalledWith('That is more than the $400.00 open balance', 'error'));
+  expect(mockInserts).toEqual([]);
 });
 
 test('size picker shows vendor stock and flags a size asking for more than the vendor has', async () => {
