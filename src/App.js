@@ -4,7 +4,7 @@ import { assignLogoArtwork, resolveLogoColorWay } from './lib/logoDetail';
 import { invoiceFollowUpDate } from './lib/invoiceFollowUp';
 import GarmentMockCard, { LogoDetailTiles } from './GarmentMockCard';
 import ProductionGarmentWorkspace from './ProductionGarmentWorkspace';
-import { productionDecoKey } from './lib/productionGroups';
+import { productionDecoKey, productionDecoSummary, groupByDecoration } from './lib/productionGroups';
 import { removeGarmentSlotMock } from './safeHelpers';
 import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jobMockReadiness';
 import {createHistoryStore} from './lib/documentHistory';
@@ -1288,10 +1288,8 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
   const genericMockupFiles=_prodJobGenericMocks(allArtFiles);
   const prodFiles=allArtFiles.flatMap(a=>a?.prod_files||[]);
   const collectItemMocks=gi=>_prodJobItemMocks(allArtFiles,so,gi);
-  // A garment linked to another garment's mockup prints a one-line reference instead of
-  // repeating the image; the source garment prints it once with an "also used by" caption.
+  // The garment whose mockup a linked garment borrows (null when it has its own).
   const _linkSrcOf=g=>resolveMockLink(allArtFiles,mockSkuOf(g),g.color);
-  const _linkDepsOf=g=>mockLinkDependents(allArtFiles,mockSkuOf(g),g.color).filter(k=>itemDetails.some(x=>garmentMockKey(x)===k));
   const colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
     'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
     'Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000',
@@ -1345,11 +1343,16 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
   const _chipsHtml=arr=>{const a=(arr||[]).filter(c2=>c2&&String(c2).trim());if(a.length===0)return '—';
     return a.map(cl=>{const sw=_swatchFor(cl);
       return '<span style="display:inline-block;white-space:nowrap;padding:1px 6px;background:#fff;border:1px solid '+(sw||'#d1d5db')+';border-radius:4px;font-size:9px;font-weight:700;margin:1px 3px 1px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:'+(sw||'#e2e8f0')+';border:1px solid #d1d5db;margin-right:4px;vertical-align:-1px"></span>'+cl+'</span>'}).join('')};
-  // Build one HTML section per item: all info tables + mockup image(s) together
-  const itemSectionHtmls=[];
+  // Collect each garment's sheet parts, then print garments that share a decoration (same
+  // design, color way, placement, numbers/names setup — lib/productionGroups) together: one
+  // section per group with its mockups and logo detail BESIDE the size table and spec, so the
+  // art never lands on a different page from the item it belongs to.
+  const itemParts=[];
   itemDetails.forEach(gi=>{
     const it=safeItems(so)[gi.item_idx];
     if(!it)return;
+    const p={gi,key:productionDecoKey(gi,it,allArtFiles),summary:productionDecoSummary(gi,it,safeArt(so)),specHtml:'',listsHtml:'',warnHtml:''};
+    itemParts.push(p);
     const itemArtDecos=jobItemDecosOfKind(gi,it,'art');
     const itemNumDecos=jobItemDecosOfKind(gi,it,'numbers');
     const itemNameDecos=jobItemDecosOfKind(gi,it,'names');
@@ -1358,13 +1361,8 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     // Match by item_idx, not sku — two garment lines can share a SKU (e.g. same jersey in two
     // colors) with numbers on only one of them; a sku match leaks the roster onto both.
     const ndData=numbersData.find(n=>n.item_idx===gi.item_idx);
-    const itemSizes=allSizes.filter(sz=>gi.sizes[sz]>0);
-    let sHtml='';
-    // Size table
-    const hdrs=['',...itemSizes,'Total'];
-    const ordRow={cells:['Ordered']};itemSizes.forEach(sz=>{ordRow.cells.push(gi.sizes[sz]||'')});
-    ordRow.cells.push({value:'<strong>'+rowTotal+'</strong>'});
-    sHtml+=_tHtml(gi.sku+' — '+gi.name+(gi.color?' ('+gi.color+')':'')+' · '+rowTotal+' units',hdrs,hdrs.map((_,i)=>i===0?'left':'center'),[ordRow]);
+    p.rowTotal=rowTotal;
+    const _gLbl=gi.sku+(gi.color?' ('+gi.color+')':'');
     // Decoration spec
     if(itemArtDecos.length>0||itemNumDecos.length>0||itemNameDecos.length>0||itemTwillDecos.length>0){
       const specRows=[];
@@ -1400,7 +1398,7 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
         const tw=TWA[d.dtf_size||0]||TWA[0];
         specRows.push({cells:[d.position||'—',(tw?tw.label:'Tackle Twill')+(d.reversible?' (Reversible)':''),'Tackle Twill','—','—']});
       });
-      sHtml+=_tHtml('Decoration Spec — '+gi.sku,['Position','Art / Type','Method','Size','Colors'],['left','left','left','left','left'],specRows);
+      p.specHtml=_tHtml('Decoration Spec',['Position','Art / Type','Method','Size','Colors'],['left','left','left','left','left'],specRows);
     }
     // Numbers list
     if(ndData?.roster&&Object.keys(ndData.roster).length>0){
@@ -1408,7 +1406,7 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
       ndData.sizes.forEach(sz=>{const nums=(ndData.roster[sz]||[]).filter(n=>n!=='');
         if(nums.length>0)numRows.push({cells:[sz,nums.sort((a,b)=>Number(a)-Number(b)).join(', ')]});
       });
-      if(numRows.length>0)sHtml+=_tHtml('Number List — '+gi.sku,['Size','Numbers'],['left','left'],numRows);
+      if(numRows.length>0)p.listsHtml+=_tHtml('Number List — '+_gLbl,['Size','Numbers'],['left','left'],numRows);
     }
     // Names list
     if(ndData?.names&&Object.keys(ndData.names).length>0){
@@ -1416,10 +1414,8 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
       ndData.sizes.forEach(sz=>{const nms=(ndData.names[sz]||[]).filter(n=>n!=='');
         if(nms.length>0)nameRows.push({cells:[sz,nms.join(', ')]});
       });
-      if(nameRows.length>0)sHtml+=_tHtml('Names List — '+gi.sku,['Size','Names'],['left','left'],nameRows);
+      if(nameRows.length>0)p.listsHtml+=_tHtml('Names List — '+_gLbl,['Size','Names'],['left','left'],nameRows);
     }
-    // Mockup image(s) for this item immediately after its tables — all locations
-    // (front + back arts, numbers/names) side by side
     const _giSrc=_linkSrcOf(gi);
     // Back-proof gate. A garment running numbers or names has its own mockup slot for that side,
     // and the sheet prints it whenever one exists — but nothing ever flagged its ABSENCE, so
@@ -1431,31 +1427,55 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
       const _missNn=[];
       if(itemNumDecos.length>0&&_nn.numbers===0)_missNn.push('numbers');
       if(itemNameDecos.length>0&&_nn.names===0)_missNn.push('names');
-      if(_missNn.length>0)sHtml+='<div style="margin:8px 0;padding:9px 12px;background:#fef2f2;border:2px solid #fecaca;border-radius:8px;font-size:12px;font-weight:800;color:#b91c1c">⚠ NO BACK MOCKUP — no approved '+_missNn.join(' / ')+' mockup on file for '+gi.sku+(gi.color?' ('+gi.color+')':'')+'. Confirm placement and size with the artist before running.</div>';
+      if(_missNn.length>0)p.warnHtml+='<div style="margin:8px 0;padding:9px 12px;background:#fef2f2;border:2px solid #fecaca;border-radius:8px;font-size:12px;font-weight:800;color:#b91c1c">⚠ NO BACK MOCKUP — no approved '+_missNn.join(' / ')+' mockup on file for '+gi.sku+(gi.color?' ('+gi.color+')':'')+'. Confirm placement and size with the artist before running.</div>';
     }
-    if(_giSrc){
-      // Linked garment: reference the source garment's mockup instead of repeating it.
-      sHtml+='<div style="margin:10px 0;padding:8px 10px;border:1px dashed #c7d2fe;border-radius:6px;background:#eef2ff;color:#3730a3;font-size:11px;font-weight:700;text-align:center">🔗 Same mockup as '+_giSrc.split('|')[0]+'</div>';
-      itemSectionHtmls.push(sHtml);
-      return;
-    }
-    const _giDeps=_linkDepsOf(gi);
-    const itemMockUrls=_urlsFor(collectItemMocks(gi));
-    if(itemMockUrls.length>0){
-      const _mh=itemMockUrls.length>1?300:380;
-      const _mw=itemMockUrls.length>1?'48%':'100%';
-      const _depsCap=_giDeps.length?'<div style="text-align:center;font-size:10px;font-weight:700;color:#3730a3;margin-top:6px">🔗 Mockup also used by: '+_giDeps.map(k=>k.split('|')[0]).join(', ')+'</div>':'';
-      sHtml+='<div style="margin:12px 0;display:flex;gap:10px;flex-wrap:wrap;justify-content:center;page-break-inside:avoid">'
-        +itemMockUrls.map(u=>'<img src="'+u+'" style="height:'+_mh+'px;max-width:'+_mw+';object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')
-        +'</div>'+_depsCap;
-    } else if(gi.image_url&&_isImgUrl(gi.image_url)){
-      sHtml+='<div style="margin:12px 0;page-break-inside:avoid"><img src="'+gi.image_url+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/></div>';
-    }
-    // Logo detail: the transparent logo PNG for each design / color way on this garment, printed on
-    // the garment color so the floor can read inks and small type at full size.
-    const _logoTiles=garmentLogoDetails(gi,so,allArtFiles).map(l=>'<div style="flex:1 1 220px;max-width:340px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden"><div style="background:'+logoDetailBg(gi.color,l.cwLabel,l.side)+';-webkit-print-color-adjust:exact;print-color-adjust:exact;height:200px;display:flex;align-items:center;justify-content:center;padding:12px"><img src="'+l.url+'" style="max-height:176px;max-width:100%;object-fit:contain"/></div><div style="padding:5px 8px;font-size:10px;font-weight:700;color:#334155">Logo detail — '+_upEsc(l.artName)+(l.cwLabel?' · CW: '+_upEsc(l.cwLabel):'')+'</div></div>');
-    if(_logoTiles.length>0)sHtml+='<div style="margin:12px 0;display:flex;gap:10px;flex-wrap:wrap;justify-content:center;page-break-inside:avoid">'+_logoTiles.join('')+'</div>';
-    itemSectionHtmls.push(sHtml);
+    // A garment linked to another garment's mockup resolves to the SOURCE garment's files
+    // (_prodJobItemMocks), so it prints that image on its own group's page — no page-flipping
+    // to a "Same mockup as" reference.
+    p.linkSrc=_giSrc;
+    p.mockUrls=_urlsFor(collectItemMocks(gi));
+    p.fallbackImg=!p.mockUrls.length&&gi.image_url&&_isImgUrl(gi.image_url)?gi.image_url:'';
+    // Logo detail: the transparent logo PNG for each design / color way, painted on the garment
+    // color so the floor can read inks and small type.
+    p.logos=garmentLogoDetails(gi,so,allArtFiles).map(l=>({url:l.url,bg:logoDetailBg(gi.color,l.cwLabel,l.side),
+      label:'Logo detail — '+_upEsc(l.artName)+(l.cwLabel?' · CW: '+_upEsc(l.cwLabel):'')}));
+  });
+  const _decoGroups=groupByDecoration(itemParts,p=>p.key);
+  const _imgBox=(src,h,bg)=>'<div style="border:1px solid #e2e8f0;border-radius:6px;background:'+(bg||'#fff')+';-webkit-print-color-adjust:exact;print-color-adjust:exact;height:'+h+'px;display:flex;align-items:center;justify-content:center;padding:6px"><img src="'+src+'" style="max-height:'+(h-12)+'px;max-width:100%;object-fit:contain"/></div>';
+  const _cap=t=>'<div style="font-size:9px;font-weight:700;color:#334155;margin:3px 0 8px;line-height:1.3">'+t+'</div>';
+  const itemSectionHtmls=_decoGroups.map((g,gIdx)=>{
+    const ps=g.items;const multi=ps.length>1;
+    const _who=list=>multi?'For: '+list.map(p=>_upEsc(p.gi.sku+(p.gi.color?' ('+p.gi.color+')':''))).join(', '):'';
+    const units=ps.reduce((a,p)=>a+p.rowTotal,0);
+    // Size table — one row per garment, a group total when several garments share the run.
+    const gSizes=allSizes.filter(sz=>ps.some(p=>p.gi.sizes[sz]>0));
+    const hdrs=['Garment',...gSizes,'Total'];
+    const rows=ps.map(p=>({cells:['<strong>'+_upEsc(p.gi.sku)+'</strong> '+_upEsc(p.gi.name||'')+(p.gi.color?' <span style="color:#475569">('+_upEsc(p.gi.color)+')</span>':''),
+      ...gSizes.map(sz=>p.gi.sizes[sz]||''),{value:'<strong>'+p.rowTotal+'</strong>'}]}));
+    if(multi)rows.push({cells:['<strong>Group total</strong>',...gSizes.map(sz=>'<strong>'+(ps.reduce((a,p)=>a+(p.gi.sizes[sz]||0),0)||'')+'</strong>'),{value:'<strong>'+units+'</strong>'}]});
+    const sizeHtml=_tHtml('',hdrs,hdrs.map((_,i)=>i===0?'left':'center'),rows);
+    // Every distinct mockup / logo once, naming the garments it covers.
+    const mocks=[];ps.forEach(p=>(p.mockUrls.length?p.mockUrls:p.fallbackImg?[p.fallbackImg]:[]).forEach(u=>{let m=mocks.find(x=>x.u===u);if(!m){m={u,ps:[]};mocks.push(m)}if(!m.ps.includes(p))m.ps.push(p)}));
+    const logos=[];ps.forEach(p=>p.logos.forEach(l=>{const k=l.url+'|'+l.bg;let m=logos.find(x=>x.k===k);if(!m){m={k,l,ps:[]};logos.push(m)}if(!m.ps.includes(p))m.ps.push(p)}));
+    const nImg=mocks.length+logos.length;
+    // Sized so the art column fits beside the tables on one Letter page.
+    const mh=nImg<=1?320:nImg===2?230:nImg<=4?160:120;
+    const cols=nImg>2?'1fr 1fr':'1fr';
+    const artCol=nImg?'<div style="display:grid;grid-template-columns:'+cols+';gap:0 8px">'
+      +mocks.map(m=>'<div>'+_imgBox(m.u,mh)+_cap((m.ps.some(p=>p.linkSrc)?'🔗 Shared mockup':'Mockup')+(multi?' · '+_who(m.ps):''))+'</div>').join('')
+      +logos.map(m=>'<div>'+_imgBox(m.l.url,mh,m.l.bg)+_cap(m.l.label+(multi?' · '+_who(m.ps):''))+'</div>').join('')
+      +'</div>'
+      :'<div style="padding:12px;border:2px dashed #fecaca;border-radius:6px;color:#b91c1c;font-size:11px;font-weight:700;text-align:center">No mockup on file for this decoration</div>';
+    const head='<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;border-bottom:3px solid #1e3a5f;padding-bottom:4px;margin-bottom:8px">'
+      +'<div><div style="font-size:9px;font-weight:800;letter-spacing:0.6px;text-transform:uppercase;color:#64748b">'+(_decoGroups.length>1?'Decoration '+(gIdx+1)+' of '+_decoGroups.length+' · ':'')+ps.length+' garment'+(multi?'s':'')+(multi?' · same logo &amp; colors':'')+'</div>'
+      +'<div style="font-size:15px;font-weight:800;color:#1e3a5f">'+_upEsc(g.items[0].summary||'Decoration')+'</div></div>'
+      +'<div style="font-size:16px;font-weight:800;color:#1e3a5f;white-space:nowrap">'+units+' units</div></div>';
+    const signoff='<div style="display:flex;gap:16px;margin-top:10px;page-break-inside:avoid">'+['Decorated by','QC by','Date'].map(r=>
+      '<div style="flex:1"><div style="border-bottom:1.5px solid #1e293b;height:22px"></div><div style="font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:#64748b;margin-top:3px">'+r+'</div></div>').join('')+'</div>';
+    const top='<div style="page-break-inside:avoid;break-inside:avoid">'+head
+      +'<div style="display:flex;gap:12px;align-items:flex-start"><div style="flex:0 0 44%;min-width:0">'+artCol+'</div>'
+      +'<div style="flex:1;min-width:0">'+sizeHtml+ps.map(p=>p.warnHtml).join('')+ps[0].specHtml+'</div></div>'+signoff+'</div>';
+    return top+ps.map(p=>p.listsHtml).join('');
   });
   // Generic mockups not tied to a specific item
   const _pdfGenericUrls=_urlsFor(genericMockupFiles);
@@ -1479,6 +1499,7 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
   // Combine: per-item sections (page break between each), then generic mockups, prod files, siblings, job notes.
   // The <style> override strips the yellow notes-box styling so item sections render cleanly.
   const _notesCssReset='<style>.notes{background:white!important;border:none!important;padding:0!important;margin-top:0!important}.notes>.label{display:none!important}</style>';
+  // One page per decoration group (a long roster may run onto the next page).
   const _itemSectionsHtml=itemSectionHtmls.map((s,i)=>
     '<div style="'+(i<itemSectionHtmls.length-1?'page-break-after:always':'')+'">'+s+'</div>'
   ).join('');
@@ -2016,7 +2037,7 @@ export { dashArtShots };
 // Exported for its unit test — the Work Order sheet is what the floor decorates from, so
 // which garment rosters reach it (SO-2361: a second numbered line was being dropped) is
 // pinned down directly rather than only through the renderer.
-export { buildWorkOrderOpts };
+export { buildWorkOrderOpts, buildProdSheetOpts };
 
 // ── Combined deco COST for manually-linked jobs that share a screen ──
 // Per-unit decoration COST priced at the COMBINED linked-job tier qty (from linkedArtCostQty)
@@ -14577,13 +14598,7 @@ export default function App(){
                     </div>;
                 // Garments with the same decoration (design, color way, placement, numbers/names
                 // setup) share a groupKey and render as one card — see lib/productionGroups.
-                const decoSummary=[...artDecos.map(d=>{const artF=safeArt(so).find(f=>f.id===d.art_file_id);
-                    const cwObj=d.color_way_id&&artF?.color_ways?artF.color_ways.find(c2=>c2.id===d.color_way_id):null;
-                    const cwName=cwObj?(cwObj.name||cwObj.label||cwObj.garment_color||''):'';
-                    return (d.position?d.position+': ':'')+(artF?.name||'Artwork')+(cwName?' ('+cwName+')':'')}),
-                  ...numDecos.map(d=>'Numbers'+(d.position?' · '+d.position:'')),
-                  ...nameDecos.map(d=>'Names'+(d.position?' · '+d.position:'')),
-                  ...jobItemDecosOfKind(gi,it,'twill').map(d=>'Tackle twill'+(d.position?' · '+d.position:''))].join(' + ');
+                const decoSummary=productionDecoSummary(sourceRow,it,safeArt(so));
                 return {id:String(gi.jobRowIndex),groupKey:productionDecoKey(sourceRow,it,allArtFiles),decoSummary,sku:gi.sku,name:gi.name,color:gi.color,sizes:gi.sizes,
                   units:Object.values(gi.sizes).reduce((a,v)=>a+safeNum(v),0),referenceLabel,mockups,logos,specs,
                   personalization:{hasNumbers:numDecos.length>0,hasNames:nameDecos.length>0,

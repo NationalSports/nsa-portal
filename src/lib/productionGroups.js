@@ -60,3 +60,21 @@ export const groupByDecoration = (rows, keyOf) => {
   });
   return groups;
 };
+
+/** Human label for a job row's decoration, e.g. "Front: Crest (Navy) + Numbers · Back". */
+export const productionDecoSummary = (gi, it, artFiles) => {
+  if (!it) return '';
+  const arts = safeArr(artFiles);
+  const pos = d => (d.position ? ' · ' + d.position : '');
+  return [
+    ...jobItemDecosOfKind(gi, it, 'art').map(d => {
+      const a = arts.find(x => x?.id === d.art_file_id);
+      const cw = d.color_way_id ? safeArr(a?.color_ways).find(c => c?.id === d.color_way_id) : null;
+      const cwName = cw ? (cw.name || cw.label || cw.garment_color || '') : '';
+      return (d.position ? d.position + ': ' : '') + (a?.name || 'Artwork') + (cwName ? ' (' + cwName + ')' : '');
+    }),
+    ...jobItemDecosOfKind(gi, it, 'numbers').map(d => 'Numbers' + pos(d)),
+    ...jobItemDecosOfKind(gi, it, 'names').map(d => 'Names' + pos(d)),
+    ...jobItemDecosOfKind(gi, it, 'twill').map(d => 'Tackle twill' + pos(d)),
+  ].join(' + ');
+};
