@@ -4,8 +4,8 @@
 // Credentials are injected server-side by ss-proxy and never appear here.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { buildSSOrderPayload, buildSSOrderLines } from './ssOrder';
-import { ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock, ssGetDaysInTransit } from './vendorApis';
-import { reconcileVendorLines, freeShipGap } from './lib/vendorOrderGuards';
+import { ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetOrders, ssGetWarehouseStock, ssGetDaysInTransit } from './vendorApis';
+import { reconcileVendorLines, exactVendorLineQuantities, freeShipGap } from './lib/vendorOrderGuards';
 import { DuplicateMergeWarning, UnacceptedLinesPanel, FreeShipNotice } from './VendorOrderGuardPanels';
 import WarehouseChips, { SS_WAREHOUSES } from './WarehouseChips';
 import { planSSWarehouses } from './lib/ssWarehouseRouting';
@@ -25,7 +25,7 @@ const NSA_SHIP_TO = {
   postalCode: NSA_WAREHOUSE.zip,
 };
 
-export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Activewear', shipTo, shipWarning = '', shipPresets = [], onClose, onSubmitted, onLearnSkus, onRemoveLine }) {
+export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Activewear', shipTo, shipWarning = '', shipPresets = [], onClose, onBeforeSubmit, onSubmitError, onSubmitted, onLearnSkus, onRemoveLine }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'json'
   const [confirmed, setConfirmed] = useState(false);
   // Live-only (owner 2026-07-31): the test-order mode was removed once S&S orders were
@@ -180,9 +180,41 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
     if (!canSubmit) return;
     setSubmitState('submitting'); setErrorMsg('');
     let r;
+    let vendorRequestStarted = false;
     try {
+      if (onBeforeSubmit && await onBeforeSubmit({ vendor: 'S&S Activewear', payload: built.order, lines, live }) === false) {
+        setErrorMsg('The purchase could not be reserved. Reload this batch before submitting.');
+        setSubmitState('idle');
+        return;
+      }
+      vendorRequestStarted = true;
       r = await ssSubmitOrder(built.order);
+      if (built.order._allSchoolSubmissionToken) {
+        const readback = await ssGetOrders({ poNumber: built.order.poNumber });
+        const rows = Array.isArray(readback) ? readback : (readback?.Orders || readback?.orders || []);
+        const accepted = rows.filter(row => String(row.poNumber || row.PoNumber || row.PONumber || '').trim() === built.order.poNumber);
+        const sentOrders = Array.isArray(r.raw) ? r.raw : (r.raw?.Orders || r.raw?.orders || [r.raw]);
+        const orderId = row => String(row?.orderNumber || row?.OrderNumber || '').trim();
+        const expectedIds = sentOrders.map(orderId).filter(Boolean).sort();
+        const actualIds = accepted.map(orderId).filter(Boolean).sort();
+        if (!expectedIds.length || JSON.stringify(expectedIds) !== JSON.stringify(actualIds)) {
+          throw new Error('S&S readback did not match the placed order IDs. Verify this PO before another submission.');
+        }
+        const checked = reconcileVendorLines(built.merged || [], { raw: accepted, lineErrors: r.lineErrors || [] }, line => line.sku);
+        if (!checked.verified || !exactVendorLineQuantities(built.merged || [], accepted, line => line.sku)) {
+          throw new Error('S&S acceptance could not be verified in full. Verify this PO before another submission.');
+        }
+        r = { ...r, raw: accepted, confirmation: 'supplier-readback' };
+      }
     } catch (e) {
+      if (vendorRequestStarted && onSubmitError) {
+        try { await onSubmitError(e); }
+        catch (_) {
+          setErrorMsg('The supplier request outcome could not be recorded. Verify this PO before another submission.');
+          setSubmitState('error');
+          return;
+        }
+      }
       setErrorMsg(e.message || 'Submit failed — try again or order manually on ssactivewear.com.');
       setSubmitState('error');
       return;
@@ -307,11 +339,11 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                 Do NOT submit or re-order this batch — record the PO on the sales order manually and remove the queue entries, or the batch will look unordered and get double-ordered.
               </div>}
             </div>
-          ) : submitState === 'error' ? (
+          ) : errorMsg ? (
             <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#991b1b' }}>
-              <strong>✗ S&S did not accept the order — nothing was placed.</strong>
+              <strong>S&S submission needs review.</strong>
               <div style={{ marginTop: 4, fontFamily: 'monospace' }}>{errorMsg}</div>
-              <div style={{ marginTop: 6 }}>Fix the issue and retry, or place this order manually on ssactivewear.com.</div>
+              <div style={{ marginTop: 6 }}>Verify the supplier PO and its portal record before submitting this purchase again.</div>
             </div>
           ) : live ? (
             <div style={{ padding: 10, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, marginBottom: 12, fontSize: 12 }}>

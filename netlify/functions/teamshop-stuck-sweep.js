@@ -60,7 +60,7 @@
 const { corsHeaders, getSupabaseAdmin, verifyUser } = require('./_shared');
 
 const ALERT_EMAIL = process.env.STUCK_SWEEP_ALERT_EMAIL || 'stores@nationalsportsapparel.com';
-const SOURCES = ['teamshop', 'club'];
+const SOURCES = ['teamshop', 'club', 'all_school'];
 const ROW_LIMIT = 200;
 
 const esc = (s) => String(s == null ? '' : s).replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));

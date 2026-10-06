@@ -21,11 +21,12 @@
 //
 // Rate limit: 60 requests per minute (check X-Rate-Limit-Remaining header)
 
-const { verifyUser } = require('./_shared');
+const { verifyUserOrInternal } = require('./_shared');
+const { guardAllSchoolVendorRequest } = require('./_allSchoolVendorGuard');
 
 exports.handler = async (event) => {
   // Staff-only: this proxy injects the company S&S Activewear credentials.
-  const v = await verifyUser(event);
+  const v = await verifyUserOrInternal(event);
   if (!v.ok) return { statusCode: v.status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: v.error }) };
 
   const accountNumber = process.env.SS_ACCOUNT_NUMBER;
@@ -41,6 +42,18 @@ exports.handler = async (event) => {
   // Forward the write verbs S&S uses (POST orders, PUT/DELETE CrossRef); anything else is a GET.
   const _m = String(event.httpMethod || 'GET').toUpperCase();
   const method = ['POST', 'PUT', 'DELETE'].includes(_m) ? _m : 'GET';
+  let forwardBody = event.body;
+  if (method === 'POST' && /^\/orders\/?(?:\?|$)/i.test(path)) {
+    let order;
+    try { order = JSON.parse(event.body || '{}'); }
+    catch (_) { return { statusCode: 400, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Order submission requires JSON' }) }; }
+    if (order.testOrder !== true) {
+      const guard = await guardAllSchoolVendorRequest({ vendor: 'S&S Activewear', poNumber: order.poNumber, token: order._allSchoolSubmissionToken });
+      if (!guard.ok) return { statusCode: guard.statusCode, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: guard.error }) };
+    }
+    delete order._allSchoolSubmissionToken; // internal claim never leaves our server
+    forwardBody = JSON.stringify(order);
+  }
 
   // Force JSON response format (Accept header alone is unreliable for some endpoints). EXCEPTION:
   // the CrossRef PUT/DELETE are bodyless and take only `identifier` on the querystring — their
@@ -64,9 +77,10 @@ exports.handler = async (event) => {
     // ASP.NET stack try to bind an empty JSON body and 500.
     if (event.body) headers['Content-Type'] = 'application/json';
     const response = await fetch(url, {
+        signal: AbortSignal.timeout(15000),
       method,
       headers,
-      ...(event.body ? { body: event.body } : {}),
+      ...(forwardBody ? { body: forwardBody } : {}),
     });
 
     const data = await response.text();

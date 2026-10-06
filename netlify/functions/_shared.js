@@ -170,7 +170,7 @@ async function verifyQBOUser(event) {
 async function verifyUserOrInternal(event) {
   const provided = event.headers?.['x-internal-secret'] || event.headers?.['X-Internal-Secret'];
   const expected = process.env.INTERNAL_FUNCTION_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (provided && expected && provided === expected) return { ok: true, internal: true };
+  if (provided && expected && safeEqualStr(provided, expected)) return { ok: true, internal: true };
   return verifyUser(event);
 }
 

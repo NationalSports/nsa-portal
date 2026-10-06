@@ -202,6 +202,8 @@ function _dPInner(T,d,q,artFiles,cq){
     // Tackle twill numbers: flat per-application price from TWN (by num_size × two_color), NOT the
     // qty-tiered npP table. _nq (application count) still doubles for front+back and reversible.
     if(d.num_method==='tackle_twill'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq>0?nq:Math.max(0,safeNum(d.num_qty)||q);const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_override!=null?d.sell_override:twnP(T,d.num_size,d.two_color,true),cost:twnP(T,d.num_size,d.two_color,false),_nq:fnq}}
+    // Conversion freezes custom print cost or zero for roster-only stocked digits.
+    if(d.cost_each!=null&&['dtf','heat_press'].includes(d.num_method)){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const fnq=(nq||Math.max(0,safeNum(d.num_qty)||q))*(d.front_and_back?2:1)*(d.reversible?2:1);return{sell:d.sell_override!=null?d.sell_override:safeNum(d.sell_each),cost:safeNum(d.cost_each),_nq:fnq}}
     const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const hasAssigned=nq>0;const useQty=hasAssigned?nq:Math.max(0,safeNum(d.num_qty)||q);const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_override!=null?d.sell_override:npP(T,fnq||1,d.two_color,true),cost:npP(T,fnq||1,d.two_color,false),_nq:fnq}};
   // sell_override honors an explicit 0 (nullish check, matching the screen_print/embroidery
   // branches) — the falsy-|| form silently re-added the $6 default over a deliberate zero
@@ -212,7 +214,7 @@ function _dPInner(T,d,q,artFiles,cq){
   // as "24 x $0.25" and the quarter-rounding then billed $6 of sell and $6 of cost for
   // $5 of work at $3 of cost (EST-2126). Deco walks already read _nq, so the line TOTAL
   // is unchanged everywhere nc*se/q happened to land on an exact quarter.
-  if(d.kind==='names'){if(d.name_method==='sublimated')return{sell:safeNum(d.sell_override)||0,cost:0};const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||Math.max(0,safeNum(d.name_qty))||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each||3);return{sell:se,cost:co,_nq:(useNc||q)*(d.reversible?2:1)}};
+  if(d.kind==='names'){if(d.name_method==='sublimated')return{sell:safeNum(d.sell_override)||0,cost:0};const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||Math.max(0,safeNum(d.name_qty))||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each!=null?d.cost_each:3);return{sell:se,cost:co,_nq:(useNc||q)*(d.reversible?2:1)}};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}}
   // sell_override honors an explicit 0 (nullish, not falsy-||) — synced with the App.js /
   // businessLogic.js / pricing.js copies so a deliberate $0 override isn't overwritten.

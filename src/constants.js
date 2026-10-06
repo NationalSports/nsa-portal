@@ -4,6 +4,7 @@
 // Namespace import: src/lib/shipFrom.js is CommonJS (shared with the Netlify
 // functions), and webpack cannot resolve named imports out of one.
 import * as SHIPFROM from './lib/shipFrom';
+import * as SIZE_NAMES from './lib/sizeNames.shared';
 const { shipFromLocation } = SHIPFROM;
 
 export const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
@@ -17,7 +18,7 @@ export const _soCols=['id','customer_id','estimate_id','memo','status','created_
 export const _itemCols=['line_id','product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','notes','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','_promo_credit','_promo_partial_qty','is_free_promo','_pre_free_promo_sell','est_qty','qty_only','size_availability','is_footwear','customer_supplied'];
 // Sales-order-only item fields. Keep these separate from _itemCols because that base list also
 // feeds estimate_items writes, while invoice reconciliation history has no meaning on an estimate.
-export const _soItemCols=['invoice_line_keys'];
+export const _soItemCols=['invoice_line_keys','recipe_snapshot','source_webstore_item_ids'];
 // PostgREST builds one column set for an entire bulk insert. If an existing line carries
 // invoice_line_keys while a newly-added line omits it, the missing value becomes explicit NULL for
 // that row; the database default is not used and the NOT NULL constraint rejects the whole batch.
@@ -688,30 +689,7 @@ export const sizeBreakdownStr=(sizes,isFootwear)=>Object.entries(isFootwear?norm
   .filter(([,v])=>Number(v)>0)
   .sort((a,b)=>_szCompare(a[0],b[0]))
   .map(([sz,v])=>v+(isFootwear?'/':' ')+sz).join(', ');
-export const SZ_NORM={'XXS':'XXS','2XS':'XXS','XS':'XS','XSMALL':'XS','X-SMALL':'XS','SM':'S','SML':'S','SMALL':'S','MD':'M','MED':'M','MEDIUM':'M','LG':'L','LRG':'L','LARGE':'L',
-  'XLG':'XL','XLARGE':'XL','X-LARGE':'XL','XXL':'2XL','2X':'2XL','2XLARGE':'2XL','2X-LARGE':'2XL',
-  'XXXL':'3XL','3X':'3XL','3XLARGE':'3XL','3X-LARGE':'3XL','XXXXL':'4XL','4X':'4XL','4XLARGE':'4XL','4X-LARGE':'4XL',
-  '5X':'5XL','6X':'6XL','ST':'ST','MT':'MT','LT':'LT','XLT':'XLT','2XLT':'2XLT','3XLT':'3XLT','4XLT':'4XLT','5XLT':'5XLT',
-  'MENS SMALL':'S','MENS MEDIUM':'M','MENS LARGE':'L','MENS XL':'XL','MENS XXL':'2XL',
-  'WOMENS SMALL':'S','WOMENS MEDIUM':'M','WOMENS LARGE':'L','WOMENS XL':'XL',
-  'YOUTH SMALL':'YS','YOUTH MEDIUM':'YM','YOUTH LARGE':'YL','YOUTH XL':'YXL',
-  'YSM':'YS','YMD':'YM','YLG':'YL',  // Under Armour youth labels
-  'BOYS SMALL':'YS','BOYS MEDIUM':'YM','BOYS LARGE':'YL','GIRLS SMALL':'YS','GIRLS MEDIUM':'YM','GIRLS LARGE':'YL',
-  'NONE':'OSFA','ONE SIZE':'OSFA','OS':'OSFA','O/S':'OSFA','OSFM':'OSFA','N/A':'OSFA',  // OSFM = One Size Fits Most (UA)
-  // Spelled-out one-size labels reps type on orders. SanMar (and most vendors) return the
-  // bare token 'OSFA', so without these an order line reading "One Size Fits All" never
-  // matched the catalog and stayed without a SanMar Part ID / Unique_Key (blocked PO — STC21).
-  'ONE SIZE FITS ALL':'OSFA','ONE SIZE FITS MOST':'OSFA','ONESIZE':'OSFA','ONE SIZE FIT ALL':'OSFA',
-  // Toddler labels. SanMar returns '2T'…'6T'; orders often carry the spelled-out
-  // "<n> Toddler" form, which never matched (PC450TD "4 Toddler" → no Part ID).
-  '2 TODDLER':'2T','3 TODDLER':'3T','4 TODDLER':'4T','5 TODDLER':'5T','6 TODDLER':'6T',
-  'TODDLER 2':'2T','TODDLER 3':'3T','TODDLER 4':'4T','TODDLER 5':'5T','TODDLER 6':'6T',
-  // Sports Inc's EDI feed truncates spelled-out sizes to 5 chars (seen on Augusta): MEDIUM->MEDIU,
-  // EXTRA LARGE->EXTRA, DOUBLE->DOUBL, TRIPLE->TRIPL, ONE SIZE->ONE S. Recover them so billed sizes
-  // align to the order instead of falsely reading as 0 ordered. (EXTRA = Extra LARGE on this book;
-  // an Augusta extra-small would truncate the same way and gets caught by the order/over-bill check.)
-  'MEDIU':'M','EXTRA':'XL','DOUBL':'2XL','TRIPL':'3XL','ONE S':'OSFA',
-  'LGT':'LT','XXLT':'2XLT'};   // round-2: Under Armour tall labels (Large Tall, 2XL Tall)
+export const { SZ_NORM } = SIZE_NAMES;   // round-2: Under Armour tall labels (Large Tall, 2XL Tall)
 
 // Statuses where offering "ship this order" makes sense: production has started, so there are
 // goods to put in a box. Includes 'complete' on purpose — a closed order can still owe a shipment

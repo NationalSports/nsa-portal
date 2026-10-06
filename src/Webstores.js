@@ -1,3 +1,10 @@
+import DecorationAllocations from './allSchool/DecorationAllocations';
+import AllSchoolDtfQueue from './allSchool/AllSchoolDtfQueue';
+import { buildTransferMaps, transferUsage, unresolvedTransferLines } from './allSchool/transferDemand';
+import AllSchoolSettings from './allSchool/AllSchoolSettings';
+import AllSchoolPrograms from './allSchool/AllSchoolPrograms';
+import DecorationStockForm, { DECORATION_TYPES, APPLICATION_METHODS } from './allSchool/DecorationStockForm';
+import { normalizeAllSchoolSettings, validateAllSchoolSettings, stockLinkedArtError, changesProductionSetup } from './allSchool/adminHelpers';
 import { openSharedProductionPacket } from './productionPacket/api';
 import { attachStoreGarmentMocks } from './lib/storeGarmentMocks';
 /* eslint-disable */
@@ -1026,41 +1033,6 @@ const slugify = (s) => (s || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-'
 
 // Rough ship weight (oz) by item type, from the name/sku keywords. Used as a
 // default in the catalog editor and as a fallback when a label is created.
-// Map products -> which transfers they consume, then tally usage from order lines.
-// Supports both new array columns (transfer_codes, num_transfer_sets) and old single columns.
-function buildTransferMaps(catalog, bundleItems) {
-  const designsByPid = {}, numSetsByPid = {}, takesNumByPid = {};
-  const process = (c) => {
-    if (!c.product_id) return;
-    const codes = c.transfer_codes?.length ? c.transfer_codes : (c.transfer_code ? [c.transfer_code] : []);
-    if (codes.length) designsByPid[c.product_id] = codes;
-    if (c.takes_number) {
-      takesNumByPid[c.product_id] = true;
-      const sets = c.num_transfer_sets?.length
-        ? c.num_transfer_sets.map((s) => { const [size, color] = s.split('|'); return { size, color }; })
-        : (c.num_transfer_size ? [{ size: c.num_transfer_size, color: c.num_transfer_color }] : []);
-      if (sets.length) numSetsByPid[c.product_id] = sets;
-    }
-  };
-  (catalog || []).forEach(process);
-  (bundleItems || []).forEach(process);
-  return { designsByPid, numSetsByPid, takesNumByPid };
-}
-function transferUsage(lines, maps) {
-  const used = {};
-  (lines || []).forEach((i) => {
-    if (i.is_bundle_parent) return;
-    const units = i.qty || 1;
-    (maps.designsByPid[i.product_id] || []).forEach((d) => { used[d] = (used[d] || 0) + units; });
-    if (maps.takesNumByPid[i.product_id] && i.player_number) {
-      (maps.numSetsByPid[i.product_id] || []).forEach((set) => {
-        String(i.player_number).replace(/[^0-9]/g, '').split('').forEach((dg) => { const code = `${dg}|${set.size || ''}|${set.color || ''}`; used[code] = (used[code] || 0) + units; });
-      });
-    }
-  });
-  return used;
-}
-
 // Pure computation behind pullBatchTransfers: which transfer rows to decrement (each
 // exactly once, regardless of how many orders/SOs share the code) and which so_ids to
 // stamp transfers_pulled on. soId accepts a single so_id (team-store single-batch pull)
@@ -2463,6 +2435,19 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const pullBatchTransfers = useCallback(async (soId, neededByCode) => {
     const { soIds, decrements } = computePullPlan(soId, neededByCode, detail?.transfers || []);
     if (!soIds.length) return;
+    if (sel.org_type === 'all_school') {
+      const linked = (detail?.orders || []).filter((order) => soIds.includes(order.so_id) && isLiveWebstoreOrder(order) && !order.transfers_pulled);
+      let pulled = 0;
+      for (const order of linked) {
+        const { data, error } = await supabase.rpc('consume_all_school_decorations', { p_order_id: order.id });
+        if (error || !data?.ok) {
+          flash(`Decoration pull stopped after ${pulled} order(s): ${error?.message || (data?.reason === 'decoration_shortage' ? `Short ${data.short_qty} decoration unit(s)` : data?.reason || 'No confirmation returned')}`);
+          loadDetail(sel); return;
+        }
+        pulled++;
+      }
+      flash(pulled ? `Decorations pulled for ${pulled} order(s)` : 'Already pulled — no changes made'); loadDetail(sel); return;
+    }
     const needs = Object.entries(neededByCode || {})
       .filter(([, qty]) => Number(qty) > 0)
       .map(([code, qty]) => ({ code, qty: Math.round(Number(qty)) }));
@@ -2703,12 +2688,26 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       transfer_codes: row.transfer_codes || [], num_transfer_sets: row.num_transfer_sets || [],
       decorations: row.decorations || [], category: row.category || null, kit_name: row.kit_name || null,
       required: !!row.required, options: Array.isArray(row.options) ? row.options : [],
+      ...(sel.org_type === 'all_school' ? { school_program_ids: row.school_program_ids || [], school_shared: !!row.school_shared, school_template_id: null, personalization_template: row.personalization_template || null } : {}),
       display_name: row.display_name || null, active: true, sort_order: (detail?.catalog?.length || 0), variant_group_id: null,
     };
     const { error } = await supabase.from('webstore_products').insert(clone);
     if (error) { flash('Error: ' + error.message); return; }
     flash('Copied to a new item'); loadDetail(sel);
   }, [sel, detail, flash, loadDetail]);
+
+  const saveAllSchoolSettings = useCallback(async (settings) => {
+    const { data, error } = await supabase.from('webstores').update({ all_school_settings: settings, updated_at: new Date().toISOString() }).eq('id', sel.id).eq('org_type', 'all_school').select().single();
+    if (error || !data) { flash('Sports not saved: ' + (error?.message || 'No editable store found')); return false; }
+    setSel(data); setStores((prev) => prev.map((store) => store.id === data.id ? data : store));
+    return true;
+  }, [sel, flash]);
+  const copySchoolOfferings = useCallback(async (rows) => {
+    if (!rows?.length || sel?.org_type !== 'all_school') return false;
+    const { data, error } = await supabase.from('webstore_products').insert(rows).select('id');
+    if (error || data?.length !== rows.length) { flash('Sport copies not saved: ' + (error?.message || 'Write was blocked')); return false; }
+    flash(`Created ${data.length} sport offerings`); loadDetail(sel); return true;
+  }, [sel, flash, loadDetail]);
 
   // Bulk import from a sales rep's spreadsheet — one insert + one reload (vs. addSingle per
   // row). Each row is { product, price, fundraise, category, kit_name, required } already
@@ -2884,12 +2883,19 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       return false;
     }
     if (!_hit || _hit.length === 0) { flash('Not saved — your login doesn’t have edit access. Ask an admin to add you as a team member.'); return false; }
-    if (fields.sku !== undefined && clean.sku) await supabase.from('webstore_products').update({ sku: clean.sku }).eq('product_id', productId);
+    if (fields.sku !== undefined && clean.sku) await supabase.from('webstore_products').update({ sku: clean.sku, production_approved_at: null, production_approved_by: null }).eq('product_id', productId);
     flash('Product updated'); loadDetail(sel);
     return true;
   }, [sel, flash, loadDetail]);
 
   const updateCatalogItem = useCallback(async (id, fields) => {
+    if (sel?.org_type === 'all_school' && Object.prototype.hasOwnProperty.call(fields, 'decorations')) {
+      const item = (detail?.catalog || []).find((c) => c.id === id);
+      const candidate = { ...item, ...(fields.transfer_codes ? { transfer_codes: fields.transfer_codes } : {}), ...(fields.transfer_code !== undefined ? { transfer_code: fields.transfer_code } : {}) };
+      const blocked = stockLinkedArtError(candidate, fields.decorations);
+      if (blocked) { flash(blocked); return false; }
+    }
+    if (sel?.org_type === 'all_school' && changesProductionSetup(fields)) fields = { ...fields, production_approved_at: null, production_approved_by: null };
     const { data: _updated, error } = await supabase.from('webstore_products').update(fields).eq('id', id).select('id');
     if (error) { flash('Error: ' + error.message); return false; }
     // A silent 0-row update means RLS blocked the write (e.g. this login isn't a
@@ -2903,6 +2909,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // every color row in the group so changing garment color never changes (or drops) the
     // shopper questions attached to that storefront card.
     const groupFields = sharedCardFields(fields);
+    if (sel?.org_type === 'all_school') ['school_program_ids', 'school_shared', 'personalization_template', 'takes_name', 'transfer_codes', 'transfer_code'].forEach((key) => { if (Object.prototype.hasOwnProperty.call(fields, key)) groupFields[key] = fields[key]; });
+    if (sel?.org_type === 'all_school' && changesProductionSetup(fields)) { groupFields.production_approved_at = null; groupFields.production_approved_by = null; }
+    if (sel?.org_type === 'all_school' && fields.decorations && fields.transfer_codes) { if (fields.image_url === null) groupFields.image_url = null; if (fields.image_back_url === null) groupFields.image_back_url = null; }
     // Size fill-ins are COLOR-specific. Never fan a White substitute onto the
     // other rows in a multi-color card (Navy, Black, etc.).
     if (Object.keys(groupFields).length) {
@@ -2910,7 +2919,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const me = cat.find((c) => c.id === id);
       const groupKey = me ? (me.variant_group_id || me.id) : null;
       const groupIds = groupKey ? cat.filter((c) => (c.variant_group_id || c.id) === groupKey && c.id !== id).map((c) => c.id) : [];
-      if (groupIds.length) await supabase.from('webstore_products').update(groupFields).in('id', groupIds);
+      if (groupIds.length) {
+        const { data: updatedGroup, error: groupError } = await supabase.from('webstore_products').update(groupFields).in('id', groupIds).select('id');
+        if (groupError || updatedGroup?.length !== groupIds.length) { flash('The selected color saved, but other colors were not updated: ' + (groupError?.message || 'Access denied')); loadDetail(sel); return false; }
+      }
     }
     // When takes_number / takes_name changes, push the new value to any bundle items that
     // snapshot these flags at the time the item was added to the package.
@@ -2949,8 +2961,15 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // collapsed into one update so price/category/availability changes hit in a few
   // queries, while a per-item patch (e.g. % fundraising) still works. One reload.
   const bulkUpdateItems = useCallback(async (rows) => {
-    const list = (rows || []).filter((r) => r && r.id && r.fields);
+    let list = (rows || []).filter((r) => r && r.id && r.fields);
     if (!list.length) return 0;
+    if (sel?.org_type === 'all_school') {
+      for (const row of list) if (row.fields.decorations) {
+        const blocked = stockLinkedArtError((detail?.catalog || []).find((c) => c.id === row.id), row.fields.decorations);
+        if (blocked) { flash(blocked); return 0; }
+      }
+      list = list.map((row) => changesProductionSetup(row.fields) ? { ...row, fields: { ...row.fields, production_approved_at: null, production_approved_by: null } } : row);
+    }
     const groups = new Map();
     for (const r of list) { const k = JSON.stringify(r.fields); if (!groups.has(k)) groups.set(k, { fields: r.fields, ids: [] }); groups.get(k).ids.push(r.id); }
     let n = 0;
@@ -2961,7 +2980,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     }
     flash(`Updated ${n} item${n === 1 ? '' : 's'}`); loadDetail(sel);
     return n;
-  }, [sel, flash, loadDetail]);
+  }, [sel, detail, flash, loadDetail]);
 
   // Reprice every single (with a known cost) to a target margin: price = trueCost / (1 - m),
   // where trueCost = garment cost + ~$5 decoration when the item is decorated. One reload.
@@ -3049,7 +3068,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (item) {
         const prev = Array.isArray(item.decorations) ? item.decorations : [];
         const baked = prev.filter((d) => d && (d.art_url || d.art_id)).map((d) => ({ ...d, baked: true }));
-        await supabase.from('webstore_products').update({ image_url: front.url, decorations: baked }).eq('id', item.id); applied++;
+        await supabase.from('webstore_products').update({ image_url: front.url, decorations: baked, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', item.id); applied++;
       }
     }
     flash(`Mockups saved to the library${applied ? ` and applied to ${applied} item${applied === 1 ? '' : 's'}` : ''}`);
@@ -3061,6 +3080,13 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // in place rather than stacking duplicates.
   const applyLogoToItems = useCallback(async (itemIds, decoration) => {
     const cat = detail?.catalog || [];
+    if (sel?.org_type === 'all_school') {
+      for (const id of itemIds) {
+        const item = cat.find((c) => c.id === id); if (!item) continue;
+        const next = (item.decorations || []).filter((d) => (d.side || 'front') !== (decoration.side || 'front')).concat([decoration]);
+        const blocked = stockLinkedArtError(item, next); if (blocked) { flash(blocked); return 0; }
+      }
+    }
     for (const id of itemIds) {
       const item = cat.find((c) => c.id === id);
       if (!item) continue;
@@ -3069,7 +3095,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // instead of leaving the old art stacked underneath (a back logo still leaves the
       // front intact, since it only clears its own side).
       const next = existing.filter((d) => (d.side || 'front') !== (decoration.side || 'front')).concat([decoration]);
-      await supabase.from('webstore_products').update({ decorations: next }).eq('id', id);
+      await supabase.from('webstore_products').update({ decorations: next, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', id);
     }
     flash(`Logo applied to ${itemIds.length} item${itemIds.length === 1 ? '' : 's'}`); loadDetail(sel);
   }, [detail, sel, flash, loadDetail]);
@@ -3082,21 +3108,29 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // tab computes it: replace the logo on each side it's placing, preserve the other side
   // and personalization tokens). Written in one pass with a single flash/reload.
   const applyLogoBulk = useCallback(async (entries) => {
+    if (sel?.org_type === 'all_school') for (const { id, decorations } of entries) {
+      const blocked = stockLinkedArtError((detail?.catalog || []).find((c) => c.id === id), decorations);
+      if (blocked) { flash(blocked); return 0; }
+    }
     let n = 0, fails = 0;
     for (const { id, decorations } of entries) {
-      const { error } = await supabase.from('webstore_products').update({ decorations }).eq('id', id);
+      const { error } = await supabase.from('webstore_products').update({ decorations, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', id);
       if (error) fails += 1; else n += 1;
     }
     flash(fails ? `Logo applied to ${n} item${n === 1 ? '' : 's'} — ${fails} failed` : `Logo applied to ${n} item${n === 1 ? '' : 's'}`);
     loadDetail(sel);
     return n;
-  }, [sel, flash, loadDetail]);
+  }, [sel, detail, flash, loadDetail]);
 
   const setItemDecorations = useCallback(async (itemId, decorations) => {
-    const { error } = await supabase.from('webstore_products').update({ decorations }).eq('id', itemId);
+    if (sel?.org_type === 'all_school') {
+      const blocked = stockLinkedArtError((detail?.catalog || []).find((c) => c.id === itemId), decorations);
+      if (blocked) { flash(blocked); return false; }
+    }
+    const { error } = await supabase.from('webstore_products').update({ decorations, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', itemId);
     if (error) { flash('Error: ' + error.message); return; }
     loadDetail(sel);
-  }, [sel, flash, loadDetail]);
+  }, [sel, detail, flash, loadDetail]);
 
   // Save an uploaded logo into the store's customer art LIBRARY (customers.art_files)
   // so it's reusable on every item — and future stores — not just stamped on one
@@ -3284,16 +3318,29 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   }, [sel, flash, loadDetail]);
 
   const updateTransfer = useCallback(async (id, fields) => {
-    const { error } = await supabase.from('webstore_transfers').update(fields).eq('id', id);
-    if (error) { flash('Error: ' + error.message); return; }
+    const { data, error } = await supabase.from('webstore_transfers').update(fields).eq('id', id).select('id');
+    if (error) { flash('Error: ' + error.message); return false; }
+    if (!data?.length) { flash('Decoration inventory not saved — access denied or row missing.'); return false; }
+    if (sel?.org_type === 'all_school') {
+      const previous = (detail?.transfers || []).find((t) => t.id === id);
+      const changed = ['production_file', 'width_in', 'height_in', 'application_method', 'application_instructions', 'artwork_version', 'supplier_id', 'decoration_type'].some((key) => Object.prototype.hasOwnProperty.call(fields, key) && JSON.stringify(fields[key]) !== JSON.stringify(previous?.[key]));
+      if (changed) {
+        const ids = (detail?.catalog || []).filter((c) => (c.transfer_codes || []).includes(previous?.code) || c.transfer_code === previous?.code).map((c) => c.id);
+        if (ids.length) {
+          const clear = await supabase.from('webstore_products').update({ production_approved_at: null, production_approved_by: null }).in('id', ids).select('id');
+          if (clear.error || clear.data?.length !== ids.length) { flash('Decoration specs saved, but production approval reset failed. Review these offerings before ordering.'); loadDetail(sel); return false; }
+        }
+      }
+    }
     setDetail((prev) => ({ ...prev, transfers: prev.transfers.map((t) => t.id === id ? { ...t, ...fields } : t) }));
-  }, [flash]);
+    return true;
+  }, [sel, detail, flash, loadDetail]);
 
   const addTransfers = useCallback(async (rows) => {
     const payload = rows.map((r) => ({ store_id: sel.id, ...r }));
     const { error } = await supabase.from('webstore_transfers').insert(payload);
-    if (error) { flash('Error: ' + error.message); return; }
-    flash('Transfer inventory added'); loadDetail(sel);
+    if (error) { flash('Error: ' + error.message); return false; }
+    flash('Decoration inventory added'); loadDetail(sel); return true;
   }, [sel, flash, loadDetail]);
 
   const removeTransfer = useCallback(async (id) => {
@@ -3663,6 +3710,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // SO creation path (onCreateSO), then link each order back to the new SO id.
   const batchOrders = useCallback(async () => {
     if (!sel || !detail || !onCreateSO) return;
+    if (sel.org_type === 'all_school') { flash('All School orders convert automatically after payment. Review their individual Sales Orders in Batches.'); return; }
     // Fresh snapshot from the DB — not the possibly-minutes-old detail state — so the
     // modal's order list includes anything placed since the page loaded and excludes
     // anything batched/cancelled/refunded elsewhere in the meantime.
@@ -4281,7 +4329,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           custName={custName} repName={repName} standardCategories={wsSettings?.standard_categories || []}
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)} onOpenSO={onOpenSO} onSetStatus={setStoreStatus}
-          onAddSingle={addSingle} onAddGrouped={addManyGrouped} onAddColors={addColorsToItem} onAddFits={addFitsToItem} onCopyItem={copyToNewItem} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onApplyTemplateColors={applyTemplateColors} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onAddBundleItem={addBundleItem} onRemoveBundleItem={removeBundleItem} onReorderBundleItems={reorderBundleItems} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onBulkRemove={bulkRemove} onUpdateImage={updateImage} onUpdateCost={updateProductCost} onUpdateProductMeta={updateProductMeta} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onPlayerReportPdf={playerReportPdf} onPlayerReportCondensed={playerReportCondensed} onStockReport={stockReport} onProductReport={productReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onReorderColors={reorderColorRows} onRemoveColor={removeColorFromItem} onUpdateItem={updateCatalogItem} onBulkUpdate={bulkUpdateItems}
+          onAddSingle={addSingle} onAddGrouped={addManyGrouped} onAddColors={addColorsToItem} onAddFits={addFitsToItem} onCopyItem={copyToNewItem} onSaveAllSchoolSettings={saveAllSchoolSettings} onCopySchoolOfferings={copySchoolOfferings} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onApplyTemplateColors={applyTemplateColors} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onAddBundleItem={addBundleItem} onRemoveBundleItem={removeBundleItem} onReorderBundleItems={reorderBundleItems} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onBulkRemove={bulkRemove} onUpdateImage={updateImage} onUpdateCost={updateProductCost} onUpdateProductMeta={updateProductMeta} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onPlayerReportPdf={playerReportPdf} onPlayerReportCondensed={playerReportCondensed} onStockReport={stockReport} onProductReport={productReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onReorderColors={reorderColorRows} onRemoveColor={removeColorFromItem} onUpdateItem={updateCatalogItem} onBulkUpdate={bulkUpdateItems}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onAddRoster={addRoster} onUpdateRoster={updateRoster} onRemoveRoster={removeRoster} onInviteRoster={inviteRoster}
@@ -5692,9 +5740,9 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
   // recombined with close_time on save (see lib/storeClock) — the form never touches
   // raw timestamps, so the date the rep sees is the date that gets stored.
   const [f, setF] = useState(() => ({
-    ...BLANK, ...(store || {}), ...(initialOverrides || {}),
+    ...BLANK, ...(!store && initialOverrides?.org_type === 'all_school' ? { delivery_mode: 'ship_home', number_unique: false, so_creation: 'daily', theme: 'showcase', fundraise_enabled: true, fundraise_pct: 10, all_school_settings: normalizeAllSchoolSettings(initialOverrides.all_school_settings) } : {}), ...(store || {}), ...(initialOverrides || {}),
     open_at: dateOnly(store?.open_at),
-    close_at: store ? dateOnly(store.close_at) : (dateOnly(initialOverrides?.close_at) || defaultCloseDate()),
+    close_at: store ? dateOnly(store.close_at) : initialOverrides?.org_type === 'all_school' ? '' : (dateOnly(initialOverrides?.close_at) || defaultCloseDate()),
     close_time: store ? ptTimeInput(store.close_at) : ptTimeInput(initialOverrides?.close_at),
   }));
   const [slugTouched, setSlugTouched] = useState(!!store);
@@ -5734,9 +5782,9 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
   }, [store?.id]);
   // Team vs club only relabels the form (most stores are team stores). The
   // customer link is the same either way; defaults to team.
-  const [orgType, setOrgType] = useState(store?.org_type || 'team');
-  const noun = orgType === 'club' ? 'Club' : 'Team';
-  const lead = orgType === 'club' ? 'Director' : 'Coach';
+  const [orgType, setOrgType] = useState(store?.org_type || initialOverrides?.org_type || 'team');
+  const noun = orgType === 'all_school' ? 'School' : orgType === 'club' ? 'Club' : 'Team';
+  const lead = orgType === 'all_school' ? 'School contact' : orgType === 'club' ? 'Director' : 'Coach';
   // Fundraise mode: percent of price, or flat $ per item. Derived from whichever
   // column is set on an existing store; defaults to percent.
   const [fundMode, setFundMode] = useState(Number(store?.fundraise_flat) > 0 ? 'flat' : 'pct');
@@ -5773,8 +5821,13 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
   // Switching team/club re-labels the auto-name too (OLu Football Team Store → Club Store).
   const switchOrg = (t) => {
     setOrgType(t);
+    if (t !== 'all_school' && page === 'operations') setPage('setup');
+    if (t === 'all_school' && orgType !== 'all_school') {
+      setFundMode('pct');
+      setF((p) => ({ ...p, close_at: '', delivery_mode: 'ship_home', number_unique: false, so_creation: 'daily', theme: 'showcase', fundraise_enabled: true, fundraise_pct: 10, fundraise_flat: 0, fundraise_round: false, all_school_settings: normalizeAllSchoolSettings(p.all_school_settings) }));
+    }
     if (!nameTouched && f.customer_id) {
-      const nn = t === 'club' ? 'Club' : 'Team';
+      const nn = t === 'all_school' ? 'School' : t === 'club' ? 'Club' : 'Team';
       const autoName = storeNameFor(f.customer_id, nn);
       if (autoName) setF((p) => ({ ...p, name: autoName, slug: slugTouched ? p.slug : slugify(autoName) }));
     }
@@ -5856,6 +5909,11 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
     payload.processing_pct = Math.max(0, Number(payload.processing_pct) || 0);
     payload.delivery_window_weeks = normalizeDeliveryWindow(payload.delivery_window_weeks);
     payload.org_type = orgType;
+    if (orgType === 'all_school') {
+      payload.all_school_settings = normalizeAllSchoolSettings(payload.all_school_settings);
+      const schoolError = validateAllSchoolSettings(payload.all_school_settings);
+      if (schoolError) { setBusy(false); return setError(schoolError); }
+    }
     // Team stores collect numbers per item (Catalog), so there's no store-wide
     // enable toggle — mark numbers active so order views/claims behave.
     if (orgType !== 'club') payload.number_enabled = true;
@@ -5892,18 +5950,19 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {onImportFromOmg && <button type="button" onClick={onImportFromOmg} title="Skip this blank form — paste a shared OMG report link instead and build the store from its items" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', color: '#166534', borderRadius: 10, padding: '9px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>📥 Import from OMG instead</button>}
           <div style={{ display: 'inline-flex', background: '#eef0f3', borderRadius: 10, padding: 3 }} role="tablist" aria-label="Store type">
-            {['team', 'club'].map((t) => (
-              <button key={t} type="button" onClick={() => switchOrg(t)} style={{ border: 'none', cursor: 'pointer', borderRadius: 8, padding: '6px 16px', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', background: orgType === t ? '#fff' : 'transparent', color: orgType === t ? '#191919' : '#6A7180', boxShadow: orgType === t ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{t}</button>
+            {['team', 'club', 'all_school'].map((t) => (
+              <button key={t} type="button" onClick={() => switchOrg(t)} style={{ border: 'none', cursor: 'pointer', borderRadius: 8, padding: '6px 16px', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', background: orgType === t ? '#fff' : 'transparent', color: orgType === t ? '#191919' : '#6A7180', boxShadow: orgType === t ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{t === 'all_school' ? 'All School' : t}</button>
             ))}
           </div>
         </div>
       </div>
       {error && <div style={{ background: '#fee2e2', color: '#b91c1c', padding: '11px 14px', borderRadius: 10, fontSize: 13, marginBottom: 14, fontWeight: 600 }}>{error}</div>}
       <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid #eef0f3' }}>
-        {[['setup', '1 · Setup'], ['delivery', '2 · Delivery & branding']].map(([k, lbl]) => (
+        {[['setup', '1 · Setup'], ['delivery', '2 · Delivery & branding'], ...(orgType === 'all_school' ? [['operations', '3 · Operations']] : [])].map(([k, lbl]) => (
           <button key={k} type="button" onClick={() => setPage(k)} style={{ border: 'none', background: 'none', cursor: 'pointer', padding: '8px 2px', marginRight: 18, fontSize: 13, fontWeight: 800, fontFamily: DISPLAY, textTransform: 'uppercase', letterSpacing: '.04em', color: page === k ? '#191919' : '#9aa1ad', borderBottom: page === k ? '2px solid #191919' : '2px solid transparent', marginBottom: -1 }}>{lbl}</button>
         ))}
       </div>
+      {page === 'operations' && orgType === 'all_school' && <AllSchoolSettings value={f.all_school_settings} onChange={(value) => set('all_school_settings', value)} />}
       {page === 'setup' && (
       <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -6017,9 +6076,9 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
           <option value="ship_home">Ship to home — collect each buyer's home address</option>
           <option value="deliver_club">{`Deliver to ${noun.toLowerCase()} — ships to the ${noun.toLowerCase()}'s default address`}</option>
         </select></Row>
-        <Row label="Estimated delivery after store closes"><select className="form-select" value={normalizeDeliveryWindow(f.delivery_window_weeks)} onChange={(e) => set('delivery_window_weeks', e.target.value)}>
+        {orgType !== 'all_school' && <Row label="Estimated delivery after store closes"><select className="form-select" value={normalizeDeliveryWindow(f.delivery_window_weeks)} onChange={(e) => set('delivery_window_weeks', e.target.value)}>
           {WEBSTORE_DELIVERY_WINDOWS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </select></Row>
+        </select></Row>}
         <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: -2, marginBottom: 8 }}>Shown to families on the storefront, cart, and checkout.</div>
         {f.delivery_mode === 'ship_home' && <Row label="Flat shipping charged to buyer ($)"><input className="form-input" type="number" step="0.01" min={0} value={f.flat_shipping} onChange={(e) => set('flat_shipping', e.target.value)} placeholder="0.00" /></Row>}
         <div style={{ display: 'flex', gap: 12 }}>
@@ -6529,7 +6588,7 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
   );
 }
 
-function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = null, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onBulkRemove, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onPlayerReportPdf, onPlayerReportCondensed, onStockReport, onProductReport, onExportCsv, onReorder, onMove, onReorderColors, onRemoveColor, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onAddStoreArtFolder, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = null, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onSaveAllSchoolSettings, onCopySchoolOfferings, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onBulkRemove, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onPlayerReportPdf, onPlayerReportCondensed, onStockReport, onProductReport, onExportCsv, onReorder, onMove, onReorderColors, onRemoveColor, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onAddStoreArtFolder, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
@@ -6594,6 +6653,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
   // Primary tabs stay visible; the rest tuck into a "More ▾" menu. Store settings
   // live behind the header ⚙ Settings button (the rich editor), not a tab.
   const PRIMARY_TABS = [
+    ...(s.org_type === 'all_school' ? [{ id: 'programs', label: 'Sports & collections' }] : []),
     { id: 'catalog', label: `Catalog (${catalog.length})` },
     { id: 'orders', label: `Orders (${validOrders.length})` },
     { id: 'art', label: 'Art & Logos' },
@@ -6638,6 +6698,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
   const _qmU = (f) => typeof f === 'string' ? f : (f && f.url) || '';
   const _qmIsImg = (u) => /\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(u || '');
   const _qmIsVec = (u) => /\.(ai|eps|pdf)(\?|$)/i.test(u || '');
+  const schoolMockAmbiguous = s.org_type === 'all_school' && new Set(catalog.filter((c) => c.kind === 'single').map((c) => (c.sku || '') + '|' + (stockByWp[c.id]?.color || ''))).size < catalog.filter((c) => c.kind === 'single').length;
   const qmGarments = catalog.filter((c) => c.kind === 'single').map((c) => { const st = stockByWp[c.id] || {}; return { key: (c.sku || '') + '|' + (st.color || ''), sku: c.sku, color: st.color || '', name: c.display_name || st.name || c.sku, frontUrl: c.image_url || st.image_front_url || '', backUrl: st.image_back_url || '' }; });
   const qmLocations = _qmArt.map((a) => {
     // Web logos (color-way default + legacy web_logo_url) are clean transparent cutouts —
@@ -6751,11 +6812,13 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
           {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} teamHexes={[...new Set([...(detail?.storeColors || []).map((pc) => pc && pc.hex), s.primary_color, s.accent_color].filter(Boolean))]} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddGrouped={onAddGrouped} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onBulkRemove={onBulkRemove} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onRemoveColor={onRemoveColor} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
+          {tab === 'programs' && s.org_type === 'all_school' && <><AllSchoolPrograms store={s} catalog={catalog} stockByWp={stockByWp} transfers={detail?.transfers || []} artLibrary={[...(s.store_art || []), ...(detail?.libraryArt || [])]} staffId={cu?.id} logoOptions={[...new Map([...(s.store_art || []), ...(detail?.libraryArt || [])].filter((art) => art?.id).map((art) => [art.id, { id: art.id, name: art.name || 'Logo', url: webLogoDefault(art) || art.web_logo_url || art.preview_url }])).values()].filter((logo) => logo.url)} onSaveSettings={onSaveAllSchoolSettings} onUpdateItem={onUpdateItem} onCopyOfferings={onCopySchoolOfferings} /><div style={{ marginTop: 20 }}><AllSchoolDtfQueue storeId={s.id} /></div></>}
           {tab === 'appearance' && <ShowcaseAppearanceTab store={s} onFlash={onFlash} />}
-          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onSaveArtFolder={onAddStoreArtFolder} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
+          {tab === 'art' && schoolMockAmbiguous && <div role="status" style={{ padding: 12, background: '#fef3c7', color: '#92400e', borderRadius: 8, marginBottom: 12, fontSize: 13 }}>This school has different sport designs on the same blank and color. Use each offering’s Catalog art editor for mockups; the shared mock builder cannot distinguish these designs.</div>}
+          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onSaveArtFolder={onAddStoreArtFolder} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} canMock={!schoolMockAmbiguous && qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} nameByPid={nameByPid} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onPlayerReportPdf={onPlayerReportPdf} onPlayerReportCondensed={onPlayerReportCondensed} onStockReport={onStockReport} onProductReport={onProductReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} labelAllRequested={labelAllRequested} onLabelAllHandled={() => setLabelAllRequested(false)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
-          {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
+          {tab === 'inventory' && <InventoryTab store={s} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
           {tab === 'analytics' && <AnalyticsTab store={s} orders={orders} orderItems={orderItems} stockByWp={stockByWp} catalog={catalog} libraryArt={detail?.libraryArt || []} />}
           {tab === 'roster' && <RosterTab store={s} roster={roster} notOrdered={notOrdered} orders={orders} onAdd={onAddRoster} onUpdate={onUpdateRoster} onRemove={onRemoveRoster} onInvite={onInviteRoster} onFlash={onFlash} />}
@@ -13201,8 +13264,9 @@ function OrderAnalytics({ store, orders: allOrders, orderItems, stockByWp, catal
 // inventory (design transfers deducted per item; number transfers deducted
 // per digit, matched to the item's number size/color set). "Used" is computed
 // live from all non-cancelled orders.
-function InventoryTab({ catalog, bundleItems, stockByWp, transfers, orders, orderItems, onUpdateTransfer, onAddTransfers, onRemoveTransfer }) {
+function InventoryTab({ store, catalog, bundleItems, stockByWp, transfers, orders, orderItems, onUpdateTransfer, onAddTransfers, onRemoveTransfer }) {
   const [addDesign, setAddDesign] = useState(false);
+  const [editDecoration, setEditDecoration] = useState(null);
   const [addSet, setAddSet] = useState(false);
   const [expandAll, setExpandAll] = useState(false);
   const [openRows, setOpenRows] = useState(() => new Set());
@@ -13218,6 +13282,7 @@ function InventoryTab({ catalog, bundleItems, stockByWp, transfers, orders, orde
   const inProcIds = new Set(active.filter((o) => o.transfers_pulled && !orderDone(o)).map((o) => o.id));
   const onOrderUse = transferUsage(orderItems.filter((i) => onOrderIds.has(i.order_id)), maps);
   const inProcUse = transferUsage(orderItems.filter((i) => inProcIds.has(i.order_id)), maps);
+  const unresolved = unresolvedTransferLines(orderItems.filter((i) => onOrderIds.has(i.order_id)), maps);
 
   const designs = transfers.filter((t) => t.kind === 'design');
   const numbers = transfers.filter((t) => t.kind === 'number');
@@ -13239,6 +13304,7 @@ function InventoryTab({ catalog, bundleItems, stockByWp, transfers, orders, orde
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      {store?.org_type === 'all_school' && <DecorationAllocations storeId={store.id} transfers={transfers} />}
       {/* Garment stock */}
       <div>
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
@@ -13274,24 +13340,26 @@ function InventoryTab({ catalog, bundleItems, stockByWp, transfers, orders, orde
         </div></div>
       </div>
 
+      {unresolved.length > 0 && <div role="alert" style={{ padding: 12, borderRadius: 8, background: '#fef3c7', color: '#92400e', fontSize: 13 }}>{unresolved.length} legacy order line(s) need their exact catalog offering assigned before decoration quantities can be determined. The same blank has multiple decoration configurations.</div>}
       {/* Transfer inventory */}
       <div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#475569' }}>Heat-transfer inventory</div>
-          <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => setAddDesign((v) => !v)}>+ Design transfer</button>
+          <div style={{ fontSize: 13, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#475569' }}>Decoration inventory</div>
+          <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => setAddDesign((v) => !v)}>+ Decoration stock</button>
           <button className="btn btn-sm btn-secondary" onClick={() => setAddSet((v) => !v)}>+ Number set</button>
         </div>
-        {addDesign && <AddDesignTransfer onAdd={(row) => { onAddTransfers([row]); setAddDesign(false); }} onClose={() => setAddDesign(false)} />}
+        {addDesign && <DecorationStockForm onAdd={(row) => onAddTransfers([row])} onClose={() => setAddDesign(false)} />}
+        {editDecoration && <DecorationStockForm key={editDecoration.id} initialValue={editDecoration} onAdd={async (row) => { const { id, store_id, created_at, updated_at, ...fields } = row; return onUpdateTransfer(editDecoration.id, fields); }} onClose={() => setEditDecoration(null)} />}
         {addSet && <AddNumberSet onAdd={(rows) => { onAddTransfers(rows); setAddSet(false); }} onClose={() => setAddSet(false)} />}
         <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}><b>On hand</b> = physically in the warehouse. <b>Incoming</b> = ordered from a supplier, not yet here (set an ETA, then "Receive" when it arrives). <b>On order</b> = needed by placed orders not yet pulled. <b>In process</b> = pulled & being decorated. <b>Available</b> = on hand − on order. Pull a batch's transfers from the <b>Batches</b> tab.</div>
 
         {designs.length > 0 && <div className="card" style={{ marginBottom: 12 }}><div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}><th style={th}>Design transfer</th><th style={th}>On hand</th><th style={th}>Incoming</th><th style={th}>ETA</th><th style={th}></th><th style={th}>On order</th><th style={th}>In process</th><th style={th}>Available</th><th style={th} title="Cost per unit (what you paid, total spend ÷ qty) — feeds club-store GP">Cost/unit</th><th style={th}></th></tr></thead>
+            <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}><th style={th}>Decoration stock</th><th style={th}>On hand</th><th style={th}>Incoming</th><th style={th}>ETA</th><th style={th}></th><th style={th}>On order</th><th style={th}>In process</th><th style={th}>Available</th><th style={th} title="Cost per unit (what you paid, total spend ÷ qty) — feeds club-store GP">Cost/unit</th><th style={th}></th></tr></thead>
             <tbody>
               {designs.map((t) => (
                 <tr key={t.id} style={{ borderTop: '1px solid #f1f5f9' }}>
-                  <td style={td}><div style={{ fontWeight: 600 }}>{t.label}</div><div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>{t.code}</div></td>
+                  <td style={td}><div style={{ fontWeight: 600 }}>{t.label}</div><div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>{t.code}</div><div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>{DECORATION_TYPES.find(([key]) => key === (t.decoration_type || 'dtf'))?.[1]} · {APPLICATION_METHODS.find(([key]) => key === (t.application_method || 'heat_press'))?.[1]}</div><button className="btn btn-sm btn-secondary" style={{ marginTop: 5 }} onClick={() => setEditDecoration(t)}>Art & print specs</button></td>
                   <td style={td}><NumCell t={t} field="on_hand" /></td><td style={td}><NumCell t={t} field="incoming" /></td><td style={td}><EtaCell t={t} /></td><td style={td}><Recv t={t} /></td>
                   <td style={td}><OnOrder t={t} /></td><td style={td}><InProc t={t} /></td><td style={td}><Avail t={t} /></td>
                   <td style={td}><CostCell t={t} /></td>
@@ -13322,7 +13390,7 @@ function InventoryTab({ catalog, bundleItems, stockByWp, transfers, orders, orde
                 <tbody>
                   {sorted.map((t) => (
                     <tr key={t.id} style={{ borderTop: '1px solid #f1f5f9' }}>
-                      <td style={{ ...td, fontWeight: 700 }}>{t.digit}</td><td style={td}><NumCell t={t} field="on_hand" /></td><td style={td}><NumCell t={t} field="incoming" /></td><td style={td}><OnOrder t={t} /></td><td style={td}><InProc t={t} /></td><td style={td}><Avail t={t} /></td>
+                      <td style={{ ...td, fontWeight: 700 }}>{t.digit}<div><button className="btn btn-sm btn-secondary" onClick={() => setEditDecoration(t)}>Art & print specs</button></div></td><td style={td}><NumCell t={t} field="on_hand" /></td><td style={td}><NumCell t={t} field="incoming" /></td><td style={td}><OnOrder t={t} /></td><td style={td}><InProc t={t} /></td><td style={td}><Avail t={t} /></td>
                     </tr>
                   ))}
                 </tbody>
@@ -13336,17 +13404,6 @@ function InventoryTab({ catalog, bundleItems, stockByWp, transfers, orders, orde
   );
 }
 
-function AddDesignTransfer({ onAdd, onClose }) {
-  const [label, setLabel] = useState(''); const [onHand, setOnHand] = useState(0);
-  return (
-    <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 14, display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-      <Row label="Transfer name"><input className="form-input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Left Chest Logo DTF" /></Row>
-      <Row label="On hand"><input className="form-input" type="number" value={onHand} onChange={(e) => setOnHand(e.target.value)} /></Row>
-      <button className="btn btn-primary" disabled={!label.trim()} onClick={() => onAdd({ code: slugify(label) || ('design-' + Date.now()), label: label.trim(), kind: 'design', on_hand: Number(onHand) || 0 })}>Add</button>
-      <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-    </div></div>
-  );
-}
 function AddNumberSet({ onAdd, onClose }) {
   const [size, setSize] = useState('8in'); const [color, setColor] = useState('');
   const create = () => {
@@ -13457,7 +13514,7 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
   // counts (this memo) + combined transfer needs (batchTransfers below, now
   // array-capable), pulled in one action. Computed unconditionally (before the
   // loading/error early-returns) to keep this hook's call order stable.
-  const clubUnpulled = store.org_type === 'club'
+  const clubUnpulled = ['club', 'all_school'].includes(store.org_type)
     ? (orders || []).filter((o) => isLiveWebstoreOrder(o) && o.so_id && !o.transfers_pulled)
     : [];
   const clubSoIds = clubUnpulled.map((o) => o.so_id);
@@ -13617,11 +13674,13 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     const soIds = Array.isArray(soId) ? new Set(soId) : new Set([soId]);
     const linked = orders.filter((o) => soIds.has(o.so_id) && (!onlyUnpulled || !o.transfers_pulled));
     const ids = new Set(linked.map((o) => o.id));
-    const used = transferUsage(orderItems.filter((i) => ids.has(i.order_id)), maps);
+    const scopedLines = orderItems.filter((i) => ids.has(i.order_id));
+    const used = transferUsage(scopedLines, maps);
+    const unresolved = unresolvedTransferLines(scopedLines, maps);
     const designs = []; const numbers = []; const byCode = {};
     Object.entries(used).forEach(([code, qty]) => { byCode[code] = qty; (code.includes('|') ? numbers : designs).push({ code, qty, label: transferLabel(code) }); });
     numbers.sort((a, b) => a.label.localeCompare(b.label));
-    return { designs, numbers, byCode };
+    return { designs, numbers, byCode, unresolved };
   };
   const batchPulled = (soId) => { const linked = orders.filter((o) => o.so_id === soId); return linked.length > 0 && linked.every((o) => o.transfers_pulled); };
   useEffect(() => {
@@ -13653,8 +13712,9 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
   // tracking entry, so rendering it would show a misleading all-defaults row.
   const allWOrders = (orders || []).filter((w) => isLiveWebstoreOrder(w) && sos.some((o) => o.id === w.so_id)).sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
   const tBtn = (mode, label) => <button onClick={() => setTrackMode(mode)} style={{ padding: '6px 14px', borderRadius: 7, border: '1px solid ' + (trackMode === mode ? '#0f172a' : '#e2e8f0'), background: trackMode === mode ? '#0f172a' : '#fff', color: trackMode === mode ? '#fff' : '#334155', fontWeight: 700, fontSize: 12.5, cursor: 'pointer' }}>{label}</button>;
-  const clubTransfers = store.org_type === 'club' ? batchTransfers(clubSoIds, true) : { designs: [], numbers: [], byCode: {} };
+  const clubTransfers = ['club', 'all_school'].includes(store.org_type) ? batchTransfers(clubSoIds, true) : { designs: [], numbers: [], byCode: {} };
   const clubDoPull = () => {
+    if (clubTransfers.unresolved?.length) { window.alert('Resolve legacy order offering assignments before pulling transfers. Multiple decoration configurations share a blank.'); return; }
     const totalXfer = Object.values(clubTransfers.byCode).reduce((a, n) => a + n, 0);
     if (!window.confirm(`Pull transfers for ${clubUnpulled.length} converted order${clubUnpulled.length === 1 ? '' : 's'}? This deducts ${totalXfer} transfer unit${totalXfer === 1 ? '' : 's'} from On hand and moves them to In process.`)) return;
     onPullTransfers && onPullTransfers(clubSoIds, clubTransfers.byCode);
@@ -13662,13 +13722,13 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {store.org_type === 'club' && clubUnpulled.length > 0 && (
+      {['club', 'all_school'].includes(store.org_type) && clubUnpulled.length > 0 && (
         <div className="card"><div style={{ padding: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 14, fontWeight: 800 }}>Group pull — {clubUnpulled.length} converted order{clubUnpulled.length === 1 ? '' : 's'} awaiting pull</div>
             {onPullTransfers && <button onClick={clubDoPull} style={{ marginLeft: 'auto', background: '#6d28d9', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>Pull all transfers</button>}
           </div>
-          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>Every order converted to its own Sales Order that hasn't had transfers pulled yet, combined into one group — same as a batch, but automatic.</div>
+          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>Every paid order converted to its own Sales Order that hasn't had transfers pulled yet, combined into one group — same as a batch, but automatic.</div>
           {clubGarmentSizes.length > 0 && (
             <div style={{ marginBottom: 10 }}>
               <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 6 }}>Garments</div>
@@ -13681,7 +13741,7 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
             <div>
               <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 6 }}>Transfers to pull</div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {clubTransfers.designs.map((d) => <span key={d.code} style={{ fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 6, background: '#ede9fe', color: '#6d28d9' }}>{d.label}: {d.qty}</span>)}
+                {clubTransfers.designs.map((d) => <span key={d.code} style={{ fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 6, background: '#ede9fe', color: '#6d28d9' }}>{d.label}: {d.qty}{Math.max(0, d.qty - Number(transfers.find((t) => t.code === d.code)?.on_hand || 0)) > 0 && <b style={{ color: '#b91c1c', marginLeft: 6 }}>Short {Math.max(0, d.qty - Number(transfers.find((t) => t.code === d.code)?.on_hand || 0))} now</b>}</span>)}
                 {clubTransfers.numbers.map((n) => <span key={n.code} style={{ fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 6, background: '#dcfce7', color: '#166534' }}>{n.label}: {n.qty}</span>)}
               </div>
             </div>
@@ -13786,6 +13846,7 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
               const pulled = batchPulled(o.id);
               const bt = batchTransfers(o.id, true); const pendingAny = bt.designs.length || bt.numbers.length;
               const doPull = () => {
+                if (bt.unresolved?.length) { window.alert('Resolve legacy order offering assignments before pulling transfers. Multiple decoration configurations share a blank.'); return; }
                 const total = Object.values(bt.byCode).reduce((a, n) => a + n, 0);
                 if (!window.confirm(`Pull ${total} transfers for this batch? This deducts them from On hand and moves the batch to In process.`)) return;
                 onPullTransfers && onPullTransfers(o.id, bt.byCode);
@@ -13800,7 +13861,8 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
                       : onPullTransfers && pendingAny ? <button onClick={doPull} style={{ background: '#6d28d9', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Pull transfers</button> : null}
                   </div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    {all.designs.map((d) => <span key={d.code} style={{ fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 6, background: '#ede9fe', color: '#6d28d9' }}>{d.label}: {d.qty}</span>)}
+                    {all.unresolved?.length > 0 && <span style={{ color: '#b91c1c', fontSize: 12 }}>Decoration mapping needs review: {all.unresolved.length} line(s)</span>}
+                    {all.designs.map((d) => <span key={d.code} style={{ fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 6, background: '#ede9fe', color: '#6d28d9' }}>{d.label}: {d.qty}{Math.max(0, d.qty - Number(transfers.find((t) => t.code === d.code)?.on_hand || 0)) > 0 && <b style={{ color: '#b91c1c', marginLeft: 6 }}>Short {Math.max(0, d.qty - Number(transfers.find((t) => t.code === d.code)?.on_hand || 0))} now</b>}</span>)}
                     {all.numbers.map((n) => <span key={n.code} style={{ fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 6, background: '#dcfce7', color: '#166534' }}>{n.label}: {n.qty}</span>)}
                   </div>
                 </div>
@@ -14335,8 +14397,8 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
             <option value="orders">Orders CSV</option>
           </select>
         )}
-        {store.org_type === 'club'
-          ? <span style={{ fontSize: 12, color: '#64748b', fontStyle: 'italic', alignSelf: 'center' }} title="Club orders convert to their own Sales Order automatically the moment they're paid — no staff batching step.">Club orders convert automatically — see the Batches tab to pull transfers.</span>
+        {['club', 'all_school'].includes(store.org_type)
+          ? <span style={{ fontSize: 12, color: '#64748b', fontStyle: 'italic', alignSelf: 'center' }} title="Paid orders convert to their own Sales Order automatically — no staff batching step.">Paid orders convert automatically — see the Batches tab to pull transfers.</span>
           : <button className="btn btn-primary" disabled={!unbatchedCount} onClick={onBatch} title={unbatchedCount ? 'Pull the open orders into a batch (a Sales Order) — the store stays open' : 'No unbatched orders'} style={!unbatchedCount ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
               Create Batch ({unbatchedCount})
             </button>}

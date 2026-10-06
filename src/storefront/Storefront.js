@@ -5,36 +5,14 @@ import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from '../lib/supabase';
 import { webstorePublicData } from '../lib/webstorePublicData';
 import { DecoOverlay } from '../lib/decoOverlay';
+import { garmentFrame, normGarment } from '../lib/garmentFrame';
+import PersonalizationOverlay from '../lib/personalizationOverlay';
 import { foldScale, foldedQty, foldedSoon, regularSize, sizeRank, scaleOf as _scaleOf } from '../lib/storeInventory';
 import { normSzName } from '../pricing';
 import { deliveryWindowLabel, estimatedDeliveryDate, estimatedDeliveryRangeLabel } from '../lib/webstoreDeliveryWindow';
 import { setTrackedStore, trackEvent } from '../lib/webstoreTracking';
 import { kbActivate, SkipLink, MAIN_ID, readable, legibleOn } from '../lib/a11y';
-
-// Route SanMar garment photos through a Cloudinary transform that trims to the
-// garment (on its white studio background) and pads to a uniform 4:5 frame, so
-// every product is framed identically and an applied team logo lands at the same
-// spot instead of drifting with each photo's crop. Only SanMar-hosted images are
-// wrapped (the Cloudinary account's fetch allowlist covers those hosts); a store's
-// own uploaded mockup or another vendor's image passes through untouched. f_jpg
-// keeps the output decodable everywhere. Cloud name matches utils' CLOUDINARY_CLOUD.
-const _CLD_GARMENT = 'https://res.cloudinary.com/dwlyljyuz/image/fetch/e_trim:10/c_pad,w_800,h_1000,b_white,f_jpg,q_auto/';
-function normGarment(url) {
-  if (!url || typeof url !== 'string') return url;
-  let host; try { host = new URL(url).hostname; } catch (e) { return url; }
-  if (!/(?:^|\.)cdn[pm]\.sanmar\.com$/i.test(host)) return url;
-  return _CLD_GARMENT + encodeURIComponent(url);
-}
-// How to frame a garment photo that carries a placed logo. A DECORATED item must render
-// exactly like the placement editor — RAW photo, object-fit:contain, 4:5 box — so the logo
-// lands where the rep dragged it (normGarment's trim+pad reframes the photo and pushes the
-// logo off). An UNDECORATED item has nothing to align, so it keeps the uniform normGarment+
-// cover look (avoids letterboxing plain catalog garments). `baked` mocks already have the art
-// in the photo, so they count as undecorated here. Returns { src, fit } for the <img>.
-const _hasLiveDeco = (decos) => Array.isArray(decos) && decos.some((d) => d && !d.baked);
-const garmentFrame = (url, decos) => _hasLiveDeco(decos)
-  ? { src: url, fit: 'contain' }
-  : { src: normGarment(url), fit: 'cover' };
+import { AllSchoolHeader, AllSchoolIntro, AllSchoolBrowse, schoolProductMatches, schoolOrderShipmentDate, schoolVariantGroupKey } from '../allSchool/AllSchoolStorefront';
 
 // Stripe publishable key is fetched at runtime from the server so changing
 // it in Netlify env vars takes effect without a rebuild.
@@ -77,7 +55,7 @@ const grandTotal = (store, items) => cartTotal(items) + shipFee(store) + procFee
 // Type system aligned with the NSA design system:
 // Barlow Condensed for display (uppercase headlines/buttons/badges/prices),
 // Source Sans 3 for body copy.
-const DISPLAY = "'Barlow Condensed','Arial Narrow','Helvetica Neue',Impact,sans-serif";
+const DISPLAY = "var(--sf-display-font, 'Barlow Condensed','Arial Narrow','Helvetica Neue',Impact,sans-serif)";
 const BODY = "'Source Sans 3','Source Sans Pro','Helvetica Neue',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif";
 
 // Fixed neutrals (not themed) — the warm "paper" system from the redesign.
@@ -290,13 +268,17 @@ const optionDetailLabels = (selections) => (Array.isArray(selections) ? selectio
 // Per-size upcharge — bigger sizes (2XL/3XL+) cost the vendor more, so the view
 // publishes a size→extra-dollars map. 0 when the store has it off or the size is standard.
 const sizeUp = (p, sz) => (sz ? Number((p.size_upcharges || {})[sz]) || 0 : 0);
+const nameLimit = (p) => p && p.personalization_template ? Math.min(40, Math.max(1, Number(p.personalization_template.max_length) || 40)) : 20;
+const nameUppercase = (p) => !!(p && p.personalization_template && p.personalization_template.uppercase);
+const nameInput = (p, value) => (nameUppercase(p) ? String(value).toUpperCase() : String(value)).slice(0, nameLimit(p));
+
 // Group color variants of one garment (rows sharing variant_group_id) so the grid
 // shows one card and the product page offers a color picker. Bundles never group.
 const variantKey = (p) => p.variant_group_id || p.webstore_product_id;
-function groupProducts(list) {
+function groupProducts(list, schoolScoped = false) {
   const byKey = new Map(); const order = [];
   for (const p of (list || [])) {
-    const k = p.kind === 'bundle' ? ('b:' + p.webstore_product_id) : variantKey(p);
+    const k = p.kind === 'bundle' ? ('b:' + p.webstore_product_id) : schoolScoped ? schoolVariantGroupKey(p, variantKey(p)) : variantKey(p);
     if (!byKey.has(k)) { byKey.set(k, []); order.push(k); }
     byKey.get(k).push(p);
   }
@@ -383,7 +365,7 @@ function useTheme(store) {
     // We intentionally do NOT key any of this off the legacy `theme` field,
     // which used to mean corner-radius style.
     const pinned = store?.hero_look === 'bold' ? 'bold' : store?.hero_look === 'open' ? 'open' : 'varsity';
-    const look = lookOverride() || pinned;
+    const look = store?.org_type === 'all_school' ? 'varsity' : lookOverride() || pinned;
     const varsity = look === 'varsity';
     // A primary deep enough for white type / heading use (see bandColor).
     const band = bandColor(primary);
@@ -476,6 +458,10 @@ function closesLabel(close_at) {
 }
 
 export function storeDeliveryEstimate(store) {
+  if (store && store.org_type === 'all_school') {
+    const days = Math.max(1, Number(store.all_school_settings && store.all_school_settings.target_ship_days) || 14);
+    return `Ships in about ${days % 7 === 0 ? `${days / 7} weeks` : `${days} days`} from payment`;
+  }
   const weeks = `${deliveryWindowLabel(store && store.delivery_window_weeks)} after the store closes`;
   const calendar = estimatedDeliveryRangeLabel(store && store.close_at, store && store.delivery_window_weeks);
   return calendar ? `${weeks} — around ${calendar}` : weeks;
@@ -581,6 +567,8 @@ export default function Storefront() {
   // Browse filters driven by the persistent category sub-nav + search field.
   const [cat, setCat] = useState('all');
   const [query, setQuery] = useState('');
+  const [schoolProgram, setSchoolProgram] = useState('all');
+  useEffect(() => { setSchoolProgram('all'); setCat('all'); setQuery(''); }, [route.slug]);
   // Descriptive tab title for screen readers / browser history (WCAG 2.4.2).
   useEffect(() => { if (store && store.name) document.title = `${store.name} · National Sports Apparel`; }, [store && store.name]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -681,13 +669,19 @@ export default function Storefront() {
   })();
   // Category clicks always land on the browse grid (sub-nav is persistent chrome).
   const onCat = (c) => { setCat(c); if (route.view !== 'home') navTo('/shop/' + store.slug); else document.getElementById('shop-grid')?.scrollIntoView({ behavior: 'smooth' }); };
-  const resetBrowse = () => { setQuery(''); onCat('all'); };
+  const allSchool = store.org_type === 'all_school';
+  const resetBrowse = () => { setSchoolProgram('all'); setQuery(''); onCat('all'); };
+  const onSchoolProgram = (program) => { setSchoolProgram(program); setCat('all'); setQuery(''); if (route.view !== 'home') navTo('/shop/' + store.slug); setTimeout(() => document.getElementById('shop-grid')?.scrollIntoView({ behavior: 'smooth' }), 60); };
+  const goSchoolSection = (id) => { if (route.view !== 'home') navTo('/shop/' + store.slug); setTimeout(() => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' }), 60); };
   return (
-    <div className={`sf-root${theme.varsity ? ' sf-vs' : ''}${store.presentation_mode === 'showcase' ? ' sf-showcase' : ''}`} style={{ '--sf-accent': theme.accent, '--sf-primary': theme.primary, '--sf-ink': theme.ink, fontFamily: BODY, color: theme.inkText, minHeight: '100vh', background: theme.cream, display: 'flex', flexDirection: 'column' }}>
+    <div className={`sf-root${allSchool ? ' sf-as' : ''}${theme.varsity ? ' sf-vs' : ''}${store.presentation_mode === 'showcase' ? ' sf-showcase' : ''}`} style={{ '--sf-accent': theme.accent, '--sf-primary': theme.primary, '--sf-ink': theme.ink, fontFamily: BODY, color: theme.inkText, minHeight: '100vh', background: theme.cream, display: 'flex', flexDirection: 'column' }}>
       <SkipLink />
       <StoreStyles />
       <div style={{ position: 'sticky', top: 0, zIndex: 30 }}>
-        {theme.varsity ? (
+        {allSchool ? <AllSchoolHeader store={store} theme={theme} cartCount={cartCount(cart)}
+          onHome={() => { setSchoolProgram('all'); setCat('all'); setQuery(''); navTo('/shop/' + store.slug); }}
+          onCart={() => navTo('/shop/' + store.slug + '/cart')}
+          onAllItems={resetBrowse} onPrograms={() => goSchoolSection('shop-programs')} onSpirit={() => onSchoolProgram('spirit')} /> : theme.varsity ? (
           <>
             <VsTopStrip store={store} theme={theme} collapsed={scrolled} />
             {/* Varsity puts search in the header and browses by the Featured
@@ -716,9 +710,9 @@ export default function Storefront() {
       {store.presentation_preview && <AppearancePreviewBanner mode={store.presentation_mode} />}
       {playerCtx && <PlayerBanner player={playerCtx} theme={theme} onClear={clearPlayer} />}
       <main id={MAIN_ID} style={{ flex: 1 }}>
-        {route.view === 'home' && <Home store={store} theme={theme} products={shownProducts} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} onCat={onCat} onResetFilters={resetBrowse} query={query} />}
+        {route.view === 'home' && <Home store={store} theme={theme} products={shownProducts} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} onCat={onCat} onResetFilters={resetBrowse} query={query} schoolProgram={schoolProgram} onSchoolProgram={onSchoolProgram} setQuery={setQuery} />}
         {route.view === 'p' && (() => {
-          const grp = groupProducts(shownProducts).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
+          const grp = groupProducts(shownProducts, allSchool).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
           const rep = grp ? grp.rep : shownProducts.find((p) => p.webstore_product_id === route.id);
           return <Wrap><ProductPage store={store} theme={theme} product={rep} colorRows={grp ? grp.rows : (rep ? [rep] : [])} isOpen={isOpen} onAdd={addToCart} player={playerCtx} onCat={onCat} /></Wrap>;
         })()}
@@ -980,13 +974,13 @@ function VsFooter({ store, theme }) {
         <div>
           <span style={{ display: 'inline-flex', background: '#fff', borderRadius: 2, padding: 7 }}><Crest store={store} theme={theme} size={50} /></span>
           <p style={{ fontSize: 15.5, lineHeight: 1.65, margin: '18px 0 0', maxWidth: 330 }}>
-            The official team store for {short || 'your team'} — stocked, decorated, and {deliver} by National Sports Apparel.
+            The official {store.org_type === 'all_school' ? 'school' : 'team'} store for {short || 'your team'} — decorated and {deliver} by National Sports Apparel.
           </p>
         </div>
         <div>
           <div style={colHead}>Store</div><span aria-hidden style={rule} />
           <div style={{ display: 'grid', gap: 12, justifyItems: 'start' }}>
-            <button className="sf-footlink" style={linkStyle} onClick={go('shop-cats')}>Shop by Category</button>
+            <button className="sf-footlink" style={linkStyle} onClick={go(store.org_type === 'all_school' ? 'shop-programs' : 'shop-cats')}>{store.org_type === 'all_school' ? 'Shop by Sport' : 'Shop by Category'}</button>
             <button className="sf-footlink" style={linkStyle} onClick={go('shop-grid')}>All Items</button>
             <button className="sf-footlink" style={linkStyle} onClick={() => navTo('/shop/' + store.slug + '/cart')}>Your Cart</button>
             <a className="sf-footlink" href="mailto:hello@nationalsportsapparel.com" style={{ ...linkStyle, textDecoration: 'none' }}>Questions & Returns</a>
@@ -1154,7 +1148,8 @@ function splitHeadline(name) {
 }
 
 // ── Home: hero + grid ────────────────────────────────────────────────
-function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExtras = [], cat = 'all', onCat = null, onResetFilters = null, query = '' }) {
+function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExtras = [], cat = 'all', onCat = null, onResetFilters = null, query = '', schoolProgram = 'all', onSchoolProgram, setQuery }) {
+  if (store.org_type === 'all_school') return <AllSchoolHome store={store} theme={theme} products={products} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} onCat={onCat} onResetFilters={onResetFilters} query={query} program={schoolProgram} onProgram={onSchoolProgram} setQuery={setQuery} />;
   const grouped = groupProducts(products);
   // wpById also resolves archived items kept alive only inside a package, so package
   // previews keep their custom photo/name even though those items aren't in the grid.
@@ -1264,6 +1259,29 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
       </div>
     </>
   );
+}
+
+// All School keeps the established cards and product routes, while program and
+// garment-category filters are independent. Filter rows before grouping colors:
+// one color variant must never expose another program's decorated offering.
+function AllSchoolHome({ store, theme, products, bundleItems, compInfo, compExtras, cat, onCat, onResetFilters, query, program, onProgram, setQuery }) {
+  const programRows = products.filter((p) => schoolProductMatches(p, program));
+  const grouped = groupProducts(programRows, true);
+  const categories = [...new Set(grouped.map((g) => productCategory(g.rep)).filter(Boolean))];
+  const q = query.trim().toLowerCase();
+  const visible = grouped.filter((g) => (cat === 'all' || productCategory(g.rep) === cat) && (!q || g.rows.some((p) => [p.name, p.store_category, p.category, p.color, p.brand, p.sku].filter(Boolean).some((v) => String(v).toLowerCase().includes(q)))));
+  const wpById = buildWpById([...products, ...compExtras]);
+  return <>
+    <AllSchoolIntro store={store} theme={theme} products={groupProducts(products, true).map((g) => g.rep)} selectedProgram={program} onProgram={onProgram} onShop={onResetFilters} />
+    <section id="shop-grid" aria-label="Shop school products" style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(35px,5vw,66px) 24px clamp(52px,6.5vw,84px)', scrollMarginTop: 130 }}>
+      <AllSchoolBrowse store={store} program={program} onProgram={onProgram} categories={categories} category={cat} onCategory={onCat} query={query} setQuery={setQuery} count={visible.length} onReset={onResetFilters} />
+      {visible.length ? <div className="sf-grid">{visible.map(({ rep, rows }) => {
+        if (rep.kind === 'bundle' && rep.card_style === 'banner') return <BannerCard key={rep.webstore_product_id} store={store} theme={theme} p={rep} bundleItems={bundleItems} compInfo={compInfo} wpById={wpById} />;
+        if (rep.kind === 'bundle' && rep.card_style === 'showcase') return <ShowcaseCard key={rep.webstore_product_id} store={store} theme={theme} p={rep} bundleItems={bundleItems} compInfo={compInfo} wpById={wpById} />;
+        return <Card key={rep.webstore_product_id} store={store} theme={theme} p={rep} colorRows={rows} bundleItems={bundleItems} compInfo={compInfo} wpById={wpById} />;
+      })}</div> : <div style={{ padding: '45px 16px', background: theme.warm, textAlign: 'center' }}><h3 style={{ color: theme.band, margin: '0 0 8px', fontFamily: DISPLAY, fontSize: 25, textTransform: 'uppercase' }}>{products.length ? 'No gear matches these filters' : 'Your school collection is coming soon'}</h3><p style={{ color: theme.subText, fontSize: 14, margin: '0 0 16px' }}>{products.length ? 'Try another program, category, or search.' : 'Check back for your official school gear.'}</p>{products.length > 0 && <button onClick={onResetFilters} style={{ background: theme.band, color: '#fff', border: 0, padding: '12px 20px', fontFamily: DISPLAY, fontWeight: 700, textTransform: 'uppercase', cursor: 'pointer' }}>Show all gear</button>}</div>}
+    </section>
+  </>;
 }
 
 // Open hero — team-color gradient, two-column, curated product collage on the right.
@@ -1468,25 +1486,7 @@ function bundleBadge(count, theme) {
 // decoUrlForColor + DecoOverlay moved to src/lib/decoOverlay.js (shared with the
 // Team Shop placement picker) — imported at the top of this file, rendering unchanged.
 
-// Sample number/name on the garment mockup so shoppers see an item is personalized.
-// Default back placement; the real value is entered at checkout. Mirrors the builder.
-const PERSO_DEFAULTS = { name: { x: 50, y: 22, w: 64 }, number: { x: 50, y: 51, w: 34 } };
-function PersoMock({ takesNumber, takesName, decorations = [], sampleName = 'PLAYER', sampleNumber = '00' }) {
-  if (!takesNumber && !takesName) return null;
-  // Honor the rep's placed/resized perso token when present; else the default.
-  const place = (kind, def) => { const d = (decorations || []).find((x) => x && x.kind === kind); return d ? { x: d.x != null ? d.x : def.x, y: d.y != null ? d.y : def.y, w: d.w != null ? d.w : def.w } : def; };
-  const tok = (p, vb, ty, fs, body) => (
-    <div style={{ position: 'absolute', left: p.x + '%', top: p.y + '%', width: p.w + '%', transform: 'translate(-50%,-50%)', pointerEvents: 'none', zIndex: 1 }}>
-      <svg viewBox={'0 0 100 ' + vb} style={{ display: 'block', width: '100%', overflow: 'visible' }}>
-        <text x="50" y={ty} textAnchor="middle" fontFamily="'Barlow Condensed',Oswald,Impact,sans-serif" fontWeight="800" fontSize={fs} fill="#fff" stroke="rgba(0,0,0,0.6)" strokeWidth="1.3" paintOrder="stroke" letterSpacing="1">{body}</text>
-      </svg>
-    </div>
-  );
-  return <>
-    {takesName && tok(place('perso_name', PERSO_DEFAULTS.name), 26, 20, 20, String(sampleName).toUpperCase())}
-    {takesNumber && tok(place('perso_number', PERSO_DEFAULTS.number), 64, 52, 58, sampleNumber)}
-  </>;
-}
+const PersoMock = PersonalizationOverlay;
 
 function BundleCollage({ comps, theme }) {
   // Each tile shows the component WITH its inherited decoration (the kit garments are
@@ -1736,7 +1736,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   useEffect(() => {
     if (!player || !rep) return;
     if (rep.takes_number && player.player_number) setNum(String(player.player_number).replace(/[^0-9]/g, '').slice(0, 3));
-    if (rep.takes_name && player.player_name) setPname(String(player.player_name).slice(0, 20));
+    if (rep.takes_name && player.player_name) setPname(nameInput(rep, player.player_name));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [player, rep ? rep.webstore_product_id : null]);
   if (!rep) return <Splash>Product not found.</Splash>;
@@ -1817,8 +1817,8 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   // server rejects the same case (checkSizesRequired) as defense in depth.
   const inherentlySized = !isFitGroup && (scaleOf(p).length > 0 || (Array.isArray(p.sizes_offered) && p.sizes_offered.length > 0));
   const soldOutNoSize = inherentlySized && sizesArr.length === 0;
-  const needNumber = !!p.takes_number;
-  const isPersonalized = needNumber || !!p.takes_name || selectedAddOns.length > 0;
+  const needNumber = !!p.takes_number && store.org_type !== 'all_school';
+  const isPersonalized = !!p.takes_number || !!p.takes_name || selectedAddOns.length > 0;
   const canAdd = isOpen && !soldOutNoSize && (!needSize || size) && (!needNumber || num.trim()) && !missingAddOn;
   const addToCart = () => {
     onAdd({
@@ -1829,7 +1829,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
       name_extra: p.takes_name && pname.trim() ? nameUp : 0,
       option_extra: addOnExtra,
       option_selections: selectedAddOns,
-      player_number: needNumber ? num.trim() : null,
+      player_number: p.takes_number && num.trim() ? num.trim() : null,
       player_name: p.takes_name && pname.trim() ? pname.trim() : null,
       qty: isPersonalized ? 1 : qty,
     });
@@ -1851,7 +1851,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const imgUrl = img === 'back' ? (imgRow.image_back_url || imgRow.image_front_url) : imgRow.image_front_url;
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
   const label = { fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1.4, color: theme.ink, marginBottom: 10 };
-  const proof = ['Custom team decoration included', 'adidas & Under Armour quality', 'Ships to the team when the store closes'];
+  const proof = store.org_type === 'all_school' ? ['Official school decoration included', 'Made to order for your school', storeDeliveryEstimate(store)] : ['Custom team decoration included', 'adidas & Under Armour quality', 'Ships to the team when the store closes'];
   return (
     <div style={{ paddingTop: 24 }}>
       {theme.varsity
@@ -1862,8 +1862,9 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
           <div style={{ position: 'relative', width: '100%', maxWidth: 420, margin: '0 auto', aspectRatio: '4 / 5', background: theme.warm, borderRadius: 8, border: `1px solid ${theme.line}`, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             {imgUrl ? (() => { const gf = garmentFrame(imgUrl, p.decorations); return <img src={gf.src} alt={p.name} style={{ width: '100%', height: '100%', objectFit: gf.fit }} />; })() : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
             <DecoOverlay decorations={p.decorations} side={img === 'back' ? 'back' : 'front'} colorName={p.color} />
-            {img === 'back' && <PersoMock takesNumber={p.takes_number} takesName={p.takes_name} decorations={p.decorations} />}
+            {img === 'back' && <PersoMock takesNumber={p.takes_number && (store.org_type !== 'all_school' || !!num.trim())} takesName={p.takes_name && (store.org_type !== 'all_school' || !!pname.trim())} decorations={p.decorations} sampleName={store.org_type === 'all_school' ? pname.trim() : 'PLAYER'} sampleNumber={store.org_type === 'all_school' ? num.trim() : '00'} preserveCase={store.org_type === 'all_school'} />}
           </div>
+          {store.org_type === 'all_school' && img === 'back' && isPerso && <p style={{ fontSize: 12, color: theme.subText, textAlign: 'center', margin: '10px 0 0' }}>Name and number placement preview. Check your entered text before ordering.</p>}
           {(hasBackDeco || isPerso) && <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
             {['front', 'back'].map((v) => <button key={v} onClick={() => setImg(v)} style={thumbBtn(theme, img === v)}>{v}</button>)}
           </div>}
@@ -1915,12 +1916,13 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
           {(p.takes_number || p.takes_name) && (
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', margin: '4px 0 18px' }}>
               {p.takes_number && <div>
-                <div style={label}>Number</div>
+                <div style={label}>Number{store.org_type === 'all_school' ? ' (optional)' : ''}</div>
                 <input aria-label="Jersey number" className="sf-input" value={num} onChange={(e) => setNum(e.target.value.replace(/[^0-9]/g, '').slice(0, 3))} placeholder="#" inputMode="numeric" style={fieldStyle(theme, 80)} />
               </div>}
               {p.takes_name && <div>
                 <div style={label}>Name {nameUp > 0 ? `(+${money(nameUp)})` : ''}</div>
-                <input aria-label="Name on jersey" className="sf-input" value={pname} onChange={(e) => setPname(e.target.value.slice(0, 20))} placeholder="Last name" style={fieldStyle(theme, 220)} />
+                <input aria-label="Name on jersey" className="sf-input" value={pname} maxLength={nameLimit(p)} onChange={(e) => setPname(nameInput(p, e.target.value))} placeholder="Last name" style={fieldStyle(theme, 220)} />
+                <div style={{ fontSize: 11, color: theme.subText, marginTop: 6 }}>{nameUppercase(p) ? 'Printed in uppercase. ' : ''}Maximum {nameLimit(p)} characters. Check spelling before adding.</div>
               </div>}
             </div>
           )}
@@ -1971,11 +1973,12 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
   useEffect(() => {
     if (!player || !components) return;
     if (player.player_number) { const n = String(player.player_number).replace(/[^0-9]/g, '').slice(0, 3); setNums((prev) => { const next = { ...prev }; components.forEach((c) => { if (c.takes_number && !next[c.id]) next[c.id] = n; }); return next; }); }
-    if (player.player_name) { const nm = String(player.player_name).slice(0, 20); setNames((prev) => { const next = { ...prev }; components.forEach((c) => { if (c.takes_name && !next[c.id]) next[c.id] = nm; }); return next; }); }
+    if (player.player_name) { setNames((prev) => { const next = { ...prev }; components.forEach((c) => { if (c.takes_name && !next[c.id]) next[c.id] = nameInput(products.find((wp) => wp.webstore_product_id === c.webstore_product_id) || c, player.player_name); }); return next; }); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [player, p ? p.webstore_product_id : null]);
   const wpById = buildWpById(products);
   const meta = (c) => compMeta(c, wpById, compInfo);
+  const componentNameRules = (c) => wpById[c.webstore_product_id] || c;
   if (!p) return <Splash>Package not found.</Splash>;
   const compSizesArr = (c) => foldScale(meta(c).sizes);
   const nameExtra = components.reduce((a, c) => a + ((c.takes_name && (names[c.id] || '').trim()) ? (Number(c.name_upcharge) || 0) : 0), 0);
@@ -1984,7 +1987,7 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
   const selectedAddOns = optionSelections(addOnDefs, addOnValues);
   const missingAddOn = addOnDefs.find((o, i) => o.required && !optionHasValue(o, addOnValues[optionKey(o, i)]));
   const missingSize = components.some((c) => c.size_required && compSizesArr(c).length > 0 && !picks[c.id]);
-  const missingNum = components.some((c) => c.takes_number && !(nums[c.id] || '').trim());
+  const missingNum = store.org_type !== 'all_school' && components.some((c) => c.takes_number && !(nums[c.id] || '').trim());
   const canAdd = isOpen && !missingSize && !missingNum && !missingAddOn;
   const addToCart = () => {
     onAdd({
@@ -2006,7 +2009,7 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
   const compImg = (c) => meta(c).image;
   const compSizes = (c) => foldScale(meta(c).sizes);
   // A step is complete when every required input on it is satisfied.
-  const isComplete = (c) => (!(c.size_required && compSizes(c).length > 0) || !!picks[c.id]) && (!c.takes_number || (nums[c.id] || '').trim());
+  const isComplete = (c) => (!(c.size_required && compSizes(c).length > 0) || !!picks[c.id]) && (!c.takes_number || store.org_type === 'all_school' || (nums[c.id] || '').trim());
   const total = components.length;
   const selCount = components.filter(isComplete).length;
   const pct = total ? selCount / total : 1;
@@ -2077,12 +2080,13 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
                 {(c.takes_number || c.takes_name) && (
                   <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
                     {c.takes_number && <div>
-                      <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: theme.subText, marginBottom: 6 }}>Number</div>
+                      <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: theme.subText, marginBottom: 6 }}>Number{store.org_type === 'all_school' ? ' (optional)' : ''}</div>
                       <input aria-label="Jersey number" className="sf-input" value={nums[c.id] || ''} onChange={(e) => setNums((x) => ({ ...x, [c.id]: e.target.value.replace(/[^0-9]/g, '').slice(0, 3) }))} placeholder="#" inputMode="numeric" style={fieldStyle(theme, 70)} />
                     </div>}
                     {c.takes_name && <div>
                       <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: theme.subText, marginBottom: 6 }}>Name {Number(c.name_upcharge) > 0 ? `(+${money(c.name_upcharge)})` : ''}</div>
-                      <input aria-label="Name on jersey" className="sf-input" value={names[c.id] || ''} onChange={(e) => setNames((x) => ({ ...x, [c.id]: e.target.value.slice(0, 20) }))} placeholder="Last name" style={fieldStyle(theme, 160)} />
+                      <input aria-label="Name on jersey" className="sf-input" value={names[c.id] || ''} maxLength={nameLimit(componentNameRules(c))} onChange={(e) => setNames((x) => ({ ...x, [c.id]: nameInput(componentNameRules(c), e.target.value) }))} placeholder="Last name" style={fieldStyle(theme, 160)} />
+                      <div style={{ fontSize: 11, color: theme.subText, marginTop: 6 }}>{nameUppercase(componentNameRules(c)) ? 'Printed in uppercase. ' : ''}Maximum {nameLimit(componentNameRules(c))} characters. Check spelling before adding.</div>
                     </div>}
                   </div>
                 )}
@@ -2214,7 +2218,7 @@ function CartPage({ store, theme, cart, onUpdate }) {
             <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 30, color: theme.primary }}>{money(grandTotal(store, cart))}</span>
           </div>
           <button className="sf-btn sf-skew" onClick={() => navTo('/shop/' + store.slug + '/checkout')} style={{ ...cta(theme), marginTop: 4 }}><span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>Checkout →</span></button>
-          <p style={{ fontSize: 12.5, color: theme.subText, lineHeight: 1.5, margin: '14px 0 0' }}>{store.delivery_mode === 'ship_home' ? 'Custom-decorated and shipped to your door' : 'Delivered to the team'}. Estimated delivery: {storeDeliveryEstimate(store)}{closesLabel(store.close_at) ? ` (${closesLabel(store.close_at).text})` : ''}.</p>
+          <p style={{ fontSize: 12.5, color: theme.subText, lineHeight: 1.5, margin: '14px 0 0' }}>{store.delivery_mode === 'ship_home' ? 'Custom-decorated and shipped to your door' : 'Delivered to the team'}. {store.org_type === 'all_school' ? 'Target shipment' : 'Estimated delivery'}: {storeDeliveryEstimate(store)}{closesLabel(store.close_at) ? ` (${closesLabel(store.close_at).text})` : ''}.</p>
         </div>
       </div>
     </div>
@@ -2392,22 +2396,37 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   const [checkoutMsg, setCheckoutMsg] = useState('');
   useEffect(() => { checkoutCall({ action: 'settings' }).then((data) => setCheckoutMsg((data && data.checkout_message) || '')).catch(() => {}); }, []);
   const needAddr = store.delivery_mode === 'ship_home';
+  const liveShipping = needAddr && store.all_school_settings?.shipping?.mode === 'ups_live';
   // Server-quoted sales tax: CA via CDTFA, registered out-of-state via TaxCloud. Quoted once
   // we can source tax (a complete ship address, or pickup which sources to NSA's location).
-  const [taxInfo, setTaxInfo] = useState(null); // { tax, total, tax_state }
-  const _shipKey = needAddr ? [ship.street1, ship.city, ship.state, ship.zip].join('|') : ['pickup', buyer.billing_street1 || '', buyer.billing_city || '', buyer.state || '', buyer.zip || ''].join('|');
-  const _cartKey = JSON.stringify(cart.map((l) => [l.webstore_product_id, l.size, l.qty, l.option_selections || null]));
+  const [quotedTotals, setTaxInfo] = useState(null);
+  const [quoteError, setQuoteError] = useState('');
+  const [quoteGeneration, setQuoteGeneration] = useState(0);
+  const _shipKey = needAddr ? [ship.street1, ship.street2, ship.city, ship.state, ship.zip].join('|') : ['pickup', buyer.billing_street1 || '', buyer.billing_city || '', buyer.state || '', buyer.zip || ''].join('|');
+  const _cartKey = JSON.stringify(cart.map((l) => [l.webstore_product_id, l.size, l.qty, l.player_name, l.player_number, l.option_selections || null, l.components || null]));
+  const quoteKey = JSON.stringify([_shipKey, _cartKey, coupon && coupon.code, store.slug, liveShipping, quoteGeneration]);
+  // A changed address/cart invalidates the old quote during this render, before
+  // the debounced request or effect runs. A stale UPS amount cannot enable Pay.
+  const taxInfo = quotedTotals && quotedTotals._quoteKey === quoteKey ? quotedTotals : null;
   useEffect(() => {
+    if (locked) return;
+    setTaxInfo(null); setQuoteError('');
     if (needAddr && !(ship.street1 && ship.city && ship.state && ship.zip)) { setTaxInfo(null); return; }
     if (!needAddr && (!(buyer.billing_street1 || '').trim() || !(buyer.billing_city || '').trim() || (buyer.state || '').length !== 2 || (buyer.zip || '').length < 5)) { setTaxInfo(null); return; }
     let cancelled = false;
     const t = setTimeout(async () => {
-      const r = await checkoutCall({ action: 'quote', storeSlug: store.slug, cart, ship: needAddr ? ship : null, billing: needAddr ? null : { street1: buyer.billing_street1, city: buyer.billing_city, zip: buyer.zip, state: buyer.state }, couponCode: coupon ? coupon.code : null });
-      if (!cancelled && r && r.totals) setTaxInfo(r.totals);
+      try {
+        const r = await checkoutCall({ action: 'quote', storeSlug: store.slug, cart, ship: needAddr ? ship : null, billing: needAddr ? null : { street1: buyer.billing_street1, city: buyer.billing_city, zip: buyer.zip, state: buyer.state }, couponCode: coupon ? coupon.code : null });
+        if (cancelled) return;
+        if (r && r.totals) setTaxInfo({ ...r.totals, _quoteKey: quoteKey, shipping_quote: r.shipping_quote });
+        else setQuoteError(r?.error?.message || 'We could not calculate your checkout total. Please try again.');
+      } catch (_) {
+        if (!cancelled) setQuoteError('We could not calculate your checkout total. Please try again.');
+      }
     }, 500);
     return () => { cancelled = true; clearTimeout(t); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [_shipKey, _cartKey, coupon && coupon.code, store.slug]);
+  }, [quoteKey, locked]);
 
   // place_order idempotency: one clientRef per distinct checkout payload. An identical
   // resubmit (double-click, retry after a lost response) reuses the ref, so the server
@@ -2415,7 +2434,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   // to the cart, buyer, coupon, or pay mode mints a fresh ref. Cleared on completion.
   const _orderRefState = useRef({ key: '', ref: '' });
   const orderRefFor = (payMode) => {
-    const key = JSON.stringify([store.slug, payMode, buyer.email, coupon ? coupon.code : null,
+    const key = JSON.stringify([store.slug, payMode, buyer.email, coupon ? coupon.code : null, ship, payable,
       cart.map((l) => [l.webstore_product_id, l.size, l.qty, l.player_name || null, l.player_number || null, l.option_selections || null, l.components || null])]);
     if (_orderRefState.current.key !== key) {
       const uuid = (window.crypto && window.crypto.randomUUID)
@@ -2431,7 +2450,8 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
 
   const validBuyer = buyer.name.trim() && /.+@.+\..+/.test(buyer.email)
     && (needAddr ? (ship.street1 && ship.city && ship.state && ship.zip) : ((buyer.billing_street1 || '').trim() && (buyer.billing_city || '').trim() && ((buyer.zip || '').length === 5) && ((buyer.state || '').length === 2) && (buyer.player_name || '').trim()));
-  const ship_ = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
+  const shippingReady = !liveShipping || !!taxInfo;
+  const ship_ = liveShipping ? (taxInfo ? Number(taxInfo.shipping) || 0 : 0) : coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
   const discount = couponDiscount(coupon, cart, ship_);
   const processing = procFeeAmt(store, cart);
   const payable = Math.max(0, cartTotal(cart) + ship_ + processing - discount);
@@ -2452,9 +2472,11 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
     const repriced = await repriceCart(store, cart);
     onUpdate(repriced);
     setPriceNotice(true); setErr('');
+    setQuoteGeneration((n) => n + 1);
   };
 
   const submitUnpaid = async () => {
+    if (!shippingReady) { setErr('Please wait for your UPS shipping quote before placing your order.'); return; }
     setErr(''); setPriceNotice(false); if (!validBuyer) { setErr(needAddr ? 'Please complete your contact and shipping info.' : 'Please complete your name, email, player name and billing address.'); return; }
     setBusy(true);
     const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'unpaid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), clientRef: orderRefFor('unpaid'), rosterToken: player ? player.token : null });
@@ -2470,6 +2492,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   // the PaymentIntent with the SERVER total, then we show the card form. The
   // Stripe webhook flips it to paid even if the buyer closes the tab.
   const startCard = async () => {
+    if (!shippingReady) { setErr('Please wait for your UPS shipping quote before paying.'); return; }
     setErr(''); setPriceNotice(false); if (!validBuyer) { setErr(needAddr ? 'Please complete your contact and shipping info.' : 'Please complete your name, email, player name and billing address.'); return; }
     setBusy(true);
     const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), clientRef: orderRefFor('paid'), rosterToken: player ? player.token : null });
@@ -2534,7 +2557,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
     <div style={{ paddingTop: 24, maxWidth: 640 }}>
       <BackLink store={store} theme={theme} />
       <h1 style={{ position: 'relative', fontFamily: DISPLAY, fontSize: 'clamp(32px,5vw,46px)', textTransform: 'uppercase', letterSpacing: 0.3, margin: '0 0 26px', lineHeight: 0.95, color: theme.ink, paddingBottom: 14 }}>Checkout<span aria-hidden style={{ position: 'absolute', left: 0, bottom: 0, width: 58, height: 4, background: theme.accent, transform: 'skewX(-12deg)' }} /></h1>
-      <div style={{ background: '#fffbeb', color: '#78350f', border: '1px solid #fde68a', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14 }}><strong>Estimated delivery:</strong> {storeDeliveryEstimate(store)}.</div>
+      <div style={{ background: '#fffbeb', color: '#78350f', border: '1px solid #fde68a', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14 }}><strong>{store.org_type === 'all_school' ? 'Target shipment:' : 'Estimated delivery:'}</strong> {storeDeliveryEstimate(store)}.</div>
       {checkoutMsg && <div style={{ background: '#eff6ff', color: '#1e3a5f', border: '1px solid #bfdbfe', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14, whiteSpace: 'pre-wrap' }}>{checkoutMsg}</div>}
       {err && <div style={{ background: '#fee2e2', color: '#b91c1c', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14 }}>{err}</div>}
       {priceNotice && <div style={{ background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14 }}>Prices changed while you were shopping, so we refreshed your cart to the current prices. Please review your new total below and place your order again.</div>}
@@ -2577,17 +2600,19 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
       </div>
 
       {discount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#16a34a', marginTop: 14 }}><span>Discount ({coupon.code})</span><span>−{money(discount)}</span></div>}
-      {ship_ > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginTop: discount > 0 ? 6 : 14 }}><span>Shipping (flat)</span><span>{money(ship_)}</span></div>}
-      {coupon && coupon.kind === 'free_shipping' && shipFee(store) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#16a34a', marginTop: 14 }}><span>Shipping</span><span>Free</span></div>}
+      {ship_ > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginTop: discount > 0 ? 6 : 14 }}><span>{liveShipping ? 'UPS shipping' : 'Shipping (flat)'}</span><span>{money(ship_)}</span></div>}
+      {coupon && coupon.kind === 'free_shipping' && (liveShipping || shipFee(store) > 0) && shippingReady && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#16a34a', marginTop: 14 }}><span>Shipping</span><span>Free</span></div>}
+      {liveShipping && !shippingReady && <div role="status" style={{ fontSize: 13, color: quoteError ? '#b91c1c' : '#64748b', marginTop: 14 }}>{quoteError || (ship.street1 && ship.city && ship.state && ship.zip ? 'Calculating UPS shipping…' : 'Enter your shipping address for a live UPS quote.')}{quoteError && <button type="button" onClick={() => setQuoteGeneration((n) => n + 1)} style={{ marginLeft: 8, background: 'none', border: 0, textDecoration: 'underline', color: 'inherit', cursor: 'pointer' }}>Try again</button>}</div>}
+      {liveShipping && taxInfo && <div style={{ fontSize: 11, color: '#64748b', marginTop: 5 }}>Quoted from Orange using garment and packaging weights.</div>}
       {processing > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginTop: (discount > 0 || ship_ > 0) ? 6 : 14 }}><span>Processing fee ({procPct(store)}%)</span><span>{money(processing)}</span></div>}
       {taxInfo && Number(taxInfo.tax) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginTop: (discount > 0 || ship_ > 0 || processing > 0) ? 6 : 14 }}><span>Sales tax{taxInfo.tax_state ? ` (${taxInfo.tax_state})` : ''}</span><span>{money(Number(taxInfo.tax))}</span></div>}
       {needAddr && !taxInfo && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#94a3b8', marginTop: (discount > 0 || ship_ > 0 || processing > 0) ? 6 : 14 }}><span>Sales tax</span><span>Calculated at address</span></div>}
       <div style={{ borderTop: '1px solid #eef1f5', margin: (discount > 0 || ship_ > 0 || processing > 0 || taxInfo) ? '10px 0 0' : '18px 0', paddingTop: 14, display: 'flex', justifyContent: 'space-between', fontSize: 20, fontWeight: 900 }}>
-        <span>Total</span><span>{money(payable + (taxInfo ? Number(taxInfo.tax) || 0 : 0))}</span>
+        <span>{liveShipping && !shippingReady ? 'Items and fees' : 'Total'}</span><span>{money(payable + (taxInfo ? Number(taxInfo.tax) || 0 : 0))}</span>
       </div>
 
       {comped ? (
-        <button className="sf-btn" onClick={submitUnpaid} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1 }}>{busy ? 'Placing…' : 'Place order — covered by code'}</button>
+        <button className="sf-btn" onClick={submitUnpaid} disabled={busy || !validBuyer || !shippingReady} style={{ ...cta(theme), opacity: busy || !validBuyer || !shippingReady ? 0.5 : 1 }}>{busy ? 'Placing…' : 'Place order — covered by code'}</button>
       ) : (<>
       {store.payment_mode === 'either' && !locked && (
         <div style={{ display: 'flex', gap: 8, marginBottom: 14, marginTop: 14 }}>
@@ -2607,10 +2632,10 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
                   same order reuses its PaymentIntent (idempotent clientRef) — no duplicate. */}
               <button onClick={() => { setClientSecret(null); setPendingOrder(null); }} style={{ marginTop: 12, background: 'none', border: 'none', color: theme.subText || '#64748b', textDecoration: 'underline', cursor: 'pointer', fontSize: 13 }}>← Edit order details</button>
             </>
-          ) : <button className="sf-btn" onClick={startCard} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1, marginTop: store.payment_mode === 'either' ? 0 : 14 }}>{busy ? 'Starting…' : 'Continue to payment'}</button>
+          ) : <button className="sf-btn" onClick={startCard} disabled={busy || !validBuyer || !shippingReady} style={{ ...cta(theme), opacity: busy || !validBuyer || !shippingReady ? 0.5 : 1, marginTop: store.payment_mode === 'either' ? 0 : 14 }}>{busy ? 'Starting…' : 'Continue to payment'}</button>
         ) : <div style={{ color: '#b91c1c', fontSize: 13, marginTop: 14 }}>Card payment isn’t set up for this store yet — please contact us.</div>
       ) : allowUnpaid ? (
-        <button className="sf-btn" onClick={submitUnpaid} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1 }}>{busy ? 'Placing…' : 'Place order — invoice the team'}</button>
+        <button className="sf-btn" onClick={submitUnpaid} disabled={busy || !validBuyer || !shippingReady} style={{ ...cta(theme), opacity: busy || !validBuyer || !shippingReady ? 0.5 : 1 }}>{busy ? 'Placing…' : 'Place order — invoice the team'}</button>
       ) : null}
       </>)}
     </div>
@@ -2695,7 +2720,13 @@ function OrderStatusPage({ store, theme, orderToken }) {
     { label: 'Bagging',       icon: 'M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z M3 6h18 M16 10a4 4 0 0 1-8 0' },
     { label: 'Shipped',       icon: 'M10 17h4V5H2v12h3 M20 17h2v-3.34a4 4 0 0 0-1.17-2.83L19 9h-5v8h1 M14 17h1 M5 17a2 2 0 1 0 4 0 2 2 0 0 0-4 0z M15 17a2 2 0 1 0 4 0 2 2 0 0 0-4 0z' },
   ];
-  const STAGE_MSGS = [
+  const STAGE_MSGS = store.org_type === 'all_school' ? [
+    "Your order is in. We're gathering the garments and decorations for your school gear.",
+    "Your materials are ready and your order is queued for decoration.",
+    "Your gear is being custom-decorated with your school artwork and personal details.",
+    "Your completed items are being checked and packed for home shipping.",
+    "Your order has shipped to your delivery address. Follow its progress with the tracking information below.",
+  ] : [
     "Your order is in. It will be produced alongside the rest of the team's gear once the store closes.",
     "We've received and verified your order. It's queued for production with the team.",
     "Your gear is being custom-decorated right now — names, numbers, and team marks applied.",
@@ -2754,8 +2785,9 @@ function OrderStatusPage({ store, theme, orderToken }) {
   const updatedLabel = updatedAt ? new Date(updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ', ' + new Date(updatedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';
   // Production starts after close. Use the later edge of the store's selected
   // window for the confirmation's conservative "week of" date.
-  const estimatedDate = estimatedDeliveryDate(store.close_at, store.delivery_window_weeks);
-  const estDelivery = estimatedDate ? 'Wk of ' + estimatedDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'TBD';
+  const schoolTarget = store.org_type === 'all_school' ? schoolOrderShipmentDate(store, order) : null;
+  const estimatedDate = schoolTarget ? schoolTarget.date : estimatedDeliveryDate(store.close_at, store.delivery_window_weeks);
+  const estDelivery = estimatedDate ? (schoolTarget ? (schoolTarget.approximate ? 'Around ' : '') : 'Wk of ') + estimatedDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'TBD';
   const orderedDate = order.created_at ? new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
 
   // Inline helpers
@@ -2822,7 +2854,7 @@ function OrderStatusPage({ store, theme, orderToken }) {
 
       {/* Meta strip */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', background: P, borderRadius: 8, overflow: 'hidden', marginBottom: 18 }}>
-        {[{ label: 'Order', value: shortId }, { label: 'Placed', value: placedDate }, { label: 'Items', value: totalPieces + ' pieces' }, { label: 'Est. Delivery', value: estDelivery }].map((m, i) => (
+        {[{ label: 'Order', value: shortId }, { label: 'Placed', value: placedDate }, { label: 'Items', value: totalPieces + ' pieces' }, { label: store.org_type === 'all_school' ? 'Target Shipment' : 'Est. Delivery', value: estDelivery }].map((m, i) => (
           <div key={m.label} style={{ padding: '14px 18px', borderRight: i < 3 ? '1px solid rgba(255,255,255,0.12)' : 'none' }}>
             <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 10.5, letterSpacing: 1.5, textTransform: 'uppercase', color: A, marginBottom: 2 }}>{m.label}</div>
             <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 19, textTransform: 'uppercase', color: '#fff', lineHeight: 1.15 }}>{m.value}</div>
@@ -2961,7 +2993,7 @@ function OrderStatusPage({ store, theme, orderToken }) {
       {/* What's next */}
       <div style={{ background: WARM, border: `1px solid ${LINE}`, borderRadius: 8, padding: '20px 24px', marginBottom: 22 }}>
         <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 1.5, textTransform: 'uppercase', color: A, marginBottom: 8 }}>What's Next</div>
-        <p style={{ fontSize: 15, lineHeight: 1.6, color: INK, margin: 0 }}>Your order has been received and will be produced with the rest of the team's gear. We'll email you each time it moves to a new stage above. Everything ships together to the team once the store closes — no separate shipping or pickup to arrange.</p>
+        <p style={{ fontSize: 15, lineHeight: 1.6, color: INK, margin: 0 }}>{store.org_type === 'all_school' ? "Your items are made to order, then checked and packed for home delivery. We'll email you as your order moves through production and shipping. Your shipment target is shown above." : "Your order has been received and will be produced with the rest of the team's gear. We'll email you each time it moves to a new stage above. Everything ships together to the team once the store closes — no separate shipping or pickup to arrange."}</p>
       </div>
 
       {/* Contact line */}
