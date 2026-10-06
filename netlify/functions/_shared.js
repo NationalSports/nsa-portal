@@ -305,6 +305,7 @@ async function reconcileInvoiceFromIntent(admin, pi) {
     } catch (e) { /* audit row is best-effort */ }
     reconciled.push(r.id);
   }
+  if (reconciled.length) await pushPaymentReceived(admin, reconciled, collected, pi.id, false);
   return { reconciled };
 }
 
@@ -349,7 +350,28 @@ async function reconcilePayRequestFromIntent(admin, pi) {
     .eq('id', inv.id).eq('paid', inv.paid).select('id');
   if (updErr || !upd || !upd.length) { console.error('[reconcilePayRequest] invoice update did not apply for', inv.id, updErr && updErr.message); return { reconciled: [], error: 'invoice_update_failed' }; }
   await admin.from('invoice_pay_requests').update({ status: 'paid', paid_at: new Date().toISOString(), payment_intent_id: pi.id }).eq('id', reqId);
+  await pushPaymentReceived(admin, [inv.id], requested, pi.id, status !== 'paid');
   return { reconciled: [inv.id], partial: status !== 'paid', applied: requested, fee };
+}
+
+// Tell the account's rep (NSA Connect push) that a customer paid online. Never throws;
+// keyed on the intent so the portal finalize + webhook backstop notify once.
+async function pushPaymentReceived(admin, invoiceIds, amount, intentId, partial) {
+  try {
+    const { safePush, repForCustomer } = require('./_push');
+    const { data: invs } = await admin.from('invoices').select('id,customer_id,so_id,created_by').in('id', invoiceIds);
+    const first = (invs || [])[0];
+    if (!first) return;
+    const rep = await repForCustomer(admin, first.customer_id, first.created_by);
+    const { data: c } = await admin.from('customers').select('name').eq('id', first.customer_id).maybeSingle();
+    const amt = '$' + (Number(amount) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    await safePush(admin, [rep], {
+      title: '💵 Payment received · ' + amt,
+      body: ((c && c.name) ? c.name + ' paid ' : 'Paid ') + (partial ? 'part of ' : '') + invoiceIds.join(', ') + ' online.',
+      url: '/?inv=' + encodeURIComponent(first.id),
+      tag: 'paid-' + first.id,
+    }, { onceKey: 'paid:' + intentId });
+  } catch (e) { console.warn('[push] payment notice skipped:', e.message); }
 }
 
 // Sync an order's webstore_order_items to `lineItems` WITHOUT destroying fulfillment state.

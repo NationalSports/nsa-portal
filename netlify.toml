@@ -41,6 +41,20 @@
 
 # build-meta.json is the deploy fingerprint that long-lived tabs poll to detect a new
 # build (see src/deployReload.js). It must never be cached or the reload would never fire.
+# Service worker and app manifest must never be cached, so a new build's worker
+# takes over on the next visit.
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+    Service-Worker-Allowed = "/"
+
+[[headers]]
+  for = "/manifest.webmanifest"
+  [headers.values]
+    Cache-Control = "no-cache"
+    Content-Type = "application/manifest+json"
+
 [[headers]]
   for = "/build-meta.json"
   [headers.values]

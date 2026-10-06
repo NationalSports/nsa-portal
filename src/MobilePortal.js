@@ -13,6 +13,7 @@ import { numericSizeKeys } from './lib/opsRecap';
 import { calcSOStatus } from './components';
 import { orderProgress } from './lib/orderProgress';
 import { coachInvoiceUrl, createPartialPayLink } from './lib/payLinks';
+import { isIOS, isAndroid, isStandalone, pushSupported, currentSubscription, enablePush, disablePush, callPush, canPromptInstall, onInstallAvailable, promptInstall } from './lib/pushClient';
 import { fetchStockForItems, stockCacheKey, normStockSize, shortSizes, SOURCE_LABEL } from './lib/mobileStock';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 
@@ -84,7 +85,7 @@ const prodLabel=(j)=>PROD_LABELS[j.prod_status]||(j.prod_status||'pending').repl
 // visited sections. 'home' is the default (clean URL). Distinct params from the desktop ?pg=
 // so the two portals never clash. Page-level only — opening a record/detail is not a history entry.
 const _MTABS=new Set(['home','orders','messages','customers','more']);
-const _MSUBS=new Set(['estimates','invoices','inventory','jobs','production','warehouse','reports']);
+const _MSUBS=new Set(['estimates','invoices','inventory','jobs','production','warehouse','reports','notes','app']);
 const _mtabFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).get('mtab');return v&&_MTABS.has(v)?v:null}catch{return null}};
 const _msubFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).get('msub');return v&&_MSUBS.has(v)?v:null}catch{return null}};
 
@@ -285,6 +286,15 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       .then(({count,error})=>{if(!off)setNotesToReview(error?0:(count||0))},()=>{});
     return()=>{off=true};
   },[cu?.id,tab]);// eslint-disable-line react-hooks/exhaustive-deps
+  // Installed app + notifications state (App & notifications screen, home nudge).
+  const[appState,setAppState]=useState({installed:false,push:'unknown',busy:false,msg:'',canInstall:false});
+  const[appNudgeHidden,setAppNudgeHidden]=useState(()=>{try{return localStorage.getItem('nsa_app_nudge')==='hidden'}catch{return false}});
+  const refreshAppState=async()=>{
+    const installed=isStandalone();let push='unsupported';
+    try{if(pushSupported()){const sub=await currentSubscription();push=Notification.permission==='denied'?'blocked':sub?'on':'off'}}catch(e){}
+    setAppState(a=>({...a,installed,push,canInstall:canPromptInstall()}));
+  };
+  useEffect(()=>{refreshAppState();return onInstallAvailable(()=>setAppState(a=>({...a,canInstall:true})))},[]);// eslint-disable-line react-hooks/exhaustive-deps
   // After converting an estimate, open the new sales order as soon as it shows up.
   useEffect(()=>{
     if(!convertedFrom)return;
@@ -319,6 +329,17 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     const seen=new Set((invsPortal||[]).map(i=>i.id));
     return[...(invsPortal||[]),...norm.filter(i=>!seen.has(i.id))];
   },[invsPortal,histInvs]);
+  // Notification links (?so= / ?est= / ?inv= / ?cust=) open that record once it has loaded.
+  const _deepLink=useRef((()=>{try{const p=new URLSearchParams(window.location.search);const k=['so','est','inv','cust'].find(x=>p.get(x));return k?{k,id:p.get(k)}:null}catch(e){return null}})());
+  useEffect(()=>{
+    const d=_deepLink.current;if(!d)return;
+    const list=d.k==='so'?sos:d.k==='est'?ests:d.k==='inv'?invs:cust;
+    const hit=(list||[]).find(x=>String(x.id)===String(d.id));
+    if(!hit)return;
+    _deepLink.current=null;
+    setDetail({type:d.k==='so'?'order':d.k==='est'?'estimate':d.k==='inv'?'invoice':'customer',data:hit});
+    try{const u=new URL(window.location.href);['so','est','inv','cust'].forEach(x=>u.searchParams.delete(x));window.history.replaceState(null,'',u.pathname+u.search+u.hash)}catch(e){}
+  },[sos,ests,invs,cust]);
 
   // Rep scoping — default to the logged-in rep's own customers/work. Falls back to
   // everything when the rep has no assigned customers (e.g. admins/CSRs).
@@ -1398,6 +1419,14 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       {canNotes&&<button onClick={()=>openNotes({mode:'dictated'})} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:10,padding:'14px',borderRadius:12,border:'none',background:'#dc2626',color:'white',fontWeight:800,fontSize:15,cursor:'pointer',margin:'4px 0 12px',minHeight:52}}>
         <span style={{fontSize:18}}>🎙️</span> Voice note after a visit
       </button>}
+      {!appNudgeHidden&&(!appState.installed||appState.push==='off')&&appState.push!=='unknown'&&<div className="mp-item-card" style={{display:'flex',alignItems:'center',gap:12,marginBottom:12,border:'1px solid #bfdbfe',background:'#eff6ff'}}>
+        <img src="/icon-192.png" alt="" style={{width:40,height:40,borderRadius:10,background:'white'}}/>
+        <div style={{flex:1,minWidth:0,cursor:'pointer'}} onClick={()=>{setTab('more');setMoreSubPage('app')}}>
+          <div style={{fontSize:14,fontWeight:800,color:'#0f172a'}}>{appState.installed?'Turn on notifications':'Get the NSA Connect app'}</div>
+          <div style={{fontSize:12,color:'#475569'}}>{appState.installed?'Art approvals, payments, notes and mentions':'Add it to your home screen in 30 seconds'}</div>
+        </div>
+        <button aria-label="Hide" onClick={()=>{setAppNudgeHidden(true);try{localStorage.setItem('nsa_app_nudge','hidden')}catch(e){}}} style={{border:'none',background:'none',color:'#94a3b8',fontSize:18,padding:6}}>✕</button>
+      </div>}
       {!isOps&&renderToday()}
       {/* Quick stats */}
       <div className="mp-stats-grid">
@@ -2289,6 +2318,59 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         </div>)}
       </div>;
     }
+    if(subPage==='app'){
+      const a=appState;const ios=isIOS();const android=isAndroid();
+      const card={background:'white',border:'1px solid #e2e8f0',borderRadius:14,padding:16,marginBottom:12};
+      const big={width:'100%',padding:'14px',borderRadius:12,border:'none',fontWeight:800,fontSize:15,cursor:'pointer'};
+      const step=(n,t,sub)=><div style={{display:'flex',gap:12,alignItems:'flex-start',padding:'8px 0'}}>
+        <div style={{width:26,height:26,borderRadius:13,background:'#1e40af',color:'white',fontWeight:800,fontSize:13,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>{n}</div>
+        <div><div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{t}</div>{sub&&<div style={{fontSize:12,color:'#64748b',marginTop:2}}>{sub}</div>}</div></div>;
+      const run=async(fn,okMsg)=>{setAppState(x=>({...x,busy:true,msg:''}));try{await fn();if(okMsg&&nf)nf(okMsg)}catch(e){setAppState(x=>({...x,msg:e.message||String(e)}))}await refreshAppState();setAppState(x=>({...x,busy:false}))};
+      const pill=(on,label)=><span style={{fontSize:12,fontWeight:800,padding:'4px 10px',borderRadius:12,background:on?'#dcfce7':'#f1f5f9',color:on?'#166534':'#64748b'}}>{label}</span>;
+      return<div className="mp-page">
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
+          <button className="mp-back-btn" onClick={()=>setSubPage(null)}><MIcon name="back" size={20}/></button>
+          <div className="mp-page-title" style={{margin:0}}>App & notifications</div>
+        </div>
+        <div style={card}>
+          <div style={{display:'flex',alignItems:'center',gap:12}}>
+            <img src="/icon-192.png" alt="" style={{width:52,height:52,borderRadius:12,border:'1px solid #e2e8f0'}}/>
+            <div style={{flex:1}}><div style={{fontSize:16,fontWeight:800,color:'#0f172a'}}>NSA Connect</div><div style={{fontSize:12,color:'#64748b'}}>The portal as an app on your home screen</div></div>
+            {pill(a.installed,a.installed?'Installed':'Not installed')}
+          </div>
+          {!a.installed&&<div style={{marginTop:12,borderTop:'1px solid #f1f5f9',paddingTop:8}}>
+            {a.canInstall?<button style={{...big,background:'#1e40af',color:'white',marginTop:6}} onClick={()=>run(async()=>{await promptInstall()})}>Install NSA Connect</button>
+            :ios?<>
+              {step(1,<>Open this page in <b>Safari</b></>,'Other browsers on iPhone can’t install apps.')}
+              {step(2,<>Tap <b>Share</b> <span style={{display:'inline-block',border:'1.5px solid #1e40af',borderRadius:4,padding:'0 4px',color:'#1e40af',fontSize:12}}>⬆︎</span> at the bottom</>)}
+              {step(3,<>Tap <b>Add to Home Screen</b>, then <b>Add</b></>)}
+              {step(4,<>Open <b>NSA Connect</b> from your home screen</>,'Then come back here to turn on notifications.')}
+            </>:<>
+              {step(1,<>Tap the browser menu <b>⋮</b></>)}
+              {step(2,<>Tap <b>Install app</b> or <b>Add to Home screen</b></>)}
+              {step(3,<>Open <b>NSA Connect</b> from your home screen</>)}
+            </>}
+          </div>}
+        </div>
+        <div style={card}>
+          <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:10}}>
+            <div style={{fontSize:28}}>🔔</div>
+            <div style={{flex:1}}><div style={{fontSize:16,fontWeight:800,color:'#0f172a'}}>Notifications</div><div style={{fontSize:12,color:'#64748b'}}>On this phone</div></div>
+            {pill(a.push==='on',a.push==='on'?'On':a.push==='blocked'?'Blocked':'Off')}
+          </div>
+          {a.push==='unsupported'?<div style={{fontSize:13,color:'#475569',background:'#f8fafc',borderRadius:10,padding:10}}>{ios&&!a.installed?'On iPhone, notifications work once NSA Connect is on your home screen. Install it above, open it from the home screen, then turn notifications on here.':'This browser can’t receive notifications. Use Safari on iPhone or Chrome on Android.'}</div>
+          :a.push==='blocked'?<div style={{fontSize:13,color:'#92400e',background:'#fef3c7',borderRadius:10,padding:10}}>Notifications are blocked. {ios?'Open Settings → Notifications → NSA Connect and allow them.':'Open site settings for this app and allow notifications.'} Then come back here.</div>
+          :a.push==='on'?<div style={{display:'flex',gap:8}}>
+            <button style={{...big,flex:2,background:'#1e40af',color:'white'}} disabled={a.busy} onClick={()=>run(async()=>{const r=await callPush(supabase,{action:'test'});if(!r.sent)throw new Error(r.skipped||'No device received it. Turn notifications off and on again.')},'Test sent. It should arrive in a few seconds.')}>Send a test</button>
+            <button style={{...big,flex:1,background:'white',color:'#475569',border:'1px solid #e2e8f0'}} disabled={a.busy} onClick={()=>run(()=>disablePush(supabase),'Notifications off on this phone')}>Turn off</button>
+          </div>
+          :<button style={{...big,background:'#16a34a',color:'white'}} disabled={a.busy} onClick={()=>run(()=>enablePush(supabase),'Notifications are on')}>{a.busy?'Turning on…':'Turn on notifications'}</button>}
+          {a.msg&&<div style={{fontSize:12,color:'#b91c1c',marginTop:8}}>{a.msg}</div>}
+          <div style={{marginTop:14,fontSize:12,fontWeight:700,color:'#475569'}}>You’ll get a notification when:</div>
+          {[['🎨','A coach approves art or asks for changes'],['✅','A coach approves a quote'],['💵','A customer pays an invoice online'],['🎙️','Your AI notes are ready to review'],['💬','Someone @mentions you in a message']].map(([i,t])=><div key={t} style={{display:'flex',gap:10,alignItems:'center',fontSize:13,color:'#1e293b',padding:'5px 0'}}><span style={{width:20,textAlign:'center'}}>{i}</span>{t}</div>)}
+        </div>
+      </div>;
+    }
     if(subPage==='notes'&&canNotes)return<div className="mp-page">
       <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
         <button className="mp-back-btn" onClick={()=>setSubPage(null)}><MIcon name="back" size={20}/></button>
@@ -2380,6 +2462,10 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     return<div className="mp-page">
       <div className="mp-page-title">More</div>
       <div className="mp-more-grid">
+        <div className="mp-more-item" onClick={()=>setSubPage('app')}>
+          <div className="mp-more-icon" style={{color:'#1e40af'}}><MIcon name="phone" size={22}/></div>
+          <div>App & alerts</div>
+        </div>
         {canNotes&&<div className="mp-more-item" onClick={()=>setSubPage('notes')}>
           <div className="mp-more-icon" style={{color:'#dc2626'}}><MIcon name="file" size={22}/></div>
           <div>AI Notes</div>
@@ -2658,6 +2744,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       {id:'messages',label:'Messages',icon:'mail',badge:unreadForMeCount},
       {id:'customers',label:'Customers',icon:'users'},
       ...(canNotes?[{id:'notes',label:'AI Notes',icon:'file',sub:true}]:[]),
+      {id:'app',label:'App & notifications',icon:'phone',sub:true},
       {id:'estimates',label:'Estimates',icon:'dollar',sub:true},
       {id:'invoices',label:'Invoices',icon:'file',sub:true},
       {id:'inventory',label:'Inventory',icon:'warehouse',sub:true},

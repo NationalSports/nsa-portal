@@ -37,6 +37,7 @@ import AiTasks from './AiTasks';
 import MyEmail, { MyEmailDigest } from './MyEmail';
 import MeetingNotes from './MeetingNotes';
 import { linesToEstimateItems, noteEstimateLines } from './estimateLines';
+import { setupAppShell, pushMentionIfNew } from './lib/pushClient';
 import DashboardCalendar from './DashboardCalendar';
 import DashboardInbox from './DashboardInbox';
 import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, decoShipToPresets, botProgress } from './lib/botTasks';
@@ -3855,7 +3856,7 @@ export default function App(){
   React.useEffect(()=>{_diffSave(ests,'ests',e=>_dbSaveEstimate(e),_estDiffCmp)},[ests]);
   React.useEffect(()=>{_diffSave(sos,'sos',s=>_dbSaveSO(s),_soDiffCmp)},[sos]);
   React.useEffect(()=>{_diffSave(invs,'invs',i=>_dbSaveInvoice(i),_invDiffCmp)},[invs]);
-  React.useEffect(()=>{_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
+  React.useEffect(()=>{_diffSave(msgs,'msgs',m=>{const p=_dbSaveMessage(m);pushMentionIfNew(supabase,cu,m,p);return p})},[msgs]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){
     _dbSave('omg_stores',[_pick(s,_omgStoreCols)]);
     // Compare the complete persisted shape so a quantity/color/image-only report
@@ -6371,6 +6372,8 @@ export default function App(){
   // may move follow_up_at; inspecting an order must leave its reminder due.
   const _todoClickedThrough=()=>{};
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
+  // Signed-in staff: make the portal installable (NSA Connect) and register the push worker.
+  React.useEffect(()=>{if(cu?.id)setupAppShell()},[cu?.id]);
   _brevoMeRef.current={cu,nf};
   React.useEffect(()=>{
     if(dbLoading||!_dbLoadSuccess.current||!cu?.id)return;

@@ -168,3 +168,20 @@ test('size picker shows vendor stock and flags a size asking for more than the v
   expect(l.style.color).toBe('rgb(220, 38, 38)');
   expect(within(l.parentElement).getByText(/\+80/)).toBeTruthy();
 });
+
+test('a notification link (?so=) opens that order', () => {
+  window.history.pushState({}, '', '/?so=SO-1');
+  render(<MobilePortal {...baseProps()} />);
+  expect(screen.getByText('Blanks not ordered yet')).toBeTruthy();
+  expect(window.location.search).toBe('');
+});
+
+test('App & notifications: install steps and the notification state for this phone', async () => {
+  open(baseProps(), 'more');
+  fireEvent.click(screen.getByText('App & alerts'));
+  expect(screen.getByText('The portal as an app on your home screen')).toBeTruthy();
+  expect(screen.getByText('Not installed')).toBeTruthy();
+  expect(screen.getByText(/Install app/)).toBeTruthy();
+  await waitFor(() => expect(screen.getByText(/can’t receive notifications/)).toBeTruthy());
+  expect(screen.getByText('A customer pays an invoice online')).toBeTruthy();
+});

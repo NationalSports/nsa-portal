@@ -6,6 +6,7 @@
 // concatenates each recorder session ("segment") into one file, sends it to
 // AssemblyAI, saves the transcript, then deletes the audio (ours and theirs).
 const { extractDraft, transcriptForModel, normalizeDraft, isRealDate } = require('./_meetingAi');
+const { safePush } = require('./_push');
 
 const BUCKET = 'meeting-audio';
 const AAI = 'https://api.assemblyai.com/v2';
@@ -154,6 +155,7 @@ async function processMeeting(admin, meetingId, { apiKey = process.env.ANTHROPIC
     const now = new Date().toISOString();
     const draft = { ...result.draft, ...(gaps ? { audio_gaps: gaps } : {}) };
     await admin.from('meetings').update({ status: 'ready', draft, title: draft.headline, error: null, processed_at: now, updated_at: now }).eq('id', m.id).eq('status', 'processing');
+    await safePush(admin, [m.team_member_id], { title: '🎙️ Your notes are ready', body: draft.headline + ' · tap to review and save', url: '/?pg=meeting_notes&mtab=more&msub=notes', tag: 'note-' + m.id }, { onceKey: 'note-ready:' + m.id });
     return { ok: true };
   } catch (e) {
     const msg = String(e.message || e).slice(0, 500);
