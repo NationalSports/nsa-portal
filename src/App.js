@@ -4,6 +4,7 @@ import { assignLogoArtwork, resolveLogoColorWay } from './lib/logoDetail';
 import { invoiceFollowUpDate } from './lib/invoiceFollowUp';
 import GarmentMockCard, { LogoDetailTiles } from './GarmentMockCard';
 import ProductionGarmentWorkspace from './ProductionGarmentWorkspace';
+import { productionDecoKey } from './lib/productionGroups';
 import { removeGarmentSlotMock } from './safeHelpers';
 import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jobMockReadiness';
 import {createHistoryStore} from './lib/documentHistory';
@@ -14574,7 +14575,16 @@ export default function App(){
                       </div>)}
                         </>})()}
                     </div>;
-                return {id:String(gi.jobRowIndex),sku:gi.sku,name:gi.name,color:gi.color,sizes:gi.sizes,
+                // Garments with the same decoration (design, color way, placement, numbers/names
+                // setup) share a groupKey and render as one card — see lib/productionGroups.
+                const decoSummary=[...artDecos.map(d=>{const artF=safeArt(so).find(f=>f.id===d.art_file_id);
+                    const cwObj=d.color_way_id&&artF?.color_ways?artF.color_ways.find(c2=>c2.id===d.color_way_id):null;
+                    const cwName=cwObj?(cwObj.name||cwObj.label||cwObj.garment_color||''):'';
+                    return (d.position?d.position+': ':'')+(artF?.name||'Artwork')+(cwName?' ('+cwName+')':'')}),
+                  ...numDecos.map(d=>'Numbers'+(d.position?' · '+d.position:'')),
+                  ...nameDecos.map(d=>'Names'+(d.position?' · '+d.position:'')),
+                  ...jobItemDecosOfKind(gi,it,'twill').map(d=>'Tackle twill'+(d.position?' · '+d.position:''))].join(' + ');
+                return {id:String(gi.jobRowIndex),groupKey:productionDecoKey(sourceRow,it,allArtFiles),decoSummary,sku:gi.sku,name:gi.name,color:gi.color,sizes:gi.sizes,
                   units:Object.values(gi.sizes).reduce((a,v)=>a+safeNum(v),0),referenceLabel,mockups,logos,specs,
                   personalization:{hasNumbers:numDecos.length>0,hasNames:nameDecos.length>0,
                     numbers:numDecos.length?jobItemRoster(safeItems(so),safeJobs(so),j,sourceRow,'numbers'):null,

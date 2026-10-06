@@ -7,17 +7,32 @@
 .prod-job-modal .prod-job-tools .modal-close { min-width: 44px; }
 .pgw { padding: 18px; background: #f1f5f9; color: #172b4d; }
 .pgw *, .pgw-preview * { box-sizing: border-box; }
-.pgw button, .pgw select, .pgw-preview button { font: inherit; min-height: 44px; border: 1px solid #cbd5e1; border-radius: 7px; padding: 8px 12px; background: white; color: #172b4d; cursor: pointer; }
-.pgw button:focus-visible, .pgw select:focus-visible, .pgw-preview button:focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
-.pgw-toolbar { display: flex; justify-content: space-between; align-items: end; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
-.pgw-toolbar label { flex: 1 1 300px; min-width: 0; font-size: 13px; font-weight: 700; }
-.pgw-toolbar select { display: block; width: 100%; max-width: 100%; margin-top: 6px; font-size: 16px; }
-.pgw-toolbar > span { font-size: 14px; padding-bottom: 10px; }
-.pgw-item-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; overflow-wrap: anywhere; }
+.pgw button, .pgw-preview button { font: inherit; min-height: 44px; border: 1px solid #cbd5e1; border-radius: 7px; padding: 8px 12px; background: white; color: #172b4d; cursor: pointer; }
+.pgw button:focus-visible, .pgw-preview button:focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
+.pgw-toolbar { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+.pgw-toolbar > span { font-size: 14px; }
+.pgw-jump { display: flex; gap: 8px; flex-wrap: wrap; }
+.pgw-jump button { font-size: 14px; font-weight: 600; text-align: left; max-width: 100%; overflow-wrap: anywhere; }
+/* Each group is one decoration run; scroll-margin keeps a jumped-to card clear of the sticky modal header. */
+.pgw-group { margin-bottom: 28px; scroll-margin-top: 120px; }
+.pgw-group > .pgw-panel { margin-bottom: 16px; }
+.pgw-group-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 3px solid #1e3a5f; overflow-wrap: anywhere; }
+.pgw-group-heading span { font-size: 14px; color: #475569; }
+.pgw-group-heading > strong { white-space: nowrap; font-size: 18px; }
+.pgw .pgw-group-heading h3 { font-size: 18px; margin: 2px 0; }
+.pgw .pgw-group-chip { display: inline-block; font-size: 12px; font-weight: 700; color: white; background: #1e3a5f; border-radius: 4px; padding: 2px 8px; }
 .pgw h3 { margin: 0; font-size: 16px; font-weight: 700; }
 .pgw h4 { margin: 0 0 10px; font-size: 14px; font-weight: 700; }
-.pgw-item-heading span { font-size: 14px; color: #475569; }
-.pgw-item-heading > strong { white-space: nowrap; font-size: 18px; }
+.pgw .pgw-num { text-align: center; white-space: nowrap; }
+.pgw-sub { font-size: 13px; font-weight: 400; color: #64748b; }
+.pgw-size-table td { overflow-wrap: normal; }
+.pgw-size-table tfoot th, .pgw-size-table tfoot td { background: #f8fafc; font-weight: 700; }
+.pgw-used-by { margin: -6px 0 12px; font-size: 12px; font-weight: 600; color: #1e3a5f; overflow-wrap: anywhere; }
+.pgw-columns-single { grid-template-columns: minmax(0, 1fr) !important; }
+.pgw-roster-block + .pgw-roster-block { border-top: 3px solid #e2e8f0; }
+.pgw-roster-title { padding: 12px 14px 4px; font-size: 14px; overflow-wrap: anywhere; }
+.pgw-roster-title span { color: #475569; margin-left: 6px; }
+.pgw-roster-caption { padding: 12px 14px; font-size: 13px; color: #475569; }
 .pgw-columns { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 16px; align-items: start; }
 .pgw-panel { border: 1px solid #dbe2eb; background: white; border-radius: 10px; min-width: 0; overflow: hidden; }
 .pgw-panel-heading { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 14px; border-bottom: 1px solid #e2e8f0; }
@@ -36,11 +51,6 @@
 .pgw-specs [style*="font-size"] { font-size: 14px !important; }
 .pgw-files { padding: 14px; border-top: 1px solid #e2e8f0; }
 .pgw-files button { margin: 0 8px 8px 0; max-width: 100%; overflow-wrap: anywhere; text-align: left; }
-.pgw-sizes { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 14px; }
-.pgw-sizes > div { display: flex; gap: 12px; padding: 8px 12px; background: #eff3f9; border-radius: 6px; }
-.pgw-sizes dt { font-weight: 600; font-size: 14px; }
-.pgw-sizes dd { margin: 0; font-weight: 800; font-size: 16px; }
-.pgw-roster-caption { padding: 0 14px 12px; font-size: 13px; color: #475569; }
 .pgw-table-wrap { overflow-x: auto; }
 .pgw table { width: 100%; border-collapse: collapse; font-size: 15px; }
 .pgw th, .pgw td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #e2e8f0; overflow-wrap: anywhere; }

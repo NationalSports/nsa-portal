@@ -16,25 +16,46 @@ const setup = (items, extra = {}) => {
   return { ...render(<ProductionGarmentWorkspace {...props} />), props };
 };
 
-test('one garment selection changes mockup, specs, quantities and roster even for the same SKU', () => {
-  setup([garment(), garment({ id: '1', color: 'White', units: 1, sizes: { XL: 1 },
+test('every garment is on the page at once — no dropdown to switch between SKUs', () => {
+  setup([garment({ groupKey: 'navy-logo', decoSummary: 'Front: Crest' }), garment({ id: '1', groupKey: 'back-num', decoSummary: 'Numbers · Back', color: 'White', units: 1, sizes: { XL: 1 },
     mockups: [{ src: 'https://example.com/white.png', file: 'white.png', label: 'White front' }],
     specs: <div>Back · 8 inch · Navy</div>, personalization: { hasNumbers: true, hasNames: false, numbers: { XL: ['33'] } } })]);
+  expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
   expect(screen.getByRole('img', { name: 'Navy front' })).toBeInTheDocument();
-  expect(screen.getByText('Lee')).toBeInTheDocument();
-  fireEvent.change(screen.getByRole('combobox', { name: 'Garment / color' }), { target: { value: '1' } });
   expect(screen.getByRole('img', { name: 'White front' })).toBeInTheDocument();
-  expect(screen.queryByRole('img', { name: 'Navy front' })).not.toBeInTheDocument();
-  expect(screen.queryByText('Lee')).not.toBeInTheDocument();
+  expect(screen.getByText('Lee')).toBeInTheDocument();
   expect(screen.getByText('Back · 8 inch · Navy')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Mark number 33, size XL, JERSEY done' })).toBeInTheDocument();
+  expect(screen.getAllByRole('region', { name: /Decoration group/ })).toHaveLength(2);
+  expect(screen.getByRole('navigation', { name: 'Jump to decoration group' })).toBeInTheDocument();
+});
+
+test('SKUs sharing a logo and colors consolidate onto one card with a combined size table', () => {
+  const shared = { src: 'https://example.com/shared.png', file: 'shared.png', label: 'Shared mock' };
+  setup([
+    garment({ id: '0', sku: 'TEE', name: 'Tee', color: 'Navy', sizes: { S: 2, M: 3 }, units: 5, groupKey: 'crest', decoSummary: 'Front: Crest',
+      mockups: [shared], personalization: { hasNumbers: false, hasNames: false } }),
+    garment({ id: '1', sku: 'HOOD', name: 'Hoodie', color: 'Navy', sizes: { M: 1, L: 4 }, units: 5, groupKey: 'crest', decoSummary: 'Front: Crest',
+      mockups: [shared], personalization: { hasNumbers: false, hasNames: false } }),
+  ], { jobUnits: 10 });
+  const groups = screen.getAllByRole('region', { name: /Decoration group/ });
+  expect(groups).toHaveLength(1);
+  expect(screen.queryByRole('navigation', { name: 'Jump to decoration group' })).not.toBeInTheDocument();
+  // the shared mockup prints once, naming both garments
+  expect(screen.getAllByRole('img', { name: 'Shared mock' })).toHaveLength(1);
+  expect(screen.getAllByText('For: TEE (Navy), HOOD (Navy)')).toHaveLength(2); // mockup + logo
+  const table = within(groups[0]).getAllByRole('table')[0];
+  const footer = within(table).getByText('Group total').closest('tr');
+  expect(within(footer).getAllByRole('cell').map(c => c.textContent)).toEqual(['2', '4', '4', '10']);
+  // no personalization → no roster panel
+  expect(screen.queryByRole('region', { name: 'Numbers and names' })).not.toBeInTheDocument();
 });
 
 test('number/name pairing preserves source order, zero, and blank slots', () => {
   const { props } = setup([garment({ sizes: { M: 3 }, units: 3,
     personalization: { hasNumbers: true, hasNames: true, numbers: { M: ['12', '', 0] }, names: { M: ['Lee', 'Perez', 'Chen'] } },
   })]);
-  const rows = screen.getAllByRole('row').slice(1);
+  const rows = within(screen.getByRole('region', { name: 'Numbers and names' })).getAllByRole('row').slice(1);
   expect(within(rows[0]).getByText('12')).toBeInTheDocument();
   expect(within(rows[0]).getByText('Lee')).toBeInTheDocument();
   expect(within(rows[1]).getByText('Not supplied')).toBeInTheDocument();
