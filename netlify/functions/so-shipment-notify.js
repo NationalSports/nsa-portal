@@ -114,7 +114,7 @@ async function sendShipmentNotice(admin, opts = {}) {
   const j = jj;
   try {
     const { data: so, error: soErr } = await admin.from('sales_orders')
-      .select('id,customer_id,rep_id,ship_to_id,_shipments,_carrier,_ship_date,_tracking_number,_tracking_url,deliver_on_date,deleted_at')
+      .select('id,customer_id,rep_id,created_by,ship_to_id,_shipments,_carrier,_ship_date,_tracking_number,_tracking_url,deliver_on_date,deleted_at')
       .eq('id', soId).maybeSingle();
     if (soErr) return j(500, { error: soErr.message });
     if (!so || so.deleted_at) return j(404, { error: 'Sales order not found' });
@@ -199,8 +199,8 @@ async function sendShipmentNotice(admin, opts = {}) {
     const [itemsRes, artRes, repRes] = await Promise.all([
       admin.from('so_items').select('id,sku,name,brand,color,sizes,item_index').eq('so_id', so.id).order('item_index'),
       admin.from('so_art_files').select('id,item_mockups,mockup_files,files,archived').eq('so_id', so.id),
-      (so.rep_id || customer.primary_rep_id)
-        ? admin.from('team_members').select('id,name,email,phone').eq('id', so.rep_id || customer.primary_rep_id).maybeSingle()
+      (so.rep_id || customer.primary_rep_id || so.created_by)
+        ? admin.from('team_members').select('id,name,email,phone').eq('id', so.rep_id || customer.primary_rep_id || so.created_by).maybeSingle()
         : Promise.resolve({ data: null }),
     ]);
     if (itemsRes.error) return j(500, { error: itemsRes.error.message });
