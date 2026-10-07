@@ -280,6 +280,7 @@ async function sendShipmentNotice(admin, opts = {}) {
       lines,
       packages,
       remainingUnits: stillToCome,
+      contentsConfirmed: !pool.some(s => s.contents_unconfirmed && !(s.items || []).length),
       shipDate: selected[0].ship_date || so._ship_date || '',
       eta: etaInput || so.deliver_on_date || '',
       carrier: selected[0].carrier || so._carrier || '',

@@ -1,4 +1,5 @@
-// ShipStation SHIP_NOTIFY webhook for webstore orders.
+const { isSoNumber, importSoShipment, fetchShipmentPages } = require('./_soShipStationBridge');
+// ShipStation SHIP_NOTIFY webhook for webstore orders and ordinary sales orders.
 //
 // The shipment ledger, item tracker, cost roll-up, and notification obligation
 // are all made retry-safe. Any failure before the notification is durably queued
@@ -161,6 +162,11 @@ async function processShipStationPayload(sb, payload) {
     stats.received += 1;
     if (sh.voided) { stats.ignored += 1; continue; }
     const orderNumber = String(sh.orderNumber || '');
+    if (isSoNumber(orderNumber)) {
+      await importSoShipment(sb, sh);
+      stats.processed += 1;
+      continue;
+    }
     if (!orderNumber.startsWith('WS-')) { stats.ignored += 1; continue; }
     const orderId = orderNumber.slice(3);
     if (!orderId) { stats.ignored += 1; continue; }
@@ -226,14 +232,8 @@ exports.handler = async (event) => {
   resourceUrl.searchParams.set('includeShipmentItems', 'true');
 
   const sb = createClient(supabaseUrl, serviceKey, { auth: { autoRefreshToken: false, persistSession: false } });
-  const auth = Buffer.from(`${apiKey}:${apiSecret}`).toString('base64');
   try {
-    const response = await fetch(resourceUrl.toString(), {
-      headers: { Authorization: `Basic ${auth}` },
-      redirect: 'error',
-    });
-    if (!response.ok) throw new Error(`ShipStation returned HTTP ${response.status}`);
-    const payload = await response.json();
+    const payload = { shipments: await fetchShipmentPages(resourceUrl) };
     const stats = await processShipStationPayload(sb, payload);
     return result(200, { received: true, ...stats });
   } catch (error) {

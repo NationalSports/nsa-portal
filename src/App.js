@@ -503,7 +503,7 @@ import { poEligibleVendors } from './lib/vendorPoEligibility';
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
-import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetProductStyles, ssGetCrossRefs, ssPutCrossRef, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments, sportsLinkSetStatus } from './vendorApis';
+import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetProductStyles, ssGetCrossRefs, ssPutCrossRef, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments, sportsLinkSetStatus } from './vendorApis';
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString, applySiDocumentDiscount, siExpectedUpcharge, earlyPayFreightWaiver, poCoreTagMatch, looksNetsuiteDocRef } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
@@ -7970,17 +7970,17 @@ export default function App(){
 
   const fetchSOShippingStatus = async (soId) => {
     try {
-      const updates = await fetchShipStationUpdates(soId);
-      if (updates?.shipments?.length > 0) {
-        const shipment = updates.shipments[0];
-        const updatedSO = sos.find(s => s.id === soId);
-        if (updatedSO && !updatedSO._tracking_number) {
-          const updated = { ...updatedSO, _tracking_number: shipment.trackingNumber, _carrier: shipment.carrierCode, _ship_date: shipment.shipDate, _tracking_url: shipment.trackingUrl, _shipped: true, _shipping_status: 'shipped', updated_at: new Date().toLocaleString() };
-          // savSO, same reasoning as handleShipToShipStation above.
-          savSO(updated);
-          nf(soId + ' shipped - Tracking: ' + shipment.trackingNumber);
-        }
-      } else { nf('No shipment data yet for ' + soId, 'error'); }
+      const response = await authFetch('/.netlify/functions/so-shipstation-sync', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ soId }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Shipment import failed');
+      // The server writes only _shipments with optimistic concurrency. Let the
+      // normal guarded refresh load it; never re-save a stale editor snapshot.
+      nf(result.matched
+        ? `${soId}: ${result.matched} ShipStation package(s) synced. Reopen Tracking after refresh to view them.`
+        : 'No ShipStation labels found for ' + soId);
     } catch (error) {
       console.error('[ShipStation] Status check failed:', error);
       nf('Status check failed: ' + error.message, 'error');
