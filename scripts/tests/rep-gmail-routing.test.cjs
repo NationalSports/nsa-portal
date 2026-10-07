@@ -19,7 +19,7 @@ test('only the scheduled entry point is configured as scheduled', () => {
   const toml = fs.readFileSync(path.join(root, 'netlify.toml'), 'utf8');
   const block = name => toml.split(`[functions."${name}"]`)[1].split('\n[')[0];
   assert.doesNotMatch(block('rep-gmail-sync'), /^\s*schedule\s*=/m);
-  assert.match(block('rep-gmail-scheduled'), /schedule = "\*\/10 \* \* \* \*"/);
+  assert.match(block('rep-gmail-scheduled'), /schedule = "0 \* \* \* \*"/);
 });
 test('forged scheduling markers do not bypass manual authentication', async () => {
   let checked = 0;

@@ -345,9 +345,10 @@
 [functions."rep-gmail-sync"]
   timeout = 26
 
+# Hourly background checks, even with the portal closed (published production only).
 # Scheduled functions cannot serve HTTP requests. Keep this separate from Check now.
 [functions."rep-gmail-scheduled"]
-  schedule = "*/10 * * * *"
+  schedule = "0 * * * *"
   timeout = 26
 
 # Durable webstore notification retry queue. Customer replies and shipment
