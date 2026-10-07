@@ -111,3 +111,30 @@ test.each(['OrderEditor.js', 'OrderEditorClassic.js'])('%s resets the form when 
   Function(...Object.keys(deps), 'return (' + source.slice(start, end) + ')')(...Object.values(deps))();
   expect(deps.setShowPO).toHaveBeenCalledWith('select'); expect(deps.setPOExcluded).toHaveBeenCalledWith({});
 });
+
+test.each(['OrderEditor.js', 'OrderEditorClassic.js'])('%s aborts either submit if its queue changes during an await', async file => {
+  const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+  const helperStart = source.indexOf('const _poAbortChangedQueue=') + 'const _poAbortChangedQueue='.length;
+  const helperEnd = source.indexOf('\n      };', helperStart) + 8;
+  let submitStart = helperEnd;
+  for (const action of ['batch', 'independent']) {
+    submitStart = source.indexOf('if(_poCreatingRef.current)return;', submitStart);
+    const submitEnd = source.indexOf('setTimeout(()=>{_poCreatingRef.current=false},1500);', submitStart);
+    const body = source.slice(submitStart, submitEnd);
+    for (const stage of ['number', 'server']) {
+      const queue = { current: [] }; const committed = jest.fn(); const readInputs = jest.fn(() => [{ idx: 0, sizes: { OSFA: 5 } }]);
+      const deps = { _poCreatingRef: { current: false }, _poBatchQueueRef: queue, _poQueueSignature: '[]', o: order,
+        nf: jest.fn(), poDropShip: false, poDecoInline: null, podLink: null, poAlphaSuffix: '', poAttention: '', _poAutoAttn: '',
+        preexistingPO: false, preexistingPOId: '', _poDsInHouse: [],
+        _awaitHeldPoNumber: jest.fn(async () => { if(stage === 'number')queue.current = [batch]; return 8000; }),
+        _poSubmitEntries: readInputs, _poOverCommitMsg: () => '',
+        _poFreshDupCheck: jest.fn(async () => { if(stage === 'server')queue.current = [batch]; return null; }), committed };
+      deps._poAbortChangedQueue = Function(...Object.keys(deps), 'return (' + source.slice(helperStart, helperEnd) + ')')(...Object.values(deps));
+      await Function(...Object.keys(deps), 'return (async()=>{' + body + 'committed();})')(...Object.values(deps))();
+      expect(committed).not.toHaveBeenCalled(); expect(deps._poCreatingRef.current).toBe(false);
+      expect(deps.nf).toHaveBeenCalledWith(expect.stringContaining('batch queue changed'), 'warn');
+      expect(readInputs).toHaveBeenCalledTimes(stage === 'number' ? 0 : 1);
+    }
+    submitStart = submitEnd + 1;
+  }
+});

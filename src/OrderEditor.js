@@ -10702,6 +10702,14 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       // writing a PO, re-read this SO's PO lines from the DB and compare: any size where the DB
       // shows MORE committed than this tab knows about means the form's "open" numbers are stale.
       // Batch reservations fail closed on a queue read error; the legacy PO-line drift check below keeps its existing fallback.
+      // The queue can change while number reservation or the server check is awaiting.
+      // Abort before reading or writing DOM inputs from a form that has been reset.
+      const _poAbortChangedQueue=()=>{
+        if(JSON.stringify(_poBatchQueueRef.current.filter(bp=>bp.so_id===o.id))===_poQueueSignature)return false;
+        _poCreatingRef.current=false;
+        nf('This order’s batch queue changed. Select the vendor again before ordering.','warn');
+        return true;
+      };
       const _poFreshDupCheck=async(entries)=>{// entries: [{idx, sizes:{sz:qty}}]
         const batchConflict=await checkBatchPoReservations(supabase,o,entries,_poBatchQueueRef.current);
         if(batchConflict)return batchConflict;
@@ -11014,6 +11022,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             if(poDecoInline&&!podLink&&!(await _awaitHeldPoNumber(true))){_poCreatingRef.current=false;nf('Couldn\'t reserve the deco PO number — check your connection and try again.','error');return}
             const finalPoId='PO '+_poN+(poAlphaSuffix?' '+poAlphaSuffix:'');
             const _attnFinal=poAttention.trim()||(poDecoInline&&!podLink?_podPoIdNow():_poAutoAttn);
+            if(_poAbortChangedQueue())return;
             const podRes=poDecoInline?buildInlineDecoPO():null;
             if(podRes&&podRes.error){_poCreatingRef.current=false;nf(podRes.error,'error');return}
             const _entries=_poSubmitEntries();
@@ -11023,6 +11032,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             // Server-truth duplicate check — the DB may hold PO lines this tab never loaded.
             const _dup=await _poFreshDupCheck(_entries);
             if(_dup){_poCreatingRef.current=false;nf(_poDupMsg(_dup),'error');return}
+            if(_poAbortChangedQueue())return;
             setTimeout(()=>{_poCreatingRef.current=false},1500);
             // Build batch PO entry
             const isDropShip=poDropShip;
@@ -11113,6 +11123,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           }
           if(poDecoInline&&!podLink&&!(await _awaitHeldPoNumber(true))){_poCreatingRef.current=false;nf('Couldn\'t reserve the deco PO number — check your connection and try again.','error');return}
           const _attnFinal=poAttention.trim()||(poDecoInline&&!podLink?_podPoIdNow():_poAutoAttn);
+          if(_poAbortChangedQueue())return;
           const podRes=poDecoInline?buildInlineDecoPO():null;
           if(podRes&&podRes.error){_poCreatingRef.current=false;nf(podRes.error,'error');return}
           const _entries=_poSubmitEntries();
@@ -11122,6 +11133,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           // Server-truth duplicate check — the DB may hold PO lines this tab never loaded.
           const _dup=await _poFreshDupCheck(_entries);
           if(_dup){_poCreatingRef.current=false;nf(_poDupMsg(_dup),'error');return}
+          if(_poAbortChangedQueue())return;
           setTimeout(()=>{_poCreatingRef.current=false},1500);
           // Preexisting PO numbers are typed by hand, so the same real PO can be entered with
           // inconsistent casing/spacing across passes (e.g. "PO6639 SBBV SP" vs "PO6639 SBBV sp").
