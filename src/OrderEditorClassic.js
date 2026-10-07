@@ -95,6 +95,7 @@ import { closeOpenArtRequests } from './lib/artRequests';
 import { artFamilyKey } from './lib/artSplitFamily';
 import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, embStitchTierLabel } from './lib/embStitchParser';
 import { _dbPersistNewPoLine } from './lib/dbEngine';
+import { printShippingLabel } from './lib/shippingLabels';
 import { applyFullPromoPricing, recoverGarmentCost as recoverGarmentCostShared } from './lib/promoPricing';
 import { buildOutOfStockRemovalMessage, emailRepOutOfStockRemoval, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
 import { markTopstarEmailFailed, markTopstarEmailSent, topstarAttachmentName, topstarPoMatches } from './lib/topstarEmail';
@@ -8004,14 +8005,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                     {shp.ship_date&&<span style={{fontSize:11,color:'#64748b'}}>Shipped {shp.ship_date}</span>}
                     {safeNum(shp.shipping_cost)>0&&<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'2px 8px',borderRadius:4}}>${safeNum(shp.shipping_cost).toFixed(2)}</span>}
                     {shp.label_url&&<button style={{fontSize:9,background:'#7c3aed',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
-                      onClick={()=>{
-                        if(shp.label_url.startsWith('data:application/pdf')){
-                          const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
-                          iframe.src=shp.label_url;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){
-                            const a=document.createElement('a');a.href=shp.label_url;a.download='label.pdf';a.click()}
-                            setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
-                        } else {const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
-                      }}>Print Label</button>}
+                      onClick={()=>{printShippingLabel(shp.label_url).catch(err=>nf(err.message,'error'))}}>Print Label</button>}
                     {shpUnits>0&&<span style={{marginLeft:'auto',fontSize:11,fontWeight:700,color:'#166534'}}>{shpUnits} units</span>}
                     {/* Edit tracking for reps/admin */}
                     {canEditCost&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>{

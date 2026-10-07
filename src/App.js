@@ -39,6 +39,7 @@ import { normalizeOmgSize } from './lib/omgReport';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './lib/requestBreaker';
 import { _sbAuthLock } from './lib/supabase';
+import { printShippingLabel, downloadShippingLabel } from './lib/shippingLabels';
 import { authStorageDegraded } from './lib/authStorage';
 import { fetchPublicInventory } from './lib/webstorePublicData';
 import { startDeployReloadWatcher } from './deployReload';
@@ -21959,19 +21960,9 @@ export default function App(){
                       {!shp.label_url&&ssConnected&&<button style={{fontSize:9,background:'#7c3aed',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
                         onClick={()=>setPickupEdit({shp,tracking_number:shp.tracking_number||'',carrier:shp.carrier||'ups',weight:shp.weight||5,dimensions:{length:shp.dimensions?.length||12,width:shp.dimensions?.width||12,height:shp.dimensions?.height||6},busy:false})}>Create Label</button>}
                       {shp.label_url&&<button style={{fontSize:9,background:'#7c3aed',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
-                        onClick={()=>{
-                          if(shp.label_url.startsWith('data:application/pdf')){
-                            const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
-                            iframe.src=shp.label_url;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){const a=document.createElement('a');a.href=shp.label_url;a.download='label.pdf';a.click()}
-                              setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
-                          } else {const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
-                        }}>Print Label</button>}
+                        onClick={()=>{printShippingLabel(shp.label_url).catch(err=>nf(err.message,'error'))}}>Print Label</button>}
                       {shp.label_url&&<button style={{fontSize:9,background:'#0369a1',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
-                        onClick={()=>{
-                          const _u=shp.label_url;
-                          if(_u.startsWith('data:application/pdf;base64,')){try{const _b=_u.replace('data:application/pdf;base64,','');const _bin=atob(_b);const _arr=new Uint8Array(_bin.length);for(let _i=0;_i<_bin.length;_i++)_arr[_i]=_bin.charCodeAt(_i);const _blob=new Blob([_arr],{type:'application/pdf'});const _bu=URL.createObjectURL(_blob);const _a=document.createElement('a');_a.href=_bu;_a.download='shipping-label-'+shp.soId+'.pdf';_a.click();setTimeout(()=>URL.revokeObjectURL(_bu),5000)}catch(_e){const _a=document.createElement('a');_a.href=_u;_a.download='label.pdf';_a.click()}}
-                          else{const _a=document.createElement('a');_a.href=_u;_a.download='label.pdf';_a.click()}
-                        }}>📄 Download</button>}
+                        onClick={()=>{downloadShippingLabel(shp.label_url,'shipping-label-'+shp.soId+'.pdf').catch(err=>nf(err.message,'error'))}}>📄 Download</button>}
                       <button style={{fontSize:9,background:'#1e40af',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
                         onClick={()=>setPickupEdit({shp,tracking_number:shp.tracking_number||'',carrier:shp.carrier||'ups',weight:shp.weight||5,dimensions:{length:shp.dimensions?.length||12,width:shp.dimensions?.width||12,height:shp.dimensions?.height||6},busy:false})}>Edit</button>
                       {shp.shipstation_shipment_id&&<button style={{fontSize:9,background:'#fef3c7',color:'#92400e',border:'1px solid #fcd34d',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
@@ -23529,19 +23520,9 @@ export default function App(){
                   <span style={{fontSize:9,color:'#94a3b8'}}>{shp.ship_date||shp.created_at||''}</span>
                   <div style={{marginLeft:'auto',display:'flex',gap:6}}>
                     {shp.label_url&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
-                      onClick={()=>{
-                        if(shp.label_url.startsWith('data:application/pdf')){
-                          const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
-                          iframe.src=shp.label_url;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){const a=document.createElement('a');a.href=shp.label_url;a.download='label.pdf';a.click()}
-                            setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
-                        } else {const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
-                      }}>Print Label</button>}
+                      onClick={()=>{printShippingLabel(shp.label_url).catch(err=>nf(err.message,'error'))}}>Print Label</button>}
                     {shp.label_url&&<button className="btn btn-sm" style={{fontSize:10,background:'#0369a1',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
-                      onClick={()=>{
-                        const _u=shp.label_url;
-                        if(_u.startsWith('data:application/pdf;base64,')){try{const _b=_u.replace('data:application/pdf;base64,','');const _bin=atob(_b);const _arr=new Uint8Array(_bin.length);for(let _i=0;_i<_bin.length;_i++)_arr[_i]=_bin.charCodeAt(_i);const _blob=new Blob([_arr],{type:'application/pdf'});const _bu=URL.createObjectURL(_blob);const _a=document.createElement('a');_a.href=_bu;_a.download='shipping-label-'+shp.soId+'.pdf';_a.click();setTimeout(()=>URL.revokeObjectURL(_bu),5000)}catch(_e){const _a=document.createElement('a');_a.href=_u;_a.download='label.pdf';_a.click()}}
-                        else{const _a=document.createElement('a');_a.href=_u;_a.download='label.pdf';_a.click()}
-                      }}>📄 Download Label</button>}
+                      onClick={()=>{downloadShippingLabel(shp.label_url,'shipping-label-'+shp.soId+'.pdf').catch(err=>nf(err.message,'error'))}}>📄 Download Label</button>}
                     <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                       onClick={()=>printSOPackingList(shp.so,shp)}>📦 Packing List</button>
                     <button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
@@ -23788,7 +23769,7 @@ export default function App(){
           const _aSo=a.soId?sos.find(s=>s.id===(a.soId||'').split(',')[0].trim()):null;
           const _aShp=_aSo&&a.tracking?(_aSo._shipments||[]).find(s=>s.tracking_number===a.tracking):null;
           const _aLabelUrl=_aShp?.label_url||null;
-          const _downloadLabel=()=>{const _u=_aLabelUrl;if(!_u)return;if(_u.startsWith('data:application/pdf;base64,')){try{const _b=_u.replace('data:application/pdf;base64,','');const _bin=atob(_b);const _arr=new Uint8Array(_bin.length);for(let _i=0;_i<_bin.length;_i++)_arr[_i]=_bin.charCodeAt(_i);const _blob=new Blob([_arr],{type:'application/pdf'});const _bu=URL.createObjectURL(_blob);const _el=document.createElement('a');_el.href=_bu;_el.download='shipping-label-'+(_aSo?.id||'manual')+'.pdf';_el.click();setTimeout(()=>URL.revokeObjectURL(_bu),5000)}catch(_e){const _el=document.createElement('a');_el.href=_u;_el.download='label.pdf';_el.click()}}else{const _el=document.createElement('a');_el.href=_u;_el.download='label.pdf';_el.click()}};
+          const _downloadLabel=()=>{if(!_aLabelUrl)return;downloadShippingLabel(_aLabelUrl,'shipping-label-'+(_aSo?.id||'manual')+'.pdf').catch(err=>nf(err.message,'error'))};
           return<div key={i} style={{padding:'10px 14px',background:isEditing?'#fffbeb':i%2===0?'#fafbfc':'white',borderRadius:6,marginBottom:2,border:isEditing?'2px solid #d97706':'1px solid #f1f5f9',transition:'background 0.15s'}}>
           {isEditing?<div>
             <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:8,flexWrap:'wrap'}}>

@@ -21,6 +21,12 @@ Harnesses:
   READ is preserved and linked staff + service_role keep full access. Ends with
   `ALL_RLS_STEP1_SCENARIOS_PASSED`. Same runner recipe, substituting the RLS
   fixture/scenarios and migration 00173.
+- `so_shipping_labels_scenarios.sql` — migration
+  `20261007120000_so_shipping_labels_out_of_orders` (label PDFs out of
+  `sales_orders._shipments`: backfill, insert/update trigger, stale-tab write-back
+  dedup, staff-only reads). Self-contained — builds its own fixture and applies the
+  migration itself; run it on an empty scratch DB from the repo root. Ends with
+  `ALL_SO_SHIPPING_LABEL_SCENARIOS_PASSED`.
 
 ## place_webstore_order (00171)
 
