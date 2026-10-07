@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import {stageDocumentBaseline} from '../lib/documentSaveBaseline';
 
 // Run App's actual conversion handler with deferred persistence receipts. Only
 // the unrelated Methodic transport is substituted; ordering stays unchanged.
@@ -18,12 +19,20 @@ function setup(overrides = {}) {
   const deps = {
     conversionInFlight: { current: null }, setConvertingEstimateId: jest.fn(value => { state.busy = value; }), setNeedByAsk: jest.fn(),
     supabase: {}, nf: jest.fn(), cust: [{ id: 'c', name: 'School' }], cu: { id: 'rep' }, invs: [], sos: [],
+    _dbSnap: {current:{sos:[],ests:[]}}, stageDocumentBaseline,
     safeItems: o => o.items || [], safeSizes: it => it.sizes || {}, safeNum: n => Number(n) || 0,
     nextSOId: () => 'SO-2851', _refetchEstimateForConvert: jest.fn(),
     _dbSaveSO: jest.fn(so => soSave.promise.then(result => { if (result !== false) so._version = 1; return result; })),
     _dbSaveEstimate: jest.fn(() => estimateSave.promise),
     createArtService: () => ({ syncConversion: jest.fn(() => artSync.promise) }), _loadArtRow: row => row,
-    setSOs: jest.fn(fn => { state.orders = fn(state.orders); }), setEsts: jest.fn(fn => { state.estimates = fn(state.estimates); }),
+    setSOs: jest.fn(fn => {
+      state.orders = fn(state.orders);
+      for (const row of state.orders) expect(deps._dbSnap.current.sos.find(base => base.id === row.id)).toBe(row);
+    }),
+    setEsts: jest.fn(fn => {
+      state.estimates = fn(state.estimates);
+      for (const row of state.estimates) expect(deps._dbSnap.current.ests.find(base => base.id === row.id)).toBe(row);
+    }),
     setEEst: jest.fn(), setESO: jest.fn(so => { state.editor = so; }), setESOC: jest.fn(), setPg: jest.fn(),
     methodicModule: async () => ({ methodicApi: jest.fn().mockResolvedValue({}) }),
     window: { dispatchEvent: jest.fn() }, CustomEvent: function(type, options) { this.type = type; this.detail = options.detail; },
@@ -85,14 +94,16 @@ test('preparation failure releases the lock without creating or opening a sales 
   log.mockRestore();
 });
 
-test('initial SO save failure preserves the draft and skips art sync', async () => {
+test('initial SO save failure keeps the source editor and skips art sync', async () => {
   const syncConversion = jest.fn();
   const t = setup({createArtService: () => ({syncConversion})});
   const pending = t.convert(t.estimate, '2026-11-01');
   t.soSave.resolve(false); t.estimateSave.resolve(true);
   await pending;
   expect(syncConversion).not.toHaveBeenCalled();
-  expect(t.state.editor.items[0].sizes).toEqual({M: 10});
+  expect(t.state.editor).toBeNull();
+  expect(t.deps.setEEst).not.toHaveBeenCalled();
+  expect(t.deps.nf).toHaveBeenCalledWith(expect.stringContaining('recovery draft is kept'),'error');
   expect(t.state.busy).toBeNull();
 });
 
@@ -104,4 +115,23 @@ test('an unexpected persistence rejection releases the lock', async () => {
   expect(t.state.editor).toBeNull();
   expect(t.deps.conversionInFlight.current).toBeNull();
   expect(t.state.busy).toBeNull();
+});
+
+test('publishing after sync updates a realtime-loaded SO instead of inserting it twice', async () => {
+  const t = setup();
+  const pending = t.convert(t.estimate, '2026-11-01');
+  t.state.orders = [{id:'SO-2851',memo:'realtime snapshot'}];
+  t.soSave.resolve(true); t.estimateSave.resolve(true); t.artSync.resolve({id:'SO-2851',_version:2,art_files:[]});
+  await pending;
+  expect(t.state.orders).toEqual([t.state.editor]);
+  expect(t.state.editor._version).toBe(2);
+});
+
+test('a saved SO with an unconfirmed estimate save warns against repeating conversion', async () => {
+  const t = setup();
+  const pending = t.convert(t.estimate, '2026-11-01');
+  t.soSave.resolve(true); t.estimateSave.resolve(false); t.artSync.resolve({id:'SO-2851',_version:2,art_files:[]});
+  await pending;
+  expect(t.state.editor._version).toBe(2);
+  expect(t.deps.nf).toHaveBeenCalledWith(expect.stringContaining('Do not convert it again'),'warn');
 });

@@ -42,3 +42,13 @@ test.each([true, false])('scheduled Nike worker uses account pricing and preserv
     expect(global.fetch.mock.calls.some(([url]) => url.includes('action=getPricing'))).toBe(true);
   } finally { global.fetch = oldFetch; process.env = oldEnv; }
 });
+test('uses vendor-supplied color aliases without guessing or mixing colors', () => {
+  const rows = [
+    { catalogColor: 'Dk Grey Hthr', size: 'S', myPrice: 35.87 },
+    { catalogColor: 'Charcoal Hthr', size: 'S', myPrice: 36.87 },
+  ];
+  expect(accountCostSnapshot(rows, 'Dark Grey Heather', ['Dk Grey Hthr']).nsa_cost).toBe(35.87);
+  expect(accountCostSnapshot(rows, 'Charcoal Heather', ['Charcoal Hthr']).nsa_cost).toBe(36.87);
+  expect(accountCostSnapshot(rows, 'White', ['White'])).toBeNull();
+  expect(accountCostSnapshot([{ catalogColor: 'Midnight Nvy', color: 'Midnight Navy', size: 'S', myPrice: 35.87 }], 'Midnight Navy').nsa_cost).toBe(35.87);
+});

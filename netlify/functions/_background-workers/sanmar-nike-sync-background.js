@@ -149,7 +149,7 @@ exports.handler = async (event = {}) => {
           const recs = grp.recs; const r0 = recs[0];
           const sku = style + '-' + colorCode;
           const sizes = [...new Set(recs.map((r) => String(r.size || r.labelSize || '').trim()).filter(Boolean))];
-          const costSnapshot = accountCostSnapshot(accountRows, grp.colorName);
+          const costSnapshot = accountCostSnapshot(accountRows, grp.colorName, recs.flatMap(r => [r.catalogColor, r.millColor, r.colorCode]));
           const cost = costSnapshot?.nsa_cost || 0;
           const retail = num(r0.msrp || r0.mapPrice || r0.piecePrice) || (cost > 0 ? Math.round(cost * 2) : 0);
           const img = r0.frontFlat || r0.colorProductImage || r0.productImage || r0.colorProductImageThumbnail || r0.thumbnailImage || '';

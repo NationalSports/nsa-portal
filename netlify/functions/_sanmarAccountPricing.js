@@ -1,9 +1,10 @@
 // Input must come from getPricing, never product-info catalog prices.
 const key = value => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-function accountCostSnapshot(rows, color) {
+const colorKeys = r => [r.catalogColor, r.color, r.colorName, r.productColor, r.millColor, r.colorCode].map(key).filter(Boolean);
+function accountCostSnapshot(rows, color, aliases = []) {
   const valid = (Array.isArray(rows) ? rows : []).filter(r => r && ![true, 'true'].includes(r.errorOccurred) && ![true, 'true'].includes(r.errorOccured));
-  const colorOf = r => key(r.catalogColor || r.color || r.colorName || r.productColor);
-  const scoped = valid.some(colorOf) ? valid.filter(r => colorOf(r) === key(color)) : valid;
+  const wanted = new Set([color, ...aliases].map(key).filter(Boolean));
+  const scoped = valid.some(r => colorKeys(r).length) ? valid.filter(r => colorKeys(r).some(value => wanted.has(value))) : valid;
   const prices = {};
   for (const r of scoped) {
     const size = String(r.size || r.labelSize || r.sizeCode || '').trim();

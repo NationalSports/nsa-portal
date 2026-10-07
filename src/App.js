@@ -27,6 +27,7 @@ import DraftRecoveryPanel from './DraftRecoveryPanel';
 import {createRepSaveNoticeFilter} from './lib/repSaveNoticeScope';
 import OrderMemoDialog,{MEMO_DRAFT_TABLE} from './OrderMemoDialog';
 import {draftJournal} from './lib/draftJournal';
+import {stageDocumentBaseline,reconcileOutboxNotices} from './lib/documentSaveBaseline';
 import { classifySaveAlert } from './lib/saveAlertClassification';
 import MobilePortal from './MobilePortal';
 import DashboardOverview from './DashboardOverview';
@@ -2608,6 +2609,11 @@ export default function App(){
   const[outboxConflicts,setOutboxConflicts]=useState([]);
   const[recoveryReview,setRecoveryReview]=useState(null);
   _setOnOutboxConflict((en)=>{setOutboxConflicts(prev=>{const key=en.table+':'+en.id;return[...prev.filter(x=>x.table+':'+x.id!==key),en]})});
+  React.useEffect(()=>{
+    const confirmed=event=>setOutboxConflicts(prev=>reconcileOutboxNotices(prev,_outboxList(),event.detail));
+    window.addEventListener('nsa:document-save-confirmed',confirmed);
+    return()=>window.removeEventListener('nsa:document-save-confirmed',confirmed);
+  },[]);
   const[cacheFull,setCacheFull]=useState(_lsQuotaWarned);_setOnCacheFullChange(setCacheFull);
   // A new build is deployed and this tab will reload when the rep goes idle — the banner's
   // "Reload now" lets them pick the moment instead. Holds the reloadNow fn from the watcher.
@@ -7007,6 +7013,7 @@ export default function App(){
       // (including _webstore_fundraise — a silent commission-GP error), so an unlabeled
       // batch must not send them at all.
       ...(batch_label?{webstore_batch_label:batch_label}:{}),...(batch_cutoff?{webstore_batch_cutoff:batch_cutoff}:{})};
+    stageDocumentBaseline(_dbSnap,'sos',newSO);
     setSOs(prev=>[newSO,...prev]);
     // Persist the SO and CONFIRM it landed in the DB BEFORE returning its id —
     // the caller (webstore batch) immediately tags orders with this so_id, so the
@@ -7028,7 +7035,7 @@ export default function App(){
     // either way since the upsert's SET list never includes an absent key.
     try{
       const{data:_bn}=await supabase.from('sales_orders').select('webstore_batch_no').eq('id',id).maybeSingle();
-      if(_bn&&_bn.webstore_batch_no!=null){newSO.webstore_batch_no=_bn.webstore_batch_no;setSOs(prev=>prev.map(s=>s.id===id?{...s,webstore_batch_no:_bn.webstore_batch_no}:s));}
+      if(_bn&&_bn.webstore_batch_no!=null)newSO.webstore_batch_no=_bn.webstore_batch_no;
     }catch{}
     // Claim the selected customer orders and record invoice/payment + fundraising
     // credit in ONE database transaction. A closed browser can no longer interrupt
@@ -7078,10 +7085,13 @@ export default function App(){
       // brand-new SO trips the version-conflict guard against our own write.
       if(Number(finalized.so_version)>0)_patch._version=Number(finalized.so_version);
       Object.assign(newSO,_patch);
-      setSOs(prev=>prev.map(s=>s.id===id?{...s,..._patch}:s));
       const _gap=Number(_sm.rounding_gap)||0;
       if(Math.abs(_gap)>=0.005)nf('Check '+id+': its product lines differ from the product money the store collected by $'+Math.abs(_gap).toFixed(2)+' (a partial refund or price edit?) — the batch invoice bills the lines as they are.','error');
     }
+    // Accounting changed the server revision. Publish the confirmed baseline
+    // before state; its fee/version echo must not launch another full save.
+    stageDocumentBaseline(_dbSnap,'sos',newSO);
+    setSOs(prev=>prev.map(s=>s.id===id?newSO:s));
     // Jump the user straight into the new SO in the Sales Orders editor.
     setESO(newSO);setESOC(cust.find(c=>c.id===customer_id)||null);setPg('orders');
     nf('Created '+id+' from webstore — '+(items||[]).length+' line(s) · invoice '+(finalized.invoice_id||'recorded'));
@@ -7453,8 +7463,7 @@ export default function App(){
     const sl=savSO(s,opts);
     if(!sl||!sl.id)return Promise.resolve(false);
     setESO(prev=>prev&&prev.id===sl.id?sl:prev);
-    const snap=_dbSnap.current?.sos;
-    if(Array.isArray(snap)&&snap.some(x=>x.id===sl.id))_dbSnap.current.sos=snap.map(x=>x.id===sl.id?sl:x);
+    stageDocumentBaseline(_dbSnap,'sos',sl);
     if(opts?.stageOutbox)_outboxAdd('sales_orders',sl);// synchronous durability for unload / forced re-auth
     _dbSavePendingIds.add(sl.id);
     const _p=_dbSaveSO(sl);
@@ -7742,8 +7751,11 @@ export default function App(){
     // Explicitly save to DB immediately — don't rely solely on useEffect chain.
     // Methodic work is relinked only after both source/target documents exist, so
     // the same request follows the line instead of creating an SO-side duplicate.
-    const[_soSaved]=await Promise.all([_dbSaveSO(so),_dbSaveEstimate(convertedEst)]);
-    if(_soSaved!==false){
+    stageDocumentBaseline(_dbSnap,'sos',so);
+    stageDocumentBaseline(_dbSnap,'ests',convertedEst);
+    const[_soSaved,_estSaved]=await Promise.all([_dbSaveSO(so),_dbSaveEstimate(convertedEst)]);
+    if(_soSaved!==true){nf('Sales order creation was not confirmed. Your recovery draft is kept; review it before converting again.','error');return;}
+    if(_soSaved===true){
       try{
         const refreshed=await createArtService(supabase).syncConversion(est.id,so.id);
         const art_files=(refreshed.art_files||[]).map(_loadArtRow);
@@ -7752,8 +7764,11 @@ export default function App(){
     }
     // Close the estimate and open the fully prepared SO together, avoiding a
     // flash of the list and a second background create during preparation.
-    setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?convertedEst:e));setEEst(null);setESO(so);setESOC(_convCust);setPg('orders');
-    if(_soSaved!==false){
+    stageDocumentBaseline(_dbSnap,'sos',so);
+    stageDocumentBaseline(_dbSnap,'ests',convertedEst);
+    setSOs(p=>p.some(s=>s.id===so.id)?p.map(s=>s.id===so.id?so:s):[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?convertedEst:e));setEEst(null);setESO(so);setESOC(_convCust);setPg('orders');
+    if(_estSaved!==true)nf(so.id+' was saved, but the estimate conversion status needs save review. Do not convert it again.','warn');
+    if(_soSaved===true){
       try{const{methodicApi}=await import('./methodic/methodicApi');await methodicApi('relink_estimate',{estimate_id:est.id,sales_order_id:so.id});window.dispatchEvent(new CustomEvent('methodic-updated',{detail:{salesOrderId:so.id,estimateId:est.id}}))}
       catch(methodicError){console.error('[convertSO] Methodic relink failed:',methodicError);nf('Sales order created, but Methodic work could not be relinked yet. Open the Methodic queue and retry.','warn')}
     }
