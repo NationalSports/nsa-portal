@@ -7,6 +7,7 @@
 const { matchingClientLine, lineIntentKey } = require('./lib/orderLineIdentity');
 const { isAllSchoolRecipeOrder } = require('./lib/allSchoolJobs');
 const { productionJobs, isOutsideArtJob, buildOutsideArtJobs } = require('./lib/outsideArt');
+const { rosterCount } = require('./lib/decoPricing');
 
 // ── Safe Accessors ──
 const safe = (v, def) => v != null ? v : def;
@@ -99,11 +100,11 @@ function dP(d, q, artFiles, cq) {
   if (d.type === 'embroidery') { const st = d.stitches || 8000; const c = emP(st, q, false); return { sell: d.sell_override != null ? d.sell_override : Math.max(rT(c * EM.mk), emFlSt(st)), cost: c } }
   if (d.kind === 'numbers' || d.type === 'number_press') {
     // Mirror src/pricing.js dP() exactly so the editor and QB billing agree.
-    if (d.num_method === 'sublimated') { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const useQty = nq || Math.max(0, safeNum(d.num_qty)) || 0; const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); return { sell: safeNum(d.sell_override) || 0, cost: 0, _nq: useQty * mult } }
+    if (d.num_method === 'sublimated') { const nq = rosterCount(d.roster, q); const useQty = nq || Math.max(0, safeNum(d.num_qty)) || 0; const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); return { sell: safeNum(d.sell_override) || 0, cost: 0, _nq: useQty * mult } }
     // Tackle twill numbers: flat price from TWN (num_size × two_color), not the qty-tiered npP.
-    if (d.num_method === 'tackle_twill') { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const useQty = nq > 0 ? nq : Math.max(0, safeNum(d.num_qty) || q); const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); const fnq = useQty * mult; return { sell: d.sell_override != null ? d.sell_override : twnP(d.num_size, d.two_color, true), cost: twnP(d.num_size, d.two_color, false), _nq: fnq } }
-    if (d.cost_each != null && ['dtf', 'heat_press'].includes(d.num_method)) { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const fnq = (nq || Math.max(0, safeNum(d.num_qty) || q)) * (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); return { sell: d.sell_override != null ? d.sell_override : safeNum(d.sell_each), cost: safeNum(d.cost_each), _nq: fnq } }
-    const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const hasAssigned = nq > 0; const useQty = hasAssigned ? nq : Math.max(0, safeNum(d.num_qty) || q); const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); const fnq = useQty * mult;
+    if (d.num_method === 'tackle_twill') { const nq = rosterCount(d.roster, q); const useQty = nq > 0 ? nq : Math.max(0, safeNum(d.num_qty) || q); const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); const fnq = useQty * mult; return { sell: d.sell_override != null ? d.sell_override : twnP(d.num_size, d.two_color, true), cost: twnP(d.num_size, d.two_color, false), _nq: fnq } }
+    if (d.cost_each != null && ['dtf', 'heat_press'].includes(d.num_method)) { const nq = rosterCount(d.roster, q); const fnq = (nq || Math.max(0, safeNum(d.num_qty) || q)) * (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); return { sell: d.sell_override != null ? d.sell_override : safeNum(d.sell_each), cost: safeNum(d.cost_each), _nq: fnq } }
+    const nq = rosterCount(d.roster, q); const hasAssigned = nq > 0; const useQty = hasAssigned ? nq : Math.max(0, safeNum(d.num_qty) || q); const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); const fnq = useQty * mult;
     // Price the per-number volume break at the doubled application count (fnq), not the garment qty.
     return { sell: d.sell_override != null ? d.sell_override : npP(fnq || 1, d.two_color, true), cost: npP(fnq || 1, d.two_color, false), _nq: fnq } };
   // sell_override honors an explicit 0 (nullish, matches decoPricing.js — keep in sync).
@@ -113,7 +114,7 @@ function dP(d, q, artFiles, cq) {
   // as "24 x $0.25" and the quarter-rounding then billed $6 of sell and $6 of cost for
   // $5 of work at $3 of cost (EST-2126). Deco walks already read _nq, so the line TOTAL
   // is unchanged everywhere nc*se/q happened to land on an exact quarter.
-  if (d.kind === 'names') { const nc = d.names ? Object.values(d.names).flat().filter(v => v && v.trim()).length : 0; const se = safeNum(d.sell_override != null ? d.sell_override : (d.sell_each || 6)); const co = safeNum(d.cost_each != null ? d.cost_each : 3); return { sell: se, cost: co, _nq: (nc || q) * (d.reversible ? 2 : 1) } };
+  if (d.kind === 'names') { const nc = rosterCount(d.names, q); const se = safeNum(d.sell_override != null ? d.sell_override : (d.sell_each || 6)); const co = safeNum(d.cost_each != null ? d.cost_each : 3); return { sell: se, cost: co, _nq: (nc || q) * (d.reversible ? 2 : 1) } };
   if (d.type === 'dtf') { const t = DTF[d.dtf_size || 0]; return { sell: d.sell_override != null ? d.sell_override : t.sell, cost: t.cost } }
   // Tackle-twill chest/logo: flat per-garment price from the TWA menu (index on d.dtf_size).
   if (d.kind === 'twill') return { sell: d.sell_override != null ? d.sell_override : twaP(d.dtf_size, true), cost: twaP(d.dtf_size, false) };
@@ -1926,7 +1927,7 @@ module.exports = {
   // Commission payouts (draw + loan)
   calcRepPayout,
   // Pricing
-  rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
+  rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, rosterCount, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
   poCommitted, unfulfilledSizes, poOverCommit, billOverageQty, billLineNeed, calcSOStatus, buildJobs, isGarmentDecoPO, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Size reductions that run into POs / picks

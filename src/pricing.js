@@ -102,6 +102,7 @@ export function twnP(size,tw=false,s=true){return DECO.twnP(_tables(),size,tw,s)
 // Per-design quantity for a split-art decoration (one of two+ logos sharing a line's sizes);
 // null when the deco isn't part of a split. Used so each design prices & bills at its own qty.
 export const decoSplitQty=DECO.decoSplitQty;
+export const rosterCount=DECO.rosterCount;
 export function dP(d,q,artFiles,cq){return DECO.dP(_tables(),d,q,artFiles,cq)}
 
 // ── Combined costing for linked jobs that share a screen ──
