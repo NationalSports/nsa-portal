@@ -11,6 +11,7 @@ describe('shipping override UI wiring', () => {
     (file) => {
       const src = read(file);
       expect(src).toContain('onManualShip');
+      expect(src).toContain('<RepShipmentButton soId={o.id} nf={nf}/>');
       expect(src).toContain('⚡ Ship Items / Override');
       expect(src).toContain('DPO for this shipment');
       expect(src).toContain('deco_po_id:');
@@ -24,10 +25,11 @@ describe('shipping override UI wiring', () => {
     expect(src).toContain('setManualShipModal(manualShipStateForSO(so,c2))');
   });
 
-  test('warehouse override search accepts an SO number and includes completed orders with work left', () => {
+  test('warehouse override search accepts an SO number and includes closed orders for rep updates', () => {
     const src = read('App.js');
-    expect(src).toContain('Type sales order #, club, or customer...');
-    expect(src).toContain('unshippedOrderItems(so).length>0||soHasOpenShipWork(so)');
+    expect(src).toContain('Type sales order #, job #, club, or customer...');
+    expect(src).toContain('const _canOverride=so=>!so.deleted_at;');
+    expect(src).toContain('<RepShipmentButton soId={manualShipModal.so.id} nf={nf}/>');
     expect(src).not.toContain("if(st==='complete')return false");
   });
 });

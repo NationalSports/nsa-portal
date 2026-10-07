@@ -1,3 +1,4 @@
+import RepShipmentButton from './RepShipmentButton';
 import { _loadArtRow } from './constants';
 import {useRecoveryHandoff} from './lib/useRecoveryHandoff';
 import StandaloneArtRequest from './StandaloneArtRequest';
@@ -7859,7 +7860,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           if(!window.confirm('Email tracking to '+(pd.to.name?pd.to.name+' <'+pd.to.email+'>':pd.to.email)+'?\n\n'+pd.boxes+' box'+(pd.boxes===1?'':'es')+' · '+pd.pieces+' pieces'+warn))return;
           const r=await post({eta:eta.trim(),resend:!!pd.alreadySent});const d=await r.json().catch(()=>({}));
           if(!r.ok){nf(d.error||'Email send failed','error');return}
-          nf('Shipping notice sent to '+d.to+(d.repCopy==='sent'?' — copy sent to '+d.repEmail:''));
+          nf('Shipping notice sent to '+d.to+(d.repCopy==='sent'?' — copy sent to '+d.repEmail:d.repCopy==='queued'?' — rep copy queued':d.repCopy==='failed'?' — rep copy failed; use Email Rep Update':''));
           if(d.historyRecorded===false)nf('Sent — but the send was not recorded on the order','error');
         }catch(e){nf('Email failed: '+e.message,'error')}
         finally{setShpEmailBusy(false)}
@@ -7932,6 +7933,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                   shipped after the order was already closed and invoiced. The warehouse Ready-to-Ship
                   flow is still the main path (it knows which units are in the box); this is the escape
                   hatch for everything else, and it is what gets the shipping COST onto the order. */}
+              <RepShipmentButton soId={o.id} nf={nf}/>
               {allOutbound.length>0&&<button className="btn btn-sm btn-secondary" style={{marginLeft:'auto',fontSize:11}}
                 disabled={shpEmailBusy} onClick={previewShipmentNotice} title="Open the coach's shipping email in a new tab — nothing is sent">
                 👁 Preview Email</button>}

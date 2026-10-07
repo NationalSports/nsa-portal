@@ -1,3 +1,4 @@
+/** @jest-environment node */
 /* The automatic coach shipping notice: which boxes count, when the sweep
  * decides an order is ready to announce, and the guards that keep it from
  * emailing the wrong thing or the same thing twice.
@@ -247,4 +248,28 @@ describe('the sweep pass', () => {
     expect(mockSends).toHaveLength(0);
     expect(summary.sends.every((s) => s.dryRun)).toBe(true);
   });
+});
+
+
+test('scans beyond 500 rows and includes a completed SO whose tracking arrived later', async () => {
+  const many = Array.from({length: 501}, (_, i) => ({id: `SO-${String(i).padStart(4, '0')}`, status: 'complete', _shipments: [shipModalBox()]}));
+  const queries=[];
+  const db={from(table) {
+    let after=null, cap=1000; const filters=[];
+    const q={
+      select:()=>q,is:()=>q,not:(...args)=>{filters.push(args);return q},order:()=>q,in:()=>q,
+      limit:n=>{cap=n;return q},gt:(_,id)=>{after=id;return q},
+      then(resolve,reject){
+        if(table==='sales_orders')queries.push({after,filters});
+        return Promise.resolve({data:table==='sales_orders'?many.filter(r=>!after||r.id>after).slice(0,cap):[],error:null}).then(resolve,reject);
+      },
+    };return q;
+  }};
+  const result=await runSweep(db,{dryRun:true,since:new Date(GO_LIVE),now:NOW});
+  expect(result.scanned).toBe(501);
+  expect(result.sends).toHaveLength(501);
+  expect(result.sends[500].so).toBe('SO-0500');
+  expect(queries).toHaveLength(2);
+  expect(queries[1].after).toBe('SO-0499');
+  expect(queries.flatMap(q=>q.filters).some(f=>f[0]==='status')).toBe(false);
 });

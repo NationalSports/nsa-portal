@@ -353,3 +353,12 @@ describe('Google review ask', () => {
     expect(html).not.toContain('Happy with how we did?');
   });
 });
+
+test('unconfirmed ShipStation contents show tracking without false counts or completion claims', () => {
+  const { html } = buildSoShipmentEmail({ order: { id: 'SO-2173' }, packages, contentsConfirmed: false, remainingUnits: 100, reviewUrl: 'https://example.com/review' });
+  expect(html).toContain('Package contents are being confirmed');
+  expect(html).toContain('1Z999AA10123456784');
+  expect(html).not.toContain('0 pieces');
+  expect(html).not.toContain('Still to come:');
+  expect(html).not.toContain('https://example.com/review');
+});
