@@ -15,6 +15,7 @@ import { splitPriorArtwork } from './lib/splitPriorArtwork';
 import { webstoreCheckoutMoney, webstoreDocMoneyRows } from './lib/webstoreSoMoney';
 import {useOrderCatalogResults,a4Visible} from './lib/orderCatalogSearch';
 import { poEligibleVendors } from './lib/vendorPoEligibility';
+import { mergeExternalPoItems } from './lib/editorPoSync';
 import QuantityDraftInput from './QuantityDraftInput';
 import TextDraftInput from './TextDraftInput';
 import { replaceTbdArt, tbdArtName, tbdArtLabel, isTbdArt } from './lib/orderArtSwap';
@@ -808,7 +809,8 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     React.useEffect(()=>{
       const pickCount=safeItems(order).reduce((a,it)=>(safePicks(it).length)+a,0);
       const poCount=safeItems(order).reduce((a,it)=>((Array.isArray(it.po_lines)?it.po_lines.length:0))+a,0);
-      const key=order.id+':'+(order.updated_at||'')+':'+pickCount+':'+poCount;
+      const poIdentity=JSON.stringify(safeItems(order).map(it=>[it.line_id||'',it.sku||'',it.color||'',(Array.isArray(it.po_lines)?it.po_lines:[]).map(pl=>pl?.po_id||pl)]));
+      const key=order.id+':'+(order.updated_at||'')+':'+pickCount+':'+poCount+':'+poIdentity;
       if(key===lastSyncRef.current)return;
       lastSyncRef.current=key;
       const extJobs=safeJobs(order);
@@ -816,30 +818,22 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       const hasExternalArtChange=JSON.stringify(order.art_files||[])!==JSON.stringify(o.art_files||[])&&!dirty;
       // Detect external pick_line changes (e.g., warehouse pulled an IF on another tab)
       const hasExternalPickChange=safeItems(order).some((ei,idx)=>{const li=safeItems(o)[idx];if(!li)return!!ei.pick_lines?.length;const ePicks=safePicks(ei);const lPicks=safePicks(li);if(ePicks.length!==lPicks.length)return true;return ePicks.some((ep,pi)=>ep.status!==lPicks[pi]?.status||ep.pick_id!==lPicks[pi]?.pick_id)});
-      // Detect external po_line ADDITIONS — e.g. lines the App save guard restored from the DB
-      // (stale/foreign client state). Additions only: a local-only line (a PO just created in this
-      // editor) must never be dropped because the incoming snapshot hasn't caught up yet.
-      const hasExternalPoChange=safeItems(order).some((ei,idx)=>{const li=safeItems(o)[idx];if(!li)return false;return(Array.isArray(ei.po_lines)?ei.po_lines.length:0)>(Array.isArray(li.po_lines)?li.po_lines.length:0)});
+      // Union by PO identity, not count: equal-length snapshots can still contain
+      // a saved PO this editor is missing. Preserve local lines and deletions.
+      const localItems=safeItems(o);
+      const hasExternalPoChange=mergeExternalPoItems(localItems,safeItems(order),o._deletedPoIds,o._hydratedPoIds)!==localItems;
       if(!hasExternalJobChange&&!hasExternalArtChange&&!hasExternalPickChange&&!hasExternalPoChange)return;
       setO(prev=>{const mergedJobs=safeJobs(prev).map(j=>{const ext=extJobs.find(ej=>ej.id===j.id);if(ext&&(ext.art_status!==j.art_status||ext.art_reuse_confirmed!==j.art_reuse_confirmed||ext.coach_approved_at!==j.coach_approved_at||ext.coach_rejected!==j.coach_rejected)){return{...j,art_status:ext.art_status,art_reuse_confirmed:ext.art_reuse_confirmed,coach_approved_at:ext.coach_approved_at,coach_rejected:ext.coach_rejected,rejections:ext.rejections,sent_to_coach_at:ext.sent_to_coach_at}}return j});
         // Merge pick_line changes from external source (warehouse pulls, new IFs from other tabs)
         // and union-add external po_lines (restored stale/foreign lines) onto their item.
-        const mergedItems=(hasExternalPickChange||hasExternalPoChange)?safeItems(prev).map((it,idx)=>{
+        const poMergedItems=mergeExternalPoItems(safeItems(prev),safeItems(order),prev._deletedPoIds,prev._hydratedPoIds);
+        const mergedItems=hasExternalPickChange?poMergedItems.map((it,idx)=>{
           const ext=safeItems(order)[idx];if(!ext)return it;
-          let next=it;
-          // Index-matched adoption is only safe when neither sku NOR color contradicts — items have no
-          // stable id, so after local adds/deletes shift the array, index N in the snapshot can be a
-          // different garment. A same-SKU/different-color (or blank-SKU) line at the same index used to
-          // adopt the snapshot line's IFs wholesale (SO-1165: IF-1024 stamped onto new S&S lines).
           const _nc=c=>String(c||'').trim().toLowerCase();
-          const _sameLine=(!next.sku||!ext.sku||next.sku===ext.sku)&&(!next.color||!ext.color||_nc(next.color)===_nc(ext.color));
-          if(hasExternalPickChange&&_sameLine){const ePicks=safePicks(ext);const lPicks=safePicks(next);if(JSON.stringify(ePicks)!==JSON.stringify(lPicks))next={...next,pick_lines:ePicks}}
-          if(hasExternalPoChange&&_sameLine){
-            const eLines=Array.isArray(ext.po_lines)?ext.po_lines:[];const lLines=Array.isArray(next.po_lines)?next.po_lines:[];
-            if(eLines.length>lLines.length){const have=new Set(lLines.map(l=>JSON.stringify(l)));const add=eLines.filter(l=>!have.has(JSON.stringify(l)));if(add.length)next={...next,po_lines:[...lLines,...add]}}
-          }
-          return next;
-        }):prev.items;
+          const _sameLine=(!it.sku||!ext.sku||it.sku===ext.sku)&&(!it.color||!ext.color||_nc(it.color)===_nc(ext.color));
+          if(_sameLine){const ePicks=safePicks(ext);if(JSON.stringify(ePicks)!==JSON.stringify(safePicks(it)))return{...it,pick_lines:ePicks}}
+          return it;
+        }):poMergedItems;
         // Merge external art by id: adopt incoming rows (status/approval changes, or groups added on another tab)
         // but NEVER drop a local group the incoming copy is missing. A stale poll/refresh snapshot must not
         // silently remove art the rep just added here — that drop would then be persisted as a DELETE on the
