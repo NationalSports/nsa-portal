@@ -5953,7 +5953,8 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                 {item.is_free_promo&&<span style={{fontSize:11,color:'#be185d'}}>$0 promo garment — deco charges apply</span>}
                 {item.is_custom&&isAU(item.brand)&&<span style={{fontSize:12,color:'#64748b'}}>Retail: <$In value={item.retail_price||0} onChange={v=>{uI(idx,'retail_price',v);if(isAU(item.brand)&&v>0){const costMult=auCostMult(item.brand,item.is_footwear);uI(idx,'nsa_cost',Math.floor(v*costMult*100)/100);uI(idx,'unit_sell',rQ(v*(1-auDisc(item.is_footwear,item.pricing_group))))}}}/></span>}
                 {!isAU(item.brand)&&_costEa>0&&<span style={{fontSize:11,color:'#64748b'}}>({((item._sizeSells&&szQty>0?pRev/szQty:item.unit_sell)/(item._sizeCosts&&szQty>0?pCost/szQty:_costEa)).toFixed(2)}x)</span>}
-                {isAU(item.brand)&&item.nsa_cost>0&&<span style={{fontSize:11,color:item.unit_sell>item.nsa_cost?'#166534':'#dc2626'}}>({Math.round((item.unit_sell-item.nsa_cost)/item.unit_sell*100)}% margin)</span>}
+                {/* unit_sell>0: a $0 free-promo line has no sell to take a margin of — dividing by it printed "(-Infinity% margin)" */}
+                {isAU(item.brand)&&item.nsa_cost>0&&item.unit_sell>0&&<span style={{fontSize:11,color:item.unit_sell>item.nsa_cost?'#166534':'#dc2626'}}>({Math.round((item.unit_sell-item.nsa_cost)/item.unit_sell*100)}% margin)</span>}
               </div></div>
             <div style={{position:'relative'}}>
               <button title="Item actions" onClick={e=>{if(showItemMenu===idx){setShowItemMenu(null);setItemMenuPos(null)}else{const r=e.currentTarget.getBoundingClientRect();const right=window.innerWidth-r.right;const spaceBelow=window.innerHeight-r.bottom;const spaceAbove=r.top;
