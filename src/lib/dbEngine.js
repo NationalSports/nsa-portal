@@ -3958,7 +3958,10 @@ const _outboxWrap=(table,entity,resultPromise,addOnly)=>{
       // FULL entity payload — only the full save may clear. 'stale' deliberately does NOT clear:
       // the rejected edit's content is preserved for the conflict card (_emitOutboxConflict) so a
       // version rejection no longer silently destroys what the rep typed.
-      else if(r===true&&!addOnly&&!_conflictCaptured){if(_outboxId&&_outboxAck(table,_outboxId,_outboxRevision)){try{delete entity._obBaseVersion}catch{}}}
+      else if(r===true&&!addOnly&&!_conflictCaptured){if(_outboxId&&_outboxAck(table,_outboxId,_outboxRevision)){
+        try{delete entity._obBaseVersion}catch{}
+        if(typeof window!=='undefined')window.dispatchEvent(new CustomEvent('nsa:document-save-confirmed',{detail:{table,id:_outboxId,revision:_outboxRevision}}));
+      }}
     }catch(e){console.error('[Outbox] hook failed:',e)}
     return r;
   },err=>{_saveRetryCoordinator.finish(retryReceipt,false);try{
