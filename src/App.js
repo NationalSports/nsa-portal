@@ -2800,6 +2800,8 @@ export default function App(){
   const[taxRemitError,setTaxRemitError]=useState('');
   const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null});
   const[needByAsk,setNeedByAsk]=useState(null);// {kind:'new'|'convert',c?,est?,date} — required need-by date before a sales order is created
+  const[convertingEstimateId,setConvertingEstimateId]=useState(null);
+  const conversionInFlight=React.useRef(null);
   // Portal-side Adidas availability for the Assign Task bot card: the portal
   // already syncs per-size stock + restock dates (adidas_inventory), so show
   // them at assign time and ship the snapshot in the payload — the bot starts
@@ -7667,6 +7669,9 @@ export default function App(){
   };
   const convertSO=async(est,needBy)=>{
     if(!needBy){setNeedByAsk({kind:'convert',est,date:''});return}
+    if(conversionInFlight.current)return;
+    conversionInFlight.current=est.id;setConvertingEstimateId(est.id);
+    try{
     // Auto-heal a partially-loaded estimate before converting. The loader flags
     // _decosHydrated/_itemsHydrated false when estimate_item_decorations or
     // estimate_items timed out on the last load — in that state est.items can be
@@ -7740,15 +7745,14 @@ export default function App(){
     const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,bill_to_id:est.bill_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),deco_pos:JSON.parse(JSON.stringify(est.deco_pos||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,promo_applied:est.promo_applied||false,promo_amount:promoAmount,credit_applied:est.credit_applied||false,credit_amount:safeNum(est.credit_amount),tax_rate:_convCust?.tax_rate||0,tax_exempt:_convCust?.tax_exempt||false};
     // Pending shipping is offered to the rep in the editor, never auto-attached (see savSO).
     const convertedEst={...est,status:'converted',updated_at:new Date().toLocaleString()};
-    // The explicit saves own these snapshots, including the first insertion.
-    // Keep the SO editor closed until artwork synchronization returns its newer
-    // revision, so an autosave cannot race that creation-time server write.
-    stageDocumentBaseline(_dbSnap,'sos',so);
-    stageDocumentBaseline(_dbSnap,'ests',convertedEst);
-    setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?convertedEst:e));setEEst(null);setPg('orders');
+    // Do not publish the new SO to the editor or diff-save effect until its
+    // initial save and art sync finish. Sync can advance the header version even
+    // with no artwork; a mounted editor would otherwise retain its earlier base.
     // Explicitly save to DB immediately — don't rely solely on useEffect chain.
     // Methodic work is relinked only after both source/target documents exist, so
     // the same request follows the line instead of creating an SO-side duplicate.
+    stageDocumentBaseline(_dbSnap,'sos',so);
+    stageDocumentBaseline(_dbSnap,'ests',convertedEst);
     const[_soSaved,_estSaved]=await Promise.all([_dbSaveSO(so),_dbSaveEstimate(convertedEst)]);
     if(_soSaved!==true){nf('Sales order creation was not confirmed. Your recovery draft is kept; review it before converting again.','error');return;}
     if(_soSaved===true){
@@ -7756,14 +7760,18 @@ export default function App(){
         const refreshed=await createArtService(supabase).syncConversion(est.id,so.id);
         const art_files=(refreshed.art_files||[]).map(_loadArtRow);
         Object.assign(so,refreshed,{art_files});
-        stageDocumentBaseline(_dbSnap,'sos',so);
-        setSOs(prev=>prev.map(s=>s.id===so.id?so:s));
       }catch(artError){nf('Order created, but completed art requests could not sync: '+artError.message+'. Open Art Library and retry Sync estimate artwork.','warn')}
+    }
+    // Close the estimate and open the fully prepared SO together, avoiding a
+    // flash of the list and a second background create during preparation.
+    stageDocumentBaseline(_dbSnap,'sos',so);
+    stageDocumentBaseline(_dbSnap,'ests',convertedEst);
+    setSOs(p=>p.some(s=>s.id===so.id)?p.map(s=>s.id===so.id?so:s):[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?convertedEst:e));setEEst(null);setESO(so);setESOC(_convCust);setPg('orders');
+    if(_estSaved!==true)nf(so.id+' was saved, but the estimate conversion status needs save review. Do not convert it again.','warn');
+    if(_soSaved===true){
       try{const{methodicApi}=await import('./methodic/methodicApi');await methodicApi('relink_estimate',{estimate_id:est.id,sales_order_id:so.id});window.dispatchEvent(new CustomEvent('methodic-updated',{detail:{salesOrderId:so.id,estimateId:est.id}}))}
       catch(methodicError){console.error('[convertSO] Methodic relink failed:',methodicError);nf('Sales order created, but Methodic work could not be relinked yet. Open the Methodic queue and retry.','warn')}
     }
-    setESO(so);setESOC(_convCust);setPg('orders');
-    if(_estSaved!==true)nf(so.id+' was saved, but the estimate conversion status needs save review. Do not convert it again.','warn');
     // Consume the attached pending shipping charge (persisted SO — safe to record usage now).
     if(so.pending_ship_applied)_consumePendingShipForSO(so);
     const c=cust.find(x=>x.id===so.customer_id);
@@ -7819,7 +7827,9 @@ export default function App(){
       });
       setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,credits:updatedCredits}:cc));
     }
-    nf(`${so.id} created from ${est.id}`)};
+    nf(`${so.id} created from ${est.id}`);
+    }finally{conversionInFlight.current=null;setConvertingEstimateId(null)}
+  };
   const copyEstimate=async est=>{
     // Auto-heal a partially-loaded estimate before copying — same failure mode the convert
     // path guards against: when estimate_item_decorations/estimate_items timed out on the
@@ -11821,12 +11831,15 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor onArtRequestResult={adoptStandaloneArtResult} recoveryEditorRef={recoveryEditorRef} ui={uiMode} key={eEst.id} supabase={supabase} order={eEst} mode="estimate" autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} customer={eEstC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={e=>{const e2=savE(e);if(e2)setEEst(e2)}} onSaveNow={e=>savENow(e)} onEmergencySave={e=>savENow(e,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} onNavBatch={()=>{setEEst(null);setPg('batch_pos')}} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onOpenIF={openIF} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(convertingEstimateId&&!eEst)return<div role="status" style={{padding:24}}>Creating sales order…</div>;
+    if(eEst)return<>
+      {convertingEstimateId&&<div className="modal-overlay" role="status" style={{zIndex:10000}}><div className="modal" style={{padding:24}}>Creating sales order…</div></div>}
+      <div inert={convertingEstimateId?'':undefined}><ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor onArtRequestResult={adoptStandaloneArtResult} recoveryEditorRef={recoveryEditorRef} ui={uiMode} key={eEst.id} supabase={supabase} order={eEst} mode="estimate" autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} customer={eEstC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={e=>{if(conversionInFlight.current===e.id)return false;const e2=savE(e);if(e2)setEEst(e2)}} onSaveNow={e=>conversionInFlight.current===e.id?Promise.resolve(false):savENow(e)} onEmergencySave={e=>conversionInFlight.current===e.id?Promise.resolve(false):savENow(e,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} onNavBatch={()=>{setEEst(null);setPg('batch_pos')}} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onOpenIF={openIF} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onOpenMethodicDashboard={()=>{setEEst(null);setPg('methodic')}}
-      companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} onSaveCustomer={savC} onScheduleEmail={scheduleEmailSend} extractPdfText={extractPdfText}/></React.Suspense></ComponentErrorBoundary>
+      companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} onSaveCustomer={savC} onScheduleEmail={scheduleEmailSend} extractPdfText={extractPdfText}/></React.Suspense></ComponentErrorBoundary></div></>
     // Filter estimates
     let fe=[...ests];
     const estRepId=estF.rep==='_me_'?cu?.id:estF.rep;
