@@ -8,6 +8,7 @@ import { buildTransferMaps, transferUsage, unresolvedTransferLines } from './all
 import AllSchoolSettings from './allSchool/AllSchoolSettings';
 import AllSchoolPrograms from './allSchool/AllSchoolPrograms';
 import SchoolLogoOptionsEditor from './allSchool/SchoolLogoOptionsEditor';
+import StoreArtInventoryOptions, { inventorySeedForArt } from './allSchool/StoreArtInventoryOptions';
 import DecorationStockForm, { DECORATION_TYPES, APPLICATION_METHODS } from './allSchool/DecorationStockForm';
 import { normalizeAllSchoolSettings, validateAllSchoolSettings, stockLinkedArtError, changesProductionSetup, logoDesignCopies, schoolArtGroups, frontArt, visualLogoCopies } from './allSchool/adminHelpers';
 import { openSharedProductionPacket } from './productionPacket/api';
@@ -6954,7 +6955,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onSaveArtFolder={onAddStoreArtFolder} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} isAllSchool={s.org_type === 'all_school'} schoolLogoOptions={schoolLogoOptions} firstSchoolLogoByStyle={firstSchoolLogoByStyle} onSetFirstSchoolLogo={setFirstSchoolLogo} schoolTransfers={detail?.transfers || []} schoolStaffId={cu?.id} onCreateSchoolLogoOption={onCreateSchoolLogoOption} onUpdateSchoolLogoOption={onUpdateSchoolLogoOption} onUpdateSchoolItem={onUpdateItem} onOpenSchoolItem={(id) => { setCatalogFocusId(id); setTab('catalog'); }} canMock={!schoolMockAmbiguous && qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} nameByPid={nameByPid} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onPlayerReportPdf={onPlayerReportPdf} onPlayerReportCondensed={onPlayerReportCondensed} onStockReport={onStockReport} onProductReport={onProductReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} labelAllRequested={labelAllRequested} onLabelAllHandled={() => setLabelAllRequested(false)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
-          {tab === 'inventory' && <InventoryTab store={s} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
+          {tab === 'inventory' && <InventoryTab artwork={hydrateStoreArt(s.store_art || [], detail?.libraryArt || []).map((art) => ({ ...art, url: webLogoDefault(art) || art.web_logo_url || art.preview_url }))} store={s} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
           {tab === 'analytics' && <AnalyticsTab store={s} orders={orders} orderItems={orderItems} stockByWp={stockByWp} catalog={catalog} libraryArt={detail?.libraryArt || []} />}
           {tab === 'roster' && <RosterTab store={s} roster={roster} notOrdered={notOrdered} orders={orders} onAdd={onAddRoster} onUpdate={onUpdateRoster} onRemove={onRemoveRoster} onInvite={onInviteRoster} onFlash={onFlash} />}
@@ -13413,8 +13414,9 @@ function OrderAnalytics({ store, orders: allOrders, orderItems, stockByWp, catal
 // inventory (design transfers deducted per item; number transfers deducted
 // per digit, matched to the item's number size/color set). "Used" is computed
 // live from all non-cancelled orders.
-function InventoryTab({ store, catalog, bundleItems, stockByWp, transfers, orders, orderItems, onUpdateTransfer, onAddTransfers, onRemoveTransfer }) {
+function InventoryTab({ artwork = [], store, catalog, bundleItems, stockByWp, transfers, orders, orderItems, onUpdateTransfer, onAddTransfers, onRemoveTransfer }) {
   const [addDesign, setAddDesign] = useState(false);
+  const [inventoryArt, setInventoryArt] = useState(null);
   const [editDecoration, setEditDecoration] = useState(null);
   const [addSet, setAddSet] = useState(false);
   const [expandAll, setExpandAll] = useState(false);
@@ -13496,11 +13498,12 @@ function InventoryTab({ store, catalog, bundleItems, stockByWp, transfers, order
       <div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <div style={{ fontSize: 13, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#475569' }}>Decoration inventory</div>
-          <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => setAddDesign((v) => !v)}>+ Decoration stock</button>
+          <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => { setInventoryArt(null); setEditDecoration(null); setAddDesign((v) => !v); }}>+ Decoration stock</button>
           <button className="btn btn-sm btn-secondary" onClick={() => setAddSet((v) => !v)}>+ Number set</button>
         </div>
-        {addDesign && <DecorationStockForm onAdd={(row) => onAddTransfers([row])} onClose={() => setAddDesign(false)} />}
-        {editDecoration && <DecorationStockForm key={editDecoration.id} initialValue={editDecoration} onAdd={async (row) => { const { id, store_id, created_at, updated_at, ...fields } = row; return onUpdateTransfer(editDecoration.id, fields); }} onClose={() => setEditDecoration(null)} />}
+        <StoreArtInventoryOptions artwork={artwork} transfers={transfers} onSelect={(art, saved) => { setInventoryArt(art); setEditDecoration(saved || null); setAddDesign(!saved); }} />
+        {addDesign && <DecorationStockForm key={inventoryArt?.id || 'manual'} artwork={inventoryArt} initialValue={inventoryArt ? inventorySeedForArt(inventoryArt) : undefined} onAdd={(row) => onAddTransfers([row])} onClose={() => setAddDesign(false)} />}
+        {editDecoration && <DecorationStockForm key={editDecoration.id} artwork={inventoryArt} initialValue={editDecoration} onAdd={async (row) => { const { id, store_id, created_at, updated_at, ...fields } = row; return onUpdateTransfer(editDecoration.id, fields); }} onClose={() => setEditDecoration(null)} />}
         {addSet && <AddNumberSet onAdd={(rows) => { onAddTransfers(rows); setAddSet(false); }} onClose={() => setAddSet(false)} />}
         <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}><b>On hand</b> = physically in the warehouse. <b>Incoming</b> = ordered from a supplier, not yet here (set an ETA, then "Receive" when it arrives). <b>On order</b> = needed by placed orders not yet pulled. <b>In process</b> = pulled & being decorated. <b>Available</b> = on hand − on order. Pull a batch's transfers from the <b>Batches</b> tab.</div>
 
@@ -13510,7 +13513,7 @@ function InventoryTab({ store, catalog, bundleItems, stockByWp, transfers, order
             <tbody>
               {designs.map((t) => (
                 <tr key={t.id} style={{ borderTop: '1px solid #f1f5f9' }}>
-                  <td style={td}><div style={{ fontWeight: 600 }}>{t.label}</div><div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>{t.code}</div><div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>{DECORATION_TYPES.find(([key]) => key === (t.decoration_type || 'dtf'))?.[1]} · {APPLICATION_METHODS.find(([key]) => key === (t.application_method || 'heat_press'))?.[1]}</div><button className="btn btn-sm btn-secondary" style={{ marginTop: 5 }} onClick={() => setEditDecoration(t)}>Art & print specs</button></td>
+                  <td style={td}><div style={{ fontWeight: 600 }}>{t.label}</div><div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>{t.code}</div><div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>{DECORATION_TYPES.find(([key]) => key === (t.decoration_type || 'dtf'))?.[1]} · {APPLICATION_METHODS.find(([key]) => key === (t.application_method || 'heat_press'))?.[1]}</div><button className="btn btn-sm btn-secondary" style={{ marginTop: 5 }} onClick={() => { setInventoryArt(null); setAddDesign(false); setEditDecoration(t); }}>Art & print specs</button></td>
                   <td style={td}><NumCell t={t} field="on_hand" /></td><td style={td}><NumCell t={t} field="incoming" /></td><td style={td}><EtaCell t={t} /></td><td style={td}><Recv t={t} /></td>
                   <td style={td}><OnOrder t={t} /></td><td style={td}><InProc t={t} /></td><td style={td}><Avail t={t} /></td>
                   <td style={td}><CostCell t={t} /></td>
