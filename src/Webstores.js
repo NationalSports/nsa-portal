@@ -1,3 +1,5 @@
+import WebstoreShippingSettings from './ui/WebstoreShippingSettings';
+import { validateShipping } from './lib/webstoreShippingRules.shared';
 import { schoolLaunchError } from './allSchool/launchReadiness';
 import DecorationAllocations from './allSchool/DecorationAllocations';
 import AllSchoolDtfQueue from './allSchool/AllSchoolDtfQueue';
@@ -5913,6 +5915,10 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
     payload.label_weight_lbs = Number(payload.label_weight_lbs) || 1;
     payload.ship_from_code = shipFromCode(payload.ship_from_code, decoLocs); // always a storable location code
     payload.flat_shipping = Number(payload.flat_shipping) || 0;
+    if (payload.delivery_mode === 'ship_home' && payload.shipping_settings) {
+      const shippingError = validateShipping(payload.shipping_settings);
+      if (shippingError) { setBusy(false); return setError(shippingError); }
+    }
     payload.processing_pct = Math.max(0, Number(payload.processing_pct) || 0);
     payload.delivery_window_weeks = normalizeDeliveryWindow(payload.delivery_window_weeks);
     payload.org_type = orgType;
@@ -6089,7 +6095,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
           {WEBSTORE_DELIVERY_WINDOWS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select></Row>}
         <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: -2, marginBottom: 8 }}>Shown to families on the storefront, cart, and checkout.</div>
-        {f.delivery_mode === 'ship_home' && <Row label="Flat shipping charged to buyer ($)"><input className="form-input" type="number" step="0.01" min={0} value={f.flat_shipping} onChange={(e) => set('flat_shipping', e.target.value)} placeholder="0.00" /></Row>}
+        {f.delivery_mode === 'ship_home' && <WebstoreShippingSettings store={f} onChange={patch => setF(prev => ({ ...prev, ...patch }))} />}
         <div style={{ display: 'flex', gap: 12 }}>
           <Row label="ShipStation Store ID (optional)"><input className="form-input" value={f.shipstation_store_id || ''} onChange={(e) => set('shipstation_store_id', e.target.value)} placeholder="e.g. 123456" /></Row>
           <Row label="ShipStation Tag ID (optional)"><input className="form-input" value={f.shipstation_tag_id || ''} onChange={(e) => set('shipstation_tag_id', e.target.value)} placeholder="team tag id" /></Row>

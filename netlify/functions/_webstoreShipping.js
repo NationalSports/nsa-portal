@@ -6,11 +6,7 @@ const { shipStationShipFrom } = require('../../src/lib/shipFrom');
 const failure = (error) => ({ error, code: 'shipping_unavailable' });
 const positive = (n) => n != null && n !== '' && Number.isFinite(Number(n)) && Number(n) > 0;
 
-function shippingConfig(store) {
-  const settings = store && store.all_school_settings;
-  return settings && typeof settings === 'object' && settings.shipping && typeof settings.shipping === 'object'
-    ? settings.shipping : {};
-}
+const { shippingConfig, validateShipping, ruleShipping } = require('../../src/lib/webstoreShippingRules.shared');
 
 async function cartWeightOz(sb, store, lines) {
   const components = (lines || []).filter((l) => l.kind === 'bundle').flatMap((l) => l.components || []);
@@ -48,14 +44,18 @@ async function cartWeightOz(sb, store, lines) {
   return positive(weight) ? { weight_oz: weight } : failure('The package weight could not be verified. Please refresh your cart.');
 }
 
-async function quoteShipping(sb, store, lines, ship, freeShipping = false) {
+async function quoteShipping(sb, store, lines, ship, freeShipping = false, subtotal = 0) {
   if (!store || store.delivery_mode !== 'ship_home') return { amount: 0, quote: null };
   const config = shippingConfig(store);
-  if (!config.mode || config.mode === 'flat') return {
-    amount: freeShipping ? 0 : Math.max(0, Math.round((Number(store.flat_shipping) || 0) * 100) / 100),
-    quote: null,
-  };
-  if (config.mode !== 'ups_live') return failure('This store’s shipping mode needs to be corrected. Please contact the store.');
+  const error = validateShipping({ ...config, mode: config.mode || 'flat' });
+  if (error) return failure(error);
+  const subtotalCents = Math.round(subtotal * 100);
+  const itemCount = (lines || []).reduce((sum, l) => sum + (l.kind === 'bundle' ? (l.components || []).reduce((n, c) => n + Number(c.qty), 0) : Number(l.qty)), 0);
+  freeShipping = !!freeShipping || (config.free_over_cents != null && subtotalCents >= config.free_over_cents);
+  if (config.mode !== 'ups_live') {
+    const amount = ruleShipping(config, store.flat_shipping, subtotalCents, itemCount, freeShipping);
+    return { amount, quote: store.shipping_settings ? { mode: config.mode, amount, waived: freeShipping, subtotal_cents: subtotalCents, item_count: itemCount } : null };
+  }
   if (!(ship && String(ship.street1 || '').trim() && String(ship.city || '').trim()
     && /^[A-Z]{2}$/i.test(String(ship.state || '').trim()) && /^\d{5}(-\d{4})?$/.test(String(ship.zip || '').trim()))) {
     return failure('Please complete a valid US shipping address to get your UPS rate.');
