@@ -1607,6 +1607,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const [focusOrderId, setFocusOrderId] = useState(null); // deep-linked order to auto-open in the Orders tab
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const duplicatingStoreRef = useRef(false);
+  const [duplicatingStoreId, setDuplicatingStoreId] = useState(null);
   const [editing, setEditing] = useState(null);   // null | 'new' | storeObj (settings edit)
   const [toast, setToast] = useState(null);
   const [wsSettings, setWsSettings] = useState(null); // global webstore defaults (singleton)
@@ -2359,55 +2361,70 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   }, [sel, flash]);
 
   const duplicateStore = useCallback(async (src, opts = {}) => {
+    if (duplicatingStoreRef.current) return null;
     if (!opts.asTemplate && !opts.startFromTemplate && !window.confirm(`Duplicate "${src.name}"? This copies the catalog, packages and transfer setup into a new draft store (no orders).`)) return null;
-    const cloneName = opts.name != null ? opts.name : src.name + (opts.suffix != null ? opts.suffix : ' (Copy)');
-    // Unique slug: <base>-copy (or -template), then -2, -3…
-    const taken = new Set(stores.map((s) => s.slug));
-    let slug = slugify(cloneName) + (opts.asTemplate ? '-template' : '-copy');
-    if (taken.has(slug)) { let n = 2; while (taken.has(`${slug}-${n}`)) n++; slug = `${slug}-${n}`; }
-    // A template is a separate is_template store carrying the ITEMS and packages only —
-    // brand-free by definition (no logo, banner, art, mockups, decorations or transfer
-    // codes from the source team). is_template makes it show in the Templates tab and
-    // stay available to the coach store builder's item pool.
-    // Clone hygiene — never carry from the source:
-    //   featured_product_ids: webstore_product ids of the SOURCE store; they resolve to
-    //     nothing in the clone, which hides the hero collage instead of the auto default.
-    //   closed_notified_at: the close-sweep idempotency stamp; carrying it means the new
-    //     store's close never creates the rep to-do/breakdown email.
-    //   coach_contact_email (rebrand/template paths): the SOURCE team's coach; launch
-    //     would prefill and email the wrong person.
-    // Template philosophy: ONLY the items (and their categories/pricing/kit setup) come
-    // over — every trace of the source team's branding strips, and the new team's colors
-    // and logos are applied fresh. So template paths also drop the banner, hero blurb and
-    // the curated store_art library (the source team's logos).
-    flash(opts.asTemplate ? 'Saving template…' : opts.startFromTemplate ? 'Creating store from template…' : 'Duplicating store…');
-    const cloneRes = await authFetch('/.netlify/functions/webstore-clone', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        source_id: src.id,
-        clone_name: cloneName,
-        slug,
-        as_template: !!opts.asTemplate,
-        start_from_template: !!opts.startFromTemplate,
-        rebrand: !!opts.rebrand,
-        // null = all products; [] = deliberately no products.
-        item_ids: opts.itemIds == null ? null : opts.itemIds,
-      }),
-    });
-    const cloned = await cloneRes.json().catch(() => ({}));
-    if (!cloneRes.ok || !cloned?.ok || !cloned?.store?.id) {
-      flash('Could not duplicate: ' + (cloned?.error || 'Atomic store copy failed'));
+    duplicatingStoreRef.current = true;
+    setDuplicatingStoreId(src.id);
+    try {
+      const cloneName = opts.name != null ? opts.name : src.name + (opts.suffix != null ? opts.suffix : ' (Copy)');
+      // Unique slug: <base>-copy (or -template), then -2, -3…
+      const taken = new Set(stores.map((s) => s.slug));
+      let slug = slugify(cloneName) + (opts.asTemplate ? '-template' : '-copy');
+      if (taken.has(slug)) { let n = 2; while (taken.has(`${slug}-${n}`)) n++; slug = `${slug}-${n}`; }
+      // A template is a separate is_template store carrying the ITEMS and packages only —
+      // brand-free by definition (no logo, banner, art, mockups, decorations or transfer
+      // codes from the source team). is_template makes it show in the Templates tab and
+      // stay available to the coach store builder's item pool.
+      // Clone hygiene — never carry from the source:
+      //   featured_product_ids: webstore_product ids of the SOURCE store; they resolve to
+      //     nothing in the clone, which hides the hero collage instead of the auto default.
+      //   closed_notified_at: the close-sweep idempotency stamp; carrying it means the new
+      //     store's close never creates the rep to-do/breakdown email.
+      //   coach_contact_email (rebrand/template paths): the SOURCE team's coach; launch
+      //     would prefill and email the wrong person.
+      // Template philosophy: ONLY the items (and their categories/pricing/kit setup) come
+      // over — every trace of the source team's branding strips, and the new team's colors
+      // and logos are applied fresh. So template paths also drop the banner, hero blurb and
+      // the curated store_art library (the source team's logos).
+      flash(opts.asTemplate ? 'Saving template…' : opts.startFromTemplate ? 'Creating store from template…' : 'Duplicating store…');
+      const cloneRes = await authFetch('/.netlify/functions/webstore-clone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source_id: src.id,
+          clone_name: cloneName,
+          slug,
+          as_template: !!opts.asTemplate,
+          start_from_template: !!opts.startFromTemplate,
+          rebrand: !!opts.rebrand,
+          // null = all products; [] = deliberately no products.
+          item_ids: opts.itemIds == null ? null : opts.itemIds,
+        }),
+      });
+      const cloned = await cloneRes.json().catch(() => ({}));
+      if (!cloneRes.ok || !cloned?.ok || !cloned?.store?.id) {
+        flash('Could not duplicate: ' + (cloned?.error || 'Atomic store copy failed'));
+        return null;
+      }
+      const store = cloned.store;
+      setStores((prev) => [store, ...prev]);
+      flash(opts.asTemplate ? 'Saved as a template — find it in the Templates tab' : (opts.suffix === '' ? 'New store created from template (draft)' : 'Store duplicated as a draft'));
+      // Both duplicate actions open the new draft's settings. Template workflows
+      // retain their own destination (template list / new-team color picker).
+      if (!opts.asTemplate && !opts.startFromTemplate) {
+        setSel(store); setTab('catalog'); setFocusOrderId(null); setDetail(null);
+        setEditing(store);
+        loadDetail(store).catch(error => console.error('[duplicateStore] detail load failed', error));
+      }
+      return store;
+    } catch (error) {
+      flash('Could not confirm the store copy: ' + (error?.message || 'Connection failed') + '. Refresh the store list before retrying.');
       return null;
+    } finally {
+      duplicatingStoreRef.current = false;
+      setDuplicatingStoreId(null);
     }
-    const store = cloned.store;
-    setStores((prev) => [store, ...prev]);
-    flash(opts.asTemplate ? 'Saved as a template — find it in the Templates tab' : (opts.suffix === '' ? 'New store created from template (draft)' : 'Store duplicated as a draft'));
-    // "Clone & rebrand" lands you straight in settings to set the new customer/colors/logo.
-    // Templates skip that; start-from-template goes to the color picker instead.
-    if (opts.rebrand && !opts.asTemplate && !opts.startFromTemplate) setEditing(store);
-    return store;
-  }, [stores, flash]);
+  }, [stores, flash, loadDetail]);
 
   // "Save as template": clone the store into a SEPARATE, reusable template (its own name,
   // catalog only, no logo). The source store is left untouched and stays in the store list;
@@ -4303,6 +4320,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
   return (
     <>
+      {duplicatingStoreId && <div role="status" style={{ padding: '10px 16px', background: '#eff6ff', color: '#1e40af', borderRadius: 8, marginBottom: 12 }}>Creating store copy…</div>}
       {toast && <div style={{ position: 'fixed', bottom: 20, right: 20, background: '#0f172a', color: '#fff', padding: '10px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, zIndex: 1000, boxShadow: '0 6px 20px rgba(0,0,0,0.25)' }}>{toast}</div>}
       {showDefaults && <StoreDefaultsModal settings={wsSettings} onSave={saveWsSettings} onClose={() => setShowDefaults(false)} />}
       {soPrompt && <SoConfirmModal orders={soPrompt.orders} shortagesFor={soPrompt.shortagesFor} stockRowsFor={soPrompt.stockRowsFor} decoRowsFor={soPrompt.decoRowsFor} unmatchedRowsFor={soPrompt.unmatchedRowsFor} stockByPid={soPrompt.stockByPid || {}} storeId={soPrompt.storeId} onCancel={() => setSoPrompt(null)} onConfirm={async (overrides, selIds, batchMeta, decoMethods, skuLinks) => { const p = soPrompt.proceed; setSoPrompt(null); await p(overrides, selIds, batchMeta, decoMethods, skuLinks); }} />}
@@ -4347,7 +4365,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} placementMemory={(wsSettings && wsSettings.placement_memory) || {}} onSavePlacementMemory={savePlacementMemory} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onAddStoreArtFolder={addStoreArtFolder} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onOpenSO={onOpenSO} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onChangeCloseDate={changeCloseDate} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
+        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onOpenSO={onOpenSO} onNew={() => setEditing('new')} onDuplicate={duplicateStore} duplicatingStoreId={duplicatingStoreId} onChangeCloseDate={changeCloseDate} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
       )}
 
       {omgStep && <OmgImportWizard
@@ -4907,7 +4925,7 @@ const REP_PALETTE = ['#192853', '#962C32', '#2A6FDB', '#1B7F4B', '#7C3AED', '#08
 const LS_STATUS_FILTER = 'nsa_ws_status_filter';
 const LS_REP_FILTER = 'nsa_ws_rep_filter';
 
-function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onOpenSO, onNew, onDuplicate, onChangeCloseDate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
+function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onOpenSO, onNew, onDuplicate, duplicatingStoreId, onChangeCloseDate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
   const [view, setView] = useState('stores');
   // A rep opening this page almost always wants their own live stores, so the list
   // defaults to "Open" (which includes Closing soon) scoped to the signed-in rep.
@@ -5317,7 +5335,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                             >
                               {copiedId === s.id
                                 ? <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Copied</>
-                                : <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</>
+                                : <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy link</>
                               }
                             </button>
                             <button
@@ -5365,8 +5383,8 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                                   <a className="btn btn-sm btn-secondary" href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ textDecoration: 'none' }}>View Storefront ↗</a>
                                   <a className="btn btn-sm btn-secondary" href="/bagging-station" target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ textDecoration: 'none' }} title="Tablet bagging: pick this store's batch there">Bagging Station ↗</a>
-                                  {onDuplicate && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onDuplicate(s); }}>Duplicate</button>}
-                                  {onDuplicate && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onDuplicate(s, { rebrand: true }); }}>Clone &amp; Rebrand</button>}
+                                  {onDuplicate && <button className="btn btn-sm btn-secondary" disabled={!!duplicatingStoreId} onClick={(e) => { e.stopPropagation(); onDuplicate(s); }}>{duplicatingStoreId === s.id ? 'Duplicating…' : 'Duplicate'}</button>}
+                                  {onDuplicate && <button className="btn btn-sm btn-secondary" disabled={!!duplicatingStoreId} onClick={(e) => { e.stopPropagation(); onDuplicate(s, { rebrand: true }); }}>Clone &amp; Rebrand</button>}
                                   {onChangeCloseDate && editCloseId !== s.id && (
                                     <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setEditCloseId(s.id); setCloseDraft(dateOnly(s.close_at) || defaultCloseDate()); setCloseTimeDraft(ptTimeInput(s.close_at)); }}>Change Close Date</button>
                                   )}

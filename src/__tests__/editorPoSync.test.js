@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { mergeExternalPoItems } from '../lib/editorPoSync';
+import { checkBatchPoReservations } from '../lib/batchPoReservations';
 
 const po = (id, extra = {}) => ({ po_id: id, M: 3, received: {}, ...extra });
 const item = (extra = {}) => ({ sku: 'JX4456', color: 'Navy/White', sizes: { M: 10 }, pick_lines: [], po_lines: [], ...extra });
@@ -88,10 +89,10 @@ describe.each(['OrderEditor.js', 'OrderEditorClassic.js'])('%s PO refresh', file
     const guardStart = source.indexOf('const _poFreshDupCheck=async(entries)=>');
     const guardEnd = source.indexOf('// The per-member', guardStart);
     const body = source.slice(guardStart, guardEnd).trim().replace(/^const _poFreshDupCheck=/, '').replace(/;$/, '');
-    const builder = data => ({select(){return this;},eq(){return this;},in(){return this;},then(resolve,reject){return Promise.resolve({data,error:null}).then(resolve,reject);}});
+    const builder = data => ({select(){return this;},eq(){return this;},in(){return this;},maybeSingle(){return Promise.resolve({data:{value:[]},error:null});},then(resolve,reject){return Promise.resolve({data,error:null}).then(resolve,reject);}});
     const supabase = {from: table => builder(table === 'so_items' ? [{id:'row-1',item_index:0}] : [{so_item_id:'row-1',po_id:'PO 60530 CSMSW',sizes:{M:3},cancelled:{}}])};
-    const check = o => Function('supabase','o','safeItems','safeNum','poCommitted','return ('+body+')')(
-      supabase,o,x=>x.items||[],x=>Number(x)||0,(lines,size)=>lines.reduce((sum,line)=>sum+Math.max(0,(line[size]||0)-(line.cancelled?.[size]||0)),0));
+    const check = o => Function('supabase','o','safeItems','safeNum','poCommitted','checkBatchPoReservations','_poBatchQueueRef','return ('+body+')')(
+      supabase,o,x=>x.items||[],x=>Number(x)||0,(lines,size)=>lines.reduce((sum,line)=>sum+Math.max(0,(line[size]||0)-(line.cancelled?.[size]||0)),0),checkBatchPoReservations,{current:[]});
     expect(await check(initial)([{idx:0,sizes:{M:1}}])).toEqual([{sku:'JX4456',pos:['PO 60530 CSMSW']}]);
     expect(await check(refresh(initial,incoming))([{idx:0,sizes:{M:1}}])).toBeNull();
   });
