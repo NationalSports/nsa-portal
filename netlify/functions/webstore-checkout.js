@@ -93,6 +93,7 @@ function publicStoreRow(row) {
   // purchasing thresholds, and automation controls belong to staff only.
   const store = Object.fromEntries(PUBLIC_STORE_FIELDS.split(',').filter((key) => row[key] !== undefined).map((key) => [key, row[key]]));
   store.org_type = row.org_type || null;
+  if (row.shipping_settings) store.shipping_settings = { mode: row.shipping_settings.mode, free_over_cents: row.shipping_settings.free_over_cents ?? null };
   if (row.org_type === 'all_school') store.all_school_settings = publicAllSchoolSettings(row.all_school_settings);
   return store;
 }
@@ -904,7 +905,7 @@ async function placeOrder(sb, body) {
   const coupon = coup.coupon;
 
   const cartTotal = r2(priced.subtotal + priced.fundraise);
-  const shippingResult = await quoteShipping(sb, store, priced.lines, ship, coupon && coupon.kind === 'free_shipping');
+  const shippingResult = await quoteShipping(sb, store, priced.lines, ship, coupon && coupon.kind === 'free_shipping', priced.subtotal);
   if (shippingResult.error) return bad(503, shippingResult.error, { code: shippingResult.code });
   const shipping = shippingResult.amount;
   const discount = couponDiscount(coupon, cartTotal, shipping);
@@ -1168,7 +1169,7 @@ async function quoteTotals(sb, body) {
   const coup = await loadCoupon(sb, store, couponCode);
   const coupon = coup.coupon;
   const cartTotal = r2(priced.subtotal + priced.fundraise);
-  const shippingResult = await quoteShipping(sb, store, priced.lines, ship, coupon && coupon.kind === 'free_shipping');
+  const shippingResult = await quoteShipping(sb, store, priced.lines, ship, coupon && coupon.kind === 'free_shipping', priced.subtotal);
   if (shippingResult.error) return bad(503, shippingResult.error, { code: shippingResult.code });
   const shipping = shippingResult.amount;
   const discount = couponDiscount(coupon, cartTotal, shipping);

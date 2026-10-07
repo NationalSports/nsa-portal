@@ -1,3 +1,4 @@
+import { needsShippingQuote, shippingConfig } from '../lib/webstoreShippingRules.shared';
 /* eslint-disable */
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Elements, PaymentElement, ExpressCheckoutElement, AddressElement, useStripe, useElements } from '@stripe/react-stripe-js';
@@ -44,7 +45,7 @@ const savePlayerToken = (slug, tok) => { try { if (tok) localStorage.setItem(pla
 const lineUnit = (l) => (Number(l.unit_price) || 0) + (Number(l.fundraise) || 0) + (Number(l.name_extra) || 0) + (Number(l.size_extra) || 0) + (Number(l.option_extra) || 0);
 const cartCount = (items) => items.reduce((a, l) => a + (l.qty || 1), 0);
 const cartTotal = (items) => items.reduce((a, l) => a + lineUnit(l) * (l.qty || 1), 0);
-const shipFee = (store) => store && store.delivery_mode === 'ship_home' ? (Number(store.flat_shipping) || 0) : 0;
+const shipFee = (store) => store && store.delivery_mode === 'ship_home' && !needsShippingQuote(store) ? (Number(store.flat_shipping) || 0) : 0;
 // Processing fee: a percent of the item subtotal only — base price + size/add-on
 // upcharges, excluding fundraising and name personalization (mirrors priceCart).
 const procPct = (store) => Math.max(0, Number(store && store.processing_pct) || 0);
@@ -2211,10 +2212,10 @@ function CartPage({ store, theme, cart, onUpdate }) {
           <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 20, textTransform: 'uppercase', letterSpacing: 0.5, color: theme.ink, marginBottom: 16 }}>Order Summary</div>
           <Row label="Subtotal" value={money(cartTotal(cart))} theme={theme} />
           <Row label="Custom decoration" value="Included" theme={theme} green />
-          <Row label={store.delivery_mode === 'ship_home' ? 'Shipping' : 'Team delivery'} value={shipFee(store) > 0 ? money(shipFee(store)) : 'Free'} theme={theme} green={shipFee(store) <= 0} />
+          <Row label={store.delivery_mode === 'ship_home' ? 'Shipping' : 'Team delivery'} value={needsShippingQuote(store) ? 'Calculated at checkout' : shipFee(store) > 0 ? money(shipFee(store)) : 'Free'} theme={theme} green={!needsShippingQuote(store) && shipFee(store) <= 0} />
           {procFeeAmt(store, cart) > 0 && <Row label={`Processing fee (${procPct(store)}%)`} value={money(procFeeAmt(store, cart))} theme={theme} />}
           <div style={{ borderTop: `1px solid ${theme.line}`, margin: '14px 0', paddingTop: 14, display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
-            <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 18, textTransform: 'uppercase', color: theme.ink }}>Total</span>
+            <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 18, textTransform: 'uppercase', color: theme.ink }}>{needsShippingQuote(store) ? 'Items and fees' : 'Total'}</span>
             <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 30, color: theme.primary }}>{money(grandTotal(store, cart))}</span>
           </div>
           <button className="sf-btn sf-skew" onClick={() => navTo('/shop/' + store.slug + '/checkout')} style={{ ...cta(theme), marginTop: 4 }}><span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>Checkout →</span></button>
@@ -2396,7 +2397,8 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   const [checkoutMsg, setCheckoutMsg] = useState('');
   useEffect(() => { checkoutCall({ action: 'settings' }).then((data) => setCheckoutMsg((data && data.checkout_message) || '')).catch(() => {}); }, []);
   const needAddr = store.delivery_mode === 'ship_home';
-  const liveShipping = needAddr && store.all_school_settings?.shipping?.mode === 'ups_live';
+  const liveShipping = needsShippingQuote(store);
+  const carrierShipping = shippingConfig(store).mode === 'ups_live';
   // Server-quoted sales tax: CA via CDTFA, registered out-of-state via TaxCloud. Quoted once
   // we can source tax (a complete ship address, or pickup which sources to NSA's location).
   const [quotedTotals, setTaxInfo] = useState(null);
@@ -2476,7 +2478,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   };
 
   const submitUnpaid = async () => {
-    if (!shippingReady) { setErr('Please wait for your UPS shipping quote before placing your order.'); return; }
+    if (!shippingReady) { setErr('Please wait for your shipping quote before placing your order.'); return; }
     setErr(''); setPriceNotice(false); if (!validBuyer) { setErr(needAddr ? 'Please complete your contact and shipping info.' : 'Please complete your name, email, player name and billing address.'); return; }
     setBusy(true);
     const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'unpaid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), clientRef: orderRefFor('unpaid'), rosterToken: player ? player.token : null });
@@ -2492,7 +2494,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   // the PaymentIntent with the SERVER total, then we show the card form. The
   // Stripe webhook flips it to paid even if the buyer closes the tab.
   const startCard = async () => {
-    if (!shippingReady) { setErr('Please wait for your UPS shipping quote before paying.'); return; }
+    if (!shippingReady) { setErr('Please wait for your shipping quote before paying.'); return; }
     setErr(''); setPriceNotice(false); if (!validBuyer) { setErr(needAddr ? 'Please complete your contact and shipping info.' : 'Please complete your name, email, player name and billing address.'); return; }
     setBusy(true);
     const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), clientRef: orderRefFor('paid'), rosterToken: player ? player.token : null });
@@ -2600,10 +2602,10 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
       </div>
 
       {discount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#16a34a', marginTop: 14 }}><span>Discount ({coupon.code})</span><span>−{money(discount)}</span></div>}
-      {ship_ > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginTop: discount > 0 ? 6 : 14 }}><span>{liveShipping ? 'UPS shipping' : 'Shipping (flat)'}</span><span>{money(ship_)}</span></div>}
-      {coupon && coupon.kind === 'free_shipping' && (liveShipping || shipFee(store) > 0) && shippingReady && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#16a34a', marginTop: 14 }}><span>Shipping</span><span>Free</span></div>}
-      {liveShipping && !shippingReady && <div role="status" style={{ fontSize: 13, color: quoteError ? '#b91c1c' : '#64748b', marginTop: 14 }}>{quoteError || (ship.street1 && ship.city && ship.state && ship.zip ? 'Calculating UPS shipping…' : 'Enter your shipping address for a live UPS quote.')}{quoteError && <button type="button" onClick={() => setQuoteGeneration((n) => n + 1)} style={{ marginLeft: 8, background: 'none', border: 0, textDecoration: 'underline', color: 'inherit', cursor: 'pointer' }}>Try again</button>}</div>}
-      {liveShipping && taxInfo && <div style={{ fontSize: 11, color: '#64748b', marginTop: 5 }}>Quoted from Orange using garment and packaging weights.</div>}
+      {ship_ > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginTop: discount > 0 ? 6 : 14 }}><span>{'Shipping'}</span><span>{money(ship_)}</span></div>}
+      {needAddr && ship_ === 0 && shippingReady && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#16a34a', marginTop: 14 }}><span>Shipping</span><span>Free</span></div>}
+      {liveShipping && !shippingReady && <div role="status" style={{ fontSize: 13, color: quoteError ? '#b91c1c' : '#64748b', marginTop: 14 }}>{quoteError || (ship.street1 && ship.city && ship.state && ship.zip ? 'Calculating shipping…' : 'Enter your shipping address to calculate shipping.')}{quoteError && <button type="button" onClick={() => setQuoteGeneration((n) => n + 1)} style={{ marginLeft: 8, background: 'none', border: 0, textDecoration: 'underline', color: 'inherit', cursor: 'pointer' }}>Try again</button>}</div>}
+      {carrierShipping && taxInfo && <div style={{ fontSize: 11, color: '#64748b', marginTop: 5 }}>Quoted from Orange using garment and packaging weights.</div>}
       {processing > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginTop: (discount > 0 || ship_ > 0) ? 6 : 14 }}><span>Processing fee ({procPct(store)}%)</span><span>{money(processing)}</span></div>}
       {taxInfo && Number(taxInfo.tax) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginTop: (discount > 0 || ship_ > 0 || processing > 0) ? 6 : 14 }}><span>Sales tax{taxInfo.tax_state ? ` (${taxInfo.tax_state})` : ''}</span><span>{money(Number(taxInfo.tax))}</span></div>}
       {needAddr && !taxInfo && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#94a3b8', marginTop: (discount > 0 || ship_ > 0 || processing > 0) ? 6 : 14 }}><span>Sales tax</span><span>Calculated at address</span></div>}
