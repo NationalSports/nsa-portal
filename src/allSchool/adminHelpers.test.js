@@ -93,3 +93,37 @@ it('number approval needs every exact configured digit and DTF production source
   expect(productionSetupError(item, digits.slice(0, 9))).toMatch(/digit 9/);
   expect(productionSetupError(item, digits.map((d) => ({ ...d, production_file: null })))).toMatch(/exact .ai/);
 });
+
+describe('normal visual art choices', () => {
+  const { schoolArtGroups, visualLogoCopies } = require('./adminHelpers');
+  const rows = [
+    { id: 'blue', kind: 'single', variant_group_id: 'original', sku: 'hoodie', sort_order: 1, decorations: [{ art_id: 'script', side: 'front' }] },
+    { id: 'black', kind: 'single', variant_group_id: 'original', sku: 'hoodie', sort_order: 2, decorations: [{ art_id: 'script', side: 'front' }] },
+  ];
+  const stock = { blue: { image_front_url: 'blank-blue' }, black: { image_front_url: 'blank-black' } };
+  test('a different logo offers a new choice across all colors using blank images', () => {
+    const [g] = schoolArtGroups(rows.map((r) => ({ ...r, image_url: 'old-mock' })), stock, 'block');
+    expect(g.addingChoice).toBe(true);
+    expect(g.items.map((r) => r.img)).toEqual(['blank-blue', 'blank-black']);
+  });
+  test('the same art selects its existing design without duplicating colors or unrelated items', () => {
+    const linked = rows.map((r) => ({ ...r, school_style_group_id: 'listing' }));
+    const second = { ...linked[0], id: 'alternate', variant_group_id: 'second', decorations: [{ art_id: 'block' }] };
+    const groups = schoolArtGroups([...linked, second, { ...rows[0], id: 'unrelated', variant_group_id: null }], stock, 'block');
+    expect(groups).toHaveLength(2);
+    expect(groups[0].addingChoice).toBe(false);
+    expect(groups[0].items.map((r) => r.id)).toEqual(['alternate']);
+    expect(groups[0].choices).toHaveLength(2);
+  });
+  test('a blank garment gets its first art without creating an alternate', () => {
+    expect(schoolArtGroups([{ ...rows[0], decorations: [] }], stock, 'script')[0].addingChoice).toBe(false);
+  });
+  test('new choices preserve exact placement and require all blank color images', () => {
+    const entries = rows.map((r) => ({ id: r.id, image_url: stock[r.id].image_front_url, decorations: [{ art_id: 'block', x: 47, y: 31, w: 36 }] }));
+    const copies = visualLogoCopies(rows, rows, entries);
+    expect(copies[0].decorations).toEqual(entries[0].decorations);
+    expect(copies[0].production_approved_at).toBeNull();
+    expect(() => visualLogoCopies(rows, rows, entries.slice(1))).toThrow('every color');
+    expect(() => visualLogoCopies(rows, rows, entries.map((r) => ({ ...r, image_url: null })))).toThrow('blank garment');
+  });
+});

@@ -9,7 +9,7 @@ import AllSchoolSettings from './allSchool/AllSchoolSettings';
 import AllSchoolPrograms from './allSchool/AllSchoolPrograms';
 import SchoolLogoOptionsEditor from './allSchool/SchoolLogoOptionsEditor';
 import DecorationStockForm, { DECORATION_TYPES, APPLICATION_METHODS } from './allSchool/DecorationStockForm';
-import { normalizeAllSchoolSettings, validateAllSchoolSettings, stockLinkedArtError, changesProductionSetup, logoDesignCopies } from './allSchool/adminHelpers';
+import { normalizeAllSchoolSettings, validateAllSchoolSettings, stockLinkedArtError, changesProductionSetup, logoDesignCopies, schoolArtGroups, frontArt, visualLogoCopies } from './allSchool/adminHelpers';
 import { openSharedProductionPacket } from './productionPacket/api';
 import { attachStoreGarmentMocks } from './lib/storeGarmentMocks';
 /* eslint-disable */
@@ -2737,14 +2737,15 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (error || data?.length !== rows.length) { flash('Sport copies not saved: ' + (error?.message || 'Write was blocked')); return false; }
     flash(`Created ${data.length} sport offerings`); loadDetail(sel); return true;
   }, [sel, flash, loadDetail]);
-  const createSchoolLogoOption = useCallback(async (source, currentLabel, newLabel, stock, logo) => {
+  const createSchoolLogoOption = useCallback(async (source, currentLabel, newLabel, stock, logo, visualEntries) => {
     if (sel?.org_type !== 'all_school' || !source?.id) return false;
     const sourceGroup = source.variant_group_id || source.id;
     const sourceRows = (detail?.catalog || []).filter((row) => row.kind === 'single' && (row.variant_group_id || row.id) === sourceGroup);
     if (!sourceRows.length) return false;
     const styleGroupId = source.school_style_group_id || crypto.randomUUID();
     const designGroupId = crypto.randomUUID();
-    const copies = logoDesignCopies(sourceRows, sel.id, styleGroupId, designGroupId, newLabel, stock, logo);
+    let copies = logoDesignCopies(sourceRows, sel.id, styleGroupId, designGroupId, newLabel, stock, logo);
+    if (visualEntries) copies = visualLogoCopies(copies, sourceRows, visualEntries);
     const { data: updated, error: linkError } = await supabase.from('webstore_products').update({ school_style_group_id: styleGroupId, school_design_label: currentLabel }).eq('store_id', sel.id).in('id', sourceRows.map((row) => row.id)).select('id');
     if (linkError || updated?.length !== sourceRows.length) { flash('Logo option not saved: ' + (linkError?.message || 'Could not link every source color')); return false; }
     const { data: inserted, error: insertError } = await supabase.from('webstore_products').insert(copies).select('id');
@@ -3162,12 +3163,46 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // Bulk apply — each entry carries the item's COMPLETE new decorations array (the Art
   // tab computes it: replace the logo on each side it's placing, preserve the other side
   // and personalization tokens). Written in one pass with a single flash/reload.
-  const applyLogoBulk = useCallback(async (entries) => {
+  const applyLogoBulk = useCallback(async (entries, artChoice) => {
+    let added = 0;
+    if (sel?.org_type === 'all_school' && artChoice) {
+      const pending = [];
+      const newGroups = new Map();
+      for (const entry of entries) {
+        const row = (detail?.catalog || []).find((r) => r.id === entry.id);
+        const existing = frontArt(row);
+        if (existing && existing.art_id !== artChoice.id) {
+          const key = row.variant_group_id || row.id;
+          if (!newGroups.has(key)) newGroups.set(key, { row, entries: [] });
+          newGroups.get(key).entries.push(entry);
+        } else {
+          // Moving an existing stock-linked logo keeps its production identity.
+          pending.push({ ...entry, decorations: entry.decorations.map((d) => d.art_id === existing?.art_id && existing?.transfer_code ? { ...d, transfer_code: existing.transfer_code, type: existing.type } : d) });
+        }
+      }
+      for (const entry of pending) {
+        const blocked = stockLinkedArtError(detail.catalog.find((r) => r.id === entry.id), entry.decorations);
+        if (blocked) { flash(blocked); return 0; }
+      }
+      // Validate all new choices before any writes.
+      for (const group of newGroups.values()) {
+        const rows = detail.catalog.filter((r) => (r.variant_group_id || r.id) === (group.row.variant_group_id || group.row.id));
+        visualLogoCopies(rows, rows, group.entries);
+      }
+      for (const group of newGroups.values()) {
+        const oldArt = frontArt(group.row);
+        const label = group.row.school_design_label || (sel.art_files || []).find((a) => a.id === oldArt?.art_id)?.name || 'Original logo';
+        const created = await createSchoolLogoOption(group.row, label, artChoice.name || 'Another logo', null, artChoice, group.entries);
+        if (!created) return 0;
+        added += group.entries.length;
+      }
+      entries = pending;
+    }
     if (sel?.org_type === 'all_school') for (const { id, decorations } of entries) {
       const blocked = stockLinkedArtError((detail?.catalog || []).find((c) => c.id === id), decorations);
       if (blocked) { flash(blocked); return 0; }
     }
-    let n = 0, fails = 0;
+    let n = added, fails = 0;
     for (const { id, decorations } of entries) {
       const { error } = await supabase.from('webstore_products').update({ decorations, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', id);
       if (error) fails += 1; else n += 1;
@@ -3175,7 +3210,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     flash(fails ? `Logo applied to ${n} item${n === 1 ? '' : 's'} — ${fails} failed` : `Logo applied to ${n} item${n === 1 ? '' : 's'}`);
     loadDetail(sel);
     return n;
-  }, [sel, detail, flash, loadDetail]);
+  }, [sel, detail, flash, loadDetail, createSchoolLogoOption]);
 
   const setItemDecorations = useCallback(async (itemId, decorations) => {
     if (sel?.org_type === 'all_school') {
@@ -12288,7 +12323,6 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
 function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onSaveArtFolder, onAttachWebLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory = {}, onSavePlacementMemory, canMock, onOpenMockBuilder, isAllSchool = false, schoolLogoOptions = [], firstSchoolLogoByStyle = {}, onSetFirstSchoolLogo, schoolTransfers = [], schoolStaffId, onCreateSchoolLogoOption, onUpdateSchoolLogoOption, onUpdateSchoolItem, onOpenSchoolItem }) {
   const singles = (catalog || []).filter((c) => c.kind === 'single');
   const [activeId, setActiveId] = useState(storeArt[0]?.id || null);
-  const [schoolItemId, setSchoolItemId] = useState('');
   const [placement, setPlacement] = useState('left_chest');
   const [selected, setSelected] = useState(() => new Set()); // STYLE keys chosen for apply — a style card covers all its colors
   const [bulkOpen, setBulkOpen] = useState(true); // the apply-to-items grid IS the main flow — open by default after art is in (collapsible via ✕ Close)
@@ -12400,8 +12434,8 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
 
   // Group store items into styles, each with its colorways; stamp the style key on each
   // item so placement (per style) and drag can resolve it.
-  const groups = [];
-  { const m = new Map();
+  const groups = isAllSchool ? schoolArtGroups(catalog, stockByWp, activeId) : [];
+  if (!isAllSchool) { const m = new Map();
     for (const it of singles) {
       const st = stockByWp[it.id] || {};
       const key = (it.display_name || st.name || it.sku || '').toUpperCase();
@@ -12627,10 +12661,10 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
           const sides = new Set(newDecos.map((d) => d.side));
           const existing = Array.isArray(it.decorations) ? it.decorations : [];
           const kept = existing.filter((d) => isPerso(d) || !sides.has(d.side || 'front'));
-          entries.push({ id: it.id, decorations: [...kept, ...newDecos] });
+          entries.push({ id: it.id, decorations: [...kept, ...newDecos], image_url: it.img, image_back_url: it.backImg });
         }
       }
-      const n = await onApplyLogoBulk(entries);
+      const n = await onApplyLogoBulk(entries, isAllSchool && !linkOnly ? { ...activeArt, url: activeUrl } : null);
       // Remember each style's final front placement per garment type, so the next
       // hoodie/tee/polo seeds where reps actually put it (quiet write, shared by all reps).
       // Skip for link-only — nothing was visually placed, so there's no placement to learn.
@@ -12774,18 +12808,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
         {!activeUrl && activeArt && <div style={{ marginTop: 10, fontSize: 12.5, color: '#92400e', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>This logo has no web-ready image (likely .ai / mockup only). Attach a clean transparent PNG or SVG to place &amp; recolor it: <WebLogoSlot art={activeArt} onAttach={onAttachWebLogo} onSaveForCw={onSaveRepWebLogo} /></div>}
         </>)}
       </div></div>
-      {isAllSchool && <div className="card" style={{ padding: 16, marginBottom: 12 }}>
-        <h3 style={{ margin: '0 0 6px' }}>Offer a second logo on a garment</h3>
-        <p style={{ margin: '0 0 12px', fontSize: 12, color: '#64748b' }}>Select a garment, then add this page’s selected logo as another shopper choice. You can manage its mockups and publishing here too.</p>
-        <label style={{ display: 'grid', gap: 5, maxWidth: 520, fontSize: 12, fontWeight: 700 }}>Choose the garment
-          <select className="form-select" value={schoolItemId} onChange={(e) => setSchoolItemId(e.target.value)}>
-            <option value="">Choose item…</option>
-            {catalog.filter((row) => row.kind === 'single' && catalog.findIndex((candidate) => candidate.kind === 'single' && (candidate.variant_group_id || candidate.id) === (row.variant_group_id || row.id)) === catalog.indexOf(row)).map((row) => <option key={row.id} value={row.id}>{row.display_name || row.sku} · {row.sku}</option>)}
-          </select>
-        </label>
-        {schoolItemId && catalog.find((row) => row.id === schoolItemId) && <div style={{ marginTop: 12 }}><SchoolLogoOptionsEditor key={schoolItemId} item={catalog.find((row) => row.id === schoolItemId)} catalog={catalog} logoOptions={schoolLogoOptions} firstLogoByStyle={firstSchoolLogoByStyle} onSetFirst={onSetFirstSchoolLogo} selectedLogoId={activeArt?.id} transfers={schoolTransfers} art={[...storeArtLive, ...libraryArt]} stockByWp={stockByWp} staffId={schoolStaffId} onCreate={onCreateSchoolLogoOption} onUpdate={onUpdateSchoolLogoOption} onSaveItem={onUpdateSchoolItem} onEdit={onOpenSchoolItem} /></div>}
-      </div>}
-
+      {isAllSchool && <p style={{ fontSize: 13, color: '#475569' }}>Pick a logo, select a garment below, position it, and Apply. A different logo adds another art choice; selecting an existing logo edits that choice. New choices stay hidden until reviewed and published.</p>}
       {/* 2 · Bulk apply — opt-in. After bringing art in, the rep chooses to bulk-apply
           a logo: pick a starting placement, select items, Autocolor + drag to fine-tune,
           then apply & review them together. */}
@@ -12851,7 +12874,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                 {/* logos already on the shown color+side (other than the one we're placing) —
                     resolved per color (cw_by_color / web-logo variant), never the raw art_url,
                     which may be a different color's cutout. */}
-                {(item.decorations || []).filter((d) => d && !d.baked && (d.side || 'front') === sideNow && !isPerso(d) && !(selG && activeArt && d.art_id === activeArt.id)).map((d, di) => { const dp = ART_PLACEMENTS.find((x) => x.id === d.placement) || place; const dx = d.x != null ? d.x : dp.x; const dy = d.y != null ? d.y : dp.y; const dw = d.w != null ? d.w : dp.w; const wl = (storeArtLive.find((a) => a.id === d.art_id) || libraryArt.find((a) => a.id === d.art_id) || {}).web_logos; const u = decoUrlForColor(d, item.color, wl); return u ? <img key={'ad' + di} src={u} alt="" draggable={false} style={{ position: 'absolute', left: `${dx}%`, top: `${dy}%`, width: `${dw}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none' }} /> : null; })}
+                {(item.decorations || []).filter((d) => d && !d.baked && (d.side || 'front') === sideNow && !isPerso(d) && !(selG && activeArt && (isAllSchool || d.art_id === activeArt.id))).map((d, di) => { const dp = ART_PLACEMENTS.find((x) => x.id === d.placement) || place; const dx = d.x != null ? d.x : dp.x; const dy = d.y != null ? d.y : dp.y; const dw = d.w != null ? d.w : dp.w; const wl = (storeArtLive.find((a) => a.id === d.art_id) || libraryArt.find((a) => a.id === d.art_id) || {}).web_logos; const u = decoUrlForColor(d, item.color, wl); return u ? <img key={'ad' + di} src={u} alt="" draggable={false} style={{ position: 'absolute', left: `${dx}%`, top: `${dy}%`, width: `${dw}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none' }} /> : null; })}
                 {/* the logo being placed — draggable; corner square resizes; moves the whole style */}
                 {activeUrl && selG && bgImg && (
                   <div onPointerDown={(e) => startDrag(e, g, item, 'move', sideNow)} style={{ position: 'absolute', left: `${pl.x}%`, top: `${pl.y}%`, width: `${pl.w}%`, transform: 'translate(-50%,-50%)', cursor: 'move', outline: '2px solid rgba(79,70,229,.7)', outlineOffset: 1, touchAction: 'none', zIndex: 2 }}>
@@ -12868,6 +12891,17 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                 {!selG && has && <button onClick={(e) => { e.stopPropagation(); removeArtFromStyle(g); }} title={`Remove ${activeArt.name || 'this logo'} from ${g.name}`} style={{ position: 'absolute', top: 6, right: 6, background: '#166534', color: '#fff', fontSize: 9, fontWeight: 800, padding: '2px 7px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3, border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>Applied <span style={{ fontSize: 11, lineHeight: 1, opacity: 0.85 }} aria-label="remove">✕</span></button>}
                 {nudged && !showBack && selG && <span title="This color has its own placement" style={{ position: 'absolute', bottom: 6, left: 6, background: '#b45309', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 5px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3 }}>Nudged</span>}
               </div>
+              {isAllSchool && <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 5 }}>{g.addingChoice && selG ? 'Adds another art choice' : 'Art choices'}</div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{g.choices.filter((choice) => frontArt(choice.row)).map((choice) => {
+                  const deco = frontArt(choice.row);
+                  const art = storeArtLive.find((a) => a.id === deco.art_id) || libraryArt.find((a) => a.id === deco.art_id);
+                  return <button key={choice.key} title={choice.row.school_design_label || art?.name || 'Edit art choice'} onClick={() => { if (art) { pickArt(art); setSelected(new Set([g.key])); } else onOpenSchoolItem?.(choice.row.id); }} style={{ border: deco.art_id === activeId ? '2px solid #4f46e5' : '1px solid #cbd5e1', borderRadius: 7, background: '#fff', padding: 5, cursor: 'pointer' }}>
+                    <img src={deco.art_url || artPlaceUrl(art)} alt={choice.row.school_design_label || art?.name || 'Logo'} style={{ width: 42, height: 32, objectFit: 'contain' }} />
+                  </button>;
+                })}</div>
+                {!!g.choices.length && <button className="btn btn-sm" style={{ marginTop: 5, fontSize: 10 }} onClick={() => onOpenSchoolItem?.(g.items[0].id)}>Manage choices / Show first →</button>}
+              </div>}
               {/* color name + pager dots */}
               <div style={{ marginTop: 6, textAlign: 'center' }}>
                 <div style={{ fontSize: 11.5, fontWeight: 700, color: '#334155', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.color || '—'}{multi && <span style={{ fontWeight: 600, color: '#94a3b8' }}> · {idx + 1}/{g.items.length}</span>}</div>

@@ -87,3 +87,35 @@ export const stockLinkedArtError = (item, decorations) => {
 };
 
 export const changesProductionSetup = (fields) => ['decorations', 'transfer_codes', 'transfer_code', 'num_transfer_sets', 'num_transfer_size', 'num_transfer_color', 'takes_name', 'takes_number', 'personalization_template', 'product_id', 'sku', 'sizes_offered', 'size_sku_overrides', 'options'].some((key) => Object.prototype.hasOwnProperty.call(fields || {}, key));
+
+// Keep one visual card per shopper listing, and edit the selected art's own colors.
+export const schoolArtGroups = (catalog, stockByWp, artId) => {
+  const listings = new Map();
+  for (const row of catalog.filter((r) => r.kind === 'single')) {
+    const key = row.school_style_group_id || row.variant_group_id || row.id;
+    if (!listings.has(key)) listings.set(key, row);
+  }
+  return [...listings].map(([key, first]) => {
+    const choices = logoOptionsForItem(catalog, first);
+    const matching = choices.find((choice) => choice.colors.some((row) => frontArt(row)?.art_id === artId));
+    const choice = matching || choices[0];
+    const addingChoice = !!artId && !matching && choice.colors.some((row) => !!frontArt(row));
+    const st = stockByWp[choice.row.id] || {};
+    return { key, name: choice.row.display_name || st.name || choice.row.sku, choices, addingChoice,
+      items: choice.colors.map((row) => {
+        const stock = stockByWp[row.id] || {};
+        return { id: row.id, sku: row.sku, img: addingChoice ? stock.image_front_url : row.image_url || stock.image_front_url,
+          backImg: stock.image_back_url || '', color: stock.color || '', decorations: row.decorations || [], styleKey: key };
+      }) };
+  });
+};
+export const frontArt = (row) => (row?.decorations || []).find((d) => d && !['perso_name', 'perso_number'].includes(d.kind) && (d.side || 'front') === 'front' && (d.art_id || d.art_url));
+export const visualLogoCopies = (copies, sources, entries) => {
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  if (sources.length !== entries.length || sources.some((row) => !byId.get(row.id)?.image_url)) throw new Error('A blank garment image is needed for every color before adding another art choice.');
+  return copies.map((copy, index) => {
+    const entry = byId.get(sources[index].id);
+    return { ...copy, image_url: entry.image_url, image_back_url: entry.image_back_url || null,
+      decorations: entry.decorations, production_approved_at: null, production_approved_by: null };
+  });
+};
