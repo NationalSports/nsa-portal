@@ -79,6 +79,8 @@ function publicAllSchoolSettings(settings) {
   const raw = settings && typeof settings === 'object' ? settings : {};
   const shipping = raw.shipping && typeof raw.shipping === 'object' ? raw.shipping : {};
   const pick = (source, keys) => Object.fromEntries(keys.filter((key) => source[key] != null).map((key) => [key, source[key]]));
+  const firstLogoByStyle = Object.fromEntries(Object.entries(raw.first_logo_by_style && typeof raw.first_logo_by_style === 'object' ? raw.first_logo_by_style : {})
+    .filter(([styleId, designId]) => /^[a-zA-Z0-9_-]{1,80}$/.test(styleId) && typeof designId === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(designId)).slice(0, 500));
   return {
     ...pick(raw, ['target_ship_days', 'hero_heading', 'hero_subheading', 'hero_title', 'hero_subtitle', 'hero_background_text']),
     show_promo_banner: raw.show_promo_banner === true,
@@ -88,6 +90,7 @@ function publicAllSchoolSettings(settings) {
     ].filter(([key]) => typeof raw[key] === 'string').map(([key, max]) => [key, safeText(raw[key], max)])),
     programs: (Array.isArray(raw.programs) ? raw.programs : []).slice(0, 100).map((program) =>
       pick(program && typeof program === 'object' ? program : {}, ['id', 'name', 'label', 'slug', 'sport', 'color', 'description', 'image_url'])),
+    ...(Object.keys(firstLogoByStyle).length ? { first_logo_by_style: firstLogoByStyle } : {}),
     shipping: { mode: shipping.mode === 'ups_live' ? 'ups_live' : 'flat', service_code: shipping.service_code || null },
   };
 }

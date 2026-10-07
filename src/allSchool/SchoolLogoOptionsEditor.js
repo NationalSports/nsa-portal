@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { logoOptionsForItem } from './adminHelpers';
 import ProductionSetupReview from './ProductionSetupReview';
 
-export default function SchoolLogoOptionsEditor({ item, catalog = [], logoOptions = [], transfers = [], art = [], stockByWp = {}, staffId, selectedLogoId, onCreate, onUpdate, onSaveItem, onEdit }) {
+export default function SchoolLogoOptionsEditor({ item, catalog = [], logoOptions = [], firstLogoByStyle = {}, onSetFirst, transfers = [], art = [], stockByWp = {}, staffId, selectedLogoId, onCreate, onUpdate, onSaveItem, onEdit }) {
   const [open, setOpen] = useState(false);
   const [currentName, setCurrentName] = useState(item.school_design_label || 'Original logo');
   const [newName, setNewName] = useState('');
@@ -14,6 +14,7 @@ export default function SchoolLogoOptionsEditor({ item, catalog = [], logoOption
   const [reviewItem, setReviewItem] = useState(null);
   useEffect(() => { if (selectedLogoId) { setLogoId(selectedLogoId); setDesignCode(''); setNewName(logoOptions.find((row) => row.id === selectedLogoId)?.name?.slice(0, 80) || ''); } }, [selectedLogoId]);
   const choices = logoOptionsForItem(catalog, item);
+  const defaultChoice = choices.find(({ key, colors }) => key === firstLogoByStyle[item.school_style_group_id] && colors.every((color) => color.active !== false))?.key || choices.find(({ colors }) => colors.some((color) => color.active !== false))?.key;
   const readyDesigns = transfers.filter((row) => row.kind === 'design' && (row.decoration_type || 'dtf') === 'dtf' && row.production_file?.bucket && row.production_file?.path && /\.ai$/i.test(row.production_file.name || row.production_file.path) && Number(row.width_in) > 0 && Number(row.height_in) > 0);
   const selectedLogo = logoOptions.find((row) => row.id === logoId);
   const nonDtf = selectedLogo?.deco_type && selectedLogo.deco_type !== 'dtf';
@@ -36,7 +37,7 @@ export default function SchoolLogoOptionsEditor({ item, catalog = [], logoOption
   };
   return <section aria-label="Logo choices for this item" style={{ border: '1px solid #dbe3ef', borderRadius: 12, padding: 16, marginBottom: 18, background: '#fff' }}>
     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-      <div><h3 style={{ margin: 0, fontSize: 17 }}>Logo choices for this item</h3><p style={{ margin: '4px 0 0', fontSize: 12, color: '#64748b' }}>One shopper listing can offer more than one design across its garment colors.</p></div>
+      <div><h3 style={{ margin: 0, fontSize: 17 }}>Logo choices for this item</h3><p style={{ margin: '4px 0 0', fontSize: 12, color: '#64748b' }}>Choose which logo shows first here. Drag the color thumbnails below to choose that logo’s first color.</p></div>
       <button type="button" className="btn btn-sm btn-primary" onClick={() => { if (!open && !newName.trim() && selectedLogo?.name) setNewName(selectedLogo.name.slice(0, 80)); setOpen((value) => !value); }}>{open ? 'Cancel' : '+ Add logo option'}</button>
     </div>
     <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
@@ -44,6 +45,7 @@ export default function SchoolLogoOptionsEditor({ item, catalog = [], logoOption
         <input aria-label={`Name for ${row.school_design_label || 'original logo'}`} className="form-input" style={{ width: 175 }} value={labelEdits[key] ?? row.school_design_label ?? 'Original logo'} onChange={(e) => setLabelEdits((edits) => ({ ...edits, [key]: e.target.value }))} />
         <button type="button" className="btn btn-sm btn-secondary" disabled={busy || !labelEdits[key]?.trim() || labelEdits[key].trim() === row.school_design_label} onClick={async () => { setBusy(true); try { if (await onUpdate(row, { school_design_label: labelEdits[key].trim() })) { setMessage('Logo name updated for every color.'); setLabelEdits((edits) => { const next = { ...edits }; delete next[key]; return next; }); } } finally { setBusy(false); } }}>Save name</button>
         <span style={{ color: '#64748b' }}>{colors.length} color{colors.length === 1 ? '' : 's'} · {ready ? 'production approved' : 'needs mockup/approval'}</span>
+        {choices.length > 1 && (key === defaultChoice ? <b style={{ color: '#166534' }}>Shows first</b> : <button type="button" className="btn btn-sm btn-secondary" disabled={busy || !ready || !live || !onSetFirst} title={!ready || !live ? 'Publish and approve every color before showing this logo first' : ''} onClick={async () => { setBusy(true); try { if (await onSetFirst(row)) setMessage('This logo now shows first on the customer preview. Its first color leads the image.'); else setMessage('Approve and publish every color in this logo choice first.'); } finally { setBusy(false); } }}>Show first</button>)}
         {nextReview && onSaveItem && <button type="button" className="btn btn-sm btn-secondary" onClick={() => setReviewItem(nextReview)}>Review setup</button>}
         {row.id !== item.id && <button type="button" className="btn btn-sm btn-secondary" onClick={() => onEdit?.(row.id, 'art')}>Edit mockups</button>}
         <button type="button" className="btn btn-sm btn-secondary" disabled={busy || (!ready && !live)} onClick={async () => { setBusy(true); try { if (await onUpdate(row, { active: !live })) setMessage(live ? 'Logo choice hidden from shoppers.' : 'Logo choice is live for shoppers.'); } finally { setBusy(false); } }}>{live ? 'Hide from store' : 'Publish choice'}</button>

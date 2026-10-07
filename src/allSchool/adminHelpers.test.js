@@ -5,6 +5,7 @@ it('uses $200 per vendor defaults with safe automation off and independent confi
   const a = allSchoolDefaults(); const b = allSchoolDefaults(); a.purchasing.enabled = true;
   expect(b.purchasing.enabled).toBe(false); expect(b.purchasing.minimum_cents).toBe(20000); expect(b.target_ship_days).toBe(14);
   expect(normalizeAllSchoolSettings({ dtf: { supplier_id: 'Astra' } }).dtf).toEqual({ supplier_id: 'Astra', auto_send: false });
+  expect(normalizeAllSchoolSettings({ first_logo_by_style: { hoodie: 'arch' } }).first_logo_by_style).toEqual({ hoodie: 'arch' });
   expect(validateAllSchoolSettings(b)).toBe('');
   expect(validateAllSchoolSettings({ purchasing: { max_wait_days: 20 } })).toMatch(/shipment target/);
 });

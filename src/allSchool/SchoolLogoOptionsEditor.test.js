@@ -41,3 +41,12 @@ test('manages names and publishing beside the item artwork', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Publish choice' }));
   await waitFor(() => expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ id: 'hoodie' }), { active: true }));
 });
+test('a published logo can be selected as the first customer preview', async () => {
+  const onSetFirst = jest.fn(async () => true);
+  const approved = { ...row, production_approved_at: '2026-10-07', production_approved_by: 'staff', image_url: 'mock.png', active: true, school_style_group_id: 'listing' };
+  const alternate = { ...approved, id: 'arch', variant_group_id: 'arch-group', school_design_label: 'Arched Serra' };
+  render(<SchoolLogoOptionsEditor {...base} item={approved} catalog={[approved, alternate]} onSetFirst={onSetFirst} />);
+  expect(screen.getByText('Shows first')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Show first' }));
+  await waitFor(() => expect(onSetFirst).toHaveBeenCalledWith(alternate));
+});

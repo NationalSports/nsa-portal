@@ -284,7 +284,7 @@ const nameInput = (p, value) => (nameUppercase(p) ? String(value).toUpperCase() 
 // Group color variants of one garment (rows sharing variant_group_id) so the grid
 // shows one card and the product page offers a color picker. Bundles never group.
 const variantKey = (p) => p.variant_group_id || p.webstore_product_id;
-export function groupProducts(list, schoolScoped = false) {
+export function groupProducts(list, schoolScoped = false, firstLogoByStyle = {}) {
   const byKey = new Map(); const order = [];
   for (const p of (list || [])) {
     const k = p.kind === 'bundle' ? ('b:' + p.webstore_product_id) : schoolScoped ? schoolVariantGroupKey(p, p.school_style_group_id || variantKey(p)) : variantKey(p);
@@ -294,7 +294,15 @@ export function groupProducts(list, schoolScoped = false) {
   // The first row (lowest sort_order — the list is ordered by sort_order) is the primary: it
   // supplies the card image and the default-selected color. Reordering colors in the builder
   // changes which color leads here.
-  return order.map((k) => { const rows = byKey.get(k); return { key: k, rep: rows[0], rows }; });
+  return order.map((k) => {
+    const rows = byKey.get(k);
+    const preferred = schoolScoped && firstLogoByStyle[rows[0]?.school_style_group_id];
+    const orderedRows = preferred ? [
+      ...rows.filter((row) => (row.variant_group_id || row.webstore_product_id) === preferred),
+      ...rows.filter((row) => (row.variant_group_id || row.webstore_product_id) !== preferred),
+    ] : rows;
+    return { key: k, rep: orderedRows[0], rows: orderedRows };
+  });
 }
 // Effective stock counts on-hand warehouse + Adidas vendor (drop-ship) stock.
 const effOnHand = (p) => sumSizes(p.size_stock) + (Number(p.vendor_on_hand) || 0);
@@ -721,9 +729,9 @@ export default function Storefront() {
       <main id={MAIN_ID} style={{ flex: 1 }}>
         {route.view === 'home' && <Home store={store} theme={theme} products={shownProducts} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} onCat={onCat} onResetFilters={resetBrowse} query={query} schoolProgram={schoolProgram} onSchoolProgram={onSchoolProgram} setQuery={setQuery} />}
         {route.view === 'p' && (() => {
-          const grp = groupProducts(shownProducts, allSchool).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
+          const grp = groupProducts(shownProducts, allSchool, store.all_school_settings?.first_logo_by_style || {}).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
           const rep = grp ? grp.rep : shownProducts.find((p) => p.webstore_product_id === route.id);
-          return <Wrap><ProductPage store={store} theme={theme} product={rep} colorRows={grp ? grp.rows : (rep ? [rep] : [])} isOpen={isOpen} onAdd={addToCart} player={playerCtx} onCat={onCat} /></Wrap>;
+          return <Wrap><ProductPage store={store} theme={theme} product={rep} colorRows={grp ? grp.rows : (rep ? [rep] : [])} selectedProductId={route.id} isOpen={isOpen} onAdd={addToCart} player={playerCtx} onCat={onCat} /></Wrap>;
         })()}
         {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={shownProducts.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} products={[...products, ...compExtras]} isOpen={isOpen} onAdd={addToCart} player={playerCtx} /></Wrap>}
         {route.view === 'cart' && <Wrap><CartPage store={store} theme={theme} cart={cart} onUpdate={updateCart} /></Wrap>}
@@ -1275,13 +1283,14 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
 // one color variant must never expose another program's decorated offering.
 function AllSchoolHome({ store, theme, products, bundleItems, compInfo, compExtras, cat, onCat, onResetFilters, query, program, onProgram, setQuery }) {
   const programRows = products.filter((p) => schoolProductMatches(p, program));
-  const grouped = groupProducts(programRows, true);
+  const firstLogoByStyle = store.all_school_settings?.first_logo_by_style || {};
+  const grouped = groupProducts(programRows, true, firstLogoByStyle);
   const categories = [...new Set(grouped.map((g) => productCategory(g.rep)).filter(Boolean))];
   const q = query.trim().toLowerCase();
   const visible = grouped.filter((g) => (cat === 'all' || productCategory(g.rep) === cat) && (!q || g.rows.some((p) => [p.name, p.store_category, p.category, p.color, p.brand, p.sku].filter(Boolean).some((v) => String(v).toLowerCase().includes(q)))));
   const wpById = buildWpById([...products, ...compExtras]);
   return <>
-    <AllSchoolIntro store={store} theme={theme} products={groupProducts(products, true).map((g) => g.rep)} selectedProgram={program} onProgram={onProgram} onShop={onResetFilters} />
+    <AllSchoolIntro store={store} theme={theme} products={groupProducts(products, true, firstLogoByStyle).map((g) => g.rep)} selectedProgram={program} onProgram={onProgram} onShop={onResetFilters} />
     <section id="shop-grid" aria-label="Shop school products" style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(35px,5vw,66px) 24px clamp(52px,6.5vw,84px)', scrollMarginTop: 130 }}>
       <AllSchoolBrowse store={store} program={program} onProgram={onProgram} categories={categories} category={cat} onCategory={onCat} query={query} setQuery={setQuery} count={visible.length} onReset={onResetFilters} />
       {visible.length ? <div className="sf-grid">{visible.map(({ rep, rows }) => {
@@ -1737,8 +1746,9 @@ function swatchColor(name) {
 }
 
 // ── Single product ───────────────────────────────────────────────────
-function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd, player = null, onCat = null }) {
-  const [colorId, setColorId] = useState(rep ? rep.webstore_product_id : null);
+function ProductPage({ store, theme, product: rep, colorRows = [], selectedProductId = null, isOpen, onAdd, player = null, onCat = null }) {
+  const initialColorId = colorRows.some((row) => row.webstore_product_id === selectedProductId) ? selectedProductId : rep?.webstore_product_id || null;
+  const [colorId, setColorId] = useState(initialColorId);
   const [size, setSize] = useState(null);
   const [img, setImg] = useState('front');
   const [num, setNum] = useState('');
@@ -1747,7 +1757,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const [qty, setQty] = useState(1);
   const [added, setAdded] = useState(false);
   // Reset the picked color / size when navigating to a different product.
-  useEffect(() => { setColorId(rep ? rep.webstore_product_id : null); setSize(null); setImg('front'); setAddOnValues({}); }, [rep ? rep.webstore_product_id : null]);
+  useEffect(() => { setColorId(initialColorId); setSize(null); setImg('front'); setAddOnValues({}); }, [initialColorId]);
   // Prefill personalization from the player's roster link — jersey number is the
   // high-value bit; name is prefilled too but stays editable.
   useEffect(() => {

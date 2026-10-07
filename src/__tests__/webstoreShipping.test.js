@@ -129,6 +129,10 @@ describe('all-school public data and frozen production recipes', () => {
     expect(publicStore.all_school_settings).toEqual({ programs: [{ id: 'football', name: 'Football' }], target_ship_days: 14, show_promo_banner: false, shipping: { mode: 'ups_live', service_code: 'ups_ground' } });
     expect(JSON.stringify(publicStore)).not.toMatch(/private|threshold_cents|package_weight_oz/);
   });
+  test('public settings expose only safe first-logo choices', () => {
+    const settings = checkout.publicAllSchoolSettings({ first_logo_by_style: { hoodie: 'arch', 'unsafe<script>': 'other', shirt: 42 } });
+    expect(settings.first_logo_by_style).toEqual({ hoodie: 'arch' });
+  });
 
   test('a saved recipe retains exact transfer/art version after catalog changes, without unrelated stock', () => {
     const product = { ...wp, takes_name: true, transfer_codes: ['CREST'], decorations: [{ type: 'dtf', prod_files: [{ name: 'crest.ai', url: 'https://assets.test/crest-v1.ai' }] }], personalization_template: { font: 'Varsity', uppercase: true, max_length: 12 } };
