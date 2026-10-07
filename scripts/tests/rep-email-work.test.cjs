@@ -59,3 +59,15 @@ test('background preparation rejects an unsigned public request',async()=>{
  vm.runInNewContext(fs.readFileSync(require.resolve('../../netlify/functions/rep-email-work-background'),'utf8'),{exports,Buffer,process:{env:{INTERNAL_FUNCTION_SECRET:'server-only'}},require:id=>id==='crypto'?require('crypto'):id==='./_shared'?{getSupabaseAdmin:()=>({}),safeEqualStr:(a,b)=>a===b}:{processWork:async()=>{processed=true}}});
  const r=await exports.handler({httpMethod:'POST',headers:{},body:'{"id":"arbitrary"}'});assert.equal(r.statusCode,403);assert.equal(processed,false);
 });
+
+test('preparation saves with the work UUID, not the optional estimate revision',async()=>{
+ for(const estimateRevision of [null,{snapshot:{customer:{name:'School'}}}]){
+ const revision='12345678-1234-1234-1234-123456789abc',saved=[];
+ const work={id:'work',revision,team_member_id:PILOT,source_insight_id:'email',customer_id:null,gmail_thread_id:'thread'};
+ const admin={from(table){let patch,filters=[];const q={update(v){patch=v;return q},eq(k,v){filters.push([k,v]);return q},select(){return q},single:async()=>({data:table==='rep_email_insights'?{customer_id:null,status:'new'}:{}}),maybeSingle:async()=>({data:work}),then(resolve){saved.push({patch,filters});return Promise.resolve({}).then(resolve)}};return q;}};
+ const module={exports:{}};
+ vm.runInNewContext(fs.readFileSync(require.resolve('../../netlify/functions/_repEmailWork'),'utf8'),{module,process:{env:{}},AbortSignal,fetch:async()=>({ok:true,json:async()=>({content:[{type:'text',text:'{"lines":[],"questions":[]}'}]})}),require:id=>id==='crypto'?require('crypto'):id==='./_repEmailRevision'?{normalizeRevision:()=>null,prepareRevision:async()=>estimateRevision,authored:x=>x}:id==='./_gmailAi'?{gmailFetch:async()=>({messages:[]})}:id==='./_repGoogle'?{accessTokenForLink:async()=> 'test'}:id==='./_shared'?{}:pricing});
+ await module.exports.processWork(admin,'work',revision);
+ assert.equal(saved.length,1);assert.equal(saved[0].patch.status,'ready');assert.ok(saved[0].filters.some(([key,value])=>key==='revision'&&value===revision));
+ }
+});

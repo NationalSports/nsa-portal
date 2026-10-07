@@ -131,12 +131,12 @@ async function processWork(admin,id,revision){
   const raw=await extract(messages);
   const hasEstimateReference=!!work.estimate_id||messages.some(m=>/\bEST-\d+\b/i.test([m.subject,...m.attachments,authored(m.text)].join(' ')));
   const revisionInput=normalizeRevision(raw.revision_request)||(hasEstimateReference&&raw.needs_estimate?{kind:'other',requests:[]}:null);
-  const revision=await prepareRevision(admin,revisionInput,work,messages);
-  const draft=revision?{...normalize(raw),lines:[],customer_name:revision.snapshot?.customer?.name||null,estimate_revision:revision}:await enrich(admin,raw,work.customer_id);
+  const estimateRevision=await prepareRevision(admin,revisionInput,work,messages);
+  const draft=estimateRevision?{...normalize(raw),lines:[],customer_name:estimateRevision.snapshot?.customer?.name||null,estimate_revision:estimateRevision}:await enrich(admin,raw,work.customer_id);
   draft.caveats=[];
   if(messages.some(m=>m.attachments.length))draft.caveats.push('Review email attachments in Gmail; attachment contents were not parsed.');
   if(all.length>20)draft.caveats.push('Long conversation: only the latest 20 messages were reviewed.');
-  if(revision){draft.missing=[];draft.reply_text='';}else finish(draft);
+  if(estimateRevision){draft.missing=[];draft.reply_text='';}else finish(draft);
   const {error:saveError}=await admin.from(TABLE).update({status:'ready',prepared:draft,error:null,updated_at:new Date().toISOString()}).eq('id',id).eq('revision',revision).eq('status','processing');if(saveError)throw saveError;
  }catch(e){await admin.from(TABLE).update({status:'failed',error:String(e.message||e).slice(0,300),updated_at:new Date().toISOString()}).eq('id',id).eq('revision',revision);}
 }
