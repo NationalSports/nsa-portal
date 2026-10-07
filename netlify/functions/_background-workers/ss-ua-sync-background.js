@@ -1,3 +1,4 @@
+const { vendorCostSnapshot } = require('../../../src/lib/vendorCostSnapshot.shared');
 // Background function (15-min limit): syncs the Under Armour brand catalog from
 // S&S Activewear into the portal so the public Team Catalog (/adidas, /livelook)
 // shows S&S-sourced UA gear with images, sizes, and live inventory alongside the
@@ -98,7 +99,9 @@ exports.handler = async () => {
           const r0 = recs[0];
           const sku = (st.styleName || st.title || 'SS') + '-' + colorCode;
           const sizes = [...new Set(recs.map((r) => r.sizeName).filter(Boolean))];
-          const cost = Number(r0.customerPrice) || Number(r0.piecePrice) || 0;
+          const snapshot = vendorCostSnapshot(recs.map(r => ({ size: r.sizeName, cost: Number(r.customerPrice) || Number(r.piecePrice) || 0 })));
+          if (!snapshot) continue; // preserve last known costs if pricing is unavailable
+          const cost = snapshot.baseCost;
           const map = Number(r0.mapPrice) || 0;
           const img = r0.colorFrontImage || r0.styleImage || '';
           const retail = map > 1 ? map : (cost > 0 ? Math.round(cost * 2) : 0);
@@ -112,6 +115,7 @@ exports.handler = async () => {
             category: mapCategory(st.title, st.baseCategory),
             retail_price: retail,
             nsa_cost: cost,
+            size_costs: snapshot.sizeCosts,
             // S&S coaches pay cost x 1.65 (flat markup, no UA tier discount)
             catalog_sell_price: cost > 0 ? Math.round(cost * 1.65 * 100) / 100 : null,
             is_active: true,

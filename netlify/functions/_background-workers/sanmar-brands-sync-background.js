@@ -1,3 +1,4 @@
+const { accountCostSnapshot } = require('../_sanmarAccountPricing');
 // Background function (15-min limit): syncs SanMar styles into the portal so the
 // public Team Catalog (/adidas, /livelook) shows SanMar-sourced styles with
 // images, sizes, and live inventory. Ingests the team-relevant SanMar brands
@@ -258,22 +259,9 @@ exports.handler = async (event) => {
         // color/size rows; keep those dimensions intact so a promo on one color never
         // becomes another color's cost. If account pricing is unavailable, preserve
         // the existing catalog cost instead of replacing it with product-info list price.
-        const priceBySize = {};
-        const priceByColorSize = {};
-        const priceColorKey = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        try {
-          const priced = await sm('pricing', 'getPricing', { style, color: '', size: '' });
-          for (const r of arr(priced.items)) {
-            const sz = String(r.size || r.labelSize || '').trim();
-            if (!sz) continue;
-            const p = num(r.myPrice) || num(r.salePrice) || num(r.piecePrice);
-            const ck = priceColorKey(r.catalogColor || r.color || r.colorName || r.productColor);
-            if (ck) {
-              priceByColorSize[ck] = priceByColorSize[ck] || {};
-              if (p > 0 && (priceByColorSize[ck][sz] == null || p < priceByColorSize[ck][sz])) priceByColorSize[ck][sz] = p;
-            } else if (p > 0 && (priceBySize[sz] == null || p < priceBySize[sz])) priceBySize[sz] = p;
-          }
-        } catch (e) { console.warn('[sanmar-brands-sync] pricing', style, e.message); }
+        let accountRows = [];
+        try { accountRows = arr((await sm('pricing', 'getPricing', { style, color: '', size: '' })).items); }
+        catch (e) { console.warn('[sanmar-brands-sync] pricing', style, e.message); }
 
         const byColor = {};
         for (const it of items) {
@@ -289,22 +277,9 @@ exports.handler = async (event) => {
           // Our real per-size cost comes only from account getPricing. Base cost is
           // the lowest size price (the XS–XL tier). If this color has no account-price
           // row, omit cost fields from the upsert so the last verified cost survives.
-          const costOf = (r) => {
-            const sz = String(r.size || r.labelSize || '').trim();
-            const exact = priceByColorSize[priceColorKey(grp.colorName)] || {};
-            if (sz && exact[sz] > 0) return exact[sz];
-            if (sz && priceBySize[sz] > 0) return priceBySize[sz];
-            return 0;
-          };
-          const _perSize = recs.map(costOf).filter((c) => c > 0);
-          const cost   = _perSize.length ? Math.min(..._perSize) : 0;
+          const snapshot = accountCostSnapshot(accountRows, grp.colorName, recs.flatMap(r => [r.catalogColor, r.millColor, r.colorCode]));
+          const cost = snapshot?.nsa_cost || 0;
           const retail = num(r0.msrp || r0.mapPrice) || num(r0.piecePrice) || (cost > 0 ? Math.round(cost * 2) : 0);
-          // Per-size cost (2XL/3XL+ often run higher). Capture only sizes that differ from
-          // the base; nsa_cost stays the base, size_costs is null when uniform.
-          const _scMap = {};
-          for (const r of recs) { const sz = String(r.size || r.labelSize || '').trim(); const sc = costOf(r); if (sz && sc > 0 && _scMap[sz] == null) _scMap[sz] = sc; }
-          const sizeCosts = {};
-          for (const [sz, sc] of Object.entries(_scMap)) { if (Math.abs(sc - cost) > 0.001) sizeCosts[sz] = sc; }
           // Prefer SanMar's garment-only flat for webstore decoration/mockups. Model
           // photography remains a fallback for colors without a published flat.
           const img    = r0.frontFlat || r0.colorProductImage || r0.productImage || r0.colorProductImageThumbnail || r0.thumbnailImage || '';
@@ -321,7 +296,7 @@ exports.handler = async (event) => {
             retail_price: retail,
             ...(cost > 0 ? {
               nsa_cost: cost,
-              size_costs: Object.keys(sizeCosts).length ? sizeCosts : null,
+              size_costs: snapshot.size_costs,
               catalog_sell_price: Math.round(cost * 1.65 * 100) / 100,
             } : {}),
             is_active: true,
@@ -339,11 +314,13 @@ exports.handler = async (event) => {
           }
         }
 
-        const pr = await sb('products?on_conflict=id', {
-          method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-          body: JSON.stringify(prodRows),
-        });
-        if (!pr.ok) throw new Error('products upsert ' + pr.status + ': ' + (await pr.text()).slice(0, 200));
+        for (const batch of [prodRows.filter(p => p.nsa_cost != null), prodRows.filter(p => p.nsa_cost == null)]) {
+          if (!batch.length) continue;
+          const pr = await sb('products?on_conflict=id', {
+            method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify(batch),
+          });
+          if (!pr.ok) throw new Error('products upsert ' + pr.status + ': ' + (await pr.text()).slice(0, 200));
+        }
         productsUpserted += prodRows.length;
         if (prodRows.length) syncedBrands.add(brand);
 

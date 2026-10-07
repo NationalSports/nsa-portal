@@ -9201,7 +9201,7 @@ function ProductSearch({ label, onPick, onClose, compact }) {
           <div key={p.id} onClick={() => onPick(p)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 6px', borderBottom: '1px solid #f1f5f9', cursor: 'pointer' }}>
             <div style={{ width: 34, height: 34, background: '#f1f5f9', borderRadius: 6, overflow: 'hidden', flexShrink: 0 }}>{p.image_front_url && <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}</div>
             <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 600, fontSize: 13 }}>{p.name}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{[p.sku, p.color].filter(Boolean).join(' · ')}</div></div>
-            <div style={{ fontSize: 13, fontWeight: 700 }}>{money(p.retail_price)}</div>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>Catalog retail {money(p.retail_price)}</div>
           </div>
         ))}
       </div>
@@ -10542,7 +10542,7 @@ function SkuImporter({ existingPids, storeFund = {}, onApplyColors, onGoToArt, o
       const upsertById = new Map(); // dedupe imported color rows across all found styles
       const reps = []; // { r, id } — the representative color for each resolved style
       hits.forEach(({ r, st }) => {
-        const prodRows = st ? (st.colors || []).map((c) => vendorColorToProductRow(st, c)).filter((p) => p && p.id) : [];
+        const prodRows = st ? (st.colors || []).filter(c => st.source !== 'sm' || c.cost > 0).map((c) => vendorColorToProductRow(st, c)).filter((p) => p && p.id) : [];
         if (!prodRows.length) { notfound.push(r.sku); return; }
         prodRows.forEach((p) => { if (!upsertById.has(p.id)) upsertById.set(p.id, p); });
         reps.push({ r, id: prodRows[0].id }); viaVendor += 1;
@@ -10799,10 +10799,10 @@ function VendorStyleCards({ styles, selected, onToggle }) {
       </div>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {s.colors.map((c) => { const on = selected.has(vendorKeyOf(s, c)); return (
-          <button key={c.colorName || c.sku} type="button" onClick={() => onToggle(s, c)} title={c.colorName} style={{ position: 'relative', width: 84, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 9, padding: 4, cursor: 'pointer' }}>
+          <button key={c.colorName || c.sku} type="button" disabled={s.source === 'sm' && !(c.cost > 0)} onClick={() => onToggle(s, c)} title={c.colorName} style={{ position: 'relative', width: 84, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 9, padding: 4, cursor: 'pointer' }}>
             <div style={{ width: '100%', height: 64, borderRadius: 5, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{c.image ? <img src={c.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{(c.colorName || '').slice(0, 14)}</span>}</div>
             <div style={{ fontSize: 9.5, color: on ? '#191919' : '#64748b', fontWeight: 700, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.colorName || '—'}</div>
-            <div style={{ fontSize: 9, color: '#94a3b8' }}>{c.cost > 0 ? money(c.cost) : ''}{c.sizes?.length ? ` · ${c.sizes.length} sz` : ''}</div>
+            <div style={{ fontSize: 9, color: '#94a3b8' }}>{c.cost > 0 ? 'Cost ' + money(c.cost) : 'Cost unavailable'}{c.sizes?.length ? ` · ${c.sizes.length} sz` : ''}</div>
             {on && <div style={{ position: 'absolute', top: -7, right: -7, background: '#191919', color: '#fff', borderRadius: '50%', width: 18, height: 18, fontSize: 11, lineHeight: '18px', fontWeight: 800, textAlign: 'center' }}>✓</div>}
           </button>
         ); })}
@@ -11618,7 +11618,7 @@ function AiMatchCard({ p, on, onToggle }) {
           ? <img src={p.image_front_url} alt="" loading="lazy" onError={() => setImgErr(true)} style={{ maxWidth: '88%', maxHeight: '88%', objectFit: 'contain', opacity: out ? 0.5 : on ? 1 : 0.82 }} />
           : <div style={{ color: '#A8AEB8', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>No image</div>}
         <span style={{ position: 'absolute', top: 8, left: 8, width: 22, height: 22, borderRadius: 6, background: on ? '#191919' : 'rgba(255,255,255,.9)', border: '1px solid ' + (on ? '#191919' : '#cbd5e1'), color: '#fff', fontSize: 14, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}>{on ? '✓' : ''}</span>
-        {p.retail_price != null && <span style={{ position: 'absolute', top: 8, right: 8, background: '#191919', color: '#fff', borderRadius: 6, padding: '2px 7px', fontSize: 12.5, fontWeight: 700 }}>{money(p.retail_price)}</span>}
+        {p.retail_price != null && <span style={{ position: 'absolute', top: 8, right: 8, background: '#191919', color: '#fff', borderRadius: 6, padding: '2px 7px', fontSize: 12.5, fontWeight: 700 }}>Catalog retail {money(p.retail_price)}</span>}
         {out && <span style={{ position: 'absolute', bottom: 8, left: 8, background: 'rgba(185,28,28,.95)', color: '#fff', borderRadius: 5, padding: '2px 7px', fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em' }}>{st.incoming ? 'Incoming' : 'Out of stock'}</span>}
       </div>
       <div style={{ padding: '10px 12px 12px', textAlign: 'left', width: '100%' }}>
