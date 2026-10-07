@@ -56,6 +56,9 @@ export default function MyEmail({supabase,cu,customers,sos,ests,products,vendors
   const[search,setSearch]=useState('');
   const[period,setPeriod]=useState('all');
   const[syncResult,setSyncResult]=useState(null);
+  const[autoChecking,setAutoChecking]=useState(false);
+  const lastCheckStarted=useRef(0);
+  const[loadError,setLoadError]=useState('');
   const[busy,setBusy]=useState('');
   const[added,setAdded]=useState({});
   const[tagEdit,setTagEdit]=useState(null);// {id, customer_id, so_id, estimate_id}
@@ -77,23 +80,34 @@ export default function MyEmail({supabase,cu,customers,sos,ests,products,vendors
 
   const loadRows=useCallback(async()=>{
     if(!supabase||!cu?.id){setLoading(false);return}
-    const{data,error}=await supabase.from('rep_email_insights').select('*').eq('team_member_id',cu.id).neq('status','dismissed').order('received_at',{ascending:false}).limit(200);
-    if(error)notify?.('My Email could not load: '+error.message,'error');
-    else setRows(data||[]);
-    setLoading(false);
+    try{
+      const{data,error}=await supabase.from('rep_email_insights').select('*').eq('team_member_id',cu.id).neq('status','dismissed').order('received_at',{ascending:false}).limit(200);
+      if(error)throw error;
+      setRows(data||[]);setLoadError('');
+    }catch(error){setLoadError(error.message||'Could not load customer emails');}
+    finally{setLoading(false)}
   },[supabase,cu?.id,notify]);
 
   useEffect(()=>{loadStatus();loadRows()},[loadStatus,loadRows]);
 
   useEffect(()=>{
-    if(!pilot||!status?.connected)return;
+    if(!status?.connected)return;
+    let active=true;
     const tick=async()=>{
-      if(document.visibilityState!=='visible'||syncLock.current)return;
-      syncLock.current=true;
-      try{const d=await callFn(supabase,'rep-gmail-sync',{});setSyncResult(d);await Promise.all([loadRows(),loadStatus(),loadWork()])}catch(e){setSyncResult({error:e.message})}finally{syncLock.current=false}
+      if(document.visibilityState!=='visible'||syncLock.current||Date.now()-lastCheckStarted.current<60000)return;
+      syncLock.current=true;lastCheckStarted.current=Date.now();setAutoChecking(true);
+      try{
+        const d=await callFn(supabase,'rep-gmail-sync',{});
+        if(active){setSyncResult(d);await Promise.all([loadRows(),loadStatus(),loadWork()])}
+      }catch(e){if(active){setSyncResult({error:e.message});await loadStatus()}}
+      finally{syncLock.current=false;if(active)setAutoChecking(false)}
     };
-    const timer=setInterval(tick,60000);return()=>clearInterval(timer);
-  },[pilot,status?.connected,supabase,loadRows,loadStatus,loadWork]);
+    tick();
+    const timer=setInterval(tick,60000);
+    document.addEventListener('visibilitychange',tick);
+    window.addEventListener('online',tick);
+    return()=>{active=false;clearInterval(timer);document.removeEventListener('visibilitychange',tick);window.removeEventListener('online',tick)};
+  },[status?.connected,supabase,loadRows,loadStatus,loadWork]);
 
   // Google redirects back to /?pg=my_email&google=<result>; show it once, then tidy the URL.
   useEffect(()=>{
@@ -121,15 +135,15 @@ export default function MyEmail({supabase,cu,customers,sos,ests,products,vendors
     setBusy('');
   };
   const checkNow=async()=>{
-    if(syncLock.current)return;syncLock.current=true;
+    if(syncLock.current)return;syncLock.current=true;lastCheckStarted.current=Date.now();
     setBusy('sync');
     try{
       const d=await callFn(supabase,'rep-gmail-sync',{});
       setSyncResult(d);
       notify?.(d.analyzed?('Added '+d.analyzed+' customer email'+(d.analyzed===1?'':'s')):d.remaining?'More messages remain. Check again to continue.':'No new customer messages in this check.');
-      await Promise.all([loadRows(),loadStatus()]);
-    }catch(e){notify?.('Check failed: '+e.message,'error');await loadStatus()}
-    setBusy('');syncLock.current=false;
+      await Promise.all([loadRows(),loadStatus(),loadWork()]);
+    }catch(e){setSyncResult({error:e.message});notify?.('Check failed: '+e.message,'error');await loadStatus()}
+    finally{setBusy('');syncLock.current=false;}
   };
 
   const setRowStatus=async(row,next)=>{
@@ -215,11 +229,11 @@ export default function MyEmail({supabase,cu,customers,sos,ests,products,vendors
   const addBtn=(done)=>({border:'none',borderRadius:4,padding:'2px 8px',fontSize:11,fontWeight:700,cursor:done?'default':'pointer',background:done?'#dcfce7':'#dbeafe',color:done?'#166534':'#1e40af'});
 
   return(<div className="customer-email">
-    {pilot&&status?.connected&&<p className="email-work-notice">Your pilot checks for new mail every minute while this page is visible and prepares customer requests in the background. Review all drafts before sending.</p>}
-    {syncResult?.error&&<p role="alert" className="email-work-error">Automatic email check failed: {syncResult.error}</p>}
+
+    {syncResult?.error&&<p role="alert" className="email-work-error">Email check failed: {syncResult.error}</p>}
     {syncResult?.preparation_error&&<p role="alert" className="email-work-error">{syncResult.preparation_error}</p>}
     <header className="customer-email-heading"><div><span className="customer-email-eyebrow">YOUR CUSTOMER WORKSPACE</span><h2>Customer inbox</h2><p>Conversations with coaches, schools, and customers. Newest first.</p></div></header>
-    <div className="card" style={{marginBottom:12}}>
+    <div className="card customer-email-connection" style={{marginBottom:12}}>
       <div className="card-body" style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
         <Icon name="mail" size={18}/>
         <div style={{flex:1,minWidth:220}}>
@@ -228,6 +242,7 @@ export default function MyEmail({supabase,cu,customers,sos,ests,products,vendors
           :status.error?<div style={{fontSize:12,color:'#b91c1c'}}>{status.error}</div>
           :status.connected?<div style={{fontSize:12,color:'#64748b'}}>
             Connected as <b>{status.google_email}</b>{status.last_synced_at?' · last checked '+fmtWhen(status.last_synced_at):' · first check pending'}
+            {status.last_synced_at&&Date.now()-Date.parse(status.last_synced_at)>30*60000&&<div className="customer-email-stale">Saved email may be out of date. Checking for newer customer requests.</div>}
             {status.last_error&&<div style={{color:'#b91c1c',marginTop:2}}>{status.last_error}</div>}
           </div>
           :<div style={{fontSize:12,color:'#64748b'}}>
@@ -236,14 +251,15 @@ export default function MyEmail({supabase,cu,customers,sos,ests,products,vendors
           </div>}
         </div>
         {status?.connected?<>
-          <button className="btn btn-sm btn-primary" disabled={!!busy} onClick={checkNow}>{busy==='sync'?'Checking…':'Check now'}</button>
+          <button className="btn btn-sm btn-primary" disabled={!!busy||autoChecking} onClick={checkNow}>{busy==='sync'||autoChecking?'Checking…':'Check now'}</button>
           <button className="btn btn-sm btn-secondary" disabled={!!busy} onClick={disconnect}>Disconnect</button>
           {status.last_error&&/reconnect/i.test(status.last_error)&&<button className="btn btn-sm btn-primary" disabled={!!busy} onClick={connect}>Reconnect Google</button>}
         </>:status&&!status.error&&<button className="btn btn-sm btn-primary" disabled={!!busy||status.configured===false} onClick={connect}>{busy==='connect'?'Opening Google…':'Connect Google'}</button>}
       </div>
     </div>
 
-    <div className="customer-email-status" role="status">{busy==='sync'?'Checking recent messages and finding customer conversations…':syncResult?`${syncResult.analyzed||0} customer email${syncResult.analyzed===1?'':'s'} added · ${syncResult.skipped||0} non-customer messages filtered${syncResult.remaining?' · '+syncResult.remaining+' messages still to check — select Check now to continue.':''}`:'Customer conversations only. Internal emails and supplier bills stay out of this view.'}</div>
+    {loadError&&<p role="alert" className="email-work-error">Could not load saved emails: {loadError} <button className="btn btn-sm btn-secondary" onClick={loadRows}>Retry loading</button></p>}
+    <div className="customer-email-status" role="status">{busy==='sync'||autoChecking?'Checking recent messages and finding customer conversations…':syncResult?.error?'The last check failed. Previously imported conversations remain below.':syncResult?`${syncResult.analyzed||0} customer email${syncResult.analyzed===1?'':'s'} added · ${syncResult.skipped||0} non-customer messages filtered${syncResult.remaining?' · '+syncResult.remaining+' messages still to check — select Check now to continue.':''}`:'Checks for new customer mail when you open this page and every minute while visible. Internal emails and supplier bills are filtered out.'}</div>
     <div className="customer-email-tools">
       <input aria-label="Search customer emails" placeholder="Search customer, sender, or subject…" value={search} onChange={e=>setSearch(e.target.value)}/>
       <select aria-label="Email date range" value={period} onChange={e=>setPeriod(e.target.value)}><option value="all">All imported dates</option><option value="today">Today</option><option value="week">Last 7 days</option></select>
@@ -259,6 +275,7 @@ export default function MyEmail({supabase,cu,customers,sos,ests,products,vendors
     </div></div>
     :visible.map(r=>{
       const cname=custName(r.customer_id);
+      const preparedWork=workRows.find(w=>w.gmail_thread_id===(r.gmail_thread_id||r.gmail_message_id));
       return(<div key={r.id} className="card customer-email-card" style={{marginBottom:8,opacity:r.status==='new'?1:0.7}}>
         <div className="card-body" style={{display:'grid',gap:6}}>
           <div style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
@@ -313,7 +330,7 @@ export default function MyEmail({supabase,cu,customers,sos,ests,products,vendors
                 <button style={addBtn(added[key])} disabled={added[key]||busy===key} onClick={()=>addReminder(r,key,{title:d.label,date:d.date,label:'deadline'})}>{added[key]?'Added':'+ Reminder'}</button>
               </span>)})}
           </div></details>}
-          {pilot&&<CustomerEmailWork row={r} work={workRows.find(w=>w.gmail_thread_id===(r.gmail_thread_id||r.gmail_message_id))} call={replyCall} onRefresh={loadWork} products={products} vendors={vendors} searchProducts={searchProducts} onOpenEstimate={onOpenEstimate} onReply={text=>{if(replyId){notify('Close the current reply before opening a suggested reply.');return;}setReplySeed(text);setReplyId(r.id)}}/>}
+          {pilot&&<details className="customer-email-prepared"><summary>{preparedWork?.status==='ready'?'Review prepared work':preparedWork?.status==='failed'?'Preparation needs attention':'Estimate & stock assistance'}</summary><CustomerEmailWork row={r} work={preparedWork} call={replyCall} onRefresh={loadWork} products={products} vendors={vendors} searchProducts={searchProducts} onOpenEstimate={onOpenEstimate} onReply={text=>{if(replyId){notify('Close the current reply before opening a suggested reply.');return;}setReplySeed(text);setReplyId(r.id)}}/></details>}
           {replyId===r.id&&<CustomerEmailReply key={r.id} row={r} initialText={replySeed} call={replyCall} onClose={()=>setReplyId(null)}/>}
           <div className="customer-email-actions" style={{display:'flex',gap:6,marginTop:4}}>
             <button className="btn btn-sm btn-primary" disabled={!!replyId} onClick={()=>{setReplySeed('');setReplyId(r.id)}}>Reply</button>
@@ -369,6 +386,7 @@ export function MyEmailDigest({supabase,cu,customers,onOpen}){
       </div>
       :rows.map(r=>{
         const cname=custName(r.customer_id);
+      const preparedWork=workRows.find(w=>w.gmail_thread_id===(r.gmail_thread_id||r.gmail_message_id));
         const extras=(r.tasks?.length||0)+(r.deadlines?.length||0);
         return(<div key={r.id} onClick={onOpen} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}}>
           <div style={{display:'flex',gap:6,alignItems:'baseline',flexWrap:'wrap'}}>
