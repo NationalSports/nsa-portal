@@ -31,12 +31,20 @@ export const validateAllSchoolSettings = (value) => {
   return '';
 };
 const COPY_FIELDS = ['kind', 'product_id', 'sku', 'retail_price', 'fundraise_amount', 'image_url', 'image_back_url', 'takes_number', 'takes_name', 'name_upcharge', 'transfer_codes', 'transfer_code', 'num_transfer_sets', 'num_transfer_size', 'num_transfer_color', 'decorations', 'category', 'kit_name', 'required', 'options', 'display_name', 'sizes_offered', 'active', 'deco_upcharge', 'deco_cost_estimate', 'track_inventory', 'size_sku_overrides', 'variant_label', 'personalization_template', 'weight_oz'];
-export const logoDesignCopies = (sources, storeId, styleGroupId, designGroupId, label, stock, logo) => applySportDesign((sources || []).map((row, index) => {
-  const fields = {}; COPY_FIELDS.forEach((key) => { if (row[key] !== undefined) fields[key] = JSON.parse(JSON.stringify(row[key])); });
-  return { ...fields, store_id: storeId, variant_group_id: designGroupId, school_style_group_id: styleGroupId,
-    school_design_label: label.trim(), school_program_ids: row.school_program_ids || [], school_shared: !!row.school_shared,
-    school_template_id: null, sort_order: Number(row.sort_order || 0) + index + 1, active: false };
-}), stock, logo);
+export const logoDesignCopies = (sources, storeId, styleGroupId, designGroupId, label, stock, logo) => {
+  const copies = (sources || []).map((row, index) => {
+    const fields = {}; COPY_FIELDS.forEach((key) => { if (row[key] !== undefined) fields[key] = JSON.parse(JSON.stringify(row[key])); });
+    return { ...fields, store_id: storeId, variant_group_id: designGroupId, school_style_group_id: styleGroupId,
+      school_design_label: label.trim(), school_program_ids: row.school_program_ids || [], school_shared: !!row.school_shared,
+      school_template_id: null, sort_order: Number(row.sort_order || 0) + index + 1, active: false };
+  });
+  if (stock) return applySportDesign(copies, stock, logo);
+  // A non-DTF art folder carries its own approved production file. Keep it linked
+  // to that art record; a DTF choice must instead use exact decoration stock.
+  return copies.map((row) => ({ ...row, image_url: null, image_back_url: null,
+    transfer_codes: [], transfer_code: null,
+    decorations: [{ kind: 'art', art_id: logo.id, art_url: logo.url, placement: 'full_front', side: 'front', type: logo.deco_type, baked: false }] }));
+};
 export const logoOptionsForItem = (catalog, item) => {
   if (!item) return [];
   const colorKey = (row) => row.variant_group_id || row.id;
@@ -74,7 +82,7 @@ export const stockLinkedArtError = (item, decorations) => {
   const codes = [...new Set([...(item?.transfer_codes || []), item?.transfer_code].filter(Boolean))];
   if (!codes.length || JSON.stringify(item.decorations || []) === JSON.stringify(decorations || [])) return '';
   const art = (decorations || []).filter((d) => d && !['perso_name', 'perso_number'].includes(d.kind) && (d.kind === 'art' || d.art_id || d.art_url));
-  if (!art.length || art.some((d) => !codes.includes(d.transfer_code)) || codes.some((code) => !art.some((d) => d.transfer_code === code))) return 'This All School offering uses a saved decoration-stock design. Choose the exact new production design and web logo in Sports & collections, then use “Use selected sport design”. Generic logo replacement cannot change its production artwork.';
+  if (!art.length || art.some((d) => !codes.includes(d.transfer_code)) || codes.some((code) => !art.some((d) => d.transfer_code === code))) return 'This All School offering uses a saved decoration-stock design. Choose the exact new production design and web logo in Categories, then use “Use selected sport design”. Generic logo replacement cannot change its production artwork.';
   return '';
 };
 

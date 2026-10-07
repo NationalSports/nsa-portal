@@ -29,6 +29,16 @@ it('shows each logo choice once with its own colors and keeps unrelated items se
   expect(logoOptionsForItem(rows, rows[0]).map((group) => group.colors.length)).toEqual([2, 1]);
   expect(logoOptionsForItem(rows, rows[3]).map((group) => group.key)).toEqual(['other']);
 });
+it('links a screen-print choice to its approved art folder instead of DTF stock', () => {
+  const source = [{ id: 'blue', kind: 'single', product_id: 'blank', sku: 'HOODIE', image_url: 'old.png', transfer_codes: ['OLD'] }];
+  const art = { id: 'serra-arch', url: 'arch.png', deco_type: 'screen_print', status: 'approved', prod_files: [{ name: 'arch.ai' }] };
+  const [copy] = logoDesignCopies(source, 'store', 'listing', 'design', 'Serra arch', null, art);
+  expect(copy.active).toBe(false);
+  expect(copy.image_url).toBeNull();
+  expect(copy.transfer_codes).toEqual([]);
+  expect(copy.decorations).toEqual([{ kind: 'art', art_id: 'serra-arch', art_url: 'arch.png', placement: 'full_front', side: 'front', type: 'screen_print', baked: false }]);
+  expect(productionSetupError({ ...copy, image_url: 'new-mock.png' }, [], [art])).toBe('');
+});
 it('counts exact sport offering transfer needs without product ID overwrite', () => {
   const maps = buildTransferMaps([{ id: 'football', product_id: 'blank', transfer_codes: ['football-logo'] }, { id: 'soccer', product_id: 'blank', transfer_codes: ['soccer-logo'] }], []);
   expect(transferUsage([{ webstore_product_id: 'football', product_id: 'blank', qty: 3, refunded_qty: 1 }, { webstore_product_id: 'soccer', product_id: 'blank', qty: 4 }], maps)).toEqual({ 'football-logo': 2, 'soccer-logo': 4 });
