@@ -14,7 +14,7 @@ export const sanmarPricingRows = (data) => {
 export const sanmarAccountPrice = (row = {}) => {
   for (const raw of [row.myPrice, row.salePrice, row.piecePrice, row.customerPrice]) {
     const value = Number.parseFloat(raw);
-    if (value > 0) return value;
+    if (Number.isFinite(value) && value > 0) return value;
   }
   return 0;
 };
@@ -24,14 +24,11 @@ const colorKey = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]
 // Return the exact SanMar account-price snapshot for a product color. SanMar
 // sometimes ignores the requested color and returns the whole style, so filter
 // the rows again client-side rather than letting another color's promo price win.
-export const sanmarPricingSnapshot = (data, requestedColor = '') => {
+export const sanmarPricingSnapshot = (data, requestedColor = '', aliases = []) => {
   const rows = sanmarPricingRows(data).filter((row) => row && row.errorOccurred !== 'true' && row.errorOccured !== 'true');
-  const wanted = colorKey(requestedColor);
-  const rowColor = (row) => colorKey(row.catalogColor || row.color || row.colorName || row.productColor);
-  const exact = wanted ? rows.filter((row) => rowColor(row) === wanted) : rows;
-  // Rows without a color are already scoped by the API request. Only fall back
-  // to all rows when SanMar returned no color metadata at all.
-  const usable = exact.length ? exact : (rows.some((row) => rowColor(row)) ? [] : rows);
+  const wanted = new Set([requestedColor, ...aliases].map(colorKey).filter(Boolean));
+  const rowColors = row => [row.catalogColor, row.color, row.colorName, row.productColor, row.millColor, row.colorCode].map(colorKey).filter(Boolean);
+  const usable = !wanted.size || !rows.some(row => rowColors(row).length) ? rows : rows.filter(row => rowColors(row).some(color => wanted.has(color)));
   const bySize = {};
   usable.forEach((row) => {
     const size = normSzName(row.size || row.labelSize || row.sizeCode || 'OSFA');

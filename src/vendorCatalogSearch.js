@@ -1,3 +1,4 @@
+import { vendorCostSnapshot } from './lib/vendorCostSnapshot.shared';
 // Live vendor-catalog search for the webstore builder.
 //
 // The webstore product picker searches the local `products` catalog (a curated subset).
@@ -13,7 +14,7 @@
 
 import { sanmarGetProduct, sanmarGetInventory, sanmarGetPricing, ssApiCall, richardsonSearchStyles, momentecStyleV2 } from './vendorApis';
 import { normSzName } from './pricing';
-import { sanmarPricingRows, sanmarAccountPrice } from './lib/sanmarPricing';
+import { sanmarPricingSnapshot } from './lib/sanmarPricing';
 
 const SS_CDN = 'https://cdn.ssactivewear.com/';
 // SanMar exposes both garment-only flats and model photography. Webstore mockups need the
@@ -44,12 +45,13 @@ async function searchSanMar(query, vendorMap) {
   });
   if (!items.length) return [];
   // Inventory + program pricing (best-effort).
-  const invData = {}; const priceMap = {};
+  const invData = {}; let accountPricing = null;
   try {
     const [invRes, priceRes] = await Promise.all([
       sanmarGetInventory(q, '', '').catch(() => null),
       sanmarGetPricing(q, '', '').catch(() => null),
     ]);
+    accountPricing = priceRes;
     let inv = invRes?.items || [];
     if (!inv.length && invRes?.listResponse) inv = Array.isArray(invRes.listResponse) ? invRes.listResponse : [invRes.listResponse];
     inv = inv.filter((it) => it.errorOccurred !== 'true' && it.errorOccured !== 'true');
@@ -58,12 +60,6 @@ async function searchSanMar(query, vendorMap) {
       let qty = parseInt(it.totalQty || it.qty || it.quantity || 0) || 0;
       if (qty <= 0 && it.warehouseInfo) { const d = it.warehouseInfo.inventoryDetail || it.warehouseInfo; (Array.isArray(d) ? d : [d]).forEach((w) => { if (w && w.quantity) qty += parseInt(w.quantity) || 0; }); }
       invData[key] = qty;
-    });
-    sanmarPricingRows(priceRes).forEach((it) => {
-      const color = it.catalogColor || it.color || it.colorName || '';
-      const sz = normSzName(it.size || it.labelSize || '');
-      const price = sanmarAccountPrice(it);
-      if (price > 0) priceMap[color + '|' + sz] = price;
     });
   } catch (e) { /* inventory/pricing optional */ }
   const styleMap = {};
@@ -74,16 +70,19 @@ async function searchSanMar(query, vendorMap) {
     const color = it.catalogColor || it.color || it.colorName || it.productColor || '';
     if (!styleMap[sid]) styleMap[sid] = { source: 'sm', vendorId: vid('sanmar', vendorMap), sku: sid, name: ((it.brandName || it.brand || '') + ' ' + (it.productTitle || it.styleName || it.description || sid)).trim(), brand: it.brandName || it.brand || '', image: sanmarGarmentImage(it), _colors: {} };
     const cKey = sid + '|' + color;
-    if (!styleMap[sid]._colors[cKey]) styleMap[sid]._colors[cKey] = { colorName: color, colorCode: it.colorCode || null, sku: sid, image: sanmarGarmentImage(it) || it.colorSwatchImage || '', cost: 0, _sizes: {}, totalQty: 0 };
+    if (!styleMap[sid]._colors[cKey]) styleMap[sid]._colors[cKey] = { colorName: color, colorCode: it.colorCode || null, sku: sid, image: sanmarGarmentImage(it) || it.colorSwatchImage || '', cost: 0, _sizes: {}, _aliases: [], _prices: {}, totalQty: 0 };
     const cEntry = styleMap[sid]._colors[cKey];
     const sz = normSzName(it.size || it.labelSize || it.sizeCode || 'OSFA');
-    const price = priceMap[color + '|' + sz] || parseFloat(it.salePrice || 0) || parseFloat(it.piecePrice || 0) || 0;
+    cEntry._aliases.push(it.catalogColor, it.color, it.colorName, it.millColor, it.colorCode);
     const qty = invData[color + '|' + sz] || parseInt(it.inventoryQty || it.qty || 0) || 0;
     if (sz) cEntry._sizes[sz] = (cEntry._sizes[sz] || 0) + qty;
     cEntry.totalQty += qty;
-    if (price > 0 && (cEntry.cost === 0 || price < cEntry.cost)) cEntry.cost = price;
+
   });
-  return Object.values(styleMap).map((s) => ({ ...s, colors: Object.values(s._colors).map((c) => ({ colorName: c.colorName, colorCode: c.colorCode, sku: c.sku, image: c.image, cost: c.cost, sizes: Object.keys(c._sizes), totalQty: c.totalQty })), _colors: undefined }));
+  return Object.values(styleMap).map(s => ({ ...s, colors: Object.values(s._colors).map(c => {
+    const snapshot = sanmarPricingSnapshot(accountPricing, c.colorName, c._aliases);
+    return { colorName: c.colorName, colorCode: c.colorCode, sku: c.sku, image: c.image, cost: snapshot.baseCost || 0, sizeCosts: snapshot.sizeCosts, sizes: Object.keys(c._sizes), totalQty: c.totalQty };
+  }), _colors: undefined }));
 }
 
 // ── S&S Activewear ──────────────────────────────────────────────────────────
@@ -106,7 +105,7 @@ async function searchSS(query, vendorMap) {
     }
     const color = it.colorName || '';
     const cKey = sid + '|' + color;
-    if (!styleMap[sid]._colors[cKey]) styleMap[sid]._colors[cKey] = { colorName: color, sku: styleMap[sid]._styleSku, image: img, cost: 0, _sizes: {}, totalQty: 0 };
+    if (!styleMap[sid]._colors[cKey]) styleMap[sid]._colors[cKey] = { colorName: color, sku: styleMap[sid]._styleSku, image: img, cost: 0, _sizes: {}, _aliases: [], _prices: {}, totalQty: 0 };
     const cEntry = styleMap[sid]._colors[cKey];
     if (img && !cEntry.image) cEntry.image = img;
     const sz = it.sizeName || 'OSFA';
@@ -114,9 +113,10 @@ async function searchSS(query, vendorMap) {
     const p = parseFloat(it.customerPrice) || parseFloat(it.piecePrice) || 0;
     cEntry._sizes[sz] = (cEntry._sizes[sz] || 0) + qty;
     cEntry.totalQty += qty;
+    if (p > 0 && (cEntry._prices[normSzName(sz)] == null || p < cEntry._prices[normSzName(sz)])) cEntry._prices[normSzName(sz)] = p;
     if (p > 0 && (cEntry.cost === 0 || p < cEntry.cost)) cEntry.cost = p;
   });
-  return Object.values(styleMap).map((s) => ({ source: s.source, vendorId: s.vendorId, sku: s.sku, name: s.name, brand: s.brand, image: s.image, colors: Object.values(s._colors).map((c) => ({ colorName: c.colorName, sku: c.sku, image: c.image, cost: c.cost, sizes: Object.keys(c._sizes), totalQty: c.totalQty })) }));
+  return Object.values(styleMap).map((s) => ({ source: s.source, vendorId: s.vendorId, sku: s.sku, name: s.name, brand: s.brand, image: s.image, colors: Object.values(s._colors).map((c) => ({ colorName: c.colorName, sku: c.sku, image: c.image, cost: c.cost, sizeCosts: vendorCostSnapshot(Object.entries(c._prices).map(([size, cost]) => ({ size, cost })))?.sizeCosts || null, sizes: Object.keys(c._sizes), totalQty: c.totalQty })) }));
 }
 
 // ── Richardson ──────────────────────────────────────────────────────────────
@@ -170,6 +170,7 @@ export async function searchVendorCatalogs(query, { vendorMap = {} } = {}) {
 export function vendorColorToProductRow(style, color) {
   const slug = String(color.colorName || 'default').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'default';
   const cost = Number(color.cost) || 0;
+  if (style.source === 'sm' && cost <= 0) throw new Error('SanMar account pricing is unavailable for this color. Refresh pricing before importing.');
   const retail = cost > 0 ? Math.ceil(cost / 0.5) : 0;
   // SKU color segment: prefer the vendor's color CODE (e.g. SanMar 'DarkHeatherGrey') over a
   // slug of the display name ('Dark Hthr Grey' → 'dark-hthr-grey'). The synced inventory is
@@ -187,6 +188,7 @@ export function vendorColorToProductRow(style, color) {
     category: null,
     retail_price: retail,
     nsa_cost: cost || null,
+    size_costs: color.sizeCosts || null,
     is_active: true,
     is_archived: false,
     available_sizes: Array.isArray(color.sizes) ? color.sizes : [],
@@ -237,6 +239,7 @@ export function missingVendorColorRows(style, localRows = []) {
   const have = new Set((localRows || []).map((r) => vendorColorKey(r.color)).filter(Boolean));
   const out = [];
   for (const color of (style.colors || [])) {
+    if (style.source === 'sm' && !(color.cost > 0)) continue;
     const key = vendorColorKey(color.colorName);
     if (!key || have.has(key)) continue;
     have.add(key);
