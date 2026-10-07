@@ -10522,20 +10522,6 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
         const openSizes=Object.entries(sizeTot).filter(([,v])=>v>0).sort((a,b)=>{const ia=_SZ_ORDER.indexOf(a[0]),ib=_SZ_ORDER.indexOf(b[0]);return(ia===-1?99:ia)-(ib===-1?99:ib)});
         return{...head,openSizes,totalOpen:openSizes.reduce((a,[,v])=>a+v,0),members:memberInfo,_soQty:memberInfo.reduce((a,m)=>a+m._soQty,0)};
       });
-      // Effective decorator destination for this PO's batch entries: the inline deco PO's vendor,
-      // or — marrying up the line-item outside-deco flow — an existing drop-ship deco PO that
-      // already covers the selected items (only when the rep chose Drop Ship for the blanks).
-      // The group key must match what gets stamped on the entries below, or the queue readout /
-      // free-ship threshold would count the wrong destination group.
-      // Full-coverage rule: the deco PO must cover EVERY selected item — a partial match would
-      // route items never meant for that decorator to its address on the batch order.
-      const _selBatchIdxs=[...new Set(poItems.filter((_,vi)=>!poExcluded[vi]).flatMap(it=>(it.members||[it]).map(m=>m._idx)))];
-      const _existingBatchDeco=(!podDv?.id&&poDropShip===true&&_selBatchIdxs.length>0)?((o.deco_pos||[]).find(dp=>dp&&dp.drop_ship&&dp.deco_vendor_id&&_selBatchIdxs.every(ix=>(dp.item_idxs||[]).includes(ix)))||null):null;
-      const batchDecoId=podDv?.id||_existingBatchDeco?.deco_vendor_id||null;
-      const batchDecoName=podDv?.id?(podDv.name||podDv.id):(_existingBatchDeco?(_existingBatchDeco.vendor||batchDecoId):null);
-      const batchGroupKey=batchKey?batchKey+(batchDecoId?':'+batchDecoId:''):null;
-      const pendingBatches=(batchPOs||[]).filter(bp=>(bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:''))===batchGroupKey);
-      const pendingBatchTotal=pendingBatches.reduce((a,bp)=>a+bp.total_cost,0);
       // Live PO totals — inputs are uncontrolled (defaultValue), so read the
       // DOM when present and fall back to the rendered defaults otherwise.
       // poCalcTick re-renders on input so the displayed totals stay in sync.
@@ -10679,6 +10665,23 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       // task later knows to deliver to the decorator — a drop_ship flag alone loses that.
       const _poShipDecoId=poShipTo==='deco'?(_decoForPo?.id||null):(typeof poShipTo==='string'&&poShipTo.startsWith('deco:')?poShipTo.slice(5):null);
       const _poShipDecoInfo=(typeof poShipTo==='string'&&poShipTo.startsWith('deco:')&&_poShipDecoId)?resolveDecoShipToClient({decoId:_poShipDecoId,so:o,decoVendors,vendors:vendorList,itemIdxs:_poSelIdxs}):null;
+      // Effective decorator destination for this PO's batch entries — ONLY when the rep chose Drop Ship
+      // for the blanks: the inline deco PO's vendor, or — marrying up the line-item outside-deco flow —
+      // an existing drop-ship deco PO that already covers the selected items, else the decorator picked
+      // in Ship To. An In-House PO always joins the vendor's regular warehouse batch, even with a deco
+      // PO created alongside it (its blanks come to Emerson first).
+      // The group key must match what gets stamped on the entries below, or the queue readout /
+      // free-ship threshold would count the wrong destination group — and a decorator-bound line
+      // filed under the warehouse group would pull that whole batch's ship-to to the decorator.
+      // Full-coverage rule: the deco PO must cover EVERY selected item — a partial match would
+      // route items never meant for that decorator to its address on the batch order.
+      const _selBatchIdxs=[...new Set(poItems.filter((_,vi)=>!poExcluded[vi]).flatMap(it=>(it.members||[it]).map(m=>m._idx)))];
+      const _existingBatchDeco=(!podDv?.id&&poDropShip===true&&_selBatchIdxs.length>0)?((o.deco_pos||[]).find(dp=>dp&&dp.drop_ship&&dp.deco_vendor_id&&_selBatchIdxs.every(ix=>(dp.item_idxs||[]).includes(ix)))||null):null;
+      const batchDecoId=poDropShip===true?(podDv?.id||_existingBatchDeco?.deco_vendor_id||_poShipDecoId||null):null;
+      const batchDecoName=!batchDecoId?null:podDv?.id===batchDecoId?(podDv.name||podDv.id):_existingBatchDeco?.deco_vendor_id===batchDecoId?(_existingBatchDeco.vendor||batchDecoId):(decoVendors.find(dv=>dv.id===batchDecoId)?.name||batchDecoId);
+      const batchGroupKey=batchKey?batchKey+(batchDecoId?':'+batchDecoId:''):null;
+      const pendingBatches=(batchPOs||[]).filter(bp=>(bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:''))===batchGroupKey);
+      const pendingBatchTotal=pendingBatches.reduce((a,bp)=>a+bp.total_cost,0);
       // The DPO reference the decorator needs on the shipping label, auto-filled so nobody has to
       // remember to add it: the deco PO being created/joined in this same modal, else the
       // decorator's existing deco PO when the blanks ship to one. Typed text always wins.
@@ -10906,6 +10909,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
               <span style={{fontSize:14}}>📦</span>
               <div style={{flex:1}}>
                 <div style={{fontSize:12,fontWeight:700,color:'#7c3aed'}}>{batchConfig.threshold===0?'Consider batching PO if small order':'Free shipping over $'+batchConfig.threshold+' — Batch eligible!'}</div>
+                {batchDecoName&&<div style={{fontSize:11,color:'#6d28d9',fontWeight:600}}>🎨 Drop ship — joins the {batchConfig.name} → {batchDecoName} batch, which ships to the decorator</div>}
                 {pendingBatches.length>0?<div style={{fontSize:11,color:'#6d28d9'}}>{pendingBatches.length} PO{pendingBatches.length!==1?'s':''} in queue · ${pendingBatchTotal.toFixed(2)} total {batchConfig.threshold>0?(pendingBatchTotal>=batchConfig.threshold?'✅ Threshold met!':'· $'+(batchConfig.threshold-pendingBatchTotal).toFixed(2)+' more to free ship'):''}</div>
                 :<div style={{fontSize:11,color:'#94a3b8'}}>No POs queued yet for {batchConfig.name}</div>}
               </div>
