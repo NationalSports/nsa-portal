@@ -1,0 +1,25 @@
+.ai-inbox { max-width:1500px; margin:0 auto; color:#18263b; }
+.ai-inbox-heading { display:flex; align-items:center; justify-content:space-between; gap:20px; margin-bottom:20px; }
+.ai-inbox-eyebrow { font-size:11px; font-weight:700; letter-spacing:1.5px; color:#64748b; margin-bottom:6px; }
+.ai-inbox-heading h2 { font-size:26px; letter-spacing:-.6px; margin:0 0 6px; }
+.ai-inbox-heading p { margin:0; color:#526279; font-size:14px; line-height:1.5; }
+.ai-inbox-health { display:flex; align-items:center; justify-content:space-between; gap:20px; background:#edf5ff; border:1px solid #bfd4ed; border-radius:12px; padding:18px 20px; margin-bottom:20px; }
+.ai-inbox-health.needs-attention { background:#fff8ec; border-color:#ead2a5; }
+.ai-inbox-health strong { font-size:15px; }
+.ai-inbox-health p { margin:5px 0 0; font-size:13px; line-height:1.5; color:#526279; }
+.ai-inbox .btn { flex-shrink:0; min-height:36px; }
+.ai-inbox-toolbar { display:flex; align-items:center; gap:12px; margin-bottom:16px; flex-wrap:wrap; }
+.ai-inbox-toolbar input { flex:1; min-width:180px; max-width:400px; }
+.ai-inbox-toolbar select { width:185px; }
+.ai-inbox-toolbar > span { font-size:12px; color:#526279; margin-left:auto; }
+.ai-inbox-columns { display:grid; grid-template-columns:minmax(280px,35%) minmax(0,1fr); gap:20px; align-items:start; }
+.ai-inbox-list.card { margin:0; max-height:70vh; overflow:auto; }
+.ai-inbox-detail { min-width:0; }
+.ai-inbox-detail .card-header { padding:20px; gap:12px; }
+.ai-inbox-detail .card-body { padding:20px; }
+.ai-inbox-detail .form-label { font-size:13px; color:#475569; }
+.ai-inbox-detail .form-input { font-size:14px; }
+.ai-inbox-error { border:1px solid #fecaca; border-radius:8px; background:#fff1f2; padding:14px; margin-bottom:16px; color:#991b1b; }
+.ai-inbox button:focus-visible { outline:3px solid #2563eb; outline-offset:2px; }
+@media(max-width:1000px) { .ai-inbox-columns { grid-template-columns:1fr; } .ai-inbox-list.card { max-height:320px; } }
+@media(max-width:650px) { .ai-inbox-heading,.ai-inbox-health { align-items:flex-start; flex-direction:column; } .ai-inbox-toolbar > span { width:100%; margin:0; } }
