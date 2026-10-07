@@ -92,3 +92,21 @@ test('a provider duplicate-key response records success instead of retrying unti
   expect((await notifyShipmentRep(mockDb,{soId:'SO-1'})).status).toBe('sent');
   expect(rows.so_rep_shipment_outbox[0].status).toBe('sent');
 });
+
+test('SO-2173 shape resolves creator when SO and customer have no explicit rep',async()=>{
+  rows.sales_orders[0].rep_id=null;
+  rows.sales_orders[0].created_by='order-rep';
+  rows.customers[0].primary_rep_id=null;
+  expect((await notifyShipmentRep(mockDb,{soId:'SO-1',preview:true})).to).toBe('rep@example.com');
+});
+test('customer assignment takes precedence over the order creator',async()=>{
+  rows.sales_orders[0].rep_id=null;
+  rows.sales_orders[0].created_by='order-rep';
+  expect((await notifyShipmentRep(mockDb,{soId:'SO-1',preview:true})).to).toBe('other@example.com');
+});
+test('a genuinely unassigned order fails clearly without sending',async()=>{
+  rows.sales_orders[0].rep_id=null;
+  rows.customers[0].primary_rep_id=null;
+  await expect(notifyShipmentRep(mockDb,{soId:'SO-1'})).rejects.toThrow(/Assign a rep/);
+  expect(fetch).not.toHaveBeenCalled();
+});
