@@ -30,6 +30,25 @@ test('storefront inherits current customer logo without exposing customer data o
   expect(store.logo_url).toBe('');
 });
 
+test('public storefront includes only display-safe promotion settings', async () => {
+  const branded = { ...store, all_school_settings: {
+    ...store.all_school_settings, show_promo_banner: true, secondary_logo_url: 'secondary.png',
+    promo_heading: 'Homecoming gear', promo_description: 'Shop for Friday night',
+    promo_button_label: 'Shop now', promo_destination: 'football', promo_art_text: 'Homecoming',
+    purchasing: { secret: 'private' }, dtf: { supplier_id: 'private' },
+  } };
+  const result = JSON.parse((await publicStorefront(database(branded, []), { slug: 'school' })).body).store;
+  expect(result.all_school_settings).toMatchObject({
+    show_promo_banner: true, secondary_logo_url: 'secondary.png', promo_heading: 'Homecoming gear',
+    promo_description: 'Shop for Friday night', promo_button_label: 'Shop now',
+    promo_destination: 'football', promo_art_text: 'Homecoming',
+  });
+  expect(result.all_school_settings.purchasing).toBeUndefined();
+  expect(result.all_school_settings.dtf).toBeUndefined();
+  const legacy = JSON.parse((await publicStorefront(database(store, []), { slug: 'school' })).body).store;
+  expect(legacy.all_school_settings.show_promo_banner).toBe(false);
+});
+
 test('explicit store override wins and clearing it restores inheritance', async () => {
   const sb = database({ ...store, logo_url: 'override.png' }, [{ id: 'team', logo_url: 'school.png' }]);
   expect(JSON.parse((await publicStorefront(sb, { slug: 'school' })).body).store.logo_url).toBe('override.png');
