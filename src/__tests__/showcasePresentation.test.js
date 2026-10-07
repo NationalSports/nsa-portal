@@ -96,7 +96,7 @@ describe('Showcase provider boundary', () => {
     expect(prompt).toContain('dramatic appeal must come from product angle');
     expect(prompt).toContain('5–8% breathing room');
     expect(prompt).not.toContain('consistent warm-neutral studio background');
-    expect(PROMPT_VERSION).toBe('showcase-v6-athletic-forms');
+    expect(PROMPT_VERSION).toBe('showcase-v7-decoration-hero');
   });
 
   test('uses athletic male and female invisible garment forms without visible models', () => {

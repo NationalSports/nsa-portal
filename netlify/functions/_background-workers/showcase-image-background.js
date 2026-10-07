@@ -127,6 +127,8 @@ exports.handler = async (event) => {
     const kimi = await analyzeWithKimi({
       product: job.product,
       decorations: job.wp.decorations,
+      settings: job.asset.analysis?.showcase_settings,
+      storeArt: job.store.store_art,
       images,
     });
     // Kimi analysis is inexpensive; this checkpoint prevents the much larger
@@ -137,6 +139,8 @@ exports.handler = async (event) => {
     const generated = await generateWithOpenAI({
       product: job.product,
       decorations: job.wp.decorations,
+      settings: job.asset.analysis?.showcase_settings,
+      storeArt: job.store.store_art,
       images,
       analysis: kimi.analysis,
     });
@@ -176,7 +180,7 @@ exports.handler = async (event) => {
       provider_job_id: generated.providerJobId || kimi.providerJobId,
       prompt_version: PROMPT_VERSION,
       prompt: generated.prompt,
-      analysis: kimi.analysis,
+      analysis: { ...kimi.analysis, showcase_settings: job.asset.analysis?.showcase_settings, generated_showcase_settings: job.asset.analysis?.showcase_settings },
       qa_result: {
         human_review_required: true,
         exact_artwork_verified: false,
