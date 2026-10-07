@@ -80,7 +80,7 @@ function publicAllSchoolSettings(settings) {
   const shipping = raw.shipping && typeof raw.shipping === 'object' ? raw.shipping : {};
   const pick = (source, keys) => Object.fromEntries(keys.filter((key) => source[key] != null).map((key) => [key, source[key]]));
   return {
-    ...pick(raw, ['target_ship_days', 'hero_heading', 'hero_subheading', 'hero_title', 'hero_subtitle']),
+    ...pick(raw, ['target_ship_days', 'hero_heading', 'hero_subheading', 'hero_title', 'hero_subtitle', 'hero_background_text']),
     programs: (Array.isArray(raw.programs) ? raw.programs : []).slice(0, 100).map((program) =>
       pick(program && typeof program === 'object' ? program : {}, ['id', 'name', 'label', 'slug', 'sport', 'color', 'description', 'image_url'])),
     shipping: { mode: shipping.mode === 'ups_live' ? 'ups_live' : 'flat', service_code: shipping.service_code || null },
@@ -186,8 +186,22 @@ async function publicStorefront(sb, body) {
   // the separately secured directory-search view.
   const { data: stores, error: storeError } = await sb.from('webstores').select('*').eq('slug', slug).limit(1);
   if (storeError) throw storeError;
-  const store = publicStoreRow((stores || [])[0]);
+  const row = (stores || [])[0];
+  const store = publicStoreRow(row);
   if (!store || store.status === 'archived') return bad(404, 'Store not found');
+  // Resolve the current school/team logo on each load, without copying it into
+  // the store override or exposing customer records to the public client.
+  if (!store.logo_url && row.customer_id) {
+    const customer = await sb.from('customers').select('logo_url,parent_id').eq('id', row.customer_id).limit(1);
+    if (customer.error) throw customer.error;
+    const linked = (customer.data || [])[0];
+    store.logo_url = linked?.logo_url || '';
+    if (!store.logo_url && linked?.parent_id) {
+      const parent = await sb.from('customers').select('logo_url').eq('id', linked.parent_id).limit(1);
+      if (parent.error) throw parent.error;
+      store.logo_url = (parent.data || [])[0]?.logo_url || '';
+    }
+  }
   let products = await drainView(
     () => sb.from('webstore_storefront_products').select('*').eq('store_id', store.id).order('sort_order'),
     3000,
@@ -1548,3 +1562,5 @@ module.exports.rollbackOrder = rollbackOrder;
 module.exports.validClientRef = validClientRef;
 module.exports.findOrderByClientRef = findOrderByClientRef;
 module.exports.replayOrder = replayOrder;
+
+module.exports.publicStorefront = publicStorefront;

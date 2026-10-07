@@ -969,7 +969,7 @@ function webstoreToShipStation(order, items, store, imageByPid = {}) {
 }
 
 // Reusable image uploader → Cloudinary, returns a secure URL via onChange.
-function ImageUpload({ value, fallback, onChange, onBusy, label = 'Product image' }) {
+function ImageUpload({ value, fallback, fallbackLabel = 'Using stock photo — drop one to override.', onChange, onBusy, label = 'Product image' }) {
   const ref = useRef();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -1002,7 +1002,7 @@ function ImageUpload({ value, fallback, onChange, onBusy, label = 'Product image
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: '#3A4150' }}>{busy ? 'Uploading…' : over ? 'Drop the image' : value ? 'Replace image' : 'Drag an image here, or click to browse'}</div>
-          {!value && fallback && <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 3 }}>Using stock photo — drop one to override.</div>}
+          {!value && fallback && <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 3 }}>{fallbackLabel}</div>}
           {err && <div style={{ fontSize: 11.5, color: '#b91c1c', marginTop: 3 }}>{err}</div>}
         </div>
         <input ref={ref} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) upload(f); e.target.value = ''; }} />
@@ -5793,6 +5793,8 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
   // Team vs club only relabels the form (most stores are team stores). The
   // customer link is the same either way; defaults to team.
   const [orgType, setOrgType] = useState(store?.org_type || initialOverrides?.org_type || 'team');
+  const brandingCustomer = cust.find((customer) => customer.id === f.customer_id);
+  const inheritedLogo = brandingCustomer?.logo_url || cust.find((customer) => customer.id === brandingCustomer?.parent_id)?.logo_url || '';
   const noun = orgType === 'all_school' ? 'School' : orgType === 'club' ? 'Club' : 'Team';
   const lead = orgType === 'all_school' ? 'School contact' : orgType === 'club' ? 'Director' : 'Coach';
   // Fundraise mode: percent of price, or flat $ per item. Derived from whichever
@@ -6132,7 +6134,10 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
           <ColorField label="Primary color" value={f.primary_color} onChange={(v) => set('primary_color', v)} fallback="#0b1f3a" />
           <ColorField label="Accent color" value={f.accent_color} onChange={(v) => set('accent_color', v)} fallback="#e11d2a" />
         </div>
-        <ImageUpload value={f.logo_url || null} onChange={(url) => set('logo_url', url || '')} onBusy={onUpBusy} label="Main logo (header)" />
+        <ImageUpload value={f.logo_url || null} fallback={inheritedLogo} fallbackLabel="Using the school/team logo. Upload an image to override it for this store." onChange={(url) => set('logo_url', url || '')} onBusy={onUpBusy} label="Store logo (header and hero)" />
+        {f.logo_url && <button type="button" className="btn btn-sm" onClick={() => set('logo_url', '')}>Use school/team logo</button>}
+        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>Defaults to the linked school/team’s main logo and follows updates to that logo.</div>
+        {orgType === 'all_school' && <Row label="Hero background text"><input className="form-input" aria-label="Hero background text" maxLength={40} value={f.all_school_settings?.hero_background_text ?? (f.name || '').replace(/\s+(team\s+|club\s+)?store$/i, '').trim().split(' ').slice(-1)[0]} onChange={(e) => set('all_school_settings', { ...normalizeAllSchoolSettings(f.all_school_settings), hero_background_text: e.target.value })} placeholder="e.g. ATHLETICS or PADRES" /><div style={{ fontSize: 12, color: '#64748b' }}>Large text behind the logo. Leave blank to hide it.</div></Row>}
         <ImageUpload value={f.banner_url || null} onChange={(url) => set('banner_url', url || '')} onBusy={onUpBusy} label="Banner image (hero background)" />
         <div style={{ marginBottom: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>
