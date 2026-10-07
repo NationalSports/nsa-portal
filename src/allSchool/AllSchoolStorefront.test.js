@@ -35,3 +35,19 @@ describe('All School order shipment target', () => {
     expect(schoolOrderShipmentDate({}, { created_at: 'invalid' }).date).toBeNull();
   });
 });
+
+describe('All School hero branding', () => {
+  const React = require('react');
+  const { renderToStaticMarkup } = require('react-dom/server');
+  const { AllSchoolIntro } = require('./AllSchoolStorefront');
+  const render = (settings) => renderToStaticMarkup(React.createElement(AllSchoolIntro, {
+    store: { name: 'Serra High School Athletics', logo_url: 'serra.png', all_school_settings: settings },
+    theme: { band: '#003da5', accent: '#ffc72c', deepest: '#001f44' }, products: [],
+  }));
+  test('renders store logo and editable background text, including explicit hiding', () => {
+    expect(render({ hero_background_text: 'PADRES' })).toContain('>PADRES</span>');
+    expect(render({ hero_background_text: 'PADRES' })).toContain('src="serra.png"');
+    expect(render({})).toContain('>Athletics</span>');
+    expect(render({ hero_background_text: '' })).not.toContain('>Athletics</span>');
+  });
+});

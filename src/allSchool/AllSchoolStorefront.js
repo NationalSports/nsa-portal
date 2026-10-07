@@ -71,7 +71,7 @@ export function AllSchoolIntro({ store, theme, products, selectedProgram, onProg
   const programs = schoolPrograms(store);
   const settings = settingsOf(store);
   const school = shortName(store.name);
-  const featuredWord = school.split(' ').slice(-1)[0];
+  const featuredWord = settings.hero_background_text == null ? school.split(' ').slice(-1)[0] : String(settings.hero_background_text).trim().slice(0, 40);
   return <>
     <section className={`as-hero${store.banner_url ? ' as-hero-photo' : ''}`} style={{ backgroundColor: theme.band }} aria-label={`${school} school store`}>
       {store.banner_url && <img className="as-hero-background" src={store.banner_url} alt="" loading="eager" />}
