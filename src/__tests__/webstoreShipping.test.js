@@ -126,7 +126,7 @@ describe('all-school public data and frozen production recipes', () => {
   });
   test('public settings expose display fields and hide supplier contacts and automation controls', () => {
     const publicStore = checkout.publicStoreRow({ ...store, contact_email: 'private@example.com', all_school_settings: { ...store.all_school_settings, programs: [{ id: 'football', name: 'Football', supplier: 'private' }], target_ship_days: 14, purchase: { threshold_cents: 20000 }, dtf: { contact_email: 'private' } } });
-    expect(publicStore.all_school_settings).toEqual({ programs: [{ id: 'football', name: 'Football' }], target_ship_days: 14, shipping: { mode: 'ups_live', service_code: 'ups_ground' } });
+    expect(publicStore.all_school_settings).toEqual({ programs: [{ id: 'football', name: 'Football' }], target_ship_days: 14, show_promo_banner: false, shipping: { mode: 'ups_live', service_code: 'ups_ground' } });
     expect(JSON.stringify(publicStore)).not.toMatch(/private|threshold_cents|package_weight_oz/);
   });
 
