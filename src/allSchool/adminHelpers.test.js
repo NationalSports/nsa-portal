@@ -1,5 +1,5 @@
 import { productionSetupError } from './ProductionSetupReview';
-import { allSchoolDefaults, normalizeAllSchoolSettings, validateAllSchoolSettings, coreOfferingCopies, applySportDesign, stockLinkedArtError, changesProductionSetup } from './adminHelpers';
+import { allSchoolDefaults, normalizeAllSchoolSettings, validateAllSchoolSettings, coreOfferingCopies, logoDesignCopies, applySportDesign, stockLinkedArtError, changesProductionSetup } from './adminHelpers';
 import { buildTransferMaps, transferUsage, unresolvedTransferLines } from './transferDemand';
 it('uses $200 per vendor defaults with safe automation off and independent config values', () => {
   const a = allSchoolDefaults(); const b = allSchoolDefaults(); a.purchasing.enabled = true;
@@ -15,6 +15,14 @@ it('copies core blanks with isolated art and group IDs and skips existing overri
   copies[0].decorations[0].art_id = 'football'; expect(core[0].decorations[0].art_id).toBe('spirit');
   expect(coreOfferingCopies(core, 'football', 'store', copies)).toEqual([]);
   expect(coreOfferingCopies([{ ...core[0], school_program_ids: ['soccer'] }], 'football', 'store')).toEqual([]);
+});
+it('makes an inactive logo group with every source color and its own exact artwork', () => {
+  const source = [{ id: 'blue', kind: 'single', product_id: 'blue-blank', variant_group_id: 'colors', school_program_ids: ['football'], retail_price: 42, decorations: [{ art_id: 'script' }] }, { id: 'black', kind: 'single', product_id: 'black-blank', variant_group_id: 'colors', school_program_ids: ['football'], retail_price: 44 }];
+  const copies = logoDesignCopies(source, 'store', 'listing', 'arched-colors', 'Arched Serra', { code: 'ARCH' }, { id: 'arch-web', url: 'arch.png' });
+  expect(copies.map((row) => row.product_id)).toEqual(['blue-blank', 'black-blank']);
+  expect(copies.every((row) => row.school_style_group_id === 'listing' && row.variant_group_id === 'arched-colors' && row.school_design_label === 'Arched Serra' && row.active === false && row.school_template_id === null)).toBe(true);
+  expect(copies.every((row) => row.transfer_codes[0] === 'ARCH' && row.decorations[0].art_id === 'arch-web')).toBe(true);
+  copies[0].decorations[0].art_id = 'changed'; expect(source[0].decorations[0].art_id).toBe('script');
 });
 it('counts exact sport offering transfer needs without product ID overwrite', () => {
   const maps = buildTransferMaps([{ id: 'football', product_id: 'blank', transfer_codes: ['football-logo'] }, { id: 'soccer', product_id: 'blank', transfer_codes: ['soccer-logo'] }], []);

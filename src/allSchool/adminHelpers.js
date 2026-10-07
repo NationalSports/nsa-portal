@@ -31,6 +31,12 @@ export const validateAllSchoolSettings = (value) => {
   return '';
 };
 const COPY_FIELDS = ['kind', 'product_id', 'sku', 'retail_price', 'fundraise_amount', 'image_url', 'image_back_url', 'takes_number', 'takes_name', 'name_upcharge', 'transfer_codes', 'transfer_code', 'num_transfer_sets', 'num_transfer_size', 'num_transfer_color', 'decorations', 'category', 'kit_name', 'required', 'options', 'display_name', 'sizes_offered', 'active', 'deco_upcharge', 'deco_cost_estimate', 'track_inventory', 'size_sku_overrides', 'variant_label', 'personalization_template', 'weight_oz'];
+export const logoDesignCopies = (sources, storeId, styleGroupId, designGroupId, label, stock, logo) => applySportDesign((sources || []).map((row, index) => {
+  const fields = {}; COPY_FIELDS.forEach((key) => { if (row[key] !== undefined) fields[key] = JSON.parse(JSON.stringify(row[key])); });
+  return { ...fields, store_id: storeId, variant_group_id: designGroupId, school_style_group_id: styleGroupId,
+    school_design_label: label.trim(), school_program_ids: row.school_program_ids || [], school_shared: !!row.school_shared,
+    school_template_id: null, sort_order: Number(row.sort_order || 0) + index + 1, active: false };
+}), stock, logo);
 export const coreOfferingCopies = (sources, programId, storeId, existing = [], groupIdFor = () => crypto.randomUUID()) => {
   const groups = new Map();
   return (sources || []).filter((row) => row.kind === 'single' && !row.school_template_id && !(row.school_program_ids || []).length && !existing.some((copy) => copy.school_template_id === row.id && (copy.school_program_ids || []).includes(programId))).map((row, i) => {

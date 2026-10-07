@@ -145,6 +145,12 @@ describe('all-school public data and frozen production recipes', () => {
     expect(saved[0].production_recipe).toBe(recipe);
     expect(checkout.buildOrderItems(lines, null)[0].production_recipe).toBeUndefined();
   });
+  test('logo option label and exact design survive in the frozen production recipe', () => {
+    const recipe = checkout.productionRecipe({ ...wp, school_design_label: 'Arched Serra', transfer_codes: ['ARCH'], decorations: [{ art_id: 'arched-logo', transfer_code: 'ARCH' }] });
+    expect(recipe.school_design_label).toBe('Arched Serra');
+    expect(recipe.transfer_codes).toEqual(['ARCH']);
+    expect(recipe.decorations[0].art_id).toBe('arched-logo');
+  });
 
   test('personalization rules reject invalid names without changing confirmed text', () => {
     const product = { personalization_template: { max_length: 8, uppercase: true } };

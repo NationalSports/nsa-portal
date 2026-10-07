@@ -106,7 +106,8 @@ function publicStoreRow(row) {
 async function enrichSchoolProducts(sb, storeId, products) {
   const ids = [...new Set(products.map((p) => p.webstore_product_id).filter(Boolean))];
   if (!ids.length) return products;
-  const result = await sb.from('webstore_products').select('id,school_program_ids,school_shared,personalization_template').eq('store_id', storeId).in('id', ids);
+  let result = await sb.from('webstore_products').select('id,school_program_ids,school_shared,personalization_template,school_style_group_id,school_design_label').eq('store_id', storeId).in('id', ids);
+  if (['42703', 'PGRST204'].includes(result.error?.code)) result = await sb.from('webstore_products').select('id,school_program_ids,school_shared,personalization_template').eq('store_id', storeId).in('id', ids);
   // A legacy store remains usable before the additive school migration lands.
   // Every other database error must surface rather than hiding a broken read.
   if (result.error) {
@@ -118,6 +119,7 @@ async function enrichSchoolProducts(sb, storeId, products) {
     const school = byId.get(product.webstore_product_id);
     const template = school && school.personalization_template && typeof school.personalization_template === 'object' ? school.personalization_template : {};
     return { ...product, school_program_ids: uniqueTextList(school && school.school_program_ids, 100, 80), school_shared: !school || school.school_shared !== false,
+      school_style_group_id: school?.school_style_group_id || null, school_design_label: safeText(school?.school_design_label, 80) || null,
       personalization_template: { max_length: Math.min(40, Math.max(1, Number(template.max_length) || 40)), uppercase: template.uppercase === true } };
   });
 }
@@ -423,7 +425,7 @@ async function priceCart(sb, store, cart) {
       subtotal += r2((unit + nameExtra) * qty);
       fundraise += r2(fundAmt * qty);
       feeBase += r2(unit * qty);
-      lines.push({ kind: 'single', wp, qty, size, unit_price: unit, fundraise: fundAmt, name_extra: nameExtra, option_extra: addOns.extra, option_selections: addOns.selections, line_total: r2((unit + fundAmt + nameExtra) * qty), player_name: pname || null, player_number: pnum || null, name: wp.display_name, color: l.color ? String(l.color).slice(0, 60) : null, variant_label: wp.variant_label || null, image: wp.image_url, ...(store.org_type === 'all_school' ? { production_recipe: productionRecipe(wp, recipeTransfers, recipeArts) } : {}) });
+      lines.push({ kind: 'single', wp, qty, size, unit_price: unit, fundraise: fundAmt, name_extra: nameExtra, option_extra: addOns.extra, option_selections: addOns.selections, line_total: r2((unit + fundAmt + nameExtra) * qty), player_name: pname || null, player_number: pnum || null, name: wp.display_name, color: l.color ? String(l.color).slice(0, 60) : null, variant_label: [wp.variant_label, wp.school_design_label].filter(Boolean).join(' · ') || null, image: wp.image_url, ...(store.org_type === 'all_school' ? { production_recipe: productionRecipe(wp, recipeTransfers, recipeArts) } : {}) });
     }
   }
   return { lines, subtotal: r2(subtotal), fundraise: r2(fundraise), feeBase: r2(feeBase) };
@@ -657,7 +659,7 @@ function personalizationNameError(wp, value) {
 }
 
 function productionRecipe(wp, transfers = [], arts = []) {
-  const keys = ['product_id', 'sku', 'display_name', 'color', 'variant_label', 'transfer_code', 'num_transfer_size', 'num_transfer_color', 'name_upcharge', 'image_url', 'image_back_url', 'weight_oz'];
+  const keys = ['product_id', 'sku', 'display_name', 'color', 'variant_label', 'school_design_label', 'transfer_code', 'num_transfer_size', 'num_transfer_color', 'name_upcharge', 'image_url', 'image_back_url', 'weight_oz'];
   const transferKeys = ['id', 'kind', 'code', 'name', 'label', 'image_url', 'color', 'size', 'tsize', 'digit', 'production_file', 'dimensions', 'type', 'decoration_type', 'supplier', 'supplier_id', 'application', 'application_method', 'application_instructions', 'unit_cost', 'artwork_version', 'art_file_id', 'width_in', 'height_in', 'prod_files'];
   const designCodes = new Set([...(Array.isArray(wp.transfer_codes) ? wp.transfer_codes : []), wp.transfer_code].filter(Boolean));
   const numberSets = (Array.isArray(wp.num_transfer_sets) && wp.num_transfer_sets.length ? wp.num_transfer_sets : [`${wp.num_transfer_size || ''}|${wp.num_transfer_color || ''}`]);

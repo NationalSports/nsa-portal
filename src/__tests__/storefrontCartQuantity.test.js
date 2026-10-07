@@ -1,4 +1,13 @@
-import { cartLineQty, isFixedCartQty, setCartLineQty } from '../storefront/Storefront';
+import { cartLineQty, isFixedCartQty, setCartLineQty, groupProducts } from '../storefront/Storefront';
+
+test('all-school listings combine logo designs but keep other sports and ordinary stores separate', () => {
+  const rows = [{ webstore_product_id: 'blue-script', variant_group_id: 'script', school_style_group_id: 'hoodie', school_program_ids: ['football'] },
+    { webstore_product_id: 'black-script', variant_group_id: 'script', school_style_group_id: 'hoodie', school_program_ids: ['football'] },
+    { webstore_product_id: 'blue-arched', variant_group_id: 'arched', school_style_group_id: 'hoodie', school_program_ids: ['football'] },
+    { webstore_product_id: 'baseball', variant_group_id: 'other', school_style_group_id: 'hoodie', school_program_ids: ['baseball'] }];
+  expect(groupProducts(rows, true).map((group) => group.rows.length)).toEqual([3, 1]);
+  expect(groupProducts(rows).map((group) => group.rows.length)).toEqual([2, 1, 1]);
+});
 
 describe('storefront cart quantity controls', () => {
   const plain = { key: 'plain', kind: 'single', qty: 1 };
