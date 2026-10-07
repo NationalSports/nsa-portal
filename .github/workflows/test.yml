@@ -36,6 +36,9 @@ jobs:
       - name: Background runtime compatibility tests
         run: node --test tests/netlify-background-runtime.test.cjs
 
+      - name: Browser shared module runtime test
+        run: node --test tests/browser-shared-runtime.test.cjs
+
       - name: Email report
         if: always() && (github.event_name == 'schedule' || failure())
         continue-on-error: true

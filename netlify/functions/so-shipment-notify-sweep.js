@@ -22,7 +22,7 @@
 //                    the order back. The rep's button can still include them.
 //
 // When an order is announced (every condition, in order):
-//   1. Live order (not soft-deleted, not `complete`) with ≥1 announceable box
+//   1. Non-deleted order (including `complete`) with ≥1 announceable box
 //      created on/after the GO-LIVE DATE and no blocking box.
 //   2. The ledger (so_shipment_notices) has no sent row for that box set.
 //   3. Grace: the FIRST time the sweep sees the set fully tracked it writes a
@@ -47,11 +47,7 @@ const { sendShipmentNotice, isCustomerShipment, isMissingRelation } = require('.
 
 const MIN_AGE_MS = Math.max(0, Number(process.env.SO_SHIPMENT_AUTONOTIFY_MIN_AGE_MIN || 15)) * 60000;
 const MAX_AGE_MS = Math.max(1, Number(process.env.SO_SHIPMENT_AUTONOTIFY_MAX_AGE_DAYS || 30)) * 86400000;
-const SCAN_LIMIT = 500;
-// A closed-out order is done being announced; a box added after it closes is the
-// rep's to send. Keeping 'complete' out of the scan is also what keeps this a
-// small query instead of a walk over every order NSA has ever shipped.
-const CLOSED_STATUSES = ['complete'];
+const SCAN_PAGE_SIZE = 500;
 // Carriers that never produce a tracking number.
 const NO_LABEL_CARRIERS = new Set(['rep_delivery', 'courier']);
 
@@ -136,21 +132,35 @@ function shipmentNoticePlan(so, { now = Date.now(), minAgeMs = MIN_AGE_MS, maxAg
   return { action: 'send', reason: 'ready', shipmentIds };
 }
 
-async function runSweep(admin, { dryRun, since, now = Date.now() }) {
-  const { data: orders, error } = await admin.from('sales_orders')
-    .select('id,status,_shipments,deleted_at')
-    .is('deleted_at', null)
-    .not('_shipments', 'is', null)
-    .not('status', 'in', `(${CLOSED_STATUSES.join(',')})`)
-    .order('id', { ascending: false })
-    .limit(SCAN_LIMIT);
-  if (error) throw new Error(`Could not scan sales orders: ${error.message}`);
-
-  const scanned = (orders || []).length;
-  if (scanned === SCAN_LIMIT) {
-    console.warn('[so-shipment-notify-sweep] scan hit the row cap — some orders were not examined this pass');
+// Keyset pagination prevents old SOs from being permanently starved by newer
+// IDs. Completion is an accounting/production state, not a notification state:
+// the warehouse can add tracking after an order has already closed.
+async function runSweep(admin, options) {
+  const total = { scanned: 0, sent: 0, failed: 0, graceStarted: 0, dryRun: !!options.dryRun, skipped: {}, sends: [], failures: [], waitingOnTracking: [], noContact: [] };
+  let afterId = null;
+  while (true) {
+    let query = admin.from('sales_orders').select('id,status,_shipments,deleted_at')
+      .is('deleted_at', null).not('_shipments', 'is', null)
+      .order('id', { ascending: true }).limit(SCAN_PAGE_SIZE);
+    if (afterId !== null) query = query.gt('id', afterId);
+    const { data: orders, error } = await query;
+    if (error) throw new Error(`Could not scan sales orders: ${error.message}`);
+    if (!orders || !orders.length) break;
+    const page = await runSweepPage(admin, orders, options);
+    for (const key of ['scanned', 'sent', 'failed', 'graceStarted']) total[key] += page[key];
+    for (const key of ['sends', 'failures', 'waitingOnTracking', 'noContact']) total[key].push(...page[key]);
+    for (const [reason, count] of Object.entries(page.skipped)) total.skipped[reason] = (total.skipped[reason] || 0) + count;
+    if (page.note) total.note = page.note;
+    if (orders.length < SCAN_PAGE_SIZE) break;
+    const next = orders[orders.length - 1].id;
+    if (next === afterId) throw new Error('Shipment scan cursor did not advance');
+    afterId = next;
   }
+  return total;
+}
 
+async function runSweepPage(admin, orders, { dryRun, since, now = Date.now() }) {
+  const scanned = orders.length;
   const summary = { scanned, sent: 0, failed: 0, graceStarted: 0, dryRun: !!dryRun, skipped: {}, sends: [], failures: [], waitingOnTracking: [], noContact: [] };
   const sinceMs = since instanceof Date ? since.getTime() : 0;
 

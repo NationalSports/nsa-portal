@@ -373,6 +373,7 @@ function buildSoShipmentEmail({
   lines = [],
   packages = [],
   remainingUnits = 0,
+  contentsConfirmed = true,
   shipDate = '',
   eta = '',
   carrier = '',
@@ -388,7 +389,7 @@ function buildSoShipmentEmail({
   const team = teamName || 'your team';
   const trackAll = trackAllUrl(packages);
 
-  const preheader = `${totalPieces} piece${totalPieces === 1 ? '' : 's'} for ${team} ${boxCount > 1 ? `in ${boxCount} boxes ` : ''}— tracking inside.`;
+  const preheader = !contentsConfirmed ? `Shipment tracking for ${team} is available.` : `${totalPieces} piece${totalPieces === 1 ? '' : 's'} for ${team} ${boxCount > 1 ? `in ${boxCount} boxes ` : ''}— tracking inside.`;
 
   const carrierLine = [carrierLabel(carrier), serviceLevel, boxCount ? `${boxCount} Box${boxCount === 1 ? '' : 'es'}` : '']
     .filter(Boolean).map(esc).join(DOT);
@@ -450,7 +451,7 @@ function buildSoShipmentEmail({
 ${wrap(NAVY, `<div style="font-family:${DISPLAY};font-size:12px;line-height:14px;mso-line-height-rule:exactly;letter-spacing:3px;color:${RED_LIGHT};text-transform:uppercase;font-weight:bold;">Order ${esc(order.id || '')}${shipDate ? DOT + 'Shipped ' + esc(shipDate) : ''}</div>
       ${rule(60, 4, RED)}
       <div class="h1" style="font-family:${DISPLAY};font-weight:bold;font-size:38px;line-height:40px;mso-line-height-rule:exactly;color:#ffffff;text-transform:uppercase;letter-spacing:0.5px;padding-top:14px;">Your Gear Is<br><em style="color:${RED_LIGHT};font-style:italic;">On The Way</em></div>
-      <div style="font-family:${BODY_FONT};font-size:15px;line-height:24px;mso-line-height-rule:exactly;color:#D8DDE9;padding-top:14px;">${styleCount} style${styleCount === 1 ? '' : 's'} for ${esc(team)} left our shop in Orange, CA.${remainingUnits > 0 ? ' This is part of your order — the rest follows separately.' : ''} Everything below matches your approved mockups.</div>`, '34px 40px')}
+      <div style="font-family:${BODY_FONT};font-size:15px;line-height:24px;mso-line-height-rule:exactly;color:#D8DDE9;padding-top:14px;">${contentsConfirmed ? `${styleCount} style${styleCount === 1 ? '' : 's'} for ${esc(team)} left our shop in Orange, CA.${remainingUnits > 0 ? ' This is part of your order — the rest follows separately.' : ''} Everything below matches your approved mockups.` : `Tracking is available for your shipment to ${esc(team)}. Package contents are being confirmed.`}</div>`, '34px 40px')}
 
 <!-- carrier / ETA card -->
 ${wrap('#ffffff', `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;background-color:${PANEL};border:1px solid ${HAIRLINE};">
@@ -483,10 +484,10 @@ ${lines.map(itemRowHtml).join('\n')}
     <td class="pad" style="padding:22px 40px 0 40px;">
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;background-color:${NAVY};">
         <tr><td style="padding:18px 24px;font-family:${DISPLAY};font-weight:bold;font-size:16px;line-height:20px;mso-line-height-rule:exactly;letter-spacing:1.5px;color:#ffffff;text-transform:uppercase;">
-          ${styleCount} style${styleCount === 1 ? '' : 's'}${DOT}${totalPieces} piece${totalPieces === 1 ? '' : 's'}${DOT}${boxCount} box${boxCount === 1 ? '' : 'es'}
+          ${contentsConfirmed ? `${styleCount} style${styleCount === 1 ? '' : 's'}${DOT}${totalPieces} piece${totalPieces === 1 ? '' : 's'}${DOT}` : ''}${boxCount} box${boxCount === 1 ? '' : 'es'}
         </td></tr>
       </table>
-      ${remainingUnits > 0 ? `<div style="font-family:${BODY_FONT};font-size:13px;line-height:20px;mso-line-height-rule:exactly;color:${BODY_TEXT};padding-top:12px;"><strong style="color:${NAVY};">Still to come:</strong> ${remainingUnits} more piece${remainingUnits === 1 ? '' : 's'} from this order will ship separately — we'll email tracking when they do.</div>` : ''}
+      ${contentsConfirmed && remainingUnits > 0 ? `<div style="font-family:${BODY_FONT};font-size:13px;line-height:20px;mso-line-height-rule:exactly;color:${BODY_TEXT};padding-top:12px;"><strong style="color:${NAVY};">Still to come:</strong> ${remainingUnits} more piece${remainingUnits === 1 ? '' : 's'} from this order will ship separately — we'll email tracking when they do.</div>` : ''}
       ${boxCount ? `<div style="font-family:${DISPLAY};font-weight:bold;font-size:13px;line-height:16px;mso-line-height-rule:exactly;letter-spacing:2px;color:${MUTED};text-transform:uppercase;padding-top:22px;padding-bottom:8px;">Tracking By Box</div>
       ${packages.map((p) => boxRowHtml(p, boxCount)).join('\n')}
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;"><tr><td height="1" style="height:1px;background-color:${HAIRLINE};font-size:0;line-height:0;">&nbsp;</td></tr></table>` : ''}
@@ -501,7 +502,7 @@ ${lines.map(itemRowHtml).join('\n')}
       </tr></table>
     </td>
   </tr>` : ''}
-  ${(reviewUrl && remainingUnits <= 0) ? `<tr>
+  ${(contentsConfirmed && reviewUrl && remainingUnits <= 0) ? `<tr>
     <td class="pad" style="padding:24px 40px 0 40px;">
       <!-- Google review ask — only once the WHOLE order has shipped; a coach still
            waiting on half their gear is not the one to ask. -->

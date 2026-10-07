@@ -175,8 +175,9 @@ describe('checkTransferLowStock (00238 — weekly-throttled, open stores only)',
         { id: 3, store_id: 'ws2', code: 'X', kind: 'design', on_hand: 0, incoming: 0, low_stock_notified_at: null }, // closed store → skip
         { id: 4, store_id: 'ws1', code: 'Y', kind: 'design', on_hand: 3, incoming: 0, low_stock_notified_at: new Date().toISOString() }, // throttled → skip
       ], error: null }],
+      'team_members.select': [{ data: [{ id: 'rep1', email: 'ops@nsa.com', is_active: true }] }],
       'webstores.select': [{ data: [
-        { id: 'ws1', name: 'Grande FC', status: 'open' },
+        { id: 'ws1', name: 'Grande FC', status: 'open', rep_id: 'rep1' },
         { id: 'ws2', name: 'Old Store', status: 'closed' },
       ], error: null }],
       'webstore_transfers.update': [{ data: null, error: null }],
@@ -198,7 +199,8 @@ describe('checkTransferLowStock (00238 — weekly-throttled, open stores only)',
       'webstore_transfers.select': [{ data: [
         { id: 1, store_id: 'ws1', code: 'LOGO', label: 'Crest', kind: 'design', on_hand: 20, incoming: 0, low_stock_notified_at: null },
       ], error: null }],
-      'webstores.select': [{ data: [{ id: 'ws1', name: 'Grande FC', status: 'open' }], error: null }],
+      'team_members.select': [{ data: [{ id: 'rep1', email: 'ops@nsa.com', is_active: true }] }],
+      'webstores.select': [{ data: [{ id: 'ws1', name: 'Grande FC', status: 'open', rep_id: 'rep1' }], error: null }],
       'webstore_orders.select': [{ data: [{ id: 'o1', store_id: 'ws1', status: 'paid', transfers_pulled: false }], error: null }],
       'webstore_order_items.select': [{ data: [{ order_id: 'o1', product_id: 'p1', qty: 18, player_number: null, is_bundle_parent: false }], error: null }],
       'webstore_products.select': [{ data: [{ id: 'wp1', store_id: 'ws1', product_id: 'p1', transfer_codes: ['LOGO'] }], error: null }],
@@ -216,7 +218,8 @@ describe('checkTransferLowStock (00238 — weekly-throttled, open stores only)',
       'webstore_transfers.select': [{ data: [
         { id: 1, store_id: 'ws1', code: 'LOGO', kind: 'design', on_hand: 2, incoming: 0, low_stock_notified_at: null },
       ], error: null }],
-      'webstores.select': [{ data: [{ id: 'ws1', name: 'Grande FC', status: 'open' }], error: null }],
+      'team_members.select': [{ data: [{ id: 'rep1', email: 'ops@nsa.com', is_active: true }] }],
+      'webstores.select': [{ data: [{ id: 'ws1', name: 'Grande FC', status: 'open', rep_id: 'rep1' }], error: null }],
     });
     const n = await sweep.checkTransferLowStock(admin, 'ops@nsa.com');
     expect(n).toBe(0);
@@ -231,4 +234,47 @@ test('runSweep degrades quietly when 00202/00236 are not applied', async () => {
   const s = await runSweep(admin, 'test');
   expect(s.ok).toBe(true);
   expect(s.enabled).toBe(false);
+});
+
+
+describe('24/7 low-stock routing', () => {
+  beforeEach(() => { process.env.BREVO_API_KEY = 'test'; global.fetch = jest.fn(async () => ({ ok: true })); });
+  afterEach(() => { delete process.env.BREVO_API_KEY; delete global.fetch; });
+  test('uses exact offering demand, keeps stores separate, and sends each rep only their store', async () => {
+    const admin = fakeAdmin({
+      'webstore_transfers.select': [{ data: [
+        { id: 'a', store_id: 's1', code: 'LOGO', label: 'Alpha logo', on_hand: 20, incoming: 5, low_stock_threshold: 10 },
+        { id: 'b', store_id: 's2', code: 'LOGO', label: 'Beta logo', on_hand: 20, low_stock_threshold: 10 },
+        { id: 'c', store_id: 's2', code: 'OTHER', label: 'Beta other', on_hand: 15, low_stock_threshold: 16 },
+      ] }],
+      'webstores.select': [{ data: [
+        { id: 's1', name: 'Alpha', org_type: 'all_school', status: 'open', rep_id: 'r1' },
+        { id: 's2', name: 'Beta', org_type: 'all_school', status: 'open', rep_id: 'r2' },
+      ] }],
+      'team_members.select': [{ data: [{ id: 'r1', email: 'alpha@example.com' }, { id: 'r2', email: 'beta@example.com' }] }],
+      'webstore_orders.select': [{ data: [{ id: 'o1', store_id: 's1', status: 'paid' }] }],
+      'webstore_order_items.select': [{ data: [{ order_id: 'o1', product_id: 'blank', production_recipe: { version: 1, webstore_product_id: 'wp1', transfer_codes: ['LOGO'] }, qty: 18 }] }],
+      'webstore_products.select': [{ data: [
+        { id: 'wp1', store_id: 's1', product_id: 'blank', transfer_codes: ['LOGO'] },
+        { id: 'wp2', store_id: 's1', product_id: 'blank', transfer_codes: ['DIFFERENT'] },
+      ] }],
+    });
+    expect(await sweep.checkTransferLowStock(admin)).toBe(2);
+    const messages = global.fetch.mock.calls.map((c) => JSON.parse(c[1].body));
+    expect(messages[0].to).toEqual([{ email: 'alpha@example.com' }]);
+    expect(messages[0].htmlContent).toContain('Alpha logo');
+    expect(messages[0].htmlContent).not.toContain('Beta');
+    expect(messages[1].to).toEqual([{ email: 'beta@example.com' }]);
+    expect(messages[1].htmlContent).toContain('Beta other');
+    expect(messages[1].htmlContent).not.toContain('Beta logo');
+  });
+  test('missing rep email sends and stamps nothing', async () => {
+    const admin = fakeAdmin({
+      'webstore_transfers.select': [{ data: [{ id: 'a', store_id: 's1', code: 'LOGO', on_hand: 0 }] }],
+      'webstores.select': [{ data: [{ id: 's1', status: 'open', org_type: 'all_school' }] }],
+    });
+    expect(await sweep.checkTransferLowStock(admin)).toBe(0);
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(admin.calls.some((c) => c.key === 'webstore_transfers.update')).toBe(false);
+  });
 });

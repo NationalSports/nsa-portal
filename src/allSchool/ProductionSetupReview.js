@@ -11,7 +11,7 @@ export const productionSetupError = (item, transfers = [], art = []) => {
   }
   for (const decoration of item.decorations || []) {
     if (!decoration || ['perso_name', 'perso_number'].includes(decoration.kind) || decoration.transfer_code && codes.includes(decoration.transfer_code)) continue;
-    if (!decoration.art_id && !decoration.art_file_id && !decoration.art_url) continue;
+    if (!decoration.art_id && !decoration.art_file_id && !decoration.art_url) return 'Every decoration needs its linked, approved production artwork before approval.';
     const file = art.find((a) => a.id === (decoration.art_id || decoration.art_file_id));
     const sources = [...(file?.prod_files || []), ...(file?.files || [])];
     if (!file || !['approved', 'art_complete'].includes(file.status) || !sources.some((f) => (typeof f === 'string' ? [f] : [f.name, f.url]).filter(Boolean).some((value) => /\.(ai|eps|pdf|dst)(\?|$)/i.test(value)))) return 'Every nonstock logo needs approved production art in Art & Logos.';

@@ -17,7 +17,7 @@
 // Serves `rowCount` rows for one table with real PostgREST range semantics, reports a row count
 // on whichever page asks for one, and records every .range() call.
 jest.mock('@supabase/supabase-js', () => {
-  const state = { table: null, rowCount: 0, reportedCount: undefined, ranges: [], served: 0, pageSize: 1000 };
+  const state = { table: null, rowCount: 0, reportedCount: undefined, ranges: [], served: 0, pageSize: 1000, waves: [], tickOpen: false };
   const makeBuilder = (table) => {
     let wantsCount = false;
     const builder = {
@@ -26,6 +26,10 @@ jest.mock('@supabase/supabase-js', () => {
       range: (from, to) => {
         if (table !== state.table) return Promise.resolve({ data: [], error: null, status: 200 });
         state.ranges.push(from);
+        // A wave issues all its .range() calls in one synchronous tick; group them so tests can
+        // count serial round trips, not just requests.
+        if (!state.tickOpen) { state.waves.push([]); state.tickOpen = true; Promise.resolve().then(() => { state.tickOpen = false; }); }
+        state.waves[state.waves.length - 1].push(from);
         const rows = [];
         for (let i = from; i <= Math.min(to, state.rowCount - 1); i++) rows.push({ id: i });
         state.served += rows.length;
@@ -56,12 +60,12 @@ const runPager = async ({ rowCount, reportedCount }) => {
   process.env.REACT_APP_SUPABASE_ANON_KEY = 'test-anon-key';
   jest.resetModules();
   const { __pagerState } = require('@supabase/supabase-js');
-  Object.assign(__pagerState, { table: 'sales_orders', rowCount, reportedCount, ranges: [], served: 0 });
+  Object.assign(__pagerState, { table: 'sales_orders', rowCount, reportedCount, ranges: [], served: 0, waves: [], tickOpen: false });
   const { _dbLoad } = require('../lib/dbEngine');
   await _dbLoad({ only: new Set(['sales_orders']) });
   // `served` is the ground truth for "did the pager read every row" — independent of how
   // _dbLoad reshapes the result downstream.
-  return { served: __pagerState.served, ranges: __pagerState.ranges };
+  return { served: __pagerState.served, ranges: __pagerState.ranges, waves: __pagerState.waves };
 };
 
 afterEach(() => { process.env = { ...ORIG_ENV }; });
@@ -84,6 +88,14 @@ describe('_safeQuery paged fetch — wave sizing', () => {
     // Server really has 6403 rows but reports 2000 (autoanalyze lag / bulk insert).
     const { served } = await runPager({ rowCount: 6403, reportedCount: 2000 });
     expect(served).toBe(6403);
+  });
+
+  test('an RLS-shrunk LOW count goes back to full waves instead of one page per round trip', async () => {
+    // message_reads on 2026-10-07: 9541 rows, but `using is_team_member()` made the planner report
+    // 3176. The pager then fetched pages 4000-9000 one serial round trip at a time (8 round trips).
+    const { served, waves } = await runPager({ rowCount: 9541, reportedCount: 3176 });
+    expect(served).toBe(9541);
+    expect(waves).toEqual([[0], [1000, 2000, 3000], [4000], [5000, 6000, 7000, 8000, 9000]]);
   });
 
   test('a stale HIGH count loads every row and never over-fetches past the data', async () => {

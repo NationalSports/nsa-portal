@@ -1,3 +1,4 @@
+import RepShipmentButton from './RepShipmentButton';
 import { _loadArtRow } from './constants';
 import {useRecoveryHandoff} from './lib/useRecoveryHandoff';
 import StandaloneArtRequest from './StandaloneArtRequest';
@@ -81,6 +82,7 @@ import { ART_PULLBACK_CLEARS, approveArtOnSO, sendArtBackOnSO } from './lib/artR
 import { artFamilyKey } from './lib/artSplitFamily';
 import { parseStitchCount, parseEmbroideryDimensions, fillEmbroiderySpecs, embStitchTierLabel } from './lib/embStitchParser';
 import { _dbPersistNewPoLine } from './lib/dbEngine';
+import { printShippingLabel } from './lib/shippingLabels';
 import { applyFullPromoPricing, recoverGarmentCost as recoverGarmentCostShared } from './lib/promoPricing';
 import { fetchPaidPromoHistoryInvoices, mergePromoHistoryInvoices, promoHalfWindows, withEarnedPromoAllocation } from './lib/promoHistory';
 import { itemVendorInvSource, vendorInvCacheKey } from './vendorInventory';
@@ -7928,7 +7930,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           if(!window.confirm('Email tracking to '+(pd.to.name?pd.to.name+' <'+pd.to.email+'>':pd.to.email)+'?\n\n'+pd.boxes+' box'+(pd.boxes===1?'':'es')+' · '+pd.pieces+' pieces'+warn))return;
           const r=await post({eta:eta.trim(),resend:!!pd.alreadySent});const d=await r.json().catch(()=>({}));
           if(!r.ok){nf(d.error||'Email send failed','error');return}
-          nf('Shipping notice sent to '+d.to+(d.repCopy==='sent'?' — copy sent to '+d.repEmail:''));
+          nf('Shipping notice sent to '+d.to+(d.repCopy==='sent'?' — copy sent to '+d.repEmail:d.repCopy==='queued'?' — rep copy queued':d.repCopy==='failed'?' — rep copy failed; use Email Rep Update':''));
           if(d.historyRecorded===false)nf('Sent — but the send was not recorded on the order','error');
         }catch(e){nf('Email failed: '+e.message,'error')}
         finally{setShpEmailBusy(false)}
@@ -8001,6 +8003,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                   shipped after the order was already closed and invoiced. The warehouse Ready-to-Ship
                   flow is still the main path (it knows which units are in the box); this is the escape
                   hatch for everything else, and it is what gets the shipping COST onto the order. */}
+              <RepShipmentButton soId={o.id} nf={nf}/>
               {allOutbound.length>0&&<button className="btn btn-sm btn-secondary" style={{marginLeft:'auto',fontSize:11}}
                 disabled={shpEmailBusy} onClick={previewShipmentNotice} title="Open the coach's shipping email in a new tab — nothing is sent">
                 👁 Preview Email</button>}
@@ -8074,14 +8077,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                     {shp.ship_date&&<span style={{fontSize:11,color:'#64748b'}}>Shipped {shp.ship_date}</span>}
                     {safeNum(shp.shipping_cost)>0&&<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'2px 8px',borderRadius:4}}>${safeNum(shp.shipping_cost).toFixed(2)}</span>}
                     {shp.label_url&&<button style={{fontSize:9,background:'#7c3aed',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
-                      onClick={()=>{
-                        if(shp.label_url.startsWith('data:application/pdf')){
-                          const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
-                          iframe.src=shp.label_url;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){
-                            const a=document.createElement('a');a.href=shp.label_url;a.download='label.pdf';a.click()}
-                            setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
-                        } else {const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
-                      }}>Print Label</button>}
+                      onClick={()=>{printShippingLabel(shp.label_url).catch(err=>nf(err.message,'error'))}}>Print Label</button>}
                     {shpUnits>0&&<span style={{marginLeft:'auto',fontSize:11,fontWeight:700,color:'#166534'}}>{shpUnits} units</span>}
                     {/* Edit tracking for reps/admin */}
                     {canEditCost&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>{
