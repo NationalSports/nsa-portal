@@ -61,12 +61,12 @@ async function queueRepShipmentEmail(admin, { soId, shipmentIds, payload, kind }
 
 async function notifyShipmentRep(admin, { soId, shipmentIds, preview = false }) {
   const { data: so, error } = await admin.from('sales_orders')
-    .select('id,customer_id,rep_id,memo,_shipments,_shipped,deleted_at').eq('id', soId).maybeSingle();
+    .select('id,customer_id,rep_id,created_by,memo,_shipments,_shipped,deleted_at').eq('id', soId).maybeSingle();
   if (error) throw new Error(error.message);
   if (!so || so.deleted_at) throw new Error('Sales order not found');
   const { data: customer, error: customerError } = await admin.from('customers').select('name,primary_rep_id').eq('id', so.customer_id).maybeSingle();
   if (customerError) throw new Error(customerError.message);
-  const repId = so.rep_id || customer?.primary_rep_id;
+  const repId = so.rep_id || customer?.primary_rep_id || so.created_by;
   if (!repId) throw new Error('Assign a rep to the order or customer first');
   const { data: rep, error: repError } = await admin.from('team_members').select('name,email').eq('id', repId).maybeSingle();
   if (repError) throw new Error(repError.message);
