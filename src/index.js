@@ -56,8 +56,9 @@ const App = React.lazy(() =>
       window.location.reload();
       return new Promise(() => {}); // never resolves; page is reloading
     }
-    // Already reloaded recently or non-chunk error — retry once after 500ms.
-    return new Promise((res, rej) => setTimeout(() => import('./App').then(res, rej), 500));
+    // A module initialization failure is not a network retry. Webpack may retain
+    // its partial exports; re-importing can render App before its constants exist.
+    throw err;
   })
 );
 

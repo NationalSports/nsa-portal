@@ -134,7 +134,7 @@ function buildSanMarPOPayload({
   // combine up to SanMar (S&S adds them, which is how NSA 4632 double-ordered). lineNumber is
   // positional in the SOAP, so renumber after the merge or the envelope skips numbers.
   const { merged, duplicates } = collapseVendorLines(lines, l => l.partId);
-  const mergedItems = merged.map((l, i) => ({ ...l, lineNumber: i + 1 }));
+  const mergedItems = merged.map((l, i) => Object.assign({}, l, { lineNumber: i + 1 }));
   return {
     wsVersion: '1.0.0',
     // id/password are injected by the proxy from env; never in the client payload.

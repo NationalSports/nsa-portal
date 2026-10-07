@@ -92,11 +92,11 @@ function buildSSOrderPayload({
     emailConfirmation: emailConfirmation || '',
     testOrder: !!testOrder,
     autoselectWarehouse: !!autoselectWarehouse,
-    ...(autoselectWarehouse && warehousePreference ? { AutoSelectWarehouse_Preference: warehousePreference } : {}),
-    ...(autoselectWarehouse && warehouse ? { autoselectWarehouse_Warehouses: warehouse } : {}),
     rejectLineErrors: false,
     lines: merged.map(l => ({ identifier: l.sku, qty: l.quantity })),
   };
+  if (autoselectWarehouse && warehousePreference) order.AutoSelectWarehouse_Preference = warehousePreference;
+  if (autoselectWarehouse && warehouse) order.autoselectWarehouse_Warehouses = warehouse;
   const summary = {
     lineCount: lines.length,
     totalQty: lines.reduce((s, l) => s + l.quantity, 0),
