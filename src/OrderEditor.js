@@ -1,3 +1,5 @@
+import BatchPoReservationsNotice from './BatchPoReservationsNotice';
+import { itemBatchReservations, checkBatchPoReservations, batchPoReservationMessage, removeQueuedBatchLines } from './lib/batchPoReservations';
 import RepShipmentButton from './RepShipmentButton';
 import { _loadArtRow } from './constants';
 import {useRecoveryHandoff} from './lib/useRecoveryHandoff';
@@ -1041,6 +1043,19 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     const[dpoMode,setDpoMode]=useState(null);// Deco PO kind: 'send' (we ship garments to the decorator) | 'dtf' (buying transfers/material) | null = auto from the order
     const[linkDpoId,setLinkDpoId]=useState(null);// Deco PO modal: id of an EXISTING deco PO to add the checked items to, instead of creating a new one
     const[dpoShowInHouse,setDpoShowInHouse]=useState(false);// Deco PO forms: reveal the in-house-deco items that are hidden from the coverage list
+    const _poBatchQueueRef=React.useRef(batchPOs);_poBatchQueueRef.current=batchPOs||[];
+    // Quantity inputs use array indexes. Reopen a form when this SO's queue
+    // changes so a removed row cannot lend its typed quantity to the next item.
+    const _poQueueSignature=JSON.stringify((batchPOs||[]).filter(bp=>bp.so_id===o.id));
+    const _poQueueSignatureRef=React.useRef(_poQueueSignature);
+    useEffect(()=>{
+      const changed=_poQueueSignatureRef.current!==_poQueueSignature;
+      _poQueueSignatureRef.current=_poQueueSignature;
+      if(changed&&showPO&&showPO!=='select'){
+        setShowPO('select');setPOExcluded({});setPoDecoInline(null);setPodLinkId(null);
+        nf('This order’s batch queue changed. Select the vendor again to use its current available items.','warn');
+      }
+    },[_poQueueSignature,showPO]);// eslint-disable-line
     const _poCreatingRef=React.useRef(false);// in-flight latch: blocks rapid double-fire of Create PO / Add to Batch within a single render cycle
     const[topstarService,setTopstarService]=useState('dst');const[topstarImgs,setTopstarImgs]=useState([]);const[topstarNotes,setTopstarNotes]=useState('');const[topstarSending,setTopstarSending]=useState(false);
     // Topstar digitizing/vector service catalog — shared by the PO modal and the send-to-vendor action.
@@ -9787,7 +9802,9 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       // items (and items whose sizes aren't broken out yet) carry their count in est_qty and
       // are ordered against a single 'QTY' line so they aren't silently left off the PO.
       const QTY_SZ='QTY';
+      const batchReservationsFor=it=>itemBatchReservations(o,it,it._idx??safeItems(o).indexOf(it),batchPOs);
       const openSizesFor=it=>{
+        if(batchReservationsFor(it).length)return[];
         const szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>{const ia=SZ_ORD.indexOf(a[0]),ib=SZ_ORD.indexOf(b[0]);return(ia<0?999:ia)-(ib<0?999:ib)});
         if(szList.length>0)return szList.map(([sz,v])=>{const picked=safePicks(it).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(it.po_lines,sz);return[sz,Math.max(0,v-picked-po)]}).filter(([,v])=>v>0);
         const est=safeNum(it.est_qty);
@@ -9840,6 +9857,10 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           {Object.entries(vendorMap).map(([vk,items])=>{const vn=vendorList.find(v=>v.id===vk)?.name||D_V.find(v=>v.id===vk)?.name||vk;
           const openItems=items.filter(it=>openSizesFor(it).reduce((a,[,v])=>a+v,0)>0);
           const openCount=openItems.reduce((tot,it)=>tot+openSizesFor(it).reduce((a,[,v])=>a+v,0),0);
+          const queuedItems=items.filter(it=>batchReservationsFor(it).length);
+          if(openCount===0&&queuedItems.length)return<div key={vk} style={{padding:'11px 14px',border:'1px solid #ddd6fe',background:'#f5f3ff',borderRadius:9,marginBottom:8}}>
+            <strong style={{color:'#6d28d9'}}>{vn} · Already in a batch</strong><div style={{fontSize:12,marginTop:4}}>Remove these items from the batch before ordering independently.</div>
+            <button type="button" className="btn btn-sm btn-secondary" style={{marginTop:8}} onClick={()=>{setPOExcluded({});setShowPO(vk)}}>View queued items →</button></div>;
           if(openCount===0)return<div key={vk} style={{display:'flex',alignItems:'center',gap:12,border:'1px solid #E2E6EF',background:'#FAFBFD',borderRadius:9,padding:'11px 14px',marginBottom:8,opacity:0.7}}>
             <span style={{width:16,height:16,borderRadius:'50%',border:'1px solid #D1D5DE',background:'#fff',flexShrink:0}}/>
             <div style={{flex:1}}><div style={{fontWeight:700,color:'#5A6075',fontSize:15}}>{vn}</div><div style={{fontSize:12,color:'#9aa0ad',marginTop:1}}>All items covered</div></div>
@@ -10475,6 +10496,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       // group, not every destination for the vendor ($100 warehouse + $60 decorator is NOT $160 toward one PO).
       const podDv=poDecoInline?decoVendors.find(v=>v.name===poDecoInline.vendor):null;
       // Each open SO line for this vendor, with its remaining per-size quantities.
+      const queuedPoItems=vItems.map(item=>({item,reservations:batchReservationsFor(item)})).filter(row=>row.reservations.length);
       const _poLinesRaw=vItems.map(it=>{const openSizes=openSizesFor(it);
         return{...it,openSizes,totalOpen:openSizes.reduce((a,[,v])=>a+v,0)}}).filter(it=>it.totalOpen>0);
       // Collapse lines that are the SAME orderable garment so a blank bought for several
@@ -10679,8 +10701,10 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       // offering units the DB already has on order, and no submit-time check existed. Right before
       // writing a PO, re-read this SO's PO lines from the DB and compare: any size where the DB
       // shows MORE committed than this tab knows about means the form's "open" numbers are stale.
-      // Soft-fails to null (allow) on any query problem — offline/legacy behavior unchanged.
+      // Batch reservations fail closed on a queue read error; the legacy PO-line drift check below keeps its existing fallback.
       const _poFreshDupCheck=async(entries)=>{// entries: [{idx, sizes:{sz:qty}}]
+        const batchConflict=await checkBatchPoReservations(supabase,o,entries,_poBatchQueueRef.current);
+        if(batchConflict)return batchConflict;
         if(!supabase||!o?.id||!entries?.length)return null;
         try{
           const idxs=[...new Set(entries.map(e=>e.idx))];
@@ -10721,6 +10745,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
         return entries;
       };
       const _poDupMsg=(dup)=>{
+        if(dup.batchError||dup.batchReservations)return batchPoReservationMessage(dup);
         const bySku={};dup.forEach(c=>{bySku[c.sku]=[...new Set([...(bySku[c.sku]||[]),...c.pos])]});
         return '⛔ Not created — the database already has blanks on order that this page doesn\'t know about: '
           +Object.entries(bySku).map(([sku,pos])=>sku+(pos.length?' (on '+pos.join(', ')+')':'')).join(', ')
@@ -10866,6 +10891,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             <div style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>⚠️ Existing POs for this order didn't finish loading</div>
             <div style={{fontSize:11,color:'#b91c1c',marginTop:2}}>Creating a PO now could duplicate one that already exists. Reload the page so the current POs load first, then create the PO.</div>
           </div>}
+          <BatchPoReservationsNotice items={queuedPoItems} onManageBatch={onNavBatch?()=>{setShowPO(null);onNavBatch()}:null}/>
           {/* Batch PO banner for eligible vendors */}
           {isBatchEligible&&!preexistingPO&&<div style={{padding:10,background:'#f5f3ff',border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12}}>
             <div style={{display:'flex',alignItems:'center',gap:6}}>
@@ -10880,7 +10906,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           {preexistingPO&&<div style={{padding:10,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,marginBottom:12}}>
             <div style={{fontSize:12,fontWeight:700,color:'#d97706'}}>Preexisting PO Mode — Enter the PO number from NetSuite. This will not affect sequential PO numbering.</div>
           </div>}
-          {poItems.length===0?<div style={{padding:24,textAlign:'center',color:'#64748b'}}><div style={{fontSize:32,marginBottom:8}}>✅</div><div style={{fontWeight:700,fontSize:16,marginBottom:4}}>All items fully covered</div><div style={{fontSize:13}}>Every size has been assigned via IFs or existing POs.</div></div>:<>
+          {poItems.length===0?<div style={{padding:24,textAlign:'center',color:'#64748b'}}><div style={{fontSize:32,marginBottom:8}}>✅</div><div style={{fontWeight:700,fontSize:16,marginBottom:4}}>All items fully covered</div><div style={{fontSize:13}}>Every size has been assigned via IFs, existing POs, or batch reservations.</div></div>:<>
           <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" checked={preexistingPO} onChange={e=>{setPreexistingPO(e.target.checked);if(!e.target.checked)setPreexistingPOId('')}}/><span style={{fontWeight:600,color:'#d97706'}}>Preexisting PO</span><span style={{fontSize:11,color:'#64748b'}}>— Apply an existing PO number from NetSuite{isBatchEligible?' (bypasses batch queue)':''}</span></label></div>
           {poItems.length>1&&<div style={{marginBottom:8,display:'flex',alignItems:'center',gap:8}}>
             <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,cursor:'pointer'}}><input type="checkbox" checked={poItems.every((_,vi)=>!poExcluded[vi])} onChange={e=>{if(e.target.checked)setPOExcluded({});else{const ex={};poItems.forEach((_,vi)=>{ex[vi]=true});setPOExcluded(ex)}}}/><span style={{fontWeight:600}}>Select All</span></label>
@@ -10936,7 +10962,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             const priceForSize=sz=>{const sc=safeNum(sizeCostMap[sz]);return sc>0?(isAdidas?Math.floor(sc*100)/100:sc):catCost};
             const distinctPrices=new Set(it.openSizes.map(([sz])=>priceForSize(sz).toFixed(2)));
             const hasSizeUpcharges=distinctPrices.size>1;
-            return<div key={vi} style={{padding:12,border:'1px solid '+(excluded?'#f1f5f9':'#e2e8f0'),borderRadius:6,marginBottom:8,opacity:excluded?0.4:1,transition:'opacity 0.15s'}}>
+            return<div key={(it.members||[it]).map(m=>m.line_id||m._idx).join('|')} style={{padding:12,border:'1px solid '+(excluded?'#f1f5f9':'#e2e8f0'),borderRadius:6,marginBottom:8,opacity:excluded?0.4:1,transition:'opacity 0.15s'}}>
               <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}>
                 <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><input type="checkbox" checked={!excluded} onChange={()=>setPOExcluded(x=>({...x,[vi]:!x[vi]}))} style={{marginTop:1}}/><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:4}}>{it.sku}</span><strong>{collapsed?it.name.split(' - ')[0]:it.name}</strong> — {it.color}{collapsed&&<span title="Same blank ordered for multiple decorations — combined into one PO line; each decoration keeps its own receiving record" style={{fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f3e8ff',border:'1px solid #e9d5ff',borderRadius:4,padding:'1px 6px',whiteSpace:'nowrap'}}>🔗 {it.members.length} decorations combined</span>}</div>
                 <div style={{fontWeight:700}}>SO Qty: {soQ} <span style={{color:'#dc2626',fontSize:12,marginLeft:6}}>Open: {it.totalOpen}</span></div></div>
@@ -11017,7 +11043,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                 Object.entries(sizes).forEach(([sz,v])=>{const p=safeNum(price[sz])||fallbackCost;sizeCosts[sz]=p;batchLineTotal+=v*p});
                 const batchUnitCost=qty>0?Math.round((batchLineTotal/qty)*100)/100:fallbackCost;
                 totalCost+=batchLineTotal;
-                const bItem={sku:member.sku,name:member.name,color:member.color,sizes,qty,unit_cost:batchUnitCost,item_idx:member._idx,
+                const bItem={sku:member.sku,name:member.name,color:member.color,sizes,qty,unit_cost:batchUnitCost,item_idx:member._idx,line_id:member.line_id||undefined,
                   // Carry Momentec order-SKU fields through so a batched Momentec PO can resolve
                   // each line's design.colorCode.size SKU at submit time (buildMomentecOrderLines).
                   ...(member._mt_skus?{_mt_style:member._mt_style,_mt_color:member._mt_color,_mt_sku:member._mt_sku,_mt_skus:member._mt_skus}:{})};
@@ -16614,6 +16640,14 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       const bp=(batchPOs||[]).find(b=>b.id===editBatchPO.bpo_id);
       if(!bp)return null;
       const bItem=bp.items.find(it=>it.item_idx===editBatchPO.item_idx);
+      const removeQueuedBatch=async()=>{
+        if(!onBatchPO){nf('Batch queue is unavailable. Reload and try again.','error');return false}
+        const updated={...o,items:removeQueuedBatchLines(safeItems(o),bp.id),updated_at:new Date().toLocaleString()};
+        let saved=false;
+        try{saved=onSaveNow?await onSaveNow(updated):(onSave(updated)!==false)}catch(_){saved=false}
+        if(!saved){nf('Could not remove the batch PO from the order. The items remain queued; retry after reloading.','error');return false}
+        setO(updated);onBatchPO(prev=>prev.filter(b=>b.id!==bp.id));setEditBatchPO(null);return true;
+      };
       const szEntries=bItem?Object.entries(bItem.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0]))):[];
       return<div className="modal-overlay" onClick={()=>setEditBatchPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2 style={{color:'#7c3aed'}}>Batch PO — {bp.vendor_name}</h2>
@@ -16666,19 +16700,18 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           })()}
         </div>
         <div className="modal-footer" style={{justifyContent:'space-between'}}>
-          <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
+          <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#dc2626',borderColor:'#fca5a5'}} onClick={async()=>{
             if(!window.confirm('Remove this batch PO from the queue?'))return;
-            if(onBatchPO)onBatchPO(prev=>prev.filter(b=>b.id!==bp.id));
-            setEditBatchPO(null);nf('Batch PO removed from queue');
+            if(await removeQueuedBatch())nf('Batch PO removed from queue');
           }}><Icon name="trash" size={10}/> Remove from Queue</button>
           <div style={{display:'flex',gap:6}}>
             <button className="btn btn-secondary" onClick={()=>setEditBatchPO(null)}>Cancel</button>
-            <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
+            <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={async()=>{
               const updatedItems=bp.items.map((it,ii)=>{const itSzs=Object.entries(it.sizes||{}).filter(([,v])=>v>0);
                 const newSizes={};let newQty=0;
                 itSzs.forEach(([sz])=>{const el=document.getElementById('bpo-edit-'+bp.id+'-'+ii+'-'+sz);const v=el?Math.max(0,parseInt(el.value)||0):0;if(v>0){newSizes[sz]=v;newQty+=v}});
                 return{...it,sizes:newSizes,qty:newQty}}).filter(it=>it.qty>0);
-              if(updatedItems.length===0){if(onBatchPO)onBatchPO(prev=>prev.filter(b=>b.id!==bp.id));setEditBatchPO(null);nf('Batch PO removed (all quantities zeroed)');return}
+              if(updatedItems.length===0){if(await removeQueuedBatch())nf('Batch PO removed (all quantities zeroed)');return}
               const newTotal=updatedItems.reduce((a,it)=>a+it.qty*it.unit_cost,0)+safeNum(bp.manual_cost);
               if(onBatchPO)onBatchPO(prev=>prev.map(b=>b.id===bp.id?{...b,items:updatedItems,total_cost:newTotal}:b));
               setEditBatchPO(null);nf('Batch PO updated');
