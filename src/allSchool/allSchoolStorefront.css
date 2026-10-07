@@ -77,7 +77,7 @@
 .sf-as .as-spirit{background:var(--as-band);color:#fff;overflow:hidden}
 .sf-as .as-spirit-inner{display:grid;grid-template-columns:1fr 1fr;gap:80px;min-height:290px;align-items:center;padding-block:42px}
 .sf-as .as-spirit-art{position:relative;min-height:220px;display:flex;align-items:center}
-.sf-as .as-spirit-art>span{font-family:var(--as-display);text-transform:uppercase;font-weight:800;font-size:clamp(60px,8vw,110px);line-height:.83;letter-spacing:-1.5px;color:#ffffff22;transform:skewX(-7deg)}
+.sf-as .as-spirit-art>span{font-family:var(--as-display);text-transform:uppercase;font-weight:800;font-size:clamp(60px,8vw,110px);line-height:.83;letter-spacing:-1.5px;color:#ffffff22;transform:skewX(-7deg);overflow-wrap:anywhere}
 .sf-as .as-spirit-art img{position:absolute;right:5%;height:185px;max-width:60%;object-fit:contain;filter:drop-shadow(0 10px 18px #0005);transform:rotate(8deg)}
 .sf-as .as-spirit-content p:not(.as-eyebrow){font-size:16px;line-height:1.65;margin:15px 0 21px;color:#ffffffe0;max-width:45ch}
 .sf-as .as-spirit h2{color:#fff}

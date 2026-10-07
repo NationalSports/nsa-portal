@@ -1,13 +1,16 @@
 // Defaults are opt-in for new All School stores; never applied to ordinary stores.
 export const allSchoolDefaults = () => ({
-  programs: [], target_ship_days: 14,
+  programs: [], target_ship_days: 14, show_promo_banner: true, secondary_logo_url: '',
+  promo_eyebrow: 'For the whole school', promo_heading: 'Wear your pride.',
+  promo_description: 'Students, families, staff, and alumni. Your school favorites belong everywhere.',
+  promo_button_label: 'Shop school spirit', promo_destination: 'spirit', promo_art_text: 'School Spirit.',
   purchasing: { enabled: false, mode: 'minimum_weekly', minimum_cents: 20000, weekday: 3, time: '09:00', timezone: 'America/Los_Angeles', combine_regular: true, no_batch_policy: 'separate', max_wait_days: 7, max_run_cents: 100000 },
   shipping: { mode: 'flat', package_weight_oz: 2, length_in: 12, width_in: 10, height_in: 3, service_code: 'ups_ground', origin_code: 'OR', fallback: 'block' },
   dtf: { supplier_id: null, auto_send: false },
 });
 export const normalizeAllSchoolSettings = (value) => {
   const defaults = allSchoolDefaults(); const input = value || {};
-  return { ...defaults, ...input, programs: Array.isArray(input.programs) ? input.programs : [], purchasing: { ...defaults.purchasing, ...input.purchasing }, shipping: { ...defaults.shipping, ...input.shipping }, dtf: { ...defaults.dtf, ...input.dtf } };
+  return { ...defaults, ...input, show_promo_banner: input.show_promo_banner !== false, secondary_logo_url: typeof input.secondary_logo_url === 'string' ? input.secondary_logo_url : '', programs: Array.isArray(input.programs) ? input.programs : [], purchasing: { ...defaults.purchasing, ...input.purchasing }, shipping: { ...defaults.shipping, ...input.shipping }, dtf: { ...defaults.dtf, ...input.dtf } };
 };
 export const validateAllSchoolSettings = (value) => {
   const s = normalizeAllSchoolSettings(value);

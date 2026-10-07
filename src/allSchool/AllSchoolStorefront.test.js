@@ -1,3 +1,4 @@
+import { render as renderUi, fireEvent, screen } from '@testing-library/react';
 import { schoolProductMatches, schoolPrograms, schoolOrderShipmentDate, schoolVariantGroupKey } from './AllSchoolStorefront';
 
 describe('All School shopper programs', () => {
@@ -44,6 +45,26 @@ describe('All School hero branding', () => {
     store: { name: 'Serra High School Athletics', logo_url: 'serra.png', all_school_settings: settings },
     theme: { band: '#003da5', accent: '#ffc72c', deepest: '#001f44' }, products: [],
   }));
+  test('can hide or customize the mid-page promotion with a secondary logo', () => {
+    const original = render({});
+    expect(original).toContain('Wear your pride.');
+    expect(original).toContain('src="serra.png"');
+    const alternate = render({ show_promo_banner: true, secondary_logo_url: 'alternate.png' });
+    expect(alternate).toContain('class="as-spirit-art"');
+    expect(alternate).toContain('src="alternate.png"');
+    expect(alternate).toContain('class="as-hero-crest"><img src="serra.png"');
+    expect(render({ show_promo_banner: false, secondary_logo_url: 'alternate.png' })).not.toContain('class="as-spirit"');
+    const promotion = render({ promo_eyebrow: 'Homecoming week', promo_heading: 'Show up in blue.', promo_description: 'Get ready for Friday night.', promo_button_label: 'Shop the collection', promo_destination: 'football', promo_art_text: 'Homecoming' });
+    expect(promotion).toContain('Homecoming week');
+    expect(promotion).toContain('Show up in blue.');
+    expect(promotion).toContain('Get ready for Friday night.');
+    expect(promotion).toContain('Shop the collection');
+    expect(promotion).toContain('Homecoming');
+    const onProgram = jest.fn();
+    renderUi(React.createElement(AllSchoolIntro, { store: { name: 'Serra High School Athletics', logo_url: 'serra.png', all_school_settings: { promo_destination: 'football' } }, theme: { band: '#003da5', accent: '#ffc72c', deepest: '#001f44' }, products: [], onProgram }));
+    fireEvent.click(screen.getByRole('button', { name: /Shop school spirit/ }));
+    expect(onProgram).toHaveBeenCalledWith('football');
+  });
   test('renders store logo and editable background text, including explicit hiding', () => {
     expect(render({ hero_background_text: 'PADRES' })).toContain('>PADRES</span>');
     expect(render({ hero_background_text: 'PADRES' })).toContain('src="serra.png"');

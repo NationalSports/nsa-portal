@@ -6139,6 +6139,27 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
         <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>Defaults to the linked school/team’s main logo and follows updates to that logo.</div>
         {orgType === 'all_school' && <Row label="Hero background text"><input className="form-input" aria-label="Hero background text" maxLength={40} value={f.all_school_settings?.hero_background_text ?? (f.name || 'School').replace(/\s+(?:team\s+store|school\s+store|webstore|store)\s*$/i, '').trim().split(' ').slice(-1)[0]} onChange={(e) => set('all_school_settings', { ...normalizeAllSchoolSettings(f.all_school_settings), hero_background_text: e.target.value })} placeholder="e.g. ATHLETICS or PADRES" /><div style={{ fontSize: 12, color: '#64748b' }}>Large text behind the logo. Leave blank to hide it.</div></Row>}
         <ImageUpload value={f.banner_url || null} onChange={(url) => set('banner_url', url || '')} onBusy={onUpBusy} label="Banner image (hero background)" />
+        {orgType === 'all_school' && (() => {
+          const schoolSettings = normalizeAllSchoolSettings(f.all_school_settings);
+          const setPromo = (key, value) => set('all_school_settings', { ...schoolSettings, [key]: value });
+          return <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 14, marginBottom: 14 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 12, fontSize: 13, fontWeight: 700 }}>
+              <input type="checkbox" checked={schoolSettings.show_promo_banner} onChange={(e) => setPromo('show_promo_banner', e.target.checked)} />
+              Show mid-page promotion banner
+            </label>
+            {schoolSettings.show_promo_banner && <>
+              <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>Advertise a collection, event, or school message below the hero and sports sections.</div>
+              <ImageUpload value={schoolSettings.secondary_logo_url || null} fallback={f.logo_url || null} fallbackLabel="Using the main logo in this banner." onChange={(url) => setPromo('secondary_logo_url', url || '')} onBusy={onUpBusy} label="Secondary logo (promotion banner)" />
+              <Row label="Background words"><input className="form-input" maxLength={40} value={schoolSettings.promo_art_text} onChange={(e) => setPromo('promo_art_text', e.target.value)} placeholder="School Spirit." /></Row>
+              <Row label="Small heading"><input className="form-input" maxLength={60} value={schoolSettings.promo_eyebrow} onChange={(e) => setPromo('promo_eyebrow', e.target.value)} /></Row>
+              <Row label="Banner headline"><input className="form-input" maxLength={100} value={schoolSettings.promo_heading} onChange={(e) => setPromo('promo_heading', e.target.value)} /></Row>
+              <Row label="Banner message"><textarea className="form-input" rows={2} maxLength={240} value={schoolSettings.promo_description} onChange={(e) => setPromo('promo_description', e.target.value)} /></Row>
+              <Row label="Button text"><input className="form-input" maxLength={50} value={schoolSettings.promo_button_label} onChange={(e) => setPromo('promo_button_label', e.target.value)} placeholder="Leave blank to hide the button" /></Row>
+              <Row label="Button destination"><select className="form-select" value={schoolSettings.promo_destination} onChange={(e) => setPromo('promo_destination', e.target.value)}><option value="spirit">School Spirit</option><option value="all">All items</option>{schoolSettings.programs.filter((p) => p.enabled !== false).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></Row>
+            </>}
+          </div>;
+        })()}
+
         <div style={{ marginBottom: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>
             <label style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: '#6A7180' }}>Hero blurb</label>
