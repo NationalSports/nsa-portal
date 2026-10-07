@@ -1,3 +1,4 @@
+import StorePickerPrice, { suggestedStorePrice as price45 } from './ui/StorePickerPrice';
 import WebstoreShippingSettings from './ui/WebstoreShippingSettings';
 import { validateShipping } from './lib/webstoreShippingRules.shared';
 import { schoolLaunchError } from './allSchool/launchReadiness';
@@ -6937,7 +6938,7 @@ const effectiveFundraise = (price, perItemY, sf) => (Number(perItemY) > 0 ? Numb
 // one. Deco estimate mirrors the editor: $5 when the item has artwork or the store is a
 // team store (decorated by default). Returns null when the cost is unknown (caller falls
 // back to list price). Never applied to items already in a store.
-const price45 = (cost, decoCost = 0) => { const c = Number(cost) || 0; return c > 0 ? Math.ceil((c + decoCost) / 0.55) : null; };
+
 
 function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {}, invSrcByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], teamHexes = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onGoToArt, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onBulkRemove, onUpdateImage, onUpdateCost, onUpdateProductMeta, onReorder, onMove, onReorderColors, onRemoveColor, onUpdateItem, onBulkUpdate }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
@@ -11154,7 +11155,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
           )}
           {styles.length > 0 && (
             <div className="ai-grid">
-              {styles.map((p) => <PickerCard key={p.id} p={p} colorways={colorwaysByStyle.get(styleKey(p)) || [p]} selectedIds={selected} onToggleId={toggleSel} schoolWords={colorWords} fav={favUnion.has(favStyleKey(p))} team={favTeam.has(favStyleKey(p))} canFav={!!myEmail} curate={curate} onToggleFav={() => toggleFav(p)} onColors={onPick ? (row) => onPick(row || p) : null} />)}
+              {styles.map((p) => <PickerCard key={p.id} p={p} storeCatalog={catalog} decorationCost={isTeam ? 5 : 0} template={destLabel === 'template'} colorways={colorwaysByStyle.get(styleKey(p)) || [p]} selectedIds={selected} onToggleId={toggleSel} schoolWords={colorWords} fav={favUnion.has(favStyleKey(p))} team={favTeam.has(favStyleKey(p))} canFav={!!myEmail} curate={curate} onToggleFav={() => toggleFav(p)} onColors={onPick ? (row) => onPick(row || p) : null} />)}
             </div>
           )}
           {active && !searching && results.length >= limit && (
@@ -11331,7 +11332,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
 
 // One catalog item, live-look card style. Click toggles selection (multi-select);
 // Clicking the card (or "Colors →") opens the color-selector modal for the style.
-function PickerCard({ p, colorways = [], selectedIds, onToggleId, schoolWords = [], fav = false, team = false, canFav = false, curate = false, onToggleFav, onColors }) {
+function PickerCard({ p, storeCatalog = [], decorationCost = 0, template = false, colorways = [], selectedIds, onToggleId, schoolWords = [], fav = false, team = false, canFav = false, curate = false, onToggleFav, onColors }) {
   const [imgErr, setImgErr] = useState(false);
   const ways = colorways.length ? colorways : [p];
   // Which colorway the card is showing / will add. Defaults to the rep (ways[0] = the
@@ -11359,9 +11360,7 @@ function PickerCard({ p, colorways = [], selectedIds, onToggleId, schoolWords = 
         {active.image_front_url && !imgErr
           ? <img src={active.image_front_url} alt={active.name || ''} loading="lazy" onError={() => setImgErr(true)} style={{ maxWidth: '88%', maxHeight: '88%', objectFit: 'contain', opacity: out ? 0.5 : 1 }} />
           : <div style={{ color: '#A8AEB8', fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase' }}>No image</div>}
-        {active.retail_price != null && (
-          <span style={{ position: 'absolute', top: 10, right: 10, background: '#191919', color: '#fff', borderRadius: 6, padding: '3px 8px', fontSize: 13, fontWeight: 700 }}>{money(active.retail_price)}</span>
-        )}
+        <StorePickerPrice product={active} storeItem={storeCatalog.find(item => item.product_id === active.id)} decorationCost={decorationCost} template={template} />
         {out && <span style={{ position: 'absolute', bottom: 10, left: 10, background: 'rgba(185,28,28,.95)', color: '#fff', borderRadius: 5, padding: '2px 8px', fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em' }}>{st.incoming ? 'Incoming' : 'Out of stock'}</span>}
       </div>
       <div style={{ padding: '12px 14px 14px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1, width: '100%' }}>

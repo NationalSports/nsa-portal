@@ -5,7 +5,7 @@
 //   products       — one row per style+color, id 'smnike-<style>-<colorCode>',
 //                    brand 'Nike', inventory_source 'nike', vendor = the SanMar
 //                    vendor (api_provider='sanmar'); image from SanMar, MAP/MSRP as
-//                    retail, piece/customer price as nsa_cost, sell = cost×1.65
+//                    retail, account getPricing as nsa_cost, per-size cost overrides
 //   nike_inventory — per sku+size stock, source 'sanmar'
 //
 // It reuses the PROVEN sanmar-proxy (SanMar SOAP, same envelopes the order screen
@@ -46,9 +46,10 @@ function mapCategory(title) {
 }
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 const arr = (v) => (Array.isArray(v) ? v : v != null ? [v] : []);
+const { accountCostSnapshot } = require('../_sanmarAccountPricing');
 const { inventoryKey, stockByColorSize } = require('../_sanmarInventory');
 
-exports.handler = async () => {
+exports.handler = async (event = {}) => {
   const site = (process.env.URL || '').replace(/\/+$/, '');
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || '').replace(/\/+$/, '');
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -92,7 +93,12 @@ exports.handler = async () => {
     const existing = await (await sb('products?vendor_id=eq.' + vendorId + '&brand=ilike.nike&select=sku')).json();
     const styleOf = (sku) => String(sku || '').split('-')[0].trim(); // 'NKDC1990-Black' → 'NKDC1990'
     const seed = (process.env.SANMAR_NIKE_STYLES || '').split(',').map((s) => s.trim()).filter(Boolean);
-    const styles = [...new Set([...arr(existing).map((p) => styleOf(p.sku)), ...seed].filter(Boolean))];
+    let styles = [...new Set([...arr(existing).map((p) => styleOf(p.sku)), ...seed].filter(Boolean))];
+    const requestedStyle = String(event.queryStringParameters?.style || '').trim().toUpperCase();
+    if (requestedStyle) {
+      styles = styles.filter(style => style.toUpperCase() === requestedStyle);
+      if (!styles.length) return { statusCode: 400, body: 'Unknown Nike style' };
+    }
     console.log('[sanmar-nike-sync] Nike styles to sync:', styles.length);
     if (!styles.length) {
       return { statusCode: 200, body: JSON.stringify({ message: 'No Nike styles. Seed SANMAR_NIKE_STYLES or add Nike products to the SanMar vendor.', styles: 0 }) };
@@ -125,6 +131,12 @@ exports.handler = async () => {
           throw new Error('Inventory unavailable; preserving the last known stock instead of writing zeros');
         }
 
+        // Catalog piecePrice is not our account cost. If pricing fails, preserve
+        // existing cost fields while still refreshing images and inventory.
+        let accountRows = [];
+        try { accountRows = arr((await sm('pricing', 'getPricing', { style, color: '', size: '' })).items); }
+        catch (e) { console.warn('[sanmar-nike-sync] pricing', style, e.message); }
+
         // Group product records by color
         const byColor = {};
         for (const it of items) {
@@ -137,7 +149,8 @@ exports.handler = async () => {
           const recs = grp.recs; const r0 = recs[0];
           const sku = style + '-' + colorCode;
           const sizes = [...new Set(recs.map((r) => String(r.size || r.labelSize || '').trim()).filter(Boolean))];
-          const cost = num(r0.piecePrice || r0.customerPrice || r0.casePrice);
+          const costSnapshot = accountCostSnapshot(accountRows, grp.colorName);
+          const cost = costSnapshot?.nsa_cost || 0;
           const retail = num(r0.msrp || r0.mapPrice || r0.piecePrice) || (cost > 0 ? Math.round(cost * 2) : 0);
           const img = r0.frontFlat || r0.colorProductImage || r0.productImage || r0.colorProductImageThumbnail || r0.thumbnailImage || '';
           // SanMar prefixes retired styles with "DISCONTINUED" (sometimes glued to the
@@ -152,7 +165,7 @@ exports.handler = async () => {
             color: grp.colorName,
             category: mapCategory(title),
             retail_price: retail,
-            nsa_cost: cost,
+            ...(costSnapshot || {}),
             // Nike shows RETAIL (MSRP) to coaches — no markup, no tier discount.
             catalog_sell_price: retail > 0 ? retail : null,
             is_active: true,
@@ -171,11 +184,17 @@ exports.handler = async () => {
           }
         }
 
-        const pr = await sb('products?on_conflict=id', {
-          method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-          body: JSON.stringify(prodRows),
-        });
-        if (!pr.ok) throw new Error('products upsert ' + pr.status + ': ' + (await pr.text()).slice(0, 200));
+        // PostgREST bulk upserts require matching keys. Separate rows without a
+        // verified account price so omitted cost columns preserve existing values.
+        for (const batch of [prodRows.filter(p => p.nsa_cost != null), prodRows.filter(p => p.nsa_cost == null)]) {
+          if (!batch.length) continue;
+          const pr = await sb('products?on_conflict=id', {
+            method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+            body: JSON.stringify(batch),
+          });
+          if (!pr.ok) throw new Error('products upsert ' + pr.status + ': ' + (await pr.text()).slice(0, 200));
+        }
+
         productsUpserted += prodRows.length;
 
         for (let j = 0; j < invUpserts.length; j += 500) {
