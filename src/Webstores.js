@@ -6940,7 +6940,7 @@ const effectiveFundraise = (price, perItemY, sf) => (Number(perItemY) > 0 ? Numb
 // back to list price). Never applied to items already in a store.
 
 
-function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {}, invSrcByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], teamHexes = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onGoToArt, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onBulkRemove, onUpdateImage, onUpdateCost, onUpdateProductMeta, onReorder, onMove, onReorderColors, onRemoveColor, onUpdateItem, onBulkUpdate }) {
+export function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {}, invSrcByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], teamHexes = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onGoToArt, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onBulkRemove, onUpdateImage, onUpdateCost, onUpdateProductMeta, onReorder, onMove, onReorderColors, onRemoveColor, onUpdateItem, onBulkUpdate }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pkgItems, setPkgItems] = useState([]); // components selected (via list checkboxes) for the package being built
   const [bulkSel, setBulkSel] = useState(() => new Set()); // catalog ids ticked for bulk edit
@@ -6969,6 +6969,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
   // Switch which item is being edited, but offer to save first if the current one is dirty —
   // so a rep never loses edits by clicking the next item before hitting Save.
   const switchEditId = (id) => {
+    if (id === editId) return;
     if (id !== editId && paneEditorDirtyRef.current && paneEditorSaveRef.current) {
       if (window.confirm('You have unsaved changes on this item. Save them before switching?')) paneEditorSaveRef.current();
     }
@@ -7000,7 +7001,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
     groups.sort((a, b) => (a.rep.sort_order || 0) - (b.rep.sort_order || 0));
   }
   const repsList = groups.map((g) => g.rep);
-  const colorsForRep = (repId) => (groups.find((g) => g.rep.id === repId)?.rows) || [];
+  const colorsForRep = (repId) => (groups.find((g) => g.rows.some((r) => r.id === repId))?.rows) || [];
   // Up/down on a card moves the whole group (by its representative) past the next card.
   const moveRep = (i, dir) => { const p = repsList[i]; if (!p) return; if (dir === 'up' && i > 0) onMove(p, repsList[i - 1].id); else if (dir === 'down' && i < repsList.length - 1) onMove(p, repsList[i + 2] ? repsList[i + 2].id : null); };
 
@@ -7049,13 +7050,13 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
     const label = p.display_name || stock?.name || p.sku || '(unnamed)';
     const fund = Number(p.fundraise_amount) || 0;
     const effFund = p.kind === 'bundle' ? fund : effectiveFundraise(p.retail_price, fund, storeFund);
-    const sel = editId === p.id;
+    const sel = colorRows.some((r) => r.id === editId);
     const margin = (p.kind !== 'bundle' && costByPid[p.product_id] != null) ? (Number(p.retail_price) || 0) - costByPid[p.product_id] : null;
     const nColors = colorRows.length;
     const archived = p.active === false;
     const bulkOn = selMode && bulkSel.has(p.id);
     return (
-      <div key={p.id} onClick={() => (selMode ? toggleBulk(p.id) : switchEditId(p.id))}
+      <div key={p.id} onClick={() => (selMode ? toggleBulk(p.id) : switchEditId(sel ? editId : p.id))}
         onDragOver={(e) => onRowDragOver(e, p)} onDrop={(e) => onRowDrop(e, p)} onDragEnd={() => { setDragId(null); setOverId(null); setOverCat(null); }}
         style={{ display: 'flex', gap: 9, alignItems: 'center', padding: '9px 12px', cursor: 'pointer',
           borderLeft: bulkOn ? '3px solid #2563eb' : sel ? '3px solid #191919' : '3px solid transparent',
@@ -7085,8 +7086,9 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
     );
   };
   // In side-by-side view keep one item selected so the editor pane is never empty
-  // (and re-home the selection if the chosen item / its card gets removed).
-  useEffect(() => { if (view === 'split' && repsList.length && !repsList.some((p) => p.id === editId)) setEditId(repsList[0].id); }, [view, catalog]);
+  // Keep the edited row mounted when another color becomes the group representative.
+  // Only re-home when the row is actually removed, preserving the tab and unsaved edits.
+  useEffect(() => { if (view === 'split' && repsList.length && !catalog.some((p) => p.id === editId)) setEditId(repsList[0].id); }, [view, catalog]);
   // After a custom product is created + added, drop the rep straight into the full item
   // editor once the reloaded catalog contains it — so they never have to reopen it to
   // finish pricing, art & colors, sizes, etc. Runs after the reselect effect above so it
@@ -7298,7 +7300,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
           {/* Right: editor pane for the selected item */}
           <div style={{ flex: 1, minWidth: 0 }}>
             {(() => {
-              const p = repsList.find((x) => x.id === editId) || null;
+              const p = catalog.find((x) => x.id === editId) || null;
               if (!p) return <div style={{ border: '1.5px dashed #d7dbe2', borderRadius: 12, padding: '70px 20px', textAlign: 'center', color: '#94a3b8', background: '#fafbfc' }}>Select an item on the left to edit it here.</div>;
               const stock = stockByWp[p.id];
               const groupColors = colorsForRep(p.id);
@@ -7705,10 +7707,10 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
               {colorRows.map((c) => { const on = c.id === previewColorId; const isFirst = colorRows[0] && colorRows[0].id === c.id; const dragging = dragColorId === c.id; return (
                 <button key={c.id} type="button" draggable={!!onReorderColors}
                   onClick={() => setPreviewColorId(c.id)}
-                  onDragStart={(e) => { setDragColorId(c.id); e.dataTransfer.effectAllowed = 'move'; }}
-                  onDragOver={(e) => { if (dragColorId && dragColorId !== c.id) e.preventDefault(); }}
-                  onDrop={(e) => { e.preventDefault(); if (!onReorderColors || !dragColorId || dragColorId === c.id) return; const ids = colorRows.map((r) => r.id); const from = ids.indexOf(dragColorId); const to = ids.indexOf(c.id); if (from < 0 || to < 0) return; ids.splice(to, 0, ids.splice(from, 1)[0]); setDragColorId(null); onReorderColors(ids); }}
-                  onDragEnd={() => setDragColorId(null)}
+                  onDragStart={(e) => { e.stopPropagation(); setDragColorId(c.id); e.dataTransfer.effectAllowed = 'move'; }}
+                  onDragOver={(e) => { e.stopPropagation(); if (dragColorId) e.preventDefault(); }}
+                  onDrop={(e) => { e.preventDefault(); e.stopPropagation(); if (!onReorderColors || !dragColorId || dragColorId === c.id) return; const ids = colorRows.map((r) => r.id); const from = ids.indexOf(dragColorId); const to = ids.indexOf(c.id); if (from < 0 || to < 0) return; ids.splice(to, 0, ids.splice(from, 1)[0]); setDragColorId(null); onReorderColors(ids); }}
+                  onDragEnd={(e) => { e.stopPropagation(); setDragColorId(null); }}
                   title={(onReorderColors ? 'Click to preview · drag to reorder' : 'Click to preview') + ' — ' + c.name}
                   style={{ flex: '0 0 auto', width: 76, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), borderRadius: 9, padding: 3, background: '#fff', cursor: onReorderColors ? 'grab' : 'pointer', opacity: dragging ? 0.4 : 1, position: 'relative' }}>
                   {isFirst && <span style={{ position: 'absolute', top: -7, left: -6, background: '#191919', color: '#fff', fontSize: 8, fontWeight: 800, letterSpacing: 0.3, padding: '1px 5px', borderRadius: 6, textTransform: 'uppercase' }}>1st</span>}
