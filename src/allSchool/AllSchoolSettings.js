@@ -30,13 +30,6 @@ export default function AllSchoolSettings({ value, onChange, repId }) {
     </div>
     {tick('purchasing', 'combine_regular', 'At weekly cutoff, add below-minimum quantities to open regular purchasing batches')}
     <div style={{ fontSize: 12, color: '#64748b' }}>Blank cost excludes tax and freight. Store, customer, and decoration allocations remain separate. Automatic purchases also require the vendor lane to be enabled.</div>
-    <h4>Home shipping</h4>
-    <div style={grid}>
-      <Field label="Checkout shipping"><select className="form-select" value={s.shipping.mode} onChange={(e) => change('shipping', 'mode', e.target.value)}><option value="ups_live">Live UPS Ground rate from Orange</option><option value="flat">Store flat shipping amount</option></select></Field>
-      {number('shipping', 'package_weight_oz', 'Packaging weight (oz)', 1)}
-      {number('shipping', 'length_in', 'Package length (in)', 1)}{number('shipping', 'width_in', 'Package width (in)', 1)}{number('shipping', 'height_in', 'Package height (in)', 1)}
-    </div>
-    <p style={{ fontSize: 12, color: '#64748b' }}>Live rates include catalog item weights plus packaging. If a rate cannot be obtained, checkout asks the buyer to retry. Final label cost can change with packed dimensions.</p>
     <h4>Low-stock alerts</h4><p style={{ fontSize: 12, color: '#64748b' }}>Set a reorder threshold for each decoration in Inventory. Available stock excludes paid-order demand. Incoming stock is shown separately. Alerts remain visible in Inventory; email goes to the store’s assigned rep.</p>
     <p style={{ fontSize: 12, color: repEmail ? '#166534' : '#b45309' }}>{repEmail ? `Low-stock emails: ${repEmail}` : 'Assign a rep with an active staff email to receive low-stock emails. Inventory warnings remain available.'}</p>
     <h4>DTF supplier</h4>

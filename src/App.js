@@ -1,3 +1,4 @@
+import RepShipmentButton, { sendRepShipmentUpdate } from './RepShipmentButton';
 import { createArtService, filterArtRequests, isOpenArtRequest } from './lib/standaloneArtRequests';
 import ArtRequestCard from './StandaloneArtQueue';
 import ClipboardImagePaste from './ClipboardImagePaste';
@@ -68,7 +69,7 @@ import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
 import { buildJobs, billOverageQty, billLineNeed, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost, assistantNormSize, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, schoolPOBoxes, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, mailProxyFetch, _withTimeout, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages, dedupeMockDupes } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
-import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty, isPromoOnlyOrder } from './pricing';
+import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty, rosterCount, isPromoOnlyOrder } from './pricing';
 import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd, quoteAgeDays as opsQuoteAgeDays, numericSizeKeys as opsNumericSizeKeys } from './lib/opsRecap';
 import { parseNetSuitePdf, parseNetSuitePdfMulti } from './lib/netsuitePdfParser';
 import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/recordRoute';
@@ -503,7 +504,7 @@ import { poEligibleVendors } from './lib/vendorPoEligibility';
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
-import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetProductStyles, ssGetCrossRefs, ssPutCrossRef, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments, sportsLinkSetStatus } from './vendorApis';
+import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetProductStyles, ssGetCrossRefs, ssPutCrossRef, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments, sportsLinkSetStatus } from './vendorApis';
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString, applySiDocumentDiscount, siExpectedUpcharge, earlyPayFreightWaiver, poCoreTagMatch, looksNetsuiteDocRef } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
@@ -1995,9 +1996,9 @@ function dP(d,q,artFiles,cq){
   // Numbers
   if(d.kind==='numbers'||d.type==='number_press'){
     // Tackle twill numbers: flat price from TWN (num_size × two_color), not the qty-tiered npP.
-    if(d.num_method==='tackle_twill'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||Math.max(0,safeNum(d.num_qty))||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:twnP(d.num_size,d.two_color,true)),cost:twnP(d.num_size,d.two_color,false),_nq:fnq}}
-    if(d.cost_each!=null&&['dtf','heat_press'].includes(d.num_method)){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const fnq=(nq||Math.max(0,safeNum(d.num_qty)||q))*(d.front_and_back?2:1)*(d.reversible?2:1);return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:safeNum(d.sell_each)),cost:safeNum(d.cost_each),_nq:fnq}}
-    const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||Math.max(0,safeNum(d.num_qty))||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:npP(useQty||1,d.two_color,true)),cost:npP(useQty||1,d.two_color,false),_nq:fnq}};
+    if(d.num_method==='tackle_twill'){const nq=rosterCount(d.roster,q);const useQty=nq||Math.max(0,safeNum(d.num_qty))||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:twnP(d.num_size,d.two_color,true)),cost:twnP(d.num_size,d.two_color,false),_nq:fnq}}
+    if(d.cost_each!=null&&['dtf','heat_press'].includes(d.num_method)){const nq=rosterCount(d.roster,q);const fnq=(nq||Math.max(0,safeNum(d.num_qty)||q))*(d.front_and_back?2:1)*(d.reversible?2:1);return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:safeNum(d.sell_each)),cost:safeNum(d.cost_each),_nq:fnq}}
+    const nq=rosterCount(d.roster,q);const useQty=nq||Math.max(0,safeNum(d.num_qty))||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:npP(useQty||1,d.two_color,true)),cost:npP(useQty||1,d.two_color,false),_nq:fnq}};
   // sell_override honors an explicit 0 (nullish, matches decoPricing.js — keep in sync).
   // Names bill per NAME, not per garment: return the true per-name rate and hand the
   // application count out as _nq, exactly like the numbers branch above. The old form
@@ -2005,7 +2006,7 @@ function dP(d,q,artFiles,cq){
   // as "24 x $0.25" and the quarter-rounding then billed $6 of sell and $6 of cost for
   // $5 of work at $3 of cost (EST-2126). Deco walks already read _nq, so the line TOTAL
   // is unchanged everywhere nc*se/q happened to land on an exact quarter.
-  if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||Math.max(0,safeNum(d.name_qty))||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each!=null?d.cost_each:3);return{sell:d.sell_suppressed?0:se,cost:co,_nq:(useNc||q)*(d.reversible?2:1)}};
+  if(d.kind==='names'){const nc=rosterCount(d.names,q);const useNc=nc||Math.max(0,safeNum(d.name_qty))||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each!=null?d.cost_each:3);return{sell:d.sell_suppressed?0:se,cost:co,_nq:(useNc||q)*(d.reversible?2:1)}};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}}
   // Tackle-twill chest/logo: flat per-garment price from the TWA menu (index on d.dtf_size).
   if(d.kind==='twill')return{sell:d.sell_override!=null?d.sell_override:twaP(d.dtf_size,true),cost:twaP(d.dtf_size,false)};
@@ -7970,17 +7971,17 @@ export default function App(){
 
   const fetchSOShippingStatus = async (soId) => {
     try {
-      const updates = await fetchShipStationUpdates(soId);
-      if (updates?.shipments?.length > 0) {
-        const shipment = updates.shipments[0];
-        const updatedSO = sos.find(s => s.id === soId);
-        if (updatedSO && !updatedSO._tracking_number) {
-          const updated = { ...updatedSO, _tracking_number: shipment.trackingNumber, _carrier: shipment.carrierCode, _ship_date: shipment.shipDate, _tracking_url: shipment.trackingUrl, _shipped: true, _shipping_status: 'shipped', updated_at: new Date().toLocaleString() };
-          // savSO, same reasoning as handleShipToShipStation above.
-          savSO(updated);
-          nf(soId + ' shipped - Tracking: ' + shipment.trackingNumber);
-        }
-      } else { nf('No shipment data yet for ' + soId, 'error'); }
+      const response = await authFetch('/.netlify/functions/so-shipstation-sync', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ soId }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Shipment import failed');
+      // The server writes only _shipments with optimistic concurrency. Let the
+      // normal guarded refresh load it; never re-save a stale editor snapshot.
+      nf(result.matched
+        ? `${soId}: ${result.matched} ShipStation package(s) synced. Reopen Tracking after refresh to view them.`
+        : 'No ShipStation labels found for ' + soId);
     } catch (error) {
       console.error('[ShipStation] Status check failed:', error);
       nf('Status check failed: ' + error.message, 'error');
@@ -22486,10 +22487,10 @@ export default function App(){
           const note=(clearShipModal.note||'').trim();
           const memo=memoBase+(note?' — '+note:'');
           const soIds=[...clearShipModal.grp.soIds];
-          return<div className="modal-overlay" onClick={()=>setClearShipModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560,maxHeight:'90vh',overflow:'auto'}}>
+          return<div className="modal-overlay" onClick={()=>!clearShipModal.busy&&setClearShipModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560,maxHeight:'90vh',overflow:'auto'}}>
             <div className="modal-header" style={{background:'linear-gradient(135deg,#0f766e,#14b8a6)',color:'white'}}>
               <h2 style={{margin:0,color:'white'}}>✓ Clear Shipment — {clearShipModal.grp.cName}</h2>
-              <button className="modal-close" onClick={()=>setClearShipModal(null)} style={{color:'white'}}>×</button>
+              <button className="modal-close" onClick={()=>!clearShipModal.busy&&setClearShipModal(null)} style={{color:'white'}}>×</button>
             </div>
             <div className="modal-body" style={{padding:16}}>
               <div style={{fontSize:12,color:'#475569',marginBottom:12,lineHeight:1.5}}>
@@ -22515,13 +22516,16 @@ export default function App(){
                 style={{fontSize:12}}
                 onChange={e=>setClearShipModal({...clearShipModal,note:e.target.value})}/>
             </div>
+            <label style={{display:'block',padding:'0 16px',fontSize:12}}><input type="checkbox" checked={clearShipModal.notifyRep!==false} onChange={e=>setClearShipModal({...clearShipModal,notifyRep:e.target.checked})}/> Email assigned rep after saving (tracking may be unavailable)</label>
             <div className="modal-footer" style={{display:'flex',gap:8}}>
-              <button className="btn btn-primary" disabled={isOther&&!memoBase} style={{background:'#0f766e',borderColor:'#0f766e',fontWeight:800,opacity:isOther&&!memoBase?0.5:1}}
-                onClick={()=>{
+              <button className="btn btn-primary" disabled={clearShipModal.busy||(isOther&&!memoBase)} style={{background:'#0f766e',borderColor:'#0f766e',fontWeight:800,opacity:isOther&&!memoBase?0.5:1}}
+                onClick={async()=>{
+                  if(clearShipModal.busy)return;
                   if(isOther&&!memoBase){nf('Enter a memo for how this was handled','error');return}
+                  setClearShipModal(m=>({...m,busy:true}));
                   const shipDate=new Date().toLocaleDateString();const nowStr=new Date().toLocaleString();
                   let clearedUnits=0;let shpIdx=0;
-                  Object.entries(clearShipModal.soMap).forEach(([soId,so])=>{
+                  for(const [soId,so] of Object.entries(clearShipModal.soMap)){
                     const soItems=remaining.filter(it=>it.soId===soId);
                     const soUnits=soItems.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+safeNum(v),0),0);
                     let allShipments=so._shipments||[];
@@ -22558,18 +22562,25 @@ export default function App(){
                       return jobShipped>=safeNum(jj.total_units)?{...jj,prod_status:'shipped'}:jj;
                     });
                     const jobsChanged=updatedJobs.some((jj,ji)=>jj!==origJobs[ji]);
-                    if(soItems.length===0&&!jobsChanged)return;// nothing to clear on this SO
+                    if(soItems.length===0&&!jobsChanged)continue;// nothing to clear on this SO
                     const allJobsShipped=updatedJobs.filter(jj=>jj.prod_status!=='draft'&&!isOutsideArtJob(jj)).every(jj=>jj.prod_status==='shipped');
-                    savSO({...so,jobs:updatedJobs,_shipments:allShipments,
+                    let saved=false;
+                    try{saved=await savSONow({...so,jobs:updatedJobs,_shipments:allShipments,
                       _shipped:allJobsShipped,_shipping_status:allJobsShipped?'shipped':'partial',
-                      _ship_date:shipDate,updated_at:nowStr});
+                      _ship_date:shipDate,updated_at:nowStr},{stageOutbox:true})!==false}catch(err){nf(err.message,'error')}
+                    if(!saved){nf(soId+': shipment save failed; no rep email sent. Review the order before retrying.','error');continue}
+                    if(clearShipModal.notifyRep!==false){
+                      const newIds=allShipments.filter(s=>!(so._shipments||[]).some(old=>old.id===s.id)).map(s=>s.id);
+                      try{const email=await sendRepShipmentUpdate(soId,newIds.length?newIds:undefined);nf(soId+': rep update '+email.status+' to '+email.to)}
+                      catch(err){nf(soId+': saved, but rep email failed: '+err.message+'. Use Ship / Override → Email Rep Update to retry.','error')}
+                    }
                     addWhAction({type:'cleared',soId,customer:clearShipModal.grp.cName,name:memo,qty:soUnits,by:cu?.id||'warehouse'});
                     clearedUnits+=soUnits;
-                  });
+                  }
                   nf('✅ Cleared — '+clearedUnits+' unit'+(clearedUnits!==1?'s':'')+' marked shipped ('+memo+')');
                   setClearShipModal(null);
                 }}>✓ Mark Shipped & Clear{totUnits>0?' ('+totUnits+' units)':''}</button>
-              <button className="btn btn-secondary" onClick={()=>setClearShipModal(null)}>Cancel</button>
+              <button className="btn btn-secondary" onClick={()=>!clearShipModal.busy&&setClearShipModal(null)}>Cancel</button>
             </div>
           </div></div>;
         })()}
@@ -22694,10 +22705,10 @@ export default function App(){
         </div></div>})()}
 
       {/* ── MANUAL SHIP MODAL (renders on any warehouse tab) ── */}
-      {manualShipModal&&<div className="modal-overlay" onClick={()=>setManualShipModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
+      {manualShipModal&&<div className="modal-overlay" onClick={()=>!manualShipModal.busy&&setManualShipModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header" style={{background:'linear-gradient(135deg,#92400e,#f59e0b)',color:'white'}}>
           <h2 style={{margin:0,color:'white'}}>⚡ Ship Items / Override</h2>
-          <button className="modal-close" onClick={()=>setManualShipModal(null)} style={{color:'white'}}>×</button>
+          <button className="modal-close" onClick={()=>!manualShipModal.busy&&setManualShipModal(null)} style={{color:'white'}}>×</button>
         </div>
         <div className="modal-body" style={{padding:16}}>
           <div style={{padding:'6px 10px',background:'#fef3c7',borderRadius:6,marginBottom:12,fontSize:11,color:'#92400e',fontWeight:600,border:'1px solid #fcd34d'}}>
@@ -22871,7 +22882,7 @@ export default function App(){
               </div>
               <div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12,flexWrap:'wrap',alignItems:'center'}}>
                 <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534',fontWeight:800}} onClick={_doNoSoShip}>💾 Record Shipping Charge</button>
-                <button className="btn btn-secondary" onClick={()=>setManualShipModal(null)}>Cancel</button>
+                <button className="btn btn-secondary" onClick={()=>!manualShipModal.busy&&setManualShipModal(null)}>Cancel</button>
                 <span style={{marginLeft:'auto',fontSize:10,color:'#64748b'}}>Adds to {c?.name||'customer'}'s next order</span>
               </div>
             </>;
@@ -22879,22 +22890,22 @@ export default function App(){
             {!manualShipModal.custFilter?<>
               {/* Step 1: Club / Customer Search */}
               <label style={{fontSize:12,fontWeight:700,color:'#334155',marginBottom:4,display:'block'}}>Search Customer / Club</label>
-              <input className="form-input" placeholder="Type sales order #, club, or customer..." value={manualShipModal.custSearch||''} autoFocus
+              <input className="form-input" placeholder="Type sales order #, job #, club, or customer..." value={manualShipModal.custSearch||''} autoFocus
                 style={{fontSize:12,marginBottom:8}}
                 onChange={e=>setManualShipModal({...manualShipModal,custSearch:e.target.value})}/>
               {(()=>{
                 const q=(manualShipModal.custSearch||'').toLowerCase();
                 if(q.length<2)return<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>Type at least 2 characters to search</div>;
-                const _canOverride=so=>!so.deleted_at&&(unshippedOrderItems(so).length>0||soHasOpenShipWork(so));
+                const _canOverride=so=>!so.deleted_at;
                 const openSosByCust={};
                 sos.forEach(so=>{
                   if(!_canOverride(so))return;
                   if(!openSosByCust[so.customer_id])openSosByCust[so.customer_id]=[];
                   openSosByCust[so.customer_id].push(so);
                 });
-                const soResults=sos.filter(so=>{if(!_canOverride(so))return false;const cc=cust.find(x=>x.id===so.customer_id);return((so.id||'')+' '+(so.memo||'')+' '+(cc?.name||'')).toLowerCase().includes(q)}).slice(0,8);
+                const soResults=sos.filter(so=>{if(!_canOverride(so))return false;const cc=cust.find(x=>x.id===so.customer_id);return((so.id||'')+' '+(so.memo||'')+' '+safeJobs(so).map(j=>j.id||'').join(' ')+' '+(cc?.name||'')).toLowerCase().includes(q)}).slice(0,8);
                 const results=cust.filter(cc=>(cc.name||'').toLowerCase().includes(q)).sort((a,b)=>(a.name||'').localeCompare(b.name||'')).slice(0,12);
-                if(results.length===0&&soResults.length===0)return<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No matching customer or sales order</div>;
+                if(results.length===0&&soResults.length===0)return<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No matching customer, sales order or job</div>;
                 return<div style={{display:'grid',gap:4}}>
                   {soResults.length>0&&<div style={{fontSize:9,fontWeight:800,color:'#64748b',textTransform:'uppercase',marginTop:2}}>Sales orders</div>}
                   {soResults.map(so=>{const cc=cust.find(x=>x.id===so.customer_id);return<div key={so.id} style={{padding:'8px 12px',background:'#eff6ff',borderRadius:6,border:'1px solid #93c5fd',cursor:'pointer'}} onClick={()=>setManualShipModal(manualShipStateForSO(so,cc,manualShipModal))}>
@@ -22925,12 +22936,12 @@ export default function App(){
                 <span style={{fontSize:10,color:'#64748b'}}>— select an order to ship</span>
               </div>
               {(()=>{
-                const custSos=sos.filter(so=>!so.deleted_at&&so.customer_id===manualShipModal.custFilter.id&&(unshippedOrderItems(so).length>0||soHasOpenShipWork(so)));
+                const custSos=sos.filter(so=>!so.deleted_at&&so.customer_id===manualShipModal.custFilter.id);
                 const _noSoBtn=<button className="btn btn-sm" style={{width:'100%',marginTop:8,fontSize:11,fontWeight:700,background:'white',color:'#166534',border:'1px dashed #86efac',padding:'8px'}}
                   onClick={()=>{const c2=manualShipModal.custFilter;const _destAddr={company:c2?.name||'',attn:'',street1:c2?.shipping_address_line1||'',street2:c2?.shipping_address_line2||'',city:c2?.shipping_city||'',state:c2?.shipping_state||'',zip:c2?.shipping_zip||'',phone:c2?.contacts?.[0]?.phone||''};setManualShipModal({...manualShipModal,noSo:true,cust:c2,destAddr:_destAddr,shipToMode:'customer',itemDesc:'',charge:'',cost:'',tracking:'',labelUrl:null,carrier:manualShipModal.carrier||'ups'});}}>
                   📦 Ship without an order — bill {manualShipModal.custFilter.name} on their next order
                 </button>;
-                if(custSos.length===0)return<><div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No open sales orders for this customer</div>{_noSoBtn}</>;
+                if(custSos.length===0)return<><div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No sales orders for this customer</div>{_noSoBtn}</>;
                 return<><div style={{display:'grid',gap:4}}>
                   {custSos.map(so=>{
                     const st=calcSOStatus(so);
@@ -22956,6 +22967,7 @@ export default function App(){
             </>}
           </>:<>
             {/* Selected SO */}
+            <div style={{marginBottom:10}}><RepShipmentButton soId={manualShipModal.so.id} nf={nf}/><span style={{fontSize:11,marginLeft:8}}>Email saved shipments, including pickups and closed orders.</span></div>
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
               <button style={{background:'none',border:'none',cursor:'pointer',fontSize:14,color:'#64748b',padding:0}} onClick={()=>setManualShipModal({...manualShipModal,so:null,cust:null,availItems:[],shipItems:[]})}>←</button>
               <span style={{fontWeight:800,color:'#1e40af',fontSize:14,fontFamily:'monospace'}}>{manualShipModal.so.id}</span>
@@ -23261,6 +23273,7 @@ export default function App(){
             {/* Actions */}
             {(()=>{
               const _doConfirmManualShip=async(openEmail)=>{
+                  if(manualShipModal.busy)return;
                   const so=manualShipModal.so;
                   const hasSelectedItems=(manualShipModal.shipItems||[]).some(it=>Object.values(it.sizes||{}).some(v=>safeNum(v)>0));
                   if(!hasSelectedItems&&!String(manualShipModal.itemDesc||'').trim()){nf('Select at least one item and quantity to ship','error');return}
@@ -23312,7 +23325,14 @@ export default function App(){
                     _tracking_url:shipment.tracking_url||so._tracking_url||'',
                     _shipping_cost:totalShipCost,_shipstation_cost:totalShipCost,
                     updated_at:new Date().toLocaleString()};
-                  savSO(updated);
+                  setManualShipModal(m=>({...m,busy:true}));
+                  let saved=false;
+                  try{saved=await savSONow(updated,{stageOutbox:true})!==false}catch(err){nf(err.message,'error')}
+                  if(!saved){setManualShipModal(m=>({...m,busy:false}));nf('Shipment save failed. Resolve the save before emailing the rep.','error');return}
+                  if(_mode==='customer'&&manualShipModal.notifyRep!==false){
+                    try{const email=await sendRepShipmentUpdate(so.id,[shipment.id]);nf('Rep update '+email.status+' to '+email.to)}
+                    catch(err){nf('Shipment saved, but rep email failed: '+err.message+'. Use Email Rep Update to retry.','error')}
+                  }
                   const markedCount=Object.values(manualShipModal.markShipped).filter(Boolean).length;
                   nf('Manual ship recorded → '+_destLabel+(cost?' · Cost: $'+cost.toFixed(2):'')+(markedCount?' · '+markedCount+' job'+(markedCount!==1?'s':'')+' marked shipped':''));
                   addWhAction({type:'manual_ship',soId:so.id,customer:manualShipModal.cust?.name||'',dest:_destLabel,tracking:manualShipModal.tracking||'',carrier:manualShipModal.carrier||'',cost:cost?'$'+cost.toFixed(2):'',jobsMarked:markedCount,notes:manualShipModal.notes||'',itemDesc:manualShipModal.itemDesc||'',by:cu?.id||'warehouse'});
@@ -23330,11 +23350,12 @@ export default function App(){
                   setManualShipModal(null);
               };
               return <div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12,flexWrap:'wrap',alignItems:'center'}}>
+                {(manualShipModal.shipToMode||'customer')==='customer'&&<label style={{width:'100%',fontSize:12}}><input type="checkbox" checked={manualShipModal.notifyRep!==false} onChange={e=>setManualShipModal({...manualShipModal,notifyRep:e.target.checked})}/> Email assigned rep after saving shipment</label>}
                 <button className="btn btn-primary" style={{background:'#92400e',borderColor:'#92400e',fontWeight:800}}
-                  onClick={()=>_doConfirmManualShip(false)}>⚡ Confirm Shipment</button>
+                  disabled={manualShipModal.busy} onClick={()=>_doConfirmManualShip(false)}>⚡ Confirm Shipment</button>
                 {manualShipModal.labelUrl&&<button className="btn btn-primary" style={{background:'#0369a1',borderColor:'#0369a1',fontWeight:800}}
-                  onClick={()=>_doConfirmManualShip(true)}>📧 Confirm &amp; Email Label…</button>}
-                <button className="btn btn-secondary" onClick={()=>setManualShipModal(null)}>Cancel</button>
+                  disabled={manualShipModal.busy} onClick={()=>_doConfirmManualShip(true)}>📧 Confirm &amp; Email Label…</button>}
+                <button className="btn btn-secondary" onClick={()=>!manualShipModal.busy&&setManualShipModal(null)}>Cancel</button>
               </div>;
             })()}
           </>}

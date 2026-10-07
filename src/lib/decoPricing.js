@@ -154,6 +154,16 @@ function spDecoPrice(T,d,pq,nc,useSplit){
   const f=spFlatShare(T,pq,nc,u);if(f)return mark({sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost});
   const c=rQ(spP(T,pq,nc,false)*u);return mark({sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c});
 }
+// ── Roster billing count ──
+// Numbers/names bill one application per filled roster slot — but never more than the line has
+// garments (one number/name per piece per side; front+back and reversible multiply after this).
+// A roster can hold slots the line no longer shows: a size the garment doesn't carry, or extras
+// left after a size's qty dropped. The editors render only the line's own slots, so those were
+// invisible but still billed (SO-1253: a 3-pc M1/L2 line whose roster still held 11 numbers from
+// a bigger size curve billed $5 x 11 = $55 for numbers instead of $15).
+// q = the line's garment count; q <= 0 (unknown) leaves the count uncapped. Shared by the
+// App.js and businessLogic.js dP copies so the three can't drift on it.
+const rosterCount=(roster,q)=>{const n=roster?Object.values(roster).flat().filter(v=>v&&String(v).trim()).length:0;return q>0?Math.min(n,q):n};
 function dP(T,d,q,artFiles,cq){
   // Split-art designs bill at their own per-size allocation. cq (the combined tier qty) is
   // already summed per design by the artQty builders, so price the design at its share, then
@@ -198,13 +208,13 @@ function _dPInner(T,d,q,artFiles,cq){
   if(d.kind==='art'&&!d.art_file_id&&d.cost_each!=null)return{sell:safeNum(d.sell_override)||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   if(d.type==='screen_print')return spDecoPrice(T,d,q,d.colors||1,false);
   if(d.type==='embroidery'){const st=d.stitches||8000;const c=emP(T,st,q,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),emFlSt(EM,st)),cost:c}}
-  if(d.kind==='numbers'||d.type==='number_press'){if(d.num_method==='sublimated'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||Math.max(0,safeNum(d.num_qty))||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);return{sell:safeNum(d.sell_override)||0,cost:0,_nq:useQty*mult}}
+  if(d.kind==='numbers'||d.type==='number_press'){if(d.num_method==='sublimated'){const nq=rosterCount(d.roster,q);const useQty=nq||Math.max(0,safeNum(d.num_qty))||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);return{sell:safeNum(d.sell_override)||0,cost:0,_nq:useQty*mult}}
     // Tackle twill numbers: flat per-application price from TWN (by num_size × two_color), NOT the
     // qty-tiered npP table. _nq (application count) still doubles for front+back and reversible.
-    if(d.num_method==='tackle_twill'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq>0?nq:Math.max(0,safeNum(d.num_qty)||q);const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_override!=null?d.sell_override:twnP(T,d.num_size,d.two_color,true),cost:twnP(T,d.num_size,d.two_color,false),_nq:fnq}}
+    if(d.num_method==='tackle_twill'){const nq=rosterCount(d.roster,q);const useQty=nq>0?nq:Math.max(0,safeNum(d.num_qty)||q);const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_override!=null?d.sell_override:twnP(T,d.num_size,d.two_color,true),cost:twnP(T,d.num_size,d.two_color,false),_nq:fnq}}
     // Conversion freezes custom print cost or zero for roster-only stocked digits.
-    if(d.cost_each!=null&&['dtf','heat_press'].includes(d.num_method)){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const fnq=(nq||Math.max(0,safeNum(d.num_qty)||q))*(d.front_and_back?2:1)*(d.reversible?2:1);return{sell:d.sell_override!=null?d.sell_override:safeNum(d.sell_each),cost:safeNum(d.cost_each),_nq:fnq}}
-    const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const hasAssigned=nq>0;const useQty=hasAssigned?nq:Math.max(0,safeNum(d.num_qty)||q);const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_override!=null?d.sell_override:npP(T,fnq||1,d.two_color,true),cost:npP(T,fnq||1,d.two_color,false),_nq:fnq}};
+    if(d.cost_each!=null&&['dtf','heat_press'].includes(d.num_method)){const nq=rosterCount(d.roster,q);const fnq=(nq||Math.max(0,safeNum(d.num_qty)||q))*(d.front_and_back?2:1)*(d.reversible?2:1);return{sell:d.sell_override!=null?d.sell_override:safeNum(d.sell_each),cost:safeNum(d.cost_each),_nq:fnq}}
+    const nq=rosterCount(d.roster,q);const hasAssigned=nq>0;const useQty=hasAssigned?nq:Math.max(0,safeNum(d.num_qty)||q);const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_override!=null?d.sell_override:npP(T,fnq||1,d.two_color,true),cost:npP(T,fnq||1,d.two_color,false),_nq:fnq}};
   // sell_override honors an explicit 0 (nullish check, matching the screen_print/embroidery
   // branches) — the falsy-|| form silently re-added the $6 default over a deliberate zero
   // (club conversion writes sell_override=0: names revenue is already inside unit_sell).
@@ -214,7 +224,7 @@ function _dPInner(T,d,q,artFiles,cq){
   // as "24 x $0.25" and the quarter-rounding then billed $6 of sell and $6 of cost for
   // $5 of work at $3 of cost (EST-2126). Deco walks already read _nq, so the line TOTAL
   // is unchanged everywhere nc*se/q happened to land on an exact quarter.
-  if(d.kind==='names'){if(d.name_method==='sublimated')return{sell:safeNum(d.sell_override)||0,cost:0};const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||Math.max(0,safeNum(d.name_qty))||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each!=null?d.cost_each:3);return{sell:se,cost:co,_nq:(useNc||q)*(d.reversible?2:1)}};
+  if(d.kind==='names'){if(d.name_method==='sublimated')return{sell:safeNum(d.sell_override)||0,cost:0};const nc=rosterCount(d.names,q);const useNc=nc||Math.max(0,safeNum(d.name_qty))||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each!=null?d.cost_each:3);return{sell:se,cost:co,_nq:(useNc||q)*(d.reversible?2:1)}};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}}
   // sell_override honors an explicit 0 (nullish, not falsy-||) — synced with the App.js /
   // businessLogic.js / pricing.js copies so a deliberate $0 override isn't overwritten.
@@ -223,4 +233,4 @@ function _dPInner(T,d,q,artFiles,cq){
   if(d.kind==='outside_deco')return{sell:d.sell_override!=null?d.sell_override:safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   return{sell:0,cost:0}}
 
-module.exports = { rQ, rT, auTierDisc, isAdidasPriced, isAU, auCostMult, SP, EM, NP, DTF, TWA, TWN, DEFAULTS, spP, spFlatShare, spRunBlend, spUnpriced, decoSplitRuns, emP, npP, twaP, twnP, decoSplitQty, dP };
+module.exports = { rQ, rT, auTierDisc, isAdidasPriced, isAU, auCostMult, SP, EM, NP, DTF, TWA, TWN, DEFAULTS, spP, spFlatShare, spRunBlend, spUnpriced, decoSplitRuns, emP, npP, twaP, twnP, decoSplitQty, rosterCount, dP };
