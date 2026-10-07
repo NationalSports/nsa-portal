@@ -3,7 +3,7 @@ const net = require('net');
 
 const KIMI_URL = 'https://api.moonshot.ai/v1/chat/completions';
 const OPENAI_IMAGE_URL = 'https://api.openai.com/v1/images/edits';
-const PROMPT_VERSION = 'showcase-v6-athletic-forms';
+const { PROMPT_VERSION, normalizeDecorationType, normalizeShowcaseSettings } = require('../../src/lib/showcaseSettings');
 const MAX_SOURCE_BYTES = 15 * 1024 * 1024;
 const DEFAULT_IMAGE_HOSTS = new Set([
   'static.momentecbrands.com',
@@ -140,17 +140,43 @@ function dataUrl(image) {
   return `data:${image.contentType};base64,${image.bytes.toString('base64')}`;
 }
 
-function cleanDecorations(decorations) {
-  return (Array.isArray(decorations) ? decorations : []).map((d) => ({
-    side: d?.side || 'front',
-    placement: d?.placement || null,
-    x_percent: d?.x ?? null,
-    y_percent: d?.y ?? null,
-    width_percent: d?.w ?? null,
-    decoration_type: d?.decoration_type || d?.type || null,
-    artwork_url: d?.art_url || d?.source_url || d?.orig_url || d?.url || d?.image_url || d?.web_logo_url || null,
-    locked: true,
-  }));
+const FINISH_GUIDANCE = {
+  tackle_twill: 'Light 3D tackle twill applique: finely woven fabric faces, clean cut edges, subtle layered thickness, realistic perimeter zigzag stitching and delicate edge shadows. Keep relief restrained, never inflated, rubbery, or heavily beveled.',
+  embroidery: 'Real stitched embroidery: fine directional thread, tidy satin and fill stitches, restrained raised thread relief and tiny contact shadows. Preserve small lettering and exact logo geometry; no plastic, metallic extrusion, or exaggerated puff.',
+  chenille: 'Real chenille: soft plush looped yarn with short dense pile, gently raised texture and clean defined borders. Keep the exact artwork silhouette and readable lettering; no shaggy fur, inflated shapes, or invented border colors.',
+  screen_print: 'Premium screen print: crisp clean ink edges, accurate opaque colors, matte ink naturally following fabric texture and folds. Keep the print flat, never raised, embroidered, glossy plastic, cracked, distressed, or a floating sticker.',
+  heat_transfer: 'Smooth thin heat transfer following the fabric and folds with sharp artwork edges; no stitched border, thick extrusion, or floating sticker.',
+  sublimation: 'Dye integrated directly into the fabric with crisp truthful color and no raised edge, stitching, or surface thickness.',
+};
+
+function heroDirection(product) {
+  const text = [product?.name, product?.display_name, product?.category].filter(Boolean).join(' ').toLowerCase();
+  if (/\b(hats?|caps?|beanies?|visors?)\b/.test(text)) return 'Headwear: a slightly elevated front three-quarter hero showing crown, brim and a hint of the side. Shape the crown naturally; keep the front decoration readable and the complete brim visible.';
+  if (/\b(bags?|backpacks?|duffels?|totes?)\b/.test(text)) return 'Bags: a sculptural upright front three-quarter hero with believable filled volume, dimensional gussets and naturally arranged straps. Show the decorated face clearly; preserve every handle, zipper and strap without props.';
+  if (/\b(shoes?|sneakers?|footwear|cleats?|slides?)\b/.test(text)) return 'Footwear: a low front three-quarter hero with convincing sole depth and crisp material detail. Preserve the exact number of products in the source, branding and complete toe and heel; no feet or invented pair.';
+  if (/\b(pants?|shorts?|joggers?|leggings?|tights?)\b/.test(text)) return 'Bottoms: angle the waistband and stagger the legs subtly, with natural athletic volume and strong directional fabric lighting. Keep the decorated leg visible and readable; show the entire rise, inseam and cuffs without crossing or twisting.';
+  return 'Use a strong near-front three-quarter hero appropriate to the actual item. For tops, create dimensional shoulders, chest, sleeves and natural drape; keep the decorated panel dominant. For other items, follow the source silhouette without inventing garment anatomy. Make every item feel substantial and dramatic through controlled key light, soft fill and crisp texture.';
+}
+
+function cleanDecorations(decorations, settings, storeArt = []) {
+  const selected = normalizeShowcaseSettings(settings).decoration_type;
+  const artRecords = Array.isArray(storeArt) ? storeArt : [];
+  return (Array.isArray(decorations) ? decorations : []).map((d) => {
+    const art = artRecords.find((record) => record.id === (d?.art_id || d?.art_file_id));
+    const type = selected !== 'auto' ? selected : [d?.decoration_type, d?.deco_type, d?.type, art?.deco_type]
+      .map(normalizeDecorationType).find(Boolean) || null;
+    return {
+      side: d?.side || 'front',
+      placement: d?.placement || null,
+      x_percent: d?.x ?? d?.x_percent ?? null,
+      y_percent: d?.y ?? d?.y_percent ?? null,
+      width_percent: d?.w ?? d?.width_percent ?? null,
+      decoration_type: type,
+      finish_guidance: FINISH_GUIDANCE[type] || 'Preserve the existing decoration appearance from the reference; do not invent a finish.',
+      artwork_url: d?.art_url || d?.source_url || d?.orig_url || d?.url || d?.image_url || d?.web_logo_url || d?.artwork_url || null,
+      locked: true,
+    };
+  });
 }
 
 function inferAthleticFormProfile(product) {
@@ -169,7 +195,7 @@ function inferAthleticFormProfile(product) {
   return 'men';
 }
 
-function buildAnalysisBrief(product, decorations) {
+function buildAnalysisBrief(product, decorations, settings, storeArt) {
   const athleticFormProfile = inferAthleticFormProfile(product);
   return {
     sku: product.sku || '',
@@ -179,7 +205,8 @@ function buildAnalysisBrief(product, decorations) {
     color: product.color || '',
     category: product.category || '',
     material: product.material || '',
-    decorations: cleanDecorations(decorations),
+    decorations: cleanDecorations(decorations, settings, storeArt),
+    showcase_settings: normalizeShowcaseSettings(settings),
     output: {
       size: '1024x1024',
       background: 'uniform neutral pure white (#FFFFFF) seamless ecommerce backdrop',
@@ -188,6 +215,7 @@ function buildAnalysisBrief(product, decorations) {
       subject: 'single garment or product only',
       full_product_visible: true,
       composition: 'premium near-front hero view with a subtle three-quarter turn',
+      item_hero_direction: heroDirection(product),
       presentation: 'product-only invisible support with natural on-body volume and drape',
       athletic_form_profile: athleticFormProfile,
       athletic_form_guidance: athleticFormProfile === 'women'
@@ -224,16 +252,21 @@ function parseJsonObject(text) {
   throw new Error('Kimi returned an invalid analysis response');
 }
 
-async function analyzeWithKimi({ product, decorations, images }) {
+async function analyzeWithKimi({ product, decorations, images, settings, storeArt }) {
   const config = getKimiConfig();
   if (!config.key) throw new Error('Kimi/Moonshot is not configured');
-  const brief = buildAnalysisBrief(product, decorations);
+  const brief = buildAnalysisBrief(product, decorations, settings, storeArt);
   const content = [
     {
       type: 'text',
       text: [
         'Analyze the supplied product and artwork references for a truthful premium ecommerce image edit.',
         'The first image is the source product. Remaining images are exact locked artwork/brand references.',
+        'Follow output.item_hero_direction for the actual item, with dramatic controlled lighting and visible truthful texture.',
+        'Each decoration finish_guidance is authoritative: reproduce its surface finish while preserving exact artwork, colors and bounds.',
+        'Apply selected finishes only to customer decorations, never to manufacturer branding or the base garment.',
+        'If revision_notes are supplied, treat them as image-review feedback within these locked truthfulness and composition rules.',
+        'The qa_checklist must verify decoration finish, readable exact artwork, dimensional hero angle and the complete uncropped product.',
         'Return JSON only with keys: garment_invariants (array), protected_elements (array),',
         'decoration_bounds (array), edit_prompt (string), and qa_checklist (array).',
         'The required output is the garment or product alone as the sole centered hero object.',
@@ -294,8 +327,8 @@ async function analyzeWithKimi({ product, decorations, images }) {
   };
 }
 
-function buildEditPrompt(product, decorations, analysis) {
-  const brief = buildAnalysisBrief(product, decorations);
+function buildEditPrompt(product, decorations, analysis, settings, storeArt) {
+  const brief = buildAnalysisBrief(product, decorations, settings, storeArt);
   const modelPrompt = String(analysis?.edit_prompt || '').trim();
   return [
     'Create a premium, photorealistic ecommerce hero image by editing the FIRST supplied product image.',
@@ -341,8 +374,18 @@ function buildEditPrompt(product, decorations, analysis) {
     'Use a neutral directional studio key light from the upper-left or upper-right, soft fill, controlled edge',
     'separation, realistic restrained grounding shadow, rich but truthful tonal contrast, and dimensional fabric',
     'depth. The dramatic appeal must come from product angle, scale, form, texture, and lighting; the background',
-    'must remain uniform pure white with no gradient or vignette. Embroidery may have subtle raised thread',
-    'direction and edge depth; screen print must remain flat and naturally integrated with the fabric.',
+    'must remain uniform pure white with no gradient or vignette.',
+    'DECORATION FINISH — REQUIRED: follow each PRODUCT.decoration finish_guidance exactly. Selected finishes apply',
+    'only to existing customer/team artwork, never manufacturer marks or undecorated fabric. Add physical surface',
+    'texture without redrawing letters, adding outlines, changing colors, moving artwork or enlarging production bounds.',
+    brief.showcase_settings.decoration_type !== 'auto' ? `SELECTED CUSTOMER DECORATION FINISH: ${FINISH_GUIDANCE[brief.showcase_settings.decoration_type]}` : '',
+    'If no structured decorations exist, a selected finish may apply only to customer artwork already visible in',
+    'the source reference. An undecorated source must remain undecorated; never invent artwork to demonstrate a finish.',
+    'Screen print stays flat, crisp and matte; tackle twill has light woven applique depth and fine edge stitching;',
+    'embroidery has fine directional stitched relief; chenille has soft short plush pile with clean borders.',
+    'Use raking key light and gentle fill to reveal real texture without harsh glare or shadows hiding any artwork.',
+    `ITEM HERO DIRECTION — REQUIRED: ${brief.output.item_hero_direction}`,
+    brief.showcase_settings.revision_notes ? `REVIEW FEEDBACK (within all locked rules above): ${brief.showcase_settings.revision_notes}` : '',
     'Do not add seams, pockets, colors, patterns, logos, or decoration.',
     `PRODUCT=${JSON.stringify(brief)}`,
     `LOCKED_INVARIANTS=${JSON.stringify(analysis?.garment_invariants || [])}`,
@@ -352,10 +395,10 @@ function buildEditPrompt(product, decorations, analysis) {
   ].filter(Boolean).join('\n');
 }
 
-async function generateWithOpenAI({ product, decorations, images, analysis }) {
+async function generateWithOpenAI({ product, decorations, images, analysis, settings, storeArt }) {
   const config = getOpenAiConfig();
   if (!config.key) throw new Error('OpenAI image generation is not configured');
-  const prompt = buildEditPrompt(product, decorations, analysis);
+  const prompt = buildEditPrompt(product, decorations, analysis, settings, storeArt);
   const form = new FormData();
   images.forEach((image, index) => {
     form.append('image[]', new Blob([image.bytes], { type: image.contentType }), `reference-${index + 1}.${imageExtension(image.contentType)}`);
@@ -416,6 +459,7 @@ module.exports = {
   isAllowedImageHost,
   fetchRemoteImage,
   cleanDecorations,
+  heroDirection,
   inferAthleticFormProfile,
   buildAnalysisBrief,
   buildEditPrompt,

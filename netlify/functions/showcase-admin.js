@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { corsHeaders, verifyUser, getTrustedSiteBaseUrl } = require('./_shared');
 const { PROMPT_VERSION, normalizeMode } = require('./_showcase');
 const { markShowcaseBatchPending } = require('./_showcaseEmail');
+const { DECORATION_FINISHES, normalizeShowcaseSettings, showcaseSettingsChanged } = require('../../src/lib/showcaseSettings');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -25,7 +26,7 @@ function publicAsset(row) {
     standard_image_url: row.standard_image_url,
     showcase_image_url: row.showcase_image_url,
     approved_showcase_image_url: row.approved_showcase_image_url,
-    status: row.status,
+    status: row.status === 'canceled' && !row.generation_request_id && !row.showcase_image_url && !row.approved_showcase_image_url ? 'missing' : row.status,
     approval_status: row.approval_status,
     fallback_to_standard: row.fallback_to_standard !== false,
     provider: row.provider,
@@ -35,6 +36,8 @@ function publicAsset(row) {
     provider_job_id: row.provider_job_id,
     prompt_version: row.prompt_version,
     qa_result: row.qa_result || {},
+    showcase_settings: normalizeShowcaseSettings(row.analysis?.showcase_settings),
+    needs_regeneration: showcaseSettingsChanged(row.analysis),
     error_details: row.error_details,
     reviewed_by: row.reviewed_by,
     reviewed_at: row.reviewed_at,
@@ -132,7 +135,7 @@ function isGenerateAllEligible(product, asset) {
   if (!product || product.kind === 'bundle' || !product.standard_image_url) return false;
   const status = asset?.status || 'missing';
   if (status === 'queued' || status === 'generating') return false;
-  if (asset && asset.prompt_version !== PROMPT_VERSION) return true;
+  if (asset && (asset.prompt_version !== PROMPT_VERSION || showcaseSettingsChanged(asset.analysis))) return true;
   if (status === 'approved') return false;
   if (status === 'review' && asset?.approval_status !== 'rejected') return false;
   return true;
@@ -143,7 +146,7 @@ function generateAllProducts(catalog, assetRows) {
   return (catalog || []).filter((product) => isGenerateAllEligible(product, byWp[product.webstore_product_id]));
 }
 
-async function queueProduct(admin, storeId, product, requestId, now) {
+async function queueProduct(admin, storeId, product, requestId, now, settings) {
   const { data, error } = await admin
     .from('webstore_showcase_assets')
     .upsert({
@@ -163,7 +166,7 @@ async function queueProduct(admin, storeId, product, requestId, now) {
       analysis_model: null,
       provider_job_id: null,
       prompt: null,
-      analysis: {},
+      analysis: { showcase_settings: normalizeShowcaseSettings(settings) },
       qa_result: {},
       error_details: null,
       reviewed_by: null,
@@ -307,8 +310,9 @@ exports.handler = async (event) => {
       const now = new Date().toISOString();
       // Queue the entire batch before starting any worker. A fast worker can
       // therefore never email the rep while later products are still being added.
+      const byWp = Object.fromEntries((assetsResult.data || []).map((asset) => [asset.webstore_product_id, asset]));
       const queuedAssets = await Promise.all(
-        products.map((product) => queueProduct(admin, storeId, product, requestId, now)),
+        products.map((product) => queueProduct(admin, storeId, product, requestId, now, byWp[product.webstore_product_id]?.analysis?.showcase_settings)),
       );
       await markShowcaseBatchPending(admin, storeId, requestId);
 
@@ -357,6 +361,46 @@ exports.handler = async (event) => {
     const wpId = String(body.webstore_product_id || '');
     if (!UUID_RE.test(wpId)) return reply(400, { error: 'Valid webstore_product_id required' });
 
+    if (body.showcase_settings !== undefined) {
+      const settings = body.showcase_settings;
+      if (!settings || typeof settings !== 'object' || Array.isArray(settings)
+        || !DECORATION_FINISHES.some(([key]) => key === settings.decoration_type)
+        || (settings.revision_notes !== undefined && (typeof settings.revision_notes !== 'string' || settings.revision_notes.length > 1000))) {
+        return reply(400, { error: 'Choose a valid decoration finish and keep review notes under 1,000 characters' });
+      }
+    }
+
+    if (action === 'save_settings') {
+      if (!body.showcase_settings) return reply(400, { error: 'Showcase settings required' });
+      const catalog = await getCatalog(admin, storeId);
+      const product = catalog.find((item) => item.webstore_product_id === wpId);
+      if (!product) return reply(404, { error: 'Store product not found' });
+      if (product.kind === 'bundle') return reply(400, { error: 'Choose finishes for the package components instead' });
+      const { data: existing, error: existingError } = await admin.from('webstore_showcase_assets')
+        .select('*').eq('store_id', storeId).eq('webstore_product_id', wpId).maybeSingle();
+      if (existingError) throw new Error(existingError.message);
+      if (['queued', 'generating'].includes(existing?.status)) return reply(409, { error: 'Cancel the active image job before changing its finish' });
+      const analysis = { ...(existing?.analysis || {}), showcase_settings: normalizeShowcaseSettings(body.showcase_settings) };
+      let saved;
+      if (existing) {
+        // Scope to the version read above so a worker or another rep cannot be overwritten.
+        const result = await admin.from('webstore_showcase_assets')
+          .update({ analysis, updated_at: new Date().toISOString() })
+          .eq('id', existing.id).eq('updated_at', existing.updated_at).select('*').maybeSingle();
+        if (result.error) throw new Error(result.error.message);
+        if (!result.data) return reply(409, { error: 'This image changed. Refresh before saving the finish.' });
+        saved = result.data;
+      } else {
+        const result = await admin.from('webstore_showcase_assets').insert({
+          store_id: storeId, webstore_product_id: wpId, product_id: product.product_id,
+          standard_image_url: product.standard_image_url, status: 'canceled', analysis,
+        }).select('*').single();
+        if (result.error) throw new Error(result.error.message);
+        saved = result.data;
+      }
+      return reply(200, { ok: true, asset: publicAsset(saved) });
+    }
+
     if (action === 'generate') {
       const catalog = await getCatalog(admin, storeId);
       const product = catalog.find((p) => p.webstore_product_id === wpId);
@@ -364,8 +408,13 @@ exports.handler = async (event) => {
       if (product.kind === 'bundle') return reply(400, { error: 'Generate Showcase images for the package components instead' });
       if (!product.standard_image_url) return reply(400, { error: 'A Standard source image is required before generation' });
 
+      const { data: existing, error: existingError } = await admin.from('webstore_showcase_assets')
+        .select('*').eq('store_id', storeId).eq('webstore_product_id', wpId).maybeSingle();
+      if (existingError) throw new Error(existingError.message);
+      if (['queued', 'generating'].includes(existing?.status)) return reply(409, { error: 'This image is already queued or generating' });
       const requestId = crypto.randomUUID();
-      const queued = await queueProduct(admin, storeId, product, requestId, new Date().toISOString());
+      const settings = body.showcase_settings || existing?.analysis?.showcase_settings;
+      const queued = await queueProduct(admin, storeId, product, requestId, new Date().toISOString(), settings);
       // Publish the notification batch only after the queued asset is visible.
       // This prevents a finishing worker from observing a pending batch with no
       // active asset and emailing the rep before this request actually runs.
@@ -427,6 +476,7 @@ exports.handler = async (event) => {
       if (!ready || ready.status !== 'review' || !ready.showcase_image_url) {
         return reply(409, { error: 'No generated Showcase image is ready to approve' });
       }
+      if (showcaseSettingsChanged(ready.analysis)) return reply(409, { error: 'Generate a new image to apply the selected decoration finish before approving' });
       const current = await updateAsset(admin, storeId, wpId, {
         status: 'approved',
         approval_status: 'approved',
@@ -488,3 +538,5 @@ module.exports.generateAllProducts = generateAllProducts;
 module.exports.state = state;
 module.exports.getWorkerBaseUrl = getWorkerBaseUrl;
 module.exports.clearNotificationBatchIfInactive = clearNotificationBatchIfInactive;
+
+module.exports.queueProduct = queueProduct;

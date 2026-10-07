@@ -1,3 +1,5 @@
+import ShowcaseImageReview from './ui/ShowcaseImageReview';
+import * as SHOWCASE from './lib/showcaseSettings';
 import StorePickerPrice, { suggestedStorePrice as price45 } from './ui/StorePickerPrice';
 import WebstoreShippingSettings from './ui/WebstoreShippingSettings';
 import { validateShipping } from './lib/webstoreShippingRules.shared';
@@ -6418,7 +6420,7 @@ const SHOWCASE_STATUS = {
   failed: { label: 'Failed', bg: '#fef2f2', fg: '#b91c1c' },
   canceled: { label: 'Canceled', bg: '#f8fafc', fg: '#475569' },
 };
-const SHOWCASE_PROMPT_VERSION = 'showcase-v6-athletic-forms';
+const SHOWCASE_PROMPT_VERSION = SHOWCASE.PROMPT_VERSION;
 
 function ShowcaseStatusBadge({ asset }) {
   const key = asset?.status || 'missing';
@@ -6430,6 +6432,7 @@ function ShowcaseStatusBadge({ asset }) {
 }
 
 function ShowcaseAppearanceTab({ store, onFlash }) {
+  const [reviewId, setReviewId] = useState(null);
   const [snapshot, setSnapshot] = useState(null);
   const [draftMode, setDraftMode] = useState('standard');
   const [busy, setBusy] = useState('');
@@ -6520,7 +6523,7 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
     const status = asset.status || 'missing';
     if (item.kind === 'bundle' || !item.standard_image_url) return false;
     if (status === 'queued' || status === 'generating') return false;
-    if (asset.id && asset.prompt_version !== SHOWCASE_PROMPT_VERSION) return true;
+    if (asset.id && (asset.prompt_version !== SHOWCASE_PROMPT_VERSION || asset.needs_regeneration)) return true;
     if (status === 'approved') return false;
     return status !== 'review' || asset.approval_status === 'rejected';
   }).length;
@@ -6543,6 +6546,9 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
 
   return (
     <div>
+      {reviewId && items.find((item) => item.webstore_product_id === reviewId) && <ShowcaseImageReview
+        key={reviewId} item={items.find((item) => item.webstore_product_id === reviewId)} busy={!!busy} error={error} onClose={() => setReviewId(null)}
+        onAction={(action, extra = {}) => act(reviewId, action, { webstore_product_id: reviewId, ...extra })} />}
       <div className="card" style={{ marginBottom: 12, overflow: 'hidden' }}>
         <div style={{ padding: '18px 20px', borderBottom: '1px solid #e2e8f0', background: 'linear-gradient(120deg,#f8fafc,#fff)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start' }}>
@@ -6591,7 +6597,7 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
         <div style={{ padding: '15px 18px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div>
             <div style={{ fontWeight: 800, fontSize: 15 }}>Showcase readiness</div>
-            <div style={{ color: '#64748b', fontSize: 11.5, marginTop: 3 }}>Generation runs in the background, and the assigned rep is emailed when all active jobs finish. Every generated image requires human approval before shoppers can see it.</div>
+            <div style={{ color: '#64748b', fontSize: 11.5, marginTop: 3 }}>Generation runs in the background, and the assigned rep is emailed when all active jobs finish. Choose the decoration finish per item, then expand Before / After to approve the hero image or request a new one. Every generated image requires human approval before shoppers can see it.</div>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end' }}>
             <button className="btn btn-sm btn-primary" type="button" disabled={!!busy || generateAllCount === 0} onClick={generateAll} title={generateAllCount ? `Queue ${generateAllCount} missing, failed, rejected, or older-style Showcase image${generateAllCount === 1 ? '' : 's'}` : (hasActiveJobs ? 'All eligible images are already queued' : 'All Showcase images use the current style')}>
@@ -6613,27 +6619,42 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
             const itemBusy = busy === item.webstore_product_id;
             const canReview = asset.status === 'review' && !!asset.showcase_image_url;
             const isBundle = item.kind === 'bundle';
-            return <div key={item.webstore_product_id} style={{ display: 'grid', gridTemplateColumns: '70px minmax(180px,1fr) minmax(200px,auto)', gap: 12, alignItems: 'center', padding: 10, borderBottom: '1px solid #f1f5f9' }}>
-              <div style={{ width: 64, height: 64, borderRadius: 9, overflow: 'hidden', background: '#f1f5f9', display: 'grid', placeItems: 'center', position: 'relative' }}>
-                {(asset.showcase_image_url || asset.approved_showcase_image_url || item.standard_image_url)
-                  ? <img src={asset.showcase_image_url || asset.approved_showcase_image_url || item.standard_image_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                  : <span style={{ color: '#94a3b8', fontSize: 10 }}>No image</span>}
-                {(asset.showcase_image_url || asset.approved_showcase_image_url) && <span style={{ position: 'absolute', left: 4, bottom: 4, borderRadius: 4, padding: '2px 4px', background: 'rgba(15,23,42,.8)', color: '#fff', fontSize: 7.5, fontWeight: 800 }}>SHOWCASE</span>}
-              </div>
+            return <div key={item.webstore_product_id} style={{ display: 'grid', gridTemplateColumns: 'minmax(120px,140px) minmax(180px,1fr) minmax(200px,auto)', gap: 12, alignItems: 'center', padding: 10, borderBottom: '1px solid #f1f5f9' }}>
+              <button type="button" onClick={() => setReviewId(item.webstore_product_id)} aria-label={`Expand before and after for ${item.name}`}
+                style={{ padding: 4, border: '1px solid #e2e8f0', borderRadius: 9, background: '#fff', cursor: 'pointer', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
+                {[
+                  ['Before', asset.standard_image_url || item.standard_image_url],
+                  ['After', asset.showcase_image_url || asset.approved_showcase_image_url],
+                ].map(([label, url]) => <span key={label} style={{ minWidth: 0 }}>
+                  <span style={{ display: 'block', fontSize: 9, color: '#64748b', fontWeight: 800, marginBottom: 3 }}>{label}</span>
+                  {url ? <img src={url} alt={`${item.name} ${label}`} loading="lazy" style={{ width: '100%', height: 64, objectFit: 'contain', background: '#fff' }} />
+                    : <span style={{ display: 'grid', placeItems: 'center', height: 64, background: '#f8fafc', fontSize: 9, color: '#94a3b8' }}>{working ? 'Generating…' : 'No image'}</span>}
+                </span>)}
+              </button>
               <div style={{ minWidth: 0 }}>
                 <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}>
                   <span style={{ fontWeight: 750, fontSize: 12.5, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.name}</span>
                   <ShowcaseStatusBadge asset={asset} />
                 </div>
                 <div style={{ marginTop: 3, color: '#94a3b8', fontSize: 10.5 }}>{item.sku || 'No SKU'}{item.color ? ` · ${item.color}` : ''}{item.brand ? ` · ${item.brand}` : ''}</div>
+                {!isBundle && <label style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 7, fontSize: 11, color: '#475569' }}>
+                  Hero decoration
+                  <select aria-label={`Hero decoration for ${item.name}`} value={asset.showcase_settings?.decoration_type || 'auto'} disabled={!!busy || working}
+                    onChange={(event) => act(item.webstore_product_id, 'save_settings', { webstore_product_id: item.webstore_product_id,
+                      showcase_settings: { ...(asset.showcase_settings || {}), decoration_type: event.target.value } })}
+                    style={{ fontSize: 11, border: '1px solid #cbd5e1', borderRadius: 6, padding: '4px 6px', background: '#fff' }}>
+                    {SHOWCASE.DECORATION_FINISHES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  </select>
+                  {asset.needs_regeneration && <span style={{ color: '#b45309', fontSize: 10 }}>Generate to apply</span>}
+                </label>}
                 {asset.error_details && <div title={asset.error_details} style={{ marginTop: 4, color: '#b91c1c', fontSize: 10.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 560 }}>{asset.error_details}</div>}
                 {isBundle && <div style={{ marginTop: 4, color: '#64748b', fontSize: 10.5 }}>Package cards use approved component images; generate each component product.</div>}
               </div>
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, flexWrap: 'wrap' }}>
-                {(asset.showcase_image_url || asset.approved_showcase_image_url) && <a className="btn btn-sm btn-secondary" href={asset.showcase_image_url || asset.approved_showcase_image_url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>Preview</a>}
-                {!isBundle && <button className="btn btn-sm btn-secondary" disabled={working || itemBusy || !item.standard_image_url} onClick={() => act(item.webstore_product_id, 'generate', { webstore_product_id: item.webstore_product_id })}>{working ? (asset.status === 'queued' ? 'Queued…' : 'Generating…') : (asset.showcase_image_url || asset.approved_showcase_image_url) ? 'Regenerate' : 'Generate'}</button>}
+                <button type="button" className="btn btn-sm btn-secondary" onClick={() => setReviewId(item.webstore_product_id)}>Before / After ↗</button>
+                {!isBundle && <button className="btn btn-sm btn-secondary" disabled={working || !!busy || !item.standard_image_url} onClick={() => act(item.webstore_product_id, 'generate', { webstore_product_id: item.webstore_product_id })}>{working ? (asset.status === 'queued' ? 'Queued…' : 'Generating…') : (asset.showcase_image_url || asset.approved_showcase_image_url) ? 'Regenerate' : 'Generate'}</button>}
                 {!isBundle && working && <button className="btn btn-sm btn-secondary" disabled={itemBusy} title="Stop this AI job at its next safe checkpoint" onClick={() => act(item.webstore_product_id, 'cancel', { webstore_product_id: item.webstore_product_id })}>{itemBusy ? 'Canceling…' : 'Cancel'}</button>}
-                {canReview && <button className="btn btn-sm" style={{ background: '#047857', color: '#fff' }} disabled={itemBusy} onClick={() => act(item.webstore_product_id, 'approve', { webstore_product_id: item.webstore_product_id })}>Approve</button>}
+                {canReview && <button className="btn btn-sm" style={{ background: '#047857', color: '#fff' }} disabled={!!busy || asset.needs_regeneration} onClick={() => act(item.webstore_product_id, 'approve', { webstore_product_id: item.webstore_product_id })}>Approve</button>}
                 {canReview && <button className="btn btn-sm btn-secondary" disabled={itemBusy} onClick={() => act(item.webstore_product_id, 'reject', { webstore_product_id: item.webstore_product_id })}>Reject</button>}
                 {!isBundle && asset.status !== 'missing' && <button className="btn btn-sm btn-secondary" disabled={itemBusy || working} title="Keep the Standard product image live for this item" onClick={() => act(item.webstore_product_id, 'fallback', { webstore_product_id: item.webstore_product_id })}>Use Standard</button>}
               </div>
