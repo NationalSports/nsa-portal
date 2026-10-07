@@ -194,7 +194,13 @@ const _safeQuery=(table,opts)=>{
     let start=pageSize,done=false;
     while(!done&&start<hardLimit){
       const starts=[];
-      const _wave=_estPages?Math.max(1,Math.min(WAVE,_estPages-(start/pageSize))):WAVE;
+      // Past the estimate with pages still full, the estimate is wrong — and it is often LOW: on an
+      // RLS table (`using is_team_member()`) the planner estimates 1/3 of the rows, so message_reads
+      // reported 3176 of 9541 and then paged one round trip at a time (6 extra serial trips on
+      // 2026-10-07). Probe one page at the estimate's edge (an exact page-size multiple must still
+      // stop there), then go back to full waves.
+      const _pagesRead=start/pageSize;
+      const _wave=!_estPages?WAVE:_pagesRead<_estPages?Math.min(WAVE,_estPages-_pagesRead):_pagesRead===_estPages?1:WAVE;
       for(let k=0;k<_wave&&start<hardLimit;k++,start+=pageSize)starts.push(start);
       const results=await Promise.all(starts.map(s=>fetchPage(s)));
       for(const r of results){
@@ -414,8 +420,12 @@ const _dbLoad = async (opts={}) => {
     // Read the small recovery index alongside network I/O, not on every render.
     const recoveryDrafts=recoveryOwner?draftJournal.list(recoveryOwner).catch(()=>[]):Promise.resolve([]);
     _lastLoadTimedOut.clear();_unconfirmedLoadTables.clear();
-    // Load tables in batches to avoid overwhelming Supabase connection pool
-    const _batch=async(queries,size=5)=>{const results=[];for(let i=0;i<queries.length;i+=size){results.push(...await Promise.all(queries.slice(i,i+size).map(q=>q())));} return results};
+    // Load tables through a bounded pool (at most `size` tables in flight) so a tab can't flood the
+    // Supabase connection pool. It used to run lock-step groups of 5 — every group waited for its
+    // slowest table before the next group could start — which made a 2026-10-07 boot take 18.7s
+    // (9 sequential groups; most of the ~45 tables are tiny, so each group cost a full round trip).
+    // A lane now picks up the next table the moment it frees. Results keep the query order.
+    const _batch=async(queries,size=8)=>{const results=new Array(queries.length);let next=0;const lane=async()=>{while(next<queries.length){const i=next++;results[i]=await queries[i]()}};await Promise.all(Array.from({length:Math.min(size,queries.length)},lane));return results};
     // When coreOnly, skip slow-changing tables (team, vendors, omg, issues, deco, promo, etc.)
     // They'll be loaded on full polls every 5 minutes and via realtime reloadAll()
     const _skip=()=>Promise.resolve({data:[],error:null,status:200});
