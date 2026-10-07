@@ -1345,8 +1345,8 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
       return '<span style="display:inline-block;white-space:nowrap;padding:1px 6px;background:#fff;border:1px solid '+(sw||'#d1d5db')+';border-radius:4px;font-size:9px;font-weight:700;margin:1px 3px 1px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:'+(sw||'#e2e8f0')+';border:1px solid #d1d5db;margin-right:4px;vertical-align:-1px"></span>'+cl+'</span>'}).join('')};
   // Collect each garment's sheet parts, then print garments that share a decoration (same
   // design, color way, placement, numbers/names setup — lib/productionGroups) together: one
-  // section per group with its mockups and logo detail BESIDE the size table and spec, so the
-  // art never lands on a different page from the item it belongs to.
+  // section per group with its mockups and logo detail kept on the same page as the size
+  // table and spec, so the art never lands on a different page from the item it belongs to.
   const itemParts=[];
   itemDetails.forEach(gi=>{
     const it=safeItems(so)[gi.item_idx];
@@ -1458,10 +1458,22 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     const mocks=[];ps.forEach(p=>(p.mockUrls.length?p.mockUrls:p.fallbackImg?[p.fallbackImg]:[]).forEach(u=>{let m=mocks.find(x=>x.u===u);if(!m){m={u,ps:[]};mocks.push(m)}if(!m.ps.includes(p))m.ps.push(p)}));
     const logos=[];ps.forEach(p=>p.logos.forEach(l=>{const k=l.url+'|'+l.bg;let m=logos.find(x=>x.k===k);if(!m){m={k,l,ps:[]};logos.push(m)}if(!m.ps.includes(p))m.ps.push(p)}));
     const nImg=mocks.length+logos.length;
-    // Sized so the art column fits beside the tables on one Letter page.
-    const mh=nImg<=1?320:nImg===2?230:nImg<=4?160:120;
-    const cols=nImg>2?'1fr 1fr':'1fr';
-    const artCol=nImg?'<div style="display:grid;grid-template-columns:'+cols+';gap:0 8px">'
+    // Art runs full width above the tables, as large as the page allows: the rest of the
+    // section's height is estimated (rows of the size table and spec, warnings, sign-offs) and
+    // the images get what's left. The first section shares page 1 with the sheet header and
+    // barcode, so it gets less room. Images stay together with the tables either way.
+    const _rowsIn=h=>(String(h).match(/<tr>/g)||[]).length;
+    const lists=ps.map(p=>p.listsHtml).join('');
+    const restH=60+_rowsIn(sizeHtml)*22+(ps[0].specHtml?30+_rowsIn(ps[0].specHtml)*28:0)
+      +ps.filter(p=>p.warnHtml).length*60+50+Math.min(260,_rowsIn(lists)*22);
+    const roomH=(gIdx===0?640:900)-restH;
+    // Pick the column count that gives the largest image that still fits; a cell is never
+    // taller than it is wide (proofs are mostly landscape), and never below a readable floor.
+    let cols=1,mh=0;
+    for(let c=1;c<=Math.max(nImg,1);c++){const rowsN=Math.ceil(nImg/c)||1;const colW=(740-10*(c-1))/c;
+      const h=Math.min(560,colW,roomH/rowsN-30);if(h>mh+1){mh=h;cols=c}}
+    mh=Math.round(Math.max(140,mh));
+    const artCol=nImg?'<div style="display:grid;grid-template-columns:repeat('+cols+',minmax(0,1fr));gap:0 10px">'
       +mocks.map(m=>'<div>'+_imgBox(m.u,mh)+_cap((m.ps.some(p=>p.linkSrc)?'🔗 Shared mockup':'Mockup')+(multi?' · '+_who(m.ps):''))+'</div>').join('')
       +logos.map(m=>'<div>'+_imgBox(m.l.url,mh,m.l.bg)+_cap(m.l.label+(multi?' · '+_who(m.ps):''))+'</div>').join('')
       +'</div>'
@@ -1473,8 +1485,7 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     const signoff='<div style="display:flex;gap:16px;margin-top:10px;page-break-inside:avoid">'+['Decorated by','QC by','Date'].map(r=>
       '<div style="flex:1"><div style="border-bottom:1.5px solid #1e293b;height:22px"></div><div style="font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:#64748b;margin-top:3px">'+r+'</div></div>').join('')+'</div>';
     const top='<div style="page-break-inside:avoid;break-inside:avoid">'+head
-      +'<div style="display:flex;gap:12px;align-items:flex-start"><div style="flex:0 0 44%;min-width:0">'+artCol+'</div>'
-      +'<div style="flex:1;min-width:0">'+sizeHtml+ps.map(p=>p.warnHtml).join('')+ps[0].specHtml+'</div></div>'+signoff+'</div>';
+      +artCol+sizeHtml+ps.map(p=>p.warnHtml).join('')+ps[0].specHtml+signoff+'</div>';
     return top+ps.map(p=>p.listsHtml).join('');
   });
   // Generic mockups not tied to a specific item
