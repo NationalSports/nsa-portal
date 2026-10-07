@@ -37,6 +37,20 @@ export const logoDesignCopies = (sources, storeId, styleGroupId, designGroupId, 
     school_design_label: label.trim(), school_program_ids: row.school_program_ids || [], school_shared: !!row.school_shared,
     school_template_id: null, sort_order: Number(row.sort_order || 0) + index + 1, active: false };
 }), stock, logo);
+export const logoOptionsForItem = (catalog, item) => {
+  if (!item) return [];
+  const colorKey = (row) => row.variant_group_id || row.id;
+  const rows = (catalog || []).filter((row) => row.kind === 'single' && (item.school_style_group_id
+    ? row.school_style_group_id === item.school_style_group_id
+    : colorKey(row) === colorKey(item)));
+  const byDesign = new Map();
+  rows.forEach((row) => {
+    const key = colorKey(row);
+    if (!byDesign.has(key)) byDesign.set(key, []);
+    byDesign.get(key).push(row);
+  });
+  return [...byDesign].map(([key, groupColors]) => { const colors = [...groupColors].sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0)); return { key, row: colors[0], colors }; });
+};
 export const coreOfferingCopies = (sources, programId, storeId, existing = [], groupIdFor = () => crypto.randomUUID()) => {
   const groups = new Map();
   return (sources || []).filter((row) => row.kind === 'single' && !row.school_template_id && !(row.school_program_ids || []).length && !existing.some((copy) => copy.school_template_id === row.id && (copy.school_program_ids || []).includes(programId))).map((row, i) => {

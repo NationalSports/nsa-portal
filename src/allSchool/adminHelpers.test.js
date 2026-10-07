@@ -1,5 +1,5 @@
 import { productionSetupError } from './ProductionSetupReview';
-import { allSchoolDefaults, normalizeAllSchoolSettings, validateAllSchoolSettings, coreOfferingCopies, logoDesignCopies, applySportDesign, stockLinkedArtError, changesProductionSetup } from './adminHelpers';
+import { allSchoolDefaults, normalizeAllSchoolSettings, validateAllSchoolSettings, coreOfferingCopies, logoDesignCopies, logoOptionsForItem, applySportDesign, stockLinkedArtError, changesProductionSetup } from './adminHelpers';
 import { buildTransferMaps, transferUsage, unresolvedTransferLines } from './transferDemand';
 it('uses $200 per vendor defaults with safe automation off and independent config values', () => {
   const a = allSchoolDefaults(); const b = allSchoolDefaults(); a.purchasing.enabled = true;
@@ -23,6 +23,11 @@ it('makes an inactive logo group with every source color and its own exact artwo
   expect(copies.every((row) => row.school_style_group_id === 'listing' && row.variant_group_id === 'arched-colors' && row.school_design_label === 'Arched Serra' && row.active === false && row.school_template_id === null)).toBe(true);
   expect(copies.every((row) => row.transfer_codes[0] === 'ARCH' && row.decorations[0].art_id === 'arch-web')).toBe(true);
   copies[0].decorations[0].art_id = 'changed'; expect(source[0].decorations[0].art_id).toBe('script');
+});
+it('shows each logo choice once with its own colors and keeps unrelated items separate', () => {
+  const rows = [{ id: 'a', kind: 'single', variant_group_id: 'script', school_style_group_id: 'hoodie' }, { id: 'b', kind: 'single', variant_group_id: 'script', school_style_group_id: 'hoodie' }, { id: 'c', kind: 'single', variant_group_id: 'arched', school_style_group_id: 'hoodie' }, { id: 'd', kind: 'single', variant_group_id: 'other', school_style_group_id: 'other' }];
+  expect(logoOptionsForItem(rows, rows[0]).map((group) => group.colors.length)).toEqual([2, 1]);
+  expect(logoOptionsForItem(rows, rows[3]).map((group) => group.key)).toEqual(['other']);
 });
 it('counts exact sport offering transfer needs without product ID overwrite', () => {
   const maps = buildTransferMaps([{ id: 'football', product_id: 'blank', transfer_codes: ['football-logo'] }, { id: 'soccer', product_id: 'blank', transfer_codes: ['soccer-logo'] }], []);
