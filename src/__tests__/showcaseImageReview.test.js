@@ -23,7 +23,28 @@ describe('Expandable Showcase image comparison', () => {
     act(() => root.render(<ShowcaseImageReview item={item} onClose={() => {}} onAction={() => {}} />));
     expect(HTMLDialogElement.prototype.showModal).toHaveBeenCalledTimes(1);
     expect([...container.querySelectorAll('img')].map((node) => node.getAttribute('src'))).toEqual(['generation-source.png', 'new-hero.png']);
-    expect([...container.querySelectorAll('a')].map((node) => node.getAttribute('href'))).toEqual(['generation-source.png', 'new-hero.png']);
+    expect([...container.querySelectorAll('a')].map((node) => node.getAttribute('href'))).toEqual(['new-hero.png']);
+  });
+
+  test('before shows the assigned front colorway once, including when enlarged', () => {
+    const decorated = { ...item, color: 'Game Royal', decorations: [
+      { art_url: 'wrong-color.png', cw_by_color: { 'game royal': { url: 'serra-logo.png' } }, x: 50, y: 39, w: 30 },
+      { art_url: 'baked.png', baked: true }, { art_url: 'back.png', side: 'back' },
+    ] };
+    act(() => root.render(<ShowcaseImageReview item={decorated} onClose={() => {}} onAction={() => {}} />));
+    expect([...container.querySelectorAll('img')].map((node) => node.getAttribute('src')))
+      .toEqual(['generation-source.png', 'serra-logo.png', 'new-hero.png']);
+    const logo = container.querySelector('img[src="serra-logo.png"]');
+    expect(logo.style.left).toBe('50%'); expect(logo.style.top).toBe('39%'); expect(logo.style.width).toBe('30%');
+    act(() => container.querySelector('[aria-label="Enlarge decorated standard image"]').click());
+    expect(container.querySelectorAll('img[src="serra-logo.png"]')).toHaveLength(1);
+    expect(container.querySelector('a[href="generation-source.png"]')).toBeNull();
+  });
+
+  test('queued message does not claim that generation has started', () => {
+    act(() => root.render(<ShowcaseImageReview item={{ ...item, asset: { status: 'queued' } }} onClose={() => {}} onAction={() => {}} />));
+    expect(container.textContent).toContain('Queued · waiting for generation to start');
+    expect(container.textContent).not.toContain('Your new hero image is generating');
   });
 
   test('approval and generation target this item and regeneration carries finish and feedback', () => {

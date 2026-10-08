@@ -2,7 +2,9 @@ const crypto = require('crypto');
 const { corsHeaders, verifyUser, getTrustedSiteBaseUrl } = require('./_shared');
 const { PROMPT_VERSION, normalizeMode } = require('./_showcase');
 const { markShowcaseBatchPending } = require('./_showcaseEmail');
-const { DECORATION_FINISHES, normalizeShowcaseSettings, showcaseSettingsChanged } = require('../../src/lib/showcaseSettings');
+const { DECORATION_FINISHES, normalizeShowcaseSettings, showcaseSettingsChanged, resolveShowcaseArtwork } = require('../../src/lib/showcaseSettings');
+
+const { expireStalledJobs, dispatchShowcaseJob, recordDispatchFailure } = require('./_showcaseJobs');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -51,14 +53,14 @@ function publicAsset(row) {
 async function getStore(admin, storeId) {
   const { data, error } = await admin
     .from('webstores')
-    .select('id,slug,name,status,presentation_mode,published_presentation_mode,presentation_published_at,presentation_published_by')
+    .select('id,slug,name,status,presentation_mode,published_presentation_mode,presentation_published_at,presentation_published_by,store_art')
     .eq('id', storeId)
     .maybeSingle();
   if (error) throw new Error(error.message);
   return data;
 }
 
-async function getCatalog(admin, storeId) {
+async function getCatalog(admin, storeId, storeArt = []) {
   const { data: rows, error } = await admin
     .from('webstore_products')
     .select('id,store_id,product_id,kind,sku,display_name,image_url,decorations,active,sort_order')
@@ -88,7 +90,7 @@ async function getCatalog(admin, storeId) {
       brand: product.brand || '',
       color: product.color || '',
       category: product.category || '',
-      decorations: wp.decorations || [],
+      decorations: (wp.decorations || []).map((d) => ({ ...d, art_url: resolveShowcaseArtwork(d, product.color, storeArt) })),
       standard_image_url: wp.image_url || product.image_front_url || null,
       sort_order: wp.sort_order || 0,
     };
@@ -183,11 +185,12 @@ async function queueProduct(admin, storeId, product, requestId, now, settings) {
 
 async function state(admin, store) {
   const [catalog, assetsResult] = await Promise.all([
-    getCatalog(admin, store.id),
+    getCatalog(admin, store.id, store.store_art),
     admin.from('webstore_showcase_assets').select('*').eq('store_id', store.id),
   ]);
   if (assetsResult.error) throw new Error(assetsResult.error.message);
-  return buildStateSnapshot(store, catalog, assetsResult.data || []);
+  const assets = await expireStalledJobs(admin, assetsResult.data || []);
+  return buildStateSnapshot(store, catalog, assets);
 }
 
 async function updateAsset(admin, storeId, wpId, fields) {
@@ -263,7 +266,7 @@ exports.handler = async (event) => {
         .from('webstores')
         .update({ presentation_mode: mode, updated_at: new Date().toISOString() })
         .eq('id', storeId)
-        .select('id,slug,name,status,presentation_mode,published_presentation_mode,presentation_published_at,presentation_published_by')
+        .select('id,slug,name,status,presentation_mode,published_presentation_mode,presentation_published_at,presentation_published_by,store_art')
         .single();
       if (error) throw new Error(error.message);
       return reply(200, { ok: true, store: data });
@@ -286,7 +289,7 @@ exports.handler = async (event) => {
           updated_at: now,
         })
         .eq('id', storeId)
-        .select('id,slug,name,status,presentation_mode,published_presentation_mode,presentation_published_at,presentation_published_by')
+        .select('id,slug,name,status,presentation_mode,published_presentation_mode,presentation_published_at,presentation_published_by,store_art')
         .single();
       if (error) throw new Error(error.message);
       return reply(200, { ok: true, store: data, fallback_count: fallbackCount });
@@ -294,11 +297,12 @@ exports.handler = async (event) => {
 
     if (action === 'generate_all') {
       const [catalog, assetsResult] = await Promise.all([
-        getCatalog(admin, storeId),
+        getCatalog(admin, storeId, store.store_art),
         admin.from('webstore_showcase_assets').select('*').eq('store_id', storeId),
       ]);
       if (assetsResult.error) throw new Error(assetsResult.error.message);
-      const products = generateAllProducts(catalog, assetsResult.data || []);
+      const assets = await expireStalledJobs(admin, assetsResult.data || []);
+      const products = generateAllProducts(catalog, assets);
       if (!products.length) {
         return reply(200, { ok: true, queued_count: 0, failed_count: 0 });
       }
@@ -316,21 +320,12 @@ exports.handler = async (event) => {
       );
       await markShowcaseBatchPending(admin, storeId, requestId);
 
-      const internalSecret = process.env.INTERNAL_FUNCTION_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY;
       const triggerResults = await Promise.all(queuedAssets.map(async (queued) => {
         try {
-          const trigger = await fetch(`${baseUrl}/.netlify/functions/showcase-image-background`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'x-internal-secret': internalSecret },
-            body: JSON.stringify({ asset_id: queued.id, generation_request_id: requestId }),
-          });
-          if (!trigger.ok && trigger.status !== 202) throw new Error(`worker returned HTTP ${trigger.status}`);
+          await dispatchShowcaseJob(baseUrl, queued);
           return true;
         } catch (e) {
-          await updateAsset(admin, storeId, queued.webstore_product_id, {
-            status: 'failed',
-            error_details: `Unable to start background worker: ${e.message}`,
-          });
+          await recordDispatchFailure(admin, queued, e);
           return false;
         }
       }));
@@ -372,7 +367,7 @@ exports.handler = async (event) => {
 
     if (action === 'save_settings') {
       if (!body.showcase_settings) return reply(400, { error: 'Showcase settings required' });
-      const catalog = await getCatalog(admin, storeId);
+      const catalog = await getCatalog(admin, storeId, store.store_art);
       const product = catalog.find((item) => item.webstore_product_id === wpId);
       if (!product) return reply(404, { error: 'Store product not found' });
       if (product.kind === 'bundle') return reply(400, { error: 'Choose finishes for the package components instead' });
@@ -402,7 +397,7 @@ exports.handler = async (event) => {
     }
 
     if (action === 'generate') {
-      const catalog = await getCatalog(admin, storeId);
+      const catalog = await getCatalog(admin, storeId, store.store_art);
       const product = catalog.find((p) => p.webstore_product_id === wpId);
       if (!product) return reply(404, { error: 'Store product not found' });
       if (product.kind === 'bundle') return reply(400, { error: 'Generate Showcase images for the package components instead' });
@@ -428,18 +423,10 @@ exports.handler = async (event) => {
         await updateAsset(admin, storeId, wpId, { status: 'failed', error_details: 'Unable to start background worker: site URL unavailable' });
         return reply(500, { error: 'Unable to start Showcase background worker' });
       }
-      const internalSecret = process.env.INTERNAL_FUNCTION_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY;
       try {
-        const trigger = await fetch(`${baseUrl}/.netlify/functions/showcase-image-background`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-internal-secret': internalSecret },
-          body: JSON.stringify({ asset_id: queued.id, generation_request_id: requestId }),
-        });
-        if (!trigger.ok && trigger.status !== 202) {
-          throw new Error(`worker returned HTTP ${trigger.status}`);
-        }
+        await dispatchShowcaseJob(baseUrl, queued);
       } catch (e) {
-        await updateAsset(admin, storeId, wpId, { status: 'failed', error_details: `Unable to start background worker: ${e.message}` });
+        await recordDispatchFailure(admin, queued, e);
         return reply(502, { error: 'Unable to start Showcase background worker' });
       }
       return reply(202, { ok: true, asset: publicAsset(queued) });

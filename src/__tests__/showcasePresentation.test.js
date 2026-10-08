@@ -96,7 +96,7 @@ describe('Showcase provider boundary', () => {
     expect(prompt).toContain('dramatic appeal must come from product angle');
     expect(prompt).toContain('5–8% breathing room');
     expect(prompt).not.toContain('consistent warm-neutral studio background');
-    expect(PROMPT_VERSION).toBe('showcase-v7-decoration-hero');
+    expect(PROMPT_VERSION).toBe('showcase-v8-applied-artwork');
   });
 
   test('uses athletic male and female invisible garment forms without visible models', () => {
@@ -116,16 +116,13 @@ describe('Showcase provider boundary', () => {
     expect(womensPrompt).toContain('no visible or residual wearer');
   });
 
-  test('collects the existing decoration URL shapes without duplicates', () => {
+  test('uses only the assigned colorway and excludes alternate artwork', () => {
     const urls = artworkUrls([{
       art_url: 'https://cdn.example/team.png',
       source_url: 'https://cdn.example/team.png',
       cw_by_color: { navy: 'https://cdn.example/team-navy.png' },
-    }], []);
-    expect(urls).toEqual([
-      'https://cdn.example/team.png',
-      'https://cdn.example/team-navy.png',
-    ]);
+    }], [], 'Navy');
+    expect(urls).toEqual(['https://cdn.example/team-navy.png']);
   });
 
   test('Kimi is analysis-only and its credential remains a request header', async () => {

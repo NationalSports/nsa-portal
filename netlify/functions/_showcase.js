@@ -3,7 +3,7 @@ const net = require('net');
 
 const KIMI_URL = 'https://api.moonshot.ai/v1/chat/completions';
 const OPENAI_IMAGE_URL = 'https://api.openai.com/v1/images/edits';
-const { PROMPT_VERSION, normalizeDecorationType, normalizeShowcaseSettings } = require('../../src/lib/showcaseSettings');
+const { PROMPT_VERSION, normalizeDecorationType, normalizeShowcaseSettings, resolveShowcaseArtwork } = require('../../src/lib/showcaseSettings');
 const MAX_SOURCE_BYTES = 15 * 1024 * 1024;
 const DEFAULT_IMAGE_HOSTS = new Set([
   'static.momentecbrands.com',
@@ -158,7 +158,7 @@ function heroDirection(product) {
   return 'Use a strong near-front three-quarter hero appropriate to the actual item. For tops, create dimensional shoulders, chest, sleeves and natural drape; keep the decorated panel dominant. For other items, follow the source silhouette without inventing garment anatomy. Make every item feel substantial and dramatic through controlled key light, soft fill and crisp texture.';
 }
 
-function cleanDecorations(decorations, settings, storeArt = []) {
+function cleanDecorations(decorations, settings, storeArt = [], color) {
   const selected = normalizeShowcaseSettings(settings).decoration_type;
   const artRecords = Array.isArray(storeArt) ? storeArt : [];
   return (Array.isArray(decorations) ? decorations : []).map((d) => {
@@ -173,7 +173,8 @@ function cleanDecorations(decorations, settings, storeArt = []) {
       width_percent: d?.w ?? d?.width_percent ?? null,
       decoration_type: type,
       finish_guidance: FINISH_GUIDANCE[type] || 'Preserve the existing decoration appearance from the reference; do not invent a finish.',
-      artwork_url: d?.art_url || d?.source_url || d?.orig_url || d?.url || d?.image_url || d?.web_logo_url || d?.artwork_url || null,
+      artwork_url: resolveShowcaseArtwork(d, color, storeArt),
+      already_in_source: !!d?.baked,
       locked: true,
     };
   });
@@ -205,7 +206,7 @@ function buildAnalysisBrief(product, decorations, settings, storeArt) {
     color: product.color || '',
     category: product.category || '',
     material: product.material || '',
-    decorations: cleanDecorations(decorations, settings, storeArt),
+    decorations: cleanDecorations(decorations, settings, storeArt, product.color),
     showcase_settings: normalizeShowcaseSettings(settings),
     output: {
       size: '1024x1024',
@@ -262,6 +263,8 @@ async function analyzeWithKimi({ product, decorations, images, settings, storeAr
       text: [
         'Analyze the supplied product and artwork references for a truthful premium ecommerce image edit.',
         'The first image is the source product. Remaining images are exact locked artwork/brand references.',
+        'Apply each assigned structured decoration to its saved position, even when the first image is a blank supplier photo.',
+        'If already_in_source is true, preserve that logo once; do not stamp it twice. Never move back artwork onto the front.',
         'Follow output.item_hero_direction for the actual item, with dramatic controlled lighting and visible truthful texture.',
         'Each decoration finish_guidance is authoritative: reproduce its surface finish while preserving exact artwork, colors and bounds.',
         'Apply selected finishes only to customer decorations, never to manufacturer branding or the base garment.',
@@ -339,7 +342,7 @@ function buildEditPrompt(product, decorations, analysis, settings, storeArt) {
     'If the source includes a person, model, face, head, hair, skin, hand, arm, leg, foot, body, silhouette,',
     'mannequin, dress form, hanger, prop, or scenery, remove it completely. Do not preserve or invent a wearer.',
     'The final image must contain no people, models, body parts, mannequins, dress forms, hangers, lifestyle',
-    'props, secondary objects, scenery, text, or watermarks—only the complete hero garment or product.',
+    'props, secondary objects, scenery, captions, or watermarks—only the complete hero garment or product with its assigned artwork and lettering.',
     'COMPOSITION — REQUIRED: create a premium near-front hero view with a subtle three-quarter suggestion rather',
     'than a flat straight-on catalog cutout or pronounced side view. Rotate the product only approximately 8–15',
     'degrees around its vertical axis—about half a typical three-quarter turn. The front must remain 85–92%',
@@ -367,6 +370,8 @@ function buildEditPrompt(product, decorations, analysis, settings, storeArt) {
     'the legs unnaturally. For hats and accessories, show the front plus one side at the same premium three-quarter angle.',
     'Truthfulness is mandatory: preserve the exact garment type, cut, silhouette, color, material, seams,',
     'panels, pockets, closures, hems, sleeves, hat shape, and all manufacturer branding.',
+    'Apply the assigned PRODUCT.decorations artwork at its saved placement even if the FIRST image is a blank supplier photo.',
+    'If already_in_source is true, preserve the existing logo once without double-stamping. Keep back artwork on the back.',
     'Other supplied images are locked artwork references. Reproduce them exactly—never redraw, restyle,',
     'respell, simplify, or invent a logo. Keep each decoration inside the stated production bounds.',
     'Fill the frame at the largest practical scale with roughly 5–8% breathing room while keeping the complete',
@@ -386,7 +391,7 @@ function buildEditPrompt(product, decorations, analysis, settings, storeArt) {
     'Use raking key light and gentle fill to reveal real texture without harsh glare or shadows hiding any artwork.',
     `ITEM HERO DIRECTION — REQUIRED: ${brief.output.item_hero_direction}`,
     brief.showcase_settings.revision_notes ? `REVIEW FEEDBACK (within all locked rules above): ${brief.showcase_settings.revision_notes}` : '',
-    'Do not add seams, pockets, colors, patterns, logos, or decoration.',
+    'Do not add seams, pockets, colors, patterns, or any logos or decoration beyond the assigned PRODUCT.decorations.',
     `PRODUCT=${JSON.stringify(brief)}`,
     `LOCKED_INVARIANTS=${JSON.stringify(analysis?.garment_invariants || [])}`,
     `PROTECTED_ELEMENTS=${JSON.stringify(analysis?.protected_elements || [])}`,
@@ -427,27 +432,10 @@ async function generateWithOpenAI({ product, decorations, images, analysis, sett
   };
 }
 
-function artworkUrls(decorations, storeArt) {
-  const urls = [];
-  const add = (value) => {
-    if (typeof value !== 'string' || !value.startsWith('https://') || urls.includes(value)) return;
-    urls.push(value);
-  };
-  (Array.isArray(decorations) ? decorations : []).forEach((d) => {
-    add(d?.art_url);
-    add(d?.source_url);
-    add(d?.orig_url);
-    add(d?.url);
-    add(d?.image_url);
-    add(d?.web_logo_url);
-    Object.values(d?.cw_by_color || {}).forEach(add);
-  });
-  (Array.isArray(storeArt) ? storeArt : []).forEach((a) => {
-    add(a?.url);
-    add(a?.image_url);
-    (Array.isArray(a?.web_logos) ? a.web_logos : []).forEach((w) => add(typeof w === 'string' ? w : w?.url));
-  });
-  return urls.slice(0, 3);
+function artworkUrls(decorations, storeArt, color) {
+  return [...new Set((Array.isArray(decorations) ? decorations : [])
+    .map((d) => resolveShowcaseArtwork(d, color, storeArt))
+    .filter((url) => typeof url === 'string' && url.startsWith('https://')))];
 }
 
 module.exports = {

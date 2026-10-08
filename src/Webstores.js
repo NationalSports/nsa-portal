@@ -3,6 +3,7 @@ import { hasSchoolMockup, methodSetupError, resolveSchoolSetup } from './allScho
 import { artworkItemName, recipeKey } from './lib/artworkReport';
 import ShowcaseImageReview from './ui/ShowcaseImageReview';
 import * as SHOWCASE from './lib/showcaseSettings';
+import ShowcaseProductImage from './ui/ShowcaseProductImage';
 import StorePickerPrice, { suggestedStorePrice as price45 } from './ui/StorePickerPrice';
 import WebstoreShippingSettings from './ui/WebstoreShippingSettings';
 import { validateShipping } from './lib/webstoreShippingRules.shared';
@@ -6691,7 +6692,7 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
               {busy === 'cancel_all' ? 'Canceling…' : `Cancel All (${activeJobCount})`}
             </button>}
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {['approved', 'review', 'missing', 'generating', 'failed', 'canceled'].map((key) => <span key={key} style={{ fontSize: 10.5, fontWeight: 700, color: SHOWCASE_STATUS[key].fg, background: SHOWCASE_STATUS[key].bg, padding: '4px 8px', borderRadius: 999 }}>{SHOWCASE_STATUS[key].label}: {Number(counts[key] || 0) + (key === 'generating' ? Number(counts.queued || 0) : 0)}</span>)}
+              {['approved', 'review', 'missing', 'queued', 'generating', 'failed', 'canceled'].map((key) => <span key={key} style={{ fontSize: 10.5, fontWeight: 700, color: SHOWCASE_STATUS[key].fg, background: SHOWCASE_STATUS[key].bg, padding: '4px 8px', borderRadius: 999 }}>{SHOWCASE_STATUS[key].label}: {Number(counts[key] || 0)}</span>)}
             </div>
           </div>
         </div>
@@ -6711,8 +6712,8 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
                   ['After', asset.showcase_image_url || asset.approved_showcase_image_url],
                 ].map(([label, url]) => <span key={label} style={{ minWidth: 0 }}>
                   <span style={{ display: 'block', fontSize: 9, color: '#64748b', fontWeight: 800, marginBottom: 3 }}>{label}</span>
-                  {url ? <img src={url} alt={`${item.name} ${label}`} loading="lazy" style={{ width: '100%', height: 64, objectFit: 'contain', background: '#fff' }} />
-                    : <span style={{ display: 'grid', placeItems: 'center', height: 64, background: '#f8fafc', fontSize: 9, color: '#94a3b8' }}>{working ? 'Generating…' : 'No image'}</span>}
+                  {url && label === 'Before' ? <ShowcaseProductImage item={item} url={url} alt={`${item.name} ${label}`} height={64} /> : url ? <img src={url} alt={`${item.name} ${label}`} loading="lazy" style={{ width: '100%', height: 64, objectFit: 'contain', background: '#fff' }} />
+                    : <span style={{ display: 'grid', placeItems: 'center', height: 64, background: '#f8fafc', fontSize: 9, color: '#94a3b8' }}>{asset.status === 'queued' ? 'Queued…' : working ? 'Generating…' : 'No image'}</span>}
                 </span>)}
               </button>
               <div style={{ minWidth: 0 }}>

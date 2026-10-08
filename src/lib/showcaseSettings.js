@@ -1,5 +1,5 @@
 // Shared by the staff UI and server-side Showcase pipeline.
-const PROMPT_VERSION = 'showcase-v7-decoration-hero';
+const PROMPT_VERSION = 'showcase-v8-applied-artwork';
 const DECORATION_FINISHES = [
   ['auto', 'Use existing decoration'],
   ['tackle_twill', 'Tackle twill'],
@@ -28,4 +28,15 @@ function showcaseSettingsChanged(analysis) {
     !== JSON.stringify(normalizeShowcaseSettings(analysis?.generated_showcase_settings));
 }
 
-module.exports = { PROMPT_VERSION, DECORATION_FINISHES, normalizeDecorationType, normalizeShowcaseSettings, showcaseSettingsChanged };
+// Only the artwork assigned to this garment/color is a generation reference.
+// Never send other colorways or unrelated designs from the store art library.
+function resolveShowcaseArtwork(decoration, color, storeArt = []) {
+  const d = decoration || {};
+  const pick = d.cw_by_color?.[String(color || '').trim().toLowerCase()];
+  const url = typeof pick === 'string' ? pick : pick?.url;
+  const art = (Array.isArray(storeArt) ? storeArt : []).find((a) => a.id === (d.art_id || d.art_file_id));
+  return url || d.art_url || d.source_url || d.orig_url || d.url || d.image_url || d.web_logo_url || d.artwork_url
+    || art?.web_logo_url || art?.url || art?.image_url || null;
+}
+
+module.exports = { PROMPT_VERSION, DECORATION_FINISHES, normalizeDecorationType, normalizeShowcaseSettings, showcaseSettingsChanged, resolveShowcaseArtwork };
