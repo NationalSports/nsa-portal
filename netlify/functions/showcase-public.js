@@ -23,6 +23,11 @@ function approvedAssetMap(rows) {
   return assets;
 }
 
+function approvedDetailMap(rows) {
+  return Object.fromEntries((rows || []).filter((r) => r.webstore_product_id && r.approved_showcase_image_url)
+    .map((r) => [r.webstore_product_id, Array.isArray(r.approved_detail_images) ? r.approved_detail_images : []]));
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: corsHeaders(), body: '' };
   if (event.httpMethod !== 'GET') return reply(405, { error: 'Method not allowed' });
@@ -44,7 +49,7 @@ exports.handler = async (event) => {
 
     const { data: rows, error } = await admin
       .from('webstore_showcase_assets')
-      .select('webstore_product_id,approved_showcase_image_url,status,approval_status')
+      .select('webstore_product_id,approved_showcase_image_url,approved_detail_images,status,approval_status')
       .eq('store_id', storeId)
       .not('approved_showcase_image_url', 'is', null);
     if (error) throw new Error(error.message);
@@ -52,7 +57,7 @@ exports.handler = async (event) => {
     // generating, or awaiting review. Only approving the new draft replaces it;
     // "Use Standard" clears the approved URL.
     const assets = approvedAssetMap(rows || []);
-    return reply(200, { ok: true, mode, assets });
+    return reply(200, { ok: true, mode, assets, details: approvedDetailMap(rows) });
   } catch (e) {
     console.error('[showcase-public]', e);
     return reply(500, { error: 'Unable to load Showcase presentation' });
@@ -60,3 +65,4 @@ exports.handler = async (event) => {
 };
 
 module.exports.approvedAssetMap = approvedAssetMap;
+module.exports.approvedDetailMap = approvedDetailMap;

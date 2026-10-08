@@ -1,10 +1,11 @@
 import { productionSetupError } from './ProductionSetupReview';
-import { allSchoolDefaults, normalizeAllSchoolSettings, validateAllSchoolSettings, coreOfferingCopies, applySportDesign, stockLinkedArtError, changesProductionSetup } from './adminHelpers';
+import { allSchoolDefaults, normalizeAllSchoolSettings, validateAllSchoolSettings, coreOfferingCopies, logoDesignCopies, logoOptionsForItem, applySportDesign, stockLinkedArtError, changesProductionSetup } from './adminHelpers';
 import { buildTransferMaps, transferUsage, unresolvedTransferLines } from './transferDemand';
 it('uses $200 per vendor defaults with safe automation off and independent config values', () => {
   const a = allSchoolDefaults(); const b = allSchoolDefaults(); a.purchasing.enabled = true;
   expect(b.purchasing.enabled).toBe(false); expect(b.purchasing.minimum_cents).toBe(20000); expect(b.target_ship_days).toBe(14);
   expect(normalizeAllSchoolSettings({ dtf: { supplier_id: 'Astra' } }).dtf).toEqual({ supplier_id: 'Astra', auto_send: false });
+  expect(normalizeAllSchoolSettings({ first_logo_by_style: { hoodie: 'arch' } }).first_logo_by_style).toEqual({ hoodie: 'arch' });
   expect(validateAllSchoolSettings(b)).toBe('');
   expect(validateAllSchoolSettings({ purchasing: { max_wait_days: 20 } })).toMatch(/shipment target/);
 });
@@ -15,6 +16,29 @@ it('copies core blanks with isolated art and group IDs and skips existing overri
   copies[0].decorations[0].art_id = 'football'; expect(core[0].decorations[0].art_id).toBe('spirit');
   expect(coreOfferingCopies(core, 'football', 'store', copies)).toEqual([]);
   expect(coreOfferingCopies([{ ...core[0], school_program_ids: ['soccer'] }], 'football', 'store')).toEqual([]);
+});
+it('makes an inactive logo group with every source color and its own exact artwork', () => {
+  const source = [{ id: 'blue', kind: 'single', product_id: 'blue-blank', variant_group_id: 'colors', school_program_ids: ['football'], retail_price: 42, decorations: [{ art_id: 'script' }] }, { id: 'black', kind: 'single', product_id: 'black-blank', variant_group_id: 'colors', school_program_ids: ['football'], retail_price: 44 }];
+  const copies = logoDesignCopies(source, 'store', 'listing', 'arched-colors', 'Arched Serra', { code: 'ARCH' }, { id: 'arch-web', url: 'arch.png' });
+  expect(copies.map((row) => row.product_id)).toEqual(['blue-blank', 'black-blank']);
+  expect(copies.every((row) => row.school_style_group_id === 'listing' && row.variant_group_id === 'arched-colors' && row.school_design_label === 'Arched Serra' && row.active === false && row.school_template_id === null)).toBe(true);
+  expect(copies.every((row) => row.transfer_codes[0] === 'ARCH' && row.decorations[0].art_id === 'arch-web')).toBe(true);
+  copies[0].decorations[0].art_id = 'changed'; expect(source[0].decorations[0].art_id).toBe('script');
+});
+it('shows each logo choice once with its own colors and keeps unrelated items separate', () => {
+  const rows = [{ id: 'a', kind: 'single', variant_group_id: 'script', school_style_group_id: 'hoodie' }, { id: 'b', kind: 'single', variant_group_id: 'script', school_style_group_id: 'hoodie' }, { id: 'c', kind: 'single', variant_group_id: 'arched', school_style_group_id: 'hoodie' }, { id: 'd', kind: 'single', variant_group_id: 'other', school_style_group_id: 'other' }];
+  expect(logoOptionsForItem(rows, rows[0]).map((group) => group.colors.length)).toEqual([2, 1]);
+  expect(logoOptionsForItem(rows, rows[3]).map((group) => group.key)).toEqual(['other']);
+});
+it('links a screen-print choice to its approved art folder instead of DTF stock', () => {
+  const source = [{ id: 'blue', kind: 'single', product_id: 'blank', sku: 'HOODIE', image_url: 'old.png', transfer_codes: ['OLD'] }];
+  const art = { id: 'serra-arch', url: 'arch.png', deco_type: 'screen_print', status: 'approved', prod_files: [{ name: 'arch.ai' }] };
+  const [copy] = logoDesignCopies(source, 'store', 'listing', 'design', 'Serra arch', null, art);
+  expect(copy.active).toBe(false);
+  expect(copy.image_url).toBeNull();
+  expect(copy.transfer_codes).toEqual([]);
+  expect(copy.decorations).toEqual([{ kind: 'art', art_id: 'serra-arch', art_url: 'arch.png', placement: 'full_front', side: 'front', type: 'screen_print', baked: false }]);
+  expect(productionSetupError({ ...copy, image_url: 'new-mock.png' }, [], [art])).toMatch(/Screen print is not offered/);
 });
 it('counts exact sport offering transfer needs without product ID overwrite', () => {
   const maps = buildTransferMaps([{ id: 'football', product_id: 'blank', transfer_codes: ['football-logo'] }, { id: 'soccer', product_id: 'blank', transfer_codes: ['soccer-logo'] }], []);
@@ -51,9 +75,9 @@ it('refuses generic art replacement of stock-linked offerings but allows explici
 
 it('requires exact production files for approval and identifies setup invalidation fields', () => {
   const item = { product_id: 'blank', sku: 'TEE', image_url: 'exact-mock.png', transfer_codes: ['DTF'] };
-  expect(productionSetupError(item, [])).toMatch(/exact production/);
+  expect(productionSetupError(item, [])).toMatch(/inventory/);
   expect(productionSetupError({ ...item, image_url: null }, [])).toMatch(/mockup/);
-  const stock = { code: 'DTF', width_in: 8, height_in: 10, production_file: { bucket: 'all-school-art', path: 'private/print.ai', name: 'print.ai' } };
+  const stock = { code: 'DTF', application_method: 'heat_press', width_in: 8, height_in: 10, production_file: { bucket: 'all-school-art', path: 'private/print.ai', name: 'print.ai' } };
   expect(productionSetupError(item, [stock])).toBe('');
   expect(productionSetupError({ ...item, takes_name: true }, [stock])).toMatch(/personalization/);
   expect(changesProductionSetup({ decorations: [] })).toBe(true);
@@ -68,4 +92,39 @@ it('number approval needs every exact configured digit and DTF production source
   expect(productionSetupError(item, digits)).toBe('');
   expect(productionSetupError(item, digits.slice(0, 9))).toMatch(/digit 9/);
   expect(productionSetupError(item, digits.map((d) => ({ ...d, production_file: null })))).toMatch(/exact .ai/);
+});
+
+describe('normal visual art choices', () => {
+  const { schoolArtGroups, visualLogoCopies } = require('./adminHelpers');
+  const rows = [
+    { id: 'blue', kind: 'single', variant_group_id: 'original', sku: 'hoodie', sort_order: 1, decorations: [{ art_id: 'script', side: 'front' }] },
+    { id: 'black', kind: 'single', variant_group_id: 'original', sku: 'hoodie', sort_order: 2, decorations: [{ art_id: 'script', side: 'front' }] },
+  ];
+  const stock = { blue: { image_front_url: 'blank-blue' }, black: { image_front_url: 'blank-black' } };
+  test('a different logo offers a new choice across all colors using blank images', () => {
+    const [g] = schoolArtGroups(rows.map((r) => ({ ...r, image_url: 'old-mock' })), stock, 'block');
+    expect(g.addingChoice).toBe(true);
+    expect(g.items.map((r) => r.img)).toEqual(['blank-blue', 'blank-black']);
+  });
+  test('the same art selects its existing design without duplicating colors or unrelated items', () => {
+    const linked = rows.map((r) => ({ ...r, school_style_group_id: 'listing' }));
+    const second = { ...linked[0], id: 'alternate', variant_group_id: 'second', decorations: [{ art_id: 'block' }] };
+    const groups = schoolArtGroups([...linked, second, { ...rows[0], id: 'unrelated', variant_group_id: null }], stock, 'block');
+    expect(groups).toHaveLength(2);
+    expect(groups[0].addingChoice).toBe(false);
+    expect(groups[0].items.map((r) => r.id)).toEqual(['alternate']);
+    expect(groups[0].choices).toHaveLength(2);
+  });
+  test('a blank garment gets its first art without creating an alternate', () => {
+    expect(schoolArtGroups([{ ...rows[0], decorations: [] }], stock, 'script')[0].addingChoice).toBe(false);
+  });
+  test('new choices preserve exact placement and require all blank color images', () => {
+    const entries = rows.map((r) => ({ id: r.id, image_url: stock[r.id].image_front_url, decorations: [{ art_id: 'block', x: 47, y: 31, w: 36 }] }));
+    const copies = visualLogoCopies(rows, rows, entries);
+    expect(copies.every((row) => row.active === true)).toBe(true);
+    expect(copies[0].decorations).toEqual(entries[0].decorations);
+    expect(copies[0].production_approved_at).toBeNull();
+    expect(() => visualLogoCopies(rows, rows, entries.slice(1))).toThrow('every color');
+    expect(() => visualLogoCopies(rows, rows, entries.map((r) => ({ ...r, image_url: null })))).toThrow('blank garment');
+  });
 });

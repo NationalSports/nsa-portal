@@ -5,7 +5,8 @@ const checkout = require('../../netlify/functions/webstore-checkout');
 const config = { mode: 'ups_live', package_weight_oz: 2, length_in: 12, width_in: 10, height_in: 3, service_code: 'ups_ground', origin_code: 'OR', fallback: 'block' };
 const store = { id: 's1', slug: 'school', org_type: 'all_school', status: 'open', delivery_mode: 'ship_home', all_school_settings: { shipping: config }, flat_shipping: 99 };
 const ship = { street1: '1 Main St', city: 'Dallas', state: 'TX', zip: '75001' };
-const wp = { id: 'wp1', product_id: 'p1', sku: 'TEE', kind: 'single', retail_price: 20, weight_oz: 6, takes_name: false, takes_number: false, active: true };
+const wp = { image_url: 'https://assets.test/mock.png', id: 'wp1', product_id: 'p1', sku: 'TEE', kind: 'single', retail_price: 20, weight_oz: 6, takes_name: false, takes_number: false, active: true };
+const template = { font: 'Varsity', print_color: 'White', placement: 'full_back', width_in: 10, height_in: 3, unit_cost: 2, production_file: { bucket: 'all-school-art', path: 'name.ai' } };
 const lines = [{ kind: 'single', wp, qty: 3 }];
 function fakeSb(tables = {}) {
   const mutations = [];
@@ -118,16 +119,20 @@ describe('server-authoritative UPS checkout rates', () => {
 });
 
 describe('all-school public data and frozen production recipes', () => {
-  test('automatic mock approval requires saved setup approval and a garment image', () => {
-    expect(checkout.productionRecipe({ ...wp, production_approved_at: null }).mock_approval.approved).toBe(false);
+  test('automatic readiness requires a garment image and valid method setup', () => {
+    expect(checkout.productionRecipe({ ...wp, production_approved_at: null }).mock_approval.approved).toBe(true);
     expect(checkout.productionRecipe({ ...wp, production_approved_at: '2026-10-02T12:00:00Z', image_url: null }).mock_approval.approved).toBe(false);
     const recipe = checkout.productionRecipe({ ...wp, production_approved_at: '2026-10-02T12:00:00Z', production_approved_by: 'staff-1', image_url: 'https://assets.test/garment.jpg' });
-    expect(recipe.mock_approval).toEqual({ approved: true, approved_at: '2026-10-02T12:00:00Z', approved_by: 'staff-1', basis: 'approved_store_setup' });
+    expect(recipe.mock_approval).toEqual({ approved: true, approved_at: null, approved_by: null, basis: 'method_readiness' });
   });
   test('public settings expose display fields and hide supplier contacts and automation controls', () => {
     const publicStore = checkout.publicStoreRow({ ...store, contact_email: 'private@example.com', all_school_settings: { ...store.all_school_settings, programs: [{ id: 'football', name: 'Football', supplier: 'private' }], target_ship_days: 14, purchase: { threshold_cents: 20000 }, dtf: { contact_email: 'private' } } });
-    expect(publicStore.all_school_settings).toEqual({ programs: [{ id: 'football', name: 'Football' }], target_ship_days: 14, shipping: { mode: 'ups_live', service_code: 'ups_ground' } });
+    expect(publicStore.all_school_settings).toEqual({ programs: [{ id: 'football', name: 'Football' }], target_ship_days: 14, show_promo_banner: false, shipping: { mode: 'ups_live', service_code: 'ups_ground' } });
     expect(JSON.stringify(publicStore)).not.toMatch(/private|threshold_cents|package_weight_oz/);
+  });
+  test('public settings expose only safe first-logo choices', () => {
+    const settings = checkout.publicAllSchoolSettings({ first_logo_by_style: { hoodie: 'arch', 'unsafe<script>': 'other', shirt: 42 } });
+    expect(settings.first_logo_by_style).toEqual({ hoodie: 'arch' });
   });
 
   test('a saved recipe retains exact transfer/art version after catalog changes, without unrelated stock', () => {
@@ -140,10 +145,16 @@ describe('all-school public data and frozen production recipes', () => {
     expect(recipe.decorations[0].prod_files[0].url).toMatch(/v1/);
     expect(recipe.transfer_inventory).toEqual([{ id: 't1', code: 'CREST', production_file: 'https://assets.test/crest-v1.ai', artwork_version: 'v1', supplier: 'Astra Sport' }]);
     arts[0].prod_files[0].url = 'https://assets.test/approved-v2.ai';
-    expect(recipe.art_files).toEqual([{ id: 'a1', status: 'approved', prod_files: [{ url: 'https://assets.test/approved-v1.ai' }] }]);
+    expect(recipe.art_files).toEqual([{ id: 'a1', status: 'approved', files: [], prod_files: [{ url: 'https://assets.test/approved-v1.ai' }] }]);
     const saved = checkout.buildOrderItems([{ ...lines[0], production_recipe: recipe }], null, undefined, true);
     expect(saved[0].production_recipe).toBe(recipe);
     expect(checkout.buildOrderItems(lines, null)[0].production_recipe).toBeUndefined();
+  });
+  test('logo option label and exact design survive in the frozen production recipe', () => {
+    const recipe = checkout.productionRecipe({ ...wp, school_design_label: 'Arched Serra', transfer_codes: ['ARCH'], decorations: [{ art_id: 'arched-logo', transfer_code: 'ARCH' }] });
+    expect(recipe.school_design_label).toBe('Arched Serra');
+    expect(recipe.transfer_codes).toEqual(['ARCH']);
+    expect(recipe.decorations[0].art_id).toBe('arched-logo');
   });
 
   test('personalization rules reject invalid names without changing confirmed text', () => {
@@ -166,11 +177,11 @@ describe('all-school public data and frozen production recipes', () => {
 
   test('package checkout freezes its exact component offering and package personalization overrides', async () => {
     const parent = { id: 'bundle1', kind: 'bundle', retail_price: 40, active: true };
-    const component = { ...wp, takes_name: false, personalization_template: { max_length: 12, uppercase: true }, transfer_codes: ['STANDALONE'] };
+    const component = { ...wp, takes_name: false, personalization_template: { ...template, max_length: 12, uppercase: true }, transfer_codes: ['STANDALONE'] };
     const sb = fakeSb({
       webstore_products: { data: [parent, component], error: null },
       webstore_bundle_items: { data: [{ bundle_id: 'bundle1', webstore_product_id: 'wp1', product_id: 'p1', sku: 'TEE', qty: 2, takes_name: true, transfer_code: 'PACKAGE' }], error: null },
-      webstore_transfers: { data: [{ code: 'PACKAGE', production_file: 'https://assets.test/package.ai' }], error: null },
+      webstore_transfers: { data: [{ code: 'PACKAGE', application_method: 'heat_press', production_file: 'https://assets.test/package.ai' }], error: null },
     });
     const priced = await checkout.priceCart(sb, store, [{ webstore_product_id: 'bundle1', components: [{ product_id: 'p1', qty: 999, size: 'M', player_name: 'SMITH' }] }]);
     expect(priced.error).toBeUndefined();
@@ -188,7 +199,7 @@ describe('all-school public data and frozen production recipes', () => {
   });
 
   test('all-school number personalization can be blank and preserves a zero jersey number', async () => {
-    const sb = fakeSb({ webstore_products: { data: [{ ...wp, takes_number: true }], error: null } });
+    const sb = fakeSb({ webstore_products: { data: [{ ...wp, takes_number: true, personalization_template: { number_template: template } }], error: null } });
     const blank = await checkout.priceCart(sb, store, [{ webstore_product_id: 'wp1', qty: 1, player_number: '' }]);
     expect(blank.error).toBeUndefined();
     expect(blank.lines[0].player_number).toBeNull();

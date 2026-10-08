@@ -1,3 +1,4 @@
+import { artworkItemName } from './artworkReport';
 import * as XLSX from 'xlsx';
 
 // Silver Screen's Domestic import tab is deliberately strict. Keep these labels,
@@ -73,7 +74,7 @@ function shipMethod(order, store) {
 function effectiveLine(line) {
   const unmatched = !!line._unmatched;
   const style = unmatched ? (line.sku || line._effSku || '') : (line._sku || line._effSku || line.sku || '');
-  const description = unmatched ? (line.name || style || '') : (line._name || line.name || style || '');
+  const description = artworkItemName(unmatched ? (line.name || style || '') : (line._name || line.name || style || ''), line);
   const tag = clean(line._adidasTagSku);
   return {
     style: clean(style),

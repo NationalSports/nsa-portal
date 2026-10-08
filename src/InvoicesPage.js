@@ -1,3 +1,4 @@
+import InvoiceStripeStatus from './InvoiceStripeStatus';
 import { emailDeliveryLabel } from './lib/emailRouting';
 import { coachInvoiceUrl, createPartialPayLink } from './lib/payLinks';
 // Invoices page — lifted verbatim out of App() (was `function rInvoices()`)
@@ -38,6 +39,7 @@ function AutoRunOnce({run}){
 }
 
 export default function InvoicesPage(){
+  const [invoiceStripe,setInvoiceStripe]=React.useState(null);
   const {setRpPrefill,CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,voidInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setCust,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
 
     // Move ONE invoice to another rep (invoices.rep_id). Clearing it ('') returns the invoice to
@@ -462,13 +464,15 @@ export default function InvoicesPage(){
                   <span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,
                     background:inv.status==='paid'||settled?'rgba(134,239,172,0.3)':inv.status==='partial'?'rgba(251,191,36,0.3)':overdue?'rgba(252,165,165,0.3)':'rgba(191,219,254,0.3)',
                     color:'white'}}>
-                    {inv.status==='paid'||settled?'Paid':inv.status==='partial'?'Partial':overdue?'Overdue':'Open'}
+                    {invoiceStripe?.invoiceId===inv.id&&invoiceStripe.processing?'Payment processing':inv.status==='paid'||settled?'Paid':inv.status==='partial'?'Partial':overdue?'Overdue':'Open'}
                   </span>
                 </div>
               </div>
             </div>
           </div>
 
+
+          {!inv._hist&&<InvoiceStripeStatus invoiceId={inv.id} onChange={setInvoiceStripe}/>}
           {/* Rep field */}
           <div className="card-body" style={{padding:'10px 24px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:8}}>
             <span style={{fontSize:12,fontWeight:600,color:'#475569'}}>Rep:</span>

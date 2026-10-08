@@ -1098,6 +1098,8 @@ function OrderDrawer({ list, updateLine, setSkuDeco, removeLine, clearList, onCl
   const [images, setImages] = useState([]); // [{ name, type, content, preview }]
   const [state, setState] = useState('idle'); // idle | sending | sent | error
   const [errMsg, setErrMsg] = useState('');
+  const [submitSaved, setSubmitSaved] = useState(false);
+  const [saveWarning, setSaveWarning] = useState('');
 
   // Saved-order controls (signed-in coaches only): name the current list, save
   // it, browse the team's saved orders, rename/delete.
@@ -1185,6 +1187,8 @@ function OrderDrawer({ list, updateLine, setSkuDeco, removeLine, clearList, onCl
     if (!canSend || state === 'sending') return;
     setState('sending');
     setErrMsg('');
+    setSubmitSaved(false);
+    setSaveWarning('');
     try {
       const res = await fetch('/.netlify/functions/catalog-order-request', {
         method: 'POST',
@@ -1206,18 +1210,23 @@ function OrderDrawer({ list, updateLine, setSkuDeco, removeLine, clearList, onCl
       });
       const d = await res.json().catch(() => ({}));
       if (!res.ok || !d.ok) throw new Error(d.error || 'Something went wrong');
+      // Sending a quote request never consumes the coach's working list.
+      // A failed account save is separate from a successful submission: keep
+      // the cart and offer Save again without encouraging a duplicate request.
       if (account && onSaveOrder) {
-        // Record the submit against the coach's saved order (creating one if the
-        // cart wasn't saved yet) and keep the list — submitted orders stay
-        // editable and re-submittable. The image attachments are email-only.
-        await onSaveOrder({ name: orderName, notes, submit: { requestId: d.id } });
-        setState('sent');
-        setImages([]);
-      } else {
-        setState('sent');
-        clearList();
-        setImages([]);
+        try {
+          const saved = await onSaveOrder({ name: orderName, notes, submit: { requestId: d.id } });
+          if (!saved || saved.error || !saved.data) {
+            setSaveWarning('Your request was sent, but we could not save it to your account. Your list is still in this browser. Go back to the order and click Save to try again.');
+          } else {
+            setSubmitSaved(true);
+          }
+        } catch {
+          setSaveWarning('Your request was sent, but we could not save it to your account. Your list is still in this browser. Go back to the order and click Save to try again.');
+        }
       }
+      setState('sent');
+      setImages([]);
     } catch (e) {
       setState('error');
       setErrMsg(e.message || 'Could not send — please try again');
@@ -1241,19 +1250,15 @@ function OrderDrawer({ list, updateLine, setSkuDeco, removeLine, clearList, onCl
               Your rep has your list and will follow up with a formal estimate at your team pricing.
               A copy went to <b>{coach.email}</b>'s rep inbox — reply there with any changes.
             </p>
-            {account ? (
-              <>
-                <p style={{ fontSize: 13, color: '#5F6675', lineHeight: 1.5, marginTop: 6 }}>
-                  We saved this as <b>{orderName.trim() || 'Untitled order'}</b> in your team's orders — edit it and re-send anytime.
-                </p>
-                <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 18, flexWrap: 'wrap' }}>
-                  <button className="ai-more" onClick={() => setState('idle')}>Back to this order</button>
-                  <button className="ai-more" onClick={onClose}>Done</button>
-                </div>
-              </>
-            ) : (
-              <button className="ai-more" style={{ margin: '18px auto 0' }} onClick={onClose}>Done</button>
-            )}
+            <p style={{ fontSize: 13, color: saveWarning ? '#B45309' : '#5F6675', lineHeight: 1.5, marginTop: 6 }} role={saveWarning ? 'alert' : undefined}>
+              {saveWarning || (submitSaved
+                ? <>We saved this as <b>{orderName.trim() || 'Untitled order'}</b> in your team's orders — edit it and re-send anytime.</>
+                : 'Your list is still in this browser. You can keep editing it; sign in and click Save order to keep a copy in your account.')}
+            </p>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 18, flexWrap: 'wrap' }}>
+              <button className="ai-more" onClick={() => setState('idle')}>Back to this order</button>
+              <button className="ai-more" onClick={onClose}>Done</button>
+            </div>
           </div>
         ) : (
           <>
@@ -1491,14 +1496,16 @@ export default function AdidasInventory() {
   const [signInState, setSignInState] = useState('idle'); // idle|sending|sent|error
   useEffect(() => {
     let alive = true;
-    const load = async (session) => {
+    let loadVersion = 0;
+    let authTimer;
+    const load = async (session, version) => {
       try {
         const email = session?.user?.email;
-        if (!email) { if (alive) setCoach(null); return; }
+        if (!email) { if (alive && version === loadVersion) setCoach(null); return; }
         // RLS limits this to the signed-in coach's own row (matched by verified email)
         const { data: accts } = await supabase.from('coach_accounts').select('email,name,customer_id,status').limit(1);
         const acct = (accts || [])[0];
-        if (!acct || acct.status !== 'active') { if (alive) setCoach(null); return; }
+        if (!acct || acct.status !== 'active') { if (alive && version === loadVersion) setCoach(null); return; }
         const { data: custs } = await supabase.from('customers').select('id,name,adidas_ua_tier,school_colors,allowed_brands,parent_id').eq('id', acct.customer_id).limit(1);
         const c = (custs || [])[0];
         // A sub-team (e.g. FPU Baseball under Fresno Pacific University) inherits its
@@ -1514,17 +1521,32 @@ export default function AdidasInventory() {
           const p = (parents || [])[0];
           if (Array.isArray(p && p.school_colors)) schoolColors = p.school_colors;
         }
-        if (!alive) return;
+        if (!alive || version !== loadVersion) return;
         setCoach({
           email, name: acct.name || '', customerId: acct.customer_id,
           customerName: (c && c.name) || '', tier: (c && c.adidas_ua_tier) || 'B',
           schoolColors, allowedBrands,
         });
-      } catch { if (alive) setCoach(null); }
+      } catch { if (alive && version === loadVersion) setCoach(null); }
     };
-    supabase.auth.getSession().then(({ data }) => load(data && data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => load(session));
-    return () => { alive = false; if (sub && sub.subscription) sub.subscription.unsubscribe(); };
+    // Auth callbacks run under the auth lock. Fetch profiles on the next
+    // task so token refresh can finish before the query asks for a token.
+    const scheduleLoad = (session) => {
+      if (!alive) return;
+      const version = ++loadVersion;
+      clearTimeout(authTimer);
+      if (!session) { setCoach(null); return; }
+      authTimer = setTimeout(() => load(session, version), 0);
+    };
+    let authEventSeen = false;
+    supabase.auth.getSession().then(({ data }) => {
+      if (!authEventSeen) scheduleLoad(data && data.session);
+    }).catch(() => { if (!authEventSeen) scheduleLoad(null); });
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+      authEventSeen = true;
+      scheduleLoad(session);
+    });
+    return () => { alive = false; clearTimeout(authTimer); if (sub && sub.subscription) sub.subscription.unsubscribe(); };
   }, []);
   // School colors pre-load the team-colors filter when the coach hasn't picked any
   useEffect(() => {

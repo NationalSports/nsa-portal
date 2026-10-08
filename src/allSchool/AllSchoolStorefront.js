@@ -1,15 +1,7 @@
 import React, { useState } from 'react';
 import { readable, legibleOn } from '../lib/a11y';
-import baseball from './assets/baseball.webp';
-import football from './assets/football.webp';
-import soccer from './assets/soccer.webp';
-import softball from './assets/softball.webp';
-import track from './assets/track.webp';
-import volleyball from './assets/volleyball.webp';
-import wrestling from './assets/wrestling.webp';
 import './allSchoolStorefront.css';
 
-const sportPhotos = { baseball, football, soccer, softball, track, volleyball, wrestling };
 const settingsOf = (store) => store.all_school_settings || {};
 export const schoolPrograms = (store) => (Array.isArray(settingsOf(store).programs) ? settingsOf(store).programs : [])
   .filter((p) => p && p.id && p.name && p.enabled !== false)
@@ -34,7 +26,7 @@ const shortName = (name) => String(name || 'School').replace(/\s+(?:team\s+store
 const initials = (name) => shortName(name).split(/\s+/).slice(0, 3).map((s) => s[0]).join('');
 const targetDays = (store) => Math.max(1, Number(settingsOf(store).target_ship_days) || 14);
 const shipLabel = (store) => targetDays(store) % 7 === 0 ? `${targetDays(store) / 7} weeks` : `${targetDays(store)} days`;
-const photoOf = (program) => program.image_url || sportPhotos[Object.keys(sportPhotos).find((name) => `${program.name} ${program.slug || ''}`.toLowerCase().includes(name))];
+const photoOf = (program) => program.image_url || null;
 
 export function AllSchoolHeader({ store, theme, cartCount, onHome, onCart, onAllItems, onPrograms, onSpirit }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -71,7 +63,7 @@ export function AllSchoolIntro({ store, theme, products, selectedProgram, onProg
   const programs = schoolPrograms(store);
   const settings = settingsOf(store);
   const school = shortName(store.name);
-  const featuredWord = school.split(' ').slice(-1)[0];
+  const featuredWord = settings.hero_background_text == null ? school.split(' ').slice(-1)[0] : String(settings.hero_background_text).trim().slice(0, 40);
   return <>
     <section className={`as-hero${store.banner_url ? ' as-hero-photo' : ''}`} style={{ backgroundColor: theme.band }} aria-label={`${school} school store`}>
       {store.banner_url && <img className="as-hero-background" src={store.banner_url} alt="" loading="eager" />}
@@ -94,14 +86,14 @@ export function AllSchoolIntro({ store, theme, products, selectedProgram, onProg
         const photo = photoOf(program);
         const count = products.filter((p) => schoolProductMatches(p, program.id)).length;
         return <button className={`as-program-card${selectedProgram === program.id ? ' as-selected' : ''}`} key={program.id} onClick={() => onProgram(program.id)} aria-pressed={selectedProgram === program.id}>
-          {photo ? <img src={photo} loading="lazy" alt="" /> : <span className="as-program-monogram" aria-hidden>{program.name.slice(0, 2)}</span>}
+          {photo ? <img src={photo} loading="lazy" alt="" /> : <span className="as-program-monogram" aria-hidden>{program.name}</span>}
           <span className="as-program-shade" aria-hidden />
           <span className="as-program-index" aria-hidden>↗</span>
           <span className="as-program-copy"><strong>{program.name}</strong><span><i aria-hidden />{count ? 'Shop the collection' : 'Explore the program'}</span></span>
         </button>;
       })}</div>
     </div></section>}
-    <section className="as-spirit" aria-labelledby="as-spirit-heading"><div className="as-wrap as-spirit-inner"><div className="as-spirit-art" aria-hidden><span>School<br />Spirit.</span>{store.logo_url && <img src={store.logo_url} alt="" loading="lazy" />}</div><div className="as-spirit-content"><p className="as-eyebrow">For the whole school</p><h2 id="as-spirit-heading">Wear your <em>pride.</em></h2><p>Students, families, staff, and alumni. Your school favorites belong everywhere.</p><button className="as-primary-button" onClick={() => onProgram('spirit')} style={{ color: readable(theme.accent, '#fff') }}>Shop school spirit <span aria-hidden>↗</span></button></div></div></section>
+    {settings.show_promo_banner === true && <section className="as-spirit" aria-labelledby="as-spirit-heading"><div className="as-wrap as-spirit-inner"><div className="as-spirit-art" aria-hidden><span>{settings.promo_art_text ?? <>School<br />Spirit.</>}</span>{(settings.secondary_logo_url || store.logo_url) && <img src={settings.secondary_logo_url || store.logo_url} alt="" loading="lazy" />}</div><div className="as-spirit-content">{(settings.promo_eyebrow ?? 'For the whole school') && <p className="as-eyebrow">{settings.promo_eyebrow ?? 'For the whole school'}</p>}<h2 id="as-spirit-heading">{settings.promo_heading ?? 'Wear your pride.'}</h2>{(settings.promo_description ?? 'Students, families, staff, and alumni. Your school favorites belong everywhere.') && <p>{settings.promo_description ?? 'Students, families, staff, and alumni. Your school favorites belong everywhere.'}</p>}{(settings.promo_button_label ?? 'Shop school spirit') && <button className="as-primary-button" onClick={() => onProgram(settings.promo_destination || 'spirit')} style={{ color: readable(theme.accent, '#fff') }}>{settings.promo_button_label ?? 'Shop school spirit'} <span aria-hidden>↗</span></button>}</div></div></section>}
   </>;
 }
 

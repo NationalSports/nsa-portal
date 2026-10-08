@@ -89,14 +89,14 @@ describe('Showcase provider boundary', () => {
     expect(prompt).toContain('approximately 8–15');
     expect(prompt).toContain('front must remain 85–92%');
     expect(prompt).toContain('Never exceed 15 degrees');
-    expect(prompt).toContain('angle the waistband and stagger the legs subtly');
+    expect(prompt).toContain('balanced planted stance');
     expect(prompt).toContain('polished invisible support');
     expect(prompt).toContain('believable on-body');
     expect(prompt).toContain('no visible or residual wearer');
     expect(prompt).toContain('dramatic appeal must come from product angle');
     expect(prompt).toContain('5–8% breathing room');
     expect(prompt).not.toContain('consistent warm-neutral studio background');
-    expect(PROMPT_VERSION).toBe('showcase-v6-athletic-forms');
+    expect(PROMPT_VERSION).toBe('showcase-v9-fit-and-laterality');
   });
 
   test('uses athletic male and female invisible garment forms without visible models', () => {
@@ -116,16 +116,13 @@ describe('Showcase provider boundary', () => {
     expect(womensPrompt).toContain('no visible or residual wearer');
   });
 
-  test('collects the existing decoration URL shapes without duplicates', () => {
+  test('uses only the assigned colorway and excludes alternate artwork', () => {
     const urls = artworkUrls([{
       art_url: 'https://cdn.example/team.png',
       source_url: 'https://cdn.example/team.png',
       cw_by_color: { navy: 'https://cdn.example/team-navy.png' },
-    }], []);
-    expect(urls).toEqual([
-      'https://cdn.example/team.png',
-      'https://cdn.example/team-navy.png',
-    ]);
+    }], [], 'Navy');
+    expect(urls).toEqual(['https://cdn.example/team-navy.png']);
   });
 
   test('Kimi is analysis-only and its credential remains a request header', async () => {
@@ -506,4 +503,14 @@ describe('Showcase completion email', () => {
     expect(global.fetch).not.toHaveBeenCalled();
     expect(admin.calls.filter((call) => call.table === 'webstores')).toHaveLength(0);
   });
+});
+
+
+test('public details come only from the approved set, including during regeneration', () => {
+  const {approvedDetailMap} = require('../../netlify/functions/showcase-public');
+  expect(approvedDetailMap([
+    {webstore_product_id:'live',approved_showcase_image_url:'hero',approved_detail_images:[{url:'old-approved'}],qa_result:{detail_images:[{url:'unreviewed'}]}},
+    {webstore_product_id:'draft',qa_result:{detail_images:[{url:'private'}]}},
+    {webstore_product_id:'legacy',approved_showcase_image_url:'hero'}
+  ])).toEqual({live:[{url:'old-approved'}],legacy:[]});
 });

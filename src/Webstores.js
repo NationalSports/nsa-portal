@@ -1,3 +1,9 @@
+import InventoryPurchasing from './allSchool/InventoryPurchasing';
+import { garmentInventoryRows } from './allSchool/garmentInventory';
+import { hasSchoolMockup, methodSetupError, resolveSchoolSetup } from './allSchool/methodReadiness.shared';
+import { artworkItemName, recipeKey } from './lib/artworkReport';
+import ShowcaseFamilyList from './ui/ShowcaseFamilyList';
+import StorePickerPrice, { suggestedStorePrice as price45 } from './ui/StorePickerPrice';
 import WebstoreShippingSettings from './ui/WebstoreShippingSettings';
 import { validateShipping } from './lib/webstoreShippingRules.shared';
 import { schoolLaunchError } from './allSchool/launchReadiness';
@@ -6,8 +12,11 @@ import AllSchoolDtfQueue from './allSchool/AllSchoolDtfQueue';
 import { buildTransferMaps, transferUsage, unresolvedTransferLines } from './allSchool/transferDemand';
 import AllSchoolSettings from './allSchool/AllSchoolSettings';
 import AllSchoolPrograms from './allSchool/AllSchoolPrograms';
+import SchoolLogoOptionsEditor from './allSchool/SchoolLogoOptionsEditor';
+import { catalogGroups, catalogEditorRows } from './allSchool/catalogGroups';
+import StoreArtInventoryOptions, { inventorySeedForArt } from './allSchool/StoreArtInventoryOptions';
 import DecorationStockForm, { DECORATION_TYPES, APPLICATION_METHODS } from './allSchool/DecorationStockForm';
-import { normalizeAllSchoolSettings, validateAllSchoolSettings, stockLinkedArtError, changesProductionSetup } from './allSchool/adminHelpers';
+import { normalizeAllSchoolSettings, validateAllSchoolSettings, stockLinkedArtError, changesProductionSetup, logoDesignCopies, schoolArtGroups, frontArt, visualLogoCopies } from './allSchool/adminHelpers';
 import { openSharedProductionPacket } from './productionPacket/api';
 import { attachStoreGarmentMocks } from './lib/storeGarmentMocks';
 /* eslint-disable */
@@ -438,7 +447,7 @@ function downloadCsv(filename, header, rows) {
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 const _csvDate = (d) => (d ? new Date(d).toLocaleDateString() : '');
-const _itemName = (i, stockByPid) => i.name || (i.product_id && stockByPid[i.product_id] && stockByPid[i.product_id].name) || i.sku || i.product_id || 'Item';
+const _itemName = (i, stockByPid) => artworkItemName(i.name || (i.product_id && stockByPid[i.product_id] && stockByPid[i.product_id].name) || i.sku || i.product_id || 'Item', i);
 
 // One place for "does this order count": an order that reached Stripe but never paid
 // (pending_payment), was cancelled, or was fully refunded is dead for batching,
@@ -890,10 +899,10 @@ function buildProductReport(store, label, lines, metaByPid, stockByPid, audit) {
   const groups = {};
   lines.forEach((i) => {
     const sku = i._effSku || i.sku || '';
-    const key = (i.product_id || '') + '|' + sku + '|' + (i.color || '');
+    const key = (i.product_id || '') + '|' + sku + '|' + (i.color || '') + '|' + recipeKey(i.production_recipe);
     const m = (i.product_id && metaByPid[i.product_id]) || {};
     const st = (i.product_id && stockByPid[i.product_id]) || {};
-    const g = groups[key] || (groups[key] = { name: i.name || m.name || _itemName(i, stockByPid), sku, adidasTagSku: i._adidasTagSku || '', color: i.color || m.color || st.color || '', image: i._reportImage || i.image_url || m.image || st.image_front_url || '', sizes: {}, total: 0, wasSkus: new Set(), wasSizes: new Set(), verify: false, unmatched: false });
+    const g = groups[key] || (groups[key] = { name: artworkItemName(i.name || m.name || i.sku || 'Item', i), sku, adidasTagSku: i._adidasTagSku || '', color: i.color || m.color || st.color || '', image: i._reportImage || i.image_url || m.image || st.image_front_url || '', sizes: {}, total: 0, wasSkus: new Set(), wasSizes: new Set(), verify: false, unmatched: false });
     const size = i.size || 'OS';
     const qty = i.qty || 1;
     g.sizes[size] = (g.sizes[size] || 0) + qty;
@@ -968,7 +977,7 @@ function webstoreToShipStation(order, items, store, imageByPid = {}) {
 }
 
 // Reusable image uploader → Cloudinary, returns a secure URL via onChange.
-function ImageUpload({ value, fallback, onChange, onBusy, label = 'Product image' }) {
+function ImageUpload({ value, fallback, fallbackLabel = 'Using stock photo — drop one to override.', onChange, onBusy, label = 'Product image' }) {
   const ref = useRef();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -1001,7 +1010,7 @@ function ImageUpload({ value, fallback, onChange, onBusy, label = 'Product image
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: '#3A4150' }}>{busy ? 'Uploading…' : over ? 'Drop the image' : value ? 'Replace image' : 'Drag an image here, or click to browse'}</div>
-          {!value && fallback && <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 3 }}>Using stock photo — drop one to override.</div>}
+          {!value && fallback && <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 3 }}>{fallbackLabel}</div>}
           {err && <div style={{ fontSize: 11.5, color: '#b91c1c', marginTop: 3 }}>{err}</div>}
         </div>
         <input ref={ref} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) upload(f); e.target.value = ''; }} />
@@ -1606,6 +1615,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const [focusOrderId, setFocusOrderId] = useState(null); // deep-linked order to auto-open in the Orders tab
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const duplicatingStoreRef = useRef(false);
+  const [duplicatingStoreId, setDuplicatingStoreId] = useState(null);
   const [editing, setEditing] = useState(null);   // null | 'new' | storeObj (settings edit)
   const [toast, setToast] = useState(null);
   const [wsSettings, setWsSettings] = useState(null); // global webstore defaults (singleton)
@@ -2313,8 +2324,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (store.is_template && status === 'open') { flash("Templates can't be launched — use Start Store on the Templates tab to spin up a real store from it"); return; }
     if (status === 'open' && store.org_type === 'all_school') {
       const { data: offerings, error: loadError } = await supabase.from('webstore_products').select('*').eq('store_id', store.id);
-      const blocked = loadError ? 'Could not verify artwork readiness. Please retry.' : schoolLaunchError(offerings);
+      const { data: transferRows, error: transferError } = await supabase.from('webstore_transfers').select('*').eq('store_id', store.id);
+      const { data: customerArt, error: artError } = await supabase.from('customers').select('art_files').eq('id', store.customer_id).maybeSingle();
+      const setupArt = [...(store.store_art || []), ...(customerArt?.art_files || [])];
+      const blocked = loadError || transferError || artError ? 'Could not verify setup. Please retry.' : schoolLaunchError(offerings, transferRows, setupArt);
       if (blocked) { flash(blocked); return false; }
+      for (const row of offerings.filter((r) => r.active !== false)) {
+        const resolved = resolveSchoolSetup(row, transferRows, setupArt);
+        const linked = await supabase.from('webstore_products').update({ decorations: resolved.decorations, transfer_codes: resolved.transfer_codes }).eq('id', row.id).select('id');
+        if (linked.error || !linked.data?.length) { flash('Could not link inventory to the garment.'); return false; }
+        const { data: saved, error } = await supabase.from('webstore_products').update({ production_approved_at: new Date().toISOString(), production_approved_by: 'automatic_method_readiness' }).eq('id', row.id).select('id');
+        if (error || !saved?.length) { flash('Could not save readiness. Please retry.'); return false; }
+      }
     }
     const patch = { status, updated_at: new Date().toISOString() };
     // Manual close: stamp close_at with the actual close moment (when unset or still in
@@ -2358,55 +2379,70 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   }, [sel, flash]);
 
   const duplicateStore = useCallback(async (src, opts = {}) => {
+    if (duplicatingStoreRef.current) return null;
     if (!opts.asTemplate && !opts.startFromTemplate && !window.confirm(`Duplicate "${src.name}"? This copies the catalog, packages and transfer setup into a new draft store (no orders).`)) return null;
-    const cloneName = opts.name != null ? opts.name : src.name + (opts.suffix != null ? opts.suffix : ' (Copy)');
-    // Unique slug: <base>-copy (or -template), then -2, -3…
-    const taken = new Set(stores.map((s) => s.slug));
-    let slug = slugify(cloneName) + (opts.asTemplate ? '-template' : '-copy');
-    if (taken.has(slug)) { let n = 2; while (taken.has(`${slug}-${n}`)) n++; slug = `${slug}-${n}`; }
-    // A template is a separate is_template store carrying the ITEMS and packages only —
-    // brand-free by definition (no logo, banner, art, mockups, decorations or transfer
-    // codes from the source team). is_template makes it show in the Templates tab and
-    // stay available to the coach store builder's item pool.
-    // Clone hygiene — never carry from the source:
-    //   featured_product_ids: webstore_product ids of the SOURCE store; they resolve to
-    //     nothing in the clone, which hides the hero collage instead of the auto default.
-    //   closed_notified_at: the close-sweep idempotency stamp; carrying it means the new
-    //     store's close never creates the rep to-do/breakdown email.
-    //   coach_contact_email (rebrand/template paths): the SOURCE team's coach; launch
-    //     would prefill and email the wrong person.
-    // Template philosophy: ONLY the items (and their categories/pricing/kit setup) come
-    // over — every trace of the source team's branding strips, and the new team's colors
-    // and logos are applied fresh. So template paths also drop the banner, hero blurb and
-    // the curated store_art library (the source team's logos).
-    flash(opts.asTemplate ? 'Saving template…' : opts.startFromTemplate ? 'Creating store from template…' : 'Duplicating store…');
-    const cloneRes = await authFetch('/.netlify/functions/webstore-clone', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        source_id: src.id,
-        clone_name: cloneName,
-        slug,
-        as_template: !!opts.asTemplate,
-        start_from_template: !!opts.startFromTemplate,
-        rebrand: !!opts.rebrand,
-        // null = all products; [] = deliberately no products.
-        item_ids: opts.itemIds == null ? null : opts.itemIds,
-      }),
-    });
-    const cloned = await cloneRes.json().catch(() => ({}));
-    if (!cloneRes.ok || !cloned?.ok || !cloned?.store?.id) {
-      flash('Could not duplicate: ' + (cloned?.error || 'Atomic store copy failed'));
+    duplicatingStoreRef.current = true;
+    setDuplicatingStoreId(src.id);
+    try {
+      const cloneName = opts.name != null ? opts.name : src.name + (opts.suffix != null ? opts.suffix : ' (Copy)');
+      // Unique slug: <base>-copy (or -template), then -2, -3…
+      const taken = new Set(stores.map((s) => s.slug));
+      let slug = slugify(cloneName) + (opts.asTemplate ? '-template' : '-copy');
+      if (taken.has(slug)) { let n = 2; while (taken.has(`${slug}-${n}`)) n++; slug = `${slug}-${n}`; }
+      // A template is a separate is_template store carrying the ITEMS and packages only —
+      // brand-free by definition (no logo, banner, art, mockups, decorations or transfer
+      // codes from the source team). is_template makes it show in the Templates tab and
+      // stay available to the coach store builder's item pool.
+      // Clone hygiene — never carry from the source:
+      //   featured_product_ids: webstore_product ids of the SOURCE store; they resolve to
+      //     nothing in the clone, which hides the hero collage instead of the auto default.
+      //   closed_notified_at: the close-sweep idempotency stamp; carrying it means the new
+      //     store's close never creates the rep to-do/breakdown email.
+      //   coach_contact_email (rebrand/template paths): the SOURCE team's coach; launch
+      //     would prefill and email the wrong person.
+      // Template philosophy: ONLY the items (and their categories/pricing/kit setup) come
+      // over — every trace of the source team's branding strips, and the new team's colors
+      // and logos are applied fresh. So template paths also drop the banner, hero blurb and
+      // the curated store_art library (the source team's logos).
+      flash(opts.asTemplate ? 'Saving template…' : opts.startFromTemplate ? 'Creating store from template…' : 'Duplicating store…');
+      const cloneRes = await authFetch('/.netlify/functions/webstore-clone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source_id: src.id,
+          clone_name: cloneName,
+          slug,
+          as_template: !!opts.asTemplate,
+          start_from_template: !!opts.startFromTemplate,
+          rebrand: !!opts.rebrand,
+          // null = all products; [] = deliberately no products.
+          item_ids: opts.itemIds == null ? null : opts.itemIds,
+        }),
+      });
+      const cloned = await cloneRes.json().catch(() => ({}));
+      if (!cloneRes.ok || !cloned?.ok || !cloned?.store?.id) {
+        flash('Could not duplicate: ' + (cloned?.error || 'Atomic store copy failed'));
+        return null;
+      }
+      const store = cloned.store;
+      setStores((prev) => [store, ...prev]);
+      flash(opts.asTemplate ? 'Saved as a template — find it in the Templates tab' : (opts.suffix === '' ? 'New store created from template (draft)' : 'Store duplicated as a draft'));
+      // Both duplicate actions open the new draft's settings. Template workflows
+      // retain their own destination (template list / new-team color picker).
+      if (!opts.asTemplate && !opts.startFromTemplate) {
+        setSel(store); setTab('catalog'); setFocusOrderId(null); setDetail(null);
+        setEditing(store);
+        loadDetail(store).catch(error => console.error('[duplicateStore] detail load failed', error));
+      }
+      return store;
+    } catch (error) {
+      flash('Could not confirm the store copy: ' + (error?.message || 'Connection failed') + '. Refresh the store list before retrying.');
       return null;
+    } finally {
+      duplicatingStoreRef.current = false;
+      setDuplicatingStoreId(null);
     }
-    const store = cloned.store;
-    setStores((prev) => [store, ...prev]);
-    flash(opts.asTemplate ? 'Saved as a template — find it in the Templates tab' : (opts.suffix === '' ? 'New store created from template (draft)' : 'Store duplicated as a draft'));
-    // "Clone & rebrand" lands you straight in settings to set the new customer/colors/logo.
-    // Templates skip that; start-from-template goes to the color picker instead.
-    if (opts.rebrand && !opts.asTemplate && !opts.startFromTemplate) setEditing(store);
-    return store;
-  }, [stores, flash]);
+  }, [stores, flash, loadDetail]);
 
   // "Save as template": clone the store into a SEPARATE, reusable template (its own name,
   // catalog only, no logo). The source store is left untouched and stays in the store list;
@@ -2543,6 +2579,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       kit_name: (shared.kit_name != null ? shared.kit_name : primary.kit_name) || null,
       required: !!(shared.required != null ? shared.required : primary.required),
       options: Array.isArray(primary.options) ? primary.options : [],
+      ...(sel.org_type === 'all_school' && !shared.separate ? { school_program_ids: primary.school_program_ids || [], school_shared: !!primary.school_shared, school_style_group_id: primary.school_style_group_id || null, school_design_label: primary.school_design_label || null, personalization_template: primary.personalization_template || null } : {}),
       active: true, sort_order: base + i,
       ...variantGroupFields(groupId, shared.separate),
     }));
@@ -2717,6 +2754,33 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (error || data?.length !== rows.length) { flash('Sport copies not saved: ' + (error?.message || 'Write was blocked')); return false; }
     flash(`Created ${data.length} sport offerings`); loadDetail(sel); return true;
   }, [sel, flash, loadDetail]);
+  const createSchoolLogoOption = useCallback(async (source, currentLabel, newLabel, stock, logo, visualEntries) => {
+    if (sel?.org_type !== 'all_school' || !source?.id) return false;
+    const sourceGroup = source.variant_group_id || source.id;
+    const sourceRows = (detail?.catalog || []).filter((row) => row.kind === 'single' && (row.variant_group_id || row.id) === sourceGroup);
+    if (!sourceRows.length) return false;
+    const styleGroupId = source.school_style_group_id || crypto.randomUUID();
+    const designGroupId = crypto.randomUUID();
+    let copies = logoDesignCopies(sourceRows, sel.id, styleGroupId, designGroupId, newLabel, stock, logo);
+    if (visualEntries) copies = visualLogoCopies(copies, sourceRows, visualEntries);
+    const { data: updated, error: linkError } = await supabase.from('webstore_products').update({ school_style_group_id: styleGroupId, school_design_label: currentLabel }).eq('store_id', sel.id).in('id', sourceRows.map((row) => row.id)).select('id');
+    if (linkError || updated?.length !== sourceRows.length) { flash('Logo option not saved: ' + (linkError?.message || 'Could not link every source color')); return false; }
+    const { data: inserted, error: insertError } = await supabase.from('webstore_products').insert(copies).select('id');
+    if (insertError || inserted?.length !== copies.length) { flash('Logo option not saved: ' + (insertError?.message || 'Could not create every color')); loadDetail(sel); return false; }
+    flash(`Added ${newLabel} as a logo option`); loadDetail(sel); return inserted[0].id;
+  }, [sel, detail, flash, loadDetail]);
+  const updateSchoolLogoOption = useCallback(async (item, fields) => {
+    if (sel?.org_type !== 'all_school' || !item?.id) return false;
+    const key = item.variant_group_id || item.id;
+    const rows = (detail?.catalog || []).filter((row) => row.kind === 'single' && (row.variant_group_id || row.id) === key);
+    if (!rows.length) return false;
+    if (fields.active === true && rows.some((row) => !hasSchoolMockup(row))) {
+      flash('Save the logo mockup for each color first.'); return false;
+    }
+    const { data, error } = await supabase.from('webstore_products').update(fields).eq('store_id', sel.id).in('id', rows.map((row) => row.id)).select('id');
+    if (error || data?.length !== rows.length) { flash('Logo choice not saved: ' + (error?.message || 'Could not update every color')); loadDetail(sel); return false; }
+    flash(fields.active === true ? 'Logo choice is live' : fields.active === false ? 'Logo choice hidden' : 'Logo choice renamed'); loadDetail(sel); return true;
+  }, [sel, detail, flash, loadDetail]);
 
   // Bulk import from a sales rep's spreadsheet — one insert + one reload (vs. addSingle per
   // row). Each row is { product, price, fundraise, category, kit_name, required } already
@@ -2904,6 +2968,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const blocked = stockLinkedArtError(candidate, fields.decorations);
       if (blocked) { flash(blocked); return false; }
     }
+    if (sel?.org_type === 'all_school' && (fields.decorations || fields.image_url)) {
+      const candidate = { ...(detail?.catalog || []).find((row) => row.id === id), ...fields };
+      if (hasSchoolMockup(candidate)) fields = { ...fields, active: true };
+    }
     if (sel?.org_type === 'all_school' && changesProductionSetup(fields)) fields = { ...fields, production_approved_at: null, production_approved_by: null };
     const { data: _updated, error } = await supabase.from('webstore_products').update(fields).eq('id', id).select('id');
     if (error) { flash('Error: ' + error.message); return false; }
@@ -2919,6 +2987,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // shopper questions attached to that storefront card.
     const groupFields = sharedCardFields(fields);
     if (sel?.org_type === 'all_school') ['school_program_ids', 'school_shared', 'personalization_template', 'takes_name', 'transfer_codes', 'transfer_code'].forEach((key) => { if (Object.prototype.hasOwnProperty.call(fields, key)) groupFields[key] = fields[key]; });
+    if (sel?.org_type === 'all_school' && fields.active === true && fields.decorations) groupFields.active = true;
     if (sel?.org_type === 'all_school' && changesProductionSetup(fields)) { groupFields.production_approved_at = null; groupFields.production_approved_by = null; }
     if (sel?.org_type === 'all_school' && fields.decorations && fields.transfer_codes) { if (fields.image_url === null) groupFields.image_url = null; if (fields.image_back_url === null) groupFields.image_back_url = null; }
     // Size fill-ins are COLOR-specific. Never fan a White substitute onto the
@@ -3077,7 +3146,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (item) {
         const prev = Array.isArray(item.decorations) ? item.decorations : [];
         const baked = prev.filter((d) => d && (d.art_url || d.art_id)).map((d) => ({ ...d, baked: true }));
-        await supabase.from('webstore_products').update({ image_url: front.url, decorations: baked, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', item.id); applied++;
+        await supabase.from('webstore_products').update({ image_url: front.url, decorations: baked, ...(sel?.org_type === 'all_school' ? { active: true, production_approved_at: null, production_approved_by: null } : {}) }).eq('id', item.id); applied++;
       }
     }
     flash(`Mockups saved to the library${applied ? ` and applied to ${applied} item${applied === 1 ? '' : 's'}` : ''}`);
@@ -3104,7 +3173,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // instead of leaving the old art stacked underneath (a back logo still leaves the
       // front intact, since it only clears its own side).
       const next = existing.filter((d) => (d.side || 'front') !== (decoration.side || 'front')).concat([decoration]);
-      await supabase.from('webstore_products').update({ decorations: next, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', id);
+      await supabase.from('webstore_products').update({ decorations: next, ...(sel?.org_type === 'all_school' ? { ...(hasSchoolMockup({ decorations: next }) ? { active: true } : {}), production_approved_at: null, production_approved_by: null } : {}) }).eq('id', id);
     }
     flash(`Logo applied to ${itemIds.length} item${itemIds.length === 1 ? '' : 's'}`); loadDetail(sel);
   }, [detail, sel, flash, loadDetail]);
@@ -3116,27 +3185,61 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // Bulk apply — each entry carries the item's COMPLETE new decorations array (the Art
   // tab computes it: replace the logo on each side it's placing, preserve the other side
   // and personalization tokens). Written in one pass with a single flash/reload.
-  const applyLogoBulk = useCallback(async (entries) => {
+  const applyLogoBulk = useCallback(async (entries, artChoice) => {
+    let added = 0;
+    if (sel?.org_type === 'all_school' && artChoice) {
+      const pending = [];
+      const newGroups = new Map();
+      for (const entry of entries) {
+        const row = (detail?.catalog || []).find((r) => r.id === entry.id);
+        const existing = frontArt(row);
+        if (existing && existing.art_id !== artChoice.id) {
+          const key = row.variant_group_id || row.id;
+          if (!newGroups.has(key)) newGroups.set(key, { row, entries: [] });
+          newGroups.get(key).entries.push(entry);
+        } else {
+          // Moving an existing stock-linked logo keeps its production identity.
+          pending.push({ ...entry, decorations: entry.decorations.map((d) => d.art_id === existing?.art_id && existing?.transfer_code ? { ...d, transfer_code: existing.transfer_code, type: existing.type } : d) });
+        }
+      }
+      for (const entry of pending) {
+        const blocked = stockLinkedArtError(detail.catalog.find((r) => r.id === entry.id), entry.decorations);
+        if (blocked) { flash(blocked); return 0; }
+      }
+      // Validate all new choices before any writes.
+      for (const group of newGroups.values()) {
+        const rows = detail.catalog.filter((r) => (r.variant_group_id || r.id) === (group.row.variant_group_id || group.row.id));
+        visualLogoCopies(rows, rows, group.entries);
+      }
+      for (const group of newGroups.values()) {
+        const oldArt = frontArt(group.row);
+        const label = group.row.school_design_label || (sel.art_files || []).find((a) => a.id === oldArt?.art_id)?.name || 'Original logo';
+        const created = await createSchoolLogoOption(group.row, label, artChoice.name || 'Another logo', null, artChoice, group.entries);
+        if (!created) return 0;
+        added += group.entries.length;
+      }
+      entries = pending;
+    }
     if (sel?.org_type === 'all_school') for (const { id, decorations } of entries) {
       const blocked = stockLinkedArtError((detail?.catalog || []).find((c) => c.id === id), decorations);
       if (blocked) { flash(blocked); return 0; }
     }
-    let n = 0, fails = 0;
+    let n = added, fails = 0;
     for (const { id, decorations } of entries) {
-      const { error } = await supabase.from('webstore_products').update({ decorations, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', id);
+      const { error } = await supabase.from('webstore_products').update({ decorations, ...(sel?.org_type === 'all_school' ? { ...(hasSchoolMockup({ decorations }) ? { active: true } : {}), production_approved_at: null, production_approved_by: null } : {}) }).eq('id', id);
       if (error) fails += 1; else n += 1;
     }
     flash(fails ? `Logo applied to ${n} item${n === 1 ? '' : 's'} — ${fails} failed` : `Logo applied to ${n} item${n === 1 ? '' : 's'}`);
     loadDetail(sel);
     return n;
-  }, [sel, detail, flash, loadDetail]);
+  }, [sel, detail, flash, loadDetail, createSchoolLogoOption]);
 
   const setItemDecorations = useCallback(async (itemId, decorations) => {
     if (sel?.org_type === 'all_school') {
       const blocked = stockLinkedArtError((detail?.catalog || []).find((c) => c.id === itemId), decorations);
       if (blocked) { flash(blocked); return false; }
     }
-    const { error } = await supabase.from('webstore_products').update({ decorations, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', itemId);
+    const { error } = await supabase.from('webstore_products').update({ decorations, ...(sel?.org_type === 'all_school' ? { ...(hasSchoolMockup({ decorations }) ? { active: true } : {}), production_approved_at: null, production_approved_by: null } : {}) }).eq('id', itemId);
     if (error) { flash('Error: ' + error.message); return; }
     loadDetail(sel);
   }, [sel, detail, flash, loadDetail]);
@@ -3150,7 +3253,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const arr = Array.isArray(cust?.art_files) ? cust.art_files : [];
     // When a vector (.ai/.eps/.pdf) is rasterized, opts.sourceFile is the original art and
     // `url` is the web-ready PNG preview — keep both (source file + placeable preview).
-    const base = { id: 'logo' + Date.now() + Math.random().toString(36).slice(2, 6), name: name || 'Store logo', files: [{ url: opts.sourceFile || url, name: name || 'logo' }], status: 'approved', deco_type: 'screen_print', uploaded: new Date().toLocaleDateString(), color_ways: [] };
+    const base = { id: 'logo' + Date.now() + Math.random().toString(36).slice(2, 6), name: name || 'Store logo', files: [{ url: opts.sourceFile || url, name: name || 'logo' }], status: 'approved', deco_type: sel?.org_type === 'all_school' ? 'dtf' : 'screen_print', uploaded: new Date().toLocaleDateString(), color_ways: [] };
     // Production source art (.ai/.eps/.pdf) with no preview stays source-only so the Art tab
     // asks for a placeable PNG/SVG instead of stamping the raw .ai url onto a garment.
     const rec = opts.source ? { ...base, kind: 'art' } : { ...base, preview_url: url, web_logo_url: url, kind: 'logo' };
@@ -3175,7 +3278,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const { data: cust } = await supabase.from('customers').select('art_files').eq('id', sel.customer_id).maybeSingle();
     const arr = Array.isArray(cust?.art_files) ? cust.art_files : [];
     const ts = Date.now();
-    const dt = decoType || 'screen_print';
+    const dt = decoType || (sel?.org_type === 'all_school' ? 'dtf' : 'screen_print');
+    if (sel?.org_type === 'all_school' && dt === 'screen_print') { flash('Screen print is not offered on 24/7 stores.'); return null; }
     // Color ways come from the modal's editor (garment color + ink/thread colors). Build the
     // list from there, then make sure EVERY labeled web cutout also has a color way — creating
     // one if the rep only named it on the logo row — so no cutout loses its color-way link.
@@ -3579,7 +3683,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const soMetaBySo = {};
     soIds.forEach((id) => { soItemsBySo[id] = []; });
     for (let i = 0; i < soIds.length; i += 100) {
-      const { data, error } = await supabase.from('so_items').select('so_id,sku,name,custom_desc,product_id,color,sizes').in('so_id', soIds.slice(i, i + 100));
+      const { data, error } = await supabase.from('so_items').select('so_id,sku,name,custom_desc,product_id,color,sizes,recipe_snapshot,source_webstore_item_ids').in('so_id', soIds.slice(i, i + 100));
       if (error) throw new Error('Could not reconcile Sales Order items: ' + error.message);
       (data || []).forEach((it) => { (soItemsBySo[it.so_id] = soItemsBySo[it.so_id] || []).push(it); });
     }
@@ -4302,6 +4406,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
   return (
     <>
+      {duplicatingStoreId && <div role="status" style={{ padding: '10px 16px', background: '#eff6ff', color: '#1e40af', borderRadius: 8, marginBottom: 12 }}>Creating store copy…</div>}
       {toast && <div style={{ position: 'fixed', bottom: 20, right: 20, background: '#0f172a', color: '#fff', padding: '10px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, zIndex: 1000, boxShadow: '0 6px 20px rgba(0,0,0,0.25)' }}>{toast}</div>}
       {showDefaults && <StoreDefaultsModal settings={wsSettings} onSave={saveWsSettings} onClose={() => setShowDefaults(false)} />}
       {soPrompt && <SoConfirmModal orders={soPrompt.orders} shortagesFor={soPrompt.shortagesFor} stockRowsFor={soPrompt.stockRowsFor} decoRowsFor={soPrompt.decoRowsFor} unmatchedRowsFor={soPrompt.unmatchedRowsFor} stockByPid={soPrompt.stockByPid || {}} storeId={soPrompt.storeId} onCancel={() => setSoPrompt(null)} onConfirm={async (overrides, selIds, batchMeta, decoMethods, skuLinks) => { const p = soPrompt.proceed; setSoPrompt(null); await p(overrides, selIds, batchMeta, decoMethods, skuLinks); }} />}
@@ -4334,11 +4439,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           }}
           onImportFromOmg={(editing === 'new' && !omgPrefill) ? () => { setEditing(null); setOmgStep('link'); } : null} />
       ) : sel ? (
-        <StoreDetail store={sel} detail={detail} loading={detailLoading} tab={tab} setTab={setTab} focusOrderId={focusOrderId} cu={cu}
+        <StoreDetail onRefreshInventory={() => loadDetail(sel)} store={sel} detail={detail} loading={detailLoading} tab={tab} setTab={setTab} focusOrderId={focusOrderId} cu={cu}
           custName={custName} repName={repName} standardCategories={wsSettings?.standard_categories || []}
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)} onOpenSO={onOpenSO} onSetStatus={setStoreStatus}
-          onAddSingle={addSingle} onAddGrouped={addManyGrouped} onAddColors={addColorsToItem} onAddFits={addFitsToItem} onCopyItem={copyToNewItem} onSaveAllSchoolSettings={saveAllSchoolSettings} onCopySchoolOfferings={copySchoolOfferings} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onApplyTemplateColors={applyTemplateColors} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onAddBundleItem={addBundleItem} onRemoveBundleItem={removeBundleItem} onReorderBundleItems={reorderBundleItems} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onBulkRemove={bulkRemove} onUpdateImage={updateImage} onUpdateCost={updateProductCost} onUpdateProductMeta={updateProductMeta} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onPlayerReportPdf={playerReportPdf} onPlayerReportCondensed={playerReportCondensed} onStockReport={stockReport} onProductReport={productReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onReorderColors={reorderColorRows} onRemoveColor={removeColorFromItem} onUpdateItem={updateCatalogItem} onBulkUpdate={bulkUpdateItems}
+          onAddSingle={addSingle} onAddGrouped={addManyGrouped} onAddColors={addColorsToItem} onAddFits={addFitsToItem} onCopyItem={copyToNewItem} onSaveAllSchoolSettings={saveAllSchoolSettings} onCopySchoolOfferings={copySchoolOfferings} onCreateSchoolLogoOption={createSchoolLogoOption} onUpdateSchoolLogoOption={updateSchoolLogoOption} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onApplyTemplateColors={applyTemplateColors} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onAddBundleItem={addBundleItem} onRemoveBundleItem={removeBundleItem} onReorderBundleItems={reorderBundleItems} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onBulkRemove={bulkRemove} onUpdateImage={updateImage} onUpdateCost={updateProductCost} onUpdateProductMeta={updateProductMeta} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onPlayerReportPdf={playerReportPdf} onPlayerReportCondensed={playerReportCondensed} onStockReport={stockReport} onProductReport={productReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onReorderColors={reorderColorRows} onRemoveColor={removeColorFromItem} onUpdateItem={updateCatalogItem} onBulkUpdate={bulkUpdateItems}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onAddRoster={addRoster} onUpdateRoster={updateRoster} onRemoveRoster={removeRoster} onInviteRoster={inviteRoster}
@@ -4346,7 +4451,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} placementMemory={(wsSettings && wsSettings.placement_memory) || {}} onSavePlacementMemory={savePlacementMemory} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onAddStoreArtFolder={addStoreArtFolder} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onOpenSO={onOpenSO} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onChangeCloseDate={changeCloseDate} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
+        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onOpenSO={onOpenSO} onNew={() => setEditing('new')} onDuplicate={duplicateStore} duplicatingStoreId={duplicatingStoreId} onChangeCloseDate={changeCloseDate} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
       )}
 
       {omgStep && <OmgImportWizard
@@ -4906,7 +5011,7 @@ const REP_PALETTE = ['#192853', '#962C32', '#2A6FDB', '#1B7F4B', '#7C3AED', '#08
 const LS_STATUS_FILTER = 'nsa_ws_status_filter';
 const LS_REP_FILTER = 'nsa_ws_rep_filter';
 
-function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onOpenSO, onNew, onDuplicate, onChangeCloseDate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
+function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onOpenSO, onNew, onDuplicate, duplicatingStoreId, onChangeCloseDate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
   const [view, setView] = useState('stores');
   // A rep opening this page almost always wants their own live stores, so the list
   // defaults to "Open" (which includes Closing soon) scoped to the signed-in rep.
@@ -5316,7 +5421,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                             >
                               {copiedId === s.id
                                 ? <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Copied</>
-                                : <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</>
+                                : <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy link</>
                               }
                             </button>
                             <button
@@ -5364,8 +5469,8 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                                   <a className="btn btn-sm btn-secondary" href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ textDecoration: 'none' }}>View Storefront ↗</a>
                                   <a className="btn btn-sm btn-secondary" href="/bagging-station" target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ textDecoration: 'none' }} title="Tablet bagging: pick this store's batch there">Bagging Station ↗</a>
-                                  {onDuplicate && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onDuplicate(s); }}>Duplicate</button>}
-                                  {onDuplicate && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onDuplicate(s, { rebrand: true }); }}>Clone &amp; Rebrand</button>}
+                                  {onDuplicate && <button className="btn btn-sm btn-secondary" disabled={!!duplicatingStoreId} onClick={(e) => { e.stopPropagation(); onDuplicate(s); }}>{duplicatingStoreId === s.id ? 'Duplicating…' : 'Duplicate'}</button>}
+                                  {onDuplicate && <button className="btn btn-sm btn-secondary" disabled={!!duplicatingStoreId} onClick={(e) => { e.stopPropagation(); onDuplicate(s, { rebrand: true }); }}>Clone &amp; Rebrand</button>}
                                   {onChangeCloseDate && editCloseId !== s.id && (
                                     <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setEditCloseId(s.id); setCloseDraft(dateOnly(s.close_at) || defaultCloseDate()); setCloseTimeDraft(ptTimeInput(s.close_at)); }}>Change Close Date</button>
                                   )}
@@ -5792,6 +5897,8 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
   // Team vs club only relabels the form (most stores are team stores). The
   // customer link is the same either way; defaults to team.
   const [orgType, setOrgType] = useState(store?.org_type || initialOverrides?.org_type || 'team');
+  const brandingCustomer = cust.find((customer) => customer.id === f.customer_id);
+  const inheritedLogo = brandingCustomer?.logo_url || cust.find((customer) => customer.id === brandingCustomer?.parent_id)?.logo_url || '';
   const noun = orgType === 'all_school' ? 'School' : orgType === 'club' ? 'Club' : 'Team';
   const lead = orgType === 'all_school' ? 'School contact' : orgType === 'club' ? 'Director' : 'Coach';
   // Fundraise mode: percent of price, or flat $ per item. Derived from whichever
@@ -6131,8 +6238,32 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
           <ColorField label="Primary color" value={f.primary_color} onChange={(v) => set('primary_color', v)} fallback="#0b1f3a" />
           <ColorField label="Accent color" value={f.accent_color} onChange={(v) => set('accent_color', v)} fallback="#e11d2a" />
         </div>
-        <ImageUpload value={f.logo_url || null} onChange={(url) => set('logo_url', url || '')} onBusy={onUpBusy} label="Main logo (header)" />
+        <ImageUpload value={f.logo_url || null} fallback={inheritedLogo} fallbackLabel="Using the school/team logo. Upload an image to override it for this store." onChange={(url) => set('logo_url', url || '')} onBusy={onUpBusy} label="Store logo (header and hero)" />
+        {f.logo_url && <button type="button" className="btn btn-sm" onClick={() => set('logo_url', '')}>Use school/team logo</button>}
+        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>Defaults to the linked school/team’s main logo and follows updates to that logo.</div>
+        {orgType === 'all_school' && <Row label="Hero background text"><input className="form-input" aria-label="Hero background text" maxLength={40} value={f.all_school_settings?.hero_background_text ?? (f.name || 'School').replace(/\s+(?:team\s+store|school\s+store|webstore|store)\s*$/i, '').trim().split(' ').slice(-1)[0]} onChange={(e) => set('all_school_settings', { ...normalizeAllSchoolSettings(f.all_school_settings), hero_background_text: e.target.value })} placeholder="e.g. ATHLETICS or PADRES" /><div style={{ fontSize: 12, color: '#64748b' }}>Large text behind the logo. Leave blank to hide it.</div></Row>}
         <ImageUpload value={f.banner_url || null} onChange={(url) => set('banner_url', url || '')} onBusy={onUpBusy} label="Banner image (hero background)" />
+        {orgType === 'all_school' && (() => {
+          const schoolSettings = normalizeAllSchoolSettings(f.all_school_settings);
+          const setPromo = (key, value) => set('all_school_settings', { ...schoolSettings, [key]: value });
+          return <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 14, marginBottom: 14 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 12, fontSize: 13, fontWeight: 700 }}>
+              <input type="checkbox" checked={schoolSettings.show_promo_banner} onChange={(e) => setPromo('show_promo_banner', e.target.checked)} />
+              Show mid-page promotion banner
+            </label>
+            {schoolSettings.show_promo_banner && <>
+              <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>Advertise a collection, event, or school message below the hero and sports sections.</div>
+              <ImageUpload value={schoolSettings.secondary_logo_url || null} fallback={f.logo_url || null} fallbackLabel="Using the main logo in this banner." onChange={(url) => setPromo('secondary_logo_url', url || '')} onBusy={onUpBusy} label="Secondary logo (promotion banner)" />
+              <Row label="Background words"><input className="form-input" maxLength={40} value={schoolSettings.promo_art_text} onChange={(e) => setPromo('promo_art_text', e.target.value)} placeholder="School Spirit." /></Row>
+              <Row label="Small heading"><input className="form-input" maxLength={60} value={schoolSettings.promo_eyebrow} onChange={(e) => setPromo('promo_eyebrow', e.target.value)} /></Row>
+              <Row label="Banner headline"><input className="form-input" maxLength={100} value={schoolSettings.promo_heading} onChange={(e) => setPromo('promo_heading', e.target.value)} /></Row>
+              <Row label="Banner message"><textarea className="form-input" rows={2} maxLength={240} value={schoolSettings.promo_description} onChange={(e) => setPromo('promo_description', e.target.value)} /></Row>
+              <Row label="Button text"><input className="form-input" maxLength={50} value={schoolSettings.promo_button_label} onChange={(e) => setPromo('promo_button_label', e.target.value)} placeholder="Leave blank to hide the button" /></Row>
+              <Row label="Button destination"><select className="form-select" value={schoolSettings.promo_destination} onChange={(e) => setPromo('promo_destination', e.target.value)}><option value="spirit">School Spirit</option><option value="all">All items</option>{schoolSettings.programs.filter((p) => p.enabled !== false).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></Row>
+            </>}
+          </div>;
+        })()}
+
         <div style={{ marginBottom: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>
             <label style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: '#6A7180' }}>Hero blurb</label>
@@ -6364,26 +6495,6 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
   );
 }
 
-const SHOWCASE_STATUS = {
-  missing: { label: 'Missing', bg: '#f1f5f9', fg: '#64748b' },
-  queued: { label: 'Queued', bg: '#eff6ff', fg: '#1d4ed8' },
-  generating: { label: 'Generating', bg: '#eef2ff', fg: '#4338ca' },
-  review: { label: 'Needs review', bg: '#fff7ed', fg: '#c2410c' },
-  approved: { label: 'Approved', bg: '#ecfdf5', fg: '#047857' },
-  failed: { label: 'Failed', bg: '#fef2f2', fg: '#b91c1c' },
-  canceled: { label: 'Canceled', bg: '#f8fafc', fg: '#475569' },
-};
-const SHOWCASE_PROMPT_VERSION = 'showcase-v6-athletic-forms';
-
-function ShowcaseStatusBadge({ asset }) {
-  const key = asset?.status || 'missing';
-  const status = SHOWCASE_STATUS[key] || SHOWCASE_STATUS.missing;
-  const rejected = key === 'review' && asset?.approval_status === 'rejected';
-  return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, borderRadius: 999, padding: '4px 9px', background: status.bg, color: status.fg, fontSize: 10.5, fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase' }}>
-    {(key === 'queued' || key === 'generating') && <span aria-hidden>◌</span>}{rejected ? 'Rejected' : status.label}
-  </span>;
-}
-
 function ShowcaseAppearanceTab({ store, onFlash }) {
   const [snapshot, setSnapshot] = useState(null);
   const [draftMode, setDraftMode] = useState('standard');
@@ -6468,33 +6579,7 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
   if (!snapshot && !error) return <div className="card"><div className="card-body" style={{ color: '#64748b' }}>Loading Store Appearance…</div></div>;
   const publishedMode = snapshot?.store?.published_presentation_mode || store.published_presentation_mode || 'standard';
   const items = snapshot?.items || [];
-  const counts = snapshot?.counts || {};
   const unpublished = publishedMode !== draftMode;
-  const generateAllCount = items.filter((item) => {
-    const asset = item.asset || {};
-    const status = asset.status || 'missing';
-    if (item.kind === 'bundle' || !item.standard_image_url) return false;
-    if (status === 'queued' || status === 'generating') return false;
-    if (asset.id && asset.prompt_version !== SHOWCASE_PROMPT_VERSION) return true;
-    if (status === 'approved') return false;
-    return status !== 'review' || asset.approval_status === 'rejected';
-  }).length;
-
-  const generateAll = async () => {
-    if (!generateAllCount) return;
-    if (!window.confirm(`Generate ${generateAllCount} Showcase image${generateAllCount === 1 ? '' : 's'}? This queues background AI jobs and may incur usage charges.`)) return;
-    const data = await act('generate_all', 'generate_all');
-    if (!data) return;
-    const failed = Number(data.failed_count || 0);
-    onFlash?.(`Queued ${Number(data.queued_count || 0)} Showcase image${Number(data.queued_count || 0) === 1 ? '' : 's'}${failed ? ` · ${failed} failed to start` : ''}`);
-  };
-  const activeJobCount = items.filter(({ asset }) => asset?.status === 'queued' || asset?.status === 'generating').length;
-  const cancelAll = async () => {
-    if (!activeJobCount) return;
-    if (!window.confirm(`Cancel ${activeJobCount} active Showcase job${activeJobCount === 1 ? '' : 's'}? Queued jobs stop immediately; provider requests already in flight may still incur a charge.`)) return;
-    const data = await act('cancel_all', 'cancel_all');
-    if (data) onFlash?.(`Canceled ${Number(data.canceled_count || 0)} Showcase job${Number(data.canceled_count || 0) === 1 ? '' : 's'}`);
-  };
 
   return (
     <div>
@@ -6542,68 +6627,14 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
         </div>
       </div>
 
-      {draftMode === 'showcase' && <div className="card">
-        <div style={{ padding: '15px 18px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <div>
-            <div style={{ fontWeight: 800, fontSize: 15 }}>Showcase readiness</div>
-            <div style={{ color: '#64748b', fontSize: 11.5, marginTop: 3 }}>Generation runs in the background, and the assigned rep is emailed when all active jobs finish. Every generated image requires human approval before shoppers can see it.</div>
-          </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end' }}>
-            <button className="btn btn-sm btn-primary" type="button" disabled={!!busy || generateAllCount === 0} onClick={generateAll} title={generateAllCount ? `Queue ${generateAllCount} missing, failed, rejected, or older-style Showcase image${generateAllCount === 1 ? '' : 's'}` : (hasActiveJobs ? 'All eligible images are already queued' : 'All Showcase images use the current style')}>
-              {busy === 'generate_all' ? 'Queueing All…' : generateAllCount ? `Generate All (${generateAllCount})` : hasActiveJobs ? 'All Queued' : 'Generate All'}
-            </button>
-            {activeJobCount > 0 && <button className="btn btn-sm btn-secondary" type="button" disabled={!!busy} onClick={cancelAll} title="Stop all queued jobs and cancel running jobs at their next safe checkpoint">
-              {busy === 'cancel_all' ? 'Canceling…' : `Cancel All (${activeJobCount})`}
-            </button>}
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {['approved', 'review', 'missing', 'generating', 'failed', 'canceled'].map((key) => <span key={key} style={{ fontSize: 10.5, fontWeight: 700, color: SHOWCASE_STATUS[key].fg, background: SHOWCASE_STATUS[key].bg, padding: '4px 8px', borderRadius: 999 }}>{SHOWCASE_STATUS[key].label}: {Number(counts[key] || 0) + (key === 'generating' ? Number(counts.queued || 0) : 0)}</span>)}
-            </div>
-          </div>
-        </div>
-        <div style={{ padding: 12 }}>
-          {items.length === 0 && <div style={{ padding: 22, textAlign: 'center', color: '#64748b', fontSize: 12.5 }}>Add products to the Catalog before generating Showcase images.</div>}
-          {items.map((item) => {
-            const asset = item.asset || {};
-            const working = asset.status === 'queued' || asset.status === 'generating';
-            const itemBusy = busy === item.webstore_product_id;
-            const canReview = asset.status === 'review' && !!asset.showcase_image_url;
-            const isBundle = item.kind === 'bundle';
-            return <div key={item.webstore_product_id} style={{ display: 'grid', gridTemplateColumns: '70px minmax(180px,1fr) minmax(200px,auto)', gap: 12, alignItems: 'center', padding: 10, borderBottom: '1px solid #f1f5f9' }}>
-              <div style={{ width: 64, height: 64, borderRadius: 9, overflow: 'hidden', background: '#f1f5f9', display: 'grid', placeItems: 'center', position: 'relative' }}>
-                {(asset.showcase_image_url || asset.approved_showcase_image_url || item.standard_image_url)
-                  ? <img src={asset.showcase_image_url || asset.approved_showcase_image_url || item.standard_image_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                  : <span style={{ color: '#94a3b8', fontSize: 10 }}>No image</span>}
-                {(asset.showcase_image_url || asset.approved_showcase_image_url) && <span style={{ position: 'absolute', left: 4, bottom: 4, borderRadius: 4, padding: '2px 4px', background: 'rgba(15,23,42,.8)', color: '#fff', fontSize: 7.5, fontWeight: 800 }}>SHOWCASE</span>}
-              </div>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <span style={{ fontWeight: 750, fontSize: 12.5, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.name}</span>
-                  <ShowcaseStatusBadge asset={asset} />
-                </div>
-                <div style={{ marginTop: 3, color: '#94a3b8', fontSize: 10.5 }}>{item.sku || 'No SKU'}{item.color ? ` · ${item.color}` : ''}{item.brand ? ` · ${item.brand}` : ''}</div>
-                {asset.error_details && <div title={asset.error_details} style={{ marginTop: 4, color: '#b91c1c', fontSize: 10.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 560 }}>{asset.error_details}</div>}
-                {isBundle && <div style={{ marginTop: 4, color: '#64748b', fontSize: 10.5 }}>Package cards use approved component images; generate each component product.</div>}
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, flexWrap: 'wrap' }}>
-                {(asset.showcase_image_url || asset.approved_showcase_image_url) && <a className="btn btn-sm btn-secondary" href={asset.showcase_image_url || asset.approved_showcase_image_url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>Preview</a>}
-                {!isBundle && <button className="btn btn-sm btn-secondary" disabled={working || itemBusy || !item.standard_image_url} onClick={() => act(item.webstore_product_id, 'generate', { webstore_product_id: item.webstore_product_id })}>{working ? (asset.status === 'queued' ? 'Queued…' : 'Generating…') : (asset.showcase_image_url || asset.approved_showcase_image_url) ? 'Regenerate' : 'Generate'}</button>}
-                {!isBundle && working && <button className="btn btn-sm btn-secondary" disabled={itemBusy} title="Stop this AI job at its next safe checkpoint" onClick={() => act(item.webstore_product_id, 'cancel', { webstore_product_id: item.webstore_product_id })}>{itemBusy ? 'Canceling…' : 'Cancel'}</button>}
-                {canReview && <button className="btn btn-sm" style={{ background: '#047857', color: '#fff' }} disabled={itemBusy} onClick={() => act(item.webstore_product_id, 'approve', { webstore_product_id: item.webstore_product_id })}>Approve</button>}
-                {canReview && <button className="btn btn-sm btn-secondary" disabled={itemBusy} onClick={() => act(item.webstore_product_id, 'reject', { webstore_product_id: item.webstore_product_id })}>Reject</button>}
-                {!isBundle && asset.status !== 'missing' && <button className="btn btn-sm btn-secondary" disabled={itemBusy || working} title="Keep the Standard product image live for this item" onClick={() => act(item.webstore_product_id, 'fallback', { webstore_product_id: item.webstore_product_id })}>Use Standard</button>}
-              </div>
-            </div>;
-          })}
-        </div>
-        <div style={{ padding: '11px 18px', borderTop: '1px solid #e2e8f0', background: '#f8fafc', color: '#64748b', fontSize: 10.5 }}>
-          Safety rule: missing, failed, rejected, queued, and unapproved products always render their existing Standard image. Approved assets are versioned in permanent storage and never depend on temporary provider URLs.
-        </div>
-      </div>}
+      {draftMode === 'showcase' && <ShowcaseFamilyList items={items} busy={!!busy} error={error} act={act} />}
     </div>
   );
 }
 
-function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = null, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onSaveAllSchoolSettings, onCopySchoolOfferings, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onBulkRemove, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onPlayerReportPdf, onPlayerReportCondensed, onStockReport, onProductReport, onExportCsv, onReorder, onMove, onReorderColors, onRemoveColor, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onAddStoreArtFolder, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTab, focusOrderId = null, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onSaveAllSchoolSettings, onCopySchoolOfferings, onCreateSchoolLogoOption, onUpdateSchoolLogoOption, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onBulkRemove, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onPlayerReportPdf, onPlayerReportCondensed, onStockReport, onProductReport, onExportCsv, onReorder, onMove, onReorderColors, onRemoveColor, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onAddStoreArtFolder, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+  const [catalogFocusId, setCatalogFocusId] = useState(null);
+  useEffect(() => { if (tab !== 'catalog') setCatalogFocusId(null); }, [tab]);
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
@@ -6612,6 +6643,16 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
   const orders = detail?.orders || [];
   const orderItems = detail?.orderItems || [];
   const catalog = detail?.catalog || [];
+  const schoolLogoOptions = [...new Map([...(s.store_art || []), ...(detail?.libraryArt || [])].filter((art) => art?.id).map((art) => [art.id, { ...art, name: art.name || 'Logo', url: webLogoDefault(art) || art.web_logo_url || art.preview_url }])).values()].filter((logo) => logo.url);
+  const firstSchoolLogoByStyle = s.all_school_settings?.first_logo_by_style || {};
+  const setFirstSchoolLogo = async (row) => {
+    const styleId = row?.school_style_group_id;
+    const designId = row?.variant_group_id || row?.id;
+    if (!styleId || !designId) return false;
+    const colors = catalog.filter((item) => item.school_style_group_id === styleId && (item.variant_group_id || item.id) === designId);
+    if (!colors.length || colors.some((color) => color.active === false || !hasSchoolMockup(color))) return false;
+    return onSaveAllSchoolSettings({ ...normalizeAllSchoolSettings(s.all_school_settings), first_logo_by_style: { ...firstSchoolLogoByStyle, [styleId]: designId } });
+  };
   const roster = detail?.roster || [];
   const bundleItems = detail?.bundleItems || [];
   const stockByWp = detail?.stockByWp || {};
@@ -6668,8 +6709,8 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
   // Primary tabs stay visible; the rest tuck into a "More ▾" menu. Store settings
   // live behind the header ⚙ Settings button (the rich editor), not a tab.
   const PRIMARY_TABS = [
-    ...(s.org_type === 'all_school' ? [{ id: 'programs', label: 'Sports & collections' }] : []),
-    { id: 'catalog', label: `Catalog (${catalog.length})` },
+    ...(s.org_type === 'all_school' ? [{ id: 'programs', label: 'Categories' }] : []),
+    { id: 'catalog', label: `Catalog (${s.org_type === 'all_school' ? catalogGroups(catalog, true, firstSchoolLogoByStyle).length : catalog.length})` },
     { id: 'orders', label: `Orders (${validOrders.length})` },
     { id: 'art', label: 'Art & Logos' },
     { id: 'analytics', label: 'Analytics' },
@@ -6779,7 +6820,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
           <button data-tour-id="ws-detail-settings" className="btn btn-sm btn-primary" onClick={onEdit}>⚙ Settings</button>
         </div>
       </div>
-      {s.org_type === 'all_school' && s.status !== 'open' && <div className="card" style={{ padding: 14, marginBottom: 12 }}><b>Artwork readiness</b><p style={{ marginBottom: 0 }}>{loading ? 'Checking catalog…' : schoolLaunchError(catalog) || 'All active offerings have approved production setups and are ready to launch.'}</p></div>}
+      {s.org_type === 'all_school' && s.status !== 'open' && <div className="card" style={{ padding: 14, marginBottom: 12 }}><b>Artwork readiness</b><p style={{ marginBottom: 0 }}>{loading ? 'Checking catalog…' : schoolLaunchError(catalog, detail?.transfers || [], [...(s.store_art || []), ...(detail?.libraryArt || [])]) || 'All active offerings have their mockups and decoration setup ready to launch.'}</p></div>}
       {launchOpen && <LaunchStoreModal store={s} onClose={() => setLaunchOpen(false)} onLaunch={async (opts) => { if (await onSetStatus(s, 'open', opts) !== false) setLaunchOpen(false); }} />}
       {emailLinkOpen && <EmailStoreLinkModal store={s} onClose={() => setEmailLinkOpen(false)} onSend={(email) => onEmailDirector(email)} />}
 
@@ -6827,14 +6868,14 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
 
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} teamHexes={[...new Set([...(detail?.storeColors || []).map((pc) => pc && pc.hex), s.primary_color, s.accent_color].filter(Boolean))]} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddGrouped={onAddGrouped} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onBulkRemove={onBulkRemove} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onRemoveColor={onRemoveColor} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
-          {tab === 'programs' && s.org_type === 'all_school' && <><AllSchoolPrograms store={s} catalog={catalog} stockByWp={stockByWp} transfers={detail?.transfers || []} artLibrary={[...(s.store_art || []), ...(detail?.libraryArt || [])]} staffId={cu?.id} logoOptions={[...new Map([...(s.store_art || []), ...(detail?.libraryArt || [])].filter((art) => art?.id).map((art) => [art.id, { id: art.id, name: art.name || 'Logo', url: webLogoDefault(art) || art.web_logo_url || art.preview_url }])).values()].filter((logo) => logo.url)} onSaveSettings={onSaveAllSchoolSettings} onUpdateItem={onUpdateItem} onCopyOfferings={onCopySchoolOfferings} /><div style={{ marginTop: 20 }}><AllSchoolDtfQueue storeId={s.id} /></div></>}
+          {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} isAllSchool={s.org_type === 'all_school'} schoolLogoOptions={schoolLogoOptions} firstSchoolLogoByStyle={firstSchoolLogoByStyle} onSetFirstSchoolLogo={setFirstSchoolLogo} onCreateSchoolLogoOption={onCreateSchoolLogoOption} onUpdateSchoolLogoOption={onUpdateSchoolLogoOption} schoolArt={[...(s.store_art || []), ...(detail?.libraryArt || [])]} schoolStaffId={cu?.id} initialEditId={catalogFocusId} initialPage={catalogFocusId ? 'art' : 'details'} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} teamHexes={[...new Set([...(detail?.storeColors || []).map((pc) => pc && pc.hex), s.primary_color, s.accent_color].filter(Boolean))]} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddGrouped={onAddGrouped} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onBulkRemove={onBulkRemove} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onRemoveColor={onRemoveColor} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
+          {tab === 'programs' && s.org_type === 'all_school' && <><AllSchoolPrograms store={s} catalog={catalog} stockByWp={stockByWp} transfers={detail?.transfers || []} artLibrary={[...(s.store_art || []), ...(detail?.libraryArt || [])]} staffId={cu?.id} logoOptions={schoolLogoOptions} onSaveSettings={onSaveAllSchoolSettings} onUpdateItem={onUpdateItem} onCopyOfferings={onCopySchoolOfferings} /><div style={{ marginTop: 20 }}><AllSchoolDtfQueue storeId={s.id} /></div></>}
           {tab === 'appearance' && <ShowcaseAppearanceTab store={s} onFlash={onFlash} />}
           {tab === 'art' && schoolMockAmbiguous && <div role="status" style={{ padding: 12, background: '#fef3c7', color: '#92400e', borderRadius: 8, marginBottom: 12, fontSize: 13 }}>This school has different sport designs on the same blank and color. Use each offering’s Catalog art editor for mockups; the shared mock builder cannot distinguish these designs.</div>}
-          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onSaveArtFolder={onAddStoreArtFolder} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} canMock={!schoolMockAmbiguous && qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
+          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onSaveArtFolder={onAddStoreArtFolder} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} isAllSchool={s.org_type === 'all_school'} schoolLogoOptions={schoolLogoOptions} firstSchoolLogoByStyle={firstSchoolLogoByStyle} onSetFirstSchoolLogo={setFirstSchoolLogo} schoolTransfers={detail?.transfers || []} schoolStaffId={cu?.id} onCreateSchoolLogoOption={onCreateSchoolLogoOption} onUpdateSchoolLogoOption={onUpdateSchoolLogoOption} onUpdateSchoolItem={onUpdateItem} onOpenSchoolItem={(id) => { setCatalogFocusId(id); setTab('catalog'); }} canMock={!schoolMockAmbiguous && qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} nameByPid={nameByPid} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onPlayerReportPdf={onPlayerReportPdf} onPlayerReportCondensed={onPlayerReportCondensed} onStockReport={onStockReport} onProductReport={onProductReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} labelAllRequested={labelAllRequested} onLabelAllHandled={() => setLabelAllRequested(false)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
-          {tab === 'inventory' && <InventoryTab store={s} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
+          {tab === 'inventory' && <InventoryTab onRefreshInventory={onRefreshInventory} artwork={hydrateStoreArt(s.store_art || [], detail?.libraryArt || []).map((art) => ({ ...art, url: webLogoDefault(art) || art.web_logo_url || art.preview_url }))} store={s} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
           {tab === 'analytics' && <AnalyticsTab store={s} orders={orders} orderItems={orderItems} stockByWp={stockByWp} catalog={catalog} libraryArt={detail?.libraryArt || []} />}
           {tab === 'roster' && <RosterTab store={s} roster={roster} notOrdered={notOrdered} orders={orders} onAdd={onAddRoster} onUpdate={onUpdateRoster} onRemove={onRemoveRoster} onInvite={onInviteRoster} onFlash={onFlash} />}
@@ -6937,9 +6978,9 @@ const effectiveFundraise = (price, perItemY, sf) => (Number(perItemY) > 0 ? Numb
 // one. Deco estimate mirrors the editor: $5 when the item has artwork or the store is a
 // team store (decorated by default). Returns null when the cost is unknown (caller falls
 // back to list price). Never applied to items already in a store.
-const price45 = (cost, decoCost = 0) => { const c = Number(cost) || 0; return c > 0 ? Math.ceil((c + decoCost) / 0.55) : null; };
 
-function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {}, invSrcByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], teamHexes = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onGoToArt, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onBulkRemove, onUpdateImage, onUpdateCost, onUpdateProductMeta, onReorder, onMove, onReorderColors, onRemoveColor, onUpdateItem, onBulkUpdate }) {
+
+function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], firstSchoolLogoByStyle = {}, onSetFirstSchoolLogo, onCreateSchoolLogoOption, onUpdateSchoolLogoOption, schoolArt = [], schoolStaffId, initialEditId = null, initialPage = 'details', catalog, bundleItems, stockByWp, costByPid = {}, invSrcByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], teamHexes = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onGoToArt, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onBulkRemove, onUpdateImage, onUpdateCost, onUpdateProductMeta, onReorder, onMove, onReorderColors, onRemoveColor, onUpdateItem, onBulkUpdate }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pkgItems, setPkgItems] = useState([]); // components selected (via list checkboxes) for the package being built
   const [bulkSel, setBulkSel] = useState(() => new Set()); // catalog ids ticked for bulk edit
@@ -6957,7 +6998,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
     return [...cur, { webstore_product_id: p.id, product_id: p.product_id, sku: p.sku, name: p.display_name || stock?.name || p.sku, image: p.image_url || stock?.image_front_url || null, retail_price: Number(p.retail_price) || 0, qty: 1, size_required: true, takes_number: !!p.takes_number, takes_name: !!p.takes_name, name_upcharge: Number(p.name_upcharge) || 0, transfer_code: null, num_transfer_size: null, num_transfer_color: null }];
   });
   const [pending, setPending] = useState(null); // picked product awaiting price + fundraise
-  const [editId, setEditId] = useState(null); // catalog row being edited inline
+  const [editId, setEditId] = useState(initialEditId); // catalog row being edited inline
   const [pendingOpenPid, setPendingOpenPid] = useState(null); // product just created — open its card once it lands
   const [newCats, setNewCats] = useState([]);  // categories added via "+ Category" but not yet holding items
   const [overCat, setOverCat] = useState(null); // category section being dragged over
@@ -6967,15 +7008,18 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
   const paneEditorDirtyRef = useRef(false); // true when the open editor has unsaved edits
   // Switch which item is being edited, but offer to save first if the current one is dirty —
   // so a rep never loses edits by clicking the next item before hitting Save.
-  const switchEditId = (id) => {
+  const nextEditorPage = useRef(null);
+  const switchEditId = (id, targetPage) => {
+    nextEditorPage.current = targetPage || null;
     if (id !== editId && paneEditorDirtyRef.current && paneEditorSaveRef.current) {
       if (window.confirm('You have unsaved changes on this item. Save them before switching?')) paneEditorSaveRef.current();
     }
     paneEditorDirtyRef.current = false;
     setEditId(id);
   };
-  const [paneTab, setPaneTab] = useState('details'); // side-by-side editor tab, lifted so it sits beside the name
-  useEffect(() => { setPaneTab('details'); }, [editId]);
+  const [paneTab, setPaneTab] = useState(initialPage); // side-by-side editor tab, lifted so it sits beside the name
+  const previousEditId = useRef(editId);
+  useEffect(() => { if (previousEditId.current !== editId) { previousEditId.current = editId; setPaneTab(nextEditorPage.current || 'details'); nextEditorPage.current = null; } }, [editId]);
   // Side-by-side layout: a persistent item list on the left, the item editor in a
   // pane on the right (no popup). Toggle back to the classic list+popup; remembered locally.
   const [view, setView] = useState(() => { try { return localStorage.getItem('nsa_catalog_view') || 'split'; } catch { return 'split'; } });
@@ -6985,21 +7029,9 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
   const [expandAll, setExpandAll] = useState(false);
   const [openRows, setOpenRows] = useState(() => new Set());
   const toggleRow = (id) => setOpenRows((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const ordered = [...catalog].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-  // Group color variants of the same garment into one card. Colors of a garment
-  // share variant_group_id (= the primary row's id); a null group id = standalone.
-  const groupKeyOf = (p) => p.variant_group_id || p.id;
-  const groups = [];
-  {
-    const byKey = new Map();
-    for (const p of ordered) { const k = groupKeyOf(p); if (!byKey.has(k)) byKey.set(k, []); byKey.get(k).push(p); }
-    // The leftmost color (lowest sort_order — rows are pre-sorted) is the primary: its image
-    // leads the catalog row and it's the default on the storefront. Reordering colors changes it.
-    for (const [k, rows] of byKey) { groups.push({ key: k, rep: rows[0], rows }); }
-    groups.sort((a, b) => (a.rep.sort_order || 0) - (b.rep.sort_order || 0));
-  }
+  const groups = catalogGroups(catalog, isAllSchool, firstSchoolLogoByStyle);
   const repsList = groups.map((g) => g.rep);
-  const colorsForRep = (repId) => (groups.find((g) => g.rep.id === repId)?.rows) || [];
+  const colorsForRep = (id) => catalogEditorRows(groups, id);
   // Up/down on a card moves the whole group (by its representative) past the next card.
   const moveRep = (i, dir) => { const p = repsList[i]; if (!p) return; if (dir === 'up' && i > 0) onMove(p, repsList[i - 1].id); else if (dir === 'down' && i < repsList.length - 1) onMove(p, repsList[i + 2] ? repsList[i + 2].id : null); };
 
@@ -7043,12 +7075,12 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
   const useCats = catSections.length > 1 || catSections.some((s) => s.cat) || newCats.length > 0;
   const dropToCat = (cat) => { if (!dragId) return; onUpdateItem(dragId, { category: cat || null, sort_order: maxSort + 1 }); setDragId(null); setOverCat(null); setOverId(null); };
   const _webLogosOf = (d) => { const art = (library || []).find((a) => a.id === d.art_id); return art && Array.isArray(art.web_logos) ? art.web_logos : []; };
-  const renderRep = ({ rep: p, rows: colorRows }) => {
+  const renderRep = ({ rep: p, rows: colorRows, designs }) => {
     const stock = stockByWp[p.id];
     const label = p.display_name || stock?.name || p.sku || '(unnamed)';
     const fund = Number(p.fundraise_amount) || 0;
     const effFund = p.kind === 'bundle' ? fund : effectiveFundraise(p.retail_price, fund, storeFund);
-    const sel = editId === p.id;
+    const sel = editId === p.id || (isAllSchool && groups.find((g) => g.rep.id === p.id)?.allRows.some((row) => row.id === editId));
     const margin = (p.kind !== 'bundle' && costByPid[p.product_id] != null) ? (Number(p.retail_price) || 0) - costByPid[p.product_id] : null;
     const nColors = colorRows.length;
     const archived = p.active === false;
@@ -7076,8 +7108,8 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
           ); })}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{archived ? <span style={{ fontSize: 9, color: '#92400e', fontWeight: 800, background: '#fef3c7', padding: '1px 5px', borderRadius: 4, marginLeft: 6, textTransform: 'uppercase', letterSpacing: 0.4 }}>Archived</span> : null}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}{nColors > 1 ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · {nColors} {colorRows.some((c) => c.variant_label) ? 'fits' : 'colors'}</span> : null}</div>
-          <div style={{ fontSize: 10.5, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{money((Number(p.retail_price) || 0) + effFund)}{p.sku ? ` · ${p.sku}` : ''}</div>
+          <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{isAllSchool && p.school_design_label ? ` · ${p.school_design_label}` : ''}{archived ? <span style={{ fontSize: 9, color: '#92400e', fontWeight: 800, background: '#fef3c7', padding: '1px 5px', borderRadius: 4, marginLeft: 6, textTransform: 'uppercase', letterSpacing: 0.4 }}>{isAllSchool ? 'Hidden · setup / publish' : 'Archived'}</span> : null}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}{nColors > 1 ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · {nColors} {colorRows.some((c) => c.variant_label) ? 'fits' : 'colors'}</span> : null}</div>
+          <div style={{ fontSize: 10.5, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{money((Number(p.retail_price) || 0) + effFund)}{p.sku ? ` · ${p.sku}` : ''}{isAllSchool && designs?.length > 1 ? ` · ${designs.length} logo choices` : ''}</div>
         </div>
         {margin != null && <span title="margin" style={{ fontSize: 10, fontWeight: 800, color: margin < 0 ? '#b91c1c' : (p.retail_price > 0 && margin / Number(p.retail_price) < 0.3) ? '#92400e' : '#166534' }}>{margin >= 0 ? '+' : ''}{money(margin)}</span>}
       </div>
@@ -7085,7 +7117,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
   };
   // In side-by-side view keep one item selected so the editor pane is never empty
   // (and re-home the selection if the chosen item / its card gets removed).
-  useEffect(() => { if (view === 'split' && repsList.length && !repsList.some((p) => p.id === editId)) setEditId(repsList[0].id); }, [view, catalog]);
+  useEffect(() => { if (view === 'split' && repsList.length && !catalog.some((p) => p.id === editId)) setEditId(repsList[0].id); }, [view, catalog]);
   // After a custom product is created + added, drop the rep straight into the full item
   // editor once the reloaded catalog contains it — so they never have to reopen it to
   // finish pricing, art & colors, sizes, etc. Runs after the reselect effect above so it
@@ -7209,7 +7241,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
               setBulkSel(new Set()); setMode(null);
             }}>Merge</button>
             <span style={sep} />
-            <button style={{ ...gBtn('#b45309'), opacity: !n ? 0.4 : 1 }} disabled={!n} title="Hide from the store (stays here as Archived)" onClick={() => applyBulk({ active: false }, true)}>Archive</button>
+            <button style={{ ...gBtn('#b45309'), opacity: !n ? 0.4 : 1 }} disabled={!n} title={isAllSchool ? "Hide from shoppers; keep this choice in the catalog" : "Hide from the store (stays here as Archived)"} onClick={() => applyBulk({ active: false }, true)}>{isAllSchool ? 'Hide' : 'Archive'}</button>
             <button style={{ ...gBtn('#15803d'), opacity: !n ? 0.4 : 1 }} disabled={!n} title="Show in the store again" onClick={() => applyBulk({ active: true }, true)}>Restore</button>
             <span style={sep} />
             <button style={{ ...gBtn('#b91c1c'), opacity: !n || !onBulkRemove ? 0.4 : 1 }} disabled={!n || !onBulkRemove} title="Permanently remove the selected items from this store" onClick={async () => {
@@ -7297,7 +7329,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
           {/* Right: editor pane for the selected item */}
           <div style={{ flex: 1, minWidth: 0 }}>
             {(() => {
-              const p = repsList.find((x) => x.id === editId) || null;
+              const p = catalog.find((x) => x.id === editId) || null;
               if (!p) return <div style={{ border: '1.5px dashed #d7dbe2', borderRadius: 12, padding: '70px 20px', textAlign: 'center', color: '#94a3b8', background: '#fafbfc' }}>Select an item on the left to edit it here.</div>;
               const stock = stockByWp[p.id];
               const groupColors = colorsForRep(p.id);
@@ -7315,7 +7347,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
                     <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c' }} onClick={() => onRemoveGroup(groupColors.map((r) => r.id), p.display_name || stock?.name || p.sku)}>Remove</button>
                   </div>
                   <div style={{ padding: 14 }}>
-                    <CatalogItemEditor key={p.id} item={p} groupColors={groupColors} page={paneTab} setPage={setPaneTab} saveRef={paneEditorSaveRef} dirtyRef={paneEditorDirtyRef} onReorderColors={onReorderColors} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} bundleItems={bundleItems} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemoveColor} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onEditItem={switchEditId} onCancel={() => setEditId(null)} onSave={(fields) => onUpdateItem(p.id, fields)} onSaveColor={onUpdateItem} />
+                    <CatalogItemEditor key={p.id} item={p} groupColors={groupColors} page={paneTab} setPage={setPaneTab} saveRef={paneEditorSaveRef} dirtyRef={paneEditorDirtyRef} onReorderColors={onReorderColors} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} bundleItems={bundleItems} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemoveColor} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onEditItem={switchEditId} isAllSchool={isAllSchool} schoolLogoOptions={schoolLogoOptions} firstSchoolLogoByStyle={firstSchoolLogoByStyle} onSetFirstSchoolLogo={onSetFirstSchoolLogo} schoolTransfers={transfers} schoolArt={schoolArt} schoolStaffId={schoolStaffId} onCreateSchoolLogoOption={onCreateSchoolLogoOption} onUpdateSchoolLogoOption={onUpdateSchoolLogoOption} onCancel={() => setEditId(null)} onSave={(fields) => onUpdateItem(p.id, fields)} onSaveColor={onUpdateItem} />
                     {p.kind !== 'bundle' && paneTab === 'details' && onAddFits && <FitManager item={p} fits={groupColors} stockByWp={stockByWp} onAttach={async (pr) => { await onAddFits(p, [{ product: pr, label: '' }]); }} onLabel={(id, label) => onUpdateItem(id, { variant_label: label || null })} onRemoveFit={(id, nm) => onRemove(id, nm)} />}
                   </div>
                 </div>
@@ -7330,7 +7362,9 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
               <th style={th}>Order</th><th style={th}>Image</th><th style={th}>Product</th><th style={th}>Type</th><th style={th}>Price</th><th style={th}>Fundraising</th><th style={th}>Shopper pays</th><th style={th}>Stock / ETA</th><th style={th}></th>
             </tr></thead>
             <tbody>
-              {groups.map(({ rep: p, rows: colorRows }, i) => {
+              {groups.map((group, i) => {
+                const p = group.allRows.find((row) => row.id === editId) || group.rep;
+                const colorRows = colorsForRep(p.id);
                 const stock = stockByWp[p.id];
                 const st = stockText(stock);
                 const comps = p.kind === 'bundle' ? bundleItems.filter((b) => b.bundle_id === p.id) : [];
@@ -7404,7 +7438,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
                           <div style={{ fontWeight: 800, fontSize: 16 }}>{p.display_name || stock?.name || p.sku}</div>
                           <button onClick={() => setEditId(null)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
                         </div>
-                        <CatalogItemEditor key={p.id} item={p} groupColors={colorRows} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemoveColor} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onCancel={() => setEditId(null)} onSave={(fields) => onUpdateItem(p.id, fields)} onSaveColor={onUpdateItem} />
+                        <CatalogItemEditor key={p.id} item={p} groupColors={colorRows} page={paneTab} setPage={setPaneTab} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemoveColor} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onEditItem={switchEditId} isAllSchool={isAllSchool} schoolLogoOptions={schoolLogoOptions} firstSchoolLogoByStyle={firstSchoolLogoByStyle} onSetFirstSchoolLogo={onSetFirstSchoolLogo} schoolTransfers={transfers} schoolArt={schoolArt} schoolStaffId={schoolStaffId} onCreateSchoolLogoOption={onCreateSchoolLogoOption} onUpdateSchoolLogoOption={onUpdateSchoolLogoOption} onCancel={() => setEditId(null)} onSave={(fields) => onUpdateItem(p.id, fields)} onSaveColor={onUpdateItem} />
                       </div>
                     </div>
                   </td></tr>}
@@ -8073,7 +8107,7 @@ function FitManager({ item, fits = [], stockByWp = {}, onAttach, onLabel, onRemo
   );
 }
 
-function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: setPageProp, saveRef, dirtyRef, onReorderColors, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], bundleItems = [], standardCategories = [], stockByWp = {}, costByPid = {}, invSrcByPid = {}, storeFund = {}, onApplyLogo, onAddSingle, onAddColors, onCopyItem, onRemoveColor, onSaveLogo, onUpdateCost, onUpdateProductMeta, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onEditItem, onCancel, onSave, onSaveColor }) {
+function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: setPageProp, saveRef, dirtyRef, onReorderColors, defaultName, stockImg, stockBackImg, availableSizes = [], designOptions = [], numberSets = [], isTeam = false, library = [], storeColors = [], catalog = [], bundleItems = [], standardCategories = [], stockByWp = {}, costByPid = {}, invSrcByPid = {}, storeFund = {}, onApplyLogo, onAddSingle, onAddColors, onCopyItem, onRemoveColor, onSaveLogo, onUpdateCost, onUpdateProductMeta, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onEditItem, isAllSchool = false, schoolLogoOptions = [], firstSchoolLogoByStyle = {}, onSetFirstSchoolLogo, schoolTransfers = [], schoolArt = [], schoolStaffId, onCreateSchoolLogoOption, onUpdateSchoolLogoOption, onCancel, onSave, onSaveColor }) {
   const isBundle = item.kind === 'bundle';
   const [dragBundleId, setDragBundleId] = useState(null);
   const [overBundleId, setOverBundleId] = useState(null);
@@ -8547,7 +8581,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   if (saveRef) saveRef.current = save;
   return (
     <div style={{ padding: 16, background: '#f6f7f9' }}>
-      {!setPageProp && (
+      {!saveRef && (
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 14, position: 'sticky', top: 0, zIndex: 5, background: '#f6f7f9', paddingBottom: 12, borderBottom: '1px solid #e5e8ec' }}>
           {!isBundle && page === 'details' && <button type="button" className="btn btn-secondary" onClick={() => setPage('sizes')}>Next: Sizes →</button>}
           {!isBundle && page === 'sizes' && <button type="button" className="btn btn-secondary" onClick={() => setPage('art')}>Next: Art &amp; colors →</button>}
@@ -8555,7 +8589,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
           <button className="btn btn-primary" disabled={imgBusy} onClick={save}>{imgBusy ? 'Uploading…' : justSaved ? 'Saved ✓' : 'Save changes'}</button>
         </div>
       )}
-      {!isBundle && !setPageProp && (
+      {!isBundle && !saveRef && (
         <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '2px solid #e5e8ec' }}>
           {[['details', '1 · Item setup'], ['sizes', '2 · Sizes & options'], ['art', '3 · Art & colors']].map(([k, lbl]) => { const on = page === k; return (
             <button key={k} type="button" onClick={() => setPage(k)} style={{ background: 'none', border: 'none', borderBottom: '3px solid ' + (on ? '#191919' : 'transparent'), color: on ? '#191919' : '#94a3b8', fontWeight: 800, fontSize: 13.5, padding: '8px 14px', marginBottom: -2, cursor: 'pointer' }}>{lbl}</button>
@@ -8889,12 +8923,14 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       </React.Fragment>}
 
       {page === 'art' && !isBundle && <React.Fragment>
+
       <ItemSection title="Garment & decoration" hint="· drag a logo on, place it, recolor, then apply to other items">
         <input ref={mainImgRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const fl = (e.target.files || [])[0]; if (fl) setMainFile(fl); e.target.value = ''; }} />
         <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} storeColors={storeColors} siblings={siblings} onApplyToItems={onApplyLogo} onSaveLogo={onSaveLogo} takesNumber={takesNumber} takesName={takesName}
           primaryColorId={item.id} onReorderColors={onReorderColors} onRemoveColor={onRemoveColor} onColorBackChange={onSaveColor ? (cid, url) => setColorBacks((m) => ({ ...m, [cid]: url })) : null}
           colorRows={(groupColors || []).map((c) => { const cs = stockByWp[c.id] || {}; return { id: c.id, name: cs.color || c.sku, frontUrl: c.image_url || cs.image_front_url || '', backUrl: Object.prototype.hasOwnProperty.call(colorBacks, c.id) ? (colorBacks[c.id] || '') : (c.image_back_url || cs.image_back_url || '') }; })} />
       </ItemSection>
+      {isAllSchool && <SchoolLogoOptionsEditor item={item} catalog={catalog} logoOptions={schoolLogoOptions} firstLogoByStyle={firstSchoolLogoByStyle} onSetFirst={onSetFirstSchoolLogo} transfers={schoolTransfers} art={schoolArt} stockByWp={stockByWp} staffId={schoolStaffId} onCreate={onCreateSchoolLogoOption} onUpdate={onUpdateSchoolLogoOption} onSaveItem={onSaveColor} onEdit={onEditItem} />}
       {!isBundle && (
         <ItemSection title="Personalization" hint="· numbers & names — previewed on the back of the mockup">
           <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -9200,7 +9236,7 @@ function ProductSearch({ label, onPick, onClose, compact }) {
           <div key={p.id} onClick={() => onPick(p)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 6px', borderBottom: '1px solid #f1f5f9', cursor: 'pointer' }}>
             <div style={{ width: 34, height: 34, background: '#f1f5f9', borderRadius: 6, overflow: 'hidden', flexShrink: 0 }}>{p.image_front_url && <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}</div>
             <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 600, fontSize: 13 }}>{p.name}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{[p.sku, p.color].filter(Boolean).join(' · ')}</div></div>
-            <div style={{ fontSize: 13, fontWeight: 700 }}>{money(p.retail_price)}</div>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>Catalog retail {money(p.retail_price)}</div>
           </div>
         ))}
       </div>
@@ -10541,7 +10577,7 @@ function SkuImporter({ existingPids, storeFund = {}, onApplyColors, onGoToArt, o
       const upsertById = new Map(); // dedupe imported color rows across all found styles
       const reps = []; // { r, id } — the representative color for each resolved style
       hits.forEach(({ r, st }) => {
-        const prodRows = st ? (st.colors || []).map((c) => vendorColorToProductRow(st, c)).filter((p) => p && p.id) : [];
+        const prodRows = st ? (st.colors || []).filter(c => st.source !== 'sm' || c.cost > 0).map((c) => vendorColorToProductRow(st, c)).filter((p) => p && p.id) : [];
         if (!prodRows.length) { notfound.push(r.sku); return; }
         prodRows.forEach((p) => { if (!upsertById.has(p.id)) upsertById.set(p.id, p); });
         reps.push({ r, id: prodRows[0].id }); viaVendor += 1;
@@ -10798,10 +10834,10 @@ function VendorStyleCards({ styles, selected, onToggle }) {
       </div>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {s.colors.map((c) => { const on = selected.has(vendorKeyOf(s, c)); return (
-          <button key={c.colorName || c.sku} type="button" onClick={() => onToggle(s, c)} title={c.colorName} style={{ position: 'relative', width: 84, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 9, padding: 4, cursor: 'pointer' }}>
+          <button key={c.colorName || c.sku} type="button" disabled={s.source === 'sm' && !(c.cost > 0)} onClick={() => onToggle(s, c)} title={c.colorName} style={{ position: 'relative', width: 84, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 9, padding: 4, cursor: 'pointer' }}>
             <div style={{ width: '100%', height: 64, borderRadius: 5, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{c.image ? <img src={c.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{(c.colorName || '').slice(0, 14)}</span>}</div>
             <div style={{ fontSize: 9.5, color: on ? '#191919' : '#64748b', fontWeight: 700, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.colorName || '—'}</div>
-            <div style={{ fontSize: 9, color: '#94a3b8' }}>{c.cost > 0 ? money(c.cost) : ''}{c.sizes?.length ? ` · ${c.sizes.length} sz` : ''}</div>
+            <div style={{ fontSize: 9, color: '#94a3b8' }}>{c.cost > 0 ? 'Cost ' + money(c.cost) : 'Cost unavailable'}{c.sizes?.length ? ` · ${c.sizes.length} sz` : ''}</div>
             {on && <div style={{ position: 'absolute', top: -7, right: -7, background: '#191919', color: '#fff', borderRadius: '50%', width: 18, height: 18, fontSize: 11, lineHeight: '18px', fontWeight: 800, textAlign: 'center' }}>✓</div>}
           </button>
         ); })}
@@ -11154,7 +11190,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
           )}
           {styles.length > 0 && (
             <div className="ai-grid">
-              {styles.map((p) => <PickerCard key={p.id} p={p} colorways={colorwaysByStyle.get(styleKey(p)) || [p]} selectedIds={selected} onToggleId={toggleSel} schoolWords={colorWords} fav={favUnion.has(favStyleKey(p))} team={favTeam.has(favStyleKey(p))} canFav={!!myEmail} curate={curate} onToggleFav={() => toggleFav(p)} onColors={onPick ? (row) => onPick(row || p) : null} />)}
+              {styles.map((p) => <PickerCard key={p.id} p={p} storeCatalog={catalog} decorationCost={isTeam ? 5 : 0} template={destLabel === 'template'} colorways={colorwaysByStyle.get(styleKey(p)) || [p]} selectedIds={selected} onToggleId={toggleSel} schoolWords={colorWords} fav={favUnion.has(favStyleKey(p))} team={favTeam.has(favStyleKey(p))} canFav={!!myEmail} curate={curate} onToggleFav={() => toggleFav(p)} onColors={onPick ? (row) => onPick(row || p) : null} />)}
             </div>
           )}
           {active && !searching && results.length >= limit && (
@@ -11331,7 +11367,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
 
 // One catalog item, live-look card style. Click toggles selection (multi-select);
 // Clicking the card (or "Colors →") opens the color-selector modal for the style.
-function PickerCard({ p, colorways = [], selectedIds, onToggleId, schoolWords = [], fav = false, team = false, canFav = false, curate = false, onToggleFav, onColors }) {
+function PickerCard({ p, storeCatalog = [], decorationCost = 0, template = false, colorways = [], selectedIds, onToggleId, schoolWords = [], fav = false, team = false, canFav = false, curate = false, onToggleFav, onColors }) {
   const [imgErr, setImgErr] = useState(false);
   const ways = colorways.length ? colorways : [p];
   // Which colorway the card is showing / will add. Defaults to the rep (ways[0] = the
@@ -11359,9 +11395,7 @@ function PickerCard({ p, colorways = [], selectedIds, onToggleId, schoolWords = 
         {active.image_front_url && !imgErr
           ? <img src={active.image_front_url} alt={active.name || ''} loading="lazy" onError={() => setImgErr(true)} style={{ maxWidth: '88%', maxHeight: '88%', objectFit: 'contain', opacity: out ? 0.5 : 1 }} />
           : <div style={{ color: '#A8AEB8', fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase' }}>No image</div>}
-        {active.retail_price != null && (
-          <span style={{ position: 'absolute', top: 10, right: 10, background: '#191919', color: '#fff', borderRadius: 6, padding: '3px 8px', fontSize: 13, fontWeight: 700 }}>{money(active.retail_price)}</span>
-        )}
+        <StorePickerPrice product={active} storeItem={storeCatalog.find(item => item.product_id === active.id)} decorationCost={decorationCost} template={template} />
         {out && <span style={{ position: 'absolute', bottom: 10, left: 10, background: 'rgba(185,28,28,.95)', color: '#fff', borderRadius: 5, padding: '2px 8px', fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em' }}>{st.incoming ? 'Incoming' : 'Out of stock'}</span>}
       </div>
       <div style={{ padding: '12px 14px 14px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1, width: '100%' }}>
@@ -11619,7 +11653,7 @@ function AiMatchCard({ p, on, onToggle }) {
           ? <img src={p.image_front_url} alt="" loading="lazy" onError={() => setImgErr(true)} style={{ maxWidth: '88%', maxHeight: '88%', objectFit: 'contain', opacity: out ? 0.5 : on ? 1 : 0.82 }} />
           : <div style={{ color: '#A8AEB8', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>No image</div>}
         <span style={{ position: 'absolute', top: 8, left: 8, width: 22, height: 22, borderRadius: 6, background: on ? '#191919' : 'rgba(255,255,255,.9)', border: '1px solid ' + (on ? '#191919' : '#cbd5e1'), color: '#fff', fontSize: 14, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}>{on ? '✓' : ''}</span>
-        {p.retail_price != null && <span style={{ position: 'absolute', top: 8, right: 8, background: '#191919', color: '#fff', borderRadius: 6, padding: '2px 7px', fontSize: 12.5, fontWeight: 700 }}>{money(p.retail_price)}</span>}
+        {p.retail_price != null && <span style={{ position: 'absolute', top: 8, right: 8, background: '#191919', color: '#fff', borderRadius: 6, padding: '2px 7px', fontSize: 12.5, fontWeight: 700 }}>Catalog retail {money(p.retail_price)}</span>}
         {out && <span style={{ position: 'absolute', bottom: 8, left: 8, background: 'rgba(185,28,28,.95)', color: '#fff', borderRadius: 5, padding: '2px 7px', fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em' }}>{st.incoming ? 'Incoming' : 'Out of stock'}</span>}
       </div>
       <div style={{ padding: '10px 12px 12px', textAlign: 'left', width: '100%' }}>
@@ -12013,12 +12047,12 @@ async function _vectorizeFile(file) {
     return new File([data.svg], (_cleanFileName(file.name || 'logo').replace(/\s+/g, '-') || 'logo') + '.svg', { type: 'image/svg+xml' });
   } finally { revoke(); }
 }
-function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
+function NewArtFolderModal({ seed, busy, onCreate, onClose, isAllSchool = false }) {
   const mk = (f) => ({ file: f, preview: _isWebArtFile(f) ? URL.createObjectURL(f) : null, label: '', cwId: null });
   const [webs, setWebs] = useState(() => (seed || []).filter(_isWebArtFile).map(mk));
   const [prods, setProds] = useState(() => (seed || []).filter((f) => !_isWebArtFile(f)).map(mk));
   const [name, setName] = useState('');
-  const [decoType, setDecoType] = useState('screen_print');
+  const [decoType, setDecoType] = useState(isAllSchool ? 'dtf' : 'screen_print');
   const [colorWays, setColorWays] = useState([]);
   const [rowBusy, setRowBusy] = useState({}); // web-row index -> 'knock' | 'vec' while processing
   const [rowErr, setRowErr] = useState('');
@@ -12127,7 +12161,7 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
           <div style={{ marginBottom: 12 }}>
             <div style={secTitle}>Art type</div>
             <div style={{ display: 'flex', gap: 6 }}>
-              {_ART_TYPES.map(([v, lbl]) => (
+              {(isAllSchool ? [['dtf', 'DTF'], ['twill', 'Heat-transfer twill'], ['patch', 'Patch'], ['embroidery', 'Embroidery']] : _ART_TYPES).map(([v, lbl]) => (
                 <button key={v} type="button" disabled={busy} onClick={() => setDecoType(v)}
                   style={{ flex: 1, padding: '7px 10px', borderRadius: 8, fontSize: 12.5, fontWeight: 700, cursor: busy ? 'default' : 'pointer', border: '1.5px solid ' + (decoType === v ? '#2563eb' : '#d7dbe2'), background: decoType === v ? '#eff6ff' : '#fff', color: decoType === v ? '#1d4ed8' : '#475569' }}>{lbl}</button>
               ))}
@@ -12198,7 +12232,7 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
   );
 }
 
-function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onSaveArtFolder, onAttachWebLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory = {}, onSavePlacementMemory, canMock, onOpenMockBuilder }) {
+function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onSaveArtFolder, onAttachWebLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory = {}, onSavePlacementMemory, canMock, onOpenMockBuilder, isAllSchool = false, schoolLogoOptions = [], firstSchoolLogoByStyle = {}, onSetFirstSchoolLogo, schoolTransfers = [], schoolStaffId, onCreateSchoolLogoOption, onUpdateSchoolLogoOption, onUpdateSchoolItem, onOpenSchoolItem }) {
   const singles = (catalog || []).filter((c) => c.kind === 'single');
   const [activeId, setActiveId] = useState(storeArt[0]?.id || null);
   const [placement, setPlacement] = useState('left_chest');
@@ -12254,7 +12288,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
     } catch (x) { /* cloudUpload surfaces error via toast */ }
     setUpBusy(false);
   };
-  const folderModal = folderOpen && <NewArtFolderModal seed={folderSeed} busy={upBusy} onCreate={createArtFolder} onClose={() => { if (!upBusy) { setFolderOpen(false); setFolderSeed(null); } }} />;
+  const folderModal = folderOpen && <NewArtFolderModal isAllSchool={isAllSchool} seed={folderSeed} busy={upBusy} onCreate={createArtFolder} onClose={() => { if (!upBusy) { setFolderOpen(false); setFolderSeed(null); } }} />;
 
   const inStore = (id) => (storeArt || []).some((a) => a.id === id);
   // Curate the store's art set. Adding a logo also makes it the ACTIVE one to place, so
@@ -12312,8 +12346,8 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
 
   // Group store items into styles, each with its colorways; stamp the style key on each
   // item so placement (per style) and drag can resolve it.
-  const groups = [];
-  { const m = new Map();
+  const groups = isAllSchool ? schoolArtGroups(catalog, stockByWp, activeId) : [];
+  if (!isAllSchool) { const m = new Map();
     for (const it of singles) {
       const st = stockByWp[it.id] || {};
       const key = (it.display_name || st.name || it.sku || '').toUpperCase();
@@ -12332,8 +12366,9 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const includedItems = selectedGroups.flatMap((g) => g.items);
   // One label for both Apply buttons that names WHY it's disabled instead of showing a
   // dead "Apply to N styles" — the two things a rep can be missing are a logo and styles.
-  const applyLabel = applying ? 'Applying…' : !activeArt ? 'Pick a logo first' : !activeUrl ? 'Add a web logo first' : selectedGroups.length ? `Apply to ${selectedGroups.length} style${selectedGroups.length === 1 ? '' : 's'}` : 'Select styles to apply';
-  const applyReady = !applying && !!activeUrl && !!selectedGroups.length;
+  const blockedSchoolMethod = isAllSchool && activeArt?.deco_type === 'screen_print';
+  const applyLabel = applying ? 'Applying…' : blockedSchoolMethod ? 'Choose a supported decoration method' : !activeArt ? 'Pick a logo first' : !activeUrl ? 'Add a web logo first' : selectedGroups.length ? `Apply to ${selectedGroups.length} style${selectedGroups.length === 1 ? '' : 's'}` : 'Select styles to apply';
+  const applyReady = !applying && !blockedSchoolMethod && !!activeUrl && !!selectedGroups.length;
   const toggleStyle = (key) => setSelected((s) => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
   const selectAll = () => setSelected(new Set(groups.map((g) => g.key)));
   const clearSel = () => setSelected(new Set());
@@ -12539,10 +12574,10 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
           const sides = new Set(newDecos.map((d) => d.side));
           const existing = Array.isArray(it.decorations) ? it.decorations : [];
           const kept = existing.filter((d) => isPerso(d) || !sides.has(d.side || 'front'));
-          entries.push({ id: it.id, decorations: [...kept, ...newDecos] });
+          entries.push({ id: it.id, decorations: [...kept, ...newDecos], image_url: it.img, image_back_url: it.backImg });
         }
       }
-      const n = await onApplyLogoBulk(entries);
+      const n = await onApplyLogoBulk(entries, isAllSchool && !linkOnly ? { ...activeArt, url: activeUrl } : null);
       // Remember each style's final front placement per garment type, so the next
       // hoodie/tee/polo seeds where reps actually put it (quiet write, shared by all reps).
       // Skip for link-only — nothing was visually placed, so there's no placement to learn.
@@ -12606,7 +12641,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px', borderRadius: 10, marginBottom: 12, fontSize: 12.5, fontWeight: 600, border: '1px solid', ...(decorationMode === 'outsourced' ? { background: '#fff7ed', borderColor: '#fed7aa', color: '#9a3412' } : { background: '#eef2ff', borderColor: '#c7d2fe', color: '#3730a3' }) }}>
         {decorationMode === 'outsourced'
           ? <span>📦 <b>Decorated elsewhere</b> — a clean PNG/AI mockup is enough here. It's still saved to the customer's art library so it can be upgraded to real decoration art later.</span>
-          : <span>🏭 <b>In-house decoration</b> — each logo needs production-ready art (separations / vector) on the customer's art folder so production knows exactly what to make.</span>}
+          : isAllSchool ? <span><b>Decoration setup</b> — DTF and heat-transfer twill use the matching inventory entry. Embroidery needs a saved mockup and an attached .dst file. No separate art approval is needed.</span> : <span>🏭 <b>In-house decoration</b> — each logo needs production-ready art (separations / vector) on the customer's art folder so production knows exactly what to make.</span>}
       </div>
       <button onClick={onOpenMockBuilder} disabled={!canMock} title={canMock ? 'Open the full mock builder' : 'Needs library art and at least one store item'} style={{ width: '100%', textAlign: 'left', border: 'none', cursor: canMock ? 'pointer' : 'not-allowed', background: canMock ? 'linear-gradient(135deg,#7c3aed,#a78bfa)' : '#e2e8f0', color: '#fff', borderRadius: 12, padding: '14px 18px', marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
         <span><span style={{ fontSize: 16, fontWeight: 800 }}>🎨 Build mockups (full editor)</span><br /><span style={{ fontSize: 12.5, opacity: 0.92 }}>Place logos, eyedrop &amp; recolor, and apply to every garment color at once — saved to the art library and onto your store items.</span></span>
@@ -12648,7 +12683,10 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                   {view.url ? <img src={view.url} alt="" style={{ maxWidth: '92%', maxHeight: '92%', objectFit: 'contain' }} /> : <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 700, textAlign: 'center', padding: '0 4px' }}>{(a.files || [])[0] ? 'AI only — add a web logo' : 'Add a web logo'}</span>}
                 </div>
                 <div style={{ fontSize: 11, fontWeight: 700, marginTop: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name || 'Logo'}</div>
-                {decoBadge(a.deco_type) && <div style={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}><DecoBadge deco={a.deco_type} /></div>}
+                {decoBadge(a.deco_type) && <div style={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}><DecoBadge deco={a.deco_type} /></div>}{isAllSchool && <select aria-label={`Decoration method for ${a.name}`} value={a.deco_type || ''} onClick={(e) => e.stopPropagation()} onChange={(e) => onSaveStoreArt(storeArt.map((row) => row.id === a.id ? { ...row, deco_type: e.target.value } : row))} style={{ width: '100%', fontSize: 11, marginTop: 5 }}>
+                  {(!a.deco_type || a.deco_type === 'screen_print') && <option value={a.deco_type || ''}>Choose method</option>}
+                  <option value="dtf">DTF</option><option value="twill">Heat-transfer twill</option><option value="patch">Patch</option><option value="embroidery">Embroidery</option>
+                </select>}
               </button>
               {multi && <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 4 }}>
                 <div style={{ display: 'flex', gap: 4, justifyContent: 'center', alignItems: 'center' }}>
@@ -12686,7 +12724,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
         {!activeUrl && activeArt && <div style={{ marginTop: 10, fontSize: 12.5, color: '#92400e', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>This logo has no web-ready image (likely .ai / mockup only). Attach a clean transparent PNG or SVG to place &amp; recolor it: <WebLogoSlot art={activeArt} onAttach={onAttachWebLogo} onSaveForCw={onSaveRepWebLogo} /></div>}
         </>)}
       </div></div>
-
+      {isAllSchool && <p style={{ fontSize: 13, color: '#475569' }}>Pick a logo, select a garment below, position it, and Apply. A different logo adds another art choice; selecting an existing logo edits that choice. Saving the mockup adds the logo choice to the store. Production requirements are checked at launch.</p>}
       {/* 2 · Bulk apply — opt-in. After bringing art in, the rep chooses to bulk-apply
           a logo: pick a starting placement, select items, Autocolor + drag to fine-tune,
           then apply & review them together. */}
@@ -12752,7 +12790,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                 {/* logos already on the shown color+side (other than the one we're placing) —
                     resolved per color (cw_by_color / web-logo variant), never the raw art_url,
                     which may be a different color's cutout. */}
-                {(item.decorations || []).filter((d) => d && !d.baked && (d.side || 'front') === sideNow && !isPerso(d) && !(selG && activeArt && d.art_id === activeArt.id)).map((d, di) => { const dp = ART_PLACEMENTS.find((x) => x.id === d.placement) || place; const dx = d.x != null ? d.x : dp.x; const dy = d.y != null ? d.y : dp.y; const dw = d.w != null ? d.w : dp.w; const wl = (storeArtLive.find((a) => a.id === d.art_id) || libraryArt.find((a) => a.id === d.art_id) || {}).web_logos; const u = decoUrlForColor(d, item.color, wl); return u ? <img key={'ad' + di} src={u} alt="" draggable={false} style={{ position: 'absolute', left: `${dx}%`, top: `${dy}%`, width: `${dw}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none' }} /> : null; })}
+                {(item.decorations || []).filter((d) => d && !d.baked && (d.side || 'front') === sideNow && !isPerso(d) && !(selG && activeArt && (isAllSchool || d.art_id === activeArt.id))).map((d, di) => { const dp = ART_PLACEMENTS.find((x) => x.id === d.placement) || place; const dx = d.x != null ? d.x : dp.x; const dy = d.y != null ? d.y : dp.y; const dw = d.w != null ? d.w : dp.w; const wl = (storeArtLive.find((a) => a.id === d.art_id) || libraryArt.find((a) => a.id === d.art_id) || {}).web_logos; const u = decoUrlForColor(d, item.color, wl); return u ? <img key={'ad' + di} src={u} alt="" draggable={false} style={{ position: 'absolute', left: `${dx}%`, top: `${dy}%`, width: `${dw}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none' }} /> : null; })}
                 {/* the logo being placed — draggable; corner square resizes; moves the whole style */}
                 {activeUrl && selG && bgImg && (
                   <div onPointerDown={(e) => startDrag(e, g, item, 'move', sideNow)} style={{ position: 'absolute', left: `${pl.x}%`, top: `${pl.y}%`, width: `${pl.w}%`, transform: 'translate(-50%,-50%)', cursor: 'move', outline: '2px solid rgba(79,70,229,.7)', outlineOffset: 1, touchAction: 'none', zIndex: 2 }}>
@@ -12769,6 +12807,17 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                 {!selG && has && <button onClick={(e) => { e.stopPropagation(); removeArtFromStyle(g); }} title={`Remove ${activeArt.name || 'this logo'} from ${g.name}`} style={{ position: 'absolute', top: 6, right: 6, background: '#166534', color: '#fff', fontSize: 9, fontWeight: 800, padding: '2px 7px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3, border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>Applied <span style={{ fontSize: 11, lineHeight: 1, opacity: 0.85 }} aria-label="remove">✕</span></button>}
                 {nudged && !showBack && selG && <span title="This color has its own placement" style={{ position: 'absolute', bottom: 6, left: 6, background: '#b45309', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 5px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3 }}>Nudged</span>}
               </div>
+              {isAllSchool && <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 5 }}>{g.addingChoice && selG ? 'Adds another art choice' : 'Art choices'}</div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{g.choices.filter((choice) => frontArt(choice.row)).map((choice) => {
+                  const deco = frontArt(choice.row);
+                  const art = storeArtLive.find((a) => a.id === deco.art_id) || libraryArt.find((a) => a.id === deco.art_id);
+                  return <button key={choice.key} title={choice.row.school_design_label || art?.name || 'Edit art choice'} onClick={() => { if (art) { pickArt(art); setSelected(new Set([g.key])); } else onOpenSchoolItem?.(choice.row.id); }} style={{ border: deco.art_id === activeId ? '2px solid #4f46e5' : '1px solid #cbd5e1', borderRadius: 7, background: '#fff', padding: 5, cursor: 'pointer' }}>
+                    <img src={deco.art_url || artPlaceUrl(art)} alt={choice.row.school_design_label || art?.name || 'Logo'} style={{ width: 42, height: 32, objectFit: 'contain' }} />
+                  </button>;
+                })}</div>
+                {!!g.choices.length && <button className="btn btn-sm" style={{ marginTop: 5, fontSize: 10 }} onClick={() => onOpenSchoolItem?.(g.items[0].id)}>Manage choices / Show first →</button>}
+              </div>}
               {/* color name + pager dots */}
               <div style={{ marginTop: 6, textAlign: 'center' }}>
                 <div style={{ fontSize: 11.5, fontWeight: 700, color: '#334155', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.color || '—'}{multi && <span style={{ fontWeight: 600, color: '#94a3b8' }}> · {idx + 1}/{g.items.length}</span>}</div>
@@ -12818,7 +12867,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
           <div style={{ position: 'sticky', bottom: 0, background: '#fff', borderTop: '1px solid #e6e8ec', padding: '12px 4px', marginTop: 12, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             {done && <span style={{ fontSize: 12.5, color: done.startsWith('Error') ? '#b91c1c' : '#166534', fontWeight: 700 }}>{done}</span>}
             <span style={{ fontSize: 12.5, color: '#64748b' }}>{selectedGroups.length} style{selectedGroups.length === 1 ? '' : 's'} · {includedItems.length} garment{includedItems.length === 1 ? '' : 's'}{(() => { const b = selectedGroups.filter((g2) => backByStyle[g2.key]).length; return b ? ` · ${b} w/ back` : ''; })()}{activeArt ? ` · ${activeArt.name}` : ''}</span>
-            <button className="btn btn-secondary" disabled={applying || !activeArt || !selectedGroups.length} onClick={() => apply({ linkOnly: true })} title="Bypass mockups: link this art to the selected styles for production (art, placement & method) without putting a logo on the image — for OMG stores whose product photos already show the decoration.">{applying ? '…' : `Bypass mocks · link art${selectedGroups.length ? ` to ${selectedGroups.length}` : ''}`}</button>
+            <button className="btn btn-secondary" hidden={isAllSchool} disabled={applying || !activeArt || !selectedGroups.length} onClick={() => apply({ linkOnly: true })} title="Bypass mockups: link this art to the selected styles for production (art, placement & method) without putting a logo on the image — for OMG stores whose product photos already show the decoration.">{applying ? '…' : `Bypass mocks · link art${selectedGroups.length ? ` to ${selectedGroups.length}` : ''}`}</button>
             <button className="btn btn-primary" disabled={!applyReady} onClick={() => apply()}>{applyLabel}</button>
           </div>
         </div></div>
@@ -13280,8 +13329,10 @@ function OrderAnalytics({ store, orders: allOrders, orderItems, stockByWp, catal
 // inventory (design transfers deducted per item; number transfers deducted
 // per digit, matched to the item's number size/color set). "Used" is computed
 // live from all non-cancelled orders.
-function InventoryTab({ store, catalog, bundleItems, stockByWp, transfers, orders, orderItems, onUpdateTransfer, onAddTransfers, onRemoveTransfer }) {
+function InventoryTab({ onRefreshInventory, artwork = [], store, catalog, bundleItems, stockByWp, transfers, orders, orderItems, onUpdateTransfer, onAddTransfers, onRemoveTransfer }) {
   const [addDesign, setAddDesign] = useState(false);
+  const [inventoryArt, setInventoryArt] = useState(null);
+  const [inventorySearch, setInventorySearch] = useState('');
   const [editDecoration, setEditDecoration] = useState(null);
   const [addSet, setAddSet] = useState(false);
   const [expandAll, setExpandAll] = useState(false);
@@ -13303,7 +13354,8 @@ function InventoryTab({ store, catalog, bundleItems, stockByWp, transfers, order
   const designs = transfers.filter((t) => t.kind === 'design');
   const numbers = transfers.filter((t) => t.kind === 'number');
   const sets = {}; numbers.forEach((t) => { const k = `${t.tsize || ''}|${t.color || ''}`; (sets[k] = sets[k] || []).push(t); });
-  const ordered = [...catalog].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+  const inventoryRows = garmentInventoryRows(catalog, stockByWp);
+  const ordered = inventoryRows.filter((row) => `${row.sku} ${row.display_name || ''} ${row.inventoryStock?.name || ''}`.toLowerCase().includes(inventorySearch.toLowerCase()));
 
   // Available = physical on hand − pending (unpulled) demand.
   const Avail = ({ t }) => { const r = (t.on_hand || 0) - (onOrderUse[t.code] || 0); return <span style={{ fontWeight: 700, color: r < 0 ? '#b91c1c' : r < (t.low_stock_threshold ?? 10) ? '#92400e' : '#166534' }}>{r}</span>; };
@@ -13323,18 +13375,21 @@ function InventoryTab({ store, catalog, bundleItems, stockByWp, transfers, order
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       {store?.org_type === 'all_school' && lowStock.length > 0 && <div role="alert" className="card" style={{ padding: 16, color: '#92400e' }}><b>Low decoration stock — {lowStock.length} item(s)</b><ul>{lowStock.map((t) => <li key={t.id}>{t.label || t.code}: {(Number(t.on_hand) || 0) - (onOrderUse[t.code] || 0)} available · alert below {t.low_stock_threshold ?? 10} · {Number(t.incoming) || 0} incoming{t.incoming_eta ? ` (ETA ${t.incoming_eta})` : ''}</li>)}</ul><span style={{ fontSize: 12 }}>Review replenishment before accepting more demand. Edit thresholds under Art &amp; print specs.</span></div>}
       {store?.org_type === 'all_school' && <DecorationAllocations storeId={store.id} transfers={transfers} />}
+      {store?.org_type === 'all_school' && <InventoryPurchasing onReceived={onRefreshInventory} storeId={store.id} catalog={catalog} transfers={transfers} />}
       {/* Garment stock */}
       <div>
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
           <div style={{ fontSize: 13, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#475569' }}>Garment stock</div>
           <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => { setExpandAll((v) => !v); setOpenRows(new Set()); }}>{expandAll ? 'Collapse all sizes' : 'Expand all sizes'}</button>
         </div>
+        <p style={{ fontSize: 13, color: '#475569' }}>One row per blank garment and color. Logo choices share the same garment stock; decoration inventory is listed below.</p>
+        <input className="form-input" aria-label="Search garment inventory" placeholder="Search garments or SKU…" value={inventorySearch} onChange={(e) => setInventorySearch(e.target.value)} style={{ maxWidth: 360, marginBottom: 12 }} />
         <div className="card"><div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}><th style={th}>Item</th><th style={th}>Type</th><th style={th}>In-house</th><th style={th}>Adidas</th><th style={th}>Transfer</th></tr></thead>
+            <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}><th style={th}>Item</th><th style={th}>Type</th><th style={th}>In-house</th><th style={th}>Supplier stock</th><th style={th}>Logo choices</th></tr></thead>
             <tbody>
               {ordered.map((p) => {
-                const st = stockByWp[p.id];
+                const st = p.inventoryStock;
                 const wh = sumSizes(st?.size_stock); const ven = Number(st?.vendor_on_hand) || 0;
                 const open = expandAll || openRows.has(p.id);
                 const tlabel = p.kind === 'bundle' ? '—' : [p.transfer_code && (designs.find((d) => d.code === p.transfer_code)?.label || p.transfer_code), p.takes_number && `#s ${p.num_transfer_size || '?'}/${p.num_transfer_color || '?'}`].filter(Boolean).join(' + ') || '—';
@@ -13347,7 +13402,7 @@ function InventoryTab({ store, catalog, bundleItems, stockByWp, transfers, order
                     <td style={td}>
                       {p.kind === 'bundle' ? '—' : <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><span style={{ color: ven > 0 ? '#1e40af' : '#cbd5e1', fontWeight: 600 }}>{ven.toLocaleString()}</span><button onClick={() => toggleRow(p.id)} style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: 11, padding: 0 }}>{open ? 'hide sizes ▲' : 'sizes ▾'}</button></span>}
                     </td>
-                    <td style={{ ...td, fontSize: 12, color: '#475569' }}>{tlabel}</td>
+                    <td style={{ ...td, fontSize: 12, color: '#475569' }}>{p.inventoryChoices.length} choice{p.inventoryChoices.length === 1 ? '' : 's'}<div style={{ fontSize: 11, marginTop: 4 }}>{[...new Set(p.inventoryChoices.map((r) => r.school_design_label).filter(Boolean))].join(' · ')}</div></td>
                   </tr>
                   {open && p.kind !== 'bundle' && <tr><td colSpan={5} style={{ background: '#f8fafc', padding: '8px 16px' }}><StockBreakdown stock={st} summary={stockText(st)} /></td></tr>}
                   </React.Fragment>
@@ -13363,11 +13418,12 @@ function InventoryTab({ store, catalog, bundleItems, stockByWp, transfers, order
       <div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <div style={{ fontSize: 13, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#475569' }}>Decoration inventory</div>
-          <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => setAddDesign((v) => !v)}>+ Decoration stock</button>
+          <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => { setInventoryArt(null); setEditDecoration(null); setAddDesign((v) => !v); }}>+ Decoration stock</button>
           <button className="btn btn-sm btn-secondary" onClick={() => setAddSet((v) => !v)}>+ Number set</button>
         </div>
-        {addDesign && <DecorationStockForm onAdd={(row) => onAddTransfers([row])} onClose={() => setAddDesign(false)} />}
-        {editDecoration && <DecorationStockForm key={editDecoration.id} initialValue={editDecoration} onAdd={async (row) => { const { id, store_id, created_at, updated_at, ...fields } = row; return onUpdateTransfer(editDecoration.id, fields); }} onClose={() => setEditDecoration(null)} />}
+        <StoreArtInventoryOptions artwork={artwork} transfers={transfers} onSelect={(art, saved) => { setInventoryArt(art); setEditDecoration(saved || null); setAddDesign(!saved); }} />
+        {addDesign && <DecorationStockForm key={inventoryArt?.id || 'manual'} artwork={inventoryArt} initialValue={inventoryArt ? inventorySeedForArt(inventoryArt) : undefined} onAdd={(row) => onAddTransfers([row])} onClose={() => setAddDesign(false)} />}
+        {editDecoration && <DecorationStockForm key={editDecoration.id} artwork={inventoryArt} initialValue={editDecoration} onAdd={async (row) => { const { id, store_id, created_at, updated_at, ...fields } = row; return onUpdateTransfer(editDecoration.id, fields); }} onClose={() => setEditDecoration(null)} />}
         {addSet && <AddNumberSet onAdd={(rows) => { onAddTransfers(rows); setAddSet(false); }} onClose={() => setAddSet(false)} />}
         <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}><b>On hand</b> = physically in the warehouse. <b>Incoming</b> = ordered from a supplier, not yet here (set an ETA, then "Receive" when it arrives). <b>On order</b> = needed by placed orders not yet pulled. <b>In process</b> = pulled & being decorated. <b>Available</b> = on hand − on order. Pull a batch's transfers from the <b>Batches</b> tab.</div>
 
@@ -13377,7 +13433,7 @@ function InventoryTab({ store, catalog, bundleItems, stockByWp, transfers, order
             <tbody>
               {designs.map((t) => (
                 <tr key={t.id} style={{ borderTop: '1px solid #f1f5f9' }}>
-                  <td style={td}><div style={{ fontWeight: 600 }}>{t.label}</div><div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>{t.code}</div><div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>{DECORATION_TYPES.find(([key]) => key === (t.decoration_type || 'dtf'))?.[1]} · {APPLICATION_METHODS.find(([key]) => key === (t.application_method || 'heat_press'))?.[1]}</div><button className="btn btn-sm btn-secondary" style={{ marginTop: 5 }} onClick={() => setEditDecoration(t)}>Art & print specs</button></td>
+                  <td style={td}><div style={{ fontWeight: 600 }}>{t.label}</div><div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>{t.code}</div><div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>{DECORATION_TYPES.find(([key]) => key === (t.decoration_type || 'dtf'))?.[1]} · {APPLICATION_METHODS.find(([key]) => key === (t.application_method || 'heat_press'))?.[1]}</div><button className="btn btn-sm btn-secondary" style={{ marginTop: 5 }} onClick={() => { setInventoryArt(null); setAddDesign(false); setEditDecoration(t); }}>Art & print specs</button></td>
                   <td style={td}><NumCell t={t} field="on_hand" /></td><td style={td}><NumCell t={t} field="incoming" /></td><td style={td}><EtaCell t={t} /></td><td style={td}><Recv t={t} /></td>
                   <td style={td}><OnOrder t={t} /></td><td style={td}><InProc t={t} /></td><td style={td}><Avail t={t} /></td>
                   <td style={td}><CostCell t={t} /></td>

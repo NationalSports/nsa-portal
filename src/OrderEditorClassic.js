@@ -1,3 +1,7 @@
+import { inventoryPickCosts } from './lib/inventoryCosts';
+import InventoryCostDetails from './allSchool/InventoryCostDetails';
+import BatchPoReservationsNotice from './BatchPoReservationsNotice';
+import { itemBatchReservations, checkBatchPoReservations, batchPoReservationMessage, removeQueuedBatchLines } from './lib/batchPoReservations';
 import RepShipmentButton from './RepShipmentButton';
 import { _loadArtRow } from './constants';
 import {useRecoveryHandoff} from './lib/useRecoveryHandoff';
@@ -13,6 +17,7 @@ import { jobArtBadgeSt } from './lib/jobArtBadge';
 import { webstoreCheckoutMoney, webstoreDocMoneyRows } from './lib/webstoreSoMoney';
 import {useOrderCatalogResults,a4Visible} from './lib/orderCatalogSearch';
 import { poEligibleVendors } from './lib/vendorPoEligibility';
+import { mergeExternalPoItems } from './lib/editorPoSync';
 import QuantityDraftInput from './QuantityDraftInput';
 import TextDraftInput from './TextDraftInput';
 import { replaceTbdArt, tbdArtName, tbdArtLabel, isTbdArt } from './lib/orderArtSwap';
@@ -823,7 +828,8 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     React.useEffect(()=>{
       const pickCount=safeItems(order).reduce((a,it)=>(safePicks(it).length)+a,0);
       const poCount=safeItems(order).reduce((a,it)=>((Array.isArray(it.po_lines)?it.po_lines.length:0))+a,0);
-      const key=order.id+':'+(order.updated_at||'')+':'+pickCount+':'+poCount;
+      const poIdentity=JSON.stringify(safeItems(order).map(it=>[it.line_id||'',it.sku||'',it.color||'',(Array.isArray(it.po_lines)?it.po_lines:[]).map(pl=>pl?.po_id||pl)]));
+      const key=order.id+':'+(order.updated_at||'')+':'+pickCount+':'+poCount+':'+poIdentity;
       if(key===lastSyncRef.current)return;
       lastSyncRef.current=key;
       const extJobs=safeJobs(order);
@@ -831,30 +837,22 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       const hasExternalArtChange=JSON.stringify(order.art_files||[])!==JSON.stringify(o.art_files||[])&&!dirty;
       // Detect external pick_line changes (e.g., warehouse pulled an IF on another tab)
       const hasExternalPickChange=safeItems(order).some((ei,idx)=>{const li=safeItems(o)[idx];if(!li)return!!ei.pick_lines?.length;const ePicks=safePicks(ei);const lPicks=safePicks(li);if(ePicks.length!==lPicks.length)return true;return ePicks.some((ep,pi)=>ep.status!==lPicks[pi]?.status||ep.pick_id!==lPicks[pi]?.pick_id)});
-      // Detect external po_line ADDITIONS — e.g. lines the App save guard restored from the DB
-      // (stale/foreign client state). Additions only: a local-only line (a PO just created in this
-      // editor) must never be dropped because the incoming snapshot hasn't caught up yet.
-      const hasExternalPoChange=safeItems(order).some((ei,idx)=>{const li=safeItems(o)[idx];if(!li)return false;return(Array.isArray(ei.po_lines)?ei.po_lines.length:0)>(Array.isArray(li.po_lines)?li.po_lines.length:0)});
+      // Union by PO identity, not count: equal-length snapshots can still contain
+      // a saved PO this editor is missing. Preserve local lines and deletions.
+      const localItems=safeItems(o);
+      const hasExternalPoChange=mergeExternalPoItems(localItems,safeItems(order),o._deletedPoIds,o._hydratedPoIds)!==localItems;
       if(!hasExternalJobChange&&!hasExternalArtChange&&!hasExternalPickChange&&!hasExternalPoChange)return;
       setO(prev=>{const mergedJobs=safeJobs(prev).map(j=>{const ext=extJobs.find(ej=>ej.id===j.id);if(ext&&(ext.art_status!==j.art_status||ext.coach_approved_at!==j.coach_approved_at||ext.coach_rejected!==j.coach_rejected)){return{...j,art_status:ext.art_status,coach_approved_at:ext.coach_approved_at,coach_rejected:ext.coach_rejected,rejections:ext.rejections,sent_to_coach_at:ext.sent_to_coach_at}}return j});
         // Merge pick_line changes from external source (warehouse pulls, new IFs from other tabs)
         // and union-add external po_lines (restored stale/foreign lines) onto their item.
-        const mergedItems=(hasExternalPickChange||hasExternalPoChange)?safeItems(prev).map((it,idx)=>{
+        const poMergedItems=mergeExternalPoItems(safeItems(prev),safeItems(order),prev._deletedPoIds,prev._hydratedPoIds);
+        const mergedItems=hasExternalPickChange?poMergedItems.map((it,idx)=>{
           const ext=safeItems(order)[idx];if(!ext)return it;
-          let next=it;
-          // Index-matched adoption is only safe when neither sku NOR color contradicts — items have no
-          // stable id, so after local adds/deletes shift the array, index N in the snapshot can be a
-          // different garment. A same-SKU/different-color (or blank-SKU) line at the same index used to
-          // adopt the snapshot line's IFs wholesale (SO-1165: IF-1024 stamped onto new S&S lines).
           const _nc=c=>String(c||'').trim().toLowerCase();
-          const _sameLine=(!next.sku||!ext.sku||next.sku===ext.sku)&&(!next.color||!ext.color||_nc(next.color)===_nc(ext.color));
-          if(hasExternalPickChange&&_sameLine){const ePicks=safePicks(ext);const lPicks=safePicks(next);if(JSON.stringify(ePicks)!==JSON.stringify(lPicks))next={...next,pick_lines:ePicks}}
-          if(hasExternalPoChange&&_sameLine){
-            const eLines=Array.isArray(ext.po_lines)?ext.po_lines:[];const lLines=Array.isArray(next.po_lines)?next.po_lines:[];
-            if(eLines.length>lLines.length){const have=new Set(lLines.map(l=>JSON.stringify(l)));const add=eLines.filter(l=>!have.has(JSON.stringify(l)));if(add.length)next={...next,po_lines:[...lLines,...add]}}
-          }
-          return next;
-        }):prev.items;
+          const _sameLine=(!it.sku||!ext.sku||it.sku===ext.sku)&&(!it.color||!ext.color||_nc(it.color)===_nc(ext.color));
+          if(_sameLine){const ePicks=safePicks(ext);if(JSON.stringify(ePicks)!==JSON.stringify(safePicks(it)))return{...it,pick_lines:ePicks}}
+          return it;
+        }):poMergedItems;
         // Merge external art by id: adopt incoming rows (status/approval changes, or groups added on another tab)
         // but NEVER drop a local group the incoming copy is missing. A stale poll/refresh snapshot must not
         // silently remove art the rep just added here — that drop would then be persisted as a DELETE on the
@@ -1060,6 +1058,19 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
     const[dpoMode,setDpoMode]=useState(null);// Deco PO kind: 'send' (we ship garments to the decorator) | 'dtf' (buying transfers/material) | null = auto from the order
     const[linkDpoId,setLinkDpoId]=useState(null);// Deco PO modal: id of an EXISTING deco PO to add the checked items to, instead of creating a new one
     const[dpoShowInHouse,setDpoShowInHouse]=useState(false);// Deco PO forms: reveal the in-house-deco items that are hidden from the coverage list
+    const _poBatchQueueRef=React.useRef(batchPOs);_poBatchQueueRef.current=batchPOs||[];
+    // Quantity inputs use array indexes. Reopen a form when this SO's queue
+    // changes so a removed row cannot lend its typed quantity to the next item.
+    const _poQueueSignature=JSON.stringify((batchPOs||[]).filter(bp=>bp.so_id===o.id));
+    const _poQueueSignatureRef=React.useRef(_poQueueSignature);
+    useEffect(()=>{
+      const changed=_poQueueSignatureRef.current!==_poQueueSignature;
+      _poQueueSignatureRef.current=_poQueueSignature;
+      if(changed&&showPO&&showPO!=='select'){
+        setShowPO('select');setPOExcluded({});setPoDecoInline(null);setPodLinkId(null);
+        nf('This order’s batch queue changed. Select the vendor again to use its current available items.','warn');
+      }
+    },[_poQueueSignature,showPO]);// eslint-disable-line
     const _poCreatingRef=React.useRef(false);// in-flight latch: blocks rapid double-fire of Create PO / Add to Batch within a single render cycle
     const[topstarService,setTopstarService]=useState('dst');const[topstarImgs,setTopstarImgs]=useState([]);const[topstarNotes,setTopstarNotes]=useState('');const[topstarSending,setTopstarSending]=useState(false);
     // Topstar digitizing/vector service catalog — shared by the PO modal and the send-to-vendor action.
@@ -1270,6 +1281,13 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
   const[expandedMockGroups,setExpandedMockGroups]=useState({});// {jobId|sku|color|artFileId:true} — reveal ALL reuse-mock candidates for one garment; default shows only the best couple (the same design was often mocked on many garments — see priorMockCards).
   const[retagMockupModal,setRetagMockupModal]=useState(null);// {artIdx} — opens admin retag tool for legacy general mockups on an art
   const[expandedArt,setExpandedArt]=useState({});// Track expanded art groups by id (default collapsed)
+  const openProductionFiles=ids=>{
+    const available=ids.filter(id=>safeArt(oRef.current).some(a=>a.id===id&&!a.archived));
+    if(!available.length){nf('No artwork folder is attached to this job. Set up its artwork first.','error');return}
+    setExpandedArt(prev=>({...prev,...Object.fromEntries(available.map(id=>[id,true]))}));
+    setTab('art');
+    setTimeout(()=>document.getElementById('so-production-files-'+available[0])?.scrollIntoView({behavior:'smooth',block:'center'}),200);
+  };
   const[collapsedNames,setCollapsedNames]=useState({});// Track collapsed Names decos by `idx-di`
   const[collapsedItems,setCollapsedItems]=useState({});// Track collapsed line items by idx — shows compact sku/qty/total summary
   // In-progress size-cell edits, keyed `idx+'_'+sz`. Lets the user type intermediate values
@@ -7263,7 +7281,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                     <ColorWaysEditor colorWays={art.color_ways||[]} onChange={cws=>uArt(i,'color_ways',cws)} decoType={art.deco_type} pantoneColors={mergeColors(cust,allCustomers,'pantone_colors')} threadColors={mergeColors(cust,allCustomers,'thread_colors')} suppressWarning={!!art.ink_colors||!!art.thread_colors}/>
                   </div>
                   {/* PRODUCTION FILES — internal only */}
-                  <div style={{marginBottom:6}}>
+                  <div id={'so-production-files-'+art.id} style={{marginBottom:6}}>
                     <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
                       <span style={{fontSize:10,fontWeight:700,color:'#d97706'}}>🔧 PRODUCTION FILES</span>
                       <span style={{fontSize:9,color:'#94a3b8'}}>Internal — not shared with customer</span>
@@ -8226,7 +8244,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           const hasActual=blankPOs.length>0||pickQty>0;
           // Use actual billed cost from supplier bills when available; no bill = no actual (show "—")
           const billedCostFromPOs=blankPOs.reduce((a,pl)=>a+safeNum(pl._bill_cost||0),0);
-          const actualBlank=billedCostFromPOs>0?billedCostFromPOs+(pickQty*safeNum(it.nsa_cost)):(pickQty>0?pickQty*safeNum(it.nsa_cost):0);
+          const actualBlank=billedCostFromPOs+(inventoryPickCosts(it).qty ? inventoryPickCosts(it).cost : pickQty*safeNum(it.nsa_cost));
           // Use SKU-level totals for unit cost so duplicate SKUs don't halve the price
           const _sk=(it.sku||'').toUpperCase();
           const skuTotalCost=_skuBillCost[_sk]||0;
@@ -8256,9 +8274,10 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             if(!(dp.cost>0))return;
             const eqD=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);
             const artF=af.find(a=>a.id===d.art_file_id);
-            const gkey=(d.art_file_id&&d.art_file_id!=='__tbd')?('art:'+d.art_file_id):('t:'+(d.deco_type||d.type||d.kind||'deco'));
-            const g=decoGroups[gkey]||(decoGroups[gkey]={name:artF?.name||(d.deco_type||d.type||'').replace(/_/g,' ')||'Decoration',expected:0,qty:0,skus:[],combQty:0});
+            const gkey=d.transfer_code?('stock:'+d.transfer_code):((d.art_file_id&&d.art_file_id!=='__tbd')?('art:'+d.art_file_id):('t:'+(d.deco_type||d.type||d.kind||'deco')));
+            const g=decoGroups[gkey]||(decoGroups[gkey]={name:artF?.name||d.transfer_code||(d.deco_type||d.type||'').replace(/_/g,' ')||'Decoration',expected:0,qty:0,skus:[],combQty:0});
             g.expected+=decoCostAt(d,qty,af,cq,costArtQty);g.qty+=eqD;
+            if(d.inventory_cost_basis?.length){g.actual=(g.actual||0)+d.inventory_cost_basis.filter(b=>b.received&&b.unit_cost!=null).reduce((a,b)=>a+b.qty*b.unit_cost,0)}
             if(d.art_file_id&&costArtQty[d.art_file_id]>0)g.combQty=Math.max(g.combQty,costArtQty[d.art_file_id]);
             if(it.sku&&!g.skus.includes(it.sku))g.skus.push(it.sku);
           });
@@ -8268,7 +8287,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           const exp=Math.round(g.expected*100)/100;
           costLines.push({category:'In-House Deco',sku:'',
             name:g.name+(g.skus.length?` · ${g.skus.length} item${g.skus.length>1?'s':''}: ${g.skus.join(', ')}`:''),
-            vendor:'NSA In-House',qty:g.qty,expected:exp,actual:exp,poCount:0,poIds:'',allReceived:true,_combQty:g.combQty});
+            vendor:'NSA In-House',qty:g.qty,expected:exp,actual:g.actual??exp,poCount:0,poIds:'',allReceived:true,_combQty:g.combQty});
         });
         // Outside deco — one row per SO-level deco PO (so.deco_pos). Expected = qty × unit_cost
         // from the PO (price-list driven); Actual = _bill_cost (—, when no bill applied yet).
@@ -8344,6 +8363,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             {variance>0?'⚠️ Over':'✅ Under'} by ${Math.abs(variance).toFixed(2)}</span>}
         </div>
         <div className="card-body">
+          <InventoryCostDetails order={o} />
           <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
             {Object.entries(cats).map(([cat,v])=>{const diff=v.actual-v.expected;
               return<div key={cat} style={{padding:'10px 14px',background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',minWidth:150,flex:1}}>
@@ -9722,7 +9742,9 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       // items (and items whose sizes aren't broken out yet) carry their count in est_qty and
       // are ordered against a single 'QTY' line so they aren't silently left off the PO.
       const QTY_SZ='QTY';
+      const batchReservationsFor=it=>itemBatchReservations(o,it,it._idx??safeItems(o).indexOf(it),batchPOs);
       const openSizesFor=it=>{
+        if(batchReservationsFor(it).length)return[];
         const szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>{const ia=SZ_ORD.indexOf(a[0]),ib=SZ_ORD.indexOf(b[0]);return(ia<0?999:ia)-(ib<0?999:ib)});
         if(szList.length>0)return szList.map(([sz,v])=>{const picked=safePicks(it).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(it.po_lines,sz);return[sz,Math.max(0,v-picked-po)]}).filter(([,v])=>v>0);
         const est=safeNum(it.est_qty);
@@ -9775,6 +9797,10 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           {Object.entries(vendorMap).map(([vk,items])=>{const vn=vendorList.find(v=>v.id===vk)?.name||D_V.find(v=>v.id===vk)?.name||vk;
           const openItems=items.filter(it=>openSizesFor(it).reduce((a,[,v])=>a+v,0)>0);
           const openCount=openItems.reduce((tot,it)=>tot+openSizesFor(it).reduce((a,[,v])=>a+v,0),0);
+          const queuedItems=items.filter(it=>batchReservationsFor(it).length);
+          if(openCount===0&&queuedItems.length)return<div key={vk} style={{padding:'11px 14px',border:'1px solid #ddd6fe',background:'#f5f3ff',borderRadius:9,marginBottom:8}}>
+            <strong style={{color:'#6d28d9'}}>{vn} · Already in a batch</strong><div style={{fontSize:12,marginTop:4}}>Remove these items from the batch before ordering independently.</div>
+            <button type="button" className="btn btn-sm btn-secondary" style={{marginTop:8}} onClick={()=>{setPOExcluded({});setShowPO(vk)}}>View queued items →</button></div>;
           if(openCount===0)return<div key={vk} style={{padding:'12px 16px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,opacity:0.5,display:'flex',alignItems:'center',gap:12}}>
             <div style={{width:40,height:40,borderRadius:8,background:'#dcfce7',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="check" size={20}/></div>
             <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#166534'}}>All items fully covered</div></div></div>;
@@ -10409,6 +10435,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       // group, not every destination for the vendor ($100 warehouse + $60 decorator is NOT $160 toward one PO).
       const podDv=poDecoInline?decoVendors.find(v=>v.name===poDecoInline.vendor):null;
       // Each open SO line for this vendor, with its remaining per-size quantities.
+      const queuedPoItems=vItems.map(item=>({item,reservations:batchReservationsFor(item)})).filter(row=>row.reservations.length);
       const _poLinesRaw=vItems.map(it=>{const openSizes=openSizesFor(it);
         return{...it,openSizes,totalOpen:openSizes.reduce((a,[,v])=>a+v,0)}}).filter(it=>it.totalOpen>0);
       // Collapse lines that are the SAME orderable garment so a blank bought for several
@@ -10434,20 +10461,6 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
         const openSizes=Object.entries(sizeTot).filter(([,v])=>v>0).sort((a,b)=>{const ia=_SZ_ORDER.indexOf(a[0]),ib=_SZ_ORDER.indexOf(b[0]);return(ia===-1?99:ia)-(ib===-1?99:ib)});
         return{...head,openSizes,totalOpen:openSizes.reduce((a,[,v])=>a+v,0),members:memberInfo,_soQty:memberInfo.reduce((a,m)=>a+m._soQty,0)};
       });
-      // Effective decorator destination for this PO's batch entries: the inline deco PO's vendor,
-      // or — marrying up the line-item outside-deco flow — an existing drop-ship deco PO that
-      // already covers the selected items (only when the rep chose Drop Ship for the blanks).
-      // The group key must match what gets stamped on the entries below, or the queue readout /
-      // free-ship threshold would count the wrong destination group.
-      // Full-coverage rule: the deco PO must cover EVERY selected item — a partial match would
-      // route items never meant for that decorator to its address on the batch order.
-      const _selBatchIdxs=[...new Set(poItems.filter((_,vi)=>!poExcluded[vi]).flatMap(it=>(it.members||[it]).map(m=>m._idx)))];
-      const _existingBatchDeco=(!podDv?.id&&poDropShip===true&&_selBatchIdxs.length>0)?((o.deco_pos||[]).find(dp=>dp&&dp.drop_ship&&dp.deco_vendor_id&&_selBatchIdxs.every(ix=>(dp.item_idxs||[]).includes(ix)))||null):null;
-      const batchDecoId=podDv?.id||_existingBatchDeco?.deco_vendor_id||null;
-      const batchDecoName=podDv?.id?(podDv.name||podDv.id):(_existingBatchDeco?(_existingBatchDeco.vendor||batchDecoId):null);
-      const batchGroupKey=batchKey?batchKey+(batchDecoId?':'+batchDecoId:''):null;
-      const pendingBatches=(batchPOs||[]).filter(bp=>(bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:''))===batchGroupKey);
-      const pendingBatchTotal=pendingBatches.reduce((a,bp)=>a+bp.total_cost,0);
       // Live PO totals — inputs are uncontrolled (defaultValue), so read the
       // DOM when present and fall back to the rendered defaults otherwise.
       // poCalcTick re-renders on input so the displayed totals stay in sync.
@@ -10589,6 +10602,23 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       // task later knows to deliver to the decorator — a drop_ship flag alone loses that.
       const _poShipDecoId=poShipTo==='deco'?(_decoForPo?.id||null):(typeof poShipTo==='string'&&poShipTo.startsWith('deco:')?poShipTo.slice(5):null);
       const _poShipDecoInfo=(typeof poShipTo==='string'&&poShipTo.startsWith('deco:')&&_poShipDecoId)?resolveDecoShipToClient({decoId:_poShipDecoId,so:o,decoVendors,vendors:vendorList,itemIdxs:_poSelIdxs}):null;
+      // Effective decorator destination for this PO's batch entries — ONLY when the rep chose Drop Ship
+      // for the blanks: the inline deco PO's vendor, or — marrying up the line-item outside-deco flow —
+      // an existing drop-ship deco PO that already covers the selected items, else the decorator picked
+      // in Ship To. An In-House PO always joins the vendor's regular warehouse batch, even with a deco
+      // PO created alongside it (its blanks come to Emerson first).
+      // The group key must match what gets stamped on the entries below, or the queue readout /
+      // free-ship threshold would count the wrong destination group — and a decorator-bound line
+      // filed under the warehouse group would pull that whole batch's ship-to to the decorator.
+      // Full-coverage rule: the deco PO must cover EVERY selected item — a partial match would
+      // route items never meant for that decorator to its address on the batch order.
+      const _selBatchIdxs=[...new Set(poItems.filter((_,vi)=>!poExcluded[vi]).flatMap(it=>(it.members||[it]).map(m=>m._idx)))];
+      const _existingBatchDeco=(!podDv?.id&&poDropShip===true&&_selBatchIdxs.length>0)?((o.deco_pos||[]).find(dp=>dp&&dp.drop_ship&&dp.deco_vendor_id&&_selBatchIdxs.every(ix=>(dp.item_idxs||[]).includes(ix)))||null):null;
+      const batchDecoId=poDropShip===true?(podDv?.id||_existingBatchDeco?.deco_vendor_id||_poShipDecoId||null):null;
+      const batchDecoName=!batchDecoId?null:podDv?.id===batchDecoId?(podDv.name||podDv.id):_existingBatchDeco?.deco_vendor_id===batchDecoId?(_existingBatchDeco.vendor||batchDecoId):(decoVendors.find(dv=>dv.id===batchDecoId)?.name||batchDecoId);
+      const batchGroupKey=batchKey?batchKey+(batchDecoId?':'+batchDecoId:''):null;
+      const pendingBatches=(batchPOs||[]).filter(bp=>(bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:''))===batchGroupKey);
+      const pendingBatchTotal=pendingBatches.reduce((a,bp)=>a+bp.total_cost,0);
       // The DPO reference the decorator needs on the shipping label, auto-filled so nobody has to
       // remember to add it: the deco PO being created/joined in this same modal, else the
       // decorator's existing deco PO when the blanks ship to one. Typed text always wins.
@@ -10611,8 +10641,18 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
       // offering units the DB already has on order, and no submit-time check existed. Right before
       // writing a PO, re-read this SO's PO lines from the DB and compare: any size where the DB
       // shows MORE committed than this tab knows about means the form's "open" numbers are stale.
-      // Soft-fails to null (allow) on any query problem — offline/legacy behavior unchanged.
+      // Batch reservations fail closed on a queue read error; the legacy PO-line drift check below keeps its existing fallback.
+      // The queue can change while number reservation or the server check is awaiting.
+      // Abort before reading or writing DOM inputs from a form that has been reset.
+      const _poAbortChangedQueue=()=>{
+        if(JSON.stringify(_poBatchQueueRef.current.filter(bp=>bp.so_id===o.id))===_poQueueSignature)return false;
+        _poCreatingRef.current=false;
+        nf('This order’s batch queue changed. Select the vendor again before ordering.','warn');
+        return true;
+      };
       const _poFreshDupCheck=async(entries)=>{// entries: [{idx, sizes:{sz:qty}}]
+        const batchConflict=await checkBatchPoReservations(supabase,o,entries,_poBatchQueueRef.current);
+        if(batchConflict)return batchConflict;
         if(!supabase||!o?.id||!entries?.length)return null;
         try{
           const idxs=[...new Set(entries.map(e=>e.idx))];
@@ -10653,6 +10693,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
         return entries;
       };
       const _poDupMsg=(dup)=>{
+        if(dup.batchError||dup.batchReservations)return batchPoReservationMessage(dup);
         const bySku={};dup.forEach(c=>{bySku[c.sku]=[...new Set([...(bySku[c.sku]||[]),...c.pos])]});
         return '⛔ Not created — the database already has blanks on order that this page doesn\'t know about: '
           +Object.entries(bySku).map(([sku,pos])=>sku+(pos.length?' (on '+pos.join(', ')+')':'')).join(', ')
@@ -10798,12 +10839,14 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             <div style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>⚠️ Existing POs for this order didn't finish loading</div>
             <div style={{fontSize:11,color:'#b91c1c',marginTop:2}}>Creating a PO now could duplicate one that already exists. Reload the page so the current POs load first, then create the PO.</div>
           </div>}
+          <BatchPoReservationsNotice items={queuedPoItems} onManageBatch={onNavBatch?()=>{setShowPO(null);onNavBatch()}:null}/>
           {/* Batch PO banner for eligible vendors */}
           {isBatchEligible&&!preexistingPO&&<div style={{padding:10,background:'#f5f3ff',border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12}}>
             <div style={{display:'flex',alignItems:'center',gap:6}}>
               <span style={{fontSize:14}}>📦</span>
               <div style={{flex:1}}>
                 <div style={{fontSize:12,fontWeight:700,color:'#7c3aed'}}>{batchConfig.threshold===0?'Consider batching PO if small order':'Free shipping over $'+batchConfig.threshold+' — Batch eligible!'}</div>
+                {batchDecoName&&<div style={{fontSize:11,color:'#6d28d9',fontWeight:600}}>🎨 Drop ship — joins the {batchConfig.name} → {batchDecoName} batch, which ships to the decorator</div>}
                 {pendingBatches.length>0?<div style={{fontSize:11,color:'#6d28d9'}}>{pendingBatches.length} PO{pendingBatches.length!==1?'s':''} in queue · ${pendingBatchTotal.toFixed(2)} total {batchConfig.threshold>0?(pendingBatchTotal>=batchConfig.threshold?'✅ Threshold met!':'· $'+(batchConfig.threshold-pendingBatchTotal).toFixed(2)+' more to free ship'):''}</div>
                 :<div style={{fontSize:11,color:'#94a3b8'}}>No POs queued yet for {batchConfig.name}</div>}
               </div>
@@ -10812,7 +10855,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           {preexistingPO&&<div style={{padding:10,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,marginBottom:12}}>
             <div style={{fontSize:12,fontWeight:700,color:'#d97706'}}>Preexisting PO Mode — Enter the PO number from NetSuite. This will not affect sequential PO numbering.</div>
           </div>}
-          {poItems.length===0?<div style={{padding:24,textAlign:'center',color:'#64748b'}}><div style={{fontSize:32,marginBottom:8}}>✅</div><div style={{fontWeight:700,fontSize:16,marginBottom:4}}>All items fully covered</div><div style={{fontSize:13}}>Every size has been assigned via IFs or existing POs.</div></div>:<>
+          {poItems.length===0?<div style={{padding:24,textAlign:'center',color:'#64748b'}}><div style={{fontSize:32,marginBottom:8}}>✅</div><div style={{fontWeight:700,fontSize:16,marginBottom:4}}>All items fully covered</div><div style={{fontSize:13}}>Every size has been assigned via IFs, existing POs, or batch reservations.</div></div>:<>
           <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" checked={preexistingPO} onChange={e=>{setPreexistingPO(e.target.checked);if(!e.target.checked)setPreexistingPOId('')}}/><span style={{fontWeight:600,color:'#d97706'}}>Preexisting PO</span><span style={{fontSize:11,color:'#64748b'}}>— Apply an existing PO number from NetSuite{isBatchEligible?' (bypasses batch queue)':''}</span></label></div>
           {poItems.length>1&&<div style={{marginBottom:8,display:'flex',alignItems:'center',gap:8}}>
             <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,cursor:'pointer'}}><input type="checkbox" checked={poItems.every((_,vi)=>!poExcluded[vi])} onChange={e=>{if(e.target.checked)setPOExcluded({});else{const ex={};poItems.forEach((_,vi)=>{ex[vi]=true});setPOExcluded(ex)}}}/><span style={{fontWeight:600}}>Select All</span></label>
@@ -10868,7 +10911,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             const priceForSize=sz=>{const sc=safeNum(sizeCostMap[sz]);return sc>0?(isAdidas?Math.floor(sc*100)/100:sc):catCost};
             const distinctPrices=new Set(it.openSizes.map(([sz])=>priceForSize(sz).toFixed(2)));
             const hasSizeUpcharges=distinctPrices.size>1;
-            return<div key={vi} style={{padding:12,border:'1px solid '+(excluded?'#f1f5f9':'#e2e8f0'),borderRadius:6,marginBottom:8,opacity:excluded?0.4:1,transition:'opacity 0.15s'}}>
+            return<div key={(it.members||[it]).map(m=>m.line_id||m._idx).join('|')} style={{padding:12,border:'1px solid '+(excluded?'#f1f5f9':'#e2e8f0'),borderRadius:6,marginBottom:8,opacity:excluded?0.4:1,transition:'opacity 0.15s'}}>
               <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}>
                 <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><input type="checkbox" checked={!excluded} onChange={()=>setPOExcluded(x=>({...x,[vi]:!x[vi]}))} style={{marginTop:1}}/><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:4}}>{it.sku}</span><strong>{collapsed?it.name.split(' - ')[0]:it.name}</strong> — {it.color}{collapsed&&<span title="Same blank ordered for multiple decorations — combined into one PO line; each decoration keeps its own receiving record" style={{fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f3e8ff',border:'1px solid #e9d5ff',borderRadius:4,padding:'1px 6px',whiteSpace:'nowrap'}}>🔗 {it.members.length} decorations combined</span>}</div>
                 <div style={{fontWeight:700}}>SO Qty: {soQ} <span style={{color:'#dc2626',fontSize:12,marginLeft:6}}>Open: {it.totalOpen}</span></div></div>
@@ -10920,6 +10963,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             if(poDecoInline&&!podLink&&!(await _awaitHeldPoNumber(true))){_poCreatingRef.current=false;nf('Couldn\'t reserve the deco PO number — check your connection and try again.','error');return}
             const finalPoId='PO '+_poN+(poAlphaSuffix?' '+poAlphaSuffix:'');
             const _attnFinal=poAttention.trim()||(poDecoInline&&!podLink?_podPoIdNow():_poAutoAttn);
+            if(_poAbortChangedQueue())return;
             const podRes=poDecoInline?buildInlineDecoPO():null;
             if(podRes&&podRes.error){_poCreatingRef.current=false;nf(podRes.error,'error');return}
             const _entries=_poSubmitEntries();
@@ -10929,6 +10973,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             // Server-truth duplicate check — the DB may hold PO lines this tab never loaded.
             const _dup=await _poFreshDupCheck(_entries);
             if(_dup){_poCreatingRef.current=false;nf(_poDupMsg(_dup),'error');return}
+            if(_poAbortChangedQueue())return;
             setTimeout(()=>{_poCreatingRef.current=false},1500);
             // Build batch PO entry
             const isDropShip=poDropShip;
@@ -10949,7 +10994,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
                 Object.entries(sizes).forEach(([sz,v])=>{const p=safeNum(price[sz])||fallbackCost;sizeCosts[sz]=p;batchLineTotal+=v*p});
                 const batchUnitCost=qty>0?Math.round((batchLineTotal/qty)*100)/100:fallbackCost;
                 totalCost+=batchLineTotal;
-                const bItem={sku:member.sku,name:member.name,color:member.color,sizes,qty,unit_cost:batchUnitCost,item_idx:member._idx,
+                const bItem={sku:member.sku,name:member.name,color:member.color,sizes,qty,unit_cost:batchUnitCost,item_idx:member._idx,line_id:member.line_id||undefined,
                   // Carry Momentec order-SKU fields through so a batched Momentec PO can resolve
                   // each line's design.colorCode.size SKU at submit time (buildMomentecOrderLines).
                   ...(member._mt_skus?{_mt_style:member._mt_style,_mt_color:member._mt_color,_mt_sku:member._mt_sku,_mt_skus:member._mt_skus}:{})};
@@ -11019,6 +11064,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           }
           if(poDecoInline&&!podLink&&!(await _awaitHeldPoNumber(true))){_poCreatingRef.current=false;nf('Couldn\'t reserve the deco PO number — check your connection and try again.','error');return}
           const _attnFinal=poAttention.trim()||(poDecoInline&&!podLink?_podPoIdNow():_poAutoAttn);
+          if(_poAbortChangedQueue())return;
           const podRes=poDecoInline?buildInlineDecoPO():null;
           if(podRes&&podRes.error){_poCreatingRef.current=false;nf(podRes.error,'error');return}
           const _entries=_poSubmitEntries();
@@ -11028,6 +11074,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           // Server-truth duplicate check — the DB may hold PO lines this tab never loaded.
           const _dup=await _poFreshDupCheck(_entries);
           if(_dup){_poCreatingRef.current=false;nf(_poDupMsg(_dup),'error');return}
+          if(_poAbortChangedQueue())return;
           setTimeout(()=>{_poCreatingRef.current=false},1500);
           // Preexisting PO numbers are typed by hand, so the same real PO can be entered with
           // inconsistent casing/spacing across passes (e.g. "PO6639 SBBV SP" vs "PO6639 SBBV sp").
@@ -12686,6 +12733,8 @@ const _decosSorted=it?jobItemArtSlots(gi,it):[];const _gf=(_af)=>{const im=_af?.
               </div>
               {_multi&&_names&&<div style={{fontSize:11,fontWeight:700,color:'#854d0e',marginTop:3}}>🎨 {_names}</div>}
               <div style={{fontSize:12,color:'#713f12',marginTop:4}}>{_msg}</div>
+              {!_dtf&&<button type="button" className="btn btn-sm btn-secondary" style={{marginTop:8}} onClick={()=>openProductionFiles(_ids)}>Upload production files</button>}
+              {!_dtf&&<div style={{fontSize:11,color:'#713f12',marginTop:4}}>Opens this job’s artwork folders. Add each file to its matching design.</div>}
               {_pfCount>0&&<div style={{fontSize:11,color:'#15803d',fontWeight:700,marginTop:6}}>🏭 {_pfCount} production file{_pfCount!==1?'s':''} attached{_multi?' to this design':''}</div>}
               {_dst&&_pfCount===0&&<div style={{fontSize:11,color:'#15803d',fontWeight:700,marginTop:6}}>🧵 DST detected on the art file — production files ready</div>}
               {_staleDst&&<div style={{fontSize:11,color:'#92400e',fontWeight:700,marginTop:6}}>🧵 A retired DST is attached (superseded by an earlier update) — mark complete to use it, or upload the new one</div>}
@@ -16489,6 +16538,14 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       const bp=(batchPOs||[]).find(b=>b.id===editBatchPO.bpo_id);
       if(!bp)return null;
       const bItem=bp.items.find(it=>it.item_idx===editBatchPO.item_idx);
+      const removeQueuedBatch=async()=>{
+        if(!onBatchPO){nf('Batch queue is unavailable. Reload and try again.','error');return false}
+        const updated={...o,items:removeQueuedBatchLines(safeItems(o),bp.id),updated_at:new Date().toLocaleString()};
+        let saved=false;
+        try{saved=onSaveNow?await onSaveNow(updated):(onSave(updated)!==false)}catch(_){saved=false}
+        if(!saved){nf('Could not remove the batch PO from the order. The items remain queued; retry after reloading.','error');return false}
+        setO(updated);onBatchPO(prev=>prev.filter(b=>b.id!==bp.id));setEditBatchPO(null);return true;
+      };
       const szEntries=bItem?Object.entries(bItem.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0]))):[];
       return<div className="modal-overlay" onClick={()=>setEditBatchPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2 style={{color:'#7c3aed'}}>Batch PO — {bp.vendor_name}</h2>
@@ -16541,19 +16598,18 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           })()}
         </div>
         <div className="modal-footer" style={{justifyContent:'space-between'}}>
-          <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
+          <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#dc2626',borderColor:'#fca5a5'}} onClick={async()=>{
             if(!window.confirm('Remove this batch PO from the queue?'))return;
-            if(onBatchPO)onBatchPO(prev=>prev.filter(b=>b.id!==bp.id));
-            setEditBatchPO(null);nf('Batch PO removed from queue');
+            if(await removeQueuedBatch())nf('Batch PO removed from queue');
           }}><Icon name="trash" size={10}/> Remove from Queue</button>
           <div style={{display:'flex',gap:6}}>
             <button className="btn btn-secondary" onClick={()=>setEditBatchPO(null)}>Cancel</button>
-            <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
+            <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={async()=>{
               const updatedItems=bp.items.map((it,ii)=>{const itSzs=Object.entries(it.sizes||{}).filter(([,v])=>v>0);
                 const newSizes={};let newQty=0;
                 itSzs.forEach(([sz])=>{const el=document.getElementById('bpo-edit-'+bp.id+'-'+ii+'-'+sz);const v=el?Math.max(0,parseInt(el.value)||0):0;if(v>0){newSizes[sz]=v;newQty+=v}});
                 return{...it,sizes:newSizes,qty:newQty}}).filter(it=>it.qty>0);
-              if(updatedItems.length===0){if(onBatchPO)onBatchPO(prev=>prev.filter(b=>b.id!==bp.id));setEditBatchPO(null);nf('Batch PO removed (all quantities zeroed)');return}
+              if(updatedItems.length===0){if(await removeQueuedBatch())nf('Batch PO removed (all quantities zeroed)');return}
               const newTotal=updatedItems.reduce((a,it)=>a+it.qty*it.unit_cost,0)+safeNum(bp.manual_cost);
               if(onBatchPO)onBatchPO(prev=>prev.map(b=>b.id===bp.id?{...b,items:updatedItems,total_cost:newTotal}:b));
               setEditBatchPO(null);nf('Batch PO updated');
