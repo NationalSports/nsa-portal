@@ -18,3 +18,18 @@ test('running family disables new generation and cancellation targets entire ite
  fireEvent.click(screen.getByText('Cancel item'));
  expect(act).toHaveBeenCalledWith('style:nike:hood','cancel_family',{family_key:'style:nike:hood'});
 });
+test('generated combinations clearly await approval and Review & Approve opens the actionable dialog',()=>{
+ HTMLDialogElement.prototype.showModal=jest.fn();
+ HTMLDialogElement.prototype.close=jest.fn();
+ const act=jest.fn();
+ render(<ShowcaseFamilyList items={[{...items[0],asset:{status:'review',showcase_image_url:'generated.png',family_version:'showcase-family-v1'}}]} act={act}/>);
+ expect(screen.getByText('1/1 generated · 0 approved · 1 awaiting review')).toBeTruthy();
+ expect(screen.getByText('Regenerate whole item')).toBeTruthy();
+ expect(screen.queryByText('Generate whole item')).toBeNull();
+ fireEvent.click(screen.getByText('Review combinations (1)'));
+ expect(screen.getByText('Generated · Awaiting approval')).toBeTruthy();
+ fireEvent.click(screen.getByText('Review & Approve'));
+ expect(HTMLDialogElement.prototype.showModal).toHaveBeenCalled();
+ fireEvent.click(screen.getByText('Approve Image'));
+ expect(act).toHaveBeenCalledWith('0','approve',{webstore_product_id:'0'});
+});

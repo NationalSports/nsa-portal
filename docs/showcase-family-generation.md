@@ -14,11 +14,9 @@ uses high-frequency texture from a supplier patch. This is a photographic color
 reference, not a calibrated measurement of physical cloth.
 
 Exact transparent logo files are reused, fitted to their original aspect ratios
-on mapped garment planes. Opaque artwork pixels retain their original sRGB values;
-no garment lighting multiplier or synthetic finish tint may darken royal into
-navy. Source texture and alpha edges are retained. Placement
+on mapped garment planes. Artwork hue comes from the original sRGB file, independent of garment RGB. New renders apply bounded neutral lighting (90–106%) and subtle simulated raised-finish relief, without substituting a different ink palette. Source texture and alpha edges are retained. Placement
 planes are shared across colors and designs with matching saved coordinates.
-Drawstring/zipper occlusion regions keep artwork behind those features. Brand
+Drawstrings and narrow zippers use curved centerlines with per-point widths, with anti-aliased boundaries. Broad polygon cutouts and ordinary fold occlusion are rejected in new jobs. Traces are limited to 2.5% of image width and require human review against the garment. Source artwork uses premultiplied bilinear sampling to avoid jagged enlarged detail edges. Raised finishes receive subtle relief at alpha boundaries while keeping source hues independent of garment color. Brand
 marks and neutral background pixels are protected from recoloring.
 
 Complex patterned or contrasting-panel products, differing manufacturer-mark
@@ -80,8 +78,9 @@ deploying this code. Existing approvals have no details until regeneration and
 review. Product detail controls follow the selected logo/color and never use an
 unapproved candidate; staff reviews the full image set in the comparison dialog.
 
-Color-locked results carry `qa_result.artwork_color_policy=original-srgb-v1`.
+New relief renders carry `qa_result.artwork_color_policy=source-hue-relief-v2`; older color-locked renders use `original-srgb-v1`.
 Older outputs can be regenerated using the cached base; this does not require
 purchasing a new garment master. Existing approved imagery remains unchanged
-until staff approves replacements. The rendered finish does not manufacture
-stitch texture that is absent from the original artwork.
+until staff approves replacements. The relief and weave are simulations, not evidence of actual stitch construction.
+
+The Appearance card reports generated, currently approved and awaiting-review counts separately. Regenerate whole item reuses the cached garment and produces new review candidates; saved older images do not change automatically. The review button opens the same modal as Before / After, with sticky close and approval controls.

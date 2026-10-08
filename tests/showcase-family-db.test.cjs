@@ -60,7 +60,7 @@ test('worker renders 15 combinations with one master generation, then reuses it'
  },storage:{from:()=>({upload:async()=>{uploaded++;return {};},getPublicUrl:(p)=>({data:{publicUrl:'https://storage/'+p}})})},from:()=>{throw new Error('Email disabled in fixture');}};
  const deps={getCatalog:async()=>members,fetchImage:async()=>({bytes:Buffer.from('image'),contentType:'image/png'}),
   generate:async()=>{generated++;return {bytes:Buffer.from('master'),contentType:'image/png',model:'test'};},
-  analyze:async({analysisPrompt})=>({model:'analysis',analysis:analysisPrompt.startsWith('Inspect')?{supported:true,colors:Array.from({length:5},(_,index)=>({index,patches:[],texture:'solid'}))}:{supported:true,protected_regions:[],logo_occluders:[],placements:{}}}),
+  analyze:async({analysisPrompt})=>({model:'analysis',analysis:analysisPrompt.startsWith('Inspect')?{supported:true,colors:Array.from({length:5},(_,index)=>({index,patches:[],texture:'solid'}))}:{supported:true,protected_regions:[],logo_occluders:[],logo_strands:[],placements:{}}}),
   render:{validateArtwork:async()=>({}),applyArtwork:async()=>[[.3,.3],[.7,.3],[.7,.7],[.3,.7]],decorationDetail:async()=>Buffer.from('detail'),sampleFabric:async()=>({rgb:[20,40,60]}),prepareMaster:async()=>({}),recolor:()=>Buffer.from('render'),encode:async()=>Buffer.from('png')}};
  try{
   const leader=await queue();

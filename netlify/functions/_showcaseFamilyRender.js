@@ -52,13 +52,37 @@ function polygons(value) {
   for (const p of value) if (!Array.isArray(p) || p.length < 3 || p.length > 30 || p.some((xy) => !Array.isArray(xy) || xy.length !== 2 || xy.some((v) => !Number.isFinite(v) || v < 0 || v > 1))) throw new Error('Invalid garment region coordinates');
   return value;
 }
+// Drawstrings are traced as narrow variable-width paths, not bounding boxes.
+// Reject broad or sparse traces rather than deleting an arbitrary strip of logo.
+function validateStrands(value = []) {
+  if (!Array.isArray(value) || value.length > 12) throw new Error('Invalid drawstring paths');
+  for (const strand of value) {
+    if (!Array.isArray(strand.points) || strand.points.length < 3 || strand.points.length > 80 ||
+      strand.points.some(p => !Array.isArray(p) || p.length !== 3 || p.some(v => !Number.isFinite(v)) || p[0] < 0 || p[0] > 1 || p[1] < 0 || p[1] > 1 || p[2] <= 0 || p[2] > .025))
+      throw new Error('Drawstring trace needs correction: use tight centerlines and actual widths');
+  }
+  return value;
+}
+function strandCoverage(x, y, strands, width, height) {
+  let coverage = 0;
+  for (const { points } of strands) for (let i = 1; i < points.length; i++) {
+    const a = points[i-1], b = points[i];
+    const ax = a[0]*width, ay = a[1]*height, dx = (b[0]-a[0])*width, dy = (b[1]-a[1])*height;
+    const t = clamp(((x-ax)*dx+(y-ay)*dy)/(dx*dx+dy*dy || 1),0,1);
+    const radius = (a[2]*(1-t)+b[2]*t)*width/2;
+    coverage = Math.max(coverage,clamp(radius + .5 - Math.hypot(x-ax-t*dx,y-ay-t*dy),0,1));
+  }
+  return coverage;
+}
 async function prepareMaster(bytes, layout, resolution) {
   // Render artwork from the original file at a larger working resolution. This
   // adds no inferred stitching or photographic evidence to the garment master.
   const source = resolution ? await sharp(bytes, { limitInputPixels: 40000000 }).rotate().resize({ width: resolution, height: resolution, fit: 'inside' }).png().toBuffer() : bytes;
   const { data, info } = await pixels(source);
   const protectedRegions = polygons(layout.protected_regions);
-  const occluders = polygons(layout.logo_occluders);
+  const occluders = polygons(layout.logo_occluders || []);
+  const strands = validateStrands(layout.logo_strands);
+  if (strands.length && occluders.length) throw new Error('Use drawstring paths without duplicate polygon cutouts');
   const mask = new Float32Array(info.width * info.height);
   const light = [];
   for (let i = 0; i < mask.length; i++) {
@@ -75,7 +99,7 @@ async function prepareMaster(bytes, layout, resolution) {
   }
   const coverage = light.length / mask.length;
   if (coverage < .12 || coverage > .8) throw new Error('Master fabric mask needs correction; generate a new base');
-  return { data, info, mask, median: median(light), occluders, protectedRegions };
+  return { data, info, mask, median: median(light), occluders, strands, protectedRegions };
 }
 function recolor(master, rgb, grain) {
   const out = Buffer.from(master.data);
@@ -141,14 +165,37 @@ async function applyArtwork(output, master, bytes, quad, finish, options = {}) {
       u -= (ex*by-ey*bx)/det; v -= (ey*ax-ex*ay)/det;
     }
     if (u < 0 || v < 0 || u >= 1 || v >= 1) continue;
-    const li = (Math.floor(v*logo.info.height)*logo.info.width+Math.floor(u*logo.info.width))*4;
-    const alpha = logo.data[li+3]/255;
+    // Premultiplied bilinear sampling preserves transparent edges without dark halos.
+    const lx = u*(logo.info.width-1), ly = v*(logo.info.height-1);
+    const x0 = Math.floor(lx), y0 = Math.floor(ly), fx = lx-x0, fy = ly-y0;
+    let sourceAlpha = 0; const rgb = [0,0,0];
+    for (const [ox,oy,weight] of [[0,0,(1-fx)*(1-fy)],[1,0,fx*(1-fy)],[0,1,(1-fx)*fy],[1,1,fx*fy]]) {
+      const li = (Math.min(y0+oy,logo.info.height-1)*logo.info.width+Math.min(x0+ox,logo.info.width-1))*4;
+      const a = logo.data[li+3]/255*weight;
+      sourceAlpha += a;
+      for(let c=0;c<3;c++) rgb[c] += logo.data[li+c]*a;
+    }
+    const alpha = sourceAlpha * (1-strandCoverage(x,y,master.strands || [],width,height));
     if (!alpha) continue;
-    // Brand artwork is color-locked to its original sRGB pixels. Applying the
-    // garment's light map or procedural finish tint here can turn royal into
-    // navy. Keep source texture and alpha edges, plus mapped folds/occlusion,
-    // without recoloring the artwork to match garment lighting.
-    for (let c = 0; c < 3; c++) output[idx*4+c] = Math.round(output[idx*4+c]*(1-alpha)+logo.data[li+c]*alpha);
+    // Source hue stays independent of garment color. Bounded neutral light
+    // and fine relief simulate a finish; never recolor the artwork with cloth RGB.
+    const raised = ['tackle_twill','embroidery','chenille'].includes(finish);
+    const light = options.finishRelief ? clamp(1 + (master.data[idx*4+1]/master.median-1)*.18,.90,1.06) : 1;
+    const weave = options.finishRelief && raised ? 1 + .018*Math.sin((x+y)*Math.PI/2) : 1;
+    for (let c = 0; c < 3; c++) {
+      const color = rgb[c]/sourceAlpha;
+      const shade = light*weave;
+      const lit = shade <= 1 ? color*shade : color+(255-color)*(shade-1);
+      output[idx*4+c] = Math.round(output[idx*4+c]*(1-alpha)+lit*alpha);
+    }
+    if (options.finishRelief && ['tackle_twill','embroidery','chenille'].includes(finish)) {
+      const offset = Math.max(1,Math.round(logo.info.width / Math.max(1,maxX-minX)));
+      const alphaAt = (px,py) => px<0 || py<0 || px>=logo.info.width || py>=logo.info.height ? 0 : logo.data[(py*logo.info.width+px)*4+3]/255;
+      const edge = Math.max(0,sourceAlpha-Math.min(alphaAt(x0-offset,y0),alphaAt(x0+offset,y0),alphaAt(x0,y0-offset),alphaAt(x0,y0+offset)));
+      // Subpixel edge relief only: retain the original palette throughout the fill.
+      const relief = (alphaAt(x0+offset,y0+offset)-alphaAt(x0-offset,y0-offset))*.10*edge*alpha;
+      for(let c=0;c<3;c++) output[idx*4+c] = Math.round(clamp(output[idx*4+c] + (relief>0 ? (255-output[idx*4+c])*relief : output[idx*4+c]*relief)));
+    }
     applied++;
   }
   if (applied < 30) throw new Error('Artwork did not land on the garment; check its placement');
@@ -169,4 +216,4 @@ async function decorationDetail(output, master, quad) {
   return sharp(output, { raw: master.info }).extract({left,top,width:size,height:size})
     .resize({width:1024,height:1024,fit:'inside',withoutEnlargement:true}).png().toBuffer();
 }
-module.exports = { decorationDetail, validateArtwork,sampleFabric, prepareMaster, recolor, applyArtwork, encode, validateQuad };
+module.exports = { validateStrands, strandCoverage, decorationDetail, validateArtwork,sampleFabric, prepareMaster, recolor, applyArtwork, encode, validateQuad };

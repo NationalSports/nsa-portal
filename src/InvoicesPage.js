@@ -5,6 +5,7 @@ import { emailDeliveryLabel } from './lib/emailRouting';
 // this component holds no state of its own, so mount/unmount on page switch is
 // behavior-identical to the old closure call.
 import React from 'react';
+import UnapplyPaymentButton from './UnapplyPaymentButton';
 import { useAppData } from './AppContext';
 import { D_V, PRINT_CSS, orderedSizeKeys } from './constants';
 import { supabase, _dbSaveInvoice, _dbCreateInvoiceCreditMemo, _fetchHistInvoiceLines } from './lib/dbEngine';
@@ -792,13 +793,14 @@ export default function InvoicesPage(){
           :!(inv.payments||[]).length?<div className="card-body" style={{fontSize:12,color:'#64748b'}}>No payments recorded yet.</div>
           :<div className="card-body" style={{padding:0}}>
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
-              <thead><tr style={{background:'#f8fafc'}}><th style={{padding:'8px 12px',textAlign:'left'}}>Date</th><th style={{padding:'8px 12px',textAlign:'right'}}>Amount</th><th style={{padding:'8px 12px',textAlign:'left'}}>Method</th><th style={{padding:'8px 12px',textAlign:'left'}}>Reference</th><th style={{padding:'8px 12px',textAlign:'right'}}>CC Fee</th></tr></thead>
+              <thead><tr style={{background:'#f8fafc'}}><th style={{padding:'8px 12px',textAlign:'left'}}>Date</th><th style={{padding:'8px 12px',textAlign:'right'}}>Amount</th><th style={{padding:'8px 12px',textAlign:'left'}}>Method</th><th style={{padding:'8px 12px',textAlign:'left'}}>Reference</th><th style={{padding:'8px 12px',textAlign:'right'}}>CC Fee</th><th>Actions</th></tr></thead>
               <tbody>{(inv.payments||[]).map((p,pi)=><tr key={pi} style={{borderBottom:'1px solid #f1f5f9'}}>
                 <td style={{padding:'8px 12px'}}>{p.date}</td>
                 <td style={{padding:'8px 12px',textAlign:'right',fontWeight:600,color:'#166534'}}>${p.amount.toLocaleString()}</td>
                 <td style={{padding:'8px 12px'}}>{PAY_METHODS.find(m=>m.id===p.method)?.icon} {PAY_METHODS.find(m=>m.id===p.method)?.label||p.method}</td>
                 <td style={{padding:'8px 12px',color:'#64748b'}}>{p.ref||'—'}</td>
                 <td style={{padding:'8px 12px',textAlign:'right',color:'#d97706'}}>{p.cc_fee>0?'$'+p.cc_fee.toFixed(2):'—'}</td>
+                <td style={{padding:'8px 12px'}}><UnapplyPaymentButton invoice={inv} payment={p} user={cu} nf={nf} onSaved={result=>{const update=x=>({...x,...result.invoice,payments:result.payments,_hydratedPayRefs:result.payments.map(p=>p.ref),_paymentsHydrated:true});setInvs(prev=>prev.map(x=>x.id===inv.id?update(x):x));setViewInvoice(update(inv));}}/></td>
               </tr>)}</tbody>
             </table>
           </div>}

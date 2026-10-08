@@ -1486,13 +1486,13 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     const nImg=mocks.length+logos.length;
     // Art runs full width above the tables, as large as the page allows: the rest of the
     // section's height is estimated (rows of the size table and spec, warnings, sign-offs) and
-    // the images get what's left. The first section shares page 1 with the sheet header and
-    // barcode, so it gets less room. Images stay together with the tables either way.
+    // the images get what's left. The first section shares page 1 with the sheet header,
+    // so it gets less room. Images stay together with the tables either way.
     const _rowsIn=h=>(String(h).match(/<tr>/g)||[]).length;
     const lists=ps.map(p=>p.listsHtml).join('');
     const restH=60+_rowsIn(sizeHtml)*22+(ps[0].specHtml?30+_rowsIn(ps[0].specHtml)*28:0)
       +ps.filter(p=>p.warnHtml).length*60+50+Math.min(260,_rowsIn(lists)*22);
-    const roomH=(gIdx===0?640:900)-restH;
+    const roomH=(gIdx===0?730:900)-restH;
     // Pick the column count that gives the largest image that still fits; a cell is never
     // taller than it is wide (proofs are mostly landscape), and never below a readable floor.
     let cols=1,mh=0;
@@ -1552,8 +1552,8 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     })});
   }
   const _bcHtml=!isEmb?'':embDesigns.length
-    ?'<div style="margin:8px 0 12px;padding:12px;background:#fff;border:2px solid #1e293b;border-radius:8px;page-break-inside:avoid"><div style="font-size:13px;font-weight:800;color:#1e293b">🧵 MACHINE DESIGNS — SCAN TO LOAD</div><div style="font-size:9px;color:#64748b;margin-bottom:8px">Barcode = DST file name. Scan at the machine to pull the design from the design server.</div><div style="display:flex;gap:18px;flex-wrap:wrap">'
-      +embDesigns.map(d=>'<div style="text-align:center"><div style="display:inline-block;background:#fff">'+(barcodeSvg(d.base)||'<div style="font-size:12px;font-weight:700;padding:8px">'+d.base+'</div>')+'</div>'+((d.dg||d.art)?'<div style="font-size:10px;font-weight:700;color:#334155">'+[d.dg,d.art].filter(Boolean).join(' · ')+'</div>':'')+'</div>').join('')
+    ?'<div style="margin:8px 0 12px;padding:8px 10px;background:#fff;border:1px solid #1e293b;border-radius:6px;page-break-inside:avoid"><div style="font-size:11px;font-weight:800;color:#1e293b">🧵 MACHINE DESIGNS — SCAN TO LOAD</div><div style="font-size:9px;color:#64748b;margin-bottom:4px">Barcode = DST file name. Scan at the machine to pull the design from the design server.</div><div style="display:flex;gap:12px;flex-wrap:wrap">'
+      +embDesigns.map(d=>'<div style="text-align:center"><div style="display:inline-block;background:#fff">'+(barcodeSvg(d.base,{height:36,width:1.2,fontSize:10})||'<div style="font-size:10px;font-weight:700;padding:6px">'+d.base+'</div>')+'</div>'+((d.dg||d.art)?'<div style="font-size:9px;font-weight:700;color:#334155">'+[d.dg,d.art].filter(Boolean).join(' · ')+'</div>':'')+'</div>').join('')
       +'</div></div>'
     :'<div style="margin:8px 0 12px;padding:10px 12px;background:#fef2f2;border:2px solid #fecaca;border-radius:8px;font-size:12px;font-weight:800;color:#b91c1c">⚠ NO DST FILE ATTACHED — upload the digitizer\'s .DST to this job\'s art files to print machine barcodes.</div>';
   // Non-embroidery jobs (DTF / screen print / vinyl) have no DST/DG to scan, so the
@@ -1567,7 +1567,7 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     // Repeat the Customer / Sales Order / Expected Date / Rep header on every
     // page (without the NSA logo block) so multi-page sheets stay identifiable.
     repeatInfoHeader:true,
-    notes:_notesCssReset+(_bcHtml||'')+(_jobBcHtml||'')+_itemSectionsHtml+_genericMockHtml+_prodFilesHtml+(_linkHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
+    notes:_notesCssReset+(_jobBcHtml||'')+_itemSectionsHtml+_genericMockHtml+_prodFilesHtml+(_bcHtml||'')+(_linkHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
     showPricing:false,_embSources:isEmb?allArtFiles:[]};
 };
 // ── Production Work Order sheet options (National Team Shop layout) ──
