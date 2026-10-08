@@ -1,9 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as SHOWCASE from '../lib/showcaseSettings';
+import ShowcaseProductImage from './ShowcaseProductImage';
 
 export default function ShowcaseImageReview({ item, busy, error, onClose, onAction }) {
   const dialog = useRef(null);
   const asset = item.asset || {};
+  const [zoomBefore, setZoomBefore] = useState(false);
   const [notes, setNotes] = useState(asset.showcase_settings?.revision_notes || '');
   const working = ['queued', 'generating'].includes(asset.status);
   const afterUrl = asset.showcase_image_url || asset.approved_showcase_image_url;
@@ -15,10 +17,12 @@ export default function ShowcaseImageReview({ item, busy, error, onClose, onActi
     return () => element.close();
   }, []);
 
-  const panel = (label, url, empty) => <div style={{ minWidth: 0 }}>
+  const panel = (label, url, empty, before = false) => <div style={{ minWidth: 0 }}>
     <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 8 }}>{label}</div>
-    <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, aspectRatio: '1', display: 'grid', placeItems: 'center', overflow: 'hidden' }}>
-      {url ? <a href={url} target="_blank" rel="noopener noreferrer" title={`Open full-size ${label.toLowerCase()} image`} style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center' }}>
+    <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, aspectRatio: before ? '4 / 5' : '1', display: 'grid', placeItems: 'center', overflow: 'hidden' }}>
+      {url && before ? <button type="button" onClick={() => setZoomBefore(!zoomBefore)} aria-label="Enlarge decorated standard image" style={{ width: '100%', border: 0, padding: 0, background: '#fff', cursor: zoomBefore ? 'zoom-out' : 'zoom-in' }}>
+        <ShowcaseProductImage item={item} url={url} alt={`${item.name} — ${label}`} />
+      </button> : url ? <a href={url} target="_blank" rel="noopener noreferrer" title={`Open full-size ${label.toLowerCase()} image`} style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center' }}>
         <img src={url} alt={`${item.name} — ${label}`} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
       </a> : <span style={{ padding: 24, color: '#64748b', textAlign: 'center', fontSize: 13 }}>{empty}</span>}
     </div>
@@ -29,14 +33,14 @@ export default function ShowcaseImageReview({ item, busy, error, onClose, onActi
     <div style={{ padding: '16px 20px', display: 'flex', gap: 12, alignItems: 'center', borderBottom: '1px solid #e2e8f0' }}>
       <div style={{ flex: 1 }}>
         <div id="showcase-review-title" style={{ fontSize: 17, fontWeight: 800 }}>{item.name} · Before / After</div>
-        <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>Check artwork, decoration texture, product color and hero angle. Click either image to inspect it at full size.</div>
+        <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>Check artwork, decoration texture, product color and hero angle. Click Before to enlarge the garment with its logo, or After to open the full-size hero.</div>
       </div>
       <button type="button" className="btn btn-secondary" onClick={onClose} autoFocus aria-label="Close image comparison">Close</button>
     </div>
     <div style={{ padding: 20 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(min(260px,100%),1fr))', gap: 16 }}>
-        {panel('Before · Standard image', asset.standard_image_url || item.standard_image_url, 'Add a Standard product image first.')}
-        {panel(asset.showcase_image_url ? 'After · New hero image' : 'After · Currently approved hero', afterUrl, working ? 'Your new hero image is generating…' : 'Generate a hero image to compare it here.')}
+      <div style={{ display: 'grid', gridTemplateColumns: zoomBefore ? '1fr' : 'repeat(auto-fit,minmax(min(260px,100%),1fr))', gap: 16 }}>
+        {panel('Before · Standard image', asset.standard_image_url || item.standard_image_url, 'Add a Standard product image first.', true)}
+        {panel(asset.showcase_image_url ? 'After · New hero image' : 'After · Currently approved hero', afterUrl, asset.status === 'queued' ? 'Queued · waiting for generation to start…' : working ? 'Your new hero image is generating…' : 'Generate a hero image to compare it here.')}
       </div>
       {asset.needs_regeneration && <p style={{ fontSize: 12, color: '#b45309' }}>Generate a new image to apply the saved decoration finish or review notes.</p>}
       {(error || asset.error_details) && <p role="alert" style={{ fontSize: 12, color: '#b91c1c' }}>{error || asset.error_details}</p>}

@@ -36,6 +36,11 @@ jobs:
       - name: Background runtime compatibility tests
         run: node --test tests/netlify-background-runtime.test.cjs
 
+      - name: Showcase deployment bundle smoke test
+        run: |
+          npm install --prefix "$RUNNER_TEMP/showcase-bundler" --no-audit --no-fund --ignore-scripts @netlify/zip-it-and-ship-it@16.3.0
+          SHOWCASE_BUNDLER_PATH="$RUNNER_TEMP/showcase-bundler/node_modules/@netlify/zip-it-and-ship-it/dist/main.js" node --test tests/showcase-bundle.test.mjs
+
       - name: Browser shared module runtime test
         run: node --test tests/browser-shared-runtime.test.cjs
 

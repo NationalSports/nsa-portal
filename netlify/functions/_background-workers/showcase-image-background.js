@@ -63,12 +63,13 @@ async function loadJob(admin, assetId, requestId) {
   };
 }
 
-async function conditionalUpdate(admin, assetId, requestId, fields) {
+async function conditionalUpdate(admin, assetId, requestId, fields, expectedStatus = 'generating') {
   const { data, error } = await admin
     .from('webstore_showcase_assets')
     .update({ ...fields, updated_at: new Date().toISOString() })
     .eq('id', assetId)
     .eq('generation_request_id', requestId)
+    .eq('status', expectedStatus)
     .select('id')
     .maybeSingle();
   if (error) throw new Error(error.message);
@@ -103,6 +104,7 @@ exports.handler = async (event) => {
 
   const admin = getSupabaseAdmin();
   let job;
+  let claimed = false;
   try {
     job = await loadJob(admin, assetId, requestId);
     if (!job) return reply(202, { ok: true, stale: true });
@@ -113,12 +115,13 @@ exports.handler = async (event) => {
       approval_status: 'pending',
       generation_started_at: new Date().toISOString(),
       error_details: null,
-    });
+    }, 'queued');
+    claimed = started;
     if (!started) return reply(202, { ok: true, stale: true });
 
     const sourceUrl = job.wp.image_url || job.product.image_front_url || job.asset.standard_image_url;
     if (!sourceUrl) throw new Error('A Standard source image is required before generation');
-    const referenceUrls = artworkUrls(job.wp.decorations, job.store.store_art);
+    const referenceUrls = artworkUrls(job.wp.decorations, job.store.store_art, job.product.color);
     const images = await Promise.all([sourceUrl, ...referenceUrls].map((url) => fetchRemoteImage(url)));
     if (!(await isJobCurrent(admin, assetId, requestId))) {
       return reply(202, { ok: true, canceled: true });
@@ -204,7 +207,7 @@ exports.handler = async (event) => {
         status: 'failed',
         approval_status: 'pending',
         error_details: String(e.message || e).slice(0, 1200),
-      });
+      }, claimed ? 'generating' : 'queued');
     } catch (updateError) {
       console.error('[showcase-image-background] failed to record error', updateError);
     }
