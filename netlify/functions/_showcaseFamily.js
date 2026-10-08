@@ -72,10 +72,20 @@ function masterPrompt(product) {
 async function validatedMapping(analyze, request, placements, current) {
   const render = require('./_showcaseFamilyRender');
   let reason = '';
+  let constructionRejected = false;
+  const product = request.product || {};
+  const context = JSON.stringify({ name: product.name, sku: product.supplier_sku || product.sku, brand: product.brand, fit: inferAthleticFormProfile(product) });
+  const instructions = ` PRODUCT_IDENTITY=${context}. Image 1 is the generated preview base; images 2 onward are supplier references of this same catalog style. The temporary green fabric is intentional and is not a sold color. A lowered hood, modest hero turn and invisible-support drape are intentional presentation changes, not by themselves construction differences. Verify actual seams, pocket shape, closures and manufacturer marks against the references. Inspect sleeve marks closely before claiming they are absent; a side view may reveal marks obscured in a front view. Use catalog fit metadata rather than guessing gender from flat-lay shape. Metadata does not excuse a genuine cut, pocket, seam or branding mismatch; if one is visible, reject it.`;
   for (let attempt=0; attempt<2; attempt++) {
     await current();
-    const result = await analyze({ ...request, analysisPrompt: request.analysisPrompt + (attempt ? ` CORRECTION REQUIRED: ${reason}. Reinspect the images and return a complete corrected mapping. Do not reuse invalid regions.` : '') });
-    if (result.analysis?.supported !== true) throw new Error(`Master needs review: ${result.analysis?.reason || 'unreliable logo placement'}`);
+    const result = await analyze({ ...request, analysisPrompt: instructions + '\n' + request.analysisPrompt + (attempt ? ` CORRECTION REQUIRED: ${reason}. Reinspect the images and return a complete corrected mapping. Do not reuse invalid regions.` : '') });
+    if (result.analysis?.supported !== true) {
+      constructionRejected = true;
+      reason = String(result.analysis?.reason || 'The preview could not be reliably compared with the supplier references').slice(0,2000);
+      console.warn('[showcase-mapping] comparison rejected', { attempt: attempt+1, sku: product.supplier_sku || product.sku, reason });
+      continue;
+    }
+    constructionRejected = false;
     try {
       const a = result.analysis;
       a.protected_regions = render.normalizeRegions(a.protected_regions);
@@ -85,7 +95,8 @@ async function validatedMapping(analyze, request, placements, current) {
       return result;
     } catch (error) { reason = error.message; }
   }
-  throw new Error(`Unable to map garment details after two attempts. The saved base is retained; retry generation. ${reason}`);
+  if (constructionRejected) throw new Error('The generated preview could not be verified against the supplier photos after two checks. Choose New base garment to create a replacement. Your approved images have not changed.');
+  throw new Error('Unable to place the artwork reliably after two checks. The saved base is retained; retry generation. Your approved images have not changed.');
 }
 
 async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
