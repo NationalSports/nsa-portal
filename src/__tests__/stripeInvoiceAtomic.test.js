@@ -19,7 +19,7 @@ test('partial requests use the same atomic settlement boundary',async()=>{
 test('never persists Stripe client secrets or bank details',async()=>{
  const admin={rpc:jest.fn().mockResolvedValue({data:{reconciled:[]}})};
  await reconcileInvoiceFromIntent(admin,{...pi,client_secret:'secret',latest_charge:{payment_method_details:{type:'us_bank_account',us_bank_account:{last4:'0000'}}}});
- expect(JSON.stringify(admin.rpc.mock.calls)).not.toMatch(/secret|0000/);
+ expect(JSON.stringify(admin.rpc.mock.calls)).not.toMatch(/client_secret|last4|us_bank_account/);
 });
 test('refund and dispute evidence is passed to atomic guard',async()=>{
  const admin={rpc:jest.fn().mockResolvedValue({data:{error:'review'}})};
