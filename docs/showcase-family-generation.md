@@ -20,7 +20,7 @@ Drawstring/zipper occlusion regions keep artwork behind those features. Brand
 marks and neutral background pixels are protected from recoloring.
 
 Complex patterned or contrasting-panel products, differing manufacturer-mark
-colors, unreliable mappings, missing artwork/placements and missing supplier
+colors, green brand marks that overlap the master masking color, unreliable mappings, missing artwork/placements and missing supplier
 photos fail clearly. These cases need separate rendering support; the pipeline
 does not silently substitute guessed colors or branding. All outputs require
 human comparison of color, texture, construction, marks and decoration placement.

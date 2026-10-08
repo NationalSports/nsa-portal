@@ -60,17 +60,19 @@ async function prepareMaster(bytes, layout) {
   const light = [];
   for (let i = 0; i < mask.length; i++) {
     const [r, g, b] = data.subarray(i * 4, i * 4 + 3);
-    const x = (i % info.width) / info.width, y = Math.floor(i / info.width) / info.height;
     // Master cloth is deliberately green; protected labels, marks, hardware,
     // white background and its neutral grounding shadow remain unchanged.
-    if (g > r * 1.35 && g > b * 1.35 && g > 12 && !protectedRegions.some((p) => inside(x, y, p))) {
+    // Do not freeze entire QA polygons: their fabric margins would retain a
+    // green halo. Neutral/other-hue marks are protected by pixel classification;
+    // polygons separately prevent artwork from covering manufacturer details.
+    if (g > r + 6 && g > b + 6 && g > 12) {
       mask[i] = clamp((g - Math.max(r, b)) / 25, 0, 1);
       light.push(g);
     }
   }
   const coverage = light.length / mask.length;
   if (coverage < .12 || coverage > .8) throw new Error('Master fabric mask needs correction; generate a new base');
-  return { data, info, mask, median: median(light), occluders };
+  return { data, info, mask, median: median(light), occluders, protectedRegions };
 }
 function recolor(master, rgb, grain) {
   const out = Buffer.from(master.data);
@@ -115,13 +117,14 @@ async function applyArtwork(output, master, bytes, quad, finish, options = {}) {
     validateQuad(quad);
   }
   const { width, height } = master.info;
+  const blocked = [...master.occluders,...master.protectedRegions];
   const [tl, tr, br, bl] = quad.map(([x,y]) => [x * width, y * height]);
   const minY = Math.max(0, Math.floor(Math.min(tl[1],tr[1]))), maxY = Math.min(height,Math.ceil(Math.max(bl[1],br[1])));
   const minX = Math.max(0, Math.floor(Math.min(tl[0],bl[0]))), maxX = Math.min(width,Math.ceil(Math.max(tr[0],br[0])));
   let applied = 0;
   for (let y = minY; y < maxY; y++) for (let x = minX; x < maxX; x++) {
     const idx = y * width + x;
-    if (!master.mask[idx] || master.occluders.some((p) => inside(x / width,y / height,p))) continue;
+    if (!master.mask[idx] || blocked.some((p) => inside(x / width,y / height,p))) continue;
     // Invert the bilinear quad by Newton iterations; artwork follows the mapped
     // garment plane, with the same coordinates for every logo/color variant.
     let u = .5, v = .5;

@@ -56,3 +56,12 @@ test('non-chroma master is rejected rather than tinting white background',async(
   const bytes=await sharp({create:{width:100,height:100,channels:3,background:'white'}}).png().toBuffer();
   await assert.rejects(prepareMaster(bytes,{protected_regions:[],logo_occluders:[]}),/mask needs correction/);
 });
+
+test('protected-brand polygon margins recolor instead of leaving a green halo',async()=>{
+  const {bytes}=await fixture();
+  const master=await prepareMaster(bytes,{protected_regions:[[[.62,.27],[.73,.27],[.73,.38],[.62,.38]]],logo_occluders:[]});
+  const output=recolor(master,[20,60,140]);
+  const brand=(32*100+67)*4, fabric=(36*100+67)*4;
+  assert.deepEqual([...output.subarray(brand,brand+3)],[255,255,255]);
+  assert.ok(output[fabric+2]>output[fabric+1], 'fabric next to the brand must be blue, not frozen green');
+});
