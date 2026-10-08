@@ -16,6 +16,16 @@ import { isPrePortalNetsuitePo } from './netsuiteOldPos';
 import { parseSiPoString, siPoOrigin } from './sportsLink';
 import { acquireQBInvoiceSyncClaim, classifyQBInvoiceDuplicate, loadQBInvoicesForDuplicateCheck, normalizeQBInvoiceDocumentNumber, qbInvoiceSourceKey, releaseQBInvoiceSyncClaim } from './qbInvoiceSyncGuard';
 
+// A migrated numeric QBO ID is not proof that it identifies this invoice.
+// Check ownership before importing money or correcting an invoice total.
+export function qbPaidInvoiceIdentityError(invoice, qboInvoice, customerId) {
+  const sourceNumber=normalizeQBInvoiceDocumentNumber(invoice.display_id||invoice.id);
+  const qboNumber=normalizeQBInvoiceDocumentNumber(qboInvoice?.DocNumber);
+  if(!sourceNumber||!qboNumber||sourceNumber!==qboNumber)return 'invoice number differs';
+  if(!customerId||String(qboInvoice?.CustomerRef?.value||'')!==String(customerId))return 'invoice customer differs or is unverified';
+  return null;
+}
+
 // Return a circular batch and the cursor for the next run. Permanent blockers
 // in the first N records must not starve every later customer/invoice/item/PO.
 export function rotatingBatch(items = [], offset = 0, size = 20) {
@@ -1547,15 +1557,16 @@ export function createQBSyncEngine(ctx){
           for(let start=0;start<linkedInvs.length;start+=QB_SYNC_BATCH_SIZE){
             const batch=linkedInvs.slice(start,start+QB_SYNC_BATCH_SIZE);
             const ids=batch.map(i=>String(i.qb_invoice_id).replace(/'/g,"\\'"));
-            const result=await queryQBReadOnly(qbApi,"SELECT Id, DocNumber, Balance, TotalAmt FROM Invoice WHERE Id IN ('"+ids.join("','")+"')",'payment review');
+            const result=await queryQBReadOnly(qbApi,"SELECT Id, DocNumber, CustomerRef, Balance, TotalAmt FROM Invoice WHERE Id IN ('"+ids.join("','")+"')",'payment review');
             const records=new Map((result?.QueryResponse?.Invoice||[]).map(i=>[String(i.Id),i]));
             for(const inv of batch){
               const q=records.get(String(inv.qb_invoice_id));
               const valid=q&&q.TotalAmt!=null&&q.Balance!=null&&Number.isFinite(Number(q.TotalAmt))&&Number.isFinite(Number(q.Balance));
               const total=valid?Number(q.TotalAmt):null,paid=valid?total-Number(q.Balance):null;
-              const action=!valid?'missing QBO amounts':Math.abs(safeNum(inv.total)-total)>0.005?'invoice total differs':paid-safeNum(inv.paid)>0.005?'pull payment details':safeNum(inv.paid)-paid>0.005?'review payment push':'aligned';
-              if(!valid&&log.status!=='error')log.status='partial';
-              rows.push({invoice:inv.display_id||inv.id,qboId:String(inv.qb_invoice_id),portalTotal:safeNum(inv.total),qboTotal:total,portalPaid:safeNum(inv.paid),qboPaid:paid,action});
+              const identityError=q&&qbPaidInvoiceIdentityError(inv,q,inv.qb_customer_id||(qbConfig.custQBMap||{})[inv.customer_id]);
+              const action=identityError?'invoice identity differs':!valid?'missing QBO amounts':Math.abs(safeNum(inv.total)-total)>0.005?'invoice total differs':paid-safeNum(inv.paid)>0.005?'pull payment details':safeNum(inv.paid)-paid>0.005?'review payment push':'aligned';
+              if((!valid||identityError)&&log.status!=='error')log.status='partial';
+              rows.push({invoice:inv.display_id||inv.id,qboId:String(inv.qb_invoice_id),portalTotal:safeNum(inv.total),qboTotal:total,portalPaid:safeNum(inv.paid),qboPaid:paid,action,...(identityError?{identityError}:{})});
             }
           }
         }catch(e){log.status='error';log.details.push('Payment review failed: '+e.message)}
@@ -1576,12 +1587,14 @@ export function createQBSyncEngine(ctx){
       try{
         // Query QB for all invoices and their balance
         const qbIds=linkedInvs.map(i=>i.qb_invoice_id);
-        const res=await queryQBReadOnly(qbApi,"SELECT Id, DocNumber, Balance, TotalAmt, SyncToken FROM Invoice WHERE Id IN ('"+qbIds.join("','")+"')",'paid-status invoice query');
+        const res=await queryQBReadOnly(qbApi,"SELECT Id, DocNumber, CustomerRef, Balance, TotalAmt, SyncToken FROM Invoice WHERE Id IN ('"+qbIds.join("','")+"')",'paid-status invoice query');
         const qbInvList=res?.QueryResponse?.Invoice||[];
         const qbMap={};qbInvList.forEach(qi=>{qbMap[qi.Id]=qi});
         for(const inv of linkedInvs){
           const qbInv=qbMap[inv.qb_invoice_id];
           if(!qbInv){log.details.push((inv.display_id||inv.id)+' — not found in QB');continue}
+          const identityError=qbPaidInvoiceIdentityError(inv,qbInv,inv.qb_customer_id||(qbConfig.custQBMap||{})[inv.customer_id]);
+          if(identityError){log.details.push((inv.display_id||inv.id)+' — payment and total sync BLOCKED: '+identityError+'; review QBO Invoice #'+inv.qb_invoice_id+' link');log.status='partial';continue}
           const qbBalance=safeNum(qbInv.Balance);
           const qbTotal=safeNum(qbInv.TotalAmt);
           // Totals drift: invoices only pushed once (!qb_invoice_id filter), so a portal
