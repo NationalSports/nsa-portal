@@ -1418,9 +1418,6 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         <MIcon name="search" size={18}/>
         <span style={{flex:1,color:'#94a3b8',fontSize:15}}>Search orders, customers, estimates…</span>
       </div>
-      {canNotes&&<button onClick={()=>openNotes({mode:'dictated'})} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:10,padding:'14px',borderRadius:12,border:'none',background:'#dc2626',color:'white',fontWeight:800,fontSize:15,cursor:'pointer',margin:'4px 0 12px',minHeight:52}}>
-        <span style={{fontSize:18}}>🎙️</span> Voice note after a visit
-      </button>}
       {!appNudgeHidden&&(!appState.installed||appState.push==='off')&&appState.push!=='unknown'&&<div className="mp-item-card" style={{display:'flex',alignItems:'center',gap:12,marginBottom:12,border:'1px solid #bfdbfe',background:'#eff6ff'}}>
         <img src="/icon-192.png" alt="" style={{width:40,height:40,borderRadius:10,background:'white'}}/>
         <div style={{flex:1,minWidth:0,cursor:'pointer'}} onClick={()=>{setTab('more');setMoreSubPage('app')}}>
