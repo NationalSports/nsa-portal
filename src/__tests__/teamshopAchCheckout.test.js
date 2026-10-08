@@ -42,7 +42,7 @@ jest.mock('../../netlify/functions/_webstoreEmail', () => ({
 jest.mock('@supabase/supabase-js', () => ({ createClient: jest.fn() }));
 jest.mock('../../netlify/functions/_shared', () => ({
   ...jest.requireActual('../../netlify/functions/_shared'),
-  reconcileInvoiceFromIntent: jest.fn(),
+  reconcileInvoiceFromIntent: jest.fn(async () => ({ reconciled: [] })),
 }));
 
 const stripeMock = require('stripe');
@@ -126,6 +126,7 @@ const placeBody = (extra) => ({ customer_id: 'custA', lines: LINES, contact: CON
 let calcTaxSpy;
 beforeEach(() => {
   jest.clearAllMocks();
+  require('../../netlify/functions/_shared').reconcileInvoiceFromIntent.mockResolvedValue({ reconciled: [] });
   calcTaxSpy = jest.spyOn(ws, 'calcTax').mockResolvedValue(TAX);
   stripeMock.__pi.create.mockResolvedValue({ id: 'pi_ach_1', client_secret: 'cs_ach_1' });
   // These ACH state-machine tests do not model a Stripe Charge.  The payout

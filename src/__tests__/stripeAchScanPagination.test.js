@@ -55,9 +55,9 @@ test('ignores non-processing and other-invoice intents; stops at has_more=false'
   expect(client.calls.length).toBe(1);
 });
 
-test('bounded: gives up (fail-open) after maxPages rather than scanning forever', async () => {
+test('bounded: fails closed after maxPages rather than permitting an unverified duplicate', async () => {
   const endless = { data: fillerPage(100, 0), has_more: true };
   const client = { paymentIntents: { list: jest.fn(async () => endless) } };
-  expect(await findInFlightIntent(client, ['INV-1'], { maxPages: 5 })).toBeNull();
+  await expect(findInFlightIntent(client, ['INV-1'], { maxPages: 5 })).rejects.toThrow('scan limit');
   expect(client.paymentIntents.list).toHaveBeenCalledTimes(5);
 });

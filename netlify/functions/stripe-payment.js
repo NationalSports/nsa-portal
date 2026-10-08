@@ -87,7 +87,16 @@ const MAX_AMOUNT_CENTS = parseInt(process.env.STRIPE_MAX_AMOUNT_CENTS || '', 10)
 // busy week the older in-flight intent — exactly the one the double-debit guard exists
 // to find — is the first thing pushed off page 1 by newer volume from every channel
 // sharing the Stripe account. maxPages bounds serverless runtime; exported for tests.
-const findInFlightIntent = async (client, realIds, { days = 7, maxPages = 20 } = {}) => {
+const findInFlightIntent = async (client, realIds, { days = 7, maxPages = 20, admin } = {}) => {
+  if (admin) {
+    const { data, error } = await admin.from('invoice_payment_intents').select('id').overlaps('invoice_ids', realIds)
+      .is('applied_at', null).in('status', ['processing','succeeded']);
+    if (error) throw error;
+    for (const row of data || []) {
+      const current = await client.paymentIntents.retrieve(row.id);
+      if (['processing','succeeded'].includes(current.status)) return current;
+    }
+  }
   const gte = Math.floor(Date.now() / 1000) - days * 86400;
   let startingAfter;
   for (let page = 0; page < maxPages; page++) {
@@ -99,7 +108,7 @@ const findInFlightIntent = async (client, realIds, { days = 7, maxPages = 20 } =
     if (!res || !res.has_more || !data.length) return null;
     startingAfter = data[data.length - 1].id;
   }
-  return null;
+  throw new Error('Bank payment verification exceeded its scan limit');
 };
 exports.findInFlightIntent = findInFlightIntent;
 
@@ -165,33 +174,36 @@ exports.handler = async (event) => {
       // Partial pay link: the REQUEST sets the price. Fail closed — a request that can't be verified
       // never falls back to the balance checks below.
       let payRequest = null;
+      let invoiceBaseCents = null;
       if (body.pay_request_id) {
         const r = await loadOpenPayRequest(getSupabaseAdmin(), body.pay_request_id);
         if (r.error) return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: r.error }) };
         const reqCents = Math.round(Number(r.req.amount) * 100);
+        invoiceBaseCents = reqCents;
         if (String(invoice_id || '').trim() !== String(r.req.invoice_id) || amount_cents < reqCents || amount_cents > Math.ceil(reqCents * 1.05) + 100) {
           return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment amount does not match this payment link. Please reload the page and try again.' }) };
         }
         let inFlight = null;
-        try { inFlight = await findInFlightIntent(client, [String(r.req.invoice_id)]); } catch (e) { console.warn('[stripe-payment] in-flight check skipped:', e.message); }
+        inFlight = await findInFlightIntent(client, [String(r.req.invoice_id)], { admin: getSupabaseAdmin() });
         if (inFlight) return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'A bank payment for this invoice is already processing. Please don’t pay again — contact NSA if you believe this is an error.' }) };
         payRequest = r.req;
       }
 
-      // Best-effort invoice-balance validation. invoice_id may be a comma-joined list
+      // Invoice-balance validation. invoice_id may be a comma-joined list
       // (multi-invoice portal payments) or a webstore slug (no invoice rows — skipped;
-      // webstore carts get verified when checkout moves server-side). Fail-open on DB
-      // errors so a Supabase blip can't take payments down — the ceiling still applies.
+      // webstore carts get verified when checkout moves server-side). Failing open on DB
+      // errors is unsafe: verification failures must stop a new debit.
       if (!payRequest) try {
         const ids = String(invoice_id || '').split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
         if (ids.length) {
           const admin = getSupabaseAdmin();
           const { data: invRows, error: invErr } = await admin.from('invoices').select('id,total,paid').in('id', ids);
           if (invErr) {
-            console.warn('[stripe-payment] invoice lookup failed, skipping balance check:', invErr.message);
+            throw new Error('Invoice balance verification is unavailable');
           } else if (invRows && invRows.length) {
             const balanceCents = Math.round(invRows.reduce((a, r) => a + Math.max(0, (Number(r.total) || 0) - (Number(r.paid) || 0)), 0) * 100);
             // Headroom for the CC surcharge the portal adds on top (3%) + rounding.
+            invoiceBaseCents = balanceCents;
             const maxCents = Math.ceil(balanceCents * 1.05) + 100;
             if (balanceCents <= 0 || amount_cents > maxCents) {
               return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment amount does not match the open balance for this invoice. Please reload the page and try again.' }) };
@@ -204,17 +216,16 @@ exports.handler = async (event) => {
             // invoice ids. Scoped inside the invRows branch so a non-invoice
             // identifier (e.g. a legacy webstore slug shared across buyers) can never
             // block one buyer on another's in-flight payment. Paginated 7-day scan
-            // (see findInFlightIntent); fail-open on Stripe errors (outer catch) so
-            // the check can never block payments outright.
+            // (see findInFlightIntent); fail closed when the check is incomplete.
             const realIds = invRows.map((r) => String(r.id));
-            const inFlight = await findInFlightIntent(client, realIds);
+            const inFlight = await findInFlightIntent(client, realIds, { admin });
             if (inFlight) {
               return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'A bank payment for this invoice is already processing (submitted ' + new Date(inFlight.created * 1000).toLocaleDateString('en-US') + '). Bank payments take 1–4 business days to clear, so please don’t pay again — contact NSA if you believe this is an error.' }) };
             }
           }
         }
       } catch (e) {
-        console.warn('[stripe-payment] balance check skipped:', e.message);
+        return { statusCode: 503, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment verification is temporarily unavailable. Please try again later; no new payment was started.' }) };
       }
 
       // Same payer + same invoice(s) + same amount on the same day → same intent
@@ -223,7 +234,7 @@ exports.handler = async (event) => {
       // payment_method_types) so a same-day retry can't reuse a key whose parameters now differ —
       // Stripe rejects that with "idempotent requests can only be used with the same parameters."
       const idemKey = body.idempotency_key || crypto.createHash('sha256')
-        .update(['nsa_pi_v2', body.method || '', invoice_id || '', payRequest ? payRequest.id : '', Math.round(amount_cents), (customer_email || '').toLowerCase(), new Date().toISOString().slice(0, 10)].join('|'))
+        .update(['nsa_pi_v3', body.method || '', invoice_id || '', payRequest ? payRequest.id : '', Math.round(amount_cents), (customer_email || '').toLowerCase(), new Date().toISOString().slice(0, 10)].join('|'))
         .digest('hex');
 
       const intent = await client.paymentIntents.create({
@@ -239,6 +250,7 @@ exports.handler = async (event) => {
           customer_name: customer_name || '',
           alpha_tag: alpha_tag || '',
           source: 'nsa_coach_portal',
+          ...(invoiceBaseCents !== null ? { invoice_base_cents: String(invoiceBaseCents) } : {}),
           ...(payRequest ? { pay_request_id: payRequest.id } : {}),
         },
         ...(customer_email ? { receipt_email: customer_email } : {}),
@@ -324,11 +336,11 @@ exports.handler = async (event) => {
       }
       let intent;
       try {
-        intent = await client.paymentIntents.retrieve(payment_intent_id);
+        intent = await client.paymentIntents.retrieve(payment_intent_id, { expand: ['latest_charge'] });
       } catch (e) {
         return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ ok: false, error: 'Payment intent not found' }) };
       }
-      if (!intent || intent.status !== 'succeeded') {
+      if (!intent) {
         return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: false, status: intent ? intent.status : 'not_found' }) };
       }
       let result = { reconciled: [] };
@@ -338,7 +350,13 @@ exports.handler = async (event) => {
         console.error('[stripe-payment] finalize_invoice reconcile error:', e.message);
         return { statusCode: 500, headers: corsHeaders(), body: JSON.stringify({ ok: false, error: 'Reconcile failed' }) };
       }
-      return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, ...result }) };
+      let invoices = [];
+      if (result.reconciled?.length && !result.error) {
+        const { data, error } = await getSupabaseAdmin().from('invoices').select('id,total,paid,status,cc_fee').in('id',result.reconciled);
+        if (error) throw error;
+        invoices = data || [];
+      }
+      return { statusCode: result.error ? 409 : 200, headers: corsHeaders(), body: JSON.stringify({ ok: intent.status === 'succeeded' && !result.error, status: intent.status, ...result, invoices }) };
     }
 
     if (action === 'refund_webstore_order') {
@@ -568,6 +586,35 @@ exports.handler = async (event) => {
         } catch (e) { /* audit row is best-effort — the refund itself already succeeded */ }
       }
       return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ id: refund.id, status: refund.status, amount: refund.amount }) };
+    }
+
+    if (action === 'invoice_status') {
+      const v = await verifyUser(event);
+      if (!v.ok) return { statusCode: v.status, headers: corsHeaders(), body: JSON.stringify({ error: v.error }) };
+      const id = String(body.invoice_id || '');
+      if (!/^INV-[A-Za-z0-9-]+$/.test(id)) return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Invalid invoice ID' }) };
+      const admin = getSupabaseAdmin();
+      const { data: known, error } = await admin.from('invoice_payment_intents').select('id').contains('invoice_ids', [id]);
+      if (error) throw error;
+      const intents = new Map();
+      // Bounded pagination also discovers pre-hotfix and multi-invoice payments.
+      let cursor;
+      let complete = false;
+      const observedAt = new Date().toISOString();
+      for (let n = 0; n < 20; n++) {
+        const page = await client.paymentIntents.list({ limit: 100, created: { gte: Math.floor(Date.now()/1000)-14*86400 }, ...(cursor ? { starting_after: cursor } : {}) });
+        for (const pi of page.data) if (String(pi.metadata?.invoice_id || '').split(/[\s,]+/).includes(id)) intents.set(pi.id, pi);
+        if (!page.has_more) { complete = true; break; }
+        cursor = page.data[page.data.length-1]?.id;
+        if (!cursor) break;
+      }
+      if (!complete) throw new Error('Payment status scan incomplete; use Stripe verification');
+      for (const row of known || []) if (!intents.has(row.id)) intents.set(row.id, await client.paymentIntents.retrieve(row.id));
+      for (const pi of intents.values()) await reconcileInvoiceFromIntent(admin, pi, { apply: false, observedAt });
+      const { data: payments, error: readError } = await admin.from('invoice_payment_intents')
+        .select('id,status,amount_cents,method,submitted_at,applied_at,review_reason').contains('invoice_ids',[id]).order('submitted_at',{ascending:false});
+      if (readError) throw readError;
+      return { statusCode: 200, headers: { ...corsHeaders(), 'Cache-Control': 'no-store' }, body: JSON.stringify({ payments: payments || [] }) };
     }
 
     if (action === 'get_intent') {
