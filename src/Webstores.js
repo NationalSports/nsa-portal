@@ -1,3 +1,4 @@
+import { approveImages } from './lib/showcaseApproval';
 import ArtworkReadiness from './allSchool/ArtworkReadiness';
 import InventoryPurchasing from './allSchool/InventoryPurchasing';
 import { garmentInventoryRows } from './allSchool/garmentInventory';
@@ -6540,6 +6541,13 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
   const act = async (key, action, extra = {}) => {
     setBusy(key); setError('');
     try {
+      if (action === 'approve_all') {
+        const result = await approveImages(call, extra.image_ids || []);
+        await loadState(true);
+        onFlash?.(`${result.approved} image${result.approved === 1 ? '' : 's'} approved`);
+        if (result.failures.length) setError(`${result.approved} approved; ${result.failures.length} could not be approved. ${result.failures[0].message}`);
+        return result;
+      }
       const data = await call(action, extra);
       if (action === 'save_mode' || action === 'publish') {
         setSnapshot((cur) => cur ? { ...cur, store: { ...cur.store, ...(data.store || {}) } } : cur);

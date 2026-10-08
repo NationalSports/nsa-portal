@@ -53,3 +53,13 @@ test('a combination can generate by itself without requesting the family',()=>{
  fireEvent.click(screen.getAllByText('Create this image')[4]);
  expect(act).toHaveBeenCalledWith('4','generate_image',{family_key:'style:nike:hood',webstore_product_id:'4',showcase_settings:{decoration_type:'auto',revision_notes:''}});
 });
+
+test('item and store bulk approval target only ready current images without opening review',()=>{
+ const act=jest.fn();
+ render(<ShowcaseFamilyList items={items.map((i,n)=>({...i,asset:n<2?{status:'review',showcase_image_url:'ready.png'}:{status:'missing'}}))} act={act}/>);
+ fireEvent.click(screen.getByText('Approve all (2)'));
+ expect(act).toHaveBeenLastCalledWith('style:nike:hood','approve_all',{image_ids:['0','1']});
+ fireEvent.click(screen.getByText('Approve all images (2)'));
+ expect(act).toHaveBeenLastCalledWith('approve_all','approve_all',{image_ids:['0','1']});
+ expect(screen.queryAllByText('Before / After')).toHaveLength(0);
+});

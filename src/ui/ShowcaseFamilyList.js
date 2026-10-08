@@ -3,12 +3,14 @@ import { groupShowcaseItems, needsFamilyGeneration } from '../lib/showcaseFamili
 import { DECORATION_FINISHES } from '../lib/showcaseSettings';
 import ShowcaseImageReview from './ShowcaseImageReview';
 import ShowcaseProductImage from './ShowcaseProductImage';
+import { approvableImageIds } from '../lib/showcaseApproval';
 
 function FamilyCard({ group, busy, act, onReview }) {
   const [open, setOpen] = useState(false);
   const [finish, setFinish] = useState(group.items[0].asset?.showcase_settings?.decoration_type || 'auto');
   const approved = group.items.filter(({ asset }) => asset?.status === 'approved').length;
   const generated = group.items.filter(({ asset }) => asset?.showcase_image_url || asset?.approved_showcase_image_url).length;
+  const approvalIds = approvableImageIds(group.items);
   const needsUpdate = needsFamilyGeneration(group);
   const review = group.items.filter(({ asset }) => asset?.status === 'review').length;
   const errors = [...new Set(group.items.map(({ asset }) => asset?.error_details).filter(Boolean))];
@@ -35,6 +37,7 @@ function FamilyCard({ group, busy, act, onReview }) {
         </button>
         {group.working ? <button className="btn btn-sm btn-secondary" disabled={busy} onClick={()=>act(group.key,'cancel_family',{family_key:group.key})}>Cancel item</button>
           : <button className="btn btn-sm btn-secondary" disabled={busy || !group.eligible} onClick={()=>generate(true)}>Change pose & lighting</button>}
+        <button className="btn btn-sm btn-primary" disabled={busy || group.working || !approvalIds.length} onClick={()=>act(group.key,'approve_all',{image_ids:approvalIds})}>Approve all ({approvalIds.length})</button>
         <button className="btn btn-sm btn-secondary" aria-expanded={open} onClick={()=>setOpen(!open)}>{open?'Hide combinations':`Review combinations (${group.items.length})`}</button>
       </div>
     </div>
@@ -65,12 +68,14 @@ function FamilyCard({ group, busy, act, onReview }) {
 export default function ShowcaseFamilyList({ items, busy, error, act }) {
   const [reviewId,setReviewId]=useState(null);
   const groups=groupShowcaseItems(items);
+  const approvalIds=approvableImageIds(items);
   const count=groups.filter(needsFamilyGeneration).length;
   const reviewItem=items.find((item)=>item.webstore_product_id===reviewId);
   return <div className="card">
     <div style={{padding:18,borderBottom:'1px solid #e2e8f0'}}>
       <div style={{display:'flex',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
         <strong>Showcase · {groups.length} base items</strong>
+        <button className="btn btn-sm btn-primary" disabled={busy || !approvalIds.length} onClick={()=>act('approve_all','approve_all',{image_ids:approvalIds})}>Approve all images ({approvalIds.length})</button>
         {groups.some((g)=>g.working) && <button className="btn btn-sm btn-secondary" disabled={busy} onClick={()=>{
           if(window.confirm('Cancel all active items? Provider requests already in flight may still incur a charge.')) act('cancel_all','cancel_all');
         }}>Cancel all</button>}
@@ -78,7 +83,7 @@ export default function ShowcaseFamilyList({ items, busy, error, act }) {
           if(window.confirm(`Generate ${count} base items and all their color/logo combinations? Each item uses up to one paid AI image generation; saved bases are reused. Color analysis also incurs usage charges.`)) act('generate_all','generate_all_families');
         }}>Generate all ({count})</button>
       </div>
-      <p style={{fontSize:12,color:'#64748b',marginBottom:0}}>One shared garment per item. Colors are sampled from supplier photos; saved logos are applied to each combination. Refresh images keeps the current pose and lighting. Choose Change pose & lighting to change the pose or lighting. Review every color and logo before approval.</p>
+      <p style={{fontSize:12,color:'#64748b',marginBottom:0}}>One shared garment per item. Colors are sampled from supplier photos; saved logos are applied to each combination. Refresh images keeps the current pose and lighting. Choose Change pose & lighting to change the pose or lighting. Approve images individually or use Approve all for the generated images awaiting approval.</p>
       <p style={{fontSize:12,color:'#64748b',marginBottom:0}}>Photo lighting can affect color accuracy. Compare fabric texture, manufacturer marks and decoration placement with the original photos. Approved images remain in use until you approve replacements.</p>
     </div>
     <div style={{padding:14}}>{!groups.length && <p>Add products to the catalog first.</p>}{groups.map((group)=><FamilyCard key={group.key} group={group} busy={busy} act={act} onReview={setReviewId}/>)}</div>
