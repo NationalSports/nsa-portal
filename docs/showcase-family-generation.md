@@ -84,3 +84,9 @@ purchasing a new garment master. Existing approved imagery remains unchanged
 until staff approves replacements. The relief and weave are simulations, not evidence of actual stitch construction.
 
 The Appearance card reports generated, currently approved and awaiting-review counts separately. Regenerate whole item reuses the cached garment and produces new review candidates; saved older images do not change automatically. The review button opens the same modal as Before / After, with sticky close and approval controls.
+
+## Athletic pose and mapping recovery
+
+Master pose version `athletic-hood-down-v2` restores fit-aware athletic volume, a restrained 10–12 degree turn and a chest-level camera. Hoodie hoods rest down behind the neck. The master signature includes the pose version, so the next generation replaces an older pose once instead of silently reusing it; subsequent renders reuse the new base. Existing approved images remain unchanged.
+
+Mapping validates all protected polygons, drawstring traces and requested placement quads before rendering. Numeric string coordinates and explicit x/y objects normalize without changing units. Pixel/percentage coordinates, extra dimensions, missing placements and unsafe traces trigger one corrected analysis using the same image references. A second invalid response fails with an actionable retry message and retains the cached master. This retry does not purchase another master image.

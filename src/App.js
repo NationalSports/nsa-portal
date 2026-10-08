@@ -67,6 +67,7 @@ import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { stampEstimateDraftLineIds } from './lib/orderLineIdentity';
 import { searchSalesOrders } from './lib/searchSalesOrders';
+import { nextSalesOrderId, salesOrderSequenceNumber } from './lib/salesOrderIds';
 import GlobalSearch from './GlobalSearch';
 import { checkUpsTracking } from './lib/upsTracking';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills, portalBillAlreadyApplied,billHoldKey,collapseParkedHolds,buildQboBackfillRows,buildQboCanaryRecoveryRow,qboBackfillHistory} from './appliedBillsLedger';
@@ -364,9 +365,20 @@ const pushWebstoreStatusSync=async(so)=>{
     await _applyWebstoreStageSync(sync,items);
   }catch(e){console.warn('[webstore] auto status sync failed:',e.message)}
 };
-const _syncDbMaxIds=async()=>{if(!supabase)return;try{const[e,s,i]=await Promise.all([supabase.from('estimates').select('id').order('id',{ascending:false}).limit(1),supabase.from('sales_orders').select('id').order('id',{ascending:false}).limit(1),supabase.from('invoices').select('id').order('id',{ascending:false}).limit(1)]);const p=r=>{const m=String(r?.data?.[0]?.id||'').match(/(\d+)/);return m?parseInt(m[1]):0};_dbMaxIds.est=p(e);_dbMaxIds.so=p(s);_dbMaxIds.inv=p(i)}catch(e){console.warn('[DB] Failed to sync max IDs:',e)}};
+const _syncDbMaxIds=async()=>{if(!supabase)return;try{
+  // Text sorting cannot find the numeric max across digit lengths. Query each
+  // canonical length separately, excluding test and date-like order IDs.
+  const soQueries=[4,5,6,7].map(digits=>supabase.from('sales_orders').select('id')
+    .like('id','SO-'+'_'.repeat(digits))
+    .gte('id','SO-'+(digits===4?'1000':'1'+'0'.repeat(digits-1)))
+    .lte('id','SO-'+'9'.repeat(digits))
+    .order('id',{ascending:false}).limit(1));
+  const[e,...rest]=await Promise.all([supabase.from('estimates').select('id').order('id',{ascending:false}).limit(1),...soQueries,supabase.from('invoices').select('id').order('id',{ascending:false}).limit(1)]);
+  const i=rest.pop();const p=r=>{const m=String(r?.data?.[0]?.id||'').match(/(\d+)/);return m?parseInt(m[1]):0};
+  _dbMaxIds.est=p(e);_dbMaxIds.so=Math.max(0,...rest.map(r=>salesOrderSequenceNumber(r?.data?.[0]?.id)));_dbMaxIds.inv=p(i);
+}catch(e){console.warn('[DB] Failed to sync max IDs:',e)}};
 const nextEstId=ests=>'EST-'+(Math.max(_maxNum(ests),_dbMaxIds.est,1000)+1);
-const nextSOId=sos=>'SO-'+(Math.max(_maxNum(sos),_dbMaxIds.so,1000)+1);
+const nextSOId=sos=>nextSalesOrderId(sos,_dbMaxIds.so);
 const nextInvId=invs=>'INV-'+(Math.max(_maxNum(invs),_dbMaxIds.inv,1000)+1);
 // Deep-clone art_files with FRESH ids for a copied estimate/SO. Copies must never share art_file
 // ids with their source: shared ids let one order's art bleed into another and break art-id-keyed
