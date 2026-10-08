@@ -1,5 +1,5 @@
 import { garmentInventoryRows } from './allSchool/garmentInventory';
-import { methodSetupError, resolveSchoolSetup } from './allSchool/methodReadiness.shared';
+import { hasSchoolMockup, methodSetupError, resolveSchoolSetup } from './allSchool/methodReadiness.shared';
 import { artworkItemName, recipeKey } from './lib/artworkReport';
 import ShowcaseImageReview from './ui/ShowcaseImageReview';
 import * as SHOWCASE from './lib/showcaseSettings';
@@ -13,6 +13,7 @@ import { buildTransferMaps, transferUsage, unresolvedTransferLines } from './all
 import AllSchoolSettings from './allSchool/AllSchoolSettings';
 import AllSchoolPrograms from './allSchool/AllSchoolPrograms';
 import SchoolLogoOptionsEditor from './allSchool/SchoolLogoOptionsEditor';
+import { catalogGroups, catalogEditorRows } from './allSchool/catalogGroups';
 import StoreArtInventoryOptions, { inventorySeedForArt } from './allSchool/StoreArtInventoryOptions';
 import DecorationStockForm, { DECORATION_TYPES, APPLICATION_METHODS } from './allSchool/DecorationStockForm';
 import { normalizeAllSchoolSettings, validateAllSchoolSettings, stockLinkedArtError, changesProductionSetup, logoDesignCopies, schoolArtGroups, frontArt, visualLogoCopies } from './allSchool/adminHelpers';
@@ -2766,20 +2767,15 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (linkError || updated?.length !== sourceRows.length) { flash('Logo option not saved: ' + (linkError?.message || 'Could not link every source color')); return false; }
     const { data: inserted, error: insertError } = await supabase.from('webstore_products').insert(copies).select('id');
     if (insertError || inserted?.length !== copies.length) { flash('Logo option not saved: ' + (insertError?.message || 'Could not create every color')); loadDetail(sel); return false; }
-    flash(`Added ${newLabel} as an inactive logo option`); loadDetail(sel); return inserted[0].id;
+    flash(`Added ${newLabel} as a logo option`); loadDetail(sel); return inserted[0].id;
   }, [sel, detail, flash, loadDetail]);
   const updateSchoolLogoOption = useCallback(async (item, fields) => {
     if (sel?.org_type !== 'all_school' || !item?.id) return false;
     const key = item.variant_group_id || item.id;
     const rows = (detail?.catalog || []).filter((row) => row.kind === 'single' && (row.variant_group_id || row.id) === key);
     if (!rows.length) return false;
-    if (fields.active === true && rows.some((row) => methodSetupError(row, detail?.transfers || [], [...(sel.store_art || []), ...(detail?.libraryArt || [])]))) {
-      flash('Complete the mockup and inventory or embroidery-file setup for each color before publishing.'); return false;
-    }
-    if (fields.active === true) for (const row of rows) {
-      const resolved = resolveSchoolSetup(row, detail?.transfers || [], [...(sel.store_art || []), ...(detail?.libraryArt || [])]);
-      const link = await supabase.from('webstore_products').update({ decorations: resolved.decorations, transfer_codes: resolved.transfer_codes }).eq('id', row.id).select('id');
-      if (link.error || !link.data?.length) { flash('Could not link decoration inventory.'); return false; }
+    if (fields.active === true && rows.some((row) => !hasSchoolMockup(row))) {
+      flash('Save the logo mockup for each color first.'); return false;
     }
     const { data, error } = await supabase.from('webstore_products').update(fields).eq('store_id', sel.id).in('id', rows.map((row) => row.id)).select('id');
     if (error || data?.length !== rows.length) { flash('Logo choice not saved: ' + (error?.message || 'Could not update every color')); loadDetail(sel); return false; }
@@ -2972,6 +2968,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const blocked = stockLinkedArtError(candidate, fields.decorations);
       if (blocked) { flash(blocked); return false; }
     }
+    if (sel?.org_type === 'all_school' && (fields.decorations || fields.image_url)) {
+      const candidate = { ...(detail?.catalog || []).find((row) => row.id === id), ...fields };
+      if (hasSchoolMockup(candidate)) fields = { ...fields, active: true };
+    }
     if (sel?.org_type === 'all_school' && changesProductionSetup(fields)) fields = { ...fields, production_approved_at: null, production_approved_by: null };
     const { data: _updated, error } = await supabase.from('webstore_products').update(fields).eq('id', id).select('id');
     if (error) { flash('Error: ' + error.message); return false; }
@@ -2987,6 +2987,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // shopper questions attached to that storefront card.
     const groupFields = sharedCardFields(fields);
     if (sel?.org_type === 'all_school') ['school_program_ids', 'school_shared', 'personalization_template', 'takes_name', 'transfer_codes', 'transfer_code'].forEach((key) => { if (Object.prototype.hasOwnProperty.call(fields, key)) groupFields[key] = fields[key]; });
+    if (sel?.org_type === 'all_school' && fields.active === true && fields.decorations) groupFields.active = true;
     if (sel?.org_type === 'all_school' && changesProductionSetup(fields)) { groupFields.production_approved_at = null; groupFields.production_approved_by = null; }
     if (sel?.org_type === 'all_school' && fields.decorations && fields.transfer_codes) { if (fields.image_url === null) groupFields.image_url = null; if (fields.image_back_url === null) groupFields.image_back_url = null; }
     // Size fill-ins are COLOR-specific. Never fan a White substitute onto the
@@ -3145,7 +3146,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (item) {
         const prev = Array.isArray(item.decorations) ? item.decorations : [];
         const baked = prev.filter((d) => d && (d.art_url || d.art_id)).map((d) => ({ ...d, baked: true }));
-        await supabase.from('webstore_products').update({ image_url: front.url, decorations: baked, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', item.id); applied++;
+        await supabase.from('webstore_products').update({ image_url: front.url, decorations: baked, ...(sel?.org_type === 'all_school' ? { active: true, production_approved_at: null, production_approved_by: null } : {}) }).eq('id', item.id); applied++;
       }
     }
     flash(`Mockups saved to the library${applied ? ` and applied to ${applied} item${applied === 1 ? '' : 's'}` : ''}`);
@@ -3172,7 +3173,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // instead of leaving the old art stacked underneath (a back logo still leaves the
       // front intact, since it only clears its own side).
       const next = existing.filter((d) => (d.side || 'front') !== (decoration.side || 'front')).concat([decoration]);
-      await supabase.from('webstore_products').update({ decorations: next, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', id);
+      await supabase.from('webstore_products').update({ decorations: next, ...(sel?.org_type === 'all_school' ? { ...(hasSchoolMockup({ decorations: next }) ? { active: true } : {}), production_approved_at: null, production_approved_by: null } : {}) }).eq('id', id);
     }
     flash(`Logo applied to ${itemIds.length} item${itemIds.length === 1 ? '' : 's'}`); loadDetail(sel);
   }, [detail, sel, flash, loadDetail]);
@@ -3225,7 +3226,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     }
     let n = added, fails = 0;
     for (const { id, decorations } of entries) {
-      const { error } = await supabase.from('webstore_products').update({ decorations, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', id);
+      const { error } = await supabase.from('webstore_products').update({ decorations, ...(sel?.org_type === 'all_school' ? { ...(hasSchoolMockup({ decorations }) ? { active: true } : {}), production_approved_at: null, production_approved_by: null } : {}) }).eq('id', id);
       if (error) fails += 1; else n += 1;
     }
     flash(fails ? `Logo applied to ${n} item${n === 1 ? '' : 's'} — ${fails} failed` : `Logo applied to ${n} item${n === 1 ? '' : 's'}`);
@@ -3238,7 +3239,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const blocked = stockLinkedArtError((detail?.catalog || []).find((c) => c.id === itemId), decorations);
       if (blocked) { flash(blocked); return false; }
     }
-    const { error } = await supabase.from('webstore_products').update({ decorations, ...(sel?.org_type === 'all_school' ? { production_approved_at: null, production_approved_by: null } : {}) }).eq('id', itemId);
+    const { error } = await supabase.from('webstore_products').update({ decorations, ...(sel?.org_type === 'all_school' ? { ...(hasSchoolMockup({ decorations }) ? { active: true } : {}), production_approved_at: null, production_approved_by: null } : {}) }).eq('id', itemId);
     if (error) { flash('Error: ' + error.message); return; }
     loadDetail(sel);
   }, [sel, detail, flash, loadDetail]);
@@ -6770,7 +6771,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
     const designId = row?.variant_group_id || row?.id;
     if (!styleId || !designId) return false;
     const colors = catalog.filter((item) => item.school_style_group_id === styleId && (item.variant_group_id || item.id) === designId);
-    if (!colors.length || colors.some((color) => color.active === false || methodSetupError(color, detail?.transfers || [], [...(s.store_art || []), ...(detail?.libraryArt || [])]))) return false;
+    if (!colors.length || colors.some((color) => color.active === false || !hasSchoolMockup(color))) return false;
     return onSaveAllSchoolSettings({ ...normalizeAllSchoolSettings(s.all_school_settings), first_logo_by_style: { ...firstSchoolLogoByStyle, [styleId]: designId } });
   };
   const roster = detail?.roster || [];
@@ -6830,7 +6831,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
   // live behind the header ⚙ Settings button (the rich editor), not a tab.
   const PRIMARY_TABS = [
     ...(s.org_type === 'all_school' ? [{ id: 'programs', label: 'Categories' }] : []),
-    { id: 'catalog', label: `Catalog (${catalog.length})` },
+    { id: 'catalog', label: `Catalog (${s.org_type === 'all_school' ? catalogGroups(catalog, true, firstSchoolLogoByStyle).length : catalog.length})` },
     { id: 'orders', label: `Orders (${validOrders.length})` },
     { id: 'art', label: 'Art & Logos' },
     { id: 'analytics', label: 'Analytics' },
@@ -7149,21 +7150,9 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
   const [expandAll, setExpandAll] = useState(false);
   const [openRows, setOpenRows] = useState(() => new Set());
   const toggleRow = (id) => setOpenRows((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const ordered = [...catalog].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-  // Group color variants of the same garment into one card. Colors of a garment
-  // share variant_group_id (= the primary row's id); a null group id = standalone.
-  const groupKeyOf = (p) => p.variant_group_id || p.id;
-  const groups = [];
-  {
-    const byKey = new Map();
-    for (const p of ordered) { const k = groupKeyOf(p); if (!byKey.has(k)) byKey.set(k, []); byKey.get(k).push(p); }
-    // The leftmost color (lowest sort_order — rows are pre-sorted) is the primary: its image
-    // leads the catalog row and it's the default on the storefront. Reordering colors changes it.
-    for (const [k, rows] of byKey) { groups.push({ key: k, rep: rows[0], rows }); }
-    groups.sort((a, b) => (a.rep.sort_order || 0) - (b.rep.sort_order || 0));
-  }
+  const groups = catalogGroups(catalog, isAllSchool, firstSchoolLogoByStyle);
   const repsList = groups.map((g) => g.rep);
-  const colorsForRep = (repId) => (groups.find((g) => g.rep.id === repId)?.rows) || [];
+  const colorsForRep = (id) => catalogEditorRows(groups, id);
   // Up/down on a card moves the whole group (by its representative) past the next card.
   const moveRep = (i, dir) => { const p = repsList[i]; if (!p) return; if (dir === 'up' && i > 0) onMove(p, repsList[i - 1].id); else if (dir === 'down' && i < repsList.length - 1) onMove(p, repsList[i + 2] ? repsList[i + 2].id : null); };
 
@@ -7207,12 +7196,12 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
   const useCats = catSections.length > 1 || catSections.some((s) => s.cat) || newCats.length > 0;
   const dropToCat = (cat) => { if (!dragId) return; onUpdateItem(dragId, { category: cat || null, sort_order: maxSort + 1 }); setDragId(null); setOverCat(null); setOverId(null); };
   const _webLogosOf = (d) => { const art = (library || []).find((a) => a.id === d.art_id); return art && Array.isArray(art.web_logos) ? art.web_logos : []; };
-  const renderRep = ({ rep: p, rows: colorRows }) => {
+  const renderRep = ({ rep: p, rows: colorRows, designs }) => {
     const stock = stockByWp[p.id];
     const label = p.display_name || stock?.name || p.sku || '(unnamed)';
     const fund = Number(p.fundraise_amount) || 0;
     const effFund = p.kind === 'bundle' ? fund : effectiveFundraise(p.retail_price, fund, storeFund);
-    const sel = editId === p.id;
+    const sel = editId === p.id || (isAllSchool && groups.find((g) => g.rep.id === p.id)?.allRows.some((row) => row.id === editId));
     const margin = (p.kind !== 'bundle' && costByPid[p.product_id] != null) ? (Number(p.retail_price) || 0) - costByPid[p.product_id] : null;
     const nColors = colorRows.length;
     const archived = p.active === false;
@@ -7241,7 +7230,7 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 700, fontSize: 12.5, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}{isAllSchool && p.school_design_label ? ` · ${p.school_design_label}` : ''}{archived ? <span style={{ fontSize: 9, color: '#92400e', fontWeight: 800, background: '#fef3c7', padding: '1px 5px', borderRadius: 4, marginLeft: 6, textTransform: 'uppercase', letterSpacing: 0.4 }}>{isAllSchool ? 'Hidden · setup / publish' : 'Archived'}</span> : null}{p.kind === 'bundle' ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · pkg</span> : null}{nColors > 1 ? <span style={{ fontSize: 10, color: '#2563eb', fontWeight: 700 }}> · {nColors} {colorRows.some((c) => c.variant_label) ? 'fits' : 'colors'}</span> : null}</div>
-          <div style={{ fontSize: 10.5, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{money((Number(p.retail_price) || 0) + effFund)}{p.sku ? ` · ${p.sku}` : ''}</div>
+          <div style={{ fontSize: 10.5, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{money((Number(p.retail_price) || 0) + effFund)}{p.sku ? ` · ${p.sku}` : ''}{isAllSchool && designs?.length > 1 ? ` · ${designs.length} logo choices` : ''}</div>
         </div>
         {margin != null && <span title="margin" style={{ fontSize: 10, fontWeight: 800, color: margin < 0 ? '#b91c1c' : (p.retail_price > 0 && margin / Number(p.retail_price) < 0.3) ? '#92400e' : '#166534' }}>{margin >= 0 ? '+' : ''}{money(margin)}</span>}
       </div>
@@ -7249,7 +7238,7 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
   };
   // In side-by-side view keep one item selected so the editor pane is never empty
   // (and re-home the selection if the chosen item / its card gets removed).
-  useEffect(() => { if (view === 'split' && repsList.length && !repsList.some((p) => p.id === editId)) setEditId(repsList[0].id); }, [view, catalog]);
+  useEffect(() => { if (view === 'split' && repsList.length && !catalog.some((p) => p.id === editId)) setEditId(repsList[0].id); }, [view, catalog]);
   // After a custom product is created + added, drop the rep straight into the full item
   // editor once the reloaded catalog contains it — so they never have to reopen it to
   // finish pricing, art & colors, sizes, etc. Runs after the reselect effect above so it
@@ -7461,7 +7450,7 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
           {/* Right: editor pane for the selected item */}
           <div style={{ flex: 1, minWidth: 0 }}>
             {(() => {
-              const p = repsList.find((x) => x.id === editId) || null;
+              const p = catalog.find((x) => x.id === editId) || null;
               if (!p) return <div style={{ border: '1.5px dashed #d7dbe2', borderRadius: 12, padding: '70px 20px', textAlign: 'center', color: '#94a3b8', background: '#fafbfc' }}>Select an item on the left to edit it here.</div>;
               const stock = stockByWp[p.id];
               const groupColors = colorsForRep(p.id);
@@ -7494,7 +7483,9 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
               <th style={th}>Order</th><th style={th}>Image</th><th style={th}>Product</th><th style={th}>Type</th><th style={th}>Price</th><th style={th}>Fundraising</th><th style={th}>Shopper pays</th><th style={th}>Stock / ETA</th><th style={th}></th>
             </tr></thead>
             <tbody>
-              {groups.map(({ rep: p, rows: colorRows }, i) => {
+              {groups.map((group, i) => {
+                const p = group.allRows.find((row) => row.id === editId) || group.rep;
+                const colorRows = colorsForRep(p.id);
                 const stock = stockByWp[p.id];
                 const st = stockText(stock);
                 const comps = p.kind === 'bundle' ? bundleItems.filter((b) => b.bundle_id === p.id) : [];
@@ -7568,7 +7559,7 @@ function CatalogTab({ tabsNode, isAllSchool = false, schoolLogoOptions = [], fir
                           <div style={{ fontWeight: 800, fontSize: 16 }}>{p.display_name || stock?.name || p.sku}</div>
                           <button onClick={() => setEditId(null)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
                         </div>
-                        <CatalogItemEditor key={p.id} item={p} groupColors={colorRows} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemoveColor} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onEditItem={switchEditId} isAllSchool={isAllSchool} schoolLogoOptions={schoolLogoOptions} firstSchoolLogoByStyle={firstSchoolLogoByStyle} onSetFirstSchoolLogo={onSetFirstSchoolLogo} schoolTransfers={transfers} schoolArt={schoolArt} schoolStaffId={schoolStaffId} onCreateSchoolLogoOption={onCreateSchoolLogoOption} onUpdateSchoolLogoOption={onUpdateSchoolLogoOption} onCancel={() => setEditId(null)} onSave={(fields) => onUpdateItem(p.id, fields)} onSaveColor={onUpdateItem} />
+                        <CatalogItemEditor key={p.id} item={p} groupColors={colorRows} page={paneTab} setPage={setPaneTab} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemoveColor} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onEditItem={switchEditId} isAllSchool={isAllSchool} schoolLogoOptions={schoolLogoOptions} firstSchoolLogoByStyle={firstSchoolLogoByStyle} onSetFirstSchoolLogo={onSetFirstSchoolLogo} schoolTransfers={transfers} schoolArt={schoolArt} schoolStaffId={schoolStaffId} onCreateSchoolLogoOption={onCreateSchoolLogoOption} onUpdateSchoolLogoOption={onUpdateSchoolLogoOption} onCancel={() => setEditId(null)} onSave={(fields) => onUpdateItem(p.id, fields)} onSaveColor={onUpdateItem} />
                       </div>
                     </div>
                   </td></tr>}
@@ -8711,7 +8702,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   if (saveRef) saveRef.current = save;
   return (
     <div style={{ padding: 16, background: '#f6f7f9' }}>
-      {!setPageProp && (
+      {!saveRef && (
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 14, position: 'sticky', top: 0, zIndex: 5, background: '#f6f7f9', paddingBottom: 12, borderBottom: '1px solid #e5e8ec' }}>
           {!isBundle && page === 'details' && <button type="button" className="btn btn-secondary" onClick={() => setPage('sizes')}>Next: Sizes →</button>}
           {!isBundle && page === 'sizes' && <button type="button" className="btn btn-secondary" onClick={() => setPage('art')}>Next: Art &amp; colors →</button>}
@@ -8719,7 +8710,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
           <button className="btn btn-primary" disabled={imgBusy} onClick={save}>{imgBusy ? 'Uploading…' : justSaved ? 'Saved ✓' : 'Save changes'}</button>
         </div>
       )}
-      {!isBundle && !setPageProp && (
+      {!isBundle && !saveRef && (
         <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '2px solid #e5e8ec' }}>
           {[['details', '1 · Item setup'], ['sizes', '2 · Sizes & options'], ['art', '3 · Art & colors']].map(([k, lbl]) => { const on = page === k; return (
             <button key={k} type="button" onClick={() => setPage(k)} style={{ background: 'none', border: 'none', borderBottom: '3px solid ' + (on ? '#191919' : 'transparent'), color: on ? '#191919' : '#94a3b8', fontWeight: 800, fontSize: 13.5, padding: '8px 14px', marginBottom: -2, cursor: 'pointer' }}>{lbl}</button>
@@ -9053,13 +9044,14 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       </React.Fragment>}
 
       {page === 'art' && !isBundle && <React.Fragment>
-      {isAllSchool && <SchoolLogoOptionsEditor item={item} catalog={catalog} logoOptions={schoolLogoOptions} firstLogoByStyle={firstSchoolLogoByStyle} onSetFirst={onSetFirstSchoolLogo} transfers={schoolTransfers} art={schoolArt} stockByWp={stockByWp} staffId={schoolStaffId} onCreate={onCreateSchoolLogoOption} onUpdate={onUpdateSchoolLogoOption} onSaveItem={onSaveColor} onEdit={onEditItem} />}
+
       <ItemSection title="Garment & decoration" hint="· drag a logo on, place it, recolor, then apply to other items">
         <input ref={mainImgRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const fl = (e.target.files || [])[0]; if (fl) setMainFile(fl); e.target.value = ''; }} />
         <LogoPlacer imageUrl={image || stockImg || item.image_url} backImageUrl={backImage} stockBackImg={stockBackImg} onBackImageChange={setBackImage} decorations={decorations} onChange={setDecorations} library={library} storeColors={storeColors} siblings={siblings} onApplyToItems={onApplyLogo} onSaveLogo={onSaveLogo} takesNumber={takesNumber} takesName={takesName}
           primaryColorId={item.id} onReorderColors={onReorderColors} onRemoveColor={onRemoveColor} onColorBackChange={onSaveColor ? (cid, url) => setColorBacks((m) => ({ ...m, [cid]: url })) : null}
           colorRows={(groupColors || []).map((c) => { const cs = stockByWp[c.id] || {}; return { id: c.id, name: cs.color || c.sku, frontUrl: c.image_url || cs.image_front_url || '', backUrl: Object.prototype.hasOwnProperty.call(colorBacks, c.id) ? (colorBacks[c.id] || '') : (c.image_back_url || cs.image_back_url || '') }; })} />
       </ItemSection>
+      {isAllSchool && <SchoolLogoOptionsEditor item={item} catalog={catalog} logoOptions={schoolLogoOptions} firstLogoByStyle={firstSchoolLogoByStyle} onSetFirst={onSetFirstSchoolLogo} transfers={schoolTransfers} art={schoolArt} stockByWp={stockByWp} staffId={schoolStaffId} onCreate={onCreateSchoolLogoOption} onUpdate={onUpdateSchoolLogoOption} onSaveItem={onSaveColor} onEdit={onEditItem} />}
       {!isBundle && (
         <ItemSection title="Personalization" hint="· numbers & names — previewed on the back of the mockup">
           <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -12853,7 +12845,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
         {!activeUrl && activeArt && <div style={{ marginTop: 10, fontSize: 12.5, color: '#92400e', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>This logo has no web-ready image (likely .ai / mockup only). Attach a clean transparent PNG or SVG to place &amp; recolor it: <WebLogoSlot art={activeArt} onAttach={onAttachWebLogo} onSaveForCw={onSaveRepWebLogo} /></div>}
         </>)}
       </div></div>
-      {isAllSchool && <p style={{ fontSize: 13, color: '#475569' }}>Pick a logo, select a garment below, position it, and Apply. A different logo adds another art choice; selecting an existing logo edits that choice. New choices stay hidden until reviewed and published.</p>}
+      {isAllSchool && <p style={{ fontSize: 13, color: '#475569' }}>Pick a logo, select a garment below, position it, and Apply. A different logo adds another art choice; selecting an existing logo edits that choice. Saving the mockup adds the logo choice to the store. Production requirements are checked at launch.</p>}
       {/* 2 · Bulk apply — opt-in. After bringing art in, the rep chooses to bulk-apply
           a logo: pick a starting placement, select items, Autocolor + drag to fine-tune,
           then apply & review them together. */}
