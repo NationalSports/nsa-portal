@@ -51,12 +51,35 @@ export async function registerWorker() {
   return navigator.serviceWorker.register('/sw.js', { scope: '/' });
 }
 
+// The push function checks a live Supabase token. getSession() can hand back one that has
+// already lapsed (a phone app sleeps, so the auto-refresh timer doesn't run), so refresh it
+// first. A sign-in through the admin user picker has no token at all.
+export const NO_SESSION = 'no-session';
+async function accessToken(supabase, force) {
+  let session = null;
+  try { ({ data: { session } } = await supabase.auth.getSession()); } catch (e) { /* fall through to refresh */ }
+  if (force || !session?.access_token || (session.expires_at && session.expires_at - Math.floor(Date.now() / 1000) < 60)) {
+    try { const { data } = await supabase.auth.refreshSession(); if (data?.session) session = data.session; } catch (e) { /* no session to refresh */ }
+  }
+  return session?.access_token || null;
+}
+
 export async function callPush(supabase, body) {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.access_token) throw new Error('Your session expired. Sign in again.');
-  const r = await fetch('/.netlify/functions/push-subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + session.access_token }, body: JSON.stringify(body) });
+  const post = (token) => fetch('/.netlify/functions/push-subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify(body) });
+  const token = await accessToken(supabase, false);
+  if (!token) {
+    const e = new Error('Notifications need a password sign-in on this phone. Sign out, then sign back in with your email and password.');
+    e.code = NO_SESSION;
+    throw e;
+  }
+  let r = await post(token);
+  if (r.status === 401) { const fresh = await accessToken(supabase, true); if (fresh && fresh !== token) r = await post(fresh); }
   const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+  if (!r.ok) {
+    const e = new Error(r.status === 401 ? 'Your sign-in on this phone has expired. Sign out, then sign back in.' : (d.error || 'HTTP ' + r.status));
+    if (r.status === 401) e.code = NO_SESSION;
+    throw e;
+  }
   return d;
 }
 

@@ -3297,3 +3297,35 @@ tbody tr { cursor: pointer; }
 .nsa-note-fab{position:fixed;right:24px;bottom:92px;z-index:60;width:56px;height:56px;border-radius:28px;border:none;background:#dc2626;color:#fff;font-size:24px;line-height:1;cursor:pointer;box-shadow:0 8px 22px rgba(220,38,38,.35);display:flex;align-items:center;justify-content:center}
 .nsa-note-fab:hover{background:#b91c1c}
 @media print{.nsa-note-fab{display:none}}
+
+/* ─── "+" quick-create menu (src/MobileQuickCreate.js) ─── */
+.qc-backdrop {
+  position: fixed; inset: 0; z-index: 9500;
+  background: rgba(15,23,42,0.5); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  display: flex; flex-direction: column; justify-content: flex-end; align-items: center;
+  padding: 0 14px calc(14px + env(safe-area-inset-bottom, 0px)); box-sizing: border-box;
+  animation: qcFade 0.18s ease-out;
+}
+.qc-menu {
+  width: 100%; max-width: 440px; background: white; border-radius: 24px; padding: 16px;
+  box-shadow: 0 24px 60px rgba(15,23,42,0.4); box-sizing: border-box;
+  animation: qcUp 0.26s cubic-bezier(0.2, 0.9, 0.3, 1.15);
+}
+.qc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.qc-tile {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-height: 124px;
+  padding: 14px; border-radius: 18px; border: 1px solid #e2e8f0; background: #f8fafc;
+  text-align: left; cursor: pointer; font-family: inherit;
+  animation: qcUp 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.15) both; transition: transform 0.12s, background 0.12s;
+}
+.qc-tile:active { transform: scale(0.96); background: #f1f5f9; }
+.qc-ico { width: 44px; height: 44px; border-radius: 13px; display: flex; align-items: center; justify-content: center; font-size: 23px; margin-bottom: 2px; }
+.qc-close {
+  margin-top: 14px; width: 56px; height: 56px; border-radius: 50%; border: none; flex-shrink: 0;
+  background: white; color: #0f172a; font-size: 22px; font-weight: 700; cursor: pointer;
+  box-shadow: 0 6px 18px rgba(15,23,42,0.3); animation: qcSpin 0.26s ease-out;
+}
+@keyframes qcFade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes qcUp { from { opacity: 0; transform: translateY(22px) scale(0.97); } to { opacity: 1; transform: none; } }
+@keyframes qcSpin { from { transform: rotate(-90deg) scale(0.6); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .qc-backdrop, .qc-menu, .qc-tile, .qc-close { animation: none; } }

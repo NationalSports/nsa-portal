@@ -3,6 +3,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { isOutsideArtJob } from './lib/outsideArt';
 import BarcodeScanner from './BarcodeScanner';
 import MeetingNotes, { AccountNotes } from './MeetingNotes';
+import MobileQuickCreate from './MobileQuickCreate';
 import { linesToEstimateItems, noteEstimateLines } from './estimateLines';
 import { supabase } from './lib/supabase';
 import { auTierDisc, dP, calcOrderTotals, isAU } from './pricing';
@@ -13,7 +14,7 @@ import { numericSizeKeys } from './lib/opsRecap';
 import { calcSOStatus } from './components';
 import { orderProgress } from './lib/orderProgress';
 import { coachInvoiceUrl, createPartialPayLink } from './lib/payLinks';
-import { isIOS, isAndroid, isStandalone, pushSupported, currentSubscription, enablePush, disablePush, callPush, canPromptInstall, onInstallAvailable, promptInstall } from './lib/pushClient';
+import { isIOS, isAndroid, isStandalone, pushSupported, currentSubscription, enablePush, disablePush, callPush, NO_SESSION, canPromptInstall, onInstallAvailable, promptInstall } from './lib/pushClient';
 import { fetchStockForItems, stockCacheKey, normStockSize, shortSizes, SOURCE_LABEL } from './lib/mobileStock';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 
@@ -92,7 +93,7 @@ const _msubFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveSOPOBatch,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxMerge,onBoxLabel,receipt,onReceiptDone,onPrintLabels,onNoteContactsAdded,onConvertEstimate}){
+export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveSOPOBatch,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxMerge,onBoxLabel,receipt,onReceiptDone,onPrintLabels,onNoteContactsAdded,onConvertEstimate,onAddTodo,onSaveCustomer}){
   const isOps=cu.role==='warehouse'||cu.role==='production';// ops roles: no sales/financial reporting
   const _caTop=canAccess||(()=>true);// page-access check usable anywhere in the component
   const[tab,setTab]=useState(()=>_mtabFromUrl()||'home');
@@ -109,6 +110,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const[stockMap,setStockMap]=useState({});
   const[convertAsk,setConvertAsk]=useState(null);// {est, date, busy} — in-hands date for estimate → sales order
   const[convertedFrom,setConvertedFrom]=useState(null);// estimate id just converted; opens its new order once it appears
+  const[quickOpen,setQuickOpen]=useState(false);// the "+" create menu
   const[payLink,setPayLink]=useState(null);// {inv, url, qr} — pay-link sheet with QR code
   // Hamburger drawer
   const[drawerOpen,setDrawerOpen]=useState(false);
@@ -2325,7 +2327,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       const step=(n,t,sub)=><div style={{display:'flex',gap:12,alignItems:'flex-start',padding:'8px 0'}}>
         <div style={{width:26,height:26,borderRadius:13,background:'#1e40af',color:'white',fontWeight:800,fontSize:13,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>{n}</div>
         <div><div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{t}</div>{sub&&<div style={{fontSize:12,color:'#64748b',marginTop:2}}>{sub}</div>}</div></div>;
-      const run=async(fn,okMsg)=>{setAppState(x=>({...x,busy:true,msg:''}));try{await fn();if(okMsg&&nf)nf(okMsg)}catch(e){setAppState(x=>({...x,msg:e.message||String(e)}))}await refreshAppState();setAppState(x=>({...x,busy:false}))};
+      const run=async(fn,okMsg)=>{setAppState(x=>({...x,busy:true,msg:'',signIn:false}));try{await fn();if(okMsg&&nf)nf(okMsg)}catch(e){setAppState(x=>({...x,msg:e.message||String(e),signIn:e.code===NO_SESSION}))}await refreshAppState();setAppState(x=>({...x,busy:false}))};
       const pill=(on,label)=><span style={{fontSize:12,fontWeight:800,padding:'4px 10px',borderRadius:12,background:on?'#dcfce7':'#f1f5f9',color:on?'#166534':'#64748b'}}>{label}</span>;
       return<div className="mp-page">
         <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
@@ -2366,6 +2368,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           </div>
           :<button style={{...big,background:'#16a34a',color:'white'}} disabled={a.busy} onClick={()=>run(()=>enablePush(supabase),'Notifications are on')}>{a.busy?'Turning on…':'Turn on notifications'}</button>}
           {a.msg&&<div style={{fontSize:12,color:'#b91c1c',marginTop:8}}>{a.msg}</div>}
+          {a.signIn&&onLogout&&<button style={{...big,background:'white',color:'#1e40af',border:'1.5px solid #1e40af',marginTop:8}} onClick={onLogout}>Sign out and sign back in</button>}
           <div style={{marginTop:14,fontSize:12,fontWeight:700,color:'#475569'}}>You’ll get a notification when:</div>
           {[['🎨','A coach approves art or asks for changes'],['✅','A coach approves a quote'],['💵','A customer pays an invoice online'],['🎙️','Your AI notes are ready to review'],['💬','Someone @mentions you in a message']].map(([i,t])=><div key={t} style={{display:'flex',gap:10,alignItems:'center',fontSize:13,color:'#1e293b',padding:'5px 0'}}><span style={{width:20,textAlign:'center'}}>{i}</span>{t}</div>)}
         </div>
@@ -2850,14 +2853,14 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     };
     const copy=async()=>{try{await navigator.clipboard.writeText(p.url);if(nf)nf('Link copied')}catch(e){window.prompt('Copy this link:',p.url)}};
     const quick=(pct)=>set({amount:(Math.round(bal*pct*100)/100).toFixed(2)});
-    if(p.big&&p.qr)return<div onClick={()=>set({big:false})} style={{position:'fixed',inset:0,background:'white',zIndex:1001,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:24,boxSizing:'border-box',textAlign:'center'}}>
+    if(p.big&&p.qr)return<div onClick={()=>set({big:false})} style={{position:'fixed',inset:0,background:'white',zIndex:9601,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:24,boxSizing:'border-box',textAlign:'center'}}>
       <div style={{fontSize:15,fontWeight:700,color:'#64748b'}}>National Sports Apparel</div>
       <div style={{fontSize:30,fontWeight:900,color:'#0f172a',margin:'4px 0 2px'}}>Scan to pay {amtTxt}</div>
       <div style={{fontSize:14,color:'#64748b',marginBottom:18}}>Invoice {inv.id} · {cc?.name}</div>
       <img src={p.qr} alt={'QR code to pay invoice '+inv.id} style={{width:'86vw',maxWidth:420,height:'auto',imageRendering:'pixelated'}}/>
       <div style={{fontSize:13,color:'#94a3b8',marginTop:18}}>Open the phone camera and point it at the code · tap to close</div>
     </div>;
-    return<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.55)',zIndex:1000,display:'flex',alignItems:'flex-end'}} onClick={()=>!p.saving&&setPayLink(null)}>
+    return<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.55)',zIndex:9600,display:'flex',alignItems:'flex-end'}} onClick={()=>!p.saving&&setPayLink(null)}>
       <div onClick={e=>e.stopPropagation()} style={{background:'#f8fafc',width:'100%',maxHeight:'94vh',overflowY:'auto',borderRadius:'18px 18px 0 0',padding:'10px 16px',paddingBottom:'calc(16px + env(safe-area-inset-bottom, 0px))',boxSizing:'border-box'}}>
         <div style={{width:40,height:4,borderRadius:2,background:'#cbd5e1',margin:'0 auto 12px'}}/>
         <div style={{display:'flex',alignItems:'flex-start',gap:10}}>
@@ -2922,6 +2925,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     {renderComposeSheet()}
     {renderConvertSheet()}
     {renderPayLinkSheet()}
+    <MobileQuickCreate open={quickOpen} onClose={()=>setQuickOpen(false)} cu={cu} cust={cust} sos={sos} invs={invs} canNotes={canNotes} nf={nf}
+      onNewEstimate={onSaveEstimate?startNewEstimate:null} onOpenNotes={openNotes} onAddTodo={onAddTodo} onSaveCustomer={onSaveCustomer} onOpenPayLink={openPayLink}/>
     {/* Box Action sheet — scanning a BX plate (camera or ?scan= deep link) lands here */}
     {mpBox&&(()=>{
       const bx=mpBox.box;
@@ -3094,9 +3099,9 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       <button className={`mp-tab${tab==='orders'?' active':''}`} onClick={()=>{setTab('orders');setDetail(null);setMoreSubPage(null)}}>
         <MIcon name="box" size={20}/><span className="mp-tab-label">Orders</span>
       </button>
-      <button className="mp-tab mp-tab-new" onClick={startNewEstimate}>
+      <button className="mp-tab mp-tab-new" aria-label="Create new" onClick={()=>setQuickOpen(true)}>
         <div className="mp-tab-new-btn"><MIcon name="plus" size={22}/></div>
-        <span className="mp-tab-label">New Est.</span>
+        <span className="mp-tab-label">New</span>
       </button>
       <button className={`mp-tab${tab==='messages'?' active':''}`} onClick={()=>{setTab('messages');setDetail(null);setMoreSubPage(null)}}>
         <MIcon name="mail" size={20}/><span className="mp-tab-label">Messages</span>
