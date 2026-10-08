@@ -1,3 +1,5 @@
+import { inventoryPickCosts } from './lib/inventoryCosts';
+import InventoryCostDetails from './allSchool/InventoryCostDetails';
 import BatchPoReservationsNotice from './BatchPoReservationsNotice';
 import { itemBatchReservations, checkBatchPoReservations, batchPoReservationMessage, removeQueuedBatchLines } from './lib/batchPoReservations';
 import RepShipmentButton from './RepShipmentButton';
@@ -8235,7 +8237,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           const hasActual=blankPOs.length>0||pickQty>0;
           // Use actual billed cost from supplier bills when available; no bill = no actual (show "—")
           const billedCostFromPOs=blankPOs.reduce((a,pl)=>a+safeNum(pl._bill_cost||0),0);
-          const actualBlank=billedCostFromPOs>0?billedCostFromPOs+(pickQty*safeNum(it.nsa_cost)):(pickQty>0?pickQty*safeNum(it.nsa_cost):0);
+          const actualBlank=billedCostFromPOs+(inventoryPickCosts(it).qty ? inventoryPickCosts(it).cost : pickQty*safeNum(it.nsa_cost));
           // Use SKU-level totals for unit cost so duplicate SKUs don't halve the price
           const _sk=(it.sku||'').toUpperCase();
           const skuTotalCost=_skuBillCost[_sk]||0;
@@ -8265,9 +8267,10 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             if(!(dp.cost>0))return;
             const eqD=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);
             const artF=af.find(a=>a.id===d.art_file_id);
-            const gkey=(d.art_file_id&&d.art_file_id!=='__tbd')?('art:'+d.art_file_id):('t:'+(d.deco_type||d.type||d.kind||'deco'));
-            const g=decoGroups[gkey]||(decoGroups[gkey]={name:artF?.name||(d.deco_type||d.type||'').replace(/_/g,' ')||'Decoration',expected:0,qty:0,skus:[],combQty:0});
+            const gkey=d.transfer_code?('stock:'+d.transfer_code):((d.art_file_id&&d.art_file_id!=='__tbd')?('art:'+d.art_file_id):('t:'+(d.deco_type||d.type||d.kind||'deco')));
+            const g=decoGroups[gkey]||(decoGroups[gkey]={name:artF?.name||d.transfer_code||(d.deco_type||d.type||'').replace(/_/g,' ')||'Decoration',expected:0,qty:0,skus:[],combQty:0});
             g.expected+=decoCostAt(d,qty,af,cq,costArtQty);g.qty+=eqD;
+            if(d.inventory_cost_basis?.length){g.actual=(g.actual||0)+d.inventory_cost_basis.filter(b=>b.received&&b.unit_cost!=null).reduce((a,b)=>a+b.qty*b.unit_cost,0)}
             if(d.art_file_id&&costArtQty[d.art_file_id]>0)g.combQty=Math.max(g.combQty,costArtQty[d.art_file_id]);
             if(it.sku&&!g.skus.includes(it.sku))g.skus.push(it.sku);
           });
@@ -8277,7 +8280,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
           const exp=Math.round(g.expected*100)/100;
           costLines.push({category:'In-House Deco',sku:'',
             name:g.name+(g.skus.length?` · ${g.skus.length} item${g.skus.length>1?'s':''}: ${g.skus.join(', ')}`:''),
-            vendor:'NSA In-House',qty:g.qty,expected:exp,actual:exp,poCount:0,poIds:'',allReceived:true,_combQty:g.combQty});
+            vendor:'NSA In-House',qty:g.qty,expected:exp,actual:g.actual??exp,poCount:0,poIds:'',allReceived:true,_combQty:g.combQty});
         });
         // Outside deco — one row per SO-level deco PO (so.deco_pos). Expected = qty × unit_cost
         // from the PO (price-list driven); Actual = _bill_cost (—, when no bill applied yet).
@@ -8353,6 +8356,7 @@ function OrderEditor({onArtRequestResult,order,mode,recoveryEditorRef,customer:i
             {variance>0?'⚠️ Over':'✅ Under'} by ${Math.abs(variance).toFixed(2)}</span>}
         </div>
         <div className="card-body">
+          <InventoryCostDetails order={o} />
           <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
             {Object.entries(cats).map(([cat,v])=>{const diff=v.actual-v.expected;
               return<div key={cat} style={{padding:'10px 14px',background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',minWidth:150,flex:1}}>

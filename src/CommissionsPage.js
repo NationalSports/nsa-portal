@@ -1,3 +1,4 @@
+import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
 // Commissions page — lifted verbatim out of App() (was `function rCommissions()`)
 // as step 3 of the App.js decomposition. All shared state comes from useAppData();
 // this component holds no state of its own, so mount/unmount on page switch is
@@ -585,6 +586,7 @@ export default function CommissionsPage({adminReports=false}={}){
     const pipeBalance=allPipeline.reduce((a,l)=>a+l.balance,0);
 
     return(<>
+      <InventoryCostWarning orders={[...allLines,...allPipeline].map(l=>l.so)} />
       {/* Header with rep selector (admin only) */}
       <div style={{display:'flex',gap:12,marginBottom:16,alignItems:'center',flexWrap:'wrap'}}>
         {isAdmin&&!adminReports&&<><span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Rep:</span>

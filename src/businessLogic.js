@@ -1,3 +1,4 @@
+const { inventoryPickCosts } = require('./lib/inventoryCosts');
 /* eslint-disable */
 // ═══════════════════════════════════════════════
 // EXTRACTED BUSINESS LOGIC — testable pure functions
@@ -1629,6 +1630,9 @@ function garmentCost(it) {
   } else {
     cost = q * safeNum(it.nsa_cost);
   }
+  const picked = inventoryPickCosts(it, Math.max(0, q - poQty));
+  // Only replace the uncovered garment estimate; order-specific PO costs stay intact.
+  if (picked.qty) cost += picked.cost - (poQty > 0 ? picked.knownQty * _catalogUnitAvg(it, sq) : picked.estimatedReplacement);
   return { cost, poQty, q };
 }
 

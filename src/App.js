@@ -1,3 +1,5 @@
+import { InventoryCostWarning } from './allSchool/InventoryCostDetails';
+import { applyInventoryPullCosts, inventoryCostIssues } from './lib/inventoryCosts';
 import { planQueuedBatchRemoval, planQueuedBatchEdit, commitQueuedBatchRemoval } from './lib/queuedBatchRemoval';
 import RepShipmentButton, { sendRepShipmentUpdate } from './RepShipmentButton';
 import { createArtService, filterArtRequests, isOpenArtRequest } from './lib/standaloneArtRequests';
@@ -16424,7 +16426,7 @@ export default function App(){
     const _exportReports=(kind)=>{
       setRptExportOpen(false);
       if(kind==='print'){window.print();return}
-      const rows=[['SO','Customer','Status','Revenue','Cost','Margin','Margin %','Units'],...pipeline.slice().sort((a,b)=>b._rev-a._rev).map(s=>[s.id,s._cname,s._status,s._rev,s._cost,s._margin,s._pct,s._units])];
+      const rows=[['SO','Customer','Status','Revenue','Cost','Margin','Margin %','Units','Cost status'],...pipeline.slice().sort((a,b)=>b._rev-a._rev).map(s=>[s.id,s._cname,s._status,s._rev,s._cost,s._margin,s._pct,s._units,inventoryCostIssues(s).length?'Missing inventory cost — provisional':''])];
       const csv=rows.map(r=>r.map(v=>{const t=String(v==null?'':v);return /[",\n]/.test(t)?'"'+t.replace(/"/g,'""')+'"':t}).join(',')).join('\n');
       try{const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='nsa-reports-'+rptTab+'.csv';document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);setRptToast('Exported '+pipeline.length+' pipeline rows to CSV')}catch(e){setRptToast('Export failed')}
       clearTimeout(window._rptToastT);window._rptToastT=setTimeout(()=>setRptToast(null),2600);
@@ -16616,6 +16618,7 @@ export default function App(){
     return(<>
       {/* ══ NSA REDESIGNED REPORTS SHELL ══ */}
       <div className="nsa-rpt num">
+        <InventoryCostWarning orders={pipeline} />
         {/* striped brand rule */}
         <div style={{height:5,background:'repeating-linear-gradient(-45deg,var(--red) 0 16px,var(--navy) 16px 32px)'}}/>
         {/* Partial-data guard: every number on this page is a client-side reduce over the loaded
@@ -20172,13 +20175,14 @@ export default function App(){
     const legacy=()=>{if(Object.keys(prodPatches).length>0)setProd(pp=>pp.map(x=>prodPatches[x.id]?{...x,_inv:prodPatches[x.id]}:x))};
     if(!supabase){legacy();return}// unconfigured/demo env: pure local decrement, as before 00237
     if(!pulls||!pulls.length){legacy();return}
-    supabase.rpc('pull_house_inventory',{p_pulls:pulls}).then(({data,error})=>{
+    const storePull=pulls.some(p=>p.source_item_ids?.length);
+    return supabase.rpc(storePull?'pull_store_inventory':'pull_house_inventory',{p_pulls:pulls}).then(({data,error})=>{
       if(error){
         const msg=(error.message||'')+' '+(error.code||'');
-        if(/42883|42P01|does not exist|schema cache/i.test(msg)){legacy();return}
+        if(!storePull&&/42883|42P01|does not exist|schema cache/i.test(msg)){legacy();return {ok:true}}
         console.error('[pull] house inventory decrement failed:',error.message);
         nf('⚠️ Inventory decrement failed — check stock counts: '+error.message);
-        return;
+        return {ok:false};
       }
       const byPid={};
       ((data&&data.rows)||[]).forEach(r=>{if(r.found===false)return;(byPid[r.product_id]=byPid[r.product_id]||{})[r.size]=r.quantity});
@@ -20193,11 +20197,12 @@ export default function App(){
         if(_dbSnap.current.prod)_dbSnap.current.prod=adopt(_dbSnap.current.prod);
         setProd(adopt);
       }
-    }).catch(e=>console.error('[pull] house inventory decrement error:',e));
+      return data;
+    }).catch(e=>{console.error('[pull] house inventory decrement error:',e);return {ok:false}});
   };
   // ─── Mobile warehouse mutations — parity with desktop IF-pull / PO-receive side effects ───
   // Pull an IF (pick group) from mobile. pullMap: {itemIdx:{size:qty}} pulled this round.
-  const mobilePullIF=(soId,pickId,pullMap)=>{
+  const mobilePullIF=async(soId,pickId,pullMap)=>{
     const so=sos.find(s=>s.id===soId);if(!so)return;
     const items=safeItems(so);
     const updatedItems=items.map((it,ii)=>{
@@ -20213,8 +20218,9 @@ export default function App(){
     const updatedSO={...so,items:updatedItems,jobs:_newJobs,updated_at:new Date().toLocaleString()};
     // Deduct warehouse inventory for what was pulled — server-side (00237), see pullHouseInv.
     const prodPatches={};const housePulls=[];
-    Object.entries(pullMap).forEach(([ii,qtys])=>{const it=items[ii];if(!it)return;const p=prod.find(x=>x.id===it.product_id)||prod.find(x=>x.sku===it.sku);if(!p)return;const newInv={...(prodPatches[p.id]||p._inv||{})};Object.entries(qtys).forEach(([sz,v])=>{if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v);housePulls.push({product_id:p.id,size:sz,qty:v,so_id:so.id})}});prodPatches[p.id]=newInv});
-    pullHouseInv(prodPatches,housePulls);
+    Object.entries(pullMap).forEach(([ii,qtys])=>{const it=items[ii];if(!it)return;const p=prod.find(x=>x.id===it.product_id)||prod.find(x=>x.sku===it.sku);if(!p)return;const newInv={...(prodPatches[p.id]||p._inv||{})};Object.entries(qtys).forEach(([sz,v])=>{if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v);housePulls.push({product_id:p.id,size:sz,qty:v,so_id:so.id,pick_id:pickId,source_item_ids:it.source_webstore_item_ids||[]})}});prodPatches[p.id]=newInv});
+    const pulled=await pullHouseInv(prodPatches,housePulls);if(pulled?.ok===false)return;
+    applyInventoryPullCosts(updatedItems,pulled);
     savSO(updatedSO,{skipMerge:true});
     // Atomic per-line DB sync for cross-tab consistency (mirrors desktop pull)
     Object.entries(pullMap).forEach(([ii,qtys])=>{const pq={};Object.keys(qtys).forEach(sz=>{pq[sz]=qtys[sz]||0});const _prev=safePicks(items[ii]).find(pk=>pk.pick_id===pickId);_dbUpdatePickLineStatus(soId,parseInt(ii),pickId,'pulled',pq,pickPersistMeta(_prev))});
@@ -20813,7 +20819,7 @@ export default function App(){
                 <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                   {(()=>{const totPulling2=grandPulling;const isPartial=totPulling2>0&&totPulling2<grandNeed;const isFull=totPulling2>=grandNeed;
                     return<>
-                    <button className="btn btn-primary" disabled={whPulling||totPulling2===0} style={{fontSize:13,padding:'10px 20px',fontWeight:800,background:'#166534',borderColor:'#166534',opacity:whPulling||totPulling2===0?0.5:1}} onClick={()=>{
+                    <button className="btn btn-primary" disabled={whPulling||totPulling2===0} style={{fontSize:13,padding:'10px 20px',fontWeight:800,background:'#166534',borderColor:'#166534',opacity:whPulling||totPulling2===0?0.5:1}} onClick={async()=>{
                       if(whPulling)return;setWhPulling(true);
                       const pickIdToUse=pickId||('IF-'+Date.now().toString(36).toUpperCase().slice(-4));
                       const byItemIdx={};pickItems.forEach(pi=>{byItemIdx[pi.itemIdx]=pi});
@@ -20837,8 +20843,9 @@ export default function App(){
                       const updatedSO={...so,items:updatedItems,jobs:_newJobs,updated_at:new Date().toLocaleString()};
                       // Inventory adjustments per item product — server-side (00237), see pullHouseInv.
                       const prodPatches={};const housePulls=[];
-                      pickItems.forEach(pi=>{if(!pi.p)return;const qtysForItem=pullQtys[pi.itemIdx]||{};const newInv={...(prodPatches[pi.p.id]||pi.p._inv||{})};pi.szKeys.forEach(sz=>{const v=qtysForItem[sz]||0;if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v);housePulls.push({product_id:pi.p.id,size:sz,qty:v,so_id:so.id})}});prodPatches[pi.p.id]=newInv});
-                      pullHouseInv(prodPatches,housePulls);
+                      pickItems.forEach(pi=>{if(!pi.p)return;const qtysForItem=pullQtys[pi.itemIdx]||{};const newInv={...(prodPatches[pi.p.id]||pi.p._inv||{})};pi.szKeys.forEach(sz=>{const v=qtysForItem[sz]||0;if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v);housePulls.push({product_id:pi.p.id,size:sz,qty:v,so_id:so.id,pick_id:pi.activePick?.pick_id||pickIdToUse,source_item_ids:safeItems(so)[pi.itemIdx]?.source_webstore_item_ids||[]})}});prodPatches[pi.p.id]=newInv});
+                      const pulled=await pullHouseInv(prodPatches,housePulls);if(pulled?.ok===false){setWhPulling(false);return}
+                      applyInventoryPullCosts(updatedItems,pulled);
                       if(showShipping&&boxes.some(bx=>bx.tracking_number||bx.label_url)){
                         const shipments=[...(updatedSO._shipments||[])];
                         let addedCost=0;
