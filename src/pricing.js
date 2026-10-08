@@ -3,7 +3,7 @@ import { EXTRA_SIZES, CATEGORIES } from './constants';
 import { safeNum, safeJobs, manualPoCostTotal } from './safeHelpers';
 // Outsourced gate — same switch Costs tab / syncJobs use. Keep cost walks from counting
 // in-house decoCostAt on decorations already covered by a deco PO (SO-1397 double-count).
-import { isDecoOutsourced, outsourcedDecoTypes, decoConcreteType, decoIsOutsourced, garmentNeedsUnderbase } from './businessLogic';
+import { isDecoOutsourced, outsourcedDecoTypes, decoConcreteType, decoIsOutsourced, garmentNeedsUnderbase, garmentCost } from './businessLogic';
 // Default deco pricing tables + pure calculators live in src/lib/decoPricing.js (CJS,
 // shared verbatim with netlify/functions/quickorder-quote.js — same dual-consumer
 // pattern as src/lib/opsRecap.js). This file layers the localStorage nsa_settings
@@ -287,7 +287,8 @@ export const calcOrderMargin=(o,allOrders,decoVendors,decoVendorPricing)=>{
       if(it._sizeSells&&sq>0){Object.entries(_sSizes(it)).forEach(([sz,v])=>{const n=_sNum(v);if(n>0)rev+=n*(it._sizeSells?.[sz]||_sNum(it.unit_sell))})}
       else{rev+=q*_sNum(it.unit_sell)}
     }
-    if(it._sizeCosts&&sq>0){Object.entries(_sSizes(it)).forEach(([sz,v])=>{const n=_sNum(v);if(n>0)cost+=n*(it._sizeCosts?.[sz]||_sNum(it.nsa_cost))})}
+    if(it.source_webstore_item_ids?.length){cost+=garmentCost(it).cost}
+    else if(it._sizeCosts&&sq>0){Object.entries(_sSizes(it)).forEach(([sz,v])=>{const n=_sNum(v);if(n>0)cost+=n*(it._sizeCosts?.[sz]||_sNum(it.nsa_cost))})}
     else{cost+=q*_sNum(it.nsa_cost)}
     // Sell always counts (customer still pays); in-house cost is suppressed when a deco PO covers it.
     _sDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*_sNum(dp.sell);cost+=decoCostResolved(o,ii,d,q,af,cq,comb,decoVendors,decoVendorPricing,outByItem)})
