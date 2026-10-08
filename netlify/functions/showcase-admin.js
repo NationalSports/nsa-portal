@@ -403,7 +403,7 @@ exports.handler = async (event) => {
         if (familyError) throw new Error(familyError.message);
         const {groupShowcaseItems} = require('../../src/lib/showcaseFamilies');
         const {catalogSignature} = require('./_showcaseFamily');
-        const group = groupShowcaseItems(await getCatalog(admin,storeId,store.store_art)).find((g)=>g.key===ready.analysis.family.key);
+        const group = groupShowcaseItems(await getCatalog(admin,storeId,store.store_art)).find((g)=>g.key===(family?.inputs?.catalog_family_key || ready.analysis.family.key));
         if (!family || family.request_id!==ready.generation_request_id || !group || catalogSignature(group.items)!==family.inputs.catalog_signature)
           return reply(409,{error:'The catalog or artwork changed. Generate the item again before approving.'});
       }
