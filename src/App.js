@@ -4014,6 +4014,15 @@ export default function App(){
           // payload array, and the engine mutates payload items in place on later saves.
           out.push({...r.item});applied++;continue;
         }
+        // kind 'item_dropped': the save healed a payload that repeated a line_id by dropping a tail
+        // copy of a line the order still holds (healDuplicateLineIds). Sent highest index first. Drop
+        // it here too, but only while it is still that unedited tail line.
+        if(r.kind==='item_dropped'){
+          const it=out[r.idx];
+          if(!it)continue;// already gone
+          if(r.idx!==out.length-1||it.line_id!==r.line_id||!_same(it,r)||JSON.stringify(it.sizes||{})!==JSON.stringify(r.sizes))return s;
+          out.pop();applied++;continue;
+        }
         const it=out[r.idx];
         // Same identity rule as _matchRestoreItem: a known DIFFERENT sku OR color means state
         // moved on mid-save and r.idx now points at another garment — bail untouched.
