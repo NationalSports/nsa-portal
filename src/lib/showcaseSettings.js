@@ -1,5 +1,5 @@
 // Shared by the staff UI and server-side Showcase pipeline.
-const PROMPT_VERSION = 'showcase-v8-applied-artwork';
+const PROMPT_VERSION = 'showcase-v9-fit-and-laterality';
 const DECORATION_FINISHES = [
   ['auto', 'Use existing decoration'],
   ['tackle_twill', 'Tackle twill'],

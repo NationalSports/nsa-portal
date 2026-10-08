@@ -57,6 +57,7 @@ async function loadJob(admin, assetId, requestId) {
       ...product,
       sku: wp.sku || product.sku,
       display_name: wp.display_name,
+      catalog_name: product.name,
       name: wp.display_name || product.name || wp.sku,
       category: wp.category || product.category,
     },
