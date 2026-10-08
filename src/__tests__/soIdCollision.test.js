@@ -62,6 +62,12 @@ const withSupabaseEnv = () => {
 };
 const restoreEnv = () => { process.env = { ...ORIG_ENV }; };
 
+// Module resets simulate a new tab; clear persisted backups between independent
+// cases so a prior tab's deliberately retained draft is not mistaken for this one.
+beforeEach(() => {
+  Object.keys(localStorage).filter(key => key.startsWith('nsa_outbox')).forEach(key => localStorage.removeItem(key));
+});
+
 // An order with no items keeps the item-write guards out of the picture — this suite is only about
 // which id the header lands on.
 const emptyChildren = () => ({
@@ -168,8 +174,8 @@ describe('_dbSaveSOInner — document-identity guard on id collision', () => {
     await _dbSaveSO(so);
 
     // A refused write must never also discard what the rep typed.
-    const mine = (_outboxList() || []).filter(e => e && e.id === 'SO-1507');
-    expect(mine.length).toBeGreaterThan(0);
+    const mine = (_outboxList() || []).filter(e => e && e.id === 'SO-1507' && !e.reviewOnly);
+    expect(mine.length).toBe(1);
     expect(mine[0].payload.memo).toBe('typed but unsaved');
   });
 
