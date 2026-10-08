@@ -1,3 +1,4 @@
+const { methodSetupError, resolveSchoolSetup, schoolArtwork } = require('../../src/allSchool/methodReadiness.shared');
 // Server-side storefront checkout — the browser never decides a price again.
 //
 // Actions (POST, public by design — shoppers have no accounts):
@@ -344,6 +345,7 @@ async function priceCart(sb, store, cart) {
       }
     }
   }
+  if (store.org_type === 'all_school') recipeArts = schoolArtwork([...(store.store_art || []), ...recipeArts]);
   if (store.org_type === 'all_school' && bundleItems.length) {
     const componentIds = [...new Set(bundleItems.map((c) => c.product_id).filter(Boolean))];
     if (componentIds.length) {
@@ -430,6 +432,10 @@ async function priceCart(sb, store, cart) {
       feeBase += r2(unit * qty);
       lines.push({ kind: 'single', wp, qty, size, unit_price: unit, fundraise: fundAmt, name_extra: nameExtra, option_extra: addOns.extra, option_selections: addOns.selections, line_total: r2((unit + fundAmt + nameExtra) * qty), player_name: pname || null, player_number: pnum || null, name: wp.display_name, color: l.color ? String(l.color).slice(0, 60) : null, variant_label: [wp.variant_label, wp.school_design_label].filter(Boolean).join(' · ') || null, image: wp.image_url, ...(store.org_type === 'all_school' ? { production_recipe: productionRecipe(wp, recipeTransfers, recipeArts) } : {}) });
     }
+  }
+  if (store.org_type === 'all_school') {
+    const error = lines.flatMap((line) => line.kind === 'bundle' ? line.components.map((c) => c.production_recipe) : [line.production_recipe]).find((recipe) => recipe?.setup_error)?.setup_error;
+    if (error) return { error };
   }
   return { lines, subtotal: r2(subtotal), fundraise: r2(fundraise), feeBase: r2(feeBase) };
 }
@@ -662,6 +668,9 @@ function personalizationNameError(wp, value) {
 }
 
 function productionRecipe(wp, transfers = [], arts = []) {
+  arts = schoolArtwork(arts);
+  wp = resolveSchoolSetup(wp, transfers, arts);
+  const setupError = methodSetupError(wp, transfers, arts);
   const keys = ['product_id', 'sku', 'display_name', 'color', 'variant_label', 'school_design_label', 'transfer_code', 'num_transfer_size', 'num_transfer_color', 'name_upcharge', 'image_url', 'image_back_url', 'weight_oz'];
   const transferKeys = ['id', 'kind', 'code', 'name', 'label', 'image_url', 'color', 'size', 'tsize', 'digit', 'production_file', 'dimensions', 'type', 'decoration_type', 'supplier', 'supplier_id', 'application', 'application_method', 'application_instructions', 'unit_cost', 'artwork_version', 'art_file_id', 'width_in', 'height_in', 'prod_files'];
   const designCodes = new Set([...(Array.isArray(wp.transfer_codes) ? wp.transfer_codes : []), wp.transfer_code].filter(Boolean));
@@ -671,7 +680,8 @@ function productionRecipe(wp, transfers = [], arts = []) {
     .map((t) => Object.fromEntries(transferKeys.filter((key) => t[key] != null).map((key) => [key, t[key]])));
   return JSON.parse(JSON.stringify({
     version: 1, webstore_product_id: wp.id,
-    mock_approval: { approved: !!wp.production_approved_at && !!wp.image_url, approved_at: wp.production_approved_at || null, approved_by: wp.production_approved_by || null, basis: 'approved_store_setup' },
+    setup_error: setupError || null,
+    mock_approval: { approved: !setupError, approved_at: null, approved_by: null, basis: 'method_readiness' },
     ...Object.fromEntries(keys.map((key) => [key, wp[key] == null ? null : wp[key]])),
     decorations: Array.isArray(wp.decorations) ? wp.decorations : [],
     transfer_codes: [...designCodes],
