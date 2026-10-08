@@ -92,7 +92,7 @@ const dstBlock = (d) => {
   }
   if (!d.dstBarcodes || !d.dstBarcodes.length) return '';
   const items = d.dstBarcodes.map((b) => `<div style="text-align:center"><div style="display:inline-block;background:#fff">${b.svg || `<div style="font-size:12px;font-weight:700;padding:8px">${esc(b.base)}</div>`}</div>${(b.dg || b.art) ? `<div style="font-size:10px;font-weight:700;color:#334155">${esc([b.dg, b.art].filter(Boolean).join(' · '))}</div>` : ''}</div>`).join('');
-  return `<div style="margin-top:10px;padding:10px 12px;background:#fff;border:2px solid #1e293b;border-radius:8px;page-break-inside:avoid">
+  return `<div style="margin-top:8px;padding:6px 10px;background:#fff;border:2px solid #1e293b;border-radius:8px;page-break-inside:avoid">
     <div style="font-size:13px;font-weight:800;color:#1e293b">🧵 MACHINE DESIGNS — SCAN TO LOAD</div>
     <div style="font-size:9px;color:#64748b;margin-bottom:8px">Barcode = DST file name. Scan at the machine to pull the design from the design server.</div>
     <div style="display:flex;gap:18px;flex-wrap:wrap">${items}</div>
@@ -214,18 +214,18 @@ export function buildWorkOrderDoc(data) {
   let mockSection;
   if (dual) {
     mockSection = `<div style="margin-top:10px;border:1px solid ${C.line};border-radius:8px;overflow:hidden">${panelHead('Approved Mockup')}<div style="display:grid;grid-template-columns:1fr 1fr">${mockCell({ ...mocks[0], side: 'front' }, d.garmentFill, d.crest)}<div style="border-left:1px solid ${C.line2}">${mockCell({ ...mocks[1], side: 'back' }, d.garmentFill, d.crest)}</div></div></div>
-      <div style="margin-top:10px">${specPanel(d)}</div>${dstBlock(d)}`;
+      <div style="margin-top:10px">${specPanel(d)}</div>`;
   } else {
     mockSection = `<div style="margin-top:10px;display:grid;grid-template-columns:0.95fr 1.05fr;gap:14px;align-items:start">
       <div style="border:1px solid ${C.line};border-radius:8px;overflow:hidden">${panelHead('Approved Mockup')}${mockCell({ ...(mocks[0] || { label: 'Front', side: 'front' }) }, d.garmentFill, d.crest)}</div>
       <div>${specPanel(d)}</div>
-    </div>${dstBlock(d)}`;
+    </div>`;
   }
 
   // Separations + runs-together are decoration info. They ride on page 1 for a
   // contract job (which has room). For a clubstore/NTS order they move onto the
   // pick page, so the two-mockup page 1 doesn't overflow.
-  const extras = prodFilesBlock(d.prodFiles) + siblingsBlock(d.siblings);
+  const extras = prodFilesBlock(d.prodFiles) + dstBlock(d) + siblingsBlock(d.siblings);
 
   const page1 = sheet(`
     ${header(d, 'Production Work Order · Decoration Floor', rushMethod, d.barcodeLabel || d.id)}
