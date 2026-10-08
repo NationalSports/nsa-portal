@@ -135,6 +135,7 @@ export default function ReceivePaymentsPage() {
     try {
       if (mode === 'apply') {
         const { applied: dbA, receipt: fresh } = await dbApplied(rid);
+        if (fresh.reconciliation_hold) throw new Error('This payment is held for QuickBooks reconciliation. Do not apply it again.');
         const applied = Math.max(dbA, receiptSummary(fresh, invs).applied);
         const leftNow = cents(Number(fresh.amount) - applied);
         const want = cents(picks.reduce((a, p) => a + p.amount, 0));
@@ -205,6 +206,7 @@ export default function ReceivePaymentsPage() {
       const { applied, receipt: fresh } = await dbApplied(x.r.id);
       if (applied > 0.005) { nf('This payment has already been applied to an invoice — reload the page', 'error'); return; }
       // Once the QBO sync has posted it, deleting here would leave an orphan payment in QuickBooks.
+      if (fresh.reconciliation_hold) { nf('This receipt is held for QuickBooks reconciliation and cannot be deleted.', 'error'); return; }
       if (fresh.qb_payment_id) { nf('This payment is already in QuickBooks (payment #' + fresh.qb_payment_id + ') — void it there first', 'error'); return; }
     }
     catch (e) { nf('Could not verify the payment — ' + e.message, 'error'); return; }
@@ -273,11 +275,13 @@ export default function ReceivePaymentsPage() {
                 <td style={{ ...td, ...num, color: '#166534' }}>{money(x.applied)}<div style={{ fontSize: 10, color: '#94a3b8' }}>{x.applications.length} invoice{x.applications.length === 1 ? '' : 's'}</div></td>
                 <td style={{ ...td, ...num, fontWeight: 700, color: x.unapplied > 0.005 ? '#b45309' : '#cbd5e1' }}>{x.unapplied > 0.005 ? money(x.unapplied) : '—'}</td>
                 <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }} onClick={e => e.stopPropagation()}>
-                  {x.unapplied > 0.005 && <button className="btn btn-sm" style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d', fontWeight: 700 }} onClick={() => setModal({ mode: 'apply', receipt: x.r })}>Apply {money(x.unapplied)}</button>}
-                  {!x.applications.length && !x.r.qb_payment_id && <button className="btn btn-sm btn-secondary" style={{ marginLeft: 6, color: '#b91c1c' }} title="Delete — only possible while nothing has been applied" onClick={() => deleteReceipt(x)}>Delete</button>}
+                  {x.r.reconciliation_hold && <span style={{color:'#92400e',fontWeight:700}}>QuickBooks review required</span>}
+                  {x.unapplied > 0.005 && !x.r.reconciliation_hold && <button className="btn btn-sm" style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d', fontWeight: 700 }} onClick={() => setModal({ mode: 'apply', receipt: x.r })}>Apply {money(x.unapplied)}</button>}
+                  {!x.applications.length && !x.r.qb_payment_id && !x.r.reconciliation_hold && <button className="btn btn-sm btn-secondary" style={{ marginLeft: 6, color: '#b91c1c' }} title="Delete — only possible while nothing has been applied" onClick={() => deleteReceipt(x)}>Delete</button>}
                 </td>
               </tr>
               {open[x.r.id] && <tr><td colSpan={7} style={{ background: '#f8fafc', padding: '8px 12px 12px 30px', borderBottom: '1px solid #e2e8f0' }}>
+                {x.r.reconciliation_hold && <div style={{color:'#92400e',fontSize:12,marginBottom:8}}>Unapplied in the portal; QuickBooks was not changed. Accounting must reconcile the original and any replacement entries before releasing this receipt. Do not record or apply this payment again.</div>}
                 {x.r.memo && <div style={{ fontSize: 11, color: '#475569', marginBottom: 6 }}>Note: {x.r.memo}</div>}
                 {!x.applications.length ? <div style={{ fontSize: 12, color: '#94a3b8' }}>Not applied to any invoice yet — the full amount is on the account.</div>
                   : <table style={{ borderCollapse: 'collapse', minWidth: 420 }}>
@@ -285,7 +289,7 @@ export default function ReceivePaymentsPage() {
                     <tbody>{x.applications.map((a, i) => <tr key={i}>
                       <td style={td}><button className="btn btn-sm" style={{ background: 'none', border: 'none', padding: 0, color: '#1e40af', fontWeight: 700, textDecoration: 'underline', cursor: 'pointer' }} onClick={() => openInvoice(a.invoice_id)}>{a.invoice_id}</button>{a._hist && <span style={{ marginLeft: 4, fontSize: 8, padding: '1px 4px', borderRadius: 3, background: '#e2e8f0', color: '#475569', fontWeight: 700 }}>NS</span>}</td>
                       <td style={{ ...td, ...num }}>{money(a.amount)}</td>
-                      <td style={td}>{a.date || '—'}</td>
+                      <td style={td}>{a.date || '—'}{!a._hist && <button className="btn btn-sm btn-secondary" style={{marginLeft:8}} onClick={() => openInvoice(a.invoice_id)}>Manage / unapply</button>}</td>
                     </tr>)}</tbody>
                   </table>}
                 {x.r.qb_payment_id && <div style={{ fontSize: 11, color: '#166534', marginTop: 6 }}>In QuickBooks as payment #{x.r.qb_payment_id}</div>}
