@@ -68,3 +68,13 @@ test('diffuse highlights preserve black fabric while retaining shaded folds',()=
  const out=recolor(master,[24,24,24]);
  assert.ok(out[0]<24);assert.equal(out[4],24);assert.ok(out[8]>24 && out[8]<=31);
 });
+
+test('unambiguous numeric strings and object corners are normalized for mapped artwork',async()=>{
+ const result=await validatedMapping(async()=>{const r=good();r.analysis.placements.a=[{x:'0.3',y:'0.3'},{x:'0.6',y:'0.3'},{x:'0.6',y:'0.6'},{x:'0.3',y:'0.6'}];return r;},{analysisPrompt:'Map'},{a:{}},async()=>{});
+ assert.deepEqual(result.analysis.placements.a,good().analysis.placements.a);
+});
+test('missing placement keys retain the exact failed rule and never produce a review candidate',async()=>{
+ await assert.rejects(validatedMapping(async()=>good(),{analysisPrompt:'Map'},{p1:{}},async()=>{}),error=>{
+  assert.match(error.message,/Missing mapped artwork placement p1/);assert.equal(error.mappingDiagnostics.attempts.length,2);return true;
+ });
+});
