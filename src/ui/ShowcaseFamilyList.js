@@ -14,7 +14,7 @@ function FamilyCard({ group, busy, act, onReview }) {
   const errors = [...new Set(group.items.map(({ asset }) => asset?.error_details).filter(Boolean))];
   const generate = (newMaster = false) => {
     if (newMaster && !window.confirm('Generate a new base garment for this entire item? This incurs a new AI image charge. Existing approved images stay in place until replacements are approved.')) return;
-    act(group.key,'generate_family',{family_key:group.key,new_master:newMaster,showcase_settings:{decoration_type:finish}});
+    act(group.key,'generate_family',{family_key:group.key,new_master:newMaster,showcase_settings:{decoration_type:finish,revision_notes:group.items[0].asset?.showcase_settings?.revision_notes || ''}});
   };
   return <section style={{ border:'1px solid #e2e8f0',borderRadius:10,marginBottom:12,overflow:'hidden' }}>
     <div style={{ display:'flex',gap:14,padding:16,alignItems:'center',flexWrap:'wrap' }}>
@@ -31,10 +31,10 @@ function FamilyCard({ group, busy, act, onReview }) {
           </select>
         </label>
         <button className="btn btn-sm btn-primary" disabled={busy || group.working || !group.eligible} onClick={()=>generate()}>
-          {group.working ? 'Generating item…' : generated ? (needsUpdate ? 'Update generated images' : 'Regenerate whole item') : 'Generate whole item'}
+          {group.working ? 'Creating images…' : generated ? (needsUpdate ? 'Update generated images' : 'Refresh images') : 'Create images'}
         </button>
         {group.working ? <button className="btn btn-sm btn-secondary" disabled={busy} onClick={()=>act(group.key,'cancel_family',{family_key:group.key})}>Cancel item</button>
-          : <button className="btn btn-sm btn-secondary" disabled={busy || !group.eligible} onClick={()=>generate(true)}>New base garment</button>}
+          : <button className="btn btn-sm btn-secondary" disabled={busy || !group.eligible} onClick={()=>generate(true)}>Change pose & lighting</button>}
         <button className="btn btn-sm btn-secondary" aria-expanded={open} onClick={()=>setOpen(!open)}>{open?'Hide combinations':`Review combinations (${group.items.length})`}</button>
       </div>
     </div>
@@ -77,11 +77,17 @@ export default function ShowcaseFamilyList({ items, busy, error, act }) {
           if(window.confirm(`Generate ${count} base items and all their color/logo combinations? Each item uses up to one paid AI image generation; saved bases are reused. Color analysis also incurs usage charges.`)) act('generate_all','generate_all_families');
         }}>Generate all ({count})</button>
       </div>
-      <p style={{fontSize:12,color:'#64748b',marginBottom:0}}>One shared garment per item. Colors are sampled from supplier photos; saved logos are applied to each combination. Generate whole item reuses its saved base. Choose New base garment to change the pose or lighting. Review every color and logo before approval.</p>
+      <p style={{fontSize:12,color:'#64748b',marginBottom:0}}>One shared garment per item. Colors are sampled from supplier photos; saved logos are applied to each combination. Refresh images keeps the current pose and lighting. Choose Change pose & lighting to change the pose or lighting. Review every color and logo before approval.</p>
       <p style={{fontSize:12,color:'#64748b',marginBottom:0}}>Photo lighting can affect color accuracy. Compare fabric texture, manufacturer marks and decoration placement with the original photos. Approved images remain in use until you approve replacements.</p>
     </div>
     <div style={{padding:14}}>{!groups.length && <p>Add products to the catalog first.</p>}{groups.map((group)=><FamilyCard key={group.key} group={group} busy={busy} act={act} onReview={setReviewId}/>)}</div>
     {reviewItem && <ShowcaseImageReview key={reviewId} item={reviewItem} familyMode busy={busy} error={error} onClose={()=>setReviewId(null)}
-      onAction={(action,extra={})=>act(reviewId,action,{webstore_product_id:reviewId,...extra})}/>}
+      onAction={(action,extra={})=>{
+        if (action === 'revise') {
+          const group = groups.find(g => g.items.some(i => i.webstore_product_id === reviewId));
+          return act(group.key,'generate_family',{family_key:group.key,new_master:true,...extra});
+        }
+        return act(reviewId,action,{webstore_product_id:reviewId,...extra});
+      }}/>}
   </div>;
 }

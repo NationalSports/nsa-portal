@@ -43,7 +43,28 @@ test('a false construction rejection is rechecked with product identity and all 
 test('confirmed construction rejection remains blocked and exposes no raw internal model narrative',async()=>{
  let calls=0;
  await assert.rejects(validatedMapping(async()=>{calls++;return {analysis:{supported:false,reason:'green hoodie PLACEMENTS wrong pocket'}};},{analysisPrompt:'Map',product:{name:'Hoodie'}},{},async()=>{}),error=>{
-   assert.match(error.message,/New base garment/);assert.doesNotMatch(error.message,/green|PLACEMENTS|wrong pocket/);return true;
+   assert.match(error.message,/Change pose & lighting/);assert.doesNotMatch(error.message,/green|PLACEMENTS|wrong pocket/);return true;
  });
  assert.equal(calls,2);
+});
+test('revision instructions reach the master prompt and invalidate the cached master',()=>{
+ const source={product_id:'p',webstore_product_id:'w',supplier_image_url:'url'};
+ const original=familyInputs({items:[source]},[],{});
+ const revised=familyInputs({items:[source]},[],{revision_notes:'Soften lighting and keep the pose'});
+ assert.notEqual(original.master_signature,revised.master_signature);
+ assert.match(masterPrompt(revised.source),/Soften lighting and keep the pose/);
+});
+test('placement reference matches a contain-fitted 4:5 editor frame',async()=>{
+ const sharp=require('sharp');const {placementReference}=require('../netlify/functions/_showcaseFamilyRender');
+ const photo=await sharp({create:{width:100,height:200,channels:3,background:'#000000'}}).png().toBuffer();
+ const {data,info}=await sharp(await placementReference(photo)).raw().toBuffer({resolveWithObject:true});
+ assert.equal(info.width,1000);assert.equal(info.height,1250);
+ const pixel=(x,y)=>data[(y*info.width+x)*info.channels];
+ assert.equal(pixel(100,625),255);assert.equal(pixel(500,625),0);assert.equal(pixel(900,625),255);
+});
+test('diffuse highlights preserve black fabric while retaining shaded folds',()=>{
+ const {recolor}=require('../netlify/functions/_showcaseFamilyRender');
+ const master={data:Buffer.from([20,90,30,255,30,180,55,255,40,250,60,255]),mask:[1,1,1],median:180,info:{width:3,height:1,channels:4}};
+ const out=recolor(master,[24,24,24]);
+ assert.ok(out[0]<24);assert.equal(out[4],24);assert.ok(out[8]>24 && out[8]<=31);
 });

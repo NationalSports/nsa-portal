@@ -7,14 +7,14 @@ test('15 combinations show one base card, generation targets the group, review e
  expect(screen.getByText('Showcase · 1 base items')).toBeTruthy();
  expect(screen.getByText('5 colors · 3 designs · 15 combinations')).toBeTruthy();
  expect(screen.queryAllByText('Before / After')).toHaveLength(0);
- fireEvent.click(screen.getByText('Generate whole item'));
- expect(act).toHaveBeenCalledWith('style:nike:hood','generate_family',{family_key:'style:nike:hood',new_master:false,showcase_settings:{decoration_type:'auto'}});
+ fireEvent.click(screen.getByText('Create images'));
+ expect(act).toHaveBeenCalledWith('style:nike:hood','generate_family',{family_key:'style:nike:hood',new_master:false,showcase_settings:{decoration_type:'auto',revision_notes:''}});
  fireEvent.click(screen.getByText('Review combinations (15)'));
  expect(screen.getAllByText('Before / After')).toHaveLength(15);
 });
 test('running family disables new generation and cancellation targets entire item',()=>{
  const act=jest.fn();render(<ShowcaseFamilyList items={items.map(i=>({...i,asset:{status:'generating'}}))} act={act}/>);
- expect(screen.getByText('Generating item…').disabled).toBe(true);
+ expect(screen.getByText('Creating images…').disabled).toBe(true);
  fireEvent.click(screen.getByText('Cancel item'));
  expect(act).toHaveBeenCalledWith('style:nike:hood','cancel_family',{family_key:'style:nike:hood'});
 });
@@ -24,12 +24,25 @@ test('generated combinations clearly await approval and Review & Approve opens t
  const act=jest.fn();
  render(<ShowcaseFamilyList items={[{...items[0],asset:{status:'review',showcase_image_url:'generated.png',family_version:'showcase-family-v1'}}]} act={act}/>);
  expect(screen.getByText('1/1 generated · 0 approved · 1 awaiting review')).toBeTruthy();
- expect(screen.getByText('Regenerate whole item')).toBeTruthy();
- expect(screen.queryByText('Generate whole item')).toBeNull();
+ expect(screen.getByText('Refresh images')).toBeTruthy();
+ expect(screen.queryByText('Create images')).toBeNull();
  fireEvent.click(screen.getByText('Review combinations (1)'));
  expect(screen.getByText('Generated · Awaiting approval')).toBeTruthy();
  fireEvent.click(screen.getByText('Review & Approve'));
  expect(HTMLDialogElement.prototype.showModal).toHaveBeenCalled();
  fireEvent.click(screen.getByText('Approve Image'));
  expect(act).toHaveBeenCalledWith('0','approve',{webstore_product_id:'0'});
+});
+test('reject offers feedback before requesting a new family version and preserves the finish',()=>{
+ HTMLDialogElement.prototype.showModal=jest.fn();HTMLDialogElement.prototype.close=jest.fn();
+ const act=jest.fn();
+ render(<ShowcaseFamilyList items={[{...items[0],asset:{status:'review',showcase_image_url:'candidate.png',showcase_settings:{decoration_type:'tackle_twill'}}}]} act={act}/>);
+ fireEvent.click(screen.getByText('Review combinations (1)'));
+ fireEvent.click(screen.getByText('Review & Approve'));
+ fireEvent.click(screen.getByText('Reject'));
+ expect(act).not.toHaveBeenCalled();
+ expect(screen.getByText('Create revised images').disabled).toBe(true);
+ fireEvent.change(screen.getByRole('textbox',{hidden:true}),{target:{value:'Keep the pose; soften lighting and raise the logo'}});
+ fireEvent.click(screen.getByText('Create revised images'));
+ expect(act).toHaveBeenCalledWith('style:nike:hood','generate_family',{family_key:'style:nike:hood',new_master:true,showcase_settings:{decoration_type:'tackle_twill',revision_notes:'Keep the pose; soften lighting and raise the logo'}});
 });
