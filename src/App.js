@@ -15,7 +15,7 @@ import { isJobReady, missingJobMocks, mockAwareProductionStatus } from './lib/jo
 import ImageExportOptions, {PngExport} from './ImageExportOptions';
 import {createHistoryStore} from './lib/documentHistory';
 import { setEmailBlockRegistry, deliveryFailureAdvice } from './lib/emailRouting';
-import {createCoalescedReload} from './lib/coalescedReload';
+import {createCoalescedReload, shouldRefreshOnFocus} from './lib/coalescedReload';
 import { indexFirstById } from './lib/rowLookup';
 import { localRowIsNewer as _localRowIsNewer, keepLocalAdoptVersion as _keepLocalAdoptVersion } from './lib/pollMergeRecency';
 /* eslint-disable */
@@ -3260,13 +3260,14 @@ export default function App(){
       let _rtErrorLogged=false;
       const _RT_TABLES=['estimates','sales_orders','invoices','messages','customers','so_item_pick_lines','assigned_todos','todo_comments'];
       const _rtSubbed=new Set();// tables whose realtime channel is currently SUBSCRIBED
+      let _rtLastDropAt=0;// last time any channel left SUBSCRIBED — events in that gap may be lost
       const _syncRtHealth=()=>{_realtimeHealthy=_rtSubbed.size===_RT_TABLES.length};
       _RT_TABLES.forEach(table=>{
         const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload(table)}).subscribe((status,err)=>{
           if(status==='SUBSCRIBED'){_rtSubbed.add(table);_syncRtHealth();return}
           // Any non-subscribed status means this table is no longer receiving live pushes — drop it from the
           // healthy set so _getPollInterval tightens back to the 120s backstop until the channel recovers.
-          _rtSubbed.delete(table);_syncRtHealth();
+          _rtSubbed.delete(table);_syncRtHealth();_rtLastDropAt=Date.now();
           if(status==='CHANNEL_ERROR'||status==='TIMED_OUT'){
             if(!_rtErrorLogged){console.warn('[Realtime] Subscription issue for',table,':',status,err?.message||'');_rtErrorLogged=true}
           }
@@ -3279,7 +3280,12 @@ export default function App(){
       // (products/product_inventory + app_state image rows), so normal tab switching can otherwise
       // multiply into a large PostgREST burst across every open portal tab.
       const _FOCUS_RELOAD_GROUPS=['estimates','sales_orders','invoices','messages','assigned_todos'];
-      const onVis=()=>{if(!document.hidden&&_dbReady.current){_pollConsecutiveFailures=0;debouncedReloadGroups(_FOCUS_RELOAD_GROUPS,1000)}};
+      // Not on every switch back, though: see shouldRefreshOnFocus. The initial load / a full poll
+      // (_lastFullSyncAt) counts as a refresh, so a tab opened a moment ago doesn't reload again.
+      let _lastFocusReloadAt=0;
+      const onVis=()=>{if(!document.hidden&&_dbReady.current){_pollConsecutiveFailures=0;
+        if(!shouldRefreshOnFocus({now:Date.now(),lastRefreshAt:Math.max(_lastFocusReloadAt,_lastFullSyncAt),realtimeHealthy:_realtimeHealthy,lastRealtimeDropAt:_rtLastDropAt}))return;
+        _lastFocusReloadAt=Date.now();debouncedReloadGroups(_FOCUS_RELOAD_GROUPS,1000)}};
       document.addEventListener('visibilitychange',onVis);
       channels._onVis=onVis;
     }
@@ -4015,6 +4021,15 @@ export default function App(){
           // Copy rather than sharing the object: r.item is the very object still sitting in the save's
           // payload array, and the engine mutates payload items in place on later saves.
           out.push({...r.item});applied++;continue;
+        }
+        // kind 'item_dropped': the save healed a payload that repeated a line_id by dropping a tail
+        // copy of a line the order still holds (healDuplicateLineIds). Sent highest index first. Drop
+        // it here too, but only while it is still that unedited tail line.
+        if(r.kind==='item_dropped'){
+          const it=out[r.idx];
+          if(!it)continue;// already gone
+          if(r.idx!==out.length-1||it.line_id!==r.line_id||!_same(it,r)||JSON.stringify(it.sizes||{})!==JSON.stringify(r.sizes))return s;
+          out.pop();applied++;continue;
         }
         const it=out[r.idx];
         // Same identity rule as _matchRestoreItem: a known DIFFERENT sku OR color means state

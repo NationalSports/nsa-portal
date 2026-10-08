@@ -216,6 +216,18 @@ describe('_matchRestoreItem', () => {
     // Skuless rows trust position only while the color doesn't contradict.
     expect(_matchRestoreItem({ item_index: 0, sku: '', color: 'Green' }, items)).toBe(-1);
   });
+  test('the same line (line_id) that still carries the row wins, even recolored (SO-2456)', () => {
+    const recolored = [
+      { line_id: 'L1', sku: '110M', color: 'Black', po_lines: [{ po_id: 'PO 1' }] },
+      { line_id: 'L2', sku: '110M', color: 'Charcoal/ White', po_lines: [{ po_id: 'PO 1' }] },
+    ];
+    const holdsPo1 = it => (it.po_lines || []).some(p => p.po_id === 'PO 1');
+    const dbRow = { item_index: 1, line_id: 'L2', sku: '110M', color: 'White' };
+    expect(_matchRestoreItem(dbRow, recolored, holdsPo1)).toBe(1);
+    // Without the line carrying the row, the color rule still applies and nothing matches.
+    expect(_matchRestoreItem(dbRow, recolored, it => false)).toBe(-1);
+    expect(_matchRestoreItem(dbRow, recolored)).toBe(-1);
+  });
 });
 
 // ── Queued per-entity save: latest-wins coalescing ───────────────────
