@@ -43,7 +43,7 @@ test('a false construction rejection is rechecked with product identity and all 
 test('repeated rejection remains blocked, saves both diagnostic reasons and offers a saved-image retry',async()=>{
  let calls=0;
  await assert.rejects(validatedMapping(async()=>{calls++;return {analysis:{supported:false,reason:'green hoodie PLACEMENTS wrong pocket'}};},{analysisPrompt:'Map',product:{name:'Hoodie'}},{},async()=>{}),error=>{
-   assert.match(error.message,/Automatic image review stopped/);assert.match(error.message,/Refresh images retries the saved image/);assert.equal(error.mappingDiagnostics.attempts.length,2);assert.equal(error.mappingDiagnostics.attempts[1].reason,'green hoodie PLACEMENTS wrong pocket');return true;
+   assert.match(error.message,/Automatic image review stopped/);assert.match(error.message,/retry the saved image/);assert.equal(error.mappingDiagnostics.attempts.length,2);assert.equal(error.mappingDiagnostics.attempts[1].reason,'green hoodie PLACEMENTS wrong pocket');return true;
  });
  assert.equal(calls,2);
 });

@@ -103,8 +103,8 @@ async function validatedMapping(analyze, request, placements, current) {
   }
   const reported = reason.replace(/\s+/g,' ').slice(0,600);
   const error = new Error(constructionRejected
-    ? `Automatic image review stopped. The image was generated, but the checker reported: ${reported}. This is an automated assessment, not a confirmed garment defect. Refresh images retries the saved image; changing pose is not required. Approved images are unchanged.`
-    : `Artwork placement stopped: ${reported}. The saved base is retained; Refresh images retries placement without creating another pose. Approved images are unchanged.`);
+    ? `Automatic image review stopped. The image was generated, but the checker reported: ${reported}. This is an automated assessment, not a confirmed garment defect. Use Create images or Refresh images to retry the saved image; changing pose is not required. Approved images are unchanged.`
+    : `Artwork placement stopped: ${reported}. The saved base is retained; use Create images or Refresh images to retry placement without creating another pose. Approved images are unchanged.`);
   error.mappingDiagnostics = { attempts };
   throw error;
 }
