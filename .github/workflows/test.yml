@@ -38,7 +38,7 @@ jobs:
 
       - name: Showcase family rendering and atomic lifecycle tests
         run: |
-          node --test tests/showcase-family-render.test.cjs
+          node --test tests/showcase-family-render.test.cjs tests/showcase-mapping.test.cjs
           npm install --prefix "$RUNNER_TEMP/showcase-db" --no-audit --no-fund @electric-sql/pglite@0.3.14
           SHOWCASE_PGLITE_PATH="$RUNNER_TEMP/showcase-db/node_modules/@electric-sql/pglite" node --test tests/showcase-family-db.test.cjs
 
