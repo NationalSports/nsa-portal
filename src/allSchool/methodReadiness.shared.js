@@ -9,16 +9,23 @@ function resolveSchoolSetup(item, transfers = [], art = []) {
     if (!d || ['perso_name', 'perso_number'].includes(d.kind)) return d;
     const id = d.art_id || d.art_file_id;
     const file = schoolArtwork(art).find((a) => a.id === id);
-    if (['embroidery', 'screen_print'].includes(file?.deco_type)) {
+    // Embroidery uses its digitized file rather than transfer stock.
+    if (file?.deco_type === 'embroidery') {
       if (d.transfer_code) codes.delete(d.transfer_code);
       const { transfer_code, ...placed } = d;
-      return { ...placed, type: file.deco_type, deco_type: file.deco_type };
+      return { ...placed, type: 'embroidery', deco_type: 'embroidery' };
     }
+    // Explicitly saved production stock overrides a legacy library default.
     const stock = transfers.find((t) => t.code === (d.transfer_code || stockCodeForArt(id)));
     const method = stock?.decoration_type || file?.deco_type || d.type || d.deco_type || '';
     if (stock && STOCK_METHODS.includes(method)) {
       codes.add(stock.code);
       return { ...d, transfer_code: stock.code, type: method, deco_type: method };
+    }
+    if (file?.deco_type === 'screen_print') {
+      if (d.transfer_code) codes.delete(d.transfer_code);
+      const { transfer_code, ...placed } = d;
+      return { ...placed, type: file.deco_type, deco_type: file.deco_type };
     }
     return { ...d, type: method, deco_type: method };
   });
@@ -30,7 +37,7 @@ function methodSetupError(raw, transfers = [], art = []) {
   if (!hasSchoolMockup(item)) return 'Save the garment mockup in Art & colors.';
   for (const code of item.transfer_codes) {
     const stock = transfers.find((t) => t.code === code);
-    if (!stock || !STOCK_METHODS.includes(stock.decoration_type || 'dtf')) return `Set up decoration inventory for ${stock?.label || code}.`;
+    if (!stock || !STOCK_METHODS.includes(stock.decoration_type || 'dtf')) return `Save the decoration production setup for ${stock?.label || code} in Inventory (zero on hand is fine).`;
     if (!stock.application_method) return `Choose the application method for ${stock.label || code} in Inventory.`;
     if (stock.application_method !== 'heat_press' && !String(stock.application_instructions || '').trim()) return `Add application instructions for ${stock.label || code} in Inventory.`;
   }
@@ -40,7 +47,7 @@ function methodSetupError(raw, transfers = [], art = []) {
     const file = schoolArtwork(art).find((a) => a.id === (d.art_id || d.art_file_id));
     const method = d.type;
     if (method === 'screen_print') return 'Screen print is not offered on 24/7 stores. Choose DTF, heat-transfer twill, patch, or embroidery.';
-    if (STOCK_METHODS.includes(method)) return `Set up inventory for ${file?.name || 'this logo'} in Inventory.`;
+    if (STOCK_METHODS.includes(method)) return `Save production details for ${file?.name || 'this logo'} in Inventory (zero on hand is fine).`;
     if (method !== 'embroidery') return 'Choose a supported decoration method in Art & Logos.';
     const files = [...(file?.files || []), ...(file?.prod_files || [])];
     if (!files.some((f) => /\.dst(?:\?|$)/i.test(typeof f === 'string' ? f : f.url || '') || (f?.url && /\.dst$/i.test(f.name || '')))) return `Attach the embroidery .dst file to ${file?.name || 'this artwork'} in Art & Logos.`;

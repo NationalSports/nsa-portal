@@ -5,7 +5,7 @@ const stock = { code: 'store-art-logo', decoration_type: 'twill', application_me
 test('zero-stock heat-transfer twill needs inventory setup, not artwork approval or an AI upload', () => {
   expect(methodSetupError(blank, [stock], [{ id: 'logo', deco_type: 'dtf' }])).toBe('');
   expect(resolveSchoolSetup(blank, [stock], []).transfer_codes).toEqual(['store-art-logo']);
-  expect(methodSetupError(blank, [], [{ id: 'logo', deco_type: 'dtf' }])).toMatch(/inventory/);
+  expect(methodSetupError(blank, [], [{ id: 'logo', deco_type: 'dtf' }])).toMatch(/inventory/i);
 });
 test('embroidery requires its attached DST and mockup but no separate approval click', () => {
   const art = [{ id: 'logo', deco_type: 'embroidery', status: 'draft', files: [{ name: 'logo.dst', url: '/logo.dst' }] }];
@@ -28,4 +28,12 @@ test('special application methods need instructions, without an art approval ste
   const sewn = { ...stock, application_method: 'sew_on' };
   expect(methodSetupError(blank, [sewn], [])).toMatch(/application instructions/);
   expect(methodSetupError(blank, [{ ...sewn, application_instructions: 'Stitch around the edge.' }], [])).toBe('');
+});
+test('explicit twill production setup overrides a legacy screen-print label with zero inventory',()=>{
+ const art=[{id:'logo',deco_type:'screen_print'}];
+ const resolved=resolveSchoolSetup(blank,[stock],art);
+ expect(resolved.decorations[0].type).toBe('twill');
+ expect(resolved.transfer_codes).toEqual(['store-art-logo']);
+ expect(methodSetupError(blank,[stock],art)).toBe('');
+ expect(methodSetupError(blank,[],art)).toMatch(/Screen print/);
 });

@@ -1,3 +1,4 @@
+import ArtworkReadiness from './allSchool/ArtworkReadiness';
 import InventoryPurchasing from './allSchool/InventoryPurchasing';
 import { garmentInventoryRows } from './allSchool/garmentInventory';
 import { hasSchoolMockup, methodSetupError, resolveSchoolSetup } from './allSchool/methodReadiness.shared';
@@ -3366,7 +3367,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (idx >= 0) {
       next = arr.map((a, i) => (i === idx ? withWebLogo(a) : a));
     } else {
-      next = [...arr, withWebLogo({ id: art.id, name: art.name || 'Logo', deco_type: art.deco_type || 'screen_print', color_ways: art.color_ways || [], files: art.files || [], mockup_files: art.mockup_files || [], kind: art.kind || 'art', status: art.status || 'approved', uploaded: new Date().toLocaleDateString() })];
+      next = [...arr, withWebLogo({ id: art.id, name: art.name || 'Logo', deco_type: art.deco_type || (sel?.org_type === 'all_school' ? '' : 'screen_print'), color_ways: art.color_ways || [], files: art.files || [], mockup_files: art.mockup_files || [], kind: art.kind || 'art', status: art.status || 'approved', uploaded: new Date().toLocaleDateString() })];
     }
     const { error } = await supabase.from('customers').update({ art_files: next }).eq('id', custId);
     if (error) { flash('Could not attach web logo: ' + error.message); return null; }
@@ -3417,7 +3418,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     };
     const idx = arr.findIndex(matches);
     const next = idx >= 0 ? arr.map((a, i) => (i === idx ? withLogo(a) : a))
-      : [...arr, withLogo({ id: art.id, name: art.name || 'Logo', deco_type: art.deco_type || 'screen_print', color_ways: art.color_ways || [], files: art.files || [], mockup_files: art.mockup_files || [], kind: art.kind || 'art', status: art.status || 'approved', uploaded: new Date().toLocaleDateString() })];
+      : [...arr, withLogo({ id: art.id, name: art.name || 'Logo', deco_type: art.deco_type || (sel?.org_type === 'all_school' ? '' : 'screen_print'), color_ways: art.color_ways || [], files: art.files || [], mockup_files: art.mockup_files || [], kind: art.kind || 'art', status: art.status || 'approved', uploaded: new Date().toLocaleDateString() })];
     const { error } = await supabase.from('customers').update({ art_files: next }).eq('id', custId);
     if (error) { flash('Could not save web logo: ' + error.message); return null; }
     const curArt = Array.isArray(sel?.store_art) ? sel.store_art : [];
@@ -6457,12 +6458,13 @@ function EmailStoreLinkModal({ store, onClose, onSend }) {
 }
 
 // the store link + QR (prefilled from the email on file; a newly typed one is saved).
-function LaunchStoreModal({ store, onClose, onLaunch }) {
+function LaunchStoreModal({ store, onClose, onLaunch, readinessError, readinessLoading }) {
   const onFile = (store.coach_contact_email || store.director_email || '').trim();
   const [emailCoach, setEmailCoach] = useState(!!onFile);
   const [coachEmail, setCoachEmail] = useState(onFile);
   const [busy, setBusy] = useState(false);
-  const valid = !emailCoach || /.+@.+\..+/.test(coachEmail.trim());
+  const emailValid = !emailCoach || /.+@.+\..+/.test(coachEmail.trim());
+  const valid = emailValid && !readinessError && !readinessLoading;
   const go = async () => { if (!valid) return; setBusy(true); await onLaunch({ emailCoach, coachEmail: coachEmail.trim() }); setBusy(false); };
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '60px 16px', overflowY: 'auto' }}>
@@ -6473,6 +6475,7 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
         </div>
         <div style={{ padding: 16 }}>
           <div style={{ fontSize: 13, color: '#334155', marginBottom: 14 }}>Make <b>{store.name}</b> live for shoppers.</div>
+          {store.org_type === 'all_school' && <ArtworkReadiness expanded error={readinessError} loading={readinessLoading} />}
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: '#1e293b', cursor: 'pointer' }}>
             <input type="checkbox" checked={emailCoach} onChange={(e) => setEmailCoach(e.target.checked)} />
             Email the coach the store link + QR
@@ -6482,7 +6485,7 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
               <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 4 }}>Coach / director email</div>
               <input className="form-input" type="email" value={coachEmail} onChange={(e) => setCoachEmail(e.target.value)} placeholder="coach@school.org" style={{ width: '100%' }} />
               {!onFile && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>No email on file — what you enter is saved to the store.</div>}
-              {!valid && <div style={{ fontSize: 11, color: '#b91c1c', marginTop: 4 }}>Enter a valid email, or uncheck to launch without notifying.</div>}
+              {!emailValid && <div style={{ fontSize: 11, color: '#b91c1c', marginTop: 4 }}>Enter a valid email, or uncheck to launch without notifying.</div>}
             </div>
           )}
         </div>
@@ -6813,6 +6816,7 @@ function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTa
             onFlyer && { label: 'Printable flyer (QR)', icon: '🖨️', title: 'Open a printable flyer with a QR code to the store', onClick: onFlyer },
             { label: 'Email store link', icon: '✉️', title: 'Send the store link + QR + PDF flyer to a coach or parent', onClick: () => setEmailLinkOpen(true) },
           ]} />
+          {s.org_type === 'all_school' && s.status !== 'open' && <ArtworkReadiness loading={loading} error={schoolLaunchError(catalog, detail?.transfers || [], [...(s.store_art || []), ...(detail?.libraryArt || [])])} onReview={() => onSetStatus && !s.is_template ? setLaunchOpen(true) : setTab('art')} />}
           {s.is_template && <span title="Templates are never live — Start Store from the Templates tab to launch a real store from this" style={{ background: '#fefce8', color: '#a16207', fontWeight: 800, fontSize: 12, borderRadius: 7, padding: '7px 11px' }}>★ Template</span>}
           {onSetStatus && !s.is_template && (s.status !== 'open'
             ? <button data-tour-id="ws-launch-store" className="btn btn-sm" style={{ background: '#166534', color: '#fff', fontWeight: 700 }} onClick={() => setLaunchOpen(true)} title="Make this store live for shoppers">🚀 Launch store</button>
@@ -6820,8 +6824,8 @@ function StoreDetail({ onRefreshInventory, store: s, detail, loading, tab, setTa
           <button data-tour-id="ws-detail-settings" className="btn btn-sm btn-primary" onClick={onEdit}>⚙ Settings</button>
         </div>
       </div>
-      {s.org_type === 'all_school' && s.status !== 'open' && <div className="card" style={{ padding: 14, marginBottom: 12 }}><b>Artwork readiness</b><p style={{ marginBottom: 0 }}>{loading ? 'Checking catalog…' : schoolLaunchError(catalog, detail?.transfers || [], [...(s.store_art || []), ...(detail?.libraryArt || [])]) || 'All active offerings have their mockups and decoration setup ready to launch.'}</p></div>}
-      {launchOpen && <LaunchStoreModal store={s} onClose={() => setLaunchOpen(false)} onLaunch={async (opts) => { if (await onSetStatus(s, 'open', opts) !== false) setLaunchOpen(false); }} />}
+
+      {launchOpen && <LaunchStoreModal store={s} readinessLoading={s.org_type === 'all_school' && loading} readinessError={s.org_type === 'all_school' ? schoolLaunchError(catalog, detail?.transfers || [], [...(s.store_art || []), ...(detail?.libraryArt || [])]) : ''} onClose={() => setLaunchOpen(false)} onLaunch={async (opts) => { if (await onSetStatus(s, 'open', opts) !== false) setLaunchOpen(false); }} />}
       {emailLinkOpen && <EmailStoreLinkModal store={s} onClose={() => setEmailLinkOpen(false)} onSend={(email) => onEmailDirector(email)} />}
 
       {(() => {
