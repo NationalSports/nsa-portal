@@ -49,7 +49,7 @@ function inside(x, y, polygon) {
 }
 function polygons(value) {
   if (!Array.isArray(value) || value.length > 50) throw new Error('Invalid protected garment regions');
-  for (const p of value) if (!Array.isArray(p) || p.length < 3 || p.length > 30 || p.some((xy) => !Array.isArray(xy) || xy.length !== 2 || xy.some((v) => !Number.isFinite(v) || v < 0 || v > 1))) throw new Error('Invalid garment region coordinates');
+  for (const p of value) if (!Array.isArray(p) || p.length < 3 || p.length > 80 || p.some((xy) => !Array.isArray(xy) || xy.length !== 2 || xy.some((v) => !Number.isFinite(v) || v < 0 || v > 1))) throw new Error('Invalid garment region coordinates');
   return value;
 }
 // Drawstrings are traced as narrow variable-width paths, not bounding boxes.
@@ -74,6 +74,20 @@ function strandCoverage(x, y, strands, width, height) {
   }
   return coverage;
 }
+function normalizeRegions(value) {
+  if (!Array.isArray(value)) throw new Error('protected_regions must be an array of polygons');
+  const number = v => typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN;
+  const normalized = value.map(p => {
+    if (!Array.isArray(p)) throw new Error('Each protected region must be an array of [x,y] points');
+    return p.map(point => {
+      if (Array.isArray(point) && point.length === 2) return point.map(number);
+      if (point && !Array.isArray(point) && typeof point === 'object' && 'x' in point && 'y' in point) return [number(point.x),number(point.y)];
+      throw new Error('Each protected region point must contain exactly x and y');
+    });
+  });
+  return polygons(normalized);
+}
+
 async function prepareMaster(bytes, layout, resolution) {
   // Render artwork from the original file at a larger working resolution. This
   // adds no inferred stitching or photographic evidence to the garment master.
@@ -216,4 +230,4 @@ async function decorationDetail(output, master, quad) {
   return sharp(output, { raw: master.info }).extract({left,top,width:size,height:size})
     .resize({width:1024,height:1024,fit:'inside',withoutEnlargement:true}).png().toBuffer();
 }
-module.exports = { validateStrands, strandCoverage, decorationDetail, validateArtwork,sampleFabric, prepareMaster, recolor, applyArtwork, encode, validateQuad };
+module.exports = { normalizeRegions, validateStrands, strandCoverage, decorationDetail, validateArtwork,sampleFabric, prepareMaster, recolor, applyArtwork, encode, validateQuad };

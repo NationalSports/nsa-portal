@@ -1,9 +1,10 @@
 const crypto = require('crypto');
 const { FAMILY_VERSION, groupShowcaseItems, needsFamilyGeneration } = require('../../src/lib/showcaseFamilies');
 const { normalizeShowcaseSettings, showcaseSettingsChanged } = require('../../src/lib/showcaseSettings');
-const { fetchRemoteImage, generateWithOpenAI, analyzeWithKimi, cleanDecorations } = require('./_showcase');
+const { fetchRemoteImage, generateWithOpenAI, analyzeWithKimi, cleanDecorations, heroDirection, inferAthleticFormProfile } = require('./_showcase');
 const { dispatchShowcaseJob } = require('./_showcaseJobs');
 const { markShowcaseBatchPending, notifyShowcaseReady } = require('./_showcaseEmail');
+const MASTER_POSE_VERSION = 'athletic-hood-down-v2';
 const hash = (value) => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 async function transition(admin, store, key, request, action, payload = {}) {
   const result = await admin.rpc('transition_showcase_family', { p_store: store, p_key: key, p_request: request, p_action: action, p_payload: payload });
@@ -18,7 +19,7 @@ function familyInputs(group, assets, settings) {
   // Stable selection across catalog reorder; logos never become master inputs.
   const source = [...members].sort((a,b) => a.product_id.localeCompare(b.product_id))[0];
   return { version: FAMILY_VERSION, members, source, catalog_signature:catalogSignature(members),
-    master_signature: hash([FAMILY_VERSION, source.product_id, source.supplier_image_url]) };
+    master_signature: hash([FAMILY_VERSION, MASTER_POSE_VERSION, source.product_id, source.supplier_image_url]) };
 }
 async function queueFamilies({ admin, store, catalog, assets, key, all, settings, newMaster, baseUrl }) {
   if (!baseUrl) throw new Error('Unable to start Showcase worker');
@@ -60,7 +61,33 @@ async function queueFamilies({ admin, store, catalog, assets, key, all, settings
   }
   return { queued_count: queued.length - failed, failed_count: failed };
 }
-const MASTER_PROMPT = `Create one premium product-only ecommerce master from the supplied BLANK supplier garment. Preserve the exact cut, seams, pockets, cuffs, closures, material and manufacturer marks. Sculpt it with realistic invisible support and natural folds, near-front with an 8 degree turn. No person, mannequin or hanger. Whole garment in frame with 6% margin, pure white background and restrained neutral grounding shadow. No customer/team logos or lettering. For subsequent deterministic recoloring, render ALL recolorable main fabric (including its cuffs, hood and matching drawstrings) in saturated chroma green, RGB approximately 30,180,55. Retain realistic luminance shading and fine fabric texture. Do NOT turn manufacturer marks, labels, zippers, hardware, contrasting trim, or the background green. Never add manufacturer marks that are absent in the reference. The main fabric color is deliberately changed; all construction details are locked.`;
+const MASTER_PROMPT = `Create one premium product-only ecommerce master from the supplied BLANK supplier garment. Preserve the exact cut, seams, pockets, cuffs, closures, material and manufacturer marks. Sculpt it with realistic invisible athletic support and natural folds: a confident premium hero, approximately 10–12 degrees around the vertical axis with the decorated front dominant, level camera at chest height, no looking down into the neckline. For hoodies the hood MUST be DOWN, resting naturally behind the neck and across the upper back, never raised or filled as if around an invisible head. Preserve the hood construction while changing its pose. Use dimensional shoulders and chest, separated relaxed sleeves and a natural substantial drape; controlled directional key light and soft fill, never exaggerated muscles, narrow sloping shoulders or a limp catalog cutout. No person, mannequin or hanger. Whole garment in frame with 6% margin, pure white background and restrained neutral grounding shadow. No customer/team logos or lettering. For subsequent deterministic recoloring, render ALL recolorable main fabric (including its cuffs, hood and matching drawstrings) in saturated chroma green, RGB approximately 30,180,55. Retain realistic luminance shading and fine fabric texture. Do NOT turn manufacturer marks, labels, zippers, hardware, contrasting trim, or the background green. Never add manufacturer marks that are absent in the reference. The main fabric color is deliberately changed; all construction details are locked.`;
+function masterPrompt(product) {
+  const fit = inferAthleticFormProfile(product);
+  const form = fit === 'youth' ? 'Child proportions, narrower shoulders and shorter torso; no adult muscular form.'
+    : fit === 'women' ? 'Natural athletic women’s proportions appropriate to the actual cut, never exaggerated.'
+    : 'Naturally strong adult male athletic proportions: moderately broad shoulders and chest, trim waist, substantial but not bulky. Preserve the actual fit; no bodybuilder shape.';
+  return `${MASTER_PROMPT} FIT: ${form} ITEM DIRECTION: ${heroDirection(product)}`;
+}
+async function validatedMapping(analyze, request, placements, current) {
+  const render = require('./_showcaseFamilyRender');
+  let reason = '';
+  for (let attempt=0; attempt<2; attempt++) {
+    await current();
+    const result = await analyze({ ...request, analysisPrompt: request.analysisPrompt + (attempt ? ` CORRECTION REQUIRED: ${reason}. Reinspect the images and return a complete corrected mapping. Do not reuse invalid regions.` : '') });
+    if (result.analysis?.supported !== true) throw new Error(`Master needs review: ${result.analysis?.reason || 'unreliable logo placement'}`);
+    try {
+      const a = result.analysis;
+      a.protected_regions = render.normalizeRegions(a.protected_regions);
+      if (!Array.isArray(a.logo_strands) || (a.logo_occluders || []).length) throw new Error('Return logo_strands paths and an empty logo_occluders array');
+      render.validateStrands(a.logo_strands);
+      for (const id of Object.keys(placements)) render.validateQuad(a.placements?.[id]);
+      return result;
+    } catch (error) { reason = error.message; }
+  }
+  throw new Error(`Unable to map garment details after two attempts. The saved base is retained; retry generation. ${reason}`);
+}
+
 async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
   const key = asset.analysis.family.key, request = asset.generation_request_id, store = asset.store_id;
   const move = (action,payload) => transition(admin,store,key,request,action,payload);
@@ -130,17 +157,16 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
     };
     if (master?.url && master.signature===job.inputs.master_signature) masterImage = await fetchImage(master.url);
     else {
-      const generated = await generate({ product:job.inputs.source,decorations:[],images:[refs[urls.indexOf(job.inputs.source.supplier_image_url)]],editPrompt:MASTER_PROMPT });
+      const generated = await generate({ product:job.inputs.source,decorations:[],images:[refs[urls.indexOf(job.inputs.source.supplier_image_url)]],editPrompt:masterPrompt(job.inputs.source) });
       await current();
       masterImage = generated;
       master = { url:await upload(generated.bytes,'master'), model:generated.model, signature:job.inputs.master_signature };
       if (!await move('cache',master)) throw new Error('Family was canceled');
     }
     await current();
-    const mapping = await analyze({ product:job.inputs.source,decorations:[],images:[masterImage,...refs],
-      analysisPrompt:`Map saved logo placements from supplier photos onto the FIRST image, a green garment master. Other images are supplier photos. Return JSON {supported:boolean,reason:string,protected_regions:[polygon],logo_occluders:[],logo_strands:[{points:[[x,y,width],...]}],placements:{id:[[x,y],[x,y],[x,y],[x,y]]}}. All output coordinates are normalized to the FIRST image. Protected regions tightly enclose manufacturer marks, labels, hardware and contrasting trim that must never change color. Keep logo_occluders empty. For each actual drawstring or narrow zipper lying in front of the logo, trace a separate logo_strands centerline with at least 8 points from top to tip, following every bend. Each point is [x,y,full_width]; width is the actual visible strand width as a fraction of image WIDTH, excludes shadows and surrounding fabric, and must not exceed 0.025. Do not mask ordinary fabric folds: the logo continues over them. If no strands overlap artwork return an empty list. Return supported:false if accurate narrow traces cannot be identified. Never substitute bounding rectangles for paths. Each placement quad is top-left,top-right,bottom-right,bottom-left, describing a SQUARE fabric-plane region at the saved width and center relative to the physical garment. The renderer fits exact artwork aspect ratios within this plane. x/y/w in input are percentages of the corresponding original supplier photo; map them to the same physical location on the master. Keep sleeve placements on that sleeve. Never enlarge beyond production bounds. Return supported:false if reliable alignment is impossible or master construction is inaccurate. PLACEMENTS=${JSON.stringify(placements)}` });
-    if (mapping.analysis.supported !== true) throw new Error(`Master needs review: ${mapping.analysis.reason || 'unreliable logo placement'}`);
-    if (!Array.isArray(mapping.analysis.logo_strands) || (mapping.analysis.logo_occluders || []).length) throw new Error('Drawstring mapping needs correction; broad logo cutouts are not supported. Retry generation.');
+    const mappingRequest = { product:job.inputs.source,decorations:[],images:[masterImage,...refs],
+      analysisPrompt:`Map saved logo placements from supplier photos onto the FIRST image, a green garment master. Other images are supplier photos. Return JSON {supported:boolean,reason:string,protected_regions:[[[0.1,0.2],[0.12,0.2],[0.12,0.23]]],logo_occluders:[],logo_strands:[{points:[[x,y,width],...]}],placements:{id:[[x,y],[x,y],[x,y],[x,y]]}}. The protected_regions example is SHAPE ONLY, not coordinates to copy. Every polygon vertex must have exactly two finite numeric values [x,y], at least 3 vertices and no more than 80. All output coordinates are normalized 0..1 to the FIRST image, never pixels or percentages. Use [] for absent regions. Protected regions tightly enclose manufacturer marks, labels, hardware and contrasting trim that must never change color. Keep logo_occluders empty. For each actual drawstring or narrow zipper lying in front of the logo, trace a separate logo_strands centerline with at least 8 points from top to tip, following every bend. Each point is [x,y,full_width]; width is the actual visible strand width as a fraction of image WIDTH, excludes shadows and surrounding fabric, and must not exceed 0.025. Do not mask ordinary fabric folds: the logo continues over them. If no strands overlap artwork return an empty list. Return supported:false if accurate narrow traces cannot be identified. Never substitute bounding rectangles for paths. Each placement quad is top-left,top-right,bottom-right,bottom-left, describing a SQUARE fabric-plane region at the saved width and center relative to the physical garment. The renderer fits exact artwork aspect ratios within this plane. x/y/w in input are percentages of the corresponding original supplier photo; map them to the same physical location on the master. Keep sleeve placements on that sleeve. Never enlarge beyond production bounds. Return supported:false if reliable alignment is impossible or master construction is inaccurate. PLACEMENTS=${JSON.stringify(placements)}` };
+    const mapping = await validatedMapping(analyze,mappingRequest,placements,current);
     const prepared = await render.prepareMaster(masterImage.bytes,mapping.analysis,2048);
     const outputs = [];
     for (const member of members) {
@@ -178,4 +204,4 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
     throw error;
   }
 }
-module.exports = { catalogSignature,familyInputs,queueFamilies,runFamilyJob,transition,MASTER_PROMPT };
+module.exports = { masterPrompt, MASTER_POSE_VERSION, validatedMapping, catalogSignature,familyInputs,queueFamilies,runFamilyJob,transition,MASTER_PROMPT };
