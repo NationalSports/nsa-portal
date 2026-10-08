@@ -7,6 +7,8 @@
 // page's Notes tab.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SearchSelect } from './components';
+import { CaptureExtras, NoteAttachments, AskAccount } from './MeetingExtras';
+import { recoveryList, recoveryClear } from './meetingRecovery';
 import { createMeetingRecorder, createChunkUploader, recorderSupported, fileChunks, isAudioFile, MAX_UPLOAD_BYTES } from './meetingRecorder';
 
 const MAX_RECORD_MS = 90 * 60 * 1000;
@@ -55,6 +57,8 @@ function Capture({supabase,customers,mode,initialCustomerId,notify,onDone,onCanc
   const[file,setFile]=useState(null);// upload mode: a recording the rep already has
   const[who,setWho]=useState('');// upload mode: 'recorded' (with others) | 'dictated' (just me)
   const[consentOk,setConsentOk]=useState(false);
+  const[annotations,setAnnotations]=useState([]);
+  const[photoBusy,setPhotoBusy]=useState(false);
   const recRef=useRef(null);const upRef=useRef(null);const meetingRef=useRef(null);
 
   // Keep the clock ticking and stop at the 90-minute cap.
@@ -63,7 +67,7 @@ function Capture({supabase,customers,mode,initialCustomerId,notify,onDone,onCanc
     const t=setInterval(()=>{const ms=recRef.current?.elapsedMs()||0;setElapsed(ms);if(ms>=MAX_RECORD_MS)stop()},500);
     return()=>clearInterval(t);
   },[phase]);// eslint-disable-line
-  // Leaving mid-recording loses whatever hasn't uploaded yet.
+  // Persist emitted chunks before upload; leaving can still lose the active last chunk.
   useEffect(()=>{
     if(!['recording','paused','interrupted','finishing','uploading'].includes(phase))return;
     const h=e=>{e.preventDefault();e.returnValue='';};
@@ -72,6 +76,12 @@ function Capture({supabase,customers,mode,initialCustomerId,notify,onDone,onCanc
   const aliveRef=useRef(true);
   useEffect(()=>()=>{aliveRef.current=false;try{recRef.current?.cancel()}catch{}try{upRef.current?.cancel()}catch{}},[]);
 
+  useEffect(()=>{
+    if(!meetingRef.current||!['recording','paused','interrupted','uploading'].includes(phase))return;
+    const timer=setTimeout(()=>callFn(supabase,{action:'annotate',id:meetingRef.current.id,annotations}).catch(e=>notify?.(e.message,'error')),600);
+    return()=>clearTimeout(timer);
+  },[annotations,phase,supabase]);
+  const uploadProgress=p=>{setUp(p);if(p.error){recRef.current?.pause();setReason(p.error);setPhase('error')}};
   const begin=async(consent)=>{
     setConsentOpen(false);setPhase('starting');
     let meeting=null;
@@ -79,7 +89,7 @@ function Capture({supabase,customers,mode,initialCustomerId,notify,onDone,onCanc
       const d=await callFn(supabase,{action:'create',mode,customer_id:customerId||null,consent:!!consent});
       meeting=d.meeting;meetingRef.current=meeting;
       if(!aliveRef.current){callFn(supabase,{action:'discard',id:meeting.id}).catch(()=>{});return}// left while it was starting
-      upRef.current=createChunkUploader({supabase,folder:d.folder,onProgress:setUp});
+      upRef.current=createChunkUploader({supabase,folder:d.folder,onProgress:uploadProgress});
       recRef.current=createMeetingRecorder({
         onChunk:(blob,meta)=>upRef.current.add(blob,meta),
         onState:(s,info)=>{
@@ -110,16 +120,16 @@ function Capture({supabase,customers,mode,initialCustomerId,notify,onDone,onCanc
       const ms=recRef.current.elapsedMs();
       await recRef.current.stop();
       await upRef.current.flush();
-      await callFn(supabase,{action:'finalize',id:meetingRef.current.id,duration_sec:Math.round(ms/1000)});
+      await callFn(supabase,{action:'finalize',id:meetingRef.current.id,duration_sec:Math.round(ms/1000),capture_complete:true,annotations});
       notify?.('Working on your notes. They will show up here in a minute or two.','success');
       onDone?.(meetingRef.current.id);
-    }catch(e){setPhase('error');setReason('Could not finish: '+(e.message||e)+'. Your audio is saved. Open the note from the list to finish it.')}
+    }catch(e){setPhase('error');setReason('Could not finish: '+(e.message||e)+'. Uploaded and locally saved portions remain. Reopen the note to recover and finish it.')}
   };
   const cancel=async()=>{
     if(meetingRef.current&&['recording','paused','interrupted','starting','uploading'].includes(phase)){
       if(!window.confirm('Throw away this recording?'))return;
       try{recRef.current?.cancel()}catch{}
-      try{upRef.current?.cancel()}catch{}
+      try{upRef.current?.cancel({discard:true})}catch{}
       callFn(supabase,{action:'discard',id:meetingRef.current.id}).catch(()=>{});
       meetingRef.current=null;
     }
@@ -127,7 +137,7 @@ function Capture({supabase,customers,mode,initialCustomerId,notify,onDone,onCanc
   };
   const submitPaste=async()=>{
     setBusy(true);
-    try{const d=await callFn(supabase,{action:'paste',text,customer_id:customerId||null});notify?.('Working on your notes…','success');onDone?.(d.meeting.id)}
+    try{const d=await callFn(supabase,{action:'paste',text,customer_id:customerId||null,annotations});notify?.('Working on your notes…','success');onDone?.(d.meeting.id)}
     catch(e){notify?.(e.message||'Could not process','error')}
     setBusy(false);
   };
@@ -147,11 +157,11 @@ function Capture({supabase,customers,mode,initialCustomerId,notify,onDone,onCanc
       if(!aliveRef.current){callFn(supabase,{action:'discard',id:meeting.id}).catch(()=>{});return}// left while it was starting
       const parts=fileChunks(file);
       setUp({uploaded:0,pending:parts.length,retrying:false,total:parts.length});
-      upRef.current=createChunkUploader({supabase,folder:d.folder,onProgress:p=>setUp({...p,total:parts.length})});
+      upRef.current=createChunkUploader({supabase,folder:d.folder,onProgress:p=>{setUp({...p,total:parts.length});if(p.error){setReason(p.error);setPhase('error')}}});
       parts.forEach(p=>upRef.current.add(p.blob,p.meta));
       await upRef.current.flush();
       if(meetingRef.current!==meeting)return;// discarded mid-upload
-      await callFn(supabase,{action:'finalize',id:meeting.id,duration_sec:null});
+      await callFn(supabase,{action:'finalize',id:meeting.id,duration_sec:null,capture_complete:true,annotations});
       notify?.('Uploaded. Your notes will show up here in a few minutes.','success');
       onDone?.(meeting.id);
     }catch(e){
@@ -177,6 +187,7 @@ function Capture({supabase,customers,mode,initialCustomerId,notify,onDone,onCanc
       :<SearchSelect options={custOptions} value={customerId} onChange={setCustomerId} placeholder="Pick a school or team (optional now)" limit={50}/>}
     </div>
 
+    <CaptureExtras supabase={supabase} meetingId={meetingRef.current?.id} elapsed={elapsed} annotations={annotations} onAnnotations={setAnnotations} notify={notify} onBusy={setPhotoBusy}/>
     {mode==='upload'?<div style={{...box,display:'grid',gap:10}}>
       {phase==='uploading'?<div style={{textAlign:'center',padding:'12px 0'}}>
         <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>Uploading {file?.name}</div>
@@ -199,9 +210,9 @@ function Capture({supabase,customers,mode,initialCustomerId,notify,onDone,onCanc
           <input type="checkbox" checked={consentOk} onChange={e=>setConsentOk(e.target.checked)} style={{marginTop:2,width:18,height:18}}/>
           Everyone on this recording knew it was being recorded.
         </label>}
-        <div style={{fontSize:12,color:'#64748b'}}>The audio is deleted after transcription. Only the notes are kept.</div>
+        <div style={{fontSize:12,color:'#64748b'}}>The audio is deleted after transcription. Transcripts, notes and attached photos are kept.</div>
         <div style={{display:'flex',justifyContent:'flex-end'}}>
-          <button className="btn btn-primary" disabled={!file||!who||(who==='recorded'&&!consentOk)} onClick={submitUpload}>Upload & make notes</button>
+          <button className="btn btn-primary" disabled={photoBusy||!file||!who||(who==='recorded'&&!consentOk)} onClick={submitUpload}>Upload & make notes</button>
         </div>
       </>}
     </div>
@@ -219,7 +230,7 @@ function Capture({supabase,customers,mode,initialCustomerId,notify,onDone,onCanc
           {phase==='starting'?'…':'Record'}
         </button>
         <div style={{fontSize:13,color:'#475569',marginTop:12}}>{mode==='recorded'?'Records everyone in the room. You will confirm they know first.':'Just you talking. 30–90 seconds is plenty.'}</div>
-        <div style={{fontSize:12,color:'#64748b',marginTop:4}}>Keep the phone face-up and unlocked while recording. Audio isn't saved, only the notes.</div>
+        <div style={{fontSize:12,color:'#64748b',marginTop:4}}>Keep the phone face-up and unlocked while recording. Audio is stored temporarily on this device and in private cloud storage, then deleted after transcription.</div>
       </>
       :phase==='error'?<div style={{fontSize:13,color:'#b91c1c'}}>{reason}</div>
       :<>
@@ -237,7 +248,7 @@ function Capture({supabase,customers,mode,initialCustomerId,notify,onDone,onCanc
         <div style={{display:'flex',gap:10,justifyContent:'center',marginTop:16}}>
           {phase==='recording'&&<button className="btn btn-secondary" onClick={pause}>Pause</button>}
           {(phase==='paused'||phase==='interrupted')&&<button className="btn btn-secondary" onClick={resume}>Resume</button>}
-          <button className="btn btn-primary" disabled={phase==='finishing'} onClick={stop}>{phase==='finishing'?(up.pending?'Saving audio…':'Finishing…'):'Stop & make notes'}</button>
+          <button className="btn btn-primary" disabled={phase==='finishing'||photoBusy} onClick={stop}>{phase==='finishing'?(up.pending?'Saving audio…':'Finishing…'):'Stop & make notes'}</button>
         </div>
       </>}
     </div>}
@@ -245,7 +256,7 @@ function Capture({supabase,customers,mode,initialCustomerId,notify,onDone,onCanc
     {consentOpen&&<div className="modal-overlay" onClick={()=>setConsentOpen(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
       <div className="modal-header"><h2>Let everyone know</h2><button className="modal-close" onClick={()=>setConsentOpen(false)}>×</button></div>
       <div className="modal-body" style={{fontSize:14,color:'#1e293b',display:'grid',gap:8}}>
-        <div>Let everyone know you're taking notes. Audio isn't saved, only the notes.</div>
+        <div>Let everyone know you're taking notes. Audio is stored temporarily on this device and in private cloud storage, then deleted after transcription.</div>
         <div style={{fontSize:13,color:'#475569'}}>You could say: <i>"I'm going to have my phone take notes so I get your order right, okay?"</i></div>
       </div>
       <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setConsentOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={()=>begin(true)}>They know. Start</button></div>
@@ -329,6 +340,8 @@ function Review({supabase,cu,meeting,customers,notify,onClose,onApproved}){
       <div style={{fontSize:12,color:'#64748b'}}>{MODE_LABEL[meeting.mode]} · {fmtWhen(meeting.created_at)}{meeting.duration_sec?' · '+fmtClock(meeting.duration_sec*1000):''}</div>
       {d.confidence!=null&&d.confidence<0.5&&<span style={{fontSize:12,color:'#b45309',fontWeight:700}}>Low confidence. Check it carefully.</span>}
     </div>
+    {(d.warnings||[]).map((w,i)=><div key={i} style={{fontSize:12,color:'#b45309'}}>{w}</div>)}
+    <NoteAttachments supabase={supabase} id={meeting.id}/>
     {d.audio_gaps>0&&<div style={{fontSize:12,color:'#b45309'}}>Some audio didn't upload, so a few seconds may be missing.</div>}
     {section('Account',<SearchSelect options={custOptions} value={customerId} onChange={setCustomerId} placeholder="Pick a school or team…" limit={50}/>)}
     {section('Headline',<textarea style={{...inp,minHeight:52,resize:'vertical'}} rows={2} value={headline} onChange={e=>setHeadline(e.target.value)}/>)}
@@ -416,7 +429,7 @@ function Review({supabase,cu,meeting,customers,notify,onClose,onApproved}){
 }
 
 // Read-only view of an approved note.
-function NoteView({note,customers,reps,onOpenCustomer,onStartEstimate}){
+function NoteView({note,customers,reps,onOpenCustomer,onStartEstimate,supabase}){
   const f=note.final||{};const s=f.sections||{};
   const cust=(customers||[]).find(c=>c.id===note.customer_id);
   const who=(reps||[]).find(r=>r.id===note.team_member_id)?.name;
@@ -427,6 +440,8 @@ function NoteView({note,customers,reps,onOpenCustomer,onStartEstimate}){
     <div>{f.summary}</div>
     {list('To-dos',(f.action_items||[]).map(a=>a.text+(a.due_date?' (due '+fmtDay(a.due_date)+')':'')+(a.owner&&a.owner!=='rep'?' · '+a.owner:'')))}
     {list('Products',s.products_discussed)}
+    {supabase&&<NoteAttachments supabase={supabase} id={note.id}/>}
+    {(f.warnings||[]).map((w,i)=><div key={i} style={{color:'#b45309'}}>{w}</div>)}
     {line('Pricing & budget',s.pricing_and_budget)}
     {line('Timeline',s.timeline)}
     {list('Decisions',s.decisions)}
@@ -449,6 +464,8 @@ export default function MeetingNotes({supabase,cu,customers,reps,notify:notifyPr
   const[reviewId,setReviewId]=useState(null);
   const[openId,setOpenId]=useState(null);
   const[busyId,setBusyId]=useState(null);
+  const[askCustomer,setAskCustomer]=useState(initialCustomerId||null);
+  const askOptions=useCustomerOptions(customers);
 
   // Arriving from an account page's "New note" button.
   useEffect(()=>{
@@ -462,7 +479,7 @@ export default function MeetingNotes({supabase,cu,customers,reps,notify:notifyPr
     if(error)notify('AI Notes could not load: '+error.message,'error');else setRows(data||[]);
     setLoading(false);
   },[supabase,cu?.id,notify]);
-  useEffect(()=>{load()},[load]);
+  useEffect(()=>{load();recoveryList().catch(()=>{})},[load]);
   useEffect(()=>{
     if(!supabase||!cu?.id)return;
     const ch=supabase.channel('meetings-'+cu.id).on('postgres_changes',{event:'*',schema:'public',table:'meetings',filter:'team_member_id=eq.'+cu.id},load).subscribe();
@@ -474,7 +491,14 @@ export default function MeetingNotes({supabase,cu,customers,reps,notify:notifyPr
 
   const act=async(id,action)=>{
     setBusyId(id);
-    try{await callFn(supabase,{action,id});await load()}catch(e){notify(e.message,'error')}
+    try{
+      if(action==='finalize') {
+        const folder=cu.id+'/'+id;const uploader=createChunkUploader({supabase,folder});await uploader.recover();await uploader.flush();
+      }
+      await callFn(supabase,{action,id});
+      if(action==='discard')await recoveryClear(cu.id+'/'+id);
+      await load();
+    }catch(e){notify(e.message,'error')}
     setBusyId(null);
   };
   const custName=id=>(customers||[]).find(c=>c.id===id)?.name||'No account yet';
@@ -500,6 +524,8 @@ export default function MeetingNotes({supabase,cu,customers,reps,notify:notifyPr
   </div></div>;
 
   return(<div style={{maxWidth:900}}>
+    <div style={{marginBottom:8}}><SearchSelect options={askOptions} value={askCustomer} onChange={setAskCustomer} placeholder="Choose an account to ask about its notes…" limit={50}/></div>
+    <AskAccount supabase={supabase} customerId={askCustomer}/>
     <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:14}}>
       <button style={big} onClick={()=>setCapture({mode:'dictated'})}><span style={{fontSize:22}}>🎙️</span>Voice memo<span style={{fontSize:11,fontWeight:500,color:'#64748b'}}>Just you, after a visit</span></button>
       <button style={big} onClick={()=>setCapture({mode:'recorded'})}><span style={{fontSize:22}}>👥</span>Record meeting<span style={{fontSize:11,fontWeight:500,color:'#64748b'}}>Everyone in the room</span></button>
@@ -512,7 +538,7 @@ export default function MeetingNotes({supabase,cu,customers,reps,notify:notifyPr
       {working.length>0&&<><h3 style={{fontSize:14,margin:'12px 0 8px',color:'#0f172a'}}>In progress</h3>
         {working.map(r=>row(r,r.status==='processing'?<span style={{fontSize:12,color:'#2563eb',fontWeight:700}}>Working on it…</span>
           :<div style={{display:'flex',gap:6}}>
-            <button className="btn btn-sm btn-primary" disabled={busyId===r.id} onClick={()=>act(r.id,'finalize')}>Finish with what was saved</button>
+            <button className="btn btn-sm btn-primary" disabled={busyId===r.id} onClick={()=>act(r.id,'finalize')}>Recover & finish saved audio</button>
             <button className="btn btn-sm btn-secondary" disabled={busyId===r.id} onClick={()=>window.confirm('Discard this recording?')&&act(r.id,'discard')}>Discard</button>
           </div>))}</>}
       {failed.length>0&&<><h3 style={{fontSize:14,margin:'12px 0 8px',color:'#b91c1c'}}>Couldn't process</h3>
@@ -530,7 +556,7 @@ export default function MeetingNotes({supabase,cu,customers,reps,notify:notifyPr
           </div>
           <span style={{fontSize:12,color:'#64748b'}}>{openId===r.id?'▲':'▼'}</span>
         </div>
-        {openId===r.id&&<div style={{marginTop:8}}><NoteView note={r} customers={customers} reps={reps} onOpenCustomer={onOpenCustomer} onStartEstimate={onStartEstimate}/></div>}
+        {openId===r.id&&<div style={{marginTop:8}}><NoteView supabase={supabase} note={r} customers={customers} reps={reps} onOpenCustomer={onOpenCustomer} onStartEstimate={onStartEstimate}/></div>}
       </div></div>)}
     </>}
   </div>);
@@ -547,7 +573,7 @@ export function AccountNotes({supabase,customer,allCustomers,reps,onNewNote,onSt
       .then(({data,error})=>{if(!off)setRows(error?[]:(data||[]))});
     return()=>{off=true};
   },[supabase,ids.join(',')]);// eslint-disable-line
-  return(<div className="card"><div className="card-header" style={{flexWrap:'wrap',gap:8}}><h2>Notes</h2>
+  return(<div className="card"><div style={{padding:12}}><AskAccount supabase={supabase} customerId={customer.id}/></div><div className="card-header" style={{flexWrap:'wrap',gap:8}}><h2>Notes</h2>
     <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
       <button className="btn btn-sm btn-primary" onClick={()=>onNewNote?.(customer,'dictated')}>🎙️ Voice memo</button>
       <button className="btn btn-sm btn-secondary" onClick={()=>onNewNote?.(customer,'recorded')}>👥 Meeting</button>
@@ -565,7 +591,7 @@ export function AccountNotes({supabase,customer,allCustomers,reps,onNewNote,onSt
           </div>
           <span style={{fontSize:12,color:'#64748b'}}>{openId===r.id?'▲':'▼'}</span>
         </div>
-        {openId===r.id&&<div style={{marginTop:6}}><NoteView note={r} customers={allCustomers} reps={reps} onStartEstimate={onStartEstimate}/></div>}
+        {openId===r.id&&<div style={{marginTop:6}}><NoteView supabase={supabase} note={r} customers={allCustomers} reps={reps} onStartEstimate={onStartEstimate}/></div>}
       </div>)}
     </div>
   </div>);
