@@ -111,6 +111,8 @@ process.env.WORKERS_COMP_CARRIER = 'Test Carrier';
 // ── Mock heavy SDKs so require() never touches the network or needs real
 // credentials. Kept intentionally minimal — just enough surface for
 // module-load time and a single no-op handler invocation to succeed. ──
+// Sharp's native binary is exercised by the Node renderer and isolated bundle tests.
+jest.mock('sharp', () => jest.fn());
 jest.mock('@supabase/supabase-js', () => {
   const chain = {
     select: () => chain,
