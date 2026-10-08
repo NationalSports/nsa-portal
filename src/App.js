@@ -1567,7 +1567,7 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     // Repeat the Customer / Sales Order / Expected Date / Rep header on every
     // page (without the NSA logo block) so multi-page sheets stay identifiable.
     repeatInfoHeader:true,
-    notes:_notesCssReset+(_jobBcHtml||'')+_itemSectionsHtml+_genericMockHtml+_prodFilesHtml+(_bcHtml||'')+(_linkHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
+    notes:_notesCssReset+_itemSectionsHtml+_genericMockHtml+_prodFilesHtml+(_bcHtml||'')+(_jobBcHtml||'')+(_linkHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
     showPricing:false,_embSources:isEmb?allArtFiles:[]};
 };
 // ── Production Work Order sheet options (National Team Shop layout) ──
