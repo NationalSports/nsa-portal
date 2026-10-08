@@ -96,6 +96,14 @@ function StoreStyles() {
         [data-kb-activate]:focus-visible{outline:3px solid var(--sf-ink,#16223F);outline-offset:3px}
         .sf-card:hover{transform:translateY(-4px);box-shadow:0 10px 30px rgba(25,40,83,.10);border-color:var(--sf-primary,#8C1D40) !important}
         .sf-card:hover .sf-img{transform:scale(1.05)}
+        .sf-design-arrows{position:absolute;left:8px;right:8px;top:48%;display:flex;justify-content:space-between;z-index:3;pointer-events:none}
+        .sf-design-arrows button{pointer-events:auto;border:0;border-radius:50%;width:34px;height:34px;background:#fffE;color:#17213b;font-size:26px;line-height:1;cursor:pointer;box-shadow:0 2px 8px #0003}
+        .sf-design-caption{font:700 12px 'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.8px;margin-top:8px;color:var(--sf-primary,#17213b)}
+        .sf-design-choices{display:flex;gap:10px;flex-wrap:wrap}
+        .sf-design-choice{width:95px;padding:5px;border:2px solid #d9dce3;background:#fff;color:inherit;cursor:pointer;font:700 12px 'Barlow Condensed',sans-serif;text-transform:uppercase;text-align:center}
+        .sf-design-choice-active{border-color:var(--sf-primary,#17213b)}
+        .sf-design-choice-image{position:relative;display:block;aspect-ratio:4/5;background:#f6f6f6;overflow:hidden;margin-bottom:5px}
+        .sf-design-choice-image img{width:100%;height:100%;object-fit:contain}
         .sf-showcase .sf-card{border-color:rgba(22,34,63,.08);box-shadow:0 14px 34px rgba(22,34,63,.10)}
         .sf-showcase .sf-card:hover{transform:translateY(-6px);box-shadow:0 22px 48px rgba(22,34,63,.16)}
         .sf-showcase .sf-card .sf-img{transform:scale(1.001)}
@@ -276,17 +284,25 @@ const nameInput = (p, value) => (nameUppercase(p) ? String(value).toUpperCase() 
 // Group color variants of one garment (rows sharing variant_group_id) so the grid
 // shows one card and the product page offers a color picker. Bundles never group.
 const variantKey = (p) => p.variant_group_id || p.webstore_product_id;
-function groupProducts(list, schoolScoped = false) {
+export function groupProducts(list, schoolScoped = false, firstLogoByStyle = {}) {
   const byKey = new Map(); const order = [];
   for (const p of (list || [])) {
-    const k = p.kind === 'bundle' ? ('b:' + p.webstore_product_id) : schoolScoped ? schoolVariantGroupKey(p, variantKey(p)) : variantKey(p);
+    const k = p.kind === 'bundle' ? ('b:' + p.webstore_product_id) : schoolScoped ? schoolVariantGroupKey(p, p.school_style_group_id || variantKey(p)) : variantKey(p);
     if (!byKey.has(k)) { byKey.set(k, []); order.push(k); }
     byKey.get(k).push(p);
   }
   // The first row (lowest sort_order — the list is ordered by sort_order) is the primary: it
   // supplies the card image and the default-selected color. Reordering colors in the builder
   // changes which color leads here.
-  return order.map((k) => { const rows = byKey.get(k); return { key: k, rep: rows[0], rows }; });
+  return order.map((k) => {
+    const rows = byKey.get(k);
+    const preferred = schoolScoped && firstLogoByStyle[rows[0]?.school_style_group_id];
+    const orderedRows = preferred ? [
+      ...rows.filter((row) => (row.variant_group_id || row.webstore_product_id) === preferred),
+      ...rows.filter((row) => (row.variant_group_id || row.webstore_product_id) !== preferred),
+    ] : rows;
+    return { key: k, rep: orderedRows[0], rows: orderedRows };
+  });
 }
 // Effective stock counts on-hand warehouse + Adidas vendor (drop-ship) stock.
 const effOnHand = (p) => sumSizes(p.size_stock) + (Number(p.vendor_on_hand) || 0);
@@ -713,9 +729,9 @@ export default function Storefront() {
       <main id={MAIN_ID} style={{ flex: 1 }}>
         {route.view === 'home' && <Home store={store} theme={theme} products={shownProducts} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} onCat={onCat} onResetFilters={resetBrowse} query={query} schoolProgram={schoolProgram} onSchoolProgram={onSchoolProgram} setQuery={setQuery} />}
         {route.view === 'p' && (() => {
-          const grp = groupProducts(shownProducts, allSchool).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
+          const grp = groupProducts(shownProducts, allSchool, store.all_school_settings?.first_logo_by_style || {}).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
           const rep = grp ? grp.rep : shownProducts.find((p) => p.webstore_product_id === route.id);
-          return <Wrap><ProductPage store={store} theme={theme} product={rep} colorRows={grp ? grp.rows : (rep ? [rep] : [])} isOpen={isOpen} onAdd={addToCart} player={playerCtx} onCat={onCat} /></Wrap>;
+          return <Wrap><ProductPage store={store} theme={theme} product={rep} colorRows={grp ? grp.rows : (rep ? [rep] : [])} selectedProductId={route.id} isOpen={isOpen} onAdd={addToCart} player={playerCtx} onCat={onCat} /></Wrap>;
         })()}
         {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={shownProducts.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} products={[...products, ...compExtras]} isOpen={isOpen} onAdd={addToCart} player={playerCtx} /></Wrap>}
         {route.view === 'cart' && <Wrap><CartPage store={store} theme={theme} cart={cart} onUpdate={updateCart} /></Wrap>}
@@ -1267,13 +1283,14 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
 // one color variant must never expose another program's decorated offering.
 function AllSchoolHome({ store, theme, products, bundleItems, compInfo, compExtras, cat, onCat, onResetFilters, query, program, onProgram, setQuery }) {
   const programRows = products.filter((p) => schoolProductMatches(p, program));
-  const grouped = groupProducts(programRows, true);
+  const firstLogoByStyle = store.all_school_settings?.first_logo_by_style || {};
+  const grouped = groupProducts(programRows, true, firstLogoByStyle);
   const categories = [...new Set(grouped.map((g) => productCategory(g.rep)).filter(Boolean))];
   const q = query.trim().toLowerCase();
   const visible = grouped.filter((g) => (cat === 'all' || productCategory(g.rep) === cat) && (!q || g.rows.some((p) => [p.name, p.store_category, p.category, p.color, p.brand, p.sku].filter(Boolean).some((v) => String(v).toLowerCase().includes(q)))));
   const wpById = buildWpById([...products, ...compExtras]);
   return <>
-    <AllSchoolIntro store={store} theme={theme} products={groupProducts(products, true).map((g) => g.rep)} selectedProgram={program} onProgram={onProgram} onShop={onResetFilters} />
+    <AllSchoolIntro store={store} theme={theme} products={groupProducts(products, true, firstLogoByStyle).map((g) => g.rep)} selectedProgram={program} onProgram={onProgram} onShop={onResetFilters} />
     <section id="shop-grid" aria-label="Shop school products" style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(35px,5vw,66px) 24px clamp(52px,6.5vw,84px)', scrollMarginTop: 130 }}>
       <AllSchoolBrowse store={store} program={program} onProgram={onProgram} categories={categories} category={cat} onCategory={onCat} query={query} setQuery={setQuery} count={visible.length} onReset={onResetFilters} />
       {visible.length ? <div className="sf-grid">{visible.map(({ rep, rows }) => {
@@ -1552,6 +1569,9 @@ function compMeta(c, wpById, compInfo) {
 const buildWpById = (products) => { const m = {}; (products || []).forEach((p) => { m[p.webstore_product_id] = p; }); return m; };
 
 function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}, wpById = null }) {
+  const designRows = [...new Map(colorRows.map((row) => [row.variant_group_id || row.webstore_product_id, row])).values()];
+  const [designIndex, setDesignIndex] = useState(0);
+  const cardRow = store.org_type === 'all_school' && designRows.length > 1 ? designRows[designIndex % designRows.length] : p;
   const isBundle = p.kind === 'bundle';
   // For a package, preview the actual pieces instead of one image.
   const comps = isBundle
@@ -1559,27 +1579,27 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
         .map((c) => { const m = compMeta(c, wpById, compInfo); return { img: m.image, name: m.name, decorations: m.decorations, color: m.color }; })
     : [];
   const hasCollage = isBundle && comps.some((c) => c.img);
-  const b = isBundle ? bundleBadge(comps.length, theme) : stockBadge(p, theme);
+  const b = isBundle ? bundleBadge(comps.length, theme) : stockBadge(cardRow, theme);
   const catLabel = (p.store_category || p.category || '').trim();
   const vs = theme.varsity;
   // Varsity badges selectively, like the design: a plain in-stock item carries no
   // tag, so the only tags on the grid are the ones that change a decision
   // (low stock, sold out, package).
   const showBadge = !vs || b.text !== 'In stock';
-  const go = () => navTo(`/shop/${store.slug}/${isBundle ? 'b' : 'p'}/${p.webstore_product_id}`);
+  const go = () => navTo(`/shop/${store.slug}/${isBundle ? 'b' : 'p'}/${cardRow.webstore_product_id}`);
   return (
     <div className="sf-card" {...kbActivate(go)} style={{ cursor: 'pointer', position: 'relative', display: 'flex', flexDirection: 'column', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: vs ? 2 : 6, overflow: 'hidden', boxShadow: vs ? 'none' : '0 2px 12px rgba(0,0,0,0.06)' }}>
       <div style={{ position: 'relative', width: '100%', aspectRatio: '4 / 5', background: '#fff', overflow: 'hidden' }}>
         {hasCollage
           ? <BundleCollage comps={comps} theme={theme} />
-          : p.image_front_url
+          : cardRow.image_front_url
             ? <div style={{ position: 'absolute', inset: 0 }}>
                 {/* WYSIWYG: render the garment the SAME way the item-editor placement stage
                     does — raw photo, object-fit:contain, full 4:5 box, no inset — so a logo
                     lands on the exact spot the rep placed it. (normGarment/cover reframed the
                     photo and pushed placements off; the editor is the source of truth.) */}
-                {(() => { const gf = garmentFrame(p.image_front_url, p.decorations); return <img className="sf-img" src={gf.src} alt={p.name} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: gf.fit, display: 'block' }} />; })()}
-                {!isBundle && <DecoOverlay decorations={p.decorations} colorName={p.color} />}
+                {(() => { const gf = garmentFrame(cardRow.image_front_url, cardRow.decorations); return <img className="sf-img" src={gf.src} alt={cardRow.name} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: gf.fit, display: 'block' }} />; })()}
+                {!isBundle && <DecoOverlay decorations={cardRow.decorations} colorName={cardRow.color} />}
               </div>
             : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
         {/* Stock / package badge — flat tag top-left in varsity, skewed −6° top-right otherwise */}
@@ -1590,13 +1610,18 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
         </span>}
         {/* Category label — bottom-right (varsity moves it above the name instead) */}
         {!vs && catLabel && <span style={{ position: 'absolute', bottom: 10, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase', color: theme.subText, zIndex: 2 }}>{catLabel}</span>}
+        {designRows.length > 1 && store.org_type === 'all_school' && <div className="sf-design-arrows" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+          <button type="button" aria-label="Previous logo design" onClick={(e) => { e.stopPropagation(); setDesignIndex((i) => (i - 1 + designRows.length) % designRows.length); }}>‹</button>
+          <button type="button" aria-label="Next logo design" onClick={(e) => { e.stopPropagation(); setDesignIndex((i) => (i + 1) % designRows.length); }}>›</button>
+        </div>}
       </div>
       <div style={{ padding: vs ? '16px 16px 18px' : '14px 15px 16px' }}>
         {vs && catLabel && <div style={{ fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, letterSpacing: 1.8, textTransform: 'uppercase', color: theme.subText, marginBottom: 8 }}>{catLabel}</div>}
         <div style={{ fontFamily: DISPLAY, textTransform: 'uppercase', fontWeight: vs ? 800 : 700, fontSize: vs ? 19 : 18, letterSpacing: 0.3, lineHeight: 1.12, color: vs ? theme.band : theme.ink, minHeight: 40, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{p.name}</div>
-        {!isBundle && <ColorDots rows={colorRows} theme={theme} />}
+        {designRows.length > 1 && store.org_type === 'all_school' && <div className="sf-design-caption">{cardRow.school_design_label || `Logo ${designIndex + 1}`} · {designRows.length} logo designs</div>}
+        {!isBundle && <ColorDots rows={colorRows.filter((row) => (row.variant_group_id || row.webstore_product_id) === (cardRow.variant_group_id || cardRow.webstore_product_id))} theme={theme} />}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: vs ? 10 : 12 }}>
-          <span style={{ fontFamily: DISPLAY, fontSize: 22, letterSpacing: 0.3, fontWeight: 800, color: vs ? theme.band : theme.primary }}>{money(priceOf(p))}</span>
+          <span style={{ fontFamily: DISPLAY, fontSize: 22, letterSpacing: 0.3, fontWeight: 800, color: vs ? theme.band : theme.primary }}>{money(priceOf(cardRow))}</span>
           {!vs && <span style={{ fontFamily: DISPLAY, fontSize: 13, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: theme.accentDeep }}>View →</span>}
         </div>
       </div>
@@ -1721,8 +1746,9 @@ function swatchColor(name) {
 }
 
 // ── Single product ───────────────────────────────────────────────────
-function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd, player = null, onCat = null }) {
-  const [colorId, setColorId] = useState(rep ? rep.webstore_product_id : null);
+function ProductPage({ store, theme, product: rep, colorRows = [], selectedProductId = null, isOpen, onAdd, player = null, onCat = null }) {
+  const initialColorId = colorRows.some((row) => row.webstore_product_id === selectedProductId) ? selectedProductId : rep?.webstore_product_id || null;
+  const [colorId, setColorId] = useState(initialColorId);
   const [size, setSize] = useState(null);
   const [img, setImg] = useState('front');
   const [num, setNum] = useState('');
@@ -1731,7 +1757,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const [qty, setQty] = useState(1);
   const [added, setAdded] = useState(false);
   // Reset the picked color / size when navigating to a different product.
-  useEffect(() => { setColorId(rep ? rep.webstore_product_id : null); setSize(null); setImg('front'); setAddOnValues({}); }, [rep ? rep.webstore_product_id : null]);
+  useEffect(() => { setColorId(initialColorId); setSize(null); setImg('front'); setAddOnValues({}); }, [initialColorId]);
   // Prefill personalization from the player's roster link — jersey number is the
   // high-value bit; name is prefilled too but stays editable.
   useEffect(() => {
@@ -1744,10 +1770,13 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   // The active color variant drives the image, sizes, stock, price and cart line —
   // each color is its own row, so everything downstream stays per-SKU and correct.
   const p = (colorRows.length ? colorRows.find((r) => r.webstore_product_id === colorId) : null) || rep;
+  const designGroups = [...new Map(colorRows.map((row) => [row.variant_group_id || row.webstore_product_id, row])).entries()];
+  const activeDesignKey = p.variant_group_id || p.webstore_product_id;
+  const activeColorRows = designGroups.length > 1 && store.org_type === 'all_school' ? colorRows.filter((row) => (row.variant_group_id || row.webstore_product_id) === activeDesignKey) : colorRows;
   // Fit/gender variants (Adult / Women's / Youth) carry a variant_label and share
   // one image. Unlike colors, they get no picker — each fit renders as its own
   // labeled size row, and a size click resolves to that fit's own SKU.
-  const isFitGroup = colorRows.length > 1 && colorRows.some((r) => r.variant_label);
+  const isFitGroup = activeColorRows.length > 1 && activeColorRows.some((r) => r.variant_label);
   // Sellable sizes for one variant row. Honors the store's per-product size
   // selection (sizes_offered; null = all). Talls fold into their regular twin
   // (LT → L), so we compare on the folded label — a legacy sizes_offered that
@@ -1824,7 +1853,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const addToCart = () => {
     onAdd({
       kind: 'single', webstore_product_id: p.webstore_product_id, product_id: p.product_id, sku: p.sku,
-      name: p.name, color: p.color || null, variant_label: p.variant_label || null, image: ((isFitGroup ? rep : p).image_front_url) || null, size: size || null,
+      name: p.name, color: p.color || null, variant_label: [p.variant_label, p.school_design_label].filter(Boolean).join(' · ') || null, image: ((isFitGroup ? rep : p).image_front_url) || null, size: size || null,
       unit_price: Number(p.retail_price) || 0, fundraise: Number(p.fundraise_amount) || 0,
       size_extra: upNow,
       name_extra: p.takes_name && pname.trim() ? nameUp : 0,
@@ -1878,10 +1907,17 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
           {showFund && <div style={{ fontSize: 13, color: STOCK.in, fontWeight: 700, marginBottom: 18 }}>Includes {money(p.fundraise_amount)} that supports the team</div>}
           {descText && <p style={{ fontSize: 16, lineHeight: 1.6, color: theme.subText, margin: '0 0 22px', maxWidth: 480, whiteSpace: 'pre-line' }}>{descText}</p>}
 
-          {!isFitGroup && colorRows.length > 1 && <div style={{ margin: '4px 0 22px' }}>
+          {store.org_type === 'all_school' && designGroups.length > 1 && <div style={{ margin: '4px 0 22px' }}>
+            <div style={label}>Choose logo design</div>
+            <div className="sf-design-choices">{designGroups.map(([key, row], index) => <button type="button" key={key} className={key === activeDesignKey ? 'sf-design-choice sf-design-choice-active' : 'sf-design-choice'} onClick={() => { const next = colorRows.find((candidate) => (candidate.variant_group_id || candidate.webstore_product_id) === key && candidate.color === p.color) || row; setColorId(next.webstore_product_id); setSize(null); setImg('front'); }}>
+              <span className="sf-design-choice-image">{row.image_front_url && <img src={row.image_front_url} alt="" />}{row.image_front_url && <DecoOverlay decorations={row.decorations} colorName={row.color} />}</span>
+              <span>{row.school_design_label || `Logo ${index + 1}`}</span>
+            </button>)}</div>
+          </div>}
+          {!isFitGroup && activeColorRows.length > 1 && <div style={{ margin: '4px 0 22px' }}>
             <div style={label}>Color{p.color ? ` — ${p.color}` : ''}</div>
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-              {colorRows.map((c) => { const on = c.webstore_product_id === p.webstore_product_id; return (
+              {activeColorRows.map((c) => { const on = c.webstore_product_id === p.webstore_product_id; return (
                 <button key={c.webstore_product_id} type="button" title={c.color || ''} onClick={() => { setColorId(c.webstore_product_id); setSize(null); setImg('front'); }}
                   style={{ width: 32, height: 32, borderRadius: '50%', cursor: 'pointer', padding: 0, background: c.image_front_url ? `center/cover url(${c.image_front_url})` : swatchColor(c.color), border: 'none', boxShadow: on ? `0 0 0 2px #fff, 0 0 0 4px ${theme.primary}` : `0 0 0 1px ${theme.line}` }} />
               ); })}
@@ -1893,7 +1929,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
           {isFitGroup ? (
             <div style={{ margin: '22px 0' }}>
               <div style={label}>Select fit &amp; size</div>
-              {colorRows.map((c) => {
+              {activeColorRows.map((c) => {
                 const cs = sizesFor(c);
                 if (!cs.length) return null;
                 return (

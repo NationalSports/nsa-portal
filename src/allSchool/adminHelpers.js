@@ -31,6 +31,34 @@ export const validateAllSchoolSettings = (value) => {
   return '';
 };
 const COPY_FIELDS = ['kind', 'product_id', 'sku', 'retail_price', 'fundraise_amount', 'image_url', 'image_back_url', 'takes_number', 'takes_name', 'name_upcharge', 'transfer_codes', 'transfer_code', 'num_transfer_sets', 'num_transfer_size', 'num_transfer_color', 'decorations', 'category', 'kit_name', 'required', 'options', 'display_name', 'sizes_offered', 'active', 'deco_upcharge', 'deco_cost_estimate', 'track_inventory', 'size_sku_overrides', 'variant_label', 'personalization_template', 'weight_oz'];
+export const logoDesignCopies = (sources, storeId, styleGroupId, designGroupId, label, stock, logo) => {
+  const copies = (sources || []).map((row, index) => {
+    const fields = {}; COPY_FIELDS.forEach((key) => { if (row[key] !== undefined) fields[key] = JSON.parse(JSON.stringify(row[key])); });
+    return { ...fields, store_id: storeId, variant_group_id: designGroupId, school_style_group_id: styleGroupId,
+      school_design_label: label.trim(), school_program_ids: row.school_program_ids || [], school_shared: !!row.school_shared,
+      school_template_id: null, sort_order: Number(row.sort_order || 0) + index + 1, active: false };
+  });
+  if (stock) return applySportDesign(copies, stock, logo);
+  // A non-DTF art folder carries its own approved production file. Keep it linked
+  // to that art record; a DTF choice must instead use exact decoration stock.
+  return copies.map((row) => ({ ...row, image_url: null, image_back_url: null,
+    transfer_codes: [], transfer_code: null,
+    decorations: [{ kind: 'art', art_id: logo.id, art_url: logo.url, placement: 'full_front', side: 'front', type: logo.deco_type, baked: false }] }));
+};
+export const logoOptionsForItem = (catalog, item) => {
+  if (!item) return [];
+  const colorKey = (row) => row.variant_group_id || row.id;
+  const rows = (catalog || []).filter((row) => row.kind === 'single' && (item.school_style_group_id
+    ? row.school_style_group_id === item.school_style_group_id
+    : colorKey(row) === colorKey(item)));
+  const byDesign = new Map();
+  rows.forEach((row) => {
+    const key = colorKey(row);
+    if (!byDesign.has(key)) byDesign.set(key, []);
+    byDesign.get(key).push(row);
+  });
+  return [...byDesign].map(([key, groupColors]) => { const colors = [...groupColors].sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0)); return { key, row: colors[0], colors }; });
+};
 export const coreOfferingCopies = (sources, programId, storeId, existing = [], groupIdFor = () => crypto.randomUUID()) => {
   const groups = new Map();
   return (sources || []).filter((row) => row.kind === 'single' && !row.school_template_id && !(row.school_program_ids || []).length && !existing.some((copy) => copy.school_template_id === row.id && (copy.school_program_ids || []).includes(programId))).map((row, i) => {
@@ -54,8 +82,40 @@ export const stockLinkedArtError = (item, decorations) => {
   const codes = [...new Set([...(item?.transfer_codes || []), item?.transfer_code].filter(Boolean))];
   if (!codes.length || JSON.stringify(item.decorations || []) === JSON.stringify(decorations || [])) return '';
   const art = (decorations || []).filter((d) => d && !['perso_name', 'perso_number'].includes(d.kind) && (d.kind === 'art' || d.art_id || d.art_url));
-  if (!art.length || art.some((d) => !codes.includes(d.transfer_code)) || codes.some((code) => !art.some((d) => d.transfer_code === code))) return 'This All School offering uses a saved decoration-stock design. Choose the exact new production design and web logo in Sports & collections, then use “Use selected sport design”. Generic logo replacement cannot change its production artwork.';
+  if (!art.length || art.some((d) => !codes.includes(d.transfer_code)) || codes.some((code) => !art.some((d) => d.transfer_code === code))) return 'This All School offering uses a saved decoration-stock design. Choose the exact new production design and web logo in Categories, then use “Use selected sport design”. Generic logo replacement cannot change its production artwork.';
   return '';
 };
 
 export const changesProductionSetup = (fields) => ['decorations', 'transfer_codes', 'transfer_code', 'num_transfer_sets', 'num_transfer_size', 'num_transfer_color', 'takes_name', 'takes_number', 'personalization_template', 'product_id', 'sku', 'sizes_offered', 'size_sku_overrides', 'options'].some((key) => Object.prototype.hasOwnProperty.call(fields || {}, key));
+
+// Keep one visual card per shopper listing, and edit the selected art's own colors.
+export const schoolArtGroups = (catalog, stockByWp, artId) => {
+  const listings = new Map();
+  for (const row of catalog.filter((r) => r.kind === 'single')) {
+    const key = row.school_style_group_id || row.variant_group_id || row.id;
+    if (!listings.has(key)) listings.set(key, row);
+  }
+  return [...listings].map(([key, first]) => {
+    const choices = logoOptionsForItem(catalog, first);
+    const matching = choices.find((choice) => choice.colors.some((row) => frontArt(row)?.art_id === artId));
+    const choice = matching || choices[0];
+    const addingChoice = !!artId && !matching && choice.colors.some((row) => !!frontArt(row));
+    const st = stockByWp[choice.row.id] || {};
+    return { key, name: choice.row.display_name || st.name || choice.row.sku, choices, addingChoice,
+      items: choice.colors.map((row) => {
+        const stock = stockByWp[row.id] || {};
+        return { id: row.id, sku: row.sku, img: addingChoice ? stock.image_front_url : row.image_url || stock.image_front_url,
+          backImg: stock.image_back_url || '', color: stock.color || '', decorations: row.decorations || [], styleKey: key };
+      }) };
+  });
+};
+export const frontArt = (row) => (row?.decorations || []).find((d) => d && !['perso_name', 'perso_number'].includes(d.kind) && (d.side || 'front') === 'front' && (d.art_id || d.art_url));
+export const visualLogoCopies = (copies, sources, entries) => {
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  if (sources.length !== entries.length || sources.some((row) => !byId.get(row.id)?.image_url)) throw new Error('A blank garment image is needed for every color before adding another art choice.');
+  return copies.map((copy, index) => {
+    const entry = byId.get(sources[index].id);
+    return { ...copy, image_url: entry.image_url, image_back_url: entry.image_back_url || null,
+      decorations: entry.decorations, production_approved_at: null, production_approved_by: null };
+  });
+};

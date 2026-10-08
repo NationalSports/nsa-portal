@@ -72,4 +72,10 @@ describe('All School hero branding', () => {
     expect(render({})).toContain('>Athletics</span>');
     expect(render({ hero_background_text: '' })).not.toContain('>Athletics</span>');
   });
+  test('sport tiles use an uploaded image or the complete styled sport name', () => {
+    const markup = render({ programs: [{ id: 'football', name: 'Football', slug: 'football' }, { id: 'baseball', name: 'Baseball', slug: 'baseball', image_url: 'baseball-custom.jpg' }] });
+    expect(markup).toContain('class="as-program-monogram" aria-hidden="true">Football</span>');
+    expect(markup).toContain('src="baseball-custom.jpg"');
+    expect(markup).not.toContain('src="football.webp"');
+  });
 });

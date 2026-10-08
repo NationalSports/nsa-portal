@@ -1,6 +1,7 @@
 import ProductionSetupReview from './ProductionSetupReview';
 import PersonalizationTemplate from './PersonalizationTemplate';
 import React, { useState } from 'react';
+import { cloudUpload } from '../utils';
 import { normalizeAllSchoolSettings, validateAllSchoolSettings, coreOfferingCopies, applySportDesign } from './adminHelpers';
 const slug = (v) => String(v).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 export default function AllSchoolPrograms({ store, catalog, stockByWp = {}, transfers = [], logoOptions = [], artLibrary = [], staffId, onSaveSettings, onUpdateItem, onCopyOfferings }) {
@@ -10,7 +11,11 @@ export default function AllSchoolPrograms({ store, catalog, stockByWp = {}, tran
   const [personalizationItem, setPersonalizationItem] = useState(null); const [approvalItem, setApprovalItem] = useState(null);
   const [preview, setPreview] = useState(null); const [busy, setBusy] = useState(false); const [message, setMessage] = useState('');
   const programs = normalizeAllSchoolSettings(store.all_school_settings).programs;
+  const orderedPrograms = [...settings.programs].sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+  const sportsDirty = JSON.stringify(settings.programs) !== JSON.stringify(programs);
   const changeProgram = (id, patch) => setSettings((s) => ({ ...s, programs: s.programs.map((p) => p.id === id ? { ...p, ...patch } : p) }));
+  const moveProgram = (id, offset) => setSettings((s) => { const list = [...s.programs].sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0)); const from = list.findIndex((p) => p.id === id); const to = from + offset; if (from < 0 || to < 0 || to >= list.length) return s; [list[from], list[to]] = [list[to], list[from]]; return { ...s, programs: list.map((p, i) => ({ ...p, sort_order: i })) }; });
+  const uploadProgramImage = async (id, file) => { if (!file) return; setBusy(true); try { const url = await cloudUpload(file, 'nsa-webstores'); changeProgram(id, { image_url: url }); setMessage('Image ready. Save sports to publish it.'); } catch (error) { setMessage(`Thumbnail upload failed: ${error.message}`); } finally { setBusy(false); } };
   const persist = async () => {
     const error = validateAllSchoolSettings(settings); if (error) return setMessage(error);
     const removed = programs.filter((p) => !settings.programs.some((next) => next.id === p.id));
@@ -41,18 +46,36 @@ export default function AllSchoolPrograms({ store, catalog, stockByWp = {}, tran
   const confirmCopy = async () => { setBusy(true); try { const ok = await onCopyOfferings(preview); if (ok) { setPreview(null); setSelected([]); setMessage('Sport offerings created. Open them in Catalog to customize artwork and pricing.'); } } finally { setBusy(false); } };
   const name = (c) => c.display_name || stockByWp[c.id]?.name || c.sku || 'Item';
   return <div style={{ display: 'grid', gap: 20 }}>
+    {message && <div role="status" style={{ padding: 12, background: '#f1f5f9', borderRadius: 8 }}>{message}</div>}
     <div className="card" style={{ padding: 20 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}><h3 style={{ margin: 0 }}>Sports & school collections</h3><button className="btn btn-sm btn-secondary" onClick={() => setSettings((s) => ({ ...s, programs: [...s.programs, { id: crypto.randomUUID(), name: '', slug: '', image_url: '', sort_order: s.programs.length, enabled: true }] }))}>+ Add sport</button></div>
-      <p style={{ fontSize: 13, color: '#64748b' }}>School Spirit contains core offerings. Add sports with their own art and prices, or share an offering across every sport.</p>
-      {settings.programs.map((p, i) => <div key={p.id} style={{ display: 'grid', gridTemplateColumns: '2fr 2fr 3fr 70px auto auto', gap: 10, marginBottom: 10, alignItems: 'center' }}>
-        <label style={{ fontSize: 11 }}>Sport name<input className="form-input" value={p.name} placeholder="Football" onChange={(e) => changeProgram(p.id, { name: e.target.value, slug: !p.slug || p.slug === slug(p.name) ? slug(e.target.value) : p.slug })} /></label>
-        <label style={{ fontSize: 11 }}>URL slug<input className="form-input" value={p.slug} onChange={(e) => changeProgram(p.id, { slug: slug(e.target.value) })} /></label>
-        <label style={{ fontSize: 11 }}>Photo URL<input className="form-input" value={p.image_url || ''} placeholder="https://…" onChange={(e) => changeProgram(p.id, { image_url: e.target.value })} /></label>
-        <label style={{ fontSize: 11 }}>Order<input className="form-input" type="number" value={p.sort_order ?? i} onChange={(e) => changeProgram(p.id, { sort_order: Number(e.target.value) })} /></label>
-        <label style={{ fontSize: 12 }}><input type="checkbox" checked={p.enabled !== false} onChange={(e) => changeProgram(p.id, { enabled: e.target.checked })} /> Live</label>
-        <button className="btn btn-sm btn-secondary" onClick={() => setSettings((s) => ({ ...s, programs: s.programs.filter((row) => row.id !== p.id) }))}>Remove</button>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div><h3 style={{ margin: 0 }}>Categories</h3><p style={{ fontSize: 13, color: '#64748b', margin: '5px 0 0' }}>Add a sport by name. Its tile uses school-colored text until you add a photo.</p></div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}><button className="btn btn-sm btn-secondary" disabled={busy} onClick={() => setSettings((s) => ({ ...s, programs: [...s.programs, { id: crypto.randomUUID(), name: '', slug: '', image_url: '', sort_order: s.programs.length, enabled: true }] }))}>+ Add category</button><button className="btn btn-primary" disabled={busy || !sportsDirty} onClick={persist}>{busy ? 'Saving…' : 'Save changes'}</button></div>
+      </div>
+      {sportsDirty && <p role="status" style={{ color: '#a16207', fontSize: 12, margin: '12px 0' }}>Unsaved category changes</p>}
+      <div style={{ display: 'grid', gap: 14, marginTop: 15 }}>
+      {orderedPrograms.map((p, i) => <div key={p.id} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%,240px),1fr))', gap: 16, padding: 14, border: '1px solid #e2e8f0', borderRadius: 10, background: '#fff' }}>
+        <div style={{ position: 'relative', aspectRatio: '4/3', overflow: 'hidden', borderRadius: 6, background: store.primary_color || '#123976', color: '#fff' }}>
+          {p.image_url ? <img src={p.image_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', padding: 8, fontFamily: 'Barlow Condensed, sans-serif', fontWeight: 800, fontStyle: 'italic', fontSize: 'clamp(28px,3vw,48px)', lineHeight: .95, textAlign: 'center', textTransform: 'uppercase', overflowWrap: 'anywhere' }}>{p.name || 'SPORT'}</span>}
+          <b style={{ position: 'absolute', bottom: 8, left: 10, fontSize: 12, textTransform: 'uppercase', textShadow: '0 1px 3px #000' }}>{p.name || 'New sport'}</b>
+        </div>
+        <div style={{ display: 'grid', gap: 10, alignContent: 'start' }}>
+          <label style={{ fontSize: 12, fontWeight: 700 }}>Category name<input className="form-input" value={p.name} placeholder="Football" onChange={(e) => changeProgram(p.id, { name: e.target.value, slug: !p.slug || p.slug === slug(p.name) ? slug(e.target.value) : p.slug })} /></label>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <label style={{ fontSize: 12 }}>Upload photo<input className="form-input" type="file" accept="image/*" aria-label={`Upload ${p.name || 'sport'} thumbnail`} disabled={busy} onChange={async (e) => { const file = e.target.files?.[0]; await uploadProgramImage(p.id, file); e.target.value = ''; }} /></label>
+            {p.image_url && <button type="button" className="btn btn-sm btn-secondary" onClick={() => changeProgram(p.id, { image_url: '' })}>Use styled text</button>}
+            <span style={{ fontSize: 11, color: '#64748b' }}>{p.image_url ? 'Photo tile · 4:3 crop' : 'Automatic text tile'}</span>
+          </div>
+          <details style={{ fontSize: 12 }}><summary style={{ cursor: 'pointer' }}>More options</summary><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 8 }}><label>Image URL<input className="form-input" value={p.image_url || ''} placeholder="Optional" onChange={(e) => changeProgram(p.id, { image_url: e.target.value })} /></label><label>URL slug<input className="form-input" value={p.slug || ''} onChange={(e) => changeProgram(p.id, { slug: slug(e.target.value) })} /></label></div></details>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn btn-sm btn-secondary" title="Move up" aria-label={`Move ${p.name || 'sport'} up`} disabled={i === 0} onClick={() => moveProgram(p.id, -1)}>↑</button><button className="btn btn-sm btn-secondary" title="Move down" aria-label={`Move ${p.name || 'sport'} down`} disabled={i === orderedPrograms.length - 1} onClick={() => moveProgram(p.id, 1)}>↓</button>
+            <label style={{ marginLeft: 7, fontSize: 12 }}><input type="checkbox" checked={p.enabled !== false} onChange={(e) => changeProgram(p.id, { enabled: e.target.checked })} /> Show on store</label>
+            <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => setSettings((s) => ({ ...s, programs: s.programs.filter((row) => row.id !== p.id) }))}>Remove</button>
+          </div>
+        </div>
       </div>)}
-      <button className="btn btn-primary" disabled={busy} onClick={persist}>{busy ? 'Saving…' : 'Save sports'}</button>
+      </div>
+      {!orderedPrograms.length && <p style={{ fontSize: 13, color: '#64748b' }}>No categories yet. Add one to create its storefront tile.</p>}
     </div>
     <div className="card" style={{ padding: 20 }}>
       <h3 style={{ marginTop: 0 }}>Core assortment → sport offerings</h3>
@@ -78,6 +101,5 @@ export default function AllSchoolPrograms({ store, catalog, stockByWp = {}, tran
     </div>
     {approvalItem && <ProductionSetupReview key={approvalItem.id} item={approvalItem} stock={stockByWp[approvalItem.id]} transfers={transfers} art={artLibrary} staffId={staffId} onSave={onUpdateItem} onClose={() => setApprovalItem(null)} />}
     {personalizationItem && <PersonalizationTemplate key={personalizationItem.id} item={personalizationItem} onSave={onUpdateItem} onClose={() => setPersonalizationItem(null)} />}
-    {message && <div role="status" style={{ padding: 12, background: '#f1f5f9', borderRadius: 8 }}>{message}</div>}
   </div>;
 }

@@ -1,15 +1,7 @@
 import React, { useState } from 'react';
 import { readable, legibleOn } from '../lib/a11y';
-import baseball from './assets/baseball.webp';
-import football from './assets/football.webp';
-import soccer from './assets/soccer.webp';
-import softball from './assets/softball.webp';
-import track from './assets/track.webp';
-import volleyball from './assets/volleyball.webp';
-import wrestling from './assets/wrestling.webp';
 import './allSchoolStorefront.css';
 
-const sportPhotos = { baseball, football, soccer, softball, track, volleyball, wrestling };
 const settingsOf = (store) => store.all_school_settings || {};
 export const schoolPrograms = (store) => (Array.isArray(settingsOf(store).programs) ? settingsOf(store).programs : [])
   .filter((p) => p && p.id && p.name && p.enabled !== false)
@@ -34,7 +26,7 @@ const shortName = (name) => String(name || 'School').replace(/\s+(?:team\s+store
 const initials = (name) => shortName(name).split(/\s+/).slice(0, 3).map((s) => s[0]).join('');
 const targetDays = (store) => Math.max(1, Number(settingsOf(store).target_ship_days) || 14);
 const shipLabel = (store) => targetDays(store) % 7 === 0 ? `${targetDays(store) / 7} weeks` : `${targetDays(store)} days`;
-const photoOf = (program) => program.image_url || sportPhotos[Object.keys(sportPhotos).find((name) => `${program.name} ${program.slug || ''}`.toLowerCase().includes(name))];
+const photoOf = (program) => program.image_url || null;
 
 export function AllSchoolHeader({ store, theme, cartCount, onHome, onCart, onAllItems, onPrograms, onSpirit }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -94,7 +86,7 @@ export function AllSchoolIntro({ store, theme, products, selectedProgram, onProg
         const photo = photoOf(program);
         const count = products.filter((p) => schoolProductMatches(p, program.id)).length;
         return <button className={`as-program-card${selectedProgram === program.id ? ' as-selected' : ''}`} key={program.id} onClick={() => onProgram(program.id)} aria-pressed={selectedProgram === program.id}>
-          {photo ? <img src={photo} loading="lazy" alt="" /> : <span className="as-program-monogram" aria-hidden>{program.name.slice(0, 2)}</span>}
+          {photo ? <img src={photo} loading="lazy" alt="" /> : <span className="as-program-monogram" aria-hidden>{program.name}</span>}
           <span className="as-program-shade" aria-hidden />
           <span className="as-program-index" aria-hidden>↗</span>
           <span className="as-program-copy"><strong>{program.name}</strong><span><i aria-hidden />{count ? 'Shop the collection' : 'Explore the program'}</span></span>

@@ -129,6 +129,10 @@ describe('all-school public data and frozen production recipes', () => {
     expect(publicStore.all_school_settings).toEqual({ programs: [{ id: 'football', name: 'Football' }], target_ship_days: 14, show_promo_banner: false, shipping: { mode: 'ups_live', service_code: 'ups_ground' } });
     expect(JSON.stringify(publicStore)).not.toMatch(/private|threshold_cents|package_weight_oz/);
   });
+  test('public settings expose only safe first-logo choices', () => {
+    const settings = checkout.publicAllSchoolSettings({ first_logo_by_style: { hoodie: 'arch', 'unsafe<script>': 'other', shirt: 42 } });
+    expect(settings.first_logo_by_style).toEqual({ hoodie: 'arch' });
+  });
 
   test('a saved recipe retains exact transfer/art version after catalog changes, without unrelated stock', () => {
     const product = { ...wp, takes_name: true, transfer_codes: ['CREST'], decorations: [{ type: 'dtf', prod_files: [{ name: 'crest.ai', url: 'https://assets.test/crest-v1.ai' }] }], personalization_template: { font: 'Varsity', uppercase: true, max_length: 12 } };
@@ -144,6 +148,12 @@ describe('all-school public data and frozen production recipes', () => {
     const saved = checkout.buildOrderItems([{ ...lines[0], production_recipe: recipe }], null, undefined, true);
     expect(saved[0].production_recipe).toBe(recipe);
     expect(checkout.buildOrderItems(lines, null)[0].production_recipe).toBeUndefined();
+  });
+  test('logo option label and exact design survive in the frozen production recipe', () => {
+    const recipe = checkout.productionRecipe({ ...wp, school_design_label: 'Arched Serra', transfer_codes: ['ARCH'], decorations: [{ art_id: 'arched-logo', transfer_code: 'ARCH' }] });
+    expect(recipe.school_design_label).toBe('Arched Serra');
+    expect(recipe.transfer_codes).toEqual(['ARCH']);
+    expect(recipe.decorations[0].art_id).toBe('arched-logo');
   });
 
   test('personalization rules reject invalid names without changing confirmed text', () => {
