@@ -31,6 +31,13 @@ describe('diff comparators (phantom-save guards)', () => {
     expect(_diffCmp(a)).not.toBe(_diffCmp({ ...a, memo: 'edited' }));
   });
 
+  test('editing ownership metadata never schedules a phantom document save', () => {
+    const row={id:'SO-1',memo:'same',items:[]};
+    const leased={...row,_editLease:{session:'tab',generation:2}};
+    expect(_diffCmp(row)).toBe(_diffCmp(leased));
+    expect(_soDiffCmp(row)).toBe(_soDiffCmp(leased));
+  });
+
   test('_invDiffCmp ignores attached credit memo history but sees invoice edits', () => {
     const invoice = { id: 'INV-1', memo: 'original', credit_memos: [] };
     expect(_invDiffCmp(invoice)).toBe(_invDiffCmp({

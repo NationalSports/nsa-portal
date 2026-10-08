@@ -1,7 +1,7 @@
 // Compare content, not JSON serialization or optimistic-lock bookkeeping.
 // Never ignore arbitrary underscore-prefixed fields: shipping, costs and job
 // progress also use those names and must remain part of the comparison.
-const rootMetadata = new Set(['_version', '_obBaseVersion', '_retry', '_draftRecovery',
+const rootMetadata = new Set(['_editLease', '_version', '_obBaseVersion', '_retry', '_draftRecovery',
   'updated_at', 'created_at', '_itemsHydrated', '_decosHydrated', '_artHydrated',
   '_recoveryHydrated', '_jobsHydrated', '_posHydrated', '_picksHydrated', '_hydratedArtIds',
   '_hydratedPoIds', '_hydratedPickIds', '_reviewedSaveToken']);

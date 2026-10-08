@@ -15,7 +15,7 @@ import {
   _custDiffCmp,
 } from '../lib/dbEngine';
 
-const clearBox = () => localStorage.removeItem('nsa_outbox');
+const clearBox = () => {Object.keys(localStorage).filter(k=>k.startsWith('nsa_outbox')).forEach(k=>localStorage.removeItem(k));};
 const deferred = () => {
   let resolve;
   let reject;
@@ -232,9 +232,8 @@ describe('outbox store (localStorage round-trip)', () => {
     const big = 'x'.repeat(500 * 1024); // two of these exceed the ~768k-char cap
     _outboxAdd('sales_orders', { id: 'SO-OLD', memo: big });
     // make SO-OLD strictly older than the next write
-    const box = JSON.parse(localStorage.getItem('nsa_outbox'));
-    box['sales_orders:SO-OLD'].ts = 1;
-    localStorage.setItem('nsa_outbox', JSON.stringify(box));
+    const [old] = _outboxList();
+    localStorage.setItem(old.storageKey, JSON.stringify({...old,ts:1}));
     _outboxAdd('sales_orders', { id: 'SO-NEW', memo: big });
     const left = _outboxList();
     expect(left).toHaveLength(2);
@@ -447,12 +446,12 @@ describe('immutable document save attempts',()=>{
 });
 
 test('quota failure preserves the previously stored backup and reports staging failure',()=>{
- localStorage.removeItem('nsa_outbox');
+ clearBox();
  _outboxAdd('sales_orders',{id:'SO-KEPT',memo:'must survive'});
- const original=localStorage.getItem('nsa_outbox');
+ const [kept]=_outboxList();const original=localStorage.getItem(kept.storageKey);
  const spy=jest.spyOn(Storage.prototype,'setItem').mockImplementation(()=>{throw new Error('QuotaExceededError');});
  const error=jest.spyOn(console,'error').mockImplementation(()=>{});
  expect(_outboxAdd('sales_orders',{id:'SO-NO-SPACE',memo:'new'})).toBe(false);
- expect(localStorage.getItem('nsa_outbox')).toBe(original);
- spy.mockRestore();error.mockRestore();localStorage.removeItem('nsa_outbox');
+ expect(localStorage.getItem(kept.storageKey)).toBe(original);
+ spy.mockRestore();error.mockRestore();clearBox();
 });
