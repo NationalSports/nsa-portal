@@ -265,7 +265,7 @@ exports.handler = async (event) => {
       return reply(200, { ok: true, store: data, fallback_count: fallbackCount });
     }
 
-    if (['generate_family', 'generate_all_families', 'cancel_family'].includes(action)) {
+    if (['generate_image', 'generate_family', 'generate_all_families', 'cancel_family'].includes(action)) {
       const { queueFamilies, transition } = require('./_showcaseFamily');
       const catalog = await getCatalog(admin, storeId, store.store_art);
       const { data, error } = await admin.from('webstore_showcase_assets').select('*').eq('store_id', storeId);
@@ -292,8 +292,9 @@ exports.handler = async (event) => {
         return reply(200,{ok:true});
       }
       if (body.showcase_settings && !DECORATION_FINISHES.some(([key]) => key === body.showcase_settings.decoration_type)) return reply(400,{error:'Invalid decoration finish'});
+      if (action === 'generate_image' && !body.webstore_product_id) return reply(400,{error:'Choose an image combination'});
       const result = await queueFamilies({admin,store,catalog,assets,key:String(body.family_key || ''),all:action==='generate_all_families',
-        settings:body.showcase_settings,newMaster:body.new_master===true,baseUrl:getWorkerBaseUrl(event)});
+        targetId:action==='generate_image'?String(body.webstore_product_id):undefined,settings:body.showcase_settings,newMaster:body.new_master===true,baseUrl:getWorkerBaseUrl(event)});
       return reply(result.failed_count && !result.queued_count ? 502 : 202,{ok:!result.failed_count,...result});
     }
 

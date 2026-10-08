@@ -14,14 +14,16 @@ async function transition(admin, store, key, request, action, payload = {}) {
 function catalogSignature(members) {
   return hash([...members].sort((a,b)=>a.webstore_product_id.localeCompare(b.webstore_product_id)).map((m)=>[m.webstore_product_id,m.product_id,m.supplier_image_url,m.color,m.decorations]));
 }
-function familyInputs(group, assets, settings) {
+function familyInputs(group, assets, settings, targetId) {
   const members = group.items.map((item) => ({ ...item, settings: normalizeShowcaseSettings(settings || assets.find((a) => a.webstore_product_id === item.webstore_product_id)?.analysis?.showcase_settings) }));
   // Stable selection across catalog reorder; logos never become master inputs.
-  const source = [...members].sort((a,b) => a.product_id.localeCompare(b.product_id))[0];
-  return { version: FAMILY_VERSION, members, source, catalog_signature:catalogSignature(members),
+  const source = (targetId && members.find(m => m.webstore_product_id === targetId)) || [...members].sort((a,b) => a.product_id.localeCompare(b.product_id))[0];
+  const selected = targetId ? members.filter(m => m.webstore_product_id === targetId) : members;
+  if (!selected.length) throw new Error('Image combination not found in this item');
+  return { version: FAMILY_VERSION, members: selected, source, catalog_family_key: group.key, catalog_signature:catalogSignature(members),
     master_signature: hash([FAMILY_VERSION, MASTER_POSE_VERSION, source.product_id, source.supplier_image_url, source.settings.revision_notes]) };
 }
-async function queueFamilies({ admin, store, catalog, assets, key, all, settings, newMaster, baseUrl }) {
+async function queueFamilies({ admin, store, catalog, assets, key, all, settings, newMaster, baseUrl, targetId }) {
   if (!baseUrl) throw new Error('Unable to start Showcase worker');
   const byId = new Map(assets.map((a) => [a.webstore_product_id, a]));
   const groups = groupShowcaseItems(catalog.map((item) => ({ ...item, asset: byId.get(item.webstore_product_id) && {
@@ -33,12 +35,25 @@ async function queueFamilies({ admin, store, catalog, assets, key, all, settings
   const queued = [];
   // Queue all groups before dispatching any, to preserve the batch email boundary.
   for (const group of selected) {
-    if (!group.eligible) throw new Error('Each color needs an original supplier photo before shared-base generation');
-    const inputs = familyInputs(group, assets, settings);
+    if (targetId ? !group.items.some(m=>m.webstore_product_id===targetId && m.supplier_image_url && m.kind!=='bundle') : !group.eligible) throw new Error('The selected images need an original supplier photo before generation');
+    const inputs = familyInputs(group, assets, settings, targetId);
+    const jobKey = targetId ? `${group.key}:image:${targetId}` : group.key;
+    if (targetId && !newMaster) {
+      const shared = await admin.from('webstore_showcase_families').select('family_key,master').eq('store_id',store.id).in('family_key',[jobKey,group.key]);
+      if (shared.error) throw new Error(shared.error.message);
+      const canonical = familyInputs(group, assets, settings);
+      const own = shared.data?.find(row=>row.family_key===jobKey)?.master;
+      const family = shared.data?.find(row=>row.family_key===group.key)?.master;
+      if (own?.signature !== inputs.master_signature && family?.signature === canonical.master_signature) {
+        inputs.shared_master = family;
+        inputs.source = canonical.source;
+        inputs.master_signature = canonical.master_signature;
+      }
+    }
     inputs.store_art = store.store_art || [];
     for (const member of inputs.members) delete member.asset;
     delete inputs.source.asset;
-    const result = await admin.rpc('queue_showcase_family', { p_store: store.id, p_key: group.key,
+    const result = await admin.rpc('queue_showcase_family', { p_store: store.id, p_key: jobKey,
       p_request: crypto.randomUUID(), p_inputs: inputs, p_new_master: !!newMaster });
     if (result.error) {
       // Earlier groups must not be left queued without dispatch if a later one conflicts.
@@ -114,7 +129,7 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
   const move = (action,payload) => transition(admin,store,key,request,action,payload);
   const job = await move('claim');
   if (!job) return { skipped: true };
-  let cachedMaster = job.master;
+  let cachedMaster = job.master || job.inputs.shared_master;
   try {
     const render = deps.render || require('./_showcaseFamilyRender');
     const fetchImage = deps.fetchImage || fetchRemoteImage;
@@ -131,7 +146,7 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
         liveArt = result.data.store_art || [];
       }
       const catalog = await (deps.getCatalog || require('./_showcaseCatalog').getCatalog)(admin,store,liveArt);
-      const group = groupShowcaseItems(catalog).find((g)=>g.key===key);
+      const group = groupShowcaseItems(catalog).find((g)=>g.key===(job.inputs.catalog_family_key || key));
       if (!group || catalogSignature(group.items)!==job.inputs.catalog_signature) throw new Error('The catalog or logo changed during generation. Generate the item again.');
     };
     const artUrls = [...new Set(members.flatMap((m) => (m.decorations || []).filter((d) => d.side !== 'back' && d.placement !== 'full_back').map((d) => d.art_url).filter(Boolean)))];
@@ -157,7 +172,10 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
       placements[id] ||= { x:d.x,y:d.y,w:d.w,supplier_index:urls.indexOf(m.supplier_image_url)+1 };
     }
     await checkCatalog();
-    const refs = await Promise.all(urls.map(fetchImage));
+    const refs = await Promise.all(urls.map(async url => {
+      try { return await fetchImage(url); }
+      catch (error) { throw new Error(`Supplier photo for ${members.find(m=>m.supplier_image_url===url)?.color || 'this color'}: ${error.message}`); }
+    }));
     const current = async () => { if (!await move('check')) throw new Error('Family was canceled or changed'); };
     await current();
     const preflight = await analyze({ product: job.inputs.source, decorations: [], images: refs,
@@ -170,7 +188,7 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
       colors.push(await render.sampleFabric(refs[i].bytes,color.patches,color.texture));
     }
     await current();
-    let master = job.master;
+    let master = job.master || job.inputs.shared_master;
     let masterImage;
     const upload = async (bytes, path) => {
       const bucket = admin.storage.from('showcase-images');
@@ -180,9 +198,13 @@ async function runFamilyJob(admin, asset, siteUrl, deps = {}) {
       if (!url) throw new Error('Permanent image URL unavailable');
       return url;
     };
-    if (master?.url && master.signature===job.inputs.master_signature) masterImage = await fetchImage(master.url);
+    if (master?.url && master.signature===job.inputs.master_signature) {
+      masterImage = await fetchImage(master.url);
+      if (!await move('cache',master)) throw new Error('Family was canceled');
+    }
     else {
-      const generated = await generate({ product:job.inputs.source,decorations:[],images:[refs[urls.indexOf(job.inputs.source.supplier_image_url)]],editPrompt:masterPrompt(job.inputs.source) });
+      const sourceImage = refs[urls.indexOf(job.inputs.source.supplier_image_url)] || await fetchImage(job.inputs.source.supplier_image_url);
+      const generated = await generate({ product:job.inputs.source,decorations:[],images:[sourceImage],editPrompt:masterPrompt(job.inputs.source) });
       await current();
       masterImage = generated;
       master = { url:await upload(generated.bytes,'master'), model:generated.model, signature:job.inputs.master_signature };

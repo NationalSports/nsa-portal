@@ -53,6 +53,7 @@ function FamilyCard({ group, busy, act, onReview }) {
           <div style={{fontSize:11,color:'#64748b',margin:'8px 0'}}>{asset.status === 'review' ? 'Generated · Awaiting approval' : asset.status === 'approved' ? 'Generated · Approved' : asset.status || 'Not generated'}</div>
           <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
             <button className="btn btn-sm btn-secondary" onClick={()=>onReview(item.webstore_product_id)}>Before / After</button>
+            <button className="btn btn-sm btn-primary" disabled={busy || group.working || !item.supplier_image_url} onClick={()=>act(item.webstore_product_id,'generate_image',{family_key:group.key,webstore_product_id:item.webstore_product_id,showcase_settings:{decoration_type:finish,revision_notes:asset.showcase_settings?.revision_notes || ''}})}>{url ? 'Refresh this image' : 'Create this image'}</button>
             {asset.status==='review' && <button className="btn btn-sm btn-primary" disabled={busy || asset.needs_regeneration} onClick={()=>onReview(item.webstore_product_id)}>Review & Approve</button>}
             {asset.approved_showcase_image_url && <button className="btn btn-sm btn-secondary" disabled={busy || group.working} onClick={()=>act(item.webstore_product_id,'fallback',{webstore_product_id:item.webstore_product_id})}>Use Standard</button>}
           </div>
@@ -83,9 +84,9 @@ export default function ShowcaseFamilyList({ items, busy, error, act }) {
     <div style={{padding:14}}>{!groups.length && <p>Add products to the catalog first.</p>}{groups.map((group)=><FamilyCard key={group.key} group={group} busy={busy} act={act} onReview={setReviewId}/>)}</div>
     {reviewItem && <ShowcaseImageReview key={reviewId} item={reviewItem} familyMode busy={busy} error={error} onClose={()=>setReviewId(null)}
       onAction={(action,extra={})=>{
-        if (action === 'revise') {
+        if (action === 'generate_image' || action === 'revise') {
           const group = groups.find(g => g.items.some(i => i.webstore_product_id === reviewId));
-          return act(group.key,'generate_family',{family_key:group.key,new_master:true,...extra});
+          return act(reviewId,'generate_image',{family_key:group.key,webstore_product_id:reviewId,new_master:action==='revise',...extra});
         }
         return act(reviewId,action,{webstore_product_id:reviewId,...extra});
       }}/>}
